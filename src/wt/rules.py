@@ -40,12 +40,23 @@ def resolve_facets(cfg, topic, mappings=None) -> dict:
     return {}
 
 
+INTERNAL_PROJECT = "Meta-Tools"   # wt's own project: internal SPEC-NNNN, research root = wt
+
+
 def known_projects(cfg):
     """Sorted distinct values of cfg['project_axis'] (default 'bucket') across
     load_mappings(cfg) — the de-facto project registry (SPEC-0018)."""
     axis = cfg.get("project_axis", "bucket")
     values = {facets[axis] for facets in load_mappings(cfg).values() if axis in facets}
     return sorted(values)
+
+
+def registered_projects(cfg) -> list[str]:
+    """Every project wt knows (SPEC-0189): mapping buckets ∪ `outbox_targets` keys ∪ the
+    internal project — the one answer to "is this a project?" for capture, completion,
+    extension schemas and `wt projects`."""
+    outbox = cfg.get("outbox_targets") or {}
+    return sorted(set(known_projects(cfg)) | set(outbox.keys()) | {INTERNAL_PROJECT})
 
 
 def _outbound_flag(entry) -> bool:
@@ -68,9 +79,8 @@ def projects_payload(cfg) -> dict:
         if val:
             counts[val] = counts.get(val, 0) + 1
     outbox = cfg.get("outbox_targets") or {}
-    names = set(known_projects(cfg)) | set(outbox.keys()) | {"Meta-Tools"}
     projects = []
-    for name in sorted(names):
+    for name in registered_projects(cfg):
         entry = outbox.get(name) or {}
         projects.append({
             "name": name,
@@ -239,7 +249,7 @@ def resolve_research_context(cfg, project=None):
             ctx["note"] = f"outbox_targets[{project!r}] has empty repo_path"
         return ctx
 
-    if project == "Meta-Tools":
+    if project == INTERNAL_PROJECT:
         root = wt_checkout(cfg)
         if root:
             return {"root": str(root), "source": "internal"}

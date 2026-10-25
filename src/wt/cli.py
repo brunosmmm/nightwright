@@ -976,7 +976,8 @@ def projects_group():
               help="emit wt.projects.v1 JSON (SPEC-0095; includes outbox + research)")
 @click.pass_obj
 def projects_list_cmd(cfg, as_json):
-    """List known projects: mapping buckets (Rich), or full routing map with --json."""
+    """List every registered project (mapping buckets, outbox targets, Meta-Tools — SPEC-0189):
+    a table, or the full routing map with --json."""
     if as_json:
         import json
         import sys
@@ -984,19 +985,27 @@ def projects_list_cmd(cfg, as_json):
         json.dump(projects_payload(cfg), sys.stdout, indent=2, ensure_ascii=False)
         sys.stdout.write("\n")
         return
-    axis = cfg.get("project_axis", "bucket")
-    mappings = load_mappings(cfg)
-    counts = {}
-    for facets in mappings.values():
-        val = facets.get(axis)
-        if val:
-            counts[val] = counts.get(val, 0) + 1
-    projects = known_projects(cfg)
-    if not projects:
-        console.print("[yellow]no projects mapped yet — see `wt map`[/]")
-        return
-    for p in projects:
-        console.print(f"[white]{p}[/]  [dim]({counts.get(p, 0)} topic(s))[/]")
+    from rich.text import Text
+
+    from . import render as R
+    from .rules import projects_payload
+    table = R.section_table("Projects")
+    table.add_column("project", no_wrap=True)
+    table.add_column("topics", justify="right")
+    table.add_column("outbound", justify="center")
+    table.add_column("research root", overflow="fold")
+    for p in projects_payload(cfg)["projects"]:
+        research = p.get("research") or {}
+        root = research.get("root")
+        where = (Text(root) if root else Text(research.get("note") or "—", style="dim"))
+        if root and research.get("source"):
+            where.append(f"  ({research['source']})", style="dim")
+        table.add_row(R.project_text(p["name"]), str(p["topics"]),
+                      Text("✓", style="green") if p["outbound"] else Text("—", style="dim"),
+                      where)
+    console.print(table)
+    if not known_projects(cfg):
+        console.print("[dim]no projects mapped to topics yet — see `wt map`[/]")
 
 
 @projects_group.command("add")

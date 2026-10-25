@@ -457,8 +457,8 @@ def _warn_unknown_associations(cfg, *, project=None, epic=None):
     the known set to stderr, but never blocks capture. Lazy imports avoid a circular import
     (specs.py imports this module)."""
     if project:
-        from .rules import known_projects
-        known = known_projects(cfg)
+        from .rules import registered_projects
+        known = registered_projects(cfg)
         if project not in known:
             warn(f"  ! unknown project {project!r}; known projects: "
                  f"{', '.join(known) or '(none mapped yet)'}")

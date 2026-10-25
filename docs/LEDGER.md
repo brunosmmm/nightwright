@@ -304,6 +304,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0183](./specs/0183-file-based-mailbox-between-conductor-and-stewards.md) | File-based mailbox between conductor and stewards | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0185](./specs/0185-rich-human-output-everywhere-and-a-queue-watch.md) | Rich human output everywhere and a queue watch dashboard | feature | done | M4: cli ergonomics | 2026-10-25 |
 | [SPEC-0186](./specs/0186-spec-change-guard-at-close-no-merge-when-the.md) | Spec-change guard at close: no merge when the implementer altered the spec | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0189](./specs/0189-one-project-registry-for-capture-completion-and.md) | One project registry for capture, completion and promotion | feature | done | M4: cli ergonomics | 2026-10-25 |
 
 ## Superseded / rejected
 

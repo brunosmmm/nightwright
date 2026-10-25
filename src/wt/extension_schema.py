@@ -3,14 +3,14 @@ from __future__ import annotations
 
 
 from .render import warn
-from .rules import known_projects
+from .rules import registered_projects
 
 _WARNED_UNKNOWN: set[str] = set()
 
 
 def _warn_unknown_extension_projects(cfg) -> None:
     """Warn once per unknown project name in idea_extensions (permissive, like associations)."""
-    known = set(known_projects(cfg))
+    known = set(registered_projects(cfg))
     for proj in (cfg.get("idea_extensions") or {}):
         if proj in known or proj in _WARNED_UNKNOWN:
             continue

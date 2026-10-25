@@ -207,7 +207,8 @@ def test_completers_soft_fail_on_broken_cfg():
            "org_todo_keywords": ["TODO", "|", "DONE"],
            "org_idea_keywords": ["IDEA", "|", "PROMOTED"]}
     ctx = _ctx(bad)
-    assert C.complete_project(ctx, None, "") == []
+    # SPEC-0189: the internal project is always registered, even with a broken config
+    assert [i.value for i in C.complete_project(ctx, None, "")] == ["Meta-Tools"]
     assert C.complete_idea_id(ctx, None, "") == []
     assert C.complete_spec_id(ctx, None, "") == []
     assert C.complete_outbound_id(ctx, None, "") == []

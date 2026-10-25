@@ -16,7 +16,7 @@ from click.shell_completion import CompletionItem, get_completion_class
 
 from .config import load_config
 from .org import _split_keywords, filter_tasks, load_tasks
-from .rules import known_projects, load_mappings
+from .rules import load_mappings, registered_projects
 from .specmeta import split_frontmatter
 from .specs import _outbound_specs, _specs_dir, known_epics
 from .export_schemes import available as available_schemes
@@ -156,7 +156,7 @@ def _soft(fn):
 
 @_soft
 def complete_project(ctx, param, incomplete):
-    return _items(known_projects(_cfg_from_ctx(ctx)), incomplete)
+    return _items(registered_projects(_cfg_from_ctx(ctx)), incomplete)
 
 
 @_soft

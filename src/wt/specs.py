@@ -200,7 +200,8 @@ def promote_idea(cfg, selector, *, internal=False, target=None, epic=False, titl
 
     Resolves `selector` to an idea (must be an idea; honors the already-promoted `:SPEC:`
     guard, same as `scaffold_from_idea`/`scaffold_outbound`), then decides where it lands:
-      - `internal` or no project (from `target` or the idea's `:PROJECT:`) -> an internal
+      - `internal`, no project (from `target` or the idea's `:PROJECT:`) or the internal
+        project Meta-Tools (SPEC-0189) -> an internal
         `SPEC-NNNN` via `scaffold_from_idea` (kind "internal").
       - the project is a configured `outbox_targets` key -> an outbound `<PROJ>-NNNN` via
         `scaffold_outbound` (kind "outbound").
@@ -220,7 +221,8 @@ def promote_idea(cfg, selector, *, internal=False, target=None, epic=False, titl
 
     project = target or task.properties.get("PROJECT")
 
-    if internal or project is None:
+    from .rules import INTERNAL_PROJECT
+    if internal or project is None or project == INTERNAL_PROJECT:
         path, spec_id = scaffold_from_idea(cfg, selector, epic=epic, title=title, force=force)
         return path, spec_id, "internal"
 
@@ -566,9 +568,9 @@ def parse_breakdown_project(item: str) -> tuple[str, str | None]:
 
 def _canonical_seed_project(cfg, name: str) -> str:
     """Resolve annotation to a known project name or raise (SPEC-0097). No soft-warn."""
-    from .rules import projects_payload
+    from .rules import registered_projects
 
-    known = [p["name"] for p in projects_payload(cfg)["projects"]]
+    known = registered_projects(cfg)
     by_cf = {n.casefold(): n for n in known}
     hit = by_cf.get(str(name).strip().casefold())
     if not hit:

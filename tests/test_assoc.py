@@ -230,6 +230,7 @@ def test_cli_projects_empty(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["projects"])
     assert r.exit_code == 0, r.output
     assert "no projects mapped" in r.output
+    assert "Meta-Tools" in r.output          # SPEC-0189: the internal project is always listed
 
 
 # ---- digest --by project groups associated captures --------------------------
