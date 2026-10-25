@@ -95,7 +95,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (9/9 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (9/14 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -105,6 +105,11 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0176](./specs/0176-queue-state-machine-with-lease-guarded-tick-run.md) Queue state machine with lease-guarded tick/run, park/resume and listing — done
   - [x] [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) wt-conduct skill, docs and dogfood bootstrap for wt itself — done
   - [x] [SPEC-0179](./specs/0179-wt-spec-status-one-line-frontmatter-status-setter.md) wt spec status: one-line frontmatter status setter — done
+  - [ ] [SPEC-0180](./specs/0180-queue-backlog-dependency-gated-prioritized.md) Queue backlog: dependency-gated, prioritized admission and backlog view — accepted
+  - [ ] [SPEC-0181](./specs/0181-queue-event-stream-watchdog-signals-and-heartbeat.md) Queue event stream, watchdog signals and heartbeat during runs — accepted
+  - [ ] [SPEC-0182](./specs/0182-event-driven-wt-conduct-monitor-armed-conductor.md) Event-driven wt-conduct: Monitor-armed conductor woken by queue events — accepted
+  - [ ] [SPEC-0183](./specs/0183-file-based-mailbox-between-conductor-and-stewards.md) File-based mailbox between conductor and stewards — accepted
+  - [ ] [SPEC-0184](./specs/0184-wt-steward-skill-monitor-armed-project-steward-on.md) wt-steward skill: Monitor-armed project steward on the mailbox — accepted
 
 ## Active & planned
 
@@ -115,6 +120,11 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0087](./specs/0087-workstreams-and-concern-separation-routing.md) | Workstreams and concern separation (routing, streams, filters, hub; umbrella for priority & sort) | epic | accepted | M4: cli ergonomics | 2026-07-28 |
 | [SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) | Example-heavy docs: SVG captures and workflow architecture | epic | accepted | M8: product documentation | 2026-09-09 |
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0180](./specs/0180-queue-backlog-dependency-gated-prioritized.md) | Queue backlog: dependency-gated, prioritized admission and backlog view | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0181](./specs/0181-queue-event-stream-watchdog-signals-and-heartbeat.md) | Queue event stream, watchdog signals and heartbeat during runs | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0182](./specs/0182-event-driven-wt-conduct-monitor-armed-conductor.md) | Event-driven wt-conduct: Monitor-armed conductor woken by queue events | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0183](./specs/0183-file-based-mailbox-between-conductor-and-stewards.md) | File-based mailbox between conductor and stewards | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0184](./specs/0184-wt-steward-skill-monitor-armed-project-steward-on.md) | wt-steward skill: Monitor-armed project steward on the mailbox | feature | accepted | M9: agentic workflow | 2026-10-25 |
 
 ## Done
 
