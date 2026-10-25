@@ -53,7 +53,8 @@ run ends. That has two consequences:
 **Non-goals**
 - The other exit paths (signal, `--once`, `--max-ticks`, crash) and admission during a drain:
   [SPEC-0229](./0229-runner-exit-paths-and-draining-ticks-with-detached-runs.md). Until it
-  lands, those paths drain as today, waiting for detachable runs like any flight.
+  lands, a stop keeps today's behaviour: it kills the persona runs and returns promptly
+  (Decision 7). Only the code-change exec detaches.
 - Detaching gate or close steps. They run in-process. They are bounded by the gate time,
   and their subprocesses must die with the runner (SPEC-0220 discard rule).
 - Killing runs on demand (a `wt queue kill-run`). The pgid is recorded, which is enough for
@@ -102,7 +103,23 @@ run ends. That has two consequences:
    adoption finds it orphaned. The runner's `stop` flag no longer marks detachable runs as
    interrupted. For non-detachable runners (FakeRunner) the old rule stays,
    `interrupted = ctx.stop.is_set()`, because their runs share the runner's fate.
-7. **Adoption.** On the first tick of every pool, whether in a fresh process, after a
+7. **Interim stop behaviour.** Today `_handler` forwards SIGTERM to the runner's own
+   process group, which kills the `claude` children. With the wrapper in its own session,
+   that signal no longer reaches them. To avoid shipping a 30-minute stop, this spec keeps
+   today's outcome explicitly: when `stop` is set (signal, or any caller setting
+   `ctx.stop`), the drain sends TERM to the child process group (from `child.json`) and to
+   the wrapper of every ClaudeRunner task in `spawning` or `wait`. A task in `spawning` gets
+   it as soon as its `child.json` appears. The runs end with `killed_by: "signal"`, so they
+   are recorded as interrupted, as today, and the drain returns within seconds. SPEC-0229
+   replaces this with detach-on-stop.
+8. **Only queue runs detach.** Detaching applies only to runs started with `hooks` (the
+   queue runner). With `hooks=None` (callers outside the queue, such as `wt spec review`),
+   the wrapper is still used, so the timeout and the files are the same, but the run is
+   attached. `ClaudeRunner.run` waits in a `try/finally`, and on any exception or
+   `KeyboardInterrupt` raised while it waits, it kills the run's group and the wrapper
+   (TERM, 10 s grace, KILL) before re-raising. A Ctrl-C on `wt spec review` therefore stops
+   the agent, as today.
+9. **Adoption.** On the first tick of every pool, whether in a fresh process, after a
    re-exec, or in a single-shot `wt queue tick`, the runner scans campaigns for open runs not
    in this pool's flights, and handles each one by its files. The caller holds the lease, so
    no other runner owns those runs. Adopted runs become ordinary flights, so harvest,
@@ -124,7 +141,13 @@ run ends. That has two consequences:
 | `exit.json` | wrapper, or adoption (synthesized) | child group ended | `{exit_code, timed_out, killed_by: null \| "timeout" \| "signal", signal, ended_at, duration_s, synthesized: bool}`, temp + `os.replace` |
 | `run.json` | collector | collect phase | `wt.run.v1` (SPEC-0192), unchanged + SPEC-0224's `cost_estimated` |
 
-`start_ticks` is field 22 of `/proc/<pid>/stat`, or null off Linux. The wrapper merges
+`start_ticks` is field 22 of `/proc/<pid>/stat`, or null off Linux. The wrapper's own
+stdout and stderr go to `wrapper.log` in the run dir, so a wrapper failure (a bad
+`launch.json`, a failed claim, an exception) can be diagnosed. The wrapper is `python -m
+wt.agentic.runproc` from the package that is installed when it is spawned. A later re-exec
+of the runner does not touch a running wrapper, so the wrapper and the runner can be on
+different code versions. `request.json`, `launch.json`, `proc.json`, `child.json` and
+`exit.json` therefore only gain optional keys, and readers ignore unknown ones. The wrapper merges
 `launch.json.env` over its inherited environment and ignores SIGHUP. On SIGTERM it forwards
 TERM to the child's group and still writes `exit.json` (`killed_by: "signal"`, `signal: 15`).
 
@@ -137,8 +160,10 @@ taken. So:
   orphan;
 - adoption declares a run `orphaned` only by winning the same claim, creating
   `proc.json = {orphaned: true}` with `O_EXCL`. A wrapper that starts later loses the claim
-  and exits without starting `claude`. Before claiming, adoption waits up to 10 s after
-  `launch.json`'s mtime, so a wrapper that was just started can still claim first.
+  and exits without starting `claude`. Before claiming, adoption waits until 10 s have passed
+  since `launch.json`'s mtime, so a wrapper that was just started can still claim first.
+  When `launch.json` does not exist, the 10 s run from the `run.start` ts instead. That
+  covers a legacy run and a run whose worker never got as far as writing the file.
   Whichever side wins, there is never more than one agent per run dir.
 
 The only gap left is accepted and documented. If the wrapper itself is SIGKILLed in the
@@ -182,8 +207,8 @@ text ("wrapper died before recording its child") so that it is visible if it eve
      return `DETACHED`;
   3. otherwise the `orphan_group` duties above (timeout kill and exit synthesis).
   A detached thread therefore returns within 0.2 s and never touches the run's files. With
-  `hooks=None` (callers outside the queue, such as `spec_review`), the loop just waits and
-  collects.
+  `hooks=None` the loop waits and collects, inside the kill-on-exception `try/finally` of
+  Decision 8.
 - `collect(run_dir) -> RunResult` reads `result.json` and runs `parse_result` with the schema
   from `request.json`. It reads `exit.json` for `exit_code`, `timed_out`, `duration_s` and
   `interrupted = killed_by == "signal"`. A vanished run gives `exit_code: -1`, `is_error:
@@ -224,7 +249,8 @@ text ("wrapper died before recording its child") so that it is visible if it eve
   - a persona in `personas.REVIEWER_PERSONAS` (today `conformance_reviewer` and
     `test_reviewer`, plus any reviewer added to that tuple later) → the campaign's reviewer
     group;
-  - any other persona (`spec_reviewer`, a future resolver persona from SPEC-0221) →
+  - any other persona in a campaign ledger (for example a future resolver persona from
+    SPEC-0221; `wt spec review` runs have no campaign ledger and are never adopted) →
     `unknown`: if the run is alive, its group is killed (TERM, 10 s, KILL). Then a synthetic
     `run.end` is written (`is_error: true`, "open run of persona <p> cannot be adopted"),
     with the cost from `result.json`, otherwise estimated. State unchanged. It never raises
@@ -329,10 +355,13 @@ gets recorded in the spec.
       respawned. An `unknown` persona gets its group killed and a `run.end` error, without
       crashing the tick.
 - [ ] An adopted reviewer fan-out is applied once as one group, with every reviewer's verdict,
-      including reviewers that had finished before the detach.
-- [ ] A campaign parked or abandoned while its run was detached gets `run.end` + cost and no
-      transition (`superseded_by_human`). A `park_requested` campaign parks `human` after
-      the adopted run applies.
+      including reviewers that had finished before the detach. A campaign parked or
+      abandoned while its run was detached gets `run.end` + cost and no transition
+      (`superseded_by_human`), and a `park_requested` one parks `human`.
+- [ ] Interim stop: with `ctx.stop` set during a live ClaudeRunner run, `run()` returns
+      within 15 s, the run's process group is gone, and `run.end` is `interrupted: true`.
+      With `hooks=None`, a `KeyboardInterrupt` raised while waiting kills the group before
+      it propagates.
 - [ ] A ClaudeRunner run that exits normally while the loop is stopping is collected with
       `interrupted: false`, and its implementer work is committed. Only an adopted run whose
       `exit.json.ended_at` predates the lease `started_at` records an unrecorded HEAD as its
@@ -371,6 +400,11 @@ gets recorded in the spec.
       `exit_code -1`, `is_error`, an estimated cost, and no process left.
     - `test_pid_reuse_ignored`: wrong `start_ticks` for the wrapper and the leader → dead.
     - `test_killed_by_signal_is_interrupted`: SIGTERM to the wrapper → `interrupted: true`.
+    - `test_attached_run_killed_on_keyboard_interrupt`: `hooks=None`. A `KeyboardInterrupt`
+      is raised in the waiting thread (the wait poll is patched to raise). The `child.pid`
+      process is gone and the wrapper has exited before the exception reaches the test.
+    - `test_wrapper_log_and_unknown_keys`: a `launch.json` with an extra key runs normally,
+      and a broken `launch.json` leaves a traceback in `wrapper.log`.
   - `tests/test_agentic_adopt.py` (runner loop, tmp git repos, helpers from
     `tests/test_agentic_nonblocking.py`):
     - `test_reexec_does_not_wait_for_persona_run`: patched `_EXEC` records the call, the live
@@ -383,7 +417,10 @@ gets recorded in the spec.
       pool is discarded. A new `run()` reports `running`, not `orphaned`, and there is one
       `child.pid`.
     - `test_orphan_claim_after_grace`: `run.start` + `launch.json` older than 10 s, with no
-      `proc.json` → `orphaned`, claim file written, step respawned next tick.
+      `proc.json` → `orphaned`, claim file written, step respawned next tick. A variant with
+      no `launch.json` uses the `run.start` ts: not claimed at 5 s, claimed at 11 s.
+    - `test_interim_stop_kills_runs`: `ctx.stop` is set while an implementer is in `wait`.
+      `run()` returns in < 15 s, the child group is gone, and `run.end.interrupted` is true.
     - `test_collect_race_delays_exec`: `git.commit_all` is patched to block, and the run
       exits just before `try_detach_all`. `_EXEC` waits for the commit, and the `commit`
       event is recorded once.
@@ -391,7 +428,7 @@ gets recorded in the spec.
       wrapper start). `try_detach_all()` returns None. Once it reaches `wait`, the call
       returns both run ids.
     - `test_adopt_statuses`: pre-seeded finished, vanished, orphan_group, orphaned and
-      `spec_reviewer` (unknown, live) runs. One tick gives the right statuses and `run.end`
+      unknown-persona (a made-up `resolver` name, live) runs. One tick gives the right statuses and `run.end`
       payloads, the unknown run's group is killed, and the tick does not raise.
     - `test_adopt_review_group_with_finished_member`: one reviewer finished before the
       detach, one running. Applied as one group with both verdicts.
