@@ -26,6 +26,7 @@ wt skills install --dest ~/.cursor/skills   # optional other host
 | `/wt-implement-spec` | In **target** repo after export |
 | `/wt-verify` | Post-hoc Definition of Done |
 | `/wt-sheet-sync` | Sheet plan/record loop |
+| `/wt-conduct` | Start, watch and unpark the agentic queue ([Agentic loop](agentic.md)) |
 
 Triage JSON: [Hub](hub.md). Full agent catalog: [Agent surface](../guides/agent-surface.md).
 Product narrative for humans: [Guides](../guides/index.md).

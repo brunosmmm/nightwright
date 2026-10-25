@@ -103,7 +103,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0174](./specs/0174-headless-persona-runner-prompt-assembly-and.md) Headless persona runner, prompt assembly and verdict schemas — done
   - [x] [SPEC-0175](./specs/0175-close-step-rebase-re-gate-ff-only-merge-or-pr.md) Close step: rebase, re-gate, ff-only merge or PR hand-off — done
   - [x] [SPEC-0176](./specs/0176-queue-state-machine-with-lease-guarded-tick-run.md) Queue state machine with lease-guarded tick/run, park/resume and listing — done
-  - [ ] [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) wt-conduct skill, docs and dogfood bootstrap for wt itself — accepted
+  - [ ] [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) wt-conduct skill, docs and dogfood bootstrap for wt itself — in-progress
 
 ## Active & planned
 
@@ -114,7 +114,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0087](./specs/0087-workstreams-and-concern-separation-routing.md) | Workstreams and concern separation (routing, streams, filters, hub; umbrella for priority & sort) | epic | accepted | M4: cli ergonomics | 2026-07-28 |
 | [SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) | Example-heavy docs: SVG captures and workflow architecture | epic | accepted | M8: product documentation | 2026-09-09 |
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) | wt-conduct skill, docs and dogfood bootstrap for wt itself | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) | wt-conduct skill, docs and dogfood bootstrap for wt itself | feature | in-progress | M9: agentic workflow | 2026-10-25 |
 
 ## Done
 

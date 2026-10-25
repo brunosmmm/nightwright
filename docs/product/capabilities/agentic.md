@@ -176,4 +176,13 @@ ledger (`wt campaign log ID`). `--json` shapes: `wt.queue.v1`, `wt.queue.add.v1`
 
 ## Conductor
 
-`/wt-conduct` starts the loop, watches it and unparks items (SPEC-0177).
+`/wt-conduct` is the human-facing skill over the loop (SPEC-0177). It starts `wt queue run`
+detached when no live lease exists (`agentic.run_launcher`: `nohup`, `tmux` or
+`foreground`), reports what is in flight, and turns every `PARKED` item into a decision:
+`wt queue resume` (with a note, a higher cap or reset loops), `wt queue abandon`, or an
+escalation to the human with the park reason and the log tail. After merges it runs
+`wt spec reconcile --apply` so source ideas advance. It never edits a campaign worktree.
+
+wt dogfoods itself: the repo's own `.wt/project.yaml` declares `uv run pytest -q -x` and
+`python3 tools/spec_lint.py` as required gates, merge policy `merge` into `main`, and
+`uv sync --extra tui` as worktree setup. `wt projects config Meta-Tools` shows it.

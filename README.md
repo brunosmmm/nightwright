@@ -58,6 +58,9 @@ wt skills install              # agent playbooks → /wt-orient, …
 
 Shell completion: `wt completion install --shell fish` (or bash/zsh).
 
+Agentic loop (accepted specs → implemented, gated, merged by headless personas):
+[`docs/product/capabilities/agentic.md`](docs/product/capabilities/agentic.md).
+
 ## Contribute
 
 Spec-first: [`AGENTS.md`](AGENTS.md), [`docs/specs/`](docs/specs/),

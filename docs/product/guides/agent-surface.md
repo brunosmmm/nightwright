@@ -30,6 +30,7 @@ Getting started Path C: [Getting started](getting-started.md).
 | `/wt-implement-spec` | (in **target** repo) portable AC + tests | Build exported work |
 | `/wt-verify` | `wt spec verify` (+ ledger / pull-status) | Post-hoc Definition of Done |
 | `/wt-sheet-sync` | `wt sheet plan\|record --json` | Optional sheet triage |
+| `/wt-conduct` | `wt queue list\|run\|resume`, `wt campaign show\|log` | Run / watch / unpark the agentic loop |
 
 Capability stub: [Skills](../capabilities/skills.md).
 

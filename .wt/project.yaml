@@ -1,0 +1,33 @@
+# wt's own agentic project configuration (SPEC-0177; schema SPEC-0170).
+# Gates are the repo's DoD commands; policy is merge-to-main after rebase + re-gate.
+schema: wt.project.v1
+project: Meta-Tools
+base: main
+gates:
+  - name: pytest
+    cmd: uv run pytest -q -x
+    timeout_s: 1200
+    required: true
+  - name: spec-lint
+    cmd: python3 tools/spec_lint.py
+    timeout_s: 120
+    required: true
+merge:
+  policy: merge
+  base: main
+  push_after_merge: false
+  delete_branch: true
+worktrees:
+  setup:
+    - uv sync --extra tui
+  cleanup: on_merge
+agents:
+  context_files:
+    - AGENTS.md
+    - docs/specs/SCHEMA.md
+  allowed_tools:
+    - "Bash(uv run wt *)"
+    - "Bash(wt *)"
+    - "Bash(git status*)"
+    - "Bash(git diff*)"
+    - "Bash(git log*)"

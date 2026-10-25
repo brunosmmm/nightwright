@@ -1,7 +1,7 @@
 ---
 id: SPEC-0177
 title: "wt-conduct skill, docs and dogfood bootstrap for wt itself"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
