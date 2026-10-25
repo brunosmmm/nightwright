@@ -1,7 +1,7 @@
 ---
 id: SPEC-0198
 title: "wt queue followers: who is armed, with pids, cursors and lag"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -42,15 +42,24 @@ Read the cursors directory and the existing helpers (`events.reader_holder`, `ev
 
 ## Acceptance criteria
 
-- [ ] `wt queue followers --json` lists the conductor and one steward from a temp data dir where both followers hold their locks, with pid, lag and cursor fields; a reader whose lock is not held shows `pid: null, held: false`.
-- [ ] `lag` counts events (or messages) after the cursor.
-- [ ] `wt queue conduct-status --json` includes `stewards`; the human view shows them.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `wt queue followers --json` lists the conductor and one steward from a temp data dir where both followers hold their locks, with pid, lag and cursor fields; a reader whose lock is not held shows `pid: null, held: false`.
+- [x] `lag` counts events (or messages) after the cursor.
+- [x] `wt queue conduct-status --json` includes `stewards`; the human view shows them.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
 - **Automated tests:** `tests/test_agentic_followers.py`: build a temp data dir; append events and mailbox messages; hold `reader_lock` for `conductor` and `mailbox:steward:P` in-process; set cursors; assert `followers()` rows (held, pid = os.getpid(), lag); release one lock → `held` False; CLI human + `--json`; `conduct-status --json` `stewards`.
 - **Regression guard:** full `uv run pytest`.
+
+### Test record (2026-10-25)
+
+- `uv run pytest -q tests/test_agentic_followers.py` — 3 passed (rows/lag/held, empty, CLI human + `--json`, `conduct-status` stewards).
+- Full `uv run pytest -q -x` — 1674 passed, 1 skipped; `python3 tools/spec_lint.py` — exit 0 (ledger regenerated).
+
+### As shipped
+
+`followers(cfg)` also returns `cursor_age_s` (seconds). `conduct-status` `stewards` lists only held mailbox followers (`address` is the steward address without the `mailbox:` prefix).
 
 ## Rollout / migration
 
@@ -58,11 +67,11 @@ Ships through the agentic queue (balanced profile). No data migration.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

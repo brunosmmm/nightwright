@@ -424,6 +424,37 @@ def reader_holder(cfg, reader) -> int | None:
         os.close(fd)
 
 
+def followers(cfg, now=None) -> list[dict]:
+    """One row per reader with a cursor file: kind, live pid (None when its lock is not
+    held), cursor, lag (events or inbox messages after the cursor) and cursor age."""
+    from . import mailbox as M
+    now = now or dt.datetime.now().astimezone()
+    d = cursors_dir(cfg)
+    rows = []
+    for p in sorted(d.glob("*.json")) if d.is_dir() else []:
+        try:
+            rec = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        reader = rec.get("reader") or p.stem
+        try:
+            after = int(rec.get("after", 0))
+        except (ValueError, TypeError):
+            after = 0
+        mailbox = reader.startswith("mailbox:")
+        lag = len(M.read_inbox(cfg, reader[len("mailbox:"):], after)) if mailbox \
+            else len(read_since(cfg, after))
+        pid = reader_holder(cfg, reader)
+        age = _age_s(rec.get("ts"), now)
+        rows.append({"reader": reader, "kind": "mailbox" if mailbox else "events",
+                     "pid": pid, "held": pid is not None, "after": after,
+                     "cursor_ts": rec.get("ts"), "cursor_age_s": None if age is None
+                     else int(age), "lag": lag})
+    return sorted(rows, key=lambda r: (r["kind"], r["reader"]))
+
+
 def summary_line(ev: dict) -> str:
     """One-line human form (still one line per event, Monitor-friendly)."""
     bits = " ".join(f"{k}={v}" for k, v in (ev.get("data") or {}).items()

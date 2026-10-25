@@ -12,6 +12,7 @@ from ..report import _dump_json
 from . import events as E
 from . import queue as Q
 from . import store
+from .cli_queue import _dur
 
 
 def conduct_status(cfg, *, recent=10) -> dict:
@@ -29,6 +30,9 @@ def conduct_status(cfg, *, recent=10) -> dict:
         "lease": payload["lease"],
         "slots": payload["slots"],
         "conductor_pid": E.reader_holder(cfg, "conductor"),
+        "stewards": [{"address": f["reader"][len("mailbox:"):], "pid": f["pid"],
+                      "lag": f["lag"]}
+                     for f in E.followers(cfg) if f["kind"] == "mailbox" and f["held"]],
         "counts": {
             "active": sum(1 for i in items if i["state"] in Q.ACTIVE_STATES),
             "queued": sum(1 for i in items if i["state"] == "QUEUED"),
@@ -108,6 +112,12 @@ def attach(queue_group):
         c = st["counts"]
         console.print(f"[bold]Conduct status[/] · {lease_txt} · {cond} · "
                       f"active {c['active']} · queued {c['queued']} · parked {c['parked']}")
+        if st["stewards"]:
+            console.print("stewards: " + ", ".join(
+                f"{s['address']} (pid {s['pid']}, lag {s['lag']})" for s in st["stewards"]),
+                highlight=False)
+        else:
+            console.print("stewards: [dim]none armed[/]")
         if st["parked"]:
             t = Table(title="Parked")
             for col in ("campaign", "spec", "reason", "detail", "cost"):
@@ -134,5 +144,26 @@ def attach(queue_group):
                                 if v not in (None, "", []))
                 t.add_row(str(ev["id"]), ev["type"], str(ev.get("campaign") or "-"), data[:70])
             console.print(t)
+
+    @queue_group.command("followers")
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.followers.v1 JSON")
+    @click.pass_obj
+    def queue_followers(cfg, as_json):
+        """Who is armed: every event/mailbox reader with its live pid, cursor, lag and age."""
+        rows = E.followers(cfg)
+        if as_json:
+            _dump_json({"schema": "wt.queue.followers.v1", "followers": rows})
+            return
+        if not rows:
+            console.print("[dim]no followers[/]")
+            return
+        t = Table(title="Followers")
+        for col in ("reader", "kind", "pid", "cursor", "lag", "cursor age"):
+            t.add_column(col)
+        for r in rows:
+            lag = f"[yellow]{r['lag']}[/]" if r["lag"] > 0 else str(r["lag"])
+            t.add_row(r["reader"], r["kind"], str(r["pid"]) if r["held"] else "[dim]not armed[/]",
+                      str(r["after"]), lag, _dur(r["cursor_age_s"]))
+        console.print(t)
 
     return queue_group
