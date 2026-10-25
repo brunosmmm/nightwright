@@ -408,6 +408,28 @@ def test_park_undecided_fires_once_per_park_and_stops_on_a_note(tmp_path):
     assert len(_undecided(cfg)) == 1
 
 
+def test_park_undecided_never_fires_for_a_park_that_has_a_note(tmp_path):
+    """The note is on the park before the watchdog first sees it overdue, so fire-once cannot
+    be what suppresses the event."""
+    from test_agentic_dashboard import ev_at
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0916-20261025-aaaa")
+    _park_at(cfg, cid, "rebase_conflict", 400)
+    ev_at(cfg, cid, "note", {"text": "decided", "author": "conductor"}, ago_s=350)
+    assert _undecided(cfg) == []
+
+
+def test_park_undecided_reparks_fire_again_without_a_note_between(tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0917-20261025-aaaa")
+    _park_at(cfg, cid, "rebase_conflict", 400)
+    assert len(_undecided(cfg)) == 1
+    _set_state(cfg, cid, state="IMPLEMENTING")           # resume (condition clears) ...
+    assert _undecided(cfg) == []
+    _park_at(cfg, cid, "rebase_conflict", 400)           # ... re-park: the new seq is a new key
+    assert len(_undecided(cfg)) == 1
+
+
 def test_park_undecided_not_before_threshold_or_for_human_reason(tmp_path):
     cfg = _cfg(tmp_path)
     young = _campaign(cfg, "SPEC-0912-20261025-aaaa")

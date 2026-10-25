@@ -199,4 +199,3 @@ def test_new_types_validate_and_summary_line(tmp_path):
     E.sync(cfg, now=at(600), ping=True)
     line = E.summary_line(_pings(cfg)[0])
     assert "\n" not in line and line.startswith("#1 conductor_ping blocked=0 parked=0")
-

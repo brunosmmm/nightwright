@@ -260,6 +260,12 @@ parked with `decided: false`".
   conductor parks (`rebase_conflict`) under `Conductor handling (3)` with their latest note and
   age (`… · 11m ago`), the header read `needs you 0 conductor 3`, and no `Needs you` section.
 
+- Review round 1 (test hardening): added `test_park_undecided_never_fires_for_a_park_that_has_a_note`
+  (note before the first overdue sync), a resume/re-park case with no note between syncs,
+  `test_young_undecided_conductor_park_renders_pending`, an overdue `!` assertion in the `queue list`
+  test and `test_list_marks_overdue_and_colours_parks_by_owner` (dim vs yellow via a colour Rich
+  console); the `overdue 7m` assertion no longer depends on second boundaries. Targeted run: 49 passed.
+
 ### As shipped
 
 - `park_view` also returns `park_seq` and `parked_for_s` (used by the watchdog); `queue_payload`

@@ -276,6 +276,24 @@ def test_park_split_rendering(tmp_path):
     assert "Needs attention" not in out and "attention" not in out
     assert "needs you 1" in out and "conductor 3 (1 overdue)" in out
     assert "rebased onto main and re-gating" in out and "3m ago" in out
-    assert "overdue 7m00s" in out
+    assert "overdue 7m" in out
     assert "park requested: hold this" in out
     assert out.index("Needs you (1)") < out.index("Conductor handling (3)")
+
+
+def test_young_undecided_conductor_park_renders_pending(tmp_path):
+    repo, cfg, ids = _park_fixture(tmp_path)
+    young = _campaign(cfg, repo, "SPEC-0001-young", "PARKED",
+                      park={"reason": "transient", "detail": "retrying", "resume_to": "GATING",
+                            "since": _iso(2)})
+    ev_at(cfg, young, "park", {"reason": "transient"}, ago_s=120)
+    p = Q.dashboard_payload(cfg)
+    park = next(it for it in p["conductor_handling"] if it["campaign"] == young)["park"]
+    assert park["overdue"] is False and park["decision"] is None
+    assert p["totals"]["conductor_overdue"] == 1
+    cells = {it["campaign"]: CQ._decision_cell(it).plain for it in p["conductor_handling"]}
+    assert cells[young].startswith("pending 2m"), cells
+    assert "overdue" not in cells[young]
+    assert cells[ids["moving"]].startswith("overdue 7m")
+    out = _render(p, 140)
+    assert "pending 2m" in out and "conductor 4 (1 overdue)" in out

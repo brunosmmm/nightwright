@@ -356,6 +356,7 @@ def test_list_needs_you_table_and_park_keys(tmp_path, monkeypatch):
     r = run_cli(cfg, monkeypatch, ["queue", "list"])
     assert r.exit_code == 0 and "PARKED:rebase_conflict" in r.output, r.output
     assert "Needs you" not in r.output
+    assert "PARKED:rebase_conflict !" in r.output, r.output     # 600 s undecided: overdue
     dirty = _campaign(cfg, repo, "SPEC-0001-dir", "PARKED",
                       park={"reason": "main_dirty", "detail": "uncommitted files",
                             "resume_to": "CLOSING"})
@@ -368,3 +369,31 @@ def test_list_needs_you_table_and_park_keys(tmp_path, monkeypatch):
     assert reb["owner"] == "conductor" and reb["overdue"] is True and reb["decision"] is None
     assert reb["decided"] is False and reb["parked_at"]
     assert items[dirty]["park"]["owner"] == "human"
+
+
+def test_list_marks_overdue_and_colours_parks_by_owner(tmp_path, monkeypatch):
+    from io import StringIO
+    from rich.console import Console
+    from test_agentic_dashboard import _campaign, ev_at
+    from wt.agentic import cli_queue as CQ
+    from wt.agentic import queue as Q
+    repo, cfg = _cfg(tmp_path)
+    parks = (("old", "rebase_conflict", 600, False), ("young", "base_moving", 60, False),
+             ("decided", "rebase_conflict", 600, True), ("dirty", "main_dirty", 600, False))
+    ids = {}
+    for key, reason, ago, noted in parks:
+        ids[key] = _campaign(cfg, repo, f"SPEC-0001-{key}", "PARKED",
+                             park={"reason": reason, "detail": "d", "resume_to": "GATING"})
+        ev_at(cfg, ids[key], "park", {"reason": reason}, ago_s=ago)
+        if noted:
+            ev_at(cfg, ids[key], "note", {"text": "ok", "author": "conductor"}, ago_s=10)
+    buf = StringIO()
+    Console(file=buf, width=200, force_terminal=True, color_system="standard").print(
+        CQ._queue_table(Q.queue_payload(cfg)))
+    rows = {k: next(l for l in buf.getvalue().splitlines() if ids[k] in l) for k in ids}
+    assert "!" in rows["old"] and "\x1b[31m!" in rows["old"]            # red overdue marker
+    for k in ("young", "decided", "dirty"):
+        assert "!" not in rows[k], rows[k]
+    assert "\x1b[2mPARKED:rebase_conflict" in rows["old"]               # dim: conductor's
+    assert "\x1b[2mPARKED:base_moving" in rows["young"]
+    assert "\x1b[33mPARKED:main_dirty" in rows["dirty"]                 # yellow: the human's
