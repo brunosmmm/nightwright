@@ -1,7 +1,7 @@
 ---
 id: SPEC-0195
 title: "wt spec new drops org drawers from the scaffolded Context"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -40,14 +40,19 @@ Strip drawers and planning lines from the idea body in `_idea_context`, before `
 
 ## Acceptance criteria
 
-- [ ] `wt spec new --from-idea` on an idea with a `:PROPERTIES:` drawer and a `:LOGBOOK:` CLOCK entry produces a Context without `:PROPERTIES:`, `:LOGBOOK:`, `:END:`, `:ID:` or `CLOCK:` lines.
-- [ ] Summary text, `** Summary` / `** Log` headings and src fences are preserved; drawer-looking text inside a src block is preserved; an unterminated drawer is not removed.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `wt spec new --from-idea` on an idea with a `:PROPERTIES:` drawer and a `:LOGBOOK:` CLOCK entry produces a Context without `:PROPERTIES:`, `:LOGBOOK:`, `:END:`, `:ID:` or `CLOCK:` lines.
+- [x] Summary text, `** Summary` / `** Log` headings and src fences are preserved; drawer-looking text inside a src block is preserved; an unterminated drawer is not removed.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
 - **Automated tests:** `tests/test_org_markup.py` (or the existing markup test module) — `strip_drawers` on a body with PROPERTIES + LOGBOOK drawers, a CLOSED line, a src block containing `:END:`, an unterminated drawer. `tests/test_explore.py` (promote tests) — a promoted idea that was clocked in/out has none of the drawer lines in its Context and keeps its Summary.
 - **Regression guard:** full `uv run pytest`.
+
+### Test record (2026-10-25)
+
+- `uv run pytest -q tests/test_org_markup.py tests/test_explore.py` — new `strip_drawers` unit tests (PROPERTIES + LOGBOOK + CLOSED/SCHEDULED removal, drawer text inside a src block kept, unterminated drawer kept) and `test_promote_context_drops_drawers` (clocked-in/out idea keeps Summary, loses all drawer lines) pass.
+- Full `uv run pytest`: 1661 passed, 1 skipped. `python3 tools/spec_lint.py`: exit 0 (ledger regenerated).
 
 ## Rollout / migration
 
@@ -55,11 +60,11 @@ Ships through the agentic queue (balanced profile). No data migration.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

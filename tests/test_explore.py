@@ -223,6 +223,22 @@ def test_promote_context_includes_summary(tmp_path):
     assert "checked module Y" in text
 
 
+def test_promote_context_drops_drawers(tmp_path):
+    """SPEC-0195: the idea's PROPERTIES / LOGBOOK drawers never reach the spec's Context."""
+    cfg = _cfg(tmp_path)
+    W.add_idea(cfg, "clocked idea")
+    EX.set_summary(cfg, "IDEA-001", "Durable finding about X")
+    W.clock_in(cfg, "IDEA-001")
+    W.clock_out(cfg, "IDEA-001")
+    assert ":LOGBOOK:" in open(load_tasks(cfg)[0].file).read()
+    path, _ = S.scaffold_from_idea(cfg, "IDEA-001", force=True)
+    ctx = path.read_text().split("## Context")[1].split("## Goals")[0]
+    for junk in (":PROPERTIES:", ":LOGBOOK:", ":END:", ":ID:", "CLOCK:"):
+        assert junk not in ctx
+    assert "Durable finding about X" in ctx
+    assert "** Summary" in ctx
+
+
 def test_idea_help_lists_subcommands():
     r = CliRunner().invoke(cli, ["idea", "--help"])
     assert r.exit_code == 0

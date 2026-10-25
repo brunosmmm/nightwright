@@ -1,7 +1,7 @@
 """Org ↔ Markdown body helpers (SPEC-0030)."""
 import pytest
 
-from wt.org_markup import from_org_body, to_org_body
+from wt.org_markup import from_org_body, strip_drawers, to_org_body
 
 
 def test_to_org_backticks_and_bold():
@@ -116,3 +116,20 @@ def test_round_trip_code_spans_and_fences(md):
 def test_to_org_idempotent(src):
     once = to_org_body(src)
     assert to_org_body(once) == once
+
+
+def test_strip_drawers_removes_drawers_and_planning():
+    text = ("CLOSED: [2026-10-25 Sun 10:00]\n"
+            ":PROPERTIES:\n:ID: IDEA-001\n:END:\n"
+            ":LOGBOOK:\nCLOCK: [2026-10-25 Sun 09:00]--[2026-10-25 Sun 10:00] =>  1:00\n:END:\n"
+            "  SCHEDULED: <2026-10-26 Mon>\n"
+            "** Summary\nkeep this\n:ID: not in a drawer\n")
+    assert strip_drawers(text) == "** Summary\nkeep this\n:ID: not in a drawer\n"
+
+
+def test_strip_drawers_leaves_blocks_and_unterminated_drawers():
+    src = "#+begin_src org\n:PROPERTIES:\n:ID: x\n:END:\nCLOSED: y\n#+end_src\n"
+    assert strip_drawers(src) == src
+    open_drawer = "before\n:LOGBOOK:\nCLOCK: foo\nafter\n"
+    assert strip_drawers(open_drawer) == open_drawer
+    assert strip_drawers("") == ""

@@ -34,6 +34,10 @@ _ORG_POST = " \t-.,;:!?')\"}[\\"
 _ORG_BOLD_RE = re.compile(
     r"(?:^|(?<=[\s\-('\"{]))\*(?=[^\s*])([^*\n]*?[^\s*])\*(?=$|[\s\-.,;:!?')\"}\[\\])")
 _ORG_HEADLINE_RE = re.compile(r"^\*+\s")
+# Org drawers (`:PROPERTIES:`, `:LOGBOOK:`, …) and planning lines (SPEC-0195)
+_DRAWER_OPEN_RE = re.compile(r"^\s*:(?!END:)[A-Z_]+:\s*$")
+_DRAWER_END_RE = re.compile(r"^\s*:END:\s*$")
+_PLANNING_RE = re.compile(r"^\s*(?:SCHEDULED|DEADLINE|CLOSED):")
 
 # Placeholders for masked spans: no `*`, `_`, `~`, `=` or backtick, so no rewrite can reach in.
 _PH_RE = re.compile("\x00(\\d+)\x01")
@@ -202,5 +206,37 @@ def from_org_body(text: str) -> str:
             out.append(core + nl)
         else:
             out.append(_line_to_md(core) + nl)
+        i += 1
+    return "".join(out)
+
+
+def strip_drawers(text: str) -> str:
+    """Drop org drawers (`:NAME:` … `:END:`) and planning lines (`SCHEDULED:`, `DEADLINE:`,
+    `CLOSED:`) from an idea body (SPEC-0195).
+
+    Lines inside terminated `#+begin_…` blocks are never touched, and an unterminated drawer
+    is left in place rather than eating the rest of the body.
+    """
+    if not text:
+        return text
+    lines = _lines(text)
+    out, i = [], 0
+    while i < len(lines):
+        core, nl = lines[i]
+        m = _ORG_BLOCK_OPEN_RE.match(core)
+        end = _block_end(lines, i + 1, _org_end_re(m.group(1))) if m else None
+        if end is not None:
+            out.extend(c + n for c, n in lines[i:end + 1])
+            i = end + 1
+            continue
+        if _DRAWER_OPEN_RE.match(core):
+            end = _block_end(lines, i + 1, _DRAWER_END_RE)
+            if end is not None:
+                i = end + 1
+                continue
+        elif _PLANNING_RE.match(core):
+            i += 1
+            continue
+        out.append(core + nl)
         i += 1
     return "".join(out)

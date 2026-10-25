@@ -107,7 +107,7 @@ def _idea_context(task):
     Org enrichment markup is lightly converted to Markdown (SPEC-0030) so spec Context stays
     Markdown-native.
     """
-    from .org_markup import from_org_body
+    from .org_markup import from_org_body, strip_drawers
 
     lines = open(task.file).read().splitlines()
     body = []
@@ -116,7 +116,7 @@ def _idea_context(task):
         if m and len(m.group(1)) <= task.level:
             break
         body.append(line)
-    notes = from_org_body("\n".join(body).strip("\n"))
+    notes = from_org_body(strip_drawers("\n".join(body)).strip("\n"))
     header = f"Promoted from idea `{task.id}` ({task.heading})."
     return f"{header}\n\n{notes}" if notes else header
 
