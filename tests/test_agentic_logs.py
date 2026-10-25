@@ -205,3 +205,13 @@ def test_open_event_without_sizing_keys_still_validates(tmp_path):      # SPEC-0
     assert (ev["size"], ev["tone"], ev["profile_source"]) == ("m", "high-end", "review")
     assert SC.ledger_problems(ev) == []
     assert "size" not in SC.EVENT_KEYS["open"]
+
+
+def test_rebase_resolved_event_is_registered_and_requires_its_keys():             # SPEC-0221
+    keys = ("run_id", "target_sha", "conflicts", "resolutions", "summary", "head")
+    assert SC.EVENT_KEYS["rebase_resolved"] == keys
+    rec = {"ts": "t", "seq": 1, "campaign": "c", "type": "rebase_resolved", "by": "queue",
+           **{k: "x" for k in keys}}
+    assert SC.ledger_problems(rec) == []
+    del rec["head"]
+    assert SC.ledger_problems(rec) == ["rebase_resolved: missing 'head'"]

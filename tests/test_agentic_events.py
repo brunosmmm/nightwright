@@ -451,3 +451,16 @@ def test_ping_digest_owner_overdue_and_counts(tmp_path):
     assert by[b]["owner"] == "human" and by[b]["overdue"] is False
     assert d["counts"]["needs_you"] == 1 and d["counts"]["undecided_parks"] == 1
     assert d["counts"]["parked"] == 2
+
+
+def test_rebase_resolved_is_projected(tmp_path):                                   # SPEC-0221
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, state="CLOSING")
+    _ev(cfg, cid, "rebase_resolved", {"conflicts": ["src/app.py"], "summary": "merged both",
+                                      "resolutions": [{"path": "src/app.py", "strategy": "both",
+                                                       "how": "x"}]})
+    E.sync(cfg)
+    hit = [e for e in E.read_since(cfg, 0) if e["type"] == "rebase_resolved"]
+    assert len(hit) == 1 and hit[0]["data"]["conflicts"] == ["src/app.py"]
+    E.sync(cfg)
+    assert len([e for e in E.read_since(cfg, 0) if e["type"] == "rebase_resolved"]) == 1

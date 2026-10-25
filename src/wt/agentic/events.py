@@ -38,6 +38,7 @@ EVENT_TYPES = {
     "run_failed": ("persona", "run_id", "transient", "error"),
     "cost_warning": ("total_usd", "cap_usd"),
     "backlog": ("ready", "blocked_by"),
+    "rebase_resolved": ("conflicts",),
     "runner_dead": ("active", "queued"),
     "lease_stale": ("pid", "heartbeat_age_s"),
     "run_overdue": ("persona", "run_id", "age_s", "timeout_s"),
@@ -235,6 +236,9 @@ def _project_ledger_event(ev: dict, st: dict, sett: dict, warned: bool):
             return "cost_warning", {"total_usd": total, "cap_usd": cap}
     if t == "backlog":
         return "backlog", {"ready": ev.get("ready"), "blocked_by": ev.get("blocked_by") or []}
+    if t == "rebase_resolved":                              # SPEC-0221
+        return "rebase_resolved", {"conflicts": ev.get("conflicts") or [],
+                                   "summary": ev.get("summary")}
     return None
 
 

@@ -253,3 +253,15 @@ def test_select_runner(tmp_path, monkeypatch):
     monkeypatch.setenv("WT_AGENTIC_RUNNER", "bogus")
     with pytest.raises(ValueError, match="unknown agentic.runner"):
         R.select_runner({})
+
+
+def test_fake_runner_pre_shell_and_shell_run_in_cwd_with_env(tmp_path):      # SPEC-0221
+    (tmp_path / "wt").mkdir()
+    script = _script(tmp_path, [
+        {"persona": "implementer", "pre_shell": ["echo pre-$WT_BASE > order.txt"],
+         "edits": [{"path": "edit.txt", "write": "x"}],
+         "shell": ["echo post >> order.txt", "test -f edit.txt && echo saw-edit >> order.txt"],
+         "verdict": {"status": "done", "summary": "s"}, "cost_usd": 0.1}])
+    r = R.FakeRunner(script).run(_req(tmp_path))
+    assert r.verdict_ok
+    assert (tmp_path / "wt" / "order.txt").read_text().split() == ["pre-main", "post", "saw-edit"]

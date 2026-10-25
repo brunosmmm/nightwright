@@ -53,10 +53,14 @@ class PreparedClose:
     seq: int | None = None
     policy: str = "merge"
     events: list = field(default_factory=list)
+    pre_head: str = ""                    # SPEC-0221: worktree HEAD before the rebase started
 
 
-def _park(reason, detail, resume_to, events, **extra) -> CloseOutcome:
+def _park(reason, detail, resume_to, events, *, conflicts=None, target=None, target_sha=None,
+          **extra) -> CloseOutcome:
     payload = {"reason": reason, "detail": detail, "resume_to": resume_to}
+    if conflicts:
+        payload.update(conflicts=conflicts, target=target, target_sha=target_sha)
     events.append(("park", payload))
     return CloseOutcome("PARKED", park=payload, events=events, **extra)
 
@@ -264,8 +268,10 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> Prep
     root, worktree, base, policy, remote = c["root"], c["worktree"], c["base"], c["policy"], c["remote"]
     mcfg, rel = c["mcfg"], c["rel"]
 
+    pre_head = ""
+
     def decided(outcome: CloseOutcome) -> PreparedClose:
-        return PreparedClose(outcome=outcome, policy=policy, events=events)
+        return PreparedClose(outcome=outcome, policy=policy, events=events, pre_head=pre_head)
 
     _abort_leftover_rebase(worktree)
 
@@ -303,11 +309,17 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> Prep
 
     # 4. rebase
     regen = {r["path"]: r["cmd"] for r in (mcfg.get("regenerate") or [])}
+    pre_head = git.rev_parse(worktree)
     rb = git.rebase(worktree, target_sha, regenerate=regen)
     if not rb.ok:
+        if rb.head != pre_head or git.rev_parse(worktree) != pre_head:
+            raise GitError(["git", "rebase", target_sha], 1,
+                           f"worktree HEAD is not the pre-rebase {pre_head} after the abort")
+        # SPEC-0221: the extra keys let the queue dispatch the resolver without re-parsing
         return decided(_park("rebase_conflict",
                              f"rebase onto {target} ({target_sha[:10]}) conflicts: "
-                             f"{', '.join(rb.conflicts)}", "CLOSING", events))
+                             f"{', '.join(rb.conflicts)}", "CLOSING", events,
+                             conflicts=list(rb.conflicts), target=target, target_sha=target_sha))
     if rb.regenerated:
         events.append(("finding", {
             "persona": "close", "severity": "info", "gate": "rebase",
@@ -323,7 +335,7 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> Prep
     if not gate_run.ok:
         return decided(CloseOutcome("TRIAGING", gate_run=gate_run, events=events))
     return PreparedClose(target=target, target_sha=target_sha, head=head, gate_run=gate_run,
-                         seq=seq, policy=policy, events=events)
+                         seq=seq, policy=policy, events=events, pre_head=pre_head)
 
 
 def finish_close(cfg, state: dict, project_cfg: dict, prepared: PreparedClose, *, attempts=1,

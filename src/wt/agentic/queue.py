@@ -78,6 +78,8 @@ TRIAGE_RETRY_MAX = 1
 GATE_RETRY_MAX = 1
 # Malformed conformance-review verdicts tolerated per loop before the review escalates.
 REVIEW_RETRY_MAX = 1
+# SPEC-0221: conflict-resolver runs per entry into CLOSING before the rebase_conflict park.
+MAX_RESOLVE_ATTEMPTS = 2
 _STOP_GRACE_S = 30
 # With steps in flight, the loop never waits less than this between ticks (no busy spin).
 _MIN_INFLIGHT_WAIT_S = 0.1
@@ -91,7 +93,7 @@ DEPENDENCY_SATISFIED = frozenset({"done", "superseded"})
 @dataclass(frozen=True)
 class Step:
     """What a campaign needs next. `kind` ∈ open | implement | gate | triage | review | close |
-    park | none; `park` steps carry `reason` / `detail` / `resume_to`."""
+    resolve | park | none; `park` steps carry `reason` / `detail` / `resume_to`."""
     kind: str
     persona: str | None = None
     reason: str | None = None
@@ -156,6 +158,12 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
     if st == "GATING":
         return Step("gate")
     if st == "CLOSING":
+        if (state.get("closing") or {}).get("resolve"):         # SPEC-0221
+            blocked = _cap_blocks(state, profile, "conflict_resolver")
+            if blocked:
+                return Step("park", persona="conflict_resolver", reason="cost_cap",
+                            detail=blocked, resume_to=st)
+            return Step("resolve", persona="conflict_resolver")
         return Step("close")
     if st == "REVIEWING":
         reviewers = reviewers_of(profile)
@@ -795,6 +803,7 @@ class StepResult:
     gate_run: object = None
     close_outcome: object = None
     prepared: object = None                          # SPEC-0220: a close's PreparedClose
+    resolution: dict | None = None                   # SPEC-0221: {verified, failed, head}
     error: str | None = None
     interrupted: bool = False
     events_before: list = field(default_factory=list)
@@ -964,6 +973,49 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     return res
 
 
+def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float) -> StepResult:
+    """Worker thread (SPEC-0221): restore the campaign branch to the recorded `pre_head`, run
+    the resolver persona, then verify its work with runner-side git reads (the verdict is not
+    trusted). Anything not verified, interrupted or failed is restored to `pre_head`, so a
+    discarded attempt leaves the branch as it was and writes nothing outside the worktree."""
+    res = StepResult(state["id"], step, state["state"], run_id=run_id, budget=budget)
+    repo = state.get("repo") or {}
+    worktree, branch = repo.get("worktree"), repo.get("branch")
+    rs = (state.get("closing") or {}).get("resolve") or {}
+    pre_head = rs.get("pre_head")
+    try:
+        git.restore_branch(worktree, branch, pre_head)
+        crash = None
+        try:
+            res.run_result = rr = ctx.runner.run(req)
+        except Exception as e:          # a crashing resolver is a failed attempt, not a stuck close
+            crash = f"the run raised: {e}"
+            res.run_result = rr = _synthetic_failure(crash)
+        res.interrupted = ctx.stop.is_set()
+        verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
+        failed = None
+        if res.interrupted or rr.interrupted:
+            failed = "interrupted"
+        elif not rr.verdict_ok:
+            failed = crash or "the run failed or returned no valid verdict"
+        elif verdict.get("status") != "resolved":
+            failed = f"the resolver reported {verdict.get('status')}"
+        else:
+            try:
+                failed = git.verify_resolution(worktree, branch, rs["target_sha"], rs["fork"],
+                                               pre_head)
+            except (GitError, KeyError) as e:
+                failed = f"verification error: {getattr(e, 'tail', None) or e}"
+        res.resolution = {"verified": failed is None, "failed": failed, "head": None}
+        if failed is None:
+            res.resolution["head"] = git.rev_parse(worktree)
+        else:
+            git.restore_branch(worktree, branch, pre_head)
+    except (GitError, ValueError, OSError) as e:
+        res.error = getattr(e, "tail", None) or str(e)
+    return res
+
+
 def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
     res = StepResult(state["id"], Step("gate"), "GATING")
     try:
@@ -1057,7 +1109,11 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         reason = {"open": "open_failed"}.get(kind, "open_failed")
         detail = f"{kind} step failed: {res.error}"
         resume = {"open": "QUEUED", "implement": "IMPLEMENTING", "gate": "GATING",
-                  "triage": "GATING", "review": "REVIEWING"}.get(kind, "IMPLEMENTING")
+                  "triage": "GATING", "review": "REVIEWING",
+                  "resolve": "CLOSING"}.get(kind, "IMPLEMENTING")
+        if kind == "resolve" and res.run_result is not None:     # keep the run.end of a run that happened
+            events += _record_run(state, res.step.persona, res.run_id, res.run_result, res.budget,
+                                  interrupted=res.interrupted)
         return finish("PARKED", reason, park={"reason": reason, "detail": detail,
                                                "resume_to": resume})
 
@@ -1067,7 +1123,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     if kind == "review":
         return _apply_reviews(ctx, state, profile, counters, res, row, events, finish)
 
-    if kind in ("implement", "triage"):
+    if kind in ("implement", "triage", "resolve"):
         persona = res.step.persona
         rr = res.run_result
         events += _record_run(state, persona, res.run_id, rr, res.budget,
@@ -1084,6 +1140,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 store.write_state(cfg, cid, state)
             row["to"], row["reason"] = res.from_state, "interrupted"
             return row
+        if kind == "resolve":
+            return _apply_resolve(state, counters, res, rr, row, events, finish)
         if kind == "implement":
             if res.commit_sha is not None or res.commit_message:
                 events.append(("commit", {"sha": res.commit_sha, "message": res.commit_message}))
@@ -1167,7 +1225,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 _absorb_close_events(state, counters, events, absorbed)
                 return finish("CLOSING", "close_superseded")
             attempts = int((state.get("closing") or {}).get("attempts") or 0) + 1
-            state["closing"] = {"attempts": attempts, "target_sha": res.prepared.target_sha}
+            state["closing"] = {**(state.get("closing") or {}), "attempts": attempts,
+                                "target_sha": res.prepared.target_sha}
             try:
                 oc = CL.finish_close(cfg, state, ctx.project(state), res.prepared,
                                      attempts=attempts)
@@ -1197,9 +1256,95 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             return finish("TRIAGING", "regate_failed")
         park = oc.park or {"reason": "open_failed", "detail": "close returned PARKED without a reason",
                            "resume_to": "CLOSING"}
+        if park["reason"] == "rebase_conflict" and park.get("conflicts"):
+            if _dispatch_resolver(ctx, state, res, park, events):
+                return finish("CLOSING", "resolve_dispatched")
+            park = _spent_resolver_park(state, park)
         return finish("PARKED", park["reason"], park=park)
 
     return finish(res.from_state, "noop")
+
+
+def _dispatch_resolver(ctx: _Ctx, state: dict, res: StepResult, park: dict, events: list) -> bool:
+    """SPEC-0221: a close rebase conflicted on non-generated paths. With budget left (and the
+    project not opted out) record `closing.resolve` and a finding, and stay CLOSING; the next
+    plan is the `resolve` step. False means park as before."""
+    closing = dict(state.get("closing") or {"attempts": 0})
+    if int(closing.get("resolve_attempts") or 0) >= MAX_RESOLVE_ATTEMPTS:
+        return False
+    if (ctx.project(state).get("merge") or {}).get("resolver", True) is False:
+        return False
+    repo = state.get("repo") or {}
+    pre_head = getattr(res.prepared, "pre_head", "") or ""
+    target_sha = park.get("target_sha") or ""
+    if not (pre_head and target_sha):
+        return False
+    try:
+        fork = git.merge_base(repo["worktree"], pre_head, target_sha)
+    except (GitError, KeyError):
+        return False
+    closing["resolve"] = {"target": park.get("target"), "target_sha": target_sha,
+                          "conflicts": list(park["conflicts"]), "pre_head": pre_head,
+                          "fork": fork, "branch": repo.get("branch")}
+    state["closing"] = closing
+    events.append(("finding", {
+        "persona": "close", "severity": "info", "gate": "rebase",
+        "title": "rebase conflict; resolver dispatched",
+        "detail": park["detail"], "files": list(park["conflicts"])}))
+    return True
+
+
+def _spent_resolver_park(state: dict, park: dict) -> dict:
+    """The park detail after resolver runs were used up: how many, and what the last said."""
+    used = int((state.get("closing") or {}).get("resolve_attempts") or 0)
+    if not used:
+        return park
+    last = state.get("last_verdict") or {}
+    summary = (last.get("verdict") or {}).get("summary") if last.get("persona") == "conflict_resolver" \
+        else None
+    return {**park, "detail": f"{park['detail']} (resolver: {used} attempts"
+                              + (f", last: {summary}" if summary else "") + ")"}
+
+
+def _apply_resolve(state: dict, counters: dict, res: StepResult, rr, row: dict, events: list,
+                   finish):
+    """SPEC-0221 harvest of a `resolve` step (not interrupted). Verified: clear
+    `closing.resolve`, record `rebase_resolved` and stay CLOSING for the normal close.
+    Otherwise a `major` finding; stay CLOSING with the same `resolve` while attempts remain,
+    else park `rebase_conflict`."""
+    closing = dict(state.get("closing") or {"attempts": 0})
+    rs = closing.get("resolve") or {}
+    info = res.resolution or {}
+    verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
+    closing["resolve_attempts"] = used = int(closing.get("resolve_attempts") or 0) + 1
+    state["closing"] = closing
+    if info.get("verified"):
+        closing.pop("resolve", None)
+        head = info.get("head")
+        events.append(("rebase_resolved", {
+            "run_id": res.run_id, "target_sha": rs.get("target_sha"),
+            "conflicts": list(rs.get("conflicts") or []),
+            "resolutions": list(verdict.get("resolutions") or []),
+            "summary": verdict.get("summary"), "head": head}))
+        state.setdefault("repo", {})["head"] = head
+        return finish("CLOSING", "rebase_resolved")
+    why = str(verdict.get("summary") or "").strip() or str(info.get("failed") or "not resolved")
+    if verdict.get("summary") and info.get("failed"):
+        why += f" [{info['failed']}]"
+    questions = [str(q) for q in verdict.get("questions") or []]
+    events.append(("finding", {
+        "persona": "conflict_resolver", "severity": "major", "gate": "rebase",
+        "title": "conflict resolver did not resolve",
+        "detail": why + ("\nQuestions:\n" + "\n".join(f"- {q}" for q in questions)
+                        if questions else ""),
+        "files": list(rs.get("conflicts") or [])}))
+    if used < MAX_RESOLVE_ATTEMPTS:
+        return finish("CLOSING", "resolve_failed")
+    paths = ", ".join(rs.get("conflicts") or [])
+    return finish("PARKED", "rebase_conflict", park={
+        "reason": "rebase_conflict", "resume_to": "CLOSING",
+        "detail": f"rebase onto {rs.get('target')} ({str(rs.get('target_sha'))[:10]}) conflicts: "
+                  f"{paths} (resolver: {used} attempts, last: {why})"})
 
 
 def _absorb_close_events(state: dict, counters: dict, events: list, close_events) -> None:
@@ -1575,6 +1720,10 @@ def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
             fl.tasks.append((step, pool.submit(_do_gate, ctx, st)))
         elif step.kind == "close":
             fl.tasks.append((step, pool.submit(_do_prepare_close, ctx, st)))
+        elif step.kind == "resolve":
+            fl.tasks.append((step, pool.submit(_do_resolve, ctx, st, step, run_id, req, budget)))
+            rows[st["id"]]["run_ids"].append(run_id)
+            fl.runs.append((run_id, getattr(req, "timeout_s", None)))
         else:
             fl.tasks.append((step, pool.submit(_do_persona, ctx, st, step, run_id, req, budget)))
             rows[st["id"]]["run_ids"].append(run_id)

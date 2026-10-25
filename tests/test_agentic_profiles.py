@@ -382,3 +382,13 @@ def test_matrix_config_errors_name_the_cell(matrix, needle):
     with pytest.raises(ValueError) as e:
         P.select_profile(_cfg(profile_matrix=matrix), review=SIZED_REVIEW)
     assert needle in str(e.value)
+
+
+@pytest.mark.parametrize("name,model,effort,budget", [
+    ("frugal", "sonnet", "medium", 1.0), ("balanced", "sonnet", "high", 2.0),
+    ("thorough", "opus", "high", 4.0)])
+def test_builtin_conflict_resolver_settings(name, model, effort, budget):         # SPEC-0221
+    s = P.persona_settings(P.BUILTIN_PROFILES[name], "conflict_resolver")
+    assert (s["model"], s["effort"], s["max_budget_usd"]) == (model, effort, budget)
+    assert s["read_only"] is False and s["permission_mode"] == "bypassPermissions"
+    assert budget < P.persona_settings(P.BUILTIN_PROFILES[name], "implementer")["max_budget_usd"]

@@ -36,6 +36,7 @@ PROJECT_DEFAULTS = {
         "delete_branch": True,
         "post_cmds": [],
         "regenerate": [],        # [{path, cmd}]: generated files resolved by regeneration at rebase
+        "resolver": True,        # SPEC-0221: a conflict_resolver persona run before parking rebase_conflict
         "pr": {"labels": [], "reviewers": [], "title_prefix": ""},
     },
     "worktrees": {
@@ -185,6 +186,7 @@ def validate(doc):
             problems.append("merge.remote: must be a non-empty string")
         _check_bool(problems, merge.get("push_after_merge"), "merge.push_after_merge")
         _check_bool(problems, merge.get("delete_branch"), "merge.delete_branch")
+        _check_bool(problems, merge.get("resolver"), "merge.resolver")
         _check_str_list(problems, merge.get("post_cmds"), "merge.post_cmds")
         _check_regenerate(problems, merge.get("regenerate"))
         pr = merge.get("pr")

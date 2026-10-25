@@ -8,6 +8,7 @@ caller passes (tests set GIT_AUTHOR_* / GIT_COMMITTER_*), never from a global co
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -213,6 +214,80 @@ def rebase(worktree, onto, *, regenerate=None) -> RebaseResult:
             raise GitError(["git", "rebase", onto], r.returncode, _tail(r.stdout + r.stderr))
         return RebaseResult(False, conflicts, after)
     return RebaseResult(True, (), rev_parse(worktree), tuple(regenerated))
+
+
+# ---- rebase-conflict resolver support (SPEC-0221) -------------------------------------------------
+
+def merge_base(repo, a, b) -> str:
+    return git(repo, "merge-base", a, b).stdout.strip()
+
+
+def rebase_in_progress(worktree) -> bool:
+    for name in ("rebase-merge", "rebase-apply"):
+        r = git(worktree, "rev-parse", "--git-path", name, check=False)
+        path = Path((r.stdout or "").strip())
+        if r.returncode == 0 and path.name:
+            if not path.is_absolute():
+                path = Path(worktree) / path
+            if path.exists():
+                return True
+    return False
+
+
+def head_ref(worktree) -> str | None:
+    """Full ref HEAD is attached to (`refs/heads/x`), or None when detached."""
+    r = git(worktree, "symbolic-ref", "-q", "HEAD", check=False)
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+def restore_branch(worktree, branch, pre_head) -> None:
+    """Put the campaign branch back, checked out, at `pre_head` with a clean tree and no
+    rebase in progress. Only the campaign branch ref moves; raises `GitError` when the end
+    state cannot be reached."""
+    if rebase_in_progress(worktree):
+        git(worktree, "rebase", "--abort", check=False)
+    ref = f"refs/heads/{branch}"
+    if head_ref(worktree) != ref:
+        git(worktree, "checkout", "-f", branch)
+    tip = git(worktree, "rev-parse", "--verify", "-q", ref, check=False).stdout.strip()
+    if tip != pre_head or status_porcelain(worktree, untracked=False):
+        git(worktree, "reset", "--hard", pre_head)
+    git(worktree, "clean", "-fdq")
+    if rebase_in_progress(worktree) or head_ref(worktree) != ref \
+            or rev_parse(worktree) != pre_head or status_porcelain(worktree, untracked=False):
+        raise GitError(["git", "restore", branch], 1,
+                       f"cannot restore {branch} to {pre_head}: "
+                       f"HEAD {rev_parse(worktree)}, ref {head_ref(worktree)}")
+
+
+_RANGE_DIFF_RE = re.compile(r"^\s*(?:-|\d+):\s+\S+\s+([=!<>])\s+(?:-|\d+):\s+\S+")
+
+
+def verify_resolution(worktree, branch, target_sha, fork, pre_head) -> str | None:
+    """Runner-side check of a resolver's work (SPEC-0221); the name of the first failed
+    check, None when the branch is attached, rebased onto `target_sha`, still carries exactly
+    the campaign's commits and is tracked-clean."""
+    if head_ref(worktree) != f"refs/heads/{branch}":
+        return "HEAD is not attached to the campaign branch"
+    if rebase_in_progress(worktree):
+        return "a rebase is still in progress"
+    if git(worktree, "ls-files", "-u").stdout.strip():
+        return "unmerged paths remain"
+    if git(worktree, "merge-base", "--is-ancestor", target_sha, "HEAD", check=False).returncode:
+        return "the rebase target is not an ancestor of HEAD"
+    new = int(git(worktree, "rev-list", "--count", f"{target_sha}..HEAD").stdout.strip())
+    old = int(git(worktree, "rev-list", "--count", f"{fork}..{pre_head}").stdout.strip())
+    if new != old:
+        return f"campaign commit count changed ({old} before, {new} after)"
+    out = git(worktree, "range-diff", "--no-color", "--creation-factor=95",
+              f"{fork}..{pre_head}", f"{target_sha}..HEAD").stdout
+    for line in out.splitlines():
+        m = _RANGE_DIFF_RE.match(line)
+        if m and m.group(1) in "<>":
+            return "a campaign commit was dropped or added"
+    if status_porcelain(worktree, untracked=False):
+        return "the worktree is dirty"
+    return None
 
 
 def ff_merge(repo, branch) -> str:

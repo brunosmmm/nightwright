@@ -1,7 +1,7 @@
 ---
 id: SPEC-0221
 title: "Rebase-conflict resolver persona"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -305,38 +305,38 @@ table.
 
 ## Acceptance criteria
 
-- [ ] A close whose rebase conflicts on a non-generated path does not park. The campaign
+- [x] A close whose rebase conflicts on a non-generated path does not park. The campaign
       stays CLOSING with `closing.resolve` set and a `resolver dispatched` finding, and the
       next tick runs a `conflict_resolver` persona step (in flight on the pool, with
       `run.start`/`run.end` on the ledger).
-- [ ] `conflict_resolver` is registered (write-capable, own invariant, schema as above), its
+- [x] `conflict_resolver` is registered (write-capable, own invariant, schema as above), its
       template carries the rules above, and its prompt contains the conflicted paths, both
       diffs (computed from the current fork point `merge-base(pre_head, target_sha)`), the
       landed commits and their spec text, the regenerate map and the target sha. Every
       builtin profile has its settings per the table.
-- [ ] A verified `resolved` result records `rebase_resolved` with per-path `strategy`/`how`,
+- [x] A verified `resolved` result records `rebase_resolved` with per-path `strategy`/`how`,
       and the following close re-gates the resolved tree and reaches MERGED (gates green),
       or TRIAGING `regate_failed` (gates red).
-- [ ] A resolver run that changes the campaign spec's governing text leads to TRIAGING
+- [x] A resolver run that changes the campaign spec's governing text leads to TRIAGING
       `spec-changed` at the following close, not a merge.
-- [ ] Runner-side verification rejects a `resolved` verdict when HEAD is detached or on
+- [x] Runner-side verification rejects a `resolved` verdict when HEAD is detached or on
       another branch, a rebase is in progress, paths are unmerged, the target is not an
       ancestor, a campaign commit was dropped or added (range-diff/count against the
       recorded `fork..pre_head`), or the tree is dirty. Those cases, `gave_up`, a failed
       run and an interrupted run each restore the campaign branch, checked out and
       attached, to the `pre_head` recorded at dispatch, with no rebase in progress.
-- [ ] After `MAX_RESOLVE_ATTEMPTS` (2) unsuccessful resolver runs in one CLOSING entry, the
+- [x] After `MAX_RESOLVE_ATTEMPTS` (2) unsuccessful resolver runs in one CLOSING entry, the
       campaign parks `rebase_conflict` (`resume_to: CLOSING`), and the detail names the paths
       and the last summary. A resume resets the budget. An interrupted run does not count
       against it.
-- [ ] `merge.resolver` is in `PROJECT_DEFAULTS["merge"]` (default true) and passes the strict
+- [x] `merge.resolver` is in `PROJECT_DEFAULTS["merge"]` (default true) and passes the strict
       project schema. `merge.resolver: false` parks `rebase_conflict` at once, as before. A cost cap that
       blocks the resolver parks `cost_cap` with `resume_to: CLOSING`.
-- [ ] Generated-only conflicts are still resolved by SPEC-0191 without a resolver run. The
+- [x] Generated-only conflicts are still resolved by SPEC-0191 without a resolver run. The
       existing close, in-flight close (SPEC-0220) and e2e suites pass unchanged.
-- [ ] `rebase_resolved` validates with `schemas.ledger_problems`, is projected as an event,
+- [x] `rebase_resolved` validates with `schemas.ledger_problems`, is projected as an event,
       and renders in `wt campaign log`. The `wt-conduct` decision table row is updated.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -400,6 +400,53 @@ table.
   `resolver dispatched`, the resolver run, `rebase resolved: …`, then the re-gate and the
   merge, with no conductor action. Record the resolver cost.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q` (full suite): 2124 passed, 1 skipped.
+- New `tests/test_agentic_resolver.py` (19 cases, real git conflicts in a tmp repo, FakeRunner with
+  `pre_shell`/`shell`): dispatch + merge, prompt context, current fork point, red re-gate to
+  TRIAGING, resolver spec edit to `spec-changed`, `gave_up` twice to park + resume, the
+  unverified-result matrix (rebase left running, dirty tree, rebase aborted, detached HEAD, other
+  branch, dropped commit, swapped commit, extra commit), interrupted run not counted, opt-out,
+  cost cap, generated-only conflict, budget spanning two verified resolutions.
+- Also extended: `test_agentic_runner.py` (`pre_shell`/`shell`), `test_agentic_personas.py`,
+  `test_agentic_profiles.py`, `test_agentic_project.py`, `test_agentic_logs.py`,
+  `test_agentic_events.py`, `test_agentic_campaign_cli.py`, `test_skills.py` (the
+  `rebase_conflict` conductor row).
+- `python3 tools/spec_lint.py` exits 0; ledger regenerated.
+- **Sabotage checks** (each applied to the source, `tests/test_agentic_resolver.py` run, reverted):
+  dropping the post-run verification fails `test_unverified_resolved_is_restored[detached_head]`;
+  dropping the attached-branch check fails the same case; dropping the commit-count check fails
+  `[dropped_commit]`; dropping the range-diff check fails `[swapped_commit]` (the count alone
+  does not catch a swap); dropping the restore on a failed attempt fails
+  `test_gave_up_twice_parks_rebase_conflict`; counting interrupted runs fails
+  `test_interrupted_resolver_not_counted`; skipping the budget check fails
+  `test_attempt_budget_spans_resolved_runs_in_one_closing_entry`.
+- **Manual verification** (a real conflicted close shows `resolver dispatched`, the resolver run,
+  `rebase resolved: …`, the re-gate and the merge, and the resolver cost): not yet performed. It
+  needs a live conflicted close; the offline end-to-end tests above cover the same sequence.
+
+### As shipped (2026-10-25)
+
+Deviations from Design, none of which change a decision:
+
+- The restore and the verification are git-only helpers in `gitops.py` (`restore_branch`,
+  `verify_resolution`, `rebase_in_progress`, `merge_base`); `queue._do_resolve` calls them. The
+  restore also resets when the tracked tree is dirty at `pre_head` and runs `git clean -fd`
+  (untracked, not ignored) so a failed attempt leaves nothing behind.
+- A runner exception during the resolver run is treated as a failed attempt (synthetic failed
+  `run.end`, restore, second attempt, then the `rebase_conflict` park) rather than the
+  `open_failed` park, so a crashing resolver never strands the close. A failure of the restore
+  itself still parks `open_failed`.
+- The finish phase's `closing` write merges into the existing dict instead of replacing it, so
+  `resolve_attempts` survives a `base_moved` redo within one CLOSING entry.
+- The template also carries the last gate results and pending brief (a resume `--note` reaches
+  the resolver through the brief). The hidden `wt campaign prompt conflict_resolver` renders the
+  resolver context too (`personas.persona_extra`).
+- Landed specs are included as their full text from the target, cut to 400 lines each.
+- The failure detail written to the `major` finding appends the failed check to the resolver's
+  own summary, and the final park detail ends with `(resolver: N attempts, last: …)`.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -414,11 +461,11 @@ add `docs/product/capabilities/agentic.md`'s `rebase_conflict` line.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

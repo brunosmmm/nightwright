@@ -699,3 +699,49 @@ def test_spec_reviewer_schema_requires_size_tone_rationale():          # SPEC-02
     t = PS.PERSONAS["spec_reviewer"].template
     for word in ("xs", "xl", "cost-effective", "high-end", "critical"):
         assert word in t
+
+
+# ---- conflict_resolver (SPEC-0221) ---------------------------------------------------------
+
+def test_conflict_resolver_registered_write_capable_with_own_invariant():
+    p = PS.PERSONAS["conflict_resolver"]
+    assert not p.read_only and p.invariant is PS.RESOLVER_INVARIANT
+    s = PS.CONFLICT_RESOLVER_SCHEMA
+    assert s["required"] == ["status", "summary", "resolutions"]
+    assert s["properties"]["status"]["enum"] == ["resolved", "gave_up"]
+    item = s["properties"]["resolutions"]["items"]
+    assert item["required"] == ["path", "strategy", "how"]
+    assert item["properties"]["strategy"]["enum"] == ["both", "ours", "theirs", "regenerated",
+                                                     "rewritten"]
+    assert s["properties"]["questions"]["items"] == {"type": "string"}
+    inv = PS.RESOLVER_INVARIANT
+    assert "Do not commit" not in inv
+    for allowed in ("rebase {{rebase_target}}", "rebase --continue", "rebase --abort", "add",
+                    "checkout --ours/--theirs -- <path>", "status", "diff", "log", "show"):
+        assert allowed in inv, allowed
+    for forbidden in ("push", "merge", "reset", "commit --amend", "switch", "checkout <branch>",
+                      "branch -f", "worktree", "stash"):
+        assert forbidden in inv.split("Forbidden git:")[1], forbidden
+    text = p.template
+    for ph in ("{{rebase_target}}", "{{conflicts}}", "{{campaign_diff}}", "{{base_diff}}",
+               "{{landed}}", "{{regenerate}}", "{{spec_rel_path}}", "{{spec_text}}"):
+        assert ph in text, ph
+    for word in ("**ours**", "**theirs**", "gave_up", "Never hand-edit", "refuses the merge",
+                 "Clock Log"):
+        assert word in text or word.replace("**", "") in text, word
+
+
+def test_conflict_resolver_build_request_follows_implementer_rules(tmp_path):
+    cfg, st = _cfg(tmp_path), _state(tmp_path)
+    st["closing"] = {"attempts": 0, "resolve": {"target_sha": "abc123", "conflicts": ["a.py"]}}
+    req = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, "conflict_resolver",
+                           run_dir=tmp_path / "runs" / "001-conflict_resolver")
+    assert req.model == "sonnet" and req.effort == "high" and req.max_budget_usd == 2.0
+    assert req.permission_mode == "bypassPermissions" and not req.read_only
+    assert req.allowed_tools == ("Bash(uv run wt *)", "Bash(uv run pytest -q -x*)",
+                                 "Bash(python3 tools/spec_lint.py*)")
+    assert req.env["WT_REBASE_TARGET"] == "abc123"
+    assert req.json_schema is PS.CONFLICT_RESOLVER_SCHEMA
+    assert req.system_append.startswith("## wt queue invariants")
+    assert "rebase abc123" in req.system_append and "{{" not in req.prompt
+    assert req.prompt.endswith(req.system_append + "\n")

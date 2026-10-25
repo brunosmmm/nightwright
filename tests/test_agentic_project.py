@@ -233,3 +233,11 @@ def test_merge_regenerate_default_and_valid():
 def test_merge_regenerate_rejects_bad(bad):
     with pytest.raises(ValueError, match="merge.regenerate"):
         P.validate(_regen_doc(bad))
+
+
+def test_merge_resolver_default_true_and_validated():                              # SPEC-0221
+    assert P.PROJECT_DEFAULTS["merge"]["resolver"] is True
+    P.validate({"schema": P.SCHEMA, "merge": {"resolver": False}})
+    P.validate({"schema": P.SCHEMA, "merge": {"resolver": True}})
+    with pytest.raises(ValueError, match="merge.resolver"):
+        P.validate({"schema": P.SCHEMA, "merge": {"resolver": "no"}})

@@ -299,8 +299,13 @@ forces anything:
    missing.
 2. Anything uncommitted in the worktree is snapshotted into a commit.
 3. The worktree is rebased onto the target (the local base for `merge`; the fetched remote
-   base for `pr` / `draft-pr`). A conflict parks the campaign (`rebase_conflict`) with the
-   worktree restored byte-for-byte.
+   base for `pr` / `draft-pr`). Declared generated files are regenerated (SPEC-0191). Any
+   other conflict dispatches a `conflict_resolver` persona run inside the campaign (SPEC-0221,
+   up to 2 per entry into CLOSING, `merge.resolver: false` opts out): it performs the rebase,
+   a runner-side check verifies the result (attached branch, no dropped or added commit,
+   clean tree) and `rebase_resolved` lists every path and how it was resolved; the close then
+   redoes its guard, rebase and re-gate. An unresolved conflict parks the campaign
+   (`rebase_conflict`) with the worktree restored byte-for-byte.
 4. **Every gate runs again on the rebased tree.** A required failure goes to triage.
 5. `merge` policy: the main checkout must be on the base branch and have no uncommitted
    tracked changes (untracked files are fine), and the base must not have moved since it

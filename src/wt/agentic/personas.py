@@ -39,6 +39,38 @@ You are one run of wt's agentic queue for campaign `{{campaign}}` (spec `{{spec_
 - Finish by emitting the JSON verdict for your persona. A program parses it; nothing else
   you print is read."""
 
+RESOLVER_INVARIANT = """\
+## wt queue invariants (read before anything else)
+
+You are one run of wt's agentic queue for campaign `{{campaign}}` (spec `{{spec_id}}`),
+resolving a rebase conflict on the campaign branch.
+- Work only in `{{worktree}}`, on its current branch. Do not touch the main checkout.
+- Allowed git: `rebase {{rebase_target}}`, `rebase --continue`, `rebase --abort`, `add`,
+  `checkout --ours/--theirs -- <path>`, `status`, `diff`, `log`, `show`.
+- Forbidden git: `push`, `merge`, `reset` (any form), `commit --amend`, `switch`,
+  `checkout <branch>`, `branch -f`, `worktree`, `stash`, and anything in the main checkout.
+- Finish with the rebase complete (`git status` shows no rebase in progress) or aborted.
+- `wt campaign note "<text>"` records a note on this campaign (WT_CAMPAIGN is set).
+- Finish by emitting the JSON verdict for your persona. A program parses it; nothing else
+  you print is read."""
+
+RESOLUTION_STRATEGIES = ["both", "ours", "theirs", "regenerated", "rewritten"]
+
+CONFLICT_RESOLVER_SCHEMA = {
+    "type": "object",
+    "required": ["status", "summary", "resolutions"],
+    "properties": {
+        "status": {"type": "string", "enum": ["resolved", "gave_up"]},
+        "summary": {"type": "string"},
+        "resolutions": {"type": "array", "items": {
+            "type": "object", "required": ["path", "strategy", "how"],
+            "properties": {"path": {"type": "string"},
+                           "strategy": {"type": "string", "enum": RESOLUTION_STRATEGIES},
+                           "how": {"type": "string"}}}},
+        "questions": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
 IMPLEMENTER_SCHEMA = {
     "type": "object",
     "required": ["status", "summary"],
@@ -209,6 +241,10 @@ PERSONAS = {
     # SPEC-0206: not a reviewer (not in REVIEWER_PERSONAS); waives minor/nit findings only
     "review_triager": Persona("review_triager", "review_triager.md", REVIEW_TRIAGER_SCHEMA,
                               read_only=True),
+    # SPEC-0221: runs the close rebase itself, so it commits (own invariant)
+    "conflict_resolver": Persona("conflict_resolver", "conflict_resolver.md",
+                                 CONFLICT_RESOLVER_SCHEMA, read_only=False,
+                                 invariant=RESOLVER_INVARIANT),
 }
 
 # Personas that get the review context (diff, gate summary, previous verdicts) and may be listed
@@ -218,7 +254,8 @@ REVIEWER_PERSONAS = ("conformance_reviewer", "test_reviewer", "adversarial_revie
 PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree", "base",
                 "loop", "loop_max", "context_files", "gate_results", "pending_brief",
                 "previous_verdicts", "diff", "test_files", "tests_touched", "changed_files",
-                "schema_text", "idea_text", "triage_input")
+                "schema_text", "idea_text", "triage_input", "rebase_target", "conflicts",
+                "campaign_diff", "base_diff", "landed", "regenerate")
 
 
 def get_persona(name) -> Persona:
@@ -452,6 +489,91 @@ def _changed_files_text(paths) -> str:
     return "\n".join(shown)
 
 
+# ---- resolver context (SPEC-0221) -----------------------------------------------------------
+
+_RESOLVE_DIFF_MAX_LINES = 600
+_RESOLVE_SPECS_MAX = 3
+_RESOLVE_SPEC_MAX_LINES = 400
+_RESOLVE_LANDED_MAX = 50
+_SPEC_ID_RE = re.compile(r"SPEC-(\d{4,})")
+_SPEC_FILE_RE = re.compile(r"^docs/specs/(\d{4,})-[^/]*\.md$")
+
+
+def _cut(text: str, max_lines: int, hint: str) -> str:
+    lines = (text or "").splitlines()
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    return "\n".join(lines[:max_lines] + [f"\u2026 truncated: {len(lines) - max_lines} more "
+                                          f"line(s); run `{hint}` for the rest"])
+
+
+def _git_text(worktree, *args) -> str:
+    try:
+        return git.git(worktree, *args).stdout
+    except (git.GitError, OSError):
+        return ""
+
+
+def resolve_context(state, resolve, project_cfg) -> dict:
+    """Prompt values of the conflict resolver (SPEC-0221) from git reads in the worktree,
+    which sits at `resolve["pre_head"]` (the close rebase was aborted). Every range starts at
+    `resolve["fork"]`, the merge-base of the campaign branch and the target, never at the
+    sha the campaign opened on."""
+    worktree = (state.get("repo") or {}).get("worktree")
+    spec_rel = (state.get("spec") or {}).get("rel_path")
+    resolve = resolve or {}
+    fork, pre_head = resolve.get("fork"), resolve.get("pre_head")
+    target_sha = resolve.get("target_sha")
+    conflicts = list(resolve.get("conflicts") or [])
+    regen = (project_cfg or {}).get("merge", {}).get("regenerate") or []
+    out = {"rebase_target": target_sha, "conflicts": conflicts,
+           "regenerate": [f"{r['path']}: {r['cmd']}" for r in regen] or None}
+    if not (worktree and fork and pre_head and target_sha and conflicts):
+        return out
+    out["campaign_diff"] = _cut(
+        _git_text(worktree, "diff", f"{fork}..{pre_head}", "--", *conflicts),
+        _RESOLVE_DIFF_MAX_LINES, f"git diff {fork}..{pre_head} -- <conflicts>")
+    out["base_diff"] = _cut(
+        _git_text(worktree, "diff", f"{fork}..{target_sha}", "--", *conflicts),
+        _RESOLVE_DIFF_MAX_LINES, f"git diff {fork}..{target_sha} -- <conflicts>")
+    log = [ln.split("\t", 1) for ln in _git_text(
+        worktree, "log", "--format=%H%x09%s", f"{fork}..{target_sha}", "--", *conflicts
+    ).splitlines() if "\t" in ln]
+    lines = [f"- {sha[:10]} {subject}" for sha, subject in log[:_RESOLVE_LANDED_MAX]]
+    if len(log) > _RESOLVE_LANDED_MAX:
+        lines.append(f"\u2026 {len(log) - _RESOLVE_LANDED_MAX} more commit(s)")
+    # the governing specs of the base side: ids named in subjects, spec files the range touched
+    changed = [p for p in _git_text(worktree, "diff", "--name-only", "--diff-filter=AM",
+                                    f"{fork}..{target_sha}", "--", "docs/specs").splitlines()
+               if _SPEC_FILE_RE.match(p) and p != spec_rel]
+    by_num = {_SPEC_FILE_RE.match(p).group(1): p for p in changed}
+    files = []
+    for _sha, subject in log:
+        for num in _SPEC_ID_RE.findall(subject):
+            hit = by_num.get(num) or next(
+                (p for p in _git_text(worktree, "ls-tree", "-r", "--name-only", target_sha,
+                                      "--", "docs/specs").splitlines()
+                 if (m := _SPEC_FILE_RE.match(p)) and m.group(1) == num and p != spec_rel), None)
+            if hit and hit not in files:
+                files.append(hit)
+    files += [p for p in sorted(changed) if p not in files]
+    for path in files[:_RESOLVE_SPECS_MAX]:
+        text = _show(worktree, target_sha, path)
+        if text is not None:
+            lines += ["", f"### Governing spec `{path}` (as on the target)", "```markdown",
+                      _cut(text, _RESOLVE_SPEC_MAX_LINES, f"git show {target_sha}:{path}"),
+                      "```"]
+    out["landed"] = "\n".join(lines) if lines else None
+    return out
+
+
+def persona_extra(state, persona, project_cfg) -> dict | None:
+    """Persona-specific prompt values built from campaign state (resolver only)."""
+    if persona != "conflict_resolver":
+        return None
+    return resolve_context(state, (state.get("closing") or {}).get("resolve"), project_cfg)
+
+
 def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
                   review=False, with_tests=False, extra=None) -> dict:
     """Prompt values from campaign state (+ project config). `spec_text` is read from the
@@ -549,6 +671,7 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         permission_mode = agents.get("permission_mode") or settings.get("permission_mode") \
             or "bypassPermissions"
         allowed = tuple(list(agents.get("allowed_tools") or []) + _gate_tool_patterns(project_cfg))
+    extra = {**(persona_extra(state, persona, project_cfg) or {}), **(extra or {})} or None
     ctx = build_context(cfg, state, project_cfg, loop_max=profile.get("loop_max"),
                         previous=previous, review=persona in REVIEWER_PERSONAS,
                         with_tests=persona == "test_reviewer", extra=extra)
@@ -560,10 +683,12 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         "WT_WORKTREE": str(worktree),
         "WT_BASE": str(repo.get("base") or ""),
     }
+    if persona == "conflict_resolver":
+        env["WT_REBASE_TARGET"] = str(ctx.get("rebase_target") or "")
     return RunRequest(
         persona=persona,
         prompt=build_prompt(p, ctx),
-        system_append=render(INVARIANT, ctx),
+        system_append=render(p.invariant, ctx),
         cwd=worktree,
         model=str(settings.get("model") or "sonnet"),
         effort=settings.get("effort"),

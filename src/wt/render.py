@@ -25,7 +25,7 @@ _EVENT_STYLES = {
     "transition": "bold", "open": "cyan", "run.start": "cyan", "run.end": "cyan",
     "cost": "dim", "commit": "green", "park": "yellow", "resume": "cyan", "close": "bold green",
     "note": "italic", "backlog": "dim", "abandon": "red", "triage": "magenta",
-    "triage.brief": "magenta",
+    "triage.brief": "magenta", "rebase_resolved": "green",
 }
 
 _MESSAGE_STYLES = {"question": "bold yellow", "answer": "bold green", "request": "bold cyan",
@@ -89,6 +89,17 @@ def _kv(text: Text, key: str, value) -> None:
     text.append(str(value), style=style)
 
 
+def rebase_resolved_text(ev: dict) -> str:
+    """`rebase resolved: 3 paths (both×2, theirs×1)` for a `rebase_resolved` ledger event."""
+    counts: dict = {}
+    for r in ev.get("resolutions") or []:
+        key = (r or {}).get("strategy") or "?"
+        counts[key] = counts.get(key, 0) + 1
+    paths = len(ev.get("conflicts") or [])
+    by = ", ".join(f"{k}\u00d7{n}" for k, n in counts.items())
+    return f"rebase resolved: {paths} paths" + (f" ({by})" if by else "")
+
+
 def campaign_event(ev: dict) -> Text:
     """`wt campaign show|log` line: seq, ts, type, by, then key=value (values ≤ 60 chars)."""
     skip = {"schema", "ts", "seq", "campaign", "type", "by"}
@@ -105,6 +116,9 @@ def campaign_event(ev: dict) -> Text:
     t.append(" ")
     t.append(f"{ev.get('by', ''):<16}", style="dim")
     t.append(" ")
+    if etype == "rebase_resolved":                      # SPEC-0221
+        t.append(rebase_resolved_text(ev))
+        return t
     first = True
     for k, v in ev.items():
         if k in skip:

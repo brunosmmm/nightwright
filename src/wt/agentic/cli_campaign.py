@@ -303,7 +303,8 @@ def attach(campaign_group):
                 project_cfg = None       # no .wt/project.yaml yet: render without context files
         previous = store.read_ledger(cfg, campaign, types=["run.end"], tail=2)
         ctx = PS.build_context(cfg, st, project_cfg, loop_max=profile.get("loop_max"),
-                               previous=previous)
+                               previous=previous,
+                               extra=PS.persona_extra(st, persona, project_cfg))
         import sys
         sys.stdout.write(PS.build_prompt(persona, ctx))
 

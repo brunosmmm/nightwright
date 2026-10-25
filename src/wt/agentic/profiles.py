@@ -29,6 +29,8 @@ BUILTIN_PROFILES = {
         "personas": {
             "implementer": {"model": "sonnet", "effort": "high", "max_budget_usd": 4.0,
                             "permission_mode": "bypassPermissions", "read_only": False},
+            "conflict_resolver": {"model": "sonnet", "effort": "high", "max_budget_usd": 2.0,
+                                  "permission_mode": "bypassPermissions", "read_only": False},
             "gate_triager": {"model": "sonnet", "effort": "medium", "max_budget_usd": 0.5,
                              "permission_mode": "dontAsk", "read_only": True},
             "conformance_reviewer": {"model": "opus", "effort": "high", "max_budget_usd": 1.5,
@@ -54,6 +56,8 @@ BUILTIN_PROFILES = {
         "personas": {
             "implementer": {"model": "sonnet", "effort": "medium", "max_budget_usd": 1.5,
                             "permission_mode": "bypassPermissions", "read_only": False},
+            "conflict_resolver": {"model": "sonnet", "effort": "medium", "max_budget_usd": 1.0,
+                                  "permission_mode": "bypassPermissions", "read_only": False},
             "gate_triager": {"model": "haiku", "effort": "medium", "max_budget_usd": 0.25,
                              "permission_mode": "dontAsk", "read_only": True},
             "conformance_reviewer": {"model": "sonnet", "effort": "medium", "max_budget_usd": 0.6,
@@ -79,6 +83,8 @@ BUILTIN_PROFILES = {
         "personas": {
             "implementer": {"model": "opus", "effort": "high", "max_budget_usd": 10.0,
                             "permission_mode": "bypassPermissions", "read_only": False},
+            "conflict_resolver": {"model": "opus", "effort": "high", "max_budget_usd": 4.0,
+                                  "permission_mode": "bypassPermissions", "read_only": False},
             "gate_triager": {"model": "sonnet", "effort": "high", "max_budget_usd": 1.0,
                              "permission_mode": "dontAsk", "read_only": True},
             "conformance_reviewer": {"model": "opus", "effort": "high", "max_budget_usd": 1.5,

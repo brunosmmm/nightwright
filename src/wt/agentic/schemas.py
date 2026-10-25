@@ -38,6 +38,7 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "finding": ("persona", "severity", "gate", "title", "detail", "files"),
     "priority": ("from", "to"),
     "admitted_after_revision": ("review_sha", "current_sha", "findings"),
+    "rebase_resolved": ("run_id", "target_sha", "conflicts", "resolutions", "summary", "head"),
     "followup": ("persona", "severity", "title", "key", "idea_id", "origin"),
 }
 

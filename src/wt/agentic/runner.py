@@ -243,7 +243,8 @@ class ClaudeRunner:
 class FakeRunner:
     """Replay a JSON script: a list of entries consumed in order, each
     `{persona, edits: [{path, write|append|delete}], verdict, cost_usd, exit_code?, timed_out?,
-    malformed?, sleep_s?}`. Edits apply relative to `req.cwd`. A persona mismatch raises so a
+    malformed?, sleep_s?, pre_shell?, shell?}`. Edits apply relative to `req.cwd`; `pre_shell`
+    / `shell` are command lists run in `req.cwd` with `req.env` before / after the edits. A persona mismatch raises so a
     test never silently runs the wrong step. The cursor lives in a file next to the campaign's
     runs dir so the script advances across separate `wt` processes."""
 
@@ -289,6 +290,12 @@ class FakeRunner:
             else:
                 target.write_text(edit.get("write", ""), encoding="utf-8")
 
+    @staticmethod
+    def _shell(req: RunRequest, cmds) -> None:
+        for cmd in cmds or ():
+            subprocess.run(cmd, shell=True, cwd=str(req.cwd), env=_child_env(req),
+                           capture_output=True, text=True)
+
     def run(self, req: RunRequest) -> RunResult:
         _save_inputs(req)
         entry = self._next_entry(req)
@@ -296,7 +303,9 @@ class FakeRunner:
         started = time.monotonic()
         if entry.get("sleep_s"):
             time.sleep(float(entry["sleep_s"]))
+        self._shell(req, entry.get("pre_shell"))
         self._apply_edits(req.cwd, entry.get("edits"))
+        self._shell(req, entry.get("shell"))
         verdict = entry.get("verdict")
         if entry.get("malformed"):
             verdict = {"garbage": True}

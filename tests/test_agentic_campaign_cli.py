@@ -147,3 +147,15 @@ def test_show_prints_sizing_and_tolerates_pre_sizing(tmp_path, monkeypatch):    
     assert json.loads(r.output)["sizing"]["size"] == "l"
     r = _run(cfg, monkeypatch, ["campaign", "show", "SPEC-0170-20261025-aaaa"])
     assert r.exit_code == 0 and "sizing:" not in r.output
+
+
+def test_log_renders_rebase_resolved(tmp_path, monkeypatch):                       # SPEC-0221
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    cid = "SPEC-0170-20261025-aaaa"
+    _ev(cfg, cid, "rebase_resolved", {"conflicts": ["src/app.py"], "summary": "s",
+                                      "resolutions": [{"path": "src/app.py", "strategy": "both",
+                                                       "how": "kept both"}]})
+    r = _run(cfg, monkeypatch, ["campaign", "log", cid, "--tail", "1"])
+    assert r.exit_code == 0, r.output
+    assert "rebase resolved: 1 paths (both×1)" in r.output
