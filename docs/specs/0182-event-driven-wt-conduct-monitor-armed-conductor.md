@@ -99,6 +99,14 @@ file guard) / Verify.
   `conductor_pid` from it.
 - The decision table gained rows for transient failures (resume with `--reset-loops`), the
   self-restart after a merge that touches `src/wt/agentic/`, and steward requests.
+- **Never block** (user rule, 2026-10-25): the conductor's own context only runs quick
+  reads/writes; investigations, rebase-conflict resolution, merge repair and any long command
+  go to background sub-agents (or background shells for mechanical waits) that report back with
+  a recommended `wt` action. The skill has a "Never block" section, per-campaign single-worker
+  bookkeeping via `wt campaign note`, and the decision-table rows for `run_overdue`,
+  `campaign_silent`, `rebase_conflict` (resolver sub-agent in the campaign worktree, then
+  resume to CLOSING for the re-gate), `open_failed`/`gh_failed` and `merged` dispatch
+  accordingly.
 - Live so far: armed conductor woken by `lease_stale` (false positive, watchdog fixed) and by
   `merged` (reconciled the idea, restarted the loop). Still to observe for the manual AC: a
   park and a `runner_dead`.

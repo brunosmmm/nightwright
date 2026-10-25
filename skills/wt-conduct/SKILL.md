@@ -17,6 +17,30 @@ record — you never implement.
 Not for authoring specs (`/wt-new-work`), implementing (`/wt-implement-spec`) or auditing
 (`/wt-verify`).
 
+## Never block (the first rule)
+
+You must stay responsive to the next event at all times. **Your own context only does
+quick reads and quick writes** — `wt queue conduct-status`, `wt campaign show|log`,
+`wt queue resume|park|abandon|prioritize`, `wt campaign note`, `wt mailbox send`,
+`wt spec reconcile --apply`: commands that return in seconds.
+
+**Everything else is dispatched, never run inline:**
+
+- **Sub-agent** (preferred) for any work that needs judgment or more than a few seconds:
+  resolving a rebase conflict in a campaign worktree, completing or retrying a merge,
+  investigating a failure (reading diffs, gate logs, runner logs), checking whether a stuck
+  run's process is alive and why, drafting a steward question from a long triage brief,
+  verifying a merged spec. Launch it in the background with a brief that names the campaign,
+  the worktree, the exact goal, what it may change, and that it must report back with facts
+  and a recommended `wt` action. You then apply that action yourself (a quick write).
+- **Background shell** for long mechanical commands with no judgment (starting the loop,
+  `wt queue gates <id>`, waiting for a reset time).
+
+Bookkeeping: before dispatching, record `wt campaign note <id> "conductor: dispatched
+sub-agent to …"`; never dispatch a second worker for the same campaign while one is in
+flight; when the report arrives, act and note the outcome. If an event arrives while workers
+run, handle it — that is the point.
+
 ## Procedure
 
 1. **Situation report:** `wt queue conduct-status --json` (`wt.conduct.status.v1`): runner
@@ -35,8 +59,8 @@ Not for authoring specs (`/wt-new-work`), implementing (`/wt-implement-spec`) or
 5. **Per event:** look up its `type` in the table, gather facts (`wt campaign show <id>`,
    `wt campaign log <id> --tail 20`), act with `wt` commands (dry-run first for writes, then
    `--yes`), and record the decision on the campaign: `wt campaign note <id> "conductor: …"`.
-   Anything long (reading a big diff, investigating a failure) goes to a sub-agent so you stay
-   responsive. Then wait for the next event.
+   Anything beyond a quick read or write goes to a sub-agent or a background shell (see
+   *Never block*). Then wait for the next event.
 6. **Reporting:** after a merge or an escalation, give the human one short line (spec, outcome,
    cost). Don't narrate routine events.
 
@@ -46,18 +70,18 @@ Not for authoring specs (`/wt-new-work`), implementing (`/wt-implement-spec`) or
 |---|---|
 | `runner_dead` | start the loop (step 2); if it dies again within minutes, read the `runner.log` tail and escalate |
 | `lease_stale` | the runner is hung (no run in flight within its timeout): report pid + heartbeat age to the human; do not kill it unless told |
-| `run_overdue` | a persona run exceeded its timeout + grace: check the process (`ps`); if gone, `wt queue park` then `wt queue resume`; if alive, wait one interval then escalate |
-| `campaign_silent` | no ledger activity for long while active: same checks as `run_overdue` |
+| `run_overdue` | a persona run exceeded its timeout + grace: dispatch a sub-agent to check the run's process and logs and recommend park+resume, wait, or escalate; apply its recommendation |
+| `campaign_silent` | no ledger activity for long while active: same as `run_overdue` (sub-agent investigates) |
 | `run_failed` with `transient: true` | account limit / overload: note the reset time from `error` if present; once it parks, resume after the reset with `--note "transient API failure"`; this is not the work failing |
 | `run_failed` (not transient) | informational; the queue's triage handles it — act only if it parks |
 | `parked` `cost_cap` | resume once with `--raise-cap` up to 2× the profile cap and a note; a second cost park → escalate |
 | `parked` `loop_exhausted` / `triage_escalated` / `implementer_blocked` | if the failures were transient (`run_failed` with `transient: true` right before), resume with `--reset-loops`; else read the last triage brief; if a steward is armed for the project (`wt mailbox list --to steward:<P>`), ask it with `wt mailbox send --to steward:<P> --kind question --campaign <id> "…"` and wait for its `message`; else escalate with the brief and your recommendation |
-| `parked` `rebase_conflict` | if every conflicted path is a generated file (e.g. `docs/LEDGER.md`), resume to `CLOSING` (the close step re-runs gates); otherwise escalate |
+| `parked` `rebase_conflict` | if every conflicted path is a generated file (e.g. `docs/LEDGER.md`), resume to `CLOSING` (the close step re-runs gates); otherwise dispatch a resolver sub-agent into the campaign worktree to rebase onto the base and resolve the conflicts preserving both intents, commit on the campaign branch, and report; then resume to `CLOSING` (the close step re-gates the result). Escalate only if the resolver reports a semantic conflict it cannot settle |
 | `parked` `main_dirty` / `main_not_on_base` | the human's checkout: escalate (never stash or switch branches yourself) |
-| `parked` `open_failed` / `gh_failed` | read the detail; retry once with `wt queue resume`; then escalate |
+| `parked` `open_failed` / `gh_failed` | read the detail; retry once with `wt queue resume`; if it fails again, dispatch a sub-agent to diagnose, then act or escalate |
 | `message` (`kind` answer) | apply it: `wt campaign note`, then resume / abandon / reprioritize as the answer says |
 | `message` (`kind` request) | a steward asks for a queue action (add, prioritize, park, resume): do it via dry-run then `--yes`, and reply with `wt mailbox send --to <from> --kind answer --re <msg_id> "done: …"` |
-| `merged` / `handed_off` | `wt spec reconcile --apply`; one-line report; if the merged spec changed `src/wt/agentic/`, restart the loop (SIGTERM the runner pid, then step 2) so it runs the new code |
+| `merged` / `handed_off` | `wt spec reconcile --apply`; one-line report; if the merged spec changed `src/wt/agentic/`, restart the loop in the background (SIGTERM the runner pid, then step 2) so it runs the new code; optional deeper verification goes to a sub-agent |
 | `backlog` with `blocked_by` an unknown spec | the spec is wrong: escalate |
 | `admitted`, `resumed`, `cost_warning`, `abandoned` | informational; act only if it contradicts what you decided |
 
@@ -66,7 +90,11 @@ Exact flags: `wt queue --help`, `wt campaign --help`, `wt mailbox --help`.
 ## Conventions / guardrails
 
 - **One conductor.** The `conductor` reader lock on the event follower enforces it.
-- **Never implement.** No edits or commits in campaign worktrees or in the main checkout.
+- **Never block.** Quick reads and writes only in your own context; everything else is a
+  sub-agent or a background shell (see *Never block*).
+- **Never implement in your own context.** Conflict resolution, merge repair and fixes are
+  done by sub-agents you dispatch, inside the campaign worktree, never in the main checkout;
+  feature implementation stays with the loop's personas.
 - **Every park gets a decision** (resume, abandon, steward question, or escalation) and a
   `wt campaign note` saying which and why.
 - **Escalate crisply:** campaign, park reason, the facts, what you recommend, what you need
