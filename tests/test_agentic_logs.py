@@ -189,7 +189,6 @@ def test_adversarial_finding_with_category_is_a_valid_ledger_record(tmp_path, mo
     assert len(f) == 1 and f[0]["category"] == "path_traversal"
     assert f[0]["gate"] is None and f[0]["ac"] is None
     assert f[0]["detail"] == "joined unchecked\ntrigger: when name has ../"
-||||||| parent of 03ed8e5 (wt(SPEC-0219-20261025-e1d5): implementer run 002 — SPEC-0219: spec sizing and tone now pick the campaign profile. The revie)
 
 
 

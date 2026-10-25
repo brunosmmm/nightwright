@@ -685,7 +685,6 @@ def test_render_pending_brief_bracket_prefers_gate_then_ac_then_category():
     assert "- MUST FIX: T" in brief()
     out = brief(category="path_traversal", files=["a.py"], detail="x\ntrigger: when ../")
     assert "[path_traversal]: T (a.py) — x\ntrigger: when ../" in out
-||||||| parent of 03ed8e5 (wt(SPEC-0219-20261025-e1d5): implementer run 002 — SPEC-0219: spec sizing and tone now pick the campaign profile. The revie)
 
 
 

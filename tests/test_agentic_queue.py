@@ -1007,7 +1007,6 @@ def test_cap_sum_includes_the_adversarial_reviewer():
     step = Q.plan_step(over, profile)
     assert step.kind == "park" and step.reason == "cost_cap" and step.resume_to == "REVIEWING"
     assert "adversarial_reviewer" in step.detail and "$4.00" in step.detail
-||||||| parent of 03ed8e5 (wt(SPEC-0219-20261025-e1d5): implementer run 002 — SPEC-0219: spec sizing and tone now pick the campaign profile. The revie)
 
 
 

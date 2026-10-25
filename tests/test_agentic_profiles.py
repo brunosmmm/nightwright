@@ -317,7 +317,6 @@ def test_capability_page_lists_reviewers_and_categories():
     from wt.agentic import personas as PS
     for needle in ("adversarial_reviewer", "conformance_reviewer", *PS.ADVERSARIAL_CATEGORIES):
         assert needle in text, needle
-||||||| parent of 03ed8e5 (wt(SPEC-0219-20261025-e1d5): implementer run 002 — SPEC-0219: spec sizing and tone now pick the campaign profile. The revie)
 
 
 
