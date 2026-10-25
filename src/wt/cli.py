@@ -22,6 +22,7 @@ import re
 import sys
 
 import click
+from rich.markup import escape
 
 from . import report as R
 from . import completion as C
@@ -1402,8 +1403,9 @@ def spec_new_cmd(cfg, from_idea, target, internal, epic, title, force):
     project = target
     try:
         if from_idea:
+            idea = resolve_selector(cfg, from_idea)
             if project is None and not internal:
-                project = resolve_selector(cfg, from_idea).properties.get("PROJECT")
+                project = idea.properties.get("PROJECT")
             path, spec_id, kind = promote_idea(cfg, from_idea, internal=internal, target=target,
                                                epic=epic, title=title, force=force)
         elif target:
@@ -1419,7 +1421,8 @@ def spec_new_cmd(cfg, from_idea, target, internal, epic, title, force):
     else:
         repo = (cfg.get("outbox_targets") or {}).get(project, {}).get("repo_path", project)
         routed = f"outbound → {repo}"
-    src = f"<- {from_idea}" if from_idea else ""
+    # SPEC-0167: name the idea's heading so a wrong id is visible at a glance.
+    src = f"<- {idea.id or from_idea} {escape(repr(idea.heading))}" if from_idea else ""
     console.print(f"[green]✓[/] {spec_id}  [white]{path}[/]  [dim]{routed} {src}[/]")
 
 

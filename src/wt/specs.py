@@ -21,6 +21,7 @@ the real docs/specs/ would create a bogus numbered spec and dirty the ledger); i
 cfg["outbox_dir"] (default `<data_dir>/outbox` — USER DATA, not the wt repo; SPEC-0021)."""
 import datetime as dt
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -120,6 +121,20 @@ def _idea_context(task):
     return f"{header}\n\n{notes}" if notes else header
 
 
+def _refuse_closed_idea(cfg, task, force):
+    """SPEC-0167: never silently re-promote a finished idea. Ideas files are shared across
+    concurrent sessions and ids are global, so a terminal (`is_done`) or archived idea reaching
+    a promote path is most likely a wrong id — refuse unless `force`."""
+    if force:
+        return
+    archived = os.path.realpath(task.file) == os.path.realpath(W.ideas_archive_path(cfg))
+    if not (task.is_done or archived):
+        return
+    where = f" and archived in {task.file}" if archived else ""
+    raise ValueError(f"idea {task.id} {task.heading!r} is {task.state}{where}; refusing to "
+                     f"re-promote a closed idea (pass --force if you really mean it)")
+
+
 def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
     """Resolve `selector` to an idea, scaffold a new docs/specs/NNNN-slug.md (draft) from the
     template (TEMPLATE-epic.md if `epic` else TEMPLATE.md), prefill Context from the idea's org
@@ -134,6 +149,7 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
     if existing and not force:
         raise ValueError(f"idea {task.id} already promoted to {existing} "
                          f"(use --force to re-promote)")
+    _refuse_closed_idea(cfg, task, force)
 
     from .explore import idea_summary_text
     if not idea_summary_text(cfg, task).strip() and not force:
@@ -201,6 +217,7 @@ def promote_idea(cfg, selector, *, internal=False, target=None, epic=False, titl
     if existing and not force:
         raise ValueError(f"idea {task.id} already promoted to {existing} "
                          f"(use --force to re-promote)")
+    _refuse_closed_idea(cfg, task, force)
 
     project = target or task.properties.get("PROJECT")
 
@@ -395,6 +412,7 @@ def scaffold_outbound(cfg, project, *, from_idea=None, title=None, force=False, 
         if not task.is_idea:
             raise ValueError(f"{from_idea!r} resolved to {task.heading!r}, which is not an idea "
                              f"(state {task.state!r})")
+        _refuse_closed_idea(cfg, task, force)
         from .explore import idea_summary_text
         if not idea_summary_text(cfg, task).strip() and not force:
             print(f"  ! idea {task.id} has empty Summary — explore first "

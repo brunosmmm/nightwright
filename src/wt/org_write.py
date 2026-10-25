@@ -694,6 +694,16 @@ def next_idea_number(cfg):
     return n + 1
 
 
+def ideas_archive_path(cfg):
+    """Where `archive_idea` moves terminal ideas (SPEC-0073): `org_ideas_archive_file`, else
+    `ideas-archive.org` next to `org_ideas_file`."""
+    configured = cfg.get("org_ideas_archive_file")
+    if configured:
+        return os.path.expanduser(configured)
+    ideas_dir = os.path.dirname(os.path.expanduser(cfg["org_ideas_file"]))
+    return os.path.join(ideas_dir, "ideas-archive.org")
+
+
 def archive_idea(cfg, task):
     """Move `task`'s whole subtree — headline through the line before the next top-level
     headline (or EOF), i.e. properties, Summary, Open questions, Log, everything nested under
@@ -727,12 +737,7 @@ def archive_idea(cfg, task):
 
     _atomic_backup_write(cfg, task.file, "".join(lines[:idx] + lines[end:]))
 
-    configured = cfg.get("org_ideas_archive_file")
-    if configured:
-        archive_path = os.path.expanduser(configured)
-    else:
-        ideas_dir = os.path.dirname(os.path.expanduser(cfg["org_ideas_file"]))
-        archive_path = os.path.join(ideas_dir, "ideas-archive.org")
+    archive_path = ideas_archive_path(cfg)
     if os.path.exists(archive_path):
         existing = open(archive_path).read()
         if existing and not existing.endswith("\n"):

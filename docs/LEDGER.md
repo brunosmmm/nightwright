@@ -265,6 +265,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0164](./specs/0164-span-aware-org-markup-normalization-protect-code.md) | Span-aware org markup normalization (protect code, verbatim, fences) | feature | done | M4: cli ergonomics | 2026-10-25 |
 | [SPEC-0165](./specs/0165-repair-test-drift-from-demo-name-scrub-and-spec.md) | Repair test drift from demo-name scrub and SPEC-0135 | feature | done | M0: process | 2026-10-25 |
 | [SPEC-0166](./specs/0166-one-wt-checkout-resolver-editable-install-as-the.md) | One wt-checkout resolver; editable install as the documented path | feature | done | M1: packaging | 2026-10-25 |
+| [SPEC-0167](./specs/0167-refuse-promoting-terminal-or-archived-ideas.md) | Refuse promoting terminal or archived ideas without --force | feature | done | M3: idea→spec pipeline | 2026-10-25 |
 
 ## Superseded / rejected
 
