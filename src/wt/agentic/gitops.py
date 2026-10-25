@@ -1,0 +1,199 @@
+"""Git worktree / branch operations for campaigns (SPEC-0172).
+
+A thin subprocess wrapper, no shell, no GitPython. Every function takes the repository (or
+worktree) path explicitly and returns a structured value or raises `GitError`. `ff_merge` is
+the only operation that touches a main checkout and it never forces; `rebase` aborts on
+conflict and leaves the worktree exactly as it was. Commit identity comes from the env the
+caller passes (tests set GIT_AUTHOR_* / GIT_COMMITTER_*), never from a global config edit."""
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+_DEFAULT_TIMEOUT = 300
+_NETWORK_TIMEOUT = 1800
+_TAIL_LINES = 20
+
+
+class GitError(RuntimeError):
+    """A git / gh command failed. `tail` is the last lines of its combined output."""
+
+    def __init__(self, cmd: list[str], code: int, tail: str):
+        self.cmd = list(cmd)
+        self.code = code
+        self.tail = tail
+        super().__init__(f"{' '.join(self.cmd)} exited {code}:\n{tail}")
+
+
+@dataclass(frozen=True)
+class RebaseResult:
+    ok: bool
+    conflicts: tuple[str, ...]
+    head: str
+
+
+def _tail(text: str, n: int = _TAIL_LINES) -> str:
+    lines = (text or "").rstrip("\n").splitlines()
+    return "\n".join(lines[-n:])
+
+
+def _run(cmd: list[str], *, cwd=None, check=True, timeout=_DEFAULT_TIMEOUT, env=None):
+    merged_env = None if env is None else {**os.environ, **env}
+    try:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+                           env=merged_env)
+    except subprocess.TimeoutExpired as e:
+        raise GitError(cmd, -1, f"timed out after {timeout}s") from e
+    except OSError as e:
+        raise GitError(cmd, -1, str(e)) from e
+    if check and r.returncode != 0:
+        raise GitError(cmd, r.returncode, _tail((r.stdout or "") + (r.stderr or "")))
+    return r
+
+
+def git(repo, *args, check=True, timeout=_DEFAULT_TIMEOUT, env=None) -> subprocess.CompletedProcess:
+    """Run `git -C <repo> *args`; raise `GitError` on non-zero exit when `check`."""
+    return _run(["git", "-C", str(repo), *args], check=check, timeout=timeout, env=env)
+
+
+# ---- read-only --------------------------------------------------------------------------
+
+def current_branch(repo) -> str | None:
+    """Short branch name, or None when HEAD is detached."""
+    r = git(repo, "symbolic-ref", "--short", "-q", "HEAD", check=False)
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+def rev_parse(repo, ref="HEAD") -> str:
+    return git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").stdout.strip()
+
+
+def status_porcelain(repo, untracked=True) -> list[str]:
+    args = ["status", "--porcelain"]
+    if not untracked:
+        args.append("--untracked-files=no")
+    return [ln for ln in git(repo, *args).stdout.splitlines() if ln.strip()]
+
+
+def is_clean(repo, untracked=False) -> bool:
+    return not status_porcelain(repo, untracked=untracked)
+
+
+def diff_stat(worktree, base) -> dict:
+    """`{files, insertions, deletions}` for `base...HEAD`."""
+    out = git(worktree, "diff", "--shortstat", f"{base}...HEAD").stdout.strip()
+    stat = {"files": 0, "insertions": 0, "deletions": 0}
+    for part in out.split(","):
+        words = part.strip().split()
+        if len(words) < 2 or not words[0].isdigit():
+            continue
+        n = int(words[0])
+        if words[1].startswith("file"):
+            stat["files"] = n
+        elif words[1].startswith("insertion"):
+            stat["insertions"] = n
+        elif words[1].startswith("deletion"):
+            stat["deletions"] = n
+    return stat
+
+
+def ahead_behind(worktree, base) -> tuple[int, int]:
+    """(ahead, behind) of HEAD relative to `base`."""
+    out = git(worktree, "rev-list", "--left-right", "--count", f"HEAD...{base}").stdout.split()
+    return int(out[0]), int(out[1])
+
+
+# ---- worktrees / branches ---------------------------------------------------------------
+
+def worktree_add(repo, path, branch, base) -> Path:
+    """`git worktree add -b <branch> <path> <base>`; errors if `path` or `branch` exists."""
+    path = Path(path).resolve()
+    if path.exists():
+        raise GitError(["git", "worktree", "add", str(path)], 1, f"{path} already exists")
+    if git(repo, "rev-parse", "--verify", "-q", f"refs/heads/{branch}", check=False).returncode == 0:
+        raise GitError(["git", "worktree", "add", "-b", branch], 1, f"branch {branch} already exists")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    git(repo, "worktree", "add", "-b", branch, str(path), base)
+    return path
+
+
+def worktree_remove(repo, path, force=False) -> None:
+    args = ["worktree", "remove"]
+    if force:
+        args.append("--force")
+    git(repo, *args, str(path))
+    git(repo, "worktree", "prune")
+
+
+def branch_delete(repo, branch, force=False) -> None:
+    git(repo, "branch", "-D" if force else "-d", branch)
+
+
+def commit_all(worktree, message, env=None) -> str | None:
+    """`add -A` then commit; None when nothing is staged."""
+    git(worktree, "add", "-A", env=env)
+    if git(worktree, "diff", "--cached", "--quiet", check=False, env=env).returncode == 0:
+        return None
+    git(worktree, "commit", "-q", "-m", message, env=env)
+    return rev_parse(worktree)
+
+
+# ---- history rewriting / integration ------------------------------------------------------
+
+def rebase(worktree, onto) -> RebaseResult:
+    """`git rebase <onto>`; on conflict collect the unmerged paths, abort, and verify the
+    worktree is back at its pre-rebase HEAD."""
+    before = rev_parse(worktree)
+    r = git(worktree, "rebase", onto, check=False)
+    if r.returncode == 0:
+        return RebaseResult(True, (), rev_parse(worktree))
+    conflicts = tuple(sorted(
+        ln.strip() for ln in
+        git(worktree, "diff", "--name-only", "--diff-filter=U", check=False).stdout.splitlines()
+        if ln.strip()))
+    git(worktree, "rebase", "--abort", check=False)
+    after = rev_parse(worktree)
+    if after != before:
+        raise GitError(["git", "rebase", "--abort"], 1,
+                       f"worktree HEAD {after} differs from pre-rebase {before}")
+    if not conflicts:
+        raise GitError(["git", "rebase", onto], r.returncode, _tail(r.stdout + r.stderr))
+    return RebaseResult(False, conflicts, after)
+
+
+def ff_merge(repo, branch) -> str:
+    """`git merge --ff-only <branch>` in `repo`; returns the new HEAD sha."""
+    git(repo, "merge", "--ff-only", branch)
+    return rev_parse(repo)
+
+
+def fetch(repo, remote, ref) -> None:
+    git(repo, "fetch", remote, ref, timeout=_NETWORK_TIMEOUT)
+
+
+def push_branch(worktree, remote, branch, set_upstream=True) -> None:
+    args = ["push"]
+    if set_upstream:
+        args.append("-u")
+    git(worktree, *args, remote, branch, timeout=_NETWORK_TIMEOUT)
+
+
+def gh_pr_create(worktree, *, base, head, title, body_file, draft=False, labels=()) -> str:
+    """`gh pr create …` with cwd=worktree; returns the PR URL (last line of stdout)."""
+    exe = shutil.which("gh")
+    if not exe:
+        raise GitError(["gh", "pr", "create"], -1, "gh not found on PATH")
+    cmd = [exe, "pr", "create", "--base", base, "--head", head, "--title", title,
+           "--body-file", str(body_file)]
+    if draft:
+        cmd.append("--draft")
+    for label in labels:
+        cmd += ["--label", label]
+    r = _run(cmd, cwd=str(worktree), timeout=_NETWORK_TIMEOUT)
+    lines = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    if not lines:
+        raise GitError(cmd, 0, "gh printed no URL")
+    return lines[-1]

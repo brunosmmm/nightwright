@@ -95,10 +95,10 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (0/8 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (1/8 done)
   - [ ] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — accepted
   - [ ] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — accepted
-  - [ ] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — accepted
+  - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
   - [ ] [SPEC-0173](./specs/0173-deterministic-gate-executor-and-wt-queue-gates.md) Deterministic gate executor and wt queue gates — accepted
   - [ ] [SPEC-0174](./specs/0174-headless-persona-runner-prompt-assembly-and.md) Headless persona runner, prompt assembly and verdict schemas — accepted
   - [ ] [SPEC-0175](./specs/0175-close-step-rebase-re-gate-ff-only-merge-or-pr.md) Close step: rebase, re-gate, ff-only merge or PR hand-off — accepted
@@ -116,7 +116,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) | Per-project config .wt/project.yaml and wt projects config|init | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) | Workflow profiles, campaign store, ledger, locks and wt campaign commands | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) | Git worktree and branch operations for campaigns (gitops) | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0173](./specs/0173-deterministic-gate-executor-and-wt-queue-gates.md) | Deterministic gate executor and wt queue gates | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0174](./specs/0174-headless-persona-runner-prompt-assembly-and.md) | Headless persona runner, prompt assembly and verdict schemas | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0175](./specs/0175-close-step-rebase-re-gate-ff-only-merge-or-pr.md) | Close step: rebase, re-gate, ff-only merge or PR hand-off | feature | accepted | M9: agentic workflow | 2026-10-25 |
@@ -284,6 +283,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0166](./specs/0166-one-wt-checkout-resolver-editable-install-as-the.md) | One wt-checkout resolver; editable install as the documented path | feature | done | M1: packaging | 2026-10-25 |
 | [SPEC-0167](./specs/0167-refuse-promoting-terminal-or-archived-ideas.md) | Refuse promoting terminal or archived ideas without --force | feature | done | M3: idea→spec pipeline | 2026-10-25 |
 | [SPEC-0168](./specs/0168-derive-the-ideas-archive-path-from-org-ideas-file.md) | Derive the ideas archive path from org_ideas_file by default | feature | done | M3: idea→spec pipeline | 2026-10-25 |
+| [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) | Git worktree and branch operations for campaigns (gitops) | feature | done | M9: agentic workflow | 2026-10-25 |
 
 ## Superseded / rejected
 
