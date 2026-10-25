@@ -7,8 +7,8 @@ site_dir: site
 theme:
   name: material
   features:
-    - navigation.tabs
     - navigation.sections
+    - navigation.expand
     - navigation.indexes
     - navigation.top
     - navigation.footer
