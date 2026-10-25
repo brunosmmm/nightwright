@@ -12,7 +12,7 @@ from __future__ import annotations
 import difflib
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -37,6 +37,22 @@ class CloseOutcome:
     synthetic_gate: dict | None = None    # the spec-dod failure that sent us to TRIAGING
     events: list = field(default_factory=list)   # [(type, payload)] for the caller to append
     attempts: int = 0                     # target-capture → merge attempts made
+    retry: bool = False                   # CLOSING + redo the worktree phase (never persisted)
+
+
+@dataclass(frozen=True)
+class PreparedClose:
+    """What the worktree phase (SPEC-0220) hands the finish phase. `outcome` is set when the
+    phase already decided (TRIAGING / PARKED); otherwise `target`..`seq` describe the gated
+    tree the finish phase merges or hands off."""
+    outcome: CloseOutcome | None = None
+    target: str = ""
+    target_sha: str = ""
+    head: str = ""                        # worktree HEAD after the rebase = the gated tree
+    gate_run: G.GateRun | None = None
+    seq: int | None = None
+    policy: str = "merge"
+    events: list = field(default_factory=list)
 
 
 def _park(reason, detail, resume_to, events, **extra) -> CloseOutcome:
@@ -215,26 +231,49 @@ def _cleanup(root, worktree, branch, project_cfg, mode, events) -> None:
                                        "detail": e.tail, "files": []}))
 
 
-def close_campaign(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
-                   max_attempts=MAX_CLOSE_ATTEMPTS, _hooks=None) -> CloseOutcome:
-    """Run the close algorithm for `state` (a `wt.campaign.v1` dict). Returns the next state
-    plus the ledger events to append. `_hooks` is for tests (`before_merge` runs after the
-    target sha is captured and before the ff-merge)."""
-    hooks = _hooks or {}
-    events: list = []
+
+def _close_cfg(state: dict, project_cfg: dict) -> dict:
     repo = state.get("repo") or {}
-    root, worktree, branch = repo["root"], repo["worktree"], repo["branch"]
     mcfg = project_cfg.get("merge") or {}
-    policy = mcfg.get("policy", "merge")
-    base = mcfg.get("base") or project_cfg.get("base") or repo.get("base") or "main"
-    remote = mcfg.get("remote") or "origin"
-    rel = (state.get("spec") or {}).get("rel_path") or ""
+    return {"root": repo["root"], "worktree": repo["worktree"], "branch": repo["branch"],
+            "mcfg": mcfg, "policy": mcfg.get("policy", "merge"),
+            "base": mcfg.get("base") or project_cfg.get("base") or repo.get("base") or "main",
+            "remote": mcfg.get("remote") or "origin",
+            "rel": (state.get("spec") or {}).get("rel_path") or ""}
+
+
+def _abort_leftover_rebase(worktree) -> None:
+    """A hard kill mid-rebase leaves one in progress; the redo must start clean."""
+    for name in ("rebase-merge", "rebase-apply"):
+        r = git.git(worktree, "rev-parse", "--git-path", name, check=False)
+        path = Path((r.stdout or "").strip())
+        if r.returncode == 0 and path.name and not path.is_absolute():
+            path = Path(worktree) / path
+        if r.returncode == 0 and path.exists():
+            git.git(worktree, "rebase", "--abort", check=False)
+            return
+
+
+def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> PreparedClose:
+    """The worktree phase (SPEC-0220): spec guard, spec DoD, snapshot commit, target capture,
+    rebase (with regenerate resolution) and the re-gate. Its only side effects are in the
+    campaign worktree and branch (and `fetch` into shared refs), so it may run on a worker
+    thread and be discarded and redone."""
+    events: list = []
+    c = _close_cfg(state, project_cfg)
+    root, worktree, base, policy, remote = c["root"], c["worktree"], c["base"], c["policy"], c["remote"]
+    mcfg, rel = c["mcfg"], c["rel"]
+
+    def decided(outcome: CloseOutcome) -> PreparedClose:
+        return PreparedClose(outcome=outcome, policy=policy, events=events)
+
+    _abort_leftover_rebase(worktree)
 
     # 0. spec-change guard (SPEC-0186): the governing text must be what was accepted
     ok, synthetic, guard_events = spec_guard(cfg, state)
     events.extend(guard_events)
     if not ok:
-        return CloseOutcome("TRIAGING", synthetic_gate=synthetic, events=events)
+        return decided(CloseOutcome("TRIAGING", synthetic_gate=synthetic, events=events))
 
     # 1. spec DoD in the worktree
     ok, synthetic = spec_dod(worktree, rel)
@@ -242,82 +281,93 @@ def close_campaign(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
         events.append(("finding", {"persona": "close", "severity": "must_fix", "gate": "spec-dod",
                                    "title": "spec Definition of Done not met",
                                    "detail": synthetic["tail"], "files": [rel]}))
-        return CloseOutcome("TRIAGING", synthetic_gate=synthetic, events=events)
+        return decided(CloseOutcome("TRIAGING", synthetic_gate=synthetic, events=events))
 
     # 2. worktree clean
     if not git.is_clean(worktree, untracked=True):
         sha = git.commit_all(worktree, f"wt({state.get('id')}): close-time snapshot")
         events.append(("commit", {"sha": sha, "message": "close-time snapshot"}))
 
-    attempts = 0
-    while True:
-        attempts += 1
-        # 3. target
-        try:
-            if policy == "merge":
-                target = base
-                target_sha = git.rev_parse(root, base)
-            else:
-                git.fetch(root, remote, base)
-                target = f"{remote}/{base}"
-                target_sha = git.rev_parse(root, target)
-        except GitError as e:
-            return _park("open_failed", f"cannot resolve {policy} target: {e.tail}",
-                         "CLOSING", events, attempts=attempts)
+    # 3. target
+    try:
+        if policy == "merge":
+            target = base
+            target_sha = git.rev_parse(root, base)
+        else:
+            git.fetch(root, remote, base)
+            target = f"{remote}/{base}"
+            target_sha = git.rev_parse(root, target)
+    except GitError as e:
+        return decided(_park("open_failed", f"cannot resolve {policy} target: {e.tail}",
+                             "CLOSING", events))
 
-        # 4. rebase
-        regen = {r["path"]: r["cmd"] for r in (mcfg.get("regenerate") or [])}
-        rb = git.rebase(worktree, target_sha, regenerate=regen)
-        if not rb.ok:
-            return _park("rebase_conflict",
-                         f"rebase onto {target} ({target_sha[:10]}) conflicts: "
-                         f"{', '.join(rb.conflicts)}", "CLOSING", events, attempts=attempts)
+    # 4. rebase
+    regen = {r["path"]: r["cmd"] for r in (mcfg.get("regenerate") or [])}
+    rb = git.rebase(worktree, target_sha, regenerate=regen)
+    if not rb.ok:
+        return decided(_park("rebase_conflict",
+                             f"rebase onto {target} ({target_sha[:10]}) conflicts: "
+                             f"{', '.join(rb.conflicts)}", "CLOSING", events))
+    if rb.regenerated:
+        events.append(("finding", {
+            "persona": "close", "severity": "info", "gate": "rebase",
+            "title": "generated files regenerated during rebase",
+            "detail": "regenerated: " + ", ".join(rb.regenerated),
+            "files": list(rb.regenerated)}))
+    head = git.rev_parse(worktree)
 
-        if rb.regenerated:
-            events.append(("finding", {
-                "persona": "close", "severity": "info", "gate": "rebase",
-                "title": "generated files regenerated during rebase",
-                "detail": "regenerated: " + ", ".join(rb.regenerated),
-                "files": list(rb.regenerated)}))
+    # 5. re-gate on the rebased tree
+    seq = gate_seq if gate_seq is not None else G.next_gate_seq(cfg, state["id"])
+    gate_run = G.run_all(project_cfg, state, cfg, seq=seq)
+    events.append(("gate", G.as_payload(gate_run)))
+    if not gate_run.ok:
+        return decided(CloseOutcome("TRIAGING", gate_run=gate_run, events=events))
+    return PreparedClose(target=target, target_sha=target_sha, head=head, gate_run=gate_run,
+                         seq=seq, policy=policy, events=events)
 
-        # 5. re-gate on the rebased tree
-        seq = gate_seq if gate_seq is not None else G.next_gate_seq(cfg, state["id"])
-        gate_run = G.run_all(project_cfg, state, cfg, seq=seq)
-        events.append(("gate", G.as_payload(gate_run)))
-        if not gate_run.ok:
-            return CloseOutcome("TRIAGING", gate_run=gate_run, events=events, attempts=attempts)
 
-        if policy != "merge":
-            break
+def finish_close(cfg, state: dict, project_cfg: dict, prepared: PreparedClose, *, attempts=1,
+                 max_attempts=MAX_CLOSE_ATTEMPTS, _hooks=None) -> CloseOutcome:
+    """The finish phase (SPEC-0220), on the main thread: the only part that writes the main
+    checkout or the remote. A moved base, worktree HEAD or branch tip is a `retry` outcome
+    (CLOSING, redo the worktree phase) until `max_attempts` is spent, then a `base_moving` park."""
+    hooks = _hooks or {}
+    events: list = []
+    c = _close_cfg(state, project_cfg)
+    root, worktree, branch, base, policy = c["root"], c["worktree"], c["branch"], c["base"], c["policy"]
+    mcfg, remote, rel = c["mcfg"], c["remote"], c["rel"]
+    gate_run, target_sha, seq = prepared.gate_run, prepared.target_sha, prepared.seq
+    extra = {"gate_run": gate_run, "attempts": attempts}
 
+    def moved(detail) -> CloseOutcome:
+        if attempts >= max_attempts:
+            return _park("base_moving", detail, "CLOSING", events, **extra)
+        return CloseOutcome("CLOSING", events=events, retry=True, **extra)
+
+    if policy == "merge":
         # 6. merge preconditions on the main checkout
         cur = git.current_branch(root)
         if cur != base:
             return _park("main_not_on_base", f"main checkout is on {cur!r}, not {base!r}",
-                         "CLOSING", events, gate_run=gate_run, attempts=attempts)
+                         "CLOSING", events, **extra)
         if not git.is_clean(root, untracked=False):
             dirty = git.status_porcelain(root, untracked=False)
             return _park("main_dirty", "main checkout has uncommitted tracked changes: "
-                         + ", ".join(dirty[:10]), "CLOSING", events, gate_run=gate_run,
-                         attempts=attempts)
+                         + ", ".join(dirty[:10]), "CLOSING", events, **extra)
         if "before_merge" in hooks:
             hooks["before_merge"]()
         if git.rev_parse(root, base) != target_sha:
-            if attempts >= max_attempts:
-                return _park("base_moving", f"{base} moved {attempts} times while closing",
-                             "CLOSING", events, gate_run=gate_run, attempts=attempts)
-            continue
+            return moved(f"{base} moved {attempts} times while closing")
+        # the merged tree must be the gated tree
+        if git.rev_parse(worktree) != prepared.head or git.rev_parse(root, branch) != prepared.head:
+            return moved("branch moved after re-gate")
         try:
             merged = git.ff_merge(root, branch)
         except GitError as e:
-            if attempts >= max_attempts:
-                return _park("base_moving", f"ff-only merge refused: {e.tail}", "CLOSING",
-                             events, gate_run=gate_run, attempts=attempts)
-            continue
-        head = git.rev_parse(worktree)
-        if merged != head:
-            return _park("base_moving", f"merged {merged[:10]} != worktree HEAD {head[:10]}",
-                         "CLOSING", events, gate_run=gate_run, attempts=attempts)
+            return moved(f"ff-only merge refused: {e.tail}")
+        if merged != prepared.head:
+            return _park("base_moving", f"merged {merged[:10]} != gated HEAD {prepared.head[:10]}",
+                         "CLOSING", events, **extra)
         _run_post_cmds(mcfg.get("post_cmds"), root, events)
         if mcfg.get("push_after_merge"):
             try:
@@ -333,7 +383,9 @@ def close_campaign(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
         return CloseOutcome("MERGED", close=close, gate_run=gate_run, events=events,
                             attempts=attempts)
 
-    # 7. pr / draft-pr
+    # 7. pr / draft-pr (push and PR creation only here: a discarded worktree phase has none)
+    if git.rev_parse(worktree) != prepared.head:
+        return moved("branch moved after re-gate")
     try:
         git.push_branch(worktree, remote, branch)
         text = Path(worktree, rel).read_text(encoding="utf-8")
@@ -349,11 +401,31 @@ def close_campaign(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
                                body_file=body_file, draft=(policy == "draft-pr"),
                                labels=tuple(prcfg.get("labels") or ()))
     except GitError as e:
-        return _park("gh_failed", f"{' '.join(e.cmd[:3])}: {e.tail}", "CLOSING", events,
-                     gate_run=gate_run, attempts=attempts)
+        return _park("gh_failed", f"{' '.join(e.cmd[:3])}: {e.tail}", "CLOSING", events, **extra)
     close = {"mode": policy, "merged_sha": None, "pr_url": url, "gates_seq": seq,
              "target_sha": target_sha}
     events.append(("close", close))
     _cleanup(root, worktree, branch, project_cfg, policy, events)
     return CloseOutcome("HANDED_OFF", close=close, gate_run=gate_run, events=events,
                         attempts=attempts)
+
+
+def close_campaign(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
+                   max_attempts=MAX_CLOSE_ATTEMPTS, _hooks=None) -> CloseOutcome:
+    """Run the close algorithm serially for `state` (a `wt.campaign.v1` dict): the worktree
+    phase then the finish phase, redoing both while the base moves. Returns the next state
+    plus the ledger events to append. `_hooks` is for tests (`before_merge` runs after the
+    main-checkout checks and before the base re-check)."""
+    events: list = []
+    attempts = 0
+    while True:
+        attempts += 1
+        prep = prepare_close(cfg, state, project_cfg, gate_seq=gate_seq)
+        events.extend(prep.events)
+        if prep.outcome is not None:
+            return replace(prep.outcome, events=events, attempts=attempts)
+        oc = finish_close(cfg, state, project_cfg, prep, attempts=attempts,
+                          max_attempts=max_attempts, _hooks=_hooks)
+        events.extend(oc.events)
+        if not oc.retry:
+            return replace(oc, events=events, attempts=attempts)

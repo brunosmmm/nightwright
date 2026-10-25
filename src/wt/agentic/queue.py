@@ -660,6 +660,10 @@ def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_even
         if to != frm:
             if to == "REVIEWING":
                 _begin_review(state)
+            if to == "CLOSING":                  # SPEC-0220: the close retry budget restarts
+                state["closing"] = {"attempts": 0}
+            elif frm == "CLOSING":
+                state.pop("closing", None)
             state["prev_state"] = frm
             state["state"] = to
             store.append_event(cfg, cid, "transition", {"from": frm, "to": to, "reason": reason},
@@ -778,6 +782,7 @@ class StepResult:
     commit_message: str | None = None
     gate_run: object = None
     close_outcome: object = None
+    prepared: object = None                          # SPEC-0220: a close's PreparedClose
     error: str | None = None
     interrupted: bool = False
     events_before: list = field(default_factory=list)
@@ -956,13 +961,14 @@ def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
     return res
 
 
-def _do_close(ctx: _Ctx, state: dict) -> StepResult:
+def _do_prepare_close(ctx: _Ctx, state: dict) -> StepResult:
+    """The close's worktree phase (SPEC-0220): worker-safe, no main-checkout writes."""
     res = StepResult(state["id"], Step("close"), "CLOSING")
     # SPEC-0207: file the follow-up ideas first; the filer never raises, and its events and
     # summary reach `_apply` whether or not the close then succeeds.
     res.events_before, res.followups = FU.file_followups(ctx.cfg, state, ctx.profile(state))
     try:
-        res.close_outcome = CL.close_campaign(ctx.cfg, state, ctx.project(state))
+        res.prepared = CL.prepare_close(ctx.cfg, state, ctx.project(state))
     except (GitError, ValueError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
     except Exception as e:                      # nothing may drop the filer's events
@@ -1008,7 +1014,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             row["to"], row["reason"] = store.read_state(cfg, cid).get("state"), "superseded_by_human"
             return row
         for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
-                  "pending_brief", "close", "review_carry"):
+                  "pending_brief", "close", "review_carry", "closing"):
             if k in state:
                 current[k] = state[k]
         requested = current.get("park_requested") or state.get("park_requested")
@@ -1119,6 +1125,11 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         return finish("TRIAGING", "gates_failed")
 
     if kind == "close":
+        if ctx.stop.is_set() and res.prepared is not None:
+            # SPEC-0220: a result that lands during a stop is discarded — a killed re-gate
+            # must not send the campaign to TRIAGING; the next run redoes the close
+            row["to"], row["reason"] = "CLOSING", "interrupted"
+            return row
         counters["close_attempts"] += 1
         if res.followups is not None:
             fu = res.followups                      # counts and ids, plus the detail lists
@@ -1131,15 +1142,33 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 "reason": "open_failed", "detail": f"close step failed: {res.error}",
                 "resume_to": "CLOSING"})
         oc = res.close_outcome
-        for etype, payload in oc.events:
-            if etype == "park":
-                continue                                   # re-emitted by _park below
-            events.append((etype, payload))
-            if etype == "gate":
-                counters["gate_runs"] += 1
-                state["last_gate"] = payload
-            if etype == "commit" and payload.get("sha"):
-                state.setdefault("repo", {})["head"] = payload["sha"]
+        if oc is None and res.prepared.outcome is not None:
+            oc = res.prepared.outcome
+        absorbed = list(oc.events) if oc is not None else list(res.prepared.events)
+        if oc is None:
+            # finish phase (main thread): a park / abandon / resume made during the worktree
+            # phase wins over a merge that has not happened yet
+            current = _fresh(cfg, state)
+            if current is None or current.get("park_requested") or state.get("park_requested"):
+                _absorb_close_events(state, counters, events, absorbed)
+                return finish("CLOSING", "close_superseded")
+            attempts = int((state.get("closing") or {}).get("attempts") or 0) + 1
+            state["closing"] = {"attempts": attempts, "target_sha": res.prepared.target_sha}
+            try:
+                oc = CL.finish_close(cfg, state, ctx.project(state), res.prepared,
+                                     attempts=attempts)
+            except (GitError, ValueError, OSError) as e:
+                _absorb_close_events(state, counters, events, absorbed)
+                return finish("PARKED", "open_failed", park={
+                    "reason": "open_failed", "resume_to": "CLOSING",
+                    "detail": f"close step failed: {getattr(e, 'tail', None) or e}"})
+            absorbed += list(oc.events)
+        _absorb_close_events(state, counters, events, absorbed)
+        if oc.retry:
+            events.append(("finding", {
+                "persona": "close", "severity": "info", "gate": "base",
+                "title": "base moved during re-gate; redoing close", "detail": "", "files": []}))
+            return finish("CLOSING", "base_moved")
         if oc.next_state in ("MERGED", "HANDED_OFF"):
             state["close"] = dict(oc.close)
             if res.followups is not None:           # after the assignment replaced the dict
@@ -1157,6 +1186,19 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         return finish("PARKED", park["reason"], park=park)
 
     return finish(res.from_state, "noop")
+
+
+def _absorb_close_events(state: dict, counters: dict, events: list, close_events) -> None:
+    """Fold a close's ledger events into the apply: gate runs counted, head tracked."""
+    for etype, payload in close_events:
+        if etype == "park":
+            continue                                   # re-emitted by _park
+        events.append((etype, payload))
+        if etype == "gate":
+            counters["gate_runs"] += 1
+            state["last_gate"] = payload
+        if etype == "commit" and payload.get("sha"):
+            state.setdefault("repo", {})["head"] = payload["sha"]
 
 
 def _synthetic_failure(error: str) -> RunResult:
@@ -1497,7 +1539,7 @@ def _harvest(pool: StepPool, report: TickReport) -> None:
         try:
             res = fut.result()
         except Exception as e:
-            res = StepResult(st["id"], Step("implement"), st["state"], error=repr(e))
+            res = StepResult(st["id"], _step, st["state"], error=repr(e))
             report.errors.append(f"{st['id']}: {e!r}")
         report.steps.append(_apply(ctx, st, res))
 
@@ -1515,6 +1557,8 @@ def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
             report.started.append(rows[st["id"]])
         if step.kind == "gate":
             fl.tasks.append((step, pool.submit(_do_gate, ctx, st)))
+        elif step.kind == "close":
+            fl.tasks.append((step, pool.submit(_do_prepare_close, ctx, st)))
         else:
             fl.tasks.append((step, pool.submit(_do_persona, ctx, st, step, run_id, req, budget)))
             rows[st["id"]]["run_ids"].append(run_id)
@@ -1638,7 +1682,12 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             report.steps.append(_apply(ctx, st, _do_open(ctx, st)))
             continue
         if step.kind == "close":
-            pending_close.append(st)
+            if ctx.stop.is_set():
+                continue
+            if own:
+                pending_close.append(st)
+            else:
+                pending_agent.append((st, step, None, None, 0.0, None))
             continue
         if step.kind == "gate":
             pending_agent.append((st, step, None, None, 0.0, None))
@@ -1664,11 +1713,17 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
         pool.wait_all()
         _harvest(pool, report)
 
-    # 4. close steps serially (they touch the main checkout)
+    # 4. single shot: closes one at a time, worktree phase then finish phase (SPEC-0220); a
+    #    moved base redoes the close within the tick until the budget is spent
     for st in pending_close:
-        if ctx.stop.is_set():
-            break
-        report.steps.append(_apply(ctx, st, _do_close(ctx, st)))
+        while not ctx.stop.is_set():
+            pool.flights[st["id"]] = fl = _Flight(st, ctx)
+            fl.tasks.append((Step("close"), pool.submit(_do_prepare_close, ctx, st)))
+            pool.wait_all()
+            _harvest(pool, report)
+            if report.steps[-1].get("reason") != "base_moved":
+                break
+            st = store.read_state(cfg, st["id"])
 
 
 def _prepare_reviews(ctx: _Ctx, st: dict, step: Step, profile: dict, pending_agent: list,

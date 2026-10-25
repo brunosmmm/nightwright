@@ -1,7 +1,7 @@
 ---
 id: SPEC-0220
 title: "Close re-gate runs off the runner main thread"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -232,39 +232,39 @@ its closes one at a time, worktree phase then finish phase. Its results match to
 
 ## Acceptance criteria
 
-- [ ] With campaign A's close re-gate held (blocking gate command), the tick returns
+- [x] With campaign A's close re-gate held (blocking gate command), the tick returns
       promptly, and a ready QUEUED item B is admitted and opened, and moves through its own
       transitions, before A's re-gate finishes.
-- [ ] Two campaigns can be in the worktree phase concurrently (both re-gates observed
+- [x] Two campaigns can be in the worktree phase concurrently (both re-gates observed
       running at once), and their finish phases run one after the other on the main thread.
       Both reach MERGED, the second one after a `base_moved` retry.
-- [ ] Base moved during the re-gate: the finish phase does not merge, the campaign stays
+- [x] Base moved during the re-gate: the finish phase does not merge, the campaign stays
       CLOSING with a `base_moved` row and finding, and the worktree phase is resubmitted onto
       the new base and merges. When base moves on every attempt, `closing.attempts` persists
       across ticks and the campaign parks `base_moving` (`resume_to: CLOSING`) after exactly
       `MAX_CLOSE_ATTEMPTS`. Every entry into CLOSING (resume, WAITING → CLOSING) resets the
       budget, and a legacy CLOSING campaign without the key starts at 0.
-- [ ] The finish phase still parks `main_dirty` / `main_not_on_base` (`resume_to: CLOSING`)
+- [x] The finish phase still parks `main_dirty` / `main_not_on_base` (`resume_to: CLOSING`)
       when the main checkout changes during the worktree phase, and redoes the close when the
       worktree HEAD or branch tip no longer equals the gated head. The spec guard, spec DoD,
       `rebase_conflict`, regenerate resolution and red re-gate outcomes are unchanged.
-- [ ] A park requested, or an abandon or park applied, during the worktree phase wins: no
+- [x] A park requested, or an abandon or park applied, during the worktree phase wins: no
       ff-merge, push or PR happens. A requested park parks `human` with `resume_to: CLOSING`,
       and a state changed on disk gives `superseded_by_human`.
-- [ ] A code change detected while a close is in flight drains it (finish phase applied)
+- [x] A code change detected while a close is in flight drains it (finish phase applied)
       before `stop code_changed` and `_EXEC`, and no close is submitted after detection.
-- [ ] A stop (signal) during the worktree phase leaves the campaign CLOSING with no gate
+- [x] A stop (signal) during the worktree phase leaves the campaign CLOSING with no gate
       event and no transition, and the next run redoes the close and merges. A worktree left
       mid-rebase is aborted and redone. For `pr`/`draft-pr`, push and `gh pr create` run only
       in the finish phase, so a discarded worktree phase never pushes or opens a PR, and a
       redo opens exactly one PR. A close worker exception parks `open_failed`
       (`resume_to: CLOSING`) through the close path, not the implement path.
-- [ ] `ready_not_admitted_items` stays empty, and `runner_busy` is true, while a close
+- [x] `ready_not_admitted_items` stays empty, and `runner_busy` is true, while a close
       re-gate runs with a ready item and a free slot.
-- [ ] `wt queue tick` (no pool) gives the same transitions and ledger events as before for
+- [x] `wt queue tick` (no pool) gives the same transitions and ledger events as before for
       the existing close and e2e suites. Ledger event shapes are unchanged apart from the
       additions listed.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -338,6 +338,54 @@ its closes one at a time, worktree phase then finish phase. Its results match to
   next real close, `wt queue runner-log` shows `started close` followed by other campaigns'
   rows before the close's result row.
 
+### Test record (2026-10-25)
+
+- `uv run pytest tests/test_agentic_close_inflight.py` — 19 tests, all pass (offline, FakeRunner
+  and tmp git repos; the held re-gate is a gate command that blocks on a `hold-<spec>` marker
+  from its second run on). Covers every test named in the plan, plus
+  `test_finish_rechecks_base_sha_itself`.
+- `uv run pytest` — 1873 passed, 1 skipped. The existing close, nonblocking, reexec, events and
+  e2e suites pass unchanged.
+- `python3 tools/spec_lint.py` exits 0 with the ledger regenerated.
+- Sabotage checks (each applied alone, new suite re-run, source restored):
+  - closes back on the main thread (`_submit` runs `_do_prepare_close` inline):
+    `test_admission_while_close_regate_runs` fails;
+  - gated-tree check dropped: `test_worktree_commit_after_regate_redoes` fails;
+  - fresh-state gate dropped: the park-requested test and both abandon/park-on-disk tests fail;
+  - `closing` removed from the `finish()` whitelist: `test_base_moving_every_attempt_parks` fails;
+  - `stop` discard dropped: `test_stop_during_worktree_phase_leaves_closing` and
+    `test_pr_policy_push_in_finish_phase` fail;
+  - base sha re-check dropped: the flow tests still pass, because the ff-only merge refuses a
+    moved base and takes the same retry path. The check is pinned directly by
+    `test_finish_rechecks_base_sha_itself` (a stale `target_sha` on a fast-forwardable branch),
+    which fails without it.
+- Manual verification (`wt queue runner-log` showing `started close` followed by other
+  campaigns' rows) can only happen after this merges and the live runner re-execs; it is not
+  done yet.
+
+### As shipped (2026-10-25)
+
+As Design, with these details:
+
+- `closing` is reset and removed centrally in `_transition` (entering CLOSING from another state
+  sets `{attempts: 0}`, leaving it pops the key), which covers `review_pass`, `waived`, resume,
+  WAITING → CLOSING and config recovery in one place. `finish()` copies `closing` from the step
+  state. The finish phase increments it and stores `target_sha` too.
+- `finish_close` also takes the test-only `_hooks` argument, so `close_campaign` keeps the
+  `before_merge` hook between the two phases.
+- `PreparedClose.events` is the full worktree-phase event list; when `outcome` is set it is the
+  same list as `outcome.events`.
+- The worktree HEAD is captured right after the rebase, before the re-gate, so a commit made
+  during the gate is also caught by the gated-tree check.
+- `_apply` still accepts a ready-made `StepResult.close_outcome` (existing unit tests); a
+  `StepResult.prepared` is the in-flight path.
+- In a single-shot tick, a `base_moved` retry loops within the tick, and each attempt gets its
+  own report row (the old in-call loop gave one row).
+- `_harvest`'s exception branch now uses the flight's own step kind for every kind, so a triage
+  worker exception parks with `resume_to: GATING` and the message "triage step failed".
+- `close_campaign` (serial wrapper) re-runs the whole worktree phase on a retry, so the spec
+  guard's "skipped" info finding may appear once per attempt.
+
 ## Rollout / migration
 
 No data migration. A campaign already CLOSING when the new code starts has no `closing` key.
@@ -347,11 +395,11 @@ re-execs into the new code.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
