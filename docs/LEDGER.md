@@ -135,7 +135,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) | Example-heavy docs: SVG captures and workflow architecture | epic | accepted | M8: product documentation | 2026-09-09 |
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0182](./specs/0182-event-driven-wt-conduct-monitor-armed-conductor.md) | Event-driven wt-conduct: Monitor-armed conductor woken by queue events | feature | in-progress | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0197](./specs/0197-piped-human-output-never-hard-wraps.md) | Piped human output never hard-wraps lines | feature | accepted | M4: cli ergonomics | 2026-10-25 |
 | [SPEC-0199](./specs/0199-wt-campaign-runs-and-run.md) | wt campaign runs / run: persona runs without reading run files | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0201](./specs/0201-test-reviewer-persona.md) | Test reviewer persona: do the tests cover the spec, plus multi-reviewer REVIEWING | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0202](./specs/0202-adversarial-reviewer-persona.md) | Adversarial reviewer persona: security, logic and bug hunting | feature | accepted | M9: agentic workflow | 2026-10-25 |
@@ -328,6 +327,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0194](./specs/0194-runner-follows-merged-code-re-exec-between-ticks.md) | Runner follows merged code: re-exec between ticks, lease handover, config_invalid parks | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0195](./specs/0195-spec-new-drops-org-drawers-from-the-context.md) | wt spec new drops org drawers from the scaffolded Context | feature | done | M4: cli ergonomics | 2026-10-25 |
 | [SPEC-0196](./specs/0196-set-property-reuses-a-drawer-after-body-text.md) | set_property reuses an existing drawer that sits after body text | feature | done | M4: cli ergonomics | 2026-10-25 |
+| [SPEC-0197](./specs/0197-piped-human-output-never-hard-wraps.md) | Piped human output never hard-wraps lines | feature | done | M4: cli ergonomics | 2026-10-25 |
 | [SPEC-0198](./specs/0198-wt-queue-followers-who-is-armed.md) | wt queue followers: who is armed, with pids, cursors and lag | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0200](./specs/0200-waiting-state-started-campaigns-wait-for-a-slot.md) | WAITING state: started campaigns wait for a slot ahead of the backlog | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0204](./specs/0204-lease-heartbeat-during-long-ticks-an-alive-runner.md) | Lease heartbeat during long ticks: an alive runner never looks stale | feature | done | M9: agentic workflow | 2026-10-25 |

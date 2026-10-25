@@ -1246,7 +1246,8 @@ def ideas(cfg, *, state=None, all_done=False, as_json=False, kind=None, plain=Fa
         matched = {(t.properties.get("ID") or t.id) for t in rows}
         _print_idea_tree(cfg, build_idea_tree(cfg, rows, sort=None if searching else sort,
                                               desc=desc, matched=matched), plain=plain)
-        console.print("[dim]flat view: drop --tree · full text: wt idea show <id>[/]")
+        console.print("[dim]flat view: drop --tree · full text: wt idea show <id>[/]",
+                      soft_wrap=False)
         return
     prows = [idea_row(cfg, tk) for tk in rows]
     for tk, prow in zip(rows, prows):                       # SPEC-0077: relative age per row
@@ -1312,9 +1313,9 @@ def ideas(cfg, *, state=None, all_done=False, as_json=False, kind=None, plain=Fa
         t.add_row(*cells)
     console.print(t)
     console.print("[dim]full text: wt idea show <id> · structured: wt ideas --json · "
-                  "related: wt ideas --query … · next steps: wt next[/]")
+                  "related: wt ideas --query … · next steps: wt next[/]", soft_wrap=False)
     if not plain:                                                # SPEC-0085 legend
-        console.print(f"[dim]{_kind_legend()}[/]")
+        console.print(f"[dim]{_kind_legend()}[/]", soft_wrap=False)
 
 
 def next_ideas(cfg, *, all_done=False, as_json=False, plain=False, state=None, kind=None,

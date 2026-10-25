@@ -1,7 +1,7 @@
 ---
 id: SPEC-0197
 title: "Piped human output never hard-wraps lines"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -75,20 +75,20 @@ the text with no inserted line breaks and no cropping.
 
 ## Acceptance criteria
 
-- [ ] On a `WtConsole(file=StringIO(), width=80, force_terminal=False)`, each of these prints
+- [x] On a `WtConsole(file=StringIO(), width=80, force_terminal=False)`, each of these prints
       as exactly one line, with the full text: a 200-character `str`; `render.tick_row` of a
       row with a 150-character reason; `render.campaign_event` of an event with long
       values; `render.message` of a 300-character mailbox message; `render.plan` with a
       150-character value (one line per key).
-- [ ] On the same console with `force_terminal=True`, the 200-character `str` still wraps
+- [x] On the same console with `force_terminal=True`, the 200-character `str` still wraps
       onto more than one line (terminal behaviour unchanged).
-- [ ] A `rich.table.Table` printed on both piped consoles produces the same output as a plain
+- [x] A `rich.table.Table` printed on both piped consoles produces the same output as a plain
       `rich.console.Console` with the same settings (tables unchanged).
-- [ ] Through CliRunner, `wt campaign log` on a campaign whose ledger has a note longer than
+- [x] Through CliRunner, `wt campaign log` on a campaign whose ledger has a note longer than
       200 characters prints that note's event on one line, and `wt mailbox thread` prints a
       300-character message on one line.
-- [ ] `soft_wrap=False` passed explicitly is respected (wraps when piped).
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `soft_wrap=False` passed explicitly is respected (wraps when piped).
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -103,17 +103,33 @@ the text with no inserted line breaks and no cropping.
   - AC 5 explicit override.
 - **Regression guard:** full `uv run pytest` (the existing CLI tests run piped).
 
+### Test record (2026-10-25)
+
+- `uv run pytest tests/test_console_piped.py` — 10 passed (AC 1–5: one test per renderable, terminal
+  wrap, table parity on piped and terminal consoles, explicit `soft_wrap=False`, CliRunner
+  `wt campaign log` / `wt mailbox thread`).
+- `uv run pytest -q` — 1684 passed, 1 skipped. `python3 tools/spec_lint.py` — exit 0.
+
+### As shipped
+
+- `WtConsole` as designed. One addition outside Design: the three footer/legend hint lines under
+  the idea tables in `src/wt/report.py` (`flat view…`, `full text…`, kind legend) now pass
+  `soft_wrap=False` explicitly. They are plain `str`s, so without it they stopped wrapping when
+  piped and broke the existing width-budget tests (`test_idea_table_width`,
+  `test_idea_freshness`, `test_idea_state_color`, `test_ideas`), which assert no line exceeds the
+  console width. This keeps the idea-table output byte-for-byte unchanged, per the Goals.
+
 ## Rollout / migration
 
 Ships through the agentic queue (balanced profile). No data migration.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
