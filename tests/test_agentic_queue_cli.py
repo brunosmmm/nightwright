@@ -75,6 +75,12 @@ def test_list_json_shape_and_filters(tmp_path, monkeypatch):
     item = d["items"][0]
     assert item["campaign"] == cid and item["state"] == "QUEUED" and item["loops"] == "0/3"
     assert item["cost_usd"] == 0.0 and item["cap_usd"] == 10.0 and item["park"] is None
+    assert item["review_score"] is None
+    st = S.read_state(cfg, cid)
+    st["last_review"] = {"verdict": "fix", "score": 72}
+    S.write_state(cfg, cid, st)
+    assert json.loads(run_cli(cfg, monkeypatch, ["queue", "list", "--json"]).output)[
+        "items"][0]["review_score"] == 72
     r = run_cli(cfg, monkeypatch, ["queue", "list", "--state", "MERGED", "--json"])
     assert json.loads(r.output)["items"] == []
     r = run_cli(cfg, monkeypatch, ["queue", "list", "--project", "Meta-Tools"])

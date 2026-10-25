@@ -200,10 +200,16 @@ def test_apply_review_fix_sets_brief_and_resets_counters(opened):
                       "files": ["a.py"]}]}
     entry = {"verdict": "fix", "score": 90, "fix_brief": "do it", "findings": v["findings"],
              "ac_assessment": v["ac_assessment"], "run": "002-conformance_reviewer", "loop": 0}
-    assert st["last_review"] == {"run": "002-conformance_reviewer", "verdict": "fix", "score": 90,
-                                 "findings": 2, "must_fix": 1, "loop": 0,
+    advisory = [{"id": "conformance_reviewer#1", "personas": ["conformance_reviewer"],
+                 "severity": "minor", "title": "minor thing", "detail": None, "files": [],
+                 "ac": None, "category": None}]
+    assert st["last_review"] == {"run": "002-conformance_reviewer", "verdict": "fix", "score": 0,
+                                 "findings": 2, "must_fix": 1, "loop": 0, "waived": [],
+                                 "advisory": advisory,
                                  "runs": {"conformance_reviewer": "002-conformance_reviewer"},
                                  "verdicts": {"conformance_reviewer": entry}}
+    notes = [n["text"] for n in S.read_ledger(cfg, cid, types=["note"])]
+    assert "review score 0/80 fix" in notes
     findings = S.read_ledger(cfg, cid, types=["finding"])
     assert [(f["persona"], f["severity"], f["ac"]) for f in findings] == [
         ("conformance_reviewer", "must_fix", "AC one"), ("conformance_reviewer", "minor", None)]

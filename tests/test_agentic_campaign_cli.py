@@ -83,6 +83,14 @@ def test_show_json_and_human(tmp_path, monkeypatch):
     assert d["worktree_present"] is False
     r = _run(cfg, monkeypatch, ["campaign", "show", "SPEC-0170-20261025-aaaa"])
     assert r.exit_code == 0 and "GATING" in r.output and "(missing)" in r.output
+    assert "review:" not in r.output
+    st = S.read_state(cfg, "SPEC-0170-20261025-aaaa")
+    st["last_review"] = {"verdict": "pass", "score": 85, "findings": 2, "must_fix": 0,
+                         "advisory": [{"id": "a#0", "severity": "major"},
+                                      {"id": "a#1", "severity": "minor"}]}
+    S.write_state(cfg, "SPEC-0170-20261025-aaaa", st)
+    r = _run(cfg, monkeypatch, ["campaign", "show", "SPEC-0170-20261025-aaaa"])
+    assert "review: score 85  pass  advisory 2 (1 major)" in r.output
     r = _run(cfg, monkeypatch, ["campaign", "show", "nope"])
     assert r.exit_code != 0 and "no campaign 'nope'" in r.output
 

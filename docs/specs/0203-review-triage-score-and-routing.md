@@ -1,7 +1,7 @@
 ---
 id: SPEC-0203
 title: "Review triage: deterministic score and routing of reviewer verdicts"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -226,7 +226,7 @@ SPEC-0206 and SPEC-0207 each extend the allowed set with their own keys.
 
 ## Acceptance criteria
 
-- [ ] AC1 (G1). `triage_reviews` is pure and parametrized-tested on the worked examples above:
+- [x] AC1 (G1). `triage_reviews` is pure and parametrized-tested on the worked examples above:
       `must_fix` ⇒ `fix` regardless of score; a `fix` verdict with only `minor`/`nit` findings does
       not block (outcome by score); a `fix` verdict with a `major` blocks; a `fix` with no
       findings blocks via the synthetic `major`; a `pass` verdict with a real `major` does not
@@ -239,25 +239,25 @@ SPEC-0206 and SPEC-0207 each extend the allowed set with their own keys.
       synthetic) and a `fix` with no findings plus an unmet AC gets both synthetics;
       `waived` ids never remove `major`/`must_fix`/synthetic findings; `score_only` and
       `waivable_weight` correct.
-- [ ] AC2 (G1). `resolve_profile` provides and validates `review:` (`pass_score`, `weights`) for
+- [x] AC2 (G1). `resolve_profile` provides and validates `review:` (`pass_score`, `weights`) for
       every builtin profile (exact defaults above); bad values raise `ValueError` naming the key;
       user deltas merge (partial `weights`); unknown `review:` keys, bool values, missing/extra
       weight keys and out-of-range `pass_score` raise.
-- [ ] AC3 (G2). Routing: `pass` ⇒ `CLOSING`; `fix` ⇒ `IMPLEMENTING` with one merged
+- [x] AC3 (G2). Routing: `pass` ⇒ `CLOSING`; `fix` ⇒ `IMPLEMENTING` with one merged
       brief of the pinned shape (labelled `fix_brief`, score line when `score_only`, bullets,
       `must_fix` entries with `id`/`severity`/`personas`; single reviewer keeps SPEC-0187's
       shape) and `loops += 1`; `loop_max` ⇒ `PARKED(loop_exhausted)`; a missing
       reviewer after retry ⇒ `PARKED(review_escalated)`; `combine_reviews` no longer exists.
-- [ ] AC4 (G3). `last_review` has the keys listed above (SPEC-0206 adds `triage` and `triager_run`) with `score` weighted and
+- [x] AC4 (G3). `last_review` has the keys listed above (SPEC-0206 adds `triage` and `triager_run`) with `score` weighted and
       `verdict` the outcome; a `note` event `review score 72/80 fix` is written when
       `triage_reviews` ran (including `loop_exhausted`) and not for `review_escalated`; a
       `pass over major` note is written only when the outcome is `pass`; `wt campaign show` prints the `review:` line
       and `wt queue list --json` carries `review_score`.
-- [ ] AC5. End to end with FakeRunner: (a) all reviewers pass with `minor` findings ⇒ `MERGED`,
+- [x] AC5. End to end with FakeRunner: (a) all reviewers pass with `minor` findings ⇒ `MERGED`,
       advisory recorded; (b) a `fix` over only `minor` findings and a passing score ⇒ `MERGED`
       with no implementer loop; (c) `must_fix` ⇒ `IMPLEMENTING` once, then pass; (d) score below
       `pass_score` with no blocking cause ⇒ `IMPLEMENTING` with a brief listing the findings.
-- [ ] AC6. `docs/product/capabilities/agentic.md` documents the block and the new `last_review` keys (grep test for `pass_score`, `advisory` and `entry_run`); full
+- [x] AC6. `docs/product/capabilities/agentic.md` documents the block and the new `last_review` keys (grep test for `pass_score`, `advisory` and `entry_run`); full
       `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
@@ -272,6 +272,26 @@ SPEC-0206 and SPEC-0207 each extend the allowed set with their own keys.
   outcome are recorded here.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q` (full suite) green, incl. new `tests/test_agentic_review_triage.py`
+  (worked examples, dedup/canonical ids, waivers, AC cover matching, brief shape),
+  `tests/test_agentic_profiles.py` (`review:` defaults/validation/docs grep),
+  `tests/test_agentic_reviewers.py` (`combine_reviews` tests replaced; routing, score notes,
+  `last_review` shape), `tests/test_agentic_campaign_cli.py` (`review:` line),
+  `tests/test_agentic_queue_cli.py` (`review_score`), `tests/test_agentic_e2e.py` (paths a-d).
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py` exit 0.
+- Manual verification on a real multi-reviewer campaign is pending (next such campaign).
+
+### As shipped
+
+- `triage_reviews` also returns `fixing` (personas whose `fix` verdict survived) and `synthetic`
+  (ids of synthetic findings) for the brief builder; `review_brief` is a second pure function in
+  `queue.py`; `Step.combined` carries `{triage, pass_score, brief}`. `fixing_reviewers` was
+  deleted together with `combine_reviews`.
+- Bullets omit the `(<files>)` / `: <detail>` parts when those are empty.
+- `profiles.review_params(profile)` supplies the balanced defaults for a hand-built profile.
+
 ## Rollout / migration
 
 Takes effect on the next `REVIEWING`; no data migration. A `last_review` without the new keys is
@@ -284,11 +304,11 @@ Built by the agentic loop or the human lane; idea bookkeeping via `wt spec recon
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

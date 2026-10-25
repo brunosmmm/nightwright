@@ -148,3 +148,60 @@ def test_reviewers_user_delta_replaces_the_list(monkeypatch):
     cfg = {"agentic": {"profiles": {"balanced": {"reviewers": ["extra"],
                                                  "personas": {"extra": extra}}}}}
     assert P.resolve_profile(cfg, "balanced")["reviewers"] == ["extra"]
+
+
+# ---- review: block (SPEC-0203) -------------------------------------------------------------
+
+DEFAULT_WEIGHTS = {"must_fix": 100, "major": 15, "minor": 4, "nit": 1}
+
+
+@pytest.mark.parametrize("name,score", [("balanced", 80), ("thorough", 90), ("frugal", 70)])
+def test_review_defaults(name, score):
+    prof = P.resolve_profile({"agentic": {"profiles": {}}}, name)
+    assert prof["review"] == {"pass_score": score, "weights": DEFAULT_WEIGHTS}
+    assert P.review_params(prof) == (score, DEFAULT_WEIGHTS)
+    assert P.review_params({}) == (80, DEFAULT_WEIGHTS)
+    prof["review"]["weights"]["major"] = 1                      # a copy, not the builtin
+    assert P.BUILTIN_PROFILES[name]["review"]["weights"]["major"] == 15
+
+
+def test_review_user_delta_merges_partial_weights():
+    cfg = {"agentic": {"profiles": {"balanced": {"review": {"weights": {"nit": 0},
+                                                            "pass_score": 60}}}}}
+    prof = P.resolve_profile(cfg, "balanced")
+    assert prof["review"] == {"pass_score": 60, "weights": {**DEFAULT_WEIGHTS, "nit": 0}}
+    new = P.resolve_profile({"agentic": {"profiles": {"mine": {"slots": 1}}}}, "mine")
+    assert new["review"]["pass_score"] == 80
+
+
+@pytest.mark.parametrize("review,needle", [
+    ({"bogus": 1}, "review.bogus"),
+    ({"pass_score": True}, "review.pass_score"),
+    ({"pass_score": 101}, "review.pass_score"),
+    ({"pass_score": -1}, "review.pass_score"),
+    ({"pass_score": "80"}, "review.pass_score"),
+    ({"pass_score": 80.5}, "review.pass_score"),
+    ({"weights": {"extra": 1}}, "review.weights.extra"),
+    ({"weights": {"major": True}}, "review.weights.major"),
+    ({"weights": {"major": -1}}, "review.weights.major"),
+    ({"weights": {"minor": 1.5}}, "review.weights.minor"),
+    ({"weights": [1]}, "review.weights"),
+])
+def test_review_rejects_bad_values(review, needle):
+    cfg = {"agentic": {"profiles": {"balanced": {"review": review}}}}
+    with pytest.raises(ValueError, match=needle.replace(".", r"\.")):
+        P.resolve_profile(cfg, "balanced")
+
+
+def test_review_missing_weight_key_is_rejected():
+    prof = {"name": "x", "review": {"weights": {"must_fix": 100}}}
+    with pytest.raises(ValueError, match=r"review\.weights\.major"):
+        P._check_review(prof)
+
+
+def test_docs_describe_the_review_block():
+    from pathlib import Path
+    doc = (Path(__file__).resolve().parent.parent / "docs/product/capabilities/agentic.md"
+           ).read_text(encoding="utf-8")
+    for needle in ("pass_score", "advisory", "entry_run", "weights"):
+        assert needle in doc

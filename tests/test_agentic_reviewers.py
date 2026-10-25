@@ -95,24 +95,24 @@ def test_cap_sums_pending_budgets(second_reviewer, spent, pending, parks):
 
 # ---- combine_reviews / decide_reviews ------------------------------------------------------------
 
-def test_combine_single_reviewer_is_verbatim():
-    out = Q.combine_reviews({A: rv("fix", "must_fix", brief="rewrite it")})
-    assert out == {"verdict": "fix", "findings": 1, "fix_brief": "rewrite it",
-                   "must_fix": [{"ac": None, "title": "must_fix thing", "detail": None,
-                                 "files": []}]}
-    assert Q.combine_reviews({A: rv("pass")})["verdict"] == "pass"
-    assert Q.combine_reviews({A: rv("pass", "must_fix")})["verdict"] == "fix"
+def test_combine_reviews_is_gone():
+    assert not hasattr(Q, "combine_reviews") and not hasattr(Q, "fixing_reviewers")
 
 
-def test_combine_merges_and_labels():
-    out = Q.combine_reviews({A: rv("fix", brief="do X"),
-                             B: rv("pass", "must_fix", "minor", brief="do Y")})
-    assert out["verdict"] == "fix" and out["findings"] == 2
-    assert out["fix_brief"] == "[A] do X\n\n[B] do Y\n\nmust_fix: must_fix thing".replace(
-        "[A]", f"[{A}]").replace("[B]", f"[{B}]")
-    assert [m["persona"] for m in out["must_fix"]] == [B]
-    both = Q.combine_reviews({A: rv("pass"), B: rv("pass", "minor")})
-    assert both["verdict"] == "pass" and both["must_fix"] == []
+def test_decide_reviews_triages_and_builds_the_merged_brief(second_reviewer):
+    st = _state()
+    step = Q.decide_reviews(st, PROFILE2, {A: rv("fix", "major", brief="do X"),
+                                           B: rv("pass", "must_fix", "minor", brief="do Y")})
+    assert (step.kind, step.reason) == ("implement", "review_fix")
+    brief = step.combined["brief"]
+    assert brief["personas"] == [A, B]
+    assert brief["fix_brief"] == (f"[{A}] do X\n\n[{B}] do Y\n\n- [major] major thing\n"
+                                  f"- [must_fix] must_fix thing")      # B: pass + must_fix = fix
+    assert [m["severity"] for m in brief["must_fix"]] == ["major", "must_fix"]
+    both = Q.decide_reviews(st, PROFILE2, {A: rv("pass"), B: rv("pass", "minor")})
+    assert both.kind == "close" and both.combined["triage"]["outcome"] == "pass"
+    # a fix over only minors does not block (SPEC-0203); score 100 - 4 >= 80
+    assert Q.decide_reviews(st, PROFILE2, {A: rv("fix", "minor"), B: rv("pass")}).kind == "close"
 
 
 def test_decide_reviews_cases(second_reviewer):
@@ -138,7 +138,7 @@ def test_decide_reviews_cases(second_reviewer):
     # loop_exhausted carries the merged brief
     st = _state()
     st["counters"]["loops"] = 3
-    step = Q.decide_reviews(st, PROFILE2, {A: rv("fix", brief="bad"), B: rv("pass")})
+    step = Q.decide_reviews(st, PROFILE2, {A: rv("fix", "major", brief="bad"), B: rv("pass")})
     assert step.reason == "loop_exhausted" and "[%s] bad" % A in step.detail
 
 
@@ -251,12 +251,17 @@ def test_apply_reviews_records_in_given_order_and_shapes_last_review(opened2):
     lr = st["last_review"]
     assert (lr["run"], lr["runs"]) == (f"003-{B}", {A: f"002-{A}", B: f"003-{B}"})
     assert (lr["verdict"], lr["score"], lr["findings"], lr["must_fix"], lr["loop"]) == (
-        "fix", 70, 2, 1, 0)
+        "fix", 0, 2, 1, 0)
     assert lr["verdicts"][A]["findings"] == v["findings"] and lr["verdicts"][A]["loop"] == 0
     assert st["pending_brief"] == {
-        "source": "review", "personas": [A], "fix_brief": f"[{A}] fix A\n\nmust_fix: must_fix thing",
+        "source": "review", "personas": [A],
+        "fix_brief": f"[{A}] fix A\n\n- [must_fix] must_fix thing (a.py): d",
         "must_fix": [{"ac": "AC1", "title": "must_fix thing", "detail": "d", "files": ["a.py"],
-                      "persona": A}], "human_notes": []}
+                      "id": f"{A}#0", "severity": "must_fix", "personas": [A]}],
+        "human_notes": []}
+    assert [a["id"] for a in lr["advisory"]] == [f"{B}#0"] and lr["waived"] == []
+    notes = [n["text"] for n in S.read_ledger(cfg, cid, types=["note"])]
+    assert "review score 0/80 fix" in notes and not any("pass over major" in n for n in notes)
     assert st["counters"]["loops"] == 1 and st["counters"]["review_retries"] == 0
     assert "review_retries_by_persona" not in st["counters"]
     assert st["last_verdict"]["persona"] == B
@@ -617,3 +622,67 @@ def test_precedence_interrupted_beats_config_error_beats_missing(opened2):
     row = Q._apply(ctx, st, Q.StepResult(cid, Q.Step("review", persona=A), "REVIEWING",
                                          reviews=[ok, bad]))
     assert row["reason"] == "interrupted" and S.read_state(cfg, cid)["state"] == "REVIEWING"
+
+
+# ---- SPEC-0203: score notes and routing through _apply_reviews --------------------------------
+
+def _notes(cfg, cid):
+    return [n["text"] for n in S.read_ledger(cfg, cid, types=["note"])]
+
+
+def test_apply_reviews_pass_over_major_notes_and_records_advisory(opened2):
+    cfg, cid, ctx = opened2
+    _to_reviewing(cfg, cid)
+    row, st = apply_reviews(ctx, cfg, cid, [(A, _rr(rv("pass", "major"))), (B, _rr(rv("pass")))])
+    assert (row["to"], row["reason"]) == ("CLOSING", "review_pass")
+    lr = st["last_review"]
+    assert (lr["verdict"], lr["score"], lr["findings"], lr["must_fix"]) == ("pass", 85, 1, 0)
+    assert [(a["id"], a["severity"]) for a in lr["advisory"]] == [(f"{A}#0", "major")]
+    notes = _notes(cfg, cid)
+    assert "review score 85/80 pass" in notes
+    assert f"pass over major: {A}#0 major thing" in notes
+
+
+def test_apply_reviews_minor_fix_passes_without_a_loop(opened2):
+    cfg, cid, ctx = opened2
+    _to_reviewing(cfg, cid)
+    row, st = apply_reviews(ctx, cfg, cid, [(A, _rr(rv("fix", "minor"))), (B, _rr(rv("pass")))])
+    assert (row["to"], row["reason"]) == ("CLOSING", "review_pass")
+    assert st["counters"]["loops"] == 0
+    assert not any(n.startswith("pass over major") for n in _notes(cfg, cid))
+
+
+def test_apply_reviews_score_only_fix_brief(opened2):
+    cfg, cid, ctx = opened2
+    _to_reviewing(cfg, cid)
+    row, st = apply_reviews(ctx, cfg, cid, [(A, _rr(rv("pass", *["minor"] * 6))),
+                                            (B, _rr(rv("pass")))])
+    assert (row["to"], row["reason"]) == ("IMPLEMENTING", "review_fix")
+    assert st["last_review"]["score"] == 76 and "review score 76/80 fix" in _notes(cfg, cid)
+    pb = st["pending_brief"]
+    assert pb["source"] == "review" and pb["personas"] == [A]
+    assert pb["fix_brief"].startswith("Review score 76 is below the pass score 80")
+    assert len(pb["must_fix"]) == 6 and st["counters"]["loops"] == 1
+
+
+def test_apply_reviews_loop_exhausted_still_notes_the_score(opened2):
+    cfg, cid, ctx = opened2
+    _to_reviewing(cfg, cid, loops=3)
+    row, st = apply_reviews(ctx, cfg, cid, [(A, _rr(rv("fix", "major", brief="bad"))),
+                                            (B, _rr(rv("pass")))])
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "loop_exhausted"
+    assert "bad" in st["park"]["detail"]
+    assert "review score 85/80 fix" in _notes(cfg, cid)
+
+
+def test_no_score_note_for_a_retry_or_escalation(opened2):
+    cfg, cid, ctx = opened2
+    _to_reviewing(cfg, cid)
+    apply_reviews(ctx, cfg, cid, [(A, _rr(rv("pass"))), (B, _rr(None, ok=False))])
+    assert not any(n.startswith("review score") for n in _notes(cfg, cid))
+    st = S.read_state(cfg, cid)
+    st["counters"]["review_retries_by_persona"] = {B: 1}
+    S.write_state(cfg, cid, st)
+    row, st = apply_reviews(ctx, cfg, cid, [(B, _rr(None, ok=False))])
+    assert st["park"]["reason"] == "review_escalated"
+    assert not any(n.startswith("review score") for n in _notes(cfg, cid))

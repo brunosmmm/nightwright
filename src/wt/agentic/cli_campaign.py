@@ -159,6 +159,12 @@ def attach(campaign_group):
         if repo:
             missing = "" if st["worktree_present"] else " (missing)"
             console.print(f"  branch {repo.get('branch') or '-'}  worktree {wt_path or '-'}{missing}")
+        lr = st.get("last_review") or {}
+        if lr.get("verdict") is not None:
+            adv = lr.get("advisory") or []
+            majors = sum(1 for f in adv if f.get("severity") == "major")
+            console.print(f"  review: score {lr.get('score')}  {lr['verdict']}  "
+                          f"advisory {len(adv)} ({majors} major)")
         if st.get("park"):
             p = st["park"]
             console.print(f"  [yellow]parked[/] {p.get('reason')}: {p.get('detail', '')}  "

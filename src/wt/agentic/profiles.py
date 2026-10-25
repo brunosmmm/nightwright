@@ -11,8 +11,15 @@ import copy
 # Canonical reviewer order (SPEC-0205, SPEC-0202): a profile's default `reviewers` list follows it.
 REVIEWER_ORDER = ("conformance_reviewer", "test_reviewer", "adversarial_reviewer")
 
+# SPEC-0203: severity weights and the pass threshold of the review triage score.
+SEVERITIES = ("must_fix", "major", "minor", "nit")
+DEFAULT_WEIGHTS = {"must_fix": 100, "major": 15, "minor": 4, "nit": 1}
+DEFAULT_PASS_SCORE = 80
+REVIEW_KEYS = frozenset({"pass_score", "weights"})
+
 BUILTIN_PROFILES = {
     "balanced": {
+        "review": {"pass_score": 80, "weights": dict(DEFAULT_WEIGHTS)},
         "slots": 2,
         "loop_max": 3,
         "campaign_cap_usd": 10.0,
@@ -32,6 +39,7 @@ BUILTIN_PROFILES = {
         },
     },
     "frugal": {
+        "review": {"pass_score": 70, "weights": dict(DEFAULT_WEIGHTS)},
         "slots": 1,
         "loop_max": 2,
         "campaign_cap_usd": 3.0,
@@ -51,6 +59,7 @@ BUILTIN_PROFILES = {
         },
     },
     "thorough": {
+        "review": {"pass_score": 90, "weights": dict(DEFAULT_WEIGHTS)},
         "slots": 3,
         "loop_max": 4,
         "campaign_cap_usd": 30.0,
@@ -104,6 +113,7 @@ def resolve_profile(cfg, name=None):
     profile = deep_merge(base, deltas.get(name) or {})
     profile["name"] = name
     _check_reviewers(profile)
+    _check_review(profile)
     return profile
 
 
@@ -132,6 +142,52 @@ def _check_reviewers(profile):
             raise ValueError(f"profile {name!r}: reviewer {r!r} has no persona settings")
         if not PS.PERSONAS[r].read_only or not settings.get("read_only", True):
             raise ValueError(f"profile {name!r}: reviewer {r!r} must be read_only")
+
+
+def _is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _check_review(profile):
+    """ValueError naming the key for a bad `review:` block (SPEC-0203): only `pass_score`
+    (int 0..100) and `weights` (exactly the four severities, ints >= 0); no bools."""
+    name = profile.get("name")
+    review = profile.get("review")
+    if review is None:
+        return
+    if not isinstance(review, dict):
+        raise ValueError(f"profile {name!r}: review must be a mapping")
+    for key in review:
+        if key not in REVIEW_KEYS:
+            raise ValueError(f"profile {name!r}: unknown key review.{key}")
+    if "pass_score" in review:
+        ps = review["pass_score"]
+        if not _is_int(ps) or not 0 <= ps <= 100:
+            raise ValueError(f"profile {name!r}: review.pass_score must be an integer 0..100, "
+                             f"got {ps!r}")
+    if "weights" in review:
+        weights = review["weights"]
+        if not isinstance(weights, dict):
+            raise ValueError(f"profile {name!r}: review.weights must be a mapping")
+        for key in weights:
+            if key not in SEVERITIES:
+                raise ValueError(f"profile {name!r}: unknown key review.weights.{key}")
+        for key in SEVERITIES:
+            if key not in weights:
+                raise ValueError(f"profile {name!r}: review.weights.{key} is missing")
+            if not _is_int(weights[key]) or weights[key] < 0:
+                raise ValueError(f"profile {name!r}: review.weights.{key} must be an integer "
+                                 f">= 0, got {weights[key]!r}")
+
+
+def review_params(profile) -> tuple:
+    """`(pass_score, weights)` of `profile["review"]`; a hand-built profile without it (or
+    with part of it) uses the `balanced` values."""
+    review = (profile or {}).get("review") or {}
+    ps = review.get("pass_score")
+    weights = dict(DEFAULT_WEIGHTS)
+    weights.update(review.get("weights") or {})
+    return (DEFAULT_PASS_SCORE if ps is None else ps), weights
 
 
 def persona_settings(profile, persona):

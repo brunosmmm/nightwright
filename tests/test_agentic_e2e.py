@@ -261,7 +261,7 @@ def test_e2e_internal_merges(tmp_path, monkeypatch):
                               "parks": 0, "review_retries": 0}
     assert st["cost"]["total_usd"] == 0.7
     assert st["cost"]["by_persona"] == {"implementer": 0.5, "conformance_reviewer": 0.2}
-    assert st["last_review"]["verdict"] == "pass" and st["last_review"]["score"] == 95
+    assert st["last_review"]["verdict"] == "pass" and st["last_review"]["score"] == 100
     types = ledger_types(cfg, cid)
     for t in ("open", "transition", "run.start", "run.end", "commit", "gate", "cost", "close"):
         assert t in types, (t, types)
@@ -411,6 +411,58 @@ def test_e2e_review_fix_then_pass_merges(tmp_path, monkeypatch):
     # the second implementer saw the reviewer's brief
     prompt = (S.runs_dir(cfg, cid) / "003-implementer" / "prompt.md").read_text()
     assert "From: conformance_reviewer" in prompt and "rewrite feature.txt" in prompt
+
+
+def _finding(sev, title, **kw):
+    return dict({"severity": sev, "title": title, "detail": "d", "files": ["feature.txt"]}, **kw)
+
+
+def _triage_run(tmp_path, monkeypatch, entries, **kw):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, entries), **kw)
+    cid = added(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    return cfg, cid, S.read_state(cfg, cid)
+
+
+def test_e2e_triage_pass_with_minor_findings_merges(tmp_path, monkeypatch):      # SPEC-0203 (a)
+    rv = review("pass", findings=[_finding("minor", "naming"), _finding("nit", "typo")])
+    cfg, cid, st = _triage_run(tmp_path, monkeypatch, [impl_done(), rv])
+    assert st["state"] == "MERGED", st
+    lr = st["last_review"]
+    assert (lr["verdict"], lr["score"], lr["findings"]) == ("pass", 95, 2)
+    assert [a["severity"] for a in lr["advisory"]] == ["minor", "nit"]
+    notes = [n["text"] for n in S.read_ledger(cfg, cid, types=["note"])]
+    assert "review score 95/80 pass" in notes
+
+
+def test_e2e_triage_fix_over_minor_findings_needs_no_loop(tmp_path, monkeypatch):  # (b)
+    rv = review("fix", findings=[_finding("minor", "naming")], fix_brief="rename it",
+                ac_assessment=[{"ac": "feature.txt exists", "met": True}])
+    cfg, cid, st = _triage_run(tmp_path, monkeypatch, [impl_done(), rv])
+    assert st["state"] == "MERGED" and st["counters"]["loops"] == 0, st
+    assert st["counters"]["runs"] == 2 and st["last_review"]["score"] == 96
+
+
+def test_e2e_triage_must_fix_loops_once_then_passes(tmp_path, monkeypatch):      # (c)
+    entries = [impl_done(), review("fix"), impl_done(content="better\n"), review("pass")]
+    cfg, cid, st = _triage_run(tmp_path, monkeypatch, entries)
+    assert st["state"] == "MERGED" and st["counters"]["loops"] == 1, st
+    assert [e["reason"] for e in S.read_ledger(cfg, cid, types=["transition"])
+            if e["from"] == "REVIEWING"].count("review_fix") == 1
+    notes = [n["text"] for n in S.read_ledger(cfg, cid, types=["note"])]
+    assert "review score 0/80 fix" in notes and "review score 100/80 pass" in notes
+
+
+def test_e2e_triage_low_score_without_blocking_cause_loops(tmp_path, monkeypatch):  # (d)
+    low = review("pass", findings=[_finding("minor", f"m{i}") for i in range(6)])
+    entries = [impl_done(), low, impl_done(content="better\n"), review("pass")]
+    cfg, cid, st = _triage_run(tmp_path, monkeypatch, entries)
+    assert st["state"] == "MERGED" and st["counters"]["loops"] == 1, st
+    prompt = (S.runs_dir(cfg, cid) / "003-implementer" / "prompt.md").read_text()
+    assert "Review score 76 is below the pass score 80" in prompt
+    assert "- [minor] m0 (feature.txt): d" in prompt
 
 
 def test_e2e_review_fix_until_loop_max_parks(tmp_path, monkeypatch):

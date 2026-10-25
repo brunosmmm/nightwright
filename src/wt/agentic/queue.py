@@ -35,7 +35,8 @@ from . import spec_review as SR
 from . import schemas as SC
 from . import store
 from .gitops import GitError
-from .profiles import persona_settings, resolve_profile, reviewers_of
+from .profiles import (SEVERITIES, persona_settings, resolve_profile, review_params,
+                       reviewers_of)
 from .runner import RunResult, select_runner
 
 STATES = ("QUEUED", "WAITING", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
@@ -231,44 +232,148 @@ def decide_triage(state: dict, profile: dict, verdict: dict | None, verdict_ok: 
     return Step("implement", reason="triage_fix")
 
 
-def combine_reviews(verdicts: dict) -> dict:
-    """Pure, interim (SPEC-0201; SPEC-0203 replaces it): merge `{persona: verdict}` (valid
-    verdicts, in profile order) into `{verdict, must_fix, findings, fix_brief}`.
+def norm_finding_title(title) -> str:
+    """Lower-case, whitespace-collapsed title: the identity of a finding across reviewers
+    (SPEC-0203; SPEC-0207 reuses it for its follow-up key)."""
+    return " ".join(str(title or "").lower().split())
 
-    `fix` when any reviewer said `fix` or any finding is `must_fix`, else `pass`. With one
-    reviewer `fix_brief` is its text verbatim; with several, each fixing reviewer's brief
-    prefixed `[persona] `, then one `must_fix: <title>` line per must-fix finding."""
-    multi = len(verdicts) > 1
-    must_fix, count = [], 0
-    for persona, v in verdicts.items():
-        for f in v.get("findings") or []:
-            if not isinstance(f, dict):
+
+def _covers(finding_ac, entry_ac) -> bool:
+    """Does a finding's `ac` cover an `ac_assessment` entry's `ac`? Equal after `norm`, or one
+    contains the other with length >= 8; an empty `ac` covers nothing."""
+    a, b = norm_finding_title(finding_ac), norm_finding_title(entry_ac)
+    if not a or not b:
+        return False
+    return a == b or (a in b and len(a) >= 8) or (b in a and len(b) >= 8)
+
+
+def triage_reviews(verdicts: dict, profile: dict, waived=()) -> dict:
+    """Pure (SPEC-0203): score and route the reviewers' verdicts `{persona: verdict}` (valid
+    verdicts, in profile order) into `{outcome, score, score_only, blocking, advisory,
+    waivable_weight, fixing, synthetic}`.
+
+    Normalize (finding ids, synthetic `major`s for an unexplained `fix` and for unmet ACs,
+    de-duplication across reviewers) ⇒ waive (`waived` ids, `minor`/`nit` only) ⇒ a `fix`
+    verdict survives iff unexplained or backed by a `major`/`must_fix` ⇒ score
+    `max(0, 100 - Σ weight)` ⇒ `fix` on a `must_fix`, a surviving `fix` verdict, an unmet AC
+    or `score < pass_score`. `fixing` = the personas whose `fix` verdict survived; `synthetic`
+    = ids of the synthetic findings."""
+    pass_score, weights = review_params(profile)
+    personas = list(verdicts)
+    own = {}                      # persona -> its finding records, in order
+    wants_fix, unmet = {}, False
+    for p in personas:
+        v = verdicts[p]
+        raw = [f for f in v.get("findings") or [] if isinstance(f, dict)]
+        recs = []
+        for i, f in enumerate(raw):
+            sev = f.get("severity") if f.get("severity") in SEVERITIES else "minor"
+            recs.append({"id": f"{p}#{i}", "personas": [p], "severity": sev,
+                         "title": f.get("title") or "", "detail": f.get("detail"),
+                         "files": list(f.get("files") or []), "ac": f.get("ac"),
+                         "category": f.get("category"), "synthetic": False})
+        wants_fix[p] = v.get("verdict") == "fix" or any(r["severity"] == "must_fix"
+                                                       for r in recs)
+        if v.get("verdict") == "fix" and not raw:
+            brief = (v.get("fix_brief") or "").strip()[:80]
+            recs.append({"id": f"{p}#fix", "personas": [p], "severity": "major",
+                         "title": brief or f"{p} returned fix without findings", "detail": None,
+                         "files": [], "ac": None, "category": None, "synthetic": True})
+        for j, entry in enumerate(v.get("ac_assessment") or []):
+            if not isinstance(entry, dict) or entry.get("met") is not False:
                 continue
-            count += 1
-            if f.get("severity") == "must_fix":
-                item = {"ac": f.get("ac"), "title": f.get("title"), "detail": f.get("detail"),
-                        "files": list(f.get("files") or [])}
-                if multi:
-                    item["persona"] = persona
-                must_fix.append(item)
-    fix = bool(must_fix) or any(v.get("verdict") == "fix" for v in verdicts.values())
-    if not multi:
-        brief = next(iter(verdicts.values()), {}).get("fix_brief")
+            unmet = True
+            if any(not r["synthetic"] and r["severity"] in ("major", "must_fix")
+                   and _covers(r["ac"], entry.get("ac")) for r in recs):
+                continue
+            recs.append({"id": f"{p}#ac{j}", "personas": [p], "severity": "major",
+                         "title": str(entry.get("ac") or ""), "detail": entry.get("evidence"),
+                         "files": [], "ac": entry.get("ac"), "category": None,
+                         "synthetic": True})
+        own[p] = recs
+    # 1d: identical real findings (same files and title) become one merged finding
+    rank = {s: i for i, s in enumerate(SEVERITIES)}
+    merged, groups = [], {}                   # all findings in order; key -> merged record
+    belongs = {p: [] for p in personas}       # persona -> merged records it reported
+    for p in personas:
+        for r in own[p]:
+            key = (tuple(sorted(r["files"])), norm_finding_title(r["title"]))
+            m = groups.get(key) if r["files"] and not r["synthetic"] else None
+            if m is None:
+                m = r
+                merged.append(m)
+                if r["files"] and not r["synthetic"]:
+                    groups[key] = m
+            else:
+                if rank[r["severity"]] < rank[m["severity"]]:      # strictly higher wins
+                    m.update(id=r["id"], severity=r["severity"], detail=r["detail"],
+                             ac=r["ac"], category=r["category"])
+                if p not in m["personas"]:
+                    m["personas"].append(p)
+            if all(m is not x for x in belongs[p]):
+                belongs[p].append(m)
+    # 2: waive (minor/nit only; synthetic findings never)
+    waived = set(waived or ())
+    gone = {id(m) for m in merged if m["id"] in waived and not m["synthetic"]
+            and m["severity"] in ("minor", "nit")}
+    surviving = [m for m in merged if id(m) not in gone]
+    # 3: a fix verdict survives iff backed by a surviving major/must_fix (synthetics are majors)
+    fixing = [p for p in personas if wants_fix[p] and any(
+        id(m) not in gone and m["severity"] in ("major", "must_fix") for m in belongs[p])]
+    # 4/5: score and outcome
+    score = max(0, 100 - sum(weights[m["severity"]] for m in surviving))
+    must = any(m["severity"] == "must_fix" for m in surviving)
+    hard = must or bool(fixing) or unmet
+    outcome = "fix" if hard or score < pass_score else "pass"
+    score_only = outcome == "fix" and not hard
+    # 6: blocking and advisory
+    if outcome == "pass":
+        blocking = []
+    elif score_only:
+        blocking = sorted(surviving, key=lambda m: -weights[m["severity"]])
     else:
-        head = "\n\n".join(f"[{p}] {(verdicts[p].get('fix_brief') or '').strip()}"
-                           for p in fixing_reviewers(verdicts))
-        tail = "\n".join(f"must_fix: {m['title']}" for m in must_fix)
-        brief = "\n\n".join(x for x in (head, tail) if x)
-    return {"verdict": "fix" if fix else "pass", "must_fix": must_fix, "findings": count,
-            "fix_brief": brief}
+        blocking = [m for m in surviving if m["severity"] in ("must_fix", "major")]
+    advisory = [m for m in surviving if m not in blocking]
+    keys = ("id", "personas", "severity", "title", "detail", "files", "ac", "category")
+    out = lambda ms: [{k: m[k] for k in keys} for m in ms]
+    return {"outcome": outcome, "score": score, "score_only": score_only,
+            "blocking": out(blocking), "advisory": out(advisory),
+            "waivable_weight": sum(weights[m["severity"]] for m in surviving
+                                   if m["severity"] in ("minor", "nit")),
+            "fixing": fixing, "synthetic": [m["id"] for m in surviving if m["synthetic"]]}
 
 
-def fixing_reviewers(verdicts: dict) -> list:
-    """The reviewers that ask for a fix: verdict `fix` or any `must_fix` finding."""
-    return [p for p, v in verdicts.items()
-            if v.get("verdict") == "fix" or any(
-                isinstance(f, dict) and f.get("severity") == "must_fix"
-                for f in v.get("findings") or [])]
+def _bullet(f: dict) -> str:
+    files = ", ".join(f.get("files") or [])
+    return (f"- [{f['severity']}] {f['title']}" + (f" ({files})" if files else "")
+            + (f": {f['detail']}" if f.get("detail") else ""))
+
+
+def review_brief(verdicts: dict, tri: dict, pass_score) -> dict:
+    """Pure: the fix brief a `fix` triage implies (SPEC-0203) as `{fix_brief, must_fix,
+    personas}` (`personas` only with several reviewers). One reviewer keeps SPEC-0187's shape
+    (its own brief verbatim; `must_fix` entries without `id` / `severity` / `personas`)."""
+    blocking = tri["blocking"]
+    tail = ([f"Review score {tri['score']} is below the pass score {pass_score}; address the "
+             f"highest-weight findings first."] if tri["score_only"] else [])
+    tail += [_bullet(f) for f in blocking]
+    if len(verdicts) == 1:
+        persona = next(iter(verdicts))
+        brief = verdicts[persona].get("fix_brief")
+        if not (brief or "").strip() and (tri["score_only"] or any(
+                f["id"] in tri["synthetic"] for f in blocking)):
+            brief = "\n".join(tail)
+        return {"fix_brief": brief, "must_fix": [
+            {"ac": f["ac"], "title": f["title"], "detail": f["detail"], "files": f["files"]}
+            for f in blocking]}
+    head = "\n\n".join(f"[{p}] {(verdicts[p].get('fix_brief') or '').strip()}".rstrip()
+                       for p in tri["fixing"])
+    reporters = {p for f in blocking for p in f["personas"]} | set(tri["fixing"])
+    return {"fix_brief": "\n\n".join(x for x in (head, "\n".join(tail)) if x),
+            "personas": [p for p in verdicts if p in reporters],
+            "must_fix": [{"ac": f["ac"], "title": f["title"], "detail": f["detail"],
+                          "files": f["files"], "id": f["id"], "severity": f["severity"],
+                          "personas": f["personas"]} for f in blocking]}
 
 
 def _retries_used(counters: dict, persona: str, n_reviewers: int) -> int:
@@ -288,8 +393,9 @@ def decide_reviews(state: dict, profile: dict, valid: dict, failed=()) -> Step:
     - a reviewer without a valid verdict is *missing*: no routing while any is missing;
       each missing one gets one retry (`Step("none", reason="review_retry", missing=…)`);
       if any is out of retries ⇒ PARKED(review_escalated) naming those (`escalated`);
-    - all valid: `combine_reviews`; `pass` ⇒ CLOSING; `fix` ⇒ loops += 1, beyond `loop_max`
-      ⇒ loop_exhausted, else back to IMPLEMENTING. `combined` carries the merge.
+    - all valid: `triage_reviews`; `pass` ⇒ CLOSING; `fix` ⇒ loops += 1, beyond `loop_max`
+      ⇒ loop_exhausted, else back to IMPLEMENTING. `combined` carries the triage,
+      the pass score and (on `fix`) the brief.
     The caller mutates the counters."""
     counters = state.get("counters") or {}
     loop_max = int(profile.get("loop_max") or 3)
@@ -304,12 +410,16 @@ def decide_reviews(state: dict, profile: dict, valid: dict, failed=()) -> Step:
             return Step("park", reason="review_escalated", missing=missing, escalated=out,
                         detail=f"{who} returned no usable verdict twice", resume_to="REVIEWING")
         return Step("none", reason="review_retry", missing=missing)
-    combined = combine_reviews({p: valid[p] for p in reviewers})
-    if combined["verdict"] == "pass":
+    valid = {p: valid[p] for p in reviewers}
+    tri = triage_reviews(valid, profile)
+    pass_score = review_params(profile)[0]
+    combined = {"triage": tri, "pass_score": pass_score, "brief": None}
+    if tri["outcome"] == "pass":
         return Step("close", reason="review_pass", combined=combined)
+    combined["brief"] = review_brief(valid, tri, pass_score)
     loops = int(counters.get("loops", 0)) + 1
     if loops > loop_max:
-        brief = (combined["fix_brief"] or "").strip()
+        brief = (combined["brief"]["fix_brief"] or "").strip()
         return Step("park", reason="loop_exhausted", combined=combined,
                     detail=f"{loops - 1}/{loop_max} implement loops used; the conformance "
                            f"review still asks for fixes: " + brief, resume_to="IMPLEMENTING")
@@ -1016,11 +1126,19 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
         return finish("REVIEWING", "review_retry")
     if decision.combined is not None:
         c = decision.combined
-        scores = [v["score"] for v in valid.values()
-                  if isinstance(v.get("score"), (int, float)) and not isinstance(v["score"], bool)]
-        state["last_review"].update(verdict=c["verdict"], score=min(scores) if scores else None,
-                                    findings=c["findings"], must_fix=len(c["must_fix"]),
-                                    loop=counters["loops"])
+        tri = c["triage"]
+        surviving = tri["blocking"] + tri["advisory"]
+        state["last_review"].update(
+            verdict=tri["outcome"], score=tri["score"], findings=len(surviving),
+            must_fix=sum(1 for f in surviving if f["severity"] == "must_fix"), waived=[],
+            advisory=tri["advisory"], loop=counters["loops"])
+        events.append(("note", {"text": f"review score {tri['score']}/{c['pass_score']} "
+                                        f"{tri['outcome']}", "author": "queue"}))
+        if tri["outcome"] == "pass":
+            for f in tri["advisory"]:
+                if f["severity"] == "major":
+                    events.append(("note", {"text": f"pass over major: {f['id']} {f['title']}",
+                                            "author": "queue"}))
     if decision.kind == "park":
         return finish("PARKED", decision.reason, park={
             "reason": decision.reason, "detail": decision.detail,
@@ -1034,12 +1152,12 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
     counters["gate_retries"] = 0
     counters["triage_retries"] = 0
     notes = ((state.get("pending_brief") or {}).get("human_notes") or [])
-    c = decision.combined
+    brief = decision.combined["brief"]
     state["pending_brief"] = {
-        "source": "review" if multi else reviewers[0], "fix_brief": c["fix_brief"],
-        "must_fix": c["must_fix"], "human_notes": list(notes)}
+        "source": "review" if multi else reviewers[0], "fix_brief": brief["fix_brief"],
+        "must_fix": brief["must_fix"], "human_notes": list(notes)}
     if multi:
-        state["pending_brief"]["personas"] = fixing_reviewers(valid)
+        state["pending_brief"]["personas"] = brief["personas"]
     return finish("IMPLEMENTING", "review_fix")
 
 
@@ -1658,6 +1776,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> d
             "park": r.get("park"), "park_requested": bool(r.get("park_requested")),
             "worktree": repo.get("worktree"), "branch": repo.get("branch"),
             "priority": _priority(r), "waiting": r.get("waiting"),
+            "review_score": (r.get("last_review") or {}).get("score"),
         })
         b = backlog.get(r.get("id"))
         if b and r.get("state") == "QUEUED":

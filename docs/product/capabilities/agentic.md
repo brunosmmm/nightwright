@@ -118,10 +118,9 @@ acceptance criterion it decides `met` with concrete evidence, flags criteria "me
 trivially passing test as `major` and scope creep as `minor`, and never edits anything. Its
 verdict is `{verdict: pass|fix, score, findings, ac_assessment, fix_brief}`:
 
-- `pass` with no `must_fix` finding ⇒ CLOSING;
-- `fix`, or any `must_fix` finding even under `pass` ⇒ `loops += 1` and back to IMPLEMENTING
-  with the `fix_brief` and the must-fix findings as the next implementer's brief (`loop_max`
-  reached ⇒ `loop_exhausted`);
+- the verdicts are triaged by a deterministic score (SPEC-0203, below): `pass` ⇒ CLOSING;
+- `fix` ⇒ `loops += 1` and back to IMPLEMENTING with the `fix_brief` and the blocking
+  findings as the next implementer's brief (`loop_max` reached ⇒ `loop_exhausted`);
 - a malformed verdict is retried once per loop, then the campaign parks as `review_escalated`.
 
 Each finding is a `finding` ledger event (`persona: conformance_reviewer`); the score is in
@@ -156,22 +155,60 @@ current review pass — and waits for every verdict before deciding. The cost ca
 before any spawn against the **sum** of the pending reviewers' budgets (`cost_cap` park, no
 partial fan-out).
 
-The verdicts are merged: any `fix` verdict or `must_fix` finding ⇒ back to IMPLEMENTING with one
-brief (`source: review`, `personas` listing the reviewers that asked for a fix, each reviewer's
-`fix_brief` prefixed `[persona]` and one `must_fix: <title>` line per must-fix finding); all
-`pass` ⇒ CLOSING. With one reviewer the brief is the reviewer's own, as before. A reviewer
-without a valid verdict (malformed, timed out, crashed) is retried once, alone — valid siblings
-are kept and never re-run — and nothing is routed until every verdict is in; a reviewer still
-missing after its retry parks the campaign as `review_escalated`, naming it. Entering REVIEWING
-always starts a fresh review (verdicts are cleared).
+A reviewer missing a valid verdict (malformed, timed out, crashed) is retried once, alone —
+valid siblings are kept and never re-run — and nothing is routed until every verdict is in; a
+reviewer still missing after its retry parks the campaign as `review_escalated`, naming it.
+Entering REVIEWING always starts a fresh review (verdicts are cleared).
+
+### Triage: score and routing (SPEC-0203)
+
+Once every verdict is in, a pure function (`triage_reviews`, no LLM) decides. Findings get ids
+`<persona>#<index>`; identical findings (same files and normalized title) from several
+reviewers are de-duplicated and counted once. Then, in order:
+
+1. any `must_fix` ⇒ `fix`;
+2. a reviewer's `fix` verdict blocks when it is backed by a `major` finding of its own, or when
+   it has no findings at all (a synthetic `major`, `<persona>#fix`); a `fix` over only
+   `minor` / `nit` findings does not block by itself;
+3. every `ac_assessment` entry with `met: false` is a hard stop (a synthetic `major`
+   `<persona>#ac<i>` unless the reviewer's own `major` / `must_fix` finding covers that AC);
+4. otherwise `score = max(0, 100 − Σ weight)` over the findings (default weights `must_fix` 100,
+   `major` 15, `minor` 4, `nit` 1) must reach the profile's `pass_score`.
+
+A `pass` verdict carrying a real `major` is respected: it costs 15 points and is `advisory`, and
+the queue writes a `pass over major: <id> <title>` note. Every triage writes a
+`review score <n>/<pass_score> <verdict>` note.
+
+`pass` ⇒ CLOSING; `fix` ⇒ IMPLEMENTING with one merged brief (`source: review`; `personas`;
+each blocking reviewer's `fix_brief` prefixed `[persona]`; when only the score failed, the line
+`Review score <n> is below the pass score <m>; …`; one bullet per blocking finding, and the
+`must_fix` entries carry `id`, `severity` and `personas`). With one reviewer the brief is the
+reviewer's own, as before.
+
+Profile keys (the `review:` block, validated by `resolve_profile`; any other key is rejected):
+
+```yaml
+agentic:
+  profiles:
+    balanced:
+      review:
+        pass_score: 80          # int 0..100; thorough 90, frugal 70
+        weights: {must_fix: 100, major: 15, minor: 4, nit: 1}   # a partial delta merges
+```
 
 `last_review` in the campaign state is
-`{loop, entry_run, run, runs, verdicts, verdict, score, findings, must_fix}`: `verdicts` holds
-one entry per reviewer (`verdict`, `score`, `fix_brief`, the full `findings`, `ac_assessment`
-for the conformance reviewer, `coverage_assessment` for the test reviewer, `run`, `loop`), `runs` the run id per reviewer, `run` the last
-reviewer's run, and `verdict` / `score` (the minimum) / `findings` / `must_fix` the combined
-values, written once every verdict is in. `counters.review_retries_by_persona` appears only
-after the first retry.
+`{loop, entry_run, run, runs, verdicts, verdict, score, findings, must_fix, waived, advisory}`:
+`verdicts` holds one entry per reviewer (`verdict`, `score`, `fix_brief`, the full `findings`,
+`ac_assessment` for the conformance reviewer, `coverage_assessment` for the test reviewer, `run`,
+`loop`), `runs` the run id per reviewer,
+`run` the last reviewer's run. Written once every verdict is in: `verdict` (the triage outcome,
+`pass|fix`), `score` (the weighted triage score; each reviewer's own score stays in
+`verdicts[*].score`), `findings` / `must_fix` (counts of the surviving findings), `waived`
+(empty until a later spec fills it) and `advisory` (the non-blocking findings of the current
+review: `{id, personas, severity, title, detail, files, ac, category}`).
+`counters.review_retries_by_persona` appears only after the first retry. `wt campaign show`
+prints a `review:` line (score, verdict, advisory count and how many are `major`) and
+`wt queue list --json` rows carry `review_score`.
 
 ## Closing
 
