@@ -1,0 +1,982 @@
+"""Queue state machine and loop (SPEC-0176): the engine of the agentic workflow.
+
+`plan_step` is a pure function from campaign state (+ profile + project config) to the one
+step the campaign needs next; `tick` executes those steps — agent steps (implement, gate,
+triage) concurrently in a thread pool, repository steps (open, close) serially — and applies
+every result on the main thread under the campaign lock, so `state.json` and `ledger.jsonl`
+can never disagree: every transition goes through `_transition`, which records the event in
+the same locked section that writes the state.
+
+Invariant (SPEC-0169): Python decides every transition; personas only produce commits and one
+structured verdict. Gates are truth; verdicts steer. Before every spawn the campaign cap is
+checked pessimistically (`total + persona budget > cap` ⇒ PARKED). Humans act only on
+`PARKED` items (`park` / `resume` / `abandon`)."""
+from __future__ import annotations
+
+import hashlib
+import os
+import signal
+import subprocess
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .. import specs as SP
+from ..specmeta import split_frontmatter
+from . import close as CL
+from . import gates as G
+from . import gitops as git
+from . import lease as L
+from . import personas as PS
+from . import project as P
+from . import store
+from .gitops import GitError
+from .profiles import persona_settings, resolve_profile
+from .runner import select_runner
+
+STATES = ("QUEUED", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "CLOSING",
+          "PARKED", "MERGED", "HANDED_OFF", "ABANDONED")
+TERMINAL_STATES = store.TERMINAL_STATES
+ACTIVE_STATES = frozenset({"OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "CLOSING"})
+RESUMABLE_STATES = ("IMPLEMENTING", "GATING", "CLOSING", "QUEUED")
+PARK_REASONS = frozenset({
+    "cost_cap", "loop_exhausted", "implementer_blocked", "triage_escalated", "open_failed",
+    "rebase_conflict", "main_dirty", "main_not_on_base", "base_moving", "gh_failed", "human",
+})
+# How many times in a row the implementer may report `blocked` before the campaign parks.
+BLOCKED_STREAK_MAX = 2
+# Malformed triage verdicts tolerated per loop before the triage is treated as `escalate`.
+TRIAGE_RETRY_MAX = 1
+# `retry_gate` dispositions honored per loop before they are treated as `fix`.
+GATE_RETRY_MAX = 1
+_STOP_GRACE_S = 30
+
+
+# ---- pure planning ---------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Step:
+    """What a campaign needs next. `kind` ∈ open | implement | gate | triage | close | park |
+    none; `park` steps carry `reason` / `detail` / `resume_to`."""
+    kind: str
+    persona: str | None = None
+    reason: str | None = None
+    detail: str | None = None
+    resume_to: str | None = None
+
+
+def _cap_blocks(state: dict, profile: dict, persona: str) -> str | None:
+    """Pessimistic cap check: a run may spend up to its budget, so never start one that could
+    cross the campaign cap. Returns the park detail or None."""
+    cost = state.get("cost") or {}
+    cap = cost.get("cap_usd")
+    if cap is None:
+        return None
+    budget = float(persona_settings(profile, persona).get("max_budget_usd") or 0.0)
+    total = float(cost.get("total_usd") or 0.0)
+    if total + budget > float(cap):
+        return (f"spent ${total:.2f}; a {persona} run may cost ${budget:.2f}; "
+                f"cap ${float(cap):.2f}")
+    return None
+
+
+def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> Step:
+    """Pure: the next step for `state`. Never touches disk."""
+    st = state.get("state")
+    if state.get("park_requested") and st not in TERMINAL_STATES and st != "PARKED":
+        req = state["park_requested"]
+        return Step("park", reason="human", detail=req.get("detail") or req.get("reason"),
+                    resume_to=_resume_target(st))
+    if st in TERMINAL_STATES or st in ("PARKED", "QUEUED"):
+        return Step("none")
+    if st == "OPENING":
+        return Step("open")
+    if st == "GATING":
+        return Step("gate")
+    if st == "CLOSING":
+        return Step("close")
+    persona = "implementer" if st == "IMPLEMENTING" else "gate_triager"
+    blocked = _cap_blocks(state, profile, persona)
+    if blocked:
+        return Step("park", persona=persona, reason="cost_cap", detail=blocked, resume_to=st)
+    return Step("implement" if st == "IMPLEMENTING" else "triage", persona=persona)
+
+
+def _resume_target(st: str) -> str:
+    """Where a human park on an active item resumes to: the step that was interrupted
+    (OPENING restarts from QUEUED; TRIAGING re-runs its gates)."""
+    return {"OPENING": "QUEUED", "TRIAGING": "GATING"}.get(st, st if st in RESUMABLE_STATES
+                                                            else "IMPLEMENTING")
+
+
+def decide_triage(state: dict, profile: dict, verdict: dict | None, verdict_ok: bool) -> Step:
+    """Pure: the transition a gate-triager verdict implies, given the loop counters.
+
+    - malformed / missing verdict: one retry per loop (stay in TRIAGING), then escalate;
+    - `fix`: loops += 1; beyond `loop_max` ⇒ loop_exhausted, else back to IMPLEMENTING;
+    - `retry_gate`: once per loop ⇒ GATING, else treated as `fix`;
+    - `waive`: only when every failing gate is optional ⇒ CLOSING, else escalate;
+    - `escalate` ⇒ PARKED(triage_escalated)."""
+    counters = state.get("counters") or {}
+    loop_max = int(profile.get("loop_max") or 3)
+    if not verdict_ok or not isinstance(verdict, dict):
+        if int(counters.get("triage_retries", 0)) < TRIAGE_RETRY_MAX:
+            return Step("none", reason="triage_retry")
+        return Step("park", reason="triage_escalated",
+                    detail="the gate triager returned no usable verdict twice", resume_to="GATING")
+    disp = verdict.get("disposition")
+    brief = (verdict.get("fix_brief") or "").strip()
+    if disp == "retry_gate":
+        if int(counters.get("gate_retries", 0)) < GATE_RETRY_MAX:
+            return Step("gate", reason="retry_gate")
+        disp = "fix"
+    if disp == "waive":
+        failing = [r for r in ((state.get("last_gate") or {}).get("results") or [])
+                   if not r.get("ok")]
+        if failing and all(not r.get("required") for r in failing):
+            return Step("close", reason="waived")
+        return Step("park", reason="triage_escalated",
+                    detail="waive requested but a required gate is failing: " + brief,
+                    resume_to="GATING")
+    if disp == "escalate":
+        return Step("park", reason="triage_escalated", detail=brief or "triager escalated",
+                    resume_to="GATING")
+    # fix (and anything unexpected the schema let through)
+    loops = int(counters.get("loops", 0)) + 1
+    if loops > loop_max:
+        return Step("park", reason="loop_exhausted",
+                    detail=f"{loops - 1}/{loop_max} implement loops used; still failing gates: "
+                           + brief, resume_to="IMPLEMENTING")
+    return Step("implement", reason="triage_fix")
+
+
+# ---- state helpers -------------------------------------------------------------------------
+
+def _counters(state: dict) -> dict:
+    c = state.setdefault("counters", {})
+    for k in ("loops", "runs", "gate_runs", "gate_retries", "triage_retries",
+              "blocked_streak", "close_attempts", "parks"):
+        c.setdefault(k, 0)
+    return c
+
+
+def _cost(state: dict) -> dict:
+    c = state.setdefault("cost", {})
+    c.setdefault("total_usd", 0.0)
+    c.setdefault("by_persona", {})
+    return c
+
+
+def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_events=()):
+    """Record `extra_events` then the transition, and write the state — all under the
+    campaign lock, so the ledger and `state.json` cannot disagree. Mutates and returns
+    `state`."""
+    cid = state["id"]
+    with store.item_lock(cfg, cid):
+        for etype, payload in extra_events:
+            store.append_event(cfg, cid, etype, payload, by=by)
+        frm = state.get("state")
+        if to != frm:
+            state["prev_state"] = frm
+            state["state"] = to
+            store.append_event(cfg, cid, "transition", {"from": frm, "to": to, "reason": reason},
+                               by=by)
+        store.write_state(cfg, cid, state)
+    return state
+
+
+def _park(cfg, state: dict, reason: str, detail: str, resume_to: str, *, by="tick",
+          extra_events=()):
+    _counters(state)["parks"] += 1
+    state["park"] = {"reason": reason, "detail": detail, "since": store.now_iso(),
+                     "resume_to": resume_to}
+    state.pop("park_requested", None)
+    events = list(extra_events) + [("park", dict(state["park"]))]
+    return _transition(cfg, state, "PARKED", reason, by=by, extra_events=events)
+
+
+def _record_run(state: dict, persona: str, run_id: str, result, budget: float, *,
+                interrupted: bool = False) -> list:
+    """Cost + run.end + findings for a finished persona run. Returns ledger events; mutates
+    the counters and cost in `state`. `interrupted` is the step's view (the loop was told to
+    stop while the run was in flight), which the RunResult cannot know."""
+    interrupted = bool(interrupted or result.interrupted)
+    cost = _cost(state)
+    charged = result.cost_usd if result.cost_usd is not None else budget
+    cost["total_usd"] = round(float(cost["total_usd"]) + float(charged), 4)
+    cost["by_persona"][persona] = round(float(cost["by_persona"].get(persona, 0.0))
+                                        + float(charged), 4)
+    events = [("run.end", {
+        "persona": persona, "run_id": run_id, "exit_code": result.exit_code,
+        "is_error": result.is_error, "timed_out": result.timed_out,
+        "interrupted": interrupted, "duration_s": result.duration_s,
+        "cost_usd": result.cost_usd, "charged_usd": charged, "usage": result.usage,
+        "session_id": result.session_id, "verdict_ok": result.verdict_ok,
+        "verdict": result.verdict,
+        "result_tail": (result.result_text or "")[-400:] if not result.verdict_ok else "",
+    }), ("cost", {"persona": persona, "delta_usd": charged, "total_usd": cost["total_usd"],
+                  "cap_usd": cost.get("cap_usd")})]
+    if result.cost_usd is None and not interrupted:
+        events.append(("finding", {"persona": persona, "severity": "info", "gate": None,
+                                   "title": "run reported no cost; charged its budget",
+                                   "detail": f"${budget:.2f} charged pessimistically",
+                                   "files": []}))
+    verdict = result.verdict if isinstance(result.verdict, dict) else {}
+    for item in verdict.get("must_fix") or []:
+        if isinstance(item, dict):
+            events.append(("finding", {"persona": persona, "severity": "must_fix",
+                                       "gate": item.get("gate"), "title": item.get("title"),
+                                       "detail": item.get("detail"),
+                                       "files": list(item.get("files") or [])}))
+    for blocker in verdict.get("blockers") or []:
+        events.append(("finding", {"persona": persona, "severity": "major", "gate": None,
+                                   "title": "implementer blocker", "detail": str(blocker),
+                                   "files": []}))
+    denials = _raw_permission_denials(result)
+    if denials:
+        events.append(("finding", {"persona": persona, "severity": "info", "gate": None,
+                                   "title": "permission denials during the run",
+                                   "detail": str(denials)[:800], "files": []}))
+    return events
+
+
+def _raw_permission_denials(result):
+    """`permission_denials` from the raw claude result, when the runner saved one."""
+    try:
+        import json
+        if result.raw_path and Path(result.raw_path).is_file():
+            obj = json.loads(Path(result.raw_path).read_text(encoding="utf-8"))
+            if isinstance(obj, dict):
+                return obj.get("permission_denials") or []
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def _spec_sha(path) -> str | None:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+# ---- step execution --------------------------------------------------------------------
+
+@dataclass
+class StepResult:
+    """What a step produced. Applied on the main thread by `_apply`."""
+    campaign: str
+    step: Step
+    from_state: str
+    run_id: str | None = None
+    run_result: object = None
+    budget: float = 0.0
+    commit_sha: str | None = None
+    commit_message: str | None = None
+    gate_run: object = None
+    close_outcome: object = None
+    error: str | None = None
+    interrupted: bool = False
+    events_before: list = field(default_factory=list)
+
+
+class _Ctx:
+    """Per-tick context: cfg, resolved profiles / project configs, the runner, the stop flag."""
+
+    def __init__(self, cfg, *, stop: threading.Event | None = None, runner=None):
+        self.cfg = cfg
+        self.stop = stop or threading.Event()
+        self._runner = runner
+        self._profiles: dict = {}
+        self._projects: dict = {}
+
+    @property
+    def runner(self):
+        if self._runner is None:
+            self._runner = select_runner(self.cfg)
+        return self._runner
+
+    def profile(self, state) -> dict:
+        name = state.get("profile")
+        if name not in self._profiles:
+            self._profiles[name] = resolve_profile(self.cfg, name)
+        return self._profiles[name]
+
+    def project(self, state) -> dict:
+        name = state.get("project")
+        if name not in self._projects:
+            self._projects[name] = P.project_config(self.cfg, name)
+        return self._projects[name]
+
+
+def _do_open(ctx: _Ctx, state: dict) -> StepResult:
+    """Create the worktree + branch, run the project's setup commands, record base sha and
+    spec hash. Serial (touches the main repository)."""
+    res = StepResult(state["id"], Step("open"), "OPENING")
+    repo = state.setdefault("repo", {})
+    try:
+        pcfg = ctx.project(state)
+        root = Path(repo["root"])
+        base = repo.get("base") or pcfg.get("base") or "main"
+        base_sha = git.rev_parse(root, base)
+        worktree = Path(repo["worktree"])
+        git.worktree_add(root, worktree, repo["branch"], base)
+        for cmd in (pcfg.get("worktrees") or {}).get("setup") or []:
+            r = subprocess.run(cmd, shell=True, cwd=str(worktree), capture_output=True, text=True)
+            if r.returncode != 0:
+                tail = "\n".join(((r.stdout or "") + (r.stderr or "")).splitlines()[-20:])
+                raise GitError([cmd], r.returncode, tail)
+        repo["base_sha_at_open"] = base_sha
+        repo["head"] = git.rev_parse(worktree)
+        spec = state.setdefault("spec", {})
+        spec["sha256_at_open"] = _spec_sha(worktree / spec.get("rel_path", ""))
+    except (GitError, ValueError, OSError) as e:
+        res.error = getattr(e, "tail", None) or str(e)
+    return res
+
+
+def _prepare_run(ctx: _Ctx, state: dict, persona: str):
+    """Main thread: mint the run id, build the request, append `run.start`, bump `runs` and
+    write the state. Returns (run_id, request, budget)."""
+    cfg = ctx.cfg
+    cid = state["id"]
+    profile = ctx.profile(state)
+    pcfg = ctx.project(state)
+    counters = _counters(state)
+    run_no = counters["runs"] + 1
+    run_id = f"{run_no:03d}-{persona}"
+    run_dir = store.runs_dir(cfg, cid) / run_id
+    previous = store.read_ledger(cfg, cid, types=["run.end"], tail=2)
+    req = PS.build_request(cfg, profile, pcfg, state, persona, run_dir=run_dir, previous=previous)
+    budget = float(req.max_budget_usd)
+    with store.item_lock(cfg, cid):
+        counters["runs"] = run_no
+        store.append_event(cfg, cid, "run.start", {
+            "persona": persona, "run_id": run_id, "model": req.model, "effort": req.effort,
+            "max_budget_usd": budget, "timeout_s": req.timeout_s,
+            "permission_mode": req.permission_mode, "prompt_sha256": PS.prompt_sha256(req.prompt),
+        })
+        store.write_state(cfg, cid, state)
+    return run_id, req, budget
+
+
+def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float) -> StepResult:
+    """Worker thread: run the persona; for the implementer, commit afterwards."""
+    res = StepResult(state["id"], step, state["state"], run_id=run_id, budget=budget)
+    try:
+        res.run_result = ctx.runner.run(req)
+        res.interrupted = ctx.stop.is_set()
+        if step.kind == "implement" and not res.interrupted:
+            pcfg = ctx.project(state)
+            summary = ""
+            if isinstance(res.run_result.verdict, dict):
+                summary = str(res.run_result.verdict.get("summary") or "").strip().splitlines()
+                summary = summary[0] if summary else ""
+            msg = f"wt({state['id']}): implementer run {run_id[:3]}"
+            if summary:
+                msg += f" — {summary[:72]}"
+            trailer = ((pcfg.get("agents") or {}).get("commit_trailer") or "").strip()
+            if trailer:
+                msg += f"\n\n{trailer}"
+            res.commit_message = msg
+            res.commit_sha = git.commit_all((state.get("repo") or {}).get("worktree"), msg)
+    except (GitError, ValueError, OSError) as e:
+        res.error = getattr(e, "tail", None) or str(e)
+    return res
+
+
+def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
+    res = StepResult(state["id"], Step("gate"), "GATING")
+    try:
+        pcfg = ctx.project(state)
+        res.gate_run = G.run_all(pcfg, state, ctx.cfg, seq=G.next_gate_seq(ctx.cfg, state["id"]))
+    except (ValueError, OSError) as e:
+        res.error = str(e)
+    return res
+
+
+def _do_close(ctx: _Ctx, state: dict) -> StepResult:
+    res = StepResult(state["id"], Step("close"), "CLOSING")
+    try:
+        res.close_outcome = CL.close_campaign(ctx.cfg, state, ctx.project(state))
+    except (GitError, ValueError, OSError) as e:
+        res.error = getattr(e, "tail", None) or str(e)
+    return res
+
+
+# ---- applying results (main thread) ---------------------------------------------------------
+
+def _fresh(cfg, state: dict) -> dict | None:
+    """Re-read the campaign from disk; None when a human moved it meanwhile (parked, abandoned
+    or resumed) — then the step's events are still recorded but the transition is skipped."""
+    on_disk = store.read_state(cfg, state["id"])
+    if on_disk.get("state") != state.get("state"):
+        return None
+    return on_disk
+
+
+def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
+    """Apply one StepResult: events, counters, cost, then the transition. Returns the report
+    row for `wt.queue.tick.v1`."""
+    cfg = ctx.cfg
+    cid = state["id"]
+    row = {"campaign": cid, "from": res.from_state, "to": None, "action": res.step.kind,
+           "run_id": res.run_id, "cost_usd": None, "reason": None}
+    events: list = list(res.events_before)
+    profile = ctx.profile(state)
+    counters = _counters(state)
+
+    def finish(to, reason, *, park=None):
+        current = _fresh(cfg, state)
+        if current is None:
+            # A human changed the state while the step ran: keep the facts, not the move.
+            with store.item_lock(cfg, cid):
+                for etype, payload in events:
+                    store.append_event(cfg, cid, etype, payload)
+                store.append_event(cfg, cid, "note", {
+                    "text": f"step {res.step.kind} finished after a human changed the state; "
+                            f"transition to {to} skipped", "author": "queue"})
+            row["to"], row["reason"] = store.read_state(cfg, cid).get("state"), "superseded_by_human"
+            return row
+        for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict",
+                  "pending_brief", "close"):
+            if k in state:
+                current[k] = state[k]
+        requested = current.get("park_requested") or state.get("park_requested")
+        if requested and park is None and to not in TERMINAL_STATES:
+            req = requested
+            _park(cfg, current, "human", req.get("detail") or req.get("reason") or "parked",
+                  _resume_target(to), by="human", extra_events=events)
+            row["to"], row["reason"] = "PARKED", "human"
+            return row
+        if park:
+            _park(cfg, current, park["reason"], park["detail"], park["resume_to"],
+                  extra_events=events)
+            row["to"], row["reason"] = "PARKED", park["reason"]
+            return row
+        _transition(cfg, current, to, reason, extra_events=events)
+        row["to"], row["reason"] = to, reason
+        return row
+
+    kind = res.step.kind
+    if res.error and kind != "close":
+        reason = {"open": "open_failed"}.get(kind, "open_failed")
+        detail = f"{kind} step failed: {res.error}"
+        resume = {"open": "QUEUED", "implement": "IMPLEMENTING", "gate": "GATING",
+                  "triage": "GATING"}.get(kind, "IMPLEMENTING")
+        return finish("PARKED", reason, park={"reason": reason, "detail": detail,
+                                               "resume_to": resume})
+
+    if kind == "open":
+        return finish("IMPLEMENTING", "opened")
+
+    if kind in ("implement", "triage"):
+        persona = res.step.persona
+        rr = res.run_result
+        events += _record_run(state, persona, res.run_id, rr, res.budget,
+                              interrupted=res.interrupted)
+        row["cost_usd"] = rr.cost_usd if rr.cost_usd is not None else res.budget
+        state["last_verdict"] = {"persona": persona, "run": res.run_id, "verdict": rr.verdict,
+                                 "verdict_ok": rr.verdict_ok}
+        if res.interrupted or rr.interrupted:
+            # State unchanged: the next tick spawns a fresh agent (run.end carries interrupted).
+            with store.item_lock(cfg, cid):
+                for etype, payload in events:
+                    store.append_event(cfg, cid, etype, payload)
+                store.write_state(cfg, cid, state)
+            row["to"], row["reason"] = res.from_state, "interrupted"
+            return row
+        if kind == "implement":
+            if res.commit_sha is not None or res.commit_message:
+                events.append(("commit", {"sha": res.commit_sha, "message": res.commit_message}))
+                if res.commit_sha:
+                    state.setdefault("repo", {})["head"] = res.commit_sha
+            state["pending_brief"] = None
+            status = (rr.verdict or {}).get("status") if isinstance(rr.verdict, dict) else None
+            if status == "blocked":
+                counters["blocked_streak"] += 1
+                if counters["blocked_streak"] >= BLOCKED_STREAK_MAX:
+                    blockers = "; ".join(str(b) for b in (rr.verdict.get("blockers") or [])) \
+                        or (rr.verdict.get("summary") or "")
+                    return finish("PARKED", "implementer_blocked", park={
+                        "reason": "implementer_blocked",
+                        "detail": f"blocked {counters['blocked_streak']}× in a row: {blockers}",
+                        "resume_to": "IMPLEMENTING"})
+            else:
+                counters["blocked_streak"] = 0
+            return finish("GATING", "implemented")
+        # triage
+        decision = decide_triage(state, profile, rr.verdict, rr.verdict_ok)
+        if decision.kind == "none":                      # malformed verdict, retry allowed
+            counters["triage_retries"] += 1
+            return finish("TRIAGING", "triage_retry")
+        if decision.kind == "park":
+            return finish("PARKED", decision.reason, park={
+                "reason": decision.reason, "detail": decision.detail,
+                "resume_to": decision.resume_to})
+        if decision.kind == "gate":
+            counters["gate_retries"] += 1
+            return finish("GATING", "retry_gate")
+        if decision.kind == "close":
+            return finish("CLOSING", "waived")
+        # fix
+        counters["loops"] += 1
+        counters["gate_retries"] = 0
+        counters["triage_retries"] = 0
+        v = rr.verdict or {}
+        notes = ((state.get("pending_brief") or {}).get("human_notes") or [])
+        state["pending_brief"] = {"source": "gate_triager", "fix_brief": v.get("fix_brief"),
+                                  "must_fix": list(v.get("must_fix") or []),
+                                  "human_notes": list(notes)}
+        return finish("IMPLEMENTING", "triage_fix")
+
+    if kind == "gate":
+        run = res.gate_run
+        counters["gate_runs"] += 1
+        payload = G.as_payload(run)
+        events.append(("gate", payload))
+        state["last_gate"] = payload
+        if run.ok:
+            return finish("CLOSING", "gates_green")
+        return finish("TRIAGING", "gates_failed")
+
+    if kind == "close":
+        counters["close_attempts"] += 1
+        if res.error:
+            return finish("PARKED", "open_failed", park={
+                "reason": "open_failed", "detail": f"close step failed: {res.error}",
+                "resume_to": "CLOSING"})
+        oc = res.close_outcome
+        for etype, payload in oc.events:
+            if etype == "park":
+                continue                                   # re-emitted by _park below
+            events.append((etype, payload))
+            if etype == "gate":
+                counters["gate_runs"] += 1
+                state["last_gate"] = payload
+            if etype == "commit" and payload.get("sha"):
+                state.setdefault("repo", {})["head"] = payload["sha"]
+        if oc.next_state in ("MERGED", "HANDED_OFF"):
+            state["close"] = oc.close
+            state["park"] = None
+            return finish(oc.next_state, "closed")
+        if oc.next_state == "TRIAGING":
+            if oc.synthetic_gate is not None:
+                state["last_gate"] = {"gate_seq": None, "ok": False, "started_at": store.now_iso(),
+                                      "duration_s": 0.0, "results": [oc.synthetic_gate]}
+                return finish("TRIAGING", "spec_dod")
+            return finish("TRIAGING", "regate_failed")
+        park = oc.park or {"reason": "open_failed", "detail": "close returned PARKED without a reason",
+                           "resume_to": "CLOSING"}
+        return finish("PARKED", park["reason"], park=park)
+
+    return finish(res.from_state, "noop")
+
+
+# ---- tick / run ------------------------------------------------------------------------------
+
+@dataclass
+class TickReport:
+    steps: list = field(default_factory=list)
+    admitted: int = 0
+    idle: bool = True
+    errors: list = field(default_factory=list)
+
+    def payload(self) -> dict:
+        return {"schema": "wt.queue.tick.v1", "steps": self.steps, "admitted": self.admitted,
+                "idle": self.idle, "errors": self.errors}
+
+
+def slots_for(cfg, profile_name=None) -> int:
+    try:
+        return int(resolve_profile(cfg, profile_name).get("slots") or 1)
+    except ValueError:
+        return 1
+
+
+def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -> TickReport:
+    """One bounded iteration: admit, open, plan, run agent steps concurrently, close serially,
+    apply everything on this thread. The caller holds the lease."""
+    ctx = _Ctx(cfg, stop=stop, runner=runner)
+    report = TickReport()
+    items = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
+    report.idle = not items
+    slots = slots_for(cfg)
+    busy = [s for s in items if s.get("state") in ACTIVE_STATES]
+    queued = sorted((s for s in items if s.get("state") == "QUEUED"),
+                    key=lambda s: (s.get("created_at") or "", s.get("id") or ""))
+
+    # 1. admission + opening (serial); an item admitted now waits for the next tick
+    admitted_ids = set()
+    if admit and not ctx.stop.is_set():
+        for st in queued:
+            if len(busy) >= slots:
+                break
+            if st.get("park_requested"):
+                continue
+            _transition(cfg, st, "OPENING", "admitted")
+            report.admitted += 1
+            admitted_ids.add(st["id"])
+            report.steps.append(_apply(ctx, st, _do_open(ctx, st)))
+            if st.get("state") in ACTIVE_STATES:
+                busy.append(st)
+
+    # 2. plan every item that was already active at the start of the tick
+    pending_agent = []       # (state, step, run_id, req, budget) for the pool
+    pending_close = []
+    for st in busy:
+        if st.get("state") not in ACTIVE_STATES or st["id"] in admitted_ids:
+            continue
+        try:
+            profile = ctx.profile(st)
+            pcfg = ctx.project(st)
+        except ValueError as e:
+            report.steps.append(_apply(ctx, st, StepResult(
+                st["id"], Step("open"), st["state"], error=str(e))))
+            continue
+        step = plan_step(st, profile, pcfg)
+        if step.kind == "none":
+            continue
+        if step.kind == "park":
+            report.steps.append(_park_row(cfg, st, step))
+            continue
+        if step.kind == "open":
+            report.steps.append(_apply(ctx, st, _do_open(ctx, st)))
+            continue
+        if step.kind == "close":
+            pending_close.append(st)
+            continue
+        if step.kind == "gate":
+            pending_agent.append((st, step, None, None, 0.0))
+            continue
+        if ctx.stop.is_set():
+            continue
+        try:
+            run_id, req, budget = _prepare_run(ctx, st, step.persona)
+        except (ValueError, OSError) as e:
+            report.steps.append(_apply(ctx, st, StepResult(
+                st["id"], step, st["state"], error=str(e))))
+            continue
+        pending_agent.append((st, step, run_id, req, budget))
+
+    # 3. agent steps concurrently
+    if pending_agent:
+        with ThreadPoolExecutor(max_workers=max(1, slots)) as pool:
+            futures = []
+            for st, step, run_id, req, budget in pending_agent:
+                if step.kind == "gate":
+                    futures.append((st, pool.submit(_do_gate, ctx, st)))
+                else:
+                    futures.append((st, pool.submit(_do_persona, ctx, st, step, run_id, req, budget)))
+            for st, fut in futures:
+                try:
+                    res = fut.result()
+                except Exception as e:      # a bug in a step must park, not kill the loop
+                    res = StepResult(st["id"], Step("implement"), st["state"], error=repr(e))
+                    report.errors.append(f"{st['id']}: {e!r}")
+                report.steps.append(_apply(ctx, st, res))
+
+    # 4. close steps serially (they touch the main checkout)
+    for st in pending_close:
+        if ctx.stop.is_set():
+            break
+        report.steps.append(_apply(ctx, st, _do_close(ctx, st)))
+
+    remaining = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
+    report.idle = not remaining
+    return report
+
+
+def _park_row(cfg, state: dict, step: Step) -> dict:
+    frm = state.get("state")
+    by = "human" if step.reason == "human" else "tick"
+    _park(cfg, state, step.reason, step.detail or step.reason, step.resume_to or frm, by=by)
+    return {"campaign": state["id"], "from": frm, "to": "PARKED", "action": "park",
+            "run_id": None, "cost_usd": None, "reason": step.reason}
+
+
+def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=False,
+        on_tick=None, runner=None, argv=None) -> int:
+    """The loop: take the lease, tick, heartbeat, sleep. SIGINT/SIGTERM stop admissions,
+    forward SIGTERM to this process group's children (the `claude` runs) when we lead the
+    group, let in-flight steps record themselves, and release the lease. Returns the number
+    of ticks performed."""
+    agentic = cfg.get("agentic") or {}
+    interval = float(poll_interval_s if poll_interval_s is not None
+                     else agentic.get("poll_interval_s") or 20)
+    stop = threading.Event()
+    lease = L.acquire(cfg, argv or ["wt", "queue", "run"])
+    previous = {}
+
+    def _handler(signum, _frame):
+        if stop.is_set():
+            return
+        stop.set()
+        try:
+            if os.getpgid(0) == os.getpid():                # we lead the group (setsid/nohup)
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                os.killpg(os.getpgid(0), signal.SIGTERM)
+        except OSError:
+            pass
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            previous[sig] = signal.signal(sig, _handler)
+        except ValueError:                                  # not the main thread (tests)
+            pass
+    ticks = 0
+    try:
+        while not stop.is_set():
+            report = tick(cfg, stop=stop, runner=runner)
+            ticks += 1
+            lease.heartbeat()
+            if on_tick:
+                on_tick(report)
+            if once or (max_ticks and ticks >= max_ticks) or (until_idle and report.idle):
+                break
+            deadline = time.monotonic() + interval
+            while time.monotonic() < deadline and not stop.is_set():
+                time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+    finally:
+        lease.release()
+        for sig, prev in previous.items():
+            try:
+                signal.signal(sig, prev)
+            except (ValueError, TypeError):
+                pass
+    return ticks
+
+
+# ---- listing -----------------------------------------------------------------------------------
+
+def _age(ts: str | None, now=None) -> int | None:
+    if not ts:
+        return None
+    import datetime as dt
+    try:
+        t = dt.datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    now = now or dt.datetime.now().astimezone()
+    if t.tzinfo is None:
+        t = t.astimezone()
+    return max(0, int((now - t).total_seconds()))
+
+
+def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> dict:
+    """`wt.queue.v1`: the lease, the slots and every in-flight item."""
+    rows = store.list_campaigns(cfg, include_terminal=include_terminal, project=project,
+                                state=state)
+    slots = slots_for(cfg)
+    busy = sum(1 for r in rows if r.get("state") in ACTIVE_STATES)
+    items = []
+    for r in rows:
+        counters = r.get("counters") or {}
+        cost = r.get("cost") or {}
+        try:
+            loop_max = resolve_profile(cfg, r.get("profile")).get("loop_max")
+        except ValueError:
+            loop_max = None
+        repo = r.get("repo") or {}
+        items.append({
+            "campaign": r.get("id"), "spec_id": r.get("spec_id"), "project": r.get("project"),
+            "profile": r.get("profile"), "state": r.get("state"),
+            "loops": f"{counters.get('loops', 0)}/{loop_max if loop_max is not None else '?'}",
+            "runs": counters.get("runs", 0),
+            "cost_usd": round(float(cost.get("total_usd") or 0.0), 4),
+            "cap_usd": cost.get("cap_usd"),
+            "age_s": _age(r.get("created_at")), "updated_age_s": _age(r.get("updated_at")),
+            "park": r.get("park"), "park_requested": bool(r.get("park_requested")),
+            "worktree": repo.get("worktree"), "branch": repo.get("branch"),
+        })
+    return {"schema": "wt.queue.v1", "lease": L.lease_status(cfg),
+            "slots": {"total": slots, "busy": busy}, "items": items}
+
+
+# ---- admission (wt queue add) --------------------------------------------------------------------
+
+def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False) -> dict:
+    """Resolve everything `wt queue add` needs and return the plan (no writes). Raises
+    ValueError with the fix when the spec is not admissible."""
+    spec_id = (spec_id or "").strip()
+    if not spec_id:
+        raise ValueError("spec id is required")
+    outbound = SP._is_outbound_spec_id(spec_id)
+    path = SP.resolve_spec_path(cfg, spec_id)
+    fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
+    fm = fm or {}
+    status = str(fm.get("status") or "")
+    if status != "accepted" and not (force and status == "in-progress"):
+        raise ValueError(f"{spec_id} is {status or 'missing status'!r}; only `accepted` specs are "
+                         f"queued (pass --force for in-progress)")
+    if outbound:
+        project = project or fm.get("target_project") or path.parent.name
+    else:
+        project = project or "Meta-Tools"
+    pcfg = P.project_config(cfg, project)
+    root = Path(pcfg["_root"])
+    if outbound:
+        target = fm.get("target_spec_path")
+        if not target or not Path(target).is_file():
+            raise ValueError(f"{spec_id}: portable spec not found at {target!r}; run "
+                             f"`wt spec export {spec_id}` first")
+        spec_path = Path(target).resolve()
+    else:
+        spec_path = path.resolve()
+    try:
+        rel = str(spec_path.relative_to(root.resolve()))
+    except ValueError:
+        raise ValueError(f"{spec_id}: spec file {spec_path} is not inside the project repo {root}")
+    active = store.active_campaign_for_spec(cfg, spec_id)
+    if active:
+        raise ValueError(f"{spec_id} already has an active campaign {active['id']} "
+                         f"({active.get('state')}); abandon it first")
+    prof = resolve_profile(cfg, profile)
+    base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
+    cid = store.new_campaign_id(cfg, spec_id)
+    worktree = P.worktree_root(pcfg, root, project) / cid
+    return {
+        "campaign": cid, "spec_id": spec_id, "project": project, "profile": prof["name"],
+        "base": base, "repo_root": str(root), "spec_rel_path": rel, "spec_status": status,
+        "internal": not outbound, "worktree": str(worktree), "branch": f"wt/{cid}",
+        "cap_usd": prof.get("campaign_cap_usd"), "loop_max": prof.get("loop_max"),
+        "slots": prof.get("slots"), "merge_policy": (pcfg.get("merge") or {}).get("policy"),
+    }
+
+
+def apply_add(cfg, plan: dict, *, by="human") -> dict:
+    """Create the campaign in `QUEUED` from a `plan_add` plan. Re-checks the active-campaign
+    guard against live state before writing."""
+    active = store.active_campaign_for_spec(cfg, plan["spec_id"])
+    if active:
+        raise ValueError(f"{plan['spec_id']} already has an active campaign {active['id']}")
+    state = {
+        "schema": "wt.campaign.v1", "id": plan["campaign"], "kind": "implement",
+        "spec_id": plan["spec_id"], "project": plan["project"], "profile": plan["profile"],
+        "state": "QUEUED", "prev_state": None, "created_at": store.now_iso(),
+        "repo": {"root": plan["repo_root"], "base": plan["base"], "base_sha_at_open": None,
+                 "branch": plan["branch"], "worktree": plan["worktree"], "head": None},
+        "spec": {"rel_path": plan["spec_rel_path"], "internal": plan["internal"],
+                 "sha256_at_open": None},
+        "counters": {"loops": 0, "runs": 0, "gate_runs": 0, "gate_retries": 0,
+                     "triage_retries": 0, "blocked_streak": 0, "close_attempts": 0, "parks": 0},
+        "cost": {"total_usd": 0.0, "cap_usd": plan.get("cap_usd"), "by_persona": {}},
+        "last_gate": None, "last_verdict": None,
+        "pending_brief": None, "park": None, "close": None,
+    }
+    store.create_campaign(cfg, state, by=by)
+    return state
+
+
+# ---- human commands ------------------------------------------------------------------------------
+
+def plan_park(cfg, campaign, reason) -> dict:
+    st = store.read_state(cfg, campaign)
+    s = st.get("state")
+    if s in TERMINAL_STATES or s == "PARKED":
+        raise ValueError(f"{campaign} is {s}; nothing to park")
+    running = L.is_held(cfg) and s in ACTIVE_STATES
+    return {"campaign": campaign, "state": s, "reason": reason,
+            "mode": "deferred" if running else "immediate",
+            "note": ("a loop holds the lease: the running step finishes and is recorded, then "
+                     "the park applies" if running else "no loop is running: parks now"),
+            "resume_to": _resume_target(s) if s != "QUEUED" else "QUEUED"}
+
+
+def apply_park(cfg, plan: dict) -> dict:
+    cid = plan["campaign"]
+    with store.item_lock(cfg, cid):
+        st = store.read_state(cfg, cid)
+        if st.get("state") in TERMINAL_STATES or st.get("state") == "PARKED":
+            raise ValueError(f"{cid} is {st.get('state')}; nothing to park")
+        if plan["mode"] == "deferred":
+            st["park_requested"] = {"reason": "human", "detail": plan["reason"],
+                                    "at": store.now_iso()}
+            store.append_event(cfg, cid, "note", {"text": f"park requested: {plan['reason']}",
+                                                  "author": "human"}, by="human")
+            store.write_state(cfg, cid, st)
+            return st
+        return _park(cfg, st, "human", plan["reason"], plan["resume_to"], by="human")
+
+
+def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loops=False) -> dict:
+    st = store.read_state(cfg, campaign)
+    if st.get("state") != "PARKED":
+        raise ValueError(f"{campaign} is {st.get('state')}, not PARKED")
+    park = st.get("park") or {}
+    target = to or park.get("resume_to") or "IMPLEMENTING"
+    if target not in RESUMABLE_STATES:
+        raise ValueError(f"cannot resume to {target!r}; one of {', '.join(RESUMABLE_STATES)}")
+    return {"campaign": campaign, "from": "PARKED", "to": target, "note": note,
+            "raise_cap": raise_cap, "reset_loops": bool(reset_loops),
+            "park": park, "cap_usd": (st.get("cost") or {}).get("cap_usd")}
+
+
+def apply_resume(cfg, plan: dict) -> dict:
+    cid = plan["campaign"]
+    with store.item_lock(cfg, cid):
+        st = store.read_state(cfg, cid)
+        if st.get("state") != "PARKED":
+            raise ValueError(f"{cid} is {st.get('state')}, not PARKED")
+        if plan.get("note"):
+            brief = st.get("pending_brief") or {"source": "human", "fix_brief": None,
+                                                "must_fix": [], "human_notes": []}
+            brief.setdefault("human_notes", []).append(plan["note"])
+            st["pending_brief"] = brief
+        if plan.get("raise_cap") is not None:
+            _cost(st)["cap_usd"] = float(plan["raise_cap"])
+        if plan.get("reset_loops"):
+            c = _counters(st)
+            c["loops"] = 0
+            c["blocked_streak"] = 0
+            c["triage_retries"] = 0
+            c["gate_retries"] = 0
+        st["park"] = None
+        st.pop("park_requested", None)
+        ev = ("resume", {"to": plan["to"], "note": plan.get("note"),
+                         "cap_usd": plan.get("raise_cap"), "loops_reset": bool(plan.get("reset_loops"))})
+        return _transition(cfg, st, plan["to"], "resumed", by="human", extra_events=[ev])
+
+
+def plan_abandon(cfg, campaign, *, keep_worktree=False) -> dict:
+    st = store.read_state(cfg, campaign)
+    if st.get("state") not in ("PARKED", "QUEUED"):
+        raise ValueError(f"{campaign} is {st.get('state')}; only PARKED or QUEUED campaigns can "
+                         f"be abandoned (park it first)")
+    repo = st.get("repo") or {}
+    wt_path = repo.get("worktree")
+    present = bool(wt_path and os.path.isdir(wt_path))
+    return {"campaign": campaign, "from": st.get("state"), "worktree": wt_path,
+            "worktree_present": present, "remove_worktree": present and not keep_worktree,
+            "branch": repo.get("branch")}
+
+
+def apply_abandon(cfg, plan: dict) -> dict:
+    cid = plan["campaign"]
+    with store.item_lock(cfg, cid):
+        st = store.read_state(cfg, cid)
+        if st.get("state") not in ("PARKED", "QUEUED"):
+            raise ValueError(f"{cid} is {st.get('state')}; only PARKED or QUEUED campaigns can "
+                             f"be abandoned")
+        events = []
+        if plan.get("remove_worktree"):
+            try:
+                git.worktree_remove((st.get("repo") or {}).get("root"), plan["worktree"], force=True)
+            except GitError as e:
+                events.append(("finding", {"persona": "human", "severity": "minor",
+                                           "gate": "cleanup", "title": "worktree removal failed",
+                                           "detail": e.tail, "files": []}))
+        st["park"] = None
+        st.pop("park_requested", None)
+        events.append(("close", {"mode": "abandoned", "merged_sha": None, "pr_url": None,
+                                 "gates_seq": None, "worktree_removed": bool(plan.get("remove_worktree"))}))
+        return _transition(cfg, st, "ABANDONED", "abandoned", by="human", extra_events=events)
+
+
+def tick_row_text(row: dict) -> str:
+    extra = f" run {row['run_id']}" if row.get("run_id") else ""
+    cost = f" ${row['cost_usd']:.2f}" if row.get("cost_usd") is not None else ""
+    return f"{row['campaign']}: {row['from']} → {row['to']} ({row['action']}; {row['reason']}){extra}{cost}"
+

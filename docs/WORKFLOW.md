@@ -24,6 +24,9 @@ wt ideas --json      agents: structured list (also: wt next --json, wt idea show
 /wt-explore          Cursor: enrich idea, never promote
 /wt-new-work         Cursor: explored idea → accepted spec (post-explore)
 /wt-generate         Cursor: accepted spec → org tasks
+wt queue add SPEC    agentic loop (SPEC-0169/0176): queue an accepted spec; `--yes` writes
+wt queue run / list  the loop (one process, lease) / what is in flight; PARKED = your turn
+wt campaign log ID   every transition, run, gate, finding and dollar of one campaign
 implement            you or the agent
 /wt-verify           Cursor: post-hoc DoD audit (global) — internal: `wt spec verify`;
                      outbound portable: audit the file in the target repo

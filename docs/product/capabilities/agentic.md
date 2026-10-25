@@ -134,8 +134,45 @@ Idea states are not touched here; `/wt-conduct` runs `wt spec reconcile --apply`
 
 ## Queue
 
-`wt queue add|list|watch|tick|run|park|resume|abandon` and the state machine
-(SPEC-0176).
+The queue is the engine (SPEC-0176). Python decides every transition; personas only produce
+commits and one verdict. One process runs the loop at a time (the lease), two or three
+campaigns advance concurrently (the profile's `slots`).
+
+```bash
+wt queue add SPEC-0170            # plan only (dry-run)
+wt queue add SPEC-0170 --yes      # create the campaign in QUEUED
+wt queue list                     # in flight: state, loops, cost, lease health
+wt queue watch                    # the same, live
+wt queue run                      # the loop; wt queue tick = one iteration
+```
+
+State machine:
+
+```
+QUEUED → OPENING → IMPLEMENTING → GATING → CLOSING → MERGED | HANDED_OFF
+                        ▲            │ required gate failed
+                        └─ TRIAGING ◀┘   fix (loops+1) · retry_gate (once per loop) ·
+                                          waive (optional gates only) · escalate
+any state → PARKED (humans only) → resume | abandon
+```
+
+- **OPENING** creates the worktree and branch and runs `worktrees.setup`.
+- **IMPLEMENTING** spawns a fresh implementer; the runner commits whatever changed.
+- **GATING** runs every gate; all required green ⇒ CLOSING, else TRIAGING.
+- **TRIAGING** spawns the read-only gate triager only after a failure.
+- **CLOSING** rebases, re-gates, audits the spec's Definition of Done, then fast-forwards
+  the base or opens a PR.
+
+Park reasons: `cost_cap` (checked pessimistically before every spawn), `loop_exhausted`,
+`implementer_blocked` (blocked twice in a row), `triage_escalated`, `open_failed`,
+`rebase_conflict`, `main_dirty`, `main_not_on_base`, `base_moving`, `gh_failed`, `human`.
+A parked item keeps its worktree; `wt queue resume ID [--to STATE] [--note …]
+[--raise-cap USD] [--reset-loops] --yes` continues it, `wt queue abandon ID --yes` ends it.
+With a loop running, `wt queue park` applies after the current step is recorded.
+
+Every transition, run (with cost), gate run, finding, park and close is in the campaign's
+ledger (`wt campaign log ID`). `--json` shapes: `wt.queue.v1`, `wt.queue.add.v1`,
+`wt.queue.tick.v1`, `wt.queue.park.v1`, `wt.queue.resume.v1`, `wt.queue.abandon.v1`.
 
 ## Conductor
 

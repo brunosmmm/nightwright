@@ -3,7 +3,12 @@ holding an atomically written `state.json` and an append-only `ledger.jsonl`.
 
 Writers take the campaign's `flock` (`.lock`) around every read-modify-write and every append,
 so the loop and human commands can touch the same campaign at once. The queue is a scan of
-`state.json` files — there is no second index to drift."""
+`state.json` files — there is no second index to drift.
+
+`item_lock` is reentrant within a process (SPEC-0176): a per-campaign `threading.RLock` plus a
+depth counter take the `flock` only at depth 1, so the queue can append events while it holds
+the lock for a read-modify-write. Across processes (or two fds in one process that bypass this
+helper) the `flock` still excludes."""
 from __future__ import annotations
 
 import datetime as dt
@@ -11,6 +16,7 @@ import fcntl
 import json
 import os
 import secrets
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -100,18 +106,49 @@ def write_state(cfg, campaign_id, state: dict) -> None:
                   json.dumps(state, indent=2, ensure_ascii=False) + "\n")
 
 
+_LOCKS_GUARD = threading.Lock()
+_LOCKS: dict[str, tuple[threading.RLock, dict]] = {}   # lock file path -> (rlock, {"depth", "fd"})
+
+
+def _process_lock(path: Path):
+    with _LOCKS_GUARD:
+        entry = _LOCKS.get(str(path))
+        if entry is None:
+            entry = (threading.RLock(), {"depth": 0, "fd": None})
+            _LOCKS[str(path)] = entry
+        return entry
+
+
 @contextmanager
 def item_lock(cfg, campaign_id):
-    """Exclusive `flock` on `campaigns/<id>/.lock` for the duration of the block."""
+    """Exclusive `flock` on `campaigns/<id>/.lock` for the duration of the block. Reentrant
+    within the process: nested use by the same thread re-enters the RLock and leaves the
+    single `flock` in place; other threads wait on the RLock; other processes wait on the
+    `flock`."""
     d = campaign_dir(cfg, campaign_id)
     d.mkdir(parents=True, exist_ok=True)
-    fd = os.open(d / ".lock", os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
+    lock_file = d / ".lock"
+    rlock, meta = _process_lock(lock_file)
+    with rlock:
+        if meta["depth"] == 0:
+            fd = os.open(lock_file, os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except BaseException:
+                os.close(fd)
+                raise
+            meta["fd"] = fd
+        meta["depth"] += 1
+        try:
+            yield
+        finally:
+            meta["depth"] -= 1
+            if meta["depth"] == 0:
+                fd, meta["fd"] = meta["fd"], None
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
 
 
 # ---- ledger ----------------------------------------------------------------------------

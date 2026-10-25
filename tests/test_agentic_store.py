@@ -161,3 +161,45 @@ def test_paths(tmp_path):
     assert S.agentic_dir(cfg) == Path(cfg["data_dir"]) / "agentic"
     assert S.runs_dir(cfg, "X") == S.campaign_dir(cfg, "X") / "runs"
     assert S.gates_dir(cfg, "X") == S.campaign_dir(cfg, "X") / "gates"
+
+
+# ---- SPEC-0176: item_lock is reentrant within the process, exclusive across processes ------------
+
+def test_item_lock_reentrant_and_append_inside(tmp_path):
+    import subprocess
+    import sys
+    import threading
+    import time
+
+    cfg = _cfg(tmp_path)
+    cid = "SPEC-0001-20261025-lock"
+    S.create_campaign(cfg, {"id": cid, "spec_id": "SPEC-0001", "state": "QUEUED"})
+    with S.item_lock(cfg, cid):
+        with S.item_lock(cfg, cid):                     # nested: must not deadlock
+            S.append_event(cfg, cid, "note", {"text": "inside"})
+        S.append_event(cfg, cid, "note", {"text": "still inside"})
+    assert [e["text"] for e in S.read_ledger(cfg, cid, types=["note"])] == ["inside", "still inside"]
+
+    # another thread waits for the lock (RLock is per thread)
+    order = []
+    with S.item_lock(cfg, cid):
+        t = threading.Thread(target=lambda: (S.append_event(cfg, cid, "note", {"text": "thread"}),
+                                             order.append("thread")))
+        t.start()
+        time.sleep(0.2)
+        order.append("main")
+    t.join(5)
+    assert order == ["main", "thread"]
+
+    # another process blocks on the flock while we hold it
+    code = (
+        "import sys, time, fcntl, os\n"
+        f"fd = os.open({str(S.campaign_dir(cfg, cid) / '.lock')!r}, os.O_RDWR | os.O_CREAT)\n"
+        "try:\n    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError:\n"
+        "    print('blocked')\nelse:\n    print('acquired')\n"
+    )
+    with S.item_lock(cfg, cid):
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True).stdout
+    assert out.strip() == "blocked"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True).stdout
+    assert out.strip() == "acquired"

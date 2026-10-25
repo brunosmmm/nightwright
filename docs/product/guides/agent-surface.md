@@ -53,6 +53,10 @@ scraping tables. Shapes below are illustrative — fields evolve; trust the live
 | `wt.campaign.v1` | `wt campaign show ID --json` | campaign state + `last_events` (SPEC-0171) |
 | `wt.campaign.log.v1` | `wt campaign log ID --json` | `{schema, campaign, events:[{seq,ts,type,by,…}]}` |
 | `wt.campaign.gate.v1` | `wt queue gates ID --json` | `{schema, campaign, gate_seq, ok, results:[{name,required,ok,exit_code,timed_out,duration_s,log,tail}]}` (SPEC-0173) |
+| `wt.queue.v1` | `wt queue list --json` | `{schema, lease:{held,pid,heartbeat_age_s,ttl_s,stale}, slots:{total,busy}, items:[{campaign,spec_id,project,state,loops,cost_usd,cap_usd,park,worktree,branch}]}` (SPEC-0176) |
+| `wt.queue.add.v1` | `wt queue add SPEC --json [--yes]` | `{schema, campaign, spec_id, project, profile, base, worktree, branch, …, written}` (dry-run unless `--yes`) |
+| `wt.queue.tick.v1` | `wt queue tick --json` / `wt queue run --json-lines` | `{schema, steps:[{campaign,from,to,action,run_id,cost_usd,reason}], admitted, idle}` |
+| `wt.queue.park.v1` / `wt.queue.resume.v1` / `wt.queue.abandon.v1` | `wt queue park|resume|abandon ID --json [--yes]` | plan fields + `written` |
 
 Example (hub triage):
 

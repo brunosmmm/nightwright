@@ -1,7 +1,7 @@
 ---
 id: SPEC-0176
 title: "Queue state machine with lease-guarded tick/run, park/resume and listing"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -136,37 +136,37 @@ gets the schema rows; `docs/WORKFLOW.md` gets a three-line "agentic loop" entry.
 
 ## Acceptance criteria
 
-- [ ] Every row of the transition table holds (parametrized tests over `plan_step` and
+- [x] Every row of the transition table holds (parametrized tests over `plan_step` and
       `apply_step` with fake results), including `retry_gate` limited to one per loop,
       `waive` only for optional failures, malformed-verdict retry-then-escalate, and the
       double-`blocked` park.
-- [ ] Loop exhaustion, the pessimistic cost cap, triage escalate and open failure each park
+- [x] Loop exhaustion, the pessimistic cost cap, triage escalate and open failure each park
       with the named reason and the documented `resume_to`.
-- [ ] Admission is FIFO and respects `slots`; a second `tick` while the lease is held
+- [x] Admission is FIFO and respects `slots`; a second `tick` while the lease is held
       fails naming the holder.
-- [ ] `park` on a running item applies after its step is recorded; `resume --note`
+- [x] `park` on a running item applies after its step is recorded; `resume --note`
       appears in the next implementer prompt; `--raise-cap` / `--reset-loops` are recorded
       and effective.
-- [ ] SIGTERM during a fake run with `sleep_s` leaves state unchanged, records
+- [x] SIGTERM during a fake run with `sleep_s` leaves state unchanged, records
       `run.end{interrupted}` with its cost, and releases the lease.
-- [ ] `wt queue add` refuses a non-accepted spec, an unknown project and a spec with an
+- [x] `wt queue add` refuses a non-accepted spec, an unknown project and a spec with an
       active campaign; writes only with `--yes`; `--json` emits `wt.queue.add.v1`.
-- [ ] `wt queue list --json` emits `wt.queue.v1` with lease, slots and items; `watch`
+- [x] `wt queue list --json` emits `wt.queue.v1` with lease, slots and items; `watch`
       renders without error for two intervals in a pilot run.
-- [ ] **End-to-end (internal):** temp repo as `wt_checkout` with `.wt/project.yaml` (two
+- [x] **End-to-end (internal):** temp repo as `wt_checkout` with `.wt/project.yaml` (two
       `sh` gates), an accepted spec, `FakeRunner` script whose first run writes the feature
       file and sets the spec `done` ⇒ `wt queue add --yes` + `wt queue run --until-idle`
       ⇒ `MERGED`; main contains the file; worktree removed; ledger contains `open,
       transition×n, run.start, run.end, commit, gate×2, cost, close`; `wt queue list --json`
       has no items.
-- [ ] **End-to-end (outbound):** same with an `outbox_targets` project and policy `pr`
+- [x] **End-to-end (outbound):** same with an `outbox_targets` project and policy `pr`
       with the fake `gh` ⇒ `HANDED_OFF` with a URL.
-- [ ] **Park variants:** never-green gate ⇒ `loop_exhausted` after `loop_max` loops (with
+- [x] **Park variants:** never-green gate ⇒ `loop_exhausted` after `loop_max` loops (with
       the triager returning `fix` each time); dirty main ⇒ `main_dirty`, then `resume`
       after cleaning ⇒ `MERGED`; `campaign_cap_usd 0.01` ⇒ `cost_cap` before the first
       spawn; conflicting base commit ⇒ `rebase_conflict`.
-- [ ] Completion, reference, agent-surface and mkdocs guards pass.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] Completion, reference, agent-surface and mkdocs guards pass.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -181,6 +181,62 @@ gets the schema rows; `docs/WORKFLOW.md` gets a three-line "agentic loop" entry.
   `wt campaign log`. The real-runner run belongs to SPEC-0177.
 - **Regression guard:** full `uv run pytest`.
 
+### As shipped (deviations from the Design above, recorded 2026-10-25)
+
+- **Loop counting.** A loop is counted exactly once, when the triager sends work back
+  (`fix`, or a `retry_gate` beyond its allowance). A close that routes to `TRIAGING`
+  (re-gate failure or the `spec-dod` synthetic gate) does not itself increment `loops`;
+  the triage that follows does. This avoids double-counting one failure.
+- **Human park timing.** `wt queue park --yes` parks immediately when no loop holds the
+  lease. With a loop running it only records `park_requested`; the next tick parks the
+  item before spawning anything if the request arrived between ticks, or right after the
+  in-flight step is recorded if it arrived mid-step (`park.resume_to` then points past the
+  finished step, e.g. `GATING` after an implementer run). `human` is a park reason.
+- **Signals.** On SIGINT/SIGTERM the loop stops admitting and, when it leads its process
+  group (started with `setsid`/`nohup` in its own session, or `start_new_session`), forwards
+  SIGTERM to the group so running `claude` children stop; it then waits for the in-flight
+  steps, records them with `run.end{interrupted: true}` (state unchanged, cost charged),
+  and releases the lease. No SIGKILL of the group (that would kill the loop itself);
+  the runner's own timeout remains the hard stop.
+- **Step failures.** An exception inside any step (git, config, runner) parks the campaign
+  with reason `open_failed` and a `detail` naming the step, instead of crashing the loop.
+- **Human changes mid-step.** If a human moved the item (abandon/resume) while a step ran,
+  the step's events are still appended and a `note` says the transition was skipped.
+- **`item_lock` reentrancy** (SPEC-0171 module, changed here): per-campaign
+  `threading.RLock` + depth counter; the `flock` is taken at depth 1 only, so
+  `append_event` nests inside `item_lock`. Cross-process exclusion unchanged (tested).
+- **Outbound admission** uses the portable file at the spec's frozen `target_spec_path`
+  inside the target repo; a not-yet-exported outbound spec is refused with the export hint.
+- `wt queue watch` has a hidden `--iterations N` for tests; `wt queue list` folds the park
+  reason into the state cell to fit 80 columns, and never truncates campaign ids.
+- Extra counters: `triage_retries`, `blocked_streak` (reset by `resume --reset-loops`).
+
+### Test record (2026-10-25)
+
+- **Automated:** `tests/test_agentic_queue.py` (26: `plan_step` table and pessimistic cap,
+  human park request per state, `decide_triage` matrix, `_apply` over synthetic results —
+  blocked×2, missing cost, triage fix/brief/reset, malformed retry→escalate, gate routing,
+  close outcomes incl. synthetic gate and park de-duplication, step error, human-moved
+  item — FIFO admission by slots, lease refusal), `tests/test_agentic_queue_cli.py` (8:
+  add dry-run/envelope/refusals/`--force`/outside-repo, list shape+filters, park/resume/
+  abandon dry-runs and errors, help), `tests/test_agentic_e2e.py` (10: internal → MERGED
+  with the full ledger trail and commit trailer; outbound `pr` → HANDED_OFF with fake `gh`;
+  `loop_exhausted`; `main_dirty` then `resume` → MERGED; `cost_cap` before any spawn then
+  `--raise-cap`; `rebase_conflict`; immediate park + abandon; deferred park both timings;
+  `watch`; SIGTERM against a real `wt queue run` process), reentrancy test in
+  `tests/test_agentic_store.py`. Full suite in the worktree: **1449 passed, 1 skipped,
+  0 failed**; completion, reference, agent-surface and mkdocs guards included.
+- **Manual (scratch clone of this checkout, tmp dir):** committed a scratch
+  `.wt/project.yaml` (gates: `spec_lint --write-ledger && spec_lint`, `uv run pytest
+  tests/test_specs.py`; setup `uv sync`) and an accepted scratch spec; fake implementer
+  writes a file and sets the spec `done`. `wt queue add SPEC-0179 --yes` then `wt queue run
+  --until-idle`: 4 ticks, 7.6 s wall, `MERGED` — ledger: open, admitted, opened, run.start,
+  run.end ($0.42), cost, commit, implemented, gate #1 ok, gates_green, close-time snapshot
+  commit (the regenerated ledger), gate #2 ok on the rebased tree, close, closed. Clone
+  `main` has the two commits and a clean tree; the worktree was removed. `wt queue list
+  --all` shows `MERGED $0.42/10`.
+- **Not done here (SPEC-0177):** a real `claude` run through the loop.
+
 ## Clock Log
 
 Internal work: clock on IDEA-023 with `wt idea clock-in` / `clock-out`.
@@ -192,11 +248,11 @@ commands are unchanged.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
