@@ -9,11 +9,11 @@ PROFILE_KEYS = {"slots", "loop_max", "campaign_cap_usd", "run_timeout_s", "perso
 
 
 def test_builtins_are_complete():
-    for name, prof in P.BUILTIN_PROFILES.items():
+    for name, prof in P.builtin_profiles().items():
         assert PROFILE_KEYS <= set(prof), name
         for persona, settings in prof["personas"].items():
             assert PERSONA_KEYS <= set(settings), (name, persona)
-    assert P.BUILTIN_PROFILES["balanced"]["personas"]["gate_triager"]["read_only"] is True
+    assert P.builtin_profiles()["balanced"]["personas"]["gate_triager"]["read_only"] is True
 
 
 def test_default_config_has_agentic_block():
@@ -26,10 +26,12 @@ def test_default_config_has_agentic_block():
 def test_resolve_default_is_balanced():
     prof = P.resolve_profile({"agentic": dict(DEFAULT_CONFIG["agentic"])})
     assert prof["name"] == "balanced"
-    assert prof == {**P.BUILTIN_PROFILES["balanced"], "name": "balanced"}
+    meta = {"name", "description", "sources"}
+    assert {k: v for k, v in prof.items() if k not in meta} == P.builtin_profiles()["balanced"]
+    assert prof["name"] == "balanced" and prof["sources"] == ["builtin:balanced.yaml"]
     # a resolved profile is a copy — mutating it must not leak into the builtin
     prof["personas"]["implementer"]["model"] = "x"
-    assert P.BUILTIN_PROFILES["balanced"]["personas"]["implementer"]["model"] == "sonnet"
+    assert P.builtin_profiles()["balanced"]["personas"]["implementer"]["model"] == "sonnet"
 
 
 def test_user_delta_keeps_every_other_builtin_key():
@@ -38,7 +40,7 @@ def test_user_delta_keeps_every_other_builtin_key():
     prof = P.resolve_profile(cfg, "balanced")
     assert prof["personas"]["implementer"]["max_budget_usd"] == 6.0
     assert prof["personas"]["implementer"]["model"] == "sonnet"       # untouched sibling key
-    assert prof["personas"]["gate_triager"] == P.BUILTIN_PROFILES["balanced"]["personas"]["gate_triager"]
+    assert prof["personas"]["gate_triager"] == P.builtin_profiles()["balanced"]["personas"]["gate_triager"]
     assert prof["slots"] == 2 and prof["loop_max"] == 3
 
 
@@ -46,7 +48,7 @@ def test_new_user_profile_merges_over_balanced():
     cfg = {"agentic": {"profiles": {"mine": {"slots": 1, "campaign_cap_usd": 2.0}}}}
     prof = P.resolve_profile(cfg, "mine")
     assert prof["name"] == "mine" and prof["slots"] == 1 and prof["campaign_cap_usd"] == 2.0
-    assert prof["personas"] == P.BUILTIN_PROFILES["balanced"]["personas"]
+    assert prof["personas"] == P.builtin_profiles()["balanced"]["personas"]
     assert "mine" in P.known_profiles(cfg)
 
 
@@ -166,7 +168,7 @@ def test_review_defaults(name, score):
     assert P.review_params(prof) == (score, DEFAULT_WEIGHTS)
     assert P.review_params({}) == (80, DEFAULT_WEIGHTS)
     prof["review"]["weights"]["major"] = 1                      # a copy, not the builtin
-    assert P.BUILTIN_PROFILES[name]["review"]["weights"]["major"] == 15
+    assert P.builtin_profiles()[name]["review"]["weights"]["major"] == 15
 
 
 def test_review_user_delta_merges_partial_weights():
@@ -405,7 +407,246 @@ def test_matrix_config_errors_name_the_cell(matrix, needle):
     ("frugal", "sonnet", "medium", 1.0), ("balanced", "sonnet", "high", 2.0),
     ("thorough", "opus", "high", 4.0)])
 def test_builtin_conflict_resolver_settings(name, model, effort, budget):         # SPEC-0221
-    s = P.persona_settings(P.BUILTIN_PROFILES[name], "conflict_resolver")
+    s = P.persona_settings(P.builtin_profiles()[name], "conflict_resolver")
     assert (s["model"], s["effort"], s["max_budget_usd"]) == (model, effort, budget)
     assert s["read_only"] is False and s["permission_mode"] == "bypassPermissions"
-    assert budget < P.persona_settings(P.BUILTIN_PROFILES[name], "implementer")["max_budget_usd"]
+    assert budget < P.persona_settings(P.builtin_profiles()[name], "implementer")["max_budget_usd"]
+
+
+# ---- SPEC-0237: YAML layers ------------------------------------------------------------------
+
+import json
+from pathlib import Path
+
+DEFS = Path(P.__file__).resolve().parent / "profile_defs"
+SCHEMA = "schema: wt.profile.v1\n"
+
+
+def _layers(tmp_path):
+    """(cfg, user dir, project root): a temp config dir and a temp project main checkout."""
+    cfg = {"config_dir": str(tmp_path / "cfg"), "agentic": {"profiles": {}}}
+    user = tmp_path / "cfg" / "profiles"
+    proj = tmp_path / "proj"
+    user.mkdir(parents=True, exist_ok=True)
+    (proj / ".wt" / "profiles").mkdir(parents=True, exist_ok=True)
+    return cfg, user, proj
+
+
+def _put(directory, name, text, suffix=".yaml"):
+    p = Path(directory) / f"{name}{suffix}"
+    p.write_text(text, encoding="utf-8")
+    return str(p)
+
+
+def _pdir(proj):
+    return proj / ".wt" / "profiles"
+
+
+def test_builtin_files_match_the_golden_snapshot():
+    golden = json.loads((Path(__file__).parent / "data" / "builtin_profiles_v1.json").read_text())
+    assert P.builtin_profiles() == golden
+    for name in golden:
+        assert (DEFS / f"{name}.yaml").read_text().startswith("schema: wt.profile.v1\n")
+    got = P.builtin_profiles()
+    got["balanced"]["personas"]["implementer"]["model"] = "x"          # copies, not shared
+    assert P.builtin_profiles()["balanced"]["personas"]["implementer"]["model"] == "sonnet"
+    assert not hasattr(P, "BUILTIN_PROFILES")
+
+
+def test_user_and_project_files_add_complete_profiles(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    body = (DEFS / "frugal.yaml").read_text()
+    u = _put(user, "cheap", body)
+    pr = _put(_pdir(proj), "projonly", body.replace("slots: 1", "slots: 4"))
+    assert P.resolve_profile(cfg, "cheap")["sources"] == [u]
+    assert P.resolve_profile(cfg, "cheap")["slots"] == 1
+    assert "projonly" not in P.known_profiles(cfg)                       # no project root: no layer
+    got = P.resolve_profile(cfg, "projonly", project_root=proj)
+    assert got["slots"] == 4 and got["sources"] == [pr]
+    assert {"cheap", "projonly", "balanced"} <= set(P.known_profiles(cfg, project_root=proj))
+
+
+def test_precedence_project_over_config_over_user_over_builtin(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    u = _put(user, "balanced", SCHEMA + "slots: 5\nloop_max: 5\nrun_timeout_s: 500\n"
+             "campaign_cap_usd: 11.0\n")
+    cfg["agentic"]["profiles"]["balanced"] = {"slots": 6, "loop_max": 6, "run_timeout_s": 600}
+    pr = _put(_pdir(proj), "balanced", SCHEMA + "slots: 7\nrun_timeout_s: 700\n")
+    got = P.resolve_profile(cfg, "balanced", project_root=proj)
+    assert (got["slots"], got["loop_max"], got["run_timeout_s"]) == (7, 6, 700)
+    assert got["campaign_cap_usd"] == 11.0                               # only the user layer set it
+    assert got["personas"] == P.builtin_profiles()["balanced"]["personas"]
+    assert got["sources"] == ["builtin:balanced.yaml", u, "config.yaml:agentic.profiles.balanced",
+                              pr]
+    no_proj = P.resolve_profile(cfg, "balanced")
+    assert (no_proj["slots"], no_proj["sources"][-1]) == (
+        6, "config.yaml:agentic.profiles.balanced")
+
+
+def test_config_only_new_name_merges_over_balanced_and_effective_balanced(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    cfg["agentic"]["profiles"]["mine"] = {"campaign_cap_usd": 2.0}
+    got = P.resolve_profile(cfg, "mine")
+    assert got["campaign_cap_usd"] == 2.0 and got["sources"] == [
+        "builtin:balanced.yaml", "config.yaml:agentic.profiles.mine"]
+    _put(user, "balanced", SCHEMA + "slots: 9\n")
+    assert P.resolve_profile(cfg, "mine")["slots"] == 9
+
+
+def test_description_is_top_most(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    assert P.resolve_profile(cfg, "frugal")["description"].startswith("cheap")
+    _put(user, "frugal", SCHEMA + "description: mine\n")
+    assert P.resolve_profile(cfg, "frugal")["description"] == "mine"
+
+
+def test_extends_other_name_builds_on_the_effective_target(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    _put(user, "frugal", SCHEMA + "slots: 3\n")                          # effective frugal
+    f = _put(_pdir(proj), "mini", SCHEMA + "extends: frugal\nloop_max: 1\n")
+    got = P.resolve_profile(cfg, "mini", project_root=proj)
+    assert (got["slots"], got["loop_max"], got["run_timeout_s"]) == (3, 1, 1200)
+    assert got["sources"] == ["builtin:frugal.yaml", str(user / "frugal.yaml"), f]
+
+
+def test_extends_own_name_builds_on_lower_layers(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    _put(user, "frugal", SCHEMA + "slots: 3\nloop_max: 3\n")
+    _put(_pdir(proj), "frugal", SCHEMA + "extends: frugal\nloop_max: 4\n")
+    got = P.resolve_profile(cfg, "frugal", project_root=proj)
+    assert (got["slots"], got["loop_max"]) == (3, 4)
+    f = _put(user, "orphan", SCHEMA + "extends: orphan\nslots: 1\n")
+    with pytest.raises(ValueError, match="unknown profile 'orphan'.*" + str(f).replace(".", r"\.")):
+        P.resolve_profile(cfg, "orphan")
+
+
+def test_extends_cycle_and_unknown_target(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    _put(user, "a", SCHEMA + "extends: b\n")
+    _put(user, "b", SCHEMA + "extends: a\n")
+    with pytest.raises(ValueError, match="profile extends cycle: a → b → a"):
+        P.resolve_profile(cfg, "a")
+    f = _put(user, "c", SCHEMA + "extends: nope\n")
+    with pytest.raises(ValueError) as e:
+        P.resolve_profile(cfg, "c")
+    assert "unknown profile 'nope'" in str(e.value) and f in str(e.value)
+
+
+def _bad(tmp_path, text, name="bad", suffix=".yaml"):
+    cfg, user, proj = _layers(tmp_path)
+    f = _put(user, name, text, suffix)
+    with pytest.raises(ValueError) as e:
+        P.resolve_profile(cfg, name)
+    return f, str(e.value)
+
+
+@pytest.mark.parametrize("text,path", [
+    (SCHEMA + "extends: balanced\nbogus: 1\n", "bogus"),
+    (SCHEMA + "extends: balanced\npersonas: {nobody: {model: opus}}\n", "personas.nobody"),
+    (SCHEMA + "extends: balanced\npersonas: {implementer: {modle: opus}}\n",
+     "personas.implementer.modle"),
+    (SCHEMA + "extends: balanced\npersonas: {implementer: {model: gpt4}}\n",
+     "personas.implementer.model"),
+    (SCHEMA + "extends: balanced\npersonas: {implementer: {model: 3}}\n",
+     "personas.implementer.model"),
+    (SCHEMA + "extends: balanced\npersonas: {implementer: {effort: huge}}\n",
+     "personas.implementer.effort"),
+    (SCHEMA + "extends: balanced\npersonas: {implementer: {permission_mode: yolo}}\n",
+     "personas.implementer.permission_mode"),
+    (SCHEMA + "extends: balanced\npersonas: {implementer: {max_budget_usd: 0}}\n",
+     "personas.implementer.max_budget_usd"),
+    (SCHEMA + "extends: balanced\npersonas: {implementer: {max_budget_usd: true}}\n",
+     "personas.implementer.max_budget_usd"),
+    (SCHEMA + "extends: balanced\npersonas: {implementer: {read_only: 1}}\n",
+     "personas.implementer.read_only"),
+    (SCHEMA + "extends: balanced\npersonas: {implementer: opus}\n", "personas.implementer"),
+    (SCHEMA + "extends: balanced\npersonas: [implementer]\n", "personas"),
+    (SCHEMA + "extends: balanced\nslots: true\n", "slots"),
+    (SCHEMA + "extends: balanced\nslots: 0\n", "slots"),
+    (SCHEMA + "extends: balanced\nloop_max: 1.5\n", "loop_max"),
+    (SCHEMA + "extends: balanced\nrun_timeout_s: '60'\n", "run_timeout_s"),
+    (SCHEMA + "extends: balanced\ncampaign_cap_usd: 0\n", "campaign_cap_usd"),
+    (SCHEMA + "extends: balanced\ncampaign_cap_usd: yes\n", "campaign_cap_usd"),
+    (SCHEMA + "extends: balanced\nreviewers: conformance_reviewer\n", "reviewers"),
+    (SCHEMA + "extends: balanced\nextends: 5\n", "extends"),
+    (SCHEMA + "extends: balanced\ndescription: [1]\n", "description"),
+    (SCHEMA + "extends: balanced\nreview: {pass_score: 101}\n", "review.pass_score"),
+    (SCHEMA + "extends: balanced\nreview: {weights: {nit: -1}}\n", "review.weights.nit"),
+    ("extends: balanced\nslots: 1\n", "schema"),
+    ("schema: wt.profile.v9\nextends: balanced\n", "schema"),
+    ("- a\n- b\n", "<root>"),
+])
+def test_validation_rejects_with_origin_and_key_path(tmp_path, text, path):
+    f, msg = _bad(tmp_path, text)
+    assert f"{f}: {path}: " in msg
+
+
+def test_validation_yaml_error_and_incomplete_profile(tmp_path):
+    f, msg = _bad(tmp_path, "slots: [1\n")
+    assert msg.startswith(f"{f}: ")
+    f, msg = _bad(tmp_path, SCHEMA + "slots: 1\n", name="lonely")
+    assert msg == (f"profile lonely ({f}): missing loop_max "
+                   "(add it or `extends: <profile>`)")
+
+def test_incomplete_personas_are_reported(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    lines = (DEFS / "frugal.yaml").read_text().splitlines()
+    _put(user, "nopersona", "\n".join(lines[:lines.index("  review_triager:")]) + "\n")
+    with pytest.raises(ValueError, match=r"missing personas\.review_triager"):
+        P.resolve_profile(cfg, "nopersona")
+
+
+def test_bad_file_names_and_yml_files(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    f1 = _put(user, "Bad_Name", SCHEMA + "extends: balanced\n")
+    f2 = _put(user, "legacy", SCHEMA + "extends: balanced\n", suffix=".yml")
+    _put(user, "notes", "ignored", suffix=".txt")
+    assert {"Bad_Name", "legacy"} <= set(P.known_profiles(cfg))
+    assert "notes" not in P.known_profiles(cfg)
+    with pytest.raises(ValueError, match=r"Bad_Name\.yaml: <file>: profile name"):
+        P.resolve_profile(cfg, "Bad_Name")
+    with pytest.raises(ValueError, match=r"legacy\.yml: <file>: rename to \.yaml"):
+        P.resolve_profile(cfg, "legacy")
+    assert f1 and f2
+
+
+def test_a_broken_file_breaks_only_its_own_profile(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    _put(user, "broken", SCHEMA + "extends: balanced\nbogus: 1\n")
+    _put(user, "fine", SCHEMA + "extends: balanced\nslots: 1\n")
+    assert P.resolve_profile(cfg, "fine")["slots"] == 1
+    assert P.resolve_profile(cfg, "frugal")["name"] == "frugal"
+    assert P.resolve_profile(cfg)["name"] == "balanced"
+    with pytest.raises(ValueError, match="broken.yaml: bogus"):
+        P.resolve_profile(cfg, "broken")
+    # a broken project delta of balanced breaks balanced there, not elsewhere
+    _put(_pdir(proj), "balanced", SCHEMA + "slots: 0\n")
+    with pytest.raises(ValueError, match="slots"):
+        P.resolve_profile(cfg, "balanced", project_root=proj)
+    assert P.resolve_profile(cfg, "balanced")["slots"] == 2
+
+
+def test_config_delta_is_validated_too():
+    cfg = {"agentic": {"profiles": {"balanced": {"personas": {"implementer": {"modle": "x"}}}}}}
+    with pytest.raises(ValueError, match=r"config\.yaml:agentic\.profiles\.balanced: "
+                                         r"personas\.implementer\.modle: unknown key"):
+        P.resolve_profile(cfg, "balanced")
+    cfg = {"agentic": {"profiles": {"balanced": {"schema": "wt.profile.v1", "slots": 4}}}}
+    assert P.resolve_profile(cfg, "balanced")["slots"] == 4         # schema allowed, not required
+    assert P.validate_profile_doc({"model": 1}, origin="o", in_file=False) == ["o: model: unknown key"]
+
+
+def test_model_ids_are_accepted(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    for model in ("claude-opus-5-5", "claude-sonnet-4-6[1m]", "haiku"):
+        cfg["agentic"]["profiles"]["balanced"] = {"personas": {"implementer": {"model": model}}}
+        assert P.resolve_profile(cfg, "balanced")["personas"]["implementer"]["model"] == model
+
+
+def test_unknown_profile_lists_every_layer(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    _put(user, "zeta", SCHEMA + "extends: balanced\n")
+    _put(_pdir(proj), "alpha", SCHEMA + "extends: balanced\n")
+    with pytest.raises(ValueError, match="unknown profile 'nope'; known: alpha, balanced, "
+                                         "frugal, thorough"):
+        P.resolve_profile(cfg, "nope", project_root=proj)

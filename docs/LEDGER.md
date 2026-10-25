@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (49/70 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (50/70 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -155,7 +155,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0234](./specs/0234-docs-only-merge-requests-and-conductor-skill-routing.md) Docs-only merge requests and conductor/steward skill routing — accepted
   - [ ] [SPEC-0235](./specs/0235-escalation-answers-decide-waive-attest-conductor-applies.md) Escalation answers: wt escalations answer (choose/waive/attest/text); the conductor applies them — accepted
   - [ ] [SPEC-0236](./specs/0236-wt-campaign-export-dataset-for-mis-sizing-analysis.md) `wt campaign export`: a flat campaign dataset for mis-sizing analysis — accepted
-  - [ ] [SPEC-0237](./specs/0237-workflow-profiles-as-yaml-files-builtin-user-project.md) Workflow profiles as YAML files: builtin package data, user and project layers — accepted
+  - [x] [SPEC-0237](./specs/0237-workflow-profiles-as-yaml-files-builtin-user-project.md) Workflow profiles as YAML files: builtin package data, user and project layers — done
   - [ ] [SPEC-0238](./specs/0238-wt-profiles-list-show-with-provenance-and-recorded-sources.md) `wt profiles list/show/check` with per-value provenance; sources recorded on campaigns and runs — accepted
   - [x] [SPEC-0239](./specs/0239-grouped-review-follow-ups-one-idea-per-campaign.md) Grouped review follow-ups: one idea per campaign, and a migration for the singles — done
   - [ ] [SPEC-0241](./specs/0241-tui-queue-tab-over-the-queue-dashboard.md) TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon — accepted
@@ -187,7 +187,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0234](./specs/0234-docs-only-merge-requests-and-conductor-skill-routing.md) | Docs-only merge requests and conductor/steward skill routing | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0235](./specs/0235-escalation-answers-decide-waive-attest-conductor-applies.md) | Escalation answers: wt escalations answer (choose/waive/attest/text); the conductor applies them | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0236](./specs/0236-wt-campaign-export-dataset-for-mis-sizing-analysis.md) | `wt campaign export`: a flat campaign dataset for mis-sizing analysis | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0237](./specs/0237-workflow-profiles-as-yaml-files-builtin-user-project.md) | Workflow profiles as YAML files: builtin package data, user and project layers | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0238](./specs/0238-wt-profiles-list-show-with-provenance-and-recorded-sources.md) | `wt profiles list/show/check` with per-value provenance; sources recorded on campaigns and runs | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0241](./specs/0241-tui-queue-tab-over-the-queue-dashboard.md) | TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0242](./specs/0242-wt-spec-review-show-and-wt-spec-reviews.md) | wt spec review --show and wt spec reviews: read stored reviews without re-running | feature | accepted | M9: agentic workflow | 2026-10-25 |
@@ -416,6 +415,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0230](./specs/0230-single-spec-review-round.md) | Single spec review round: admit a revised spec without re-review | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0231](./specs/0231-followers-exit-on-code-change-sessions-re-arm.md) | Followers exit with code_changed on new wt code; conductor and steward re-arm and re-read skills | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0233](./specs/0233-queue-merge-requests-branch-merges-as-campaigns.md) | Queue merge requests: `wt queue merge` runs a branch merge as a campaign | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0237](./specs/0237-workflow-profiles-as-yaml-files-builtin-user-project.md) | Workflow profiles as YAML files: builtin package data, user and project layers | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0239](./specs/0239-grouped-review-follow-ups-one-idea-per-campaign.md) | Grouped review follow-ups: one idea per campaign, and a migration for the singles | feature | done | M9: agentic workflow | 2026-10-25 |
 
 ## Superseded / rejected

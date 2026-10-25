@@ -869,9 +869,10 @@ class _Ctx:
 
     def profile(self, state) -> dict:
         name = state.get("profile")
-        if name not in self._profiles:
-            self._profiles[name] = resolve_profile(self.cfg, name)
-        return self._profiles[name]
+        root = (state.get("repo") or {}).get("root")        # SPEC-0237: the main checkout
+        if (name, root) not in self._profiles:
+            self._profiles[name, root] = resolve_profile(self.cfg, name, project_root=root)
+        return self._profiles[name, root]
 
     def project(self, state) -> dict:
         name = state.get("project")
@@ -916,6 +917,7 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
     if state.get("kind") == "merge":
         return _do_open_merge(ctx, state, res)
     try:
+        ctx.profile(state)             # SPEC-0237: a broken profile file fails the open, no worktree
         pcfg = ctx.project(state)
         root = Path(repo["root"])
         base = repo.get("base") or pcfg.get("base") or "main"
@@ -1321,7 +1323,12 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     row = {"campaign": cid, "from": res.from_state, "to": None, "action": res.step.kind,
            "run_id": res.run_id, "cost_usd": None, "reason": None}
     events: list = list(res.events_before)
-    profile = ctx.profile(state)
+    try:
+        profile = ctx.profile(state)
+    except ValueError:
+        if not res.error:
+            raise
+        profile = {}                   # the step failed on this very profile; the park needs none
     counters = _counters(state)
 
     def finish(to, reason, *, park=None):
@@ -2930,7 +2937,8 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
         counters = r.get("counters") or {}
         cost = r.get("cost") or {}
         try:
-            loop_max = resolve_profile(cfg, r.get("profile")).get("loop_max")
+            loop_max = resolve_profile(cfg, r.get("profile"), project_root=(
+                r.get("repo") or {}).get("root")).get("loop_max")
         except ValueError:
             loop_max = None
         repo = r.get("repo") or {}
@@ -3188,8 +3196,9 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
             revision = {"review_sha": review_doc.get("spec_sha256"),
                         "current_sha": review_doc["current_sha"],
                         "findings": review_doc.get("findings") or []}
-    pick = select_profile(cfg, flag=profile, review=review_doc)         # SPEC-0219
-    prof = resolve_profile(cfg, pick["profile"])
+    pick = select_profile(cfg, flag=profile, review=review_doc,         # SPEC-0219
+                          project_root=root)
+    prof = resolve_profile(cfg, pick["profile"], project_root=root)
     base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
     cid = store.new_campaign_id(cfg, spec_id)
     worktree = P.worktree_root(pcfg, root, project) / cid

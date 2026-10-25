@@ -3,6 +3,7 @@ step results, admission by slots, lease refusal. Repos and runners come from the
 (`test_agentic_e2e`), personas never run for real."""
 import dataclasses
 import json
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -1217,3 +1218,82 @@ def test_overdue_threshold_and_setting(tmp_path):
     assert _pk(cfg, at(610))[cid]["overdue"] is True
     ev_at(cfg, cid, "note", {"text": "done", "author": "conductor"}, ago_s=-400)
     assert _pk(cfg, at(610))[cid]["overdue"] is False
+||||||| parent of f3d7d49 (wt(SPEC-0237-20261025-bc02): implementer run 001 — Workflow profiles are now YAML files in four layers: builtin package dat)
+
+
+
+# ---- SPEC-0237: the project's profile layer ---------------------------------------------------
+
+PROFILE_SCHEMA = "schema: wt.profile.v1\n"
+
+
+def _project_profile(root, text, name="balanced"):
+    d = root / ".wt" / "profiles"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.yaml").write_text(PROFILE_SCHEMA + text, encoding="utf-8")
+    return d / f"{name}.yaml"
+
+
+def _model(ctx, state):
+    return ctx.profile(state)["personas"]["implementer"]["model"]
+
+
+def test_ctx_profile_uses_the_campaigns_project_layer(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    for d in (a, b):
+        d.mkdir()
+    _project_profile(a, "personas: {implementer: {model: haiku}}\nslots: 7\n")
+    cfg = {"agentic": {"profiles": {}}}
+    ctx = Q._Ctx(cfg)
+    st_a = {"profile": "balanced", "repo": {"root": str(a)}}
+    st_b = {"profile": "balanced", "repo": {"root": str(b)}}
+    assert _model(ctx, st_a) == "haiku" and _model(ctx, st_b) == "sonnet"
+    assert ctx.profile({"profile": "balanced"})["slots"] == 2        # no repo: no project layer
+    assert Q.slots_for(cfg, "balanced") == 2                          # slots ignore project files
+
+
+def test_ctx_profile_ignores_a_worktree_copy_and_sees_edits_on_the_next_ctx(tmp_path):
+    root, wt = tmp_path / "main", tmp_path / "wt"
+    root.mkdir()
+    wt.mkdir()
+    cfg = {"agentic": {"profiles": {}}}
+    st = {"profile": "balanced", "repo": {"root": str(root), "worktree": str(wt)}}
+    _project_profile(wt, "personas: {implementer: {model: haiku}}\n")
+    assert _model(Q._Ctx(cfg), st) == "sonnet"                       # worktree copy is ignored
+    _project_profile(root, "personas: {implementer: {model: opus}}\n")
+    ctx = Q._Ctx(cfg)
+    assert _model(ctx, st) == "opus"
+    _project_profile(root, "personas: {implementer: {model: haiku}}\n")
+    assert _model(ctx, st) == "opus"                                 # cached for the tick
+    assert _model(Q._Ctx(cfg), st) == "haiku"                        # next tick: re-read
+
+
+def test_invalid_project_profile_parks_an_active_campaign_open_failed(opened):
+    cfg, cid, ctx = opened
+    root = S.read_state(cfg, cid)["repo"]["root"]
+    f = _project_profile(Path(root), "personas: {implementer: {modle: opus}}\n")
+    report = Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed"
+    assert str(f) in st["park"]["detail"] and "personas.implementer.modle" in st["park"]["detail"]
+    assert report.steps[-1]["to"] == "PARKED"
+
+
+def test_invalid_project_profile_fails_the_open_before_the_worktree(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    cid = added(cfg, monkeypatch)
+    f = _project_profile(repo, "slots: 0\n")
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed"
+    assert str(f) in st["park"]["detail"] and "slots" in st["park"]["detail"]
+    assert not Path(st["repo"]["worktree"]).exists()
+
+
+def test_queue_add_fails_with_the_profile_file_message(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    f = _project_profile(repo, "bogus: 1\n")
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--yes", "--json"])
+    assert r.exit_code != 0 and f"{f}: bogus: unknown key" in r.output

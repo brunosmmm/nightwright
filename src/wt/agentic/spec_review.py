@@ -390,7 +390,7 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
         idea_text = _idea_text(cfg, (fm or {}).get("source_idea"))
     ctx = review_context(path, spec_id, idea_text=idea_text, root=root)
     persona = PS.get_persona(PERSONA)
-    prof = resolve_profile(cfg, profile)
+    prof = resolve_profile(cfg, profile, project_root=root)
     settings = PS.persona_settings(prof, PERSONA)
     run_id = _RUN_ID_RE.sub("-", f"{spec_id}-{store.now_iso()}-{os.getpid()}-{secrets.token_hex(2)}")
     req = PS.RunRequest(

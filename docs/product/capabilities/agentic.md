@@ -58,10 +58,49 @@ heartbeat); a second runner is refused and names the holder. A heartbeat older t
 
 ## Profiles
 
-Models, effort, budgets, loop limits and slots live under `agentic:` in `config.yaml`.
+Models, effort, budgets, loop limits and slots are workflow profiles (SPEC-0171, SPEC-0237).
 Builtin profiles `balanced` (default: Sonnet implementer and triager, $10 cap, 3 loops,
-2 slots), `frugal` and `thorough` ship in code; the user block holds only deltas, deep-merged
-over the builtin of the same name (SPEC-0171):
+2 slots), `frugal` and `thorough` ship as YAML files in the package
+(`src/wt/agentic/profile_defs/<name>.yaml`).
+
+### Profile files and layers
+
+Four layers define profiles; a higher layer wins, key by key:
+
+1. builtin files (package data);
+2. user files, `<config_dir>/profiles/*.yaml`;
+3. the `agentic.profiles` deltas in `config.yaml`;
+4. project files, `<repo>/.wt/profiles/*.yaml`, read from the project's **main checkout** (a
+   campaign cannot change its own profile by editing its branch). `slots` are a property of the
+   whole queue, so they ignore the project layer.
+
+The profile name is the file stem (`^[a-z][a-z0-9_-]*$`; a `*.yml` file is an error). A file
+is either complete, or a delta: it extends the same name in a lower layer (`extends: <own
+name>`, or simply the same stem), or another profile (`extends: balanced`). A `config.yaml`-only
+new name merges over `balanced`, as before. Files are re-read on every tick, so an edit applies
+without restarting the runner.
+
+```yaml
+# <repo>/.wt/profiles/careful.yaml
+schema: wt.profile.v1            # required in files
+extends: balanced                # optional; a delta over the effective `balanced`
+description: "opus implements, one more loop"
+loop_max: 4
+campaign_cap_usd: 20.0           # number > 0, or null for no cap
+personas:
+  implementer: {model: opus, effort: high, max_budget_usd: 8.0}
+```
+
+Keys: `slots`, `loop_max`, `run_timeout_s` (integers >= 1), `campaign_cap_usd`, `reviewers`, the
+`review:` block (below) and `personas.<name>` with `model` (`opus|sonnet|haiku` or a
+`claude-*` id), `effort` (`low|medium|high|xhigh|max`), `max_budget_usd`, `permission_mode`
+(`default|acceptEdits|bypassPermissions|dontAsk|plan`) and `read_only`. Every source is
+validated: an unknown key, persona, model, effort or permission mode, or a wrong type, fails
+with `<file>: <key.path>: <problem>`, and only the profile that file defines breaks. A campaign
+of that profile parks `open_failed` with that message; `wt queue add` and `wt spec review` fail
+with it. The resolved profile lists its `sources`, lowest layer first.
+
+The `config.yaml` block holds the same deltas:
 
 ```yaml
 agentic:

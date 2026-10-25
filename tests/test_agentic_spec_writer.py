@@ -797,11 +797,11 @@ def test_two_campaigns_in_one_tick_get_different_numbers(tmp_path, monkeypatch):
 # ---- profiles, placeholder parity --------------------------------------------------------------------------
 
 def test_every_builtin_profile_has_a_spec_writer_entry():
-    for name, prof in PR.BUILTIN_PROFILES.items():
+    for name, prof in PR.builtin_profiles().items():
         entry = prof["personas"]["spec_writer"]
         assert entry["permission_mode"] == "bypassPermissions" and not entry["read_only"], name
         assert entry["max_budget_usd"] > 0 and entry["model"] and entry["effort"], name
-    assert PR.BUILTIN_PROFILES["balanced"]["personas"]["spec_writer"]["max_budget_usd"] == 1.5
+    assert PR.builtin_profiles()["balanced"]["personas"]["spec_writer"]["max_budget_usd"] == 1.5
     assert "spec_written" in SC.EVENT_KEYS
     assert Q.SPEC_WRITE_RETRY_MAX == 1
     assert {"spec_write_failed", "spec_review_unavailable", "spec_writer_unavailable"} \

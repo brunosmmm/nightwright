@@ -51,6 +51,20 @@ def test_review_writes_valid_sidecar(tmp_path, monkeypatch):
     assert side["reviewed_at"]
 
 
+def test_review_uses_the_project_profile_layer(tmp_path, monkeypatch):           # SPEC-0237
+    repo, cfg = _setup(tmp_path, [_review_entry()])
+    prof = repo / ".wt" / "profiles"
+    prof.mkdir(parents=True, exist_ok=True)
+    (prof / "balanced.yaml").write_text(
+        "schema: wt.profile.v1\npersonas: {spec_reviewer: {model: opus}}\n")
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.stdout)["model"] == "opus"
+    (prof / "balanced.yaml").write_text("schema: wt.profile.v1\nbogus: 1\n")
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
+    assert r.exit_code != 0 and "balanced.yaml: bogus: unknown key" in r.output
+
+
 def test_review_pretty_output(tmp_path, monkeypatch):
     split = {"verdict": "split", **SIZED, "findings": [{"severity": "major", "section": "Design",
                                                "title": "too big", "detail": "x"}],
@@ -90,7 +104,7 @@ def test_review_request_is_read_only_and_persona_has_defaults():
     for ph in ("{{spec_id}}", "{{spec_text}}", "{{idea_text}}", "{{schema_text}}"):
         assert ph in p.template
     budgets = {}
-    for name, prof in PR.BUILTIN_PROFILES.items():
+    for name, prof in PR.builtin_profiles().items():
         s = prof["personas"]["spec_reviewer"]
         assert s["read_only"] is True and s["permission_mode"] == "dontAsk"
         budgets[name] = (s["model"], s["max_budget_usd"])

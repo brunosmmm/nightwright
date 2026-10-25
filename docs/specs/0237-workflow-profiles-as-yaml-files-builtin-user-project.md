@@ -1,7 +1,7 @@
 ---
 id: SPEC-0237
 title: "Workflow profiles as YAML files: builtin package data, user and project layers"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -217,31 +217,31 @@ format, the precedence and an `extends` example. The existing doc tests
 
 ## Acceptance criteria
 
-- [ ] `src/wt/agentic/profile_defs/{balanced,frugal,thorough}.yaml` exist with
+- [x] `src/wt/agentic/profile_defs/{balanced,frugal,thorough}.yaml` exist with
       `schema: wt.profile.v1`. `builtin_profiles()` equals `tests/data/builtin_profiles_v1.json`
       (today's dict). `BUILTIN_PROFILES` no longer exists in `src/` or `tests/`.
-- [ ] A user file and a project file each add a new complete profile and override a builtin by
+- [x] A user file and a project file each add a new complete profile and override a builtin by
       delta. Precedence is project > `config.yaml` delta > user file > builtin, and a key set at
       a higher layer wins. A `config.yaml`-only new name still merges over `balanced`.
-- [ ] `extends: X` builds on the effective `X`. `extends: <own name>` builds on the lower
+- [x] `extends: X` builds on the effective `X`. `extends: <own name>` builds on the lower
       layers. A cycle raises with the chain, and an unknown `extends` target raises naming the
       file.
-- [ ] Each validation rule rejects with `<origin>: <key.path>`: unknown top-level key, unknown
+- [x] Each validation rule rejects with `<origin>: <key.path>`: unknown top-level key, unknown
       persona, unknown persona key, bad model, effort, permission mode or type, missing `schema`
       in a file, an incomplete profile with nothing to extend, a bad file name, and a `.yml`
       file. A broken file makes only its own profile fail to resolve, and other profiles still
       resolve.
-- [ ] `resolve_profile` keeps the default-name, unknown-name, reviewer and review semantics (the
+- [x] `resolve_profile` keeps the default-name, unknown-name, reviewer and review semantics (the
       existing `tests/test_agentic_profiles.py` assertions pass, ported from `BUILTIN_PROFILES`
       to `builtin_profiles()`). It returns `sources` in layer order.
-- [ ] A campaign of project A uses A's `.wt/profiles/<name>.yaml` from A's main checkout. A
+- [x] A campaign of project A uses A's `.wt/profiles/<name>.yaml` from A's main checkout. A
       campaign of another project and `slots_for` do not. An edit to the file is used by the
       next tick's `_Ctx`. A copy of the file in the campaign worktree is ignored.
-- [ ] An invalid profile file makes the next tick park an active campaign of that profile
+- [x] An invalid profile file makes the next tick park an active campaign of that profile
       `open_failed` with the file and key path in the detail. `wt queue add` and
       `wt spec review` fail with the same message.
-- [ ] `uv build` produces a wheel that contains `wt/agentic/profile_defs/*.yaml`.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv build` produces a wheel that contains `wt/agentic/profile_defs/*.yaml`.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -275,6 +275,45 @@ format, the precedence and an `extends` example. The existing doc tests
 - **Regression guard:** full `uv run pytest`. Queue, e2e, personas and spec-review tests pass
   unchanged apart from the `BUILTIN_PROFILES` → `builtin_profiles()` port.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q` (full suite): 2054 passed, 1 skipped.
+- `tests/test_agentic_profiles.py` (extended): golden equality with
+  `tests/data/builtin_profiles_v1.json`; precedence project > `config.yaml` > user > builtin;
+  new complete profiles from a user and a project file; `extends` (other name, own name, cycle,
+  unknown target); one case per validation rule asserting `<file>: <key.path>`; broken-file
+  isolation; `sources` order; bad file name and `.yml`; the pre-existing tests ported to
+  `builtin_profiles()`.
+- `tests/test_agentic_queue.py`: `_Ctx.profile` with a project file against another project's
+  campaign and `slots_for`; a worktree copy is ignored; an edit is seen by the next `_Ctx`;
+  an invalid file parks an active campaign `open_failed` and fails an open before the worktree
+  exists; `wt queue add` fails with the file message.
+- `tests/test_agentic_spec_review.py`: `wt spec review` uses the project layer's `spec_reviewer`
+  model, and fails on an invalid project file.
+- `tests/test_packaging.py`: `uv build --wheel` lists the three `profile_defs/*.yaml` files
+  (also checked by hand with `zipfile`).
+- Manual: the resolve-everything one-liner against the real config succeeded:
+  `balanced` (builtin + `config.yaml` delta), `frugal`, `thorough`; no user key was rejected.
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: exit 0.
+
+### As shipped (2026-10-25)
+
+Built to Design, with these details the Design left open:
+- The builtin files also carry a `description:`; `builtin_profiles()` strips `name`,
+  `description` and `sources`, so it still equals the golden snapshot. A resolved profile's
+  `description` is the top-most one, or `""`.
+- `validate_profile_doc` checks each document on its own, so a delta may omit `review.weights`
+  keys; the merged profile must still have all four (`_check_review`).
+- Resolution order after folding: required top-level keys, then `_check_reviewers` and
+  `_check_review`, then the per-persona completeness check. A reviewer without settings
+  therefore reports `no persona settings`, as before.
+- `_do_open` resolves the profile first, so an invalid file fails the open before the worktree
+  is created; `_apply` tolerates a profile that fails to resolve when the step already carries
+  that error (the park path needs no profile).
+- A `*.yml` file or a stem that is not a valid name is a broken definition under that stem
+  (`<file>: <file>: …`), and shows in `known_profiles`.
+- `tests/test_packaging.py` is not marked slow (the build takes about a second).
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -288,11 +327,11 @@ name.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

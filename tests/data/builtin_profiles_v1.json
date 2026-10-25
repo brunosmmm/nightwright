@@ -1,0 +1,264 @@
+{
+  "balanced": {
+    "campaign_cap_usd": 10.0,
+    "loop_max": 3,
+    "personas": {
+      "adversarial_reviewer": {
+        "effort": "high",
+        "max_budget_usd": 1.5,
+        "model": "opus",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "conflict_resolver": {
+        "effort": "high",
+        "max_budget_usd": 2.0,
+        "model": "sonnet",
+        "permission_mode": "bypassPermissions",
+        "read_only": false
+      },
+      "conformance_reviewer": {
+        "effort": "high",
+        "max_budget_usd": 1.5,
+        "model": "opus",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "gate_triager": {
+        "effort": "medium",
+        "max_budget_usd": 0.5,
+        "model": "sonnet",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "implementer": {
+        "effort": "high",
+        "max_budget_usd": 4.0,
+        "model": "sonnet",
+        "permission_mode": "bypassPermissions",
+        "read_only": false
+      },
+      "review_triager": {
+        "effort": "medium",
+        "max_budget_usd": 0.5,
+        "model": "sonnet",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "spec_reviewer": {
+        "effort": "high",
+        "max_budget_usd": 0.8,
+        "model": "sonnet",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "spec_writer": {
+        "effort": "high",
+        "max_budget_usd": 1.5,
+        "model": "sonnet",
+        "permission_mode": "bypassPermissions",
+        "read_only": false
+      },
+      "test_reviewer": {
+        "effort": "high",
+        "max_budget_usd": 1.0,
+        "model": "opus",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      }
+    },
+    "review": {
+      "followups": true,
+      "followups_nits": false,
+      "pass_score": 80,
+      "triager": true,
+      "weights": {
+        "major": 15,
+        "minor": 4,
+        "must_fix": 100,
+        "nit": 1
+      }
+    },
+    "reviewers": [
+      "conformance_reviewer",
+      "test_reviewer",
+      "adversarial_reviewer"
+    ],
+    "run_timeout_s": 1800,
+    "slots": 2
+  },
+  "frugal": {
+    "campaign_cap_usd": 3.0,
+    "loop_max": 2,
+    "personas": {
+      "adversarial_reviewer": {
+        "effort": "medium",
+        "max_budget_usd": 0.6,
+        "model": "sonnet",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "conflict_resolver": {
+        "effort": "medium",
+        "max_budget_usd": 1.0,
+        "model": "sonnet",
+        "permission_mode": "bypassPermissions",
+        "read_only": false
+      },
+      "conformance_reviewer": {
+        "effort": "medium",
+        "max_budget_usd": 0.6,
+        "model": "sonnet",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "gate_triager": {
+        "effort": "medium",
+        "max_budget_usd": 0.25,
+        "model": "haiku",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "implementer": {
+        "effort": "medium",
+        "max_budget_usd": 1.5,
+        "model": "sonnet",
+        "permission_mode": "bypassPermissions",
+        "read_only": false
+      },
+      "review_triager": {
+        "effort": "medium",
+        "max_budget_usd": 0.25,
+        "model": "haiku",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "spec_reviewer": {
+        "effort": "medium",
+        "max_budget_usd": 0.4,
+        "model": "sonnet",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "spec_writer": {
+        "effort": "medium",
+        "max_budget_usd": 0.8,
+        "model": "sonnet",
+        "permission_mode": "bypassPermissions",
+        "read_only": false
+      },
+      "test_reviewer": {
+        "effort": "medium",
+        "max_budget_usd": 0.5,
+        "model": "sonnet",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      }
+    },
+    "review": {
+      "followups": true,
+      "followups_nits": false,
+      "pass_score": 70,
+      "triager": false,
+      "weights": {
+        "major": 15,
+        "minor": 4,
+        "must_fix": 100,
+        "nit": 1
+      }
+    },
+    "reviewers": [
+      "conformance_reviewer"
+    ],
+    "run_timeout_s": 1200,
+    "slots": 1
+  },
+  "thorough": {
+    "campaign_cap_usd": 30.0,
+    "loop_max": 4,
+    "personas": {
+      "adversarial_reviewer": {
+        "effort": "high",
+        "max_budget_usd": 2.5,
+        "model": "opus",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "conflict_resolver": {
+        "effort": "high",
+        "max_budget_usd": 4.0,
+        "model": "opus",
+        "permission_mode": "bypassPermissions",
+        "read_only": false
+      },
+      "conformance_reviewer": {
+        "effort": "high",
+        "max_budget_usd": 1.5,
+        "model": "opus",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "gate_triager": {
+        "effort": "high",
+        "max_budget_usd": 1.0,
+        "model": "sonnet",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "implementer": {
+        "effort": "high",
+        "max_budget_usd": 10.0,
+        "model": "opus",
+        "permission_mode": "bypassPermissions",
+        "read_only": false
+      },
+      "review_triager": {
+        "effort": "medium",
+        "max_budget_usd": 0.5,
+        "model": "sonnet",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "spec_reviewer": {
+        "effort": "high",
+        "max_budget_usd": 1.5,
+        "model": "opus",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      },
+      "spec_writer": {
+        "effort": "high",
+        "max_budget_usd": 3.0,
+        "model": "opus",
+        "permission_mode": "bypassPermissions",
+        "read_only": false
+      },
+      "test_reviewer": {
+        "effort": "high",
+        "max_budget_usd": 1.0,
+        "model": "opus",
+        "permission_mode": "dontAsk",
+        "read_only": true
+      }
+    },
+    "review": {
+      "followups": true,
+      "followups_nits": false,
+      "pass_score": 90,
+      "triager": true,
+      "weights": {
+        "major": 15,
+        "minor": 4,
+        "must_fix": 100,
+        "nit": 1
+      }
+    },
+    "reviewers": [
+      "conformance_reviewer",
+      "test_reviewer",
+      "adversarial_reviewer"
+    ],
+    "run_timeout_s": 2700,
+    "slots": 3
+  }
+}

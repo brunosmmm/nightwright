@@ -307,7 +307,8 @@ def attach(campaign_group):
 
         try:
             st = store.read_state(cfg, campaign)
-            profile = resolve_profile(cfg, st.get("profile"))
+            profile = resolve_profile(cfg, st.get("profile"),
+                                      project_root=(st.get("repo") or {}).get("root"))
         except ValueError as e:
             raise click.ClickException(str(e))
         project_cfg = None

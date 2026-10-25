@@ -6,7 +6,7 @@ import copy
 import pytest
 
 from wt.agentic import queue as Q
-from wt.agentic.profiles import BUILTIN_PROFILES
+from wt.agentic.profiles import builtin_profiles
 
 A, B = "conformance_reviewer", "test_reviewer"
 BAL = {"review": {"pass_score": 80, "weights": {"must_fix": 100, "major": 15, "minor": 4,
@@ -79,7 +79,7 @@ def test_pass_over_a_major_passes_and_it_is_advisory():
 
 def test_profiles_weights_and_pass_score():
     verdicts = {A: v("pass", *[f("minor", f"m{i}") for i in range(6)])}      # score 76
-    outs = {n: tri(verdicts, BUILTIN_PROFILES[n])["outcome"] for n in BUILTIN_PROFILES}
+    outs = {n: tri(verdicts, builtin_profiles()[n])["outcome"] for n in builtin_profiles()}
     assert outs == {"balanced": "fix", "thorough": "fix", "frugal": "pass"}
     assert tri(verdicts, {})["outcome"] == "fix"                      # no `review`: balanced
     cheap = {"review": {"pass_score": 80, "weights": {"minor": 1}}}  # partial weights: defaults
