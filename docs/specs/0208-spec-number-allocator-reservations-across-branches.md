@@ -214,6 +214,17 @@ the CLI commands `wt spec reserve`, `wt spec reservations` and `wt spec release`
   machine paths and re-ran that file plus `test_spec_numbers.py` — 16 passed.
 - `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py` — exit 0.
 
+### Test record (2026-10-25, review loop 1)
+
+- Review follow-up: `tests/test_spec_numbers.py` now pins each scan source as the unique
+  maximum (branch only, main-checkout working tree only, linked-worktree working tree only,
+  reservation only), a prunable (deleted) worktree, per-key `release`, malformed release
+  arguments (API and CLI), `by == "human"` when `WT_MAILBOX_ADDR` is unset, exact table
+  header columns, prune-on-commit on a branch checked out nowhere (via the store contents
+  after `allocate`), and `--all` pruning ABANDONED campaigns of other keys.
+- `uv run pytest tests/test_spec_numbers.py` — 18 passed; mutation checks (skipping the first
+  worktree record, dropping the key filter in `release`) each fail a test.
+
 ### As shipped
 
 - `list_reservations(all_keys=True)` prunes by campaign state across all keys but by branch

@@ -1,6 +1,9 @@
 """Spec-number allocator (SPEC-0208): worktree/branch-aware reservations under a flock."""
 import json
 import multiprocessing as mp
+import os
+import re
+import shutil
 import subprocess
 
 import pytest
@@ -18,7 +21,7 @@ def _git(cwd, *args):
     subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True,
                    env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
-                        "PATH": __import__("os").environ["PATH"], "HOME": str(cwd)})
+                        "PATH": os.environ["PATH"], "HOME": str(cwd)})
 
 
 def _touch(repo, num, rel="docs/specs"):
@@ -72,6 +75,46 @@ def test_allocate_sees_branches_and_worktrees(tmp_path, cfg, repo):
     assert again["number"] == 6 and again["id"] == "SPEC-0006"
 
 
+def test_each_source_is_load_bearing_alone(tmp_path, cfg):
+    """Each scan source, as the unique maximum, moves the answer (0001 is on main)."""
+    # branch only: 0003 committed on b1
+    r1 = _make_repo(tmp_path / "r1")
+    _git(r1, "checkout", "-q", "-b", "b1")
+    _touch(r1, 3)
+    _git(r1, "add", "-A")
+    _git(r1, "commit", "-q", "-m", "three")
+    _git(r1, "checkout", "-q", "main")
+    assert SN.allocate(cfg, by="t", specs_dir=_sd(r1))["number"] == 4
+    # main checkout working tree only: uncommitted 0003 (a linked worktree exists but is stale)
+    r2 = _make_repo(tmp_path / "r2")
+    _git(r2, "worktree", "add", "-q", "--detach", str(tmp_path / "r2w"), "main")
+    _touch(r2, 3)
+    assert SN.allocate(cfg, by="t", specs_dir=_sd(r2))["number"] == 4
+    # linked worktree working tree only: uncommitted 0006 in the worktree
+    r3 = _make_repo(tmp_path / "r3")
+    w3 = tmp_path / "r3w"
+    _git(r3, "worktree", "add", "-q", "--detach", str(w3), "main")
+    _touch(w3, 6)
+    assert SN.allocate(cfg, by="t", specs_dir=_sd(r3))["number"] == 7
+    # a live reservation alone: nothing on disk beyond 0001
+    r4 = _make_repo(tmp_path / "r4")
+    assert SN.allocate(cfg, by="t", specs_dir=_sd(r4))["number"] == 2
+    assert SN.allocate(cfg, by="t", specs_dir=_sd(r4))["number"] == 3
+
+
+def test_prunable_worktree_is_skipped(tmp_path, cfg, repo):
+    w = tmp_path / "gone"
+    _git(repo, "worktree", "add", "-q", "--detach", str(w), "main")
+    _touch(w, 9)
+    assert SN.allocate(cfg, by="t", specs_dir=_sd(repo))["number"] == 10
+    shutil.rmtree(w)                         # now prunable: path missing, record still listed
+    listing = subprocess.run(["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+                             capture_output=True, text=True).stdout
+    assert "prunable" in listing
+    SN.release(cfg, 10, specs_dir=_sd(repo))
+    assert SN.allocate(cfg, by="t", specs_dir=_sd(repo))["number"] == 2
+
+
 def _worker(args):
     cfg, sd = args
     return SN.allocate(cfg, by="w", specs_dir=sd)["number"]
@@ -113,6 +156,43 @@ def test_prune_on_commit_abandon_and_release(cfg, repo):
         SN.release(cfg, 3, specs_dir=sd)
     with pytest.raises(ValueError):
         SN.release(cfg, 99, specs_dir=sd)
+
+
+def test_release_is_per_key_and_rejects_bad_numbers(tmp_path, cfg, repo):
+    other = _make_repo(tmp_path / "repo2")
+    assert SN.allocate(cfg, by="t", specs_dir=_sd(other))["number"] == 2
+    with pytest.raises(ValueError, match="not reserved"):
+        SN.release(cfg, 2, specs_dir=_sd(repo))          # reserved only under the other key
+    assert [r["number"] for r in SN.list_reservations(cfg, specs_dir=_sd(other))] == [2]
+    for bad in ("abc", "SPEC-", "", "12x"):
+        with pytest.raises(ValueError, match="not a spec number"):
+            SN.release(cfg, bad, specs_dir=_sd(repo))
+    assert SN.release(cfg, "spec-0002", specs_dir=_sd(other))["number"] == 2
+
+
+def test_prune_on_commit_on_unchecked_out_branch(tmp_path, cfg, repo):
+    sd = _sd(repo)
+    a = SN.allocate(cfg, by="t", specs_dir=sd)           # 2
+    w = tmp_path / "wb"
+    _git(repo, "worktree", "add", "-q", "-b", "feat", str(w), "main")
+    _touch(w, a["number"])
+    _git(w, "add", "-A")
+    _git(w, "commit", "-q", "-m", "two")
+    _git(w, "checkout", "-q", "--detach")                # 'feat' is now checked out nowhere
+    shutil.rmtree(w)
+    _git(repo, "worktree", "prune")
+    assert [r["number"] for r in SN._load(cfg)] == [2]   # still stored until a call prunes it
+    b = SN.allocate(cfg, by="t", specs_dir=sd)           # allocate itself prunes
+    assert b["number"] == 3
+    assert [r["number"] for r in SN._load(cfg)] == [3]
+
+
+def test_all_keys_prunes_abandoned_campaigns_of_other_keys(tmp_path, cfg, repo):
+    other = _make_repo(tmp_path / "repo2")
+    SN.allocate(cfg, by="t", campaign="C-X", specs_dir=_sd(other))
+    store.campaign_dir(cfg, "C-X").mkdir(parents=True)
+    store.write_state(cfg, "C-X", {"id": "C-X", "state": "ABANDONED"})
+    assert SN.list_reservations(cfg, specs_dir=_sd(repo), all_keys=True) == []
 
 
 def test_corrupt_store_raises_missing_and_empty_work(cfg, repo):
@@ -197,6 +277,8 @@ def test_cli_reserve_human_and_json(run, monkeypatch):
     assert (d["id"], d["by"], d["note"], d["campaign"]) == ("SPEC-0003", "steward:Meta",
                                                             "demo", None)
     assert json.loads(run("reserve", "--json").output)["by"] == "steward:Meta"
+    monkeypatch.delenv("WT_MAILBOX_ADDR")
+    assert json.loads(run("reserve", "--json").output)["by"] == "human"
 
 
 def test_cli_reservations_table_json_all(run, tmp_path):
@@ -204,8 +286,8 @@ def test_cli_reservations_table_json_all(run, tmp_path):
     other = _make_repo(tmp_path / "repo2")
     run("reserve", "--specs-dir", str(_sd(other)), "--for", "beta")
     table = run("reservations").output
-    for col in ("id", "note", "by", "campaign", "age"):
-        assert col in table
+    header = next(ln for ln in table.splitlines() if "note" in ln)
+    assert re.findall(r"[a-z]+", header) == ["id", "note", "by", "campaign", "age"]
     assert "alpha" in table and "beta" not in table
     d = json.loads(run("reservations", "--json").output)
     assert d["schema"] == "wt.spec.reservations.v1" and len(d["reservations"]) == 1
@@ -225,6 +307,8 @@ def test_cli_release_dry_run_then_apply(run):
     assert "SPEC-0002" not in run("reservations").output
     assert run("release", "2", "--yes").exit_code != 0
     assert run("release", "2").exit_code != 0
+    bad = run("release", "abc", "--yes")
+    assert bad.exit_code != 0 and "not a spec number" in bad.output
 
 
 # ---- spec new ---------------------------------------------------------------------------------
