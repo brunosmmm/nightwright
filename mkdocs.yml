@@ -7,14 +7,21 @@ site_dir: site
 theme:
   name: material
   features:
+    - navigation.tabs
     - navigation.sections
-    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
     - search.suggest
     - content.code.copy
+    - content.tabs.link
   palette:
     - scheme: default
       primary: blue grey
       accent: teal
+
+extra_css:
+  - assets/css/extra.css
 
 plugins:
   - search
@@ -27,6 +34,11 @@ markdown_extensions:
   - attr_list
   - md_in_html
   - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -35,17 +47,30 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Guides:
-      - guides/index.md
+  - Start here:
+      - Bootstrap from zero: guides/bootstrap.md
       - Getting started: guides/getting-started.md
+  - Ideas to specs:
+      - ideas/index.md
+      - Capture ideas: ideas/capture.md
+      - Explore until it's ready: ideas/explore.md
+      - Write a spec the loop can build: ideas/spec.md
+  - The agentic loop:
+      - How it works: loop/index.md
+      - Principles: loop/principles.md
+      - The state machine: loop/states.md
+      - Convergence & escalation: loop/convergence.md
+      - Operating the loop: loop/operate.md
+  - Everyday use:
+      - guides/index.md
       - Daily ops: guides/daily-ops.md
       - Weekly ops: guides/weekly-ops.md
-      - Agent surface: guides/agent-surface.md
-      - Org-mode storage: guides/org-storage.md
+      - Idea → ship (by hand): guides/idea-to-ship.md
       - Track time: guides/track-time.md
-      - Idea → ship: guides/idea-to-ship.md
-      - Outbound: guides/outbound.md
       - Multi-project: guides/multi-project.md
+      - Outbound: guides/outbound.md
+      - Org-mode storage: guides/org-storage.md
+      - Agent surface: guides/agent-surface.md
   - Concepts:
       - concepts/index.md
       - Storage architecture: concepts/architecture.md
@@ -53,20 +78,21 @@ nav:
       - Default portable (wt-native): concepts/portable-default.md
       - Workflow architecture: concepts/workflows.md
       - Time model & retention: concepts/time-and-retention.md
-  - Capabilities:
-      - capabilities/index.md
-      - Report & topics: capabilities/report.md
-      - Ideas & next: capabilities/ideas.md
-      - Desk (TUI): capabilities/tui.md
-      - Hub: capabilities/hub.md
-      - Projects & outbound: capabilities/projects.md
-      - Sheet sync: capabilities/sheet.md
-      - Clock: capabilities/clock.md
-      - Completion: capabilities/completion.md
-      - Release archive: capabilities/release-archive.md
-      - Tasks & agenda: capabilities/tasks-agenda.md
-      - Meetings: capabilities/meetings.md
-      - Skills: capabilities/skills.md
-      - Agentic loop: capabilities/agentic.md
-  - Reference: reference/index.md
+  - Reference:
+      - Commands: reference/index.md
+      - Capabilities:
+          - capabilities/index.md
+          - Agentic loop: capabilities/agentic.md
+          - Ideas & next: capabilities/ideas.md
+          - Skills: capabilities/skills.md
+          - Projects & outbound: capabilities/projects.md
+          - Hub: capabilities/hub.md
+          - Desk (TUI): capabilities/tui.md
+          - Report & topics: capabilities/report.md
+          - Clock: capabilities/clock.md
+          - Tasks & agenda: capabilities/tasks-agenda.md
+          - Meetings: capabilities/meetings.md
+          - Sheet sync: capabilities/sheet.md
+          - Completion: capabilities/completion.md
+          - Release archive: capabilities/release-archive.md
   - Contribute: contribute/index.md

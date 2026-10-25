@@ -486,6 +486,113 @@ def capture_tui(cfg: dict, out: Path, show_id: str) -> list[Path]:
     return [path]
 
 
+
+def capture_agentic(out: Path) -> list[Path]:
+    """The agentic loop's `wt queue watch --once` frame from a deterministic demo queue:
+    two active campaigns, one waiting, one parked, a backlog and recent deliveries."""
+    import datetime as dt
+    import json as _json
+
+    from wt.agentic import cli_queue as CQ
+    from wt.agentic import queue as Q
+    from wt.agentic import store as S
+
+    with tempfile.TemporaryDirectory(prefix="wt-docs-agentic-") as tmp:
+        tmp = Path(tmp)
+        repo = tmp / "acme"
+        specs = repo / "docs" / "specs"
+        specs.mkdir(parents=True)
+        titles = {
+            "SPEC-0041": "CSV export for the weekly report",
+            "SPEC-0042": "Group the weekly digest by project",
+            "SPEC-0043": "Retry flaky uploads with backoff",
+            "SPEC-0044": "Per-project cost budget alerts",
+            "SPEC-0045": "Dark mode for the desk",
+            "SPEC-0046": "Faster idea search index",
+            "SPEC-0039": "Clock-in reminders",
+            "SPEC-0038": "Archive old campaigns",
+        }
+        for sid, title in titles.items():
+            (specs / f"{sid[5:]}-x.md").write_text(
+                f"---\nid: {sid}\ntitle: \"{title}\"\nstatus: accepted\nowner: user\n"
+                f"created: 2026-10-25\n---\n")
+        cfg = {"data_dir": str(tmp / "data")}
+        now = dt.datetime.now().astimezone()
+
+        def iso(minutes):
+            return (now - dt.timedelta(minutes=minutes)).isoformat(timespec="seconds")
+
+        def camp(cid, sid, state, *, created, updated, cost=0.0, **extra):
+            S.create_campaign(cfg, {
+                "id": cid, "kind": "implement", "spec_id": sid, "project": "Acme",
+                "profile": "balanced", "state": state, "created_at": iso(created),
+                "repo": {"root": str(repo), "base": "main", "branch": f"wt/{cid}",
+                         "worktree": str(tmp / "wt" / cid)},
+                "spec": {"rel_path": f"docs/specs/{sid[5:]}-x.md", "internal": True},
+                "counters": {"loops": extra.pop("loops", 0), "runs": extra.pop("runs", 1)},
+                "cost": {"total_usd": cost, "cap_usd": 10.0}, **extra})
+            path = S.campaign_dir(cfg, cid) / "state.json"
+            st = _json.loads(path.read_text())
+            st["updated_at"] = iso(updated)
+            path.write_text(_json.dumps(st))
+            return cid
+
+        a = camp("SPEC-0042-20261025-a1f3", "SPEC-0042", "IMPLEMENTING", created=38, updated=4,
+                 cost=1.84, loops=1, runs=3,
+                 last_gate={"gate_seq": 2, "ok": False, "results": [
+                     {"name": "tests", "ok": False, "required": True, "duration_s": 96.0},
+                     {"name": "lint", "ok": True, "required": False, "duration_s": 2.1}]},
+                 last_verdict={"persona": "gate_triager", "run": "002-gate_triager",
+                               "verdict": {"disposition": "fix",
+                                           "summary": "test_digest_groups fails: totals not summed per project"}})
+        from wt.agentic import schemas as SC
+
+        def ev(cid, etype, minutes_ago, **payload):
+            S.append_event(cfg, cid, etype, SC.with_defaults(etype, payload))
+            lp = S.campaign_dir(cfg, cid) / "ledger.jsonl"
+            lines = lp.read_text().splitlines()
+            last = _json.loads(lines[-1])
+            last["ts"] = iso(minutes_ago)
+            lines[-1] = _json.dumps(last)
+            lp.write_text("\n".join(lines) + "\n")
+
+        ev(a, "gate", 9, gate_seq=2, ok=False, started_at=iso(10), duration_s=98.1, results=[])
+        ev(a, "transition", 8, **{"from": "TRIAGING", "to": "IMPLEMENTING", "reason": "triage_fix"})
+        ev(a, "run.start", 4, persona="implementer", run_id="003-implementer", model="sonnet",
+           effort="high", max_budget_usd=4.0, timeout_s=1800,
+           permission_mode="bypassPermissions", prompt_sha256="0" * 64)
+        b = camp("SPEC-0043-20261025-7c2e", "SPEC-0043", "REVIEWING", created=55, updated=2,
+             cost=2.47, runs=2,
+             last_gate={"gate_seq": 1, "ok": True, "results": [
+                 {"name": "tests", "ok": True, "required": True, "duration_s": 112.4},
+                 {"name": "lint", "ok": True, "required": False, "duration_s": 1.9}]},
+             last_verdict={"persona": "implementer", "run": "001-implementer",
+                           "verdict": {"status": "done",
+                                       "summary": "Upload retries with exponential backoff and jitter"}})
+        ev(b, "gate", 6, gate_seq=1, ok=True, started_at=iso(8), duration_s=114.3, results=[])
+        ev(b, "transition", 5, **{"from": "GATING", "to": "REVIEWING", "reason": "gates_green"})
+        ev(b, "run.start", 2, persona="conformance_reviewer", run_id="002-conformance_reviewer",
+           model="opus", effort="high", max_budget_usd=1.5, timeout_s=1800,
+           permission_mode="dontAsk", prompt_sha256="0" * 64)
+        camp("SPEC-0044-20261025-55b0", "SPEC-0044", "WAITING", created=70, updated=12,
+             cost=0.92, waiting={"resume_to": "GATING", "since": iso(12), "reason": "resumed"})
+        p = camp("SPEC-0045-20261025-9e14", "SPEC-0045", "PARKED", created=90, updated=20,
+                 cost=10.0, park={"reason": "cost_cap",
+                                  "detail": "spent $10.00; an implementer run may cost $4.00",
+                                  "resume_to": "IMPLEMENTING"})
+        S.append_event(cfg, p, "park", {"reason": "cost_cap", "detail": "cap", "resume_to": "IMPLEMENTING"})
+        camp("SPEC-0046-20261025-0d77", "SPEC-0046", "QUEUED", created=15, updated=15, runs=0)
+        camp("SPEC-0041-20261025-c3a9", "SPEC-0041", "MERGED", created=140, updated=25, cost=1.31,
+             close={"mode": "merge", "merged_sha": "4f2a9c1e0b", "pr_url": None})
+        camp("SPEC-0039-20261025-e81b", "SPEC-0039", "MERGED", created=300, updated=180, cost=0.74,
+             close={"mode": "merge", "merged_sha": "9b1d77a3c2", "pr_url": None})
+
+        payload = Q.dashboard_payload(cfg)
+        payload["lease"] = {"held": True, "pid": 48213, "heartbeat_age_s": 3.2, "stale": False}
+        rec, theme = _make_console(width=132, height=60)
+        rec.print(CQ._dashboard(payload, 132))
+        return [_save(rec, out / "cli-queue-watch.svg", "wt queue watch", theme)]
+
 def export_org_examples(cfg: dict, examples: Path) -> list[Path]:
     examples.mkdir(parents=True, exist_ok=True)
     src = Path(cfg["org_ideas_file"])
@@ -536,6 +643,7 @@ def main(argv: list[str] | None = None) -> int:
         written.extend(capture_wave_c(cfg, args.out))
         written.extend(capture_cli(cfg, args.out, show_id))
         written.extend(capture_tui(cfg, args.out, show_id))
+        written.extend(capture_agentic(args.out))
         written.extend(export_org_examples(cfg, args.examples))
 
     for path in written:
