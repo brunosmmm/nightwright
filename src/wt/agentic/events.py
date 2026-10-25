@@ -54,6 +54,8 @@ EVENT_TYPES = {
     "runner_config_invalid": ("scope", "path", "error"),
     # SPEC-0231: synthetic follower line (never appended to events.jsonl)
     "code_changed": ("from_sha", "to_sha", "paths", "skills_changed"),
+    # SPEC-0222
+    "park_undecided": ("reason", "parked_for_s", "owner"),
 }
 
 # transient run failures: account limits, overload, network-ish API errors
@@ -72,7 +74,9 @@ DEFAULTS = {"poll_s": 2.0, "silent_after_s": 900, "overdue_grace_s": 60,
             # older than this is reported as `runner_draining`
             "drain_grace_s": 60,
             # SPEC-0231: followers exit with `code_changed` when wt's code changes; 0 = off
-            "code_check_s": 10}
+            "code_check_s": 10,
+            # SPEC-0222: a conductor-owned park without a decision note after this is overdue
+            "park_decide_s": 300}
 
 
 def settings(cfg) -> dict:
@@ -380,7 +384,7 @@ def ready_not_admitted_items(cfg, now, sett) -> list[dict]:
 
 def ping_digest(cfg, now=None) -> dict:
     """The `conductor_ping` payload: what needs the conductor's eyes right now."""
-    from .queue import ACTIVE_STATES
+    from .queue import ACTIVE_STATES, park_view
     now = now or dt.datetime.now().astimezone()
     sett = settings(cfg)
     rows = store.list_campaigns(cfg)
@@ -389,13 +393,12 @@ def ping_digest(cfg, now=None) -> dict:
         if st.get("state") == "PARKED":
             park = st.get("park") or {}
             since = park.get("since")
-            led = store.read_ledger(cfg, st["id"], types=["park", "note"])
-            last_park = max([e.get("seq") or 0 for e in led if e["type"] == "park"] or [0])
-            decided = any(e["type"] == "note" and (e.get("seq") or 0) > last_park for e in led)
+            view = park_view(cfg, st, now, sett)
             parked.append({"campaign": st["id"], "spec_id": st.get("spec_id"),
                            "reason": park.get("reason"), "detail": park.get("detail"),
                            "since": since, "parked_for_s": round(_age_s(since, now) or 0),
-                           "decided": decided})
+                           "decided": view["decided"], "owner": view["owner"],
+                           "overdue": view["overdue"]})
         elif st.get("state") == "WAITING":
             w = st.get("waiting") or {}
             waiting.append({"campaign": st["id"], "spec_id": st.get("spec_id"),
@@ -409,7 +412,10 @@ def ping_digest(cfg, now=None) -> dict:
     counts = {"active": sum(1 for r in rows if r.get("state") in ACTIVE_STATES),
               "queued": len(queued), "ready": ready,
               "blocked": sum(1 for r in queued if (r.get("backlog") or {}).get("ready") is False),
-              "parked": len(parked), "undecided_parks": sum(1 for p in parked if not p["decided"]),
+              "parked": len(parked),
+              "needs_you": sum(1 for p in parked if p["owner"] == "human"),
+              "undecided_parks": sum(1 for p in parked
+                                     if p["owner"] == "conductor" and not p["decided"]),
               "stuck": len(stuck), "waiting": len(waiting)}
     return {"blocked": blocked, "parked": parked, "stuck": stuck, "waiting": waiting,
             "ready_not_admitted": rna, "counts": counts}
@@ -435,7 +441,7 @@ def _ping(cfg, proj: dict, now) -> list[dict]:
 def watchdog_checks(cfg, now=None) -> list[tuple]:
     """Current problem conditions as `(key, type, campaign, data)`. Pure over the store, the
     ledgers and the runner lease; no writes."""
-    from .queue import ACTIVE_STATES, slots_for  # local: queue imports a lot
+    from .queue import ACTIVE_STATES, park_view, slots_for  # local: queue imports a lot
     now = now or dt.datetime.now().astimezone()
     sett = settings(cfg)
     rows = store.list_campaigns(cfg)
@@ -504,6 +510,15 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
         out.append((f"ready_not_admitted:{r_['campaign']}", "ready_not_admitted",
                     r_["campaign"], {k: v for k, v in r_.items()
                                      if k not in ("campaign", "spec_id")}))
+    for st in rows:
+        if st.get("state") != "PARKED":
+            continue
+        view = park_view(cfg, st, now, sett)
+        if view["overdue"]:
+            out.append((f"park_undecided:{st['id']}:{view['park_seq']}", "park_undecided",
+                        st["id"], {"reason": (st.get("park") or {}).get("reason"),
+                                   "parked_for_s": round(view["parked_for_s"]),
+                                   "owner": view["owner"]}))
     return out
 
 

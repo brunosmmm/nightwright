@@ -141,7 +141,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0219](./specs/0219-spec-sizing-and-tone-pick-the-campaign-profile.md) Spec sizing and tone pick the campaign profile — done
   - [x] [SPEC-0220](./specs/0220-close-regate-off-main-thread.md) Close re-gate runs off the runner main thread — done
   - [ ] [SPEC-0221](./specs/0221-rebase-conflict-resolver-persona.md) Rebase-conflict resolver persona — accepted
-  - [ ] [SPEC-0222](./specs/0222-queue-watch-needs-you-vs-conductor-handling.md) queue watch: split parks into 'Needs you' and 'Conductor handling' — accepted
+  - [x] [SPEC-0222](./specs/0222-queue-watch-needs-you-vs-conductor-handling.md) queue watch: split parks into 'Needs you' and 'Conductor handling' — done
   - [x] [SPEC-0224](./specs/0224-honest-run-cost-on-interrupt-and-a-runner-draining.md) Honest run cost on interrupt, and a runner_draining signal to the conductor — done
   - [ ] [SPEC-0225](./specs/0225-detached-persona-runs-adopted-across-runner-restarts.md) Detached persona runs, adopted across runner restarts — accepted
   - [x] [SPEC-0226](./specs/0226-runner-reloads-user-and-project-config-on-change.md) Queue runner reloads user and project config on change — done
@@ -183,7 +183,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0215](./specs/0215-spec-writer-persona-and-the-spec-writing-step.md) | spec_writer persona and the SPEC_WRITING step (write and revise) | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0221](./specs/0221-rebase-conflict-resolver-persona.md) | Rebase-conflict resolver persona | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0222](./specs/0222-queue-watch-needs-you-vs-conductor-handling.md) | queue watch: split parks into 'Needs you' and 'Conductor handling' | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0225](./specs/0225-detached-persona-runs-adopted-across-runner-restarts.md) | Detached persona runs, adopted across runner restarts | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0228](./specs/0228-watchdog-waiting-not-admitted-and-silent-runner-journal.md) | Watchdog: waiting_not_admitted and runner_journal_silent, with the drain in ready_not_admitted | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0229](./specs/0229-runner-exit-paths-and-draining-ticks-with-detached-runs.md) | Runner exit paths and draining ticks with detached runs | feature | accepted | M9: agentic workflow | 2026-10-25 |
@@ -411,6 +410,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0213](./specs/0213-nonblocking-queue-ticks.md) | Non-blocking queue ticks: in-flight steps carry across ticks | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0219](./specs/0219-spec-sizing-and-tone-pick-the-campaign-profile.md) | Spec sizing and tone pick the campaign profile | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0220](./specs/0220-close-regate-off-main-thread.md) | Close re-gate runs off the runner main thread | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0222](./specs/0222-queue-watch-needs-you-vs-conductor-handling.md) | queue watch: split parks into 'Needs you' and 'Conductor handling' | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0223](./specs/0223-use-case-oriented-docs-two-pillars-diagrams.md) | Use-case oriented docs: two pillars, bootstrap path and rich diagrams | feature | done | M8: product documentation | 2026-10-25 |
 | [SPEC-0224](./specs/0224-honest-run-cost-on-interrupt-and-a-runner-draining.md) | Honest run cost on interrupt, and a runner_draining signal to the conductor | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0226](./specs/0226-runner-reloads-user-and-project-config-on-change.md) | Queue runner reloads user and project config on change | feature | done | M9: agentic workflow | 2026-10-25 |

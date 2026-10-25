@@ -1,7 +1,7 @@
 ---
 id: SPEC-0222
 title: "queue watch: split parks into 'Needs you' and 'Conductor handling'"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -185,29 +185,29 @@ parked with `decided: false`".
 
 ## Acceptance criteria
 
-- [ ] `queue.PARK_OWNERS` / `park_owner` map `main_dirty`, `main_not_on_base` and
+- [x] `queue.PARK_OWNERS` / `park_owner` map `main_dirty`, `main_not_on_base` and
       `human_decision` to `human`, and every other reason in `PARK_REASONS` (and unknown or
       None) to `conductor`.
-- [ ] `wt queue list --json` PARKED items carry `park.owner`, `park.decision` (the latest
+- [x] `wt queue list --json` PARKED items carry `park.owner`, `park.decision` (the latest
       note after the latest park, `{text, ts, by}`, or null), `park.decided`, `park.overdue`
       and `park.parked_at`. A note written before the park does not count. A `human`-reason
       park is decided.
-- [ ] `overdue` is true only for a conductor-owned, undecided park older than
+- [x] `overdue` is true only for a conductor-owned, undecided park older than
       `agentic.events.park_decide_s` (default 300), and the setting is honoured.
-- [ ] `dashboard_payload` has `needs_you` and `conductor_handling` lists, keeps `attention`
+- [x] `dashboard_payload` has `needs_you` and `conductor_handling` lists, keeps `attention`
       as their union, and its `totals` carry `needs_you`, `conductor_handling` and
       `conductor_overdue`. A pending park request goes to `conductor_handling`.
-- [ ] `wt queue watch` renders `Needs you` (yellow) only for human-owned parks, and
+- [x] `wt queue watch` renders `Needs you` (yellow) only for human-owned parks, and
       `Conductor handling` (dim) with the decision text and its age, `pending`, or `overdue`.
       The header shows `needs you` and `conductor` chips and no `attention` chip.
-- [ ] `wt queue list` colours PARKED rows by owner (overdue marked) and prints a `Needs you`
+- [x] `wt queue list` colours PARKED rows by owner (overdue marked) and prints a `Needs you`
       table only when a human-owned park exists.
-- [ ] An overdue conductor park fires exactly one `park_undecided` event per park (a re-sync
+- [x] An overdue conductor park fires exactly one `park_undecided` event per park (a re-sync
       does not repeat it, a re-park fires again, a note stops it). A human-owned park never
       fires one.
-- [ ] `ping_digest` parked entries carry `owner` and `overdue`, and `undecided_parks` counts
+- [x] `ping_digest` parked entries carry `owner` and `overdue`, and `undecided_parks` counts
       conductor-owned parks only. The `wt-conduct` skill has the `park_undecided` row.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -242,6 +242,32 @@ parked with `decided: false`".
   `Needs attention` are updated in the same change. That is the only intended rendering
   break.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q`: 1945 passed, 1 skipped; the only 2 failures were the ledger-drift guards
+  (`test_specs`, `test_export`), because the generated `docs/LEDGER.md` was regenerated after the
+  run began. Re-run green after `python3 tools/spec_lint.py --write-ledger`.
+- New tests: `test_agentic_queue.py` (owner table, park keys for decided / undecided / note
+  before park / re-park / `human`, overdue on each side of 300 s and a configured
+  `park_decide_s`), `test_agentic_dashboard.py` (split lists, totals, rendered `Needs you (1)`,
+  `Conductor handling (3)`, note + age, `overdue`, `needs you 1` / `conductor 3 (1 overdue)`,
+  no `attention`), `test_agentic_queue_cli.py` (`Needs you` table only with a human-owned park,
+  `--json` keys), `test_agentic_events.py` (`park_undecided` once / not on re-sync / not for
+  `main_dirty` / again after re-park / stops on a note; `ping_digest` owner, overdue,
+  `undecided_parks`, `counts.needs_you`), `test_skills.py` (`park_undecided` in `wt-conduct`).
+  Existing dashboard assertions of `Needs attention` were updated.
+- Manual: `COLUMNS=140 uv run wt queue watch --once` against the live data dir showed three
+  conductor parks (`rebase_conflict`) under `Conductor handling (3)` with their latest note and
+  age (`… · 11m ago`), the header read `needs you 0 conductor 3`, and no `Needs you` section.
+
+### As shipped
+
+- `park_view` also returns `park_seq` and `parked_for_s` (used by the watchdog); `queue_payload`
+  exposes only the five documented keys. `queue_payload` gained an optional `now`.
+- Header chips are label-first (`needs you 2`, `conductor 3 (1 overdue)`), unlike the older
+  number-first chips, so they read as the spec writes them.
+- The `Conductor handling` note age is computed against the wall clock at render time.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -255,11 +281,11 @@ row ships in the same change. The live runner re-execs on merge (SPEC-0194), and
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

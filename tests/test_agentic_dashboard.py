@@ -19,6 +19,20 @@ def _ev(cfg, cid, etype, payload=None, **kw):
 NOW = dt.datetime.now().astimezone()
 
 
+def ev_at(cfg, cid, etype, payload=None, *, ago_s=0, **kw):
+    """`_ev`, then rewrite the ledger line's `ts` to `ago_s` seconds before now (SPEC-0222:
+    park ownership and age come from ledger timestamps)."""
+    rec = _ev(cfg, cid, etype, payload, **kw)
+    path = S.campaign_dir(cfg, cid) / "ledger.jsonl"
+    lines = path.read_text().splitlines()
+    last = json.loads(lines[-1])
+    last["ts"] = (dt.datetime.now().astimezone() - dt.timedelta(seconds=ago_s)).isoformat(
+        timespec="seconds")
+    lines[-1] = json.dumps(last)
+    path.write_text("\n".join(lines) + "\n")
+    return last
+
+
 def _iso(minutes_ago):
     return (NOW - dt.timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
 
@@ -92,6 +106,8 @@ def test_payload_sections_activity_and_totals(tmp_path):
 
     assert [it["campaign"] for it in p["attention"]] == [ids["parked"]]
     assert p["attention"][0]["park"]["reason"] == "rate_limited"
+    assert [it["campaign"] for it in p["conductor_handling"]] == [ids["parked"]]
+    assert p["needs_you"] == []
     assert p["attention"][0]["park_age_s"] is not None
 
     back = {b["campaign"]: b for b in p["backlog"]}
@@ -131,7 +147,7 @@ def test_frame_renders_every_section_at_both_widths(tmp_path):
     p = Q.dashboard_payload(cfg)
     for width in (80, 160):
         out = _render(p, width)
-        for header in ("wt queue", "Active (2)", "Needs attention (1)", "Backlog (2)",
+        for header in ("wt queue", "Active (2)", "Conductor handling (1)", "Backlog (2)",
                        "Recently delivered (2"):
             assert header in out, (width, header, out)
         for cid in (ids["impl"], ids["gating"], ids["parked"], ids["merged"]):
@@ -146,7 +162,7 @@ def test_empty_frame(tmp_path):
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
     out = _render(Q.dashboard_payload(cfg), 80)
     assert "No active campaigns" in out and "empty" in out and "nothing in this window" in out
-    assert "Needs attention" not in out and "no loop running" in out
+    assert "Needs you" not in out and "Conductor handling" not in out and "no loop running" in out
 
 
 def test_cli_once_json_and_project(tmp_path, monkeypatch):
@@ -169,8 +185,8 @@ def test_multiple_projects_in_flight_are_labelled(tmp_path, monkeypatch):
                       project="comfort-assistant")
     p = Q.dashboard_payload(cfg)
     by = p["totals"]["by_project"]
-    assert by["comfort-assistant"] == {"active": 1, "attention": 0, "waiting": 0, "backlog": 0,
-                                       "delivered": 0}
+    assert by["comfort-assistant"] == {"active": 1, "needs_you": 0, "conductor": 0,
+                                       "waiting": 0, "backlog": 0, "delivered": 0}
     assert by["Meta-Tools"]["active"] == 2 and by["Meta-Tools"]["backlog"] == 2
     assert {it["campaign"]: it["project"] for it in p["active"]}[other] == "comfort-assistant"
     assert all(b["project"] == "Meta-Tools" for b in p["backlog"])
@@ -212,3 +228,54 @@ def test_dashboard_shows_size_tone_and_profile(tmp_path):                  # SPE
     backlog = out[out.index("Backlog ("):]
     assert "size" in backlog and "m/high-end" in backlog
     assert "m/high-end" in out[out.index("Waiting for a slot"):out.index("Backlog (")]
+
+
+def _park_fixture(tmp_path):
+    """A main_dirty park, a decided rebase_conflict, an overdue base_moving and a pending park
+    request (SPEC-0222)."""
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    ids = {}
+    for key, reason, mins in (("dirty", "main_dirty", 20), ("rebase", "rebase_conflict", 15),
+                              ("moving", "base_moving", 7)):
+        cid = _campaign(cfg, repo, f"SPEC-0001-{key}", "PARKED",
+                        park={"reason": reason, "detail": f"{reason} detail",
+                              "resume_to": "GATING", "since": _iso(mins)})
+        ev_at(cfg, cid, "park", {"reason": reason}, ago_s=mins * 60)
+        ids[key] = cid
+    ev_at(cfg, ids["rebase"], "note", {"text": "rebased onto main\nand re-gating",
+                                       "author": "conductor"}, by="agent:conductor", ago_s=180)
+    ids["req"] = _campaign(cfg, repo, "SPEC-0001-req", "IMPLEMENTING",
+                           park_requested={"reason": "human", "detail": "hold this", "at": _iso(2)})
+    return repo, cfg, ids
+
+
+def test_park_split_lists_and_totals(tmp_path):
+    repo, cfg, ids = _park_fixture(tmp_path)
+    p = Q.dashboard_payload(cfg)
+    assert [it["campaign"] for it in p["needs_you"]] == [ids["dirty"]]
+    handling = [it["campaign"] for it in p["conductor_handling"]]
+    assert handling == [ids["moving"], ids["rebase"], ids["req"]]      # overdue first, then oldest
+    assert [it["campaign"] for it in p["attention"]] == [ids["dirty"]] + handling
+    t = p["totals"]
+    assert (t["needs_you"], t["conductor_handling"], t["conductor_overdue"],
+            t["attention"]) == (1, 3, 1, 4)
+    moving = p["conductor_handling"][0]["park"]
+    assert moving["overdue"] is True and moving["decision"] is None
+    req = p["conductor_handling"][2]["park"]
+    assert req["decision"]["text"] == "park requested: hold this" and req["owner"] == "conductor"
+    assert {c["campaign"] for c in p["active"]} == {ids["req"]}
+    assert t["by_project"]["Meta-Tools"]["needs_you"] == 1
+    assert t["by_project"]["Meta-Tools"]["conductor"] == 3
+
+
+def test_park_split_rendering(tmp_path):
+    repo, cfg, ids = _park_fixture(tmp_path)
+    out = _render(Q.dashboard_payload(cfg), 140)
+    assert "Needs you (1)" in out and "Conductor handling (3)" in out
+    assert "Needs attention" not in out and "attention" not in out
+    assert "needs you 1" in out and "conductor 3 (1 overdue)" in out
+    assert "rebased onto main and re-gating" in out and "3m ago" in out
+    assert "overdue 7m00s" in out
+    assert "park requested: hold this" in out
+    assert out.index("Needs you (1)") < out.index("Conductor handling (3)")

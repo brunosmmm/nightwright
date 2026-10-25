@@ -101,6 +101,10 @@ def _queue_table(payload: dict, width: int | None = None) -> Group:
             state = f"{state}:park?"
         color = {"PARKED": "yellow", "MERGED": "green", "HANDED_OFF": "green",
                  "ABANDONED": "dim"}.get(it["state"])
+        suffix = ""
+        if it["state"] == "PARKED" and park.get("owner") != "human":
+            color = "dim"           # SPEC-0222: the conductor's, not the human's
+            suffix = " [red]![/]" if park.get("overdue") else ""
         campaign, extra = Text(it["campaign"]), []
         if wide:
             extra = [it.get("size") or "-", it.get("tone") or "-", _profile_text(it)]
@@ -109,12 +113,32 @@ def _queue_table(payload: dict, width: int | None = None) -> Group:
                             style="dim")
             campaign.append_text(_source_marker(it))
         table.add_row(campaign, R.project_text(it.get("project")),
-                      f"[{color}]{state}[/]" if color else state, *extra,
+                      f"[{color}]{state}[/]{suffix}" if color else state, *extra,
                       it["loops"], cost, _age_txt(it.get("updated_age_s")))
     parts = [table]
+    needs_you = [it for it in active if it["state"] == "PARKED"
+                 and (it.get("park") or {}).get("owner") == "human"]
+    if needs_you:
+        parts.append(_list_needs_you(needs_you))
     if waiting:
         parts.append(_waiting_table(waiting))
     return Group(*parts, _backlog_table(backlog))
+
+
+def _list_needs_you(items: list) -> Table:
+    """SPEC-0222: parks only the human can resolve."""
+    table = Table(title=f"Needs you ({len(items)})", box=box.SIMPLE_HEAD, pad_edge=False,
+                  title_style="yellow")
+    table.add_column("campaign", min_width=24, no_wrap=True)
+    table.add_column("reason", style="yellow", no_wrap=True)
+    table.add_column("detail", overflow="fold")
+    table.add_column("resume to", no_wrap=True)
+    for it in items:
+        park = it.get("park") or {}
+        table.add_row(it["campaign"], str(park.get("reason") or "?"),
+                      Text(str(park.get("detail") or ""), style="dim"),
+                      Text(str(park.get("resume_to") or ""), style=R.state_style(park.get("resume_to"))))
+    return table
 
 
 def _waiting_table(items: list) -> Table:
@@ -201,6 +225,21 @@ def _ago(s) -> str:
             else f"{s // 86400}d")
 
 
+def _owner_chip(label: str, n, style: str) -> Text:
+    """SPEC-0222: label first (`needs you 2`), so it reads as a sentence."""
+    if not n:
+        return Text(f"{label} 0", style="dim")
+    return Text.assemble((label, style), " ", (str(n), f"bold {style}"))
+
+
+def _conductor_chip(tot: dict) -> Text:
+    n, overdue = tot.get("conductor_handling", 0), tot.get("conductor_overdue", 0)
+    chip = Text(f"conductor {n}", style="dim")
+    if overdue:
+        chip.append(f" ({overdue} overdue)", style="red")
+    return chip
+
+
 def _chip(label: str, n, style: str) -> Text:
     return Text.assemble((f" {n} ", f"bold reverse {style}" if n else "dim reverse"),
                          (f" {label}", style if n else "dim"))
@@ -222,7 +261,7 @@ def _dash_header(p: dict) -> Panel:
                                                     style="cyan"), f" {busy}/{slots.get('total')}")
     chips = Text(" ").join([
         _chip("active", tot["active"], "cyan"), _chip("waiting", tot.get("waiting", 0), "bright_blue"),
-        _chip("attention", tot["attention"], "yellow"),
+        _owner_chip("needs you", tot.get("needs_you", 0), "yellow"), _conductor_chip(tot),
         _chip("ready", tot["ready"], "green"), _chip("blocked", tot["blocked"], "magenta"),
         _chip("delivered", tot["delivered"], "green")])
     grid = Table.grid(expand=True, padding=(0, 2))
@@ -239,7 +278,8 @@ def _dash_header(p: dict) -> Panel:
             if i:
                 line.append("   ")
             line.append_text(R.project_text(name))
-            bits = [f"{c[k]} {k}" for k in ("active", "waiting", "attention", "backlog", "delivered")
+            bits = [f"{c[k]} {k.replace('_', ' ')}" for k in ("active", "waiting", "needs_you", "conductor", "backlog",
+                                         "delivered")
                     if c.get(k)]
             line.append(" ▸ " + (" · ".join(bits) or "idle"), style="dim")
         rows.append(line)
@@ -355,8 +395,8 @@ def _active_panel(it: dict) -> Panel:
                  box=box.ROUNDED)
 
 
-def _attention_table(items: list) -> Table:
-    t = R.section_table(f"Needs attention ({len(items)})", border_style="yellow")
+def _needs_you_table(items: list) -> Table:
+    t = R.section_table(f"Needs you ({len(items)})", border_style="yellow")
     t.add_column("campaign", no_wrap=True, style="bold")
     t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
@@ -366,11 +406,57 @@ def _attention_table(items: list) -> Table:
     t.add_column("for", justify="right", no_wrap=True)
     for it in items:
         park = it.get("park") or {}
-        reason = park.get("reason") or ("park requested" if it.get("park_requested") else "?")
+        reason = park.get("reason") or "?"
         t.add_row(it["campaign"], R.project_text(it.get("project")),
                   _title_cell(it.get("spec_title")), reason,
                   Text(str(park.get("detail") or ""), style="dim"),
                   Text(str(park.get("resume_to") or ""), style=R.state_style(park.get("resume_to"))),
+                  _ago(it.get("park_age_s")))
+    return t
+
+
+def _decision_cell(it: dict) -> Text:
+    """SPEC-0222: the conductor's latest note and its age, `overdue`, or `pending`."""
+    park = it.get("park") or {}
+    decision = park.get("decision")
+    if decision:
+        text = " ".join(str(decision.get("text") or "").split())
+        if len(text) > 120:
+            text = text[:119] + "…"
+        t = Text(text, style="dim")
+        ago = _ago(_note_age(decision.get("ts")))
+        t.append(f" · {ago} ago", style="dim")
+        return t
+    age = _dur(it.get("park_age_s"))
+    if park.get("overdue"):
+        return Text(f"overdue {age}", style="bold red")
+    return Text(f"pending {age}", style="dim")
+
+
+def _note_age(ts):
+    import datetime as dt
+    try:
+        t = dt.datetime.fromisoformat(ts)
+    except (TypeError, ValueError):
+        return None
+    if t.tzinfo is None:
+        t = t.astimezone()
+    return max(0, int((dt.datetime.now().astimezone() - t).total_seconds()))
+
+
+def _conductor_table(items: list) -> Table:
+    t = R.section_table(f"Conductor handling ({len(items)})", border_style="grey50")
+    t.add_column("campaign", no_wrap=True, style="dim")
+    t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
+    t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8, style="dim")
+    t.add_column("reason", no_wrap=True, style="dim")
+    t.add_column("decision", overflow="fold", ratio=3)
+    t.add_column("for", justify="right", no_wrap=True, style="dim")
+    for it in items:
+        park = it.get("park") or {}
+        reason = park.get("reason") or "park requested"
+        t.add_row(it["campaign"], R.project_text(it.get("project")),
+                  _title_cell(it.get("spec_title")), reason, _decision_cell(it),
                   _ago(it.get("park_age_s")))
     return t
 
@@ -459,8 +545,10 @@ def _dashboard(p: dict, width: int = 120, recent_hours: int = 24) -> Group:
         parts.append(grid)
     else:
         parts.extend(active)
-    if p["attention"]:
-        parts.append(_attention_table(p["attention"]))
+    if p.get("needs_you"):
+        parts.append(_needs_you_table(p["needs_you"]))
+    if p.get("conductor_handling"):
+        parts.append(_conductor_table(p["conductor_handling"]))
     if p.get("waiting"):
         parts.append(_dash_waiting(p["waiting"]))
     parts.append(_dash_backlog(p["backlog"]))

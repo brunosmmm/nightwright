@@ -61,6 +61,15 @@ PARK_REASONS = frozenset({
     "rebase_conflict", "main_dirty", "main_not_on_base", "base_moving", "gh_failed", "human",
     "review_escalated", "config_invalid", "spec_writer_unavailable",
 })
+# SPEC-0222: who a park waits for. The human only for their own checkout and explicit
+# escalations (`human_decision` is reserved for IDEA-087); everything else is the conductor's.
+PARK_OWNERS = {"main_dirty": "human", "main_not_on_base": "human", "human_decision": "human"}
+
+
+def park_owner(reason) -> str:
+    return PARK_OWNERS.get(reason or "", "conductor")
+
+
 # How many times in a row the implementer may report `blocked` before the campaign parks.
 BLOCKED_STREAK_MAX = 2
 # Malformed triage verdicts tolerated per loop before the triage is treated as `escalate`.
@@ -2296,8 +2305,36 @@ def _age(ts: str | None, now=None) -> int | None:
     return max(0, int((now - t).total_seconds()))
 
 
-def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> dict:
+def park_view(cfg, state: dict, now, sett) -> dict:
+    """SPEC-0222: who a PARKED campaign waits for and whether it was decided. Derived from the
+    park and its ledger (`park` / `note` events); nothing is stored."""
+    park = state.get("park") or {}
+    reason = park.get("reason")
+    owner = park_owner(reason)
+    led = store.read_ledger(cfg, state["id"], types=["park", "note"])
+    last = next((e for e in reversed(led) if e.get("type") == "park"), None)
+    park_seq = (last or {}).get("seq") or 0
+    parked_at = (last or {}).get("ts") or park.get("since")
+    note = next((e for e in reversed(led)
+                 if e.get("type") == "note" and (e.get("seq") or 0) > park_seq), None)
+    decision = ({"text": note.get("text"), "ts": note.get("ts"),
+                 "by": note.get("author") or note.get("by")} if note else None)
+    decided = decision is not None or reason == "human"
+    parked_for = _age(parked_at, now) or 0
+    overdue = owner == "conductor" and not decided and parked_for > sett["park_decide_s"]
+    return {"owner": owner, "decision": decision, "decided": decided, "overdue": overdue,
+            "parked_at": parked_at, "park_seq": park_seq, "parked_for_s": parked_for}
+
+
+_PARK_VIEW_KEYS = ("owner", "decision", "decided", "overdue", "parked_at")
+
+
+def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=None) -> dict:
     """`wt.queue.v1`: the lease, the slots and every in-flight item."""
+    import datetime as dt
+    from . import events as EV
+    now = now or dt.datetime.now().astimezone()
+    sett = EV.settings(cfg)
     rows = store.list_campaigns(cfg, include_terminal=include_terminal, project=project,
                                 state=state)
     slots = slots_for(cfg)
@@ -2313,6 +2350,10 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> d
             loop_max = None
         repo = r.get("repo") or {}
         sizing = r.get("sizing") or {}
+        park = r.get("park")
+        if r.get("state") == "PARKED":
+            view = park_view(cfg, r, now, sett)
+            park = {**(park or {}), **{k: view[k] for k in _PARK_VIEW_KEYS}}
         items.append({
             "campaign": r.get("id"), "spec_id": r.get("spec_id"), "project": r.get("project"),
             "kind": r.get("kind"), "idea_id": _idea_id_of(r),
@@ -2325,7 +2366,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> d
             "cap_usd": cost.get("cap_usd"),
             "cost": {"estimated_usd": round(float(cost.get("estimated_usd") or 0.0), 4)},
             "age_s": _age(r.get("created_at")), "updated_age_s": _age(r.get("updated_at")),
-            "park": r.get("park"), "park_requested": bool(r.get("park_requested")),
+            "park": park, "park_requested": bool(r.get("park_requested")),
             "worktree": repo.get("worktree"), "branch": repo.get("branch"),
             "priority": _priority(r), "waiting": r.get("waiting"),
             "review_score": (r.get("last_review") or {}).get("score"),
@@ -2414,8 +2455,8 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
     now = now or dt.datetime.now().astimezone()
     states = {s.get("id"): s for s in store.list_campaigns(cfg, include_terminal=True,
                                                             project=project)}
-    base = queue_payload(cfg, include_terminal=True, project=project)
-    active, attention, waiting, backlog, delivered = [], [], [], [], []
+    base = queue_payload(cfg, include_terminal=True, project=project, now=now)
+    active, needs_you, conductor, waiting, backlog, delivered = [], [], [], [], [], []
     spend_today = 0.0
     for it in base["items"]:
         st = states.get(it["campaign"]) or {}
@@ -2454,12 +2495,19 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
             continue
         ledger = store.read_ledger(cfg, it["campaign"])
         if state == "PARKED" or it["park_requested"]:
-            park = dict(st.get("park") or {})
-            parked_at = next((e.get("ts") for e in reversed(ledger) if e.get("type") == "park"),
-                             None)
-            attention.append({**it, "spec_title": title, "park": park or None,
-                              "park_age_s": _age(parked_at, now),
-                              "last_verdict": _verdict_summary(st)})
+            park = dict(it.get("park") or {})
+            parked_at = park.get("parked_at")
+            if state != "PARKED":
+                # SPEC-0222: a pending request is the conductor's, and its detail is the decision
+                req = st.get("park_requested") or {}
+                parked_at = req.get("at")
+                park = {"reason": None, "owner": "conductor", "decided": True, "overdue": False,
+                        "decision": {"text": f"park requested: {req.get('detail') or req.get('reason')}",
+                                     "ts": req.get("at"), "by": req.get("by") or "human"},
+                        "parked_at": parked_at}
+            row = {**it, "spec_title": title, "park": park or None,
+                   "park_age_s": _age(parked_at, now), "last_verdict": _verdict_summary(st)}
+            (needs_you if park.get("owner") == "human" else conductor).append(row)
             if state == "PARKED":
                 continue
         active.append({**it, "spec_title": title,
@@ -2467,27 +2515,34 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                        "activity": _activity(st, ledger, now),
                        "last_gate": _gate_summary(st), "last_verdict": _verdict_summary(st),
                        "recent_events": ledger[-3:]})
+    conductor.sort(key=lambda c: (not (c["park"] or {}).get("overdue"),
+                                  -(c.get("park_age_s") or 0)))
+    needs_you.sort(key=lambda c: -(c.get("park_age_s") or 0))
+    attention = needs_you + conductor
     backlog.sort(key=lambda b: b["position"])
     delivered.sort(key=lambda d: d["finished_age_s"])
     delivered = delivered[:recent]
     ready = sum(1 for b in backlog if b["ready"])
     by_project: dict = {}
     waiting.sort(key=lambda w: (w.get("priority") or 3, -(w.get("waiting_s") or 0)))
-    for key, rows in (("active", active), ("attention", attention), ("waiting", waiting),
-                      ("backlog", backlog), ("delivered", delivered)):
+    for key, rows in (("active", active), ("needs_you", needs_you), ("conductor", conductor),
+                      ("waiting", waiting), ("backlog", backlog), ("delivered", delivered)):
         for r in rows:
-            c = by_project.setdefault(r.get("project") or "?", {"active": 0, "attention": 0,
-                                                                 "waiting": 0, "backlog": 0,
-                                                                 "delivered": 0})
+            c = by_project.setdefault(r.get("project") or "?", {"active": 0, "needs_you": 0,
+                                                                 "conductor": 0, "waiting": 0,
+                                                                 "backlog": 0, "delivered": 0})
             c[key] += 1
     return {
         "schema": "wt.queue.dashboard.v1", "generated_at": now.isoformat(timespec="seconds"),
         "project": project, "lease": base["lease"], "slots": base["slots"],
         "totals": {"active": len(active), "attention": len(attention), "waiting": len(waiting),
+                   "needs_you": len(needs_you), "conductor_handling": len(conductor),
+                   "conductor_overdue": sum(1 for c in conductor if c["park"].get("overdue")),
                    "backlog": len(backlog),
                    "ready": ready, "blocked": len(backlog) - ready, "delivered": len(delivered),
                    "spend_today_usd": round(spend_today, 4), "by_project": by_project},
-        "active": active, "attention": attention, "waiting": waiting, "backlog": backlog,
+        "active": active, "needs_you": needs_you, "conductor_handling": conductor,
+        "attention": attention, "waiting": waiting, "backlog": backlog,
         "delivered": delivered,
     }
 

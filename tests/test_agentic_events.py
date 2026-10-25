@@ -371,3 +371,61 @@ def test_lease_not_stale_while_gates_run(tmp_path):
         assert "lease_stale" in {t for _k, t, _c, _d in E.watchdog_checks(cfg, now=late)}
     finally:
         lease.release()
+
+
+# ---- SPEC-0222: park_undecided --------------------------------------------------------------
+
+def _park_at(cfg, cid, reason, ago_s):
+    """Park `cid` (state + ledger event) `ago_s` before now."""
+    from test_agentic_dashboard import ev_at
+    park = {"reason": reason, "detail": "d", "resume_to": "GATING"}
+    ev_at(cfg, cid, "park", park, ago_s=ago_s)
+    _set_state(cfg, cid, state="PARKED", park={**park, "since": store.now_iso()})
+
+
+def _undecided(cfg, **kw):
+    return [e for e in E.sync(cfg, **kw) if e["type"] == "park_undecided"]
+
+
+def test_park_undecided_fires_once_per_park_and_stops_on_a_note(tmp_path):
+    from test_agentic_dashboard import ev_at
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0910-20261025-aaaa")
+    dirty = _campaign(cfg, "SPEC-0911-20261025-aaaa")
+    _park_at(cfg, cid, "rebase_conflict", 400)
+    _park_at(cfg, dirty, "main_dirty", 400)             # human-owned: never fires
+    fired = _undecided(cfg)
+    assert len(fired) == 1
+    e = fired[0]
+    assert e["campaign"] == cid and e["by"] == "watchdog" and e["project"] == "Meta-Tools"
+    assert e["data"]["reason"] == "rebase_conflict" and e["data"]["owner"] == "conductor"
+    assert e["data"]["parked_for_s"] >= 400
+    assert _undecided(cfg) == []                         # a re-sync does not repeat it
+    ev_at(cfg, cid, "note", {"text": "decided", "author": "conductor"})
+    assert _undecided(cfg) == []                         # a note clears the condition
+    _set_state(cfg, cid, state="IMPLEMENTING")           # resume ...
+    _park_at(cfg, cid, "rebase_conflict", 400)           # ... and re-park: new seq fires again
+    assert len(_undecided(cfg)) == 1
+
+
+def test_park_undecided_not_before_threshold_or_for_human_reason(tmp_path):
+    cfg = _cfg(tmp_path)
+    young = _campaign(cfg, "SPEC-0912-20261025-aaaa")
+    held = _campaign(cfg, "SPEC-0913-20261025-aaaa")
+    _park_at(cfg, young, "base_moving", 100)
+    _park_at(cfg, held, "human", 4000)                   # a deliberate hold is decided
+    assert _undecided(cfg) == []
+
+
+def test_ping_digest_owner_overdue_and_counts(tmp_path):
+    cfg = _cfg(tmp_path)
+    a = _campaign(cfg, "SPEC-0914-20261025-aaaa")
+    b = _campaign(cfg, "SPEC-0915-20261025-aaaa")
+    _park_at(cfg, a, "base_moving", 400)
+    _park_at(cfg, b, "main_dirty", 400)
+    d = E.ping_digest(cfg)
+    by = {p["campaign"]: p for p in d["parked"]}
+    assert by[a]["owner"] == "conductor" and by[a]["overdue"] is True
+    assert by[b]["owner"] == "human" and by[b]["overdue"] is False
+    assert d["counts"]["needs_you"] == 1 and d["counts"]["undecided_parks"] == 1
+    assert d["counts"]["parked"] == 2

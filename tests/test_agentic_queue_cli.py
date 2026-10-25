@@ -342,3 +342,29 @@ def test_add_after_revision_dry_run_text_and_json(tmp_path, monkeypatch):      #
     assert not S.list_campaigns(cfg)
     r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--yes", "--json"])
     assert r.exit_code == 0 and len(S.list_campaigns(cfg)) == 1
+
+
+def test_list_needs_you_table_and_park_keys(tmp_path, monkeypatch):
+    """SPEC-0222: PARKED rows are coloured by owner and a `Needs you` table appears only when a
+    human-owned park exists."""
+    from test_agentic_dashboard import _campaign, ev_at
+    repo, cfg = _cfg(tmp_path)
+    rebase = _campaign(cfg, repo, "SPEC-0001-reb", "PARKED",
+                       park={"reason": "rebase_conflict", "detail": "conflict in x",
+                             "resume_to": "GATING"})
+    ev_at(cfg, rebase, "park", {"reason": "rebase_conflict"}, ago_s=600)
+    r = run_cli(cfg, monkeypatch, ["queue", "list"])
+    assert r.exit_code == 0 and "PARKED:rebase_conflict" in r.output, r.output
+    assert "Needs you" not in r.output
+    dirty = _campaign(cfg, repo, "SPEC-0001-dir", "PARKED",
+                      park={"reason": "main_dirty", "detail": "uncommitted files",
+                            "resume_to": "CLOSING"})
+    ev_at(cfg, dirty, "park", {"reason": "main_dirty"}, ago_s=60)
+    r = run_cli(cfg, monkeypatch, ["queue", "list"])
+    assert "Needs you (1)" in r.output and "uncommitted files" in r.output, r.output
+    r = run_cli(cfg, monkeypatch, ["queue", "list", "--json"])
+    items = {i["campaign"]: i for i in json.loads(r.output)["items"]}
+    reb = items[rebase]["park"]
+    assert reb["owner"] == "conductor" and reb["overdue"] is True and reb["decision"] is None
+    assert reb["decided"] is False and reb["parked_at"]
+    assert items[dirty]["park"]["owner"] == "human"

@@ -1097,3 +1097,85 @@ def test_first_implementer_prompt_has_findings_second_does_not(tmp_path, monkeyp
         assert title in first and title not in second
     assert "state the timeout behaviour" in first and "From: spec_review" in first
     assert "From: spec_review" not in second
+
+
+
+# ---- SPEC-0222: park owner / decision / overdue --------------------------------------------
+
+def test_park_owner_table():
+    assert Q.PARK_OWNERS == {"main_dirty": "human", "main_not_on_base": "human",
+                             "human_decision": "human"}
+    for reason in Q.PARK_REASONS:
+        assert Q.park_owner(reason) == ("human" if reason in ("main_dirty", "main_not_on_base")
+                                        else "conductor"), reason
+    assert Q.park_owner("human_decision") == "human"
+    assert "human_decision" not in Q.PARK_REASONS
+    assert Q.park_owner(None) == "conductor" and Q.park_owner("whatever") == "conductor"
+
+
+def _park_items(tmp_path, **cfg_over):
+    from test_agentic_dashboard import _campaign, _fixture, ev_at
+    repo, cfg, _ = _fixture(tmp_path)
+    cfg.update(cfg_over)
+    return repo, cfg, _campaign, ev_at
+
+
+def _mk(cfg, repo, campaign, ev_at, cid, reason, *, ago_s):
+    campaign(cfg, repo, cid, "PARKED", park={"reason": reason, "detail": "d",
+                                              "resume_to": "GATING"})
+    ev_at(cfg, cid, "park", {"reason": reason}, ago_s=ago_s)
+    return cid
+
+
+def _pk(cfg, now=None):
+    return {i["campaign"]: i["park"] for i in Q.queue_payload(cfg, now=now)["items"]
+            if i["state"] == "PARKED"}
+
+
+def test_queue_payload_park_keys_decision_rules(tmp_path):
+    repo, cfg, campaign, ev_at = _park_items(tmp_path)
+    undecided = _mk(cfg, repo, campaign, ev_at, "SPEC-0001-und", "rebase_conflict", ago_s=60)
+    decided = _mk(cfg, repo, campaign, ev_at, "SPEC-0001-dec", "rebase_conflict", ago_s=60)
+    before = _mk(cfg, repo, campaign, ev_at, "SPEC-0001-bef", "base_moving", ago_s=60)
+    repark = _mk(cfg, repo, campaign, ev_at, "SPEC-0001-rep", "base_moving", ago_s=60)
+    human = _mk(cfg, repo, campaign, ev_at, "SPEC-0001-hum", "human", ago_s=60)
+    dirty = _mk(cfg, repo, campaign, ev_at, "SPEC-0001-dir", "main_dirty", ago_s=60)
+    ev_at(cfg, decided, "note", {"text": "first", "author": "conductor"}, ago_s=50,
+          by="agent:conductor")
+    ev_at(cfg, decided, "note", {"text": "rebased", "author": "conductor"}, ago_s=40,
+          by="agent:conductor")
+    # a note written before the park does not count: re-order by parking after the note
+    ev_at(cfg, before, "note", {"text": "stale", "author": "human"}, ago_s=70, by="human")
+    ev_at(cfg, before, "park", {"reason": "base_moving"}, ago_s=60)
+    ev_at(cfg, repark, "note", {"text": "handled", "author": "conductor"}, ago_s=50)
+    ev_at(cfg, repark, "park", {"reason": "base_moving"}, ago_s=30)
+    park = _pk(cfg)
+    assert park[undecided]["owner"] == "conductor" and park[undecided]["decision"] is None
+    assert park[undecided]["decided"] is False and park[undecided]["overdue"] is False
+    assert park[undecided]["parked_at"]
+    d = park[decided]["decision"]
+    assert d["text"] == "rebased" and d["by"] == "conductor" and d["ts"]
+    assert park[decided]["decided"] is True
+    assert park[before]["decision"] is None and park[before]["decided"] is False
+    assert park[repark]["decision"] is None and park[repark]["decided"] is False
+    assert park[human]["decided"] is True and park[human]["overdue"] is False
+    assert park[dirty]["owner"] == "human" and park[dirty]["overdue"] is False
+    assert park[undecided]["reason"] == "rebase_conflict"          # existing keys survive
+    # non-parked items keep their (null) park
+    assert all(i["park"] is None for i in Q.queue_payload(cfg)["items"]
+               if i["state"] == "IMPLEMENTING")
+
+
+def test_overdue_threshold_and_setting(tmp_path):
+    import datetime as dt
+    repo, cfg, campaign, ev_at = _park_items(tmp_path)
+    cid = _mk(cfg, repo, campaign, ev_at, "SPEC-0001-ovr", "base_moving", ago_s=0)
+    base = dt.datetime.now().astimezone()
+    at = lambda s: base + dt.timedelta(seconds=s)          # noqa: E731
+    assert _pk(cfg, at(290))[cid]["overdue"] is False
+    assert _pk(cfg, at(310))[cid]["overdue"] is True
+    cfg["agentic"] = {**cfg.get("agentic", {}), "events": {"park_decide_s": 600}}
+    assert _pk(cfg, at(310))[cid]["overdue"] is False
+    assert _pk(cfg, at(610))[cid]["overdue"] is True
+    ev_at(cfg, cid, "note", {"text": "done", "author": "conductor"}, ago_s=-400)
+    assert _pk(cfg, at(610))[cid]["overdue"] is False
