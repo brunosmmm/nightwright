@@ -73,14 +73,17 @@ conductor never kills a runner in the middle of a merge.
    - at start, `poll_interval_s`;
    - after each tick, before `emit`, `tick_at` and `in_flight`, the sorted
      `pool.ids()`;
+   - `slot_freed_at`, the time the runner last saw its occupied count drop. It is stamped
+     at start too;
    - around every long main-thread step, `busy: {kind, campaign, since, timeout_s}`,
      cleared in `finally`. Today that step is the close.
 
    `lease_status()` returns all of these, plus `draining`.
 2. **`waiting_not_admitted`.** A WAITING campaign (not `park_requested`) gets a row when
    two conditions hold for longer than `waiting_grace_s` (new setting, default 60): the
-   campaign has been waiting, and a slot has been free. A slot is free when `occupied <
-   slots`. `occupied` is the union of the active-state campaign ids and the lease's
+   campaign has been waiting (`waiting.since`), and a slot has been free (the lease's
+   `slot_freed_at`). The age is measured from the later of the two. A slot is free when
+   `occupied < slots`. `occupied` is the union of the active-state campaign ids and the lease's
    `in_flight` ids, the same count the tick uses (`n_busy`).
 3. **`runner_journal_silent`.** Silence runs from the newer of `tick_at` and the holder's
    last journal record. The journal alone is not enough, because idle ticks are not
@@ -91,8 +94,9 @@ conductor never kills a runner in the middle of a merge.
 4. **Drain info.** `events._drain_info(lease)` builds `{reason, since, draining_s,
    waiting_on}` or `None`. It goes on `ready_not_admitted`, `waiting_not_admitted` and
    `runner_journal_silent`.
-5. **Ping.** `ping_digest` gains the `waiting_not_admitted` rows, `runner` (the current
-   silence row or `None`) and `counts.waiting_not_admitted`.
+5. **Ping.** `ping_digest` gains the `waiting_not_admitted` rows, `runner` and
+   `counts.waiting_not_admitted`. `runner` comes from `events.runner_silence(cfg, now,
+   sett)`, the same helper the watchdog uses.
 
 ## Design
 
@@ -109,6 +113,14 @@ conductor never kills a runner in the middle of a merge.
   either key. They stay old during a drain or a hung main thread, which is the case to
   catch. The drain (`_drain`) refreshes `in_flight` whenever it harvests a flight, using
   the same call without `tick_at`.
+- **`slot_freed_at`.** `run()` stamps `slot_freed_at = now_iso()` right after `acquire`.
+  A fresh runner has just started, so a slot freed at that moment is the safe reading.
+  The loop keeps the last occupied count it saw in memory. That count is
+  `len({active-state ids} | pool.ids())`, the tick's `n_busy`. Whenever the count drops,
+  the loop stamps `slot_freed_at` in the same `update_info` call. It checks after each tick
+  (a harvest, a close or a park inside the tick) and after each harvest in `_drain`. A park
+  or abandon from outside the runner shows up as a drop at the next tick. Every way a slot
+  frees is caught within one poll interval, with no guess from state rows.
 - **`busy`.** A context manager, `queue._main_busy(lease, kind, campaign, timeout_s)`,
   calls `update_info(busy={kind, campaign, since: now_iso(), timeout_s})` on entry and
   `pop_info("busy")` in `finally`. `tick()` and `_Ctx` gain an optional `lease` (None in
@@ -120,9 +132,10 @@ conductor never kills a runner in the middle of a merge.
   same manager. Once SPEC-0220 moves the close regate onto the pool, the window shrinks to
   the main-checkout merge phase. SPEC-0220 then moves `_main_busy` to wrap only that phase.
 - `Lease.handover` / adopt drop `busy` (with SPEC-0224's `draining`). They keep `tick_at`
-  and `in_flight`, and the new process overwrites both on its first tick.
-- **`lease_status()`** adds `tick_at`, `poll_interval_s`, `in_flight`, `busy` and
-  `draining` to its dict. Each is the info value when `held`, else `None`. If SPEC-0224
+  and `in_flight`, and the new process overwrites both on its first tick. It also
+  re-stamps `slot_freed_at` at its start.
+- **`lease_status()`** adds `tick_at`, `poll_interval_s`, `in_flight`, `slot_freed_at`,
+  `busy` and `draining` to its dict. Each is the info value when `held`, else `None`. If SPEC-0224
   already added `draining`, it is reused. Legacy lease files without the keys read as
   `None`.
 
@@ -144,19 +157,22 @@ conductor never kills a runner in the middle of a merge.
   see the pool, so the runner publishes its flights. A campaign parked while its run is
   still in flight therefore counts, as it does in `_tick`. Without `in_flight` (legacy
   lease, runner down) the count is the state rows alone. `ready_not_admitted_items`
-  switches to the same helper, and its `active` field becomes this count.
+  switches to the same helper in two places: its early return (`if _occupied(rows, lease)
+  >= slots: return []`, replacing `len(active) >= slots`) and its `active` field. A parked
+  campaign's in-flight run therefore suppresses that alert as well.
 
 ### `waiting_not_admitted`
 
 - `waiting_for_s` is the age of `st["waiting"]["since"]`.
-- `slot_free_s` estimates how long a slot has been free. Reading every ledger on each 2 s
-  sync costs too much. The estimate is the age of the newest `updated_at` among campaigns
-  that are neither in `ACTIVE_STATES` nor QUEUED/WAITING (parked, merged, handed off,
-  abandoned). With none, it is `waiting_for_s`. A later `updated_at` on such a row (a note
-  on a parked item) only delays the alert, by at most one grace. That is the safe
-  direction: a long wait plus a slot freed seconds ago must not fire before the next tick.
-  Raising `slots` in the config can overstate `slot_free_s`. The runner reloads config
-  each tick (SPEC-0226), so the error lasts less than one poll interval. It is accepted.
+- `slot_free_s` is the age of `lease.slot_freed_at`. The check is skipped when the lease
+  is not held (`runner_dead` covers that) or has no `slot_freed_at` (a runner from before
+  this spec, until it re-execs). Take a WAITING item that has waited an hour while a
+  campaign merged 10 s ago. Then `slot_free_s` is about 10, so nothing fires before the
+  next tick's step 0b resumes the item.
+- Raising `slots` in the config adds a free slot without a drop in the count, so
+  `slot_freed_at` can be old. The runner reloads config each tick (SPEC-0226) and resumes
+  the item at once. The alert can only be early within that one interval. This is
+  accepted.
 - The row fires when `occupied < slots` and `min(waiting_for_s, slot_free_s) >
   waiting_grace_s`. Data: `{waiting_for_s, slot_free_s, resume_to, active (= occupied),
   slots, runner_pid, drain}`. Key: `waiting_not_admitted:<cid>:<waiting.since>`. A
@@ -164,13 +180,18 @@ conductor never kills a runner in the middle of a merge.
 
 ### `runner_journal_silent`
 
+- One helper, `events.runner_silence(cfg, now, sett) -> dict | None`, evaluates the whole
+  condition: lease read, journal tail, busy guard. It returns the event data or `None`.
+  `watchdog_checks` and `ping_digest` both call it, so the two cannot drift apart.
 - The check is skipped when the lease is not held, when it is `stale` (`lease_stale` /
   `runner_dead` cover that), or when `tick_at` is absent. A runner from before this spec
   has no `tick_at`, and skipping it avoids a false alarm until it re-execs.
 - `interval = lease.poll_interval_s` (fallback `agentic.poll_interval_s`, default 20).
 - `last = max(lease.tick_at, ts of the newest journal record with pid == holder)`. The
   journal is read from its tail with a bounded backwards read, and only the newest record
-  of the holder pid is needed. `silent_s = age(last)`.
+  of the holder pid is needed. If the bounded tail holds no record of that pid,
+  `last = tick_at` alone. That is not an error, and the whole file is not read.
+  `silent_s = age(last)`.
 - **Busy guard.** When `lease.busy` is set and `age(busy.since) <= busy.timeout_s +
   overdue_grace_s`, the condition is suppressed. The loop is in a declared step within its
   budget. A close that takes minutes is the main case. Past that budget the condition
@@ -197,7 +218,7 @@ conductor never kills a runner in the middle of a merge.
 ### Ping (`ping_digest`)
 
 - `waiting_not_admitted`: the rows.
-- `runner`: the `runner_journal_silent` data when it holds now, else `None`.
+- `runner`: `runner_silence(cfg, now, sett)`.
 - `counts.waiting_not_admitted`: the number of those rows.
 
 ### Conductor skill (`skills/wt-conduct/SKILL.md`)
@@ -221,7 +242,9 @@ conductor never kills a runner in the middle of a merge.
 - **Relation to SPEC-0224's planned `runner_draining` row** ("do not SIGTERM"). After
   0224 was accepted, the human decided that a stalled queue is worse than an interrupted
   persona run (commit a43fef6). When both events fire, the `runner_journal_silent` row
-  decides, within the close guard. Whoever builds 0224's row adds that precedence note.
+  decides, within the close guard. This spec depends on 0224, so that row exists when
+  this spec is built. This spec edits it to add: "if `runner_journal_silent` also fired,
+  follow that row (with the close guard)". The skill then has no two contradictory rows.
 
 ## Alternatives considered
 
@@ -232,9 +255,13 @@ conductor never kills a runner in the middle of a merge.
 - **Count occupancy from state rows only.** Flights the watchdog cannot see would be
   missing, and alerts would come late or wrong. Publishing `in_flight` is one list per
   tick. Rejected.
-- **Track when each condition was first seen, in the projector.** This gives an exact
-  "slot free for N s", but makes `watchdog_checks` stateful, and the `updated_at` estimate
-  only errs toward delay. Rejected for now.
+- **Estimate when a slot freed from state rows (newest `updated_at` of non-active
+  campaigns).** `store.list_campaigns` hides terminal rows by default, so the common
+  merge case false-alarmed, and the estimate was indirect anyway. The runner knows when
+  its count drops. Rejected (review).
+- **Track when each condition was first seen, in the projector.** This makes
+  `watchdog_checks` stateful. `slot_freed_at` gives the same answer without that.
+  Rejected.
 - **Fold into SPEC-0224.** 0224 is accepted, so rewriting it would break the timeline.
   Rejected.
 - **Reuse `ready_not_admitted` for WAITING items.** WAITING items have no
@@ -242,19 +269,23 @@ conductor never kills a runner in the middle of a merge.
 
 ## Acceptance criteria
 
-- [ ] `queue.run` writes `poll_interval_s` at start. After each tick, before `emit`, it
-      writes `tick_at` and `in_flight`. Around every main-thread close it writes `busy:
+- [ ] `queue.run` writes `poll_interval_s` and `slot_freed_at` at start. After each
+      tick, before `emit`, it writes `tick_at` and `in_flight`. It re-stamps
+      `slot_freed_at` whenever its occupied count drops, after a tick or after a drain
+      harvest. Around every main-thread close it writes `busy:
       {kind: "close", campaign, since, timeout_s}`, cleared in `finally` even when the
       close raises. All of these go through `update_info` / `pop_info`. Handover drops
       `busy`.
-- [ ] `lease_status()` returns `tick_at`, `poll_interval_s`, `in_flight`, `busy` and
-      `draining` while the lease is held, and `None` for each otherwise or when the key is
+- [ ] `lease_status()` returns `tick_at`, `poll_interval_s`, `in_flight`,
+      `slot_freed_at`, `busy` and `draining` while the lease is held, and `None` for each otherwise or when the key is
       absent.
 - [ ] `watchdog_checks` emits `waiting_not_admitted` (`waiting_for_s, slot_free_s,
       resume_to, active, slots, runner_pid, drain`) for a WAITING campaign when `occupied <
-      slots` and `min(waiting_for_s, slot_free_s) > waiting_grace_s`. `occupied` counts
-      the lease's `in_flight` ids. It does not fire within the grace, with slots
-      occupied, for `park_requested`, or soon after a slot freed. It fires once per wait.
+      slots` and `min(waiting_for_s, age(slot_freed_at)) > waiting_grace_s`. `occupied`
+      counts the lease's `in_flight` ids, and so does `ready_not_admitted_items`' early
+      return. It does not fire within the grace, with slots occupied, for
+      `park_requested`, or soon after a slot freed (merge included). It fires once per
+      wait.
 - [ ] `watchdog_checks` emits `runner_journal_silent` (`pid, last_journal_ts,
       last_tick_at, silent_s, interval_s, heartbeat_age_s, draining, busy`) when the lease
       is held and not stale and `tick_at` is present. The newer of `tick_at` and the
@@ -265,12 +296,13 @@ conductor never kills a runner in the middle of a merge.
 - [ ] `ready_not_admitted` rows, `waiting_not_admitted` and `runner_journal_silent` carry
       the drain info (`reason, since, draining_s, waiting_on`) or `None`.
       `ready_not_admitted.active` uses the same occupied count.
-- [ ] `ping_digest` includes `waiting_not_admitted`, `runner` and
-      `counts.waiting_not_admitted`. Older `conductor_ping` events still validate.
+- [ ] `ping_digest` includes `waiting_not_admitted`, `runner` (from the shared
+      `runner_silence` helper) and `counts.waiting_not_admitted`. Older `conductor_ping` events still validate.
 - [ ] `skills/wt-conduct/SKILL.md` has rows for `waiting_not_admitted` and
       `runner_journal_silent` (act at once by restarting a stalled runner). It has the
-      close guard (never SIGTERM while `busy.kind == "close"` within its budget), and the
-      `ready_not_admitted` and `conductor_ping` rows mention the new fields.
+      close guard (never SIGTERM while `busy.kind == "close"` within its budget). The
+      `ready_not_admitted` and `conductor_ping` rows mention the new fields. SPEC-0224's
+      `runner_draining` row points to the `runner_journal_silent` row when both fire.
 - [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
@@ -291,9 +323,15 @@ conductor never kills a runner in the middle of a merge.
       sync gives no duplicate.
     - `test_waiting_not_admitted_counts_in_flight`: same setup with `in_flight` listing a
       parked campaign's id gives no event, because both slots are occupied.
+    - `test_ready_not_admitted_counts_in_flight`: the same `in_flight` setup with a ready
+      QUEUED item gives no `ready_not_admitted`, because of the early return.
     - `test_waiting_not_admitted_quiet_when_full_or_park_requested`.
     - `test_waiting_not_admitted_waits_for_slot_age`: a WAITING item that has waited an
-      hour, plus a campaign parked 10 s ago, gives nothing. At 90 s it fires.
+      hour, with `slot_freed_at` 10 s ago (a campaign MERGED 10 s ago), gives nothing. At
+      90 s it fires. A held lease without `slot_freed_at` gives nothing.
+    - `test_run_stamps_slot_freed_at_on_drop`: a FakeRunner run whose campaign closes
+      (merges) during a tick moves `slot_freed_at` past its start value. A tick with no
+      drop leaves it unchanged.
     - `test_runner_journal_silent_once_per_episode`: `poll_interval_s: 20`, `tick_at` set.
       At 50 s nothing fires, at 70 s one event fires, and a repeat sync gives nothing. A
       new `tick_at` clears it, and a later silence fires again.
@@ -302,7 +340,8 @@ conductor never kills a runner in the middle of a merge.
       5 min ago and `timeout_s: 1800`, gives nothing at 10 min of silence. With since 35
       min ago it fires, and `busy` is in its data.
     - `test_journal_record_counts_as_activity`: an old `tick_at` plus a fresh holder-pid
-      journal record gives nothing. A record from another pid does not count.
+      journal record gives nothing. A record from another pid does not count. A tail with
+      no holder record falls back to `tick_at`.
     - `test_drain_info_on_rows`: a lease with `draining` shows `drain` on all three event
       types. Without it the value is `None`.
   - `tests/test_agentic_runner.py` (or `test_agentic_nonblocking.py`):
@@ -313,8 +352,10 @@ conductor never kills a runner in the middle of a merge.
       reads `read_lease()["busy"]` (kind `close`, campaign id, `timeout_s` =
       `gate_budget_s`) from inside the close. After the tick `busy` is gone. A
       `_do_close` that raises also leaves no `busy`.
-  - `tests/test_agentic_ping.py`: `test_ping_digest_lists_waiting_and_runner` and
-    `test_old_ping_event_validates`.
+  - `tests/test_agentic_ping.py`: `test_ping_digest_lists_waiting_and_runner` (its
+    `runner` equals `runner_silence(...)`) and `test_old_ping_event_validates`.
+  - `tests/test_skills.py`:
+    `test_runner_draining_row_points_to_silent_row`.
 - **Existing suites unchanged:** `tests/test_agentic_events.py`,
   `tests/test_agentic_heartbeat.py`, `tests/test_agentic_drain_signal.py` (SPEC-0224),
   `tests/test_agentic_reexec.py`, `tests/test_agentic_e2e.py`.
