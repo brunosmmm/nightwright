@@ -1,51 +1,48 @@
 {
   "schema": "wt.spec.review.v1",
   "spec_id": "SPEC-0201",
-  "verdict": "split",
-  "spec_sha256": "5ee49cf6451fba9fd1f690e1b898b6ae8944a005c23b253259a1e346c7646fd8",
-  "reviewed_at": "2026-10-25T16:15:23-04:00",
+  "verdict": "approve",
+  "spec_sha256": "9186d2d22bbbd1bd5f01562d69bf5660d9cc2ef626f1ceaa668af073799acfad",
+  "reviewed_at": "2026-10-25T16:39:06-04:00",
   "model": "sonnet",
-  "cost_usd": 0.1601957,
+  "cost_usd": 0.22493390000000002,
   "findings": [
     {
-      "severity": "major",
-      "section": "Acceptance criteria / Non-goals (Size)",
-      "title": "12 ACs across three independent subsystems; Non-goals reject splitting",
-      "detail": "There are 12 ACs (the previous review saw 10 and called it borderline; it has grown). They cover three separable subsystems. (1) The multi-reviewer REVIEWING fan-out: profile `reviewers` key, pool sizing, `_cap_blocks` generalisation, `_apply_reviews`, retry/park decision order, the `last_review` reshape and counters. (2) The `test_reviewer` persona: template, schema, profile settings. (3) The deterministic `tests_touched` git/ast extractor. AC5 and AC6 alone each bundle 5-6 behaviours. The Non-goals bullet 'Splitting this spec: the fan-out and the persona ship together because the fan-out has no second member to exercise it without the persona' does not hold up. The persona and `tests_touched` (AC7, AC8) are testable in `tests/test_agentic_personas.py` without any fan-out, so the persona can land first and the fan-out can follow with a real second member. Split as suggested and delete or rewrite that bullet."
+      "severity": "minor",
+      "section": "Design — Failure paths in the tick",
+      "title": "Failure handling forks on reviewer count",
+      "detail": "With one reviewer any `res.error` parks `open_failed`/`config_invalid` campaign-wide (rule 1). With two or more, the same error becomes a per-persona `missing` result plus a retry (rules 3-4). So adding a second reviewer silently changes how a transient runner error behaves, and the spec says nothing about whether SPEC-0205/0202 will keep the split or unify it. This is workable, and the test plan covers both sides. Add one sentence to Open questions or Non-goals saying the divergence is deliberate and interim."
     },
     {
       "severity": "minor",
-      "section": "Test plan",
-      "title": "Wrong AC reference for the e2e tests",
-      "detail": "The test plan line 'tests/test_agentic_e2e.py: AC8 paths a-e' should be AC9. AC8 is `tests_touched`. As written, AC9 has no stated home in the plan."
+      "section": "Design — Decision order in _apply_reviews",
+      "title": "Escalation detail text for the single-reviewer wrapper",
+      "detail": "`decide_review` currently parks with the detail 'the conformance reviewer returned no usable verdict twice'. The spec says the park 'names the personas'. State whether the `decide_review` wrapper keeps the old string verbatim, because AC8 requires SPEC-0187 behaviour to be unchanged. If any existing test or doc matches that string, say which."
     },
     {
       "severity": "minor",
-      "section": "Design — Decision order step 3",
-      "title": "Counter resets on the fix path are not carried over",
-      "detail": "The existing `_apply_review` (`queue.py:763-777`) also resets `gate_retries` and `triage_retries` and preserves `human_notes` when building the brief. Step 3 and the Brief bullet mention only `human_notes`, `loops` and the review retry counters. Say that `_apply_reviews` keeps the `gate_retries = 0` and `triage_retries = 0` resets, or an implementer may drop them."
+      "section": "Design — Failure paths, rule 5",
+      "title": "Interrupted pass with every verdict already valid",
+      "detail": "Valid verdicts are stored with the current `loop` on an interrupted pass. If all reviewers were valid, `plan_step` finds nothing pending, returns the full list, and re-runs every reviewer. That is accepted in the spec, but it throws away stored verdicts and costs a full extra budget. It is cheaper to treat the aggregate as complete and run the decision. The current wording is internally consistent, so this is optional."
     },
     {
       "severity": "minor",
-      "section": "Design — Plan",
-      "title": "Forward reference to an undefined 'triager step'",
-      "detail": "'If *pending* is empty and SPEC-0203's triager step is not pending, plan_step falls back to the full reviewer list.' This spec defines no triager step. Either state the rule without SPEC-0203 ('if pending is empty, return the full list') and leave the exception to SPEC-0203, or define the condition here. As written the behaviour is untestable inside this spec."
+      "section": "Design — Execution",
+      "title": "Pool sizing changes concurrency beyond slots",
+      "detail": "The pool becomes `max(slots, all pending_agent entries)`, so gate and implementer tasks are no longer throttled by `slots` either. The spec argues this is bounded by admission, which is fine. A test asserting that non-review ticks never exceed `slots` would pin it down, and AC3a only covers the reviewer case."
     },
     {
       "severity": "nit",
-      "section": "Context",
-      "title": "Review-process note in the spec body",
-      "detail": "'Revised 2026-10-25 after spec review (docs/specs/reviews/SPEC-0201.json).' is process chatter, not spec content (the earlier review raised the same point). The `updated` frontmatter field already records the revision."
-    }
-  ],
-  "suggested_splits": [
-    {
-      "title": "test_reviewer persona and tests_touched extractor",
-      "scope": "AC7, AC8, and the persona part of AC1. Add `src/wt/agentic/personas/test_reviewer.md`, `TEST_REVIEWER_SCHEMA`, the `PERSONAS` entry, per-profile `personas.test_reviewer` settings, the `REVIEWER_PERSONAS` constant for `build_context`, and `personas.tests_touched`. Tests: `tests/test_agentic_personas.py` only. The persona is registered but not in any default `reviewers` list, so the queue does not change. SPEC-0187's conformance review stays the only reviewer."
+      "section": "Acceptance criteria",
+      "title": "Dense ACs",
+      "detail": "AC3b and AC6 each bundle five or more independently testable rules. The test plan lists them separately, so the implementer is covered. Splitting them would help the done-checklist. There are 9 ACs in all, which is within size limits."
     },
     {
-      "title": "Multi-reviewer REVIEWING fan-out, combiner and state reshape",
-      "scope": "AC1 (the `reviewers` key and default lists), AC2-AC6, AC9-AC12, depending on the persona spec above. Add the `reviewers` profile key and validation, `Step.personas`, the concurrent spawn with pool sizing, `_cap_blocks` over pending personas, `combine_reviews`, `_apply_reviews` and `decide_reviews` with per-persona retry and park, the `last_review` shape, `pending_brief.source = review`, and the docs update. Defaults become `[conformance_reviewer, test_reviewer]` for balanced/thorough. The e2e and queue helpers pin `reviewers: [conformance_reviewer]`. Split AC5 and AC6 into smaller ACs (retry/park, counters/reset, stale/old-shape) while doing this."
+      "severity": "nit",
+      "section": "Design — Counters",
+      "title": "Legacy int semantics",
+      "detail": "`review_retries` is 'retry passes used', while `review_retries_by_persona` counts per persona. When A and B are both missing, the int goes up by 1 and each per-persona counter by 1. A one-line example would remove any doubt."
     }
-  ]
+  ],
+  "suggested_splits": []
 }

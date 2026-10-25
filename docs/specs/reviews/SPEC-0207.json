@@ -1,0 +1,48 @@
+{
+  "schema": "wt.spec.review.v1",
+  "spec_id": "SPEC-0207",
+  "verdict": "approve",
+  "spec_sha256": "36e1269efb45b429e5b9f3374266a7dbda20f73d6c2c065bc9a0740c3d1ff44a",
+  "reviewed_at": "2026-10-25T16:37:00-04:00",
+  "model": "sonnet",
+  "cost_usd": 0.12936760000000003,
+  "findings": [
+    {
+      "severity": "minor",
+      "title": "AC3 says text is \"bounded\" but the file list has no cap",
+      "section": "Design → Filing / Acceptance criteria AC3",
+      "detail": "Design caps the title (120) and detail (200 chars) but gives no limit for `(files: …)`. AC3's test files 20 files and only asserts the headline starts with the marker, so an implementer has no bound to assert. State a cap (e.g. first 5 files plus `+N more`) or say the list is unbounded and only the marker position is guaranteed."
+    },
+    {
+      "severity": "minor",
+      "title": "Key does not include the filed text's file cap, and lookup is plain substring",
+      "section": "Design → Idempotency step 2",
+      "detail": "The marker lookup is a substring search of `wtfu:<key12>` over the headline text of the ideas file and archive. Say explicitly that it matches on the headline text only (not drawers or bodies) and that a key12 prefix collision is accepted. Also note it adopts ideas filed by an earlier campaign on the same spec (same spec_id/title/files). That seems intended (it prevents duplicates across rework campaigns) but is not stated."
+    },
+    {
+      "severity": "minor",
+      "title": "Carry persistence on a human-moved campaign is only partly specified",
+      "section": "Design → Carry-over",
+      "detail": "If `finish` finds the campaign moved by a human, the state keys are not copied, so `review_carry` is dropped. The spec accepts this because the review re-runs on resume. It does not say what happens if the human resumes to a state past REVIEWING. Either add a one-line statement or a test that a resume re-merges the carry."
+    },
+    {
+      "severity": "minor",
+      "title": "Design is dense and several promises have no dedicated test row",
+      "section": "Test plan",
+      "detail": "The Test plan maps files to ACs only loosely. Items such as the `tick.v1` additive `followups` key, `except Exception` around `close_campaign` setting `res.error = repr(e)`, and epic = parent frontmatter read from the main checkout are covered only inside AC5/AC6/AC3 prose. Add them to the named test files. `add_idea` is an `@org_writer`; confirm it is safe from the worker thread (the spec assumes the serial close step makes it so)."
+    },
+    {
+      "severity": "nit",
+      "title": "Size is at the upper edge",
+      "section": "Acceptance criteria",
+      "detail": "Eight ACs, but they cover carry-over, the filer, profile keys, a new ledger event, reporting and docs. Acceptable for one campaign because they share one code path. If the implementer struggles, carry-over (`_merge_carry`) is the natural split."
+    },
+    {
+      "severity": "nit",
+      "title": "Non-goals and Clock Log boilerplate",
+      "section": "Goals / Non-goals",
+      "detail": "Non-goals are present and substantive. The empty-looking `## Clock Log` section is template boilerplate, not a placeholder, so it is harmless."
+    }
+  ],
+  "suggested_splits": []
+}

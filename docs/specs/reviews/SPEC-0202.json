@@ -2,40 +2,40 @@
   "schema": "wt.spec.review.v1",
   "spec_id": "SPEC-0202",
   "verdict": "approve",
-  "spec_sha256": "afb31fe1a09e5e5174e0ec93d8122a3572d036bfdd03162278d8826377d20c13",
-  "reviewed_at": "2026-10-25T16:18:51-04:00",
+  "spec_sha256": "72db551ffdc54fbfb4ea88fcde4bb6b2f6685a69da4fb66b18ffde92797d8dfd",
+  "reviewed_at": "2026-10-25T16:35:08-04:00",
   "model": "sonnet",
-  "cost_usd": 0.15461789999999997,
+  "cost_usd": 0.19398200000000002,
   "findings": [
     {
       "severity": "minor",
-      "section": "Design (Verdict schema) / Acceptance criteria",
-      "title": "Schema's required keys and field types are not stated",
-      "detail": "Goals say a `category` on \"every finding\", and `ADVERSARIAL_REVIEWER_SCHEMA` lists `category`, `trigger` and `lines` per finding. The spec never says which of these are `required`. CONFORMANCE_REVIEWER_SCHEMA (personas.py:78) requires only `severity` and `title`. The spec also doesn't give `lines`' type (array of ints, strings, or ranges?). Say that `category` is required and the enum is closed, that `trigger` is optional (a missing trigger caps severity at `minor`, enforced by prompt only), and give the type of `lines`. Otherwise the schema AC (\"category enum, trigger\") can't be checked objectively."
+      "section": "Design — Ledger and brief, rules 2–3",
+      "title": "Where the brief entries get `category` and the folded trigger is not pinned",
+      "detail": "SPEC-0201 defines the brief's `must_fix` entries as the combiner's must-fix findings with `persona` added, and SPEC-0203 replaces the combiner. This spec only says the brief is \"built where SPEC-0201/0203 build the brief\". `render_pending_brief` reads `item['detail']`, so the combiner has to call `finding_detail(f)` and carry `category` when it builds the entries. Name the function that does this (`combine_reviews` today, its SPEC-0203 replacement later) and say the AC5 brief test goes through it, not through a hand-built brief."
     },
     {
       "severity": "minor",
-      "section": "Design (Ledger) / Acceptance criteria",
-      "title": "`trigger` and `lines` are dropped from the ledger and nothing says so",
-      "detail": "`_events_for_result` (queue.py:373-378) copies only ac/title/detail/files, and the spec adds only `category`. `trigger` and `lines` (cite file and line) exist only in the persisted `last_review.verdicts` state. If they should reach the ledger or the implementer's `fix_brief`, say so. If not, state that it is deliberate. Also note that SPEC-0201 line 255 says `_events_for_result` \"already handles the shape\", while this spec says it must be changed to copy `category`. Reconcile the two statements."
+      "section": "Design — Ledger and brief / AC6",
+      "title": "Single-reviewer brief path is not covered",
+      "detail": "SPEC-0201 says that with exactly one reviewer the brief is SPEC-0187's: `source` is the persona, `must_fix` entries have no `persona`, and the `fix_brief` has no `[persona]` prefix. A user who opts in with `reviewers: [adversarial_reviewer]`, which AC3 explicitly allows for `frugal`, gets that path. Say whether `category` and the folded trigger must also reach that brief, and keep AC6's \"labelled `[adversarial_reviewer]`\" scoped to two or more reviewers."
     },
     {
       "severity": "minor",
-      "section": "Design (Docs) / Acceptance criteria",
-      "title": "Docs update is promised but no criterion covers it",
-      "detail": "Design says the capability page \"Reviews\" lists the three reviewers and their categories. No acceptance criterion or Definition-of-done item checks this. Add a criterion (for example `docs/product/capabilities/agentic.md` lists the three reviewers and the category set), or drop the bullet."
+      "section": "Design — Verdict schema / severity rule",
+      "title": "Trigger rule is prompt-only and `finding_detail` hides a missing trigger",
+      "detail": "The spec accepts that \"a finding without a trigger is at most `minor`\" is only a prompt rule, and AC1's test only checks that the template contains the rule. A cheap code check would help: for example, record the severity downgrade, or log a `finding` note when a `must_fix` has no `trigger`. Otherwise a trigger-less false-positive `must_fix` forces an implementer loop (up to `loop_max`) with nothing marking it as unverified. This is optional, because the spec records the choice as accepted."
     },
     {
-      "severity": "minor",
-      "section": "Acceptance criteria / Test plan",
-      "title": "\"`pass` with a `must_fix` is `fix`\" has no explicit test",
-      "detail": "The Design states this rule. It is enforced by SPEC-0201's `combine_reviews`, and the e2e paths listed here use a `must_fix` finding. No test is named for an adversarial verdict of `pass` that carries a `must_fix` finding. Add it to the e2e or queue test list."
+      "severity": "nit",
+      "section": "Design — Context plumbing",
+      "title": "Say that a failed `try` leaves `changed_files` as `None`, rendered as `(none)`",
+      "detail": "\"A failure there leaves all three unset\" and AC4's \"`(none)` on `GitError`\" agree only because `_as_text(None)` returns `(none)` (personas.py:156). One sentence would make that explicit. The ordering and cap rules (sort, keep 300, `… N more`) are clear."
     },
     {
-      "severity": "minor",
-      "section": "Rollout / migration",
-      "title": "Default cap impact is not analysed",
-      "detail": "With balanced's default cap of 10.0 and an implementer budget of 4.0, reviewers now cost up to 1.5+1.0+1.5 = 4.0 per pass, where they cost 1.5 today. If budgets are spent in full, a second fix loop would park on `cost_cap` at the implementer step (4+4+4 > 10). SPEC-0201 analyses the cap for two reviewers. State here whether `campaign_cap_usd` defaults stay unchanged for three reviewers, and what happens at the worst-case spend."
+      "severity": "nit",
+      "section": "Frontmatter",
+      "title": "`status: accepted` while still under review",
+      "detail": "The spec is already `accepted` at the point where it is being reviewed for admission, and the \"Open questions\" section says none remain. This is fine if intentional; the lifecycle in the schema doc says review comes before acceptance."
     }
   ],
   "suggested_splits": []
