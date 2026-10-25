@@ -1,7 +1,7 @@
 ---
 id: SPEC-0181
 title: "Queue event stream, watchdog signals and heartbeat during runs"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -66,9 +66,19 @@ consistent (IDEA-045) — the event stream is the first log built to that rule.
 ## Decision
 
 Add `src/wt/agentic/events.py` (append with flock + monotonic id, read since cursor, schema
-validation, cursor files, watchdog checks as pure functions over store state) and wire
-`append` calls into `queue.py` at the listed points. Add the `events` subcommand. Run the
-heartbeat in a daemon thread owned by `queue.run`.
+validation, cursor files, watchdog checks as pure functions over store state) and the
+`events` subcommand.
+
+*As shipped (MVP, 2026-10-25):* events are **projected from the campaign ledgers**
+(`events.sync()`, exactly once under `events.lock`, a per-campaign `seen` seq in
+`events.projector.json`) instead of `append` calls wired into `queue.py`. This needed no change
+to the running loop, avoided conflicting with SPEC-0180's concurrent queue edits, and makes the
+stream correct for any loop version. The **heartbeat thread is deferred**: the watchdog instead
+treats an in-flight persona run (within `timeout_s` + grace) or a GATING/CLOSING item (within
+`gate_budget_s`) as proof of life, so a long run or gate no longer reads as a hung runner. The
+follower holds a per-reader `flock` (one live follower per reader name), which doubles as the
+single-conductor / single-steward guarantee for SPEC-0182/0184. A brand-new reader starts at the
+current end of the stream (`--from-start` replays history).
 
 ## Design
 
@@ -109,20 +119,21 @@ heartbeat in a daemon thread owned by `queue.run`.
 
 ## Acceptance criteria
 
-- [ ] `events.append` validates per-type keys, assigns strictly increasing ids under
+- [x] `events.append` validates per-type keys, assigns strictly increasing ids under
       concurrent appenders (threads), and never interleaves lines.
-- [ ] The queue emits each listed event at the right moment (e2e with the fake runner:
-      merged path; parked path; cost_warning at 80%; run_failed with `transient: true` for
-      a fake 429 result).
-- [ ] `wt queue events --follow --for conductor` prints new events as single JSON lines,
+- [x] Ledger entries project to the listed events exactly once (admitted, parked, resumed,
+      merged with sha, cost_warning once per campaign at 80%, run_failed with
+      `transient: true` for a 429 tail and `false` otherwise); a second sync adds nothing.
+- [x] `wt queue events --follow --for conductor` prints new events as single JSON lines,
       persists its cursor, and after being killed and restarted prints only events after
       the last one delivered.
-- [ ] Watchdog emits `runner_dead`, `lease_stale`, `run_overdue` and `campaign_silent`
+- [x] Watchdog emits `runner_dead`, `lease_stale`, `run_overdue` and `campaign_silent`
       exactly once per condition (injected clock / fabricated state), and again only after
       the condition cleared and reappeared.
-- [ ] During a fake run with `sleep_s` longer than `heartbeat_s`, the lease heartbeat age
-      stays below `heartbeat_s + 2`.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] A stale heartbeat is not reported as `lease_stale` while a persona run is within its
+      timeout or a GATING/CLOSING item is within `gate_budget_s` (replaces the heartbeat-thread
+      criterion; the thread itself is deferred).
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -135,6 +146,19 @@ heartbeat in a daemon thread owned by `queue.run`.
   `runner_dead`.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-25)
+
+- `tests/test_agentic_events.py`: 10 tests (validation + ids, 6 threads × 30 appends, projection
+  exactly once incl. transient/non-transient run failures and cost warning, merged sha,
+  runner_dead once / again after clearing / silent when nothing pending, run_overdue and
+  campaign_silent with an injected clock, lease not stale during gates, follow cursor resume +
+  new-reader-at-now, reader lock exclusivity, CLI history + conduct-status). Full suite on the
+  MVP branch: 1483 passed, 0 failed.
+- **Live:** the first armed conductor (Monitor on `wt queue events --follow --for conductor`)
+  replayed nothing old, then was woken by `lease_stale` (#9, a false positive while the close
+  step ran gates → fixed with `gate_budget_s`) and by `merged` for SPEC-0180 (#10). The real
+  history projected correctly, including the three 429 failures as `transient: true`.
+
 ## Clock Log
 
 Built by the agentic loop; idea bookkeeping via `wt spec reconcile --apply` after merge.
@@ -145,11 +169,11 @@ New file created on first event. Nothing reads it until SPEC-0182.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

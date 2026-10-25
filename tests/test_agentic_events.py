@@ -205,3 +205,18 @@ def test_cli_events_history_and_conduct_status(tmp_path, monkeypatch):
     assert st["parked"][0]["park"]["reason"] == "cost_cap"
     r = CliRunner().invoke(cli, ["queue", "events", "--follow"])
     assert r.exit_code != 0 and "--for" in r.output
+
+
+def test_lease_not_stale_while_gates_run(tmp_path):
+    """A GATING/CLOSING item runs gates in the loop's process; its stale heartbeat is not a
+    hung runner within the gate budget (false positive seen on the first live conductor)."""
+    cfg = _cfg(tmp_path)
+    _campaign(cfg, state="CLOSING")
+    lease = L.acquire(cfg, ["test"])
+    try:
+        soon = dt.datetime.now().astimezone() + dt.timedelta(seconds=300)
+        assert "lease_stale" not in {t for _k, t, _c, _d in E.watchdog_checks(cfg, now=soon)}
+        late = dt.datetime.now().astimezone() + dt.timedelta(seconds=4000)
+        assert "lease_stale" in {t for _k, t, _c, _d in E.watchdog_checks(cfg, now=late)}
+    finally:
+        lease.release()

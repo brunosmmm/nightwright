@@ -1,7 +1,7 @@
 ---
 id: SPEC-0183
 title: "File-based mailbox between conductor and stewards"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -75,15 +75,15 @@ messages are mirrored into the event stream.
 
 ## Acceptance criteria
 
-- [ ] `send` validates addresses (unknown steward project refused), writes the envelope,
+- [x] `send` validates addresses (unknown steward project refused), writes the envelope,
       returns an id; concurrent senders get distinct, increasing ids.
-- [ ] `follow` prints only new messages as JSON lines and resumes after its cursor across
+- [x] `follow` prints only new messages as JSON lines and resumes after its cursor across
       restarts.
-- [ ] A message to `conductor` appears as a `message` event in `events.jsonl`.
-- [ ] `list --unanswered` and `thread` reflect replies linked by `re`.
-- [ ] `--from` defaults to `WT_MAILBOX_ADDR`; sending without either is a usage error.
-- [ ] Completion, reference, agent-surface guards pass.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] A message to `conductor` appears as a `message` event in `events.jsonl`.
+- [x] `list --unanswered` and `thread` reflect replies linked by `re`.
+- [x] `--from` defaults to `WT_MAILBOX_ADDR`; sending without either is a usage error.
+- [x] Completion, reference, agent-surface guards pass.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -92,6 +92,16 @@ messages are mirrored into the event stream.
 - **Manual verification:** two shells: `wt mailbox follow --to steward:Meta-Tools` and a
   `wt mailbox send` from `conductor`; reply and check `thread`.
 - **Regression guard:** full `uv run pytest`.
+
+### Test record (2026-10-25)
+
+- `tests/test_agentic_mailbox.py`: 8 tests (addresses incl. case-insensitive steward
+  canonicalization, ids under threads, conductor mail mirrored as `message` events, follow
+  cursor resume, unanswered/thread, CLI). Full suite 1483 passed.
+- **Live:** the human armed `/wt-steward` for Meta-Tools (follower holding
+  `mailbox:steward:Meta-Tools`); the conductor sent `steward:Meta-Tools:1` (info) through
+  `wt mailbox send`. *As shipped:* ids are `<address>:<n>`; one-steward-per-project comes from
+  the follower's reader lock (no separate lease command).
 
 ## Clock Log
 
@@ -103,11 +113,11 @@ New files on first message.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

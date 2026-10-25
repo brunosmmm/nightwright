@@ -1,7 +1,7 @@
 ---
 id: SPEC-0184
 title: "wt-steward skill: Monitor-armed project steward on the mailbox"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -58,6 +58,13 @@ acquire|release|status --project P`; no other code.
   heading guard on ideas; SPEC-0138) / Verify.
 - `steward-lease` uses `lease.py` with name `steward-<project>`.
 - Docs: capability page "Stewards"; agent-surface skill-map row; `EXPECTED_SKILLS`.
+
+### As shipped (MVP, 2026-10-25)
+
+- No `steward-lease` command: one steward per project is the reader lock held by
+  `wt mailbox follow --to steward:<P>` (the Monitor's command).
+- Skill shipped; the human armed a Meta-Tools steward. Still to observe for the manual AC: a
+  conductor question answered by the steward and acted on.
 
 ## Alternatives considered
 

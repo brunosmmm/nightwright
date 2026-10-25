@@ -48,7 +48,10 @@ _TRANSIENT_MARKERS = ("usage_limit", "session limit", "rate limit", "429", "over
                       "529", "api_error", "timed out connecting")
 
 DEFAULTS = {"poll_s": 2.0, "silent_after_s": 900, "overdue_grace_s": 60,
-            "cost_warning_ratio": 0.8}
+            "cost_warning_ratio": 0.8,
+            # a GATING / CLOSING item runs project gates (and a rebase) in-process; the loop
+            # cannot heartbeat meanwhile, so its lease is not stale within this budget
+            "gate_budget_s": 1800}
 
 
 def settings(cfg) -> dict:
@@ -292,12 +295,15 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
     if (active or queued) and not lease.get("held"):
         out.append(("runner_dead", "runner_dead", None,
                     {"active": len(active), "queued": len(queued)}))
-    # A long persona run blocks the loop's between-tick heartbeat; only call the lease stale
-    # when no run is in flight within its timeout.
+    # A long persona run or gate run blocks the loop's between-tick heartbeat; only call the
+    # lease stale when nothing is in flight within its budget.
     if lease.get("stale"):
         in_budget = any((_age_s(run.get("ts"), now) or 0) <= float(run.get("timeout_s") or 1800)
                         + sett["overdue_grace_s"] for run in running.values())
-        if not in_budget:
+        gating = any(r.get("state") in ("GATING", "CLOSING") and r["id"] not in running
+                     and (_age_s(r.get("updated_at"), now) or 0) <= sett["gate_budget_s"]
+                     for r in active)
+        if not (in_budget or gating):
             out.append((f"lease_stale:{lease.get('pid')}", "lease_stale", None,
                         {"pid": lease.get("pid"), "heartbeat_age_s": lease.get("heartbeat_age_s")}))
     for r in active:

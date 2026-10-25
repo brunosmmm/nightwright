@@ -1,7 +1,7 @@
 ---
 id: SPEC-0182
 title: "Event-driven wt-conduct: Monitor-armed conductor woken by queue events"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -91,6 +91,17 @@ When to use / Procedure (acquire lease → `conduct-status` → arm Monitor → 
 → act → log `wt campaign note` → back to waiting; re-arm on expiry; release on exit) /
 Conventions (never implement; sub-agents for anything long; one conductor; shared ideas
 file guard) / Verify.
+
+### As shipped (MVP, 2026-10-25)
+
+- No `conduct-lease` command: the single-conductor guarantee is the `conductor` reader lock
+  held by the event follower the Monitor runs (`events.reader_lock`); `conduct-status` reports
+  `conductor_pid` from it.
+- The decision table gained rows for transient failures (resume with `--reset-loops`), the
+  self-restart after a merge that touches `src/wt/agentic/`, and steward requests.
+- Live so far: armed conductor woken by `lease_stale` (false positive, watchdog fixed) and by
+  `merged` (reconciled the idea, restarted the loop). Still to observe for the manual AC: a
+  park and a `runner_dead`.
 
 ## Alternatives considered
 
