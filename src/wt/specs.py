@@ -45,8 +45,11 @@ def _yaml_fm_value(value: str) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 def _package_specs_dir():
-    """wt's own `docs/specs`, located from this module: `<repo>/src/wt/specs.py` -> `<repo>`."""
-    return Path(__file__).resolve().parents[2] / "docs" / "specs"
+    """wt's own `docs/specs`, located from the installed package via the shared checkout walk
+    (SPEC-0166), or None when the package does not run from a checkout."""
+    from .rules import discover_wt_checkout
+    root = discover_wt_checkout()
+    return Path(root) / "docs" / "specs" if root else None
 
 
 def _specs_dir(cfg):
@@ -61,11 +64,13 @@ def _specs_dir(cfg):
     configured = cfg.get("specs_dir")
     if configured:
         return Path(configured)
-    default = _package_specs_dir()
-    if not default.is_dir():
+    from .rules import CHECKOUT_HINT, configured_wt_checkout
+    checkout = configured_wt_checkout(cfg)            # SPEC-0166 override
+    default = checkout / "docs" / "specs" if checkout else _package_specs_dir()
+    if default is None or not default.is_dir():
         raise ValueError(
-            "cannot locate the internal specs directory; set `specs_dir` in your config "
-            f"(looked for {default})")
+            "cannot locate the internal specs directory; set `specs_dir` in your config, or "
+            f"{CHECKOUT_HINT} (looked for {default})")
     return default
 
 

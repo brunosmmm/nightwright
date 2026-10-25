@@ -16,6 +16,9 @@ DEFAULT_CONFIG = {
     "transcripts_root": "~/.claude/projects",
     "cursor_transcripts_root": "~/.cursor/projects",  # set to null to disable
     "work_root": "~/work",
+    # SPEC-0166: path to this wt checkout (skills/, docs/specs, Meta-Tools research root).
+    # Only needed for a non-editable install; `uv tool install --editable .` resolves it.
+    "wt_checkout": None,
     "timezone": "America/New_York",
     "default_axis": "topic",   # report grouping when --by omitted ("topic" = base topics)
     "gap_minutes": 15,

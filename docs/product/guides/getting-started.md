@@ -9,10 +9,15 @@ the wrong binary.
 ```bash
 uv sync                       # .venv + base deps
 uv run wt --help              # verify: idea, report, projects, …
-uv tool install .             # put wt on PATH
+uv tool install --editable .  # put wt on PATH
 # optional desk UI:
-uv tool install '.[tui]'      # from this checkout — not `uv tool install 'wt[tui]'`
+uv tool install --editable '.[tui]'   # from this checkout — not `uv tool install 'wt[tui]'`
 ```
+
+Install **editable**: `wt skills install`, internal specs and the Meta-Tools research root
+all resolve from this checkout, and a `git pull` takes effect without reinstalling. For a
+non-editable install, set `wt_checkout: /path/to/wt` in `config.yaml`; otherwise those
+commands stop with a hint saying so.
 
 Config and data live under XDG (`~/.config/wt/`, `~/.local/share/wt/`), not in the repo.
 

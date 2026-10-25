@@ -6,7 +6,7 @@ Optional Textual **ideas desk** for humans. Agents stay on CLI + `--json`.
 
 ```bash
 uv sync --extra tui                 # checkout
-uv tool install '.[tui]'            # PATH entry from this checkout
+uv tool install --editable '.[tui]'   # PATH entry from this checkout
 wt tui
 ```
 

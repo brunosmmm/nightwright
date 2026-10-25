@@ -37,10 +37,14 @@ Requires [uv](https://docs.astral.sh/uv/). From this checkout:
 ```bash
 uv sync
 uv run wt --help               # must list idea / report / projects (not a static-site tool)
-uv tool install .              # PATH entry
-uv tool install '.[tui]'       # optional desk: wt tui
+uv tool install --editable .   # PATH entry
+uv tool install --editable '.[tui]'   # optional desk: wt tui
 uv run pytest
 ```
+
+Install **editable**: skills, internal specs and the Meta-Tools research root live in this
+checkout, and a `git pull` takes effect without reinstalling. For a non-editable install, set
+`wt_checkout: /path/to/wt` in `config.yaml` (SPEC-0166).
 
 Config/data live under XDG (`~/.config/wt/`, `~/.local/share/wt/`), not in the repo.
 

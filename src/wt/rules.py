@@ -178,9 +178,42 @@ def discover_wt_checkout():
     import wt as _wt
     here = Path(_wt.__file__).resolve().parent
     for cand in [here, *here.parents]:
-        if (cand / "src" / "wt").is_dir() and (cand / "pyproject.toml").is_file():
+        if _is_wt_checkout(cand):
             return str(cand)
     return None
+
+
+# SPEC-0166: shared fix hint for every caller that needs the checkout and cannot find it.
+CHECKOUT_HINT = ("reinstall from your wt checkout with `uv tool install --editable .` "
+                 "or set `wt_checkout: /path/to/wt` in config.yaml")
+
+
+def _is_wt_checkout(path):
+    return (path / "src" / "wt").is_dir() and (path / "pyproject.toml").is_file()
+
+
+def configured_wt_checkout(cfg):
+    """The `wt_checkout` config override as a Path, or None when unset. Raises ValueError if
+    it is set but does not look like a wt checkout — a typo must not silently fall back."""
+    raw = str((cfg or {}).get("wt_checkout") or "").strip()
+    if not raw:
+        return None
+    path = Path(os.path.expanduser(raw))
+    if not _is_wt_checkout(path):
+        raise ValueError(f"wt_checkout {raw!r} is not a wt checkout (needs src/wt and "
+                         "pyproject.toml)")
+    return path
+
+
+def wt_checkout(cfg=None):
+    """wt's own checkout root (SPEC-0166): config `wt_checkout` > module-relative walk
+    (`discover_wt_checkout`, works for `uv run` / editable installs) > None. Never cwd-relative
+    (SPEC-0079)."""
+    configured = configured_wt_checkout(cfg)
+    if configured:
+        return configured
+    found = discover_wt_checkout()
+    return Path(found) if found else None
 
 
 def resolve_research_context(cfg, project=None):
@@ -207,13 +240,13 @@ def resolve_research_context(cfg, project=None):
         return ctx
 
     if project == "Meta-Tools":
-        root = discover_wt_checkout()
+        root = wt_checkout(cfg)
         if root:
-            return {"root": root, "source": "internal"}
+            return {"root": str(root), "source": "internal"}
         return {
             "root": None,
             "source": "none",
-            "note": "could not discover wt checkout for internal Meta-Tools",
+            "note": f"could not discover wt checkout for internal Meta-Tools; {CHECKOUT_HINT}",
         }
 
     if project:

@@ -1777,6 +1777,19 @@ def skills_group():
     any --dest), so a fresh agent session can drive wt without reading its code."""
 
 
+def _skills_source():
+    """The checkout's skills/ dir, or a ClickException with the SPEC-0166 fix hint — never a
+    silent empty install."""
+    from .rules import CHECKOUT_HINT
+    try:
+        source = SK.repo_skills_dir(load_config())
+    except ValueError as e:                     # invalid `wt_checkout` override
+        raise click.ClickException(str(e))
+    if source is None:
+        raise click.ClickException(f"cannot find wt's skills/ directory; {CHECKOUT_HINT}")
+    return source
+
+
 @skills_group.command("install")
 @click.option("--link/--copy", "link", default=True,
               help="symlink into the repo (default) or make a portable copy")
@@ -1792,8 +1805,10 @@ def skills_install_cmd(link, dest, force):
     wt skills install --copy          portable copy instead
     wt skills install --dest /tmp/x   install elsewhere (tests MUST use this)
     """
+    source = _skills_source()
     try:
-        results = SK.install(dest=dest, mode="link" if link else "copy", force=force)
+        results = SK.install(dest=dest, mode="link" if link else "copy", force=force,
+                             source=source)
     except ValueError as e:
         raise click.ClickException(str(e))
     if not results:
@@ -1808,7 +1823,7 @@ def skills_install_cmd(link, dest, force):
               help="destination to check (default: ~/.claude/skills)")
 def skills_list_cmd(dest):
     """Show repo skills and whether/how each is installed at --dest."""
-    for entry in SK.status(dest=dest):
+    for entry in SK.status(dest=dest, source=_skills_source()):
         console.print(f"[white]{entry['name']}[/]  [dim]{entry['state']}[/]")
 
 
