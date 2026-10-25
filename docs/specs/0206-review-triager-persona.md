@@ -1,7 +1,7 @@
 ---
 id: SPEC-0206
 title: "Review triager persona: waive low-severity findings that only cost a loop"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -150,32 +150,32 @@ triager is on by default for `balanced`/`thorough` and off for `frugal`.
 
 ## Acceptance criteria
 
-- [ ] AC1 (G1). `needs_triager` truth table: true iff `triager` is on, the outcome is a
+- [x] AC1 (G1). `needs_triager` truth table: true iff `triager` is on, the outcome is a
       score-only `fix` and `score + waivable_weight >= pass_score`; false for a `must_fix`, a
       surviving `fix` verdict, a synthetic `major`, a pass, a hopeless score, or `triager: false`.
-- [ ] AC2 (G1). State machine: after the last valid reviewer verdict `_apply_reviews` sets
+- [x] AC2 (G1). State machine: after the last valid reviewer verdict `_apply_reviews` sets
       `triage = "pending"` (reason `review_triage`) when needed and the cap fits; `plan_step`
       then returns the one-persona `review_triager` step; after its run `triage = "done"` and
       the campaign routes; it runs at most once per loop; a cap that cannot fit its budget sets
       `skipped` with a `note` and later ticks do not retry; the fields clear on re-entry into
       `REVIEWING` and persist after leaving it; an interrupted run keeps `pending`.
-- [ ] AC3 (G2). Waivers: only existing `minor`/`nit` ids with a non-empty reason are honored;
+- [x] AC3 (G2). Waivers: only existing `minor`/`nit` ids with a non-empty reason are honored;
       `major`/`must_fix`/synthetic/unknown ids and empty reasons are ignored with a `note`;
       accepted waivers are `note` events and in `last_review.waived`; the re-run
       `triage_reviews` routes on them (e.g. waiving enough `minor` findings ⇒ `pass` ⇒ `CLOSING`;
       waiving too few ⇒ still `fix`).
-- [ ] AC4 (G3). A malformed, failed or timed-out triager leaves the deterministic outcome, sets
+- [x] AC4 (G3). A malformed, failed or timed-out triager leaves the deterministic outcome, sets
       `triage = "done"`, never `review_escalated`, and charges its cost.
-- [ ] AC5 (G1). `review_triager`: template, `REVIEW_TRIAGER_SCHEMA` (exact required keys),
+- [x] AC5 (G1). `review_triager`: template, `REVIEW_TRIAGER_SCHEMA` (exact required keys),
       `PERSONAS` entry, not in `REVIEWER_PERSONAS`/`reviewers`, read-only `build_request` with a
       deterministic prompt containing the `triage_input` waivable ids; per-profile
       model/effort/budget as above; `review.triager` defaults and validation in
       `resolve_profile`.
-- [ ] AC6. End to end with FakeRunner: (a) a clean pass or a `must_fix` ⇒ no triager run;
+- [x] AC6. End to end with FakeRunner: (a) a clean pass or a `must_fix` ⇒ no triager run;
       (b) a score-only `fix` ⇒ triager waives minors ⇒ `MERGED`, waivers recorded;
       (c) triager waives too little ⇒ `IMPLEMENTING` once; (d) triager malformed ⇒ deterministic
       `fix` stands; (e) a cap too small for the triager ⇒ skipped, deterministic outcome.
-- [ ] AC7. `docs/product/capabilities/agentic.md` documents the triager (grep test); full
+- [x] AC7. `docs/product/capabilities/agentic.md` documents the triager (grep test); full
       `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
@@ -191,6 +191,33 @@ triager is on by default for `balanced`/`thorough` and off for `frugal`.
   record its waivers and cost here.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q -x` (full suite): 1904 passed, 1 skipped.
+- New tests: `tests/test_agentic_review_triage.py` (`needs_triager` truth table, `_accept_waivers`,
+  waiver re-run, `_triage_input`), `tests/test_agentic_queue.py` (pending → triager step → done,
+  skipped on cap and terminal, once per loop, clear on re-entry, interrupted keeps pending, cost
+  charged on malformed/failed/timed-out runs, stored waivers re-applied), `tests/test_agentic_personas.py`
+  (template, schema, `build_request`, determinism, per-profile settings), `tests/test_agentic_profiles.py`
+  (`review.triager` defaults/validation, persona settings, docs grep), `tests/test_agentic_e2e.py` (AC6 a-e).
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`: exit 0.
+- Manual verification (a real campaign whose score-only `fix` triggers the triager) is pending: record
+  its waivers and cost on the next such campaign.
+
+### As shipped (2026-10-25)
+
+- Matches the Design. Small choices: `profiles.triager_enabled(profile)` is the shared "on" check
+  (`review.triager is True`); the routing tail of `_apply_reviews` moved into `_route_reviews`, which the
+  triager path shares; `decide_reviews` takes a `waived` argument; `_accept_waivers`, `_apply_triager` and
+  `_triage_input` live in `queue.py`.
+- `plan_step` does not re-check the cap for the triager step: it was checked when `triage` became `pending`.
+- A triager step is applied through the multi-reviewer path even with one reviewer, so a prepare failure
+  becomes a result without a run (a `note`, `triage = "done"`) instead of the campaign-wide `open_failed` park.
+- The `review_triager` template carries the spec text and `triage_input` only (no gate results or brief);
+  `test_templates_and_schemas` excludes it from the common-placeholder check.
+- Existing SPEC-0201/0203 tests whose score-only `fix` expected a direct loop now run with
+  `review.triager: false` (`DELTA` in `test_agentic_reviewers.py`, the SPEC-0203 e2e low-score test).
+
 ## Rollout / migration
 
 Takes effect on the next `REVIEWING`; no data migration (`triage` is absent on old state, which
@@ -203,11 +230,11 @@ Built by the agentic loop or the human lane; idea bookkeeping via `wt spec recon
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

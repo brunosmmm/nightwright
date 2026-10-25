@@ -15,11 +15,11 @@ REVIEWER_ORDER = ("conformance_reviewer", "test_reviewer", "adversarial_reviewer
 SEVERITIES = ("must_fix", "major", "minor", "nit")
 DEFAULT_WEIGHTS = {"must_fix": 100, "major": 15, "minor": 4, "nit": 1}
 DEFAULT_PASS_SCORE = 80
-REVIEW_KEYS = frozenset({"pass_score", "weights"})
+REVIEW_KEYS = frozenset({"pass_score", "weights", "triager"})
 
 BUILTIN_PROFILES = {
     "balanced": {
-        "review": {"pass_score": 80, "weights": dict(DEFAULT_WEIGHTS)},
+        "review": {"pass_score": 80, "weights": dict(DEFAULT_WEIGHTS), "triager": True},
         "slots": 2,
         "loop_max": 3,
         "campaign_cap_usd": 10.0,
@@ -36,10 +36,12 @@ BUILTIN_PROFILES = {
                               "permission_mode": "dontAsk", "read_only": True},
             "spec_reviewer": {"model": "sonnet", "effort": "high", "max_budget_usd": 0.8,
                               "permission_mode": "dontAsk", "read_only": True},
+            "review_triager": {"model": "sonnet", "effort": "medium", "max_budget_usd": 0.5,
+                               "permission_mode": "dontAsk", "read_only": True},
         },
     },
     "frugal": {
-        "review": {"pass_score": 70, "weights": dict(DEFAULT_WEIGHTS)},
+        "review": {"pass_score": 70, "weights": dict(DEFAULT_WEIGHTS), "triager": False},
         "slots": 1,
         "loop_max": 2,
         "campaign_cap_usd": 3.0,
@@ -56,10 +58,12 @@ BUILTIN_PROFILES = {
                               "permission_mode": "dontAsk", "read_only": True},
             "spec_reviewer": {"model": "sonnet", "effort": "medium", "max_budget_usd": 0.4,
                               "permission_mode": "dontAsk", "read_only": True},
+            "review_triager": {"model": "haiku", "effort": "medium", "max_budget_usd": 0.25,
+                               "permission_mode": "dontAsk", "read_only": True},
         },
     },
     "thorough": {
-        "review": {"pass_score": 90, "weights": dict(DEFAULT_WEIGHTS)},
+        "review": {"pass_score": 90, "weights": dict(DEFAULT_WEIGHTS), "triager": True},
         "slots": 3,
         "loop_max": 4,
         "campaign_cap_usd": 30.0,
@@ -76,6 +80,8 @@ BUILTIN_PROFILES = {
                               "permission_mode": "dontAsk", "read_only": True},
             "spec_reviewer": {"model": "opus", "effort": "high", "max_budget_usd": 1.5,
                               "permission_mode": "dontAsk", "read_only": True},
+            "review_triager": {"model": "sonnet", "effort": "medium", "max_budget_usd": 0.5,
+                               "permission_mode": "dontAsk", "read_only": True},
         },
     },
 }
@@ -150,7 +156,8 @@ def _is_int(value) -> bool:
 
 def _check_review(profile):
     """ValueError naming the key for a bad `review:` block (SPEC-0203): only `pass_score`
-    (int 0..100) and `weights` (exactly the four severities, ints >= 0); no bools."""
+    (int 0..100), `weights` (exactly the four severities, ints >= 0; no bools) and `triager`
+    (bool, SPEC-0206)."""
     name = profile.get("name")
     review = profile.get("review")
     if review is None:
@@ -165,6 +172,9 @@ def _check_review(profile):
         if not _is_int(ps) or not 0 <= ps <= 100:
             raise ValueError(f"profile {name!r}: review.pass_score must be an integer 0..100, "
                              f"got {ps!r}")
+    if "triager" in review and not isinstance(review["triager"], bool):
+        raise ValueError(f"profile {name!r}: review.triager must be true or false, "
+                         f"got {review['triager']!r}")
     if "weights" in review:
         weights = review["weights"]
         if not isinstance(weights, dict):
@@ -188,6 +198,13 @@ def review_params(profile) -> tuple:
     weights = dict(DEFAULT_WEIGHTS)
     weights.update(review.get("weights") or {})
     return (DEFAULT_PASS_SCORE if ps is None else ps), weights
+
+
+def triager_enabled(profile) -> bool:
+    """Is the review triager (SPEC-0206) on? A hand-built profile without `review.triager`
+    has it off."""
+    review = (profile or {}).get("review")
+    return isinstance(review, dict) and review.get("triager") is True
 
 
 def persona_settings(profile, persona):

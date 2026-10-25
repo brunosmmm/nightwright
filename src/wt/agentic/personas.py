@@ -116,6 +116,17 @@ TEST_REVIEWER_SCHEMA = {
     },
 }
 
+REVIEW_TRIAGER_SCHEMA = {
+    "type": "object",
+    "required": ["waive", "note"],
+    "properties": {
+        "waive": {"type": "array", "items": {
+            "type": "object", "required": ["id", "reason"],
+            "properties": {"id": {"type": "string"}, "reason": {"type": "string"}}}},
+        "note": {"type": "string"},
+    },
+}
+
 SPEC_REVIEW_INVARIANT = """\
 ## wt spec review invariants (read before anything else)
 
@@ -166,6 +177,9 @@ PERSONAS = {
                              read_only=True),
     "spec_reviewer": Persona("spec_reviewer", "spec_reviewer.md", SPEC_REVIEWER_SCHEMA,
                              read_only=True, invariant=SPEC_REVIEW_INVARIANT),
+    # SPEC-0206: not a reviewer (not in REVIEWER_PERSONAS); waives minor/nit findings only
+    "review_triager": Persona("review_triager", "review_triager.md", REVIEW_TRIAGER_SCHEMA,
+                              read_only=True),
 }
 
 # Personas that get the review context (diff, gate summary, previous verdicts) and may be listed
@@ -175,7 +189,7 @@ REVIEWER_PERSONAS = ("conformance_reviewer", "test_reviewer")
 PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree", "base",
                 "loop", "loop_max", "context_files", "gate_results", "pending_brief",
                 "previous_verdicts", "diff", "test_files", "tests_touched", "schema_text",
-                "idea_text")
+                "idea_text", "triage_input")
 
 
 def get_persona(name) -> Persona:
@@ -399,12 +413,13 @@ def tests_touched(worktree, base) -> list[dict]:
 
 
 def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
-                  review=False, with_tests=False) -> dict:
+                  review=False, with_tests=False, extra=None) -> dict:
     """Prompt values from campaign state (+ project config). `spec_text` is read from the
     worktree so the persona sees the spec as it is on the branch. `previous` = `run.end`
     ledger events (the caller reads them; this stays free of store I/O). `review` adds the
     branch `diff` (≤ 1500 lines) and the `test_files` it touches, read from the worktree;
-    `with_tests` adds `tests_touched` (SPEC-0205), pre-rendered as sorted JSON."""
+    `with_tests` adds `tests_touched` (SPEC-0205), pre-rendered as sorted JSON. `extra` = more
+    prompt values (SPEC-0206 `triage_input`), merged last."""
     repo = state.get("repo") or {}
     spec = state.get("spec") or {}
     worktree = repo.get("worktree")
@@ -428,7 +443,7 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
     if with_tests and worktree and repo.get("base"):
         entries = tests_touched(worktree, repo["base"])
         touched = json.dumps(entries, indent=2, sort_keys=True) if entries else None
-    return {
+    ctx = {
         "campaign": state.get("id"),
         "spec_id": state.get("spec_id"),
         "spec_rel_path": rel,
@@ -445,6 +460,8 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
         "test_files": test_files,
         "tests_touched": touched,
     }
+    ctx.update(extra or {})
+    return ctx
 
 
 def build_prompt(persona, ctx: dict) -> str:
@@ -469,14 +486,14 @@ def _gate_tool_patterns(project_cfg) -> list[str]:
 
 
 def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
-                  previous=None) -> RunRequest:
+                  previous=None, extra=None) -> RunRequest:
     """Turn profile + project config + campaign state into a `RunRequest` for `persona`.
 
     Model / effort / budget come from the profile's persona settings. The implementer's
     permission mode follows the project (`agents.permission_mode`, default bypassPermissions,
     so a project can opt into an allowlist); read-only personas keep the profile's mode and run
     `--restricted`. The implementer's allowlist is the project's `agents.allowed_tools` plus a
-    `Bash(<gate cmd>*)` pattern per gate."""
+    `Bash(<gate cmd>*)` pattern per gate. `extra` = additional prompt values (`triage_input`)."""
     p = get_persona(persona)
     settings = persona_settings(profile, persona)
     repo = state.get("repo") or {}
@@ -492,7 +509,7 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         allowed = tuple(list(agents.get("allowed_tools") or []) + _gate_tool_patterns(project_cfg))
     ctx = build_context(cfg, state, project_cfg, loop_max=profile.get("loop_max"),
                         previous=previous, review=persona in REVIEWER_PERSONAS,
-                        with_tests=persona == "test_reviewer")
+                        with_tests=persona == "test_reviewer", extra=extra)
     env = {
         "WT_CAMPAIGN": str(state.get("id") or ""),
         "WT_DATA_DIR": str(cfg.get("data_dir") or ""),

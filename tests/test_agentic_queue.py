@@ -1,6 +1,7 @@
 """SPEC-0176: the pure state machine (`plan_step`, `decide_triage`) and `_apply` over synthetic
 step results, admission by slots, lease refusal. Repos and runners come from the e2e harness
 (`test_agentic_e2e`), personas never run for real."""
+import dataclasses
 import json
 
 import pytest
@@ -9,6 +10,7 @@ from click.testing import CliRunner
 from test_agentic_e2e import (SPEC_ACCEPTED, added, impl_done, make_cfg, make_repo, run_cli,
                               script, write_review)
 from wt.agentic import lease as L
+from wt.agentic import personas as PS
 from wt.agentic import queue as Q
 from wt.agentic import store as S
 from wt.agentic.runner import RunResult
@@ -511,3 +513,232 @@ def test_tick_records_one_backlog_event_per_change(tmp_path, monkeypatch):
     assert len(events()) == 3
     reasons = [e["reason"] for e in S.read_ledger(cfg, cid, types=["transition"])]
     assert reasons[0] == "admitted"
+
+
+# ---- SPEC-0206: review triager state machine ---------------------------------------------------
+
+RV = "conformance_reviewer"
+TG = "review_triager"
+
+
+def _minors(n):
+    return {"verdict": "pass", "score": 90, "fix_brief": "", "ac_assessment": [],
+            "findings": [{"severity": "minor", "title": f"m{i}", "detail": "d",
+                          "files": ["a.py"]} for i in range(n)]}
+
+
+def _tv(*ids, reason="subjective", note="n"):
+    return {"waive": [{"id": i, "reason": reason} for i in ids], "note": note}
+
+
+def _reviewing(cfg, cid, **over):
+    st = S.read_state(cfg, cid)
+    st.update(state="REVIEWING", **over)
+    S.write_state(cfg, cid, st)
+
+
+def _review_in(ctx, cfg, cid, v):
+    return _apply(ctx, cfg, cid, "review", persona=RV, run_id="002-conformance_reviewer",
+                  run_result=_rr(v), budget=1.5)
+
+
+def _triager_in(ctx, cfg, cid, rr, run_id="003-review_triager"):
+    st = S.read_state(cfg, cid)
+    step = Q.Step("review", persona=TG, personas=(TG,))
+    row = Q._apply(ctx, st, Q.StepResult(cid, step, st["state"], run_id=run_id, run_result=rr,
+                                         budget=0.5))
+    return row, S.read_state(cfg, cid)
+
+
+def _pending(opened, n=6):
+    cfg, cid, ctx = opened
+    _reviewing(cfg, cid)
+    row, st = _review_in(ctx, cfg, cid, _minors(n))
+    assert (row["to"], row["reason"]) == ("REVIEWING", "review_triage"), row
+    return cfg, cid, ctx, st
+
+
+def _notes(cfg, cid):
+    return [n["text"] for n in S.read_ledger(cfg, cid, types=["note"])]
+
+
+def test_triage_pending_after_the_last_valid_verdict(opened):
+    cfg, cid, ctx, st = _pending(opened)
+    lr = st["last_review"]
+    assert lr["triage"] == "pending" and lr["verdicts"][RV]["loop"] == 0
+    assert "score" not in lr and "verdict" not in lr                  # not evaluated yet
+    assert st["state"] == "REVIEWING" and st["counters"]["loops"] == 0
+    assert st["counters"]["review_retries"] == 0
+    assert not any(n.startswith("review score") for n in _notes(cfg, cid))
+    step = Q.plan_step(st, ctx.profile(st))
+    assert (step.kind, step.persona, step.personas) == ("review", TG, (TG,))
+    assert [e["to"] for e in S.read_ledger(cfg, cid, types=["transition"])][-1] != "REVIEWING"
+
+
+def test_triager_is_skipped_for_pass_must_fix_and_synthetic(opened):
+    cfg, cid, ctx = opened
+    fix = {"verdict": "fix", "score": 40, "fix_brief": "x", "ac_assessment": [],
+           "findings": _minors(6)["findings"] + [{"severity": "must_fix", "title": "bad"}]}
+    for v, to in ((_minors(2), "CLOSING"), (fix, "IMPLEMENTING"),
+                  ({"verdict": "fix", "score": 1, "fix_brief": "x", "findings": [],
+                    "ac_assessment": []}, "IMPLEMENTING")):
+        _reviewing(cfg, cid)
+        st = S.read_state(cfg, cid)
+        st["counters"]["loops"] = 0
+        S.write_state(cfg, cid, st)
+        row, st = _review_in(ctx, cfg, cid, v)
+        assert row["to"] == to and "triage" not in st["last_review"], row
+
+
+def test_triager_waives_enough_and_the_campaign_passes(opened):
+    cfg, cid, ctx, _ = _pending(opened)
+    before = S.read_state(cfg, cid)["cost"]["total_usd"]
+    row, st = _triager_in(ctx, cfg, cid, _rr(_tv(f"{RV}#0", f"{RV}#1", f"{RV}#2"), cost=0.1))
+    assert (row["to"], row["reason"], row["run_id"]) == ("CLOSING", "review_pass",
+                                                         "003-review_triager")
+    lr = st["last_review"]
+    assert lr["triage"] == "done" and lr["triager_run"] == "003-review_triager"
+    assert [w["id"] for w in lr["waived"]] == [f"{RV}#0", f"{RV}#1", f"{RV}#2"]
+    assert lr["waived"][0]["reason"] == "subjective" and lr["waived"][0]["title"] == "m0"
+    assert (lr["verdict"], lr["score"], lr["findings"]) == ("pass", 88, 3)
+    assert [a["title"] for a in lr["advisory"]] == ["m3", "m4", "m5"]
+    assert RV in lr["verdicts"] and TG not in lr["verdicts"]
+    notes = _notes(cfg, cid)
+    assert notes.count("review score 88/80 pass") == 1
+    assert [n for n in notes if n.startswith("waived ")] == [f"waived {RV}#{i}: subjective"
+                                                            for i in range(3)]
+    assert st["cost"]["by_persona"][TG] == 0.1 and st["cost"]["total_usd"] == round(before + 0.1, 4)
+    assert not [f for f in S.read_ledger(cfg, cid, types=["finding"]) if f["persona"] == TG]
+    assert [e["persona"] for e in S.read_ledger(cfg, cid, types=["run.end"])][-1] == TG
+
+
+def test_triager_waives_too_little_and_the_review_still_fixes(opened):
+    cfg, cid, ctx, _ = _pending(opened, 8)
+    row, st = _triager_in(ctx, cfg, cid, _rr(_tv(f"{RV}#0", f"{RV}#1")))
+    assert (row["to"], row["reason"]) == ("IMPLEMENTING", "review_fix")
+    lr = st["last_review"]
+    assert lr["triage"] == "done" and (lr["verdict"], lr["score"]) == ("fix", 76)
+    assert st["counters"]["loops"] == 1 and len(st["pending_brief"]["must_fix"]) == 6
+    assert "review score 76/80 fix" in _notes(cfg, cid)
+    assert [w["id"] for w in lr["waived"]] == [f"{RV}#0", f"{RV}#1"]     # kept for reporting
+
+
+def test_triager_invalid_waivers_are_ignored_with_notes(opened):
+    cfg, cid, ctx, _ = _pending(opened, 8)
+    bad = {"waive": [{"id": "nobody#3", "reason": "x"}, {"id": f"{RV}#0", "reason": ""},
+                     {"id": f"{RV}#1", "reason": "ok"}], "note": "n"}
+    row, st = _triager_in(ctx, cfg, cid, _rr(bad))
+    assert [w["id"] for w in st["last_review"]["waived"]] == [f"{RV}#1"]
+    notes = _notes(cfg, cid)
+    assert "triager ignored nobody#3: not a finding of this review" in notes
+    assert f"triager ignored {RV}#0: empty reason" in notes
+    assert f"waived {RV}#1: ok" in notes and st["last_review"]["score"] == 72
+
+
+@pytest.mark.parametrize("rr_kw,why", [
+    ({"verdict": {"garbage": True}, "ok": False}, "malformed"),
+    ({"verdict": None, "ok": False, "exit_code": 1, "cost": None}, "failed"),
+    ({"verdict": None, "ok": False, "exit_code": 1, "timed_out": True}, "timed out"),
+])
+def test_bad_triager_run_leaves_the_deterministic_outcome(opened, rr_kw, why):
+    cfg, cid, ctx, st = _pending(opened)
+    before = st["cost"]["total_usd"]
+    kw = dict(rr_kw)
+    timed_out = kw.pop("timed_out", False)
+    rr = dataclasses.replace(_rr(kw.pop("verdict"), **kw), timed_out=timed_out)
+    row, st = _triager_in(ctx, cfg, cid, rr)
+    assert (row["to"], row["reason"]) == ("IMPLEMENTING", "review_fix")       # score-only fix
+    lr = st["last_review"]
+    assert lr["triage"] == "done" and lr["waived"] == [] and lr["score"] == 76
+    assert st["state"] == "IMPLEMENTING" and st["counters"]["loops"] == 1
+    assert st["counters"]["review_retries"] == 0 and "review_retries_by_persona" not in \
+        st["counters"]
+    assert any(why in n and "deterministic" in n for n in _notes(cfg, cid))
+    charged = 0.5 if rr_kw.get("cost", 0.25) is None else kw.get("cost", 0.25)
+    assert st["cost"]["by_persona"][TG] == charged
+    assert st["cost"]["total_usd"] == round(before + charged, 4)
+
+
+def test_triager_without_a_run_result_counts_as_done(opened):
+    cfg, cid, ctx, _ = _pending(opened)
+    st = S.read_state(cfg, cid)
+    step = Q.Step("review", persona=TG, personas=(TG,))
+    res = Q.StepResult(cid, step, "REVIEWING", reviews=[Q.StepResult(cid, step, "REVIEWING",
+                                                                      error="boom")])
+    row = Q._apply(ctx, st, res)
+    st = S.read_state(cfg, cid)
+    assert st["last_review"]["triage"] == "done" and row["to"] == "IMPLEMENTING"
+    assert any("review triager run not started: boom" in n for n in _notes(cfg, cid))
+
+
+def test_interrupted_triager_keeps_pending(opened):
+    cfg, cid, ctx, _ = _pending(opened)
+    row, st = _triager_in(ctx, cfg, cid, _rr(_tv(f"{RV}#0"), interrupted=True))
+    assert (row["to"], row["reason"]) == ("REVIEWING", "interrupted")
+    assert st["state"] == "REVIEWING" and st["last_review"]["triage"] == "pending"
+    assert "waived" not in st["last_review"] and st["cost"]["by_persona"][TG] == 0.25
+    step = Q.plan_step(st, ctx.profile(st))
+    assert step.personas == (TG,)                       # the next tick re-spawns it
+    assert [e for e in S.read_ledger(cfg, cid, types=["run.end"])][-1]["interrupted"] is True
+
+
+def test_cap_too_small_skips_the_triager(opened):
+    cfg, cid, ctx = opened
+    _reviewing(cfg, cid)
+    st = S.read_state(cfg, cid)
+    st["cost"].update(total_usd=9.6, cap_usd=10.0)                     # triager budget is 0.5
+    S.write_state(cfg, cid, st)
+    row, st = _review_in(ctx, cfg, cid, _minors(6))
+    assert (row["to"], row["reason"]) == ("IMPLEMENTING", "review_fix")
+    assert st["last_review"]["triage"] == "skipped" and st["last_review"]["score"] == 76
+    notes = _notes(cfg, cid)
+    assert notes.count("triager skipped: cost cap") == 1
+    assert "review score 76/80 fix" in notes
+    # terminal: a later evaluation of the same review never re-evaluates the triager
+    _reviewing(cfg, cid, counters=dict(st["counters"], loops=0))
+    st = S.read_state(cfg, cid)
+    st["cost"]["total_usd"] = 0.0
+    S.write_state(cfg, cid, st)
+    assert Q.plan_step(st, ctx.profile(st)).personas != (TG,)
+    row, st = _review_in(ctx, cfg, cid, _minors(6))
+    assert st["last_review"]["triage"] == "skipped" and row["reason"] == "review_fix"
+    assert notes.count("triager skipped: cost cap") == 1
+
+
+def test_triage_runs_at_most_once_per_loop_and_clears_on_reentry(opened):
+    cfg, cid, ctx, _ = _pending(opened, 8)
+    _, st = _triager_in(ctx, cfg, cid, _rr(_tv(f"{RV}#0")))
+    assert st["state"] == "IMPLEMENTING" and st["last_review"]["triage"] == "done"
+    assert st["last_review"]["waived"]                          # kept after leaving REVIEWING
+    st["state"] = "GATING"
+    st = Q._transition(cfg, st, "REVIEWING", "gates_green")
+    lr = S.read_state(cfg, cid)["last_review"]
+    assert not {"triage", "triager_run", "waived", "verdicts"} & set(lr)
+    # second loop: the triager is evaluated afresh, and runs again only via a new pending
+    row, st = _review_in(ctx, cfg, cid, _minors(6))
+    assert st["last_review"]["triage"] == "pending"
+    _, st = _triager_in(ctx, cfg, cid, _rr(_tv()), run_id="005-review_triager")
+    assert st["last_review"]["triage"] == "done"
+    step = Q.plan_step(dict(st, state="REVIEWING"), ctx.profile(st))
+    assert step.personas != (TG,)                               # done: never a second run
+
+
+def test_stored_waivers_survive_a_later_evaluation(opened):
+    cfg, cid, ctx, _ = _pending(opened)
+    _, st = _triager_in(ctx, cfg, cid, _rr(_tv(f"{RV}#0", f"{RV}#1", f"{RV}#2")))
+    assert st["state"] == "CLOSING"
+    # a re-evaluation of the same review (a reviewer result arriving again) keeps the waivers
+    _reviewing(cfg, cid)
+    row, st = _review_in(ctx, cfg, cid, _minors(6))
+    assert (row["to"], row["reason"]) == ("CLOSING", "review_pass")
+    assert st["last_review"]["score"] == 88 and len(st["last_review"]["waived"]) == 3
+    assert st["last_review"]["triage"] == "done"
+
+
+def test_prepare_run_gives_the_triager_its_input(opened):
+    cfg, cid, ctx, st = _pending(opened)
+    run_id, req, budget = Q._prepare_run(ctx, st, TG)
+    assert run_id.endswith("-review_triager") and budget == 0.5 and req.read_only
+    assert f"{RV}#0" in req.prompt and f"{RV}#5" in req.prompt and '"score": 76' in req.prompt
+    assert "{{" not in req.prompt and req.json_schema is PS.REVIEW_TRIAGER_SCHEMA
+    assert "(none)" in req.prompt                  # previous verdicts blanked

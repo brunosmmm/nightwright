@@ -458,7 +458,8 @@ def test_e2e_triage_must_fix_loops_once_then_passes(tmp_path, monkeypatch):     
 def test_e2e_triage_low_score_without_blocking_cause_loops(tmp_path, monkeypatch):  # (d)
     low = review("pass", findings=[_finding("minor", f"m{i}") for i in range(6)])
     entries = [impl_done(), low, impl_done(content="better\n"), review("pass")]
-    cfg, cid, st = _triage_run(tmp_path, monkeypatch, entries)
+    cfg, cid, st = _triage_run(tmp_path, monkeypatch, entries,
+                               profile={"review": {"triager": False}})     # SPEC-0206 off
     assert st["state"] == "MERGED" and st["counters"]["loops"] == 1, st
     prompt = (S.runs_dir(cfg, cid) / "003-implementer" / "prompt.md").read_text()
     assert "Review score 76 is below the pass score 80" in prompt
@@ -760,3 +761,92 @@ def test_e2e_cost_cap_sums_the_test_reviewer_budget(tmp_path, monkeypatch):
     assert st["state"] == "PARKED" and st["park"]["reason"] == "cost_cap", st
     assert st["park"]["resume_to"] == "REVIEWING" and st["counters"]["runs"] == 1
     assert runner.calls == ["implementer"]                   # no reviewer spawned, no partial fan-out
+
+
+# ---- SPEC-0206: review triager -----------------------------------------------------------------
+
+def triager_entry(*ids, reason="subjective", **kw):
+    """FakeRunner entry: the review triager waives `ids`."""
+    return dict({"persona": "review_triager", "cost_usd": 0.1, "verdict": {
+        "waive": [{"id": i, "reason": reason} for i in ids], "note": "n"}}, **kw)
+
+
+def _minors_review(n):
+    return review("pass", findings=[_finding("minor", f"m{i}") for i in range(n)])
+
+
+def _run_personas(cfg, cid):
+    return [e["persona"] for e in S.read_ledger(cfg, cid, types=["run.start"])]
+
+
+def test_e2e_triager_not_run_for_a_clean_pass_or_a_must_fix(tmp_path, monkeypatch):    # (a)
+    cfg, cid, st = _triage_run(tmp_path, monkeypatch, [impl_done(), review("pass")])
+    assert st["state"] == "MERGED" and "review_triager" not in _run_personas(cfg, cid)
+    assert "triage" not in st["last_review"]
+    sub = tmp_path / "second"
+    sub.mkdir()
+    entries = [impl_done(), review("fix"), impl_done(content="better\n"), review("pass")]
+    cfg, cid, st = _triage_run(sub, monkeypatch, entries)
+    assert st["state"] == "MERGED" and st["counters"]["loops"] == 1
+    assert "review_triager" not in _run_personas(cfg, cid)
+
+
+def test_e2e_triager_waives_minors_and_the_campaign_merges(tmp_path, monkeypatch):     # (b)
+    entries = [impl_done(), _minors_review(6),
+               triager_entry("conformance_reviewer#0", "conformance_reviewer#1",
+                             "conformance_reviewer#2")]
+    cfg, cid, st = _triage_run(tmp_path, monkeypatch, entries)
+    assert st["state"] == "MERGED" and st["counters"]["loops"] == 0, st
+    assert _run_personas(cfg, cid) == ["implementer", "conformance_reviewer", "review_triager"]
+    lr = st["last_review"]
+    assert lr["triage"] == "done" and lr["triager_run"] == "003-review_triager"
+    assert [w["id"] for w in lr["waived"]] == [f"conformance_reviewer#{i}" for i in range(3)]
+    assert (lr["verdict"], lr["score"]) == ("pass", 88)
+    notes = [n["text"] for n in S.read_ledger(cfg, cid, types=["note"])]
+    assert "waived conformance_reviewer#0: subjective" in notes
+    assert notes.count("review score 88/80 pass") == 1
+    trans = [(e["from"], e["to"], e["reason"]) for e in S.read_ledger(cfg, cid, types=["transition"])]
+    assert ("REVIEWING", "CLOSING", "review_pass") in trans
+    assert st["cost"]["by_persona"]["review_triager"] == 0.1
+    prompt = (S.runs_dir(cfg, cid) / "003-review_triager" / "prompt.md").read_text()
+    assert "conformance_reviewer#5" in prompt and "waivable" in prompt
+
+
+def test_e2e_triager_waives_too_little_so_one_loop_follows(tmp_path, monkeypatch):      # (c)
+    entries = [impl_done(), _minors_review(8), triager_entry("conformance_reviewer#0"),
+               impl_done(content="better\n"), review("pass")]
+    cfg, cid, st = _triage_run(tmp_path, monkeypatch, entries)
+    assert st["state"] == "MERGED" and st["counters"]["loops"] == 1, st
+    assert _run_personas(cfg, cid).count("review_triager") == 1
+    assert [e["reason"] for e in S.read_ledger(cfg, cid, types=["transition"])
+            if e["from"] == "REVIEWING"].count("review_fix") == 1
+    prompt = (S.runs_dir(cfg, cid) / "004-implementer" / "prompt.md").read_text()
+    assert "Review score 72 is below the pass score 80" in prompt
+    assert "- [minor] m0" not in prompt and "- [minor] m1 (feature.txt): d" in prompt
+
+
+def test_e2e_triager_malformed_leaves_the_deterministic_fix(tmp_path, monkeypatch):     # (d)
+    entries = [impl_done(), _minors_review(6), dict(triager_entry(), malformed=True),
+               impl_done(content="better\n"), review("pass")]
+    cfg, cid, st = _triage_run(tmp_path, monkeypatch, entries)
+    assert st["state"] == "MERGED" and st["counters"]["loops"] == 1, st
+    assert "review_escalated" not in [e["reason"] for e in S.read_ledger(cfg, cid, types=["park"])]
+    notes = [n["text"] for n in S.read_ledger(cfg, cid, types=["note"])]
+    assert any("malformed verdict" in n for n in notes)
+    assert "review score 76/80 fix" in notes
+    assert st["cost"]["by_persona"]["review_triager"] == 0.1      # charged though unusable
+
+
+def test_e2e_cap_too_small_skips_the_triager(tmp_path, monkeypatch):                    # (e)
+    profile = {"campaign_cap_usd": 1.0, "personas": {"implementer": {"max_budget_usd": 0.5},
+                                                      "conformance_reviewer": {"max_budget_usd": 0.3}}}
+    entries = [impl_done(), _minors_review(6)]
+    cfg, cid, st = _triage_run(tmp_path, monkeypatch, entries, profile=profile)
+    assert _run_personas(cfg, cid) == ["implementer", "conformance_reviewer"]
+    lr = st["last_review"]
+    assert lr["triage"] == "skipped" and (lr["verdict"], lr["score"]) == ("fix", 76)
+    notes = [n["text"] for n in S.read_ledger(cfg, cid, types=["note"])]
+    assert "triager skipped: cost cap" in notes and "review score 76/80 fix" in notes
+    trans = [(e["from"], e["to"], e["reason"]) for e in S.read_ledger(cfg, cid, types=["transition"])]
+    assert ("REVIEWING", "IMPLEMENTING", "review_fix") in trans      # the deterministic outcome
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "cost_cap"

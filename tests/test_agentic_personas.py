@@ -112,6 +112,8 @@ def test_templates_and_schemas(tmp_path):
     for name, persona in PS.PERSONAS.items():
         if name == "spec_reviewer":       # no campaign/worktree: SPEC-0188 tests cover it
             continue
+        if name == "review_triager":      # its own context (SPEC-0206): spec + triage_input
+            continue
         text = persona.template
         for ph in ("{{campaign}}", "{{spec_id}}", "{{worktree}}", "{{spec_text}}",
                    "{{gate_results}}", "{{pending_brief}}", "{{previous_verdicts}}"):
@@ -514,3 +516,51 @@ def test_test_reviewer_prompt_lists_changed_and_removed(tmp_path):
     assert PS.build_prompt("test_reviewer", ctx) == prompt
     assert '"changed": [\n      "test_kept"\n    ]' in prompt
     assert '"removed": [\n      "test_dropped"\n    ]' in prompt
+
+
+# ---- SPEC-0206: review triager -----------------------------------------------------------
+
+def test_review_triager_registered_and_template():
+    p = PS.PERSONAS["review_triager"]
+    assert p.read_only and p.schema is PS.REVIEW_TRIAGER_SCHEMA
+    assert "review_triager" not in PS.REVIEWER_PERSONAS
+    assert "triage_input" in PS.PLACEHOLDERS
+    t = p.template
+    assert "{{triage_input}}" in t and "{{spec_text}}" in t
+    for word in ("subjective", "out of scope", "not a defect", "reason", "waive"):
+        assert word in t
+    assert set(PS._PLACEHOLDER_RE.findall(t)) <= set(PS.PLACEHOLDERS)
+
+
+def test_review_triager_schema_keys():
+    from wt.agentic.runner import _conforms
+    S_ = PS.REVIEW_TRIAGER_SCHEMA
+    assert S_["required"] == ["waive", "note"] and set(S_["properties"]) == {"waive", "note"}
+    assert S_["properties"]["waive"]["items"]["required"] == ["id", "reason"]
+    ok = {"waive": [{"id": "conformance_reviewer#0", "reason": "taste"}], "note": "n"}
+    assert _conforms(ok, S_) and _conforms({"waive": [], "note": ""}, S_)
+    assert not _conforms({"waive": []}, S_) and not _conforms({"note": "n"}, S_)
+    assert not _conforms({"waive": [{"id": "x"}], "note": "n"}, S_)
+    assert not _conforms({"waive": [{"reason": "r"}], "note": "n"}, S_)
+
+
+def test_build_request_review_triager(tmp_path):
+    cfg, st = _cfg(tmp_path), _state(tmp_path, state="REVIEWING")
+    extra = {"triage_input": '{"waivable": [{"id": "conformance_reviewer#2"}]}'}
+    req = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, "review_triager",
+                           run_dir=tmp_path / "r", extra=extra)
+    assert req.read_only and req.allowed_tools == () and req.permission_mode == "dontAsk"
+    assert req.json_schema is PS.REVIEW_TRIAGER_SCHEMA and req.model == "sonnet"
+    assert req.max_budget_usd == 0.5
+    assert "conformance_reviewer#2" in req.prompt and "{{" not in req.prompt
+    assert "Use {braces} freely." in req.prompt                     # the spec text
+    assert "```diff" not in req.prompt                              # no review context
+    again = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, "review_triager",
+                             run_dir=tmp_path / "r", extra=extra)
+    assert again.prompt == req.prompt
+    bare = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, "review_triager",
+                            run_dir=tmp_path / "r")
+    assert "conformance_reviewer#2" not in bare.prompt
+    frugal = PS.build_request(cfg, resolve_profile(cfg, "frugal"), _project_cfg(), st,
+                              "review_triager", run_dir=tmp_path / "r", extra=extra)
+    assert (frugal.model, frugal.max_budget_usd) == ("haiku", 0.25)

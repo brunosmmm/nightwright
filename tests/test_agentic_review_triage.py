@@ -211,3 +211,121 @@ def test_single_reviewer_brief_keeps_the_0187_shape():
     assert Q.review_brief(low, tri(low), 80)["fix_brief"].startswith("Review score 76")
     empty = {A: v("fix", f("must_fix"))}
     assert Q.review_brief(empty, tri(empty), 80)["fix_brief"] == ""
+
+
+# ---- SPEC-0206: needs_triager, waiver validation, triage_input ---------------------------------
+
+import json
+
+from wt.agentic import profiles as P
+
+ON = {"review": {"pass_score": 80, "weights": BAL["review"]["weights"], "triager": True}}
+
+
+def need(verdicts, profile=ON):
+    return Q.needs_triager(tri(verdicts, profile), profile)
+
+
+def minors(n, persona=A):
+    return v("pass", *[f("minor", f"{persona} m{i}") for i in range(n)])
+
+
+@pytest.mark.parametrize("label,verdicts,profile,want", [
+    ("rescuable score-only fix", {A: minors(6)}, ON, True),
+    ("a nit-only tail", {A: v("pass", *[f("nit", f"n{i}") for i in range(30)])}, ON, True),
+    ("boundary: score + waivable == pass_score",
+     {A: v("pass", f("major"), *[f("minor", f"m{i}") for i in range(6)])},
+     {"review": {"pass_score": 85, "weights": BAL["review"]["weights"], "triager": True}}, True),
+    ("just below the boundary",
+     {A: v("pass", f("major"), *[f("minor", f"m{i}") for i in range(6)])},
+     {"review": {"pass_score": 86, "weights": BAL["review"]["weights"], "triager": True}}, False),
+    ("triager off", {A: minors(6)}, {"review": dict(ON["review"], triager=False)}, False),
+    ("hand-built profile without the key", {A: minors(6)}, BAL, False),
+    ("a pass", {A: minors(2)}, ON, False),
+    ("a must_fix", {A: v("pass", f("must_fix"), *[f("minor", f"m{i}") for i in range(6)])},
+     ON, False),
+    ("a surviving fix verdict", {A: v("fix", f("major"), *[f("minor", f"m{i}") for i in range(6)])},
+     ON, False),
+    ("a synthetic major (fix without findings)", {A: v("fix"), B: minors(6, B)}, ON, False),
+    ("an unmet AC", {A: v("pass", *[f("minor", f"m{i}") for i in range(6)], ac=[("AC one", False)])},
+     ON, False),
+    ("a hopeless score", {A: v("pass", *[f("major", f"j{i}") for i in range(5)],
+                              *[f("minor", f"m{i}") for i in range(3)])}, ON, False),
+])
+def test_needs_triager_truth_table(label, verdicts, profile, want):
+    assert need(verdicts, profile) is want, label
+
+
+def _state(verdicts, profile, **lr):
+    return {"id": "SPEC-0001-20261025-abcd", "counters": {"loops": 0, "runs": 3},
+            "last_review": {"verdicts": {p: dict(x, loop=0, run=f"00{i}-{p}")
+                                         for i, (p, x) in enumerate(verdicts.items(), 2)}, **lr}}
+
+
+PROF2 = dict(ON, reviewers=[A, B])
+
+
+def test_accept_waivers_validates_ids_reasons_and_severities():
+    vs = {A: v("pass", f("minor", "taste"), f("nit", "typo"), f("major", "real"),
+               f("must_fix", "broken")), B: v("fix", brief="x")}
+    state = _state(vs, PROF2)
+    got, ignored = Q._accept_waivers(state, PROF2, [
+        {"id": f"{A}#0", "reason": " subjective "},       # minor: accepted, reason stripped
+        {"id": f"{A}#1", "reason": "tiny"},               # nit: accepted
+        {"id": f"{A}#1", "reason": "again"},              # duplicate
+        {"id": f"{A}#2", "reason": "meh"},                # major
+        {"id": f"{A}#3", "reason": "meh"},                # must_fix
+        {"id": f"{B}#fix", "reason": "meh"},              # synthetic
+        {"id": "nobody#9", "reason": "meh"},              # unknown
+        {"id": f"{A}#0"},                                 # no reason
+        {"reason": "no id"}, "junk", {"id": 3, "reason": "x"}])
+    assert [(w["id"], w["severity"], w["title"], w["reason"]) for w in got] == [
+        (f"{A}#0", "minor", "taste", "subjective"), (f"{A}#1", "nit", "typo", "tiny")]
+    assert set(got[0]) == {"id", "personas", "severity", "title", "detail", "files", "ac",
+                           "category", "reason"}
+    assert ignored == [
+        (f"{A}#1", "duplicate"), (f"{A}#2", "major findings cannot be waived"),
+        (f"{A}#3", "must_fix findings cannot be waived"),
+        (f"{B}#fix", "synthetic findings cannot be waived"),
+        ("nobody#9", "not a finding of this review"), (f"{A}#0", "empty reason"),
+        (None, "not a finding of this review"), (None, "not a finding of this review"),
+        (3, "not a finding of this review")]
+
+
+def test_accept_waivers_rejects_empty_reason_on_a_fresh_id():
+    state = _state({A: minors(2)}, ON)
+    got, ignored = Q._accept_waivers(state, ON, [{"id": f"{A}#0", "reason": "  "},
+                                                 {"id": f"{A}#1", "reason": None}])
+    assert got == [] and ignored == [(f"{A}#0", "empty reason"), (f"{A}#1", "empty reason")]
+
+
+def test_waivers_rerun_triage_reviews():
+    vs = {A: minors(8)}
+    assert tri(vs, ON)["score"] == 68
+    got, _ = Q._accept_waivers(_state(vs, ON), ON, [{"id": f"{A}#{i}", "reason": "r"}
+                                                    for i in range(3)])
+    out = tri(vs, ON, [w["id"] for w in got])
+    assert (out["outcome"], out["score"]) == ("pass", 80)
+    out = tri(vs, ON, [f"{A}#0", f"{A}#1"])                       # too few
+    assert (out["outcome"], out["score"], out["score_only"]) == ("fix", 76, True)
+    assert len(out["blocking"]) == 6
+
+
+def test_triage_input_renders_score_verdicts_and_waivable_findings():
+    vs = {A: v("pass", f("minor", "taste", detail="d1", files=["a.py"]), f("major", "real"),
+               *[f("nit", f"n{i}") for i in range(2)], brief="ok"),
+          B: v("pass", *[f("minor", f"m{i}") for i in range(4)])}
+    state = _state(vs, PROF2)
+    text = Q._triage_input(state, PROF2)
+    data = json.loads(text)
+    assert text == json.dumps(data, indent=2, sort_keys=True) == Q._triage_input(state, PROF2)
+    assert (data["score"], data["pass_score"]) == (100 - 15 - 4 * 5 - 2, 80)
+    assert data["reviewer_verdicts"] == {A: {"verdict": "pass", "fix_brief": "ok"},
+                                         B: {"verdict": "pass", "fix_brief": ""}}
+    ids = [w["id"] for w in data["waivable"]]
+    assert f"{A}#1" not in ids and len(ids) == 7                 # the major is not waivable
+    first = next(w for w in data["waivable"] if w["id"] == f"{A}#0")
+    assert first == {"id": f"{A}#0", "personas": [A], "severity": "minor", "title": "taste",
+                     "detail": "d1", "files": ["a.py"]}
+    assert all(w["severity"] in ("minor", "nit") for w in data["waivable"])
+    assert Q._triage_input(_state(vs, PROF2, waived=[{"id": f"{A}#0"}]), PROF2) == text

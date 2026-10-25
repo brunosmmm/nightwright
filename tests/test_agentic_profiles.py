@@ -158,7 +158,8 @@ DEFAULT_WEIGHTS = {"must_fix": 100, "major": 15, "minor": 4, "nit": 1}
 @pytest.mark.parametrize("name,score", [("balanced", 80), ("thorough", 90), ("frugal", 70)])
 def test_review_defaults(name, score):
     prof = P.resolve_profile({"agentic": {"profiles": {}}}, name)
-    assert prof["review"] == {"pass_score": score, "weights": DEFAULT_WEIGHTS}
+    assert prof["review"] == {"pass_score": score, "weights": DEFAULT_WEIGHTS,
+                              "triager": name != "frugal"}
     assert P.review_params(prof) == (score, DEFAULT_WEIGHTS)
     assert P.review_params({}) == (80, DEFAULT_WEIGHTS)
     prof["review"]["weights"]["major"] = 1                      # a copy, not the builtin
@@ -169,7 +170,8 @@ def test_review_user_delta_merges_partial_weights():
     cfg = {"agentic": {"profiles": {"balanced": {"review": {"weights": {"nit": 0},
                                                             "pass_score": 60}}}}}
     prof = P.resolve_profile(cfg, "balanced")
-    assert prof["review"] == {"pass_score": 60, "weights": {**DEFAULT_WEIGHTS, "nit": 0}}
+    assert prof["review"] == {"pass_score": 60, "weights": {**DEFAULT_WEIGHTS, "nit": 0},
+                              "triager": True}
     new = P.resolve_profile({"agentic": {"profiles": {"mine": {"slots": 1}}}}, "mine")
     assert new["review"]["pass_score"] == 80
 
@@ -204,4 +206,45 @@ def test_docs_describe_the_review_block():
     doc = (Path(__file__).resolve().parent.parent / "docs/product/capabilities/agentic.md"
            ).read_text(encoding="utf-8")
     for needle in ("pass_score", "advisory", "entry_run", "weights"):
+        assert needle in doc
+
+
+# ---- SPEC-0206: review triager ---------------------------------------------------------------
+
+@pytest.mark.parametrize("name,on", [("balanced", True), ("thorough", True), ("frugal", False)])
+def test_review_triager_defaults(name, on):
+    prof = P.resolve_profile({}, name)
+    assert prof["review"]["triager"] is on and P.triager_enabled(prof) is on
+
+
+@pytest.mark.parametrize("name,model,effort,budget", [
+    ("balanced", "sonnet", "medium", 0.5), ("thorough", "sonnet", "medium", 0.5),
+    ("frugal", "haiku", "medium", 0.25)])
+def test_review_triager_settings(name, model, effort, budget):
+    s = P.persona_settings(P.resolve_profile({}, name), "review_triager")
+    assert (s["model"], s["effort"], s["max_budget_usd"]) == (model, effort, budget)
+    assert s["read_only"] is True and s["permission_mode"] == "dontAsk"
+
+
+def test_review_triager_user_toggle_and_hand_built_profile():
+    cfg = {"agentic": {"profiles": {"frugal": {"review": {"triager": True}},
+                                    "balanced": {"review": {"triager": False}}}}}
+    assert P.triager_enabled(P.resolve_profile(cfg, "frugal"))
+    assert not P.triager_enabled(P.resolve_profile(cfg, "balanced"))
+    assert not P.triager_enabled({}) and not P.triager_enabled({"review": {"pass_score": 80}})
+    assert not P.triager_enabled({"review": {"triager": "yes"}})
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None, [True]])
+def test_review_triager_rejects_non_bool(value):
+    cfg = {"agentic": {"profiles": {"balanced": {"review": {"triager": value}}}}}
+    with pytest.raises(ValueError, match=r"review\.triager"):
+        P.resolve_profile(cfg, "balanced")
+
+
+def test_docs_describe_the_review_triager():
+    from pathlib import Path
+    doc = (Path(__file__).resolve().parent.parent / "docs/product/capabilities/agentic.md"
+           ).read_text(encoding="utf-8")
+    for needle in ("review_triager", "review.triager", "last_review.triage"):
         assert needle in doc

@@ -22,7 +22,7 @@ PROFILE2 = {"slots": 2, "loop_max": 3, "campaign_cap_usd": 10.0, "run_timeout_s"
             "personas": {"implementer": {"max_budget_usd": 4.0},
                          "gate_triager": {"max_budget_usd": 0.5},
                          A: {"max_budget_usd": 1.5}, B: {"max_budget_usd": 1.0}}}
-DELTA = {"reviewers": [A, B], "personas": {B: B_SETTINGS}}
+DELTA = {"reviewers": [A, B], "review": {"triager": False}, "personas": {B: B_SETTINGS}}
 
 
 @pytest.fixture

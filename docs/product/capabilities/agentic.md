@@ -194,6 +194,7 @@ agentic:
       review:
         pass_score: 80          # int 0..100; thorough 90, frugal 70
         weights: {must_fix: 100, major: 15, minor: 4, nit: 1}   # a partial delta merges
+        triager: true           # bool (SPEC-0206); true in balanced / thorough, false in frugal
 ```
 
 `last_review` in the campaign state is
@@ -204,11 +205,36 @@ agentic:
 `run` the last reviewer's run. Written once every verdict is in: `verdict` (the triage outcome,
 `pass|fix`), `score` (the weighted triage score; each reviewer's own score stays in
 `verdicts[*].score`), `findings` / `must_fix` (counts of the surviving findings), `waived`
-(empty until a later spec fills it) and `advisory` (the non-blocking findings of the current
+(the findings the review triager waived, each with its `reason`; empty otherwise) and `advisory` (the non-blocking findings of the current
 review: `{id, personas, severity, title, detail, files, ac, category}`).
 `counters.review_retries_by_persona` appears only after the first retry. `wt campaign show`
 prints a `review:` line (score, verdict, advisory count and how many are `major`) and
 `wt queue list --json` rows carry `review_score`.
+
+### Review triager (SPEC-0206)
+
+One case in the score is a judgment call: a `fix` caused **only** by the score (no `must_fix`, no
+surviving `fix` verdict, no synthetic `major`) because several `minor` / `nit` findings add up
+below `pass_score`. When waiving *every* waivable finding could lift the score to `pass_score`
+(the pure `needs_triager`), the campaign stays in REVIEWING and runs the small read-only
+`review_triager` persona (`--restricted`; Sonnet/medium, $0.50 in `balanced` and `thorough`;
+Haiku, $0.25 in `frugal`, where `review.triager` is off by default). It gets the spec and a
+`triage_input` JSON (score, pass score, the reviewers' verdicts and the waivable findings by id)
+and answers `{waive: [{id, reason}], note}`: it may waive findings that are subjective, out of
+scope or not defects, and nothing else. Code validates the answer — only surviving `minor` /
+`nit` ids with a non-empty reason count; others are ignored with a `triager ignored <id>: <why>`
+note — records each accepted waiver as a `waived <id>: <reason>` note and in
+`last_review.waived`, and re-runs `triage_reviews` with them; the deterministic result decides
+(`pass` ⇒ CLOSING, still `fix` ⇒ IMPLEMENTING). It never touches `must_fix`, `major` or synthetic
+findings and never flips a verdict by itself.
+
+`last_review.triage` tracks it: absent (not evaluated), `pending` (the triager step runs next;
+transition reason `review_triage`), `done` (after the run, valid or not — a malformed, failed or
+timed-out triager only adds a note and the deterministic outcome stands; it is never retried and
+never causes `review_escalated`) or `skipped` (the cost cap could not fit its budget; a
+`triager skipped: cost cap` note). It runs at most once per review; `triage`, `triager_run` and
+`waived` clear on every entry into REVIEWING. The score note is written once, after the final
+`triage_reviews` run. Set `review.triager: false` to opt out.
 
 ## Closing
 

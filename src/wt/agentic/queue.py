@@ -14,6 +14,7 @@ checked pessimistically (`total + persona budget > cap` ⇒ PARKED). Humans act 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import signal
 import subprocess
@@ -36,7 +37,7 @@ from . import schemas as SC
 from . import store
 from .gitops import GitError
 from .profiles import (SEVERITIES, persona_settings, resolve_profile, review_params,
-                       reviewers_of)
+                       reviewers_of, triager_enabled)
 from .runner import RunResult, select_runner
 
 STATES = ("QUEUED", "WAITING", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
@@ -138,6 +139,12 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
     if st == "CLOSING":
         return Step("close")
     if st == "REVIEWING":
+        reviewers = reviewers_of(profile)
+        if len(_valid_verdicts(state, profile)) == len(reviewers) \
+                and (state.get("last_review") or {}).get("triage") == "pending":
+            # SPEC-0206: the one exception to "a review is never skipped"; the cap was checked
+            # when `triage` became pending
+            return Step("review", persona="review_triager", personas=("review_triager",))
         pending = _pending_reviewers(state, profile)
         blocked = _cap_blocks(state, profile, pending)
         if blocked:
@@ -385,7 +392,17 @@ def _retries_used(counters: dict, persona: str, n_reviewers: int) -> int:
     return int(counters.get("review_retries", 0)) if n_reviewers == 1 else 0
 
 
-def decide_reviews(state: dict, profile: dict, valid: dict, failed=()) -> Step:
+def needs_triager(result: dict, profile: dict) -> bool:
+    """Pure (SPEC-0206): could the review triager change the outcome of `triage_reviews`
+    `result`? Only a score-only `fix` that waiving every waivable finding would lift to the pass
+    score, with `review.triager` on."""
+    if not triager_enabled(profile) or result.get("outcome") != "fix" \
+            or not result.get("score_only"):
+        return False
+    return result["score"] + result["waivable_weight"] >= review_params(profile)[0]
+
+
+def decide_reviews(state: dict, profile: dict, valid: dict, failed=(), waived=()) -> Step:
     """Pure: the transition the reviewers' verdicts imply (SPEC-0187, SPEC-0201).
 
     `valid` = ordered `{persona: verdict}` of every reviewer with a valid current-loop
@@ -393,7 +410,7 @@ def decide_reviews(state: dict, profile: dict, valid: dict, failed=()) -> Step:
     - a reviewer without a valid verdict is *missing*: no routing while any is missing;
       each missing one gets one retry (`Step("none", reason="review_retry", missing=…)`);
       if any is out of retries ⇒ PARKED(review_escalated) naming those (`escalated`);
-    - all valid: `triage_reviews`; `pass` ⇒ CLOSING; `fix` ⇒ loops += 1, beyond `loop_max`
+    - all valid: `triage_reviews` (with the `waived` ids, SPEC-0206); `pass` ⇒ CLOSING; `fix` ⇒ loops += 1, beyond `loop_max`
       ⇒ loop_exhausted, else back to IMPLEMENTING. `combined` carries the triage,
       the pass score and (on `fix`) the brief.
     The caller mutates the counters."""
@@ -411,7 +428,7 @@ def decide_reviews(state: dict, profile: dict, valid: dict, failed=()) -> Step:
                         detail=f"{who} returned no usable verdict twice", resume_to="REVIEWING")
         return Step("none", reason="review_retry", missing=missing)
     valid = {p: valid[p] for p in reviewers}
-    tri = triage_reviews(valid, profile)
+    tri = triage_reviews(valid, profile, waived)
     pass_score = review_params(profile)[0]
     combined = {"triage": tri, "pass_score": pass_score, "brief": None}
     if tri["outcome"] == "pass":
@@ -781,6 +798,21 @@ def _previous_runs(cfg, state: dict, persona: str) -> list:
     return ends[-2:]
 
 
+def _triage_input(state: dict, profile: dict) -> str:
+    """The `triage_input` prompt value of the review triager (SPEC-0206): the score, the
+    reviewers' verdict and brief, and the waivable (surviving `minor`/`nit`) findings."""
+    valid = _valid_verdicts(state, profile)
+    tri = triage_reviews(valid, profile)
+    keys = ("id", "personas", "severity", "title", "detail", "files")
+    return json.dumps({
+        "score": tri["score"], "pass_score": review_params(profile)[0],
+        "reviewer_verdicts": {p: {"verdict": v.get("verdict"), "fix_brief": v.get("fix_brief")}
+                              for p, v in valid.items()},
+        "waivable": [{k: f[k] for k in keys} for f in tri["blocking"] + tri["advisory"]
+                     if f["severity"] in ("minor", "nit")],
+    }, indent=2, sort_keys=True)
+
+
 def _prepare_run(ctx: _Ctx, state: dict, persona: str):
     """Main thread: mint the run id, build the request, append `run.start`, bump `runs` and
     write the state. Returns (run_id, request, budget). Everything that can raise happens
@@ -793,8 +825,12 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str):
     run_no = counters["runs"] + 1
     run_id = f"{run_no:03d}-{persona}"
     run_dir = store.runs_dir(cfg, cid) / run_id
-    previous = _previous_runs(cfg, state, persona)
-    req = PS.build_request(cfg, profile, pcfg, state, persona, run_dir=run_dir, previous=previous)
+    if persona == "review_triager":     # its input carries the verdicts already (SPEC-0206)
+        previous, extra = [], {"triage_input": _triage_input(state, profile)}
+    else:
+        previous, extra = _previous_runs(cfg, state, persona), None
+    req = PS.build_request(cfg, profile, pcfg, state, persona, run_dir=run_dir, previous=previous,
+                           extra=extra)
     budget = float(req.max_budget_usd)
     with store.item_lock(cfg, cid):
         store.append_event(cfg, cid, "run.start", {
@@ -1072,12 +1108,86 @@ def _store_verdicts(state: dict, profile: dict, counters: dict, results) -> bool
     return stored
 
 
+def _accept_waivers(state: dict, profile: dict, items) -> tuple:
+    """`(accepted, ignored)` for the triager's `waive` list (SPEC-0206): accepted = waived
+    findings `{id, personas, severity, title, detail, files, ac, category, reason}`; ignored =
+    `[(id, why)]`. Only a surviving `minor`/`nit` finding with a non-empty reason, once."""
+    tri = triage_reviews(_valid_verdicts(state, profile), profile)
+    found = {f["id"]: f for f in tri["blocking"] + tri["advisory"]}
+    accepted, ignored, seen = [], [], set()
+    for item in items:
+        fid = item.get("id") if isinstance(item, dict) else None
+        reason = item.get("reason") if isinstance(item, dict) else None
+        if not isinstance(fid, str) or fid not in found:
+            ignored.append((fid, "not a finding of this review"))
+        elif fid in tri["synthetic"]:
+            ignored.append((fid, "synthetic findings cannot be waived"))
+        elif found[fid]["severity"] not in ("minor", "nit"):
+            ignored.append((fid, f"{found[fid]['severity']} findings cannot be waived"))
+        elif not isinstance(reason, str) or not reason.strip():
+            ignored.append((fid, "empty reason"))
+        elif fid in seen:
+            ignored.append((fid, "duplicate"))
+        else:
+            seen.add(fid)
+            accepted.append(dict(found[fid], reason=reason.strip()))
+    return accepted, ignored
+
+
+def _apply_triager(ctx, state, profile, counters, res, row, events):
+    """Record the review triager's run and accept its waivers (SPEC-0206). The result never
+    enters `last_review.verdicts` nor the reviewers' retry logic: a failed, malformed or
+    timed-out run only adds a note, and `triage` becomes `done` so it runs once per loop.
+    Returns the report row when the run was interrupted (state unchanged: `triage` stays
+    `pending`), else None — the caller then routes the review with the accepted waivers."""
+    cfg, cid = ctx.cfg, state["id"]
+    r = res.reviews[0]
+    events += r.events_before
+    rr = r.run_result
+    lr = state["last_review"]
+    if rr is not None:
+        events += _record_run(state, "review_triager", r.run_id, rr, r.budget,
+                              interrupted=r.interrupted)
+        row["run_id"] = r.run_id
+        row["cost_usd"] = rr.cost_usd if rr.cost_usd is not None else r.budget
+        if r.interrupted or rr.interrupted:
+            with store.item_lock(cfg, cid):
+                for etype, payload in events:
+                    store.append_event(cfg, cid, etype, payload)
+                store.write_state(cfg, cid, state)
+            row["to"], row["reason"] = res.from_state, "interrupted"
+            return row
+    verdict = rr.verdict if rr is not None and rr.verdict_ok else None
+    if not isinstance(verdict, dict) or not isinstance(verdict.get("waive"), list):
+        why = (f"review triager run not started: {r.error}" if rr is None else
+               "review triager timed out" if rr.timed_out else
+               "review triager run failed" if rr.is_error else
+               "review triager returned a malformed verdict")
+        events.append(("note", {"text": f"{why}; the deterministic review outcome stands",
+                                "author": "queue"}))
+        accepted = []
+    else:
+        accepted, ignored = _accept_waivers(state, profile, verdict["waive"])
+        for fid, why in ignored:
+            events.append(("note", {"text": f"triager ignored {fid}: {why}", "author": "queue"}))
+        for w in accepted:
+            events.append(("note", {"text": f"waived {w['id']}: {w['reason']}",
+                                    "author": "queue"}))
+    lr.update(triage="done", waived=accepted, triager_run=r.run_id)
+    return None
+
+
 def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
     """Route the reviewers' results (SPEC-0187, SPEC-0201): record every run, store the valid
     verdicts in `last_review`, then follow `decide_reviews`. `res.reviews` is in profile
-    order; `events` is `_apply`'s list, `finish` its closure."""
+    order; `events` is `_apply`'s list, `finish` its closure. The review triager's result
+    (SPEC-0206) is handled by `_apply_triager` and then routed the same way."""
     cfg, cid = ctx.cfg, state["id"]
     reviewers = reviewers_of(profile)
+    if res.step.persona == "review_triager":
+        out = _apply_triager(ctx, state, profile, counters, res, row, events)
+        return out if out is not None else _route_reviews(
+            ctx, state, profile, counters, row, events, finish)
     multi = len(reviewers) > 1
     charged, last = 0.0, None
     for r in res.reviews:
@@ -1115,9 +1225,19 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
             "reason": "config_invalid", "detail": f"project config: {bad.error}",
             "resume_to": "REVIEWING"})
     _store_verdicts(state, profile, counters, res.reviews)
+    return _route_reviews(ctx, state, profile, counters, row, events, finish)
+
+
+def _route_reviews(ctx, state, profile, counters, row, events, finish):
+    """Follow `decide_reviews` on the stored verdicts and waivers (SPEC-0203, SPEC-0206): retry
+    missing reviewers, ask the triager (`triage` pending) or skip it on the cap, then pass, park
+    or send the implementer back."""
+    reviewers = reviewers_of(profile)
+    multi = len(reviewers) > 1
     valid = _valid_verdicts(state, profile)
-    decision = decide_reviews(state, profile, valid,
-                              [p for p in reviewers if p not in valid])
+    lr = state.get("last_review") or {}
+    decision = decide_reviews(state, profile, valid, [p for p in reviewers if p not in valid],
+                              [w["id"] for w in lr.get("waived") or [] if isinstance(w, dict)])
     if decision.kind == "none":                          # missing verdicts, retry allowed
         by = counters.setdefault("review_retries_by_persona", {})
         for p in decision.missing:
@@ -1127,11 +1247,18 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
     if decision.combined is not None:
         c = decision.combined
         tri = c["triage"]
+        lr = state["last_review"]
+        if lr.get("triage") is None and needs_triager(tri, profile):
+            if _cap_blocks(state, profile, ["review_triager"]) is None:
+                lr["triage"] = "pending"
+                return finish("REVIEWING", "review_triage")
+            lr["triage"] = "skipped"
+            events.append(("note", {"text": "triager skipped: cost cap", "author": "queue"}))
         surviving = tri["blocking"] + tri["advisory"]
-        state["last_review"].update(
+        lr.update(
             verdict=tri["outcome"], score=tri["score"], findings=len(surviving),
-            must_fix=sum(1 for f in surviving if f["severity"] == "must_fix"), waived=[],
-            advisory=tri["advisory"], loop=counters["loops"])
+            must_fix=sum(1 for f in surviving if f["severity"] == "must_fix"),
+            waived=lr.get("waived") or [], advisory=tri["advisory"], loop=counters["loops"])
         events.append(("note", {"text": f"review score {tri['score']}/{c['pass_score']} "
                                         f"{tri['outcome']}", "author": "queue"}))
         if tri["outcome"] == "pass":
@@ -1434,7 +1561,8 @@ def _prepare_reviews(ctx: _Ctx, st: dict, step: Step, profile: dict, pending_age
     task starts). A failure with one reviewer configured is the campaign-wide error of
     SPEC-0187; with several it is that reviewer's missing result and its siblings still run.
     Returns the `_ReviewGroup` to apply when its flight is harvested, or None."""
-    multi = len(reviewers_of(profile)) > 1
+    # the triager (SPEC-0206) never takes the one-reviewer campaign-wide error path
+    multi = len(reviewers_of(profile)) > 1 or step.persona == "review_triager"
     group = _ReviewGroup(st, step)
     for persona in step.personas:
         if ctx.stop.is_set():
@@ -1468,7 +1596,7 @@ def _finish_reviews(ctx: _Ctx, report: TickReport, group: _ReviewGroup) -> dict:
     raised or errored after `run.start` becomes a synthetic failed run (a `run.end` and the
     budget charge), so the reviewer is simply missing."""
     st = group.state
-    multi = len(reviewers_of(ctx.profile(st))) > 1
+    multi = len(reviewers_of(ctx.profile(st))) > 1 or group.step.persona == "review_triager"
     ordered = []
     for persona in group.step.personas:
         item = group.results.get(persona)
