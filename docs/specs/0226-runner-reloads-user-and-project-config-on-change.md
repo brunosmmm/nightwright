@@ -1,5 +1,5 @@
 ---
-id: SPEC-0225
+id: SPEC-0226
 title: "Queue runner reloads user and project config on change"
 status: accepted
 owner: user

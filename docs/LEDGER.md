@@ -142,10 +142,10 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0220](./specs/0220-close-regate-off-main-thread.md) Close re-gate runs off the runner main thread — accepted
   - [ ] [SPEC-0221](./specs/0221-rebase-conflict-resolver-persona.md) Rebase-conflict resolver persona — accepted
   - [ ] [SPEC-0222](./specs/0222-queue-watch-needs-you-vs-conductor-handling.md) queue watch: split parks into 'Needs you' and 'Conductor handling' — accepted
-  - [ ] [SPEC-0223](./specs/0223-honest-run-cost-on-interrupt-and-a-runner-draining.md) Honest run cost on interrupt, and a runner_draining signal to the conductor — accepted
-  - [ ] [SPEC-0224](./specs/0224-detached-persona-runs-adopted-across-runner-restarts.md) Detached persona runs, adopted across runner restarts — accepted
-  - [ ] [SPEC-0225](./specs/0225-runner-reloads-user-and-project-config-on-change.md) Queue runner reloads user and project config on change — accepted
-  - [ ] [SPEC-0226](./specs/0226-wt-spec-review-resolves-the-spec-from-the-current-checkout.md) wt spec review resolves the spec from the current checkout — accepted
+  - [ ] [SPEC-0224](./specs/0224-honest-run-cost-on-interrupt-and-a-runner-draining.md) Honest run cost on interrupt, and a runner_draining signal to the conductor — accepted
+  - [ ] [SPEC-0225](./specs/0225-detached-persona-runs-adopted-across-runner-restarts.md) Detached persona runs, adopted across runner restarts — accepted
+  - [ ] [SPEC-0226](./specs/0226-runner-reloads-user-and-project-config-on-change.md) Queue runner reloads user and project config on change — accepted
+  - [ ] [SPEC-0227](./specs/0227-wt-spec-review-resolves-the-spec-from-the-current-checkout.md) wt spec review resolves the spec from the current checkout — accepted
 
 ## Active & planned
 
@@ -171,10 +171,10 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0220](./specs/0220-close-regate-off-main-thread.md) | Close re-gate runs off the runner main thread | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0221](./specs/0221-rebase-conflict-resolver-persona.md) | Rebase-conflict resolver persona | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0222](./specs/0222-queue-watch-needs-you-vs-conductor-handling.md) | queue watch: split parks into 'Needs you' and 'Conductor handling' | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0223](./specs/0223-honest-run-cost-on-interrupt-and-a-runner-draining.md) | Honest run cost on interrupt, and a runner_draining signal to the conductor | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0224](./specs/0224-detached-persona-runs-adopted-across-runner-restarts.md) | Detached persona runs, adopted across runner restarts | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0225](./specs/0225-runner-reloads-user-and-project-config-on-change.md) | Queue runner reloads user and project config on change | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0226](./specs/0226-wt-spec-review-resolves-the-spec-from-the-current-checkout.md) | wt spec review resolves the spec from the current checkout | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0224](./specs/0224-honest-run-cost-on-interrupt-and-a-runner-draining.md) | Honest run cost on interrupt, and a runner_draining signal to the conductor | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0225](./specs/0225-detached-persona-runs-adopted-across-runner-restarts.md) | Detached persona runs, adopted across runner restarts | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0226](./specs/0226-runner-reloads-user-and-project-config-on-change.md) | Queue runner reloads user and project config on change | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0227](./specs/0227-wt-spec-review-resolves-the-spec-from-the-current-checkout.md) | wt spec review resolves the spec from the current checkout | feature | accepted | M9: agentic workflow | 2026-10-25 |
 
 ## Done
 

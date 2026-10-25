@@ -1,5 +1,5 @@
 ---
-id: SPEC-0224
+id: SPEC-0225
 title: "Detached persona runs, adopted across runner restarts"
 status: accepted
 owner: user
@@ -10,14 +10,14 @@ kind: feature
 parent: SPEC-0169
 tags: [agentic, runner, queue, concurrency, reexec]
 source_idea: IDEA-100
-depends_on: [SPEC-0174, SPEC-0194, SPEC-0213, SPEC-0223]
+depends_on: [SPEC-0174, SPEC-0194, SPEC-0213, SPEC-0224]
 ---
 
 ## Context
 
 Child of epic [SPEC-0169](./0169-mini-agentic-workflow-queue-campaigns-headless.md). This is
 the durable fix for bug `IDEA-100`. The incident is described in
-[SPEC-0223](./0223-honest-run-cost-on-interrupt-and-a-runner-draining.md), which also ships
+[SPEC-0224](./0224-honest-run-cost-on-interrupt-and-a-runner-draining.md), which also ships
 honest cost on interrupt and the `runner_draining` signal.
 
 Today a persona run is a child of the runner process that the runner waits on.
@@ -98,7 +98,7 @@ run ends. That has two consequences:
 | `result.json` | wrapper (child stdout) | streamed | raw vendor stdout, as today but written live |
 | `stderr.log` | wrapper (child stderr) | streamed | as today |
 | `exit.json` | wrapper | child ended | `{exit_code, timed_out, signal, ended_at, duration_s}`, temp + `os.replace` |
-| `run.json` | collector | collect phase | `wt.run.v1` (SPEC-0192), unchanged + SPEC-0223's `cost_estimated` |
+| `run.json` | collector | collect phase | `wt.run.v1` (SPEC-0192), unchanged + SPEC-0224's `cost_estimated` |
 
 - `runproc` reads its argv, cwd and env from a `launch.json` that the runner writes next to
   `request.json`. The env holds only the `req.env` additions (`WT_*`); the wrapper merges
@@ -117,7 +117,7 @@ run ends. That has two consequences:
 `parse_result` with the schema from `request.json`. It reads `exit.json` for `exit_code`,
 `timed_out` and `duration_s`. With no `exit.json` and a dead process ("vanished"), it uses
 `exit_code: -1`, `is_error: true`, and `result_text` = the stderr tail + "run process
-vanished". The cost is whatever `result.json` carries, otherwise null, which SPEC-0223 turns
+vanished". The cost is whatever `result.json` carries, otherwise null, which SPEC-0224 turns
 into an estimated charge. `write_run_record` then runs as today.
 
 ### Queue (`queue.py`)
@@ -131,14 +131,14 @@ into an estimated charge. `write_run_record` then runs as today.
   This is defensive, since detached flights are no longer in `flights`. FakeRunner flights
   have no `on_exit` and are never detachable. They drain as today.
 - **Draining ticks.** `run()` no longer breaks out of the loop on `code_changed`. It sets
-  `draining = "code_changed"` (SPEC-0223 lease field), and from then on calls
+  `draining = "code_changed"` (SPEC-0224 lease field), and from then on calls
   `tick(..., inprocess=False)`. In `_tick` planning, `gate` / `close` steps are skipped when
   `inprocess` is false. They stay in their state and are planned by the new process.
   Everything else runs as normal. Each loop iteration checks
   `pool.inprocess_or_collecting()`. When it is empty, the loop calls `detach_waiting()`,
   journals `tick(drain)` and `stop code_changed` with `detached: [...]`, and execs as
   today. A signal during draining ticks makes it a signal stop (no exec), as today.
-  SPEC-0223's `runner_draining` still fires if this takes longer than 60 s (a long gate). Its
+  SPEC-0224's `runner_draining` still fires if this takes longer than 60 s (a long gate). Its
   `waiting_on` then lists only in-process flights.
 - **Signal stop.** After `stop` is set, the existing `_drain` waits for in-process and
   collect-phase flights only, then calls `detach_waiting()`. `stop` records `detached`. The
@@ -150,9 +150,9 @@ into an estimated charge. `write_run_record` then runs as today.
   `pool.adopted is False`, before `_harvest`). For each campaign not in
   MERGED/HANDED_OFF, open runs are found in its ledger, the same pairing as
   `events._open_run` but returning all open runs. For each open run:
-  - **no `proc.json`** (spawned by pre-SPEC-0224 code, or a crash before spawn): orphaned.
+  - **no `proc.json`** (spawned by pre-SPEC-0225 code, or a crash before spawn): orphaned.
     It is applied at once as a synthetic interrupted `RunResult` (`interrupted: true`,
-    `cost_usd: null`, which SPEC-0223 marks estimated). The state is unchanged and the next
+    `cost_usd: null`, which SPEC-0224 marks estimated). The state is unchanged and the next
     plan respawns the step;
   - **live or finished** (`exit.json` exists, or the process is alive, or it vanished):
     rebuild the `RunRequest` from `request.json` + `prompt.md`, take `budget` from

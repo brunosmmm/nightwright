@@ -1,5 +1,5 @@
 ---
-id: SPEC-0223
+id: SPEC-0224
 title: "Honest run cost on interrupt, and a runner_draining signal to the conductor"
 status: accepted
 owner: user
@@ -19,8 +19,8 @@ Child of epic [SPEC-0169](./0169-mini-agentic-workflow-queue-campaigns-headless.
 promoted from bug `IDEA-100` ("Runner re-exec drain blocks admission for up to a full persona
 run after every code merge"). This is the first of two specs for that bug. The durable fix,
 persona runs that survive the runner's restart and are adopted by the new process, is
-[SPEC-0224](./0224-detached-persona-runs-adopted-across-runner-restarts.md). This spec ships the
-two smaller parts that the incident also exposed. They help on their own, before SPEC-0224
+[SPEC-0225](./0225-detached-persona-runs-adopted-across-runner-restarts.md). This spec ships the
+two smaller parts that the incident also exposed. They help on their own, before SPEC-0225
 lands.
 
 The incident, 2026-10-25 17:48. SPEC-0203 merged and touched `src/wt/agentic`. The runner
@@ -63,7 +63,7 @@ Two defects here are independent of the drain design:
 
 **Non-goals**
 - Not waiting for persona runs during a drain. That is
-  [SPEC-0224](./0224-detached-persona-runs-adopted-across-runner-restarts.md).
+  [SPEC-0225](./0225-detached-persona-runs-adopted-across-runner-restarts.md).
 - Estimating cost from token usage and a price table (see Alternatives).
 - Changing cost-cap semantics. Caps still count estimated charges at their upper bound.
 - Changing the SIGTERM forwarding of SPEC-0213.
@@ -167,7 +167,7 @@ Two defects here are independent of the drain design:
 - **Charge 0 when unknown.** Caps would undercount. Rejected.
 - **Send SIGINT first and wait for claude to print a result.** It is not documented that
   `claude -p` prints a cost on SIGINT. It would change SPEC-0213's forwarding for an unknown
-  gain, and SPEC-0224 removes most interrupts anyway. Rejected for now. If a run does print a
+  gain, and SPEC-0225 removes most interrupts anyway. Rejected for now. If a run does print a
   result on a signal, Decision 1 already uses it.
 - **Have the runner append `runner_draining` to the event stream itself.** The stream is
   written only by `events.sync` (projector + watchdog), outside the loop, so that a hung loop

@@ -1,5 +1,5 @@
 ---
-id: SPEC-0226
+id: SPEC-0227
 title: "wt spec review resolves the spec from the current checkout"
 status: accepted
 owner: user
