@@ -71,6 +71,18 @@ DEFAULT_CONFIG = {
     # Pretty wt idea show (SPEC-0035/0036): Pygments style name for Rich Syntax.
     # Default `nord` (dark-terminal friendly); light themes like `manni` wash out.
     "idea_show_theme": "nord",
+    # Agentic workflow (SPEC-0169/0171): the loop's runner, service and profiles. `profiles`
+    # holds deltas over the builtin profiles in agentic/profiles.py — load_config merges one
+    # level deep, so resolve_profile deep-merges these in code. Scalar keys replace outright.
+    "agentic": {
+        "runner": "claude",            # claude | fake (tests; SPEC-0174)
+        "fake_script": None,           # FakeRunner script path (SPEC-0174)
+        "default_profile": "balanced",
+        "poll_interval_s": 20,
+        "lease_ttl_s": 120,
+        "run_launcher": "nohup",       # nohup | tmux | foreground (used by /wt-conduct)
+        "profiles": {},
+    },
 }
 
 

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0171
 title: "Workflow profiles, campaign store, ledger, locks and wt campaign commands"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -135,10 +135,14 @@ under the campaign flock; the lease is a held file descriptor with `LOCK_EX | LO
 - `wt campaign log CAMPAIGN [--type T]* [--tail N] [--json]` → `wt.campaign.log.v1`
   `{"campaign", "events": [...]}`; human: one line per event `seq ts type by summary`.
 - `wt campaign note [CAMPAIGN] TEXT [--author A]`: CAMPAIGN defaults to `$WT_CAMPAIGN`,
-  else `click.UsageError`; appends `note{text, author}` with `by = "agent:<author>"` when
+  else `click.UsageError`. *As shipped:* the arguments are one variadic list; the first
+  word is taken as the campaign when a campaign directory of that name exists, otherwise
+  the whole text is the note and `$WT_CAMPAIGN` must be set; appends `note{text, author}` with `by = "agent:<author>"` when
   author is given, else `"human"`.
 - `CAMPAIGN` arguments use `shell_complete=C.complete_campaign_id` (non-terminal ids
   first); `"campaign"` is added to `completion.REQUIRED_SHELL_COMPLETE_NAMES`.
+  *As shipped:* a `complete_campaign_state` completer was added as well, because the
+  `--state` option is named `state` and the completion guard requires one.
 
 ### Docs
 
@@ -159,24 +163,24 @@ gains the three schema ids.
 
 ## Acceptance criteria
 
-- [ ] A user delta on one persona key keeps every other builtin key for that profile;
+- [x] A user delta on one persona key keeps every other builtin key for that profile;
       unknown profile names error with the known list; `persona_settings` errors on an
       unknown persona.
-- [ ] `create_campaign` refuses a duplicate id; `write_state` is atomic (no partial file
+- [x] `create_campaign` refuses a duplicate id; `write_state` is atomic (no partial file
       observable; temp file cleaned up); `read_state` round-trips.
-- [ ] `append_event` from 8 threads × 50 events yields 400 lines with strictly increasing
+- [x] `append_event` from 8 threads × 50 events yields 400 lines with strictly increasing
       `seq` and no interleaving; `read_ledger` skips a truncated last line and honors
       `types` and `tail`.
-- [ ] A second `acquire` while the first lease is held fails with the holder's pid; after
+- [x] A second `acquire` while the first lease is held fails with the holder's pid; after
       `release` it succeeds; `lease_status().stale` is true once the heartbeat age exceeds
       `ttl_s` while held, false after `heartbeat()`.
-- [ ] `list_campaigns` hides terminal states unless asked and filters by project / spec /
+- [x] `list_campaigns` hides terminal states unless asked and filters by project / spec /
       state; `active_campaign_for_spec` finds exactly the non-terminal one.
-- [ ] `wt campaign list|show|log --json` emit `wt.campaigns.v1`, `wt.campaign.v1`,
+- [x] `wt campaign list|show|log --json` emit `wt.campaigns.v1`, `wt.campaign.v1`,
       `wt.campaign.log.v1`; `wt campaign note` with `WT_CAMPAIGN` set and no argument
       appends to that campaign; without either it is a usage error.
-- [ ] Completion, reference and agent-surface guards pass.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] Completion, reference and agent-surface guards pass.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -191,6 +195,34 @@ gains the three schema ids.
   dir untouched.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-25)
+
+- **Automated:** 31 new tests — `tests/test_agentic_profiles.py` (9: builtin completeness,
+  DEFAULT_CONFIG block, copy semantics, one-key delta keeps siblings, new user profile over
+  balanced, default_profile, unknown name, persona_settings, deep_merge),
+  `tests/test_agentic_store.py` (12: id shape/uniqueness, create/read/duplicate, missing
+  state, atomic write with a simulated crash in `os.replace`, event envelope, **8 threads ×
+  50 appends ⇒ 401 lines with seq 1..401**, truncated last line skipped and seq still
+  monotonic, filters/tail, item_lock exclusion, listing order/filters, active campaign,
+  paths), `tests/test_agentic_lease.py` (5: acquire/release/status, second acquire names
+  the holder, **stale flag with an injected clock** at 121 s > ttl 120 then cleared by
+  heartbeat, ttl from config/override, leftover lease.json without flock is not held),
+  `tests/test_agentic_campaign_cli.py` (5: list json/all/filters/human, empty data dir,
+  show json/human/missing, log filters/tail, note by argument / by `WT_CAMPAIGN` / usage
+  error / unknown campaign). Full suite in this worktree (textual installed, so the pilot
+  tests run): **1300 passed, 2 failed, 1 skipped**. The 2 failures
+  (`tests/test_idea_project.py::test_capture_flow_offers_a_project_and_can_decline`,
+  `::test_metadata_chooser_sets_and_clears_project`) also fail at the scaffold commit
+  without this change — the same `Example`/`Meta-Tools` chooser-order drift SPEC-0165
+  fixed for `test_known_project_choices`, visible only when the `tui` extra is installed.
+  Not caused here; flagged to the epic.
+- **Manual:** with `WT_DATA_DIR`/`WT_CONFIG_DIR` on a scratch dir: `resolve_profile`
+  → balanced/2 slots/sonnet; a campaign created, a transition appended, `acquire` held,
+  second `acquire` refused naming the pid, released; `wt campaign list` table,
+  `wt campaign show` (worktree reported missing), `WT_CAMPAIGN=… wt campaign note … --author
+  implementer` appended `by=agent:implementer`, `wt campaign log --json` → seq 1,2,3. The
+  real data dir was untouched.
+
 ## Clock Log
 
 Internal work: clock on IDEA-018 with `wt idea clock-in` / `clock-out`.
@@ -202,11 +234,11 @@ user config means builtin defaults.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

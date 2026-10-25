@@ -36,13 +36,41 @@ wt projects init acme                  # print a starter; --yes writes it, --for
 
 ## Campaigns and the ledger
 
-A campaign is one spec's trip through the loop: `state.json` plus an append-only
-`ledger.jsonl` under the wt data dir (SPEC-0171). `wt campaign list|show|log|note`.
+A campaign is one spec's trip through the loop. Each lives under
+`<data_dir>/agentic/campaigns/<id>/` as an atomically written `state.json` (schema
+`wt.campaign.v1`: state, counters, cost, last gate, park reason) plus an append-only
+`ledger.jsonl` with one event per line (`open`, `transition`, `run.start`/`run.end`,
+`commit`, `gate`, `finding`, `cost`, `note`, `park`, `resume`, `close`), each carrying a
+monotonic `seq`. Writers hold the campaign's `flock`, so the loop and a human command can
+touch the same campaign safely. Campaign ids are `<SPEC-ID>-<YYYYMMDD>-<hex>`.
+
+```bash
+wt campaign list                 # open campaigns (--all for terminal ones)
+wt campaign show CAMPAIGN        # state + last events (--json → wt.campaign.v1)
+wt campaign log CAMPAIGN --tail 20   # the ledger (--json → wt.campaign.log.v1)
+wt campaign note CAMPAIGN "text" # append a note; inside a persona run $WT_CAMPAIGN is set
+```
+
+A single `wt queue run` holds the runner lease (`queue.lock` + `queue.lease.json` with a
+heartbeat); a second runner is refused and names the holder. A heartbeat older than
+`agentic.lease_ttl_s` is reported as `stale`, never taken over (SPEC-0171).
 
 ## Profiles
 
-Models, effort, budgets, loop limits and slots live under `agentic:` in `config.yaml`;
-builtin profiles `balanced`, `frugal`, `thorough` (SPEC-0171).
+Models, effort, budgets, loop limits and slots live under `agentic:` in `config.yaml`.
+Builtin profiles `balanced` (default: Sonnet implementer and triager, $10 cap, 3 loops,
+2 slots), `frugal` and `thorough` ship in code; the user block holds only deltas, deep-merged
+over the builtin of the same name (SPEC-0171):
+
+```yaml
+agentic:
+  default_profile: balanced
+  lease_ttl_s: 120
+  profiles:
+    balanced:
+      personas:
+        implementer: {max_budget_usd: 6.0}
+```
 
 ## Gates
 

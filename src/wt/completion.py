@@ -45,6 +45,7 @@ REQUIRED_SHELL_COMPLETE_NAMES = frozenset({
     "new_state",
     "workstream",    # SPEC-0090 curated lanes from config
     "key",           # SPEC-0122 idea ext keys when schema exists
+    "campaign",      # SPEC-0171 agentic campaign ids
 })
 
 
@@ -248,6 +249,26 @@ def complete_outbound_id(ctx, param, incomplete):
     cfg = _cfg_from_ctx(ctx)
     ids = [s["fm"]["id"] for s in _outbound_specs(cfg) if s.get("fm", {}).get("id")]
     return _items(sorted(ids), incomplete)
+
+
+@_soft
+def complete_campaign_id(ctx, param, incomplete):
+    """Agentic campaign ids (SPEC-0171): open campaigns first, then terminal ones."""
+    from .agentic import store
+    cfg = _cfg_from_ctx(ctx)
+    rows = store.list_campaigns(cfg, include_terminal=True)
+    open_ids = [r["id"] for r in rows if r.get("state") not in store.TERMINAL_STATES]
+    done_ids = [r["id"] for r in rows if r.get("state") in store.TERMINAL_STATES]
+    helps = {r["id"]: f"{r.get('state')} {r.get('spec_id')}" for r in rows}
+    return _items(open_ids + done_ids, incomplete, helps=helps)
+
+
+@_soft
+def complete_campaign_state(ctx, param, incomplete):
+    """Campaign state names (SPEC-0171/0176)."""
+    states = ["QUEUED", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "CLOSING",
+              "PARKED", "MERGED", "HANDED_OFF", "ABANDONED"]
+    return _items(states, incomplete)
 
 
 @_soft
