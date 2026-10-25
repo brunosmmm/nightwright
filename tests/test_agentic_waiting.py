@@ -19,10 +19,10 @@ def two(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     second = _write(repo, "docs/specs/0002-second.md",
                     (repo / "docs/specs/0001-trivial.md").read_text().replace("SPEC-0001", "SPEC-0002"))
-    write_review(second, "SPEC-0002")
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    write_review(cfg, second, "SPEC-0002")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "second")
-    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
     monkeypatch.setattr(Q, "slots_for", lambda cfg, profile_name=None: 1)
     a = added(cfg, monkeypatch, "SPEC-0001")
     b = added(cfg, monkeypatch, "SPEC-0002")

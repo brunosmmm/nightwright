@@ -1,7 +1,7 @@
 ---
 id: SPEC-0210
 title: "Spec review store in the data dir, any-repo reviews and a standalone review journal"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -135,31 +135,31 @@ Restructure `spec_review.py` into small pieces:
 
 ## Acceptance criteria
 
-- [ ] `wt spec review SPEC-X` (FakeRunner reviewer) writes
+- [x] `wt spec review SPEC-X` (FakeRunner reviewer) writes
       `<data_dir>/agentic/reviews/SPEC-X/<sha>.json`, including `repo_root`, and writes nothing
       under `docs/specs/`.
-- [ ] `wt queue add SPEC-X`:
+- [x] `wt queue add SPEC-X`:
   - accepts a stored approving review for the current text;
   - accepts a legacy sidecar whose `spec_sha256` matches;
   - refuses when the stored or legacy review is for an older text;
   - refuses a stored `revise`.
-- [ ] `wt spec review --path <file in a second git repo>`:
+- [x] `wt spec review --path <file in a second git repo>`:
   - runs with that repo as `cwd`;
   - reads that repo's `SCHEMA.md` into the prompt;
   - records `repo_root`.
   Outside a git repo, the root falls back to `parent.parent.parent`.
-- [ ] Every standalone run appends a `start` and an `end` sharing `run_id`, and two runs of the
+- [x] Every standalone run appends a `start` and an `end` sharing `run_id`, and two runs of the
       same spec started in the same second get distinct `run_id`s. A run that fails (runner
       error, or an approve carrying must_fix) still appends an `end` with `error` and raises.
       `read_journal(tail=…)` returns only the tail, filtered by `since_ts`.
-- [ ] `wt spec review` with both SPEC-ID and `--path`, or neither, is a usage error. `--path`
+- [x] `wt spec review` with both SPEC-ID and `--path`, or neither, is a usage error. `--path`
       on a file without `id` errors. A corrupt store file makes `wt queue add` refuse with
       the usual message instead of crashing.
-- [ ] An outbound spec (`<PROJ>-NNNN` in the outbox) is reviewed with the Meta-Tools root and
+- [x] An outbound spec (`<PROJ>-NNNN` in the outbox) is reviewed with the Meta-Tools root and
       its SCHEMA.md, as before.
-- [ ] `review_context` returns the same keys `review_spec` used, and `review_payload` rejects
+- [x] `review_context` returns the same keys `review_spec` used, and `review_payload` rejects
       an approve with must_fix.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -171,6 +171,20 @@ Restructure `spec_review.py` into small pieces:
 - **Regression guard:** full `uv run pytest`. The SPEC-0188 tests keep passing once
   `write_review` writes the store.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q` (full suite): 1865 passed, 1 skipped, including the new
+  `tests/test_spec_review_store.py` (one test per AC) and the existing SPEC-0188 tests with
+  `write_review(cfg, spec_path, spec_id)` writing the store.
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: exit 0.
+
+### As shipped (2026-10-25)
+
+As designed. `review_context` takes an extra optional `root=` keyword (defaults to the
+`parent.parent.parent` fallback) so `run_spec_review` can pass the root it already computed.
+`journal_end` records `verdict, counts, cost_usd, duration_s, error` on every `end` (null when
+unset); `read_journal`'s `since_ts` accepts an ISO string or a datetime and skips torn lines.
+
 ## Rollout / migration
 
 Ships through the agentic queue. Existing legacy sidecars keep working through the fallback,
@@ -178,11 +192,11 @@ and new reviews go to the store.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

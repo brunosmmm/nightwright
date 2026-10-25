@@ -39,7 +39,8 @@ def test_review_writes_valid_sidecar(tmp_path, monkeypatch):
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
     assert r.exit_code == 0, r.output
     out = json.loads(r.output)
-    side = json.loads((repo / "docs" / "specs" / "reviews" / "SPEC-0001.json").read_text())
+    side = SR.load_review(cfg, "SPEC-0001", SR.spec_sha256(_spec(repo)))
+    assert not (repo / "docs" / "specs" / "reviews").exists()
     assert out == side
     assert side["schema"] == "wt.spec.review.v1" and side["spec_id"] == "SPEC-0001"
     assert side["verdict"] == "approve" and side["cost_usd"] == 0.42
@@ -70,7 +71,7 @@ def test_bad_review_errors_and_writes_nothing(tmp_path, monkeypatch, entry):
     repo, cfg = _setup(tmp_path, [entry])
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001"])
     assert r.exit_code != 0 and "SPEC-0001" in r.output
-    assert not (repo / "docs" / "specs" / "reviews").exists()
+    assert not (Path(cfg["data_dir"]) / "agentic" / "reviews").exists()
 
 
 def test_review_request_is_read_only_and_persona_has_defaults():
@@ -120,16 +121,16 @@ def test_queue_add_refuses_without_approving_review(tmp_path, monkeypatch):
     want = "SPEC-0001 has no approving review for its current text; run wt spec review SPEC-0001"
     r = _add(cfg, monkeypatch)                                        # no review at all
     assert r.exit_code != 0 and want in r.output and "--force" in r.output
-    write_review(_spec(repo), "SPEC-0001", verdict="revise")           # not approving
+    write_review(cfg, _spec(repo), "SPEC-0001", verdict="revise")           # not approving
     r = _add(cfg, monkeypatch)
     assert r.exit_code != 0 and want in r.output
-    write_review(_spec(repo), "SPEC-0001", verdict="split")
+    write_review(cfg, _spec(repo), "SPEC-0001", verdict="split")
     assert _add(cfg, monkeypatch).exit_code != 0
 
 
 def test_queue_add_accepts_matching_approve_and_refuses_stale_hash(tmp_path, monkeypatch):
     repo, cfg = _setup(tmp_path, [])
-    write_review(_spec(repo), "SPEC-0001")
+    write_review(cfg, _spec(repo), "SPEC-0001")
     r = _add(cfg, monkeypatch)
     assert r.exit_code == 0, r.output
     assert json.loads(r.output)["review"] == "approved"

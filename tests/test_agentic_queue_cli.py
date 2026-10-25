@@ -190,7 +190,7 @@ def test_backlog_json_order_and_list_sections(tmp_path, monkeypatch):
     repo, cfg = _cfg(tmp_path)
     (repo / "docs" / "specs" / "0002-second.md").write_text(
         SPEC_ACCEPTED.format(id="SPEC-0002", extra="depends_on: [SPEC-0001, SPEC-0099]\n"))
-    write_review(repo / "docs" / "specs" / "0002-second.md", "SPEC-0002")
+    write_review(cfg, repo / "docs" / "specs" / "0002-second.md", "SPEC-0002")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "second"], check=True)
     first = added(cfg, monkeypatch, "SPEC-0001")

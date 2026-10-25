@@ -1605,25 +1605,41 @@ def spec_status_cmd(cfg, spec_id, new_status, as_json):
 
 
 @spec_group.command("review")
-@click.argument("spec_id", shell_complete=C.complete_any_spec_id)
-@click.option("--json", "as_json", is_flag=True, help="emit the wt.spec.review.v1 sidecar")
+@click.argument("spec_id", required=False, shell_complete=C.complete_any_spec_id)
+@click.option("--path", "path", type=click.Path(exists=True, dir_okay=False),
+              help="review this spec file (any repository) instead of a SPEC-ID")
+@click.option("--json", "as_json", is_flag=True, help="emit the wt.spec.review.v1 payload")
 @click.pass_obj
-def spec_review_cmd(cfg, spec_id, as_json):
+def spec_review_cmd(cfg, spec_id, path, as_json):
     """Review a spec with the read-only spec_reviewer persona (SPEC-0188).
 
-    Writes `docs/specs/reviews/<SPEC-ID>.json`, keyed by the spec file's hash; `wt queue add`
-    admits a spec only when its latest review is `approve` for the current text.
+    Stores the review in the data dir, keyed by the spec id and the file's hash
+    (`<data>/agentic/reviews/<SPEC-ID>/<sha>.json`); `wt queue add` admits a spec only when
+    its review for the current text is `approve`. Give exactly one of SPEC-ID and --path;
+    --path reviews a file in any repository, with that repository as the reviewer's root.
 
     \b
     wt spec review SPEC-0188
     wt spec review SPEC-0188 --json
+    wt spec review --path ~/code/other/docs/specs/0007-thing.md
     """
     import json as _json
     import sys
+    from pathlib import Path
 
-    from .agentic.spec_review import review_spec
+    from .agentic.spec_review import review_spec, run_spec_review
+    from .specmeta import split_frontmatter
+    if bool(spec_id) == bool(path):
+        raise click.UsageError("give exactly one of SPEC-ID and --path")
     try:
-        review = review_spec(cfg, spec_id)
+        if path:
+            fm, _ = split_frontmatter(Path(path).read_text(encoding="utf-8"))
+            spec_id = str((fm or {}).get("id") or "")
+            if not spec_id:
+                raise click.ClickException(f"{path}: front matter has no `id`")
+            review = run_spec_review(cfg, Path(path), spec_id)
+        else:
+            review = review_spec(cfg, spec_id)
     except ValueError as e:
         raise click.ClickException(str(e))
     if as_json:

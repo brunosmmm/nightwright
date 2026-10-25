@@ -2106,7 +2106,7 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
     if force:                                                          # SPEC-0188
         review = "forced"
     else:
-        SR.check_admissible(path, spec_id)
+        SR.check_admissible(cfg, path, spec_id)
         review = "approved"
     prof = resolve_profile(cfg, profile)
     base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"

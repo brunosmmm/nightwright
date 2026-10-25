@@ -43,7 +43,7 @@ def _campaign(cfg, repo, cid, state, *, spec_id="SPEC-0001", rel="docs/specs/000
 
 def _fixture(tmp_path):
     repo = make_repo(tmp_path)
-    write_review(_write(repo, "docs/specs/0002-second.md",
+    write_review(make_cfg(tmp_path, repo, None), _write(repo, "docs/specs/0002-second.md",
                         SPEC_ACCEPTED.format(id="SPEC-0002", extra="depends_on: [SPEC-0009]\n")
                         .replace("Trivial feature", "Blocked second")), "SPEC-0002")
     _git(repo, "add", "-A")

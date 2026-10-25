@@ -39,7 +39,7 @@ class HeldRunner:
 def _second_spec(repo, spec_id="SPEC-0002", rel="docs/specs/0002-second.md"):
     p = _write(repo, rel, (repo / "docs/specs/0001-trivial.md").read_text()
                .replace("SPEC-0001", spec_id))
-    write_review(p, spec_id)
+    write_review({"data_dir": str(repo.parent / "data")}, p, spec_id)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", spec_id)
 
