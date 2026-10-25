@@ -1035,6 +1035,37 @@ def code_changes(root, since: str) -> tuple[str | None, list[str]]:
     return head, [p for p in (diff or "").splitlines() if p]
 
 
+class _heartbeat_while:
+    """Heartbeat the lease from a daemon thread while a tick runs (SPEC-0204): a tick that
+    runs gates or waits on persona runs can outlast the lease TTL, and an alive runner must
+    never look stale. Beats every ttl/4 seconds (at least 1s)."""
+
+    def __init__(self, lease, interval_s=None):
+        self.lease = lease
+        ttl = float((lease.info or {}).get("ttl_s") or 120)
+        self.interval = interval_s if interval_s is not None else max(1.0, ttl / 4)
+        self._stop = threading.Event()
+        self._thread = None
+
+    def _beat(self):
+        while not self._stop.wait(self.interval):
+            try:
+                self.lease.heartbeat()
+            except OSError:
+                pass
+
+    def __enter__(self):
+        self._thread = threading.Thread(target=self._beat, name="wt-lease-heartbeat",
+                                        daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._thread.join(timeout=5)
+        return False
+
+
 def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=False,
         on_tick=None, runner=None, argv=None, reexec=False, code_root=None) -> int:
     """The loop: take the lease, tick, heartbeat, sleep. SIGINT/SIGTERM stop admissions,
@@ -1077,7 +1108,8 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
             code_sha=code_sha)
     try:
         while not stop.is_set():
-            report = tick(cfg, stop=stop, runner=runner)
+            with _heartbeat_while(lease):
+                report = tick(cfg, stop=stop, runner=runner)
             ticks += 1
             lease.heartbeat()
             if report.steps or report.admitted or report.errors:      # idle ticks stay silent
