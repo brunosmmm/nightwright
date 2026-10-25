@@ -84,13 +84,13 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0145](./specs/0145-capability-showcase-pages-for-major-cli-surfaces.md) Capability showcase pages for major CLI surfaces — done
   - [x] [SPEC-0146](./specs/0146-command-reference-synced-to-live-cli.md) Command reference synced to live CLI — done
   - [x] [SPEC-0147](./specs/0147-root-readme-slim-front-door-into-docs-site.md) Root README slim front door into docs site — done
-- **[SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) — Example-heavy docs: SVG captures and workflow architecture** · accepted · (5/6 done)
+- **[SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) — Example-heavy docs: SVG captures and workflow architecture** · accepted · (6/6 done)
   - [x] [SPEC-0149](./specs/0149-demo-fixture-and-docs-svg-capture-toolchain.md) Demo fixture and docs SVG capture toolchain — done
   - [x] [SPEC-0150](./specs/0150-workflow-architecture-diagrams-in-product-docs.md) Workflow architecture diagrams in product docs — done
   - [x] [SPEC-0151](./specs/0151-example-heavy-guides-embedding-svg-captures.md) Example-heavy guides embedding SVG captures — done
   - [x] [SPEC-0152](./specs/0152-org-mode-storage-guide-and-expanded-cli-svg.md) Org-mode storage guide and expanded CLI SVG captures — done
   - [x] [SPEC-0218](./specs/0218-agentic-workflow-docs-refresh.md) Agentic workflow docs refresh: a guide, a coherent reference, concepts and front door — superseded
-  - [ ] [SPEC-0219](./specs/0219-use-case-oriented-docs-two-pillars-diagrams.md) Use-case oriented docs: two pillars, bootstrap path and rich diagrams — in-progress
+  - [x] [SPEC-0223](./specs/0223-use-case-oriented-docs-two-pillars-diagrams.md) Use-case oriented docs: two pillars, bootstrap path and rich diagrams — done
 - **[SPEC-0153](./specs/0153-full-surface-product-docs-remediation.md) — Full-surface product docs remediation** · done · (5/5 done)
   - [x] [SPEC-0154](./specs/0154-time-ops-demo-fixture-and-wave-a-b-svg-captures.md) Time+ops demo fixture and Wave A/B SVG captures — done
   - [x] [SPEC-0155](./specs/0155-journey-rewrite-home-getting-started-forks-daily.md) Journey rewrite: home, getting-started forks, daily/weekly guides — done
@@ -164,7 +164,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0215](./specs/0215-spec-writer-persona-and-the-spec-writing-step.md) | spec_writer persona and the SPEC_WRITING step (write and revise) | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0219](./specs/0219-spec-sizing-and-tone-pick-the-campaign-profile.md) | Spec sizing and tone pick the campaign profile | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0219](./specs/0219-use-case-oriented-docs-two-pillars-diagrams.md) | Use-case oriented docs: two pillars, bootstrap path and rich diagrams | feature | in-progress | M8: product documentation | 2026-10-25 |
 | [SPEC-0220](./specs/0220-close-regate-off-main-thread.md) | Close re-gate runs off the runner main thread | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0221](./specs/0221-rebase-conflict-resolver-persona.md) | Rebase-conflict resolver persona | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0222](./specs/0222-queue-watch-needs-you-vs-conductor-handling.md) | queue watch: split parks into 'Needs you' and 'Conductor handling' | feature | accepted | M9: agentic workflow | 2026-10-25 |
@@ -366,6 +365,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0205](./specs/0205-test-reviewer-persona.md) | Test reviewer persona: do the tests cover the spec? | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0212](./specs/0212-periodic-conductor-ping.md) | Periodic conductor ping: a digest of blocked, stuck, parked and waiting items | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0213](./specs/0213-nonblocking-queue-ticks.md) | Non-blocking queue ticks: in-flight steps carry across ticks | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0223](./specs/0223-use-case-oriented-docs-two-pillars-diagrams.md) | Use-case oriented docs: two pillars, bootstrap path and rich diagrams | feature | done | M8: product documentation | 2026-10-25 |
 
 ## Superseded / rejected
 

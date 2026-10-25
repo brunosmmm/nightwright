@@ -1,7 +1,7 @@
 ---
-id: SPEC-0219
+id: SPEC-0223
 title: "Use-case oriented docs: two pillars, bootstrap path and rich diagrams"
-status: in-progress
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -99,14 +99,14 @@ docs in sync with the code.
 
 ## Acceptance criteria
 
-- [ ] Every new page exists, is in the nav, and is not a stub (more than 1500 characters).
-- [ ] Each `ideas/*` and `loop/*` page has at least one mermaid diagram.
-- [ ] `loop/states.md` names every state in `queue.STATES`, and `loop/operate.md` every
+- [x] Every new page exists, is in the nav, and is not a stub (more than 1500 characters).
+- [x] Each `ideas/*` and `loop/*` page has at least one mermaid diagram.
+- [x] `loop/states.md` names every state in `queue.STATES`, and `loop/operate.md` every
       reason in `queue.PARK_REASONS` (enforced by the test).
-- [ ] The home page presents the two pillars and links `ideas/index.md`, `loop/index.md` and
+- [x] The home page presents the two pillars and links `ideas/index.md`, `loop/index.md` and
       `guides/bootstrap.md`.
-- [ ] `mkdocs build --strict` passes, and the existing doc tests pass.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `mkdocs build --strict` passes, and the existing doc tests pass.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -114,6 +114,10 @@ docs in sync with the code.
   `test_docs_mkdocs_build.py` (strict build).
 - **Manual verification:** the human reviews the rendered site locally (`mkdocs serve`) and
   signs off on the structure and the diagrams.
+  **Done 2026-10-25:** the human reviewed the site served locally on :8000. After the left
+  nav was restored (`navigation.tabs` dropped), they signed off ("ok this is much better",
+  "merge the docs"). Full suite: 1876 passed, 1 skipped. Renumbered from SPEC-0219, which
+  collided with another SPEC-0219 merged meanwhile.
 - **Regression guard:** full `uv run pytest`.
 
 ## Rollout / migration
@@ -123,11 +127,11 @@ conductor as a docs-only change.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

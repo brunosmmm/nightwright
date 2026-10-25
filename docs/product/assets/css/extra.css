@@ -1,4 +1,4 @@
-/* SPEC-0219: room for diagrams and wide tables. */
+/* SPEC-0223: room for diagrams and wide tables. */
 .md-grid { max-width: 1480px; }
 .md-typeset .mermaid { text-align: center; }
 .md-typeset .mermaid svg { max-width: 100%; height: auto; }

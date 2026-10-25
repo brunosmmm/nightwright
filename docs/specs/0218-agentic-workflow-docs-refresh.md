@@ -2,7 +2,7 @@
 id: SPEC-0218
 title: "Agentic workflow docs refresh: a guide, a coherent reference, concepts and front door"
 status: superseded
-superseded_by: SPEC-0219
+superseded_by: SPEC-0223
 owner: user
 created: 2026-10-25
 updated: 2026-10-25

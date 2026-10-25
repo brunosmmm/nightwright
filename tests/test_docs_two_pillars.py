@@ -1,4 +1,4 @@
-"""SPEC-0219: use-case oriented docs — the two pillars (ideas → specs, the agentic loop), a
+"""SPEC-0223: use-case oriented docs — the two pillars (ideas → specs, the agentic loop), a
 bootstrap path, diagrams on every pillar page, and states / park reasons kept in sync with the
 code."""
 import re
