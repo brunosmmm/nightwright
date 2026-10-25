@@ -25,7 +25,8 @@ when the human names the spec.
 2. **Start the service if nothing holds the lease** (`lease.held` false). The launcher
    comes from config `agentic.run_launcher` (`wt projects config` shows the project side;
    the runner side is `~/.config/wt/config.yaml`):
-   - `nohup` (default): `nohup wt queue run >> <data_dir>/agentic/runner.log 2>&1 &`
+   - `nohup` (default): `setsid nohup wt queue run >> <data_dir>/agentic/runner.log 2>&1 &`
+     (its own session, so the loop's signal handling works as designed)
      (`<data_dir>` is usually `~/.local/share/wt`), then re-run `wt queue list` and confirm
      `lease.held` with the new pid.
    - `tmux`: `tmux new -d -s wt-queue 'wt queue run'`.

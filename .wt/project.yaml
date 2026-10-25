@@ -9,7 +9,9 @@ gates:
     timeout_s: 1200
     required: true
   - name: spec-lint
-    cmd: python3 tools/spec_lint.py
+    # Regenerate the generated ledger block first: it is derived from frontmatter, so an
+    # implementer that edited a spec but forgot --write-ledger must not fail the gate for it.
+    cmd: python3 tools/spec_lint.py --write-ledger >/dev/null && python3 tools/spec_lint.py
     timeout_s: 120
     required: true
 merge:

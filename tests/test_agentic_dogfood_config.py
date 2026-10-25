@@ -16,6 +16,7 @@ def test_dogfood_project_config_loads_and_names_the_gates():
     assert gates["pytest"]["cmd"].startswith("uv run pytest")
     assert gates["pytest"]["required"] and gates["spec-lint"]["required"]
     assert "spec_lint.py" in gates["spec-lint"]["cmd"]
+    assert "--write-ledger" in gates["spec-lint"]["cmd"]   # regenerate, then lint
     assert doc["merge"]["policy"] == "merge"
     assert doc["merge"]["base"] == "main"
     assert doc["merge"]["push_after_merge"] is False
