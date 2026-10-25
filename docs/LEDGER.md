@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (34/52 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (34/53 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -150,6 +150,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0229](./specs/0229-runner-exit-paths-and-draining-ticks-with-detached-runs.md) Runner exit paths and draining ticks with detached runs — accepted
   - [ ] [SPEC-0230](./specs/0230-single-spec-review-round.md) Single spec review round: admit a revised spec without re-review — accepted
   - [ ] [SPEC-0231](./specs/0231-followers-exit-on-code-change-sessions-re-arm.md) Followers exit with code_changed on new wt code; conductor and steward re-arm and re-read skills — accepted
+  - [ ] [SPEC-0232](./specs/0232-escalation-records-wt-queue-escalate-and-notify.md) Escalation records: wt queue escalate parks human_decision, mails and notifies the human — accepted
 
 ## Active & planned
 
@@ -178,6 +179,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0229](./specs/0229-runner-exit-paths-and-draining-ticks-with-detached-runs.md) | Runner exit paths and draining ticks with detached runs | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0230](./specs/0230-single-spec-review-round.md) | Single spec review round: admit a revised spec without re-review | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0231](./specs/0231-followers-exit-on-code-change-sessions-re-arm.md) | Followers exit with code_changed on new wt code; conductor and steward re-arm and re-read skills | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0232](./specs/0232-escalation-records-wt-queue-escalate-and-notify.md) | Escalation records: wt queue escalate parks human_decision, mails and notifies the human | feature | accepted | M9: agentic workflow | 2026-10-25 |
 
 ## Done
 
