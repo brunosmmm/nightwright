@@ -24,7 +24,8 @@ These apply to every session that touches wt — conductor, steward, builders, h
   campaigns can close.
 - **Do real work through background sub-agents** — specs, implementation, investigations,
   rebases, merges, conflict resolution. The main session stays responsive for events and
-  decisions.
+  decisions. Dispatch work to fresh sub-agents (general-purpose, or Explore for read-only search) with a self-contained brief and a model chosen per task (sonnet for routine work, opus only for hard design or review). Never use forks — they inherit the whole conversation and cost an order of magnitude more; write any needed context into the brief. The brief names the governing spec path, the worktree, the
+  files to read, the files the sub-agent owns, these rules, and what to report.
 - **Missing-CLI rule:** a one-off python / cat / jq peek into wt's data means a `wt` command is
   missing — file an idea (`wt idea capture --kind improvement --project Meta-Tools …`,
   heading-verified) and carry on.

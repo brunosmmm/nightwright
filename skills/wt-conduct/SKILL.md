@@ -24,7 +24,9 @@ quick reads and quick writes** — `wt queue conduct-status`, `wt campaign show|
 `wt queue resume|park|abandon|prioritize`, `wt campaign note`, `wt mailbox send`,
 `wt spec reconcile --apply`: commands that return in seconds.
 
-**Everything else is dispatched, never run inline:**
+**Everything else is dispatched, never run inline.** Dispatch work to fresh sub-agents (general-purpose, or Explore for read-only search) with a self-contained brief and a model chosen per task (sonnet for routine work, opus only for hard design or review). Never use forks — they inherit the whole conversation and cost an order of magnitude more; write any needed context into the brief. The brief names the
+campaign, the governing spec path, the worktree, the files to read, the files the sub-agent may
+change, these rules, and what to report.
 
 - **Sub-agent** (preferred) for any work that needs judgment or more than a few seconds:
   resolving a rebase conflict in a campaign worktree, completing or retrying a merge,
