@@ -280,3 +280,5 @@ def test_orient_carries_working_rules_and_session_skills_require_it():
         procedure = body.split("## Procedure", 1)[1]
         first = procedure.strip().splitlines()[0]
         assert first.startswith("0.") and "/wt-orient" in first, name
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    assert "Clear blockers yourself" in conduct

@@ -79,7 +79,8 @@ run, handle it — that is the point.
 | `parked` `cost_cap` | resume once with `--raise-cap` up to 2× the profile cap and a note; a second cost park → escalate |
 | `parked` `loop_exhausted` / `triage_escalated` / `implementer_blocked` | if the failures were transient (`run_failed` with `transient: true` right before), resume with `--reset-loops`; else read the last triage brief; if a steward is armed for the project (`wt mailbox list --to steward:<P>`), ask it with `wt mailbox send --to steward:<P> --kind question --campaign <id> "…"` and wait for its `message`; else escalate with the brief and your recommendation |
 | `parked` `rebase_conflict` | if every conflicted path is a generated file (e.g. `docs/LEDGER.md`), resume to `CLOSING` (the close step re-runs gates); otherwise dispatch a resolver sub-agent into the campaign worktree to rebase onto the base and resolve the conflicts preserving both intents, commit on the campaign branch, and report; then resume to `CLOSING` (the close step re-gates the result). Escalate only if the resolver reports a semantic conflict it cannot settle |
-| `parked` `main_dirty` / `main_not_on_base` | the human's checkout: escalate (never stash or switch branches yourself) |
+| `parked` `main_dirty` / `main_not_on_base` | someone edited the main checkout in place: dispatch a sub-agent to move the uncommitted work intact onto a new branch in its own worktree (copy changed + untracked files, commit as WIP there, verify the copy, then restore main with `git checkout -- <files>` / remove the moved untracked files), notify the owner (steward) by mail where the work now lives, then resume the campaign to `CLOSING`. Off-base main: switch it back to the base branch only if clean; otherwise move the work first the same way |
+| live `wt` broken (any `wt` command fails to import) | same as `main_dirty`: move the in-place WIP to a worktree branch, restore main, notify the owner; use `uv run wt` from a worktree meanwhile |
 | `parked` `open_failed` / `gh_failed` | read the detail; retry once with `wt queue resume`; if it fails again, dispatch a sub-agent to diagnose, then act or escalate |
 | `message` (`kind` answer) | apply it: `wt campaign note`, then resume / abandon / reprioritize as the answer says |
 | `message` (`kind` request) | a steward asks for a queue action (add, prioritize, park, resume): do it via dry-run then `--yes`, and reply with `wt mailbox send --to <from> --kind answer --re <msg_id> "done: …"` |
@@ -99,8 +100,13 @@ Exact flags: `wt queue --help`, `wt campaign --help`, `wt mailbox --help`.
   feature implementation stays with the loop's personas.
 - **Every park gets a decision** (resume, abandon, steward question, or escalation) and a
   `wt campaign note` saying which and why.
-- **Escalate crisply:** campaign, park reason, the facts, what you recommend, what you need
-  decided. Escalation is for design and for the human's own checkout, not routine recovery.
+- **Clear blockers yourself.** Anything stopping the queue (a broken or dirty main checkout, a
+  dead runner, a stuck campaign, a conflict) is yours to resolve through sub-agents; escalate
+  to the human only for decisions about what gets built. Never discard anyone's work: move it,
+  don't delete it.
+- **Escalate crisply** (decisions about what gets built only): campaign, the facts, what you
+  recommend, what you need decided. Routine recovery and blocker clearing never go to the
+  human.
 - **Mail identity:** send with `WT_MAILBOX_ADDR=conductor` set (or `--from conductor`).
 - **Shared ideas file:** verify headings before any `wt idea …` write.
 - **SPEC-0138:** the spec in the queue is the governing design.
