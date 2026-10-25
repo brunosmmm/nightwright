@@ -12,6 +12,8 @@ wt idea "…"          park a thought (seconds)
 /wt-seed             Cursor: distill conversation → idea (+ optional Summary/Log)
 wt idea log …        append a Log note (date+time); was `wt idea explore`
 wt idea summary …    set durable Summary (gate for promote)
+                     bodies are org: quote code/paths/identifiers as ~x~ or =x= (left
+                     untouched); multi-line code as #+begin_src (SPEC-0164)
 wt idea show …       read headline + Summary / questions / Log
                      (TTY: Rich+Pygments org highlight; --plain / --json stay plain;
                      theme via config idea_show_theme, default nord)

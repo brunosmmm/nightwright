@@ -53,7 +53,8 @@ Exact flags: `wt idea --help` and `wt idea <subcommand> --help`.
 - Write Summary / questions / Log **bodies as org-mode markup**, not Markdown: use `~code~`
   or `=verbatim=`, `*bold*`, `/italic/`, plain `-` lists. Avoid backtick spans and
   `**double-star**` bold. `wt` normalizes common Markdown idioms on write (SPEC-0030), but
-  prefer authxxing org directly.
+  prefer authxxing org directly. Quote identifiers, paths and code in `~…~` / `=…=` (left
+  untouched, so `__init__` stays intact); write multi-line code as `#+begin_src` (SPEC-0164).
 - Promotion belongs in `wt-new-work` only after Summary is non-empty.
 - See `docs/WORKFLOW.md` (explore stage).
 - **SPEC-0138:** durable learning belongs on the idea (Summary/Log), not a governing

@@ -92,6 +92,43 @@ def test_promote_context_converts_org_to_markdown(tmp_path):
     assert "checked module Y" in text
 
 
+def test_summary_preserves_code_and_fences_on_disk(tmp_path, monkeypatch):
+    """SPEC-0164: identifiers in verbatim/code survive the write path byte-for-byte, and a
+    fenced block lands as a comma-escaped org src block that does not break the idea tree."""
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    W.add_idea(cfg, "code idea")
+    body = ("Resolves =Path(__file__)= here.\n"
+            "```python\ndef __init__(self):\n* not a headline\n```\n")
+    r = CliRunner().invoke(cli, ["idea", "summary", "IDEA-001", "--set", body])
+    assert r.exit_code == 0, r.output
+    r = CliRunner().invoke(cli, ["idea", "log", "IDEA-001",
+                                 "--note", "see `snake__case__name`"])
+    assert r.exit_code == 0, r.output
+    t = load_tasks(cfg)[0]
+    raw = open(t.file).read()
+    assert "=Path(__file__)=" in raw
+    assert "#+begin_src python\ndef __init__(self):\n,* not a headline\n#+end_src" in raw
+    assert "~snake__case__name~" in raw
+    # the escaped line is not a new headline: still exactly one idea, Summary intact
+    assert [x.properties.get("ID") for x in load_tasks(cfg)] == ["IDEA-001"]
+    assert "def __init__(self):" in EX.idea_summary_text(cfg, t)
+    # a second write still finds the sections (tree not broken)
+    assert CliRunner().invoke(cli, ["idea", "log", "IDEA-001", "--note", "again"]).exit_code == 0
+
+
+def test_promote_context_fences_and_no_spurious_spans(tmp_path):
+    """SPEC-0164: org → md prefill turns src blocks back into fences and leaves `a = b = c`
+    and `2*3*4` alone."""
+    cfg = _cfg(tmp_path)
+    W.add_idea(cfg, "fence idea")
+    EX.set_summary(cfg, "IDEA-001", "Check a = b = c and 2*3*4.\n```sh\necho hi\n```\n")
+    path, _ = S.scaffold_from_idea(cfg, "IDEA-001", force=True)
+    ctx = path.read_text().split("## Context")[1].split("## Goals")[0]
+    assert "Check a = b = c and 2*3*4." in ctx
+    assert "```sh\necho hi\n```" in ctx
+
+
 def test_log_stamp_inactive_org_with_time(tmp_path):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "stamp me")

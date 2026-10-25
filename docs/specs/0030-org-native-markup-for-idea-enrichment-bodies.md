@@ -1,7 +1,8 @@
 ---
 id: SPEC-0030
 title: Org-native markup for idea enrichment bodies
-status: done
+status: superseded
+superseded_by: SPEC-0164
 owner: user
 created: 2026-07-22
 updated: 2026-07-22

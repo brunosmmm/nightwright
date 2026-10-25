@@ -49,7 +49,9 @@ already exists and needs more research, use `/wt-explore`.
 - Prefer short titles; put substance in Summary / Log.
 - Write enrichment bodies as **org-mode markup** (not Markdown): ~code~, =verbatim=,
   *bold*, /italic/, plain `-` lists. `wt idea summary|explore` also normalizes common
-  Markdown idioms on write (SPEC-0030).
+  Markdown idioms on write (SPEC-0030). Quote identifiers, paths and code in ~…~ / =…=
+  (left untouched, so `__init__` stays intact); write multi-line code as `#+begin_src`
+  (SPEC-0164).
 - Prefer `wt idea log` (not the hidden `explore` alias) when appending Log notes (SPEC-0031).
 - Never `wt spec new`, never set a spec to `accepted`, never `wt spec generate`.
 - Title-only seed is valid when the chat was thin; Summary is recommended, not required.

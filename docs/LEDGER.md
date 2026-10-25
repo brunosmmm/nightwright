@@ -137,7 +137,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0026](./specs/0026-cli-json-on-ideas-next-and-idea-show.md) | CLI --json on ideas, next, and idea show | feature | done | M4: cli ergonomics | 2026-07-22 |
 | [SPEC-0027](./specs/0027-prefix-facet-inheritance-for-colon-suffixed-topics.md) | Prefix facet inheritance for colon-suffixed topics | feature | done | M4: cli ergonomics | 2026-07-22 |
 | [SPEC-0028](./specs/0028-all-time-topics-rollup-by-facet-axis.md) | All-time topics rollup by facet axis | feature | done | M4: cli ergonomics | 2026-07-22 |
-| [SPEC-0030](./specs/0030-org-native-markup-for-idea-enrichment-bodies.md) | Org-native markup for idea enrichment bodies | feature | done | M4: cli ergonomics | 2026-07-22 |
 | [SPEC-0031](./specs/0031-rename-idea-explore-to-log-datetime-log-stamps.md) | Rename idea explore to log; datetime Log stamps | feature | done | M4: cli ergonomics | 2026-07-23 |
 | [SPEC-0032](./specs/0032-inactive-org-timestamps-for-idea-log-entries.md) | Inactive org timestamps for idea Log entries | feature | done | M4: cli ergonomics | 2026-07-23 |
 | [SPEC-0033](./specs/0033-wt-rework-skill-and-next-hints-for-specced-epics.md) | wt-rework skill and next-hints for SPECCED epics | feature | done | M4: cli ergonomics | 2026-07-23 |
@@ -263,6 +262,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0161](./specs/0161-remove-branded-export-adapter-from-public-tree.md) | Remove branded export adapter from the public tree | feature | done | M3: idea→spec pipeline | 2026-09-09 |
 | [SPEC-0162](./specs/0162-document-default-wt-native-portable-workflow.md) | Document default wt-native portable as lightweight verify workflow | feature | done | M8: product documentation | 2026-09-09 |
 | [SPEC-0163](./specs/0163-home-page-thesis-mini-spec-first.md) | Home page thesis: mini-spec workflow first, passive time secondary | feature | done | M8: product documentation | 2026-09-10 |
+| [SPEC-0164](./specs/0164-span-aware-org-markup-normalization-protect-code.md) | Span-aware org markup normalization (protect code, verbatim, fences) | feature | done | M4: cli ergonomics | 2026-10-25 |
 | [SPEC-0165](./specs/0165-repair-test-drift-from-demo-name-scrub-and-spec.md) | Repair test drift from demo-name scrub and SPEC-0135 | feature | done | M0: process | 2026-10-25 |
 
 ## Superseded / rejected
@@ -270,6 +270,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | ID | Title | Kind | Status | Milestone | Updated |
 |----|-------|------|--------|-----------|---------|
 | [SPEC-0029](./specs/0029-withdrawn-repo-specific-export-scheme.md) | Withdrawn: repo-specific export scheme | policy | superseded | M3: idea→spec pipeline | 2026-09-09 |
+| [SPEC-0030](./specs/0030-org-native-markup-for-idea-enrichment-bodies.md) | Org-native markup for idea enrichment bodies | feature | superseded | M4: cli ergonomics | 2026-07-22 |
 | [SPEC-0034](./specs/0034-withdrawn-auto-allocate-free-task-ids.md) | Withdrawn: auto-allocate free task ids | policy | superseded | M3: idea→spec pipeline | 2026-09-09 |
 | [SPEC-0037](./specs/0037-withdrawn-explicit-task-id-pin.md) | Withdrawn: explicit task-id pin for export | policy | superseded | M3: idea→spec pipeline | 2026-09-09 |
 | [SPEC-0047](./specs/0047-withdrawn-compose-outbound-epic-children.md) | Withdrawn: compose outbound epic children into deliverables | policy | superseded | M3: idea→spec pipeline | 2026-09-09 |
