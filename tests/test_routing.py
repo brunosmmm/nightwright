@@ -57,7 +57,7 @@ def test_promote_idea_with_configured_project_goes_outbound(tmp_path):
     path, spec_id, kind = S.promote_idea(cfg, "adversarial reviewer")
 
     assert kind == "outbound"
-    assert spec_id.startswith("DEMO-")
+    assert spec_id.startswith("AIWORKSTREAMS-")
     assert path.exists()
     assert (tmp_path / "outbox").exists()
     assert not list((tmp_path / "specs").glob("[0-9]*.md"))  # nothing landed internally
@@ -147,7 +147,7 @@ def test_cli_spec_new_from_idea_routes_outbound(tmp_path, monkeypatch):
 
     r = CliRunner().invoke(cli, ["spec", "new", "--from-idea", "adversarial reviewer"])
     assert r.exit_code == 0, r.output
-    assert "DEMO-" in r.output
+    assert "AIWORKSTREAMS-" in r.output
     assert "outbound" in r.output
     assert "/tmp/ai-repo" in r.output
 

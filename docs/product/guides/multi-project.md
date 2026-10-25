@@ -6,7 +6,7 @@ When work spans **more than one** tracked repo, do not collapse everything under
 ## Map first
 
 ```bash
-wt projects list --json
+wt projects --json
 ```
 
 ![projects](../assets/captures/cli-projects.svg)

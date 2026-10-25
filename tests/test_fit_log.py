@@ -27,7 +27,8 @@ def _cfg(tmp_path):
         "org_files": [str(org)],
         "org_todo_keywords": ["TODO", "|", "DONE"],
         "org_idea_keywords": [
-            "IDEA", "INCUBATE", "SPECCED", "|", "PROMOTED", "EXPORTED", "DROPPED"],
+            "IDEA", "INCUBATE", "SPECCED", "|", "PROMOTED", "EXPORTED", "SHIPPED", "DROPPED",
+            "RESEARCHED"],
         "timezone": "America/New_York",
         "_tz": ZoneInfo("America/New_York"),
         "data_dir": str(data),
@@ -148,7 +149,7 @@ def test_pull_status_archives_idea_when_status_first_becomes_done(tmp_path):
 
     reloaded = load_tasks(cfg)[0]
     assert reloaded.properties.get("ID") == "IDEA-001"
-    assert reloaded.state == "EXPORTED"
+    assert reloaded.state == "SHIPPED"          # SPEC-0135: done pull advances EXPORTED
 
 
 def test_pull_status_second_call_does_not_rearchive(tmp_path):
@@ -195,7 +196,7 @@ def test_pull_status_done_with_no_linked_idea_still_succeeds(tmp_path, capsys):
     assert status == "done"
     assert out_path is not None
     err = capsys.readouterr().err
-    assert "could not auto-archive" in err
+    assert "could not advance linked idea to SHIPPED" in err
 
 
 def test_postmortem_cli(tmp_path, monkeypatch):

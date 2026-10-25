@@ -203,7 +203,7 @@ def test_apply_mutation_sets_and_clears_project(tmp_path, monkeypatch):
 
 def test_known_project_choices_comes_from_the_registry(tmp_path, monkeypatch):
     cfg = _seed(tmp_path, monkeypatch)
-    assert M.known_project_choices(cfg) == ["Meta-Tools", "Example"]
+    assert M.known_project_choices(cfg) == ["Example", "Meta-Tools"]
 
 
 def test_known_project_choices_includes_outbox_and_meta_tools_without_mappings(tmp_path):

@@ -263,6 +263,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0161](./specs/0161-remove-branded-export-adapter-from-public-tree.md) | Remove branded export adapter from the public tree | feature | done | M3: idea→spec pipeline | 2026-09-09 |
 | [SPEC-0162](./specs/0162-document-default-wt-native-portable-workflow.md) | Document default wt-native portable as lightweight verify workflow | feature | done | M8: product documentation | 2026-09-09 |
 | [SPEC-0163](./specs/0163-home-page-thesis-mini-spec-first.md) | Home page thesis: mini-spec workflow first, passive time secondary | feature | done | M8: product documentation | 2026-09-10 |
+| [SPEC-0165](./specs/0165-repair-test-drift-from-demo-name-scrub-and-spec.md) | Repair test drift from demo-name scrub and SPEC-0135 | feature | done | M0: process | 2026-10-25 |
 
 ## Superseded / rejected
 

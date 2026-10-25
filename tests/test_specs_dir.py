@@ -49,7 +49,8 @@ def test_empty_string_specs_dir_falls_back_not_crashes():
 
 # ---- meta: no fixture may omit the key -------------------------------------------
 
-_CFG_MARKER = "org_ideas_file"
+# Config-key form (dict key or YAML key), not a bare mention such as a docs phrase.
+_CFG_MARKER = re.compile(r"org_ideas_file[\"']?\s*:")
 
 
 def test_no_test_fixture_omits_specs_dir():
@@ -58,7 +59,7 @@ def test_no_test_fixture_omits_specs_dir():
     offenders = []
     for path in sorted(Path("tests").glob("*.py")):
         text = path.read_text(encoding="utf-8")
-        if _CFG_MARKER in text and "specs_dir" not in text:
+        if _CFG_MARKER.search(text) and "specs_dir" not in text:
             offenders.append(path.name)
     assert not offenders, (
         "these fixtures build a wt config without `specs_dir`, so spec lookups would resolve "
