@@ -75,8 +75,12 @@ run ends. That has two consequences:
    atomically when the child ends.
 2. **Attach-or-spawn, and a runner protocol with hooks.** `PersonaRunner.run(req, *,
    hooks=None)`. `ClaudeRunner.run` is idempotent per run dir: if `run_dir/proc.json` exists
-   it attaches, otherwise it spawns and waits until the wrapper's `proc.json` appears. Either
-   way it then waits and collects. Collecting gives exactly today's `RunResult` and
+   it attaches. Otherwise it spawns and waits until the wrapper's `proc.json` appears, for at
+   most `agentic.spawn_timeout_s` (default 30 s). Past that the launch has failed: the runner
+   claims `proc.json` itself (`{orphaned: true, by: "spawn_timeout"}`), so a late wrapper
+   can never start `claude`, and returns an error `RunResult` (`exit_code: -1`, `is_error`,
+   `result_text` = the `wrapper.log` tail), which becomes a normal `run.end` error.
+   Once attached or spawned, it waits and collects. Collecting gives exactly today's `RunResult` and
    `run.json`. `hooks` (`RunHooks`, below) lets the pool see the run's phase and release a
    waiting thread. `FakeRunner` accepts and ignores `hooks`. `_do_persona` changes in three
    ways only: it passes `hooks`, it handles the `DETACHED` outcome, and it takes
@@ -87,8 +91,10 @@ run ends. That has two consequences:
      Detachable;
    - `collect`: parse, `run.json`, the implementer's commit. Not detachable;
    - `done`.
-   Every phase change, and every detach, happens under one `StepPool.lock`. A FakeRunner task
-   never leaves `spawning`, so it is never detachable and drains as today.
+   Every phase change, and every detach, happens under one `StepPool.lock`. Detachability is
+   the runner's `PersonaRunner.detachable` attribute: True for `ClaudeRunner`, False for
+   `FakeRunner`. A non-detachable task never leaves `spawning`, so it is never detachable
+   and drains as today.
 4. **Detach for the code-change exec.** On `code_changed` the loop stops admitting and
    submitting, as today. It then loops: `_harvest`, then `pool.try_detach_all()`, which
    atomically checks that nothing is in-process, `spawning` or `collect`, and only then
@@ -98,20 +104,26 @@ run ends. That has two consequences:
    the child's process group is alive. A run is `vanished` only when no process of either
    is left. If the wrapper is gone but the group lives, adoption waits on the group and
    enforces the timeout itself.
-6. **`interrupted` is the run's own outcome.** A run is interrupted only when its process was
-   killed by a signal that was not a timeout (`exit.json.killed_by == "signal"`), or when
-   adoption finds it orphaned. The runner's `stop` flag no longer marks detachable runs as
+6. **`interrupted` is the run's own outcome.** A run is interrupted only when **we** killed
+   it: the wrapper forwarded a SIGTERM it received (`exit.json.killed_by == "signal"`), or
+   adoption found it orphaned. A child killed by a signal the wrapper did not send (an OOM
+   kill, an external `kill`) gets `killed_by: "external"` and is an error, not an
+   interruption (`is_error: true`, `interrupted: false`). The runner's `stop` flag no longer marks detachable runs as
    interrupted. For non-detachable runners (FakeRunner) the old rule stays,
    `interrupted = ctx.stop.is_set()`, because their runs share the runner's fate.
 7. **Interim stop behaviour.** Today `_handler` forwards SIGTERM to the runner's own
    process group, which kills the `claude` children. With the wrapper in its own session,
    that signal no longer reaches them. To avoid shipping a 30-minute stop, this spec keeps
    today's outcome explicitly: when `stop` is set (signal, or any caller setting
-   `ctx.stop`), the drain sends TERM to the child process group (from `child.json`) and to
-   the wrapper of every ClaudeRunner task in `spawning` or `wait`, and KILL to the group 10
-   s later if it is still alive. A task in `spawning` gets this as soon as its `child.json`
-   appears. The runs end with `killed_by: "signal"`, so they are recorded as interrupted,
-   as today, and the drain returns within about 10 s. SPEC-0229 replaces this with
+   `ctx.stop`), the drain sends TERM to the **wrapper** of every ClaudeRunner task in
+   `spawning` or `wait` whose run is still running, meaning no `exit.json` exists yet. A
+   `spawning` task gets it as soon as its `proc.json` appears. The wrapper forwards TERM to
+   the child's group and escalates to KILL after 10 s, then writes `exit.json` with
+   `killed_by: "signal"`. As a backstop, the drain sends KILL to the child group 15 s after
+   its TERM if the group is still alive. A run whose `exit.json` already exists at stop
+   time is not signalled. It is collected normally, as a finished run, and is not
+   interrupted. Signalled runs are recorded as interrupted, as today, and the drain returns
+   within about 15 s. SPEC-0229 replaces this with
    detach-on-stop. Exception: runs already detached by a successful `try_detach_all` (the
    code-change exec) are no longer in `flights`. A stop that arrives between that call and
    `_EXEC` leaves them running, with no exec. They stay adoptable, the wrapper enforces
@@ -154,10 +166,16 @@ different code versions. `request.json`, `launch.json`, `proc.json`, `child.json
 `exit.json` therefore only gain optional keys, and readers ignore unknown ones. The wrapper merges
 `launch.json.env` over its inherited environment and ignores SIGHUP. On SIGTERM it forwards
 TERM to the child's group and still writes `exit.json` (`killed_by: "signal"`, `signal: 15`).
-In general, `killed_by` is `"timeout"` only when the wrapper's own timeout killed the child.
-Whenever the child ended by any other signal (the wrapper's SIGTERM forward, a TERM sent to
-the group by the interim stop, an OOM kill, an external `kill`), it is `"signal"`, with the
-child's signal number in `signal`.
+`killed_by` is decided by the wrapper:
+- `"timeout"`: its own timeout killed the child;
+- `"signal"`: the child died after the wrapper forwarded a SIGTERM it received (the interim
+  stop, a manual stop of the run);
+- `"external"`: the child died from a signal the wrapper did not send (OOM, an external
+  `kill`).
+The child's signal number is always in `signal`. If starting `claude` fails (`Popen`
+raises, for example because `claude` is not installed), the wrapper writes `exit.json =
+{exit_code: -1, killed_by: null, error: str(e)}` and exits. The run collects as an error with
+that text, as today's `OSError` path does.
 
 ### The claim closes the spawn window
 
@@ -279,7 +297,12 @@ text ("wrapper died before recording its child") so that it is visible if it eve
     the tick.
 
   and by its files:
-  - **no `proc.json`** after the 10 s grace: adoption claims it (`{orphaned: true}`). The
+  - **legacy survivor** (no `proc.json`, no `launch.json`, and a `run.start` without `step`,
+    so it was started by pre-SPEC-0225 code): that `claude` may still be alive in no
+    group adoption knows about. Adoption kills nothing. It holds the campaign with a waiting
+    flight, so no step is respawned, until `run.start.ts + timeout_s` + 60 s. Then it writes
+    `run.end` (`is_error: true`, "legacy orphan", cost estimated), with state unchanged;
+  - **no `proc.json`** after the 10 s grace (new-code run): adoption claims it (`{orphaned: true}`). The
     status is `orphaned`, applied at once as a synthetic interrupted `RunResult`
     (`interrupted: true`, `cost_usd: null`, which SPEC-0224 marks estimated). The state is
     unchanged and the next plan respawns the step. This covers runs from pre-SPEC-0225 code
@@ -299,9 +322,15 @@ text ("wrapper died before recording its child") so that it is visible if it eve
     | orphan_group | vanished | orphaned | unknown}]` and sets `pool.adopted = True`. A
     single-shot `wt queue tick` applies finished, vanished, orphaned and unknown runs, and
     waits for live ones, since a throwaway pool always waits.
-- Applying is unchanged. An adopted flight's result goes through `_apply`. A campaign that
-  was parked, abandoned or resumed meanwhile records `run.end` and cost, then skips the
-  transition (`_fresh` → `superseded_by_human`). `park_requested` is honoured as today.
+- **Snapshot check for adopted runs.** `_fresh` compares only the state name, and a human
+  park-then-resume while no runner was alive would leave the name unchanged. So
+  `run.start` records `state` (the campaign state at planning time) and its own ledger `seq`
+  is the snapshot point. An adopted flight is superseded when the on-disk state differs from
+  `run.start.state`, **or** the campaign ledger has a `transition`, `park`, `resumed` or
+  `abandoned` event with `by != "tick"` and a `seq` after the `run.start`. The run's
+  `run.end` and cost are recorded, and the transition is skipped (`superseded_by_human`).
+  Otherwise applying is unchanged: the result goes through `_apply`, and `park_requested`
+  is honoured as today.
 - **Unrecorded commit, for adopted runs only.** An adopted implementer flight carries
   `adopted=True` and `exited_before_start`. The flag is true when `exit.json.ended_at` is
   earlier than the lease's `started_at`. That timestamp is the runner's logical start: it is
@@ -356,7 +385,10 @@ gets recorded in the spec.
 - [ ] A wrapper whose claim is already taken (`{orphaned: true}`) exits without starting
       `claude`, and adoption never claims a run dir whose wrapper claimed it first. A run dir
       never has two agents. A runner SIGKILLed right after `Popen` leaves a run that the next
-      runner reports `running` or `finished`, not `orphaned`.
+      runner reports `running` or `finished`, not `orphaned`. A wrapper that never claims
+      within `spawn_timeout_s` gives a `run.end` error carrying the `wrapper.log` tail, and a
+      late wrapper cannot start. A `claude` that fails to start gives `exit.json` with
+      `error`.
 - [ ] On a code change with a persona run in `wait` and no in-process work, the runner execs
       while the run's process is alive. At `_EXEC` no `wt-step` thread for that run is alive,
       and `stop code_changed` lists it under `detached`. The new process adopts it and applies
@@ -374,17 +406,22 @@ gets recorded in the spec.
 - [ ] Adoption classifies every open run and journals one `adopt` record listing each run's
       persona and status. `finished` is applied on the first tick. `orphaned` (no claim
       after 10 s) gives `run.end` interrupted and estimated, state unchanged, step
-      respawned. Classification uses `run.start.step`, falling back to
+      respawned. A legacy survivor is never killed and is closed as "legacy orphan" after
+      its timeout. Classification uses `run.start.step`, falling back to
       `personas.ADOPT_REGISTRY` for legacy events, which covers every campaign persona. An
       unregistered persona is adopted and collected (never killed), with a `note` and no
       transition, without crashing the tick.
 - [ ] An adopted reviewer fan-out is applied once as one group, with every reviewer's verdict,
       including reviewers that had finished before the detach. An adopted `review_triager`
-      run is applied as its own single-member group, never merged with the reviewers. A campaign parked or
-      abandoned while its run was detached gets `run.end` + cost and no transition
-      (`superseded_by_human`), and a `park_requested` one parks `human`.
+      run is applied as its own single-member group, never merged with the reviewers. A
+      campaign parked or abandoned while its run was detached, including a park-then-resume
+      done while no runner was alive (same state name), gets `run.end` + cost and no
+      transition (`superseded_by_human`), and a `park_requested` one parks `human`.
 - [ ] Interim stop: with `ctx.stop` set during a live ClaudeRunner run, `run()` returns
-      within 15 s, the run's process group is gone, and `run.end` is `interrupted: true`.
+      within 20 s, the run's process group is gone, and `run.end` is `interrupted: true`. A
+      run whose `exit.json` already existed at stop time is collected as finished, not
+      interrupted. A child killed by an external signal is `killed_by: "external"`, an
+      error and not interrupted.
       With `hooks=None`, a `KeyboardInterrupt` raised while waiting kills the group before
       it propagates.
 - [ ] A ClaudeRunner run that exits normally while the loop is stopping is collected with
@@ -424,7 +461,15 @@ gets recorded in the spec.
     - `test_vanished_when_group_gone`: SIGKILL the wrapper and the child group → `vanished`,
       `exit_code -1`, `is_error`, an estimated cost, and no process left.
     - `test_pid_reuse_ignored`: wrong `start_ticks` for the wrapper and the leader → dead.
-    - `test_killed_by_signal_is_interrupted`: SIGTERM to the wrapper → `interrupted: true`.
+    - `test_killed_by_signal_is_interrupted`: SIGTERM to the wrapper → `killed_by: "signal"`,
+      `interrupted: true`. SIGKILL sent straight to the child → `killed_by: "external"`,
+      `is_error`, `interrupted: false`.
+    - `test_spawn_timeout_failed_launch`: the wrapper start is patched to hang before
+      claiming, with `spawn_timeout_s: 1`. The result is a `run.end` error with the
+      `wrapper.log` tail, `proc.json = {orphaned: true, by: "spawn_timeout"}`, and a
+      released wrapper exits without starting `claude`.
+    - `test_claude_popen_failure`: `claude` is missing from `PATH` → `exit.json` has
+      `exit_code: -1` and `error`, and the run collects as an error.
     - `test_attached_run_killed_on_keyboard_interrupt`: `hooks=None`. A `KeyboardInterrupt`
       is raised in the waiting thread (the wait poll is patched to raise). The `child.pid`
       process is gone and the wrapper has exited before the exception reaches the test.
@@ -445,9 +490,15 @@ gets recorded in the spec.
       `proc.json` → `orphaned`, claim file written, step respawned next tick. A variant with
       no `launch.json` uses the `run.start` ts: not claimed at 5 s, claimed at 11 s.
     - `test_interim_stop_kills_runs`: `ctx.stop` is set while an implementer is in `wait`.
-      `run()` returns in < 15 s, the child group is gone, and `run.end.interrupted` is true.
-      A `FAKE_CLAUDE_STUBBORN` variant (TERM ignored) still meets the 15 s bound through the
-      KILL escalation, with `killed_by: "signal"` and `signal: 9`.
+      `run()` returns in < 20 s, the child group is gone, and `run.end.interrupted` is true.
+      A `FAKE_CLAUDE_STUBBORN` variant (TERM ignored) still meets the bound through the
+      wrapper's KILL escalation, with `killed_by: "signal"` and `signal: 9`. In a variant
+      where the run's `exit.json` exists before the stop, it is not signalled and is
+      collected with `interrupted: false`.
+    - `test_legacy_survivor_not_killed`: a `run.start` without `step`, with no `proc.json`
+      or `launch.json`, and a live dummy process. Adoption kills nothing, and the campaign
+      gets no new step before the deadline. After `timeout_s` + 60 s (clock patched), there
+      is a `run.end` "legacy orphan" and the state is unchanged.
     - `test_stop_after_detach_leaves_runs`: `ctx.stop` is set after `try_detach_all`
       returned but before `_EXEC` (patched hook). No exec, the run is alive, and `stop
       signal` lists it under `detached`.
@@ -470,7 +521,9 @@ gets recorded in the spec.
     - `test_adopt_registry_complete`: every `PERSONAS` key except `spec_reviewer` is in
       `ADOPT_REGISTRY`.
     - `test_adopt_after_abandon_and_park_request`: `superseded_by_human`, and a `human`
-      park.
+      park. A variant parks and resumes the campaign while no runner is alive (the state
+      name is the same again). The adopted run is `superseded_by_human` through the
+      ledger-seq check.
     - `test_run_finishing_while_stopping_is_not_interrupted`: `ctx.stop` is set while
       `_drain` waits on a gate, and the run exits normally. `interrupted` is false, and the
       commit is recorded.
@@ -494,7 +547,9 @@ gets recorded in the spec.
   - allow detach in `spawning` or in `collect`;
   - split `try_detach_all`'s check from its detach;
   - ignore the detach flag in the wait loop;
-  - skip adoption.
+  - skip adoption;
+  - drop the snapshot (ledger-seq) check on adoption;
+  - signal every task at an interim stop, including those that have already exited.
   Record the outcomes in the spec.
 - **Regression guard:** full `uv run pytest`.
 - **Manual verification:** with a live implementer running, merge a code change. `wt queue
