@@ -828,8 +828,8 @@ def test_close_files_followups_and_state_close_keeps_them(opened, monkeypatch): 
                            "advisory")]
     st = _closing(cfg, cid, [_adv("major", "advisory one")], carry=carry,
                   waived=[_adv("nit", "waived nit", files=["w.py"], reason="style")])
-    monkeypatch.setattr(CL, "close_campaign", lambda *a, **k: _merged_outcome())
-    res = Q._do_close(ctx, st)
+    monkeypatch.setattr(CL, "prepare_close", lambda *a, **k: CL.PreparedClose(outcome=_merged_outcome()))
+    res = Q._do_prepare_close(ctx, st)
     assert res.error is None and len(res.events_before) == 2
     row = Q._apply(ctx, st, res)
     st = S.read_state(cfg, cid)
@@ -861,8 +861,8 @@ def test_close_raising_still_records_the_filer_events_and_parks(opened, monkeypa
     def boom(*a, **k):
         raise RuntimeError("close exploded")
 
-    monkeypatch.setattr(CL, "close_campaign", boom)
-    res = Q._do_close(ctx, st)
+    monkeypatch.setattr(CL, "prepare_close", boom)
+    res = Q._do_prepare_close(ctx, st)
     assert res.error == "RuntimeError('close exploded')" and res.followups["filed"]
     row = Q._apply(ctx, st, res)
     st = S.read_state(cfg, cid)
@@ -871,11 +871,11 @@ def test_close_raising_still_records_the_filer_events_and_parks(opened, monkeypa
     [ev] = S.read_ledger(cfg, cid, types=["followup"])
     assert ev["title"] == "keep me"
     # the resume re-runs the close step: the finding is reported again, filed once
-    monkeypatch.setattr(CL, "close_campaign", lambda *a, **k: _merged_outcome())
+    monkeypatch.setattr(CL, "prepare_close", lambda *a, **k: CL.PreparedClose(outcome=_merged_outcome()))
     st = S.read_state(cfg, cid)
     st.update(state="CLOSING", park=None)
     S.write_state(cfg, cid, st)
-    res = Q._do_close(ctx, st)
+    res = Q._do_prepare_close(ctx, st)
     assert res.events_before == [] and res.followups["filed"][0]["idea_id"] == ev["idea_id"]
     Q._apply(ctx, st, res)
     assert len(_ideas(cfg)) == 1 and len(S.read_ledger(cfg, cid, types=["followup"])) == 1
@@ -886,8 +886,8 @@ def test_filer_failure_never_prevents_the_close(opened, monkeypatch):
     cfg, cid, ctx = opened
     st = _closing(cfg, cid, [_adv("minor", "x")])
     monkeypatch.setattr(FU.OW, "add_idea", lambda *a, **k: (_ for _ in ()).throw(KeyError("org")))
-    monkeypatch.setattr(CL, "close_campaign", lambda *a, **k: _merged_outcome())
-    res = Q._do_close(ctx, st)
+    monkeypatch.setattr(CL, "prepare_close", lambda *a, **k: CL.PreparedClose(outcome=_merged_outcome()))
+    res = Q._do_prepare_close(ctx, st)
     Q._apply(ctx, st, res)
     st = S.read_state(cfg, cid)
     assert st["state"] == "MERGED"
@@ -900,8 +900,8 @@ def test_followups_false_files_nothing(opened, monkeypatch):
     cfg["agentic"]["profiles"]["balanced"]["review"] = {"followups": False}
     ctx = Q._Ctx(cfg)
     st = _closing(cfg, cid, [_adv("major", "x")])
-    monkeypatch.setattr(CL, "close_campaign", lambda *a, **k: _merged_outcome())
-    Q._apply(ctx, st, Q._do_close(ctx, st))
+    monkeypatch.setattr(CL, "prepare_close", lambda *a, **k: CL.PreparedClose(outcome=_merged_outcome()))
+    Q._apply(ctx, st, Q._do_prepare_close(ctx, st))
     assert S.read_state(cfg, cid)["close"]["followups"]["filed"] == [] and _ideas(cfg) == []
 
 
@@ -923,17 +923,17 @@ def test_campaign_show_lists_followups_unfiled_and_waivers(opened, monkeypatch):
 def test_regate_failed_rerun_reports_earlier_filings_without_duplicates(opened, monkeypatch):
     cfg, cid, ctx = opened
     st = _closing(cfg, cid, [_adv("minor", "keep me")])
-    monkeypatch.setattr(CL, "close_campaign", lambda *a, **k: CL.CloseOutcome("TRIAGING"))
-    res = Q._do_close(ctx, st)
+    monkeypatch.setattr(CL, "prepare_close", lambda *a, **k: CL.PreparedClose(outcome=CL.CloseOutcome("TRIAGING")))
+    res = Q._do_prepare_close(ctx, st)
     row = Q._apply(ctx, st, res)
     assert row["to"] == "TRIAGING" and row["reason"] == "regate_failed"
     [ev] = S.read_ledger(cfg, cid, types=["followup"])
     # TRIAGING -> ... -> CLOSING again: the re-run reports the filing and files nothing new
-    monkeypatch.setattr(CL, "close_campaign", lambda *a, **k: _merged_outcome())
+    monkeypatch.setattr(CL, "prepare_close", lambda *a, **k: CL.PreparedClose(outcome=_merged_outcome()))
     st = S.read_state(cfg, cid)
     st.update(state="CLOSING")
     S.write_state(cfg, cid, st)
-    res = Q._do_close(ctx, st)
+    res = Q._do_prepare_close(ctx, st)
     assert res.events_before == []
     assert [f["idea_id"] for f in res.followups["filed"]] == [ev["idea_id"]]
     Q._apply(ctx, st, res)

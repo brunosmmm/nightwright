@@ -789,6 +789,7 @@ class StepResult:
     config_error: bool = False
     reviews: list = field(default_factory=list)      # per-reviewer StepResults, profile order
     followups: dict | None = None                    # SPEC-0207: the close step's filer summary
+    crashed: str | None = None                       # unexpected worker exception caught in-step
 
 
 class _Ctx:
@@ -973,6 +974,7 @@ def _do_prepare_close(ctx: _Ctx, state: dict) -> StepResult:
         res.error = getattr(e, "tail", None) or str(e)
     except Exception as e:                      # nothing may drop the filer's events
         res.error = repr(e)
+        res.crashed = repr(e)                   # SPEC-0220: still a report.errors entry
     return res
 
 
@@ -1541,6 +1543,8 @@ def _harvest(pool: StepPool, report: TickReport) -> None:
         except Exception as e:
             res = StepResult(st["id"], _step, st["state"], error=repr(e))
             report.errors.append(f"{st['id']}: {e!r}")
+        if res.crashed:
+            report.errors.append(f"{st['id']}: {res.crashed}")
         report.steps.append(_apply(ctx, st, res))
 
 
