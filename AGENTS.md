@@ -15,6 +15,16 @@ read it before making changes.
   pass, every acceptance criterion is true, and the spec + ledger are updated to reflect
   what actually shipped.
 
+## Autonomy (all agents)
+
+**Decide, don't defer.** Resolve design details, defaults, thresholds, judgment calls,
+conflicts and blockers yourself; record the reasoning in the spec (Design / As shipped) or a
+campaign note and tune later from evidence. Escalate to the human only decisions about what
+gets built (scope, priorities, product direction) or anything touching their own checkout;
+never hand them parameters to adjust. Full working rules (worktree-only, background fresh
+sub-agents with per-task models and never forks, missing-CLI -> file an idea, ideas-file
+heading check, decide-don't-defer): `/wt-orient`.
+
 ## Agent skill priority (SPEC-0138)
 
 Other agent skill packs (notably **Superpowers** — brainstorming, writing-plans, TDD — which

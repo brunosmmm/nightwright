@@ -271,6 +271,9 @@ def test_orient_carries_working_rules_and_session_skills_require_it():
     """Standing rules live in /wt-orient; conductor and steward must load it first."""
     orient = (REPO_SKILLS_DIR / "wt-orient" / "SKILL.md").read_text(encoding="utf-8")
     assert "Working rules" in orient
+    assert "Decide, don't defer" in orient
+    agents_md = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Autonomy" in agents_md and "/wt-orient" in agents_md
     for phrase in ("worktree", "sub-agent", "missing", "heading"):
         assert phrase in orient, phrase
     for name in ("wt-steward", "wt-conduct"):

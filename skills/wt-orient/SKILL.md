@@ -31,6 +31,11 @@ These apply to every session that touches wt — conductor, steward, builders, h
   heading-verified) and carry on.
 - **Shared ideas file:** idea ids are global across concurrent sessions — read the id from the
   capture output and verify the heading (`wt idea show ID --json`) before every write.
+- **Decide, don't defer.** Resolve design details, defaults, thresholds, judgment calls,
+  conflicts and blockers yourself, record the reasoning where it belongs (spec Design / As
+  shipped, campaign note), and tune later from real evidence. Escalate to the human only
+  decisions about what gets built (scope, priorities, product direction) or anything touching
+  their own checkout. Never hand the human a list of parameters or judgment calls to adjust.
 
 ## What `wt` is
 

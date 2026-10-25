@@ -111,10 +111,14 @@ Exact flags: `wt queue --help`, `wt campaign --help`, `wt mailbox --help`.
 - **Clear blockers yourself.** Anything stopping the queue (a broken or dirty main checkout, a
   dead runner, a stuck campaign, a conflict) is yours to resolve through sub-agents; escalate
   to the human only for decisions about what gets built. Never discard anyone's work: move it,
-  don't delete it.
-- **Escalate crisply** (decisions about what gets built only): campaign, the facts, what you
-  recommend, what you need decided. Routine recovery and blocker clearing never go to the
-  human.
+  don't delete it. Judgment calls that sub-agents or specs report (defaults, thresholds,
+  profile contents, option names, small scope additions) are yours to settle: decide, note
+  the reasoning with `wt campaign note`, and tune later from evidence; never forward them to
+  the human as things to adjust.
+- **Escalate crisply** (decisions about what gets built only: scope, priorities between
+  features, product direction, or anything touching the human's own checkout): campaign, the
+  facts, what you recommend, what you need decided. Routine recovery, blocker clearing and
+  judgment calls never go to the human.
 - **Mail identity:** send with `WT_MAILBOX_ADDR=conductor` set (or `--from conductor`).
 - **Shared ideas file:** verify headings before any `wt idea …` write.
 - **SPEC-0138:** the spec in the queue is the governing design.
