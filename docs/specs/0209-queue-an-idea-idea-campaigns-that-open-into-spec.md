@@ -57,16 +57,22 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
   matches `^IDEA-\d+$` and dispatches to `plan_add_idea` / `apply_add_idea`; spec ids keep
   the existing path. The plan and `--json` (`wt.queue.add.v1`) carry `kind: "idea"`,
   `idea_id`, `project`, `profile`, `priority`, `campaign`, `branch`, `worktree`.
-  - **Refusals (ValueError):**
-    - an unknown idea, or a closed one (anything other than `IDEA`, `INCUBATE`, or `SPECCED`
-      without `:SPEC:`);
-    - an idea with a `:SPEC:` (message: "queue that spec instead: wt queue add SPEC-…");
+  - **Refusals (ValueError)**, checked in this order, so the first match gives its message:
+    - an unknown idea;
+    - an idea with a `:SPEC:` (message: "queue that spec instead: wt queue add SPEC-…").
+      This runs before the closed check, so a SPECCED idea with `:SPEC:` gets this
+      actionable message;
+    - a closed idea (`idea_is_open` false);
     - an open campaign for the same idea: any campaign whose `state.kind == "idea"`, whose
       `state.idea.id` equals the argument, and whose state is not terminal (MERGED,
-      HANDED_OFF, ABANDONED). Found by scanning `store.list_campaigns(cfg)`; `apply_add_idea`
-      repeats the scan under the add lock, so two concurrent adds cannot both pass;
+      HANDED_OFF, ABANDONED). Found by scanning `store.list_campaigns(cfg)`;
     - a project whose `.wt/project.yaml` doesn't load. The project is the idea's
       `:PROJECT:`, default `Meta-Tools`.
+  - **Add lock:** a new queue-wide `store.add_lock(cfg)`, an exclusive `flock` on
+    `<data_dir>/agentic/add.lock` built like `store.item_lock` (process RLock + `flock`).
+    Both `apply_add` (spec campaigns, `queue.py:1996`) and `apply_add_idea` hold it around
+    the duplicate re-check and `store.create_campaign`, so two concurrent adds of the same
+    idea (or spec) create exactly one campaign; the second raises the duplicate refusal.
   - **On apply:**
     - campaign id `store.new_campaign_id(cfg, "IDEA-NNN")`, and `state.kind = "idea"`;
     - `state.spec_id = None` (top level, as the event envelope reads it);
@@ -89,7 +95,10 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
   `idea_is_open` holds for the idea, else `(False, ["idea IDEA-NNN is <state>"])`. An idea
   that no longer exists in the org gives `(False, ["idea IDEA-NNN not found"])`.
 - **Open:** `_do_open` skips the spec hash and the `spec_at_open.md` copy when
-  `has_no_spec(st)`. An idea campaign's open goes to SPEC_WRITING.
+  `has_no_spec(st)`. The open-result apply (`kind == "open"` in the result apply, today
+  `finish("IMPLEMENTING", "opened")` at `queue.py:930`) picks `SPEC_WRITING` instead when
+  `has_no_spec(st)`. Where that transition goes through `_enter_slot_or_wait` and no slot
+  is free, the campaign goes to WAITING with `resume_to SPEC_WRITING`.
 - **`plan_step`:** SPEC_WRITING → park `spec_writer_unavailable` (resume_to SPEC_WRITING).
   SPEC-0215 replaces this with the write step.
 - **Specless tolerance:** each of these uses `has_no_spec(st)` (show the idea id and heading
@@ -112,7 +121,11 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
     - clears `:SPEC:` when it equals this campaign's `state.spec.id` (a different, hand-set
       one is kept);
     - restores the idea's org state to `state.idea.state_before` (the field `apply_add_idea`
-      records; the `idea_show_payload` snapshot's own `state` is not used);
+      records; the `idea_show_payload` snapshot's own `state` is not used), **only** when
+      the idea's current state is one the campaign could have left it in: still
+      `state_before`, or `SPECCED` with `:SPEC:` equal to this campaign's `state.spec.id`.
+      A state set by hand meanwhile (for example DROPPED) is kept, and the abandon result
+      notes "idea state kept: <state>";
     - releases the campaign's reservations: `spec_numbers.list_reservations(cfg,
       specs_dir=<repo.root>/docs/specs)` (the project's base checkout, so the reservation
       key matches the one the writer used), filtered on `record["campaign"] == cid`, then
@@ -137,14 +150,19 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
   - the dry run writes nothing.
 - [ ] Each refusal errors with its message: unknown idea, closed idea, idea with `:SPEC:`,
       duplicate campaign (an open `kind: idea` campaign for the same `idea.id`; an abandoned
-      one does not block), unloadable project.
+      one does not block), unloadable project. A SPECCED idea with `:SPEC:` gets the
+      "queue that spec instead" message, not the closed one.
+- [ ] Two concurrent `apply_add_idea` calls for the same idea (threads, started together
+      after both plans are made) create exactly one campaign; the other raises the
+      duplicate refusal. `apply_add` holds the same `add.lock`.
 - [ ] A pre-existing spec campaign state without `spec.id` (only `spec_id` and
       `spec.rel_path`) is not treated as "no spec yet": its readiness still reads the spec
       file, and its open still hashes and copies the spec.
 - [ ] The backlog shows the campaign ready, and not ready once the idea is closed. Readiness
       for an idea campaign never reads a spec file.
 - [ ] After admission and open, the campaign is in SPEC_WRITING with no spec hash. The next
-      tick parks it `spec_writer_unavailable` (resume_to SPEC_WRITING).
+      tick parks it `spec_writer_unavailable` (resume_to SPEC_WRITING). With no free slot
+      at open, it waits with `resume_to SPEC_WRITING`.
 - [ ] With an idea campaign in SPEC_WRITING and in that park, every command and function
       under *Specless tolerance* runs without error, and the listing shows the idea id.
 - [ ] Abandoning:
@@ -153,6 +171,7 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
     naming another spec is kept;
   - a reservation recorded for the campaign is released (gone from `list_reservations`);
     one recorded for another campaign is kept;
+  - an idea set to DROPPED by hand while the campaign was parked stays DROPPED;
   - a WAITING campaign can now be abandoned (`apply_abandon`);
   - `wt queue add IDEA-NNN` works again afterwards.
 - [ ] `render.STATE_STYLES` has `SPEC_WRITING`.
@@ -165,7 +184,10 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
   sub-bullet is its own assertion. The abandon tests set `:SPEC:` to the campaign's
   `state.spec.id` (and, separately, to another id) and reserve a number with
   `spec_numbers.allocate(..., campaign=cid)` (and one for another campaign) before
-  abandoning. The legacy-state test writes a spec campaign state without `spec.id`. The specless-tolerance test drives CliRunner over every
+  abandoning. The legacy-state test writes a spec campaign state without `spec.id`. The
+  WAITING abandon uses its own fixture, `waiting_idea_campaign` (an opened idea campaign
+  moved to WAITING via `_enter_slot_or_wait` with zero free slots). The concurrency test
+  runs two threads on `apply_add_idea` with a barrier. The specless-tolerance test drives CliRunner over every
   listed command, plus `events.sync` and the watchdog, on the parked fixture.
 - **Regression guard:** full `uv run pytest`. Spec campaigns are unaffected, and existing
   abandon tests still pass with WAITING now allowed.
