@@ -58,13 +58,21 @@ conductor never kills a runner in the middle of a merge.
 - `ready_not_admitted` and the new events carry the drain info.
 - The `conductor_ping` digest lists the new conditions.
 - `skills/wt-conduct/SKILL.md` has rows for both new events: act at once, except never
-  SIGTERM during a close that is within its budget.
+  SIGTERM during an open or a close that is within its budget.
 
 **Non-goals**
 - Changing admission, the drain (SPEC-0224, SPEC-0225), or where closes run
   ([SPEC-0220](./0220-close-regate-off-main-thread.md)).
 - Restarting the runner from the watchdog. The watchdog observes, and the conductor acts.
 - Changing `lease_stale` / `runner_dead` semantics.
+- Alerting on a stalled drain within its budget. The drain is a declared `busy` step
+  (kind `drain`), so `runner_journal_silent` stays quiet while it is within budget.
+  Within the drain, `slot_freed_at` only moves on the drain's own harvests: an outside
+  park or abandon goes unseen until the re-exec. This gap is accepted. During a drain the
+  conductor gets SPEC-0224's `runner_draining` and the `drain` field on
+  `ready_not_admitted` / `waiting_not_admitted`.
+  [SPEC-0229](./0229-runner-exit-paths-and-draining-ticks-with-detached-runs.md) makes
+  drains keep ticking.
 
 ## Decision
 
@@ -75,8 +83,9 @@ conductor never kills a runner in the middle of a merge.
      `pool.ids()`;
    - `slot_freed_at`, the time the runner last saw its occupied count drop. It is stamped
      at start too;
-   - around every long main-thread step, `busy: {kind, campaign, since, timeout_s}`,
-     cleared in `finally`. Today that step is the close.
+   - around every main-thread step that can take long, `busy: {kind, campaign?, since,
+     budget_s}` with `kind` in `open` | `close` | `drain`. One context manager,
+     `_busy(lease, kind, ...)`, writes it and clears it in `finally`.
 
    `lease_status()` returns all of these, plus `draining`.
 2. **`waiting_not_admitted`.** A WAITING campaign (not `park_requested`) gets a row when
@@ -89,7 +98,7 @@ conductor never kills a runner in the middle of a merge.
    last journal record. The journal alone is not enough, because idle ticks are not
    journaled. The event fires when the silence exceeds `3 × poll_interval_s`, the lease is
    held and not stale, and no in-budget `busy` is set. A `busy` step past `since +
-   timeout_s + overdue_grace_s` does not suppress it, and the event carries `busy`. One
+   budget_s + overdue_grace_s` does not suppress it, and the event carries `busy`. One
    event fires per episode: the key carries the last-activity timestamp.
 4. **Drain info.** `events._drain_info(lease)` builds `{reason, since, draining_s,
    waiting_on}` or `None`. It goes on `ready_not_admitted`, `waiting_not_admitted` and
@@ -119,18 +128,34 @@ conductor never kills a runner in the middle of a merge.
   `len({active-state ids} | pool.ids())`, the tick's `n_busy`. Whenever the count drops,
   the loop stamps `slot_freed_at` in the same `update_info` call. It checks after each tick
   (a harvest, a close or a park inside the tick) and after each harvest in `_drain`. A park
-  or abandon from outside the runner shows up as a drop at the next tick. Every way a slot
-  frees is caught within one poll interval, with no guess from state rows.
-- **`busy`.** A context manager, `queue._main_busy(lease, kind, campaign, timeout_s)`,
-  calls `update_info(busy={kind, campaign, since: now_iso(), timeout_s})` on entry and
-  `pop_info("busy")` in `finally`. `tick()` and `_Ctx` gain an optional `lease` (None in
-  tests and one-shot ticks, where the manager does nothing). Step 4 of `_tick` wraps
-  each `_do_close` in `_main_busy(lease, "close", cid, sett["gate_budget_s"])`. A close
-  rebases and runs the project gates in-process, and `gate_budget_s` is already their
-  budget (1800). The close is the only long main-thread step today. Opening a worktree and
-  the drain's readiness refresh take seconds. Any future long main-thread step uses the
-  same manager. Once SPEC-0220 moves the close regate onto the pool, the window shrinks to
-  the main-checkout merge phase. SPEC-0220 then moves `_main_busy` to wrap only that phase.
+  or abandon from outside the runner shows up as a drop at the next tick. While the loop
+  ticks, every way a slot frees is caught within one poll interval, with no guess from
+  state rows. During a drain the loop does not tick, so only the drain's own harvests
+  re-stamp it (see Non-goals).
+- **`busy`.** One context manager, `queue._busy(lease, kind, *, campaign=None,
+  budget_s)`. On entry it calls `update_info(busy={kind, campaign, since: now_iso(),
+  budget_s})`, and in `finally` it calls `pop_info("busy")`. `tick()` and `_Ctx` gain an
+  optional `lease`. It is None in tests and one-shot ticks, and then the manager does
+  nothing. Every main-thread step that can take long is wrapped:
+  - **`open`.** Each `_do_open` (step 1) runs as `_busy(lease, "open", campaign=cid,
+    budget_s=…)`. `_do_open` creates the worktree and then runs every
+    `worktrees.setup` command with `subprocess.run`, one after another and with no timeout.
+    wt's own setup is `uv sync --extra tui`, and other projects may run `npm ci`. So
+    `budget_s` is the sum of the per-command `timeout_s` when setup entries carry one.
+    Today they are plain strings, so it is the new events setting `open_budget_s`
+    (default 600) for the whole open.
+  - **`close`.** Step 4 wraps each `_do_close` in `_busy(lease, "close", campaign=cid,
+    budget_s=sett["gate_budget_s"])`. A close rebases and runs the project gates
+    in-process, and `gate_budget_s` (1800) is already their budget. Once SPEC-0220 moves
+    the close regate onto the pool, the window shrinks to the main-checkout merge phase.
+    SPEC-0220 then narrows the wrap to that phase.
+  - **`drain`.** `_drain` runs inside `_busy(lease, "drain", budget_s=…)`. The budget is
+    the largest `waiting_on[].timeout_s` of SPEC-0224's draining info, or
+    `gate_budget_s` for gates. It is computed at drain start.
+
+  Nested use does not happen: steps 1 and 4 run in sequence, and the drain runs outside
+  `tick`. The drain's readiness refresh and admission bookkeeping take seconds and are not
+  wrapped. A new long main-thread step must use `_busy`.
 - `Lease.handover` / adopt drop `busy` (with SPEC-0224's `draining`). They keep `tick_at`
   and `in_flight`, and the new process overwrites both on its first tick. It also
   re-stamps `slot_freed_at` at its start.
@@ -141,6 +166,7 @@ conductor never kills a runner in the middle of a merge.
 
 ### Settings and event types (`events.py`)
 
+- `DEFAULTS["open_budget_s"] = 600` (see `busy`).
 - `DEFAULTS["waiting_grace_s"] = 60`. This is separate from `ready_grace_s`, because
   WAITING items resume ahead of the backlog (SPEC-0200) and may be tuned on their own.
   `DEFAULTS["journal_silent_factor"] = 3`. Overrides go in `agentic.events`.
@@ -192,9 +218,15 @@ conductor never kills a runner in the middle of a merge.
   of the holder pid is needed. If the bounded tail holds no record of that pid,
   `last = tick_at` alone. That is not an error, and the whole file is not read.
   `silent_s = age(last)`.
-- **Busy guard.** When `lease.busy` is set and `age(busy.since) <= busy.timeout_s +
-  overdue_grace_s`, the condition is suppressed. The loop is in a declared step within its
-  budget. A close that takes minutes is the main case. Past that budget the condition
+- **The reader.** It is a new helper, `queue.journal_tail_for_pid(cfg, pid,
+  max_bytes=262144) -> dict | None`. It reads `runner.jsonl` backwards, at most 256 KiB
+  from the end, skips the partial first line and unparseable lines, and returns the newest
+  record whose `pid` matches, or `None`. It does not use `read_journal`, which reads the
+  whole file. `last_journal_ts` is that record's `ts`, or `None` when it is absent.
+  `last_tick_at` is `lease.tick_at`. `silent_s` is measured from the newer of the two.
+- **Busy guard.** When `lease.busy` is set and `age(busy.since) <= busy.budget_s +
+  overdue_grace_s`, the condition is suppressed, for every kind. The loop is in a declared
+  step within its budget: a slow open (setup), a close (gates) or a drain. Past that budget the condition
   fires, and its data includes `busy`.
 - It fires when `silent_s > journal_silent_factor × interval`. Key:
   `runner_journal_silent:<pid>:<last>`. The condition holds for one episode and clears
@@ -207,8 +239,10 @@ conductor never kills a runner in the middle of a merge.
 - **Why 3×.** One interval is the normal gap, and a tick that admits and opens worktrees
   can take one more. At a 20 s poll the alarm comes at 60 s, in line with the other
   graces.
-- **Overlap with `runner_draining`.** Both events can fire for one drain, at about 60 s.
-  That is intended. `runner_journal_silent` covers any loop stall, drain or not.
+- **Relation to `runner_draining`.** Within its budget a drain is reported only by
+  SPEC-0224's `runner_draining`. Past `budget_s + overdue_grace_s`,
+  `runner_journal_silent` fires as well, with `busy.kind == "drain"`.
+  `runner_journal_silent` also covers any undeclared stall, such as a hung main thread.
 
 ### Drain info in `ready_not_admitted`
 
@@ -233,10 +267,12 @@ conductor never kills a runner in the middle of a merge.
   If it recurs within minutes of a restart, read `wt queue runner-log --tail 30` and
   dispatch a sub-agent to diagnose.
 - **Close guard**, stated in both new rows and in `ready_not_admitted`: never SIGTERM
-  while `wt queue list --json` (`.lease`) shows `busy.kind == "close"` within `since +
-  timeout_s`. A killed close can leave the main checkout mid-merge. Wait for the next
-  event. A close past its budget arrives as `runner_journal_silent` with `busy` set: dispatch
-  a sub-agent to check the main checkout and the gate process before any restart.
+  while `wt queue list --json` (`.lease`) shows `busy.kind` `open` or `close` within
+  `since + budget_s`. A killed close can leave the main checkout mid-merge, and a killed
+  open leaves a half-built worktree in OPENING. Wait for the next event. An open or close
+  past its budget arrives as `runner_journal_silent` with `busy` set. Dispatch a sub-agent
+  to check the worktree or main checkout and the process before any restart. A `drain`
+  busy is not guarded. The existing restart policy for drains applies.
 - The `ready_not_admitted` row mentions `drain`. The `conductor_ping` row lists
   `waiting_not_admitted` and `runner`.
 - **Relation to SPEC-0224's planned `runner_draining` row** ("do not SIGTERM"). After
@@ -272,9 +308,9 @@ conductor never kills a runner in the middle of a merge.
 - [ ] `queue.run` writes `poll_interval_s` and `slot_freed_at` at start. After each
       tick, before `emit`, it writes `tick_at` and `in_flight`. It re-stamps
       `slot_freed_at` whenever its occupied count drops, after a tick or after a drain
-      harvest. Around every main-thread close it writes `busy:
-      {kind: "close", campaign, since, timeout_s}`, cleared in `finally` even when the
-      close raises. All of these go through `update_info` / `pop_info`. Handover drops
+      harvest. Around every main-thread open, close and drain it writes `busy: {kind,
+      campaign?, since, budget_s}` through one `_busy` manager, cleared in `finally` even
+      when the step raises. All of these go through `update_info` / `pop_info`. Handover drops
       `busy`.
 - [ ] `lease_status()` returns `tick_at`, `poll_interval_s`, `in_flight`,
       `slot_freed_at`, `busy` and `draining` while the lease is held, and `None` for each otherwise or when the key is
@@ -291,7 +327,7 @@ conductor never kills a runner in the middle of a merge.
       is held and not stale and `tick_at` is present. The newer of `tick_at` and the
       holder's last journal record must be older than `3 × lease.poll_interval_s`. It
       fires exactly once per episode, and fires again after `last` moves.
-- [ ] `runner_journal_silent` is suppressed while `busy` is within `timeout_s +
+- [ ] `runner_journal_silent` is suppressed while `busy` (any kind) is within `budget_s +
       overdue_grace_s`. Past that budget it fires, with `busy` in its data.
 - [ ] `ready_not_admitted` rows, `waiting_not_admitted` and `runner_journal_silent` carry
       the drain info (`reason, since, draining_s, waiting_on`) or `None`.
@@ -300,7 +336,8 @@ conductor never kills a runner in the middle of a merge.
       `runner_silence` helper) and `counts.waiting_not_admitted`. Older `conductor_ping` events still validate.
 - [ ] `skills/wt-conduct/SKILL.md` has rows for `waiting_not_admitted` and
       `runner_journal_silent` (act at once by restarting a stalled runner). It has the
-      close guard (never SIGTERM while `busy.kind == "close"` within its budget). The
+      close guard (never SIGTERM while `busy.kind` is `open` or `close` within its
+      budget). The
       `ready_not_admitted` and `conductor_ping` rows mention the new fields. SPEC-0224's
       `runner_draining` row points to the `runner_journal_silent` row when both fire.
 - [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
@@ -320,7 +357,8 @@ conductor never kills a runner in the middle of a merge.
   - `tests/test_agentic_watchdog_gaps.py`:
     - `test_waiting_not_admitted_after_grace`: `slots: 2`, one active campaign, one
       WAITING. At 30 s there is no event. At 90 s there is one, with the data. A repeat
-      sync gives no duplicate.
+      sync gives no duplicate. Changing `waiting.since` (the campaign resumed and waited
+      again) and syncing past the grace gives a second event.
     - `test_waiting_not_admitted_counts_in_flight`: same setup with `in_flight` listing a
       parked campaign's id gives no event, because both slots are occupied.
     - `test_ready_not_admitted_counts_in_flight`: the same `in_flight` setup with a ready
@@ -337,11 +375,14 @@ conductor never kills a runner in the middle of a merge.
       new `tick_at` clears it, and a later silence fires again.
     - `test_runner_journal_silent_skips_free_stale_or_legacy_lease`.
     - `test_runner_journal_silent_suppressed_during_close`: `busy` with kind close, since
-      5 min ago and `timeout_s: 1800`, gives nothing at 10 min of silence. With since 35
+      5 min ago and `budget_s: 1800`, gives nothing at 10 min of silence. With since 35
       min ago it fires, and `busy` is in its data.
     - `test_journal_record_counts_as_activity`: an old `tick_at` plus a fresh holder-pid
       journal record gives nothing. A record from another pid does not count. A tail with
-      no holder record falls back to `tick_at`.
+      no holder record falls back to `tick_at`, and `last_journal_ts` is `None`.
+    - `test_journal_tail_for_pid_bounded`: in a journal larger than 256 KiB, a holder
+      record past the window gives `None`, and the newest holder record inside it is
+      returned. A partial or garbage line is skipped.
     - `test_drain_info_on_rows`: a lease with `draining` shows `drain` on all three event
       types. Without it the value is `None`.
   - `tests/test_agentic_runner.py` (or `test_agentic_nonblocking.py`):
@@ -349,21 +390,39 @@ conductor never kills a runner in the middle of a merge.
       and an `on_tick` hook that reads `read_lease()`. The hook sees `tick_at`,
       `in_flight` and `poll_interval_s`, which shows they were written before `emit`.
     - `test_close_sets_and_clears_busy`: a campaign in CLOSING with a patched `_do_close`
-      reads `read_lease()["busy"]` (kind `close`, campaign id, `timeout_s` =
+      reads `read_lease()["busy"]` (kind `close`, campaign id, `budget_s` =
       `gate_budget_s`) from inside the close. After the tick `busy` is gone. A
       `_do_close` that raises also leaves no `busy`.
+    - `test_open_sets_and_clears_busy`: a project whose `worktrees.setup` runs a command
+      that reads the lease file sees `busy.kind == "open"` with `budget_s` =
+      `open_budget_s`, and `busy` is gone after the open. A failing setup also leaves no
+      `busy`.
+    - `test_drain_stamps_busy_in_flight_and_slot_freed_at`: a FakeRunner `sleep_s` flight
+      is in flight when a code change is patched in. During `_drain`, `busy.kind ==
+      "drain"`. When the flight is harvested and its campaign parks, `in_flight` loses it,
+      `slot_freed_at` moves, and `tick_at` stays unchanged. After the drain `busy` is
+      gone.
+    - `test_runner_journal_silent_suppressed_during_open_and_drain`: in-budget `busy`
+      kinds `open` and `drain` suppress the event. Past budget, it fires.
   - `tests/test_agentic_ping.py`: `test_ping_digest_lists_waiting_and_runner` (its
     `runner` equals `runner_silence(...)`) and `test_old_ping_event_validates`.
-  - `tests/test_skills.py`:
-    `test_runner_draining_row_points_to_silent_row`.
+  - `tests/test_skills.py`, which reads `skills/wt-conduct/SKILL.md`:
+    - `test_new_watchdog_rows_present`: rows exist for `waiting_not_admitted` and
+      `runner_journal_silent`.
+    - `test_close_guard_in_rows`: `busy.kind` guard text (open/close) appears in both new
+      rows and in the `ready_not_admitted` row.
+    - `test_rows_mention_new_fields`: the `ready_not_admitted` row mentions `drain`, and
+      the `conductor_ping` row mentions `waiting_not_admitted` and `runner`.
+    - `test_runner_draining_row_points_to_silent_row`.
 - **Existing suites unchanged:** `tests/test_agentic_events.py`,
   `tests/test_agentic_heartbeat.py`, `tests/test_agentic_drain_signal.py` (SPEC-0224),
   `tests/test_agentic_reexec.py`, `tests/test_agentic_e2e.py`.
 - **Regression guard:** full `uv run pytest`.
 - **Manual verification:** on the next code merge while a persona run is in flight,
-  `wt queue events --tail 10` shows `runner_journal_silent` about 60 s into the drain. A
-  WAITING campaign then shows `waiting_not_admitted` with `drain`. During a normal close
-  that takes several minutes, no `runner_journal_silent` appears.
+  `wt queue events --tail 10` shows `runner_draining` (SPEC-0224) and, for a WAITING
+  campaign, `waiting_not_admitted` with `drain`, and no `runner_journal_silent` within the
+  drain budget. During a normal close or a slow `uv sync` open, no `runner_journal_silent`
+  appears.
 
 ## Rollout / migration
 
@@ -371,7 +430,7 @@ This spec lands after SPEC-0224, because it needs `update_info`, `pop_info` and
 `draining`. No data migration is needed, and all keys are additive. A runner from before
 this spec has no `tick_at` until its re-exec, so the silence check stays quiet for it. The
 live runner re-execs into this code on merge (SPEC-0194). When SPEC-0220 lands, its
-implementer narrows `_main_busy` to the merge phase.
+implementer narrows the `close` `_busy` wrap to the merge phase.
 
 ## Definition of done
 
