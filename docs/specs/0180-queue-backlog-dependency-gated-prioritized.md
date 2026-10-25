@@ -1,7 +1,7 @@
 ---
 id: SPEC-0180
 title: "Queue backlog: dependency-gated, prioritized admission and backlog view"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -104,20 +104,20 @@ list view.
 
 ## Acceptance criteria
 
-- [ ] `pick_admissions` orders by priority then age, skips not-ready and park-requested
+- [x] `pick_admissions` orders by priority then age, skips not-ready and park-requested
       items, and never exceeds free slots (parametrized pure tests).
-- [ ] A queued spec with `depends_on: [X]` is not admitted while X is `accepted` and is
+- [x] A queued spec with `depends_on: [X]` is not admitted while X is `accepted` and is
       admitted on the first tick after X's status in the base checkout becomes `done`
       (e2e with the fake runner: queue X and Y together; X merges first, then Y opens).
-- [ ] Unknown dependency ids and a spec edited back to `draft` keep the item in the backlog
+- [x] Unknown dependency ids and a spec edited back to `draft` keep the item in the backlog
       with the documented `blocked_by` reason; one `backlog` event per change, none per
       unchanged tick.
-- [ ] `wt queue add --priority`, `wt queue prioritize` (dry-run / `--yes`, ledger event),
+- [x] `wt queue add --priority`, `wt queue prioritize` (dry-run / `--yes`, ledger event),
       and `wt queue backlog --json` behave as documented; invalid priorities error.
-- [ ] `wt queue list` shows separate Active and Backlog sections; `wt.queue.v1` queued
+- [x] `wt queue list` shows separate Active and Backlog sections; `wt.queue.v1` queued
       items carry `backlog{position, priority, ready, blocked_by}`.
-- [ ] Completion, reference, agent-surface guards pass.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] Completion, reference, agent-surface guards pass.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -129,6 +129,16 @@ list view.
   queued together) exercise it.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q` — full suite green (new: `pick_admissions` parametrized, `check_priority`,
+  `backlog_readiness` reasons over tmp spec files, one-`backlog`-event-per-change tick test in
+  `test_agentic_queue.py`; `--priority`, `prioritize`, `backlog --json`, list sections and
+  `wt.queue.v1` `backlog` object in `test_agentic_queue_cli.py`; the two-spec dependency e2e in
+  `test_agentic_e2e.py`: Y (priority 1, `depends_on: [X]`) stays QUEUED through X's whole run
+  and is admitted on the first tick after X merges).
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` — exit 0.
+
 ## Clock Log
 
 Built by the agentic loop; idea bookkeeping via `wt spec reconcile --apply` after merge.
@@ -137,13 +147,21 @@ Built by the agentic loop; idea bookkeeping via `wt spec reconcile --apply` afte
 
 Existing `QUEUED` campaigns without `priority` default to 3. No data migration.
 
+## What shipped
+
+As designed, with two small clarifications: `queue add --force` is stored on the campaign
+(`force: true`) so admission accepts `in-progress` only for forced adds, and the `backlog`
+object's `position` is the rank among all queued items in admission order (ready or not).
+`wt queue backlog` and `wt.queue.v1` compute readiness live; the tick persists it and writes
+the `backlog` event on change.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

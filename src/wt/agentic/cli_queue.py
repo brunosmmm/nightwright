@@ -1,5 +1,6 @@
-"""`wt queue gates` (SPEC-0173) and `wt queue add|list|watch|tick|run|park|resume|abandon`
-(SPEC-0176). `attach` is called by `wt.agentic.cli.register` with the `queue` group.
+"""`wt queue gates` (SPEC-0173), `wt queue add|list|watch|tick|run|park|resume|abandon`
+(SPEC-0176) and `wt queue backlog|prioritize` (SPEC-0180). `attach` is called by
+`wt.agentic.cli.register` with the `queue` group.
 
 Conventions (as elsewhere in wt): destructive commands are dry-run by default and write only
 with `--yes`; `--json` emits `{"schema": "wt.queue.<x>.v1", …plan, "written": bool}`; library
@@ -13,6 +14,7 @@ import time
 
 import click
 from rich import box
+from rich.console import Group
 from rich.table import Table
 
 from .. import completion as C
@@ -27,9 +29,14 @@ from . import store
 _NOT_WRITTEN = "[yellow]not written — re-run with --yes to commit[/]"
 
 
-def _queue_table(payload: dict) -> Table:
-    """The human listing: dense enough for an 80-column terminal, ids never cut (they are
-    what a human copies into the next command); the park reason rides in the state cell."""
+def _age_txt(age) -> str:
+    return f"{age}s" if age is not None and age < 120 else (f"{age // 60}m" if age else "")
+
+
+def _queue_table(payload: dict) -> Group:
+    """The human listing: an Active table (the slots) and a Backlog table (admission order).
+    Dense enough for an 80-column terminal, ids never cut (they are what a human copies into
+    the next command); the park reason rides in the state cell."""
     lease = payload["lease"]
     slots = payload["slots"]
     if lease.get("held"):
@@ -38,18 +45,19 @@ def _queue_table(payload: dict) -> Table:
         lease_txt = f"lease pid {lease.get('pid')} (heartbeat {hb}s ago){stale}"
     else:
         lease_txt = "no loop running"
-    table = Table(title=f"Queue · {lease_txt} · slots {slots['busy']}/{slots['total']} · "
-                        f"{len(payload['items'])} item(s)", box=box.SIMPLE_HEAD, pad_edge=False)
+    active = [it for it in payload["items"] if it["state"] != "QUEUED"]
+    backlog = sorted((it for it in payload["items"] if it["state"] == "QUEUED"),
+                     key=lambda it: it["backlog"]["position"])
+    table = Table(title=f"Active ({slots['busy']}/{slots['total']}) · {lease_txt}",
+                  box=box.SIMPLE_HEAD, pad_edge=False)
     table.add_column("campaign", min_width=24, no_wrap=True)
     table.add_column("spec", no_wrap=True)
     table.add_column("state", no_wrap=True)
     table.add_column("loops")
     table.add_column("cost")
     table.add_column("age")
-    for it in payload["items"]:
+    for it in active:
         cost = f"${it['cost_usd']:.2f}" + (f"/{it['cap_usd']:.0f}" if it.get("cap_usd") else "")
-        age = it.get("updated_age_s")
-        age_txt = f"{age}s" if age is not None and age < 120 else (f"{age // 60}m" if age else "")
         park = it.get("park") or {}
         state = it["state"]
         if park.get("reason"):
@@ -59,7 +67,24 @@ def _queue_table(payload: dict) -> Table:
         color = {"PARKED": "yellow", "MERGED": "green", "HANDED_OFF": "green",
                  "ABANDONED": "dim"}.get(it["state"])
         table.add_row(it["campaign"], it["spec_id"], f"[{color}]{state}[/]" if color else state,
-                      it["loops"], cost, age_txt)
+                      it["loops"], cost, _age_txt(it.get("updated_age_s")))
+    return Group(table, _backlog_table(backlog))
+
+
+def _backlog_table(items: list) -> Table:
+    """The backlog section: `items` are `wt.queue.v1` queued items (each has `backlog`)."""
+    table = Table(title=f"Backlog ({len(items)})", box=box.SIMPLE_HEAD, pad_edge=False)
+    table.add_column("#", justify="right")
+    table.add_column("campaign", min_width=24, no_wrap=True)
+    table.add_column("spec", no_wrap=True)
+    table.add_column("pri", justify="right")
+    table.add_column("waiting on")
+    table.add_column("age")
+    for it in items:
+        b = it["backlog"]
+        waiting = "[green]ready[/]" if b["ready"] else "; ".join(b["blocked_by"])
+        table.add_row(str(b["position"]), it["campaign"], it["spec_id"], str(b["priority"]),
+                      waiting, _age_txt(it.get("age_s")))
     return table
 
 
@@ -127,10 +152,12 @@ def attach(queue_group):
     @click.option("--profile", default=None, help="workflow profile (default: agentic.default_profile)")
     @click.option("--base", default=None, help="base branch (default: the project's merge.base)")
     @click.option("--force", is_flag=True, help="also admit an in-progress spec")
+    @click.option("--priority", type=int, default=Q.PRIORITY_DEFAULT, show_default=True,
+                  help="backlog priority 1..5 (1 = admitted first)")
     @click.option("--yes", "do_write", is_flag=True, help="create the campaign (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.add.v1 JSON")
     @click.pass_obj
-    def queue_add(cfg, spec_id, project, profile, base, force, do_write, as_json):
+    def queue_add(cfg, spec_id, project, profile, base, force, priority, do_write, as_json):
         """Queue an accepted spec as a new campaign (dry-run unless --yes).
 
         \b
@@ -139,7 +166,7 @@ def attach(queue_group):
         """
         try:
             plan = Q.plan_add(cfg, spec_id, project=project, profile=profile, base=base,
-                              force=force)
+                              force=force, priority=priority)
             if do_write:
                 Q.apply_add(cfg, plan)
         except ValueError as e:
@@ -167,6 +194,40 @@ def attach(queue_group):
             _dump_json(payload)
             return
         console.print(_queue_table(payload))
+
+    @queue_group.command("backlog")
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.backlog.v1 JSON")
+    @click.pass_obj
+    def queue_backlog(cfg, as_json):
+        """The inactive backlog in admission order: priority, then age; what each item waits on."""
+        items = Q.backlog_view(cfg)
+        if as_json:
+            _dump_json({"schema": "wt.queue.backlog.v1", "items": items})
+            return
+        table = _backlog_table([{"campaign": b["campaign"], "spec_id": b["spec_id"],
+                                 "age_s": b["age_s"], "backlog": b} for b in items])
+        console.print(table)
+
+    @queue_group.command("prioritize")
+    @click.argument("campaign", shell_complete=C.complete_campaign_id)
+    @click.argument("priority", type=int)
+    @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.prioritize.v1 JSON")
+    @click.pass_obj
+    def queue_prioritize(cfg, campaign, priority, do_write, as_json):
+        """Set a QUEUED or PARKED campaign's backlog priority (1..5, 1 = admitted first)."""
+        try:
+            plan = Q.plan_prioritize(cfg, campaign, priority)
+            if do_write:
+                Q.apply_prioritize(cfg, plan)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        if as_json:
+            _dump_json({"schema": "wt.queue.prioritize.v1", **plan, "written": bool(do_write)})
+            return
+        _print_plan(f"prioritize {campaign}", plan)
+        console.print(f"[green]✓[/] {campaign} priority {plan['from']} → {plan['to']}"
+                      if do_write else _NOT_WRITTEN)
 
     @queue_group.command("watch")
     @click.option("--interval", type=float, default=2.0, show_default=True,

@@ -16,6 +16,7 @@ from click.testing import CliRunner
 
 from wt.agentic import queue as Q
 from wt.agentic import store as S
+from wt.agentic.runner import FakeRunner
 from wt.cli import cli
 
 ENV = {
@@ -233,6 +234,51 @@ def test_e2e_internal_merges(tmp_path, monkeypatch):
     assert d["schema"] == "wt.queue.v1" and d["items"] == [] and d["lease"]["held"] is False
 
 
+def test_e2e_dependent_spec_admitted_only_after_dependency_merges(tmp_path, monkeypatch):
+    """SPEC-0180: queue X and Y (Y depends on X) together; Y opens only once X is done on main."""
+    repo = make_repo(tmp_path)
+    spec2 = "docs/specs/0002-second.md"
+    _write(repo, spec2, SPEC_ACCEPTED.format(id="SPEC-0002", extra="depends_on: [SPEC-0001]\n"))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "second spec")
+    # the fake script cursor is per campaign, so each spec gets its own script
+    runners = {"SPEC-0001": FakeRunner(script(tmp_path, [impl_done()], "x.json")),
+               "SPEC-0002": FakeRunner(script(tmp_path, [
+                   impl_done("SPEC-0002", "second\n", extra="depends_on: [SPEC-0001]\n",
+                             spec_rel=spec2)], "y.json"))}
+
+    class ByCampaign:
+        def run(self, req):
+            return next(r for k, r in runners.items() if k in str(req.cwd)).run(req)
+
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    y = added(cfg, monkeypatch, "SPEC-0002", "--priority", "1")      # higher priority, but blocked
+    x = added(cfg, monkeypatch, "SPEC-0001")
+
+    tick = lambda: Q.tick(cfg, runner=ByCampaign())  # noqa: E731
+    report = tick()                              # only X is admitted; Y waits on it
+    assert report.admitted == 1
+    assert S.read_state(cfg, x)["state"] == "IMPLEMENTING"
+    assert S.read_state(cfg, y)["state"] == "QUEUED"
+    for _ in range(2):                           # X implements, gates; Y still waits
+        tick()
+        assert S.read_state(cfg, y)["state"] == "QUEUED"
+    assert S.read_state(cfg, x)["state"] == "CLOSING"
+    assert S.read_ledger(cfg, y, types=["backlog"])[-1]["blocked_by"] == [
+        "waiting on SPEC-0001 (accepted)"]
+
+    tick()                                       # X merges; the base now has SPEC-0001 done
+    assert S.read_state(cfg, x)["state"] == "MERGED"
+    assert S.read_state(cfg, y)["state"] == "QUEUED"
+    report = tick()                              # first tick after: Y is admitted
+    assert report.admitted == 1 and S.read_state(cfg, y)["state"] == "IMPLEMENTING"
+    assert S.read_ledger(cfg, y, types=["backlog"])[-1]["ready"] is True
+    while not tick().idle:
+        pass
+    assert S.read_state(cfg, y)["state"] == "MERGED"
+    assert (repo / "feature.txt").read_text() == "second\n"
+
+
 # ---- outbound: policy pr → HANDED_OFF -----------------------------------------------------------
 
 def test_e2e_outbound_pr_hands_off(tmp_path, monkeypatch):
@@ -438,7 +484,7 @@ def test_watch_renders(tmp_path, monkeypatch):
     added(cfg, monkeypatch)
     r = run_cli(cfg, monkeypatch, ["queue", "watch", "--interval", "0.01", "--iterations", "2"])
     assert r.exit_code == 0, r.output
-    assert "Queue" in r.output and "QUEUED" in r.output
+    assert "Active" in r.output and "Backlog (1)" in r.output
 
 
 # ---- signals: a real process --------------------------------------------------------------------

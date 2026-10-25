@@ -52,6 +52,9 @@ TRIAGE_RETRY_MAX = 1
 # `retry_gate` dispositions honored per loop before they are treated as `fix`.
 GATE_RETRY_MAX = 1
 _STOP_GRACE_S = 30
+PRIORITY_MIN, PRIORITY_MAX, PRIORITY_DEFAULT = 1, 5, 3
+# A dependency counts as satisfied once its spec reached one of these in the base checkout.
+DEPENDENCY_SATISFIED = frozenset({"done", "superseded"})
 
 
 # ---- pure planning ---------------------------------------------------------------------
@@ -150,6 +153,102 @@ def decide_triage(state: dict, profile: dict, verdict: dict | None, verdict_ok: 
                     detail=f"{loops - 1}/{loop_max} implement loops used; still failing gates: "
                            + brief, resume_to="IMPLEMENTING")
     return Step("implement", reason="triage_fix")
+
+
+# ---- backlog: ordering, readiness, admission (SPEC-0180) ----------------------------------
+
+def check_priority(value) -> int:
+    """`value` as a priority in 1..5 (1 highest), else ValueError."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = None
+    if n is None or isinstance(value, bool) or not PRIORITY_MIN <= n <= PRIORITY_MAX:
+        raise ValueError(f"priority must be an integer {PRIORITY_MIN}..{PRIORITY_MAX} "
+                         f"(1 highest), got {value!r}")
+    return n
+
+
+def _priority(state: dict) -> int:
+    try:
+        return check_priority(state.get("priority", PRIORITY_DEFAULT))
+    except ValueError:
+        return PRIORITY_DEFAULT
+
+
+def admission_key(state: dict) -> tuple:
+    """Admission order: highest priority first, oldest first among equals."""
+    return (_priority(state), state.get("created_at") or "", state.get("id") or "")
+
+
+def pick_admissions(backlog, busy: int, slots: int, readiness) -> list:
+    """Pure: the backlog items to admit now, in admission order. Candidates are ready and not
+    park-requested; at most `slots - busy` are taken. `readiness(state) -> (ready, blocked_by)`."""
+    free = max(0, int(slots) - int(busy))
+    picks = []
+    for st in sorted(backlog, key=admission_key):
+        if len(picks) >= free:
+            break
+        if st.get("park_requested") or not readiness(st)[0]:
+            continue
+        picks.append(st)
+    return picks
+
+
+def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
+    """Can this queued campaign be admitted? Re-reads the spec and its `depends_on` from the
+    project's base checkout (`repo.root`): the spec must still be `accepted` (`in-progress` for a
+    `--force` add) and every dependency `done` or `superseded`. Unknown ids block."""
+    root = Path((state.get("repo") or {}).get("root") or "")
+    spec_path = root / ((state.get("spec") or {}).get("rel_path") or "")
+    try:
+        fm, _ = split_frontmatter(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False, ["spec file missing"]
+    fm = fm if isinstance(fm, dict) else {}
+    blocked = []
+    status = str(fm.get("status") or "")
+    allowed = ("accepted", "in-progress") if state.get("force") else ("accepted",)
+    if status not in allowed:
+        blocked.append(f"spec status is {status or 'missing'}")
+    deps = fm.get("depends_on") or []
+    for dep in [deps] if isinstance(deps, str) else deps:
+        dep = str(dep)
+        try:
+            dep_fm, _ = split_frontmatter(SP._find_spec(spec_path.parent, dep)
+                                          .read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            blocked.append(f"{dep} not found")
+            continue
+        dep_status = str((dep_fm or {}).get("status") or "")
+        if dep_status not in DEPENDENCY_SATISFIED:
+            blocked.append(f"waiting on {dep} ({dep_status or 'no status'})")
+    return not blocked, blocked
+
+
+def backlog_view(cfg, *, readiness=None) -> list[dict]:
+    """Every QUEUED campaign in admission order with its live readiness (`wt queue backlog`,
+    the `backlog` object of `wt.queue.v1`)."""
+    queued = sorted((s for s in store.list_campaigns(cfg) if s.get("state") == "QUEUED"),
+                    key=admission_key)
+    rows = []
+    for pos, st in enumerate(queued, 1):
+        ready, blocked_by = (readiness or (lambda s: backlog_readiness(cfg, s)))(st)
+        rows.append({"campaign": st.get("id"), "spec_id": st.get("spec_id"),
+                     "priority": _priority(st), "position": pos, "ready": ready,
+                     "blocked_by": blocked_by, "age_s": _age(st.get("created_at"))})
+    return rows
+
+
+def _record_backlog(cfg, st: dict, ready: bool, blocked_by: list) -> None:
+    """Write the item's `backlog` object and one `backlog` event, only when it changed."""
+    cur = st.get("backlog") or {}
+    if "ready" in cur and cur["ready"] == ready and list(cur.get("blocked_by") or []) == blocked_by:
+        return
+    with store.item_lock(cfg, st["id"]):
+        st["backlog"] = {"ready": ready, "blocked_by": blocked_by, "since": store.now_iso()}
+        store.append_event(cfg, st["id"], "backlog", {"ready": ready, "blocked_by": blocked_by})
+        store.write_state(cfg, st["id"], st)
 
 
 # ---- state helpers -------------------------------------------------------------------------
@@ -605,17 +704,16 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
     report.idle = not items
     slots = slots_for(cfg)
     busy = [s for s in items if s.get("state") in ACTIVE_STATES]
-    queued = sorted((s for s in items if s.get("state") == "QUEUED"),
-                    key=lambda s: (s.get("created_at") or "", s.get("id") or ""))
+    queued = [s for s in items if s.get("state") == "QUEUED"]
 
     # 1. admission + opening (serial); an item admitted now waits for the next tick
+    ready = {}
+    for st in queued:
+        ready[st["id"]] = backlog_readiness(cfg, st)
+        _record_backlog(cfg, st, *ready[st["id"]])
     admitted_ids = set()
     if admit and not ctx.stop.is_set():
-        for st in queued:
-            if len(busy) >= slots:
-                break
-            if st.get("park_requested"):
-                continue
+        for st in pick_admissions(queued, len(busy), slots, lambda s: ready[s["id"]]):
             _transition(cfg, st, "OPENING", "admitted")
             report.admitted += 1
             admitted_ids.add(st["id"])
@@ -771,6 +869,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> d
                                 state=state)
     slots = slots_for(cfg)
     busy = sum(1 for r in rows if r.get("state") in ACTIVE_STATES)
+    backlog = {b["campaign"]: b for b in backlog_view(cfg)}
     items = []
     for r in rows:
         counters = r.get("counters") or {}
@@ -790,19 +889,25 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> d
             "age_s": _age(r.get("created_at")), "updated_age_s": _age(r.get("updated_at")),
             "park": r.get("park"), "park_requested": bool(r.get("park_requested")),
             "worktree": repo.get("worktree"), "branch": repo.get("branch"),
+            "priority": _priority(r),
         })
+        b = backlog.get(r.get("id"))
+        if b and r.get("state") == "QUEUED":
+            items[-1]["backlog"] = {k: b[k] for k in ("position", "priority", "ready", "blocked_by")}
     return {"schema": "wt.queue.v1", "lease": L.lease_status(cfg),
             "slots": {"total": slots, "busy": busy}, "items": items}
 
 
 # ---- admission (wt queue add) --------------------------------------------------------------------
 
-def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False) -> dict:
+def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False,
+             priority=PRIORITY_DEFAULT) -> dict:
     """Resolve everything `wt queue add` needs and return the plan (no writes). Raises
     ValueError with the fix when the spec is not admissible."""
     spec_id = (spec_id or "").strip()
     if not spec_id:
         raise ValueError("spec id is required")
+    priority = check_priority(priority)
     outbound = SP._is_outbound_spec_id(spec_id)
     path = SP.resolve_spec_path(cfg, spec_id)
     fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
@@ -839,7 +944,7 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
     worktree = P.worktree_root(pcfg, root, project) / cid
     return {
         "campaign": cid, "spec_id": spec_id, "project": project, "profile": prof["name"],
-        "base": base, "repo_root": str(root), "spec_rel_path": rel, "spec_status": status,
+        "priority": priority, "force": bool(force), "base": base, "repo_root": str(root), "spec_rel_path": rel, "spec_status": status,
         "internal": not outbound, "worktree": str(worktree), "branch": f"wt/{cid}",
         "cap_usd": prof.get("campaign_cap_usd"), "loop_max": prof.get("loop_max"),
         "slots": prof.get("slots"), "merge_policy": (pcfg.get("merge") or {}).get("policy"),
@@ -856,6 +961,8 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
         "schema": "wt.campaign.v1", "id": plan["campaign"], "kind": "implement",
         "spec_id": plan["spec_id"], "project": plan["project"], "profile": plan["profile"],
         "state": "QUEUED", "prev_state": None, "created_at": store.now_iso(),
+        "priority": check_priority(plan.get("priority", PRIORITY_DEFAULT)),
+        "force": bool(plan.get("force")), "backlog": None,
         "repo": {"root": plan["repo_root"], "base": plan["base"], "base_sha_at_open": None,
                  "branch": plan["branch"], "worktree": plan["worktree"], "head": None},
         "spec": {"rel_path": plan["spec_rel_path"], "internal": plan["internal"],
@@ -871,6 +978,28 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
 
 
 # ---- human commands ------------------------------------------------------------------------------
+
+def plan_prioritize(cfg, campaign, priority) -> dict:
+    priority = check_priority(priority)
+    st = store.read_state(cfg, campaign)
+    if st.get("state") not in ("QUEUED", "PARKED"):
+        raise ValueError(f"{campaign} is {st.get('state')}; only QUEUED or PARKED campaigns "
+                         f"can be re-prioritized")
+    return {"campaign": campaign, "state": st.get("state"), "from": _priority(st),
+            "to": priority}
+
+
+def apply_prioritize(cfg, plan: dict) -> dict:
+    cid = plan["campaign"]
+    with store.item_lock(cfg, cid):
+        st = store.read_state(cfg, cid)
+        if st.get("state") not in ("QUEUED", "PARKED"):
+            raise ValueError(f"{cid} is {st.get('state')}; only QUEUED or PARKED campaigns "
+                             f"can be re-prioritized")
+        ev = ("priority", {"from": _priority(st), "to": plan["to"]})
+        st["priority"] = plan["to"]
+        return _transition(cfg, st, st["state"], "prioritized", by="human", extra_events=[ev])
+
 
 def plan_park(cfg, campaign, reason) -> dict:
     st = store.read_state(cfg, campaign)

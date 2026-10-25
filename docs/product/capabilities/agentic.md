@@ -40,7 +40,8 @@ A campaign is one spec's trip through the loop. Each lives under
 `<data_dir>/agentic/campaigns/<id>/` as an atomically written `state.json` (schema
 `wt.campaign.v1`: state, counters, cost, last gate, park reason) plus an append-only
 `ledger.jsonl` with one event per line (`open`, `transition`, `run.start`/`run.end`,
-`commit`, `gate`, `finding`, `cost`, `note`, `park`, `resume`, `close`), each carrying a
+`commit`, `gate`, `finding`, `cost`, `note`, `park`, `resume`, `close`, plus the backlog
+`backlog` and `priority` events of SPEC-0180), each carrying a
 monotonic `seq`. Writers hold the campaign's `flock`, so the loop and a human command can
 touch the same campaign safely. Campaign ids are `<SPEC-ID>-<YYYYMMDD>-<hex>`.
 
@@ -141,7 +142,10 @@ campaigns advance concurrently (the profile's `slots`).
 ```bash
 wt queue add SPEC-0170            # plan only (dry-run)
 wt queue add SPEC-0170 --yes      # create the campaign in QUEUED
-wt queue list                     # in flight: state, loops, cost, lease health
+wt queue list                     # Active (slots) and Backlog (admission order) tables
+wt queue backlog                  # only the backlog: priority, what each item waits on
+wt queue add SPEC-0171 --priority 1 --yes   # 1 (first) .. 5; default 3
+wt queue prioritize CAMPAIGN 2 --yes        # re-prioritize a QUEUED / PARKED item
 wt queue watch                    # the same, live
 wt queue run                      # the loop; wt queue tick = one iteration
 ```
@@ -163,6 +167,19 @@ any state → PARKED (humans only) → resume | abandon
 - **CLOSING** rebases, re-gates, audits the spec's Definition of Done, then fast-forwards
   the base or opens a PR.
 
+### Backlog and admission
+
+`QUEUED` is the inactive backlog (SPEC-0180): items claim a free slot on their own. Each
+tick picks, among backlog items that are **ready**, the highest priority (`1` first, default
+`3`), oldest first among equals, up to the free slots. Ready means, re-read from the project's
+base checkout at admission time: the spec is still `accepted` (`in-progress` for a `--force`
+add) and every `depends_on` spec is `done` or `superseded`. Anything else keeps the item
+queued with a `blocked_by` reason (`spec status is draft`, `waiting on SPEC-0181 (accepted)`,
+`SPEC-0181 not found`, `spec file missing`) — so a chain can be queued in one go and opens
+link by link as each spec lands on the base. Each admission records a transition with reason
+`admitted`; an item becoming blocked or unblocked records one `backlog` ledger event (none
+per unchanged tick), and `wt queue prioritize` records a `priority{from,to}` event.
+
 Park reasons: `cost_cap` (checked pessimistically before every spawn), `loop_exhausted`,
 `implementer_blocked` (blocked twice in a row), `triage_escalated`, `open_failed`,
 `rebase_conflict`, `main_dirty`, `main_not_on_base`, `base_moving`, `gh_failed`, `human`.
@@ -172,7 +189,8 @@ With a loop running, `wt queue park` applies after the current step is recorded.
 
 Every transition, run (with cost), gate run, finding, park and close is in the campaign's
 ledger (`wt campaign log ID`). `--json` shapes: `wt.queue.v1`, `wt.queue.add.v1`,
-`wt.queue.tick.v1`, `wt.queue.park.v1`, `wt.queue.resume.v1`, `wt.queue.abandon.v1`.
+`wt.queue.backlog.v1`, `wt.queue.prioritize.v1`, `wt.queue.tick.v1`, `wt.queue.park.v1`,
+`wt.queue.resume.v1`, `wt.queue.abandon.v1`.
 
 ## Events and watchdog
 

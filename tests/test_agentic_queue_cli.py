@@ -78,7 +78,7 @@ def test_list_json_shape_and_filters(tmp_path, monkeypatch):
     assert json.loads(r.output)["items"] == []
     r = run_cli(cfg, monkeypatch, ["queue", "list", "--project", "Meta-Tools"])
     assert r.exit_code == 0 and cid in r.output and "no loop running" in r.output
-    assert "QUEUED" in r.output
+    assert "Active (0/2)" in r.output and "Backlog (1)" in r.output and "ready" in r.output
 
 
 def test_park_resume_abandon_dry_runs_and_errors(tmp_path, monkeypatch):
@@ -123,7 +123,8 @@ def test_park_resume_abandon_dry_runs_and_errors(tmp_path, monkeypatch):
 def test_queue_help_lists_every_command():
     r = run_cli({"agentic": {}, "data_dir": "/nonexistent", "config_dir": "/nonexistent"},
                 __import__("pytest").MonkeyPatch(), ["queue", "--help"])
-    for name in ("add", "list", "watch", "tick", "run", "park", "resume", "abandon", "gates"):
+    for name in ("add", "list", "backlog", "prioritize", "watch", "tick", "run", "park", "resume",
+                 "abandon", "gates"):
         assert f"  {name}" in r.output, name
 
 
@@ -133,3 +134,73 @@ def test_second_spec_commit_helper_sanity(tmp_path):
     out = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True,
                          text=True).stdout
     assert out == ""
+
+
+# ---- SPEC-0180: priority, prioritize, backlog ---------------------------------------------------
+
+def test_add_priority_plan_state_and_validation(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--priority", "2", "--json"])
+    d = json.loads(r.output)
+    assert d["priority"] == 2 and d["written"] is False
+    for bad in ("0", "6", "-1"):
+        r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--priority", bad, "--yes"])
+        assert r.exit_code != 0 and "priority must be" in r.output, bad
+    assert not S.list_campaigns(cfg)
+    cid = added(cfg, monkeypatch, "SPEC-0001", "--priority", "1")
+    assert S.read_state(cfg, cid)["priority"] == 1
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--yes", "--priority", "x"])
+    assert r.exit_code != 0
+
+
+def test_prioritize_dry_run_apply_ledger_and_errors(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    cid = added(cfg, monkeypatch)
+    assert S.read_state(cfg, cid)["priority"] == 3
+    r = run_cli(cfg, monkeypatch, ["queue", "prioritize", cid, "1", "--json"])
+    d = json.loads(r.output)
+    assert d["schema"] == "wt.queue.prioritize.v1" and d["written"] is False
+    assert (d["from"], d["to"]) == (3, 1) and S.read_state(cfg, cid)["priority"] == 3
+    r = run_cli(cfg, monkeypatch, ["queue", "prioritize", cid, "1", "--yes"])
+    assert r.exit_code == 0, r.output
+    assert S.read_state(cfg, cid)["priority"] == 1
+    ev = S.read_ledger(cfg, cid, types=["priority"])
+    assert [(e["from"], e["to"]) for e in ev] == [(3, 1)]
+    for bad in ("0", "6"):
+        r = run_cli(cfg, monkeypatch, ["queue", "prioritize", cid, bad, "--yes"])
+        assert r.exit_code != 0 and "priority must be" in r.output
+    run_cli(cfg, monkeypatch, ["queue", "park", cid, "--reason", "hold", "--yes"])
+    r = run_cli(cfg, monkeypatch, ["queue", "prioritize", cid, "4", "--yes"])      # PARKED is ok
+    assert r.exit_code == 0 and S.read_state(cfg, cid)["priority"] == 4
+    st = S.read_state(cfg, cid)
+    st["state"] = "IMPLEMENTING"
+    S.write_state(cfg, cid, st)
+    r = run_cli(cfg, monkeypatch, ["queue", "prioritize", cid, "2", "--yes"])
+    assert r.exit_code != 0 and "only QUEUED or PARKED" in r.output
+
+
+def test_backlog_json_order_and_list_sections(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    (repo / "docs" / "specs" / "0002-second.md").write_text(
+        SPEC_ACCEPTED.format(id="SPEC-0002", extra="depends_on: [SPEC-0001, SPEC-0099]\n"))
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "second"], check=True)
+    first = added(cfg, monkeypatch, "SPEC-0001")
+    second = added(cfg, monkeypatch, "SPEC-0002", "--priority", "1")
+    r = run_cli(cfg, monkeypatch, ["queue", "backlog", "--json"])
+    d = json.loads(r.output)
+    assert d["schema"] == "wt.queue.backlog.v1"
+    assert [i["campaign"] for i in d["items"]] == [second, first]
+    top = d["items"][0]
+    assert set(top) == {"campaign", "spec_id", "priority", "position", "ready", "blocked_by",
+                        "age_s"}
+    assert top["position"] == 1 and top["priority"] == 1 and top["ready"] is False
+    assert top["blocked_by"] == ["waiting on SPEC-0001 (accepted)", "SPEC-0099 not found"]
+    assert d["items"][1]["ready"] is True and d["items"][1]["blocked_by"] == []
+    r = run_cli(cfg, monkeypatch, ["queue", "backlog"])
+    assert r.exit_code == 0 and "Backlog (2)" in r.output and "SPEC-0099" in r.output
+    r = run_cli(cfg, monkeypatch, ["queue", "list", "--json"])
+    items = {i["campaign"]: i for i in json.loads(r.output)["items"]}
+    assert items[second]["backlog"] == {"position": 1, "priority": 1, "ready": False,
+                                        "blocked_by": top["blocked_by"]}
+    assert items[first]["backlog"]["position"] == 2 and items[first]["backlog"]["ready"] is True
