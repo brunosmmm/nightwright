@@ -99,7 +99,8 @@ Two defects here are independent of the drain design:
   - `cost["estimated_usd"] += charged` when estimated (new key, created at 0.0, rounded to
     4 places like `total_usd`);
   - `run.end` gains `cost_estimated: bool`, and the `cost` event gains `estimated: bool`.
-    Both are additive;
+    Both are additive and optional. `schemas.EVENT_KEYS` lists required keys only, and
+    neither key is added there, so legacy ledgers keep validating;
   - the finding is emitted whenever `estimated`, interrupted or not. Title: `run cost
     unknown; charged its budget as an estimate`. Detail: `$<budget> charged as an upper
     bound (<reason>)`. The reason is `interrupted` when `interrupted`, else `timed out` when
@@ -119,18 +120,41 @@ Two defects here are independent of the drain design:
 
 ### Drain signal (`queue.py`, `lease.py`, `events.py`)
 
-- `_drain(cfg, pool, lease, *, reason)` gains `reason` (`code_changed` | `signal` | `once` |
-  `max_ticks` | `idle` | `crash`, the same vocabulary as the `stop` record). On entry it sets
-  `lease.info["draining"] = {"reason", "since": now_iso(), "waiting_on": [...]}` and calls
-  `lease.heartbeat()` to persist it. `waiting_on` lists the in-flight flights as `{campaign,
-  kind, run_ids}`, with kind `implement` / `triage` / `review` / `gate` / `close`. It is
-  rewritten whenever a flight is harvested, so it shrinks as the drain progresses. On exit
-  `draining` is popped and persisted.
+- **Thread-safe lease info (`lease.py`).** The heartbeat thread (`_heartbeat_while._beat`)
+  serialises `lease.info` while the main thread changes it. Changing the dict during
+  `json.dumps` can raise `RuntimeError` and kill the heartbeat thread, and a heartbeat holding
+  an old snapshot can write back a key that was just removed. So:
+  - `Lease` gains `self._lock = threading.Lock()`;
+  - `heartbeat()`, under the lock, sets `heartbeat_at`, takes `snapshot =
+    copy.deepcopy(self.info)` and writes it (`_atomic_write`). Because the write happens under
+    the lock, an older snapshot can never land after a newer one;
+  - `update_info(**kv)` and `pop_info(*keys)`, under the lock, replace values with new
+    objects, never mutating them in place, then write the same way. These are the only ways
+    main-thread code changes `info`. `heartbeat()`, `release()` and `handover()` take the
+    lock too;
+  - `_beat` also catches `Exception` (logged to the journal as `heartbeat_error`, at most
+    once per minute), so a heartbeat thread never dies silently.
+  [SPEC-0226](./0226-runner-reloads-user-and-project-config-on-change.md) uses the same API
+  for its `config_errors`.
+- `_drain(cfg, pool, lease, *, reason, interval)` gains `reason` and `interval`. `reason`
+  is `code_changed` | `signal` | `once` | `max_ticks` | `idle`, the `stop` vocabulary minus
+  `crash`, because a crash never drains (it goes to `pool.shutdown(cancel=True)`).
+  `interval` is `run()`'s inter-tick interval. On entry the drain calls
+  `lease.update_info(draining={"reason", "since": now_iso(), "waiting_on": [...]})`.
+  `waiting_on` lists the in-flight flights as `{campaign, kind, run_ids, timeout_s}`:
+  - `kind` is `implement` / `triage` / `review` / `gate`, the flight kinds that exist today.
+    `close` joins the list once [SPEC-0220](./0220-close-regate-off-main-thread.md) puts
+    closes on the pool;
+  - `timeout_s` is the largest `timeout_s` among the flight's `run.start` events. For a gate
+    it is `events` `gate_budget_s`.
+  The whole `draining` value is rebuilt and set through `update_info` whenever a flight is
+  harvested, so it shrinks as the drain progresses. On exit `lease.pop_info("draining")`.
 - **The readiness refresh during the drain.** Every `poll_interval_s` of drain time, the
   main thread runs `backlog_readiness` + `_record_backlog` for every QUEUED item. It is the
   same code step 1 of `_tick` runs, without admitting. The main thread is otherwise idle
   waiting on futures. Readiness that a merge just flipped (as SPEC-0203 did for 0206/0207)
-  is therefore stored with its real `since`.
+  is therefore stored ready within one poll interval of becoming ready (`_record_backlog`
+  stamps `since` at write time).
 - `Lease.handover` and `lease.acquire` (adopted path) drop `draining` from the info they
   carry over, so the new process never shows a drain that has ended.
   `lease.lease_status` exposes `draining` (or None) when the lease is held.
@@ -151,8 +175,8 @@ Two defects here are independent of the drain design:
   `runner_draining`: read `waiting_on`. If it lists persona runs and `ready` > 0, note it on
   the waiting items (`wt campaign note`), do not SIGTERM the runner (an interrupt now costs
   that run, honestly marked estimated), and re-check at the next event. If it lists only a
-  gate or close, wait. If the drain lasts longer than the largest `timeout_s` among
-  `waiting_on` + 5 min, treat it as `lease_stale`. No report to the human. The
+  gate, wait. If `draining_s` exceeds the largest `waiting_on[].timeout_s` + 5 min, treat it
+  as `lease_stale`. No report to the human. The
   `ready_not_admitted` row gains: "`runner_draining: true` ⇒ handled by the
   `runner_draining` row".
 
@@ -187,8 +211,10 @@ Two defects here are independent of the drain design:
       `cost.estimated_usd`, and `wt campaign show` / `wt queue watch` show it when above 0.
       A legacy state without the key reads as 0.0.
 - [ ] While `_drain` runs, the lease info carries `draining` with `reason`, `since` and a
-      `waiting_on` list that shrinks as flights finish. It is gone after the drain, after
-      release, and in the process that adopts the lease after an exec.
+      `waiting_on` list (each entry with `timeout_s`) that shrinks as flights finish. It is
+      gone after the drain, after release, and in the process that adopts the lease after an
+      exec. Lease info changes go through `update_info`/`pop_info` under the lease lock: a
+      heartbeat running concurrently never raises, and never writes back a removed key.
 - [ ] `watchdog_checks` emits `runner_draining` (`reason`, `draining_s`, `waiting_on`,
       `ready`, `slots`) once a drain is older than `drain_grace_s` (default 60). It emits
       nothing before that or when no drain is recorded, and exactly one event per drain
@@ -228,12 +254,20 @@ Two defects here are independent of the drain design:
       ago gives no event, 90 s ago gives one `runner_draining` with `ready` counting a ready
       QUEUED item, and a second `sync` gives no duplicate. Clearing `draining` clears the
       condition.
-    - `test_ready_not_admitted_fires_during_drain`: B depends on A. The tick merges A (fake
+    - `test_ready_not_admitted_fires_during_drain` (profile `slots: 3`, so C implementing
+      leaves a free slot and `ready_not_admitted_items` does not return early): B depends on A. The tick merges A (fake
       close), then the code change is detected. During the drain (a held implementer of C),
       B's stored backlog flips to ready with `since` during the drain. With
       `ready_grace_s: 0`, `ready_not_admitted_items` lists B with `runner_draining: true`.
     - `test_handover_drops_draining`: `Lease.handover()` + adopt in a fresh `acquire` gives
       info without `draining`.
+    - `test_heartbeat_races_info_updates` (`tests/test_agentic_lease.py`): one thread calls
+      `heartbeat()` in a tight loop for 2 s while the main thread alternates
+      `update_info(draining=…)` (with a growing `waiting_on`) and `pop_info("draining")`.
+      Neither thread raises. After the final `pop_info`, a last `heartbeat()` leaves the file
+      without `draining`, and every file read during the run is valid JSON.
+    - `test_legacy_ledger_without_estimate_keys_validates`: a `run.end` / `cost` without the
+      new keys passes `schemas` validation.
 - **Existing suites unchanged:** `tests/test_agentic_runner.py`,
   `tests/test_agentic_reexec.py`, `tests/test_agentic_heartbeat.py`,
   `tests/test_agentic_events.py`, `tests/test_agentic_ping.py`,

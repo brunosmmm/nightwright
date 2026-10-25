@@ -10,7 +10,7 @@ kind: feature
 parent: SPEC-0169
 tags: [agentic, runner, queue, config, profiles, watchdog]
 source_idea: IDEA-099
-depends_on: [SPEC-0194, SPEC-0213]
+depends_on: [SPEC-0194, SPEC-0213, SPEC-0224]
 ---
 
 ## Context
@@ -60,8 +60,10 @@ tick the loop calls `ConfigWatch.check()`. It stats the user config file and the
 `.wt/project.yaml` of every project with a non-terminal campaign, and compares
 `(mtime_ns, size)` with the last seen. On a user-config change it loads and validates a
 new cfg. If valid, the loop uses it from this tick on and journals `config_reloaded`. If
-invalid, it keeps the old cfg, journals `config_invalid`, and records the error in the
-lease info, from which the watchdog emits `runner_config_invalid`. On a project-config
+invalid, it keeps the old cfg, journals `config_load_failed`, and records the error in
+the lease info under its path, from which the watchdog emits `runner_config_invalid`. A
+missing, empty or non-mapping user file counts as invalid: the runner never falls back to
+pure defaults. On a project-config
 change it parses once to compute the changed keys and journals `config_reloaded` (or the
 invalid path). The per-tick re-read already applies the change.
 
@@ -79,25 +81,42 @@ invalid path). The per-tick re-read already applies the change.
     - `resolve_profile(new, name)` succeeds for `agentic.default_profile` and for every
       profile named by a non-terminal campaign;
     - `slots` resolves to an int ≥ 1 for each of those profiles;
-    - `agentic.poll_interval_s` > 0;
+    - `agentic.poll_interval_s` and `agentic.lease_ttl_s` are numbers > 0. `lease_ttl_s` is
+      checked even though it only applies after a restart, because a bad value would crash
+      `_heartbeat_while` / `lease_status` after the next re-exec;
     - `agentic.runner` is `claude` or `fake`.
-    A YAML error raised by `load_config` counts as invalid as well. `ValueError`,
-    `yaml.YAMLError` and `OSError` are caught, with the message kept.
+
+    **Before** calling the loader, the watch reads the raw file itself. A file that is
+    missing (when one was seen before), empty or whitespace only, or whose `yaml.safe_load`
+    is not a mapping, is invalid. `load_config` would otherwise silently return pure defaults
+    (`_load_yaml` returns `{}`), for example when an editor or a `>` redirect truncates the
+    file before writing it. Truncation is transient: the next tick sees the new stat key and
+    loads the complete file. If no user file existed at start and none exists now, nothing
+    has changed. The raw read, `loader()` and `validate_runner_cfg` all run inside one
+    `except Exception`, so a bad timezone (`ZoneInfoNotFoundError`), a non-string path
+    (`TypeError`), a YAML error or anything else is recorded as invalid with
+    `f"{type(e).__name__}: {e}"` and never escapes into `run()`'s crash handler.
     - valid and any key changed → journal `config_reloaded {scope: "user", path, changed,
-      restart_required}`, clear `lease.info["config_error"]` if it is set, and return `new`.
+      restart_required}`, remove the user path's entry from the lease `config_errors` if it
+      is there, and return `new`.
       Valid but no key changed (a `touch`, or a whitespace edit): no record. The stat key is
       updated either way;
-    - invalid → journal `config_invalid {scope: "user", path, error}` once per stat key, set
-      `lease.info["config_error"] = {scope, path, error, since, mtime_ns}`, persist it with
-      `lease.heartbeat()`, and return the **old** cfg.
+    - invalid → journal `config_load_failed {scope: "user", path, error}` once per stat key,
+      set the user path's entry in the lease `config_errors`, and return the **old** cfg.
+  - **Lease `config_errors`:** a dict `path → {scope, error, since, mtime_ns}`. Each file
+    sets and clears only its own entry. All writes use SPEC-0224's thread-safe lease API:
+    `lease.update_info(config_errors={**current, path: entry})`, a new dict every time, and
+    clearing writes a new dict without that path (`pop_info("config_errors")` when it becomes
+    empty). The heartbeat thread never sees a dict being changed. Several broken files
+    (user + projects) are reported at once, and fixing one never hides another.
   - **Project configs:** for each project of a non-terminal campaign, resolve
     `P.config_path(P.project_root(cfg, project))`. A stat change → `P.load_project_config`:
     - ok → journal `config_reloaded {scope: "project:<name>", path, changed}` when keys
       changed;
-    - `ValueError` → journal `config_invalid {scope: "project:<name>", path, error}` once
-      per stat key and set the lease `config_error`, as for the user config. Behaviour is
-      otherwise unchanged: the next tick parks affected campaigns `config_invalid` per
-      SPEC-0194. A later valid parse clears the lease field.
+    - any `Exception` → journal `config_load_failed {scope: "project:<name>", path, error}`
+      once per stat key and set that path's `config_errors` entry. Behaviour is otherwise
+      unchanged: the next tick parks affected campaigns `config_invalid` per SPEC-0194. A
+      later valid parse clears that path's entry only.
     Errors from `project_root` (an unregistered project) are left to the tick, which already
     reports them.
 - **Changed keys** (`config_diff(old, new) -> list[str]`): flatten both dicts to dotted
@@ -121,10 +140,11 @@ invalid path). The per-tick re-read already applies the change.
 
 ### Watchdog (`events.py`)
 
-- `lease_status` exposes `config_error` when the lease is held.
-- `watchdog_checks` emits `("runner_config_invalid:<path>:<mtime_ns>",
-  "runner_config_invalid", None, {scope, path, error, since})` while the lease carries
-  `config_error`. One event per broken version of the file, and it clears once fixed.
+- `lease_status` exposes `config_errors` (or `{}`) when the lease is held.
+- `watchdog_checks` emits, for each `config_errors` entry,
+  `("runner_config_invalid:<path>:<mtime_ns>", "runner_config_invalid", None, {scope, path,
+  error, since})`. That is one condition per broken file version, and each clears when its
+  own entry goes away.
 - `EVENT_TYPES["runner_config_invalid"] = ("scope", "path", "error")`.
 - `skills/wt-conduct/SKILL.md` row: `runner_config_invalid` with scope `user` → the human's
   config file is broken. The runner keeps the last good config, so nothing is stopped. Tell
@@ -134,9 +154,11 @@ invalid path). The per-tick re-read already applies the change.
 
 ### Journal and display
 
-- New runner-journal kinds `config_reloaded` and `config_invalid` (`wt.runner.log.v1`,
-  additive). `wt queue runner-log` renders them as one line: `config reloaded (user):
-  agentic.profiles.balanced.slots, …` and `config invalid (project:wt): <error>`.
+- New runner-journal kinds `config_reloaded` and `config_load_failed` (`wt.runner.log.v1`,
+  additive). The second one is deliberately not named `config_invalid`, which is already a
+  park reason in campaign ledgers, so `runner-log` greps stay unambiguous. `wt queue
+  runner-log` renders them as one line: `config reloaded (user):
+  agentic.profiles.balanced.slots, …` and `config load failed (project:wt): <error>`.
 
 ## Alternatives considered
 
@@ -158,21 +180,25 @@ invalid path). The per-tick re-read already applies the change.
 - [ ] With the runner running (`config_loader` given), editing the user config's profile
       persona model and the profile `slots` takes effect at the next tick. The next
       `run.start` carries the new model, and admission uses the new slot count. A persona
-      run already in flight keeps its old model, and its harvest uses the old profile.
+      run already in flight keeps its old model, and its harvest decision uses the profile it
+      was planned with.
 - [ ] Each effective user-config change journals exactly one `config_reloaded` with `scope:
       user`, the sorted dotted `changed` keys (no `_*` or runtime path keys) and
       `restart_required` (`agentic.lease_ttl_s` when it changed). A `touch` or an edit that
       changes no key journals nothing.
-- [ ] A user config that fails to parse, or fails `validate_runner_cfg` (unknown profile
-      for a live campaign, `slots` < 1, bad `poll_interval_s`, unknown runner), leaves the
-      old cfg in use: the next ticks admit and run as before. It journals one
-      `config_invalid` per broken file version and sets the lease `config_error`.
-      `watchdog_checks` then emits one `runner_config_invalid` event. Fixing the file reloads
-      it, journals `config_reloaded` and clears the lease field and the condition.
+- [ ] A user config that is invalid leaves the old cfg in use, and the next ticks admit and
+      run as before. Invalid covers: fails to parse; not a mapping; empty, truncated or
+      deleted; bad timezone or path type; fails `validate_runner_cfg` (unknown profile for a
+      live campaign, `slots` < 1, bad `poll_interval_s` / `lease_ttl_s`, unknown runner). The
+      runner never crashes and never reloads pure defaults. It journals one
+      `config_load_failed` per broken file version, sets that path's lease `config_errors`
+      entry, and `watchdog_checks` emits one `runner_config_invalid`. Fixing the file
+      reloads it, journals `config_reloaded`, and clears only that path's entry and condition.
 - [ ] Editing a live campaign's project `.wt/project.yaml` journals `config_reloaded` with
-      `scope: project:<name>` and the changed keys. An invalid one journals `config_invalid`
-      and raises `runner_config_invalid`, while the SPEC-0194 `config_invalid` park and
-      recovery behave as before.
+      `scope: project:<name>` and the changed keys. An invalid one journals
+      `config_load_failed` and raises `runner_config_invalid`, while the SPEC-0194
+      `config_invalid` park and recovery behave as before. With the user config and a project
+      config broken at once, both conditions are raised, and fixing one leaves the other.
 - [ ] `agentic.poll_interval_s` changes apply to the inter-tick wait unless
       `--poll-interval` was given.
 - [ ] `run()` without `config_loader`, and `wt queue tick`, never reload (existing tests are
@@ -191,17 +217,29 @@ invalid path). The per-tick re-read already applies the change.
     (FakeRunner `sleep_s`). The config changes `implementer.model`. A's in-flight run's
     `run.start.model` is the old one, and the next run (A's triager or B's implementer)
     carries the new one.
+  - `test_inflight_harvest_uses_planning_profile`: a reviewer is in flight under
+    `review.pass_score: 3` and returns score 3. The config changes it to 5 before the
+    harvest. The campaign passes review (the old threshold), and the next review pass uses 5.
   - `test_slots_change_applies_to_admission`: slots 1 → 2 mid-run. A second ready item is
     admitted at the next tick.
   - `test_reload_journal_changed_keys_and_restart_required`: changing `lease_ttl_s` and a
     persona budget gives one record with both keys and `restart_required ==
     ["agentic.lease_ttl_s"]`. A `touch` gives no record.
-  - `test_invalid_user_config_keeps_old`: broken YAML, then an unknown default profile. The
-    ticks keep admitting with the old slots, there is one `config_invalid` per version, the
-    lease has `config_error`, and `watchdog_checks` gives one `runner_config_invalid`. Fixing
-    the file gives `config_reloaded` and an empty condition.
+  - `test_invalid_user_config_keeps_old` (parametrized): broken YAML, a list document, a
+    scalar document, an empty file, a truncated (zero-byte) file, a deleted file,
+    `timezone: Bogus/Zone`, `work_root: 5`, `lease_ttl_s: "x"`, and an unknown default
+    profile. For each: `run()` does not crash, the ticks keep admitting with the old slots,
+    there is one `config_load_failed` per version, the lease `config_errors` has the user
+    path, and `watchdog_checks` gives one `runner_config_invalid`. Fixing the file gives
+    `config_reloaded` and an empty condition.
+  - `test_two_broken_files_reported_independently`: the user config and a project yaml are
+    broken together, which gives two conditions. Fixing the project file clears only its
+    own condition.
+  - `test_config_errors_updates_race_heartbeat`: the heartbeat thread runs in a tight loop
+    while `config_errors` entries are set and cleared. No exception, and the file is always
+    valid JSON.
   - `test_project_config_change_journaled`: editing `gates` in the project yaml journals
-    `scope: project:<name>` with `gates…` keys. An invalid yaml journals `config_invalid`,
+    `scope: project:<name>` with `gates…` keys. An invalid yaml journals `config_load_failed`,
     raises the event, and the campaign parks `config_invalid` (SPEC-0194 path unchanged).
   - `test_poll_interval_reload_respects_cli_override`.
   - `test_no_loader_no_reload`: `run()` without a loader ignores file edits.
