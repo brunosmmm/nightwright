@@ -96,7 +96,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (29/42 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (29/43 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -139,6 +139,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) Standalone spec reviews in queue watch, spec-phase queue events and conductor rows — accepted
   - [ ] [SPEC-0219](./specs/0219-spec-sizing-and-tone-pick-the-campaign-profile.md) Spec sizing and tone pick the campaign profile — accepted
   - [ ] [SPEC-0220](./specs/0220-close-regate-off-main-thread.md) Close re-gate runs off the runner main thread — accepted
+  - [ ] [SPEC-0221](./specs/0221-rebase-conflict-resolver-persona.md) Rebase-conflict resolver persona — accepted
 
 ## Active & planned
 
@@ -163,6 +164,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0218](./specs/0218-agentic-workflow-docs-refresh.md) | Agentic workflow docs refresh: a guide, a coherent reference, concepts and front door | feature | accepted | M8: product documentation | 2026-10-25 |
 | [SPEC-0219](./specs/0219-spec-sizing-and-tone-pick-the-campaign-profile.md) | Spec sizing and tone pick the campaign profile | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0220](./specs/0220-close-regate-off-main-thread.md) | Close re-gate runs off the runner main thread | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0221](./specs/0221-rebase-conflict-resolver-persona.md) | Rebase-conflict resolver persona | feature | accepted | M9: agentic workflow | 2026-10-25 |
 
 ## Done
 
