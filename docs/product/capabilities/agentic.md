@@ -74,9 +74,21 @@ agentic:
 
 ## Gates
 
-Project commands (tests, lint) run in the campaign worktree with a timeout; `required`
-gates block, optional ones only report (SPEC-0173). `wt queue gates CAMPAIGN` runs them on
-demand.
+Gates are the project's own proof commands from `.wt/project.yaml` — tests, lint, anything
+with an exit code (SPEC-0173). The loop runs them in the campaign worktree, **in order and
+all of them every time**, so triage and humans see every failure at once rather than the
+first one. Each gate has a `timeout_s`; a timeout kills the gate's whole process group.
+`required: true` gates block the campaign; optional gates are recorded but never block.
+
+Every gate writes one log under the campaign directory, `gates/NNN-<name>.log`, starting
+with a header line that names the command and its working directory; the last 60 lines
+travel with the result into the ledger (`gate` event) and into `wt campaign show`. Gate
+commands see `WT_CAMPAIGN`, `WT_SPEC_ID`, `WT_WORKTREE`, `WT_BASE`, `WT_DATA_DIR` and
+`WT_CONFIG_DIR`, and may use `{spec_id}`, `{campaign}`, `{worktree}`, `{base}` placeholders.
+
+`wt queue gates CAMPAIGN` runs the gates on a campaign's worktree right now — for example
+on a parked item — and logs a `gate` event. It never changes the campaign's state or its
+`last_gate`, so a debug run cannot steer the queue. `--json` emits `wt.campaign.gate.v1`.
 
 ## Personas
 

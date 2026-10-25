@@ -52,6 +52,7 @@ scraping tables. Shapes below are illustrative — fields evolve; trust the live
 | `wt.campaigns.v1` | `wt campaign list --json` | `{schema, campaigns:[{id,spec_id,state,loops,cost_usd,…}]}` |
 | `wt.campaign.v1` | `wt campaign show ID --json` | campaign state + `last_events` (SPEC-0171) |
 | `wt.campaign.log.v1` | `wt campaign log ID --json` | `{schema, campaign, events:[{seq,ts,type,by,…}]}` |
+| `wt.campaign.gate.v1` | `wt queue gates ID --json` | `{schema, campaign, gate_seq, ok, results:[{name,required,ok,exit_code,timed_out,duration_s,log,tail}]}` (SPEC-0173) |
 
 Example (hub triage):
 

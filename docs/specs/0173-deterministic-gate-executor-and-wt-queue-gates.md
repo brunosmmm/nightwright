@@ -1,7 +1,7 @@
 ---
 id: SPEC-0173
 title: "Deterministic gate executor and wt queue gates"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -74,6 +74,14 @@ class GateRun:
   (SPEC-0171 paths), `ok = all(r.ok for r in results if r.required)`.
 - `blocking_failures(run) -> list[GateResult]`; `tail(path, n=60) -> str`.
 - `as_payload(run) -> dict` for the `gate` ledger event and for `last_gate` in state.
+  *As shipped:* the run number is keyed `gate_seq`, not `seq` — `store.append_event` merges
+  the payload over the ledger envelope, so a `seq` key would overwrite the event's own
+  sequence number (found by the CLI test). Also shipped: `run_and_log(cfg, state,
+  project_cfg, *, seq=None, by)` (run + one `gate` event, no state write), `next_gate_seq`
+  (1 + highest `NNN-` prefix among existing gate logs, so debug and loop runs never
+  overwrite each other), `gate_env` / `placeholders` helpers, a `log_rel` keyword on
+  `run_gate` so the result's `log` is campaign-relative, and a gate whose `cwd` cannot be
+  entered yields a failed result with `exit_code None` instead of raising.
 - `wt queue gates CAMPAIGN [--json]` (in `src/wt/agentic/cli.py`, under the `queue` group
   created here as an otherwise empty group that SPEC-0176 fills): loads state and project
   config, runs `run_all` with the next gate `seq`, appends a `gate` event with
@@ -92,17 +100,17 @@ class GateRun:
 
 ## Acceptance criteria
 
-- [ ] A passing, a failing and a timing-out gate produce the documented `GateResult`
+- [x] A passing, a failing and a timing-out gate produce the documented `GateResult`
       (exit code, `timed_out`, bounded `tail`, log path); the timing-out gate's child
       process group is gone afterwards.
-- [ ] `run_all` runs every gate even after a required failure; `ok` is false only when a
+- [x] `run_all` runs every gate even after a required failure; `ok` is false only when a
       required gate fails; optional failures are present in `results`.
-- [ ] Placeholders in `cmd` expand; the environment contains the six `WT_*` variables.
-- [ ] Log files exist at `gates/<seq>-<name>.log` with the header line and the command's
+- [x] Placeholders in `cmd` expand; the environment contains the six `WT_*` variables.
+- [x] Log files exist at `gates/<seq>-<name>.log` with the header line and the command's
       combined output.
-- [ ] `wt queue gates CAMPAIGN` appends exactly one `gate` event, leaves `state.json`'s
+- [x] `wt queue gates CAMPAIGN` appends exactly one `gate` event, leaves `state.json`'s
       `state` and `last_gate` unchanged, and `--json` emits `wt.campaign.gate.v1`.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -115,6 +123,23 @@ class GateRun:
   repo's two gates and inspect the logs.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-25)
+
+- **Automated:** `tests/test_agentic_gates.py`, 10 tests: pass/fail results and log header,
+  timeout kills the process group (a backgrounded `sleep` grandchild is verified dead),
+  env vars + placeholders + `cwd`, bounded tail, unstartable cwd, `run_all` runs every gate
+  after a required failure with optional-only failure still `ok`, `as_payload` shape and
+  `next_gate_seq`, missing worktree error, CLI `--json` schema + one `gate` event by
+  `human` with the envelope `seq` intact and `state`/`last_gate` untouched, CLI errors (no
+  campaign, no worktree on disk). Full suite in this worktree: **1349 passed, 1 skipped,
+  0 failed**.
+- **Manual:** scratch `WT_DATA_DIR`/`WT_CONFIG_DIR`, a temporary untracked `.wt/project.yaml`
+  with this repo's two gates, a campaign whose worktree is this checkout:
+  `wt queue gates SPEC-0173-20261025-manu` → table `pytest ok 104.1s`, `spec-lint ok 1.1s`;
+  `wt campaign log` shows `open` (seq 1) then `gate` (seq 2, `gate_seq=1`, `ok=True`);
+  logs at `gates/001-pytest.log` (ends `1349 passed`) and `gates/001-spec-lint.log`;
+  `state.json` still `GATING` with `last_gate: null`. Temporary file removed afterwards.
+
 ## Clock Log
 
 Internal work: clock on IDEA-020 with `wt idea clock-in` / `clock-out`.
@@ -125,11 +150,11 @@ Library plus one read-mostly command. Nothing runs gates unattended until SPEC-0
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
