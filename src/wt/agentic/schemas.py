@@ -49,7 +49,8 @@ GATE_KEYS = ("schema", "name", "cmd", "cwd", "required", "ok", "exit_code", "tim
 RUNNER_KINDS = {"start": ("pid", "argv", "interval_s"),
                 "tick": ("tick", "steps", "admitted", "errors"),
                 "stop": ("ticks", "reason"),
-                "crash": ("ticks", "error")}
+                "crash": ("ticks", "error"),
+                "heartbeat_error": ("error",)}
 
 
 def with_defaults(etype: str, payload: dict | None = None) -> dict:

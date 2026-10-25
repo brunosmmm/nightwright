@@ -169,7 +169,10 @@ def tick_row(row: dict) -> Text:
     if row.get("run_id"):
         t.append(f" run {row['run_id']}")
     if row.get("cost_usd") is not None:
-        t.append(f" ${row['cost_usd']:.2f}", style="green")
+        if row.get("cost_estimated"):
+            t.append(f" ~${row['cost_usd']:.2f} est.", style="dim")
+        else:
+            t.append(f" ${row['cost_usd']:.2f}", style="green")
     return t
 
 

@@ -25,6 +25,7 @@ def _summary(st: dict) -> dict:
         "profile": st.get("profile"), "state": st.get("state"),
         "loops": counters.get("loops", 0), "runs": counters.get("runs", 0),
         "cost_usd": cost.get("total_usd", 0.0), "cap_usd": cost.get("cap_usd"),
+        "estimated_usd": cost.get("estimated_usd") or 0.0,
         "park": st.get("park"), "created_at": st.get("created_at"),
         "updated_at": st.get("updated_at"),
     }
@@ -154,7 +155,8 @@ def attach(campaign_group):
         console.print(f"[bold]{r['id']}[/]  {r['state']}  spec {r['spec_id']}  "
                       f"project {r['project'] or '-'}  profile {r['profile'] or '-'}")
         cap = f" / ${r['cap_usd']:.2f}" if r["cap_usd"] else ""
-        console.print(f"  loops {r['loops']}  runs {r['runs']}  cost ${r['cost_usd']:.2f}{cap}")
+        est = f" (~${r['estimated_usd']:.2f} est.)" if r["estimated_usd"] > 0 else ""
+        console.print(f"  loops {r['loops']}  runs {r['runs']}  cost ${r['cost_usd']:.2f}{est}{cap}")
         repo = st.get("repo") or {}
         if repo:
             missing = "" if st["worktree_present"] else " (missing)"

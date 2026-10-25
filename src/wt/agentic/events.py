@@ -47,6 +47,8 @@ EVENT_TYPES = {
     "backlog_blocked_long": ("blocked_for_s", "blocked_by"),
     "state_stuck": ("state", "stuck_s"),
     "ready_not_admitted": ("ready_for_s", "active", "slots"),
+    # SPEC-0224
+    "runner_draining": ("reason", "draining_s", "waiting_on", "ready"),
 }
 
 # transient run failures: account limits, overload, network-ish API errors
@@ -60,7 +62,10 @@ DEFAULTS = {"poll_s": 2.0, "silent_after_s": 900, "overdue_grace_s": 60,
             "gate_budget_s": 1800,
             # SPEC-0212: conductor ping interval and the "too long" thresholds
             "ping_interval_s": 600, "blocked_after_s": 1200, "stuck_after_s": 900,
-            "ready_grace_s": 60}
+            "ready_grace_s": 60,
+            # SPEC-0224: a drain (the runner waits for in-flight steps before a stop or exec)
+            # older than this is reported as `runner_draining`
+            "drain_grace_s": 60}
 
 
 def settings(cfg) -> dict:
@@ -361,6 +366,7 @@ def ready_not_admitted_items(cfg, now, sett) -> list[dict]:
             out.append({"campaign": st["id"], "spec_id": st.get("spec_id"),
                         "ready_for_s": round(age), "active": len(active), "slots": slots,
                         "runner_pid": lease.get("pid") if lease.get("held") else None,
+                        "runner_draining": bool(lease.get("held") and lease.get("draining")),
                         "runner_busy": bool(lease.get("held") and busy)})
     return sorted(out, key=lambda r: -r["ready_for_s"])
 
@@ -422,7 +428,7 @@ def _ping(cfg, proj: dict, now) -> list[dict]:
 def watchdog_checks(cfg, now=None) -> list[tuple]:
     """Current problem conditions as `(key, type, campaign, data)`. Pure over the store, the
     ledgers and the runner lease; no writes."""
-    from .queue import ACTIVE_STATES  # local: queue imports a lot
+    from .queue import ACTIVE_STATES, slots_for  # local: queue imports a lot
     now = now or dt.datetime.now().astimezone()
     sett = settings(cfg)
     rows = store.list_campaigns(cfg)
@@ -449,6 +455,17 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
         if not (in_budget or gating):
             out.append((f"lease_stale:{lease.get('pid')}", "lease_stale", None,
                         {"pid": lease.get("pid"), "heartbeat_age_s": lease.get("heartbeat_age_s")}))
+    draining = lease.get("draining") if lease.get("held") else None
+    if isinstance(draining, dict) and draining.get("since"):
+        drained = _age_s(draining["since"], now) or 0
+        if drained > float(sett["drain_grace_s"]):
+            from .queue import backlog_readiness
+            ready = sum(1 for q in queued if backlog_readiness(cfg, q)[0])
+            out.append((f"runner_draining:{lease.get('pid')}:{draining['since']}",
+                        "runner_draining", None,
+                        {"reason": draining.get("reason"), "draining_s": round(drained),
+                         "waiting_on": list(draining.get("waiting_on") or []),
+                         "ready": ready, "slots": slots_for(cfg)}))
     for r in active:
         cid = r["id"]
         run = running.get(cid)

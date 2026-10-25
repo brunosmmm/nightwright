@@ -39,6 +39,7 @@ from . import store
 from .gitops import GitError
 from .profiles import (SEVERITIES, persona_settings, resolve_profile, review_params,
                        reviewers_of, triager_enabled)
+from .events import settings as events_settings
 from .runner import RunResult, select_runner
 
 STATES = ("QUEUED", "WAITING", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
@@ -623,24 +624,30 @@ def _record_run(state: dict, persona: str, run_id: str, result, budget: float, *
     stop while the run was in flight), which the RunResult cannot know."""
     interrupted = bool(interrupted or result.interrupted)
     cost = _cost(state)
-    charged = result.cost_usd if result.cost_usd is not None else budget
+    estimated = result.cost_usd is None
+    charged = budget if estimated else result.cost_usd
     cost["total_usd"] = round(float(cost["total_usd"]) + float(charged), 4)
+    if estimated:
+        cost["estimated_usd"] = round(float(cost.get("estimated_usd") or 0.0) + float(charged), 4)
     cost["by_persona"][persona] = round(float(cost["by_persona"].get(persona, 0.0))
                                         + float(charged), 4)
     events = [("run.end", {
         "persona": persona, "run_id": run_id, "exit_code": result.exit_code,
         "is_error": result.is_error, "timed_out": result.timed_out,
         "interrupted": interrupted, "duration_s": result.duration_s,
-        "cost_usd": result.cost_usd, "charged_usd": charged, "usage": result.usage,
+        "cost_usd": result.cost_usd, "charged_usd": charged, "cost_estimated": estimated,
+        "usage": result.usage,
         "session_id": result.session_id, "verdict_ok": result.verdict_ok,
         "verdict": result.verdict,
         "result_tail": (result.result_text or "")[-400:] if not result.verdict_ok else "",
     }), ("cost", {"persona": persona, "delta_usd": charged, "total_usd": cost["total_usd"],
-                  "cap_usd": cost.get("cap_usd")})]
-    if result.cost_usd is None and not interrupted:
+                  "cap_usd": cost.get("cap_usd"), "estimated": estimated})]
+    if estimated:
+        reason = ("interrupted" if interrupted else "timed out" if result.timed_out
+                  else "no cost reported")
         events.append(("finding", {"persona": persona, "severity": "info", "gate": None,
-                                   "title": "run reported no cost; charged its budget",
-                                   "detail": f"${budget:.2f} charged pessimistically",
+                                   "title": "run cost unknown; charged its budget as an estimate",
+                                   "detail": f"${budget:.2f} charged as an upper bound ({reason})",
                                    "files": []}))
     verdict = result.verdict if isinstance(result.verdict, dict) else {}
     for item in verdict.get("must_fix") or []:
@@ -981,6 +988,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         events += _record_run(state, persona, res.run_id, rr, res.budget,
                               interrupted=res.interrupted)
         row["cost_usd"] = rr.cost_usd if rr.cost_usd is not None else res.budget
+        row["cost_estimated"] = rr.cost_usd is None
         state["last_verdict"] = {"persona": persona, "run": res.run_id, "verdict": rr.verdict,
                                  "verdict_ok": rr.verdict_ok}
         if res.interrupted or rr.interrupted:
@@ -1165,6 +1173,7 @@ def _apply_triager(ctx, state, profile, counters, res, row, events):
                               interrupted=r.interrupted)
         row["run_id"] = r.run_id
         row["cost_usd"] = rr.cost_usd if rr.cost_usd is not None else r.budget
+        row["cost_estimated"] = rr.cost_usd is None
         if r.interrupted or rr.interrupted:
             with store.item_lock(cfg, cid):
                 for etype, payload in events:
@@ -1236,6 +1245,7 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
         events += _record_run(state, r.step.persona, r.run_id, rr, r.budget,
                               interrupted=r.interrupted)
         charged += rr.cost_usd if rr.cost_usd is not None else r.budget
+        row["cost_estimated"] = bool(row.get("cost_estimated")) or rr.cost_usd is None
         last = r
     if last is not None:
         row["run_id"], row["cost_usd"] = last.run_id, charged
@@ -1362,6 +1372,7 @@ class _Flight:
     tasks: list = field(default_factory=list)       # [(Step, Future)]
     group: object = None
     started_at: str = field(default_factory=lambda: store.now_iso())
+    runs: list = field(default_factory=list)        # [(run_id, timeout_s)] of its persona runs
 
     def done(self) -> bool:
         return all(f.done() for _, f in self.tasks)
@@ -1442,6 +1453,7 @@ def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
         else:
             fl.tasks.append((step, pool.submit(_do_persona, ctx, st, step, run_id, req, budget)))
             rows[st["id"]]["run_ids"].append(run_id)
+            fl.runs.append((run_id, getattr(req, "timeout_s", None)))
     for group in groups:              # a fan-out whose every prepare failed: nothing to run
         if group.state["id"] not in pool.flights:
             report.steps.append(_finish_reviews(ctx, report, group))
@@ -1755,11 +1767,16 @@ class _heartbeat_while:
         self._thread = None
 
     def _beat(self):
+        last_logged = None
         while not self._stop.wait(self.interval):
             try:
                 self.lease.heartbeat()
-            except OSError:
-                pass
+            except Exception as e:             # SPEC-0224: this thread never dies silently
+                now = time.monotonic()
+                if last_logged is None or now - last_logged >= 60:
+                    last_logged = now
+                    journal(self.lease.cfg, "heartbeat_error",
+                            error=f"{type(e).__name__}: {e}")
 
     def __enter__(self):
         self._thread = threading.Thread(target=self._beat, name="wt-lease-heartbeat",
@@ -1773,13 +1790,51 @@ class _heartbeat_while:
         return False
 
 
-def _drain(cfg, pool: StepPool, lease) -> TickReport:
+def _waiting_on(cfg, pool: StepPool) -> list:
+    """The in-flight flights as `{campaign, kind, run_ids, timeout_s}` (SPEC-0224)."""
+    out = []
+    for cid, fl in pool.flights.items():
+        kind = fl.tasks[0][0].kind if fl.tasks else "implement"
+        if kind == "gate":
+            timeout = events_settings(cfg)["gate_budget_s"]
+        else:
+            timeout = max((t for _, t in fl.runs if t is not None), default=None)
+        out.append({"campaign": cid, "kind": kind, "run_ids": [r for r, _ in fl.runs],
+                    "timeout_s": timeout})
+    return out
+
+
+def _refresh_backlog(cfg) -> None:
+    """Store the readiness of every QUEUED item (what step 1 of `_tick` does, without
+    admitting), so a merge that just made one ready is visible to the watchdog."""
+    for st in store.list_campaigns(cfg, state="QUEUED"):
+        _record_backlog(cfg, st, *backlog_readiness(cfg, st))
+
+
+def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
+           interval: float = 20.0) -> TickReport:
     """Join every flight, applying each as it finishes (main thread), before the loop stops
-    or re-execs (SPEC-0213). Returns once `pool.flights` is empty."""
+    or re-execs (SPEC-0213). Returns once `pool.flights` is empty. While it waits, the lease
+    info carries `draining` (SPEC-0224) for the out-of-process watchdog, and the stored
+    backlog readiness is refreshed every `interval` seconds."""
     report = TickReport(drain=True)
-    while pool.flights:
-        pool.wait_any(timeout=0.5)
-        _harvest(pool, report)
+    since = store.now_iso()
+    lease.update_info(draining={"reason": reason, "since": since,
+                                "waiting_on": _waiting_on(cfg, pool)})
+    try:
+        next_refresh = time.monotonic()
+        while pool.flights:
+            if time.monotonic() >= next_refresh:
+                _refresh_backlog(cfg)
+                next_refresh = time.monotonic() + interval
+            pool.wait_any(timeout=0.5)
+            before = len(pool.flights)
+            _harvest(pool, report)
+            if len(pool.flights) != before:
+                lease.update_info(draining={"reason": reason, "since": since,
+                                            "waiting_on": _waiting_on(cfg, pool)})
+    finally:
+        lease.pop_info("draining")
     lease.heartbeat()
     report.idle = not [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
     return report
@@ -1868,7 +1923,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                         break
                     time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
             if pool.flights:
-                emit(_drain(cfg, pool, lease))
+                emit(_drain(cfg, pool, lease, reason=reason, interval=interval))
             if reason == "code_changed" and stop.is_set():
                 reason, restart = "signal", {}        # signalled during the drain: no exec
     except BaseException as e:
@@ -1939,6 +1994,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> d
             "runs": counters.get("runs", 0),
             "cost_usd": round(float(cost.get("total_usd") or 0.0), 4),
             "cap_usd": cost.get("cap_usd"),
+            "cost": {"estimated_usd": round(float(cost.get("estimated_usd") or 0.0), 4)},
             "age_s": _age(r.get("created_at")), "updated_age_s": _age(r.get("updated_at")),
             "park": r.get("park"), "park_requested": bool(r.get("park_requested")),
             "worktree": repo.get("worktree"), "branch": repo.get("branch"),
@@ -2318,6 +2374,8 @@ def apply_abandon(cfg, plan: dict) -> dict:
 
 def tick_row_text(row: dict) -> str:
     extra = f" run {row['run_id']}" if row.get("run_id") else ""
-    cost = f" ${row['cost_usd']:.2f}" if row.get("cost_usd") is not None else ""
+    cost = ""
+    if row.get("cost_usd") is not None:
+        cost = f" ~${row['cost_usd']:.2f} est." if row.get("cost_estimated") else f" ${row['cost_usd']:.2f}"
     return f"{row['campaign']}: {row['from']} → {row['to']} ({row['action']}; {row['reason']}){extra}{cost}"
 

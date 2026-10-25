@@ -4,11 +4,13 @@ and a heartbeat. The TTL is advisory: `lease_status()` flags a hung holder as `s
 never takes the lease over."""
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import fcntl
 import json
 import os
 import socket
+import threading
 from pathlib import Path
 
 from ..export import _atomic_write
@@ -43,28 +45,54 @@ class Lease:
         self.cfg = cfg
         self.fd = fd
         self.info = info
+        # The heartbeat thread serialises `info` while the main thread changes it (SPEC-0224):
+        # every change and every write happens under this lock, so an older snapshot can never
+        # land after a newer one.
+        self._lock = threading.Lock()
+
+    def _write(self):
+        snapshot = copy.deepcopy(self.info)
+        _atomic_write(lease_path(self.cfg), json.dumps(snapshot, indent=2) + "\n")
 
     def heartbeat(self, now=None):
-        self.info["heartbeat_at"] = now_iso(now)
-        _atomic_write(lease_path(self.cfg), json.dumps(self.info, indent=2) + "\n")
+        with self._lock:
+            self.info["heartbeat_at"] = now_iso(now)
+            self._write()
+
+    def update_info(self, **kv):
+        """Set lease info keys (new values, never mutated in place) and write the file."""
+        with self._lock:
+            self.info.update(copy.deepcopy(kv))
+            self._write()
+
+    def pop_info(self, *keys):
+        """Remove lease info keys and write the file."""
+        with self._lock:
+            for k in keys:
+                self.info.pop(k, None)
+            self._write()
 
     def release(self):
-        if self.fd is None:
-            return
-        try:
-            lease_path(self.cfg).unlink(missing_ok=True)
-        finally:
-            fcntl.flock(self.fd, fcntl.LOCK_UN)
-            os.close(self.fd)
-            self.fd = None
+        with self._lock:
+            if self.fd is None:
+                return
+            try:
+                lease_path(self.cfg).unlink(missing_ok=True)
+            finally:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+                os.close(self.fd)
+                self.fd = None
 
     def handover(self) -> dict:
         """Keep the lease across `os.execv` (SPEC-0194): the flock lives on the open file
         description, so making the descriptor inheritable and naming it in the environment
         lets the re-executed loop adopt it — the lease is never free in between. Returns the
         env additions; after this, `release()` is a no-op in this image."""
-        os.set_inheritable(self.fd, True)
-        fd, self.fd = self.fd, None
+        with self._lock:
+            self.info.pop("draining", None)       # the drain ends with this process image
+            self._write()
+            os.set_inheritable(self.fd, True)
+            fd, self.fd = self.fd, None
         return {HANDOVER_ENV: str(fd)}
 
     def __enter__(self):
@@ -96,6 +124,7 @@ def acquire(cfg, argv=None, *, ttl_s=None, now=None) -> Lease:
     adopted = _adopt_handover(cfg)
     if adopted is not None:
         info = dict(read_lease(cfg) or {})
+        info.pop("draining", None)
         info.update({"pid": os.getpid(), "argv": list(argv or []),
                      "heartbeat_at": now_iso(now), "restarted_at": now_iso(now)})
         info.setdefault("host", socket.gethostname())
@@ -156,12 +185,13 @@ def is_held(cfg) -> bool:
 
 
 def lease_status(cfg, now=None) -> dict:
-    """`{held, pid, host, started_at, heartbeat_at, heartbeat_age_s, ttl_s, stale}`."""
+    """`{held, pid, host, started_at, heartbeat_at, heartbeat_age_s, ttl_s, stale}`, plus
+    `draining` (the runner's drain info or None) while held."""
     info = read_lease(cfg) or {}
     held = is_held(cfg)
     age = _heartbeat_age(info, now) if held else None
     ttl = info.get("ttl_s") or (cfg.get("agentic") or {}).get("lease_ttl_s") or 120
-    return {
+    out = {
         "held": held,
         "pid": info.get("pid") if held else None,
         "host": info.get("host") if held else None,
@@ -171,4 +201,7 @@ def lease_status(cfg, now=None) -> dict:
         "ttl_s": ttl,
         "stale": bool(held and age is not None and age > ttl),
     }
+    if held:
+        out["draining"] = info.get("draining") or None     # SPEC-0224
+    return out
 

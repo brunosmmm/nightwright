@@ -61,7 +61,9 @@ def _queue_table(payload: dict) -> Group:
     table.add_column("cost")
     table.add_column("age")
     for it in active:
-        cost = f"${it['cost_usd']:.2f}" + (f"/{it['cap_usd']:.0f}" if it.get("cap_usd") else "")
+        est = (it.get("cost") or {}).get("estimated_usd") or 0.0
+        cost = (f"${it['cost_usd']:.2f}" + (f" (~${est:.2f} est.)" if est > 0 else "")
+                + (f"/{it['cap_usd']:.0f}" if it.get("cap_usd") else ""))
         park = it.get("park") or {}
         state = it["state"]
         if park.get("reason"):
@@ -289,6 +291,9 @@ def _active_panel(it: dict) -> Panel:
     grid.add_row("now", _activity_text(it.get("activity"), it["state"]))
     cap = it.get("cap_usd")
     cost = Text(f"${it['cost_usd']:.2f}", style="bold")
+    est = (it.get("cost") or {}).get("estimated_usd") or 0.0
+    if est > 0:
+        cost.append(f" (~${est:.2f} est.)", style="dim")
     if cap:
         cost.append(f" / ${float(cap):.2f} ", style="dim")
         cost.append_text(_bar(it["cost_usd"] / float(cap)))

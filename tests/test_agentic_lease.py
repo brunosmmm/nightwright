@@ -67,3 +67,54 @@ def test_lease_file_without_lock_is_not_held(tmp_path):
     st = L.lease_status(cfg)
     assert st["held"] is False and st["pid"] is None and st["stale"] is False
     L.acquire(cfg).release()      # and a new holder can take it
+
+
+def test_heartbeat_races_info_updates(tmp_path):
+    """SPEC-0224: info changes and heartbeats serialise on the lease lock — no RuntimeError from
+    a dict changing under json.dumps, no half-written file, no removed key written back."""
+    import json
+    import threading
+    import time
+
+    cfg = _cfg(tmp_path)
+    lease = L.acquire(cfg, ["t"])
+    errors, reads = [], []
+    stop = threading.Event()
+
+    def beat():
+        try:
+            while not stop.is_set():
+                lease.heartbeat()
+        except BaseException as e:        # noqa: BLE001 - the test asserts nothing was raised
+            errors.append(e)
+
+    def read():
+        while not stop.is_set():
+            try:
+                reads.append(json.loads(L.lease_path(cfg).read_text()))
+            except FileNotFoundError:
+                pass
+            except ValueError as e:
+                errors.append(e)
+
+    threads = [threading.Thread(target=beat), threading.Thread(target=read)]
+    for t in threads:
+        t.start()
+    try:
+        deadline = time.monotonic() + 2
+        n = 0
+        while time.monotonic() < deadline:
+            n += 1
+            lease.update_info(draining={"reason": "code_changed", "since": "t",
+                                        "waiting_on": [{"campaign": f"c{i}"} for i in range(n % 50)]})
+            lease.pop_info("draining")
+        lease.pop_info("draining")
+    finally:
+        stop.set()
+        for t in threads:
+            t.join(10)
+    assert errors == []
+    assert reads and all(isinstance(r, dict) for r in reads)
+    lease.heartbeat()
+    assert "draining" not in json.loads(L.lease_path(cfg).read_text())
+    lease.release()
