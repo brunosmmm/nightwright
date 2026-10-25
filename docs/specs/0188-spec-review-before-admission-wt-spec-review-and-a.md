@@ -75,12 +75,17 @@ with placeholder detection.
   not `approve`, or hash mismatch ⇒ `ValueError("SPEC-X has no approving review for its
   current text; run wt spec review SPEC-X (or --force)")`; `--force` sets `review: forced`.
 - **Lint:** new rule in `tools/spec_lint.py`'s validate loop, reporting the first offending
-  line number. Fenced code blocks and inline code spans are ignored, so a spec can name the
+  line number.
+
+### As shipped (2026-10-25)
+
+- The sidecar lives next to the resolved spec file (`<spec dir>/reviews/`), which is
+  `docs/specs/reviews/` for internal specs.
+- `plan_add` also reports `review: approved|forced`.
+- An `approve` verdict that lists a `must_fix` finding is rejected as non-conforming.
+- The persona carries its own invariant block (no campaign/worktree) via `Persona.invariant`.
+- The lint rule ignores fenced code blocks and inline code spans, so a spec can name the
   placeholders it forbids.
-- **As shipped:** the sidecar lives next to the resolved spec file (`<spec dir>/reviews/`), which
-  is `docs/specs/reviews/` for internal specs; `plan_add` also reports `review: approved|forced`;
-  an `approve` verdict that lists a `must_fix` finding is rejected as non-conforming. The
-  persona carries its own invariant block (no campaign/worktree) via `Persona.invariant`.
 
 ## Alternatives considered
 
