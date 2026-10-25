@@ -161,9 +161,23 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
         if title != task.heading.strip():
             warn(f"  ! long idea heading; used a truncated title (pass --title to override). "
                  f"Full text is in the spec's Context.")
+    from . import spec_numbers
     specs_dir = _specs_dir(cfg)
-    num = next_spec_number(specs_dir)
-    spec_id = f"SPEC-{num}"
+    rec = spec_numbers.allocate(cfg, by="spec new", note=task.id, specs_dir=specs_dir)
+    try:
+        return _scaffold_allocated(cfg, task, rec, specs_dir, epic, title)
+    except BaseException:
+        try:
+            spec_numbers.release(cfg, rec["number"], specs_dir=specs_dir)
+        except Exception:
+            pass                      # the original error matters; a stale reservation self-prunes
+        raise
+
+
+def _scaffold_allocated(cfg, task, rec, specs_dir, epic, title):
+    """Everything after the number is allocated (SPEC-0208): the caller releases it on error."""
+    num = f"{rec['number']:04d}"
+    spec_id = rec["id"]
     slug = slugify(title)
     spec_path = specs_dir / f"{num}-{slug}.md"
 

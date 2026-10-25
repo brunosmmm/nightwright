@@ -1,7 +1,7 @@
 ---
 id: SPEC-0208
 title: "Spec-number allocator: reservations that see every branch and worktree"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -159,30 +159,30 @@ the CLI commands `wt spec reserve`, `wt spec reservations` and `wt spec release`
 
 ## Acceptance criteria
 
-- [ ] In a scratch repo, `allocate` returns 5 when all of these hold: `0001` on `main`; `0002`
+- [x] In a scratch repo, `allocate` returns 5 when all of these hold: `0001` on `main`; `0002`
       only on branch `b1`; `0003` uncommitted in the main checkout; `0004` uncommitted in a
       second worktree `w2`. A second call with `specs_dir=<w2>/docs/specs` returns 6, because
       the key is shared and the first call's reservation for 5 is live.
-- [ ] Eight processes calling `allocate` concurrently get eight distinct numbers.
-- [ ] Two calls with the same `campaign` return the same number.
-- [ ] An uncommitted file for a reserved number does not prune the reservation. After the
+- [x] Eight processes calling `allocate` concurrently get eight distinct numbers.
+- [x] Two calls with the same `campaign` return the same number.
+- [x] An uncommitted file for a reserved number does not prune the reservation. After the
       file is committed on any branch, the next `allocate` or `list_reservations` call no
       longer lists it. Likewise after its campaign is marked ABANDONED. `release` removes one,
       and an unknown number errors.
-- [ ] A corrupt store file makes `allocate` raise, naming the file; a missing or empty one
+- [x] A corrupt store file makes `allocate` raise, naming the file; a missing or empty one
       works.
-- [ ] `release` and `list_reservations` run concurrently with `allocate` lose no
+- [x] `release` and `list_reservations` run concurrently with `allocate` lose no
       reservation: four processes, each looping `allocate` and `list_reservations`, plus one
       `release`, end with exactly the expected records.
-- [ ] Outside a git repository, `allocate` works from the directory listing alone.
+- [x] Outside a git repository, `allocate` works from the directory listing alone.
       `TEMPLATE.md` and `SCHEMA.md` never count.
-- [ ] CLI: `reserve` (human and `--json`, `by` taken from `WT_MAILBOX_ADDR`); `reservations`
+- [x] CLI: `reserve` (human and `--json`, `by` taken from `WT_MAILBOX_ADDR`); `reservations`
       (table columns, `--json` schema, `--all` across two keys); `release` (dry-run without
       `--yes`, applied with it); `--specs-dir` for a second repository.
-- [ ] `wt spec new --from-idea` in a repo whose branch `b1` holds the next local number picks
+- [x] `wt spec new --from-idea` in a repo whose branch `b1` holds the next local number picks
       the number after it. A failure at the file write, or at the idea's `set_property`, after
       allocation leaves no reservation behind.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -202,6 +202,26 @@ the CLI commands `wt spec reserve`, `wt spec reservations` and `wt spec release`
 - **Regression guard:** full `uv run pytest`. Existing scaffold tests use temp `data_dir`s
   through their cfg helpers, so the store never touches the real data dir.
 
+### Test record (2026-10-25)
+
+- `uv run pytest tests/test_spec_numbers.py tests/test_promote.py` — 30 passed (one test per
+  AC: scratch repo with `b1` + detached worktree `w2`, 8-process allocate, campaign
+  idempotence, prune on commit / ABANDONED / release, corrupt/missing/empty store, 4 hammer
+  processes + 1 release, non-git directory, CLI via CliRunner, `spec new` branch number and
+  both failure points).
+- Full `uv run pytest`: 1866 passed, 1 skipped, 1 failed (`test_rich_output_guard`, the new
+  `spec reserve` / `reservations` stdout emitters were not on its allowlist); added them as
+  machine paths and re-ran that file plus `test_spec_numbers.py` — 16 passed.
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py` — exit 0.
+
+### As shipped
+
+- `list_reservations(all_keys=True)` prunes by campaign state across all keys but by branch
+  commits only for the caller's key (other keys have no spec directory to scan).
+- `wt spec release` without `--yes` validates the reservation exists (after pruning) and
+  prints what it would release.
+- `wt spec reserve` and `reservations` also accept `--specs-dir` (the spec says all three).
+
 ## Rollout / migration
 
 Ships through the agentic queue. When it merges, `IDEA-052` gets a log line saying the
@@ -211,11 +231,11 @@ use `wt spec reserve` instead of mailbox reservations.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

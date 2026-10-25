@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (31/50 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (32/50 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -129,7 +129,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0205](./specs/0205-test-reviewer-persona.md) Test reviewer persona: do the tests cover the spec? — done
   - [x] [SPEC-0206](./specs/0206-review-triager-persona.md) Review triager persona: waive low-severity findings that only cost a loop — done
   - [ ] [SPEC-0207](./specs/0207-automatic-review-followups.md) Automatic follow-up ideas for non-blocking review findings — accepted
-  - [ ] [SPEC-0208](./specs/0208-spec-number-allocator-reservations-across-branches.md) Spec-number allocator: reservations that see every branch and worktree — accepted
+  - [x] [SPEC-0208](./specs/0208-spec-number-allocator-reservations-across-branches.md) Spec-number allocator: reservations that see every branch and worktree — done
   - [ ] [SPEC-0209](./specs/0209-queue-an-idea-idea-campaigns-that-open-into-spec.md) Queue an idea: idea campaigns that open into SPEC_WRITING — accepted
   - [x] [SPEC-0210](./specs/0210-spec-review-store-in-the-data-dir-any-repo-reviews.md) Spec review store in the data dir, any-repo reviews and a standalone review journal — done
   - [ ] [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) Spec phases and review rounds in queue watch and listing — accepted
@@ -161,7 +161,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0182](./specs/0182-event-driven-wt-conduct-monitor-armed-conductor.md) | Event-driven wt-conduct: Monitor-armed conductor woken by queue events | feature | in-progress | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0202](./specs/0202-adversarial-reviewer-persona.md) | Adversarial reviewer persona: security, logic and bug hunting | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0207](./specs/0207-automatic-review-followups.md) | Automatic follow-up ideas for non-blocking review findings | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0208](./specs/0208-spec-number-allocator-reservations-across-branches.md) | Spec-number allocator: reservations that see every branch and worktree | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0209](./specs/0209-queue-an-idea-idea-campaigns-that-open-into-spec.md) | Queue an idea: idea campaigns that open into SPEC_WRITING | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) | Spec phases and review rounds in queue watch and listing | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0214](./specs/0214-spec-review-loop-inside-the-campaign-with-in-loop.md) | Spec review loop inside the campaign, with in-loop acceptance | feature | accepted | M9: agentic workflow | 2026-10-25 |
@@ -374,6 +373,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0204](./specs/0204-lease-heartbeat-during-long-ticks-an-alive-runner.md) | Lease heartbeat during long ticks: an alive runner never looks stale | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0205](./specs/0205-test-reviewer-persona.md) | Test reviewer persona: do the tests cover the spec? | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0206](./specs/0206-review-triager-persona.md) | Review triager persona: waive low-severity findings that only cost a loop | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0208](./specs/0208-spec-number-allocator-reservations-across-branches.md) | Spec-number allocator: reservations that see every branch and worktree | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0210](./specs/0210-spec-review-store-in-the-data-dir-any-repo-reviews.md) | Spec review store in the data dir, any-repo reviews and a standalone review journal | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0212](./specs/0212-periodic-conductor-ping.md) | Periodic conductor ping: a digest of blocked, stuck, parked and waiting items | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0213](./specs/0213-nonblocking-queue-ticks.md) | Non-blocking queue ticks: in-flight steps carry across ticks | feature | done | M9: agentic workflow | 2026-10-25 |

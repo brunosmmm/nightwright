@@ -1436,6 +1436,104 @@ def spec_new_cmd(cfg, from_idea, target, internal, epic, title, force):
     console.print(f"[green]✓[/] {spec_id}  [white]{path}[/]  [dim]{routed} {src}[/]")
 
 
+def _spec_by():
+    import os
+    return os.environ.get("WT_MAILBOX_ADDR") or "human"
+
+
+def _reservation_age(rec):
+    try:
+        secs = (dt.datetime.now().astimezone() - dt.datetime.fromisoformat(rec["at"])
+                ).total_seconds()
+    except (KeyError, ValueError, TypeError):
+        return "?"
+    secs = max(int(secs), 0)
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if secs >= size:
+            return f"{secs // size}{unit}"
+    return f"{secs}s"
+
+
+_specs_dir_opt = click.option("--specs-dir", "specs_dir", type=click.Path(file_okay=False),
+                              help="another repository's spec directory (default: the "
+                                   "internal specs directory)")
+
+
+@spec_group.command("reserve")
+@click.option("--for", "for_", help="free-text note: what the number is for")
+@click.option("--json", "as_json", is_flag=True, help="machine-readable output")
+@_specs_dir_opt
+@click.pass_obj
+def spec_reserve_cmd(cfg, for_, as_json, specs_dir):
+    """Reserve the next free SPEC number (SPEC-0208), visible across every branch and
+    worktree of the repository. Release with `wt spec release`; it is pruned automatically
+    once the number is committed on a branch."""
+    from . import spec_numbers as SN
+    try:
+        rec = SN.allocate(cfg, by=_spec_by(), note=for_, specs_dir=specs_dir)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        click.echo(json.dumps({"schema": "wt.spec.reservation.v1", **rec}, indent=2))
+    else:
+        click.echo(rec["id"])
+
+
+@spec_group.command("reservations")
+@click.option("--all", "all_keys", is_flag=True, help="every repository / spec directory")
+@click.option("--json", "as_json", is_flag=True, help="machine-readable output")
+@_specs_dir_opt
+@click.pass_obj
+def spec_reservations_cmd(cfg, all_keys, as_json, specs_dir):
+    """List live SPEC-number reservations (SPEC-0208); committed ones are pruned first."""
+    from . import spec_numbers as SN
+    try:
+        recs = SN.list_reservations(cfg, specs_dir=specs_dir, all_keys=all_keys)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        click.echo(json.dumps({"schema": "wt.spec.reservations.v1", "reservations": recs},
+                              indent=2))
+        return
+    if not recs:
+        console.print("[dim]no reservations[/]")
+        return
+    from rich.table import Table
+    table = Table(show_header=True, header_style="bold")
+    for col in ("id", "note", "by", "campaign", "age"):
+        table.add_column(col)
+    for r in recs:
+        table.add_row(r["id"], escape(r.get("note") or ""), escape(r.get("by") or ""),
+                      escape(r.get("campaign") or ""), _reservation_age(r))
+    console.print(table)
+
+
+@spec_group.command("release")
+@click.argument("number")
+@click.option("--yes", is_flag=True, help="apply (default is a dry run)")
+@_specs_dir_opt
+@click.pass_obj
+def spec_release_cmd(cfg, number, yes, specs_dir):
+    """Release a SPEC-number reservation (SPEC-0208). Dry run without --yes."""
+    from . import spec_numbers as SN
+    try:
+        if yes:
+            rec = SN.release(cfg, number, specs_dir=specs_dir)
+        else:
+            n = SN.parse_number(number)
+            rec = next((r for r in SN.list_reservations(cfg, specs_dir=specs_dir)
+                        if r["number"] == n), None)
+            if rec is None:
+                raise ValueError(f"SPEC-{n:04d} is not reserved under this spec directory")
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if yes:
+        console.print(f"[green]✓[/] released {rec['id']}")
+    else:
+        console.print(f"would release {rec['id']} (by {escape(rec.get('by') or '')}); "
+                      f"pass --yes to apply")
+
+
 @spec_group.command("export")
 @click.argument("outbound_id", shell_complete=C.complete_outbound_id)
 @click.option("--scheme", help="export scheme (default: wt-native, or the target's "
