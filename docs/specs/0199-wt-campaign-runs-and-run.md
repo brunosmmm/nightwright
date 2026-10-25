@@ -1,7 +1,7 @@
 ---
 id: SPEC-0199
 title: "wt campaign runs / run: persona runs without reading run files"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -122,31 +122,31 @@ carries; `run.json` fills only what the ledger lacks. `cli_campaign.py` renders 
 
 ## Acceptance criteria
 
-- [ ] On an e2e campaign (implementer + conformance reviewer, FakeRunner), `wt campaign runs
+- [x] On an e2e campaign (implementer + conformance reviewer, FakeRunner), `wt campaign runs
       --json` lists both runs ordered by run_id with every record key above,
       `source: ledger+run.json`, the right `verdict_status` and `transient: false`.
-- [ ] After deleting the `run.json` files, every key except `source` and `runner_started_at`
+- [x] After deleting the `run.json` files, every key except `source` and `runner_started_at`
       has the same value (`source: ledger`).
-- [ ] Listing covers each case: a lone `run.start` gives `status: running`; a directory with
+- [x] Listing covers each case: a lone `run.start` gives `status: running`; a directory with
       only `prompt.md` gives `status: orphan, source: files`; a directory with `run.json` and
       no ledger events gives `source: run.json`; a ledger run whose directory is gone still
       appears (with no `paths`).
-- [ ] `transient`: `is_error` with `result_tail` containing `429` → true; `is_error` with
+- [x] `transient`: `is_error` with `result_tail` containing `429` → true; `is_error` with
       another tail → false; `timed_out` with an empty tail → false (the `"timed out"` text has
       no transient marker), matching `events.run_failed` for the same event.
-- [ ] `verdict_status`: null → `—`; a string verdict → `invalid`; `verdict_ok: false` with
+- [x] `verdict_status`: null → `—`; a string verdict → `invalid`; `verdict_ok: false` with
       `status: done` → `invalid`; `{disposition: fix}` → `fix`; `{}` → `?`.
-- [ ] `charged_usd` is in the records, and the human cost column shows `$4.00*` for a run with
+- [x] `charged_usd` is in the records, and the human cost column shows `$4.00*` for a run with
       `cost_usd: null, charged_usd: 4.0`.
-- [ ] `wt campaign run C 001` (unique prefix) and `wt campaign run C 001-implementer` return
+- [x] `wt campaign run C 001` (unique prefix) and `wt campaign run C 001-implementer` return
       the same record. `--json` has keys `schema, campaign, run`; `run` includes `paths`
       (existing files only), `stderr_tail` as a list (the last 40 lines of a 100-line
       stderr.log), and `permission_denials` (from a raw result.json carrying them, and `[]`
       for an empty or unparseable one), plus `must_fix` and `blockers`.
-- [ ] Unknown campaign, unknown run and ambiguous prefix each exit non-zero naming the problem.
-- [ ] The human `runs` and `run` views render (smoke: run ids and verdict status appear), and
+- [x] Unknown campaign, unknown run and ambiguous prefix each exit non-zero naming the problem.
+- [x] The human `runs` and `run` views render (smoke: run ids and verdict status appear), and
       the conduct skill names `wt campaign runs`.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -167,17 +167,32 @@ carries; `run.json` fills only what the ledger lacks. `cli_campaign.py` renders 
   - grep the skill.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-25)
+
+- `uv run pytest tests/test_agentic_campaign_runs.py` — 22 passed (e2e `runs --json`; same
+  record without `run.json`; the four listing cases; `transient` against
+  `events._project_ledger_event`; `verdict_status` table; `$4.00*` in the human view; `run`
+  prefix/full id, 100-line stderr tail, `permission_denials`, `paths`; error cases; human smoke;
+  conduct-skill grep).
+- Full `uv run pytest -q` and `python3 tools/spec_lint.py` (after `--write-ledger`) pass.
+
+### As shipped (2026-10-25)
+
+As designed. Notes: a run directory whose `run.json` does not parse counts as having none
+(`source` reflects that); `verdict_ok` only makes a verdict `invalid` when it is exactly
+`false`; the detail's `permission_denials` is `[]` when the key is not a list.
+
 ## Rollout / migration
 
 Ships through the agentic queue (balanced profile). No data migration.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

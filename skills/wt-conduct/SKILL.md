@@ -21,6 +21,7 @@ Not for authoring specs (`/wt-new-work`), implementing (`/wt-implement-spec`) or
 
 You must stay responsive to the next event at all times. **Your own context only does
 quick reads and quick writes** — `wt queue conduct-status`, `wt campaign show|log`,
+`wt campaign runs|run` (diagnosing failed runs),
 `wt queue resume|park|abandon|prioritize`, `wt campaign note`, `wt mailbox send`,
 `wt spec reconcile --apply`: commands that return in seconds.
 

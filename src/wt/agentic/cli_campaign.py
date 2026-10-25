@@ -1,7 +1,8 @@
-"""`wt campaign list|show|log|note` (SPEC-0171) and the hidden `prompt` (SPEC-0174). `attach`
+"""`wt campaign list|show|log|note|runs|run` (SPEC-0171, SPEC-0199) and the hidden `prompt` (SPEC-0174). `attach`
 is called by `wt.agentic.cli.register` with the `campaign` group."""
 from __future__ import annotations
 
+import json
 import os
 
 import click
@@ -12,6 +13,7 @@ from .. import completion as C
 from .. import render as R
 from ..console import console
 from ..report import _dump_json
+from . import runs as RN
 from . import store
 
 
@@ -26,6 +28,79 @@ def _summary(st: dict) -> dict:
         "park": st.get("park"), "created_at": st.get("created_at"),
         "updated_at": st.get("updated_at"),
     }
+
+
+_VERDICT_STYLES = {"done": "green", "pass": "green", "approve": "green", "blocked": "red",
+                   "fail": "red", "escalate": "red", "invalid": "dim", "—": "dim"}
+
+
+def _cost_text(rec: dict) -> str:
+    if rec.get("cost_usd") is not None:
+        return f"${rec['cost_usd']:.2f}"
+    if rec.get("charged_usd") is not None:
+        return f"${rec['charged_usd']:.2f}*"
+    return ""
+
+
+def _flag(value, style) -> Text:
+    return Text("yes", style=style) if value else Text("")
+
+
+def _model_text(rec: dict) -> str:
+    return "/".join(str(x) for x in (rec.get("model"), rec.get("effort")) if x)
+
+
+def _duration_text(rec: dict) -> str:
+    d = rec.get("duration_s")
+    return f"{d:.0f}s" if isinstance(d, (int, float)) else ""
+
+
+def _runs_table(cid: str, runs: list[dict]) -> Table:
+    table = R.section_table(f"Runs  ({cid}; {len(runs)})")
+    for col in ("run", "persona", "model/effort", "started", "duration", "cost", "exit",
+                "is_error", "timed_out", "transient", "verdict"):
+        table.add_column(col)
+    for r in runs:
+        vs = r["verdict_status"]
+        status = "" if r["status"] == "done" else f" ({r['status']})"
+        table.add_row(
+            r["run_id"] + status, str(r["persona"] or ""), _model_text(r),
+            str(r["started_at"] or ""), _duration_text(r), _cost_text(r),
+            "" if r["exit_code"] is None else str(r["exit_code"]),
+            _flag(r["is_error"], "red"), _flag(r["timed_out"], "red"),
+            _flag(r["transient"], "yellow"), Text(vs, style=_VERDICT_STYLES.get(vs, "")))
+    return table
+
+
+def _print_run(rec: dict) -> None:
+    def kv(key, value):
+        console.print(f"  [dim]{key:<14}[/] {value}", highlight=False)
+
+    vs = rec["verdict_status"]
+    verdict = rec["verdict"] if isinstance(rec["verdict"], dict) else {}
+    console.print(f"[bold]{rec['run_id']}[/]  {rec['campaign']}  "
+                  f"[{_VERDICT_STYLES.get(vs, '')}]{vs}[/]  ({rec['source']}, {rec['status']})",
+                  highlight=False)
+    kv("persona", f"{rec['persona'] or '-'}  {_model_text(rec)}")
+    kv("started", f"{rec['started_at'] or '-'}  ({_duration_text(rec) or '-'})")
+    kv("exit", f"{rec['exit_code']}  is_error={rec['is_error']}  timed_out={rec['timed_out']}  "
+               f"interrupted={rec['interrupted']}  transient={rec['transient']}")
+    kv("cost", f"{_cost_text(rec) or '-'}  (budget {rec['max_budget_usd']})")
+    if verdict.get("summary"):
+        kv("summary", verdict["summary"])
+    for key in ("must_fix", "blockers"):
+        for item in rec[key]:
+            kv(key, item if isinstance(item, str) else json.dumps(item, ensure_ascii=False))
+    if rec["result_tail"]:
+        kv("error tail", rec["result_tail"])
+    if rec["permission_denials"]:
+        kv("denials", json.dumps(rec["permission_denials"], ensure_ascii=False)[:800])
+    if rec["stderr_tail"]:
+        console.print("  [dim]stderr tail[/]")
+        for line in rec["stderr_tail"]:
+            console.print(Text("    " + line), highlight=False)
+    for key, path in rec["paths"].items():
+        kv(key, path)
 
 
 def attach(campaign_group):
@@ -111,6 +186,41 @@ def attach(campaign_group):
             console.print(R.campaign_event(ev), highlight=False)
         if not events:
             console.print("[dim]no events[/]")
+
+    @campaign_group.command("runs")
+    @click.argument("campaign", shell_complete=C.complete_campaign_id)
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.campaign.runs.v1 JSON")
+    @click.pass_obj
+    def campaign_runs(cfg, campaign, as_json):
+        """One row per persona run: cost, exit, errors, transient?, verdict status."""
+        try:
+            runs = RN.campaign_runs(cfg, campaign)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        if as_json:
+            _dump_json({"schema": "wt.campaign.runs.v1", "campaign": campaign, "runs": runs})
+            return
+        if not runs:
+            console.print("[dim]no runs yet[/]")
+            return
+        console.print(_runs_table(campaign, runs))
+
+    @campaign_group.command("run")
+    @click.argument("campaign", shell_complete=C.complete_campaign_id)
+    @click.argument("run")
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.campaign.run.v1 JSON")
+    @click.pass_obj
+    def campaign_run(cfg, campaign, run, as_json):
+        """One run in full: verdict, must_fix / blockers, error / stderr tails, file paths.
+        RUN is a run id (001-implementer) or a unique prefix (001)."""
+        try:
+            rec = RN.campaign_run(cfg, campaign, run)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        if as_json:
+            _dump_json({"schema": "wt.campaign.run.v1", "campaign": campaign, "run": rec})
+            return
+        _print_run(rec)
 
     @campaign_group.command("note")
     @click.argument("args", nargs=-1, required=True)
