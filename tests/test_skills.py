@@ -293,3 +293,15 @@ def test_orient_carries_working_rules_and_session_skills_require_it():
         text = (REPO_SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
         assert "fresh sub-agent" in text, name
         assert "Never use forks" in text, name
+
+
+def test_conduct_skill_has_runner_draining_row_spec_0224():
+    """SPEC-0224: the conductor table handles `runner_draining`, and `ready_not_admitted`
+    points to it."""
+    text = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    rows = [ln for ln in text.splitlines() if ln.startswith("| `")]
+    (draining,) = [r for r in rows if r.startswith("| `runner_draining`")]
+    for word in ("waiting_on", "ready", "lease_stale"):
+        assert word in draining, word
+    (rna,) = [r for r in rows if r.startswith("| `ready_not_admitted`")]
+    assert "`runner_draining: true`" in rna

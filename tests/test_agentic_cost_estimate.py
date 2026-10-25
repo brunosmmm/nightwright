@@ -156,3 +156,46 @@ def test_e2e_null_cost_reaches_the_displays(tmp_path, monkeypatch):
     show = run_cli(cfg, monkeypatch, ["campaign", "show", cid])
     assert show.exit_code == 0, show.output
     assert f"~${est:.2f} est." in show.output
+
+
+def _rendered(renderable) -> str:
+    from io import StringIO
+    from rich.console import Console
+    buf = StringIO()
+    Console(file=buf, width=240, color_system=None).print(renderable)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("cost,shown", [({"estimated_usd": 4.0}, True),
+                                         ({"estimated_usd": 0.0}, False), (None, False)])
+def test_queue_watch_shows_estimate_only_when_above_zero(tmp_path, monkeypatch, cost, shown):
+    from wt.agentic import cli_queue
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    added(cfg, monkeypatch)
+    (item,) = Q.queue_payload(cfg)["items"]
+    item = {**item, "state": "IMPLEMENTING", "cost_usd": 4.2}
+    if cost is None:
+        item.pop("cost", None)
+    else:
+        item["cost"] = cost
+    payload = {**Q.queue_payload(cfg), "items": [item]}
+    table = _rendered(cli_queue._queue_table(payload))
+    panel = _rendered(cli_queue._active_panel(item))
+    assert "$4.20" in table and "$4.20" in panel
+    assert ("~$4.00 est." in table) is shown
+    assert ("~$4.00 est." in panel) is shown
+    if not shown:
+        assert "est." not in table and "est." not in panel
+
+
+def test_campaign_show_has_no_estimate_mark_without_estimate(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), review()]))
+    cid = added(cfg, monkeypatch)
+    run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle", "--json-lines"])
+    assert "est." not in run_cli(cfg, monkeypatch, ["campaign", "show", cid]).output
+    st = S.read_state(cfg, cid)
+    st["cost"].pop("estimated_usd", None)                         # legacy state
+    S.write_state(cfg, cid, st)
+    assert "est." not in run_cli(cfg, monkeypatch, ["campaign", "show", cid]).output
