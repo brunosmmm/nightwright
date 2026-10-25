@@ -682,3 +682,25 @@ def test_unknown_profile_lists_every_layer(tmp_path):
     with pytest.raises(ValueError, match="unknown profile 'nope'; known: alpha, balanced, "
                                          "frugal, thorough"):
         P.resolve_profile(cfg, "nope", project_root=proj)
+
+
+def test_profile_matrix_and_select_profile_see_the_project_layer(tmp_path):   # SPEC-0237 x 0219
+    cfg, _user, proj = _layers(tmp_path)
+    _put(_pdir(proj), "projonly", (DEFS / "frugal.yaml").read_text())
+    cfg["agentic"]["profile_matrix"] = {"critical": {"xs": "projonly"}}
+    with pytest.raises(ValueError, match="unknown profile 'projonly'"):
+        P.profile_matrix(cfg)                                            # no project root
+    review = {"verdict": "approve", "size": "xs", "tone": "critical"}
+    pick = P.select_profile(cfg, review=review, project_root=proj)
+    assert pick["profile"] == "projonly" and pick["source"] == "review"
+
+
+def test_yaml_builtins_equal_the_last_python_builtin_profiles():         # resolver guard
+    """Every key the retired Python builtin dict had (incl. SPEC-0202 adversarial_reviewer and
+    reviewers, SPEC-0203/0206/0207 review keys) survives into the YAML builtins unchanged."""
+    golden = json.loads((Path(__file__).parent / "data" / "builtin_profiles_v1.json").read_text())
+    got = P.builtin_profiles()
+    for name, prof in golden.items():
+        for key, value in prof.items():
+            assert got[name][key] == value, (name, key)
+    assert golden["balanced"]["reviewers"][-1] == "adversarial_reviewer"
