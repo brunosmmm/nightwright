@@ -122,7 +122,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0182](./specs/0182-event-driven-wt-conduct-monitor-armed-conductor.md) | Event-driven wt-conduct: Monitor-armed conductor woken by queue events | feature | in-progress | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0184](./specs/0184-wt-steward-skill-monitor-armed-project-steward-on.md) | wt-steward skill: Monitor-armed project steward on the mailbox | feature | in-progress | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0185](./specs/0185-rich-human-output-everywhere-and-a-queue-watch.md) | Rich human output everywhere and a queue watch dashboard | feature | in-progress | M4: cli ergonomics | 2026-10-25 |
 
 ## Done
 
@@ -298,6 +297,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0180](./specs/0180-queue-backlog-dependency-gated-prioritized.md) | Queue backlog: dependency-gated, prioritized admission and backlog view | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0181](./specs/0181-queue-event-stream-watchdog-signals-and-heartbeat.md) | Queue event stream, watchdog signals and heartbeat during runs | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0183](./specs/0183-file-based-mailbox-between-conductor-and-stewards.md) | File-based mailbox between conductor and stewards | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0185](./specs/0185-rich-human-output-everywhere-and-a-queue-watch.md) | Rich human output everywhere and a queue watch dashboard | feature | done | M4: cli ergonomics | 2026-10-25 |
 
 ## Superseded / rejected
 

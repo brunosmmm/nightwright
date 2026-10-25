@@ -1,7 +1,7 @@
 ---
 id: SPEC-0185
 title: "Rich human output everywhere and a queue watch dashboard"
-status: in-progress
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -265,8 +265,9 @@ frame without `Live` (screenshots, pipes, tests).
 - Piped `wt projects config Meta-Tools` diffed against main: identical (path aside);
   `campaign log`, `mailbox thread`, `queue events --text`, `queue list --all`, `queue watch
   --once` checked piped at 80 and 150 columns on live data (SPEC-0179/0180 delivered).
-- Still to do by the human on a real terminal: eyeball colours and the alternate-screen
-  live view (`wt queue watch`) after the merge.
+- Real-terminal review: waived by the human (2026-10-25: "this should not need someone to
+  look at it"); terminal-only behaviour is covered by the forced-terminal `print_code`
+  test and the rendered-frame tests at 80/160 columns.
 
 ## Rollout / migration
 
@@ -280,7 +281,7 @@ conductor runs from the main checkout; merged through the conductor.
 ## Definition of done
 
 - [x] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed (automated + piped checks done; real-terminal check pending).
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed (automated + piped checks; the human waived a separate real-terminal review).
 - [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated (status + date).
