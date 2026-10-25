@@ -70,8 +70,9 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
       `:PROJECT:`, default `Meta-Tools`.
   - **Add lock:** a new queue-wide `store.add_lock(cfg)`, an exclusive `flock` on
     `<data_dir>/agentic/add.lock` built like `store.item_lock` (process RLock + `flock`).
-    Both `apply_add` (spec campaigns, `queue.py:1996`) and `apply_add_idea` hold it around
-    the duplicate re-check and `store.create_campaign`, so two concurrent adds of the same
+    `apply_add` (spec campaigns, `queue.py:1996`) holds it around its existing
+    `active_campaign_for_spec` re-check plus `store.create_campaign` (no new check);
+    `apply_add_idea` holds it around its duplicate re-check plus `store.create_campaign`, so two concurrent adds of the same
     idea (or spec) create exactly one campaign; the second raises the duplicate refusal.
   - **On apply:**
     - campaign id `store.new_campaign_id(cfg, "IDEA-NNN")`, and `state.kind = "idea"`;
@@ -80,6 +81,8 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
       kind), plus `epic` from the idea task's `:EPIC:` (`task.properties.get("EPIC")`), plus
       `state_before` (the idea's org state);
     - `state.spec = {"id": None, "rel_path": None, "internal": True}`;
+    - every other state field (`repo_root`, `base`, `cap_usd`, `loop_max`, `counters`,
+      `repo`) is built exactly as `apply_add` builds it;
     - the idea gets `:CAMPAIGN: <campaign id>` through `org_write.set_property` (SPEC-0190
       lock).
 - **"No spec yet"** is one predicate, `queue.has_no_spec(st)`: `st.get("kind") == "idea"` and
@@ -97,8 +100,9 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
 - **Open:** `_do_open` skips the spec hash and the `spec_at_open.md` copy when
   `has_no_spec(st)`. The open-result apply (`kind == "open"` in the result apply, today
   `finish("IMPLEMENTING", "opened")` at `queue.py:930`) picks `SPEC_WRITING` instead when
-  `has_no_spec(st)`. Where that transition goes through `_enter_slot_or_wait` and no slot
-  is free, the campaign goes to WAITING with `resume_to SPEC_WRITING`.
+  `has_no_spec(st)`: `finish("SPEC_WRITING", "opened")`. The slot is already held at
+  OPENING, so this never waits. WAITING arises for an idea campaign only on resume from
+  PARKED, through `_enter_slot_or_wait` with `resume_to` = the park's `resume_to`.
 - **`plan_step`:** SPEC_WRITING → park `spec_writer_unavailable` (resume_to SPEC_WRITING).
   SPEC-0215 replaces this with the write step.
 - **Specless tolerance:** each of these uses `has_no_spec(st)` (show the idea id and heading
@@ -116,17 +120,19 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
 - **Abandon:**
   - `apply_abandon` accepts WAITING as `plan_abandon` already does; today `apply_abandon`
     raises for WAITING (`apply_abandon`, `queue.py:2130`). Both now accept PARKED, QUEUED or WAITING.
-  - For a `kind: idea` campaign it also:
-    - clears the idea's `:CAMPAIGN:`;
-    - clears `:SPEC:` when it equals this campaign's `state.spec.id` (a different, hand-set
-      one is kept);
-    - restores the idea's org state to `state.idea.state_before` (the field `apply_add_idea`
-      records; the `idea_show_payload` snapshot's own `state` is not used), **only** when
-      the idea's current state is one the campaign could have left it in: still
-      `state_before`, or `SPECCED` with `:SPEC:` equal to this campaign's `state.spec.id`.
-      A state set by hand meanwhile (for example DROPPED) is kept, and the abandon result
-      notes "idea state kept: <state>";
-    - releases the campaign's reservations: `spec_numbers.list_reservations(cfg,
+    `apply_abandon` also pops `waiting` from the state, as it already clears `park`.
+  - For a `kind: idea` campaign it also, in this order:
+    1. evaluates the restore condition **first**, before any write: the idea's current
+       state is still `state_before`, or it is `SPECCED` with `:SPEC:` equal to this
+       campaign's `state.spec.id`;
+    2. clears the idea's `:CAMPAIGN:`;
+    3. clears `:SPEC:` when it equals this campaign's `state.spec.id` (a different, hand-set
+       one is kept);
+    4. restores the idea's org state to `state.idea.state_before` (the field
+       `apply_add_idea` records; the `idea_show_payload` snapshot's own `state` is not
+       used) only when step 1 held. A state set by hand meanwhile (for example DROPPED) is
+       kept, and the abandon result notes "idea state kept: <state>";
+    5. releases the campaign's reservations: `spec_numbers.list_reservations(cfg,
       specs_dir=<repo.root>/docs/specs)` (the project's base checkout, so the reservation
       key matches the one the writer used), filtered on `record["campaign"] == cid`, then
       `spec_numbers.release(cfg, record["number"], specs_dir=…)` for each. None found is a
@@ -161,8 +167,7 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
 - [ ] The backlog shows the campaign ready, and not ready once the idea is closed. Readiness
       for an idea campaign never reads a spec file.
 - [ ] After admission and open, the campaign is in SPEC_WRITING with no spec hash. The next
-      tick parks it `spec_writer_unavailable` (resume_to SPEC_WRITING). With no free slot
-      at open, it waits with `resume_to SPEC_WRITING`.
+      tick parks it `spec_writer_unavailable` (resume_to SPEC_WRITING).
 - [ ] With an idea campaign in SPEC_WRITING and in that park, every command and function
       under *Specless tolerance* runs without error, and the listing shows the idea id.
 - [ ] Abandoning:
@@ -181,7 +186,9 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
 
 - **Automated tests:** `tests/test_agentic_idea_campaign.py`, using the `test_agentic_e2e`
   harness and a helper that captures an idea in the harness's org. One test per AC, and each
-  sub-bullet is its own assertion. The abandon tests set `:SPEC:` to the campaign's
+  sub-bullet is its own assertion. The abandon-restore test first sets the idea to SPECCED
+  with `:SPEC:` equal to the campaign's `state.spec.id`, and sets `state.spec.id` in the
+  campaign, before abandoning. The abandon tests set `:SPEC:` to the campaign's
   `state.spec.id` (and, separately, to another id) and reserve a number with
   `spec_numbers.allocate(..., campaign=cid)` (and one for another campaign) before
   abandoning. The legacy-state test writes a spec campaign state without `spec.id`. The
