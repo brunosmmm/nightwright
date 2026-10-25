@@ -1,7 +1,8 @@
 ---
 id: SPEC-0177
 title: "wt-conduct skill, docs and dogfood bootstrap for wt itself"
-status: done
+status: superseded
+superseded_by: SPEC-0182
 owner: user
 created: 2026-10-25
 updated: 2026-10-25

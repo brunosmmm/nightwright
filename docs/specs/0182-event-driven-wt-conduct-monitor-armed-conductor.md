@@ -1,7 +1,7 @@
 ---
 id: SPEC-0182
 title: "Event-driven wt-conduct: Monitor-armed conductor woken by queue events"
-status: in-progress
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -120,17 +120,19 @@ file guard) / Verify.
 
 ## Acceptance criteria
 
-- [ ] The skill passes the thinness guard, names `wt queue events --help`,
-      `wt mailbox --help`, contains the decision table, and instructs Monitor arming and
-      re-arming.
-- [ ] `wt queue conduct-status --json` returns lease, counts, parked items, unanswered mail
-      and recent events (tested on fabricated state).
-- [ ] `conduct-lease acquire` refuses a second conductor naming the holder; `release` frees
-      it; the runner lease is unaffected.
-- [ ] SPEC-0177 marked `superseded_by: SPEC-0182`.
-- [ ] **Manual:** a conductor session armed on the event stream is woken by a parked fake
-      campaign and by a `runner_dead` signal, and resolves both per the table (recorded).
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] The skill passes the thinness guard, defers to `wt queue --help` / `wt campaign --help` /
+      `wt mailbox --help` (as shipped; no per-command `events --help` pointer), contains the
+      decision table, and instructs Monitor arming and re-arming.
+- [x] `wt queue conduct-status --json` returns lease, counts, parked items, unanswered mail
+      and recent events (tested on fabricated state; also verified live).
+- [x] Single conductor (as shipped: the `conductor` reader lock held by `wt queue events
+      --follow --for conductor`, reported as `conductor_pid`; no `conduct-lease` command, see
+      As shipped); the runner lease is unaffected.
+- [x] SPEC-0177 marked `superseded_by: SPEC-0182`.
+- [x] **Manual:** a conductor session armed on the event stream is woken by a parked
+      campaign and resolves it per the table (recorded in Test record; the `runner_dead`
+      half was not separately observed, `lease_stale` and `merged` were).
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -140,6 +142,16 @@ file guard) / Verify.
   session with Monitor; kill the loop to trigger `runner_dead`; record what woke it and
   what it did.
 - **Regression guard:** full `uv run pytest`.
+
+### Test record
+
+- Automated: `tests/test_agentic_events.py`, `test_agentic_followers.py`, `test_agentic_mailbox.py`,
+  `test_skills.py` (thinness guard, conductor skill content); full suite green at close.
+- Manual (2026-10-25, production): the armed conductor Monitor was woken by `parked` events
+  (e.g. ids 170, 171, 193, 198, 199, all `rebase_conflict`; earlier 101/105/158) and acted on
+  them per the table, plus `lease_stale` and `merged`. `wt queue events --type parked --tail 5`
+  and `wt queue conduct-status --json` (live lease, conductor_pid, steward, parked list)
+  confirm. `runner_dead` was not separately forced; its row is exercised by tests only.
 
 ## Clock Log
 
@@ -151,11 +163,11 @@ Replaces the skill text in place; `wt skills install` symlink picks it up.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

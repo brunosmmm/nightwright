@@ -105,11 +105,11 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0174](./specs/0174-headless-persona-runner-prompt-assembly-and.md) Headless persona runner, prompt assembly and verdict schemas — done
   - [x] [SPEC-0175](./specs/0175-close-step-rebase-re-gate-ff-only-merge-or-pr.md) Close step: rebase, re-gate, ff-only merge or PR hand-off — done
   - [x] [SPEC-0176](./specs/0176-queue-state-machine-with-lease-guarded-tick-run.md) Queue state machine with lease-guarded tick/run, park/resume and listing — done
-  - [x] [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) wt-conduct skill, docs and dogfood bootstrap for wt itself — done
+  - [x] [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) wt-conduct skill, docs and dogfood bootstrap for wt itself — superseded
   - [x] [SPEC-0179](./specs/0179-wt-spec-status-one-line-frontmatter-status-setter.md) wt spec status: one-line frontmatter status setter — done
   - [x] [SPEC-0180](./specs/0180-queue-backlog-dependency-gated-prioritized.md) Queue backlog: dependency-gated, prioritized admission and backlog view — done
   - [x] [SPEC-0181](./specs/0181-queue-event-stream-watchdog-signals-and-heartbeat.md) Queue event stream, watchdog signals and heartbeat during runs — done
-  - [ ] [SPEC-0182](./specs/0182-event-driven-wt-conduct-monitor-armed-conductor.md) Event-driven wt-conduct: Monitor-armed conductor woken by queue events — in-progress
+  - [x] [SPEC-0182](./specs/0182-event-driven-wt-conduct-monitor-armed-conductor.md) Event-driven wt-conduct: Monitor-armed conductor woken by queue events — done
   - [x] [SPEC-0183](./specs/0183-file-based-mailbox-between-conductor-and-stewards.md) File-based mailbox between conductor and stewards — done
   - [x] [SPEC-0184](./specs/0184-wt-steward-skill-monitor-armed-project-steward-on.md) wt-steward skill: Monitor-armed project steward on the mailbox — done
   - [x] [SPEC-0186](./specs/0186-spec-change-guard-at-close-no-merge-when-the.md) Spec-change guard at close: no merge when the implementer altered the spec — done
@@ -167,7 +167,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0087](./specs/0087-workstreams-and-concern-separation-routing.md) | Workstreams and concern separation (routing, streams, filters, hub; umbrella for priority & sort) | epic | accepted | M4: cli ergonomics | 2026-07-28 |
 | [SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) | Example-heavy docs: SVG captures and workflow architecture | epic | accepted | M8: product documentation | 2026-09-09 |
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0182](./specs/0182-event-driven-wt-conduct-monitor-armed-conductor.md) | Event-driven wt-conduct: Monitor-armed conductor woken by queue events | feature | in-progress | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0202](./specs/0202-adversarial-reviewer-persona.md) | Adversarial reviewer persona: security, logic and bug hunting | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0209](./specs/0209-queue-an-idea-idea-campaigns-that-open-into-spec.md) | Queue an idea: idea campaigns that open into SPEC_WRITING | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) | Spec phases and review rounds in queue watch and listing | feature | accepted | M9: agentic workflow | 2026-10-25 |
@@ -360,11 +359,11 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0174](./specs/0174-headless-persona-runner-prompt-assembly-and.md) | Headless persona runner, prompt assembly and verdict schemas | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0175](./specs/0175-close-step-rebase-re-gate-ff-only-merge-or-pr.md) | Close step: rebase, re-gate, ff-only merge or PR hand-off | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0176](./specs/0176-queue-state-machine-with-lease-guarded-tick-run.md) | Queue state machine with lease-guarded tick/run, park/resume and listing | feature | done | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) | wt-conduct skill, docs and dogfood bootstrap for wt itself | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0178](./specs/0178-fix-two-textual-pilot-tests-that-assumed-meta.md) | Fix two Textual pilot tests that assumed Meta-Tools is the first chooser entry | feature | done | M0: process | 2026-10-25 |
 | [SPEC-0179](./specs/0179-wt-spec-status-one-line-frontmatter-status-setter.md) | wt spec status: one-line frontmatter status setter | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0180](./specs/0180-queue-backlog-dependency-gated-prioritized.md) | Queue backlog: dependency-gated, prioritized admission and backlog view | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0181](./specs/0181-queue-event-stream-watchdog-signals-and-heartbeat.md) | Queue event stream, watchdog signals and heartbeat during runs | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0182](./specs/0182-event-driven-wt-conduct-monitor-armed-conductor.md) | Event-driven wt-conduct: Monitor-armed conductor woken by queue events | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0183](./specs/0183-file-based-mailbox-between-conductor-and-stewards.md) | File-based mailbox between conductor and stewards | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0184](./specs/0184-wt-steward-skill-monitor-armed-project-steward-on.md) | wt-steward skill: Monitor-armed project steward on the mailbox | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0185](./specs/0185-rich-human-output-everywhere-and-a-queue-watch.md) | Rich human output everywhere and a queue watch dashboard | feature | done | M4: cli ergonomics | 2026-10-25 |
@@ -409,6 +408,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0072](./specs/0072-idea-archival-primitive.md) | Idea-archival primitive: atomic, drift-guarded subtree move | feature | superseded | M4: cli ergonomics | 2026-07-26 |
 | [SPEC-0083](./specs/0083-light-theme-substitution-for-dim-idea-state-styles.md) | Theme-adapt the idea state palette: substitute dim on light backgrounds | feature | rejected | M4: cli ergonomics | 2026-07-28 |
 | [SPEC-0084](./specs/0084-theme-the-recessive-styling-in-the-idea-views.md) | Theme every recessive style in the idea views, not just the state palette | feature | rejected | M4: cli ergonomics | 2026-07-28 |
+| [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) | wt-conduct skill, docs and dogfood bootstrap for wt itself | feature | superseded | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0218](./specs/0218-agentic-workflow-docs-refresh.md) | Agentic workflow docs refresh: a guide, a coherent reference, concepts and front door | feature | superseded | M8: product documentation | 2026-10-25 |
 
 <!-- specs:end -->
