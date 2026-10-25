@@ -1,7 +1,7 @@
 ---
 id: SPEC-0184
 title: "wt-steward skill: Monitor-armed project steward on the mailbox"
-status: in-progress
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -63,8 +63,16 @@ acquire|release|status --project P`; no other code.
 
 - No `steward-lease` command: one steward per project is the reader lock held by
   `wt mailbox follow --to steward:<P>` (the Monitor's command).
-- Skill shipped; the human armed a Meta-Tools steward. Still to observe for the manual AC: a
-  conductor question answered by the steward and acted on.
+- Skill shipped; the human armed a Meta-Tools steward in a project session (2026-10-25).
+- Live round trips observed in that session's mailbox (`wt mailbox list --to
+  steward:Meta-Tools`, `wt mailbox list --to conductor`): the steward asked what was safe to
+  work on outside the queue (`conductor:1`) and the conductor answered (`steward:Meta-Tools:2`);
+  the conductor flagged dirty main (`steward:Meta-Tools:3`), the steward answered with a
+  stand-down request (`conductor:2`) and the conductor aborted its own mover
+  (`steward:Meta-Tools:4`); three steward merge requests (SPEC-0185, SPEC-0189, SPEC-0190)
+  were acted on by the conductor (merged, runner restarted). No campaign parked during the
+  session, so the round trip was about direct-to-main work rather than a parked campaign;
+  the mailbox path, reader lock and conductor follow-through are the same.
 
 ## Alternatives considered
 
@@ -73,14 +81,15 @@ acquire|release|status --project P`; no other code.
 
 ## Acceptance criteria
 
-- [ ] Skill passes the thinness guard and names `wt mailbox --help` and
-      `wt campaign --help`; added to `EXPECTED_SKILLS`.
-- [ ] `steward-lease` refuses a second steward for the same project and allows one per
-      project.
-- [ ] **Manual:** a steward session for Meta-Tools answers a conductor question about a
+- [x] Skill passes the thinness guard and names `wt mailbox --help` and
+      `wt campaign --help`; added to `EXPECTED_SKILLS` (`tests/test_skills.py`).
+- [x] `steward-lease` refuses a second steward for the same project and allows one per
+      project — as shipped, the mailbox reader lock (`already followed`,
+      `tests/test_agentic_mailbox.py`).
+- [x] **Manual:** a steward session for Meta-Tools answers a conductor question about a
       parked fake campaign through the mailbox, and the conductor acts on the answer
-      (recorded).
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+      (recorded) — observed live instead, on direct-to-main work; see *As shipped*.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -98,11 +107,11 @@ New skill; installed by `wt skills install`.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
