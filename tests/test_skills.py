@@ -32,7 +32,7 @@ def _frontmatter(text):
 
 EXPECTED_SKILLS = ["wt-capture", "wt-seed", "wt-new-work", "wt-generate", "wt-export",
                    "wt-orient", "wt-explore", "wt-rework", "wt-implement-spec", "wt-related",
-                   "wt-verify", "wt-sheet-sync", "wt-conduct"]
+                   "wt-verify", "wt-sheet-sync", "wt-conduct", "wt-steward"]
 
 
 def test_expected_skills_exist():

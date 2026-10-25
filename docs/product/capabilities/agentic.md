@@ -174,14 +174,43 @@ Every transition, run (with cost), gate run, finding, park and close is in the c
 ledger (`wt campaign log ID`). `--json` shapes: `wt.queue.v1`, `wt.queue.add.v1`,
 `wt.queue.tick.v1`, `wt.queue.park.v1`, `wt.queue.resume.v1`, `wt.queue.abandon.v1`.
 
+## Events and watchdog
+
+`wt queue events` is the queue's alert stream (SPEC-0181): `<data_dir>/agentic/events.jsonl`,
+one `wt.event.v1` JSON record per line — `admitted`, `parked`, `resumed`, `merged`,
+`handed_off`, `abandoned`, `run_failed` (with `transient: true` for account limits and API
+overload), `cost_warning`, `backlog`, and mailbox `message`s to the conductor. Events are
+projected from the campaign ledgers exactly once, so the stream works with any loop version.
+`wt queue events --follow --for conductor` streams new events forever with a per-reader cursor
+(a restarted follower resumes after the last delivered event) and runs a **watchdog** outside
+the loop: `runner_dead` (work pending, no runner), `lease_stale` (runner hung, no run in
+flight), `run_overdue` (a persona run past its timeout), `campaign_silent` (no activity for a
+long time). Each watchdog condition fires once until it clears.
+
+## Mailbox
+
+`wt mailbox send|follow|list|thread` (SPEC-0183): per-recipient JSONL inboxes for
+`conductor`, `human` and `steward:<Project>`, `wt.message.v1` envelopes with `kind`
+(question / answer / request / info), `campaign` and `re` threading. Messages to the
+conductor also appear in its event stream, so one Monitor wakes it for both.
+
 ## Conductor
 
-`/wt-conduct` is the human-facing skill over the loop (SPEC-0177). It starts `wt queue run`
-detached when no live lease exists (`agentic.run_launcher`: `nohup`, `tmux` or
-`foreground`), reports what is in flight, and turns every `PARKED` item into a decision:
-`wt queue resume` (with a note, a higher cap or reset loops), `wt queue abandon`, or an
-escalation to the human with the park reason and the log tail. After merges it runs
-`wt spec reconcile --apply` so source ideas advance. It never edits a campaign worktree.
+`/wt-conduct` (SPEC-0182) turns a session into the **conductor**: it arms Claude Code's
+Monitor on `wt queue events --follow --for conductor` and is woken by every event — a park,
+a merge, a dead or hung runner, an overdue run, a steward's message — and resolves it from a
+decision table (resume, raise the cap once, ask the project's steward, restart the loop,
+reconcile ideas after a merge), escalating to the human only for design questions and the
+human's own checkout. `wt queue conduct-status` is its one-call situation report. The
+follower's reader lock means only one conductor can be armed.
+
+## Stewards
+
+`/wt-steward` (SPEC-0184) turns a project session into `steward:<Project>`: a Monitor on
+`wt mailbox follow --to steward:<Project>` wakes it for the conductor's questions about that
+project's campaigns; it answers with a concrete action, and routes the human's queue requests
+for the project to the conductor. One steward per project (reader lock); stewards advise and
+never implement in campaign worktrees.
 
 wt dogfoods itself: the repo's own `.wt/project.yaml` declares `uv run pytest -q -x` and
 `python3 tools/spec_lint.py` as required gates, merge policy `merge` into `main`, and

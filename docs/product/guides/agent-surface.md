@@ -30,7 +30,8 @@ Getting started Path C: [Getting started](getting-started.md).
 | `/wt-implement-spec` | (in **target** repo) portable AC + tests | Build exported work |
 | `/wt-verify` | `wt spec verify` (+ ledger / pull-status) | Post-hoc Definition of Done |
 | `/wt-sheet-sync` | `wt sheet plan\|record --json` | Optional sheet triage |
-| `/wt-conduct` | `wt queue list\|run\|resume`, `wt campaign show\|log` | Run / watch / unpark the agentic loop |
+| `/wt-conduct` | Monitor on `wt queue events --follow --for conductor`; `wt queue conduct-status\|resume`, `wt mailbox send` | Long-lived conductor woken by queue events |
+| `/wt-steward` | Monitor on `wt mailbox follow --to steward:<P>`; `wt mailbox send` | Project steward answering the conductor |
 
 Capability stub: [Skills](../capabilities/skills.md).
 
@@ -58,6 +59,11 @@ scraping tables. Shapes below are illustrative — fields evolve; trust the live
 | `wt.queue.add.v1` | `wt queue add SPEC --json [--yes]` | `{schema, campaign, spec_id, project, profile, base, worktree, branch, …, written}` (dry-run unless `--yes`) |
 | `wt.queue.tick.v1` | `wt queue tick --json` / `wt queue run --json-lines` | `{schema, steps:[{campaign,from,to,action,run_id,cost_usd,reason}], admitted, idle}` |
 | `wt.queue.park.v1` / `wt.queue.resume.v1` / `wt.queue.abandon.v1` | `wt queue park|resume|abandon ID --json [--yes]` | plan fields + `written` |
+| `wt.event.v1` | `wt queue events --follow --for READER` (one per line) | `{schema, id, ts, type, campaign, spec_id, project, by, data:{…}}` — parks, merges, failed runs, watchdog signals, mail (SPEC-0181) |
+| `wt.events.v1` | `wt queue events [--since ID] [--tail N]` | `{schema, events:[wt.event.v1…]}` |
+| `wt.conduct.status.v1` | `wt queue conduct-status --json` | `{schema, lease, slots, conductor_pid, counts, parked[], active[], unanswered_mail[], recent_events[]}` (SPEC-0182) |
+| `wt.message.v1` | `wt mailbox follow --to ADDR` (one per line) / `wt mailbox send --json` | `{schema, id, seq, ts, from, to, kind, campaign, re, text, needs_reply}` (SPEC-0183) |
+| `wt.mailbox.list.v1` | `wt mailbox list --to ADDR --json` | `{schema, to, messages:[wt.message.v1…]}` |
 
 Example (hub triage):
 
