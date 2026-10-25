@@ -37,6 +37,7 @@ from . import lease as L
 from . import personas as PS
 from . import project as P
 from . import spec_review as SR
+from . import spec_write as SW
 from . import schemas as SC
 from . import store
 from .codewatch import _CODE_PATHS, _git_out, code_changes, code_checkout  # noqa: F401
@@ -59,7 +60,8 @@ RESUMABLE_STATES = ("SPEC_WRITING", "IMPLEMENTING", "GATING", "REVIEWING", "CLOS
 PARK_REASONS = frozenset({
     "cost_cap", "loop_exhausted", "implementer_blocked", "triage_escalated", "open_failed",
     "rebase_conflict", "main_dirty", "main_not_on_base", "base_moving", "gh_failed", "human",
-    "review_escalated", "config_invalid", "spec_writer_unavailable",
+    "review_escalated", "config_invalid", "spec_writer_unavailable", "spec_write_failed",
+    "spec_review_unavailable",
 })
 # SPEC-0222: who a park waits for. The human only for their own checkout and explicit
 # escalations (`human_decision` is reserved for IDEA-087); everything else is the conductor's.
@@ -72,6 +74,8 @@ def park_owner(reason) -> str:
 
 # How many times in a row the implementer may report `blocked` before the campaign parks.
 BLOCKED_STREAK_MAX = 2
+# SPEC-0215: rejected spec writes retried before the campaign parks `spec_write_failed`.
+SPEC_WRITE_RETRY_MAX = 1
 # Malformed triage verdicts tolerated per loop before the triage is treated as `escalate`.
 TRIAGE_RETRY_MAX = 1
 # `retry_gate` dispositions honored per loop before they are treated as `fix`.
@@ -92,8 +96,8 @@ DEPENDENCY_SATISFIED = frozenset({"done", "superseded"})
 
 @dataclass(frozen=True)
 class Step:
-    """What a campaign needs next. `kind` ∈ open | implement | gate | triage | review | close |
-    resolve | park | none; `park` steps carry `reason` / `detail` / `resume_to`."""
+    """What a campaign needs next. `kind` ∈ open | write_spec | implement | gate | triage | review |
+    close | resolve | park | none; `park` steps carry `reason` / `detail` / `resume_to`."""
     kind: str
     persona: str | None = None
     reason: str | None = None
@@ -152,9 +156,15 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
     if st == "OPENING":
         return Step("open")
     if st == "SPEC_WRITING":
-        # SPEC-0209: SPEC-0215 replaces this park with the write step
-        return Step("park", reason="spec_writer_unavailable",
-                    detail="no spec writer yet (SPEC-0215)", resume_to="SPEC_WRITING")
+        # SPEC-0215: the spec writer writes (no spec yet) or revises (findings in the brief)
+        if (state.get("spec") or {}).get("id") and not state.get("pending_brief"):
+            return Step("park", reason="spec_review_unavailable", resume_to="SPEC_WRITING",
+                        detail="nothing to revise; resume with --note to have the writer revise")
+        blocked = _cap_blocks(state, profile, "spec_writer")
+        if blocked:
+            return Step("park", persona="spec_writer", reason="cost_cap", detail=blocked,
+                        resume_to=st)
+        return Step("write_spec", persona="spec_writer")
     if st == "GATING":
         return Step("gate")
     if st == "CLOSING":
@@ -811,6 +821,7 @@ class StepResult:
     reviews: list = field(default_factory=list)      # per-reviewer StepResults, profile order
     followups: dict | None = None                    # SPEC-0207: the close step's filer summary
     crashed: str | None = None                       # unexpected worker exception caught in-step
+    write: dict | None = None                        # SPEC-0215: a write_spec step's outcome
 
 
 class _Ctx:
@@ -928,6 +939,8 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str):
     run_dir = store.runs_dir(cfg, cid) / run_id
     if persona == "review_triager":     # its input carries the verdicts already (SPEC-0206)
         previous, extra = [], {"triage_input": _triage_input(state, profile)}
+    elif persona == "spec_writer":
+        previous, extra = [], _prepare_spec_write(ctx, state)
     else:
         previous, extra = _previous_runs(cfg, state, persona), None
     req = PS.build_request(cfg, profile, pcfg, state, persona, run_dir=run_dir, previous=previous,
@@ -945,6 +958,119 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str):
         except (ValueError, OSError) as e:
             raise _RunStarted(e, run_id, budget) from e
     return run_id, req, budget
+
+
+def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
+    """Main thread, before the writer's `run.start` (SPEC-0215): resolve the parent epic, fix the
+    spec number and path, record `state.spec_write` and return the prompt values. Raises
+    ValueError (the tick parks `spec_write_failed`) when nothing may be run."""
+    worktree = Path((state.get("repo") or {}).get("worktree") or ".")
+    idea = state.get("idea") or {}
+    epic = (idea.get("epic") or "").strip() or None
+    epic_text = SW.epic_context(worktree, epic) if epic else None
+    spec = state.get("spec") or {}
+    counters = _counters(state)
+    try:
+        if SW.tracked_dirty(worktree):
+            raise ValueError("the worktree has uncommitted changes to tracked files; clean the "
+                             "worktree, then resume")
+        if spec.get("id"):
+            mode, number, path = "revise", int(str(spec["id"])[5:]), spec["rel_path"]
+        else:
+            from .. import spec_numbers as SN
+            rec = SN.allocate(ctx.cfg, by="queue", campaign=state["id"],
+                              specs_dir=worktree / "docs" / "specs")
+            mode, number = "write", rec["number"]
+            path = f"docs/specs/{rec['number']:04d}-{SP.slugify(idea.get('heading') or '')}.md"
+        sw = SW.snapshot(worktree, mode=mode, number=number, path=path)
+    except GitError as e:
+        raise ValueError(e.tail or str(e)) from e
+    prior = state.get("spec_write") or {}
+    if counters.get("spec_write_retries", 0) and prior.get("untracked_before") is not None:
+        sw["untracked_before"] = prior["untracked_before"]      # a failed attempt's leftovers
+    state["spec_write"] = sw                                    # never join the baseline
+    brief = state.get("pending_brief")
+    spec_id = SW.spec_id_of(number)
+    return {
+        "spec_id": spec_id, "spec_rel_path": path,
+        "idea_text": json.dumps(idea, indent=2, ensure_ascii=False),
+        "template_text": _read_text(worktree / "docs" / "specs" / "TEMPLATE.md"),
+        "schema_text": _read_text(worktree / "docs" / "specs" / "SCHEMA.md"),
+        "write_problems": SW.write_problems_text(brief),
+        "write_rules": SW.write_rules(mode, sw, idea, brief),
+        "epic_text": epic_text,
+    }
+
+
+def _read_text(path) -> str | None:
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
+                   budget: float) -> StepResult:
+    """Worker thread (SPEC-0215): run the spec writer, validate what it left, regenerate the
+    project's generated files, then commit — or roll the worktree back to where it was."""
+    res = StepResult(state["id"], step, state["state"], run_id=run_id, budget=budget)
+    worktree = (state.get("repo") or {}).get("worktree")
+    sw = dict(state["spec_write"])
+    res.write = {"problems": [], "blocked": None, "committed": False, "sha": None,
+                 "title": None, "mode": sw["mode"], "rollback_failed": False}
+    w = res.write
+
+    def roll_back():
+        try:
+            SW.rollback(worktree, sw)
+        except GitError:
+            w["rollback_failed"] = True
+            raise
+
+    try:
+        res.run_result = rr = ctx.runner.run(req)
+        res.interrupted = ctx.stop.is_set()
+        verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
+        if res.interrupted or rr.interrupted:
+            roll_back()
+        elif rr.verdict_ok and verdict.get("status") == "blocked":
+            w["blocked"] = [str(b) for b in verdict.get("blockers") or []] \
+                or [str(verdict.get("summary") or "no reason given")]
+            roll_back()
+        else:
+            problems = SW.verdict_problems(rr, sw)
+            if not problems:
+                problems = SW.validate_spec_change(worktree, sw, state.get("idea"))
+            generated = []
+            if not problems:
+                pcfg = ctx.project(state)
+                regen = (pcfg.get("merge") or {}).get("regenerate") or []
+                problems, generated = SW.regenerate(worktree, regen, sw)
+            if problems:
+                w["problems"] = problems
+                roll_back()
+            else:
+                fm, _ = split_frontmatter((Path(worktree) / sw["path"]).read_text(encoding="utf-8"))
+                w["title"] = str(fm.get("title") or verdict.get("title") or "")
+                msg = (f"wt({state['id']}): spec {sw['mode']} — "
+                       f"{SW.spec_id_of(sw['number'])} {w['title']}")
+                trailer = ((ctx.project(state).get("agents") or {}).get("commit_trailer")
+                           or "").strip()
+                if trailer:
+                    msg += f"\n\n{trailer}"
+                w["sha"] = SW.commit_staged(worktree, [sw["path"], *generated], msg)
+                w["committed"] = True
+                w["head"] = git.rev_parse(worktree)
+    except (GitError, ValueError, OSError) as e:
+        res.error = getattr(e, "tail", None) or str(e)
+        if not w["rollback_failed"] and not res.interrupted:
+            try:
+                SW.rollback(worktree, sw)
+            except GitError:
+                w["rollback_failed"] = True
+        if w["rollback_failed"]:
+            res.error = "rollback failed; clean the worktree, then resume"
+    return res
 
 
 def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float) -> StepResult:
@@ -1087,7 +1213,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             row["to"], row["reason"] = store.read_state(cfg, cid).get("state"), "superseded_by_human"
             return row
         for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
-                  "pending_brief", "close", "review_carry", "closing"):
+                  "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id"):
             if k in state:
                 current[k] = state[k]
         requested = current.get("park_requested") or state.get("park_requested")
@@ -1113,11 +1239,16 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             "reason": "config_invalid", "detail": f"project config: {res.error}",
             "resume_to": resume if resume in RESUMABLE_STATES else "IMPLEMENTING"})
     if res.error and kind != "close":
-        reason = {"open": "open_failed"}.get(kind, "open_failed")
+        reason = {"open": "open_failed", "write_spec": "spec_write_failed"}.get(kind, "open_failed")
         detail = f"{kind} step failed: {res.error}"
+        if kind == "write_spec" and (res.write or {}).get("rollback_failed"):
+            detail = res.error
+        if kind == "write_spec" and res.run_result is not None:     # the run was paid for
+            events += _record_run(state, res.step.persona, res.run_id, res.run_result,
+                                  res.budget, interrupted=res.interrupted)
         resume = {"open": "QUEUED", "implement": "IMPLEMENTING", "gate": "GATING",
                   "triage": "GATING", "review": "REVIEWING",
-                  "resolve": "CLOSING"}.get(kind, "IMPLEMENTING")
+                  "resolve": "CLOSING", "write_spec": "SPEC_WRITING"}.get(kind, "IMPLEMENTING")
         if kind == "resolve" and res.run_id:    # run.start is on the ledger: close it, run or no run
             rr = res.run_result or replace(_synthetic_failure(str(res.error)), cost_usd=0.0)
             events += _record_run(state, res.step.persona, res.run_id, rr, res.budget,
@@ -1130,6 +1261,9 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
 
     if kind == "review":
         return _apply_reviews(ctx, state, profile, counters, res, row, events, finish)
+
+    if kind == "write_spec":
+        return _apply_spec_write(ctx, state, counters, res, row, events, finish)
 
     if kind in ("implement", "triage", "resolve"):
         persona = res.step.persona
@@ -1363,6 +1497,81 @@ def _apply_resolve(state: dict, counters: dict, res: StepResult, rr, row: dict, 
         "reason": "rebase_conflict", "resume_to": "CLOSING",
         "detail": f"rebase onto {rs.get('target')} ({str(rs.get('target_sha'))[:10]}) conflicts: "
                   f"{paths} (resolver: {used} attempts, last: {why})"})
+
+
+def _apply_spec_write(ctx, state, counters, res, row, events, finish):
+    """A `write_spec` result (SPEC-0215): problems retry once then park, `blocked` parks, a
+    committed spec is recorded on the campaign and the idea, then the campaign parks until the
+    spec review (SPEC-0214) exists."""
+    cfg, cid = ctx.cfg, state["id"]
+    rr, w, persona = res.run_result, res.write, res.step.persona
+    events += _record_run(state, persona, res.run_id, rr, res.budget, interrupted=res.interrupted)
+    row["cost_usd"] = rr.cost_usd if rr.cost_usd is not None else res.budget
+    row["cost_estimated"] = rr.cost_usd is None
+    state["last_verdict"] = {"persona": persona, "run": res.run_id, "verdict": rr.verdict,
+                             "verdict_ok": rr.verdict_ok}
+    if res.interrupted or rr.interrupted:
+        # rolled back by the worker; no retry counted, the next tick runs a fresh writer
+        with store.item_lock(cfg, cid):
+            for etype, payload in events:
+                store.append_event(cfg, cid, etype, payload)
+            store.write_state(cfg, cid, state)
+        row["to"], row["reason"] = res.from_state, "interrupted"
+        return row
+    park_back = {"resume_to": "SPEC_WRITING"}
+    if w["blocked"]:
+        return finish("PARKED", "spec_write_failed", park={
+            "reason": "spec_write_failed", "detail": "blocked: " + "; ".join(w["blocked"]),
+            **park_back})
+    if w["problems"]:
+        for problem in w["problems"]:
+            events.append(("finding", {"persona": persona, "severity": "major",
+                                       "gate": "spec-write", "title": problem[:120],
+                                       "detail": problem, "files": []}))
+        brief = state.get("pending_brief") or {"source": "spec_write", "fix_brief": None,
+                                               "must_fix": [], "human_notes": []}
+        brief["write_problems"] = list(w["problems"])
+        state["pending_brief"] = brief
+        counters["spec_write_retries"] = counters.get("spec_write_retries", 0) + 1
+        if counters["spec_write_retries"] <= SPEC_WRITE_RETRY_MAX:
+            return finish("SPEC_WRITING", "spec_write_retry")
+        return finish("PARKED", "spec_write_failed", park={
+            "reason": "spec_write_failed", "detail": "; ".join(w["problems"]), **park_back})
+    sw = state["spec_write"]
+    spec_id = SW.spec_id_of(sw["number"])
+    record = {"id": spec_id, "rel_path": sw["path"], "internal": True}
+    if w["sha"]:
+        events.append(("commit", {"sha": w["sha"], "message": f"spec {sw['mode']} — {spec_id}"}))
+    state.setdefault("repo", {})["head"] = w.get("head") or w["sha"]
+    with store.item_lock(cfg, cid):
+        on_disk = store.read_state(cfg, cid)
+        on_disk["spec"] = {**(on_disk.get("spec") or {}), **record}
+        on_disk["spec_id"] = spec_id
+        store.write_state(cfg, cid, on_disk)
+        if sw["mode"] == "write" and on_disk.get("state") not in TERMINAL_STATES:
+            _link_idea(cfg, state, spec_id)
+    state["spec"] = {**(state.get("spec") or {}), **record}
+    state["spec_id"] = spec_id
+    counters["spec_write_retries"] = 0
+    state["pending_brief"] = None
+    events.append(("spec_written", {"spec_id": spec_id, "rel_path": sw["path"],
+                                    "title": w["title"], "mode": sw["mode"]}))
+    return finish("PARKED", "spec_written", park={
+        "reason": "spec_review_unavailable", "resume_to": "SPEC_WRITING",
+        "detail": f"{spec_id} {sw['mode']}; no spec review yet (SPEC-0214)"})
+
+
+def _link_idea(cfg, state: dict, spec_id: str) -> None:
+    """Give the campaign's idea `:SPEC:` and SPECCED; both are idempotent."""
+    from .. import org_write as OW
+    task = _idea_task(cfg, _idea_id_of(state))
+    if task is None:
+        return
+    if (task.properties.get("SPEC") or "").strip() != spec_id:
+        OW.set_property(cfg, task, "SPEC", spec_id)
+        task = _idea_task(cfg, _idea_id_of(state))
+    if task is not None and task.state != "SPECCED":
+        OW.set_state(cfg, task, "SPECCED")
 
 
 def _absorb_close_events(state: dict, counters: dict, events: list, close_events) -> None:
@@ -1740,6 +1949,11 @@ def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
             fl.tasks.append((step, pool.submit(_do_prepare_close, ctx, st)))
         elif step.kind == "resolve":
             fl.tasks.append((step, pool.submit(_do_resolve, ctx, st, step, run_id, req, budget)))
+            rows[st["id"]]["run_ids"].append(run_id)
+            fl.runs.append((run_id, getattr(req, "timeout_s", None)))
+        elif step.kind == "write_spec":
+            fl.tasks.append((step, pool.submit(_do_write_spec, ctx, st, step, run_id, req,
+                                               budget)))
             rows[st["id"]]["run_ids"].append(run_id)
             fl.runs.append((run_id, getattr(req, "timeout_s", None)))
         else:
@@ -2991,6 +3205,8 @@ def apply_resume(cfg, plan: dict) -> dict:
             st["pending_brief"] = brief
         if plan.get("raise_cap") is not None:
             _cost(st)["cap_usd"] = float(plan["raise_cap"])
+        if (st.get("park") or {}).get("reason") == "spec_write_failed":
+            _reset_spec_write(cfg, st)
         if plan.get("reset_loops"):
             c = _counters(st)
             c["loops"] = 0
@@ -3002,6 +3218,20 @@ def apply_resume(cfg, plan: dict) -> dict:
         ev = ("resume", {"to": plan["to"], "note": plan.get("note"),
                          "cap_usd": plan.get("raise_cap"), "loops_reset": bool(plan.get("reset_loops"))})
         return _enter_slot_or_wait(cfg, st, plan["to"], "resumed", by="human", extra_events=[ev])
+
+
+def _reset_spec_write(cfg, st: dict) -> None:
+    """Resuming `spec_write_failed` (SPEC-0215): a fresh retry budget and a fresh idea snapshot
+    (its text may have been edited meanwhile), keeping `state_before`."""
+    _counters(st)["spec_write_retries"] = 0
+    old = st.get("idea") or {}
+    task = _idea_task(cfg, old.get("id")) if st.get("kind") == "idea" else None
+    if task is not None:
+        from .. import explore as EX
+        fresh = EX.idea_show_payload(cfg, task)
+        fresh["epic"] = task.properties.get("EPIC")
+        fresh["state_before"] = old.get("state_before")
+        st["idea"] = fresh
 
 
 def plan_abandon(cfg, campaign, *, keep_worktree=False) -> dict:

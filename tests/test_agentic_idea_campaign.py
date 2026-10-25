@@ -50,7 +50,8 @@ def ticks(cfg, n=2):
 
 @pytest.fixture
 def parked(env, monkeypatch):
-    """An idea campaign opened into SPEC_WRITING and parked `spec_writer_unavailable`."""
+    """An idea campaign opened into SPEC_WRITING and parked `spec_write_failed` (SPEC-0215: its
+    `:EPIC:` names no epic spec in the fixture repo, so the writer never runs)."""
     cfg, repo = env
     iid = capture(cfg, epic="SPEC-0169")
     cid = add_idea_campaign(cfg, monkeypatch, iid)
@@ -225,7 +226,8 @@ def test_opens_into_spec_writing_then_parks(env, monkeypatch):
     Q.tick(cfg)
     st = S.read_state(cfg, cid)
     assert st["state"] == "PARKED"
-    assert st["park"]["reason"] == "spec_writer_unavailable"
+    assert st["park"]["reason"] == "spec_write_failed"      # SPEC-0215 replaced the old park
+    assert "fake runner script exhausted" in st["park"]["detail"]   # the writer ran, no script
     assert st["park"]["resume_to"] == "SPEC_WRITING"
 
 

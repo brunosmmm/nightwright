@@ -1,7 +1,7 @@
 ---
 id: SPEC-0215
 title: "spec_writer persona and the SPEC_WRITING step (write and revise)"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -137,7 +137,7 @@ unreviewed is ever implemented.
      absent or `feature`. `parent` must equal `state.idea.epic` when that is set (a missing
      parent is a problem), and must be absent otherwise.
   3. Body: the headings Context, Goals / Non-goals, Decision, Design, Acceptance criteria
-     (with at least one `- [ ]`) and Test plan are present. There is no leftover template
+     (with at least one `- [x]`) and Test plan are present. There is no leftover template
      placeholder, using the same rule as `tools/spec_lint.py`'s `first_placeholder`. A copy
      goes into `wt.specmeta`, and the linter keeps its own so it stays standalone (the
      existing `specmeta` convention). A test asserts that the two give the same result on
@@ -212,7 +212,7 @@ unreviewed is ever implemented.
 
 ## Acceptance criteria
 
-- [ ] **Write mode** with a FakeRunner writer producing a valid spec:
+- [x] **Write mode** with a FakeRunner writer producing a valid spec:
   - the commit contains the spec file at the wt-chosen path and the regenerated
     `docs/LEDGER.md`, and nothing else;
   - `python3 tools/spec_lint.py` exits 0 in the worktree afterwards;
@@ -223,12 +223,12 @@ unreviewed is ever implemented.
     concurrent change to the on-disk `idea` is not overwritten.
   When the writer committed the file itself and regeneration changes nothing, no new commit
   is made. With a project that has no `merge.regenerate`, only the spec file is committed.
-- [ ] **Revise mode** (fixture: a committed spec and findings in `pending_brief`):
+- [x] **Revise mode** (fixture: a committed spec and findings in `pending_brief`):
   - the prompt carries the findings, and the file is modified and committed;
   - `pending_brief` is None afterwards;
   - an unchanged file is a problem;
   - with `suggested_splits` in the findings, the prompt contains the narrowing rule.
-- [ ] Invalid output is rolled back to `head_before`, retried once with the same number,
+- [x] Invalid output is rolled back to `head_before`, retried once with the same number,
       then parks `spec_write_failed` (resume_to SPEC_WRITING). Parametrized cases:
   - a wrong number or path, a second file, an edited `docs/LEDGER.md`, or a deletion;
   - `status: accepted`, a missing `source_idea`, a missing `created`, an unknown
@@ -240,31 +240,31 @@ unreviewed is ever implemented.
   - a runner error, a `spec_path` mismatch, or a failing regenerate command.
   An untracked setup file survives the rollback and is never committed. An untracked file
   created by a failing regenerate command is removed.
-- [ ] A `blocked` verdict parks `spec_write_failed` with the blockers. An interrupted run is
+- [x] A `blocked` verdict parks `spec_write_failed` with the blockers. An interrupted run is
       rolled back without counting a retry.
-- [ ] **Generic error:** a GitError injected into the worker's commit parks
+- [x] **Generic error:** a GitError injected into the worker's commit parks
       `spec_write_failed` with resume_to SPEC_WRITING. A resume then writes and commits.
-- [ ] **Cost cap:** with `cap_usd` below `total_usd + spec_writer budget`, the campaign parks
+- [x] **Cost cap:** with `cap_usd` below `total_usd + spec_writer budget`, the campaign parks
       `cost_cap` (resume_to SPEC_WRITING) without a run. `wt queue resume --raise-cap`
       runs the writer. In revise mode with an empty brief, the `spec_review_unavailable`
       rule wins over the cap.
-- [ ] Resuming `spec_write_failed` with `--note` puts the note in the next prompt, refreshes
+- [x] Resuming `spec_write_failed` with `--note` puts the note in the next prompt, refreshes
       the idea snapshot and resets the retry count.
-- [ ] **Epic child:** an `:EPIC:` that names no `kind: epic` spec parks `spec_write_failed`
+- [x] **Epic child:** an `:EPIC:` that names no `kind: epic` spec parks `spec_write_failed`
       with no run.
-- [ ] Resuming `spec_review_unavailable` without a note re-parks it with no run. With a note,
+- [x] Resuming `spec_review_unavailable` without a note re-parks it with no run. With a note,
       it runs the writer in revise mode.
-- [ ] When a human changed the campaign's state during a successful write (so `finish`
+- [x] When a human changed the campaign's state during a successful write (so `finish`
       skips the move), `state.spec`, `state.spec_id` and the idea's `:SPEC:` still match the
       commit. When the campaign is already terminal, the idea is not written.
-- [ ] The saved prompt in write mode contains the summary, the TEMPLATE text, the SCHEMA
+- [x] The saved prompt in write mode contains the summary, the TEMPLATE text, the SCHEMA
       text, the id and path, and the blocked rule. For an `:EPIC:` idea, it also contains the
       epic's title, a sibling's id and the `parent` rule. No `{{…}}` remains. The request
       uses the writer invariant.
-- [ ] Two idea campaigns writing in the same tick (`slots=2`) get different numbers. Every
+- [x] Two idea campaigns writing in the same tick (`slots=2`) get different numbers. Every
       builtin profile has a `spec_writer` entry. `wt.specmeta.first_placeholder` and the
       linter's copy agree on the lint test inputs, and the existing lint tests pass.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -279,6 +279,34 @@ unreviewed is ever implemented.
   contract.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-25)
+
+- `uv run pytest tests/test_agentic_spec_writer.py`: 53 passed (write, revise, 18 parametrized
+  invalid-output cases, epic child, blocked/interrupted, generic error and failed rollback,
+  cost cap, resumes, human state change, prompt/request, two campaigns in one tick, profiles,
+  placeholder/`_normalize` parity with the linter).
+- Existing tests touched: `test_agentic_idea_campaign.py` (the SPEC-0209 park is replaced by the
+  writer), `test_agentic_personas.py` (the writer template has no gates/previous runs).
+- Full `uv run pytest` and `python3 tools/spec_lint.py` pass after `--write-ledger`.
+
+### As shipped
+
+- The logic lives in the new `src/wt/agentic/spec_write.py` (validation, regeneration,
+  rollback, commit, prompt pieces); `queue.validate_spec_change` is `spec_write.validate_spec_change`
+  reached through `SW`, and `queue.py` holds `_prepare_spec_write`, `_do_write_spec`,
+  `_apply_spec_write`. Persona template: `personas/spec_writer.md`.
+- The builtin profiles here are `balanced`, `frugal`, `thorough` (not `lean`/`premium`); the
+  entries went to `balanced` (sonnet, high, $1.50), `frugal` (sonnet, medium, $0.80) and
+  `thorough` (opus, high, $3.00).
+- `jsonschema` is a dev-only dependency; when it (or the repo's `spec.schema.json`) is missing,
+  the schema check is skipped and only the explicit front-matter checks apply.
+- The dirty-worktree check on resume runs in `_prepare_spec_write` (before `run.start`), on every
+  writer start: tracked changes park `spec_write_failed` with no run.
+- A worker exception after the run still records the run's cost and `run.end`.
+- `render_pending_brief` also renders `section` as a tag and `suggested_splits`; a brief's
+  `write_problems` are shown by the prompt's top block, not by the brief.
+- `docs/product/loop/operate.md` lists the new park reasons.
+
 ## Rollout / migration
 
 Ships through the agentic queue after SPEC-0209. Written specs then park
@@ -286,11 +314,11 @@ Ships through the agentic queue after SPEC-0209. Written specs then park
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

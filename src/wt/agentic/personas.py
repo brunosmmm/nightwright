@@ -191,7 +191,25 @@ You are one run of `wt spec review` on spec `{{spec_id}}`. There is no campaign 
 - Finish by emitting the JSON verdict for your persona. A program parses it; nothing else
   you print is read."""
 
+SPEC_WRITER_INVARIANT = """\
+## wt spec writer invariants (read before anything else)
+
+You are the spec writer of campaign {{campaign}} in its worktree. Edit only the spec file you are
+told to. Finish with the JSON verdict."""
+
 _SEVERITIES = ["must_fix", "major", "minor", "nit"]
+
+SPEC_WRITER_SCHEMA = {
+    "type": "object",
+    "required": ["status", "summary"],
+    "properties": {
+        "status": {"type": "string", "enum": ["written", "blocked"]},
+        "spec_path": {"type": "string"},
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+        "blockers": {"type": "array", "items": {"type": "string"}},
+    },
+}
 
 SPEC_REVIEWER_SCHEMA = {
     "type": "object",
@@ -238,6 +256,9 @@ PERSONAS = {
                                     ADVERSARIAL_REVIEWER_SCHEMA, read_only=True),
     "spec_reviewer": Persona("spec_reviewer", "spec_reviewer.md", SPEC_REVIEWER_SCHEMA,
                              read_only=True, invariant=SPEC_REVIEW_INVARIANT),
+    # SPEC-0215: writes (and revises) the campaign's spec in its worktree; wt validates it
+    "spec_writer": Persona("spec_writer", "spec_writer.md", SPEC_WRITER_SCHEMA, read_only=False,
+                           invariant=SPEC_WRITER_INVARIANT),
     # SPEC-0206: not a reviewer (not in REVIEWER_PERSONAS); waives minor/nit findings only
     "review_triager": Persona("review_triager", "review_triager.md", REVIEW_TRIAGER_SCHEMA,
                               read_only=True),
@@ -255,7 +276,8 @@ PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree",
                 "loop", "loop_max", "context_files", "gate_results", "pending_brief",
                 "previous_verdicts", "diff", "test_files", "tests_touched", "changed_files",
                 "schema_text", "idea_text", "triage_input", "rebase_target", "conflicts",
-                "campaign_diff", "base_diff", "landed", "regenerate")
+                "campaign_diff", "base_diff", "landed", "regenerate", "template_text",
+                "write_problems", "write_rules", "epic_text")
 
 
 def get_persona(name) -> Persona:
@@ -311,13 +333,19 @@ def render_pending_brief(brief) -> str:
         parts.append(f"Brief: {brief['fix_brief']}")
     for item in brief.get("must_fix") or []:
         if isinstance(item, dict):
-            tag = item.get("gate") or item.get("ac") or item.get("category")
+            tag = item.get("gate") or item.get("ac") or item.get("category") or item.get("section")
             where = f" [{tag}]" if tag else ""
             files = f" ({', '.join(item.get('files') or [])})" if item.get("files") else ""
             parts.append(f"- MUST FIX{where}: {item.get('title')}{files}"
                          + (f" — {item['detail']}" if item.get("detail") else ""))
         else:
             parts.append(f"- MUST FIX: {item}")
+    for split in brief.get("suggested_splits") or []:     # SPEC-0215: a spec review's splits
+        if isinstance(split, dict):
+            scope = f" — {split['scope']}" if split.get("scope") else ""
+            parts.append(f"- Suggested split: {split.get('title')}{scope}")
+        else:
+            parts.append(f"- Suggested split: {split}")
     for note in brief.get("human_notes") or []:
         parts.append(f"- Human note: {note}")
     return "\n".join(parts) if parts else "(none)"

@@ -6,6 +6,15 @@ import re
 
 import yaml
 
+_FENCE_LINE_RE = re.compile(r"^\s*(```|~~~)")
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+_PLACEHOLDER_RES = (
+    (re.compile(r"^<The chosen approach"), "a line starting '<The chosen approach'"),
+    (re.compile(r"^\s*-\s*…\s*$"), "a bullet that is only '- …'"),
+    (re.compile(r"<option>"), "'<option>'"),
+    (re.compile(r'^\s*#\s*milestone:\s*"M\?'), "a '# milestone: \"M?' comment line"),
+)
+
 
 def split_frontmatter(text):
     """(frontmatter_dict_or_None, body). A file without a `---`-delimited block -> (None, text)."""
@@ -29,3 +38,21 @@ def sections(body):
     if cur is not None:
         out[cur] = "\n".join(buf).strip()
     return out
+
+
+def first_placeholder(text):
+    """(line number, description) of the first leftover template placeholder in a spec file,
+    or None. Fenced code blocks and inline code spans are ignored, so a spec may talk about
+    the placeholders it forbids. Same rule as `tools/spec_lint.py` (a test keeps them equal)."""
+    fenced = False
+    for n, line in enumerate(text.splitlines(), 1):
+        if _FENCE_LINE_RE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        line = _INLINE_CODE_RE.sub("", line)
+        for rx, what in _PLACEHOLDER_RES:
+            if rx.search(line):
+                return n, what
+    return None

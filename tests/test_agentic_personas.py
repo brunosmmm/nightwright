@@ -114,6 +114,8 @@ def test_templates_and_schemas(tmp_path):
             continue
         if name == "review_triager":      # its own context (SPEC-0206): spec + triage_input
             continue
+        if name == "spec_writer":         # no gates or previous runs (SPEC-0215)
+            continue
         text = persona.template
         for ph in ("{{campaign}}", "{{spec_id}}", "{{worktree}}", "{{spec_text}}",
                    "{{gate_results}}", "{{pending_brief}}", "{{previous_verdicts}}"):

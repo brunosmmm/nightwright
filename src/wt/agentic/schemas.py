@@ -39,6 +39,7 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "priority": ("from", "to"),
     "admitted_after_revision": ("review_sha", "current_sha", "findings"),
     "rebase_resolved": ("run_id", "target_sha", "conflicts", "resolutions", "summary", "head"),
+    "spec_written": ("spec_id", "rel_path", "title", "mode"),
     "followup": ("persona", "severity", "title", "key", "idea_id", "origin"),
 }
 
