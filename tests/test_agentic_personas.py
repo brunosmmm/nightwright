@@ -270,6 +270,20 @@ def test_cli_campaign_prompt(tmp_path, monkeypatch):
     assert "prompt" not in CliRunner().invoke(cli, ["campaign", "--help"]).output.split("Commands:")[1]
 
 
+def test_cli_campaign_prompt_resolves_the_projects_profile_layer(tmp_path, monkeypatch):
+    cfg, st = _cfg(tmp_path), _state(tmp_path)
+    S.create_campaign(cfg, st)
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    d = tmp_path / "repo" / ".wt" / "profiles"
+    d.mkdir(parents=True)
+    f = d / "balanced.yaml"
+    f.write_text("schema: wt.profile.v1\nslots: 0\n", encoding="utf-8")
+    r = CliRunner().invoke(cli, ["campaign", "prompt", st["id"], "implementer"])
+    assert r.exit_code != 0 and f"{f}: slots" in r.output
+    f.write_text("schema: wt.profile.v1\nslots: 3\n", encoding="utf-8")
+    assert CliRunner().invoke(cli, ["campaign", "prompt", st["id"], "implementer"]).exit_code == 0
+
+
 def test_reviewer_personas_get_the_review_context(tmp_path, monkeypatch):
     """SPEC-0201: `build_request` gives the review context to a persona listed in
     REVIEWER_PERSONAS and to no other."""

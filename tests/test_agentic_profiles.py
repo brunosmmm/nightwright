@@ -416,6 +416,7 @@ def test_builtin_conflict_resolver_settings(name, model, effort, budget):       
 # ---- SPEC-0237: YAML layers ------------------------------------------------------------------
 
 import json
+import re
 from pathlib import Path
 
 DEFS = Path(P.__file__).resolve().parent / "profile_defs"
@@ -450,7 +451,12 @@ def test_builtin_files_match_the_golden_snapshot():
     got = P.builtin_profiles()
     got["balanced"]["personas"]["implementer"]["model"] = "x"          # copies, not shared
     assert P.builtin_profiles()["balanced"]["personas"]["implementer"]["model"] == "sonnet"
-    assert not hasattr(P, "BUILTIN_PROFILES")
+    needle = "BUILTIN" + "_PROFILES"                      # not spelled out, so this file is clean
+    assert not hasattr(P, needle)
+    root = Path(__file__).resolve().parent.parent
+    stray = [str(f.relative_to(root)) for d in ("src", "tests") for f in (root / d).rglob("*.py")
+             if needle in f.read_text(encoding="utf-8")]
+    assert stray == []
 
 
 def test_user_and_project_files_add_complete_profiles(tmp_path):
@@ -491,6 +497,33 @@ def test_config_only_new_name_merges_over_balanced_and_effective_balanced(tmp_pa
         "builtin:balanced.yaml", "config.yaml:agentic.profiles.mine"]
     _put(user, "balanced", SCHEMA + "slots: 9\n")
     assert P.resolve_profile(cfg, "mine")["slots"] == 9
+
+
+def test_campaign_cap_null_means_no_cap(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    cfg["agentic"]["profiles"]["balanced"] = {"campaign_cap_usd": None}
+    assert P.resolve_profile(cfg, "balanced")["campaign_cap_usd"] is None
+    cfg["agentic"]["profiles"] = {}
+    _put(user, "nocap", (DEFS / "frugal.yaml").read_text().replace(
+        "campaign_cap_usd:", "campaign_cap_usd: null  #", 1))
+    got = P.resolve_profile(cfg, "nocap")
+    assert got["campaign_cap_usd"] is None and got["sources"] == [str(user / "nocap.yaml")]
+
+
+def test_sources_list_each_origin_once_in_layer_order(tmp_path):
+    """A chain through all four layers (own-name `extends` at each) lists each origin once; a
+    chain is linear and a cycle raises, so no origin can repeat."""
+    cfg, user, proj = _layers(tmp_path)
+    u = _put(user, "balanced", SCHEMA + "slots: 3\n")
+    cfg["agentic"]["profiles"]["balanced"] = {"extends": "balanced", "loop_max": 2}
+    pr = _put(_pdir(proj), "balanced", SCHEMA + "extends: balanced\nrun_timeout_s: 9\n")
+    got = P.resolve_profile(cfg, "balanced", project_root=proj)
+    assert got["sources"] == ["builtin:balanced.yaml", u, "config.yaml:agentic.profiles.balanced",
+                              pr]
+    chain = P.profile_chain(cfg, "balanced", project_root=proj)
+    assert [o for o, _ in chain] == got["sources"]
+    tail = _put(_pdir(proj), "tail", SCHEMA + "extends: balanced\n")
+    assert P.resolve_profile(cfg, "tail", project_root=proj)["sources"] == got["sources"] + [tail]
 
 
 def test_description_is_top_most(tmp_path):
@@ -603,11 +636,10 @@ def test_bad_file_names_and_yml_files(tmp_path):
     _put(user, "notes", "ignored", suffix=".txt")
     assert {"Bad_Name", "legacy"} <= set(P.known_profiles(cfg))
     assert "notes" not in P.known_profiles(cfg)
-    with pytest.raises(ValueError, match=r"Bad_Name\.yaml: <file>: profile name"):
+    with pytest.raises(ValueError, match=re.escape(f"{f1}: <file>: profile name")):
         P.resolve_profile(cfg, "Bad_Name")
-    with pytest.raises(ValueError, match=r"legacy\.yml: <file>: rename to \.yaml"):
+    with pytest.raises(ValueError, match=re.escape(f"{f2}: <file>: rename to .yaml")):
         P.resolve_profile(cfg, "legacy")
-    assert f1 and f2
 
 
 def test_a_broken_file_breaks_only_its_own_profile(tmp_path):

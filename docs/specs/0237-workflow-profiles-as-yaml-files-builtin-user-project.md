@@ -295,6 +295,12 @@ format, the precedence and an `extends` example. The existing doc tests
 - Manual: the resolve-everything one-liner against the real config succeeded:
   `balanced` (builtin + `config.yaml` delta), `frugal`, `thorough`; no user key was rejected.
 - `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: exit 0.
+- Review round 1 additions: `project_root` forwarding in `queue_payload` (`loop_max`) and
+  `wt campaign prompt` is now tested (removing either argument fails a test); `campaign_cap_usd:
+  null` resolves in a file and a config delta; a source scan asserts no stray `BUILTIN_PROFILES`
+  in `src/` or `tests/`; the file-name tests match the full path; the packaging test no longer
+  skips without `uv`. `sources` is built without duplicates, but a chain is linear and a cycle
+  raises, so no origin can repeat; the test pins the four-layer order instead.
 
 ### As shipped (2026-10-25)
 

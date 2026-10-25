@@ -4,13 +4,12 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
 
 
-@pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")
 def test_wheel_contains_the_builtin_profile_files(tmp_path):
+    """Not skipped without uv: the wheel-content criterion must fail loudly, not go unchecked."""
+    assert shutil.which("uv"), "uv is required to build the wheel (the project's tooling)"
     out = tmp_path / "dist"
     subprocess.run(["uv", "build", "--wheel", "--out-dir", str(out)], cwd=ROOT, check=True,
                    capture_output=True, text=True)

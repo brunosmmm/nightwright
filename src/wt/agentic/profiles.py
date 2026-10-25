@@ -237,14 +237,16 @@ def _chain(layers, name, top, stack=()) -> list | None:
     return (base or []) + [(d.origin, d.doc)]
 
 
-def profile_chain(cfg, name, *, project_root=None) -> list:
-    """The `(origin, delta)` pairs, lowest first, that make up profile `name`."""
-    layers = load_layers(cfg, project_root=project_root)
+def _chain_of(layers, name) -> list:
     chain = _chain(layers, name, len(layers) - 1)
     if chain is None:
-        raise ValueError(f"unknown profile {name!r}; known: "
-                         f"{', '.join(_known(layers))}")
+        raise ValueError(f"unknown profile {name!r}; known: {', '.join(_known(layers))}")
     return chain
+
+
+def profile_chain(cfg, name, *, project_root=None) -> list:
+    """The `(origin, delta)` pairs, lowest first, that make up profile `name`."""
+    return _chain_of(load_layers(cfg, project_root=project_root), name)
 
 
 def _known(layers) -> list:
@@ -262,9 +264,7 @@ def _persona_names() -> tuple:
 
 
 def _resolve(layers, name) -> dict:
-    chain = _chain(layers, name, len(layers) - 1)
-    if chain is None:
-        raise ValueError(f"unknown profile {name!r}; known: {', '.join(_known(layers))}")
+    chain = _chain_of(layers, name)
     profile = {}
     for _, delta in chain:
         profile = deep_merge(profile, {k: v for k, v in delta.items() if k not in META_KEYS})

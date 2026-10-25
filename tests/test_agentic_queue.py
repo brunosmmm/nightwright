@@ -1297,3 +1297,14 @@ def test_queue_add_fails_with_the_profile_file_message(tmp_path, monkeypatch):
     f = _project_profile(repo, "bogus: 1\n")
     r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--yes", "--json"])
     assert r.exit_code != 0 and f"{f}: bogus: unknown key" in r.output
+
+
+def test_queue_payload_uses_the_campaigns_project_layer_for_loop_max(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    cid = added(cfg, monkeypatch)
+    [item] = [i for i in Q.queue_payload(cfg)["items"] if i["campaign"] == cid]
+    assert item["loops"].endswith("/3")
+    _project_profile(repo, "loop_max: 9\n")
+    [item] = [i for i in Q.queue_payload(cfg)["items"] if i["campaign"] == cid]
+    assert item["loops"].endswith("/9")
