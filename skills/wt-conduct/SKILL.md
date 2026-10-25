@@ -106,6 +106,8 @@ Exact flags: `wt queue --help`, `wt campaign --help`, `wt mailbox --help`.
 
 ## Conventions / guardrails
 
+- **One spec review round, never more.** A spec gets exactly one `wt spec review`. `approve` ⇒ queue it. `revise` ⇒ the author applies the findings (with the conductor's decisions on each) and the spec is queued without a second review; the implementer's brief carries the findings. `split` ⇒ split, and each part gets its own single review. Until the single-round admission rule ships (IDEA-101 spec), `wt queue add` still demands an approve for the current text, so a revised spec waits for that rule instead of being re-reviewed. Never run review → revise → re-review loops.
+
 - **One conductor.** The `conductor` reader lock on the event follower enforces it.
 - **Never block.** Quick reads and writes only in your own context; everything else is a
   sub-agent or a background shell (see *Never block*).
