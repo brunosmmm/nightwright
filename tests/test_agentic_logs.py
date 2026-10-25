@@ -5,7 +5,8 @@ import json
 
 import pytest
 
-from test_agentic_e2e import added, impl_done, make_cfg, make_repo, review, run_cli, script, triage
+from test_agentic_e2e import (added, impl_done, make_cfg, make_repo, review, run_cli, script,
+                              tr_review, triage)
 from wt.agentic import queue as Q
 from wt.agentic import schemas as SC
 from wt.agentic import store as S
@@ -121,3 +122,30 @@ def test_runner_log_cli(tmp_path, monkeypatch):
     assert r.exit_code == 0 and "start" in r.output and "stop" in r.output and cid in r.output
     r = run_cli(cfg, monkeypatch, ["queue", "runner-log", "--tail", "1", "--json"])
     assert len(json.loads(r.output)["records"]) == 1
+
+
+def test_test_reviewer_records_are_valid_and_routed(tmp_path, monkeypatch):
+    """SPEC-0205 AC4: the test reviewer's findings are `finding` events with persona and `ac`;
+    `pass` + a `must_fix` finding routes as `fix`; the ledger validates."""
+    from test_agentic_reviewers import PersonaRunner, drive
+    mixed = tr_review("pass")                       # pass, but carries a must_fix finding
+    mixed["verdict"]["findings"] = tr_review("fix")["verdict"]["findings"]
+    scripts = {"implementer": [impl_done(), impl_done(content="better\n")],
+               "conformance_reviewer": [review("pass"), review("pass")],
+               "test_reviewer": [mixed, tr_review("pass")]}
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []),
+                   profile={"reviewers": ["conformance_reviewer", "test_reviewer"]})
+    cid = added(cfg, monkeypatch)
+    drive(cfg, PersonaRunner(scripts))
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED" and st["counters"]["loops"] == 1     # pass+must_fix ⇒ fix
+    ledger = [json.loads(line)
+              for line in (S.campaign_dir(cfg, cid) / "ledger.jsonl").read_text().splitlines()]
+    assert [p for rec in ledger for p in SC.ledger_problems(rec)] == []
+    found = [r for r in ledger if r["type"] == "finding" and r["persona"] == "test_reviewer"]
+    assert [(f["severity"], f["ac"]) for f in found] == [("must_fix", "feature.txt exists")]
+    assert st["last_review"]["verdicts"]["test_reviewer"]["coverage_assessment"] == [
+        {"ac": "feature.txt exists", "covered": True, "tests": ["tests/test_feature.py::test_exists"]}]
+    first = S.runs_dir(cfg, cid) / "003-test_reviewer" / "run.json"
+    assert json.loads(first.read_text())["verdict"]["coverage_assessment"][0]["covered"] is True

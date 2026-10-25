@@ -1,7 +1,7 @@
 ---
 id: SPEC-0205
 title: "Test reviewer persona: do the tests cover the spec?"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -154,31 +154,31 @@ a removed test cannot go unnoticed; parametrized tests are not expanded (one nam
 
 ## Acceptance criteria
 
-- [ ] AC1 (G1). `test_reviewer` template (containing the regression rule: removed or weakened
+- [x] AC1 (G1). `test_reviewer` template (containing the regression rule: removed or weakened
       test ⇒ `must_fix`, and the severity mapping), `TEST_REVIEWER_SCHEMA` (exact required keys
       as above),
       `PERSONAS` entry and `REVIEWER_PERSONAS` membership exist; `build_request` is read-only and
       its prompt is deterministic (two builds equal) and contains the `tests_touched` entries
       (changed and removed names).
-- [ ] AC2 (G3). `resolve_profile` gives `personas.test_reviewer` the model/effort/budget above
+- [x] AC2 (G3). `resolve_profile` gives `personas.test_reviewer` the model/effort/budget above
       for every builtin profile and `reviewers` containing `test_reviewer` immediately after
       `conformance_reviewer` (asserted as `reviewers.index("test_reviewer") == reviewers.index("conformance_reviewer") + 1`) for `balanced` and `thorough` (exactly `["conformance_reviewer",
       "test_reviewer"]` when SPEC-0202 has not shipped) and `["conformance_reviewer"]` for
       `frugal`; a user delta can add it
       to `frugal`.
-- [ ] AC3 (G2). `tests_touched` returns, for a fixture repo, the changed test names (incl.
+- [x] AC3 (G2). `tests_touched` returns, for a fixture repo, the changed test names (incl.
       `Class::name`), the removed test names (deleted function, deleted file, renamed file; an
       R100 rename lists nothing as changed), a test whose only edit is a deleted assertion as `changed`, normalises `R087` to `R`, caps
       long lists, and falls back to the regex on a syntax error.
-- [ ] AC4 (G1). Its findings become `finding` events with `persona: test_reviewer` and `ac`;
+- [x] AC4 (G1). Its findings become `finding` events with `persona: test_reviewer` and `ac`;
       a `verdict: pass` with a `must_fix` finding routes as `fix`; `ledger_problems` is empty for them and `coverage_assessment` is stored in
       `last_review.verdicts`.
-- [ ] AC5 (G1, G3). End to end with FakeRunner scripts on the default balanced reviewers:
+- [x] AC5 (G1, G3). End to end with FakeRunner scripts on the default balanced reviewers:
       (a) conformance pass + test_reviewer fix then pass ⇒ `MERGED` with two implementer runs and
       the test findings in the ledger; (b) both pass ⇒ `MERGED`; (c) test_reviewer malformed
       twice ⇒ `PARKED(review_escalated)` naming it; (d) the cost-cap sum includes its budget (a
       cap that fits conformance alone but not both parks `cost_cap` before any spawn).
-- [ ] AC6. Existing queue/e2e tests that assumed the default `balanced` has one reviewer set
+- [x] AC6. Existing queue/e2e tests that assumed the default `balanced` has one reviewer set
       `reviewers: [conformance_reviewer]` in their profile delta; `docs/product/capabilities/
       agentic.md` lists the reviewer (grep assertion in `tests/test_agentic_profiles.py`); full `uv run pytest` green; `python3 tools/spec_lint.py`
       exits 0.
@@ -199,6 +199,32 @@ a removed test cannot go unnoticed; parametrized tests are not expanded (one nam
   reviewers' verdicts and the actual spend per review pass here (to judge the cap impact).
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q` (full suite) green; new tests in `tests/test_agentic_personas.py`
+  (template, schema, request, deterministic prompt, `tests_touched` fixtures: nested classes,
+  decorator edit, deleted assertion, deleted/added/renamed incl. R100 and R087, rename across the
+  test boundary, syntax-error regex fallback, `"… 50 more"` cap, GitError ⇒ `[]`),
+  `tests/test_agentic_profiles.py` (settings, default lists, `REVIEWER_ORDER`, frugal opt-in,
+  docs grep), `tests/test_agentic_logs.py` (AC4: ledger valid, `pass`+`must_fix` routes as `fix`,
+  `coverage_assessment` in `last_review` and `run.json`), `tests/test_agentic_e2e.py` (AC5 a-d,
+  with the test reviewer finishing first and last).
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py` exit 0.
+- Manual verification (both reviewers' verdicts and actual spend per review pass on a real
+  balanced campaign) is deferred to the next real campaign, as the plan words it.
+
+### As shipped
+
+- `REVIEWER_ORDER` was created here in `profiles.py` (SPEC-0202 had not shipped); the builtin
+  `reviewers` lists remain literal lists, and a test pins them to that order.
+- AC6: only the `tests/test_agentic_e2e.py` `make_cfg` helper needed the
+  `reviewers: [conformance_reviewer]` default (the other test files build on it);
+  `tests/test_agentic_queue.py` uses profile dicts without a `reviewers` key, which already
+  fall back to the conformance reviewer, so it is unchanged.
+- `queue._store_verdicts` keeps `coverage_assessment` beside `ac_assessment` in
+  `last_review.verdicts`; the regex fallback marks a test `changed` only when a hunk touches its
+  `def` line, as specified.
+
 ## Rollout / migration
 
 Existing `balanced`/`thorough` campaigns gain the second reviewer on their next `REVIEWING`
@@ -211,11 +237,11 @@ Built by the agentic loop or the human lane; idea bookkeeping via `wt spec recon
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

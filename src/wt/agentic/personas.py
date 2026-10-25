@@ -7,7 +7,9 @@ byte-identical prompt (its sha is logged by the queue). Every prompt ends with t
 invariant block, which the runner also passes as `--append-system-prompt`."""
 from __future__ import annotations
 
+import ast
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +23,9 @@ _TEMPLATES_DIR = Path(__file__).resolve().parent / "personas"
 _GATE_TAIL_LINES = 60
 _PREVIOUS_VERDICTS = 2
 _DIFF_MAX_LINES = 1500
+_TESTS_LIST_MAX = 200
+_TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def\s+(test_\w+)", re.MULTILINE)
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 
 INVARIANT = """\
 ## wt queue invariants (read before anything else)
@@ -90,6 +95,27 @@ CONFORMANCE_REVIEWER_SCHEMA = {
     },
 }
 
+TEST_REVIEWER_SCHEMA = {
+    "type": "object",
+    "required": ["verdict", "score", "findings", "coverage_assessment", "fix_brief"],
+    "properties": {
+        "verdict": {"type": "string", "enum": ["pass", "fix"]},
+        "score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "findings": {"type": "array", "items": {
+            "type": "object", "required": ["severity", "title"],
+            "properties": {"severity": {"type": "string",
+                                        "enum": ["must_fix", "major", "minor", "nit"]},
+                           "ac": {"type": "string"}, "title": {"type": "string"},
+                           "detail": {"type": "string"},
+                           "files": {"type": "array", "items": {"type": "string"}}}}},
+        "coverage_assessment": {"type": "array", "items": {
+            "type": "object", "required": ["ac", "covered"],
+            "properties": {"ac": {"type": "string"}, "covered": {"type": "boolean"},
+                           "tests": {"type": "array", "items": {"type": "string"}}}}},
+        "fix_brief": {"type": "string"},
+    },
+}
+
 SPEC_REVIEW_INVARIANT = """\
 ## wt spec review invariants (read before anything else)
 
@@ -136,17 +162,20 @@ PERSONAS = {
                             read_only=True),
     "conformance_reviewer": Persona("conformance_reviewer", "conformance_reviewer.md",
                                     CONFORMANCE_REVIEWER_SCHEMA, read_only=True),
+    "test_reviewer": Persona("test_reviewer", "test_reviewer.md", TEST_REVIEWER_SCHEMA,
+                             read_only=True),
     "spec_reviewer": Persona("spec_reviewer", "spec_reviewer.md", SPEC_REVIEWER_SCHEMA,
                              read_only=True, invariant=SPEC_REVIEW_INVARIANT),
 }
 
 # Personas that get the review context (diff, gate summary, previous verdicts) and may be listed
 # in a profile's `reviewers` (SPEC-0201).
-REVIEWER_PERSONAS = ("conformance_reviewer",)
+REVIEWER_PERSONAS = ("conformance_reviewer", "test_reviewer")
 
 PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree", "base",
                 "loop", "loop_max", "context_files", "gate_results", "pending_brief",
-                "previous_verdicts", "diff", "test_files", "schema_text", "idea_text")
+                "previous_verdicts", "diff", "test_files", "tests_touched", "schema_text",
+                "idea_text")
 
 
 def get_persona(name) -> Persona:
@@ -225,12 +254,157 @@ def render_previous_verdicts(events) -> str:
     return "\n".join(lines) if lines else "(none)"
 
 
+# ---- tests_touched (SPEC-0205) -----------------------------------------------------------
+
+def _is_test_file(path: str) -> bool:
+    """A `.py` file under a `tests/` directory or named `test_*.py` / `*_test.py`; `conftest.py`
+    holds helpers, not tests."""
+    parts = path.split("/")
+    name = parts[-1]
+    if not name.endswith(".py") or name == "conftest.py":
+        return False
+    return "tests" in parts[:-1] or name.startswith("test_") or name.endswith("_test.py")
+
+
+def _test_defs(source: str):
+    """`({name: (start, end)}, parsed)` — the test functions of `source` with their line spans
+    (decorators included). `parsed` is False when `ast.parse` failed and the regex fallback was
+    used (bare names, `start == end` = the `def` line)."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        lines = {}
+        for m in _TEST_DEF_RE.finditer(source):
+            n = source.count("\n", 0, m.start(1)) + 1
+            lines[m.group(1)] = (n, n)
+        return lines, False
+    out = {}
+
+    def walk(body, prefix):
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name.startswith("test_"):
+                    start = min([node.lineno] + [d.lineno for d in node.decorator_list])
+                    out[f"{prefix}::{node.name}" if prefix else node.name] = \
+                        (start, node.end_lineno or node.lineno)
+            elif isinstance(node, ast.ClassDef):
+                walk(node.body, f"{prefix}.{node.name}" if prefix else node.name)
+
+    walk(tree.body, "")
+    return out, True
+
+
+def _split_diff(text: str) -> dict:
+    """`{new_path: [(start, count), …]}` new-side hunk ranges from a `--unified=0` diff,
+    split per file on the `diff --git` headers. A quoted or `/dev/null` path gets no entry."""
+    hunks = {}
+    for section in re.split(r"^diff --git ", text, flags=re.MULTILINE)[1:]:
+        m = re.search(r"^\+\+\+ b/(.+)$", section, flags=re.MULTILINE)
+        if not m:
+            continue
+        hunks[m.group(1)] = [(int(a), 1 if b is None or b == "" else int(b))
+                             for a, b in _HUNK_RE.findall(section)]
+    return hunks
+
+
+def _hits(span, ranges) -> bool:
+    start, end = span
+    for s, n in ranges:
+        if n == 0:
+            if start - 1 <= s <= end:
+                return True
+        elif s <= end and s + n - 1 >= start:
+            return True
+    return False
+
+
+def _capped(names) -> list:
+    names = sorted(set(names))
+    if len(names) > _TESTS_LIST_MAX:
+        extra = len(names) - _TESTS_LIST_MAX
+        return names[:_TESTS_LIST_MAX] + [f"\u2026 {extra} more"]
+    return names
+
+
+def _show(worktree, rev, path):
+    try:
+        return git.git(worktree, "show", f"{rev}:{path}").stdout
+    except git.GitError:
+        return None
+
+
+def tests_touched(worktree, base) -> list[dict]:
+    """Deterministic, no LLM (SPEC-0205): per test file touched between `base` and HEAD,
+    `{path, status: A|M|R|D, changed: [names], removed: [names]}` sorted by path. Names are
+    `test_x` or `Class::test_x` (parametrization is not expanded). `changed` = tests whose span
+    (decorators included) meets a new-side hunk; `removed` = tests of the base version absent from
+    the new one. Lists are capped at 200 plus a trailing `"… N more"`. A `GitError` gives `[]`."""
+    try:
+        raw = git.git(worktree, "-c", "core.quotepath=off", "diff", "-M", "--name-status", "-z",
+                      f"{base}...HEAD").stdout
+        full = git.git(worktree, "-c", "core.quotepath=off", "diff", "-M", "--unified=0",
+                       f"{base}...HEAD").stdout
+        merge_base = git.git(worktree, "merge-base", base, "HEAD").stdout.strip()
+    except git.GitError:
+        return []
+    hunks = _split_diff(full)
+    toks = raw.split("\0")
+    entries, i = [], 0
+    while i < len(toks) and toks[i]:
+        code = toks[i][0]
+        if code in "RC":
+            old, new, i = toks[i + 1], toks[i + 2], i + 3
+            similarity = toks[i - 3][1:]
+        else:
+            old = new = toks[i + 1]
+            i += 2
+            similarity = ""
+        status = {"T": "M", "C": "A"}.get(code, code)
+        if status == "A":
+            old = None
+        if status not in ("A", "M", "R", "D"):
+            continue
+        old_test = old is not None and _is_test_file(old)
+        new_test = status != "D" and _is_test_file(new)
+        if not (old_test or new_test):
+            continue
+        changed, removed = [], []
+        old_defs, old_parsed = {}, True
+        if old_test:
+            src = _show(worktree, merge_base, old)
+            if src is not None:
+                old_defs, old_parsed = _test_defs(src)
+        if new_test:
+            src = _show(worktree, "HEAD", new)
+            new_defs, new_parsed = _test_defs(src) if src is not None else ({}, True)
+            ranges = hunks.get(new)
+            if status == "A" or (status == "R" and not old_test):
+                changed = list(new_defs)
+            elif status == "R" and similarity == "100":
+                changed = []
+            elif ranges is None:                  # quoted path: no hunk info
+                changed = list(new_defs)
+            else:
+                changed = [n for n, span in new_defs.items() if _hits(span, ranges)]
+            if old_parsed and new_parsed:
+                removed = [n for n in old_defs if n not in new_defs]
+            else:
+                keep = {n.rsplit("::", 1)[-1] for n in new_defs}
+                removed = [n for n in old_defs if n.rsplit("::", 1)[-1] not in keep]
+        else:
+            removed = list(old_defs)
+        entries.append({"path": new if status != "D" else old, "status": status,
+                        "changed": _capped(changed), "removed": _capped(removed)})
+    return sorted(entries, key=lambda e: e["path"])
+
+
 def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
-                  review=False) -> dict:
+                  review=False, with_tests=False) -> dict:
     """Prompt values from campaign state (+ project config). `spec_text` is read from the
     worktree so the persona sees the spec as it is on the branch. `previous` = `run.end`
     ledger events (the caller reads them; this stays free of store I/O). `review` adds the
-    branch `diff` (≤ 1500 lines) and the `test_files` it touches, read from the worktree."""
+    branch `diff` (≤ 1500 lines) and the `test_files` it touches, read from the worktree;
+    `with_tests` adds `tests_touched` (SPEC-0205), pre-rendered as sorted JSON."""
     repo = state.get("repo") or {}
     spec = state.get("spec") or {}
     worktree = repo.get("worktree")
@@ -250,6 +424,10 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
                           if f.startswith("tests/")]
         except (git.GitError, OSError):
             pass
+    touched = None
+    if with_tests and worktree and repo.get("base"):
+        entries = tests_touched(worktree, repo["base"])
+        touched = json.dumps(entries, indent=2, sort_keys=True) if entries else None
     return {
         "campaign": state.get("id"),
         "spec_id": state.get("spec_id"),
@@ -265,6 +443,7 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
         "previous_verdicts": render_previous_verdicts(previous),
         "diff": diff,
         "test_files": test_files,
+        "tests_touched": touched,
     }
 
 
@@ -312,7 +491,8 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
             or "bypassPermissions"
         allowed = tuple(list(agents.get("allowed_tools") or []) + _gate_tool_patterns(project_cfg))
     ctx = build_context(cfg, state, project_cfg, loop_max=profile.get("loop_max"),
-                        previous=previous, review=persona in REVIEWER_PERSONAS)
+                        previous=previous, review=persona in REVIEWER_PERSONAS,
+                        with_tests=persona == "test_reviewer")
     env = {
         "WT_CAMPAIGN": str(state.get("id") or ""),
         "WT_DATA_DIR": str(cfg.get("data_dir") or ""),

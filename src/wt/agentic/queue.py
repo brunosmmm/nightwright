@@ -949,6 +949,8 @@ def _store_verdicts(state: dict, profile: dict, counters: dict, results) -> bool
                  "findings": [f for f in v.get("findings") or [] if isinstance(f, dict)]}
         if "ac_assessment" in v:
             entry["ac_assessment"] = v["ac_assessment"]
+        if "coverage_assessment" in v:
+            entry["coverage_assessment"] = v["coverage_assessment"]
         entry.update(run=r.run_id, loop=counters["loops"])
         verdicts[r.step.persona] = entry
         stored = True

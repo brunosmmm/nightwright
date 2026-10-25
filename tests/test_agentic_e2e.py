@@ -183,6 +183,20 @@ def review(verdict="pass", **kw):
     return {"persona": "conformance_reviewer", "verdict": v, "cost_usd": 0.2}
 
 
+def tr_review(verdict="pass", **kw):
+    """FakeRunner entry: the test reviewer (SPEC-0205). `fix` carries one must_fix finding."""
+    fix = verdict == "fix"
+    v = {"verdict": verdict, "score": 30 if fix else 90,
+         "findings": [{"severity": "must_fix", "ac": "feature.txt exists",
+                       "title": "no test for feature.txt", "detail": "add one",
+                       "files": ["tests/test_feature.py"]}] if fix else [],
+         "coverage_assessment": [{"ac": "feature.txt exists", "covered": not fix,
+                                  "tests": [] if fix else ["tests/test_feature.py::test_exists"]}],
+         "fix_brief": "add a test for feature.txt" if fix else ""}
+    v.update(kw)
+    return {"persona": "test_reviewer", "verdict": v, "cost_usd": 0.2}
+
+
 def make_cfg(tmp_path, repo, script_path, *, profile=None, outbox=None):
     org = tmp_path / "org"
     org.mkdir(exist_ok=True)
@@ -201,7 +215,7 @@ def make_cfg(tmp_path, repo, script_path, *, profile=None, outbox=None):
         "outbox_targets": outbox or {},
         "agentic": {"runner": "fake", "fake_script": str(script_path), "default_profile": "balanced",
                     "poll_interval_s": 0.01, "lease_ttl_s": 120,
-                    "profiles": {"balanced": profile or {}}},
+                    "profiles": {"balanced": {"reviewers": ["conformance_reviewer"], **(profile or {})}}},
     }
     return cfg
 
@@ -614,3 +628,83 @@ def test_sigterm_mid_run_leaves_state_and_releases_lease(tmp_path, monkeypatch):
     assert st["counters"]["runs"] == 1 and st["cost"]["total_usd"] == 0.5
     from wt.agentic import lease as L
     assert L.lease_status(cfg)["held"] is False
+
+
+# ---- SPEC-0205: the test reviewer on the default balanced reviewers ---------------------------
+
+BOTH = ["conformance_reviewer", "test_reviewer"]
+
+
+def _both(tmp_path, monkeypatch, scripts, **profile):
+    """cfg + campaign with the default balanced reviewers and a per-persona scripted runner."""
+    from test_agentic_reviewers import PersonaRunner
+    from wt.agentic.profiles import resolve_profile
+    assert resolve_profile({}, "balanced")["reviewers"] == BOTH
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []), profile=dict(reviewers=BOTH, **profile))
+    return cfg, added(cfg, monkeypatch), repo, PersonaRunner(scripts)
+
+
+@pytest.mark.parametrize("slow", ["conformance_reviewer", "test_reviewer"])
+def test_e2e_test_reviewer_fix_then_pass_merges(tmp_path, monkeypatch, slow):
+    from test_agentic_reviewers import drive
+    scripts = {"implementer": [impl_done(), impl_done(content="better\n")],
+               "conformance_reviewer": [review("pass"), review("pass")],
+               "test_reviewer": [tr_review("fix"), tr_review("pass")]}
+    scripts[slow][0]["sleep_s"] = 0.3                      # test_reviewer finishes first / last
+    cfg, cid, repo, runner = _both(tmp_path, monkeypatch, scripts)
+    drive(cfg, runner)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED", st
+    assert runner.calls.count("implementer") == 2 and st["counters"]["loops"] == 1
+    starts = [e["persona"] for e in S.read_ledger(cfg, cid, types=["run.start"])]
+    assert starts == ["implementer", *BOTH, "implementer", *BOTH]
+    findings = [f for f in S.read_ledger(cfg, cid, types=["finding"])
+                if f["persona"] == "test_reviewer"]
+    assert [(f["severity"], f["ac"], f["title"]) for f in findings] == [
+        ("must_fix", "feature.txt exists", "no test for feature.txt")]
+    assert st["last_review"]["verdicts"]["test_reviewer"]["coverage_assessment"][0]["covered"]
+    prompt = (S.runs_dir(cfg, cid) / "004-implementer" / "prompt.md").read_text()
+    assert "From: review" in prompt and "[test_reviewer] add a test for feature.txt" in prompt
+    reviewer_prompt = (S.runs_dir(cfg, cid) / "003-test_reviewer" / "prompt.md").read_text()
+    assert '"path": "feature.txt"' not in reviewer_prompt     # not a test file: not listed
+
+
+def test_e2e_both_reviewers_pass_merges(tmp_path, monkeypatch):
+    from test_agentic_reviewers import drive
+    cfg, cid, repo, runner = _both(tmp_path, monkeypatch, {
+        "implementer": [impl_done()], "conformance_reviewer": [review("pass")],
+        "test_reviewer": [tr_review("pass")]})
+    drive(cfg, runner)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED", st
+    assert set(st["last_review"]["verdicts"]) == set(BOTH) and st["last_review"]["verdict"] == "pass"
+    assert st["cost"]["by_persona"]["test_reviewer"] == 0.2
+
+
+def test_e2e_test_reviewer_malformed_twice_escalates(tmp_path, monkeypatch):
+    from test_agentic_reviewers import drive
+    bad = dict(tr_review("pass"), malformed=True)
+    cfg, cid, repo, runner = _both(tmp_path, monkeypatch, {
+        "implementer": [impl_done()], "conformance_reviewer": [review("pass")],
+        "test_reviewer": [bad, dict(bad)]})
+    drive(cfg, runner)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "review_escalated", st
+    assert "test_reviewer" in st["park"]["detail"] and "conformance" not in st["park"]["detail"]
+    assert runner.calls.count("conformance_reviewer") == 1
+
+
+def test_e2e_cost_cap_sums_the_test_reviewer_budget(tmp_path, monkeypatch):
+    from test_agentic_reviewers import drive
+    # after the implementer 0.5 is spent: 0.5 + 1.5 (conformance alone) fits 2.0, + 1.0 does not
+    cfg, cid, repo, runner = _both(
+        tmp_path, monkeypatch,
+        {"implementer": [impl_done()], "conformance_reviewer": [review("pass")],
+         "test_reviewer": [tr_review("pass")]},
+        campaign_cap_usd=2.0, personas={"implementer": {"max_budget_usd": 1.0}})
+    drive(cfg, runner)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "cost_cap", st
+    assert st["park"]["resume_to"] == "REVIEWING" and st["counters"]["runs"] == 1
+    assert runner.calls == ["implementer"]                   # no reviewer spawned, no partial fan-out

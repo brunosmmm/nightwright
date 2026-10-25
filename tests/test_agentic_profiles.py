@@ -74,9 +74,39 @@ def test_deep_merge_replaces_non_dicts():
 
 # ---- SPEC-0201: reviewers --------------------------------------------------------------------
 
-@pytest.mark.parametrize("name", ["balanced", "thorough", "frugal"])
-def test_reviewers_default_is_conformance_only(name):
-    assert P.resolve_profile({}, name)["reviewers"] == ["conformance_reviewer"]
+@pytest.mark.parametrize("name,want", [("balanced", ["conformance_reviewer", "test_reviewer"]),
+                                       ("thorough", ["conformance_reviewer", "test_reviewer"]),
+                                       ("frugal", ["conformance_reviewer"])])
+def test_reviewers_default_lists(name, want):
+    got = P.resolve_profile({}, name)["reviewers"]
+    assert got == want
+    order = [p for p in P.REVIEWER_ORDER if p in got]
+    assert got == order                                  # canonical order (SPEC-0205/0202)
+    if "test_reviewer" in got:
+        assert got.index("test_reviewer") == got.index("conformance_reviewer") + 1
+
+
+@pytest.mark.parametrize("name,model,effort,budget", [("balanced", "opus", "high", 1.0),
+                                                      ("thorough", "opus", "high", 1.0),
+                                                      ("frugal", "sonnet", "medium", 0.5)])
+def test_test_reviewer_settings(name, model, effort, budget):
+    s = P.resolve_profile({}, name)["personas"]["test_reviewer"]
+    assert (s["model"], s["effort"], s["max_budget_usd"]) == (model, effort, budget)
+    assert s["read_only"] is True and s["permission_mode"] == "dontAsk"
+
+
+def test_test_reviewer_frugal_opt_in_by_user_delta():
+    cfg = {"agentic": {"profiles": {"frugal": {
+        "reviewers": ["conformance_reviewer", "test_reviewer"]}}}}
+    prof = P.resolve_profile(cfg, "frugal")
+    assert prof["reviewers"] == ["conformance_reviewer", "test_reviewer"]
+    assert prof["personas"]["test_reviewer"]["max_budget_usd"] == 0.5
+
+
+def test_docs_list_the_test_reviewer():
+    from pathlib import Path
+    doc = Path(__file__).resolve().parent.parent / "docs/product/capabilities/agentic.md"
+    assert "test_reviewer" in doc.read_text(encoding="utf-8")
 
 
 def test_reviewers_of_falls_back_to_conformance():

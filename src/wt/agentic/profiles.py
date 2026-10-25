@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import copy
 
+# Canonical reviewer order (SPEC-0205, SPEC-0202): a profile's default `reviewers` list follows it.
+REVIEWER_ORDER = ("conformance_reviewer", "test_reviewer", "adversarial_reviewer")
+
 BUILTIN_PROFILES = {
     "balanced": {
         "slots": 2,
         "loop_max": 3,
         "campaign_cap_usd": 10.0,
         "run_timeout_s": 1800,
-        "reviewers": ["conformance_reviewer"],
+        "reviewers": ["conformance_reviewer", "test_reviewer"],
         "personas": {
             "implementer": {"model": "sonnet", "effort": "high", "max_budget_usd": 4.0,
                             "permission_mode": "bypassPermissions", "read_only": False},
@@ -22,6 +25,8 @@ BUILTIN_PROFILES = {
                              "permission_mode": "dontAsk", "read_only": True},
             "conformance_reviewer": {"model": "opus", "effort": "high", "max_budget_usd": 1.5,
                                      "permission_mode": "dontAsk", "read_only": True},
+            "test_reviewer": {"model": "opus", "effort": "high", "max_budget_usd": 1.0,
+                              "permission_mode": "dontAsk", "read_only": True},
             "spec_reviewer": {"model": "sonnet", "effort": "high", "max_budget_usd": 0.8,
                               "permission_mode": "dontAsk", "read_only": True},
         },
@@ -39,6 +44,8 @@ BUILTIN_PROFILES = {
                              "permission_mode": "dontAsk", "read_only": True},
             "conformance_reviewer": {"model": "sonnet", "effort": "medium", "max_budget_usd": 0.6,
                                      "permission_mode": "dontAsk", "read_only": True},
+            "test_reviewer": {"model": "sonnet", "effort": "medium", "max_budget_usd": 0.5,
+                              "permission_mode": "dontAsk", "read_only": True},
             "spec_reviewer": {"model": "sonnet", "effort": "medium", "max_budget_usd": 0.4,
                               "permission_mode": "dontAsk", "read_only": True},
         },
@@ -48,7 +55,7 @@ BUILTIN_PROFILES = {
         "loop_max": 4,
         "campaign_cap_usd": 30.0,
         "run_timeout_s": 2700,
-        "reviewers": ["conformance_reviewer"],
+        "reviewers": ["conformance_reviewer", "test_reviewer"],
         "personas": {
             "implementer": {"model": "opus", "effort": "high", "max_budget_usd": 10.0,
                             "permission_mode": "bypassPermissions", "read_only": False},
@@ -56,6 +63,8 @@ BUILTIN_PROFILES = {
                              "permission_mode": "dontAsk", "read_only": True},
             "conformance_reviewer": {"model": "opus", "effort": "high", "max_budget_usd": 1.5,
                                      "permission_mode": "dontAsk", "read_only": True},
+            "test_reviewer": {"model": "opus", "effort": "high", "max_budget_usd": 1.0,
+                              "permission_mode": "dontAsk", "read_only": True},
             "spec_reviewer": {"model": "opus", "effort": "high", "max_budget_usd": 1.5,
                               "permission_mode": "dontAsk", "read_only": True},
         },

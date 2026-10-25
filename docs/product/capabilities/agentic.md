@@ -129,11 +129,27 @@ the `run.end` verdict and in `last_review` of the campaign state. The cost cap a
 the spawn like for any persona. A close that bounces back to triage and ends in a new
 implementer run is reviewed again.
 
+### Test reviewer (SPEC-0205)
+
+The second reviewer asks the question the conformance reviewer is not tasked with: **would the
+tests catch a regression?** The read-only `test_reviewer` (`--restricted`; Opus in `balanced` and
+`thorough`, Sonnet in `frugal` where it is opt-in via `reviewers`; about $1.00) gets the same
+context plus `tests_touched`, computed by code from git rather than by the model: per test file
+the `changed` test names (`Class::name` for methods) and the `removed` ones. It never runs the
+suite or edits anything. For every acceptance criterion it names the test that would fail if the
+criterion broke — none is `must_fix`, one that would still pass with the behavior removed is
+`major` — then flags untested edge and failure cases (`major` when behavior-bearing, `minor`
+when cosmetic). A removed test or a visibly weakened assertion without a reason in the spec is
+`must_fix`. Its verdict is `{verdict, score, findings, coverage_assessment, fix_brief}`;
+findings are `finding` events with `persona: test_reviewer` and `ac`, and `coverage_assessment`
+is kept in the run record and in `last_review.verdicts`. At defaults it adds $1.00 to every
+review pass; to get the old cost set `reviewers: [conformance_reviewer]` in the profile.
+
 ### Several reviewers (SPEC-0201)
 
-A profile's `reviewers` key lists the reviewer personas of REVIEWING (the builtin profiles list
-only `conformance_reviewer`; a user delta replaces the list wholesale; an absent or empty key
-means the conformance reviewer). Each name must be a read-only reviewer persona with settings in
+A profile's `reviewers` key lists the reviewer personas of REVIEWING (`balanced` and `thorough`
+list `conformance_reviewer` and `test_reviewer`, `frugal` only the conformance reviewer; a user
+delta replaces the list wholesale; an absent or empty key means the conformance reviewer). Each name must be a read-only reviewer persona with settings in
 the profile. REVIEWING runs all of them **in parallel** — each a fresh run with its own budget,
 run directory (`runs/NNN-<persona>/`) and ledger events, none of which sees the runs of the
 current review pass — and waits for every verdict before deciding. The cost cap is checked
@@ -152,7 +168,7 @@ always starts a fresh review (verdicts are cleared).
 `last_review` in the campaign state is
 `{loop, entry_run, run, runs, verdicts, verdict, score, findings, must_fix}`: `verdicts` holds
 one entry per reviewer (`verdict`, `score`, `fix_brief`, the full `findings`, `ac_assessment`
-for the conformance reviewer, `run`, `loop`), `runs` the run id per reviewer, `run` the last
+for the conformance reviewer, `coverage_assessment` for the test reviewer, `run`, `loop`), `runs` the run id per reviewer, `run` the last
 reviewer's run, and `verdict` / `score` (the minimum) / `findings` / `must_fix` the combined
 values, written once every verdict is in. `counters.review_retries_by_persona` appears only
 after the first retry.
