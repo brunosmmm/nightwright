@@ -23,9 +23,9 @@ import datetime as dt
 import json
 import os
 import re
-import sys
 from pathlib import Path
 
+from .render import warn
 from . import org_write as W
 from .org_write import resolve_selector
 from .specmeta import sections, split_frontmatter
@@ -153,15 +153,14 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
 
     from .explore import idea_summary_text
     if not idea_summary_text(cfg, task).strip() and not force:
-        print(f"  ! idea {task.id} has empty Summary — explore first "
-              f"(`wt idea log {task.id}` / /wt-explore); pass --force to promote anyway",
-              file=sys.stderr)
+        warn(f"  ! idea {task.id} has empty Summary — explore first "
+              f"(`wt idea log {task.id}` / /wt-explore); pass --force to promote anyway")
 
     if title is None:
         title = _short_title(task.heading)
         if title != task.heading.strip():
-            print(f"  ! long idea heading; used a truncated title (pass --title to override). "
-                 f"Full text is in the spec's Context.", file=sys.stderr)
+            warn(f"  ! long idea heading; used a truncated title (pass --title to override). "
+                 f"Full text is in the spec's Context.")
     specs_dir = _specs_dir(cfg)
     num = next_spec_number(specs_dir)
     spec_id = f"SPEC-{num}"
@@ -180,8 +179,8 @@ def scaffold_from_idea(cfg, selector, *, epic=False, title=None, force=False):
         if idea_epic in known_epics(cfg):
             extra.append(f"parent: {idea_epic}")
         else:
-            print(f"  ! idea {task.id} has :EPIC: {idea_epic!r}, which doesn't resolve to a "
-                 f"known kind:epic spec; leaving parent unset", file=sys.stderr)
+            warn(f"  ! idea {task.id} has :EPIC: {idea_epic!r}, which doesn't resolve to a "
+                 f"known kind:epic spec; leaving parent unset")
     text = re.sub(r"^created: YYYY-MM-DD$", "\n".join(extra), text, count=1, flags=re.M)
     context = _idea_context(task)
     text = _CONTEXT_RE.sub(lambda m: m.group(1) + context + m.group(2), text, count=1)
@@ -415,9 +414,8 @@ def scaffold_outbound(cfg, project, *, from_idea=None, title=None, force=False, 
         _refuse_closed_idea(cfg, task, force)
         from .explore import idea_summary_text
         if not idea_summary_text(cfg, task).strip() and not force:
-            print(f"  ! idea {task.id} has empty Summary — explore first "
-                  f"(`wt idea log {task.id}` / /wt-explore); pass --force to promote anyway",
-                  file=sys.stderr)
+            warn(f"  ! idea {task.id} has empty Summary — explore first "
+                  f"(`wt idea log {task.id}` / /wt-explore); pass --force to promote anyway")
         title = title or task.heading
     if not title:
         raise ValueError("title is required unless --from-idea is given")

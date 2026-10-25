@@ -15,9 +15,12 @@ import time
 import click
 from rich import box
 from rich.console import Group
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from .. import completion as C
+from .. import render as R
 from ..console import console
 from ..report import _dump_json
 from . import gates as G
@@ -88,12 +91,277 @@ def _backlog_table(items: list) -> Table:
     return table
 
 
+# ---- dashboard (wt queue watch, SPEC-0185) ------------------------------------------------------
+
+def _dur(s) -> str:
+    """Compact duration: 45s, 4m12s, 2h05m, 3d4h."""
+    if s is None:
+        return "—"
+    s = int(float(s))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m{s % 60:02d}s"
+    if s < 86400:
+        return f"{s // 3600}h{s % 3600 // 60:02d}m"
+    return f"{s // 86400}d{s % 86400 // 3600}h"
+
+
+def _bar(frac: float, width: int = 12, style: str = "green") -> Text:
+    frac = max(0.0, min(1.0, frac))
+    full = round(frac * width)
+    if frac >= 0.9:
+        style = "red"
+    elif frac >= 0.6:
+        style = "yellow"
+    return Text.assemble(("━" * full, style), ("━" * (width - full), "grey30"))
+
+
+def _spec_cell(spec_id, title) -> Text:
+    t = Text(str(spec_id or "?"), style="bold")
+    if title:
+        t.append("  ")
+        t.append(title, style="dim")
+    return t
+
+
+def _title_cell(title) -> Text:
+    return Text(title or "—", style="" if title else "dim")
+
+
+def _ago(s) -> str:
+    """Coarse age for tables: 45s, 11m, 3h, 2d."""
+    if s is None:
+        return "—"
+    s = int(s)
+    return (f"{s}s" if s < 60 else f"{s // 60}m" if s < 3600 else f"{s // 3600}h" if s < 86400
+            else f"{s // 86400}d")
+
+
+def _chip(label: str, n, style: str) -> Text:
+    return Text.assemble((f" {n} ", f"bold reverse {style}" if n else "dim reverse"),
+                         (f" {label}", style if n else "dim"))
+
+
+def _dash_header(p: dict) -> Panel:
+    lease, slots, tot = p["lease"], p["slots"], p["totals"]
+    if lease.get("held"):
+        runner = Text.assemble(("● ", "red" if lease.get("stale") else "green"),
+                               f"runner pid {lease.get('pid')}",
+                               (f"  heartbeat {_dur(lease.get('heartbeat_age_s'))} ago", "dim"))
+        if lease.get("stale"):
+            runner.append("  STALE", style="bold red")
+    else:
+        runner = Text.assemble(("○ ", "red"), ("no loop running", "bold red"),
+                               ("  (wt queue run)", "dim"))
+    busy, total = slots.get("busy", 0), slots.get("total", 0) or 1
+    slot_txt = Text.assemble(("slots ", "dim"), _bar(busy / total, width=max(total * 3, 6),
+                                                    style="cyan"), f" {busy}/{slots.get('total')}")
+    chips = Text(" ").join([
+        _chip("active", tot["active"], "cyan"), _chip("attention", tot["attention"], "yellow"),
+        _chip("ready", tot["ready"], "green"), _chip("blocked", tot["blocked"], "magenta"),
+        _chip("delivered", tot["delivered"], "green")])
+    grid = Table.grid(expand=True, padding=(0, 2))
+    grid.add_column(ratio=1)
+    grid.add_column(justify="right", no_wrap=True)
+    slot_txt.append_text(Text.assemble(("  today ", "dim"),
+                                       (f"${tot['spend_today_usd']:.2f}", "bold")))
+    grid.add_row(runner, slot_txt)
+    body = Group(grid, chips)
+    when = (p.get("generated_at") or "")[11:19]
+    scope = f" · {p['project']}" if p.get("project") else ""
+    return Panel(body, title=Text(f"wt queue{scope}", style="bold"),
+                 subtitle=Text(when, style="dim"), title_align="left",
+                 subtitle_align="right", border_style="grey50", box=box.ROUNDED)
+
+
+def _stepper(state: str, phase_index) -> Text:
+    t = Text()
+    for i, name in enumerate(Q.PHASES):
+        if i:
+            t.append(" › ", style="grey50")
+        label = name.lower()
+        if phase_index is None:
+            t.append(label, style="dim")
+        elif i < phase_index:
+            t.append("✓ " + label, style="green")
+        elif i == phase_index:
+            t.append("● " + label, style=f"bold {R.state_style(state) or 'cyan'}")
+        else:
+            t.append(label, style="grey50")
+    return t
+
+
+def _activity_text(a: dict, state: str) -> Text:
+    kind = (a or {}).get("kind")
+    if kind == "run":
+        t = Text.assemble(("▶ ", "bold cyan"), (str(a.get("persona")), "bold"))
+        model = "/".join(x for x in (a.get("model"), a.get("effort")) if x)
+        if model:
+            t.append(f" · {model}", style="cyan")
+        t.append(f" · run {a.get('run_id')}", style="dim")
+        el, to = a.get("elapsed_s"), a.get("timeout_s")
+        t.append(f" · {_dur(el)}")
+        if to:
+            t.append(f" / {_dur(to)}", style="dim")
+            t.append(" ")
+            t.append_text(_bar((el or 0) / float(to), width=8, style="cyan"))
+        if a.get("max_budget_usd") is not None:
+            t.append(f" · budget ${float(a['max_budget_usd']):.2f}", style="dim")
+        return t
+    if kind == "gates":
+        return Text.assemble(("⚙ ", "bold blue"), ("running gates" if state == "GATING"
+                                                    else "closing (re-gate, rebase, merge)"))
+    return Text("· idle (waiting for the next tick)", style="dim")
+
+
+def _gate_text(g) -> Text:
+    if not g:
+        return Text("no gate run yet", style="dim")
+    t = Text(f"#{g.get('gate_seq')} ", style="dim")
+    for i, r in enumerate(g.get("results") or []):
+        if i:
+            t.append("  ")
+        ok = r.get("ok")
+        t.append("✓ " if ok else "✗ ", style="green" if ok else "red")
+        t.append(str(r.get("name")), style="" if ok else "bold red")
+        t.append(f" {_dur(r.get('duration_s'))}", style="dim")
+    return t
+
+
+def _verdict_text(v) -> Text:
+    if not v:
+        return Text("no verdict yet", style="dim")
+    status = str(v.get("status") or "?")
+    style = {"done": "green", "blocked": "red", "needs_info": "yellow"}.get(status, "magenta")
+    t = Text.assemble((status, f"bold {style}"), (f" ({v.get('persona')})", "dim"))
+    if v.get("summary"):
+        t.append("  ")
+        t.append(v["summary"])
+    return t
+
+
+def _active_panel(it: dict) -> Panel:
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(style="dim", no_wrap=True, justify="right")
+    grid.add_column(overflow="fold")
+    grid.add_row("spec", _spec_cell(it["spec_id"], it.get("spec_title")))
+    grid.add_row("where", Text(f"{it.get('project')} · {it.get('profile')} · "
+                               f"{it.get('branch') or 'no branch yet'}", style="dim"))
+    grid.add_row("phase", _stepper(it["state"], it.get("phase_index")))
+    grid.add_row("now", _activity_text(it.get("activity"), it["state"]))
+    cap = it.get("cap_usd")
+    cost = Text(f"${it['cost_usd']:.2f}", style="bold")
+    if cap:
+        cost.append(f" / ${float(cap):.2f} ", style="dim")
+        cost.append_text(_bar(it["cost_usd"] / float(cap)))
+    cost.append(f"   loops {it['loops']} · runs {it['runs']} · age {_dur(it.get('age_s'))}",
+                style="dim")
+    grid.add_row("cost", cost)
+    grid.add_row("gates", _gate_text(it.get("last_gate")))
+    grid.add_row("verdict", _verdict_text(it.get("last_verdict")))
+    events = it.get("recent_events") or []
+    if events:
+        grid.add_row("events", Group(*[R.campaign_event(ev) for ev in events]))
+    state = it["state"]
+    if it.get("park_requested"):
+        state += " · park requested"
+    return Panel(grid, title=Text.assemble((it["campaign"], "bold"), "  ",
+                                           (state, R.state_style(it["state"]))),
+                 title_align="left", border_style=R.state_style(it["state"]) or "cyan",
+                 box=box.ROUNDED)
+
+
+def _attention_table(items: list) -> Table:
+    t = R.section_table(f"Needs attention ({len(items)})", border_style="yellow")
+    t.add_column("campaign", no_wrap=True, style="bold")
+    t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
+    t.add_column("reason", style="yellow", no_wrap=True)
+    t.add_column("detail", overflow="fold", ratio=3)
+    t.add_column("resume to", no_wrap=True)
+    t.add_column("for", justify="right", no_wrap=True)
+    for it in items:
+        park = it.get("park") or {}
+        reason = park.get("reason") or ("park requested" if it.get("park_requested") else "?")
+        t.add_row(it["campaign"], _title_cell(it.get("spec_title")), reason,
+                  Text(str(park.get("detail") or ""), style="dim"),
+                  Text(str(park.get("resume_to") or ""), style=R.state_style(park.get("resume_to"))),
+                  _ago(it.get("park_age_s")))
+    return t
+
+
+def _dash_backlog(items: list):
+    if not items:
+        return Group(Text("Backlog (0)", style="bold"),
+                     Text("  empty — wt queue add SPEC-NNNN --yes", style="dim"))
+    t = R.section_table(f"Backlog ({len(items)})")
+    t.add_column("#", justify="right", style="dim")
+    t.add_column("campaign", no_wrap=True)
+    t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
+    t.add_column("pri", justify="right")
+    t.add_column("status", overflow="fold", ratio=1, min_width=8)
+    t.add_column("waiting", justify="right", no_wrap=True)
+    for b in items:
+        status = (Text("● ready", style="green") if b.get("ready")
+                  else Text.assemble(("◌ waiting on ", "yellow"),
+                                     ("; ".join(b.get("blocked_by") or []), "bold yellow")))
+        pri = b.get("priority")
+        t.add_row(str(b.get("position")), b["campaign"],
+                  _title_cell(b.get("spec_title")),
+                  Text(str(pri), style="bold" if pri is not None and pri <= 2 else "dim"),
+                  status, _ago(b.get("age_s")))
+    return t
+
+
+def _dash_delivered(items: list, hours: int, width: int = 120):
+    wide = width >= 110
+    t = R.section_table(f"Recently delivered ({len(items)}, last {hours}h)")
+    t.add_column("ago", justify="right", no_wrap=True, style="dim")
+    t.add_column("campaign", no_wrap=True)
+    t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
+    t.add_column("outcome", no_wrap=True)
+    if wide:
+        t.add_column("ref", no_wrap=True, overflow="ellipsis")
+    t.add_column("cost", justify="right", no_wrap=True)
+    if wide:
+        t.add_column("took", justify="right", no_wrap=True)
+    glyph = {"MERGED": "✓ merged", "HANDED_OFF": "↗ handed off", "ABANDONED": "✗ abandoned"}
+    for d in items:
+        ref = d.get("pr_url") or ((d.get("merged_sha") or "")[:7])
+        outcome = Text(glyph.get(d["state"], d["state"]), style=R.state_style(d["state"]))
+        cells = [_ago(d.get("finished_age_s")), d["campaign"], _title_cell(d.get("spec_title")),
+                 outcome] + ([ref] if wide else []) + [f"${d['cost_usd']:.2f}"]
+        t.add_row(*cells + ([_dur(d.get("duration_s"))] if wide else []))
+    if not items:
+        return Group(t, Text("  nothing in this window", style="dim"))
+    return t
+
+
+def _dashboard(p: dict, width: int = 120, recent_hours: int = 24) -> Group:
+    """The `wt queue watch` frame for a `wt.queue.dashboard.v1` payload."""
+    parts = [_dash_header(p)]
+    active = [_active_panel(it) for it in p["active"]]
+    parts.append(Text.assemble((f"Active ({len(active)})", "bold")))
+    if not active:
+        parts.append(Text("  No active campaigns", style="dim"))
+    elif width >= 140 and len(active) > 1:
+        grid = Table.grid(expand=True, padding=(0, 1))
+        grid.add_column(ratio=1)
+        grid.add_column(ratio=1)
+        for i in range(0, len(active), 2):
+            grid.add_row(*(active[i:i + 2] + ([Text("")] if i + 1 >= len(active) else [])))
+        parts.append(grid)
+    else:
+        parts.extend(active)
+    if p["attention"]:
+        parts.append(_attention_table(p["attention"]))
+    parts.append(_dash_backlog(p["backlog"]))
+    parts.append(_dash_delivered(p["delivered"], recent_hours, width))
+    return Group(*parts)
+
+
 def _print_plan(title: str, plan: dict) -> None:
-    console.print(f"[bold]plan[/]  {title}")
-    for k, v in plan.items():
-        if v in (None, "", [], {}):
-            continue
-        console.print(f"  {k}: {v}", markup=False, highlight=False)
+    console.print(R.plan(title, plan), highlight=False)
 
 
 def attach(queue_group):
@@ -141,7 +409,7 @@ def attach(queue_group):
         console.print(table)
         for r in G.blocking_failures(run):
             console.print(f"[red]✗[/] {r.name} — last lines:", highlight=False)
-            console.print("\n".join(r.tail.splitlines()[-10:]), markup=False, highlight=False)
+            R.print_code("\n".join(r.tail.splitlines()[-10:]) + "\n", "text", console=console)
 
     # ---- SPEC-0176 -------------------------------------------------------------------------
 
@@ -232,21 +500,39 @@ def attach(queue_group):
     @queue_group.command("watch")
     @click.option("--interval", type=float, default=2.0, show_default=True,
                   help="refresh interval in seconds")
+    @click.option("--project", shell_complete=C.complete_project, help="only this project")
+    @click.option("--recent", type=int, default=5, show_default=True,
+                  help="how many recently delivered campaigns to show")
+    @click.option("--hours", "recent_hours", type=int, default=24, show_default=True,
+                  help="the 'recently delivered' window")
+    @click.option("--once", is_flag=True, help="print one frame and exit (no live refresh)")
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.dashboard.v1 JSON once")
     @click.option("--iterations", type=int, default=0, hidden=True,
                   help="stop after N refreshes (0 = until Ctrl-C)")
     @click.pass_obj
-    def queue_watch(cfg, interval, iterations):
-        """Live view of `wt queue list` (Ctrl-C to stop)."""
+    def queue_watch(cfg, interval, project, recent, recent_hours, once, as_json, iterations):
+        """Live dashboard: the runner, active campaigns (what each is doing now, gates, verdict,
+        cost), what needs attention, the backlog and recently delivered work (Ctrl-C to stop)."""
+        def payload():
+            return Q.dashboard_payload(cfg, project=project, recent=recent,
+                                       recent_hours=recent_hours)
+
+        if as_json:
+            _dump_json(payload())
+            return
+        if once:
+            console.print(_dashboard(payload(), console.width, recent_hours))
+            return
         from rich.live import Live
         n = 0
-        with Live(_queue_table(Q.queue_payload(cfg)), console=console,
-                  refresh_per_second=4) as live:
+        with Live(_dashboard(payload(), console.width, recent_hours), console=console,
+                  refresh_per_second=4, screen=False) as live:
             while True:
                 n += 1
                 if iterations and n >= iterations:
                     break
                 time.sleep(interval)
-                live.update(_queue_table(Q.queue_payload(cfg)))
+                live.update(_dashboard(payload(), console.width, recent_hours))
 
     @queue_group.command("tick")
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.tick.v1 JSON")
@@ -265,7 +551,7 @@ def attach(queue_group):
             _dump_json(report.payload())
             return
         for row in report.steps:
-            console.print(Q.tick_row_text(row), markup=False, highlight=False)
+            console.print(R.tick_row(row), highlight=False)
         if not report.steps:
             console.print("[dim]nothing to do[/]" if report.idle else "[dim]no step this tick[/]")
 
@@ -290,7 +576,7 @@ def attach(queue_group):
                 sys.stdout.flush()
                 return
             for row in report.steps:
-                console.print(Q.tick_row_text(row), markup=False, highlight=False)
+                console.print(R.tick_row(row), highlight=False)
 
         try:
             ticks = Q.run(cfg, once=once, max_ticks=max_ticks, poll_interval_s=poll_interval,

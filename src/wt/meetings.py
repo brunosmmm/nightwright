@@ -3,7 +3,10 @@ it, and refresh it via a headless `claude -p` + m365 MCP call."""
 import json
 import os
 import subprocess
-import sys
+
+from rich.markup import escape
+
+from .render import note, warn
 
 
 def meetings_path(cfg):
@@ -59,7 +62,9 @@ def ingest_meetings(cfg, rawfile):
     with open(meetings_path(cfg), "w") as f:
         for m in sorted(existing.values(), key=lambda x: x["start"]):
             f.write(json.dumps(m) + "\n")
-    print(f"ingested {len(existing)} attended meetings ({added} new) -> {meetings_path(cfg)}")
+    from .console import console
+    console.print(f"ingested {len(existing)} attended meetings ({added} new) -> "
+                  f"{escape(str(meetings_path(cfg)))}", highlight=False)
 
 
 def _harvest_tool_result(stdout, toolname):
@@ -105,12 +110,12 @@ def refresh_meetings(cfg, start, end):
     cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose",
            "--model", "claude-haiku-4-5-20251001",
            "--allowedTools", "mcp__m365__search_events", "ToolSearch", "--max-turns", "6"]
-    print("running headless claude to refresh meetings cache ...", file=sys.stderr)
+    note("running headless claude to refresh meetings cache ...")
     r = subprocess.run(cmd, capture_output=True, text=True)
     raw = _harvest_tool_result(r.stdout, "mcp__m365__search_events")
     if not raw:
-        print("  ! meeting refresh produced no search_events result (check m365 OAuth via "
-              "/mcp). meetings.jsonl left unchanged.", file=sys.stderr)
+        warn("  ! meeting refresh produced no search_events result (check m365 OAuth via "
+              "/mcp). meetings.jsonl left unchanged.")
         return
     with open(cache, "w") as f:
         f.write(raw)

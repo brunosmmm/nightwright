@@ -1,11 +1,11 @@
 """The human-owned rules layer: mappings.yaml (base topic -> facets) and overrides.yaml
 (session + time range -> topic). Read at report time; the parser never writes these."""
 import os
-import sys
 from pathlib import Path
 
 import yaml
 
+from .render import warn
 from .config import _load_yaml
 from .dates import _parse_iso
 
@@ -280,7 +280,7 @@ def load_overrides(cfg):
                 "note": ov.get("note", ""),
             })
         except Exception as e:
-            print(f"  ! skipping bad override {ov!r}: {e}", file=sys.stderr)
+            warn(f"  ! skipping bad override {ov!r}: {e}")
     return out
 
 

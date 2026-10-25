@@ -6,6 +6,7 @@ from __future__ import annotations
 import click
 from rich.table import Table
 
+from .. import render as R
 from ..console import console
 from ..report import _dump_json
 from . import events as E
@@ -85,7 +86,7 @@ def attach(queue_group):
             evs = evs[-tail:]
         if as_text:
             for ev in evs:
-                console.print(E.summary_line(ev), markup=False, highlight=False)
+                console.print(R.queue_event(ev), highlight=False)
             return
         _dump_json({"schema": "wt.events.v1", "events": evs})
 

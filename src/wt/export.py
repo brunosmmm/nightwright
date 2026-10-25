@@ -14,12 +14,12 @@ import datetime as dt
 import os
 import re
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
 import yaml
 
+from .render import warn
 from . import export_schemes as ES
 from . import org_write as OW
 from .org_write import resolve_selector
@@ -302,8 +302,7 @@ def pull_status(cfg, outbound_id, *, to=None):
                     idea = resolve_selector(cfg, selector)
                 OW.set_state(cfg, idea, "SHIPPED")
         except ValueError as e:
-            print(f"  ! {outbound_id}: could not advance linked idea to SHIPPED ({e})",
-                  file=sys.stderr)
+            warn(f"  ! {outbound_id}: could not advance linked idea to SHIPPED ({e})")
 
     return source_path, status
 
@@ -335,9 +334,8 @@ def pull_clock(cfg, outbound_id, *, to=None):
     # content. One legitimate still-open trailing CLOCK-IN is not an error (docstring above).
     n_clock_in = sum(1 for line in clock_log.splitlines() if line.strip().startswith("CLOCK-IN:"))
     if n_clock_in not in (len(pairs), len(pairs) + 1):
-        print(f"  ! {outbound_id}: Clock Log has {n_clock_in} CLOCK-IN line(s) but only "
-              f"{len(pairs)} parsed as complete pairs — check timestamp format in {dest_path}",
-              file=sys.stderr)
+        warn(f"  ! {outbound_id}: Clock Log has {n_clock_in} CLOCK-IN line(s) but only "
+              f"{len(pairs)} parsed as complete pairs — check timestamp format in {dest_path}")
 
     added = 0
     for start, end in pairs:
@@ -477,7 +475,7 @@ def sweep(cfg):
             # any other failure (e.g. a Clock Log parse error) must be visible, not silently
             # read as "0 clock entries" (bug found against EXAMPLE-0026/IDEA-212: a timestamp
             # parse crash was masquerading as "+0 clock" instead of surfacing).
-            print(f"  ! {outbound_id}: pull-clock failed — {e}", file=sys.stderr)
+            warn(f"  ! {outbound_id}: pull-clock failed — {e}")
             added = 0
         label = "updated" if (status_after != status_before or added > 0) else "unchanged"
         results.append((idea_id, outbound_id, f"{label}: status={status_after}, +{added} clock"))
@@ -516,7 +514,7 @@ def export_spec(cfg, outbound_id, *, scheme=None, emit=None, to=None, force=Fals
     # --force skips product-fit outcome problems for any scheme (legacy escape).
     from .export_schemes.canonical import has_outcome_signal, missing_outcome_problem
     if scheme_obj.name == "wt-native" and not has_outcome_signal(canonical):
-        print(f"  ! {outbound_id}: {missing_outcome_problem(canonical)}", file=sys.stderr)
+        warn(f"  ! {outbound_id}: {missing_outcome_problem(canonical)}")
     if force:
         problems = [p for p in problems if "product-fit outcome" not in p]
     if problems:

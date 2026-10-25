@@ -1,0 +1,156 @@
+"""SPEC-0185: `wt queue watch` dashboard — `queue.dashboard_payload` sections, activity and
+totals, and the rendered frame (`--once`, `--json`, `--project`, widths)."""
+import datetime as dt
+import json
+
+from rich.console import Console
+
+from test_agentic_e2e import (SPEC_ACCEPTED, _git, _write, impl_done, make_cfg, make_repo,
+                              run_cli, script)
+from wt.agentic import cli_queue as CQ
+from wt.agentic import queue as Q
+from wt.agentic import store as S
+
+NOW = dt.datetime.now().astimezone()
+
+
+def _iso(minutes_ago):
+    return (NOW - dt.timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
+
+
+def _campaign(cfg, repo, cid, state, *, spec_id="SPEC-0001", rel="docs/specs/0001-trivial.md",
+              created_min=30, updated_min=1, project="Meta-Tools", **extra):
+    S.create_campaign(cfg, {
+        "id": cid, "kind": "implement", "spec_id": spec_id, "project": project,
+        "profile": "balanced", "state": state, "created_at": _iso(created_min),
+        "repo": {"root": str(repo), "base": "main", "branch": f"wt/{cid}",
+                 "worktree": f"/tmp/wt/{cid}"},
+        "spec": {"rel_path": rel, "internal": True},
+        "counters": {"loops": 1, "runs": 1}, "cost": {"total_usd": 1.25, "cap_usd": 10.0},
+        **extra})
+    # write_state stamps updated_at = now; rewrite it raw to control the age
+    p = S.campaign_dir(cfg, cid) / "state.json"
+    st = json.loads(p.read_text())
+    st["updated_at"] = _iso(updated_min)
+    p.write_text(json.dumps(st))
+    return cid
+
+
+def _fixture(tmp_path):
+    repo = make_repo(tmp_path)
+    _write(repo, "docs/specs/0002-second.md",
+           SPEC_ACCEPTED.format(id="SPEC-0002", extra="depends_on: [SPEC-0009]\n")
+           .replace("Trivial feature", "Blocked second"))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "second")
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    impl = _campaign(cfg, repo, "SPEC-0001-impl", "IMPLEMENTING",
+                     last_gate={"gate_seq": 1, "ok": False, "results": [
+                         {"name": "test", "ok": False, "required": True, "duration_s": 3.2}]},
+                     last_verdict={"persona": "implementer", "run": "001-implementer",
+                                   "verdict": {"status": "done", "summary": "first line\nmore"}})
+    S.append_event(cfg, impl, "run.start", {"persona": "implementer", "run_id": "002-implementer",
+                                            "model": "sonnet", "effort": "high",
+                                            "timeout_s": 1800, "max_budget_usd": 4.0})
+    gating = _campaign(cfg, repo, "SPEC-0001-gate", "GATING")
+    parked = _campaign(cfg, repo, "SPEC-0001-park", "PARKED",
+                       park={"reason": "rate_limited", "detail": "429 from the API",
+                             "resume_to": "IMPLEMENTING"})
+    S.append_event(cfg, parked, "park", {"reason": "rate_limited"})
+    ready = _campaign(cfg, repo, "SPEC-0001-ready", "QUEUED")
+    blocked = _campaign(cfg, repo, "SPEC-0002-blk", "QUEUED", spec_id="SPEC-0002",
+                        rel="docs/specs/0002-second.md")
+    merged = _campaign(cfg, repo, "SPEC-0001-merged", "MERGED", created_min=50, updated_min=5,
+                       close={"mode": "merge", "merged_sha": "abcdef1234567", "pr_url": None})
+    _campaign(cfg, repo, "SPEC-0001-old", "MERGED", created_min=3000, updated_min=2900)
+    abandoned = _campaign(cfg, repo, "SPEC-0001-gone", "ABANDONED", updated_min=10)
+    return repo, cfg, dict(impl=impl, gating=gating, parked=parked, ready=ready,
+                           blocked=blocked, merged=merged, abandoned=abandoned)
+
+
+def test_payload_sections_activity_and_totals(tmp_path):
+    repo, cfg, ids = _fixture(tmp_path)
+    p = Q.dashboard_payload(cfg)
+    assert p["schema"] == "wt.queue.dashboard.v1"
+    active = {it["campaign"]: it for it in p["active"]}
+    assert set(active) == {ids["impl"], ids["gating"]}
+    a = active[ids["impl"]]["activity"]
+    assert a["kind"] == "run" and a["persona"] == "implementer" and a["model"] == "sonnet"
+    assert a["run_id"] == "002-implementer" and a["elapsed_s"] is not None and a["timeout_s"] == 1800
+    assert active[ids["gating"]]["activity"] == {"kind": "gates"}
+    assert active[ids["impl"]]["phase_index"] == Q.PHASES.index("IMPLEMENTING")
+    assert active[ids["impl"]]["spec_title"] == "Trivial feature"
+    assert active[ids["impl"]]["last_gate"]["results"][0] == {
+        "name": "test", "ok": False, "required": True, "duration_s": 3.2}
+    assert active[ids["impl"]]["last_verdict"]["summary"] == "first line"
+    assert [e["type"] for e in active[ids["impl"]]["recent_events"]][-1] == "run.start"
+
+    assert [it["campaign"] for it in p["attention"]] == [ids["parked"]]
+    assert p["attention"][0]["park"]["reason"] == "rate_limited"
+    assert p["attention"][0]["park_age_s"] is not None
+
+    back = {b["campaign"]: b for b in p["backlog"]}
+    assert back[ids["ready"]]["ready"] is True
+    assert back[ids["blocked"]]["ready"] is False and back[ids["blocked"]]["blocked_by"]
+    assert back[ids["blocked"]]["spec_title"] == "Blocked second"
+
+    # newest first, the 2-day-old merge is outside the 24h window
+    assert [d["campaign"] for d in p["delivered"]] == [ids["merged"], ids["abandoned"]]
+    m = p["delivered"][0]
+    assert m["merged_sha"] == "abcdef1234567" and m["state"] == "MERGED"
+    assert 40 * 60 <= m["duration_s"] <= 50 * 60
+
+    t = p["totals"]
+    assert (t["active"], t["attention"], t["backlog"], t["ready"], t["blocked"],
+            t["delivered"]) == (2, 1, 2, 1, 1, 2)
+    assert Q.dashboard_payload(cfg, recent=1)["delivered"][0]["campaign"] == ids["merged"]
+    assert Q.dashboard_payload(cfg, project="other")["active"] == []
+
+
+def test_run_end_closes_activity(tmp_path):
+    repo, cfg, ids = _fixture(tmp_path)
+    S.append_event(cfg, ids["impl"], "run.end", {"persona": "implementer",
+                                                 "run_id": "002-implementer"})
+    act = {it["campaign"]: it for it in Q.dashboard_payload(cfg)["active"]}
+    assert act[ids["impl"]]["activity"] == {"kind": "idle"}
+
+
+def _render(payload, width):
+    c = Console(width=width, record=True, force_terminal=False)
+    c.print(CQ._dashboard(payload, width))
+    return c.export_text()
+
+
+def test_frame_renders_every_section_at_both_widths(tmp_path):
+    repo, cfg, ids = _fixture(tmp_path)
+    p = Q.dashboard_payload(cfg)
+    for width in (80, 160):
+        out = _render(p, width)
+        for header in ("wt queue", "Active (2)", "Needs attention (1)", "Backlog (2)",
+                       "Recently delivered (2"):
+            assert header in out, (width, header, out)
+        for cid in (ids["impl"], ids["gating"], ids["parked"], ids["merged"]):
+            assert cid in out, (width, cid)
+        assert "implementer" in out and "rate_limited" in out and "merged" in out
+        assert "waiting on" in out
+        assert max(len(line) for line in out.splitlines()) <= width
+
+
+def test_empty_frame(tmp_path):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    out = _render(Q.dashboard_payload(cfg), 80)
+    assert "No active campaigns" in out and "empty" in out and "nothing in this window" in out
+    assert "Needs attention" not in out and "no loop running" in out
+
+
+def test_cli_once_json_and_project(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    r = run_cli(cfg, monkeypatch, ["queue", "watch", "--once"])
+    assert r.exit_code == 0, r.output
+    assert "Active (2)" in r.output and ids["merged"] in r.output
+    r = run_cli(cfg, monkeypatch, ["queue", "watch", "--json", "--recent", "1"])
+    d = json.loads(r.output)
+    assert d["schema"] == "wt.queue.dashboard.v1" and len(d["delivered"]) == 1
+    r = run_cli(cfg, monkeypatch, ["queue", "watch", "--json", "--project", "nobody"])
+    assert json.loads(r.output)["active"] == []

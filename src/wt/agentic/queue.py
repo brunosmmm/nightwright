@@ -898,6 +898,140 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> d
             "slots": {"total": slots, "busy": busy}, "items": items}
 
 
+# ---- dashboard (wt queue watch, SPEC-0185) -------------------------------------------------------
+
+PHASES = ("OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "CLOSING")
+_TITLE_CACHE: dict = {}
+
+
+def _spec_title(state: dict) -> str | None:
+    """The spec's frontmatter title in the project repo (cached on path + mtime)."""
+    root = (state.get("repo") or {}).get("root")
+    rel = (state.get("spec") or {}).get("rel_path")
+    if not root or not rel:
+        return None
+    path = Path(root) / rel
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    hit = _TITLE_CACHE.get(str(path))
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    title = str((fm or {}).get("title") or "") or None
+    _TITLE_CACHE[str(path)] = (mtime, title)
+    return title
+
+
+def _activity(state: dict, ledger: list, now=None) -> dict:
+    """What the campaign is doing now: an open persona run, gates, or idle."""
+    open_run = None
+    for ev in ledger:
+        if ev.get("type") == "run.start":
+            open_run = ev
+        elif ev.get("type") == "run.end" and open_run and ev.get("run_id") == open_run.get("run_id"):
+            open_run = None
+    if open_run and state.get("state") not in TERMINAL_STATES:
+        return {"kind": "run", "persona": open_run.get("persona"), "model": open_run.get("model"),
+                "effort": open_run.get("effort"), "run_id": open_run.get("run_id"),
+                "elapsed_s": _age(open_run.get("ts"), now), "timeout_s": open_run.get("timeout_s"),
+                "max_budget_usd": open_run.get("max_budget_usd")}
+    if state.get("state") in ("GATING", "CLOSING"):
+        return {"kind": "gates"}
+    return {"kind": "idle"}
+
+
+def _gate_summary(state: dict) -> dict | None:
+    g = state.get("last_gate")
+    if not g:
+        return None
+    return {"gate_seq": g.get("gate_seq"), "ok": g.get("ok"),
+            "results": [{"name": r.get("name"), "ok": r.get("ok"), "required": r.get("required"),
+                         "duration_s": r.get("duration_s")} for r in g.get("results") or []]}
+
+
+def _verdict_summary(state: dict) -> dict | None:
+    v = state.get("last_verdict")
+    if not v:
+        return None
+    verdict = v.get("verdict") or {}
+    summary = str(verdict.get("summary") or "").strip()
+    return {"persona": v.get("persona"), "run": v.get("run"), "status": verdict.get("status"),
+            "summary": summary.splitlines()[0] if summary else ""}
+
+
+def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None) -> dict:
+    """`wt.queue.dashboard.v1`: everything `wt queue watch` shows — the runner, the active
+    campaigns with what each is doing now, what needs attention, the backlog, and what was
+    recently delivered."""
+    import datetime as dt
+    now = now or dt.datetime.now().astimezone()
+    states = {s.get("id"): s for s in store.list_campaigns(cfg, include_terminal=True,
+                                                            project=project)}
+    base = queue_payload(cfg, include_terminal=True, project=project)
+    active, attention, backlog, delivered = [], [], [], []
+    spend_today = 0.0
+    for it in base["items"]:
+        st = states.get(it["campaign"]) or {}
+        title = _spec_title(st)
+        updated = st.get("updated_at") or st.get("created_at")
+        try:
+            if updated and dt.datetime.fromisoformat(updated).astimezone().date() == now.date():
+                spend_today += it["cost_usd"]
+        except ValueError:
+            pass
+        state = it["state"]
+        if state in TERMINAL_STATES:
+            age = _age(updated, now)
+            if age is not None and age <= recent_hours * 3600:
+                close = st.get("close") or {}
+                delivered.append({
+                    "campaign": it["campaign"], "spec_id": it["spec_id"], "spec_title": title,
+                    "project": it["project"], "state": state,
+                    "merged_sha": close.get("merged_sha"), "pr_url": close.get("pr_url"),
+                    "cost_usd": it["cost_usd"],
+                    "duration_s": (_age(st.get("created_at"), now) or 0) - age,
+                    "finished_age_s": age})
+            continue
+        if state == "QUEUED":
+            backlog.append({"position": 0, "priority": it["priority"], "ready": True,
+                            "blocked_by": [], **(it.get("backlog") or {}),
+                            "campaign": it["campaign"], "spec_id": it["spec_id"],
+                            "spec_title": title, "project": it["project"], "age_s": it["age_s"]})
+            continue
+        ledger = store.read_ledger(cfg, it["campaign"])
+        if state == "PARKED" or it["park_requested"]:
+            park = dict(st.get("park") or {})
+            parked_at = next((e.get("ts") for e in reversed(ledger) if e.get("type") == "park"),
+                             None)
+            attention.append({**it, "spec_title": title, "park": park or None,
+                              "park_age_s": _age(parked_at, now),
+                              "last_verdict": _verdict_summary(st)})
+            if state == "PARKED":
+                continue
+        active.append({**it, "spec_title": title,
+                       "phase_index": PHASES.index(state) if state in PHASES else None,
+                       "activity": _activity(st, ledger, now),
+                       "last_gate": _gate_summary(st), "last_verdict": _verdict_summary(st),
+                       "recent_events": ledger[-3:]})
+    backlog.sort(key=lambda b: b["position"])
+    delivered.sort(key=lambda d: d["finished_age_s"])
+    delivered = delivered[:recent]
+    ready = sum(1 for b in backlog if b["ready"])
+    return {
+        "schema": "wt.queue.dashboard.v1", "generated_at": now.isoformat(timespec="seconds"),
+        "project": project, "lease": base["lease"], "slots": base["slots"],
+        "totals": {"active": len(active), "attention": len(attention), "backlog": len(backlog),
+                   "ready": ready, "blocked": len(backlog) - ready, "delivered": len(delivered),
+                   "spend_today_usd": round(spend_today, 4)},
+        "active": active, "attention": attention, "backlog": backlog, "delivered": delivered,
+    }
+
+
 # ---- admission (wt queue add) --------------------------------------------------------------------
 
 def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False,

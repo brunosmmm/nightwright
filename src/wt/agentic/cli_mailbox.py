@@ -7,6 +7,7 @@ import click
 from rich.table import Table
 
 from .. import completion as C
+from .. import render as R
 from ..console import console
 from ..report import _dump_json
 from . import mailbox as M
@@ -117,4 +118,4 @@ def mailbox_thread(cfg, msg_id, as_json):
         _dump_json({"schema": "wt.mailbox.thread.v1", "id": msg_id, "messages": msgs})
         return
     for m in msgs:
-        console.print(M.summary_line(m), markup=False, highlight=False)
+        console.print(R.message(m), highlight=False)

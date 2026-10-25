@@ -6,8 +6,10 @@ import os
 
 import click
 from rich.table import Table
+from rich.text import Text
 
 from .. import completion as C
+from .. import render as R
 from ..console import console
 from ..report import _dump_json
 from . import store
@@ -24,20 +26,6 @@ def _summary(st: dict) -> dict:
         "park": st.get("park"), "created_at": st.get("created_at"),
         "updated_at": st.get("updated_at"),
     }
-
-
-def _event_line(ev: dict) -> str:
-    skip = {"ts", "seq", "campaign", "type", "by"}
-    bits = []
-    for k, v in ev.items():
-        if k in skip:
-            continue
-        txt = v if isinstance(v, str) else str(v)
-        if len(txt) > 60:
-            txt = txt[:57] + "..."
-        bits.append(f"{k}={txt}")
-    return (f"{ev.get('seq', '?'):>4}  {ev.get('ts', '')}  {ev.get('type', '?'):<12} "
-            f"{ev.get('by', ''):<16} {' '.join(bits)}")
 
 
 def attach(campaign_group):
@@ -101,7 +89,7 @@ def attach(campaign_group):
             console.print(f"  [yellow]parked[/] {p.get('reason')}: {p.get('detail', '')}  "
                           f"→ resume to {p.get('resume_to')}")
         for ev in st["last_events"]:
-            console.print("  " + _event_line(ev), markup=False, highlight=False)
+            console.print(Text("  ") + R.campaign_event(ev), highlight=False)
 
     @campaign_group.command("log")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)
@@ -120,7 +108,7 @@ def attach(campaign_group):
             _dump_json({"schema": "wt.campaign.log.v1", "campaign": campaign, "events": events})
             return
         for ev in events:
-            console.print(_event_line(ev), markup=False, highlight=False)
+            console.print(R.campaign_event(ev), highlight=False)
         if not events:
             console.print("[dim]no events[/]")
 

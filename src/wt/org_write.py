@@ -7,12 +7,12 @@ import datetime as dt
 import os
 import re
 import shutil
-import sys
 import tempfile
 
 import orgparse
 from orgparse.node import OrgEnv
 
+from .render import warn
 from .dates import parse_date
 from .org import _split_keywords, filter_tasks, load_tasks
 
@@ -460,14 +460,14 @@ def _warn_unknown_associations(cfg, *, project=None, epic=None):
         from .rules import known_projects
         known = known_projects(cfg)
         if project not in known:
-            print(f"  ! unknown project {project!r}; known projects: "
-                 f"{', '.join(known) or '(none mapped yet)'}", file=sys.stderr)
+            warn(f"  ! unknown project {project!r}; known projects: "
+                 f"{', '.join(known) or '(none mapped yet)'}")
     if epic:
         from .specs import known_epics
         known = known_epics(cfg)
         if epic not in known:
-            print(f"  ! unknown epic {epic!r}; known epics: "
-                 f"{', '.join(known) or '(none)'}", file=sys.stderr)
+            warn(f"  ! unknown epic {epic!r}; known epics: "
+                 f"{', '.join(known) or '(none)'}")
 
 
 # Capture kinds on ideas (SPEC-0044) — not org TODO keywords; not spec frontmatter `kind`.

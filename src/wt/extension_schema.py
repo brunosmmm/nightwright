@@ -1,8 +1,8 @@
 """Per-project idea extension schema (SPEC-0120) and validation (SPEC-0121)."""
 from __future__ import annotations
 
-import sys
 
+from .render import warn
 from .rules import known_projects
 
 _WARNED_UNKNOWN: set[str] = set()
@@ -15,7 +15,7 @@ def _warn_unknown_extension_projects(cfg) -> None:
         if proj in known or proj in _WARNED_UNKNOWN:
             continue
         _WARNED_UNKNOWN.add(proj)
-        print(f"! unknown project in idea_extensions: {proj}", file=sys.stderr)
+        warn(f"! unknown project in idea_extensions: {proj}")
 
 
 def extension_schema_for(cfg, project: str) -> dict | None:

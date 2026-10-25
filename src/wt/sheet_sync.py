@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sys
 
+from .render import warn
 from . import idea_ext as IX
 from . import org_write as OW
 from .org import filter_tasks, load_tasks
@@ -34,8 +34,8 @@ def _apply_value_map(col: SheetColumn, raw: str) -> str:
     if raw in col.value_map:
         return col.value_map[raw]
     if raw:
-        print(f"! sheet column {col.header!r}: no value_map entry for {raw!r}; "
-              f"using raw value", file=sys.stderr)
+        warn(f"! sheet column {col.header!r}: no value_map entry for {raw!r}; "
+              f"using raw value")
     return raw
 
 

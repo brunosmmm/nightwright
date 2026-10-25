@@ -10,6 +10,7 @@ import yaml
 
 from . import project as P
 from .. import completion as C
+from .. import render as R
 from ..console import console
 
 
@@ -47,8 +48,8 @@ def attach(projects_group):
             json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
             sys.stdout.write("\n")
             return
-        sys.stdout.write(f"# {path}\n")
-        sys.stdout.write(yaml.safe_dump(doc, sort_keys=False, default_flow_style=False))
+        R.print_code(yaml.safe_dump(doc, sort_keys=False, default_flow_style=False), "yaml",
+                     console=console, title=str(path))
 
     @projects_group.command("init")
     @click.argument("project", required=False, shell_complete=C.complete_project)
@@ -67,8 +68,7 @@ def attach(projects_group):
         if path.exists() and not force:
             raise click.ClickException(f"{path} already exists (pass --force to overwrite)")
         if not do_write:
-            console.print(f"[dim]# would write {path}[/]")
-            sys.stdout.write(text)
+            R.print_code(text, "yaml", console=console, title=f"would write {path}")
             console.print("[yellow]not written — re-run with --yes to commit[/]")
             return
         Path(path).parent.mkdir(parents=True, exist_ok=True)
