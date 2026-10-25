@@ -47,7 +47,9 @@ def _check(name: str, status: str, detail: str) -> dict:
 def verify_spec(cfg, spec_id: str) -> dict:
     """Return wt.spec.verify.v1 audit for an internal SPEC-NNNN.
 
-    Raises ValueError for outbound ids or missing files.
+    Raises ValueError for outbound ids or missing files. Resolves the path, then delegates to
+    `verify_spec_file` (SPEC-0175 factoring) so the same checks run on a spec inside a
+    campaign worktree.
     """
     if _is_outbound_spec_id(spec_id):
         raise ValueError(
@@ -58,6 +60,18 @@ def verify_spec(cfg, spec_id: str) -> dict:
 
     specs_dir = Path(_specs_dir(cfg))
     path = _find_spec(specs_dir, spec_id)
+    return verify_spec_file(path, specs_dir=specs_dir, spec_id=spec_id)
+
+
+def verify_spec_file(path, *, specs_dir=None, spec_id: str | None = None) -> dict:
+    """The mechanical DoD audit for one spec file (SPEC-0175): same checks and payload as
+    `verify_spec`, computed from a path — e.g. a spec inside a campaign worktree, or an
+    outbound portable file. Epic-children checks need `specs_dir`; without it they are
+    skipped. Raises ValueError when the file is missing."""
+    path = Path(path)
+    if not path.is_file():
+        raise ValueError(f"spec file not found: {path}")
+    specs_dir = Path(specs_dir) if specs_dir else None
     text = path.read_text(encoding="utf-8")
     fm, body = split_frontmatter(text)
     fm = fm or {}
@@ -125,8 +139,11 @@ def verify_spec(cfg, spec_id: str) -> dict:
     else:
         checks.append(_check("open_questions", "pass", "Open questions present but no open boxes"))
 
-    if kind == "epic":
-        children = _child_frontmatters(specs_dir, spec_id)
+    if kind == "epic" and specs_dir is None:
+        checks.append(_check("epic_children", "skip", "no specs_dir given for children lookup"))
+        checks.append(_check("epic_breakdown", "skip", "no specs_dir given for children lookup"))
+    elif kind == "epic":
+        children = _child_frontmatters(specs_dir, fm.get("id") or spec_id or "")
         incomplete = [
             f"{c.get('id')}={c.get('status')}"
             for c in children
@@ -184,7 +201,7 @@ def verify_spec(cfg, spec_id: str) -> dict:
 
     return {
         "schema": "wt.spec.verify.v1",
-        "id": fm.get("id") or spec_id,
+        "id": fm.get("id") or spec_id or path.stem,
         "path": str(path),
         "kind": kind,
         "status": status,

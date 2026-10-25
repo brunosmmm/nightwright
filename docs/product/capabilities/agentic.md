@@ -108,8 +108,29 @@ script of scripted edits and canned verdicts instead of calling `claude`.
 
 ## Closing
 
-Rebase, re-run every gate on the rebased tree, audit the spec's Definition of Done, then
-fast-forward the base branch or open a PR (SPEC-0175).
+Closing is the step that guards the base branch, and for wt itself the live editable install
+(SPEC-0175). It is plain Python over the git wrapper and the gate executor, and it never
+forces anything:
+
+1. The spec in the worktree must verify (`wt spec verify` checks) **and** be `status: done`;
+   otherwise the campaign goes back to triage with a synthetic `spec-dod` gate naming what is
+   missing.
+2. Anything uncommitted in the worktree is snapshotted into a commit.
+3. The worktree is rebased onto the target (the local base for `merge`; the fetched remote
+   base for `pr` / `draft-pr`). A conflict parks the campaign (`rebase_conflict`) with the
+   worktree restored byte-for-byte.
+4. **Every gate runs again on the rebased tree.** A required failure goes to triage.
+5. `merge` policy: the main checkout must be on the base branch and have no uncommitted
+   tracked changes (untracked files are fine), and the base must not have moved since it
+   was captured — else `main_not_on_base`, `main_dirty`, or (after two attempts)
+   `base_moving`. Then `git merge --ff-only`, the configured `post_cmds`, and an optional
+   push.
+6. `pr` / `draft-pr` policy: push the branch and `gh pr create` with a generated body (the
+   spec's Decision, its acceptance checklist, the gate table, campaign cost). A failing `gh`
+   parks (`gh_failed`).
+7. Cleanup per `worktrees.cleanup`; a merged branch is deleted, a PR branch kept.
+
+Idea states are not touched here; `/wt-conduct` runs `wt spec reconcile --apply` after merges.
 
 ## Queue
 

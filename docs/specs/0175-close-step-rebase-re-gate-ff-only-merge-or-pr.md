@@ -1,7 +1,7 @@
 ---
 id: SPEC-0175
 title: "Close step: rebase, re-gate, ff-only merge or PR hand-off"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -108,6 +108,19 @@ questions, epic children when applicable) computed from a path; `verify_spec(cfg
 resolves the path and delegates. Epic-children checks need a specs dir; `verify_spec_file`
 takes an optional `specs_dir` and skips them when absent.
 
+### As shipped (deviations from the Design above)
+
+- The "base moved" retry loop lives **inside** `close_campaign` (`max_attempts`, default 2)
+  instead of being a caller-visible signal; the outcome reports `attempts` and the park
+  reason `base_moving` after the limit. The queue therefore calls `close_campaign` once.
+- `CloseOutcome` carries `events: [(type, payload)]` for the caller to append (`gate`,
+  `commit`, `finding`, `park`, `close`) and never writes campaign state itself, so no
+  `item_lock` nesting can occur.
+- An unreachable target (`rev_parse` / `fetch` failure) parks as `open_failed` with the
+  git tail; a failing `post_cmds` entry is a `finding(major)` and the merge stands.
+- `verify_spec_file(path, *, specs_dir=None, spec_id=None)`; without `specs_dir` the two
+  epic checks are `skip`.
+
 ## Alternatives considered
 
 - **Merge from the worktree with `git push . HEAD:main`** — rejected. Git refuses to update
@@ -123,23 +136,23 @@ takes an optional `specs_dir` and skips them when absent.
 
 ## Acceptance criteria
 
-- [ ] Happy path (`merge`) on temp repos: branch fast-forwarded, main HEAD == worktree
+- [x] Happy path (`merge`) on temp repos: branch fast-forwarded, main HEAD == worktree
       HEAD, worktree removed and branch deleted per config, `close` payload filled,
       `post_cmds` ran in the main checkout.
-- [ ] Dirty main (tracked change) ⇒ `PARKED(main_dirty)` and main untouched; untracked file
+- [x] Dirty main (tracked change) ⇒ `PARKED(main_dirty)` and main untouched; untracked file
       alone does not park; main on another branch ⇒ `PARKED(main_not_on_base)`.
-- [ ] Base advanced without conflict ⇒ rebase then merge; with a conflict ⇒
+- [x] Base advanced without conflict ⇒ rebase then merge; with a conflict ⇒
       `PARKED(rebase_conflict)` naming the file, worktree tree identical to before.
-- [ ] Base moved between target capture and merge ⇒ caller-visible retry signal, and
+- [x] Base moved between target capture and merge ⇒ caller-visible retry signal, and
       `PARKED(base_moving)` after the configured attempts.
-- [ ] Re-gate required failure ⇒ `next_state == "TRIAGING"` with the `GateRun`; spec not
+- [x] Re-gate required failure ⇒ `next_state == "TRIAGING"` with the `GateRun`; spec not
       `done` or with unchecked ACs ⇒ `TRIAGING` with the `spec-dod` synthetic gate.
-- [ ] `pr` policy with a fake `gh`: branch pushed to the bare remote, `HANDED_OFF` with the
+- [x] `pr` policy with a fake `gh`: branch pushed to the bare remote, `HANDED_OFF` with the
       URL, body contains the Decision text, the AC checklist, the gate table and the
       footer; `draft-pr` passes `--draft`; a failing `gh` ⇒ `PARKED(gh_failed)`.
-- [ ] `verify_spec_file` returns the same payload as `verify_spec` for an existing spec;
+- [x] `verify_spec_file` returns the same payload as `verify_spec` for an existing spec;
       `wt spec verify` behavior unchanged.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -153,6 +166,27 @@ takes an optional `specs_dir` and skips them when absent.
   a modified tracked file in the clone to see `main_dirty`.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-25)
+
+- **Automated:** `tests/test_agentic_close.py` — 19 tests, one per acceptance criterion
+  plus optional-gate, late-snapshot, draft-pr, pr-body purity and `verify_spec_file`
+  parity (incl. missing file and no-`specs_dir` skip). `tests/test_verify.py` (6) unchanged
+  and passing. Full suite in the worktree: **1395 passed, 1 skipped in 103.70s (0:01:43)** (0 failed).
+- **Manual (scratch clone of this repo, never the live checkout):** a scratch
+  `.wt/project.yaml` with gates `python3 tools/spec_lint.py` and `uv run pytest -q -x
+  tests/test_agentic_gitops.py tests/test_verify.py`; a `done` probe spec on a branch.
+  Observed: (1) first attempt went to `TRIAGING` because the pytest gate pointed at a file
+  absent from the clone — the re-gate failure path, main untouched; (2) with a valid gate,
+  `MERGED` in 2 s, worktree removed, probe on `main`; (3) a second branch parked with
+  `rebase_conflict` on `docs/LEDGER.md` (both sides had regenerated the ledger), main
+  unchanged; (4) a third branch with a modified tracked `README.md` in the clone parked
+  with `main_dirty`, gates having run once; after `git checkout -- README.md` the same
+  campaign closed `MERGED`.
+- **Finding for the queue / conductor:** in this repo two concurrent campaigns both
+  regenerate `docs/LEDGER.md`, so `rebase_conflict` will be routine. A deterministic
+  pre-rebase step (regenerate the generated block, retry once) belongs in SPEC-0176 or the
+  resolver child idea.
+
 ## Clock Log
 
 Internal work: clock on IDEA-022 with `wt idea clock-in` / `clock-out`.
@@ -164,11 +198,11 @@ happens under SPEC-0177's manual verification.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
