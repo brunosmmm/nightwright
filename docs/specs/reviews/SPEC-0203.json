@@ -1,0 +1,61 @@
+{
+  "schema": "wt.spec.review.v1",
+  "spec_id": "SPEC-0203",
+  "verdict": "split",
+  "spec_sha256": "26259b01363f32f7a5aec9b61331bed4c47227d17f1899591bf94cd4bc44ec25",
+  "reviewed_at": "2026-10-25T16:17:50-04:00",
+  "model": "sonnet",
+  "cost_usd": 0.16700569999999998,
+  "findings": [
+    {
+      "severity": "major",
+      "section": "Acceptance criteria / Design (size)",
+      "title": "Too big for one campaign: three independent subsystems, 11 ACs",
+      "detail": "The spec bundles (1) the deterministic combiner, profile keys, routing and `last_review` reshaping, (2) the optional LLM `review_triager` persona with its cap and `triage` state machine, and (3) a crash-safe follow-up idea filer with carry-over, a new `followup` ledger event, marker-based adoption, and changes to `_do_close`/`StepResult`/`_apply`. It has 11 ACs (AC1–AC11) and touches queue.py, profiles, personas, schemas, close, org_write usage, the CLI (`queue show`, `list --json`) and docs. The filer and the triager share no code with each other and only a thin interface with the scorer (`advisory`/`waived` lists). Split into three ordered campaigns."
+    },
+    {
+      "severity": "minor",
+      "section": "Design / Deterministic combiner (step 5–6)",
+      "title": "A `pass`-verdict reviewer's real `major` never blocks; this is not stated or tested",
+      "detail": "Step 3 only lets a `fix` verdict survive, and step 5 blocks on a `major` only through a surviving `fix` verdict or the synthetic AC `major`. So a `pass` verdict carrying one real `major` and nothing else scores 85 and the outcome is `pass` — the major is demoted to advisory and filed as a follow-up. That may be intended, but it sits uneasily with the Decision's \"a reviewer that names a concrete material defect must be heard\" and with G1's wording. Add an explicit sentence and a worked example/AC1 case (pass + one major ⇒ pass, advisory), or make a real `major` from any reviewer force `fix`."
+    },
+    {
+      "severity": "minor",
+      "section": "Design / Follow-up filing (Idempotency)",
+      "title": "Marker may be truncated or altered by add_task; adoption then fails and duplicates return",
+      "detail": "The idea text is `[spec] persona/slot: title(≤120) — detail(200) (files: …) wtfu:<key12>` with the marker at the end, and `add_idea` → `add_task` builds the org headline (it may wrap, cap or move content). Step 3 only adds a `note` if the returned headline lacks the marker; a later crash-recovery lookup (step 2) would then miss it and capture again. Put the marker at the start of the text (or in a property such as `:KEY:` that `add_idea` supports via `key=`) and add a test that a long-title/long-files finding still carries the marker."
+    },
+    {
+      "severity": "minor",
+      "section": "Design / Deterministic combiner vs Follow-up filing",
+      "title": "Two different identity notions for a finding",
+      "detail": "Scoring dedup uses `(sorted files, lower-cased title)`; the filer key uses lower-cased title with whitespace collapsed plus spec id. Titles differing only in whitespace are scored twice but filed once. Use one normalization function for both and say so."
+    },
+    {
+      "severity": "minor",
+      "section": "Design / Routing and state (Carry-over)",
+      "title": "Carry-over removal rule is under-specified for severity-changing duplicates",
+      "detail": "\"a carried key that becomes blocking in a later review is removed\" depends on the key being computed from the merged/canonical finding. State that blocking is evaluated per key (any blocking copy removes the carry entry), and that a key that was carried and then neither reappears nor is blocking is still filed (as accepted) — AC8 covers only the first half."
+    },
+    {
+      "severity": "nit",
+      "section": "Design / Reporting",
+      "title": "Triager `max_budget_usd` for frugal is specified though the persona is disabled there",
+      "detail": "Harmless, but AC2 says \"exact defaults above\" while the frugal haiku/0.25 settings are only parenthetical in the persona section; list the per-profile persona settings in one table in Profile changes."
+    }
+  ],
+  "suggested_splits": [
+    {
+      "title": "Review triage combiner, review profile keys and routing",
+      "scope": "`triage_reviews` (normalize/dedup/waive/verdict-block/score/outcome, synthetic majors), replacing `combine_reviews`; `review:` profile keys + validation; `_apply_reviews` routing, `last_review` reshaping and `review_carry`, `review score` note event, `queue show` review line and `list --json` review_score; docs. Covers AC1, AC2 (review keys), AC5, part of AC10 (a, d)."
+    },
+    {
+      "title": "review_triager persona and waiver handling",
+      "scope": "`needs_triager`, `review_triager` template/schema/PERSONAS/profile settings, REVIEWING pending→triager step, cost-cap skip, waiver validation and recording, `triage` state machine. Depends on the combiner campaign. Covers AC3, AC4, AC6, AC10(c)."
+    },
+    {
+      "title": "Automatic follow-up idea filing",
+      "scope": "`followup` ledger event in schemas, `file_followups` in `_do_close` with `events_before`/`StepResult.followups`/`state.close.followups`, key/marker idempotency and crash/error handling, carry-over consumption, merge-summary and `queue show` reporting. Depends on the combiner campaign (advisory/waived/review_carry). Covers AC7, AC8, AC9, AC10(b, d, e)."
+    }
+  ]
+}

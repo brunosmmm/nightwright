@@ -1,0 +1,42 @@
+{
+  "schema": "wt.spec.review.v1",
+  "spec_id": "SPEC-0202",
+  "verdict": "approve",
+  "spec_sha256": "afb31fe1a09e5e5174e0ec93d8122a3572d036bfdd03162278d8826377d20c13",
+  "reviewed_at": "2026-10-25T16:18:51-04:00",
+  "model": "sonnet",
+  "cost_usd": 0.15461789999999997,
+  "findings": [
+    {
+      "severity": "minor",
+      "section": "Design (Verdict schema) / Acceptance criteria",
+      "title": "Schema's required keys and field types are not stated",
+      "detail": "Goals say a `category` on \"every finding\", and `ADVERSARIAL_REVIEWER_SCHEMA` lists `category`, `trigger` and `lines` per finding. The spec never says which of these are `required`. CONFORMANCE_REVIEWER_SCHEMA (personas.py:78) requires only `severity` and `title`. The spec also doesn't give `lines`' type (array of ints, strings, or ranges?). Say that `category` is required and the enum is closed, that `trigger` is optional (a missing trigger caps severity at `minor`, enforced by prompt only), and give the type of `lines`. Otherwise the schema AC (\"category enum, trigger\") can't be checked objectively."
+    },
+    {
+      "severity": "minor",
+      "section": "Design (Ledger) / Acceptance criteria",
+      "title": "`trigger` and `lines` are dropped from the ledger and nothing says so",
+      "detail": "`_events_for_result` (queue.py:373-378) copies only ac/title/detail/files, and the spec adds only `category`. `trigger` and `lines` (cite file and line) exist only in the persisted `last_review.verdicts` state. If they should reach the ledger or the implementer's `fix_brief`, say so. If not, state that it is deliberate. Also note that SPEC-0201 line 255 says `_events_for_result` \"already handles the shape\", while this spec says it must be changed to copy `category`. Reconcile the two statements."
+    },
+    {
+      "severity": "minor",
+      "section": "Design (Docs) / Acceptance criteria",
+      "title": "Docs update is promised but no criterion covers it",
+      "detail": "Design says the capability page \"Reviews\" lists the three reviewers and their categories. No acceptance criterion or Definition-of-done item checks this. Add a criterion (for example `docs/product/capabilities/agentic.md` lists the three reviewers and the category set), or drop the bullet."
+    },
+    {
+      "severity": "minor",
+      "section": "Acceptance criteria / Test plan",
+      "title": "\"`pass` with a `must_fix` is `fix`\" has no explicit test",
+      "detail": "The Design states this rule. It is enforced by SPEC-0201's `combine_reviews`, and the e2e paths listed here use a `must_fix` finding. No test is named for an adversarial verdict of `pass` that carries a `must_fix` finding. Add it to the e2e or queue test list."
+    },
+    {
+      "severity": "minor",
+      "section": "Rollout / migration",
+      "title": "Default cap impact is not analysed",
+      "detail": "With balanced's default cap of 10.0 and an implementer budget of 4.0, reviewers now cost up to 1.5+1.0+1.5 = 4.0 per pass, where they cost 1.5 today. If budgets are spent in full, a second fix loop would park on `cost_cap` at the implementer step (4+4+4 > 10). SPEC-0201 analyses the cap for two reviewers. State here whether `campaign_cap_usd` defaults stay unchanged for three reviewers, and what happens at the worst-case spend."
+    }
+  ],
+  "suggested_splits": []
+}

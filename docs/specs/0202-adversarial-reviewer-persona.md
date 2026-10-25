@@ -113,7 +113,7 @@ conformance reviewer's plus a per-finding `category`.
 - **Automated tests:** `tests/test_agentic_personas.py` (template, schema enum, request
   read-only/model/budget per profile, deterministic prompt); `tests/test_agentic_profiles.py`
   (default lists, frugal opt-in); `tests/test_agentic_queue.py` (event mapping with
-  `category`, cap sum with three reviewers); `tests/test_agentic_schemas.py` (ledger validity of
+  `category`, cap sum with three reviewers); `tests/test_agentic_logs.py` (ledger validity of
   a reviewer `finding` with `category`); `tests/test_agentic_e2e.py` (the scripted paths above).
 - **Manual verification:** the next real campaign records this reviewer's verdict and cost here.
 - **Regression guard:** full `uv run pytest`.
