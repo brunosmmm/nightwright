@@ -1,7 +1,7 @@
 ---
 id: SPEC-0174
 title: "Headless persona runner, prompt assembly and verdict schemas"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -164,28 +164,28 @@ current state. `PERSONA` is a `click.Choice`.
 
 ## Acceptance criteria
 
-- [ ] `ClaudeRunner` passes exactly the documented flags (asserted on a monkeypatched
+- [x] `ClaudeRunner` passes exactly the documented flags (asserted on a monkeypatched
       `subprocess.run`), the prompt on stdin, `cwd` = worktree, env with the six `WT_*`
       variables, `--restricted` only for read-only personas.
-- [ ] A canned result with `structured_output` yields `verdict_ok`, `cost_usd`, `usage`,
+- [x] A canned result with `structured_output` yields `verdict_ok`, `cost_usd`, `usage`,
       `session_id`; a result whose `structured_output` is absent falls back to parsing
       `result`; invalid JSON ⇒ `verdict=None`, `is_error=True`; a conforming-but-wrong
       enum value ⇒ `verdict_ok=False`; `TimeoutExpired` ⇒ `timed_out=True`; a missing
       `total_cost_usd` ⇒ `cost_usd=None`.
-- [ ] `prompt.md` and `result.json` exist under `run_dir` after a run.
-- [ ] `build_prompt` is byte-identical across two calls with the same inputs and contains
+- [x] `prompt.md` and `result.json` exist under `run_dir` after a run.
+- [x] `build_prompt` is byte-identical across two calls with the same inputs and contains
       the spec text, worktree, gate tails and pending brief; missing values render as
       `(none)`.
-- [ ] `build_request` for the implementer carries `bypassPermissions` by default, the
+- [x] `build_request` for the implementer carries `bypassPermissions` by default, the
       project's `allowed_tools` plus gate commands, and the profile budget; for the triager
       `read_only=True` and the triager budget.
-- [ ] `FakeRunner` applies edits in `cwd`, returns verdicts in script order, raises on a
+- [x] `FakeRunner` applies edits in `cwd`, returns verdicts in script order, raises on a
       persona mismatch, advances across processes, and honors `malformed`, `exit_code`,
       `timed_out`.
-- [ ] `select_runner` picks the fake via config or env, otherwise `ClaudeRunner`.
-- [ ] A real `claude -p --output-format json --json-schema …` run on this machine confirms
+- [x] `select_runner` picks the fake via config or env, otherwise `ClaudeRunner`.
+- [x] A real `claude -p --output-format json --json-schema …` run on this machine confirms
       the parsed field names (recorded in the test record with its cost).
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -200,6 +200,34 @@ current state. `PERSONA` is a `click.Choice`.
 - **Regression guard:** full `uv run pytest`; `tests/test_mcp_deferred.py` still passes
   (no "mcp" in pyproject).
 
+### Test record (2026-10-25)
+
+- **Automated:** `tests/test_agentic_runner.py` (17) and `tests/test_agentic_personas.py` (10):
+  argv assertion on a monkeypatched `subprocess.run` (prompt on stdin, cwd, env, `--restricted`
+  only for read-only, no `--max-turns`), the parsing matrix (structured output; fenced
+  `result` fallback; invalid stdout; wrong enum; missing required key; missing cost;
+  `TimeoutExpired`; `is_error`; missing `claude`), run-dir files, `_conforms` nesting,
+  FakeRunner (edits in order, cursor across instances, exhaustion, persona mismatch,
+  malformed / exit_code / timed_out, bad scripts), `select_runner` via config and env,
+  prompt determinism and content, `(none)` rendering, templates/schemas, `build_request` for
+  both personas and the project allowlist override, the hidden CLI. Full `uv run pytest` in
+  the worktree (tui extra installed): **1364 passed, 1 skipped, 0 failed (the 2 lint-guard failures in the first run were a stale ledger from the in-progress status flip; green after `--write-ledger`)**.
+- **Manual (one real run):** gate triager against a scratch campaign (tmp git repo as the
+  worktree, `WT_DATA_DIR`/`WT_CONFIG_DIR` in scratch dirs), `--model sonnet --effort low
+  --max-budget-usd 0.2 --permission-mode dontAsk --restricted`. Result: exit 0, 10.4 s,
+  `total_cost_usd` **0.0818**, `session_id` `d97bd8d6-40e7-4481-ad53-24d2dcd021f8`, a
+  conforming verdict (`disposition: fix`, one `must_fix` naming `app.py` with the right
+  change). Top-level keys observed: `type, subtype, is_error, result, structured_output,
+  session_id, total_cost_usd, usage, num_turns, duration_ms, stop_reason, permission_denials,
+  modelUsage, …` — the five the parser reads are all present under the expected names, so no
+  parser change was needed. `usage` carries `input_tokens, output_tokens,
+  cache_read_input_tokens, cache_creation_input_tokens` plus extra detail. The worktree was
+  clean afterwards (`--restricted` prevented edits). Note for the queue (SPEC-0176):
+  `permission_denials` is available for diagnosing an allowlist that is too tight.
+- **As shipped:** matches Design. One addition: `parse_result` also accepts a `result`
+  wrapped in a ```json fence, and a stream-json array (takes its `result` event) — both
+  defensive, both tested.
+
 ## Clock Log
 
 Internal work: clock on IDEA-021 with `wt idea clock-in` / `clock-out`.
@@ -210,11 +238,11 @@ Library plus a hidden command. Nothing spawns `claude` unattended until SPEC-017
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

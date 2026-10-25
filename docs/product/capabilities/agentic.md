@@ -92,8 +92,19 @@ on a parked item — and logs a `gate` event. It never changes the campaign's st
 
 ## Personas
 
-`claude -p` with a structured verdict, a dollar budget and a wall-clock timeout; a
-scripted fake runner for tests (SPEC-0174).
+Each judgment step is one fresh `claude -p` run (SPEC-0174): a persona markdown template
+(`implementer`, `gate_triager`; reviewers come later) is filled with the campaign's context
+— the spec text as it is on the branch, the worktree path, the last gate logs, the brief
+from the previous loop — and ends with a fixed invariant block (work only in the worktree,
+do not commit, finish with the JSON verdict). The runner passes a `--json-schema` so the
+verdict is structured, a `--max-budget-usd`, a wall-clock timeout, the profile's model and
+effort, and an explicit permission mode (`bypassPermissions` scoped to the worktree for the
+implementer; `--restricted` for read-only personas). Cost, usage and session id come back in
+the result and go to the ledger. Identical inputs give a byte-identical prompt; `wt campaign
+prompt CAMPAIGN PERSONA` prints it without running anything.
+
+For tests and dry runs, `agentic.runner: fake` (or `WT_AGENTIC_RUNNER=fake`) replays a JSON
+script of scripted edits and canned verdicts instead of calling `claude`.
 
 ## Closing
 

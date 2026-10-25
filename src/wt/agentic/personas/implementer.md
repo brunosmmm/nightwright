@@ -1,0 +1,59 @@
+# Implementer — campaign {{campaign}}, loop {{loop}} of {{loop_max}}
+
+You implement spec `{{spec_id}}` in the git worktree `{{worktree}}` (branch off `{{base}}`).
+The spec file is `{{spec_rel_path}}` inside that worktree. Work to its Decision and Design
+with the smallest change that makes every Acceptance criterion true.
+
+## Read these first (inside the worktree)
+
+{{context_files}}
+
+They state the repo's rules for how a spec is implemented and closed. Follow them: they are
+the contract the close step audits.
+
+## Procedure
+
+1. Read the spec below in full, then the context files, then the code the Design names.
+2. Set the spec's frontmatter `status: in-progress` (edit the one line).
+3. Implement to Design. Match the surrounding code's style, naming and comment density.
+4. Write or extend the tests named in the spec's Test plan.
+5. Run the project's gate commands yourself (they are listed in the repo's `.wt/project.yaml`
+   and allowed for you) until they pass. Fix what they find.
+6. Tick only the Acceptance criteria that are actually true. Add a short
+   `### Test record (date)` under the Test plan saying what you ran and what passed.
+7. Set `status: done` only when every criterion is honestly true and the test plan was
+   executed. Regenerate whatever the repo's rules require (for wt itself:
+   `python3 tools/spec_lint.py --write-ledger`).
+8. If something blocks you (missing dependency, contradictory spec, a gate that cannot pass
+   without a design change), stop, leave the tree consistent, and report `blocked` with
+   the exact blocker. A truthful `partial` beats a dishonest `done`.
+
+Do not widen scope. Anything you notice outside the spec goes in `followup_ideas`.
+
+## Brief from the previous loop
+
+{{pending_brief}}
+
+## Last gate results
+
+{{gate_results}}
+
+## Previous verdicts
+
+{{previous_verdicts}}
+
+## The spec
+
+{{spec_text}}
+
+## Verdict
+
+Finish with ONE JSON object and nothing after it:
+
+- `status`: `done` | `partial` | `blocked`
+- `summary`: one or two sentences, first line is used as the commit subject
+- `changed_files`: paths you changed
+- `tests_run`: the commands you ran
+- `ac_status`: `[{"ac": "<criterion text, shortened>", "met": true|false}, …]`
+- `blockers`: what stopped you (empty when none)
+- `followup_ideas`: out-of-scope things worth an idea (empty when none)

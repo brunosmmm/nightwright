@@ -154,4 +154,37 @@ def attach(campaign_group):
                                  {"text": text, "author": author or "human"}, by=by)
         console.print(f"[green]✓[/] note #{rec['seq']} ← {campaign}")
 
+    @campaign_group.command("prompt", hidden=True)
+    @click.argument("campaign", shell_complete=C.complete_campaign_id)
+    @click.argument("persona", type=click.Choice(sorted(_persona_names())))
+    @click.pass_obj
+    def campaign_prompt(cfg, campaign, persona):
+        """Print the prompt a persona would get for this campaign, without running it
+        (SPEC-0174). Debugging aid; byte-identical to what the runner saves as prompt.md."""
+        from . import personas as PS
+        from .profiles import resolve_profile
+
+        try:
+            st = store.read_state(cfg, campaign)
+            profile = resolve_profile(cfg, st.get("profile"))
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        project_cfg = None
+        if st.get("project"):
+            try:
+                from . import project as P
+                project_cfg = P.project_config(cfg, st["project"])
+            except ValueError:
+                project_cfg = None       # no .wt/project.yaml yet: render without context files
+        previous = store.read_ledger(cfg, campaign, types=["run.end"], tail=2)
+        ctx = PS.build_context(cfg, st, project_cfg, loop_max=profile.get("loop_max"),
+                               previous=previous)
+        import sys
+        sys.stdout.write(PS.build_prompt(persona, ctx))
+
     return campaign_group
+
+
+def _persona_names():
+    from .personas import PERSONAS
+    return list(PERSONAS)
