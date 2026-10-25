@@ -97,6 +97,23 @@ def _drawer_id(lines, idx):
     return None
 
 
+def _find_drawer(lines, idx) -> tuple[int, int] | None:
+    """(start, end) indexes of the first `:PROPERTIES:` ... `:END:` block between the headline
+    at `lines[idx]` and the next headline, or None. Lenient like orgparse: the drawer may follow
+    body text."""
+    j = idx + 1
+    while j < len(lines) and not _HEADLINE_RE.match(lines[j]):
+        if lines[j].strip() == ":PROPERTIES:":
+            end = j + 1
+            while end < len(lines) and not _HEADLINE_RE.match(lines[end]):
+                if lines[end].strip() == ":END:":
+                    return j, end
+                end += 1
+            return None
+        j += 1
+    return None
+
+
 def _is_same_headline(task, lines, idx) -> bool:
     m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
     if not m:
@@ -224,20 +241,19 @@ def _inject_property(lines, idx, stars, name, value):
     Replacing an existing property does not shift any offsets; only creating one does, which is
     why stamping callers do it last (SPEC-0076)."""
     indent = " " * (len(stars) + 1)
-    nxt = idx + 1
-    while nxt < len(lines) and _PLANNING_RE.match(lines[nxt]):
-        nxt += 1
-
-    prop_re = re.compile(rf"^\s*:{re.escape(name)}:\s*.*$")
-    if nxt < len(lines) and lines[nxt].strip() == ":PROPERTIES:":
-        end = nxt + 1
-        while end < len(lines) and lines[end].strip() != ":END:":
-            if prop_re.match(lines[end]):
-                lines[end] = f"{indent}:{name}: {value}\n"
+    drawer = _find_drawer(lines, idx)
+    if drawer:
+        prop_re = re.compile(rf"^\s*:{re.escape(name)}:\s*.*$")
+        start, end = drawer
+        for k in range(start + 1, end):
+            if prop_re.match(lines[k]):
+                lines[k] = f"{indent}:{name}: {value}\n"
                 return lines
-            end += 1
         lines.insert(end, f"{indent}:{name}: {value}\n")
     else:
+        nxt = idx + 1
+        while nxt < len(lines) and _PLANNING_RE.match(lines[nxt]):
+            nxt += 1
         lines[nxt:nxt] = [f"{indent}:PROPERTIES:\n", f"{indent}:{name}: {value}\n",
                           f"{indent}:END:\n"]
     return lines
@@ -251,18 +267,15 @@ def _remove_property(lines, idx, name) -> bool:
     Returns True if a line was removed. Leaves an emptied drawer in place — dropping
     `:PROPERTIES:`/`:END:` would shift offsets for a caller mid-write.
     """
-    nxt = idx + 1
-    while nxt < len(lines) and _PLANNING_RE.match(lines[nxt]):
-        nxt += 1
-    if not (nxt < len(lines) and lines[nxt].strip() == ":PROPERTIES:"):
+    drawer = _find_drawer(lines, idx)
+    if not drawer:
         return False
     prop_re = re.compile(rf"^\s*:{re.escape(name)}:\s*.*$")
-    end = nxt + 1
-    while end < len(lines) and lines[end].strip() != ":END:":
-        if prop_re.match(lines[end]):
-            del lines[end]
+    start, end = drawer
+    for k in range(start + 1, end):
+        if prop_re.match(lines[k]):
+            del lines[k]
             return True
-        end += 1
     return False
 
 

@@ -134,7 +134,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0182](./specs/0182-event-driven-wt-conduct-monitor-armed-conductor.md) | Event-driven wt-conduct: Monitor-armed conductor woken by queue events | feature | in-progress | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0195](./specs/0195-spec-new-drops-org-drawers-from-the-context.md) | wt spec new drops org drawers from the scaffolded Context | feature | accepted | M4: cli ergonomics | 2026-10-25 |
-| [SPEC-0196](./specs/0196-set-property-reuses-a-drawer-after-body-text.md) | set_property reuses an existing drawer that sits after body text | feature | accepted | M4: cli ergonomics | 2026-10-25 |
 | [SPEC-0197](./specs/0197-piped-human-output-never-hard-wraps.md) | Piped human output never hard-wraps lines | feature | accepted | M4: cli ergonomics | 2026-10-25 |
 | [SPEC-0198](./specs/0198-wt-queue-followers-who-is-armed.md) | wt queue followers: who is armed, with pids, cursors and lag | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0199](./specs/0199-wt-campaign-runs-and-run.md) | wt campaign runs / run: persona runs without reading run files | feature | accepted | M9: agentic workflow | 2026-10-25 |
@@ -327,6 +326,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0192](./specs/0192-schema-d-agentic-logs-validated-ledger-run-json.md) | Schema'd agentic logs: validated ledger, run.json, gate sidecars, runner journal | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0193](./specs/0193-persona-prompts-state-the-spec-change-guard-rules.md) | Persona prompts state the spec-change guard rules | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0194](./specs/0194-runner-follows-merged-code-re-exec-between-ticks.md) | Runner follows merged code: re-exec between ticks, lease handover, config_invalid parks | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0196](./specs/0196-set-property-reuses-a-drawer-after-body-text.md) | set_property reuses an existing drawer that sits after body text | feature | done | M4: cli ergonomics | 2026-10-25 |
 
 ## Superseded / rejected
 

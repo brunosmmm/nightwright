@@ -1,7 +1,7 @@
 ---
 id: SPEC-0196
 title: "set_property reuses an existing drawer that sits after body text"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -41,15 +41,21 @@ Search for the drawer between the headline and the next headline, as `_drawer_id
 
 ## Acceptance criteria
 
-- [ ] `set_property` on an entry whose drawer follows body text adds the key to that drawer; the entry still has exactly one `:PROPERTIES:` line.
-- [ ] `clear_property` removes a key from such a drawer.
-- [ ] An entry without a drawer still gets one right after the headline (and after SCHEDULED/DEADLINE/CLOSED lines).
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `set_property` on an entry whose drawer follows body text adds the key to that drawer; the entry still has exactly one `:PROPERTIES:` line.
+- [x] `clear_property` removes a key from such a drawer.
+- [x] An entry without a drawer still gets one right after the headline (and after SCHEDULED/DEADLINE/CLOSED lines).
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
 - **Automated tests:** `tests/test_org_write.py` (or a new `tests/test_org_drawer.py`): fixture with body text before the drawer → `set_property` → one drawer containing both the old and new keys; `clear_property` on it; an entry with no drawer; an entry with planning lines. `tests/test_export.py::test_scaffold_outbound_from_idea_prefills_and_links_back` still passes, and its idea ends with one drawer.
 - **Regression guard:** full `uv run pytest`.
+
+### Test record (2026-10-25)
+
+- `uv run pytest -q tests/test_org_drawer.py` — 5 passed (drawer after body text: set/replace/clear keep one `:PROPERTIES:`; no-drawer entries, with and without planning lines, get a drawer at the canonical position; `set_property`/`clear_property` end to end).
+- `uv run pytest -q -x` — 1663 passed, 1 skipped (includes `test_export.py::test_scaffold_outbound_from_idea_prefills_and_links_back`).
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py` — exit 0.
 
 ## Rollout / migration
 
@@ -57,11 +63,11 @@ Ships through the agentic queue (balanced profile). No data migration.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
