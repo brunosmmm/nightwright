@@ -7,6 +7,7 @@ from .explore import _idea_span, _skip_meta
 from .extension_schema import validate_extension_map
 from .org import filter_tasks, load_tasks
 from .org_write import (_HEADLINE_RE, _PLANNING_RE, _atomic_backup_write, _inject_property,
+                        org_writer,
                         _remove_property, resolve_selector, stamp_updated)
 
 _EXT_HEADLINE_RE = re.compile(r"^\*+\s+Ext\s+(.+?)\s*$")
@@ -98,6 +99,7 @@ def _validate_write(cfg, project: str, mapping: dict[str, str]) -> None:
         raise ValueError("; ".join(problems))
 
 
+@org_writer
 def rename_idea_ext_namespace(cfg, selector, old: str, new: str, *, task=None) -> bool:
     """Rename `** Ext <old>` → `** Ext <new>` on an idea (SPEC-0159). Values preserved.
 
@@ -132,6 +134,7 @@ def rename_idea_ext_namespace(cfg, selector, old: str, new: str, *, task=None) -
     return True
 
 
+@org_writer
 def set_idea_extension(cfg, selector, key: str, value: str, *, project: str | None = None):
     """Set one Ext key under `** Ext <project>`. Schema-validates when configured."""
     task = _require_idea(cfg, selector)
@@ -154,6 +157,7 @@ def set_idea_extension(cfg, selector, key: str, value: str, *, project: str | No
     return task.file
 
 
+@org_writer
 def clear_idea_extension(cfg, selector, key: str, *, project: str | None = None):
     """Remove one Ext key. Rejects clearing a required key when schema exists."""
     task = _require_idea(cfg, selector)

@@ -7,8 +7,8 @@ import datetime as dt
 import os
 import re
 
-from .org_write import (_HEADLINE_RE, _atomic_backup_write, resolve_selector, set_state,
-                        file_keywords, _inactive_stamp, set_property, ensure_idea_keyword,
+from .org_write import (_HEADLINE_RE, _atomic_backup_write, _locate_headline, org_writer,
+                        resolve_selector, set_state, file_keywords, _inactive_stamp, set_property, ensure_idea_keyword,
                         stamp_updated, parse_inactive_stamp, _INACTIVE_STAMP_RE)
 from .org_markup import to_org_body
 
@@ -149,6 +149,7 @@ def _items_to_question_body(items: list[dict], *, normalize_text: bool = True) -
     return "".join(out)
 
 
+@org_writer
 def _ensure_question_header(cfg, path) -> bool:
     """Ensure the file declares `#+TODO: OPEN | RESOLVED` so orgparse recognizes question
     states (a file's own `#+TODO` wins over the env fallback). Inserted after the last
@@ -170,9 +171,7 @@ def _ensure_question_header(cfg, path) -> bool:
 def _idea_span(lines, task):
     """Return (head_idx, body_start, body_end) for task's headline subtree.
     body_end is exclusive index of the next same-or-higher-level headline (or len)."""
-    idx = task.line - 1
-    if not (0 <= idx < len(lines)):
-        raise ValueError(f"line {task.line} out of range in {task.file}")
+    idx = _locate_headline(task, lines)
     m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
     if not m:
         raise ValueError(f"line {task.line} is not a headline")
@@ -275,6 +274,7 @@ def _stars(lines, idx) -> str:
     return m.group(1) if m else "*"
 
 
+@org_writer
 def _replace_section_body(cfg, task, section_name, body_text, *, apply_markup=True):
     # Question bodies are pre-rendered as `*** OPEN|RESOLVED` headlines with markup already
     # applied per item (SPEC-0054); re-running to_org_body over them would mangle the stars.
@@ -571,6 +571,7 @@ def normalize_plain_log_headlines(text: str) -> tuple[str, int]:
     return "".join(out), n
 
 
+@org_writer
 def normalize_log_stamps_in_file(cfg, path) -> int:
     """Normalize plain Log headlines in one org file; return count rewritten."""
     raw = open(path, encoding="utf-8").read()
@@ -599,6 +600,7 @@ def normalize_idea_log_stamps(cfg, selector=None) -> list[tuple[str, int]]:
     return [(p, normalize_log_stamps_in_file(cfg, p)) for p in paths]
 
 
+@org_writer
 def append_log(cfg, selector, note, *, when=None):
     """Append a Log entry; ensure skeleton; set state INCUBATE if still IDEA.
 
@@ -768,6 +770,7 @@ def set_idea_state(cfg, selector, new_state):
     return task.file
 
 
+@org_writer
 def retitle_idea(cfg, selector, new_title):
     """Rewrite the idea headline text; keep stars, state, tags, properties."""
     task = resolve_selector(cfg, selector)
@@ -777,7 +780,7 @@ def retitle_idea(cfg, selector, new_title):
     if not new_title:
         raise ValueError("title is empty")
     lines = open(task.file).read().splitlines(keepends=True)
-    idx = task.line - 1
+    idx = _locate_headline(task, lines)
     m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
     if not m:
         raise ValueError("not a headline")

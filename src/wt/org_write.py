@@ -4,10 +4,13 @@ custom, deliberately-minimal mutation: it rewrites exactly the keyword token of 
 the file up under cfg['data_dir']/org-backups, and writes atomically. It never edits tags,
 priority, body, or any other headline."""
 import datetime as dt
+import fcntl
+import functools
 import os
 import re
 import shutil
 import tempfile
+import threading
 
 import orgparse
 from orgparse.node import OrgEnv
@@ -17,6 +20,111 @@ from .dates import parse_date
 from .org import _split_keywords, filter_tasks, load_tasks
 
 _HEADLINE_RE = re.compile(r"^(\*+)(\s+)(.*)$")
+
+
+# ---- concurrency (SPEC-0190) ----------------------------------------------------------------
+# Several sessions write the same ideas file. Every read-modify-write of an org file holds one
+# cross-process lock (flock on <data_dir>/org-write.lock), re-entrant within a thread so
+# writers can call writers. Inside it, a writer re-reads the file and finds its headline by
+# identity (`_locate_headline`), never trusting the line number it parsed earlier.
+
+_ORG_LOCK_GUARD = threading.Lock()
+_ORG_LOCK_STATE = threading.local()
+_ORG_THREAD_LOCK = threading.RLock()
+
+
+def _org_lock_path(cfg) -> str:
+    return os.path.join(cfg["data_dir"], "org-write.lock")
+
+
+class org_write_lock:
+    """`with org_write_lock(cfg):` — exclusive across processes and threads, re-entrant."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+
+    def __enter__(self):
+        _ORG_THREAD_LOCK.acquire()
+        depth = getattr(_ORG_LOCK_STATE, "depth", 0)
+        if depth == 0:
+            path = _org_lock_path(self.cfg)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            _ORG_LOCK_STATE.fd = fd
+        _ORG_LOCK_STATE.depth = depth + 1
+        return self
+
+    def __exit__(self, *exc):
+        _ORG_LOCK_STATE.depth -= 1
+        if _ORG_LOCK_STATE.depth == 0:
+            fd = _ORG_LOCK_STATE.fd
+            _ORG_LOCK_STATE.fd = None
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        _ORG_THREAD_LOCK.release()
+        return False
+
+
+def org_writer(fn):
+    """Decorator for an org-file writer whose first argument is `cfg`: runs it under
+    `org_write_lock`. `tests/test_org_write_race.py` checks every writer carries it."""
+    @functools.wraps(fn)
+    def wrapper(cfg, *args, **kwargs):
+        with org_write_lock(cfg):
+            return fn(cfg, *args, **kwargs)
+    wrapper.__org_writer__ = True
+    return wrapper
+
+
+def _drawer_id(lines, idx):
+    """The `:ID:` in the property drawer of the headline at `lines[idx]`, or None. Lenient
+    like orgparse: the drawer may follow body lines, as long as it is before the next
+    headline."""
+    j = idx + 1
+    in_drawer = False
+    while j < len(lines) and not _HEADLINE_RE.match(lines[j]):
+        line = lines[j].strip()
+        if line == ":PROPERTIES:":
+            in_drawer = True
+        elif line == ":END:":
+            in_drawer = False
+        elif in_drawer:
+            m = re.match(r"^:ID:\s*(\S+)$", line)
+            if m:
+                return m.group(1)
+        j += 1
+    return None
+
+
+def _is_same_headline(task, lines, idx) -> bool:
+    m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
+    if not m:
+        return False
+    want_id = (task.properties or {}).get("ID")
+    if want_id:
+        return _drawer_id(lines, idx) == want_id
+    return len(m.group(1)) == task.level and bool(task.heading) and task.heading in m.group(3)
+
+
+def _locate_headline(task, lines) -> int:
+    """0-based index of `task`'s headline in the current `lines` (SPEC-0190).
+
+    Trusts `task.line` only when the headline there is the same entry — same `:ID:` when the
+    task has one, else same level and heading text. Otherwise (another session inserted,
+    archived or rotated entries since `task` was parsed) it searches the file and returns the
+    unique match, or raises a drift error. Never returns a different headline."""
+    idx = task.line - 1
+    if 0 <= idx < len(lines) and _is_same_headline(task, lines, idx):
+        return idx
+    hits = [i for i, line in enumerate(lines)
+            if _HEADLINE_RE.match(line) and _is_same_headline(task, lines, i)]
+    if len(hits) == 1:
+        return hits[0]
+    who = (task.properties or {}).get("ID") or repr(task.heading)
+    why = "not found" if not hits else f"{len(hits)} matches"
+    raise ValueError(f"drift: {who} is no longer at {task.file}:{task.line} ({why}) — the "
+                     f"file changed since it was read; re-run")
 
 
 def file_keywords(cfg, path):
@@ -158,12 +266,11 @@ def _remove_property(lines, idx, name) -> bool:
     return False
 
 
+@org_writer
 def clear_property(cfg, task, name):
     """Remove `:NAME:` from `task`'s drawer, bumping `:UPDATED:` like `set_property` does."""
     lines = open(task.file).read().splitlines(keepends=True)
-    idx = task.line - 1
-    if not (0 <= idx < len(lines)):
-        raise ValueError(f"line {task.line} out of range in {task.file}")
+    idx = _locate_headline(task, lines)
     m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
     if not m:
         raise ValueError(f"line {task.line} in {task.file} is not a headline: {lines[idx]!r}")
@@ -186,6 +293,7 @@ def stamp_updated(cfg, lines, idx, stars, *, when=None):
 _ARCHIVE_ON_STATES = frozenset({"DROPPED", "RESEARCHED", "PROMOTED", "SHIPPED"})
 
 
+@org_writer
 def set_state(cfg, task, new_state, *, stamp_closed=True):
     """Set `task`'s TODO keyword to `new_state` in its file. Validates the state against the
     file's keyword set, verifies the on-disk headline still matches (drift guard), manages the
@@ -197,9 +305,7 @@ def set_state(cfg, task, new_state, *, stamp_closed=True):
                          f"valid: {' '.join(active)} | {' '.join(done)}")
 
     lines = open(task.file).read().splitlines(keepends=True)
-    idx = task.line - 1
-    if not (0 <= idx < len(lines)):
-        raise ValueError(f"line {task.line} out of range in {task.file}")
+    idx = _locate_headline(task, lines)
     m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
     if not m:
         raise ValueError(f"line {task.line} in {task.file} is not a headline: {lines[idx]!r}")
@@ -248,6 +354,7 @@ def set_state(cfg, task, new_state, *, stamp_closed=True):
 _PLANNING_RE = re.compile(r"^\s*(SCHEDULED|DEADLINE|CLOSED):")
 
 
+@org_writer
 def set_property(cfg, task, name, value, *, touch=True):
     """Add/update a `:NAME: value` property in `task`'s `:PROPERTIES:` drawer (SPEC-0013),
     sibling to `set_state`: line-anchored + drift-guarded, backs up, writes atomically. Creates
@@ -257,9 +364,7 @@ def set_property(cfg, task, name, value, *, touch=True):
     SPEC-0076: on an idea this also bumps `:UPDATED:` in the same write. `touch=False` opts out
     for mechanical backfills (`reindex_ideas`), and the stamp properties never bump themselves."""
     lines = open(task.file).read().splitlines(keepends=True)
-    idx = task.line - 1
-    if not (0 <= idx < len(lines)):
-        raise ValueError(f"line {task.line} out of range in {task.file}")
+    idx = _locate_headline(task, lines)
     m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
     if not m:
         raise ValueError(f"line {task.line} in {task.file} is not a headline: {lines[idx]!r}")
@@ -317,9 +422,7 @@ def _find_logbook(lines, idx, stars):
 
 def _headline_and_drift(task, lines):
     """Shared drift-guard + headline parse for the clock primitives."""
-    idx = task.line - 1
-    if not (0 <= idx < len(lines)):
-        raise ValueError(f"line {task.line} out of range in {task.file}")
+    idx = _locate_headline(task, lines)
     m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
     if not m:
         raise ValueError(f"line {task.line} in {task.file} is not a headline: {lines[idx]!r}")
@@ -331,6 +434,7 @@ def _headline_and_drift(task, lines):
     return idx, stars
 
 
+@org_writer
 def clock_in(cfg, selector, *, when=None):
     """Open a clock on `selector`'s idea: insert `CLOCK: [stamp]` into its `:LOGBOOK:` drawer
     (creating the drawer if absent), org-native so orgparse/Emacs read it back. Raises (no
@@ -354,6 +458,7 @@ def clock_in(cfg, selector, *, when=None):
     return task.file
 
 
+@org_writer
 def clock_out(cfg, selector, *, when=None):
     """Close the open clock on `selector`'s idea: rewrite its open `CLOCK: [start]` line to
     `CLOCK: [start]--[end] => H:MM`. Raises (no write) if nothing is clocked in."""
@@ -384,6 +489,7 @@ def clock_out(cfg, selector, *, when=None):
     return task.file
 
 
+@org_writer
 def add_clock_entry(cfg, selector, start, end):
     """Append a **closed** `CLOCK: [start]--[end] => H:MM` line to `selector`'s idea (SPEC-0063
     reconciliation — a historical, already-complete pair, not a live clock_in/clock_out
@@ -411,6 +517,7 @@ def add_clock_entry(cfg, selector, start, end):
     return task.file, True
 
 
+@org_writer
 def ensure_idea_keyword(cfg, path, keyword, *, marker="INCUBATE"):
     """Ensure the ideas file's idea-state `#+TODO` line (identified by containing `marker`,
     e.g. INCUBATE) includes `keyword` in its done section (SPEC-0056). A file's own `#+TODO`
@@ -524,6 +631,7 @@ def idea_kind(task) -> str:
     return raw if raw in IDEA_KINDS_SET else DEFAULT_IDEA_KIND
 
 
+@org_writer
 def add_task(cfg, text, *, state=None, tags=(), priority=None, scheduled=None,
              deadline=None, file=None, project=None, epic=None, key=None, idea_id=None,
              kind=None, workstream=None):
@@ -612,6 +720,7 @@ def add_task(cfg, text, *, state=None, tags=(), priority=None, scheduled=None,
     return path, headline
 
 
+@org_writer
 def generate_tasks(cfg, spec, items, *, file=None, key=None):
     """Generate org tasks from a spec (SPEC-0014): spec is {"id": "SPEC-NNNN", "title": ...}.
     Ensures a parent heading `* <id> <title>  :spec:` exists (created once, idempotent by
@@ -704,6 +813,7 @@ def ideas_archive_path(cfg):
     return os.path.join(ideas_dir, "ideas-archive.org")
 
 
+@org_writer
 def archive_idea(cfg, task):
     """Move `task`'s whole subtree — headline through the line before the next top-level
     headline (or EOF), i.e. properties, Summary, Open questions, Log, everything nested under
@@ -715,9 +825,7 @@ def archive_idea(cfg, task):
         raise ValueError(f"{task.id} is not an idea")
 
     lines = open(task.file).read().splitlines(keepends=True)
-    idx = task.line - 1
-    if not (0 <= idx < len(lines)):
-        raise ValueError(f"line {task.line} out of range in {task.file}")
+    idx = _locate_headline(task, lines)
     m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
     if not m:
         raise ValueError(f"line {task.line} in {task.file} is not a headline: {lines[idx]!r}")
@@ -750,6 +858,7 @@ def archive_idea(cfg, task):
     return archive_path
 
 
+@org_writer
 def maybe_rotate_ideas_file(cfg):
     """Roll `cfg['org_ideas_file']` over to a dated historical file once it crosses
     `cfg['idea_rotation_max_lines']` (SPEC-0071). The renamed file keeps living under the same
@@ -783,6 +892,7 @@ def maybe_rotate_ideas_file(cfg):
     return dest
 
 
+@org_writer
 def add_idea(cfg, text, *, state=None, tags=(), priority=None, scheduled=None, deadline=None,
              project=None, epic=None, key=None, kind=None, workstream=None):
     """Capture an idea (SPEC-0012): thin wrapper over add_task targeting cfg['org_ideas_file'],
@@ -855,6 +965,7 @@ def set_idea_workstream(cfg, selector, workstream):
 _PRIO_COOKIE_RE = re.compile(r"^\[#([ABC])\]\s+")
 
 
+@org_writer
 def set_idea_priority(cfg, selector, priority):
     """Set/replace the org `[#A|B|C]` cookie on an idea headline (SPEC-0093)."""
     pri = str(priority).strip().upper()
@@ -864,9 +975,7 @@ def set_idea_priority(cfg, selector, priority):
     if not task.is_idea:
         raise ValueError(f"{selector!r} is not an idea")
     lines = open(task.file).read().splitlines(keepends=True)
-    idx = task.line - 1
-    if not (0 <= idx < len(lines)):
-        raise ValueError(f"line {task.line} out of range in {task.file}")
+    idx = _locate_headline(task, lines)
     m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
     if not m:
         raise ValueError(f"line {task.line} in {task.file} is not a headline: {lines[idx]!r}")
@@ -894,6 +1003,7 @@ _TAG_RE = re.compile(r"^[\w@-]+$")
 _TAG_BLOCK_RE = re.compile(r"\s*:([\w@:-]+):\s*$")
 
 
+@org_writer
 def set_idea_tags(cfg, selector, tags):
     """Replace the trailing `:tag:tag:` block on an idea headline (SPEC-0101).
 
@@ -916,9 +1026,7 @@ def set_idea_tags(cfg, selector, tags):
     if not task.is_idea:
         raise ValueError(f"{selector!r} is not an idea")
     lines = open(task.file).read().splitlines(keepends=True)
-    idx = task.line - 1
-    if not (0 <= idx < len(lines)):
-        raise ValueError(f"line {task.line} out of range in {task.file}")
+    idx = _locate_headline(task, lines)
     m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
     if not m:
         raise ValueError(f"line {task.line} in {task.file} is not a headline: {lines[idx]!r}")

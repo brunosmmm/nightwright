@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 
-from .org_write import _HEADLINE_RE
+from .org_write import _HEADLINE_RE, _locate_headline
 from .report import collect_idea_tasks
 
 _TOP_LEVEL_RE = re.compile(r"^\*\s")
@@ -18,9 +18,7 @@ def idea_subtree_lines(task) -> list[str]:
     if not task.is_idea:
         raise ValueError(f"{task.id} is not an idea")
     lines = open(task.file, encoding="utf-8").read().splitlines(keepends=True)
-    idx = task.line - 1
-    if not (0 <= idx < len(lines)):
-        raise ValueError(f"line {task.line} out of range in {task.file}")
+    idx = _locate_headline(task, lines)
     m = _HEADLINE_RE.match(lines[idx].rstrip("\n"))
     if not m:
         raise ValueError(f"line {task.line} in {task.file} is not a headline: {lines[idx]!r}")
