@@ -372,6 +372,25 @@ def test_linked_worktree_reviews_count_as_same_repo(tmp_path):
     assert SR.check_admissible(cfg, spec, "SPEC-0001")["admission"] == "after_revision"
 
 
+def test_review_from_removed_worktree_or_moved_checkout_still_counts(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    spec = _spec(repo)
+    wt = tmp_path / "linked"
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(wt)], check=True)
+    _foreign(cfg, spec, "revise", 1, wt, sha=OLD)                  # reviewed from the worktree
+    subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], check=True)
+    assert not wt.exists()
+    spec.write_text(spec.read_text() + "\nrevised\n")              # the revision was applied
+    assert SR.check_admissible(cfg, spec, "SPEC-0001")["admission"] == "after_revision"
+    assert SR.latest_review(cfg, "SPEC-0001", spec)["spec_sha256"] == OLD
+    # a root that never existed (moved checkout) matches too; a foreign existing repo does not
+    _foreign(cfg, spec, "split", 2, tmp_path / "gone", sha=OLDER)
+    assert SR.latest_review(cfg, "SPEC-0001", spec)["verdict"] == "split"
+    other, _ = _second_repo(tmp_path)
+    _foreign(cfg, spec, "approve", 3, other, sha="c" * 64)
+    assert SR.latest_review(cfg, "SPEC-0001", spec)["verdict"] == "split"
+
+
 def test_reviews_sort_by_parsed_time_not_string(tmp_path):
     repo, cfg = _setup(tmp_path, [])
     spec = _spec(repo)

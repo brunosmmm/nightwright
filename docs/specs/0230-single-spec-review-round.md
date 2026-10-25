@@ -262,8 +262,8 @@ is always 1. Neither spec needs a change.
   (`review <sha12> -> spec <sha12>, N findings`); `--json` carries it in full.
 - The review store is keyed by spec id only, so `list_reviews` / `latest_review` take an optional
   `spec_path` and then ignore reviews recorded for another repository (`repo_root` resolved to
-  the git common dir, so linked-worktree reviews still count; an empty or missing `repo_root`
-  matches). `check_admissible` and `wt spec review` pass it, so a `--path` review of another
+  the git common dir, so linked-worktree reviews still count; an empty `repo_root`, or one
+  that no longer exists (removed linked worktree, moved checkout), matches). `check_admissible` and `wt spec review` pass it, so a `--path` review of another
   repository's spec with the same id neither admits nor blocks the local spec. Reviews sort by
   parsed `reviewed_at` (unparsable first). `check_admissible` also returns `current_sha`, which
   `plan_add` uses instead of hashing the file again.

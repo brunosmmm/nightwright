@@ -106,8 +106,9 @@ def _reviewed_at_key(review):
 def list_reviews(cfg, spec_id, spec_path=None) -> list:
     """Every readable stored review of `spec_id` (all shas), oldest `reviewed_at` first.
     Corrupt files and temp files are skipped. With `spec_path`, reviews recorded for another
-    repository's spec of the same id (`--path` reviews, different `repo_root`) are ignored; an
-    empty or missing `repo_root` (legacy reviews) matches."""
+    repository's spec of the same id (`--path` reviews, a `repo_root` that exists and has a
+    different git common dir) are ignored; an empty `repo_root` (legacy reviews) or one that no
+    longer exists (removed linked worktree, moved checkout) matches."""
     d = store_path(cfg, spec_id, "x").parent
     if not d.is_dir():
         return []
@@ -116,7 +117,7 @@ def list_reviews(cfg, spec_id, spec_path=None) -> list:
         mine, seen = _repo_identity(spec_root(cfg, spec_path)), {}
         def same_repo(r):
             root = str(r.get("repo_root") or "")
-            if not root:
+            if not root or not Path(root).is_dir():
                 return True
             if root not in seen:
                 seen[root] = _repo_identity(root)

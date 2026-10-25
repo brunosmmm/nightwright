@@ -1,6 +1,7 @@
 """SPEC-0188: `wt spec review` (fake runner), the sidecar, the `wt queue add` review gate, the
 spec_reviewer persona/profile defaults, and the linter's placeholder rule."""
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -309,3 +310,46 @@ def test_spec_review_second_round_needs_force(tmp_path, monkeypatch, by_path):
     assert len(ran) == 2
     assert f"warning: extra review round for SPEC-0001 (previous: approve, {sha12})" in r.output
     assert f"warning: extra review round for SPEC-0001 (previous: approve, {sha12})" in r.stderr
+
+
+def _spy(monkeypatch, tmp_path):
+    from wt.agentic.runner import FakeRunner
+    ran = []
+    inner = FakeRunner(script(tmp_path, [_review_entry(), _review_entry()], "spy.json"))
+
+    class Spy:
+        def run(self, req):
+            ran.append(req)
+            return inner.run(req)
+
+    monkeypatch.setattr(SR, "select_runner", lambda cfg: Spy())
+    return ran
+
+
+def test_spec_review_ignores_foreign_repo_review(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [])
+    other = tmp_path / "other"
+    other.mkdir()
+    subprocess.run(["git", "-C", str(other), "init", "-q", "-b", "main"], check=True)
+    p = write_review(cfg, _spec(repo), "SPEC-0001", "revise", sha="a" * 64)
+    data = json.loads(p.read_text())
+    data["repo_root"] = str(other)                                      # another repo's SPEC-0001
+    p.write_text(json.dumps(data))
+    ran = _spy(monkeypatch, tmp_path)
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001"])
+    assert r.exit_code == 0, r.output
+    assert len(ran) == 1 and "warning" not in r.output and "already reviewed" not in r.output
+
+
+def test_spec_review_still_blocks_after_review_from_removed_worktree(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [])
+    wt = tmp_path / "linked"
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(wt)], check=True)
+    p = write_review(cfg, _spec(repo), "SPEC-0001", "revise", sha="a" * 64)
+    data = json.loads(p.read_text())
+    data["repo_root"] = str(wt)
+    p.write_text(json.dumps(data))
+    subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], check=True)
+    ran = _spy(monkeypatch, tmp_path)
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001"])
+    assert r.exit_code != 0 and not ran and "already reviewed (revise, aaaaaaaaaaaa)" in r.output
