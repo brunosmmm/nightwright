@@ -198,8 +198,12 @@ def test_apply_review_fix_sets_brief_and_resets_counters(opened):
         "source": "conformance_reviewer", "fix_brief": "do it", "human_notes": ["be brief"],
         "must_fix": [{"ac": "AC one", "title": "must_fix thing", "detail": "because",
                       "files": ["a.py"]}]}
+    entry = {"verdict": "fix", "score": 90, "fix_brief": "do it", "findings": v["findings"],
+             "ac_assessment": v["ac_assessment"], "run": "002-conformance_reviewer", "loop": 0}
     assert st["last_review"] == {"run": "002-conformance_reviewer", "verdict": "fix", "score": 90,
-                                 "findings": 2, "must_fix": 1, "loop": 0}
+                                 "findings": 2, "must_fix": 1, "loop": 0,
+                                 "runs": {"conformance_reviewer": "002-conformance_reviewer"},
+                                 "verdicts": {"conformance_reviewer": entry}}
     findings = S.read_ledger(cfg, cid, types=["finding"])
     assert [(f["persona"], f["severity"], f["ac"]) for f in findings] == [
         ("conformance_reviewer", "must_fix", "AC one"), ("conformance_reviewer", "minor", None)]

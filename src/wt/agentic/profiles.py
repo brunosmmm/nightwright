@@ -14,6 +14,7 @@ BUILTIN_PROFILES = {
         "loop_max": 3,
         "campaign_cap_usd": 10.0,
         "run_timeout_s": 1800,
+        "reviewers": ["conformance_reviewer"],
         "personas": {
             "implementer": {"model": "sonnet", "effort": "high", "max_budget_usd": 4.0,
                             "permission_mode": "bypassPermissions", "read_only": False},
@@ -30,6 +31,7 @@ BUILTIN_PROFILES = {
         "loop_max": 2,
         "campaign_cap_usd": 3.0,
         "run_timeout_s": 1200,
+        "reviewers": ["conformance_reviewer"],
         "personas": {
             "implementer": {"model": "sonnet", "effort": "medium", "max_budget_usd": 1.5,
                             "permission_mode": "bypassPermissions", "read_only": False},
@@ -46,6 +48,7 @@ BUILTIN_PROFILES = {
         "loop_max": 4,
         "campaign_cap_usd": 30.0,
         "run_timeout_s": 2700,
+        "reviewers": ["conformance_reviewer"],
         "personas": {
             "implementer": {"model": "opus", "effort": "high", "max_budget_usd": 10.0,
                             "permission_mode": "bypassPermissions", "read_only": False},
@@ -91,7 +94,35 @@ def resolve_profile(cfg, name=None):
     base = BUILTIN_PROFILES.get(name, BUILTIN_PROFILES["balanced"])
     profile = deep_merge(base, deltas.get(name) or {})
     profile["name"] = name
+    _check_reviewers(profile)
     return profile
+
+
+def reviewers_of(profile):
+    """The effective reviewer personas for REVIEWING (SPEC-0201): `profile["reviewers"]`, or
+    `["conformance_reviewer"]` when the key is absent or empty (SPEC-0187 behavior)."""
+    return list(profile.get("reviewers") or []) or ["conformance_reviewer"]
+
+
+def _check_reviewers(profile):
+    """ValueError naming the persona and the profile for a `reviewers` entry that is unknown,
+    duplicated, not a registered reviewer, not read-only, or has no settings in the profile."""
+    from . import personas as PS      # personas imports this module
+    name = profile.get("name")
+    seen = set()
+    for r in profile.get("reviewers") or []:
+        if r in seen:
+            raise ValueError(f"profile {name!r}: reviewer {r!r} is listed twice")
+        seen.add(r)
+        if r not in PS.PERSONAS:
+            raise ValueError(f"profile {name!r}: unknown reviewer persona {r!r}")
+        if r not in PS.REVIEWER_PERSONAS:
+            raise ValueError(f"profile {name!r}: persona {r!r} is not a reviewer persona")
+        settings = (profile.get("personas") or {}).get(r)
+        if settings is None:
+            raise ValueError(f"profile {name!r}: reviewer {r!r} has no persona settings")
+        if not PS.PERSONAS[r].read_only or not settings.get("read_only", True):
+            raise ValueError(f"profile {name!r}: reviewer {r!r} must be read_only")
 
 
 def persona_settings(profile, persona):

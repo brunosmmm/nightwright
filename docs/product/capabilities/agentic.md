@@ -129,6 +129,34 @@ the `run.end` verdict and in `last_review` of the campaign state. The cost cap a
 the spawn like for any persona. A close that bounces back to triage and ends in a new
 implementer run is reviewed again.
 
+### Several reviewers (SPEC-0201)
+
+A profile's `reviewers` key lists the reviewer personas of REVIEWING (the builtin profiles list
+only `conformance_reviewer`; a user delta replaces the list wholesale; an absent or empty key
+means the conformance reviewer). Each name must be a read-only reviewer persona with settings in
+the profile. REVIEWING runs all of them **in parallel** — each a fresh run with its own budget,
+run directory (`runs/NNN-<persona>/`) and ledger events, none of which sees the runs of the
+current review pass — and waits for every verdict before deciding. The cost cap is checked
+before any spawn against the **sum** of the pending reviewers' budgets (`cost_cap` park, no
+partial fan-out).
+
+The verdicts are merged: any `fix` verdict or `must_fix` finding ⇒ back to IMPLEMENTING with one
+brief (`source: review`, `personas` listing the reviewers that asked for a fix, each reviewer's
+`fix_brief` prefixed `[persona]` and one `must_fix: <title>` line per must-fix finding); all
+`pass` ⇒ CLOSING. With one reviewer the brief is the reviewer's own, as before. A reviewer
+without a valid verdict (malformed, timed out, crashed) is retried once, alone — valid siblings
+are kept and never re-run — and nothing is routed until every verdict is in; a reviewer still
+missing after its retry parks the campaign as `review_escalated`, naming it. Entering REVIEWING
+always starts a fresh review (verdicts are cleared).
+
+`last_review` in the campaign state is
+`{loop, entry_run, run, runs, verdicts, verdict, score, findings, must_fix}`: `verdicts` holds
+one entry per reviewer (`verdict`, `score`, `fix_brief`, the full `findings`, `ac_assessment`
+for the conformance reviewer, `run`, `loop`), `runs` the run id per reviewer, `run` the last
+reviewer's run, and `verdict` / `score` (the minimum) / `findings` / `must_fix` the combined
+values, written once every verdict is in. `counters.review_retries_by_persona` appears only
+after the first retry.
+
 ## Closing
 
 Closing is the step that guards the base branch, and for wt itself the live editable install
@@ -194,7 +222,7 @@ any state → PARKED (humans only) → resume | abandon
 - **IMPLEMENTING** spawns a fresh implementer; the runner commits whatever changed.
 - **GATING** runs every gate; all required green ⇒ REVIEWING, else TRIAGING.
 - **TRIAGING** spawns the read-only gate triager only after a failure.
-- **REVIEWING** spawns the read-only conformance reviewer (see Reviews); pass ⇒ CLOSING.
+- **REVIEWING** spawns the read-only reviewers in parallel (see Reviews); all pass ⇒ CLOSING.
 - **CLOSING** rebases, re-gates, audits the spec's Definition of Done, then fast-forwards
   the base or opens a PR.
 

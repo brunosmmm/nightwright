@@ -1,7 +1,7 @@
 ---
 id: SPEC-0201
 title: "Reviewer fan-out: run several reviewer personas in parallel in REVIEWING"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -313,49 +313,49 @@ SPEC-0205/0202.
 
 ## Acceptance criteria
 
-- [ ] AC1 (G1). `resolve_profile` returns exactly `reviewers == ["conformance_reviewer"]` for
+- [x] AC1 (G1). `resolve_profile` returns exactly `reviewers == ["conformance_reviewer"]` for
       `balanced`, `thorough` and `frugal`; rejects an unknown, duplicate, non-read-only or
       non-`REVIEWER_PERSONAS` persona, or one missing from `profile["personas"]` (no settings), with a
       `ValueError` naming it and the profile; a user delta replaces the list; absent/empty key ⇒
       conformance only.
-- [ ] AC2 (G1, G2). `plan_step` for `REVIEWING` returns a `review` step with `personas` = the
+- [x] AC2 (G1, G2). `plan_step` for `REVIEWING` returns a `review` step with `personas` = the
       pending reviewers in profile order and `persona` = the first (full list when pending is
       empty); the cap check sums the pending reviewers' `max_budget_usd` against
       `cap_usd − total_usd`, parks `cost_cap` (detail names the personas and sum) without
       spawning any when over, and a retry pass sums only the still-pending reviewers.
-- [ ] AC3a (G1). Reviewers run concurrently as independent runs (own run dir, budget, `run.*`,
+- [x] AC3a (G1). Reviewers run concurrently as independent runs (own run dir, budget, `run.*`,
       `cost` and `finding` events); run ids are allocated in profile-list order before any task
       starts; the pool is sized `max(slots, pending_agent entries)` (two reviewers with
       `slots: 1` are both in flight at once, shown with a barrier in the FakeRunner); events are
       applied in profile-list order even when the runs finish in reverse order.
-- [ ] AC3b (G1, G4). No reviewer's request contains a run of the current review pass-through
+- [x] AC3b (G1, G4). No reviewer's request contains a run of the current review pass-through
       (`previous_verdicts` is filtered by `last_review.entry_run`, filter-then-tail, and earlier
       loops' reviewer runs still appear); each rule of "Failure paths in the tick" (single
       reviewer unchanged; prepare failure leaves no trace; worker exception writes a matching
       `run.end`/`cost`; interrupted keeps state; `config_error` parks; precedence) has a test.
-- [ ] AC4 (G3, G5). `combine_reviews`: any `fix` verdict or `must_fix` finding ⇒ `fix` with a
+- [x] AC4 (G3, G5). `combine_reviews`: any `fix` verdict or `must_fix` finding ⇒ `fix` with a
       merged, persona-labelled `fix_brief`; all `pass` ⇒ `pass`; `state.last_review` has the
       shape above (per-persona `verdicts` with full findings, `runs`, `run` = last reviewer's
       run, SPEC-0187 keys) and with two or more reviewers `pending_brief.source == "review"` listing the fixing personas, whereas a single reviewer's brief is SPEC-0187's unchanged.
-- [ ] AC5 (G4). Retry and park: a missing reviewer (malformed or hard failure) is retried once
+- [x] AC5 (G4). Retry and park: a missing reviewer (malformed or hard failure) is retried once
       while valid siblings are kept and **not** re-spawned; a valid `fix` plus a missing sibling
       does not route until the sibling is resolved; missing after its retry ⇒
       `PARKED(review_escalated)` naming only the personas out of retries (the mixed A/B case
       names A only), even if a sibling said `fix`; sibling events and costs are recorded for a
       hard failure.
-- [ ] AC6 (G4). Counters and freshness: `review_retries` stays an int and
+- [x] AC6 (G4). Counters and freshness: `review_retries` stays an int and
       `review_retries_by_persona` is absent until used; both reset on exit from REVIEWING by
       `pass` and by `fix`; every entry into REVIEWING through `_transition` (from `gates_green` at an unchanged loop
       after CLOSING→TRIAGING→GATING, a human resume, a resume released from `WAITING`, and
       `config_recovered`) clears `verdicts` so the review re-runs; a
       verdict whose `loop` differs from `counters.loops` is not valid; an old-shape
       `last_review` (no `verdicts`) makes the review re-run.
-- [ ] AC7 (G1-G5). End to end with FakeRunner and the two-reviewer fixture: (a) A pass + B fix
+- [x] AC7 (G1-G5). End to end with FakeRunner and the two-reviewer fixture: (a) A pass + B fix
       then both pass ⇒ `MERGED` with two implementer runs; (b) both pass ⇒ `MERGED`; (c) B
       malformed twice ⇒ `PARKED(review_escalated)`; (d) fix until `loop_max` ⇒
       `PARKED(loop_exhausted)`; (e) A `fix` + B malformed once then valid pass ⇒ one implementer
       brief containing `[A]`, A not re-spawned.
-- [ ] AC8. Regression and docs: with the default `[conformance_reviewer]` existing queue, close
+- [x] AC8. Regression and docs: with the default `[conformance_reviewer]` existing queue, close
       and e2e tests pass, the only existing assertion changed being
       `tests/test_agentic_queue.py:201` (new `last_review` keys), and a single-reviewer brief
       identical to SPEC-0187's (`:198` and e2e `:399` unchanged);
@@ -392,6 +392,27 @@ SPEC-0205/0202.
   campaigns record both verdicts here.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q`: 1736 passed, 1 skipped, after `python3 tools/spec_lint.py --write-ledger`.
+- New: `tests/test_agentic_reviewers.py` (plan/cap, `combine_reviews`, `decide_reviews`, entry
+  clearing, `_apply_reviews` shapes, failure paths, `previous_verdicts` filter, e2e a-e plus
+  barrier/ordering/exception/prepare-failure/config-error/interrupted with a test-only second
+  reviewer and a per-persona `PersonaRunner`), additions to `test_agentic_profiles.py` and
+  `test_agentic_personas.py`; the only existing assertion changed is
+  `tests/test_agentic_queue.py:201` (new `runs` / `verdicts` keys).
+- Manual verification: none (no second real reviewer yet, as planned).
+
+### As shipped (2026-10-25)
+
+As designed, with these details: `_RunStarted` (an `OSError`) carries the run id out of
+`_prepare_run` when `write_state` fails after `run.start`; `Step` also gained `missing`,
+`escalated` and `combined` for `decide_reviews`; `fixing_reviewers(verdicts)` is a small public
+helper next to `combine_reviews`, which returns exactly its four documented keys. The tick keeps
+review prepare/worker outcomes in a `_ReviewGroup` and applies each campaign's fan-out once
+(`_finish_reviews`) after the pool. For a single reviewer the loop-exhausted and escalation
+details keep SPEC-0187's wording.
+
 ## Rollout / migration
 
 Profiles without `reviewers` keep the conformance-only review unchanged. In-flight campaigns in `REVIEWING` resume (resume re-runs the review); an in-flight state
@@ -405,11 +426,11 @@ Built by the agentic loop or the human lane; idea bookkeeping via `wt spec recon
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

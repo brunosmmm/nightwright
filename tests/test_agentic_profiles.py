@@ -70,3 +70,51 @@ def test_persona_settings():
 def test_deep_merge_replaces_non_dicts():
     assert P.deep_merge({"a": {"b": 1, "c": [1]}, "d": 1}, {"a": {"c": [2]}, "e": 2}) == \
         {"a": {"b": 1, "c": [2]}, "d": 1, "e": 2}
+
+
+# ---- SPEC-0201: reviewers --------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", ["balanced", "thorough", "frugal"])
+def test_reviewers_default_is_conformance_only(name):
+    assert P.resolve_profile({}, name)["reviewers"] == ["conformance_reviewer"]
+
+
+def test_reviewers_of_falls_back_to_conformance():
+    assert P.reviewers_of({}) == ["conformance_reviewer"]
+    assert P.reviewers_of({"reviewers": []}) == ["conformance_reviewer"]
+    assert P.reviewers_of({"reviewers": ["x"]}) == ["x"]
+
+
+@pytest.mark.parametrize("reviewers,needle", [
+    (["nobody"], "nobody"),
+    (["conformance_reviewer", "conformance_reviewer"], "twice"),
+    (["implementer"], "implementer"),          # not read-only, not a reviewer persona
+    (["gate_triager"], "gate_triager"),        # read-only but not in REVIEWER_PERSONAS
+])
+def test_reviewers_rejects_bad_entries(reviewers, needle):
+    cfg = {"agentic": {"profiles": {"balanced": {"reviewers": reviewers}}}}
+    with pytest.raises(ValueError) as e:
+        P.resolve_profile(cfg, "balanced")
+    assert needle in str(e.value) and "balanced" in str(e.value)
+
+
+def test_reviewers_rejects_non_read_only_and_missing_settings(monkeypatch):
+    from wt.agentic import personas as PS
+    monkeypatch.setitem(PS.PERSONAS, "extra", PS.PERSONAS["conformance_reviewer"])
+    monkeypatch.setattr(PS, "REVIEWER_PERSONAS", ("conformance_reviewer", "extra"))
+    cfg = {"agentic": {"profiles": {"balanced": {"reviewers": ["extra"]}}}}
+    with pytest.raises(ValueError, match="extra.*no persona settings"):
+        P.resolve_profile(cfg, "balanced")
+    cfg["agentic"]["profiles"]["balanced"]["personas"] = {"extra": {"read_only": False}}
+    with pytest.raises(ValueError, match="extra.*read_only"):
+        P.resolve_profile(cfg, "balanced")
+
+
+def test_reviewers_user_delta_replaces_the_list(monkeypatch):
+    from wt.agentic import personas as PS
+    monkeypatch.setitem(PS.PERSONAS, "extra", PS.PERSONAS["conformance_reviewer"])
+    monkeypatch.setattr(PS, "REVIEWER_PERSONAS", ("conformance_reviewer", "extra"))
+    extra = {"model": "sonnet", "effort": "low", "max_budget_usd": 1.0, "read_only": True}
+    cfg = {"agentic": {"profiles": {"balanced": {"reviewers": ["extra"],
+                                                 "personas": {"extra": extra}}}}}
+    assert P.resolve_profile(cfg, "balanced")["reviewers"] == ["extra"]

@@ -35,8 +35,8 @@ from . import spec_review as SR
 from . import schemas as SC
 from . import store
 from .gitops import GitError
-from .profiles import persona_settings, resolve_profile
-from .runner import select_runner
+from .profiles import persona_settings, resolve_profile, reviewers_of
+from .runner import RunResult, select_runner
 
 STATES = ("QUEUED", "WAITING", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
           "CLOSING", "PARKED", "MERGED", "HANDED_OFF", "ABANDONED")
@@ -78,21 +78,45 @@ class Step:
     reason: str | None = None
     detail: str | None = None
     resume_to: str | None = None
+    # SPEC-0201: a `review` step names every pending reviewer; `decide_reviews` fills the rest.
+    personas: tuple = ()
+    missing: tuple = ()
+    escalated: tuple = ()
+    combined: dict | None = None
 
 
-def _cap_blocks(state: dict, profile: dict, persona: str) -> str | None:
+def _cap_blocks(state: dict, profile: dict, persona) -> str | None:
     """Pessimistic cap check: a run may spend up to its budget, so never start one that could
-    cross the campaign cap. Returns the park detail or None."""
+    cross the campaign cap. `persona` is a name or a list of names (a fan-out is checked as
+    the sum of its budgets). Returns the park detail or None."""
     cost = state.get("cost") or {}
     cap = cost.get("cap_usd")
     if cap is None:
         return None
-    budget = float(persona_settings(profile, persona).get("max_budget_usd") or 0.0)
+    names = [persona] if isinstance(persona, str) else list(persona)
+    budget = sum(float(persona_settings(profile, p).get("max_budget_usd") or 0.0) for p in names)
     total = float(cost.get("total_usd") or 0.0)
     if total + budget > float(cap):
-        return (f"spent ${total:.2f}; a {persona} run may cost ${budget:.2f}; "
-                f"cap ${float(cap):.2f}")
+        who = f"a {names[0]} run" if len(names) == 1 else f"{', '.join(names)} runs"
+        return f"spent ${total:.2f}; {who} may cost ${budget:.2f}; cap ${float(cap):.2f}"
     return None
+
+
+def _valid_verdicts(state: dict, profile: dict) -> dict:
+    """`{persona: stored verdict}` for the reviewers with a valid verdict of the current loop
+    (SPEC-0201), in profile order. A stale-loop entry, or an old-shape `last_review` without
+    `verdicts`, counts as none."""
+    stored = (state.get("last_review") or {}).get("verdicts") or {}
+    loop = int((state.get("counters") or {}).get("loops", 0))
+    return {p: stored[p] for p in reviewers_of(profile)
+            if isinstance(stored.get(p), dict) and stored[p].get("loop") == loop}
+
+
+def _pending_reviewers(state: dict, profile: dict) -> list:
+    """Reviewers without a valid current-loop verdict; the full list when none is pending
+    (a review is never skipped)."""
+    valid = _valid_verdicts(state, profile)
+    return [p for p in reviewers_of(profile) if p not in valid] or reviewers_of(profile)
 
 
 def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> Step:
@@ -110,13 +134,32 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
         return Step("gate")
     if st == "CLOSING":
         return Step("close")
-    persona, kind = {"IMPLEMENTING": ("implementer", "implement"),
-                     "REVIEWING": ("conformance_reviewer", "review")}.get(
-                         st, ("gate_triager", "triage"))
+    if st == "REVIEWING":
+        pending = _pending_reviewers(state, profile)
+        blocked = _cap_blocks(state, profile, pending)
+        if blocked:
+            return Step("park", persona=pending[0], personas=tuple(pending), reason="cost_cap",
+                        detail=blocked, resume_to=st)
+        return Step("review", persona=pending[0], personas=tuple(pending))
+    persona, kind = ("implementer", "implement") if st == "IMPLEMENTING" \
+        else ("gate_triager", "triage")
     blocked = _cap_blocks(state, profile, persona)
     if blocked:
         return Step("park", persona=persona, reason="cost_cap", detail=blocked, resume_to=st)
     return Step(kind, persona=persona)
+
+
+class _ReviewGroup:
+    """One campaign's reviewer fan-out inside a tick (SPEC-0201): the per-persona results
+    (prepared runs fill in after the pool finishes), applied once, in profile order."""
+
+    def __init__(self, state: dict, step: Step):
+        self.state, self.step = state, step
+        self.results: dict = {}          # persona -> StepResult | Exception
+        self.meta: dict = {}             # persona -> (run_id, budget) of prepared runs
+
+    def __bool__(self):
+        return bool(self.results or self.meta)
 
 
 def _active_count(cfg) -> int:
@@ -186,33 +229,104 @@ def decide_triage(state: dict, profile: dict, verdict: dict | None, verdict_ok: 
     return Step("implement", reason="triage_fix")
 
 
+def combine_reviews(verdicts: dict) -> dict:
+    """Pure, interim (SPEC-0201; SPEC-0203 replaces it): merge `{persona: verdict}` (valid
+    verdicts, in profile order) into `{verdict, must_fix, findings, fix_brief}`.
+
+    `fix` when any reviewer said `fix` or any finding is `must_fix`, else `pass`. With one
+    reviewer `fix_brief` is its text verbatim; with several, each fixing reviewer's brief
+    prefixed `[persona] `, then one `must_fix: <title>` line per must-fix finding."""
+    multi = len(verdicts) > 1
+    must_fix, count = [], 0
+    for persona, v in verdicts.items():
+        for f in v.get("findings") or []:
+            if not isinstance(f, dict):
+                continue
+            count += 1
+            if f.get("severity") == "must_fix":
+                item = {"ac": f.get("ac"), "title": f.get("title"), "detail": f.get("detail"),
+                        "files": list(f.get("files") or [])}
+                if multi:
+                    item["persona"] = persona
+                must_fix.append(item)
+    fix = bool(must_fix) or any(v.get("verdict") == "fix" for v in verdicts.values())
+    if not multi:
+        brief = next(iter(verdicts.values()), {}).get("fix_brief")
+    else:
+        head = "\n\n".join(f"[{p}] {(verdicts[p].get('fix_brief') or '').strip()}"
+                           for p in fixing_reviewers(verdicts))
+        tail = "\n".join(f"must_fix: {m['title']}" for m in must_fix)
+        brief = "\n\n".join(x for x in (head, tail) if x)
+    return {"verdict": "fix" if fix else "pass", "must_fix": must_fix, "findings": count,
+            "fix_brief": brief}
+
+
+def fixing_reviewers(verdicts: dict) -> list:
+    """The reviewers that ask for a fix: verdict `fix` or any `must_fix` finding."""
+    return [p for p, v in verdicts.items()
+            if v.get("verdict") == "fix" or any(
+                isinstance(f, dict) and f.get("severity") == "must_fix"
+                for f in v.get("findings") or [])]
+
+
+def _retries_used(counters: dict, persona: str, n_reviewers: int) -> int:
+    """Retries `persona` used in this review: its own counter, else (one reviewer only) the
+    legacy int `review_retries`, else 0."""
+    by = counters.get("review_retries_by_persona") or {}
+    if persona in by:
+        return int(by[persona])
+    return int(counters.get("review_retries", 0)) if n_reviewers == 1 else 0
+
+
+def decide_reviews(state: dict, profile: dict, valid: dict, failed=()) -> Step:
+    """Pure: the transition the reviewers' verdicts imply (SPEC-0187, SPEC-0201).
+
+    `valid` = ordered `{persona: verdict}` of every reviewer with a valid current-loop
+    verdict; `failed` = the personas that produced no usable verdict in this pass.
+    - a reviewer without a valid verdict is *missing*: no routing while any is missing;
+      each missing one gets one retry (`Step("none", reason="review_retry", missing=…)`);
+      if any is out of retries ⇒ PARKED(review_escalated) naming those (`escalated`);
+    - all valid: `combine_reviews`; `pass` ⇒ CLOSING; `fix` ⇒ loops += 1, beyond `loop_max`
+      ⇒ loop_exhausted, else back to IMPLEMENTING. `combined` carries the merge.
+    The caller mutates the counters."""
+    counters = state.get("counters") or {}
+    loop_max = int(profile.get("loop_max") or 3)
+    reviewers = reviewers_of(profile)
+    missing = tuple(p for p in reviewers if p not in valid)
+    if missing:
+        out = tuple(p for p in missing
+                    if _retries_used(counters, p, len(reviewers)) >= REVIEW_RETRY_MAX)
+        if out:
+            who = "the conformance reviewer" if out == ("conformance_reviewer",) \
+                else ", ".join(out)
+            return Step("park", reason="review_escalated", missing=missing, escalated=out,
+                        detail=f"{who} returned no usable verdict twice", resume_to="REVIEWING")
+        return Step("none", reason="review_retry", missing=missing)
+    combined = combine_reviews({p: valid[p] for p in reviewers})
+    if combined["verdict"] == "pass":
+        return Step("close", reason="review_pass", combined=combined)
+    loops = int(counters.get("loops", 0)) + 1
+    if loops > loop_max:
+        brief = (combined["fix_brief"] or "").strip()
+        return Step("park", reason="loop_exhausted", combined=combined,
+                    detail=f"{loops - 1}/{loop_max} implement loops used; the conformance "
+                           f"review still asks for fixes: " + brief, resume_to="IMPLEMENTING")
+    return Step("implement", reason="review_fix", combined=combined)
+
+
 def decide_review(state: dict, profile: dict, verdict: dict | None, verdict_ok: bool) -> Step:
-    """Pure: the transition a conformance-reviewer verdict implies (SPEC-0187).
+    """Pure: the transition one conformance-reviewer verdict implies (SPEC-0187) — a thin
+    one-reviewer wrapper over `decide_reviews`.
 
     - malformed / missing verdict: one retry per loop (stay in REVIEWING), then
       PARKED(review_escalated);
     - `pass` with no `must_fix` finding ⇒ CLOSING;
     - `fix`, or any `must_fix` finding even under `pass`: loops += 1; beyond `loop_max` ⇒
       loop_exhausted, else back to IMPLEMENTING."""
-    counters = state.get("counters") or {}
-    loop_max = int(profile.get("loop_max") or 3)
-    if not verdict_ok or not isinstance(verdict, dict):
-        if int(counters.get("review_retries", 0)) < REVIEW_RETRY_MAX:
-            return Step("none", reason="review_retry")
-        return Step("park", reason="review_escalated",
-                    detail="the conformance reviewer returned no usable verdict twice",
-                    resume_to="REVIEWING")
-    must_fix = [f for f in verdict.get("findings") or []
-                if isinstance(f, dict) and f.get("severity") == "must_fix"]
-    if verdict.get("verdict") == "pass" and not must_fix:
-        return Step("close", reason="review_pass")
-    loops = int(counters.get("loops", 0)) + 1
-    if loops > loop_max:
-        brief = (verdict.get("fix_brief") or "").strip()
-        return Step("park", reason="loop_exhausted",
-                    detail=f"{loops - 1}/{loop_max} implement loops used; the conformance "
-                           f"review still asks for fixes: " + brief, resume_to="IMPLEMENTING")
-    return Step("implement", reason="review_fix")
+    solo = dict(profile, reviewers=["conformance_reviewer"])
+    ok = bool(verdict_ok) and isinstance(verdict, dict)
+    return decide_reviews(state, solo, {"conformance_reviewer": verdict} if ok else {},
+                          () if ok else ("conformance_reviewer",))
 
 
 # ---- backlog: ordering, readiness, admission (SPEC-0180) ----------------------------------
@@ -328,6 +442,20 @@ def _cost(state: dict) -> dict:
     return c
 
 
+def _begin_review(state: dict) -> None:
+    """Entering REVIEWING always starts a fresh review (SPEC-0201): clear the previous
+    verdicts and per-review counters, and remember the run count so reviewers never see runs
+    of this pass-through."""
+    counters = _counters(state)
+    lr = state.get("last_review") if isinstance(state.get("last_review"), dict) else {}
+    for k in ("verdicts", "triage", "triager_run", "waived"):
+        lr.pop(k, None)
+    lr["entry_run"] = counters["runs"]
+    state["last_review"] = lr
+    counters["review_retries"] = 0
+    counters.pop("review_retries_by_persona", None)
+
+
 def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_events=()):
     """Record `extra_events` then the transition, and write the state — all under the
     campaign lock, so the ledger and `state.json` cannot disagree. Mutates and returns
@@ -338,6 +466,8 @@ def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_even
             store.append_event(cfg, cid, etype, payload, by=by)
         frm = state.get("state")
         if to != frm:
+            if to == "REVIEWING":
+                _begin_review(state)
             state["prev_state"] = frm
             state["state"] = to
             store.append_event(cfg, cid, "transition", {"from": frm, "to": to, "reason": reason},
@@ -451,6 +581,7 @@ class StepResult:
     interrupted: bool = False
     events_before: list = field(default_factory=list)
     config_error: bool = False
+    reviews: list = field(default_factory=list)      # per-reviewer StepResults, profile order
 
 
 class _Ctx:
@@ -518,9 +649,30 @@ def _do_open(ctx: _Ctx, state: dict) -> StepResult:
     return res
 
 
+class _RunStarted(OSError):
+    """`_prepare_run` failed after `run.start` was written; carries what a matching
+    `run.end` needs."""
+
+    def __init__(self, cause, run_id, budget):
+        super().__init__(str(cause))
+        self.run_id, self.budget = run_id, budget
+
+
+def _previous_runs(cfg, state: dict, persona: str) -> list:
+    """The `run.end` events shown to `persona` as previous verdicts (tail 2). A reviewer never
+    sees the runs of its own review pass-through (run number > `last_review.entry_run`)."""
+    entry = (state.get("last_review") or {}).get("entry_run")
+    if persona not in PS.REVIEWER_PERSONAS or entry is None:
+        return store.read_ledger(cfg, state["id"], types=["run.end"], tail=2)
+    ends = store.read_ledger(cfg, state["id"], types=["run.end"])
+    ends = [e for e in ends if int(str(e.get("run_id") or "0-").split("-")[0] or 0) <= entry]
+    return ends[-2:]
+
+
 def _prepare_run(ctx: _Ctx, state: dict, persona: str):
     """Main thread: mint the run id, build the request, append `run.start`, bump `runs` and
-    write the state. Returns (run_id, request, budget)."""
+    write the state. Returns (run_id, request, budget). Everything that can raise happens
+    before the `run.start` append; a failure after it raises `_RunStarted`."""
     cfg = ctx.cfg
     cid = state["id"]
     profile = ctx.profile(state)
@@ -529,17 +681,20 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str):
     run_no = counters["runs"] + 1
     run_id = f"{run_no:03d}-{persona}"
     run_dir = store.runs_dir(cfg, cid) / run_id
-    previous = store.read_ledger(cfg, cid, types=["run.end"], tail=2)
+    previous = _previous_runs(cfg, state, persona)
     req = PS.build_request(cfg, profile, pcfg, state, persona, run_dir=run_dir, previous=previous)
     budget = float(req.max_budget_usd)
     with store.item_lock(cfg, cid):
-        counters["runs"] = run_no
         store.append_event(cfg, cid, "run.start", {
             "persona": persona, "run_id": run_id, "model": req.model, "effort": req.effort,
             "max_budget_usd": budget, "timeout_s": req.timeout_s,
             "permission_mode": req.permission_mode, "prompt_sha256": PS.prompt_sha256(req.prompt),
         })
-        store.write_state(cfg, cid, state)
+        counters["runs"] = run_no
+        try:
+            store.write_state(cfg, cid, state)
+        except (ValueError, OSError) as e:
+            raise _RunStarted(e, run_id, budget) from e
     return run_id, req, budget
 
 
@@ -604,6 +759,9 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     row for `wt.queue.tick.v1`."""
     cfg = ctx.cfg
     cid = state["id"]
+    if res.step.kind == "review" and not res.reviews and not res.error:
+        # one reviewer's bare result (SPEC-0201): the aggregate path is the only code path
+        res = StepResult(res.campaign, res.step, res.from_state, reviews=[res])
     row = {"campaign": cid, "from": res.from_state, "to": None, "action": res.step.kind,
            "run_id": res.run_id, "cost_usd": None, "reason": None}
     events: list = list(res.events_before)
@@ -659,7 +817,10 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     if kind == "open":
         return finish("IMPLEMENTING", "opened")
 
-    if kind in ("implement", "triage", "review"):
+    if kind == "review":
+        return _apply_reviews(ctx, state, profile, counters, res, row, events, finish)
+
+    if kind in ("implement", "triage"):
         persona = res.step.persona
         rr = res.run_result
         events += _record_run(state, persona, res.run_id, rr, res.budget,
@@ -694,8 +855,6 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             else:
                 counters["blocked_streak"] = 0
             return finish("GATING", "implemented")
-        if kind == "review":
-            return _apply_review(state, profile, counters, rr, res, finish)
         # triage
         decision = decide_triage(state, profile, rr.verdict, rr.verdict_ok)
         if decision.kind == "none":                      # malformed verdict, retry allowed
@@ -764,26 +923,106 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     return finish(res.from_state, "noop")
 
 
-def _apply_review(state, profile, counters, rr, res, finish):
-    """Route a conformance-reviewer result (SPEC-0187): record `last_review`, then follow
-    `decide_review`. `finish` is `_apply`'s closure."""
-    v = rr.verdict if isinstance(rr.verdict, dict) else {}
-    findings = [f for f in v.get("findings") or [] if isinstance(f, dict)]
-    if rr.verdict_ok:
-        state["last_review"] = {
-            "run": res.run_id, "verdict": v.get("verdict"), "score": v.get("score"),
-            "findings": len(findings),
-            "must_fix": sum(1 for f in findings if f.get("severity") == "must_fix"),
-            "loop": counters["loops"]}
-    decision = decide_review(state, profile, rr.verdict, rr.verdict_ok)
-    if decision.kind == "none":                          # malformed verdict, retry allowed
+def _synthetic_failure(error: str) -> RunResult:
+    """The RunResult recorded for a reviewer whose worker raised after `run.start`."""
+    return RunResult(exit_code=-1, timed_out=False, interrupted=False, duration_s=0.0,
+                     is_error=True, cost_usd=None, usage={}, session_id=None, verdict=None,
+                     verdict_ok=False, result_text=error, raw_path=None)
+
+
+def _store_verdicts(state: dict, profile: dict, counters: dict, results) -> bool:
+    """Merge this pass's valid verdicts into `last_review.verdicts` (overwriting a retried
+    reviewer's entry) and refresh `run` / `runs` / `loop`. True when any verdict was stored."""
+    lr = state.get("last_review") if isinstance(state.get("last_review"), dict) else {}
+    verdicts = dict(lr.get("verdicts") or {})
+    stored = False
+    for r in results:
+        rr = r.run_result
+        if rr is None or not rr.verdict_ok or not isinstance(rr.verdict, dict) \
+                or r.interrupted or rr.interrupted:
+            continue
+        v = rr.verdict
+        entry = {"verdict": v.get("verdict"), "score": v.get("score"),
+                 "fix_brief": v.get("fix_brief"),
+                 "findings": [f for f in v.get("findings") or [] if isinstance(f, dict)]}
+        if "ac_assessment" in v:
+            entry["ac_assessment"] = v["ac_assessment"]
+        entry.update(run=r.run_id, loop=counters["loops"])
+        verdicts[r.step.persona] = entry
+        stored = True
+    if stored:
+        order = [p for p in reviewers_of(profile) if p in verdicts]
+        lr.update(verdicts=verdicts, runs={p: verdicts[p]["run"] for p in order},
+                  run=verdicts[order[-1]]["run"], loop=counters["loops"])
+        state["last_review"] = lr
+    return stored
+
+
+def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
+    """Route the reviewers' results (SPEC-0187, SPEC-0201): record every run, store the valid
+    verdicts in `last_review`, then follow `decide_reviews`. `res.reviews` is in profile
+    order; `events` is `_apply`'s list, `finish` its closure."""
+    cfg, cid = ctx.cfg, state["id"]
+    reviewers = reviewers_of(profile)
+    multi = len(reviewers) > 1
+    charged, last = 0.0, None
+    for r in res.reviews:
+        events += r.events_before
+        rr = r.run_result
+        if rr is None:                      # prepared nothing: no run.start, no cost
+            events.append(("note", {"text": f"{r.step.persona}: review run not started: "
+                                            f"{r.error}", "author": "queue"}))
+            continue
+        events += _record_run(state, r.step.persona, r.run_id, rr, r.budget,
+                              interrupted=r.interrupted)
+        charged += rr.cost_usd if rr.cost_usd is not None else r.budget
+        last = r
+    if last is not None:
+        row["run_id"], row["cost_usd"] = last.run_id, charged
+        state["last_verdict"] = {"persona": last.step.persona, "run": last.run_id,
+                                 "verdict": last.run_result.verdict,
+                                 "verdict_ok": last.run_result.verdict_ok}
+    bad = next((r for r in res.reviews if r.config_error), None)
+    interrupted = any(r.interrupted or (r.run_result and r.run_result.interrupted)
+                      for r in res.reviews) or (multi and ctx.stop.is_set())
+    if interrupted:
+        # No decision, no retry counted: the next tick re-spawns the reviewers still lacking a
+        # valid verdict (one reviewer: state unchanged, as SPEC-0187).
+        if multi:
+            _store_verdicts(state, profile, counters, res.reviews)
+        with store.item_lock(cfg, cid):
+            for etype, payload in events:
+                store.append_event(cfg, cid, etype, payload)
+            store.write_state(cfg, cid, state)
+        row["to"], row["reason"] = res.from_state, "interrupted"
+        return row
+    if bad is not None:
+        return finish("PARKED", "config_invalid", park={
+            "reason": "config_invalid", "detail": f"project config: {bad.error}",
+            "resume_to": "REVIEWING"})
+    _store_verdicts(state, profile, counters, res.reviews)
+    valid = _valid_verdicts(state, profile)
+    decision = decide_reviews(state, profile, valid,
+                              [p for p in reviewers if p not in valid])
+    if decision.kind == "none":                          # missing verdicts, retry allowed
+        by = counters.setdefault("review_retries_by_persona", {})
+        for p in decision.missing:
+            by[p] = by.get(p, 0) + 1
         counters["review_retries"] += 1
         return finish("REVIEWING", "review_retry")
+    if decision.combined is not None:
+        c = decision.combined
+        scores = [v["score"] for v in valid.values()
+                  if isinstance(v.get("score"), (int, float)) and not isinstance(v["score"], bool)]
+        state["last_review"].update(verdict=c["verdict"], score=min(scores) if scores else None,
+                                    findings=c["findings"], must_fix=len(c["must_fix"]),
+                                    loop=counters["loops"])
     if decision.kind == "park":
         return finish("PARKED", decision.reason, park={
             "reason": decision.reason, "detail": decision.detail,
             "resume_to": decision.resume_to})
     counters["review_retries"] = 0
+    counters.pop("review_retries_by_persona", None)
     if decision.kind == "close":
         return finish("CLOSING", "review_pass")
     # fix
@@ -791,12 +1030,12 @@ def _apply_review(state, profile, counters, rr, res, finish):
     counters["gate_retries"] = 0
     counters["triage_retries"] = 0
     notes = ((state.get("pending_brief") or {}).get("human_notes") or [])
+    c = decision.combined
     state["pending_brief"] = {
-        "source": "conformance_reviewer", "fix_brief": v.get("fix_brief"),
-        "must_fix": [{"ac": f.get("ac"), "title": f.get("title"), "detail": f.get("detail"),
-                      "files": list(f.get("files") or [])}
-                     for f in findings if f.get("severity") == "must_fix"],
-        "human_notes": list(notes)}
+        "source": "review" if multi else reviewers[0], "fix_brief": c["fix_brief"],
+        "must_fix": c["must_fix"], "human_notes": list(notes)}
+    if multi:
+        state["pending_brief"]["personas"] = fixing_reviewers(valid)
     return finish("IMPLEMENTING", "review_fix")
 
 
@@ -887,7 +1126,8 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
                 busy.append(st)
 
     # 2. plan every item that was already active at the start of the tick
-    pending_agent = []       # (state, step, run_id, req, budget) for the pool
+    pending_agent = []       # (state, step, run_id, req, budget, review group) for the pool
+    groups = []              # reviewer fan-outs, applied once each after the pool (SPEC-0201)
     pending_close = []
     for st in busy:
         if st.get("state") not in ACTIVE_STATES or st["id"] in admitted_ids:
@@ -913,9 +1153,14 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
             pending_close.append(st)
             continue
         if step.kind == "gate":
-            pending_agent.append((st, step, None, None, 0.0))
+            pending_agent.append((st, step, None, None, 0.0, None))
             continue
         if ctx.stop.is_set():
+            continue
+        if step.kind == "review":
+            group = _prepare_reviews(ctx, st, step, profile, pending_agent, report)
+            if group:
+                groups.append(group)
             continue
         try:
             run_id, req, budget = _prepare_run(ctx, st, step.persona)
@@ -923,24 +1168,35 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
             report.steps.append(_apply(ctx, st, StepResult(
                 st["id"], step, st["state"], error=str(e))))
             continue
-        pending_agent.append((st, step, run_id, req, budget))
+        pending_agent.append((st, step, run_id, req, budget, None))
 
     # 3. agent steps concurrently
     if pending_agent:
-        with ThreadPoolExecutor(max_workers=max(1, slots)) as pool:
+        # sized to the tick's agent tasks so every campaign's reviewers run concurrently
+        with ThreadPoolExecutor(max_workers=max(1, slots, len(pending_agent))) as pool:
             futures = []
-            for st, step, run_id, req, budget in pending_agent:
+            for st, step, run_id, req, budget, group in pending_agent:
                 if step.kind == "gate":
-                    futures.append((st, pool.submit(_do_gate, ctx, st)))
+                    futures.append((st, None, pool.submit(_do_gate, ctx, st)))
                 else:
-                    futures.append((st, pool.submit(_do_persona, ctx, st, step, run_id, req, budget)))
-            for st, fut in futures:
+                    futures.append((st, (step, group), pool.submit(
+                        _do_persona, ctx, st, step, run_id, req, budget)))
+            for st, review, fut in futures:
+                group = review[1] if review else None
                 try:
                     res = fut.result()
                 except Exception as e:      # a bug in a step must park, not kill the loop
+                    if group is not None:
+                        group.results[review[0].persona] = e
+                        continue
                     res = StepResult(st["id"], Step("implement"), st["state"], error=repr(e))
                     report.errors.append(f"{st['id']}: {e!r}")
+                if group is not None:
+                    group.results[review[0].persona] = res
+                    continue
                 report.steps.append(_apply(ctx, st, res))
+        for group in groups:
+            report.steps.append(_finish_reviews(ctx, report, group))
 
     # 4. close steps serially (they touch the main checkout)
     for st in pending_close:
@@ -951,6 +1207,69 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
     remaining = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
     report.idle = not remaining
     return report
+
+
+def _prepare_reviews(ctx: _Ctx, st: dict, step: Step, profile: dict, pending_agent: list,
+                     report: TickReport):
+    """Prepare one run per pending reviewer, in profile order (run ids are allocated before any
+    task starts). A failure with one reviewer configured is the campaign-wide error of
+    SPEC-0187; with several it is that reviewer's missing result and its siblings still run.
+    Returns the `_ReviewGroup` to apply after the pool, or None."""
+    multi = len(reviewers_of(profile)) > 1
+    group = _ReviewGroup(st, step)
+    for persona in step.personas:
+        if ctx.stop.is_set():
+            break
+        sub = Step("review", persona=persona, personas=step.personas)
+        try:
+            run_id, req, budget = _prepare_run(ctx, st, persona)
+        except (ValueError, OSError) as e:
+            if not multi:
+                report.steps.append(_apply(ctx, st, StepResult(
+                    st["id"], step, st["state"], error=str(e))))
+                return None
+            if isinstance(e, _RunStarted):          # run.start is written: it needs a run.end
+                report.errors.append(f"{st['id']}: {e!r}")
+                group.results[persona] = StepResult(
+                    st["id"], sub, st["state"], run_id=e.run_id, budget=e.budget,
+                    run_result=_synthetic_failure(repr(e)))
+            else:
+                group.results[persona] = StepResult(
+                    st["id"], sub, st["state"], error=str(e),
+                    config_error=isinstance(e, ProjectConfigError))
+            continue
+        group.meta[persona] = (run_id, budget)
+        pending_agent.append((st, sub, run_id, req, budget, group))
+    return group
+
+
+def _finish_reviews(ctx: _Ctx, report: TickReport, group: _ReviewGroup) -> dict:
+    """Apply a reviewer fan-out once, results in profile order. One reviewer: its bare result
+    (or the campaign-wide error of a raising worker), as SPEC-0187. Several: a worker that
+    raised or errored after `run.start` becomes a synthetic failed run (a `run.end` and the
+    budget charge), so the reviewer is simply missing."""
+    st = group.state
+    multi = len(reviewers_of(ctx.profile(st))) > 1
+    ordered = []
+    for persona in group.step.personas:
+        item = group.results.get(persona)
+        if item is None:                 # never prepared (stop set between two prepares)
+            continue
+        if not multi:
+            if isinstance(item, Exception):
+                report.errors.append(f"{st['id']}: {item!r}")
+                item = StepResult(st["id"], Step("implement"), st["state"], error=repr(item))
+            return _apply(ctx, st, item)
+        run_id, budget = group.meta.get(persona, (None, 0.0))
+        if isinstance(item, Exception) or (item.error and item.run_result is None
+                                           and run_id is not None):
+            err = repr(item) if isinstance(item, Exception) else item.error
+            report.errors.append(f"{st['id']}: {persona}: {err}")
+            item = StepResult(st["id"], Step("review", persona=persona), st["state"],
+                              run_id=run_id, budget=budget,
+                              run_result=_synthetic_failure(err))
+        ordered.append(item)
+    return _apply(ctx, st, StepResult(st["id"], group.step, st["state"], reviews=ordered))
 
 
 def _park_row(cfg, state: dict, step: Step) -> dict:

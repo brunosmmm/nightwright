@@ -264,3 +264,20 @@ def test_cli_campaign_prompt(tmp_path, monkeypatch):
     r3 = CliRunner().invoke(cli, ["campaign", "prompt", "nope", "implementer"])
     assert r3.exit_code != 0 and "no campaign" in r3.output
     assert "prompt" not in CliRunner().invoke(cli, ["campaign", "--help"]).output.split("Commands:")[1]
+
+
+def test_reviewer_personas_get_the_review_context(tmp_path, monkeypatch):
+    """SPEC-0201: `build_request` gives the review context to a persona listed in
+    REVIEWER_PERSONAS and to no other."""
+    seen = {}
+    monkeypatch.setattr(PS, "build_context", lambda *a, **kw: seen.update(review=kw["review"])
+                        or {})
+    monkeypatch.setattr(PS, "build_prompt", lambda p, ctx: "")
+    monkeypatch.setattr(PS, "render", lambda text, ctx: "")
+    cfg = {"agentic": {}}
+    monkeypatch.setattr(PS, "REVIEWER_PERSONAS", ("conformance_reviewer", "gate_triager"))
+    for persona, want in (("conformance_reviewer", True), ("gate_triager", True),
+                          ("implementer", False)):
+        PS.build_request(cfg, resolve_profile(cfg), {}, {"id": "c", "repo": {}}, persona,
+                         run_dir=tmp_path)
+        assert seen["review"] is want, persona

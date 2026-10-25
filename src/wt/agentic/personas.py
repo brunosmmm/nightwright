@@ -140,6 +140,10 @@ PERSONAS = {
                              read_only=True, invariant=SPEC_REVIEW_INVARIANT),
 }
 
+# Personas that get the review context (diff, gate summary, previous verdicts) and may be listed
+# in a profile's `reviewers` (SPEC-0201).
+REVIEWER_PERSONAS = ("conformance_reviewer",)
+
 PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree", "base",
                 "loop", "loop_max", "context_files", "gate_results", "pending_brief",
                 "previous_verdicts", "diff", "test_files", "schema_text", "idea_text")
@@ -308,7 +312,7 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
             or "bypassPermissions"
         allowed = tuple(list(agents.get("allowed_tools") or []) + _gate_tool_patterns(project_cfg))
     ctx = build_context(cfg, state, project_cfg, loop_max=profile.get("loop_max"),
-                        previous=previous, review=persona == "conformance_reviewer")
+                        previous=previous, review=persona in REVIEWER_PERSONAS)
     env = {
         "WT_CAMPAIGN": str(state.get("id") or ""),
         "WT_DATA_DIR": str(cfg.get("data_dir") or ""),
