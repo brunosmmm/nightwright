@@ -57,7 +57,8 @@ Capture (`wt idea "…"`), `show`, `summary`, `log`, `questions`, `mark-explored
 
 ### `wt projects …` / `wt sheet …` / `wt skills …` / `wt completion …` / `wt queue …` / `wt campaign …`
 
-Subcommands via `wt <group> --help`.
+Subcommands via `wt <group> --help`. `wt projects` adds `config` / `init` for the per-project
+`.wt/project.yaml` ([Agentic loop](../capabilities/agentic.md)).
 
 ## Date scopes
 

@@ -9,9 +9,30 @@ in by its child specs as they land.
 
 ## Project configuration
 
-`<repo>/.wt/project.yaml` declares the project's gates, merge policy and worktree setup
-(SPEC-0170). `wt projects config NAME` shows the resolved file; `wt projects init NAME`
-writes a starter (dry-run by default).
+`<repo>/.wt/project.yaml` is committed with the project and declares what the loop needs
+to know about it (SPEC-0170):
+
+- `gates`: ordered shell commands (`name`, `cmd`, `cwd`, `timeout_s`, `required`) run
+  inside the campaign worktree; `required` gates block, optional ones only report.
+- `merge`: `policy` (`merge` | `pr` | `draft-pr`), `base`, `remote`, `push_after_merge`,
+  `delete_branch`, `post_cmds`, `pr.labels` / `reviewers` / `title_prefix`.
+- `worktrees`: `root` (default `<repo>/../.wt-worktrees/<project>`), `setup` commands,
+  `cleanup` (`on_merge` | `on_close` | `never`).
+- `agents`: `context_files` read first by every persona, `permission_mode`,
+  `allowed_tools`, `commit_trailer`.
+
+Unknown keys fail; every problem is reported by key path. Gate commands may use the
+placeholders `{spec_id}`, `{campaign}`, `{worktree}`, `{base}`.
+
+wt finds the file through the project registry (`wt projects --json`): an outbound
+project's `repo_path`, or this wt checkout for `Meta-Tools`. Never from the current
+directory alone.
+
+```bash
+wt projects config Meta-Tools          # resolved document, defaults filled
+wt projects config --json              # wt.project.config.v1 (project from cwd)
+wt projects init acme                  # print a starter; --yes writes it, --force overwrites
+```
 
 ## Campaigns and the ledger
 

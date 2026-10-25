@@ -1,7 +1,7 @@
 ---
 id: SPEC-0170
 title: "Per-project config .wt/project.yaml and wt projects config|init"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -140,21 +140,21 @@ configuration") so the nav entry exists from the first child; later children fil
 
 ## Acceptance criteria
 
-- [ ] A valid file loads with every default filled (gate `cwd`, `timeout_s`, `required`;
+- [x] A valid file loads with every default filled (gate `cwd`, `timeout_s`, `required`;
       `merge.*`, `worktrees.*`, `agents.*`).
-- [ ] Unknown top-level or section keys, a missing `gates[].cmd`, a bad `merge.policy`, a
+- [x] Unknown top-level or section keys, a missing `gates[].cmd`, a bad `merge.policy`, a
       non-positive `timeout_s` and a wrong `schema` each fail, and the message names the key
       path; several problems are reported in one error.
-- [ ] `project_config(cfg, "Meta-Tools")` resolves through `wt_checkout`; an outbound
+- [x] `project_config(cfg, "Meta-Tools")` resolves through `wt_checkout`; an outbound
       project resolves through `outbox_targets[p].repo_path`; a missing file errors with
       the `wt projects init` hint; an unresolvable project errors with the registry note.
-- [ ] `worktree_root` defaults to `<repo>/../.wt-worktrees/<project>` and honors absolute
+- [x] `worktree_root` defaults to `<repo>/../.wt-worktrees/<project>` and honors absolute
       and repo-relative overrides.
-- [ ] `expand_cmd` replaces the four placeholders and leaves other braces untouched.
-- [ ] `wt projects config --json` emits `wt.project.config.v1`; `wt projects init` writes
+- [x] `expand_cmd` replaces the four placeholders and leaves other braces untouched.
+- [x] `wt projects config --json` emits `wt.project.config.v1`; `wt projects init` writes
       nothing without `--yes`, writes the starter with it, and refuses to overwrite.
-- [ ] Completion guard, reference guard and `mkdocs build --strict` pass.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] Completion guard, reference guard and `mkdocs build --strict` pass.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -170,6 +170,30 @@ configuration") so the nav entry exists from the first child; later children fil
 - **Regression guard:** full `uv run pytest`, including the completion, reference and
   mkdocs guards.
 
+### Test record (2026-10-25)
+
+- **Automated:** `tests/test_agentic_project.py`, 25 tests: defaults filled; ten
+  parametrized invalid documents each name their key path; several problems in one error;
+  missing file and bad YAML; Meta-Tools via `wt_checkout` and an outbound project via
+  `repo_path`; missing-file init hint; unresolvable project carries the registry note;
+  `project:` mismatch; `worktree_root` default / absolute / repo-relative; `expand_cmd`;
+  `find_project_for_cwd` on a temp git repo; CLI `config` (human + `--json`), `config`
+  errors, `init` dry-run → `--yes` → refuse → `--force`; the starter validates.
+  Full suite in the worktree (which has the `tui` extra installed): 1291 passed, 1
+  skipped, 2 failed — the two failures are `tests/test_idea_project.py` TUI pilot tests that
+  fail identically on clean `main` with the `tui` extra and are skipped on main's venv
+  (no textual). Not related to this spec; noted for the epic.
+- **Manual:** in the worktree, `uv run wt projects init Meta-Tools` printed the starter
+  and `not written — re-run with --yes`; no `.wt/` was created; `uv run wt projects
+  config Meta-Tools` failed with `no .wt/project.yaml under <root>; run `wt projects init
+  Meta-Tools``.
+- **As shipped:** matches Design, with two small notes. `find_project_for_cwd` calls
+  `git rev-parse --show-toplevel` directly (5 s timeout) instead of `topics.RepoResolver`,
+  which needs `_work`/`_home` keys that minimal configs lack. The human `config` output
+  writes its header with plain stdout, not Rich, so long paths are not wrapped mid-word.
+  A `project:` value that does not match the requested project is rejected (the spec said
+  "cross-checked"; mismatch is an error).
+
 ## Clock Log
 
 Internal work: clock on IDEA-017 with `wt idea clock-in` / `clock-out`.
@@ -181,11 +205,11 @@ Library + read-only command + dry-run writer. No existing behavior changes. wt's
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
