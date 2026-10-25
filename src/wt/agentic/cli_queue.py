@@ -546,8 +546,10 @@ def attach(queue_group):
             return
         from rich.live import Live
         n = 0
+        # the alternate screen redraws in place (no scroll-back ghosts) and restores the
+        # terminal on exit; `--once` is the frame to keep
         with Live(_dashboard(payload(), console.width, recent_hours), console=console,
-                  refresh_per_second=4, screen=False) as live:
+                  refresh_per_second=4, screen=console.is_terminal) as live:
             while True:
                 n += 1
                 if iterations and n >= iterations:

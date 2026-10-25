@@ -52,6 +52,10 @@ human paths bypass styling:
   **Backlog** (with what each blocked item waits on), and **Recently delivered**
   (merged / handed off / abandoned). It also gets `--once` (one frame, no Live) and
   `--json` (the same data as `wt.queue.dashboard.v1`).
+- **Several projects in flight at once** (user, 2026-10-25): every queue view names the
+  project an item belongs to — `wt queue list` and `wt queue backlog` get a `project`
+  column, every dashboard table and active-panel title shows it in a stable per-project
+  colour, and the dashboard header breaks counts down per project.
 
 **Non-goals**
 - Machine output: `--json` everywhere, the `--follow` streams (`wt queue events --follow`,
@@ -81,6 +85,10 @@ rendered by `cli_queue._dashboard(payload, width)`; `watch` refreshes it in `ric
 - `print_code(text, lexer, *, console, title=None)`: on a terminal, a `rich.syntax.Syntax`
   (theme from the idea-show theme config, `background_color="default"`, no word wrap),
   optional dim `# title` line; otherwise `console.file.write(text)` unchanged.
+- `note(msg)`: a dim progress/info line on stderr (used by `meetings`).
+- `project_style(name)` / `project_text(name)`: a stable colour per project (crc32 into a
+  fixed palette), so one project's items read as a group.
+- `section_table(title)`: the house table style (left bold title, simple head, expand).
 - `state_style(state)`: one colour per campaign state, shared by every renderer:
   QUEUED dim, OPENING/IMPLEMENTING cyan, GATING blue, TRIAGING magenta, CLOSING green,
   PARKED yellow, MERGED/HANDED_OFF green, ABANDONED dim red.
@@ -93,7 +101,8 @@ rendered by `cli_queue._dashboard(payload, width)`; `watch` refreshes it in `ric
   request cyan, info dim), `from`/`re` dim, full text.
 - `tick_row(row) -> Text`: `campaign: FROM → TO (action; reason) run … $cost` with states
   styled via `state_style`.
-- `plan(title, mapping) -> Table`: two-column grid, keys dim, empty values skipped.
+- `plan(title, mapping) -> Group`: `plan  <title>` then `  key: value` lines (dim keys,
+  empty values skipped) — the same text as before.
 
 `events.summary_line`, `mailbox.summary_line` and `queue.tick_row_text` stay (they feed the
 follow streams and tests); the renderers produce the same plain text (`Text.plain`).
@@ -112,7 +121,7 @@ the stderr `print`s in `rules`, `extension_schema`, `meetings`, `sheet_sync`, `o
 `tests/test_rich_output_guard.py` parses every `src/wt/**/*.py` with `ast` and collects
 calls to `print`, `click.echo`, `sys.stdout.write`, `sys.stderr.write` (and
 `json.dump(…, sys.stdout)` is ignored — it is JSON). Each hit must match an allowlist entry
-`(module, enclosing function)` with a one-line reason (JSON emitters, follow streams,
+`(module, innermost enclosing function)` with a one-line reason (JSON emitters, follow streams,
 `print_code` plain fallback, completion source, campaign prompt, idea show plain mode,
 `config` pre-import pyyaml error). A new hit fails with the file:line and the fix.
 
@@ -144,28 +153,42 @@ calls to `print`, `click.echo`, `sys.stdout.write`, `sys.stderr.write` (and
   at most `recent`.
 - `attention`: PARKED campaigns and any non-terminal campaign with `park_requested`.
 - `spend_today_usd`: sum of `cost.total_usd` over campaigns updated today (local date).
+- `totals.by_project`: `{project: {active, attention, backlog, delivered}}`.
+- `wt.queue.backlog.v1` items (and `backlog_view` rows) gain `project` (additive).
 
 Rendering (`_dashboard(payload, width)`):
 
 - **Header** panel: runner (pid, heartbeat age, STALE in red), slots `busy/total` as a
-  small bar, counts as coloured chips (active, attention, backlog ready/blocked,
-  delivered 24h), spend today, `generated_at` clock.
+  small bar and spend today, counts as coloured chips (active, attention, ready, blocked,
+  delivered), a per-project line (`Meta-Tools ▸ 2 active · 1 backlog   comfort-assistant ▸
+  1 active`) when more than one project is in view or `--project` is set, and the
+  `generated_at` clock.
 - **Active**: one panel per campaign, border coloured by `state_style`. Title = campaign
-  id; body: spec id + title, project · profile · branch; the phase stepper (done steps
+  id, project, state; body: spec id + title, project · profile · branch; the phase stepper (done steps
   green, current bold, rest dim); activity line ("implementer · sonnet/high · run 002 ·
   4m12s / 30m · budget $4.00" or "running gates" or "idle"); loops `x/max`; cost bar
   `$spent / $cap`; last gate (`✓ pytest 114s  ✓ spec-lint 1s` or red `✗`); last verdict
   status + first summary line; last 3 events via `campaign_event`. "No active campaigns"
   when empty.
-- **Needs attention**: table — campaign, spec + title, reason (yellow), detail, resume
+- **Needs attention**: table — campaign, project, title, reason (yellow), detail, resume
   to, parked for. Hidden when empty.
-- **Backlog**: table — #, campaign, spec + title, priority, ready (green) or waiting on
+- **Backlog**: table — #, campaign, project, title, priority, ready (green) or waiting on
   (yellow, the `blocked_by` list), age.
-- **Recently delivered**: table — finished ago, campaign, spec + title, outcome
-  (MERGED green / HANDED_OFF green with PR url / ABANDONED dim), sha (7), cost, duration.
-- At width ≥ 140 Active panels sit two per row (`rich.columns.Columns`); below, stacked.
+- **Recently delivered**: table — finished ago, campaign, project, title, outcome
+  (✓ merged / ↗ handed off / ✗ abandoned), ref (PR url or 7-char sha), cost, duration;
+  ref and duration drop below 110 columns. The campaign id already carries the spec id,
+  so tables show the title rather than repeating the id.
+- At width ≥ 140 Active panels sit two per row (a two-column grid); below, stacked.
+- Empty sections collapse to a one-line hint (`empty — wt queue add SPEC-NNNN --yes`,
+  `nothing in this window`, `No active campaigns`).
+- The live view draws in the terminal's alternate screen (`Live(screen=True)` on a TTY):
+  in-place redraws without scroll-back ghosts (an inline Live left a duplicated top border
+  in the user's terminal), terminal restored on exit. `--once` is the frame to keep.
 
-CLI: `wt queue watch [--interval S] [--project P] [--recent N] [--once] [--json]`;
+`wt queue list` keeps its compact layout but its `spec` column becomes `project` (the
+campaign id already starts with the spec id); `wt queue backlog` likewise.
+
+CLI: `wt queue watch [--interval S] [--project P] [--recent N] [--hours H] [--once] [--json]`;
 `--iterations` stays hidden. `--json` prints one payload and exits; `--once` prints one
 frame without `Live` (screenshots, pipes, tests).
 
@@ -182,26 +205,28 @@ frame without `Live` (screenshots, pipes, tests).
 
 ## Acceptance criteria
 
-- [ ] `src/wt/render.py` exists with `err_console`, `warn`, `print_code`, `state_style`,
+- [x] `src/wt/render.py` exists with `err_console`, `warn`, `print_code`, `state_style`,
       `campaign_event`, `queue_event`, `message`, `tick_row`, `plan`.
-- [ ] Each renderer's `Text.plain` equals the current plain line for the same input
+- [x] Each renderer's `Text.plain` equals the current plain line for the same input
       (`events.summary_line`, `mailbox.summary_line`, `queue.tick_row_text`, the campaign
       event line).
-- [ ] Every call site in *Converted call sites* uses `wt.render`; no human path prints
+- [x] Every call site in *Converted call sites* uses `wt.render`; no human path prints
       with `markup=False, highlight=False` any more.
-- [ ] `wt projects config` piped (non-terminal) output is byte-identical to before; on a
+- [x] `wt projects config` piped (non-terminal) output is byte-identical to before; on a
       terminal it is a highlighted YAML block.
-- [ ] Warnings go to stderr via `warn` with their existing text; stdout of a `--json`
+- [x] Warnings go to stderr via `warn` with their existing text; stdout of a `--json`
       command carries no warning text.
-- [ ] The guard test fails on a new bare `print(…)` in `src/wt` and passes on the tree.
-- [ ] `queue.dashboard_payload` returns `wt.queue.dashboard.v1` with `active`,
+- [x] The guard test fails on a new bare `print(…)` in `src/wt` and passes on the tree.
+- [x] `queue.dashboard_payload` returns `wt.queue.dashboard.v1` with `active`,
       `attention`, `backlog`, `delivered`, `totals`; `activity` reports an open persona run
       with elapsed time, gates, or idle.
-- [ ] `wt queue watch --once` renders Header, Active (or "No active campaigns"), Backlog,
+- [x] `wt queue watch --once` renders Header, Active (or "No active campaigns"), Backlog,
       Recently delivered, and Needs attention when something is parked; `--json` emits
       the payload; `--project` and `--recent` filter.
-- [ ] `--follow` streams, `--json` outputs and `wt sheet plan|record` are unchanged.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `--follow` streams, `--json` outputs and `wt sheet plan|record` are unchanged.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] Every queue view names the item's project (`queue list`, `queue backlog`, all
+      dashboard sections, header per-project breakdown).
 
 ## Test plan
 
@@ -226,10 +251,27 @@ frame without `Live` (screenshots, pipes, tests).
   <id> --tail 15`, `wt mailbox thread steward:Meta-Tools:2`, `wt queue events --text --tail
   10`, `wt queue watch --once` (current data: SPEC-0179/0180 delivered) and a few seconds of
   `wt queue watch`; `wt projects config | cat` diffed against the pre-change output.
+- **Multi-project:** `test_multiple_projects_in_flight_are_labelled` (two projects in
+  flight: per-project totals, project in panel titles and every table, `--project` filter,
+  `queue list|backlog` project column, backlog JSON `project`).
 - **Regression guard:** full `uv run pytest`; `wt queue events --follow` / `wt mailbox
   follow` code paths untouched (no diff in `events.follow` / `mailbox.follow`).
 
+### Executed (2026-10-25)
+
+- `uv run pytest`: 1538 passed, 1 skipped (new: `tests/test_render.py`,
+  `tests/test_rich_output_guard.py`, `tests/test_agentic_dashboard.py`; one assertion in
+  `test_agentic_queue_cli.py` updated for the additive backlog `project` field).
+- Piped `wt projects config Meta-Tools` diffed against main: identical (path aside);
+  `campaign log`, `mailbox thread`, `queue events --text`, `queue list --all`, `queue watch
+  --once` checked piped at 80 and 150 columns on live data (SPEC-0179/0180 delivered).
+- Still to do by the human on a real terminal: eyeball colours and the alternate-screen
+  live view (`wt queue watch`) after the merge.
+
 ## Rollout / migration
+
+Built on branch `spec-0185-rich` (worktree `/home/bruno/work/wt-spec-0185`) because the
+conductor runs from the main checkout; merged through the conductor.
 
 1. Land `wt.render` + tests, convert call sites, add the guard.
 2. Add `dashboard_payload` + the new `watch`.
@@ -237,11 +279,11 @@ frame without `Live` (screenshots, pipes, tests).
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed (automated + piped checks done; real-terminal check pending).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
