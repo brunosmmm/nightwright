@@ -92,16 +92,30 @@ def _write(repo, rel, text):
     return p
 
 
+def write_review(spec_path, spec_id, verdict="approve"):
+    """SPEC-0188: the sidecar `wt queue add` demands, keyed by the spec file's current hash."""
+    from wt.agentic import spec_review as SR
+    out = SR.sidecar_path(spec_path, spec_id)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"schema": SR.SCHEMA, "spec_id": spec_id, "verdict": verdict,
+                               "spec_sha256": SR.spec_sha256(spec_path),
+                               "reviewed_at": "2026-10-25T00:00:00+00:00", "model": "sonnet",
+                               "cost_usd": 0.0, "findings": [], "suggested_splits": []}))
+    return out
+
+
 def make_repo(tmp_path, *, spec_id="SPEC-0001", policy="merge", lint_required="true",
               test_gate="test -f feature.txt", lint_gate="true", with_origin=False, extra_fm="",
-              spec_rel="docs/specs/0001-trivial.md"):
+              spec_rel="docs/specs/0001-trivial.md", review=True):
     """A git repo that doubles as a wt checkout (src/wt + pyproject) with an accepted spec."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
     (repo / "src" / "wt").mkdir(parents=True)
     _write(repo, "pyproject.toml", "[project]\nname='wt'\n")
-    _write(repo, spec_rel, SPEC_ACCEPTED.format(id=spec_id, extra=extra_fm))
+    spec_path = _write(repo, spec_rel, SPEC_ACCEPTED.format(id=spec_id, extra=extra_fm))
+    if review:
+        write_review(spec_path, spec_id)
     _write(repo, "gates/test.sh", f"{test_gate}\n")
     _write(repo, "gates/lint.sh", f"{lint_gate}\n")
     _write(repo, ".wt/project.yaml", PROJECT_YAML.format(policy=policy,
@@ -253,7 +267,9 @@ def test_e2e_dependent_spec_admitted_only_after_dependency_merges(tmp_path, monk
     """SPEC-0180: queue X and Y (Y depends on X) together; Y opens only once X is done on main."""
     repo = make_repo(tmp_path)
     spec2 = "docs/specs/0002-second.md"
-    _write(repo, spec2, SPEC_ACCEPTED.format(id="SPEC-0002", extra="depends_on: [SPEC-0001]\n"))
+    write_review(_write(repo, spec2, SPEC_ACCEPTED.format(id="SPEC-0002",
+                                                          extra="depends_on: [SPEC-0001]\n")),
+                 "SPEC-0002")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "second spec")
     # the fake script cursor is per campaign, so each spec gets its own script
@@ -307,6 +323,7 @@ def test_e2e_outbound_pr_hands_off(tmp_path, monkeypatch):
     (outbox / "ACME-0001-trivial.md").write_text(SPEC_ACCEPTED.format(
         id="ACME-0001", extra=f"target_project: acme\ntarget_repo: {repo}\n"
                               f"target_spec_path: {repo / rel}\n"))
+    write_review(outbox / "ACME-0001-trivial.md", "ACME-0001")
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done("ACME-0001", spec_rel=rel, extra=extra), review()]),
                    outbox={"acme": {"repo_path": str(repo)}})
     r = run_cli(cfg, monkeypatch, ["queue", "add", "ACME-0001", "--json"])

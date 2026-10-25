@@ -161,7 +161,13 @@ The queue is the engine (SPEC-0176). Python decides every transition; personas o
 commits and one verdict. One process runs the loop at a time (the lease), two or three
 campaigns advance concurrently (the profile's `slots`).
 
+A spec is admitted only with an approving review for its current text (SPEC-0188):
+`wt spec review SPEC-0170` runs the read-only `spec_reviewer` persona and stores the verdict in
+`docs/specs/reviews/SPEC-0170.json`, keyed by the spec file's sha256 — editing the spec
+invalidates it. `wt queue add --force` skips the check and records `review: forced`.
+
 ```bash
+wt spec review SPEC-0170          # approve | revise | split, with findings
 wt queue add SPEC-0170            # plan only (dry-run)
 wt queue add SPEC-0170 --yes      # create the campaign in QUEUED
 wt queue list                     # Active (slots) and Backlog (admission order) tables

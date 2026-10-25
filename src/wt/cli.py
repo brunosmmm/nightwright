@@ -1604,6 +1604,51 @@ def spec_status_cmd(cfg, spec_id, new_status, as_json):
         console.print(f"{spec_id}  {info['status']}")
 
 
+@spec_group.command("review")
+@click.argument("spec_id", shell_complete=C.complete_any_spec_id)
+@click.option("--json", "as_json", is_flag=True, help="emit the wt.spec.review.v1 sidecar")
+@click.pass_obj
+def spec_review_cmd(cfg, spec_id, as_json):
+    """Review a spec with the read-only spec_reviewer persona (SPEC-0188).
+
+    Writes `docs/specs/reviews/<SPEC-ID>.json`, keyed by the spec file's hash; `wt queue add`
+    admits a spec only when its latest review is `approve` for the current text.
+
+    \b
+    wt spec review SPEC-0188
+    wt spec review SPEC-0188 --json
+    """
+    import json as _json
+    import sys
+
+    from .agentic.spec_review import review_spec
+    try:
+        review = review_spec(cfg, spec_id)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        _json.dump(review, sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return
+    color = {"approve": "green", "revise": "yellow", "split": "yellow"}[review["verdict"]]
+    cost = review.get("cost_usd")
+    cost_txt = f"  ${cost:.2f}" if cost is not None else ""
+    console.print(f"[bold]{spec_id}[/]  [{color}]{review['verdict']}[/]  "
+                  f"{review['model']}{cost_txt}")
+    if review["findings"]:
+        from rich.table import Table
+        table = Table(show_header=True, header_style="bold")
+        for col in ("severity", "section", "title", "detail"):
+            table.add_column(col, overflow="fold")
+        for f in review["findings"]:
+            table.add_row(f.get("severity", ""), f.get("section", ""), f.get("title", ""),
+                          f.get("detail", ""))
+        console.print(table)
+    for sp in review["suggested_splits"]:
+        console.print(f"  split: [bold]{sp.get('title')}[/] — {sp.get('scope', '')}",
+                      highlight=False)
+
+
 @spec_group.command("verify")
 @click.argument("spec_id", shell_complete=C.complete_spec_id)
 @click.option("--json", "as_json", is_flag=True, help="emit wt.spec.verify.v1")

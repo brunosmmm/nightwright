@@ -5,7 +5,7 @@ import json
 
 from rich.console import Console
 
-from test_agentic_e2e import (SPEC_ACCEPTED, _git, _write, impl_done, make_cfg, make_repo,
+from test_agentic_e2e import (SPEC_ACCEPTED, _git, _write, impl_done, make_cfg, make_repo, write_review,
                               run_cli, script)
 from wt.agentic import cli_queue as CQ
 from wt.agentic import queue as Q
@@ -43,9 +43,9 @@ def _campaign(cfg, repo, cid, state, *, spec_id="SPEC-0001", rel="docs/specs/000
 
 def _fixture(tmp_path):
     repo = make_repo(tmp_path)
-    _write(repo, "docs/specs/0002-second.md",
-           SPEC_ACCEPTED.format(id="SPEC-0002", extra="depends_on: [SPEC-0009]\n")
-           .replace("Trivial feature", "Blocked second"))
+    write_review(_write(repo, "docs/specs/0002-second.md",
+                        SPEC_ACCEPTED.format(id="SPEC-0002", extra="depends_on: [SPEC-0009]\n")
+                        .replace("Trivial feature", "Blocked second")), "SPEC-0002")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "second")
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))

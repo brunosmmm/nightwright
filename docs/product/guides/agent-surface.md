@@ -51,6 +51,7 @@ scraping tables. Shapes below are illustrative — fields evolve; trust the live
 | `wt.projects.v1` | `wt projects --json` | `{schema, projects:[{name,outbound,research,…}]}` |
 | `wt.projects.add.v1` | `wt projects add … --json` | plan payload before mutating config |
 | `wt.spec.verify.v1` | `wt spec verify … --json` | verify report (AC / tests / ledger drift) |
+| `wt.spec.review.v1` | `wt spec review … --json` | `{schema, spec_id, verdict: approve\|revise\|split, spec_sha256, reviewed_at, model, cost_usd, findings[], suggested_splits[]}` (SPEC-0188) |
 | `wt.campaigns.v1` | `wt campaign list --json` | `{schema, campaigns:[{id,spec_id,state,loops,cost_usd,…}]}` |
 | `wt.campaign.v1` | `wt campaign show ID --json` | campaign state + `last_events` (SPEC-0171) |
 | `wt.campaign.log.v1` | `wt campaign log ID --json` | `{schema, campaign, events:[{seq,ts,type,by,…}]}` |

@@ -21,6 +21,8 @@ BUILTIN_PROFILES = {
                              "permission_mode": "dontAsk", "read_only": True},
             "conformance_reviewer": {"model": "opus", "effort": "high", "max_budget_usd": 1.5,
                                      "permission_mode": "dontAsk", "read_only": True},
+            "spec_reviewer": {"model": "sonnet", "effort": "high", "max_budget_usd": 0.8,
+                              "permission_mode": "dontAsk", "read_only": True},
         },
     },
     "frugal": {
@@ -35,6 +37,8 @@ BUILTIN_PROFILES = {
                              "permission_mode": "dontAsk", "read_only": True},
             "conformance_reviewer": {"model": "sonnet", "effort": "medium", "max_budget_usd": 0.6,
                                      "permission_mode": "dontAsk", "read_only": True},
+            "spec_reviewer": {"model": "sonnet", "effort": "medium", "max_budget_usd": 0.4,
+                              "permission_mode": "dontAsk", "read_only": True},
         },
     },
     "thorough": {
@@ -49,6 +53,8 @@ BUILTIN_PROFILES = {
                              "permission_mode": "dontAsk", "read_only": True},
             "conformance_reviewer": {"model": "opus", "effort": "high", "max_budget_usd": 1.5,
                                      "permission_mode": "dontAsk", "read_only": True},
+            "spec_reviewer": {"model": "opus", "effort": "high", "max_budget_usd": 1.5,
+                              "permission_mode": "dontAsk", "read_only": True},
         },
     },
 }

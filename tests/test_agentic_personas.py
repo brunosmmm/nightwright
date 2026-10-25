@@ -110,6 +110,8 @@ def test_missing_values_render_as_none(tmp_path):
 
 def test_templates_and_schemas(tmp_path):
     for name, persona in PS.PERSONAS.items():
+        if name == "spec_reviewer":       # no campaign/worktree: SPEC-0188 tests cover it
+            continue
         text = persona.template
         for ph in ("{{campaign}}", "{{spec_id}}", "{{worktree}}", "{{spec_text}}",
                    "{{gate_results}}", "{{pending_brief}}", "{{previous_verdicts}}"):

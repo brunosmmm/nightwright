@@ -16,6 +16,7 @@ ALLOWED = {
     ("cli.py", "projects_rename_cmd"): "JSON emitter (--json)",
     ("cli.py", "spec_status_cmd"): "JSON emitter (--json)",
     ("cli.py", "spec_verify_cmd"): "JSON emitter (--json)",
+    ("cli.py", "spec_review_cmd"): "JSON emitter (--json)",
     ("cli.py", "sheet_plan_cmd"): "JSON-only by contract (SPEC-0125)",
     ("cli.py", "sheet_record_cmd"): "JSON-only by contract (SPEC-0125)",
     ("cli.py", "_print_completion"): "shell script for eval",

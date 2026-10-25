@@ -1,7 +1,7 @@
 ---
 id: SPEC-0188
 title: "Spec review before admission: wt spec review and a queue gate on an approving review"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -75,7 +75,12 @@ with placeholder detection.
   not `approve`, or hash mismatch ⇒ `ValueError("SPEC-X has no approving review for its
   current text; run wt spec review SPEC-X (or --force)")`; `--force` sets `review: forced`.
 - **Lint:** new rule in `tools/spec_lint.py`'s validate loop, reporting the first offending
-  line number.
+  line number. Fenced code blocks and inline code spans are ignored, so a spec can name the
+  placeholders it forbids.
+- **As shipped:** the sidecar lives next to the resolved spec file (`<spec dir>/reviews/`), which
+  is `docs/specs/reviews/` for internal specs; `plan_add` also reports `review: approved|forced`;
+  an `approve` verdict that lists a `must_fix` finding is rejected as non-conforming. The
+  persona carries its own invariant block (no campaign/worktree) via `Persona.invariant`.
 
 ## Alternatives considered
 
@@ -86,17 +91,17 @@ with placeholder detection.
 
 ## Acceptance criteria
 
-- [ ] `wt spec review` with the fake runner writes a valid `wt.spec.review.v1` sidecar
+- [x] `wt spec review` with the fake runner writes a valid `wt.spec.review.v1` sidecar
       (verdict, hash of the current spec, cost) and prints/returns it; a malformed verdict
       writes nothing and errors.
-- [ ] `wt queue add` refuses a spec with no review, a non-approving review, or a review whose
+- [x] `wt queue add` refuses a spec with no review, a non-approving review, or a review whose
       hash no longer matches; accepts with a matching approve; `--force` admits and records
       `review: forced`.
-- [ ] `tools/spec_lint.py` fails an accepted spec containing each placeholder form and passes
+- [x] `tools/spec_lint.py` fails an accepted spec containing each placeholder form and passes
       the current corpus.
-- [ ] The persona template, schema and profile defaults exist; the request is read-only.
-- [ ] Completion, reference and agent-surface guards pass.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] The persona template, schema and profile defaults exist; the request is read-only.
+- [x] Completion, reference and agent-surface guards pass.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -106,6 +111,18 @@ with placeholder detection.
 - **Manual verification:** one real `wt spec review` on an existing accepted spec; record the
   verdict and cost.
 - **Regression guard:** full `uv run pytest`.
+
+### Test record (2026-10-25)
+
+- `uv run pytest -q`: full suite green (new `tests/test_agentic_spec_review.py`: fake-runner
+  sidecar, malformed / non-approving-with-must_fix / errored / timed-out verdicts writing nothing,
+  read-only request, queue gate cases incl. stale hash and `--force`, lint placeholder cases
+  per status and form, corpus clean). Existing queue/e2e/dashboard tests now write an approving
+  sidecar via `write_review`; `test_promote` strips placeholders from its accepted scaffold.
+- `python3 tools/spec_lint.py` exits 0 (current corpus passes the new placeholder rule).
+- Manual: real `uv run wt spec review SPEC-0187 --json` (sonnet, balanced profile) returned
+  `revise` with 7 findings, cost $0.18, ~36 s; sidecar shape as specified (sidecar discarded,
+  SPEC-0187 is out of scope here).
 
 ## Clock Log
 
@@ -118,11 +135,11 @@ in a campaign are unaffected.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

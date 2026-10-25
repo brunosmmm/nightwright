@@ -95,7 +95,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (18/20 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (19/20 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -112,7 +112,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0184](./specs/0184-wt-steward-skill-monitor-armed-project-steward-on.md) wt-steward skill: Monitor-armed project steward on the mailbox — done
   - [x] [SPEC-0186](./specs/0186-spec-change-guard-at-close-no-merge-when-the.md) Spec-change guard at close: no merge when the implementer altered the spec — done
   - [x] [SPEC-0187](./specs/0187-conformance-review-reviewing-state-with-a-read.md) Conformance review: REVIEWING state with a read-only conformance-reviewer persona — done
-  - [ ] [SPEC-0188](./specs/0188-spec-review-before-admission-wt-spec-review-and-a.md) Spec review before admission: wt spec review and a queue gate on an approving review — accepted
+  - [x] [SPEC-0188](./specs/0188-spec-review-before-admission-wt-spec-review-and-a.md) Spec review before admission: wt spec review and a queue gate on an approving review — done
   - [x] [SPEC-0191](./specs/0191-deterministic-rebase-resolver-for-generated-files.md) Deterministic rebase resolver for generated files in the close step — done
   - [x] [SPEC-0192](./specs/0192-schema-d-agentic-logs-validated-ledger-run-json.md) Schema'd agentic logs: validated ledger, run.json, gate sidecars, runner journal — done
   - [x] [SPEC-0193](./specs/0193-persona-prompts-state-the-spec-change-guard-rules.md) Persona prompts state the spec-change guard rules — done
@@ -127,7 +127,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) | Example-heavy docs: SVG captures and workflow architecture | epic | accepted | M8: product documentation | 2026-09-09 |
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0182](./specs/0182-event-driven-wt-conduct-monitor-armed-conductor.md) | Event-driven wt-conduct: Monitor-armed conductor woken by queue events | feature | in-progress | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0188](./specs/0188-spec-review-before-admission-wt-spec-review-and-a.md) | Spec review before admission: wt spec review and a queue gate on an approving review | feature | accepted | M9: agentic workflow | 2026-10-25 |
 
 ## Done
 
@@ -307,6 +306,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0185](./specs/0185-rich-human-output-everywhere-and-a-queue-watch.md) | Rich human output everywhere and a queue watch dashboard | feature | done | M4: cli ergonomics | 2026-10-25 |
 | [SPEC-0186](./specs/0186-spec-change-guard-at-close-no-merge-when-the.md) | Spec-change guard at close: no merge when the implementer altered the spec | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0187](./specs/0187-conformance-review-reviewing-state-with-a-read.md) | Conformance review: REVIEWING state with a read-only conformance-reviewer persona | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0188](./specs/0188-spec-review-before-admission-wt-spec-review-and-a.md) | Spec review before admission: wt spec review and a queue gate on an approving review | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0189](./specs/0189-one-project-registry-for-capture-completion-and.md) | One project registry for capture, completion and promotion | feature | done | M4: cli ergonomics | 2026-10-25 |
 | [SPEC-0190](./specs/0190-concurrency-safe-org-writes-identity-checked.md) | Concurrency-safe org writes: identity-checked headlines and one write lock | feature | done | M4: cli ergonomics | 2026-10-25 |
 | [SPEC-0191](./specs/0191-deterministic-rebase-resolver-for-generated-files.md) | Deterministic rebase resolver for generated files in the close step | feature | done | M9: agentic workflow | 2026-10-25 |

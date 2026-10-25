@@ -4,6 +4,7 @@ prefill, source_idea, reciprocal :SPEC: property + SPECCED state), idempotence, 
 All scaffolding happens in a tmp specs dir (never docs/specs/) — see cfg["specs_dir"]."""
 import importlib.util
 import pathlib
+import re
 import shutil
 
 from click.testing import CliRunner
@@ -248,6 +249,11 @@ def test_scaffolded_spec_with_empty_clock_log_still_lints_clean(tmp_path):
         "## Test plan\n\n- **Automated tests:** pytest\n- **Manual verification:** look\n"
         "- **Regression guard:** green")
     text = text.replace("status: draft", "status: accepted", 1)
+    # SPEC-0188: an accepted spec may not keep template placeholders
+    text = re.sub(r'^# milestone: "M\?.*\n', "", text, flags=re.M)
+    text = re.sub(r"^<The chosen approach.*$", "Do the thing.", text, flags=re.M)
+    text = re.sub(r"^- …$", "- ok", text, flags=re.M)
+    text = text.replace("<option>", "none")
     pathlib.Path(path).write_text(text)
 
     lint = _linter()

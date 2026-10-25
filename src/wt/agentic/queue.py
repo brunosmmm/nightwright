@@ -31,6 +31,7 @@ from . import gitops as git
 from . import lease as L
 from . import personas as PS
 from . import project as P
+from . import spec_review as SR
 from . import schemas as SC
 from . import store
 from .gitops import GitError
@@ -1222,13 +1223,18 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
     if active:
         raise ValueError(f"{spec_id} already has an active campaign {active['id']} "
                          f"({active.get('state')}); abandon it first")
+    if force:                                                          # SPEC-0188
+        review = "forced"
+    else:
+        SR.check_admissible(path, spec_id)
+        review = "approved"
     prof = resolve_profile(cfg, profile)
     base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
     cid = store.new_campaign_id(cfg, spec_id)
     worktree = P.worktree_root(pcfg, root, project) / cid
     return {
         "campaign": cid, "spec_id": spec_id, "project": project, "profile": prof["name"],
-        "priority": priority, "force": bool(force), "base": base, "repo_root": str(root), "spec_rel_path": rel, "spec_status": status,
+        "priority": priority, "force": bool(force), "review": review, "base": base, "repo_root": str(root), "spec_rel_path": rel, "spec_status": status,
         "internal": not outbound, "worktree": str(worktree), "branch": f"wt/{cid}",
         "cap_usd": prof.get("campaign_cap_usd"), "loop_max": prof.get("loop_max"),
         "slots": prof.get("slots"), "merge_policy": (pcfg.get("merge") or {}).get("policy"),

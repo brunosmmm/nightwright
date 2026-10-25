@@ -90,6 +90,32 @@ CONFORMANCE_REVIEWER_SCHEMA = {
     },
 }
 
+SPEC_REVIEW_INVARIANT = """\
+## wt spec review invariants (read before anything else)
+
+You are one run of `wt spec review` on spec `{{spec_id}}`. There is no campaign and no worktree.
+- Read only: do not edit, create or delete anything.
+- Finish by emitting the JSON verdict for your persona. A program parses it; nothing else
+  you print is read."""
+
+_SEVERITIES = ["must_fix", "major", "minor", "nit"]
+
+SPEC_REVIEWER_SCHEMA = {
+    "type": "object",
+    "required": ["verdict", "findings"],
+    "properties": {
+        "verdict": {"type": "string", "enum": ["approve", "revise", "split"]},
+        "findings": {"type": "array", "items": {
+            "type": "object", "required": ["severity", "title"],
+            "properties": {"severity": {"type": "string", "enum": _SEVERITIES},
+                           "section": {"type": "string"}, "title": {"type": "string"},
+                           "detail": {"type": "string"}}}},
+        "suggested_splits": {"type": "array", "items": {
+            "type": "object", "required": ["title"],
+            "properties": {"title": {"type": "string"}, "scope": {"type": "string"}}}},
+    },
+}
+
 
 @dataclass(frozen=True)
 class Persona:
@@ -97,6 +123,7 @@ class Persona:
     template_file: str
     schema: dict
     read_only: bool
+    invariant: str = INVARIANT
 
     @property
     def template(self) -> str:
@@ -109,11 +136,13 @@ PERSONAS = {
                             read_only=True),
     "conformance_reviewer": Persona("conformance_reviewer", "conformance_reviewer.md",
                                     CONFORMANCE_REVIEWER_SCHEMA, read_only=True),
+    "spec_reviewer": Persona("spec_reviewer", "spec_reviewer.md", SPEC_REVIEWER_SCHEMA,
+                             read_only=True, invariant=SPEC_REVIEW_INVARIANT),
 }
 
 PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree", "base",
                 "loop", "loop_max", "context_files", "gate_results", "pending_brief",
-                "previous_verdicts", "diff", "test_files")
+                "previous_verdicts", "diff", "test_files", "schema_text", "idea_text")
 
 
 def get_persona(name) -> Persona:
@@ -238,7 +267,7 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
 def build_prompt(persona, ctx: dict) -> str:
     """Persona template + invariant block, both rendered from `ctx`. Deterministic."""
     p = get_persona(persona) if isinstance(persona, str) else persona
-    return render(p.template, ctx).rstrip("\n") + "\n\n" + render(INVARIANT, ctx) + "\n"
+    return render(p.template, ctx).rstrip("\n") + "\n\n" + render(p.invariant, ctx) + "\n"
 
 
 def prompt_sha256(prompt: str) -> str:

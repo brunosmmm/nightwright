@@ -7,7 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from test_agentic_e2e import (SPEC_ACCEPTED, added, impl_done, make_cfg, make_repo, run_cli,
-                             script)
+                              script, write_review)
 from wt.agentic import lease as L
 from wt.agentic import queue as Q
 from wt.agentic import store as S
@@ -369,6 +369,7 @@ def test_admission_is_fifo_and_bounded_by_slots(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     (repo / "docs" / "specs" / "0002-second.md").write_text(
         (repo / "docs" / "specs" / "0001-trivial.md").read_text().replace("SPEC-0001", "SPEC-0002"))
+    write_review(repo / "docs" / "specs" / "0002-second.md", "SPEC-0002")
     import subprocess
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "second spec"], check=True)
@@ -476,6 +477,7 @@ def test_tick_records_one_backlog_event_per_change(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     spec2 = repo / "docs" / "specs" / "0002-second.md"
     spec2.write_text(SPEC_ACCEPTED.format(id="SPEC-0002", extra="depends_on: [SPEC-0099]\n"))
+    write_review(spec2, "SPEC-0002")
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
     cid = added(cfg, monkeypatch, "SPEC-0002")
 
