@@ -225,6 +225,17 @@ the CLI commands `wt spec reserve`, `wt spec reservations` and `wt spec release`
 - `uv run pytest tests/test_spec_numbers.py` — 18 passed; mutation checks (skipping the first
   worktree record, dropping the key filter in `release`) each fail a test.
 
+### Test record (2026-10-25, review loop 2)
+
+- Review follow-up in `tests/test_spec_numbers.py`: commit pruning is limited to the caller's
+  key (repo2's reservation survives repo's commit of the same number); a corrupt or
+  wrong-schema store file is left byte-identical after the raise; `wt spec release
+  --specs-dir` (dry run and `--yes`); `spec new` re-raises the original error when `release`
+  itself fails (the stale reservation stays).
+- `uv run pytest tests/test_spec_numbers.py` — 21 passed; removing the `r["key"] == key`
+  guard in `_prune` fails `test_commit_prunes_only_the_callers_key`.
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py` — exit 0.
+
 ### As shipped
 
 - `list_reservations(all_keys=True)` prunes by campaign state across all keys but by branch

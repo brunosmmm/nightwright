@@ -187,6 +187,22 @@ def test_prune_on_commit_on_unchecked_out_branch(tmp_path, cfg, repo):
     assert [r["number"] for r in SN._load(cfg)] == [3]
 
 
+def test_commit_prunes_only_the_callers_key(tmp_path, cfg, repo):
+    other = _make_repo(tmp_path / "repo2")
+    sd, osd = _sd(repo), _sd(other)
+    n = SN.allocate(cfg, by="t", specs_dir=osd)["number"]            # 2 under repo2
+    _git(repo, "checkout", "-q", "-b", "b1")
+    _touch(repo, n)                                                  # same number committed in repo
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "two")
+    assert SN.list_reservations(cfg, specs_dir=sd) == []
+    assert [r["number"] for r in SN._load(cfg)] == [n]               # repo2's stays in the store
+    SN.allocate(cfg, by="t", specs_dir=sd)
+    SN.list_reservations(cfg, specs_dir=sd, all_keys=True)
+    assert [r["number"] for r in SN.list_reservations(cfg, specs_dir=osd)] == [n]
+    assert SN.allocate(cfg, by="t", specs_dir=osd)["number"] == n + 1
+
+
 def test_all_keys_prunes_abandoned_campaigns_of_other_keys(tmp_path, cfg, repo):
     other = _make_repo(tmp_path / "repo2")
     SN.allocate(cfg, by="t", campaign="C-X", specs_dir=_sd(other))
@@ -203,9 +219,12 @@ def test_corrupt_store_raises_missing_and_empty_work(cfg, repo):
     store_path.write_text("{nope")
     with pytest.raises(ValueError, match="spec-reservations.json"):
         SN.allocate(cfg, by="t", specs_dir=_sd(repo))
-    store_path.write_text(json.dumps({"schema": "other", "reservations": []}))
+    assert store_path.read_text() == "{nope"                                 # never reset
+    other = json.dumps({"schema": "other", "reservations": []})
+    store_path.write_text(other)
     with pytest.raises(ValueError, match="wrong schema"):
         SN.allocate(cfg, by="t", specs_dir=_sd(repo))
+    assert store_path.read_text() == other
 
 
 def _hammer(args):
@@ -311,6 +330,18 @@ def test_cli_release_dry_run_then_apply(run):
     assert bad.exit_code != 0 and "not a spec number" in bad.output
 
 
+def test_cli_release_specs_dir(run, tmp_path):
+    other = _make_repo(tmp_path / "repo2")
+    osd = str(_sd(other))
+    run("reserve", "--specs-dir", osd, "--for", "beta")
+    assert run("release", "2", "--yes").exit_code != 0                # not reserved under repo's key
+    dry = run("release", "2", "--specs-dir", osd)
+    assert dry.exit_code == 0 and "pass --yes" in dry.output
+    assert "SPEC-0002" in run("reservations", "--specs-dir", osd).output
+    assert run("release", "SPEC-0002", "--specs-dir", osd, "--yes").exit_code == 0
+    assert "SPEC-0002" not in run("reservations", "--specs-dir", osd).output
+
+
 # ---- spec new ---------------------------------------------------------------------------------
 
 def _git_specs_cfg(tmp_path):
@@ -365,3 +396,21 @@ def test_spec_new_failure_releases(tmp_path, monkeypatch):
     monkeypatch.undo()
     assert SN.list_reservations(cfg, specs_dir=sd) == []
     assert _find(cfg, "instant review agent").properties.get("SPEC") is None
+
+
+def test_spec_new_release_failure_keeps_original_error(tmp_path, monkeypatch):
+    cfg, sd = _git_specs_cfg(tmp_path)
+    _seed_idea(cfg, "instant review agent")
+
+    def boom(*a, **k):
+        raise RuntimeError("original")
+
+    def bad_release(*a, **k):
+        raise OSError("release failed")
+
+    monkeypatch.setattr(W, "set_property", boom)
+    monkeypatch.setattr(SN, "release", bad_release)
+    with pytest.raises(RuntimeError, match="original"):
+        S.scaffold_from_idea(cfg, "instant review agent")
+    monkeypatch.undo()
+    assert [r["number"] for r in SN.list_reservations(cfg, specs_dir=sd)] == [2]  # stale, kept
