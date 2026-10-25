@@ -47,8 +47,9 @@ The fix loop then runs again on the same finding.
   The answer is recorded on the escalation and on the campaign ledger.
 - G2. An `escalation_answered` event wakes the conductor, which applies the answer (resume,
   abandon, reprioritize, re-review). The answer command never moves the campaign itself.
-- G3. Human waivers (any severity) and attestations persist on the campaign and are honoured
-  by `triage_reviews` in every later review, so the fix loop is unblocked.
+- G3. Human waivers (any severity) and attestations persist on the campaign, are given to
+  every later reviewer as "do not re-raise", and are honoured by `triage_reviews` as a safety
+  net (with the matching limits stated in Design), so the fix loop is unblocked.
 
 **Non-goals**
 - A TUI answer form (IDEA-085).
@@ -109,14 +110,27 @@ wt escalations answer ID (--choose N|LABEL | --text TEXT |
     `ac` text) or a text that `queue._covers` matches against an `ac_assessment` entry with
     `met: false` in those verdicts. Anything else is refused and names the valid ids (at most
     10).
+  - Reach of an attestation: the plan lists every distinct unmet AC text that each
+    `--attest` covers. When a text covers **more than one** distinct AC, the plan is refused
+    and lists them, asking for a longer text or a `#ac` id. Choice: refuse rather than
+    warn. `_covers`' substring rule would silently extend the attestation to other ACs in
+    every later review.
+  - A `--waive` of a real finding whose `ac` covers an unmet entry also lists that AC in the
+    plan as `implicitly attested` (see Triage).
 - The plan prints the record's question and options, the resolved answer and, for
   overrides, each finding (`id severity title`) and each AC. `--json` emits
   `wt.escalation.answer.v1` with `written`.
 
 ### Apply (`apply_answer`)
 
-Under the campaign's `store.item_lock` when there is a campaign, else under the escalations
-lock:
+Locking follows SPEC-0232's order: `store.item_lock(cfg, cid)` when there is a campaign,
+then, nested, the escalations lock (`events._locked(<escalations>/.lock)`), always. The
+escalations lock is held across the record's read-check-write. Inside it `apply_answer`
+re-reads the record and **re-checks `status == "open"`**. A record withdrawn or answered
+since the plan raises `ValueError("<id> is <status> since <ts>")`, and nothing is written.
+`remind_due` and `withdraw` write the record under the same lock, so no lost update is
+possible. The state and ledger writes (steps 2 and 3) happen under `item_lock` after the
+record write. The event (step 4) is appended after both locks are released.
 1. Record:
    - `status: answered`;
    - `answer: {kind: choose|text|override, choice: n|null, label: str|null, text:
@@ -124,14 +138,22 @@ lock:
    - `answered_by`, `answered_at`.
 2. Campaign ledger (when there is a campaign):
    - `store.append_event(cfg, cid, "human_decision", {"escalation": id, **answer}, by=<by>)`;
-   - a `note` with the text `<by>: <id> <summary>`. The summary is `chose 2 (abandon)`,
-     `waived conformance_reviewer#1, attested "AC text…": <reason>`, or the text folded to 200 chars.
+   - a `note` with the text `<by>: <id> <summary>`. The summary format is pinned:
+     - choose: `chose <n> (<label>)`;
+     - override: `waived <id>, <id>; attested "<ac>", "<ac>"; reason: <reason>`. Items are
+       joined by `, ` and sections by `; `, and an empty section is omitted. Each AC text is
+       cut to 60 chars, with `…` added when cut;
+     - text: `text: <text folded to one line, cut to 200 chars>`;
+     - when `--note` is given: ` — note: <note cut to 200 chars>` appended.
+
+     Example: `human: ESC-0003 waived conformance_reviewer#1; attested "AC 4 output is
+     sorted"; reason: checked by hand`.
    - The note marks the park decided under SPEC-0222's rule. That is harmless, because a
      `human_decision` park is human-owned and never overdue.
    - `human_decision` is not projected by `events._project_ledger_event`, so it raises no
      second queue event.
 3. Overrides: append to `state["human_overrides"] = {"waive": [{id, title, files, severity,
-   synthetic, reason, escalation, at}], "attest": [{ac, reason, escalation, at}]}` and write
+   synthetic, ac, reason, escalation, at}], "attest": [{ac, reason, escalation, at}]}` and write
    the state. The state stays `PARKED` with `park` unchanged.
 4. `events.append(cfg, "escalation_answered", campaign=…, spec_id=…, project=…, by=<by>,
    data={"escalation_id": id, "kind": kind, "summary": summary, "answer": answer})`.
@@ -144,14 +166,38 @@ lock:
 - `triage_reviews(verdicts, profile, waived=(), human_waived=(), attested=())`:
   - `attested`: an `ac_assessment` entry with `met: false` that `_covers(a, entry.ac)` for
     any attested `a` is treated as met. It does not set `unmet` and gets no synthetic `#ac`
-    finding.
+    finding. The effective attested set is `attested` plus the `ac` of every **real**
+    human-waived finding that has one. Waiving a real `major` that covers an unmet AC
+    therefore also clears that AC. Otherwise `unmet` (set before the coverage check in the `ac_assessment` loop, L290-L296)
+    would keep the outcome at `fix`, and no `#ac` id exists for the human to attest.
+    Choice: option (a). The human waived the very finding that stands for that AC, and
+    `plan_answer` shows the AC as `implicitly attested`, so the reach is visible.
   - `human_waived` (the stored waive dicts): a merged finding is removed, **whatever its
     severity**, synthetic included, when either:
     - its `id` equals a waiver's `id` and its normalized title equals the waiver's; or
     - it is not synthetic, its `norm_finding_title(title)` equals the waiver's, and its
       `sorted(files)` equals the waiver's (files included).
     The second rule matches a re-review's findings: ids are positional, and a fresh review
-    renumbers them.
+    renumbers them. A merged finding (two reviewers with the same files and title) is waived
+    through its surviving merged id.
+  - Limits, stated plainly:
+    - A **synthetic** waiver (`<p>#fix`, titled from `fix_brief[:80]`) only applies to the
+      review it came from, because a fresh review rewrites the brief. It is kept in state
+      for the record, but in practice it does not survive the REVIEWING resume.
+    - A real finding that a fresh reviewer **rewords** or re-files does not match.
+
+    The defence against both is to tell the reviewers (next bullet). Exact-key matching is
+    the safety net, not the main mechanism.
+- Reviewer brief: `personas.PLACEHOLDERS` gains `human_overrides`.
+  `personas.render_human_overrides(state)` renders `state["human_overrides"]` as two lists:
+  - "The human waived these findings; do not raise them again, even reworded:
+    `<severity> <title> (<files>) — <reason>`";
+  - "The human attested these ACs as met; do not assess them as unmet: `<ac> — <reason>`".
+
+  An empty state renders `""`. `build_request` fills it (next to `pending_brief`, L457), and
+  `personas/conformance_reviewer.md` and `personas/test_reviewer.md` include
+  `{{human_overrides}}` after their previous-verdicts section. This mirrors how SPEC-0207's
+  `review_carry` feeds earlier review results forward.
   - Removed findings join the same `gone` set as triager waivers, so `fixing`, `score`,
     `must` and `blocking` all ignore them. The result gains `human_waived: [ids]` and
     `attested: [ac texts]` (the applied ones).
@@ -172,7 +218,10 @@ lock:
     `wt queue prioritize`, raise the cap…).
   - `override`: `wt queue resume <cid> --to REVIEWING --note "human override <id>" --yes`.
     The fresh review then triages with the overrides.
-  - `text`: act on it per the table, or escalate again if it is not actionable.
+  - `text`: act on it per the table, or escalate again if it is not actionable. SPEC-0232's
+    re-park rule allows a new `wt queue escalate` on a `human_decision` park once its
+    escalation is answered. It keeps `escalated_from` / `resume_to`, and the new record is a
+    fresh `ESC-NNNN`.
 
   Record `wt campaign note <cid> "conductor: applied <id>: …"`, and give the human one line.
 - `skills/wt-steward/SKILL.md`: when the human answers an open escalation for this project
@@ -202,20 +251,26 @@ lock:
       unknown option are refused. Without `--yes` nothing is written.
 - [ ] `--choose` resolves a 1-based number or a case-insensitive label. The record becomes
       `answered` with `answer`, `answered_by` (default `human`) and `answered_at` set.
-- [ ] `--waive` accepts any finding id of the stored review (any severity, synthetic
+- [ ] `--waive` accepts any finding id of the stored review (any severity, synthetic and merged
       included) and refuses other ids. `--attest` accepts a `#ac` finding id or an AC text
-      covering an unmet entry, and refuses others. Overrides without a campaign are refused.
-- [ ] Apply appends a `human_decision` ledger event and a `note` on the campaign, stores
-      override items in `state["human_overrides"]`, and leaves the campaign `PARKED` with its
-      `park` unchanged.
+      covering exactly one distinct unmet AC, and refuses others (listing the matches when
+      more than one). Overrides without a campaign are refused.
+- [ ] Apply takes `item_lock` then the escalations lock, re-checks `open` (a record withdrawn
+      after the plan is refused, with nothing written), appends a `human_decision` ledger event
+      and a `note` in the pinned summary format, stores override items in
+      `state["human_overrides"]`, and leaves the campaign `PARKED` with its `park` unchanged.
 - [ ] Apply appends exactly one `escalation_answered` event (registered in `EVENT_TYPES`,
       with `escalation_id`, `kind`, `summary`). The ledger `human_decision` event projects no
       queue event.
 - [ ] `triage_reviews` drops human-waived findings of any severity, both by id and, for a
-      fresh review, by (normalized title, files). Attested ACs are neither unmet nor
-      synthetic findings. A review whose only blockers are overridden routes to `pass`.
+      fresh review, by (normalized title, files). Attested ACs, and the ACs of waived real
+      findings, are neither unmet nor synthetic findings. A review whose only blockers are
+      overridden routes to `pass`, including a waived real `major` that covers an unmet AC.
 - [ ] `state["human_overrides"]` survives `_begin_review`. `_route_reviews` notes applied
-      overrides. `_accept_waivers` does not list a human-waived finding as waivable.
+      overrides. `_accept_waivers` does not list a human-waived finding as waivable. The
+      reviewer prompts receive `{{human_overrides}}` (empty when there are none).
+- [ ] After an answered `text`, `wt queue escalate <cid>` on the still-`human_decision` park
+      succeeds with a new id (SPEC-0232 re-park rule).
 - [ ] The `wt-conduct` skill has the `escalation_answered` row (choose / override ⇒ resume to
       REVIEWING / text), and `wt-steward` has the relay rule.
 - [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
@@ -226,7 +281,15 @@ lock:
   - `tests/test_agentic_escalations.py` (from SPEC-0232), new cases:
     - `plan_answer` / `apply_answer` for `choose` by number and by label, and for `text`;
     - refusals: an answered record, a withdrawn record, mixed forms, an override without a
-      reason or without a campaign, an unknown finding, an unmatched AC;
+      reason, with a blank (whitespace) reason, or without a campaign, an unknown finding,
+      an unmatched AC, an AC text covering two distinct ACs (both listed), `--choose 3` on a
+      2-option record, an unmatched `--choose` label, `--choose` on an options-less record;
+    - the apply race: plan an answer, withdraw the record, then apply ⇒ `ValueError`, the
+      record is still `withdrawn`, and there is no ledger event;
+    - the pinned note text for choose, for a mixed override with `--note`, and for a long
+      text;
+    - escalate again: after an answered `text`, `plan_escalate` / `apply_escalate` on the
+      `human_decision` park creates `ESC-0002` and keeps `escalated_from`;
     - a campaign parked `human_decision` whose `last_review` holds a fixture verdict with a
       `major` finding, a `minor` finding and an unmet AC: `--waive conformance_reviewer#0 --attest
       conformance_reviewer#ac0 --reason r` stores both overrides, the ledger has
@@ -237,7 +300,11 @@ lock:
       fresh verdict with the finding at another index);
     - a waived `must_fix` no longer forces `fix`;
     - `attested` removes the unmet flag and the synthetic `#ac`;
-    - only-overridden blockers ⇒ `outcome == "pass"`.
+    - only-overridden blockers ⇒ `outcome == "pass"`;
+    - a real `major` with `ac` covering an unmet entry, human-waived ⇒ no `unmet`,
+      `outcome == "pass"`;
+    - a merged finding (two reviewers, same files and title) waived by its merged id;
+    - a reworded title on re-review is **not** matched, which pins the documented limit.
   - `tests/test_agentic_queue.py`:
     - `_begin_review` keeps `human_overrides`;
     - a tick in REVIEWING with stored verdicts and overrides routes to CLOSING, with the
@@ -245,12 +312,15 @@ lock:
     - `_accept_waivers` ignores a human-waived id.
   - `tests/test_agentic_escalations_cli.py`: `answer` dry-run vs `--yes`, `--json` schema,
     mixed-form usage error.
+  - `tests/test_agentic_personas.py`: `render_human_overrides` for empty and populated
+    state; `build_request` for `conformance_reviewer` and `test_reviewer` includes the
+    waived title and the attested AC.
   - `tests/test_skills.py`: `wt-conduct` mentions `escalation_answered`, and `wt-steward`
     mentions `wt escalations answer`.
 - **Manual verification:** in a throwaway `WT_DATA_DIR`, create a campaign-less escalation
   with two options (SPEC-0232), run `uv run wt escalations answer ESC-0001 --choose 2 --yes`,
   then check `uv run wt queue events --tail 2` shows `escalation_answered` and
-  `wt escalations show` shows the answer. Record the output in the spec.
+  `uv run wt escalations show ESC-0001` shows the answer. Record the output in the spec.
 - **Regression guard:** full `uv run pytest`. With no overrides, the existing SPEC-0203/0206
   triage tests are unchanged, because the new arguments default to empty.
 

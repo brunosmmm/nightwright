@@ -116,33 +116,89 @@ wt queue escalate [CAMPAIGN] --question TEXT [--option TEXT]... [--recommend N]
     escalation per campaign.
 - The plan's `park` follows the campaign's state:
   - `PARKED`: a **re-park**. `escalated_from` is the current `park.reason`, `resume_to` is
-    the current `park.resume_to`, and the mode is `immediate`. If the current reason is
-    already `human_decision`, the plan is refused (an escalation is already pending or
-    stale).
+    the current `park.resume_to`, and the mode is `immediate`. When the current reason is
+    already `human_decision`, the re-park is allowed: no escalation is open (`open_for`
+    already refused that case), so the previous one was answered or withdrawn. It keeps
+    the park's existing `escalated_from` and `resume_to`. This is how the conductor asks a
+    follow-up after an answer (SPEC-0235).
   - `QUEUED`, `WAITING`, or active with no lease held: `immediate`, with `resume_to` taken
     as `plan_park` computes it.
-  - Active with the lease held (a loop is running): `deferred`, as `plan_park` does.
+  - Active with the lease held (a loop is running): `deferred`, as `plan_park` does. If
+    the campaign already has a `park_requested` from `wt queue park` (reason `human`), the
+    escalation **replaces** it with the `human_decision` request. The earlier detail is
+    added to the record's `facts` as `park requested earlier: <detail>`. Choice: the
+    escalation is the stronger hold, because it also waits for the human, and it keeps the
+    earlier intent.
   - No campaign: `park: null`. Runner or global escalations have no campaign.
 - `apply_escalate(cfg, plan)` runs, in this order:
-  1. Write the record (status `open`).
-  2. Park, under `store.item_lock`:
+  1. With a campaign, take `store.item_lock(cfg, cid)` and keep it through step 3. Re-read
+     the state and re-validate the plan: the same `state`, the same `park.reason` when
+     PARKED, not terminal, and `open_for` still None. A mismatch raises `ValueError("<cid>
+     changed since the plan; re-run")` before any id is allocated. This is the same re-check
+     that `apply_park` does. Lock order is always `item_lock`, then the escalations lock, and
+     SPEC-0235 follows the same order.
+  2. Under the escalations lock (nested): allocate the id and write the record (status
+     `open`).
+  3. Park (still under `item_lock`):
      - `immediate`: `queue._park(cfg, st, "human_decision", f"{id}: {question}",
-       resume_to, by=<from>, extra={"escalated_from": …})`. `_park` gains `extra=None`,
-       merged into `state["park"]`.
+       resume_to, by=<from>, extra={"escalated_from": …}, count=not re_park)`. `_park`
+       gains `extra=None`, merged into `state["park"]`, and `count=True`. A PARKED→PARKED
+       re-park does not increment `counters.parks`: the campaign parked once, and the
+       escalation only changes who owns it.
      - `deferred`: set `st["park_requested"] = {"reason": "human_decision", "detail":
-       f"{id}: {question}", "at": now}`. `queue.plan_step` (L129) and `queue._apply` (L935)
-       now use `req["reason"]` when it is `human_decision` instead of the hard-coded
-       `"human"`.
-  3. `events.append(cfg, "escalation", campaign=…, spec_id=…, project=…, by=<from>,
+       f"{id}: {question}", "at": now, "by": <from>}`.
+     - If the park raises anyway (an I/O error), the record file is deleted before the
+       error propagates, so no orphan `open` record blocks `open_for`.
+  4. `events.append(cfg, "escalation", campaign=…, spec_id=…, project=…, by=<from>,
      data={"escalation_id", "question", "options", "recommendation"})`.
      `EVENT_TYPES["escalation"] = ("escalation_id", "question", "options")`.
-  4. `mailbox.send(cfg, to="human", frm=<from>, kind="question", campaign=…,
+  5. `mailbox.send(cfg, to="human", frm=<from>, kind="question", campaign=…,
      needs_reply=False, text=…)`. The text holds the question, the numbered options with
      `(recommended)` on one, and the line `answer: wt escalations show <id>`. The record's
      `mail_id` is set. `needs_reply=False`: the record, not the mailbox thread, tracks
      whether the human answered, so `wt mailbox list --unanswered` does not show stale
      questions.
-  5. `notify(cfg, rec)`. The outcome is stored in `notified`.
+  6. `notify(cfg, rec)`. The outcome is stored in `notified`. Steps 4 to 6 run after the
+     locks are released.
+### Deferred parks (`queue.py`)
+
+- `queue.plan_step` (L129) returns `Step("park", reason=req["reason"] if req.get("reason")
+  == "human_decision" else "human", by=req.get("by"), …)`. `Step` gains an optional `by`
+  field. `queue._park_row` (L1663) uses `step.by` when set, else today's rule (`"human"`
+  for reason `human`, `"tick"` otherwise), so the park is attributed to the escalating
+  actor.
+- `queue._apply` (L945, the hard-coded `"human"`) parks with the request's reason and `by`
+  in the same way. Two more cases are handled there:
+  - The running step produced **its own park** (`park` is set, e.g. `loop_exhausted`) while
+    a `human_decision` request is pending: the campaign parks as `human_decision`, with
+    `escalated_from` = the step's reason, `resume_to` = the step's `resume_to`, and the
+    detail `"<ESC id>: <question> (step parked: <step detail>)"`. The step's own park
+    reason is kept in `escalated_from`, so nothing is lost, and the open escalation matches
+    the park. This replaces today's behaviour, where the step park wins and pops the
+    request. A pending `human` request (from `wt queue park`) keeps today's behaviour.
+  - The step ends the campaign (MERGED, ABANDONED, HANDED_OFF): the transition is
+    unchanged, and the open escalation is withdrawn automatically (below).
+
+### Escalations that end without an answer
+
+- `escalations.withdraw_for_campaign(cfg, cid, reason, by)` withdraws the campaign's
+  `open` record, if any. It sets `withdrawn`, appends the `escalation_withdrawn` event and
+  mails `human` (`kind info`), exactly like `wt escalations withdraw`. It never touches
+  `answered` records. It is called:
+  - by `queue.apply_resume` and `queue.apply_abandon` (reason `campaign resumed by <by>` /
+    `campaign abandoned by <by>`);
+  - by `queue._transition` when the target is terminal (reason `campaign <STATE>`).
+
+  Choice: rule (a), closing the record at the moment the campaign leaves the park. A lazy
+  scan alone would leave the record open until the next reader comes along.
+- As a backstop for edits made outside these paths (a hand-edited `state.json`),
+  `remind_due`, `ping_digest` and `open_for` skip any open record whose campaign is neither
+  PARKED with reason `human_decision` nor holding a `human_decision` `park_requested`.
+  `remind_due` withdraws such records (reason `campaign left the park`), so the skip is not
+  permanent.
+
+### Watch
+
 - The detail starts with the escalation id, so `wt queue watch` shows the id and the question
   in SPEC-0222's **Needs you** section without any change to that code.
 - A campaign park through `_park` projects to the existing `parked` event (reason
@@ -162,7 +218,11 @@ wt queue escalate [CAMPAIGN] --question TEXT [--option TEXT]... [--recommend N]
   the error text. Escalating never fails because of a notification.
 - Reminders: `escalations.remind_due(cfg, now)` re-notifies (with `wt: {id} still needs you`)
   each open record whose `reminded_at or created` is older than
-  `agentic.escalations.remind_s` (default 3600; 0 disables), then sets `reminded_at`.
+  `agentic.escalations.remind_s` (default 3600; 0 disables). It **claims** each due record
+  first: under the escalations lock it re-reads the record, re-checks `open` and due, writes
+  `reminded_at`, and releases the lock. The notifier then runs outside the lock. Two
+  followers syncing at once therefore send one reminder, not two. The cost is that a failed
+  notification is not retried before the next interval.
   `events.sync` calls it when `ping=True`, after the events lock is released. Only live
   followers ping, so reminders run while a conductor is armed, which is when escalations
   happen.
@@ -183,7 +243,11 @@ wt queue escalate [CAMPAIGN] --question TEXT [--option TEXT]... [--recommend N]
   (`EVENT_TYPES["escalation_withdrawn"] = ("escalation_id", "reason")`) and mails `human`
   (`kind info`).
 - Withdrawing does **not** resume the campaign. The conductor resumes it with `wt queue resume`
-  as for any park. Choice: one way to leave a park, already audited.
+  as for any park. Choice: one way to leave a park, already audited. Until that resume, the
+  campaign stays under SPEC-0222's **Needs you** with the withdrawn id in its detail. So
+  `withdraw` prints `<cid> is still PARKED (human_decision); resume it: wt queue resume <cid>
+  --yes`, and the `--json` output carries `campaign_state`. A new escalation for that
+  campaign is allowed (re-park rule above).
 
 ### Conductor skill (`skills/wt-conduct/SKILL.md`)
 
@@ -216,27 +280,37 @@ wt queue escalate [CAMPAIGN] --question TEXT [--option TEXT]... [--recommend N]
       (`wt.escalation.v1`, every field above), with sequential ids under the lock. Without
       `--yes` it writes nothing and prints the plan. A campaign-less escalation works.
 - [ ] `queue.PARK_REASONS` contains `human_decision`. Escalating a PARKED campaign re-parks it
-      as `human_decision` with `park.escalated_from` set and the original `resume_to` kept.
-      A QUEUED, WAITING or idle active campaign parks immediately.
-- [ ] With the lease held, an active campaign gets `park_requested.reason ==
-      "human_decision"`, and the tick parks it with that reason (`plan_step` / `_apply`). A
-      terminal campaign, a second open escalation for one campaign, and an already
-      `human_decision` park are refused.
+      as `human_decision` with `park.escalated_from` set, the original `resume_to` kept and
+      `counters.parks` unchanged. A `human_decision` park with no open escalation can be
+      re-parked. A QUEUED, WAITING or idle active campaign parks immediately. Apply
+      re-validates under `item_lock` and leaves no record when the campaign changed after
+      the plan.
+- [ ] With the lease held, an active campaign gets `park_requested = {reason:
+      "human_decision", by}`, replacing a `human` request (whose detail goes to `facts`).
+      The tick parks it with that reason, `by` the escalating actor (`plan_step`,
+      `_park_row`, `_apply`). A step that parks by itself parks as `human_decision` with
+      `escalated_from` = the step's reason. A terminal campaign and a second open
+      escalation for one campaign are refused.
 - [ ] Apply appends one `escalation` event (registered in `EVENT_TYPES`) and one `human` inbox
       message (`kind question`, `needs_reply: false`, the text naming the id and the options).
       The record carries `mail_id`.
 - [ ] `notify` runs `notify-send` with `auto` when it is on PATH and nothing when it is not.
       `none` never runs. A list setting runs the substituted argv. A failing or missing
       command is recorded in `notified` and the escalation still succeeds.
-- [ ] `remind_due` re-notifies an open record once per `remind_s` (not a withdrawn one), and is
-      off at 0. `ping_digest` carries `escalations_open` and `counts.escalations_open`.
+- [ ] `remind_due` claims due records under the escalations lock and re-notifies an open record
+      once per `remind_s` (not a withdrawn one, and once even with two concurrent callers).
+      It is off at 0. `ping_digest` carries `escalations_open` and `counts.escalations_open`.
 - [ ] `wt escalations list` (open by default, `--all`, `--json` as
       `wt.escalation.list.v1`) and `show ID` (`--json` is the record) work. An unknown id is a
       clean error.
 - [ ] `wt escalations withdraw ID --reason … --yes` sets `withdrawn`, notes the campaign, emits
       `escalation_withdrawn` and mails `human`. It leaves the campaign PARKED and refuses a
-      non-open record. The `wt-conduct` skill carries the escalate convention and the
+      non-open record, and prints the resume hint. The `wt-conduct` skill carries the escalate convention and the
       `human_decision` row.
+- [ ] An open escalation is withdrawn automatically when its campaign is resumed, abandoned or
+      reaches a terminal state, and an answered record is never touched.
+      `remind_due` / `ping_digest` / `open_for` skip, and `remind_due` withdraws, an open
+      record whose campaign has left the `human_decision` park by another route.
 - [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
@@ -252,14 +326,26 @@ wt queue escalate [CAMPAIGN] --question TEXT [--option TEXT]... [--recommend N]
     - an active campaign with a held lease (the lease fixture from `test_agentic_queue.py`):
       `park_requested.reason == "human_decision"`, and `plan_step` returns a park Step with
       that reason;
-    - refusals: terminal, a second open escalation, an existing `human_decision` park,
-      `--recommend` out of range;
+    - refusals: terminal, a second open escalation, `--recommend` out of range;
+    - a re-park of a `human_decision` park whose escalation was withdrawn (allowed, keeps
+      `escalated_from` / `resume_to`), with `counters.parks` unchanged by a re-park;
+    - the race: plan on a PARKED campaign, then resume it, then apply ⇒ `ValueError` and no
+      record file; a park that raises (monkeypatched `_park`) ⇒ no record file;
+    - a pending `human` `park_requested` replaced by the escalation, with the earlier detail
+      in `facts`;
+    - `_apply` with a pending `human_decision` request and a step result that parks
+      `loop_exhausted` ⇒ PARKED `human_decision`, `escalated_from: loop_exhausted`; a step
+      result that merges ⇒ the record is `withdrawn`; `_park_row` records `by` = the
+      escalating actor;
+    - `apply_resume` and `apply_abandon` withdraw the open record; an `answered` record (set
+      by hand in the fixture) is left alone; a hand-edited state (PARKED `cost_cap`) makes
+      `remind_due` withdraw the record and `ping_digest` skip it;
     - the event in `events.read_since` and the message in `mailbox.read_inbox(cfg, "human")`
       with `needs_reply` false;
     - notify `auto` with and without `notify-send`, `none`, a custom argv (substitution
       asserted), and a raising `_run_notify` (recorded, no exception);
     - `remind_due` with a frozen `now` before and after `remind_s`, a withdrawn record
-      skipped, and `remind_s: 0`;
+      skipped, and `remind_s: 0`; two back-to-back calls at the same due `now` notify once;
     - `ping_digest` `escalations_open`.
   - `tests/test_agentic_escalations_cli.py` (new, `CliRunner`): `wt queue escalate` dry-run
     vs `--yes`; `wt escalations list` / `--all` / `--json`; `show` (text contains
