@@ -14,6 +14,7 @@ Claude-generating vs your-turn diagnostic.
 | *(bare)* `wt` | Dashboard: today + this week | [Report](../capabilities/report.md) |
 | `add` | Capture a new org task | [Tasks](../capabilities/tasks-agenda.md) |
 | `agenda` | Tasks by SCHEDULED/DEADLINE (+ overdue) | [Tasks](../capabilities/tasks-agenda.md) |
+| `campaign` | Campaign state, ledger and notes (agentic loop) | [Agentic loop](../capabilities/agentic.md) |
 | `completion` | Generate / install shell completion | [Completion](../capabilities/completion.md) |
 | `digest` | Hours joined to org tasks by JIRA key | [Report](../capabilities/report.md) |
 | `done` | Mark a task done | [Tasks](../capabilities/tasks-agenda.md) |
@@ -26,6 +27,7 @@ Claude-generating vs your-turn diagnostic.
 | `next` | Next-step hints for open ideas | [Ideas](../capabilities/ideas.md) |
 | `override` | Time-scoped reclassification | [Report](../capabilities/report.md) |
 | `projects` | List / register outbox + research targets | [Projects](../capabilities/projects.md) |
+| `queue` | Agentic work queue: add / list / run / park / resume | [Agentic loop](../capabilities/agentic.md) |
 | `refresh-meetings` | Pull Outlook meetings into meetings.jsonl | [Meetings](../capabilities/meetings.md) |
 | `release-archive` | Pack git HEAD + ideas slice tarball | [Release archive](../capabilities/release-archive.md) |
 | `report` | Per-topic hours | [Report](../capabilities/report.md), [Track time](../guides/track-time.md) |
@@ -53,7 +55,7 @@ Capture (`wt idea "…"`), `show`, `summary`, `log`, `questions`, `mark-explored
 `new`, `generate`, `verify`, `export`, `pull-status`, `pull-clock`, `sweep`, `reconcile`,
 `schemes`, `seed-children`, `fit-log`, `postmortem`. Full list: `wt spec --help`.
 
-### `wt projects …` / `wt sheet …` / `wt skills …` / `wt completion …`
+### `wt projects …` / `wt sheet …` / `wt skills …` / `wt completion …` / `wt queue …` / `wt campaign …`
 
 Subcommands via `wt <group> --help`.
 

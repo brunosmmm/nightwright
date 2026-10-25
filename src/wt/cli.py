@@ -1984,5 +1984,11 @@ def refresh_cmd(cfg, date, week, days):
     refresh_meetings(cfg, f"{start}T00:00:00{off}", f"{end}T00:00:00{off}")
 
 
+# SPEC-0169: agentic workflow groups (`wt queue`, `wt campaign`, `wt projects config|init`).
+from .agentic.cli import register as _register_agentic  # noqa: E402
+
+_register_agentic(cli, projects_group)
+
+
 if __name__ == "__main__":
     cli()

@@ -67,5 +67,6 @@ nav:
       - Tasks & agenda: capabilities/tasks-agenda.md
       - Meetings: capabilities/meetings.md
       - Skills: capabilities/skills.md
+      - Agentic loop: capabilities/agentic.md
   - Reference: reference/index.md
   - Contribute: contribute/index.md

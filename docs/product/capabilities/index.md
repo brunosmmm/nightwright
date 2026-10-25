@@ -17,5 +17,6 @@ pages are the inventory of what the CLI can do.
 | [Tasks & agenda](tasks-agenda.md) | `wt tasks`, `wt agenda`, `wt add`, `wt done` |
 | [Meetings](meetings.md) | `wt refresh-meetings`, `wt ingest-meetings` |
 | [Skills](skills.md) | `wt skills` |
+| [Agentic loop](agentic.md) | `wt queue`, `wt campaign`, `wt projects config` |
 
 Exact flags: `wt <cmd> --help`. Curated reference index: [Reference](../reference/index.md).
