@@ -10,7 +10,7 @@ from wt.agentic import close as CL
 from wt.agentic import store as S
 
 from test_agentic_e2e import (SPEC_ACCEPTED, _git, added, make_cfg, make_repo, run_cli,
-                              script, triage)
+                              script, review, triage)
 
 BASE = """---
 id: SPEC-0900
@@ -141,7 +141,7 @@ def _impl_deleting_ac(spec_rel="docs/specs/0001-trivial.md"):
 def test_e2e_implementer_deleting_an_ac_never_merges(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     head_before = _git(repo, "rev-parse", "HEAD")
-    entries = [_impl_deleting_ac(), triage("escalate"), triage("escalate")]
+    entries = [_impl_deleting_ac(), review(), triage("escalate"), triage("escalate")]
     cfg = make_cfg(tmp_path, repo, script(tmp_path, entries))
     cid = added(cfg, monkeypatch)
     r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
@@ -149,7 +149,7 @@ def test_e2e_implementer_deleting_an_ac_never_merges(tmp_path, monkeypatch):
     st = S.read_state(cfg, cid)
     assert st["state"] == "PARKED", st
     trans = [(e["from"], e["to"]) for e in S.read_ledger(cfg, cid, types=["transition"])]
-    assert ("GATING", "CLOSING") in trans and ("CLOSING", "TRIAGING") in trans
+    assert ("REVIEWING", "CLOSING") in trans and ("CLOSING", "TRIAGING") in trans
     assert all(to != "MERGED" for _f, to in trans)
     findings = S.read_ledger(cfg, cid, types=["finding"])
     drift = [f for f in findings if f.get("gate") == "spec-changed"]

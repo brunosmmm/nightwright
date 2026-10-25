@@ -94,7 +94,7 @@ on a parked item — and logs a `gate` event. It never changes the campaign's st
 ## Personas
 
 Each judgment step is one fresh `claude -p` run (SPEC-0174): a persona markdown template
-(`implementer`, `gate_triager`; reviewers come later) is filled with the campaign's context
+(`implementer`, `gate_triager`, `conformance_reviewer`) is filled with the campaign's context
 — the spec text as it is on the branch, the worktree path, the last gate logs, the brief
 from the previous loop — and ends with a fixed invariant block (work only in the worktree,
 do not commit, finish with the JSON verdict). The runner passes a `--json-schema` so the
@@ -106,6 +106,28 @@ prompt CAMPAIGN PERSONA` prints it without running anything.
 
 For tests and dry runs, `agentic.runner: fake` (or `WT_AGENTIC_RUNNER=fake`) replays a JSON
 script of scripted edits and canned verdicts instead of calling `claude`.
+
+## Reviews
+
+Green gates say the build works, not that the change does what the spec says. After every
+green gate run the campaign enters **REVIEWING** (SPEC-0187) and a fresh, read-only
+`conformance_reviewer` (`--restricted`; Opus in `balanced` and `thorough`, Sonnet in
+`frugal`; about $1.50) gets the spec as it is on the branch, the diff against the base
+(at most 1500 lines), the test files touched under `tests/`, and the gate summary. For every
+acceptance criterion it decides `met` with concrete evidence, flags criteria "met" only by a
+trivially passing test as `major` and scope creep as `minor`, and never edits anything. Its
+verdict is `{verdict: pass|fix, score, findings, ac_assessment, fix_brief}`:
+
+- `pass` with no `must_fix` finding ⇒ CLOSING;
+- `fix`, or any `must_fix` finding even under `pass` ⇒ `loops += 1` and back to IMPLEMENTING
+  with the `fix_brief` and the must-fix findings as the next implementer's brief (`loop_max`
+  reached ⇒ `loop_exhausted`);
+- a malformed verdict is retried once per loop, then the campaign parks as `review_escalated`.
+
+Each finding is a `finding` ledger event (`persona: conformance_reviewer`); the score is in
+the `run.end` verdict and in `last_review` of the campaign state. The cost cap applies before
+the spawn like for any persona. A close that bounces back to triage and ends in a new
+implementer run is reviewed again.
 
 ## Closing
 
@@ -153,17 +175,20 @@ wt queue run                      # the loop; wt queue tick = one iteration
 State machine:
 
 ```
-QUEUED → OPENING → IMPLEMENTING → GATING → CLOSING → MERGED | HANDED_OFF
-                        ▲            │ required gate failed
-                        └─ TRIAGING ◀┘   fix (loops+1) · retry_gate (once per loop) ·
-                                          waive (optional gates only) · escalate
+QUEUED → OPENING → IMPLEMENTING → GATING → REVIEWING → CLOSING → MERGED | HANDED_OFF
+                        ▲            │            │ review fix (loops+1)
+                        ├────────────┼────────────┘
+                        └─ TRIAGING ◀┘ required gate failed:
+                           fix (loops+1) · retry_gate (once per loop) ·
+                           waive (optional gates only) · escalate
 any state → PARKED (humans only) → resume | abandon
 ```
 
 - **OPENING** creates the worktree and branch and runs `worktrees.setup`.
 - **IMPLEMENTING** spawns a fresh implementer; the runner commits whatever changed.
-- **GATING** runs every gate; all required green ⇒ CLOSING, else TRIAGING.
+- **GATING** runs every gate; all required green ⇒ REVIEWING, else TRIAGING.
 - **TRIAGING** spawns the read-only gate triager only after a failure.
+- **REVIEWING** spawns the read-only conformance reviewer (see Reviews); pass ⇒ CLOSING.
 - **CLOSING** rebases, re-gates, audits the spec's Definition of Done, then fast-forwards
   the base or opens a PR.
 
@@ -181,7 +206,8 @@ link by link as each spec lands on the base. Each admission records a transition
 per unchanged tick), and `wt queue prioritize` records a `priority{from,to}` event.
 
 Park reasons: `cost_cap` (checked pessimistically before every spawn), `loop_exhausted`,
-`implementer_blocked` (blocked twice in a row), `triage_escalated`, `open_failed`,
+`implementer_blocked` (blocked twice in a row), `triage_escalated`, `review_escalated`,
+`open_failed`,
 `rebase_conflict`, `main_dirty`, `main_not_on_base`, `base_moving`, `gh_failed`, `human`.
 A parked item keeps its worktree; `wt queue resume ID [--to STATE] [--note …]
 [--raise-cap USD] [--reset-loops] --yes` continues it, `wt queue abandon ID --yes` ends it.

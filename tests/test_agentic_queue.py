@@ -16,7 +16,8 @@ from wt.cli import cli
 
 PROFILE = {"slots": 2, "loop_max": 3, "campaign_cap_usd": 10.0, "run_timeout_s": 60,
            "personas": {"implementer": {"max_budget_usd": 4.0},
-                        "gate_triager": {"max_budget_usd": 0.5}}}
+                        "gate_triager": {"max_budget_usd": 0.5},
+                        "conformance_reviewer": {"max_budget_usd": 1.5}}}
 
 
 def _state(state="IMPLEMENTING", **over):
@@ -32,6 +33,7 @@ def _state(state="IMPLEMENTING", **over):
 @pytest.mark.parametrize("state,kind,persona", [
     ("QUEUED", "none", None), ("OPENING", "open", None), ("IMPLEMENTING", "implement", "implementer"),
     ("GATING", "gate", None), ("TRIAGING", "triage", "gate_triager"), ("CLOSING", "close", None),
+    ("REVIEWING", "review", "conformance_reviewer"),
     ("PARKED", "none", None), ("MERGED", "none", None), ("HANDED_OFF", "none", None),
     ("ABANDONED", "none", None),
 ])
@@ -45,6 +47,8 @@ def test_plan_step_table(state, kind, persona):
     ("IMPLEMENTING", "implementer", 6.01, True),   # pessimistic: could cross the cap
     ("TRIAGING", "gate_triager", 9.5, False),
     ("TRIAGING", "gate_triager", 9.51, True),
+    ("REVIEWING", "conformance_reviewer", 8.5, False),   # 8.5 + 1.5 = 10, not over
+    ("REVIEWING", "conformance_reviewer", 8.51, True),
 ])
 def test_plan_step_cost_cap_is_pessimistic(state, persona, spent, parks):
     st = _state(state, cost={"total_usd": spent, "cap_usd": 10.0, "by_persona": {}})
@@ -53,7 +57,7 @@ def test_plan_step_cost_cap_is_pessimistic(state, persona, spent, parks):
         assert step.kind == "park" and step.reason == "cost_cap" and step.resume_to == state
         assert persona in step.detail
     else:
-        assert step.kind in ("implement", "triage")
+        assert step.kind in ("implement", "triage", "review")
 
 
 def test_plan_step_no_cap_never_parks():
@@ -63,7 +67,7 @@ def test_plan_step_no_cap_never_parks():
 
 @pytest.mark.parametrize("state,resume_to", [
     ("IMPLEMENTING", "IMPLEMENTING"), ("GATING", "GATING"), ("CLOSING", "CLOSING"),
-    ("TRIAGING", "GATING"), ("OPENING", "QUEUED"),
+    ("TRIAGING", "GATING"), ("OPENING", "QUEUED"), ("REVIEWING", "REVIEWING"),
 ])
 def test_plan_step_human_park_request_wins(state, resume_to):
     st = _state(state, park_requested={"reason": "human", "detail": "hold"})
@@ -123,6 +127,95 @@ def test_triage_malformed_retries_once_then_escalates():
     st["counters"]["triage_retries"] = 1
     step = Q.decide_triage(st, PROFILE, None, False)
     assert step.kind == "park" and step.reason == "triage_escalated" and "twice" in step.detail
+
+
+# ---- decide_review (SPEC-0187) -------------------------------------------------------------
+
+def _review(verdict="pass", *severities, **kw):
+    v = {"verdict": verdict, "score": 90, "ac_assessment": [], "fix_brief": "do it",
+         "findings": [{"severity": sev, "title": f"{sev} thing"} for sev in severities]}
+    v.update(kw)
+    return v
+
+
+@pytest.mark.parametrize("verdict,severities,kind,reason", [
+    ("pass", (), "close", "review_pass"),
+    ("pass", ("minor", "nit", "major"), "close", "review_pass"),
+    ("pass", ("must_fix",), "implement", "review_fix"),            # must-fix overrides a pass
+    ("fix", (), "implement", "review_fix"),
+    ("fix", ("must_fix", "minor"), "implement", "review_fix"),
+])
+def test_review_routing(verdict, severities, kind, reason):
+    step = Q.decide_review(_state("REVIEWING"), PROFILE, _review(verdict, *severities), True)
+    assert (step.kind, step.reason) == (kind, reason)
+
+
+def test_review_fix_beyond_loop_max_parks():
+    st = _state("REVIEWING")
+    st["counters"]["loops"] = 2
+    assert Q.decide_review(st, PROFILE, _review("fix"), True).kind == "implement"   # 3rd loop
+    st["counters"]["loops"] = 3
+    step = Q.decide_review(st, PROFILE, _review("fix", fix_brief="still wrong"), True)
+    assert step.kind == "park" and step.reason == "loop_exhausted"
+    assert step.resume_to == "IMPLEMENTING" and "still wrong" in step.detail
+    # a pass with a must-fix at the limit parks too
+    assert Q.decide_review(st, PROFILE, _review("pass", "must_fix"), True).kind == "park"
+    # a clean pass at the limit still closes
+    assert Q.decide_review(st, PROFILE, _review("pass"), True).kind == "close"
+
+
+def test_review_malformed_retries_once_then_escalates():
+    st = _state("REVIEWING")
+    assert Q.decide_review(st, PROFILE, {"garbage": True}, False).kind == "none"
+    assert Q.decide_review(st, PROFILE, None, False).kind == "none"
+    st["counters"]["review_retries"] = 1
+    step = Q.decide_review(st, PROFILE, None, False)
+    assert step.kind == "park" and step.reason == "review_escalated"
+    assert step.resume_to == "REVIEWING" and "twice" in step.detail
+    assert "review_escalated" in Q.PARK_REASONS
+
+
+def test_reviewing_is_an_active_resumable_state():
+    assert "REVIEWING" in Q.STATES and "REVIEWING" in Q.ACTIVE_STATES
+    assert "REVIEWING" in Q.RESUMABLE_STATES
+
+
+def test_apply_review_fix_sets_brief_and_resets_counters(opened):
+    cfg, cid, ctx = opened
+    st = S.read_state(cfg, cid)
+    st.update(state="REVIEWING", pending_brief={"source": "human", "fix_brief": None,
+                                                "must_fix": [], "human_notes": ["be brief"]})
+    st["counters"].update(gate_retries=1, triage_retries=1, review_retries=1)
+    S.write_state(cfg, cid, st)
+    v = _review("fix", "must_fix", "minor")
+    v["findings"][0].update(ac="AC one", detail="because", files=["a.py"])
+    row, st = _apply(ctx, cfg, cid, "review", persona="conformance_reviewer",
+                     run_id="002-conformance_reviewer", run_result=_rr(v), budget=1.5)
+    assert row["to"] == "IMPLEMENTING" and row["reason"] == "review_fix"
+    assert st["counters"]["loops"] == 1 and st["counters"]["review_retries"] == 0
+    assert st["counters"]["gate_retries"] == 0 and st["counters"]["triage_retries"] == 0
+    assert st["pending_brief"] == {
+        "source": "conformance_reviewer", "fix_brief": "do it", "human_notes": ["be brief"],
+        "must_fix": [{"ac": "AC one", "title": "must_fix thing", "detail": "because",
+                      "files": ["a.py"]}]}
+    assert st["last_review"] == {"run": "002-conformance_reviewer", "verdict": "fix", "score": 90,
+                                 "findings": 2, "must_fix": 1, "loop": 0}
+    findings = S.read_ledger(cfg, cid, types=["finding"])
+    assert [(f["persona"], f["severity"], f["ac"]) for f in findings] == [
+        ("conformance_reviewer", "must_fix", "AC one"), ("conformance_reviewer", "minor", None)]
+
+
+def test_apply_review_malformed_stays_then_escalates(opened):
+    cfg, cid, ctx = opened
+    S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="REVIEWING"))
+    row, st = _apply(ctx, cfg, cid, "review", persona="conformance_reviewer",
+                     run_id="002-conformance_reviewer", run_result=_rr(None, ok=False), budget=1.5)
+    assert row["to"] == "REVIEWING" and row["reason"] == "review_retry"
+    assert st["counters"]["review_retries"] == 1
+    row, st = _apply(ctx, cfg, cid, "review", persona="conformance_reviewer",
+                     run_id="003-conformance_reviewer", run_result=_rr(None, ok=False), budget=1.5)
+    assert row["to"] == "PARKED" and st["park"]["reason"] == "review_escalated"
+    assert st["park"]["resume_to"] == "REVIEWING"
 
 
 # ---- _apply over synthetic results ------------------------------------------------------------
@@ -214,7 +307,8 @@ def test_apply_gate_result_routes(opened):
                    "2026-10-25T00:00:00", 0.1)
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
     row, st = _apply(ctx, cfg, cid, "gate", gate_run=good)
-    assert row["to"] == "CLOSING" and st["last_gate"]["gate_seq"] == 1 and st["counters"]["gate_runs"] == 1
+    assert row["to"] == "REVIEWING" and row["reason"] == "gates_green"
+    assert st["last_gate"]["gate_seq"] == 1 and st["counters"]["gate_runs"] == 1
     bad = GateRun(2, False, (GateResult("test", True, False, 1, False, 0.1, "gates/002-test.log", "x"),),
                   "2026-10-25T00:00:00", 0.1)
     S.write_state(cfg, cid, dict(st, state="GATING"))

@@ -156,6 +156,19 @@ def triage(disposition="fix", **kw):
     return {"persona": "gate_triager", "verdict": v, "cost_usd": 0.1}
 
 
+def review(verdict="pass", **kw):
+    """FakeRunner entry: the conformance reviewer (SPEC-0187). `fix` carries one must_fix finding."""
+    fix = verdict == "fix"
+    v = {"verdict": verdict, "score": 40 if fix else 95,
+         "findings": [{"severity": "must_fix", "ac": "feature.txt exists",
+                       "title": "feature.txt is wrong", "detail": "write the right text",
+                       "files": ["feature.txt"]}] if fix else [],
+         "ac_assessment": [{"ac": "feature.txt exists", "met": not fix, "evidence": "feature.txt"}],
+         "fix_brief": "rewrite feature.txt" if fix else ""}
+    v.update(kw)
+    return {"persona": "conformance_reviewer", "verdict": v, "cost_usd": 0.2}
+
+
 def make_cfg(tmp_path, repo, script_path, *, profile=None, outbox=None):
     org = tmp_path / "org"
     org.mkdir(exist_ok=True)
@@ -200,7 +213,7 @@ def ledger_types(cfg, cid):
 
 def test_e2e_internal_merges(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
-    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), review()]))
     cid = added(cfg, monkeypatch)
     st = S.read_state(cfg, cid)
     assert st["state"] == "QUEUED" and st["spec"]["rel_path"] == "docs/specs/0001-trivial.md"
@@ -215,17 +228,19 @@ def test_e2e_internal_merges(tmp_path, monkeypatch):
     assert st["close"]["mode"] == "merge" and st["close"]["merged_sha"] == _git(repo, "rev-parse", "HEAD")
     assert (repo / "feature.txt").read_text() == "hello\n"
     assert not Path(st["repo"]["worktree"]).exists()
-    assert st["counters"] == {"loops": 0, "runs": 1, "gate_runs": 2, "gate_retries": 0,
+    assert st["counters"] == {"loops": 0, "runs": 2, "gate_runs": 2, "gate_retries": 0,
                               "triage_retries": 0, "blocked_streak": 0, "close_attempts": 1,
-                              "parks": 0}
-    assert st["cost"]["total_usd"] == 0.5 and st["cost"]["by_persona"] == {"implementer": 0.5}
+                              "parks": 0, "review_retries": 0}
+    assert st["cost"]["total_usd"] == 0.7
+    assert st["cost"]["by_persona"] == {"implementer": 0.5, "conformance_reviewer": 0.2}
+    assert st["last_review"]["verdict"] == "pass" and st["last_review"]["score"] == 95
     types = ledger_types(cfg, cid)
     for t in ("open", "transition", "run.start", "run.end", "commit", "gate", "cost", "close"):
         assert t in types, (t, types)
     assert types.count("gate") == 2
     trans = [(e["from"], e["to"]) for e in S.read_ledger(cfg, cid, types=["transition"])]
     assert trans == [("QUEUED", "OPENING"), ("OPENING", "IMPLEMENTING"), ("IMPLEMENTING", "GATING"),
-                     ("GATING", "CLOSING"), ("CLOSING", "MERGED")]
+                     ("GATING", "REVIEWING"), ("REVIEWING", "CLOSING"), ("CLOSING", "MERGED")]
     # the runner committed with the trailer; the setup command ran in the worktree
     assert "Co-Authored-By: wt test" in _git(repo, "log", "-1", "--format=%B")
     assert "wt(" in _git(repo, "log", "-1", "--format=%s")
@@ -242,10 +257,10 @@ def test_e2e_dependent_spec_admitted_only_after_dependency_merges(tmp_path, monk
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "second spec")
     # the fake script cursor is per campaign, so each spec gets its own script
-    runners = {"SPEC-0001": FakeRunner(script(tmp_path, [impl_done()], "x.json")),
+    runners = {"SPEC-0001": FakeRunner(script(tmp_path, [impl_done(), review()], "x.json")),
                "SPEC-0002": FakeRunner(script(tmp_path, [
                    impl_done("SPEC-0002", "second\n", extra="depends_on: [SPEC-0001]\n",
-                             spec_rel=spec2)], "y.json"))}
+                             spec_rel=spec2), review()], "y.json"))}
 
     class ByCampaign:
         def run(self, req):
@@ -260,7 +275,7 @@ def test_e2e_dependent_spec_admitted_only_after_dependency_merges(tmp_path, monk
     assert report.admitted == 1
     assert S.read_state(cfg, x)["state"] == "IMPLEMENTING"
     assert S.read_state(cfg, y)["state"] == "QUEUED"
-    for _ in range(2):                           # X implements, gates; Y still waits
+    for _ in range(3):                           # X implements, gates, is reviewed; Y waits
         tick()
         assert S.read_state(cfg, y)["state"] == "QUEUED"
     assert S.read_state(cfg, x)["state"] == "CLOSING"
@@ -292,7 +307,7 @@ def test_e2e_outbound_pr_hands_off(tmp_path, monkeypatch):
     (outbox / "ACME-0001-trivial.md").write_text(SPEC_ACCEPTED.format(
         id="ACME-0001", extra=f"target_project: acme\ntarget_repo: {repo}\n"
                               f"target_spec_path: {repo / rel}\n"))
-    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done("ACME-0001", spec_rel=rel, extra=extra)]),
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done("ACME-0001", spec_rel=rel, extra=extra), review()]),
                    outbox={"acme": {"repo_path": str(repo)}})
     r = run_cli(cfg, monkeypatch, ["queue", "add", "ACME-0001", "--json"])
     assert r.exit_code == 0, r.output
@@ -337,9 +352,65 @@ def test_e2e_loop_exhausted(tmp_path, monkeypatch):
     assert item["state"] == "PARKED" and item["park"]["reason"] == "loop_exhausted"
 
 
+def test_e2e_review_fix_then_pass_merges(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    entries = [impl_done(), review("fix"), impl_done(content="better\n"), review("pass")]
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, entries))
+    cid = added(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED", st
+    assert (repo / "feature.txt").read_text() == "better\n"
+    assert st["counters"]["loops"] == 1 and st["counters"]["runs"] == 4
+    assert st["last_review"]["verdict"] == "pass" and st["last_review"]["loop"] == 1
+    runs = S.read_ledger(cfg, cid, types=["run.start"])
+    assert [e["persona"] for e in runs] == ["implementer", "conformance_reviewer",
+                                            "implementer", "conformance_reviewer"]
+    findings = [f for f in S.read_ledger(cfg, cid, types=["finding"])
+                if f["persona"] == "conformance_reviewer"]
+    assert [(f["severity"], f["title"]) for f in findings] == [
+        ("must_fix", "feature.txt is wrong")]
+    trans = [(e["from"], e["to"], e["reason"]) for e in S.read_ledger(cfg, cid, types=["transition"])]
+    assert ("REVIEWING", "IMPLEMENTING", "review_fix") in trans
+    assert ("REVIEWING", "CLOSING", "review_pass") in trans
+    end = [e for e in S.read_ledger(cfg, cid, types=["run.end"])
+           if e["persona"] == "conformance_reviewer"]
+    assert [e["verdict"]["score"] for e in end] == [40, 95]
+    # the second implementer saw the reviewer's brief
+    prompt = (S.runs_dir(cfg, cid) / "003-implementer" / "prompt.md").read_text()
+    assert "From: conformance_reviewer" in prompt and "rewrite feature.txt" in prompt
+
+
+def test_e2e_review_fix_until_loop_max_parks(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    entries = [impl_done(), review("fix"), impl_done(), review("fix")]
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, entries), profile={"loop_max": 1})
+    cid = added(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "loop_exhausted", st
+    assert st["park"]["resume_to"] == "IMPLEMENTING" and st["counters"]["loops"] == 1
+    assert not (repo / "feature.txt").exists()
+
+
+def test_e2e_review_malformed_twice_escalates(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    bad = dict(review(), malformed=True)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), bad, bad]))
+    cid = added(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "review_escalated", st
+    assert st["park"]["resume_to"] == "REVIEWING" and st["counters"]["review_retries"] == 1
+    assert st["counters"]["runs"] == 3 and st["counters"]["loops"] == 0
+
+
 def test_e2e_main_dirty_then_resume(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
-    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), review()]))
     cid = added(cfg, monkeypatch)
     (repo / "gates" / "lint.sh").write_text("true # edited\n")          # tracked, uncommitted
     r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
@@ -364,7 +435,7 @@ def test_e2e_main_dirty_then_resume(tmp_path, monkeypatch):
 
 def test_e2e_cost_cap_parks_before_spawn(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
-    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]),
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), review()]),
                    profile={"campaign_cap_usd": 0.01})
     cid = added(cfg, monkeypatch)
     r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
@@ -384,7 +455,7 @@ def test_e2e_cost_cap_parks_before_spawn(tmp_path, monkeypatch):
 
 def test_e2e_rebase_conflict_parks(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
-    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(content="branch\n")]))
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(content="branch\n"), review()]))
     cid = added(cfg, monkeypatch)
     r = run_cli(cfg, monkeypatch, ["queue", "tick", "--json"])          # admit + open only
     assert r.exit_code == 0, r.output

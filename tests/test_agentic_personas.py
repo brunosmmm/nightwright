@@ -176,6 +176,69 @@ def test_build_request_triager_is_read_only(tmp_path):
     assert req.effort == "medium"
 
 
+def _git_repo_with_change(tmp_path):
+    """A repo at the state's worktree: `main` plus a branch commit touching src and tests."""
+    import subprocess
+    wt = tmp_path / "worktree"
+    wt.mkdir(exist_ok=True)
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_GLOBAL": "/dev/null",
+           "GIT_CONFIG_NOSYSTEM": "1", "PATH": __import__("os").environ["PATH"]}
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(wt), *args], check=True, capture_output=True, env=env)
+    git("init", "-q", "-b", "main")
+    git("add", "-A")
+    git("commit", "-q", "--allow-empty", "-m", "base")
+    git("checkout", "-q", "-b", "wt/x")
+    (wt / "src").mkdir()
+    (wt / "src" / "a.py").write_text("print('hi')\n")
+    (wt / "tests").mkdir()
+    (wt / "tests" / "test_a.py").write_text("def test_a():\n    assert True\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "change")
+
+
+def test_build_request_conformance_reviewer(tmp_path):
+    _git_repo_with_change(tmp_path)
+    cfg, st = _cfg(tmp_path), _state(tmp_path, state="REVIEWING")
+    req = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, "conformance_reviewer",
+                           run_dir=tmp_path / "r")
+    assert req.read_only and req.allowed_tools == () and req.permission_mode == "dontAsk"
+    assert req.model == "opus" and req.max_budget_usd == 1.5
+    assert req.json_schema is PS.CONFORMANCE_REVIEWER_SCHEMA
+    assert "+print('hi')" in req.prompt and "src/a.py" in req.prompt
+    assert "- tests/test_a.py" in req.prompt and "- src/a.py" not in req.prompt
+    assert "Use {braces} freely." in req.prompt and "### gate `pytest`" in req.prompt
+    assert "{{" not in req.prompt
+    again = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, "conformance_reviewer",
+                             run_dir=tmp_path / "r")
+    assert again.prompt == req.prompt                       # deterministic
+    for name, model, budget in (("frugal", "sonnet", 0.6), ("thorough", "opus", 1.5)):
+        prof = resolve_profile(cfg, name)
+        r = PS.build_request(cfg, prof, _project_cfg(), st, "conformance_reviewer",
+                             run_dir=tmp_path / "r")
+        assert (r.model, r.max_budget_usd, r.read_only) == (model, budget, True)
+
+
+def test_conformance_reviewer_schema_and_diff_truncation(tmp_path):
+    from wt.agentic.runner import _conforms
+    ok = {"verdict": "pass", "score": 90, "findings": [{"severity": "nit", "title": "t"}],
+          "ac_assessment": [{"ac": "a", "met": True, "evidence": "e"}], "fix_brief": ""}
+    assert _conforms(ok, PS.CONFORMANCE_REVIEWER_SCHEMA)
+    assert not _conforms({**ok, "verdict": "maybe"}, PS.CONFORMANCE_REVIEWER_SCHEMA)
+    assert not _conforms({**ok, "findings": [{"severity": "huge", "title": "t"}]},
+                         PS.CONFORMANCE_REVIEWER_SCHEMA)
+    assert not _conforms({k: v for k, v in ok.items() if k != "score"},
+                         PS.CONFORMANCE_REVIEWER_SCHEMA)
+    assert PS.PERSONAS["conformance_reviewer"].read_only
+    from wt.agentic import gitops
+    _git_repo_with_change(tmp_path)
+    cut = gitops.diff_text(tmp_path / "worktree", "main", max_lines=3)
+    assert cut.splitlines()[:3] == gitops.diff_text(tmp_path / "worktree", "main").splitlines()[:3]
+    assert "diff truncated" in cut.splitlines()[-1]
+
+
 def test_build_request_unknown_persona(tmp_path):
     cfg = _cfg(tmp_path)
     with pytest.raises(ValueError):

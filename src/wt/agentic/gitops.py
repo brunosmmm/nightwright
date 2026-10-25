@@ -101,6 +101,21 @@ def diff_stat(worktree, base) -> dict:
     return stat
 
 
+def diff_text(worktree, base, max_lines=1500) -> str:
+    """`git diff base...HEAD`, cut to `max_lines` with a note saying how much was dropped."""
+    lines = git(worktree, "diff", f"{base}...HEAD").stdout.splitlines()
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    return "\n".join(lines[:max_lines] + [f"… diff truncated: {len(lines) - max_lines} more "
+                                          f"line(s); run `git diff {base}...HEAD` for the rest"])
+
+
+def changed_files(worktree, base) -> list[str]:
+    """Paths touched between `base` and HEAD (`git diff --name-only base...HEAD`)."""
+    return [p for p in git(worktree, "diff", "--name-only", f"{base}...HEAD").stdout.splitlines()
+            if p]
+
+
 def ahead_behind(worktree, base) -> tuple[int, int]:
     """(ahead, behind) of HEAD relative to `base`."""
     out = git(worktree, "rev-list", "--left-right", "--count", f"HEAD...{base}").stdout.split()

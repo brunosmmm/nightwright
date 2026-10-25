@@ -17,7 +17,7 @@ err_console = Console(stderr=True, soft_wrap=True, highlight=False)
 
 STATE_STYLES = {
     "QUEUED": "dim", "OPENING": "cyan", "IMPLEMENTING": "cyan", "GATING": "blue",
-    "TRIAGING": "magenta", "CLOSING": "green", "PARKED": "yellow",
+    "TRIAGING": "magenta", "REVIEWING": "magenta", "CLOSING": "green", "PARKED": "yellow",
     "MERGED": "bold green", "HANDED_OFF": "bold green", "ABANDONED": "dim red",
 }
 

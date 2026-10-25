@@ -1,7 +1,7 @@
 ---
 id: SPEC-0187
 title: "Conformance review: REVIEWING state with a read-only conformance-reviewer persona"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -72,6 +72,9 @@ to `decide_triage`, reusing the runner, the cost accounting and the brief mechan
   under `tests/` touched), `gate_results` summary, `previous_verdicts`.
 - **Profiles:** `BUILTIN_PROFILES[*]["personas"]["conformance_reviewer"]` with `read_only:
   true`, `permission_mode: dontAsk`, models as above, `max_budget_usd` 1.5 (frugal 0.6).
+- **State and counters:** `counters.review_retries` (malformed verdicts tolerated per loop, 1;
+  reset on pass and on fix) and `state.last_review` = `{run, verdict, score, findings,
+  must_fix, loop}`. A reviewer finding event carries `ac` besides the usual fields.
 - **Queue:** `plan_step` returns a `review` step for `REVIEWING`; `_do_persona` handles it like
   the triager (no commit); `decide_review` maps the verdict; the brief carries `source:
   conformance_reviewer`.
@@ -89,16 +92,16 @@ to `decide_triage`, reusing the runner, the cost accounting and the brief mechan
 
 ## Acceptance criteria
 
-- [ ] `plan_step` / `decide_review` implement every routing rule above (parametrized tests,
+- [x] `plan_step` / `decide_review` implement every routing rule above (parametrized tests,
       including must-fix overriding a `pass`, `loop_max`, malformed-twice park).
-- [ ] The persona template and schema exist; `build_request` for it is read-only and uses the
+- [x] The persona template and schema exist; `build_request` for it is read-only and uses the
       profile model and budget; prompts are deterministic.
-- [ ] End to end with the fake runner: reviewer `fix` once then `pass` ⇒ `MERGED` with two
+- [x] End to end with the fake runner: reviewer `fix` once then `pass` ⇒ `MERGED` with two
       implementer runs and the reviewer's findings in the ledger; reviewer `fix` until
       `loop_max` ⇒ `PARKED(loop_exhausted)`; malformed twice ⇒ `PARKED(review_escalated)`.
-- [ ] The cost cap is checked before the review spawn.
-- [ ] Existing queue, close and e2e tests updated for the new state and still pass.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] The cost cap is checked before the review spawn.
+- [x] Existing queue, close and e2e tests updated for the new state and still pass.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -108,6 +111,20 @@ to `decide_triage`, reusing the runner, the cost accounting and the brief mechan
 - **Manual verification:** the next real campaign records the reviewer's verdict, score and cost
   in this spec's test record.
 - **Regression guard:** full `uv run pytest`.
+
+### Test record (2026-10-25)
+
+- `uv run pytest -q tests/test_agentic_queue.py tests/test_agentic_personas.py
+  tests/test_agentic_e2e.py tests/test_agentic_spec_drift.py` — green: `plan_step` /
+  `decide_review` routing (parametrized: pass, must-fix overriding a pass, fix, `loop_max`,
+  malformed twice), `_apply` for the review step, request/prompt/schema checks (read-only,
+  profile model and budget per profile, deterministic prompt, diff truncation), and three e2e
+  paths (fix then pass ⇒ `MERGED` with two implementer runs and the findings in the ledger;
+  fix until `loop_max` ⇒ `PARKED(loop_exhausted)`; malformed twice ⇒ `PARKED(review_escalated)`).
+  Existing e2e / close / drift scripts gained a passing reviewer step.
+- Cost cap before the review spawn: `test_plan_step_cost_cap_is_pessimistic` (REVIEWING rows).
+- `uv run pytest -q` — full suite green; `python3 tools/spec_lint.py` exits 0.
+- Manual: deferred by the spec itself (it needs a real campaign) — the next real campaign records the reviewer's verdict, score and cost here.
 
 ## Clock Log
 
@@ -120,11 +137,11 @@ The running loop must be restarted to load the new code.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

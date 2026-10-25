@@ -2,7 +2,7 @@
 
 `plan_step` is a pure function from campaign state (+ profile + project config) to the one
 step the campaign needs next; `tick` executes those steps — agent steps (implement, gate,
-triage) concurrently in a thread pool, repository steps (open, close) serially — and applies
+triage, review) concurrently in a thread pool, repository steps (open, close) serially — and applies
 every result on the main thread under the campaign lock, so `state.json` and `ledger.jsonl`
 can never disagree: every transition goes through `_transition`, which records the event in
 the same locked section that writes the state.
@@ -37,14 +37,16 @@ from .gitops import GitError
 from .profiles import persona_settings, resolve_profile
 from .runner import select_runner
 
-STATES = ("QUEUED", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "CLOSING",
+STATES = ("QUEUED", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING", "CLOSING",
           "PARKED", "MERGED", "HANDED_OFF", "ABANDONED")
 TERMINAL_STATES = store.TERMINAL_STATES
-ACTIVE_STATES = frozenset({"OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "CLOSING"})
-RESUMABLE_STATES = ("IMPLEMENTING", "GATING", "CLOSING", "QUEUED")
+ACTIVE_STATES = frozenset({"OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
+                           "CLOSING"})
+RESUMABLE_STATES = ("IMPLEMENTING", "GATING", "REVIEWING", "CLOSING", "QUEUED")
 PARK_REASONS = frozenset({
     "cost_cap", "loop_exhausted", "implementer_blocked", "triage_escalated", "open_failed",
     "rebase_conflict", "main_dirty", "main_not_on_base", "base_moving", "gh_failed", "human",
+    "review_escalated",
 })
 # How many times in a row the implementer may report `blocked` before the campaign parks.
 BLOCKED_STREAK_MAX = 2
@@ -52,6 +54,8 @@ BLOCKED_STREAK_MAX = 2
 TRIAGE_RETRY_MAX = 1
 # `retry_gate` dispositions honored per loop before they are treated as `fix`.
 GATE_RETRY_MAX = 1
+# Malformed conformance-review verdicts tolerated per loop before the review escalates.
+REVIEW_RETRY_MAX = 1
 _STOP_GRACE_S = 30
 PRIORITY_MIN, PRIORITY_MAX, PRIORITY_DEFAULT = 1, 5, 3
 # A dependency counts as satisfied once its spec reached one of these in the base checkout.
@@ -62,8 +66,8 @@ DEPENDENCY_SATISFIED = frozenset({"done", "superseded"})
 
 @dataclass(frozen=True)
 class Step:
-    """What a campaign needs next. `kind` ∈ open | implement | gate | triage | close | park |
-    none; `park` steps carry `reason` / `detail` / `resume_to`."""
+    """What a campaign needs next. `kind` ∈ open | implement | gate | triage | review | close |
+    park | none; `park` steps carry `reason` / `detail` / `resume_to`."""
     kind: str
     persona: str | None = None
     reason: str | None = None
@@ -101,16 +105,18 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
         return Step("gate")
     if st == "CLOSING":
         return Step("close")
-    persona = "implementer" if st == "IMPLEMENTING" else "gate_triager"
+    persona, kind = {"IMPLEMENTING": ("implementer", "implement"),
+                     "REVIEWING": ("conformance_reviewer", "review")}.get(
+                         st, ("gate_triager", "triage"))
     blocked = _cap_blocks(state, profile, persona)
     if blocked:
         return Step("park", persona=persona, reason="cost_cap", detail=blocked, resume_to=st)
-    return Step("implement" if st == "IMPLEMENTING" else "triage", persona=persona)
+    return Step(kind, persona=persona)
 
 
 def _resume_target(st: str) -> str:
     """Where a human park on an active item resumes to: the step that was interrupted
-    (OPENING restarts from QUEUED; TRIAGING re-runs its gates)."""
+    (OPENING restarts from QUEUED; TRIAGING re-runs its gates; REVIEWING re-runs the review)."""
     return {"OPENING": "QUEUED", "TRIAGING": "GATING"}.get(st, st if st in RESUMABLE_STATES
                                                             else "IMPLEMENTING")
 
@@ -154,6 +160,35 @@ def decide_triage(state: dict, profile: dict, verdict: dict | None, verdict_ok: 
                     detail=f"{loops - 1}/{loop_max} implement loops used; still failing gates: "
                            + brief, resume_to="IMPLEMENTING")
     return Step("implement", reason="triage_fix")
+
+
+def decide_review(state: dict, profile: dict, verdict: dict | None, verdict_ok: bool) -> Step:
+    """Pure: the transition a conformance-reviewer verdict implies (SPEC-0187).
+
+    - malformed / missing verdict: one retry per loop (stay in REVIEWING), then
+      PARKED(review_escalated);
+    - `pass` with no `must_fix` finding ⇒ CLOSING;
+    - `fix`, or any `must_fix` finding even under `pass`: loops += 1; beyond `loop_max` ⇒
+      loop_exhausted, else back to IMPLEMENTING."""
+    counters = state.get("counters") or {}
+    loop_max = int(profile.get("loop_max") or 3)
+    if not verdict_ok or not isinstance(verdict, dict):
+        if int(counters.get("review_retries", 0)) < REVIEW_RETRY_MAX:
+            return Step("none", reason="review_retry")
+        return Step("park", reason="review_escalated",
+                    detail="the conformance reviewer returned no usable verdict twice",
+                    resume_to="REVIEWING")
+    must_fix = [f for f in verdict.get("findings") or []
+                if isinstance(f, dict) and f.get("severity") == "must_fix"]
+    if verdict.get("verdict") == "pass" and not must_fix:
+        return Step("close", reason="review_pass")
+    loops = int(counters.get("loops", 0)) + 1
+    if loops > loop_max:
+        brief = (verdict.get("fix_brief") or "").strip()
+        return Step("park", reason="loop_exhausted",
+                    detail=f"{loops - 1}/{loop_max} implement loops used; the conformance "
+                           f"review still asks for fixes: " + brief, resume_to="IMPLEMENTING")
+    return Step("implement", reason="review_fix")
 
 
 # ---- backlog: ordering, readiness, admission (SPEC-0180) ----------------------------------
@@ -257,7 +292,7 @@ def _record_backlog(cfg, st: dict, ready: bool, blocked_by: list) -> None:
 def _counters(state: dict) -> dict:
     c = state.setdefault("counters", {})
     for k in ("loops", "runs", "gate_runs", "gate_retries", "triage_retries",
-              "blocked_streak", "close_attempts", "parks"):
+              "blocked_streak", "close_attempts", "parks", "review_retries"):
         c.setdefault(k, 0)
     return c
 
@@ -334,6 +369,12 @@ def _record_run(state: dict, persona: str, run_id: str, result, budget: float, *
         events.append(("finding", {"persona": persona, "severity": "major", "gate": None,
                                    "title": "implementer blocker", "detail": str(blocker),
                                    "files": []}))
+    for item in verdict.get("findings") or []:        # conformance reviewer (SPEC-0187)
+        if isinstance(item, dict):
+            events.append(("finding", {"persona": persona, "severity": item.get("severity"),
+                                       "gate": None, "ac": item.get("ac"),
+                                       "title": item.get("title"), "detail": item.get("detail"),
+                                       "files": list(item.get("files") or [])}))
     denials = _raw_permission_denials(result)
     if denials:
         events.append(("finding", {"persona": persona, "severity": "info", "gate": None,
@@ -469,7 +510,8 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str):
 
 
 def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float) -> StepResult:
-    """Worker thread: run the persona; for the implementer, commit afterwards."""
+    """Worker thread: run the persona; for the implementer, commit afterwards (the triager and
+    the reviewer are read-only and commit nothing)."""
     res = StepResult(state["id"], step, state["state"], run_id=run_id, budget=budget)
     try:
         res.run_result = ctx.runner.run(req)
@@ -546,7 +588,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                             f"transition to {to} skipped", "author": "queue"})
             row["to"], row["reason"] = store.read_state(cfg, cid).get("state"), "superseded_by_human"
             return row
-        for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict",
+        for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
                   "pending_brief", "close"):
             if k in state:
                 current[k] = state[k]
@@ -571,14 +613,14 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         reason = {"open": "open_failed"}.get(kind, "open_failed")
         detail = f"{kind} step failed: {res.error}"
         resume = {"open": "QUEUED", "implement": "IMPLEMENTING", "gate": "GATING",
-                  "triage": "GATING"}.get(kind, "IMPLEMENTING")
+                  "triage": "GATING", "review": "REVIEWING"}.get(kind, "IMPLEMENTING")
         return finish("PARKED", reason, park={"reason": reason, "detail": detail,
                                                "resume_to": resume})
 
     if kind == "open":
         return finish("IMPLEMENTING", "opened")
 
-    if kind in ("implement", "triage"):
+    if kind in ("implement", "triage", "review"):
         persona = res.step.persona
         rr = res.run_result
         events += _record_run(state, persona, res.run_id, rr, res.budget,
@@ -613,6 +655,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             else:
                 counters["blocked_streak"] = 0
             return finish("GATING", "implemented")
+        if kind == "review":
+            return _apply_review(state, profile, counters, rr, res, finish)
         # triage
         decision = decide_triage(state, profile, rr.verdict, rr.verdict_ok)
         if decision.kind == "none":                      # malformed verdict, retry allowed
@@ -645,7 +689,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         events.append(("gate", payload))
         state["last_gate"] = payload
         if run.ok:
-            return finish("CLOSING", "gates_green")
+            return finish("REVIEWING", "gates_green")
         return finish("TRIAGING", "gates_failed")
 
     if kind == "close":
@@ -679,6 +723,42 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         return finish("PARKED", park["reason"], park=park)
 
     return finish(res.from_state, "noop")
+
+
+def _apply_review(state, profile, counters, rr, res, finish):
+    """Route a conformance-reviewer result (SPEC-0187): record `last_review`, then follow
+    `decide_review`. `finish` is `_apply`'s closure."""
+    v = rr.verdict if isinstance(rr.verdict, dict) else {}
+    findings = [f for f in v.get("findings") or [] if isinstance(f, dict)]
+    if rr.verdict_ok:
+        state["last_review"] = {
+            "run": res.run_id, "verdict": v.get("verdict"), "score": v.get("score"),
+            "findings": len(findings),
+            "must_fix": sum(1 for f in findings if f.get("severity") == "must_fix"),
+            "loop": counters["loops"]}
+    decision = decide_review(state, profile, rr.verdict, rr.verdict_ok)
+    if decision.kind == "none":                          # malformed verdict, retry allowed
+        counters["review_retries"] += 1
+        return finish("REVIEWING", "review_retry")
+    if decision.kind == "park":
+        return finish("PARKED", decision.reason, park={
+            "reason": decision.reason, "detail": decision.detail,
+            "resume_to": decision.resume_to})
+    counters["review_retries"] = 0
+    if decision.kind == "close":
+        return finish("CLOSING", "review_pass")
+    # fix
+    counters["loops"] += 1
+    counters["gate_retries"] = 0
+    counters["triage_retries"] = 0
+    notes = ((state.get("pending_brief") or {}).get("human_notes") or [])
+    state["pending_brief"] = {
+        "source": "conformance_reviewer", "fix_brief": v.get("fix_brief"),
+        "must_fix": [{"ac": f.get("ac"), "title": f.get("title"), "detail": f.get("detail"),
+                      "files": list(f.get("files") or [])}
+                     for f in findings if f.get("severity") == "must_fix"],
+        "human_notes": list(notes)}
+    return finish("IMPLEMENTING", "review_fix")
 
 
 # ---- tick / run ------------------------------------------------------------------------------
@@ -963,7 +1043,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> d
 
 # ---- dashboard (wt queue watch, SPEC-0185) -------------------------------------------------------
 
-PHASES = ("OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "CLOSING")
+PHASES = ("OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING", "CLOSING")
 _TITLE_CACHE: dict = {}
 
 

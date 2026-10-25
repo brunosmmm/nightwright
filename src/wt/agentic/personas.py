@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import gitops as git
 from .profiles import persona_settings
 from .runner import RunRequest
 
@@ -19,6 +20,7 @@ _PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "personas"
 _GATE_TAIL_LINES = 60
 _PREVIOUS_VERDICTS = 2
+_DIFF_MAX_LINES = 1500
 
 INVARIANT = """\
 ## wt queue invariants (read before anything else)
@@ -67,6 +69,27 @@ GATE_TRIAGER_SCHEMA = {
     },
 }
 
+CONFORMANCE_REVIEWER_SCHEMA = {
+    "type": "object",
+    "required": ["verdict", "score", "findings", "ac_assessment", "fix_brief"],
+    "properties": {
+        "verdict": {"type": "string", "enum": ["pass", "fix"]},
+        "score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "findings": {"type": "array", "items": {
+            "type": "object", "required": ["severity", "title"],
+            "properties": {"severity": {"type": "string",
+                                        "enum": ["must_fix", "major", "minor", "nit"]},
+                           "ac": {"type": "string"}, "title": {"type": "string"},
+                           "detail": {"type": "string"},
+                           "files": {"type": "array", "items": {"type": "string"}}}}},
+        "ac_assessment": {"type": "array", "items": {
+            "type": "object", "required": ["ac", "met"],
+            "properties": {"ac": {"type": "string"}, "met": {"type": "boolean"},
+                           "evidence": {"type": "string"}}}},
+        "fix_brief": {"type": "string"},
+    },
+}
+
 
 @dataclass(frozen=True)
 class Persona:
@@ -84,11 +107,13 @@ PERSONAS = {
     "implementer": Persona("implementer", "implementer.md", IMPLEMENTER_SCHEMA, read_only=False),
     "gate_triager": Persona("gate_triager", "gate_triager.md", GATE_TRIAGER_SCHEMA,
                             read_only=True),
+    "conformance_reviewer": Persona("conformance_reviewer", "conformance_reviewer.md",
+                                    CONFORMANCE_REVIEWER_SCHEMA, read_only=True),
 }
 
 PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree", "base",
                 "loop", "loop_max", "context_files", "gate_results", "pending_brief",
-                "previous_verdicts")
+                "previous_verdicts", "diff", "test_files")
 
 
 def get_persona(name) -> Persona:
@@ -144,7 +169,8 @@ def render_pending_brief(brief) -> str:
         parts.append(f"Brief: {brief['fix_brief']}")
     for item in brief.get("must_fix") or []:
         if isinstance(item, dict):
-            where = f" [{item.get('gate')}]" if item.get("gate") else ""
+            where = f" [{item.get('gate') or item.get('ac')}]" \
+                if item.get("gate") or item.get("ac") else ""
             files = f" ({', '.join(item.get('files') or [])})" if item.get("files") else ""
             parts.append(f"- MUST FIX{where}: {item.get('title')}{files}"
                          + (f" — {item['detail']}" if item.get("detail") else ""))
@@ -161,15 +187,17 @@ def render_previous_verdicts(events) -> str:
     for ev in (events or [])[-_PREVIOUS_VERDICTS:]:
         v = ev.get("verdict") or {}
         summary = v.get("summary") or v.get("fix_brief") or "(no summary)"
-        head = v.get("status") or v.get("disposition") or "?"
+        head = v.get("status") or v.get("disposition") or v.get("verdict") or "?"
         lines.append(f"- {ev.get('persona', '?')} run {ev.get('run_id', '?')}: {head} — {summary}")
     return "\n".join(lines) if lines else "(none)"
 
 
-def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None) -> dict:
+def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
+                  review=False) -> dict:
     """Prompt values from campaign state (+ project config). `spec_text` is read from the
     worktree so the persona sees the spec as it is on the branch. `previous` = `run.end`
-    ledger events (the caller reads them; this stays free of store I/O)."""
+    ledger events (the caller reads them; this stays free of store I/O). `review` adds the
+    branch `diff` (≤ 1500 lines) and the `test_files` it touches, read from the worktree."""
     repo = state.get("repo") or {}
     spec = state.get("spec") or {}
     worktree = repo.get("worktree")
@@ -181,6 +209,14 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None)
             spec_text = p.read_text(encoding="utf-8")
     counters = state.get("counters") or {}
     agents = (project_cfg or {}).get("agents") or {}
+    diff = test_files = None
+    if review and worktree and repo.get("base"):
+        try:
+            diff = git.diff_text(worktree, repo["base"], _DIFF_MAX_LINES)
+            test_files = [f for f in git.changed_files(worktree, repo["base"])
+                          if f.startswith("tests/")]
+        except (git.GitError, OSError):
+            pass
     return {
         "campaign": state.get("id"),
         "spec_id": state.get("spec_id"),
@@ -194,6 +230,8 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None)
         "gate_results": render_gate_results(state.get("last_gate")),
         "pending_brief": render_pending_brief(state.get("pending_brief")),
         "previous_verdicts": render_previous_verdicts(previous),
+        "diff": diff,
+        "test_files": test_files,
     }
 
 
@@ -241,7 +279,7 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
             or "bypassPermissions"
         allowed = tuple(list(agents.get("allowed_tools") or []) + _gate_tool_patterns(project_cfg))
     ctx = build_context(cfg, state, project_cfg, loop_max=profile.get("loop_max"),
-                        previous=previous)
+                        previous=previous, review=persona == "conformance_reviewer")
     env = {
         "WT_CAMPAIGN": str(state.get("id") or ""),
         "WT_DATA_DIR": str(cfg.get("data_dir") or ""),
