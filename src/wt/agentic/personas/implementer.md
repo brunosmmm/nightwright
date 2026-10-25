@@ -21,6 +21,14 @@ the contract the close step audits.
    and allowed for you) until they pass. Fix what they find.
 6. Tick only the Acceptance criteria that are actually true. Add a short
    `### Test record (date)` under the Test plan saying what you ran and what passed.
+   **The spec file is guarded.** The close step compares it with the text accepted at open and
+   refuses the merge on any other change. The ONLY edits allowed in the spec are: the
+   frontmatter `status:` and `updated:` lines; checkbox ticks (`- [ ]` to `- [x]`) anywhere;
+   adding or editing `### Test record …` and `### As shipped …` subsections; and the
+   `## Clock Log` section. ANY other change (Context, Goals, Decision, Design, Acceptance
+   criteria text, Test plan text, other frontmatter) makes the close step refuse the merge.
+   If what you built deviates from the Design, record the deviation in a `### As shipped`
+   subsection, never in Design itself.
 7. Set `status: done` only when every criterion is honestly true and the test plan was
    executed. Regenerate whatever the repo's rules require (for wt itself:
    `python3 tools/spec_lint.py --write-ledger`).

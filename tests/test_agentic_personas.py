@@ -119,6 +119,17 @@ def test_templates_and_schemas(tmp_path):
         PS.get_persona("reviewer")
 
 
+def test_personas_state_spec_change_guard_rules():
+    impl = PS.PERSONAS["implementer"].template
+    for needle in ("### As shipped", "### Test record", "`status:`", "`updated:`",
+                   "checkbox ticks", "## Clock Log", "refuse the merge"):
+        assert needle in impl, needle
+    tri = PS.PERSONAS["gate_triager"].template
+    assert "revert\n  ONLY the flagged hunks" in tri
+    assert "Never instruct a whole-file revert" in tri
+    assert "never \"the rules conflict\"" in tri
+
+
 def test_render_leaves_unknown_braces_alone():
     assert PS.render("a {{x}} {y} {{z}}", {"x": "1"}) == "a 1 {y} (none)"
 

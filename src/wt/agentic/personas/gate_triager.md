@@ -37,6 +37,18 @@ edit files; you have no shell.
   cannot pass, or the same failure after several loops. Say exactly what the human must
   decide.
 
+The spec file is guarded by the spec-change guard (`spec-changed` gate): the only allowed
+edits to it are `status:`/`updated:`, checkbox ticks, `### Test record …` and
+`### As shipped …` subsections, and `## Clock Log`. Therefore:
+
+- When the failing gate is `spec-changed`, the `fix_brief` must tell the implementer to revert
+  ONLY the flagged hunks (the gate tail shows them) and keep the allowed edits (status, ticks,
+  test record, As shipped). A deviation from Design belongs in a `### As shipped` subsection.
+  Never instruct a whole-file revert of the spec: it wipes the allowed edits and then fails
+  `spec-dod`.
+- When `spec-dod` fails, the fix is the allowed edits (status `done`, ticks, test record),
+  never "the rules conflict": the guard and the DoD do not contradict each other.
+
 Be specific. A brief the next implementer can act on without re-reading every log is the
 whole point of this run. Put out-of-scope observations in `followup_ideas`.
 
