@@ -245,10 +245,10 @@ def test_capture_flow_offers_a_project_and_can_decline(tmp_path, monkeypatch):
                 await pilot.press("space" if ch == " " else ch)
             await pilot.press("enter")             # -> project chooser
             await pilot.pause()
-            await pilot.press("j")                 # (none) -> first real project
+            await pilot.press("j")                 # (none) -> first real project (sorted)
             await pilot.press("enter")
             await pilot.pause()
-            assert _project(cfg, "IDEA-002") == "Meta-Tools"
+            assert _project(cfg, "IDEA-002") == "Example"
 
             await pilot.press("c")                 # second capture, decline the project
             await pilot.pause()
@@ -279,10 +279,10 @@ def test_metadata_chooser_sets_and_clears_project(tmp_path, monkeypatch):
                 await pilot.press("j")
             await pilot.press("enter")
             await pilot.pause()
-            await pilot.press("j")                 # (none) → Meta-Tools
+            await pilot.press("j")                 # (none) → Example (first real project, sorted)
             await pilot.press("enter")
             await pilot.pause()
-            assert _project(cfg) == "Meta-Tools"
+            assert _project(cfg) == "Example"
 
             await pilot.press("m")                 # now clear it
             await pilot.pause()

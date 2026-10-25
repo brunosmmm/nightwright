@@ -284,6 +284,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) | Per-project config .wt/project.yaml and wt projects config|init | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) | Workflow profiles, campaign store, ledger, locks and wt campaign commands | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) | Git worktree and branch operations for campaigns (gitops) | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0178](./specs/0178-fix-two-textual-pilot-tests-that-assumed-meta.md) | Fix two Textual pilot tests that assumed Meta-Tools is the first chooser entry | feature | done | M0: process | 2026-10-25 |
 
 ## Superseded / rejected
 
