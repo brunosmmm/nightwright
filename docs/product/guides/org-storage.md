@@ -36,7 +36,7 @@ Topics that show up most in wt’s idea files:
 |------------|-------------------|------|
 | `org_files` | `~/work/org` (dir or list) | **Read** corpus — recursive `*.org` |
 | `org_ideas_file` | `~/work/org/ai/ideas.org` | **Write** target for new captures |
-| `org_ideas_archive_file` | `~/work/org/ai/ideas-archive.org` | Terminal ideas move here |
+| `org_ideas_archive_file` | `ideas-archive.org` next to `org_ideas_file` | Terminal ideas move here |
 | `idea_rotation_max_lines` | `1200` | Rotate active ideas file when oversized |
 
 Capture always appends to `org_ideas_file`. Listing (`wt ideas`, desk, hub) scans
@@ -171,8 +171,9 @@ flowchart LR
 ## Archive
 
 Moving to a **terminal** idea state (for example DROPPED, PROMOTED, SHIPPED) cuts the
-whole level-1 subtree into `org_ideas_archive_file`. There is no separate
-`wt idea archive` verb — state transitions drive it.
+whole level-1 subtree into `org_ideas_archive_file`. When that key is unset, the archive is
+`ideas-archive.org` in the same directory as `org_ideas_file`, so moving the ideas file moves
+the archive with it. There is no separate `wt idea archive` verb — state transitions drive it.
 
 Example stub: [`ideas-archive-demo.org`](../assets/examples/ideas-archive-demo.org).
 

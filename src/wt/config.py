@@ -45,8 +45,10 @@ DEFAULT_CONFIG = {
     # capture renames it to a dated historical file and starts a fresh one at the same path.
     "idea_rotation_max_lines": 1200,
     # Terminal-idea archival (SPEC-0072/0073): where archive_idea() moves a settled idea's
-    # whole subtree once it's DROPPED/RESEARCHED/PROMOTED/EXPORTED-and-done.
-    "org_ideas_archive_file": "~/work/org/ai/ideas-archive.org",
+    # whole subtree once it's DROPPED/RESEARCHED/PROMOTED/EXPORTED-and-done. None (SPEC-0168) =
+    # `ideas-archive.org` next to org_ideas_file, so relocating the ideas file moves the archive
+    # with it instead of writing into ~/work/org/ai (see org_write.ideas_archive_path).
+    "org_ideas_archive_file": None,
     # Curated workstream lanes (SPEC-0090): closed list; empty = feature inert until configured.
     # A user-supplied list REPLACES this default (lists don't merge).
     "workstreams": [],

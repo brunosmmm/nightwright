@@ -1,7 +1,8 @@
 ---
 id: SPEC-0072
 title: "Idea-archival primitive: atomic, drift-guarded subtree move"
-status: done
+status: superseded
+superseded_by: SPEC-0168
 owner: user
 created: 2026-07-26
 updated: 2026-07-26

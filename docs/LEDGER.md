@@ -46,7 +46,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0068](./specs/0068-wt-next-pull-clock-hint.md) wt next pull-clock hint, parity with the existing pull-status hint — done
 - **[SPEC-0070](./specs/0070-ideas-org-rotation-and-archival.md) — Automatic ideas.org rotation + terminal-idea archival** · done · (4/4 done)
   - [x] [SPEC-0071](./specs/0071-ideas-org-rotation.md) Automatic ideas.org rotation past a line-count threshold — done
-  - [x] [SPEC-0072](./specs/0072-idea-archival-primitive.md) Idea-archival primitive: atomic, drift-guarded subtree move — done
+  - [x] [SPEC-0072](./specs/0072-idea-archival-primitive.md) Idea-archival primitive: atomic, drift-guarded subtree move — superseded
   - [x] [SPEC-0073](./specs/0073-automatic-archival-hooks.md) Automatic archival hooks: set_state terminal states + pull_status EXPORTED-done — done
   - [x] [SPEC-0074](./specs/0074-normalize-multi-file-fix.md) normalize-logs/normalize-questions: scan every idea-bearing file — done
 - **[SPEC-0087](./specs/0087-workstreams-and-concern-separation-routing.md) — Workstreams and concern separation (routing, streams, filters, hub; umbrella for priority & sort)** · accepted · (8/8 done)
@@ -174,7 +174,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0069](./specs/0069-wt-spec-postmortem-command.md) | Dedicated post-mortem/defect annotation mechanism, bidirectional | feature | done | M4: cli ergonomics | 2026-07-26 |
 | [SPEC-0070](./specs/0070-ideas-org-rotation-and-archival.md) | Automatic ideas.org rotation + terminal-idea archival | epic | done | M4: cli ergonomics | 2026-07-26 |
 | [SPEC-0071](./specs/0071-ideas-org-rotation.md) | Automatic ideas.org rotation past a line-count threshold | feature | done | M4: cli ergonomics | 2026-07-26 |
-| [SPEC-0072](./specs/0072-idea-archival-primitive.md) | Idea-archival primitive: atomic, drift-guarded subtree move | feature | done | M4: cli ergonomics | 2026-07-26 |
 | [SPEC-0073](./specs/0073-automatic-archival-hooks.md) | Automatic archival hooks: set_state terminal states + pull_status EXPORTED-done | feature | done | M4: cli ergonomics | 2026-07-26 |
 | [SPEC-0074](./specs/0074-normalize-multi-file-fix.md) | normalize-logs/normalize-questions: scan every idea-bearing file | feature | done | M4: cli ergonomics | 2026-07-26 |
 | [SPEC-0075](./specs/0075-overhaul-the-wt-ideas-triage-table-drop-the-next.md) | Readable idea tables: drop the next column, budget headline width from the terminal | feature | done | M4: cli ergonomics | 2026-07-27 |
@@ -266,6 +265,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0165](./specs/0165-repair-test-drift-from-demo-name-scrub-and-spec.md) | Repair test drift from demo-name scrub and SPEC-0135 | feature | done | M0: process | 2026-10-25 |
 | [SPEC-0166](./specs/0166-one-wt-checkout-resolver-editable-install-as-the.md) | One wt-checkout resolver; editable install as the documented path | feature | done | M1: packaging | 2026-10-25 |
 | [SPEC-0167](./specs/0167-refuse-promoting-terminal-or-archived-ideas.md) | Refuse promoting terminal or archived ideas without --force | feature | done | M3: idea→spec pipeline | 2026-10-25 |
+| [SPEC-0168](./specs/0168-derive-the-ideas-archive-path-from-org-ideas-file.md) | Derive the ideas archive path from org_ideas_file by default | feature | done | M3: idea→spec pipeline | 2026-10-25 |
 
 ## Superseded / rejected
 
@@ -276,6 +276,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0034](./specs/0034-withdrawn-auto-allocate-free-task-ids.md) | Withdrawn: auto-allocate free task ids | policy | superseded | M3: idea→spec pipeline | 2026-09-09 |
 | [SPEC-0037](./specs/0037-withdrawn-explicit-task-id-pin.md) | Withdrawn: explicit task-id pin for export | policy | superseded | M3: idea→spec pipeline | 2026-09-09 |
 | [SPEC-0047](./specs/0047-withdrawn-compose-outbound-epic-children.md) | Withdrawn: compose outbound epic children into deliverables | policy | superseded | M3: idea→spec pipeline | 2026-09-09 |
+| [SPEC-0072](./specs/0072-idea-archival-primitive.md) | Idea-archival primitive: atomic, drift-guarded subtree move | feature | superseded | M4: cli ergonomics | 2026-07-26 |
 | [SPEC-0083](./specs/0083-light-theme-substitution-for-dim-idea-state-styles.md) | Theme-adapt the idea state palette: substitute dim on light backgrounds | feature | rejected | M4: cli ergonomics | 2026-07-28 |
 | [SPEC-0084](./specs/0084-theme-the-recessive-styling-in-the-idea-views.md) | Theme every recessive style in the idea views, not just the state palette | feature | rejected | M4: cli ergonomics | 2026-07-28 |
 

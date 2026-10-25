@@ -696,7 +696,7 @@ def next_idea_number(cfg):
 
 def ideas_archive_path(cfg):
     """Where `archive_idea` moves terminal ideas (SPEC-0073): `org_ideas_archive_file`, else
-    `ideas-archive.org` next to `org_ideas_file`."""
+    `ideas-archive.org` next to `org_ideas_file` — the default since SPEC-0168."""
     configured = cfg.get("org_ideas_archive_file")
     if configured:
         return os.path.expanduser(configured)
