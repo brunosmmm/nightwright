@@ -252,6 +252,15 @@ def norm_finding_title(title) -> str:
     return " ".join(str(title or "").lower().split())
 
 
+def finding_detail(f: dict):
+    """A finding's `detail` with its `trigger` folded in (SPEC-0202), so the ledger event and
+    the implementer brief carry the same text."""
+    detail, trigger = f.get("detail"), f.get("trigger")
+    if detail and trigger:
+        return f"{detail}\ntrigger: {trigger}"
+    return f"trigger: {trigger}" if trigger else detail
+
+
 def _covers(finding_ac, entry_ac) -> bool:
     """Does a finding's `ac` cover an `ac_assessment` entry's `ac`? Equal after `norm`, or one
     contains the other with length >= 8; an empty `ac` covers nothing."""
@@ -283,7 +292,7 @@ def triage_reviews(verdicts: dict, profile: dict, waived=()) -> dict:
         for i, f in enumerate(raw):
             sev = f.get("severity") if f.get("severity") in SEVERITIES else "minor"
             recs.append({"id": f"{p}#{i}", "personas": [p], "severity": sev,
-                         "title": f.get("title") or "", "detail": f.get("detail"),
+                         "title": f.get("title") or "", "detail": finding_detail(f),
                          "files": list(f.get("files") or []), "ac": f.get("ac"),
                          "category": f.get("category"), "synthetic": False})
         wants_fix[p] = v.get("verdict") == "fix" or any(r["severity"] == "must_fix"
@@ -378,16 +387,24 @@ def review_brief(verdicts: dict, tri: dict, pass_score) -> dict:
                 f["id"] in tri["synthetic"] for f in blocking)):
             brief = "\n".join(tail)
         return {"fix_brief": brief, "must_fix": [
-            {"ac": f["ac"], "title": f["title"], "detail": f["detail"], "files": f["files"]}
-            for f in blocking]}
+            _with_category({"ac": f["ac"], "title": f["title"], "detail": f["detail"],
+                            "files": f["files"]}, f) for f in blocking]}
     head = "\n\n".join(f"[{p}] {(verdicts[p].get('fix_brief') or '').strip()}".rstrip()
                        for p in tri["fixing"])
     reporters = {p for f in blocking for p in f["personas"]} | set(tri["fixing"])
     return {"fix_brief": "\n\n".join(x for x in (head, "\n".join(tail)) if x),
             "personas": [p for p in verdicts if p in reporters],
-            "must_fix": [{"ac": f["ac"], "title": f["title"], "detail": f["detail"],
-                          "files": f["files"], "id": f["id"], "severity": f["severity"],
-                          "personas": f["personas"]} for f in blocking]}
+            "must_fix": [_with_category({"ac": f["ac"], "title": f["title"],
+                                         "detail": f["detail"], "files": f["files"],
+                                         "id": f["id"], "severity": f["severity"],
+                                         "personas": f["personas"]}, f) for f in blocking]}
+
+
+def _with_category(item: dict, f: dict) -> dict:
+    """A brief entry carries the finding's `category` when it has one (SPEC-0202)."""
+    if f.get("category"):
+        item["category"] = f["category"]
+    return item
 
 
 def _retries_used(counters: dict, persona: str, n_reviewers: int) -> int:
@@ -704,12 +721,15 @@ def _record_run(state: dict, persona: str, run_id: str, result, budget: float, *
         events.append(("finding", {"persona": persona, "severity": "major", "gate": None,
                                    "title": "implementer blocker", "detail": str(blocker),
                                    "files": []}))
-    for item in verdict.get("findings") or []:        # conformance reviewer (SPEC-0187)
+    for item in verdict.get("findings") or []:        # reviewers (SPEC-0187, SPEC-0202)
         if isinstance(item, dict):
-            events.append(("finding", {"persona": persona, "severity": item.get("severity"),
-                                       "gate": None, "ac": item.get("ac"),
-                                       "title": item.get("title"), "detail": item.get("detail"),
-                                       "files": list(item.get("files") or [])}))
+            ev = {"persona": persona, "severity": item.get("severity"),
+                  "gate": None, "ac": item.get("ac"),
+                  "title": item.get("title"), "detail": finding_detail(item),
+                  "files": list(item.get("files") or [])}
+            if item.get("category"):
+                ev["category"] = item["category"]
+            events.append(("finding", ev))
     denials = _raw_permission_denials(result)
     if denials:
         events.append(("finding", {"persona": persona, "severity": "info", "gate": None,

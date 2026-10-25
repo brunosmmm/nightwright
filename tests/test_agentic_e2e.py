@@ -688,10 +688,11 @@ BOTH = ["conformance_reviewer", "test_reviewer"]
 
 
 def _both(tmp_path, monkeypatch, scripts, **profile):
-    """cfg + campaign with the default balanced reviewers and a per-persona scripted runner."""
+    """cfg + campaign with the conformance and test reviewers (both in the balanced default,
+    with SPEC-0202's adversarial reviewer) and a per-persona scripted runner."""
     from test_agentic_reviewers import PersonaRunner
     from wt.agentic.profiles import resolve_profile
-    assert resolve_profile({}, "balanced")["reviewers"] == BOTH
+    assert set(BOTH) <= set(resolve_profile({}, "balanced")["reviewers"])
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []), profile=dict(reviewers=BOTH, **profile))
     return cfg, added(cfg, monkeypatch), repo, PersonaRunner(scripts)
@@ -935,3 +936,103 @@ def test_e2e_followups_disabled_by_profile_files_nothing(tmp_path, monkeypatch):
                                profile={"review": {"followups": False}})
     assert st["state"] == "MERGED" and _fu_ideas(cfg) == []
     assert st["close"]["followups"]["filed"] == [] and "followup" not in ledger_types(cfg, cid)
+
+
+# ---- SPEC-0202: adversarial reviewer in the REVIEWING fan-out ---------------------------------
+
+CONF, ADV = "conformance_reviewer", "adversarial_reviewer"
+
+
+def adv_review(verdict="pass", *, category="path_traversal", malformed=False, **kw):
+    """FakeRunner entry: the adversarial reviewer. `fix` carries one must_fix finding."""
+    fix = verdict == "fix"
+    findings = [{"severity": "must_fix", "category": category, "title": "name escapes the root",
+                 "detail": "joined unchecked", "trigger": "when `name` contains `../`",
+                 "files": ["feature.txt"], "lines": ["feature.txt:1"]}] if fix else []
+    v = {"verdict": verdict, "score": 30 if fix else 92, "findings": findings,
+         "fix_brief": "reject names with .." if fix else ""}
+    v.update(kw)
+    return {"persona": ADV, "verdict": v, "cost_usd": 0.3, "malformed": malformed}
+
+
+class _PerPersona(FakeRunner):
+    """`{persona: [entry, ...]}` scripts consumed per persona (reviewers run concurrently)."""
+
+    def __init__(self, scripts):
+        import threading
+        self.scripts = {p: list(v) for p, v in scripts.items()}
+        self.lock, self.calls = threading.Lock(), []
+
+    def _next_entry(self, req):
+        with self.lock:
+            self.calls.append(req.persona)
+            return self.scripts[req.persona].pop(0)
+
+
+def _drive_adv(tmp_path, monkeypatch, scripts, **profile):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []),
+                   profile={"reviewers": [CONF, ADV], **profile})
+    cid = added(cfg, monkeypatch)
+    runner = _PerPersona(scripts)
+    for _ in range(14):
+        Q.tick(cfg, runner=runner)
+        if S.read_state(cfg, cid)["state"] in ("MERGED", "PARKED"):
+            break
+    return cfg, cid, runner
+
+
+@pytest.mark.parametrize("as_pass", [False, True])
+def test_e2e_adversarial_must_fix_routes_fix_then_merges(tmp_path, monkeypatch, as_pass):
+    bad = adv_review("fix")
+    if as_pass:                                     # `pass` carrying a must_fix still routes fix
+        bad["verdict"]["verdict"] = "pass"
+    cfg, cid, runner = _drive_adv(tmp_path, monkeypatch, {
+        "implementer": [impl_done(), impl_done(content="better\n")],
+        CONF: [review(), review()], ADV: [bad, adv_review()]})
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED", st
+    assert runner.calls.count("implementer") == 2 and runner.calls.count(ADV) == 2
+    brief = (S.runs_dir(cfg, cid) / "004-implementer" / "prompt.md").read_text()
+    assert "From: review" in brief and f"[{ADV}] reject names with .." in brief
+    assert "- MUST FIX [path_traversal]: name escapes the root (feature.txt)" in brief
+    assert "trigger: when `name` contains `../`" in brief
+    found = [e for e in S.read_ledger(cfg, cid, types=["finding"]) if e["persona"] == ADV]
+    assert len(found) == 1 and found[0]["category"] == "path_traversal"
+    assert found[0]["detail"] == "joined unchecked\ntrigger: when `name` contains `../`"
+    assert st["last_review"]["verdicts"][ADV]["findings"] == [] and st["last_review"]["loop"] == 1
+    first = S.read_ledger(cfg, cid, types=["run.end"])[2]
+    assert first["persona"] == ADV and first["verdict"]["findings"][0]["lines"] == ["feature.txt:1"]
+
+
+def test_e2e_adversarial_unknown_category_retries_then_escalates(tmp_path, monkeypatch):
+    cfg, cid, runner = _drive_adv(tmp_path, monkeypatch, {
+        "implementer": [impl_done()], CONF: [review()],
+        ADV: [adv_review("fix", category="vibes"), adv_review("fix", category="vibes")]})
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "review_escalated"
+    assert ADV in st["park"]["detail"] and CONF not in st["park"]["detail"]
+    assert runner.calls.count(ADV) == 2 and runner.calls.count(CONF) == 1
+    ends = [e for e in S.read_ledger(cfg, cid, types=["run.end"]) if e["persona"] == ADV]
+    assert [e["verdict_ok"] for e in ends] == [False, False]
+
+
+def test_e2e_adversarial_malformed_once_then_valid_merges(tmp_path, monkeypatch):
+    cfg, cid, runner = _drive_adv(tmp_path, monkeypatch, {
+        "implementer": [impl_done()], CONF: [review()],
+        ADV: [adv_review(malformed=True), adv_review()]})
+    assert S.read_state(cfg, cid)["state"] == "MERGED"
+    assert runner.calls.count(ADV) == 2 and runner.calls.count(CONF) == 1
+
+
+def test_e2e_cost_cap_counts_the_adversarial_reviewer(tmp_path, monkeypatch):
+    """After the implementer ($3) conformance alone ($1.50) fits a $5 cap; with the adversarial
+    reviewer ($1.50 more) it does not: parked before any reviewer is spawned."""
+    impl = impl_done()
+    impl["cost_usd"] = 3.0
+    cfg, cid, runner = _drive_adv(tmp_path, monkeypatch, {
+        "implementer": [impl], CONF: [review()], ADV: [adv_review()]}, campaign_cap_usd=5.0)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "cost_cap"
+    assert ADV in st["park"]["detail"]
+    assert runner.calls == ["implementer"]

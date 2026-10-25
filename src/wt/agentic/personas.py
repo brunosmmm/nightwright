@@ -26,6 +26,7 @@ _DIFF_MAX_LINES = 1500
 _TESTS_LIST_MAX = 200
 _TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def\s+(test_\w+)", re.MULTILINE)
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+_CHANGED_FILES_MAX = 300
 
 INVARIANT = """\
 ## wt queue invariants (read before anything else)
@@ -127,6 +128,29 @@ REVIEW_TRIAGER_SCHEMA = {
     },
 }
 
+ADVERSARIAL_CATEGORIES = ["bug", "logic", "security", "injection", "path_traversal",
+                          "subprocess", "secrets", "concurrency", "error_handling",
+                          "data_loss", "resource_leak", "other"]
+
+ADVERSARIAL_REVIEWER_SCHEMA = {
+    "type": "object",
+    "required": ["verdict", "score", "findings", "fix_brief"],
+    "properties": {
+        "verdict": {"type": "string", "enum": ["pass", "fix"]},
+        "score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "findings": {"type": "array", "items": {
+            "type": "object", "required": ["severity", "category", "title"],
+            "properties": {"severity": {"type": "string",
+                                        "enum": ["must_fix", "major", "minor", "nit"]},
+                           "category": {"type": "string", "enum": ADVERSARIAL_CATEGORIES},
+                           "title": {"type": "string"}, "detail": {"type": "string"},
+                           "trigger": {"type": "string"},
+                           "files": {"type": "array", "items": {"type": "string"}},
+                           "lines": {"type": "array", "items": {"type": "string"}}}}},
+        "fix_brief": {"type": "string"},
+    },
+}
+
 SPEC_REVIEW_INVARIANT = """\
 ## wt spec review invariants (read before anything else)
 
@@ -175,6 +199,8 @@ PERSONAS = {
                                     CONFORMANCE_REVIEWER_SCHEMA, read_only=True),
     "test_reviewer": Persona("test_reviewer", "test_reviewer.md", TEST_REVIEWER_SCHEMA,
                              read_only=True),
+    "adversarial_reviewer": Persona("adversarial_reviewer", "adversarial_reviewer.md",
+                                    ADVERSARIAL_REVIEWER_SCHEMA, read_only=True),
     "spec_reviewer": Persona("spec_reviewer", "spec_reviewer.md", SPEC_REVIEWER_SCHEMA,
                              read_only=True, invariant=SPEC_REVIEW_INVARIANT),
     # SPEC-0206: not a reviewer (not in REVIEWER_PERSONAS); waives minor/nit findings only
@@ -184,12 +210,12 @@ PERSONAS = {
 
 # Personas that get the review context (diff, gate summary, previous verdicts) and may be listed
 # in a profile's `reviewers` (SPEC-0201).
-REVIEWER_PERSONAS = ("conformance_reviewer", "test_reviewer")
+REVIEWER_PERSONAS = ("conformance_reviewer", "test_reviewer", "adversarial_reviewer")
 
 PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree", "base",
                 "loop", "loop_max", "context_files", "gate_results", "pending_brief",
-                "previous_verdicts", "diff", "test_files", "tests_touched", "schema_text",
-                "idea_text", "triage_input")
+                "previous_verdicts", "diff", "test_files", "tests_touched", "changed_files",
+                "schema_text", "idea_text", "triage_input")
 
 
 def get_persona(name) -> Persona:
@@ -245,8 +271,8 @@ def render_pending_brief(brief) -> str:
         parts.append(f"Brief: {brief['fix_brief']}")
     for item in brief.get("must_fix") or []:
         if isinstance(item, dict):
-            where = f" [{item.get('gate') or item.get('ac')}]" \
-                if item.get("gate") or item.get("ac") else ""
+            tag = item.get("gate") or item.get("ac") or item.get("category")
+            where = f" [{tag}]" if tag else ""
             files = f" ({', '.join(item.get('files') or [])})" if item.get("files") else ""
             parts.append(f"- MUST FIX{where}: {item.get('title')}{files}"
                          + (f" — {item['detail']}" if item.get("detail") else ""))
@@ -412,6 +438,17 @@ def tests_touched(worktree, base) -> list[dict]:
     return sorted(entries, key=lambda e: e["path"])
 
 
+def _changed_files_text(paths) -> str:
+    """Sorted paths, one per line: the first 300, then `… N more` (SPEC-0202); `(none)` if empty."""
+    paths = sorted(paths)
+    if not paths:
+        return "(none)"
+    shown = paths[:_CHANGED_FILES_MAX]
+    if len(paths) > _CHANGED_FILES_MAX:
+        shown.append(f"… {len(paths) - _CHANGED_FILES_MAX} more")
+    return "\n".join(shown)
+
+
 def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
                   review=False, with_tests=False, extra=None) -> dict:
     """Prompt values from campaign state (+ project config). `spec_text` is read from the
@@ -431,12 +468,13 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
             spec_text = p.read_text(encoding="utf-8")
     counters = state.get("counters") or {}
     agents = (project_cfg or {}).get("agents") or {}
-    diff = test_files = None
+    diff = test_files = changed_files = None
     if review and worktree and repo.get("base"):
         try:
-            diff = git.diff_text(worktree, repo["base"], _DIFF_MAX_LINES)
-            test_files = [f for f in git.changed_files(worktree, repo["base"])
-                          if f.startswith("tests/")]
+            d = git.diff_text(worktree, repo["base"], _DIFF_MAX_LINES)
+            changed = sorted(git.changed_files(worktree, repo["base"]))
+            diff, test_files = d, [f for f in changed if f.startswith("tests/")]
+            changed_files = _changed_files_text(changed)
         except (git.GitError, OSError):
             pass
     touched = None
@@ -459,6 +497,7 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
         "diff": diff,
         "test_files": test_files,
         "tests_touched": touched,
+        "changed_files": changed_files,
     }
     ctx.update(extra or {})
     return ctx

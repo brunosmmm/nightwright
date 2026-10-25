@@ -160,3 +160,32 @@ def test_followup_event_is_registered_and_requires_its_keys(tmp_path):          
     del rec["idea_id"]
     assert SC.ledger_problems(rec) == ["followup: missing 'idea_id'"]
     assert SC.ledger_problems({**rec, "idea_id": "IDEA-001"}) == []
+
+
+def test_adversarial_finding_with_category_is_a_valid_ledger_record(tmp_path, monkeypatch):
+    """SPEC-0202: a reviewer `finding` carrying `category` still satisfies the ledger schema."""
+    adv = {"persona": "adversarial_reviewer", "verdict": {
+        "verdict": "fix", "score": 20, "fix_brief": "escape the name",
+        "findings": [{"severity": "must_fix", "category": "path_traversal", "title": "escape",
+                      "detail": "joined unchecked", "trigger": "when name has ../",
+                      "files": ["feature.txt"], "lines": ["feature.txt:1"]}]}, "cost_usd": 0.3}
+    ok = dict(adv, verdict=dict(adv["verdict"], verdict="pass", score=90, findings=[],
+                                fix_brief=""))
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []),
+                   profile={"reviewers": ["adversarial_reviewer"]})
+    from wt.agentic.runner import FakeRunner
+    cid = added(cfg, monkeypatch)
+    entries = [impl_done(), adv, impl_done(content="better\n"), ok]
+    runner = FakeRunner(script(tmp_path, entries, "adv.json"))
+    for _ in range(12):
+        Q.tick(cfg, runner=runner)
+        if S.read_state(cfg, cid)["state"] in ("MERGED", "PARKED"):
+            break
+    assert S.read_state(cfg, cid)["state"] == "MERGED"
+    ledger = S.read_ledger(cfg, cid)
+    assert [p for rec in ledger for p in SC.ledger_problems(rec)] == []
+    f = [e for e in ledger if e["type"] == "finding" and e["persona"] == "adversarial_reviewer"]
+    assert len(f) == 1 and f[0]["category"] == "path_traversal"
+    assert f[0]["gate"] is None and f[0]["ac"] is None
+    assert f[0]["detail"] == "joined unchecked\ntrigger: when name has ../"

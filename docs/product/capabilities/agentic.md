@@ -144,11 +144,33 @@ findings are `finding` events with `persona: test_reviewer` and `ac`, and `cover
 is kept in the run record and in `last_review.verdicts`. At defaults it adds $1.00 to every
 review pass; to get the old cost set `reviewers: [conformance_reviewer]` in the profile.
 
+### Shipped reviewers
+
+- `conformance_reviewer` (SPEC-0187): judges the change against the spec's acceptance criteria.
+- `adversarial_reviewer` (SPEC-0202): attacks the code itself, by reading only. It assumes the
+  change is wrong, asks per hunk what input, ordering, timing or environment breaks it, and
+  checks shell strings built from input, `shell=True`, unvalidated paths, secrets in logs,
+  unlocked read-modify-write, swallowed exceptions, non-atomic writes and unguarded
+  destructive git or file operations. It gets the spec (for intent), the diff, the sorted list
+  of changed files (first 300, then `… N more`), the gate summary and earlier verdicts. Each
+  finding carries a closed `category` — `bug`, `logic`, `security`, `injection`,
+  `path_traversal`, `subprocess`, `secrets`, `concurrency`, `error_handling`, `data_loss`,
+  `resource_leak` or `other` — plus a concrete `trigger` (a finding without one is at most
+  `minor`, by prompt rule). `must_fix` is an exploitable flaw, data loss or a certain crash on
+  the main path; `major` a plausible defect on a realistic path. Its verdict is
+  `{verdict, score, findings, fix_brief}` with `score` = confidence the change is safe to
+  merge; a missing or unknown `category` makes the verdict malformed (one retry, then
+  `review_escalated`). Its `finding` events carry `category` with the trigger folded into
+  `detail`, and the implementer's brief shows `- MUST FIX [category]: title (files) — detail`.
+  Budget: Opus/high $1.50 in `balanced`, $2.50 in `thorough`; `frugal` has settings (Sonnet,
+  $0.60) for opting in through `reviewers`.
+
 ### Several reviewers (SPEC-0201)
 
 A profile's `reviewers` key lists the reviewer personas of REVIEWING (`balanced` and `thorough`
-list `conformance_reviewer` and `test_reviewer`, `frugal` only the conformance reviewer; a user
-delta replaces the list wholesale; an absent or empty key means the conformance reviewer). Each name must be a read-only reviewer persona with settings in
+list `conformance_reviewer`, `test_reviewer` and `adversarial_reviewer`, `frugal` only the
+conformance reviewer; a user delta replaces the list wholesale; an absent or empty key
+means the conformance reviewer). Each name must be a read-only reviewer persona with settings in
 the profile. REVIEWING runs all of them **in parallel** — each a fresh run with its own budget,
 run directory (`runs/NNN-<persona>/`) and ledger events, none of which sees the runs of the
 current review pass — and waits for every verdict before deciding. The cost cap is checked

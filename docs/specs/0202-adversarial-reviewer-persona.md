@@ -1,7 +1,7 @@
 ---
 id: SPEC-0202
 title: "Adversarial reviewer persona: security, logic and bug hunting"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -135,30 +135,30 @@ conformance reviewer's plus a per-finding `category`.
 
 ## Acceptance criteria
 
-- [ ] AC1. `adversarial_reviewer` template (containing the checklist, the severity guide and the
+- [x] AC1. `adversarial_reviewer` template (containing the checklist, the severity guide and the
       trigger rule), `ADVERSARIAL_REVIEWER_SCHEMA` (exact required keys, category enum,
       optional `trigger`/`lines`) and `PERSONAS`/`REVIEWER_PERSONAS` entries exist;
       `build_request` is read-only, uses the profile model and budget, and its prompt is
       deterministic (two builds equal).
-- [ ] AC2. A verdict whose finding lacks `category` or has an unknown one is malformed
+- [x] AC2. A verdict whose finding lacks `category` or has an unknown one is malformed
       (`verdict_ok` false) and goes through the SPEC-0201 retry.
-- [ ] AC3. Profiles define its settings as above; `balanced` and `thorough` default `reviewers`
+- [x] AC3. Profiles define its settings as above; `balanced` and `thorough` default `reviewers`
       include it last (membership and relative order against `REVIEWER_ORDER`, not exact
       equality), `frugal` does not; a user delta adding it to `frugal` passes `resolve_profile`.
-- [ ] AC4. `changed_files` is a context placeholder: sorted, first 300 kept, `… N more` with N =
+- [x] AC4. `changed_files` is a context placeholder: sorted, first 300 kept, `… N more` with N =
       total − 300, `(none)` when empty or on `GitError`.
-- [ ] AC5. `finding` events carry `persona: adversarial_reviewer` and `category`, the trigger
+- [x] AC5. `finding` events carry `persona: adversarial_reviewer` and `category`, the trigger
       folded into `detail` by `finding_detail` (all three cases); `ledger_problems` is empty for
       them; the rendered `From: review` brief for an adversarial `must_fix` contains the
       category bracket, the files and the trigger text.
-- [ ] AC6. With the SPEC-0201 fan-out and FakeRunner: an adversarial `must_fix` (e.g. category
+- [x] AC6. With the SPEC-0201 fan-out and FakeRunner: an adversarial `must_fix` (e.g. category
       `path_traversal`) with the other reviewers passing ⇒ `IMPLEMENTING` with a brief labelled
       `[adversarial_reviewer]`; the same as `verdict: pass` carrying that `must_fix` also routes
       `fix`; then all pass ⇒ `MERGED`; malformed twice ⇒ `PARKED(review_escalated)` naming the
       persona.
-- [ ] AC7. The cost-cap sum includes its budget (a cap that fits the other configured reviewers
+- [x] AC7. The cost-cap sum includes its budget (a cap that fits the other configured reviewers
       but not them plus this one parks `cost_cap` before any spawn).
-- [ ] AC8. `docs/product/capabilities/agentic.md` lists the shipped reviewers and this
+- [x] AC8. `docs/product/capabilities/agentic.md` lists the shipped reviewers and this
       reviewer's categories (grep assertion); full `uv run pytest` green;
       `python3 tools/spec_lint.py` exits 0.
 
@@ -176,6 +176,29 @@ conformance reviewer's plus a per-finding `category`.
 - **Manual verification:** the next real campaign records this reviewer's verdict and cost here.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q` (full suite): 1793 passed, 1 skipped, after `python3 tools/spec_lint.py
+  --write-ledger`; `python3 tools/spec_lint.py` exits 0.
+- New tests: `tests/test_agentic_personas.py` (template checklist/severity/trigger rule, schema
+  enum and required keys, request per profile, deterministic prompt, `verdict_ok` without or
+  with unknown category, `changed_files` sorted / capped at 300 with `… N more` / `(none)` on
+  empty and `GitError`, brief bracket), `tests/test_agentic_profiles.py` (defaults in
+  `REVIEWER_ORDER`, frugal opt-in, docs grep), `tests/test_agentic_queue.py`
+  (`finding_detail` three cases, event mapping, `must_fix` carries category, cap sum),
+  `tests/test_agentic_logs.py` (ledger validity of a categorized finding),
+  `tests/test_agentic_e2e.py` (fix via `must_fix` and via `pass`+`must_fix` then merge, unknown
+  category retried then `review_escalated`, cap parks before any spawn).
+- Manual: the next real campaign records this reviewer's verdict and cost (not yet run).
+
+### As shipped
+
+- `REVIEWER_ORDER` lists `test_reviewer` already (SPEC-0205 not yet shipped); it is only an
+  ordering reference until that persona exists.
+- Existing e2e fixtures (`make_cfg` in `tests/test_agentic_e2e.py`) pin `reviewers` to
+  `["conformance_reviewer"]` so the one-reviewer scripts of older specs stay valid; the
+  adversarial paths set their own profile delta.
+
 ## Rollout / migration
 
 Existing `balanced`/`thorough` campaigns gain an additional reviewer on their next `REVIEWING`
@@ -188,11 +211,11 @@ Built by the agentic loop or the human lane; idea bookkeeping via `wt spec recon
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

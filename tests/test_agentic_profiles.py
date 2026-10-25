@@ -74,9 +74,10 @@ def test_deep_merge_replaces_non_dicts():
 
 # ---- SPEC-0201: reviewers --------------------------------------------------------------------
 
-@pytest.mark.parametrize("name,want", [("balanced", ["conformance_reviewer", "test_reviewer"]),
-                                       ("thorough", ["conformance_reviewer", "test_reviewer"]),
-                                       ("frugal", ["conformance_reviewer"])])
+@pytest.mark.parametrize("name,want", [
+    ("balanced", ["conformance_reviewer", "test_reviewer", "adversarial_reviewer"]),
+    ("thorough", ["conformance_reviewer", "test_reviewer", "adversarial_reviewer"]),
+    ("frugal", ["conformance_reviewer"])])
 def test_reviewers_default_lists(name, want):
     got = P.resolve_profile({}, name)["reviewers"]
     assert got == want
@@ -273,3 +274,46 @@ def test_docs_describe_the_followup_filer():                                    
     for needle in ("wtfu:", "followups_nits", "review_carry", "`followup` event", "adopted",
                    "unfiled"):
         assert needle in doc
+
+
+# ---- SPEC-0202: adversarial reviewer in the profiles ------------------------------------------
+
+def _in_canonical_order(reviewers):
+    return reviewers == [r for r in P.REVIEWER_ORDER if r in reviewers]
+
+
+@pytest.mark.parametrize("name,model,budget", [("balanced", "opus", 1.5), ("thorough", "opus", 2.5)])
+def test_default_reviewers_include_adversarial_last(name, model, budget):
+    prof = P.resolve_profile({}, name)
+    assert {"conformance_reviewer", "adversarial_reviewer"} <= set(prof["reviewers"])
+    assert _in_canonical_order(prof["reviewers"]) and prof["reviewers"][-1] == "adversarial_reviewer"
+    s = prof["personas"]["adversarial_reviewer"]
+    assert (s["model"], s["effort"], s["max_budget_usd"]) == (model, "high", budget)
+    assert s["read_only"] is True and s["permission_mode"] == "dontAsk"
+
+
+def test_frugal_has_settings_but_does_not_list_adversarial():
+    prof = P.resolve_profile({}, "frugal")
+    assert "adversarial_reviewer" not in prof["reviewers"]
+    s = prof["personas"]["adversarial_reviewer"]
+    assert (s["model"], s["effort"], s["max_budget_usd"]) == ("sonnet", "medium", 0.6)
+
+
+def test_frugal_user_delta_can_opt_in_to_adversarial():
+    cfg = {"agentic": {"profiles": {"frugal": {
+        "reviewers": ["conformance_reviewer", "adversarial_reviewer"]}}}}
+    prof = P.resolve_profile(cfg, "frugal")
+    assert P.reviewers_of(prof) == ["conformance_reviewer", "adversarial_reviewer"]
+
+
+def test_reviewer_order_is_canonical():
+    assert P.REVIEWER_ORDER == ("conformance_reviewer", "test_reviewer", "adversarial_reviewer")
+
+
+def test_capability_page_lists_reviewers_and_categories():
+    from pathlib import Path
+    text = (Path(__file__).resolve().parent.parent / "docs" / "product" / "capabilities"
+            / "agentic.md").read_text()
+    from wt.agentic import personas as PS
+    for needle in ("adversarial_reviewer", "conformance_reviewer", *PS.ADVERSARIAL_CATEGORIES):
+        assert needle in text, needle

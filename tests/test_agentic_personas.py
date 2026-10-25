@@ -279,6 +279,7 @@ def test_reviewer_personas_get_the_review_context(tmp_path, monkeypatch):
     cfg = {"agentic": {}}
     monkeypatch.setattr(PS, "REVIEWER_PERSONAS",
                         ("conformance_reviewer", "test_reviewer", "gate_triager"))
+    cfg = {"agentic": {"profiles": {"balanced": {"reviewers": ["conformance_reviewer"]}}}}
     for persona, want in (("conformance_reviewer", True), ("gate_triager", True),
                           ("implementer", False)):
         PS.build_request(cfg, resolve_profile(cfg), {}, {"id": "c", "repo": {}}, persona,
@@ -564,3 +565,123 @@ def test_build_request_review_triager(tmp_path):
     frugal = PS.build_request(cfg, resolve_profile(cfg, "frugal"), _project_cfg(), st,
                               "review_triager", run_dir=tmp_path / "r", extra=extra)
     assert (frugal.model, frugal.max_budget_usd) == ("haiku", 0.25)
+
+
+# ---- SPEC-0202: adversarial reviewer -------------------------------------------------------
+
+ADV = "adversarial_reviewer"
+
+
+def _adv_ok(**finding):
+    f = {"severity": "major", "category": "bug", "title": "t"}
+    f.update(finding)
+    return {"verdict": "fix", "score": 40, "findings": [f], "fix_brief": "fix it"}
+
+
+def test_adversarial_template_checklist_severity_and_trigger_rule():
+    text = PS.PERSONAS[ADV].template
+    for needle in ("shell=True", "unvalidated paths", "tempfile", "secrets or tokens",
+                   "read-modify-write", "time-of-check", "swallowed", "non-atomic",
+                   "destructive git", "unbounded", "A finding without a trigger is at most",
+                   "`must_fix`", "`major`", "`minor`", "`nit`", "{{changed_files}}", "{{diff}}",
+                   "{{spec_text}}", "{{gate_results}}", "{{previous_verdicts}}",
+                   "{{pending_brief}}"):
+        assert needle in text, needle
+    for cat in PS.ADVERSARIAL_CATEGORIES:
+        assert f"`{cat}`" in text, cat
+    assert PS.PERSONAS[ADV].read_only and ADV in PS.REVIEWER_PERSONAS
+
+
+def test_adversarial_schema_shape():
+    s = PS.ADVERSARIAL_REVIEWER_SCHEMA
+    assert s["required"] == ["verdict", "score", "findings", "fix_brief"]
+    item = s["properties"]["findings"]["items"]
+    assert item["required"] == ["severity", "category", "title"]
+    assert item["properties"]["category"]["enum"] == [
+        "bug", "logic", "security", "injection", "path_traversal", "subprocess", "secrets",
+        "concurrency", "error_handling", "data_loss", "resource_leak", "other"]
+    assert item["properties"]["trigger"] == {"type": "string"}
+    assert item["properties"]["lines"] == {"type": "array", "items": {"type": "string"}}
+
+
+def test_adversarial_verdict_ok_needs_a_known_category():
+    from wt.agentic.runner import _conforms
+    S_ = PS.ADVERSARIAL_REVIEWER_SCHEMA
+    assert _conforms(_adv_ok(trigger="when x", lines=["a.py:3"], files=["a.py"]), S_)
+    assert _conforms(_adv_ok(category="path_traversal"), S_)
+    bad = _adv_ok()
+    del bad["findings"][0]["category"]
+    assert not _conforms(bad, S_)
+    assert not _conforms(_adv_ok(category="vibes"), S_)
+    assert not _conforms({k: v for k, v in _adv_ok().items() if k != "fix_brief"}, S_)
+    assert not _conforms(_adv_ok(lines="a.py:3"), S_)
+
+
+def test_build_request_adversarial_reviewer(tmp_path):
+    _git_repo_with_change(tmp_path)
+    cfg, st = _cfg(tmp_path), _state(tmp_path, state="REVIEWING")
+    req = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, ADV,
+                           run_dir=tmp_path / "r")
+    assert req.read_only and req.allowed_tools == () and req.permission_mode == "dontAsk"
+    assert req.model == "opus" and req.max_budget_usd == 1.5 and req.effort == "high"
+    assert req.json_schema is PS.ADVERSARIAL_REVIEWER_SCHEMA
+    assert "+print('hi')" in req.prompt and "{{" not in req.prompt
+    assert "Use {braces} freely." in req.prompt
+    assert "src/a.py\ntests/test_a.py" in req.prompt              # changed_files, sorted
+    again = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, ADV,
+                             run_dir=tmp_path / "r")
+    assert again.prompt == req.prompt
+    for name, model, effort, budget in (("frugal", "sonnet", "medium", 0.6),
+                                        ("thorough", "opus", "high", 2.5)):
+        r = PS.build_request(cfg, resolve_profile(cfg, name), _project_cfg(), st, ADV,
+                             run_dir=tmp_path / "r")
+        assert (r.model, r.effort, r.max_budget_usd, r.read_only) == (model, effort, budget, True)
+
+
+def test_conformance_template_ignores_changed_files(tmp_path):
+    assert "{{changed_files}}" not in PS.PERSONAS["conformance_reviewer"].template
+    assert "changed_files" in PS.PLACEHOLDERS
+
+
+def _changed_ctx(tmp_path, monkeypatch, paths):
+    monkeypatch.setattr(PS.git, "diff_text", lambda *a, **kw: "d")
+    monkeypatch.setattr(PS.git, "changed_files", lambda *a, **kw: paths)
+    return PS.build_context(_cfg(tmp_path), _state(tmp_path), None, review=True)
+
+
+def test_changed_files_sorted_and_plain(tmp_path, monkeypatch):
+    ctx = _changed_ctx(tmp_path, monkeypatch, ["z.py", "tests/t.py", "a/b.py"])
+    assert ctx["changed_files"] == "a/b.py\ntests/t.py\nz.py"
+    assert ctx["test_files"] == ["tests/t.py"]
+    assert PS.render("{{changed_files}}", ctx) == "a/b.py\ntests/t.py\nz.py"
+
+
+def test_changed_files_caps_at_300(tmp_path, monkeypatch):
+    names = [f"f{i:04d}.py" for i in range(305)]
+    out = _changed_ctx(tmp_path, monkeypatch, list(reversed(names)))["changed_files"].split("\n")
+    assert out[:300] == names[:300] and out[300] == "… 5 more" and len(out) == 301
+    exact = _changed_ctx(tmp_path, monkeypatch, names[:300])["changed_files"].split("\n")
+    assert len(exact) == 300 and "more" not in exact[-1]
+
+
+def test_changed_files_none_when_empty_or_git_error(tmp_path, monkeypatch):
+    assert _changed_ctx(tmp_path, monkeypatch, [])["changed_files"] == "(none)"
+
+    def boom(*a, **kw):
+        raise PS.git.GitError(["git", "diff"], 1, "nope")
+    monkeypatch.setattr(PS.git, "changed_files", boom)
+    ctx = PS.build_context(_cfg(tmp_path), _state(tmp_path), None, review=True)
+    assert PS.render("{{changed_files}}", ctx) == "(none)"
+    assert ctx["diff"] is None and ctx["test_files"] is None      # all three stay unset
+    assert PS.build_context(_cfg(tmp_path), _state(tmp_path), None)["changed_files"] is None
+
+
+def test_render_pending_brief_bracket_prefers_gate_then_ac_then_category():
+    def brief(**item):
+        return PS.render_pending_brief({"source": "review", "must_fix": [dict(title="T", **item)]})
+    assert "- MUST FIX [path_traversal]: T" in brief(category="path_traversal")
+    assert "- MUST FIX [AC1]: T" in brief(ac="AC1", category="bug")
+    assert "- MUST FIX [pytest]: T" in brief(gate="pytest", ac="AC1", category="bug")
+    assert "- MUST FIX: T" in brief()
+    out = brief(category="path_traversal", files=["a.py"], detail="x\ntrigger: when ../")
+    assert "[path_traversal]: T (a.py) — x\ntrigger: when ../" in out

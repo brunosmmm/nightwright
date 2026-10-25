@@ -939,3 +939,71 @@ def test_regate_failed_rerun_reports_earlier_filings_without_duplicates(opened, 
     Q._apply(ctx, st, res)
     assert S.read_state(cfg, cid)["close"]["followups"]["filed"][0]["idea_id"] == ev["idea_id"]
     assert len(_ideas(cfg)) == 1 and len(S.read_ledger(cfg, cid, types=["followup"])) == 1
+
+
+# ---- SPEC-0202: adversarial reviewer ---------------------------------------------------------
+
+def test_finding_detail_three_cases():
+    assert Q.finding_detail({"detail": "d", "trigger": "t"}) == "d\ntrigger: t"
+    assert Q.finding_detail({"trigger": "t"}) == "trigger: t"
+    assert Q.finding_detail({"detail": "d"}) == "d"
+    assert Q.finding_detail({}) is None
+    assert Q.finding_detail({"detail": "d", "trigger": ""}) == "d"
+
+
+ADV_FINDINGS = [
+    {"severity": "must_fix", "category": "path_traversal", "title": "escape", "detail": "joined",
+     "trigger": "when name has ../", "files": ["a.py"], "lines": ["a.py:3"]},
+    {"severity": "minor", "category": "other", "title": "meh", "trigger": "rare"},
+    {"severity": "nit", "title": "no category, as the conformance reviewer"},
+]
+
+
+def test_record_run_maps_category_and_folds_trigger():
+    st = _state("REVIEWING")
+    verdict = {"verdict": "fix", "score": 30, "fix_brief": "b", "findings": ADV_FINDINGS}
+    events = Q._record_run(st, "adversarial_reviewer", "003-adversarial_reviewer",
+                           _rr(verdict), 1.5)
+    found = [p for t, p in events if t == "finding"]
+    assert found[0] == {"persona": "adversarial_reviewer", "severity": "must_fix", "gate": None,
+                        "ac": None, "title": "escape", "files": ["a.py"],
+                        "detail": "joined\ntrigger: when name has ../",
+                        "category": "path_traversal"}
+    assert found[1]["detail"] == "trigger: rare" and found[1]["category"] == "other"
+    assert "category" not in found[2] and found[2]["detail"] is None
+    assert "trigger" not in found[0] and "lines" not in found[0]
+
+
+def test_review_brief_must_fix_carries_category_and_trigger():
+    """SPEC-0202 on SPEC-0203's triage: brief entries carry `category` and the folded trigger."""
+    from wt.agentic.profiles import resolve_profile
+    prof = resolve_profile({}, "balanced")
+    one = {"adversarial_reviewer": {"verdict": "pass", "findings": ADV_FINDINGS, "fix_brief": ""}}
+    tri = Q.triage_reviews(one, prof)
+    assert tri["outcome"] == "fix"
+    out = Q.review_brief(one, tri, 80)
+    assert out["must_fix"] == [{"ac": None, "title": "escape", "files": ["a.py"],
+                                "detail": "joined\ntrigger: when name has ../",
+                                "category": "path_traversal"}]
+    both = {"conformance_reviewer": {"verdict": "pass", "findings": [], "fix_brief": ""},
+            "adversarial_reviewer": {"verdict": "fix", "findings": ADV_FINDINGS,
+                                     "fix_brief": "b"}}
+    out = Q.review_brief(both, Q.triage_reviews(both, prof), 80)
+    assert out["must_fix"][0]["personas"] == ["adversarial_reviewer"]
+    assert out["must_fix"][0]["category"] == "path_traversal"
+
+
+def test_cap_sum_includes_the_adversarial_reviewer():
+    """balanced lists conformance (1.5) + test (1.0) + adversarial (1.5) = 4.0: at 7.5 spent the
+    first alone fits the $10 cap but the full set does not."""
+    from wt.agentic.profiles import resolve_profile
+    profile = resolve_profile({}, "balanced")
+    assert profile["reviewers"][-1] == "adversarial_reviewer"
+    fits = _state("REVIEWING", cost={"total_usd": 5.5, "cap_usd": 10.0, "by_persona": {}})
+    step = Q.plan_step(fits, profile)
+    assert step.kind == "review" and step.personas == tuple(profile["reviewers"])
+    over = _state("REVIEWING", cost={"total_usd": 7.5, "cap_usd": 10.0, "by_persona": {}})
+    assert Q.plan_step(over, dict(profile, reviewers=["conformance_reviewer"])).kind == "review"
+    step = Q.plan_step(over, profile)
+    assert step.kind == "park" and step.reason == "cost_cap" and step.resume_to == "REVIEWING"
+    assert "adversarial_reviewer" in step.detail and "$4.00" in step.detail
