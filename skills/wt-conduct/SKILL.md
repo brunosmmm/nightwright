@@ -35,6 +35,12 @@ change, these rules, and what to report.
   verifying a merged spec. Launch it in the background with a brief that names the campaign,
   the worktree, the exact goal, what it may change, and that it must report back with facts
   and a recommended `wt` action. You then apply that action yourself (a quick write).
+- **Restart with the merge.** When a merged change touches `src/wt/agentic/` or
+  `.wt/project.yaml`, restart the runner in the SAME step as the merge (stop runner,
+  ff-merge, start runner) at a quiet window: no campaign in OPENING, IMPLEMENTING, GATING,
+  TRIAGING, REVIEWING or CLOSING. A live old runner can reject new config (2026-10-25: both
+  campaigns parked `open_failed` after `merge.regenerate` landed under an old runner). Do it
+  from a background shell that waits for the quiet window.
 - **Background shell** for long mechanical commands with no judgment (starting the loop,
   `wt queue gates <id>`, waiting for a reset time).
 
@@ -80,13 +86,14 @@ run, handle it — that is the point.
 | `run_failed` (not transient) | informational; the queue's triage handles it — act only if it parks |
 | `parked` `cost_cap` | resume once with `--raise-cap` up to 2× the profile cap and a note; a second cost park → escalate |
 | `parked` `loop_exhausted` / `triage_escalated` / `implementer_blocked` | if the failures were transient (`run_failed` with `transient: true` right before), resume with `--reset-loops`; else read the last triage brief; if a steward is armed for the project (`wt mailbox list --to steward:<P>`), ask it with `wt mailbox send --to steward:<P> --kind question --campaign <id> "…"` and wait for its `message`; else escalate with the brief and your recommendation |
-| `parked` `rebase_conflict` | if every conflicted path is a generated file (e.g. `docs/LEDGER.md`), resume to `CLOSING` (the close step re-runs gates); otherwise dispatch a resolver sub-agent into the campaign worktree to rebase onto the base and resolve the conflicts preserving both intents, commit on the campaign branch, and report; then resume to `CLOSING` (the close step re-gates the result). Escalate only if the resolver reports a semantic conflict it cannot settle |
+| `parked` `rebase_conflict` | generated-files-only conflicts are now resolved automatically by the close step (SPEC-0191, `merge.regenerate` in `.wt/project.yaml`), so such parks should no longer occur; if one does, treat it like any other conflict: dispatch a resolver sub-agent into the campaign worktree to rebase onto the base and resolve the conflicts preserving both intents, commit on the campaign branch, and report; then resume to `GATING` (not `CLOSING`) so the rebased result passes the gates and the conformance review (REVIEWING, SPEC-0187) before the close step. Escalate only if the resolver reports a semantic conflict it cannot settle |
+| `parked` `review_escalated` | the conformance reviewer failed to produce a usable verdict twice (SPEC-0187): dispatch a sub-agent to read the campaign's last review runs and the diff and recommend one of: resume to `REVIEWING`, resume to `IMPLEMENTING` with a brief, or escalate; apply its recommendation |
 | `parked` `main_dirty` / `main_not_on_base` | someone edited the main checkout in place: dispatch a sub-agent to move the uncommitted work intact onto a new branch in its own worktree (copy changed + untracked files, commit as WIP there, verify the copy, then restore main with `git checkout -- <files>` / remove the moved untracked files), notify the owner (steward) by mail where the work now lives, then resume the campaign to `CLOSING`. Off-base main: switch it back to the base branch only if clean; otherwise move the work first the same way |
 | live `wt` broken (any `wt` command fails to import) | same as `main_dirty`: move the in-place WIP to a worktree branch, restore main, notify the owner; use `uv run wt` from a worktree meanwhile |
 | `parked` `open_failed` / `gh_failed` | read the detail; retry once with `wt queue resume`; if it fails again, dispatch a sub-agent to diagnose, then act or escalate |
 | `message` (`kind` answer) | apply it: `wt campaign note`, then resume / abandon / reprioritize as the answer says |
 | `message` (`kind` request) | a steward asks for a queue action (add, prioritize, park, resume): do it via dry-run then `--yes`, and reply with `wt mailbox send --to <from> --kind answer --re <msg_id> "done: …"` |
-| `merged` / `handed_off` | `wt spec reconcile --apply`; one-line report; if the merged spec changed `src/wt/agentic/`, restart the loop in the background (SIGTERM the runner pid, then step 2) so it runs the new code; optional deeper verification goes to a sub-agent |
+| `merged` / `handed_off` | `wt spec reconcile --apply`; one-line report; if the merged change touches `src/wt/agentic/` or `.wt/project.yaml`, restart the runner in the same step as the merge, not later (see *Never block*); optional deeper verification goes to a sub-agent |
 | `backlog` with `blocked_by` an unknown spec | the spec is wrong: escalate |
 | `admitted`, `resumed`, `cost_warning`, `abandoned` | informational; act only if it contradicts what you decided |
 

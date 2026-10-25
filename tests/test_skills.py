@@ -282,6 +282,10 @@ def test_orient_carries_working_rules_and_session_skills_require_it():
         assert first.startswith("0.") and "/wt-orient" in first, name
     conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
     assert "Clear blockers yourself" in conduct
+    assert "review_escalated" in conduct
+    row = next(r for r in conduct.splitlines() if r.startswith("| `parked` `rebase_conflict`"))
+    assert "resume to `GATING`" in row
+    assert "same step as the merge" in conduct
     for name in ("wt-orient", "wt-conduct"):
         text = (REPO_SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
         assert "fresh sub-agent" in text, name
