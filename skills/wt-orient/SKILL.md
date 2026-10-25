@@ -12,6 +12,25 @@ First thing in a fresh session, whenever you're about to do anything with `wt` (
 work-time tracker + idea→spec→task pipeline) and don't already have context on it. Read this
 once instead of `src/wt/`.
 
+## Working rules (all wt sessions)
+
+These apply to every session that touches wt — conductor, steward, builders, humans' agents.
+
+- **Always work in a git worktree** (`git worktree add ../wt-<topic> -b <branch>`); never edit
+  the main checkout in place. The global `wt` is typically an editable install of it, so a
+  half-done edit breaks the live tool for every session (happened 2026-10-25). Land work with
+  an `--ff-only` merge only when the worktree's gates (`uv run pytest`,
+  `python3 tools/spec_lint.py`) are green, and keep the main checkout clean so queue
+  campaigns can close.
+- **Do real work through background sub-agents** — specs, implementation, investigations,
+  rebases, merges, conflict resolution. The main session stays responsive for events and
+  decisions.
+- **Missing-CLI rule:** a one-off python / cat / jq peek into wt's data means a `wt` command is
+  missing — file an idea (`wt idea capture --kind improvement --project Meta-Tools …`,
+  heading-verified) and carry on.
+- **Shared ideas file:** idea ids are global across concurrent sessions — read the id from the
+  capture output and verify the heading (`wt idea show ID --json`) before every write.
+
 ## What `wt` is
 
 `wt` turns Claude transcripts + meetings into per-topic hours, and separately runs an

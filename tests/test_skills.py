@@ -265,3 +265,18 @@ def test_superpowers_coexistence_guidance_spec_0138():
     verify = (REPO_SKILLS_DIR / "wt-verify" / "SKILL.md").read_text(encoding="utf-8")
     assert "Superpowers" in impl or "wt-verify" in impl
     assert "Superpowers" in verify
+
+
+def test_orient_carries_working_rules_and_session_skills_require_it():
+    """Standing rules live in /wt-orient; conductor and steward must load it first."""
+    orient = (REPO_SKILLS_DIR / "wt-orient" / "SKILL.md").read_text(encoding="utf-8")
+    assert "Working rules" in orient
+    for phrase in ("worktree", "sub-agent", "missing", "heading"):
+        assert phrase in orient, phrase
+    for name in ("wt-steward", "wt-conduct"):
+        text = (REPO_SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
+        fm, body = _frontmatter(text)
+        assert "/wt-orient" in fm["description"], name
+        procedure = body.split("## Procedure", 1)[1]
+        first = procedure.strip().splitlines()[0]
+        assert first.startswith("0.") and "/wt-orient" in first, name

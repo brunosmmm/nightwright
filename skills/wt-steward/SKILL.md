@@ -1,6 +1,6 @@
 ---
 name: wt-steward
-description: "Become the steward of one project (SPEC-0184): arm a Monitor on the project's mailbox (`wt mailbox follow --to steward:<Project>`) and answer the conductor's questions about that project's campaigns with project knowledge; route the human's queue requests for this project to the conductor. Use in a project session when the human says to steward the project or to work with the conductor. Advises; never implements in campaign worktrees."
+description: "Become the steward of one project (SPEC-0184) — requires /wt-orient first: arm a Monitor on the project's mailbox (`wt mailbox follow --to steward:<Project>`) and answer the conductor's questions about that project's campaigns with project knowledge; route the human's queue requests for this project to the conductor. Use in a project session when the human says to steward the project or to work with the conductor. Advises; never implements in campaign worktrees."
 trigger: steward this project; be the steward; answer the conductor; work with the agentic queue from a project session
 ---
 
@@ -17,6 +17,8 @@ decides queue actions.
 
 ## Procedure
 
+0. **Load `/wt-orient` first** (invoke the skill) and follow its working rules — required
+   before anything else in this skill.
 1. **Who you are:** resolve the project with `wt projects config` (or the name the human
    gives; `wt projects --json` lists them). Your address is `steward:<Project>`; set
    `WT_MAILBOX_ADDR=steward:<Project>` for every `wt mailbox send` (or pass

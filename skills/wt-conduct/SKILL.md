@@ -1,6 +1,6 @@
 ---
 name: wt-conduct
-description: "Become wt's conductor (SPEC-0182): a long-lived session that arms a Monitor on the queue's event stream (`wt queue events --follow --for conductor`) and is woken by every queue event — parks, merges, failed runs, stuck or dead runners, steward mail — and resolves each from a decision table, escalating to the human only when the table says so. Use when the human asks to conduct / run / watch the agentic queue. Never implements anything itself."
+description: "Become wt's conductor (SPEC-0182) — requires /wt-orient first: a long-lived session that arms a Monitor on the queue's event stream (`wt queue events --follow --for conductor`) and is woken by every queue event — parks, merges, failed runs, stuck or dead runners, steward mail — and resolves each from a decision table, escalating to the human only when the table says so. Use when the human asks to conduct / run / watch the agentic queue. Never implements anything itself."
 trigger: conduct the queue; be the conductor; run and watch the agentic loop; resolve parked campaigns
 ---
 
@@ -43,6 +43,8 @@ run, handle it — that is the point.
 
 ## Procedure
 
+0. **Load `/wt-orient` first** (invoke the skill) and follow its working rules — required
+   before anything else in this skill.
 1. **Situation report:** `wt queue conduct-status --json` (`wt.conduct.status.v1`): runner
    lease, active / queued / parked items, unanswered conductor mail, recent events. If
    `conductor_pid` is set and is not yours, another conductor is armed: stop and tell the
