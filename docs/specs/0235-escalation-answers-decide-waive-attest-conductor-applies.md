@@ -1,0 +1,277 @@
+---
+id: SPEC-0235
+title: "Escalation answers: wt escalations answer (choose/waive/attest/text); the conductor applies them"
+status: accepted
+owner: user
+created: 2026-10-25
+updated: 2026-10-25
+milestone: "M9: agentic workflow"
+kind: feature
+parent: SPEC-0169
+tags: [agentic, conductor, escalation, review, triage]
+source_idea: IDEA-087
+depends_on: [SPEC-0232, SPEC-0203, SPEC-0206]
+---
+
+## Context
+
+Child of epic [SPEC-0169](./0169-mini-agentic-workflow-queue-campaigns-headless.md),
+promoted from `IDEA-087` (part 2 of 2).
+[SPEC-0232](./0232-escalation-records-wt-queue-escalate-and-notify.md) creates escalation
+records (`wt.escalation.v1`, `ESC-NNNN`), parks the campaign as `human_decision`, and mails
+and notifies the human. Two things are still missing:
+- the human has no command to answer;
+- the conductor gets no signal that an answer arrived.
+
+Many escalations come from the review loop: `loop_exhausted` / `triage_escalated` after the
+reviewers keep asking for the same fix.
+[SPEC-0203](./0203-review-triage-score-and-routing.md) scores verdicts
+(`queue.triage_reviews`), and [SPEC-0206](./0206-review-triager-persona.md) lets the review
+triager waive `minor`/`nit` findings only (`queue._accept_waivers`).
+
+The human sometimes has a different answer:
+- "that `major` is wrong, ship it";
+- "AC 4 is met; I checked by hand".
+
+Today the human can only express that as a resume note, which the next reviewer may ignore.
+The fix loop then runs again on the same finding.
+
+## Goals / Non-goals
+
+**Goals**
+- G1. `wt escalations answer ID` with exactly one answer form:
+  - `--choose` an option;
+  - an **override**: `--waive FINDING` and/or `--attest AC`, with `--reason`;
+  - free `--text`.
+
+  The answer is recorded on the escalation and on the campaign ledger.
+- G2. An `escalation_answered` event wakes the conductor, which applies the answer (resume,
+  abandon, reprioritize, re-review). The answer command never moves the campaign itself.
+- G3. Human waivers (any severity) and attestations persist on the campaign and are honoured
+  by `triage_reviews` in every later review, so the fix loop is unblocked.
+
+**Non-goals**
+- A TUI answer form (IDEA-085).
+- Answering by replying in the mailbox. The command is the one entry point, and the steward
+  relays to it.
+- Letting the review triager (SPEC-0206) waive more than `minor`/`nit`. Only the human
+  overrides severity.
+- Auto-resume on answer. The conductor's table stays the single place where a park is
+  resolved.
+
+## Decision
+
+Add `escalations.plan_answer` / `apply_answer` and a `wt escalations answer` command (dry-run,
+then `--yes`). Apply runs, in this order:
+1. Write the answer into the record (status `answered`).
+2. Append a ledger `human_decision` event and a `note` on the campaign.
+3. Store override items in `state["human_overrides"]`.
+4. Append an `escalation_answered` queue event.
+
+`triage_reviews` / `decide_reviews` gain `human_waived` and `attested` arguments, fed from
+`state["human_overrides"]` by `queue._route_reviews`, `_accept_waivers` and the
+`needs_triager` path. The conductor skill gets an `escalation_answered` row.
+
+## Design
+
+### Command
+
+```
+wt escalations answer ID (--choose N|LABEL | --text TEXT |
+                          [--waive FINDING]... [--attest AC]... --reason TEXT)
+                         [--note TEXT] [--by ADDR] [--yes] [--json]
+```
+
+- Exactly one form is allowed:
+  - `choose`;
+  - `text`;
+  - `override` (one or more `--waive` / `--attest`, combinable, with a required non-empty
+    `--reason`).
+
+  Mixing forms is a `UsageError`. `--note` is optional free text and is allowed with any
+  form.
+- `--by` defaults to `human`. The steward passes `--by steward:<P>` when it relays the human's
+  words (see Skills). It must be a valid mailbox address.
+- `plan_answer(cfg, id, ...)` validates. Errors are `ValueError`, turned into
+  `ClickException`:
+  - Refuses a record that is not `open` (the error says answered or withdrawn, and when).
+  - `choose`: the value must be a 1-based option number or an option label (exact match
+    after strip and casefold). The record must have options.
+  - `override`: the record must have a campaign. Each `--waive FINDING` must be the id of a
+    finding (`blocking` or `advisory`, synthetic included, any severity) in
+    `triage_reviews(stored, profile)`:
+    - `stored` is every reviewer verdict in `state["last_review"]["verdicts"]`, in profile
+      order, regardless of `loop`, because the human answers about the review that led to the
+      park;
+    - `profile` is `profiles.resolve_profile(cfg, state.get("profile"))`.
+
+    Each `--attest AC` is either a synthetic AC finding id (`<persona>#ac<j>`, resolved to its
+    `ac` text) or a text that `queue._covers` matches against an `ac_assessment` entry with
+    `met: false` in those verdicts. Anything else is refused and names the valid ids (at most
+    10).
+- The plan prints the record's question and options, the resolved answer and, for
+  overrides, each finding (`id severity title`) and each AC. `--json` emits
+  `wt.escalation.answer.v1` with `written`.
+
+### Apply (`apply_answer`)
+
+Under the campaign's `store.item_lock` when there is a campaign, else under the escalations
+lock:
+1. Record:
+   - `status: answered`;
+   - `answer: {kind: choose|text|override, choice: n|null, label: str|null, text:
+     str|null, waive: [ids], attest: [ac texts], reason: str|null, note: str|null}`;
+   - `answered_by`, `answered_at`.
+2. Campaign ledger (when there is a campaign):
+   - `store.append_event(cfg, cid, "human_decision", {"escalation": id, **answer}, by=<by>)`;
+   - a `note` with the text `<by>: <id> <summary>`. The summary is `chose 2 (abandon)`,
+     `waived conformance_reviewer#1, attested "AC text…": <reason>`, or the text folded to 200 chars.
+   - The note marks the park decided under SPEC-0222's rule. That is harmless, because a
+     `human_decision` park is human-owned and never overdue.
+   - `human_decision` is not projected by `events._project_ledger_event`, so it raises no
+     second queue event.
+3. Overrides: append to `state["human_overrides"] = {"waive": [{id, title, files, severity,
+   synthetic, reason, escalation, at}], "attest": [{ac, reason, escalation, at}]}` and write
+   the state. The state stays `PARKED` with `park` unchanged.
+4. `events.append(cfg, "escalation_answered", campaign=…, spec_id=…, project=…, by=<by>,
+   data={"escalation_id": id, "kind": kind, "summary": summary, "answer": answer})`.
+   `EVENT_TYPES["escalation_answered"] = ("escalation_id", "kind", "summary")`. This is the
+   conductor's wake-up. No mail is sent, because mail to the conductor would add a second
+   `message` event for the same answer.
+
+### Triage honours overrides (`queue.py`)
+
+- `triage_reviews(verdicts, profile, waived=(), human_waived=(), attested=())`:
+  - `attested`: an `ac_assessment` entry with `met: false` that `_covers(a, entry.ac)` for
+    any attested `a` is treated as met. It does not set `unmet` and gets no synthetic `#ac`
+    finding.
+  - `human_waived` (the stored waive dicts): a merged finding is removed, **whatever its
+    severity**, synthetic included, when either:
+    - its `id` equals a waiver's `id` and its normalized title equals the waiver's; or
+    - it is not synthetic, its `norm_finding_title(title)` equals the waiver's, and its
+      `sorted(files)` equals the waiver's (files included).
+    The second rule matches a re-review's findings: ids are positional, and a fresh review
+    renumbers them.
+  - Removed findings join the same `gone` set as triager waivers, so `fixing`, `score`,
+    `must` and `blocking` all ignore them. The result gains `human_waived: [ids]` and
+    `attested: [ac texts]` (the applied ones).
+- `decide_reviews(..., human_waived=(), attested=())` passes them through.
+  `queue._route_reviews` reads `state.get("human_overrides")` and passes both. It appends a
+  `note` `human override: waived N, attested M` when the triage applied any.
+  `_accept_waivers` and `needs_triager` see the same overridden triage, so the triager never
+  re-waives a human-waived finding.
+- `state["human_overrides"]` is top-level and outside `last_review`, so `_begin_review` keeps
+  it. It applies for the rest of the campaign. `queue._apply` does not copy it from the
+  step's snapshot (it is not in the copied-keys list), so the on-disk value wins.
+
+### Skills
+
+- `skills/wt-conduct/SKILL.md`, new row `escalation_answered`. First read `wt escalations show
+  <id>` and `wt campaign log <id> --tail 10`, then act on the kind:
+  - `choose`: do what the chosen option says (resume with `--to` / `--note`, abandon,
+    `wt queue prioritize`, raise the cap…).
+  - `override`: `wt queue resume <cid> --to REVIEWING --note "human override <id>" --yes`.
+    The fresh review then triages with the overrides.
+  - `text`: act on it per the table, or escalate again if it is not actionable.
+
+  Record `wt campaign note <cid> "conductor: applied <id>: …"`, and give the human one line.
+- `skills/wt-steward/SKILL.md`: when the human answers an open escalation for this project
+  in the steward's session, run `wt escalations answer <id> … --by steward:<P> --yes` with the
+  human's words, and never decide on their behalf. Point the human at `wt escalations list` for
+  open ones.
+
+## Alternatives considered
+
+- **The answer command resumes the campaign itself.** Rejected. Choosing an option can mean
+  abandon, reprioritize, raise a cap or resume to a specific state. The conductor's table
+  already knows how to do each, and one actor resolving parks keeps the audit trail simple.
+- **Human waivers in `last_review.waived` (the triager's list).** Rejected. `_begin_review`
+  clears it on every review, ids are positional, and a fresh review would bring the finding
+  straight back.
+- **Re-route the stored verdicts without re-reviewing (resume straight to CLOSING when the
+  overrides clear every blocker).** Rejected for now. A fresh review costs one pass but
+  re-checks the branch as it is. Pre-computing "would pass" would duplicate `decide_reviews`
+  in the answer path.
+- **Answer by mailbox reply (`wt mailbox send --to conductor --kind answer`).** Rejected. It
+  is free text with no validation of finding ids or ACs, and the record would never close.
+
+## Acceptance criteria
+
+- [ ] `wt escalations answer` accepts exactly one form (`--choose`, `--text`, or `--waive` /
+      `--attest` with `--reason`). Mixing forms, a missing reason, a non-open record and an
+      unknown option are refused. Without `--yes` nothing is written.
+- [ ] `--choose` resolves a 1-based number or a case-insensitive label. The record becomes
+      `answered` with `answer`, `answered_by` (default `human`) and `answered_at` set.
+- [ ] `--waive` accepts any finding id of the stored review (any severity, synthetic
+      included) and refuses other ids. `--attest` accepts a `#ac` finding id or an AC text
+      covering an unmet entry, and refuses others. Overrides without a campaign are refused.
+- [ ] Apply appends a `human_decision` ledger event and a `note` on the campaign, stores
+      override items in `state["human_overrides"]`, and leaves the campaign `PARKED` with its
+      `park` unchanged.
+- [ ] Apply appends exactly one `escalation_answered` event (registered in `EVENT_TYPES`,
+      with `escalation_id`, `kind`, `summary`). The ledger `human_decision` event projects no
+      queue event.
+- [ ] `triage_reviews` drops human-waived findings of any severity, both by id and, for a
+      fresh review, by (normalized title, files). Attested ACs are neither unmet nor
+      synthetic findings. A review whose only blockers are overridden routes to `pass`.
+- [ ] `state["human_overrides"]` survives `_begin_review`. `_route_reviews` notes applied
+      overrides. `_accept_waivers` does not list a human-waived finding as waivable.
+- [ ] The `wt-conduct` skill has the `escalation_answered` row (choose / override ⇒ resume to
+      REVIEWING / text), and `wt-steward` has the relay rule.
+- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+
+## Test plan
+
+- **Automated tests:**
+  - `tests/test_agentic_escalations.py` (from SPEC-0232), new cases:
+    - `plan_answer` / `apply_answer` for `choose` by number and by label, and for `text`;
+    - refusals: an answered record, a withdrawn record, mixed forms, an override without a
+      reason or without a campaign, an unknown finding, an unmatched AC;
+    - a campaign parked `human_decision` whose `last_review` holds a fixture verdict with a
+      `major` finding, a `minor` finding and an unmet AC: `--waive conformance_reviewer#0 --attest
+      conformance_reviewer#ac0 --reason r` stores both overrides, the ledger has
+      `human_decision` + `note`, the state is still PARKED, and `events.read_since` has one
+      `escalation_answered` (and no extra projected event after `events.sync`).
+  - `tests/test_agentic_review_triage.py`:
+    - `triage_reviews` with `human_waived` by id, and by title+files after renumbering (a
+      fresh verdict with the finding at another index);
+    - a waived `must_fix` no longer forces `fix`;
+    - `attested` removes the unmet flag and the synthetic `#ac`;
+    - only-overridden blockers ⇒ `outcome == "pass"`.
+  - `tests/test_agentic_queue.py`:
+    - `_begin_review` keeps `human_overrides`;
+    - a tick in REVIEWING with stored verdicts and overrides routes to CLOSING, with the
+      `human override:` note;
+    - `_accept_waivers` ignores a human-waived id.
+  - `tests/test_agentic_escalations_cli.py`: `answer` dry-run vs `--yes`, `--json` schema,
+    mixed-form usage error.
+  - `tests/test_skills.py`: `wt-conduct` mentions `escalation_answered`, and `wt-steward`
+    mentions `wt escalations answer`.
+- **Manual verification:** in a throwaway `WT_DATA_DIR`, create a campaign-less escalation
+  with two options (SPEC-0232), run `uv run wt escalations answer ESC-0001 --choose 2 --yes`,
+  then check `uv run wt queue events --tail 2` shows `escalation_answered` and
+  `wt escalations show` shows the answer. Record the output in the spec.
+- **Regression guard:** full `uv run pytest`. With no overrides, the existing SPEC-0203/0206
+  triage tests are unchanged, because the new arguments default to empty.
+
+## Clock Log
+
+Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
+
+## Rollout / migration
+
+None. `human_overrides` is absent on existing campaigns and is read as empty. After merge,
+the conductor re-reads `/wt-conduct` (automatic with SPEC-0231). Escalations opened under
+SPEC-0232 before this merge can be answered at once.
+
+## Definition of done
+
+- [ ] Acceptance criteria all met.
+- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [ ] No regressions.
+- [ ] Spec body updated to match what shipped.
+- [ ] `docs/LEDGER.md` updated (status + date).
+
+## Open questions
+
+_None — decisions locked above._
