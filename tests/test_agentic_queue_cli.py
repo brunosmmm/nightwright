@@ -221,7 +221,7 @@ SIZED = {"size": "s", "tone": "cost-effective", "rationale": "2 ACs, one module.
 
 def _sized(tmp_path, **extra):
     repo, cfg = _cfg(tmp_path, review=False)
-    write_review(repo / "docs" / "specs" / "0001-trivial.md", "SPEC-0001", **(extra or SIZED))
+    write_review(cfg, repo / "docs" / "specs" / "0001-trivial.md", "SPEC-0001", **(extra or SIZED))
     return repo, cfg
 
 
@@ -249,7 +249,8 @@ def test_add_records_sizing_on_state_and_open_event(tmp_path, monkeypatch):
     cid = added(cfg, monkeypatch)
     st = S.read_state(cfg, cid)
     assert st["profile"] == "frugal"
-    sha = json.loads(S.__file__ and (repo / "docs/specs/reviews/SPEC-0001.json").read_text())["spec_sha256"]
+    from wt.agentic import spec_review as SR
+    sha = SR.spec_sha256(repo / "docs/specs/0001-trivial.md")
     assert st["sizing"] == {"size": "s", "tone": "cost-effective", "rationale": SIZED["rationale"],
                             "source": "review", "reason": "size s, tone cost-effective → frugal",
                             "review_sha256": sha}
@@ -274,7 +275,7 @@ def test_add_old_sidecar_and_force_use_default_profile(tmp_path, monkeypatch):
     assert (d["profile"], d["profile_source"]) == ("balanced", "default")
     assert d["profile_reason"] == "review predates sizing (no size/tone)"
     assert d["size"] is None and d["tone"] is None
-    write_review(repo / "docs" / "specs" / "0001-trivial.md", "SPEC-0001", **SIZED)
+    write_review(cfg, repo / "docs" / "specs" / "0001-trivial.md", "SPEC-0001", **SIZED)
     d = _plan(cfg, monkeypatch, "--force")           # a forced add never trusts the review
     assert (d["profile"], d["profile_source"]) == ("balanced", "default")
     assert d["profile_reason"] == "no approving review (--force)" and d["size"] is None

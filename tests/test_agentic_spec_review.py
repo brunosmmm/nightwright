@@ -216,7 +216,7 @@ def test_review_stores_size_tone_rationale(tmp_path, monkeypatch):
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
     assert r.exit_code == 0, r.output
     out = json.loads(r.output)
-    side = json.loads((repo / "docs" / "specs" / "reviews" / "SPEC-0001.json").read_text())
+    side = SR.load_review(cfg, "SPEC-0001", SR.spec_sha256(_spec(repo)))
     assert (side["size"], side["tone"], side["rationale"]) == ("m", "high-end", SIZED["rationale"])
     assert side["schema"] == "wt.spec.review.v1"
     assert out.pop("profile") == "balanced" and out == side      # would-pick, not stored

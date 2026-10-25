@@ -10,9 +10,10 @@ import pytest
 from test_agentic_e2e import SPEC_ACCEPTED, make_cfg, make_repo, run_cli, script, write_review
 from wt.agentic import spec_review as SR
 
-APPROVE = {"verdict": "approve", "findings": [{"severity": "nit", "section": "Context",
+SIZED = {"size": "m", "tone": "high-end", "rationale": "r"}            # SPEC-0219
+APPROVE = {"verdict": "approve", **SIZED, "findings": [{"severity": "nit", "section": "Context",
                                                "title": "wording"}], "suggested_splits": []}
-MUST_FIX = {"verdict": "approve", "findings": [{"severity": "must_fix", "title": "t"}]}
+MUST_FIX = {"verdict": "approve", **SIZED, "findings": [{"severity": "must_fix", "title": "t"}]}
 
 
 def _entry(verdict=None, **kw):
@@ -62,7 +63,8 @@ def test_review_writes_store_with_repo_root_and_nothing_in_repo(tmp_path, monkey
     path = Path(cfg["data_dir"]) / "agentic" / "reviews" / "SPEC-0001" / f"{sha}.json"
     assert path == SR.store_path(cfg, "SPEC-0001", sha)
     stored = json.loads(path.read_text())
-    assert stored == json.loads(r.stdout)
+    out = json.loads(r.stdout)
+    assert out.pop("profile") == "balanced" and stored == out      # SPEC-0219: not stored
     assert stored["repo_root"] == str(repo.resolve()) and stored["spec_sha256"] == sha
     assert not (repo / "docs" / "specs" / "reviews").exists()
     assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True,
@@ -114,7 +116,7 @@ def test_review_path_in_second_repo_uses_that_root_and_schema(tmp_path, monkeypa
     assert r.exit_code == 0, r.output
     out = json.loads(r.stdout)
     assert out["repo_root"] == str(other.resolve()) and out["spec_id"] == "SPEC-0007"
-    assert SR.load_review(cfg, "SPEC-0007", SR.spec_sha256(spec)) == out
+    assert SR.load_review(cfg, "SPEC-0007", SR.spec_sha256(spec)) == {k: v for k, v in out.items() if k != "profile"}
     assert not (other / "docs" / "specs" / "reviews").exists()
 
 
