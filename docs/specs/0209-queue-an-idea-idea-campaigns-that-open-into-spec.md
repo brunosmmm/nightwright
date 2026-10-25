@@ -32,7 +32,7 @@ accepted, reviewed spec (`queue.plan_add`, SPEC-0176 / SPEC-0188).
 **Goals**
 - `wt queue add IDEA-NNN` queues an idea as a campaign of kind `idea`, which opens into
   SPEC_WRITING.
-- Every queue view and step handles a campaign whose `state.spec.id` is None.
+- Every queue view and step handles an idea campaign that has no spec yet.
 - The idea is linked while its campaign lives (`:CAMPAIGN:`), and unlinked on abandon.
 
 **Non-goals**
@@ -61,26 +61,39 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
     - an unknown idea, or a closed one (anything other than `IDEA`, `INCUBATE`, or `SPECCED`
       without `:SPEC:`);
     - an idea with a `:SPEC:` (message: "queue that spec instead: wt queue add SPEC-…");
-    - an open campaign for the same idea;
+    - an open campaign for the same idea: any campaign whose `state.kind == "idea"`, whose
+      `state.idea.id` equals the argument, and whose state is not terminal (MERGED,
+      HANDED_OFF, ABANDONED). Found by scanning `store.list_campaigns(cfg)`; `apply_add_idea`
+      repeats the scan under the add lock, so two concurrent adds cannot both pass;
     - a project whose `.wt/project.yaml` doesn't load. The project is the idea's
       `:PROJECT:`, default `Meta-Tools`.
   - **On apply:**
     - campaign id `store.new_campaign_id(cfg, "IDEA-NNN")`, and `state.kind = "idea"`;
     - `state.spec_id = None` (top level, as the event envelope reads it);
-    - `state.idea` = `explore.idea_show_payload` (heading, summary, questions, log, project,
+    - `state.idea` = `explore.idea_show_payload` (id, heading, summary, questions, log, project,
       kind), plus `epic` from the idea task's `:EPIC:` (`task.properties.get("EPIC")`), plus
       `state_before` (the idea's org state);
     - `state.spec = {"id": None, "rel_path": None, "internal": True}`;
     - the idea gets `:CAMPAIGN: <campaign id>` through `org_write.set_property` (SPEC-0190
       lock).
-- **Readiness:** `queue.backlog_readiness` returns `(True, [])` for `kind == "idea"` while the
-  idea is open, else `(False, ["idea IDEA-NNN is <state>"])`.
-- **Open:** `_do_open` skips the spec hash and the `spec_at_open.md` copy while
-  `state.spec.id` is None. An idea campaign's open goes to SPEC_WRITING.
+- **"No spec yet"** is one predicate, `queue.has_no_spec(st)`: `st.get("kind") == "idea"` and
+  `not (st.get("spec") or {}).get("id")`. It keys on `kind` first, because spec campaigns
+  created before this spec have no `spec.id` field (they carry `spec_id` and
+  `spec.rel_path` only), and must keep their old behaviour. Every rule below that says
+  "no spec yet" uses it.
+- **"Open idea"** is one predicate, `queue.idea_is_open(task)`: state `IDEA` or `INCUBATE`,
+  or `SPECCED` without `:SPEC:`. Add refusals and readiness both use it.
+- **Readiness:** `queue.backlog_readiness` checks `has_no_spec(st)` **first**, before it reads
+  the spec file (today it reads `state.spec.rel_path` at `queue.py:484`, which would answer
+  "spec file missing"). For such a campaign it returns `(True, [])` while
+  `idea_is_open` holds for the idea, else `(False, ["idea IDEA-NNN is <state>"])`. An idea
+  that no longer exists in the org gives `(False, ["idea IDEA-NNN not found"])`.
+- **Open:** `_do_open` skips the spec hash and the `spec_at_open.md` copy when
+  `has_no_spec(st)`. An idea campaign's open goes to SPEC_WRITING.
 - **`plan_step`:** SPEC_WRITING → park `spec_writer_unavailable` (resume_to SPEC_WRITING).
   SPEC-0215 replaces this with the write step.
-- **Specless tolerance:** each of these treats a missing `state.spec.id` / `spec_id` as "no
-  spec yet" (show the idea id and heading instead) and does not crash:
+- **Specless tolerance:** each of these uses `has_no_spec(st)` (show the idea id and heading
+  instead of a spec) and does not crash:
   - `queue_payload` / `wt queue list` / `wt queue backlog`;
   - `dashboard_payload` / `wt queue watch --once`;
   - `wt campaign show` / `log`;
@@ -93,14 +106,19 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
   `:CAMPAIGN:` stays as a pointer to the history.
 - **Abandon:**
   - `apply_abandon` accepts WAITING as `plan_abandon` already does; today `apply_abandon`
-    raises for WAITING (`queue.py` ≈1556). Both now accept PARKED, QUEUED or WAITING.
+    raises for WAITING (`apply_abandon`, `queue.py:2130`). Both now accept PARKED, QUEUED or WAITING.
   - For a `kind: idea` campaign it also:
     - clears the idea's `:CAMPAIGN:`;
     - clears `:SPEC:` when it equals this campaign's `state.spec.id` (a different, hand-set
       one is kept);
-    - restores the idea's org state to `state.idea.state_before`;
-    - releases the campaign's reservation with `spec_numbers.release` when one exists
-      (pruning would also catch it).
+    - restores the idea's org state to `state.idea.state_before` (the field `apply_add_idea`
+      records; the `idea_show_payload` snapshot's own `state` is not used);
+    - releases the campaign's reservations: `spec_numbers.list_reservations(cfg,
+      specs_dir=<repo.root>/docs/specs)` (the project's base checkout, so the reservation
+      key matches the one the writer used), filtered on `record["campaign"] == cid`, then
+      `spec_numbers.release(cfg, record["number"], specs_dir=…)` for each. None found is a
+      no-op; a ValueError from `release` (pruned concurrently) is ignored. Pruning would
+      also catch it later, because the campaign is ABANDONED.
     All org writes go through `org_write`.
 
 ## Alternatives considered
@@ -118,15 +136,23 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
   - sets the idea's `:CAMPAIGN:`;
   - the dry run writes nothing.
 - [ ] Each refusal errors with its message: unknown idea, closed idea, idea with `:SPEC:`,
-      duplicate campaign, unloadable project.
-- [ ] The backlog shows the campaign ready, and not ready once the idea is closed.
+      duplicate campaign (an open `kind: idea` campaign for the same `idea.id`; an abandoned
+      one does not block), unloadable project.
+- [ ] A pre-existing spec campaign state without `spec.id` (only `spec_id` and
+      `spec.rel_path`) is not treated as "no spec yet": its readiness still reads the spec
+      file, and its open still hashes and copies the spec.
+- [ ] The backlog shows the campaign ready, and not ready once the idea is closed. Readiness
+      for an idea campaign never reads a spec file.
 - [ ] After admission and open, the campaign is in SPEC_WRITING with no spec hash. The next
       tick parks it `spec_writer_unavailable` (resume_to SPEC_WRITING).
 - [ ] With an idea campaign in SPEC_WRITING and in that park, every command and function
       under *Specless tolerance* runs without error, and the listing shows the idea id.
 - [ ] Abandoning:
-  - a parked idea campaign restores the idea's state and clears `:CAMPAIGN:`. With a
-    hand-set `:SPEC:` naming another spec, that `:SPEC:` is kept;
+  - a parked idea campaign restores the idea's state and clears `:CAMPAIGN:`;
+  - a `:SPEC:` equal to the campaign's `state.spec.id` is cleared; a hand-set `:SPEC:`
+    naming another spec is kept;
+  - a reservation recorded for the campaign is released (gone from `list_reservations`);
+    one recorded for another campaign is kept;
   - a WAITING campaign can now be abandoned (`apply_abandon`);
   - `wt queue add IDEA-NNN` works again afterwards.
 - [ ] `render.STATE_STYLES` has `SPEC_WRITING`.
@@ -136,7 +162,10 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
 
 - **Automated tests:** `tests/test_agentic_idea_campaign.py`, using the `test_agentic_e2e`
   harness and a helper that captures an idea in the harness's org. One test per AC, and each
-  sub-bullet is its own assertion. The specless-tolerance test drives CliRunner over every
+  sub-bullet is its own assertion. The abandon tests set `:SPEC:` to the campaign's
+  `state.spec.id` (and, separately, to another id) and reserve a number with
+  `spec_numbers.allocate(..., campaign=cid)` (and one for another campaign) before
+  abandoning. The legacy-state test writes a spec campaign state without `spec.id`. The specless-tolerance test drives CliRunner over every
   listed command, plus `events.sync` and the watchdog, on the parked fixture.
 - **Regression guard:** full `uv run pytest`. Spec campaigns are unaffected, and existing
   abandon tests still pass with WAITING now allowed.
@@ -149,7 +178,7 @@ Ships through the agentic queue. Until SPEC-0215 lands, idea campaigns park
 ## Definition of done
 
 - [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [ ] Test plan executed; automated tests pass (`uv run pytest`). (No manual steps.)
 - [ ] No regressions.
 - [ ] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` updated (status + date).

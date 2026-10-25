@@ -15,8 +15,10 @@ depends_on: [SPEC-0210, SPEC-0211, SPEC-0214, SPEC-0215]
 
 ## Context
 
-Child of epic [SPEC-0169](./0169-mini-agentic-workflow-queue-campaigns-headless.md), the
-second half of `IDEA-078`; SPEC-0211 is the first. It covers three things:
+Child of epic [SPEC-0169](./0169-mini-agentic-workflow-queue-campaigns-headless.md), from
+`IDEA-078`. SPEC-0211 delivers the spec-phase display inside campaigns; this spec adds
+standalone spec reviews. Per-reviewer chips and implementation-review status stay deferred,
+with `IDEA-078` open for them. It covers three things:
 - `wt spec review` runs outside campaigns, journaled by SPEC-0210 in
   `<agentic>/spec-reviews.jsonl`, appear on the dashboard;
 - the spec phases (SPEC-0215, SPEC-0214) emit queue events;
@@ -54,12 +56,16 @@ status and age rules in memory. Project the new events in `events._project_ledge
   - Listed: running rows; ended rows whose end `ts` is within `recent_hours`; failed-orphan
     rows until `started_at + timeout_s + recent_hours`. There is no time filter on the read,
     so a long `timeout_s` never hides a running review.
+  - **Order:** running rows first, oldest `started_at` first; then ended and failed rows,
+    most recent end (or, for a failed orphan, `started_at + timeout_s`) first.
   - `totals.reviews_running` counts running standalone rows. It is a new total, hidden with
     `--project` along with the rows.
   - **With `--project`** (`dashboard_payload(project=…)`), standalone rows are hidden: journal
     records carry no project. Without it, all rows are shown.
   - **Known limitation:** a killed `wt spec review` leaves a start with no end, which shows
     `running` until `started_at + timeout_s` and then `failed`.
+- **Header chip:** the dashboard header gains a `reviews N` chip (cyan) from
+  `totals.reviews_running`, shown only when N > 0, next to the existing state chips.
 - **Rendering:** a **Spec reviews** table after Needs attention, only when non-empty. Columns:
   spec, status (approve green, revise/split yellow, failed red, running cyan), findings
   (`2 must_fix · 1 major`, zero counts omitted, `—` when counts are null), cost (`$0.15`, or
@@ -72,14 +78,17 @@ status and age rules in memory. Project the new events in `events._project_ledge
     - ledger `spec_written` → `spec_written`;
     - ledger `spec_review` → `spec_reviewed`;
     - ledger `spec_accepted` (SPEC-0214's event) → `spec_accepted`. Transitions are not
-      used for this, so a `spec_accepted`-reason transition from WAITING still projects only
-      the existing `admitted` event.
-  - The event **data** carries `spec_id` explicitly, from the campaign state's `spec_id`
+      used for this: the accept's own transition (SPEC_REVIEW → IMPLEMENTING, reason
+      `spec_accepted`) projects nothing, so the event is not doubled.
+  - The event **data** carries `spec_id` explicitly: `ev.get("spec_id") or
+    st.get("spec_id")`, the ledger event's own value first, then the campaign state's
     (SPEC-0215 sets it when the spec is written); the envelope already carries it too.
     `verdict` and `round` come from the ledger event.
 - **Conduct skill:** decision-table rows for the spec-phase park reasons.
-  - `spec_writer_unavailable` and `spec_review_unavailable`: legacy, produced only between
-    the SPEC-0209 / SPEC-0215 merges; resume once the next spec is in.
+  - `spec_writer_unavailable`: legacy, produced only between the SPEC-0209 and SPEC-0215
+    merges; resume once SPEC-0215 is on main.
+  - `spec_review_unavailable`: legacy, produced only between the SPEC-0215 and SPEC-0214
+    merges; resume once SPEC-0214 is on main.
   - `spec_write_failed`: read the problems or blockers; resume with a `--note` that answers
     them. The steward helps when one is armed, and the conductor escalates otherwise.
   - `spec_review_exhausted`: read the reviews (`wt spec review --path …` / the store) and the
@@ -103,18 +112,21 @@ status and age rules in memory. Project the new events in `events._project_ledge
     it;
   - after it ends, the Spec reviews table renders its verdict, findings, cost and when, e.g.
     `revise`, `1 must_fix`, `$0.00`;
-  - with `--project Meta-Tools`, the section is hidden.
+  - while it runs, the header shows the `reviews 1` chip; with none running, no chip;
+  - with `--project Meta-Tools`, the section and the chip are hidden.
 - [ ] Backdated journal records:
   - a start with no end past its `timeout_s` shows `failed`, and disappears after
     `recent_hours`;
   - an end with `error` shows `failed` with counts null and the record's cost;
   - a review that ended more than `recent_hours` ago is not listed;
-  - a running review whose start is 2.5 hours old (with a 3-hour `timeout_s`) is still
-    listed.
+  - with `recent_hours=1`, a running review whose start is 2.5 hours old (with a 3-hour
+    `timeout_s`) is still listed as `running`;
+  - rows are ordered running first (oldest start first), then ended and failed rows, most
+    recent first.
 - [ ] `spec_written`, `spec_reviewed` (with verdict and round) and `spec_accepted` are each
       projected exactly once from an idea campaign's ledger (`events.sync` run twice). Their
-      data `spec_id` matches the campaign's spec. A `spec_accepted`-reason transition from
-      WAITING projects only `admitted`.
+      data `spec_id` matches the campaign's spec. The accept's SPEC_REVIEW → IMPLEMENTING
+      transition (reason `spec_accepted`) projects no event of its own.
 - [ ] `skills/wt-conduct/SKILL.md` has a row for each of the four spec-phase park reasons
       listed in the Design.
 - [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
@@ -136,7 +148,7 @@ Ships through the agentic queue after SPEC-0211. The changes are additive.
 ## Definition of done
 
 - [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [ ] Test plan executed; automated tests pass (`uv run pytest`). (No manual steps.)
 - [ ] No regressions.
 - [ ] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` updated (status + date).
