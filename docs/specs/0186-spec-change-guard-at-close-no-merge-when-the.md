@@ -1,7 +1,7 @@
 ---
 id: SPEC-0186
 title: "Spec-change guard at close: no merge when the implementer altered the spec"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -94,17 +94,17 @@ drift — the same routing the existing `spec-dod` failure uses, so the queue ne
 
 ## Acceptance criteria
 
-- [ ] `spec_drift` returns no hunks for: ticking boxes, changing `status`/`updated`, adding or
+- [x] `spec_drift` returns no hunks for: ticking boxes, changing `status`/`updated`, adding or
       editing `### Test record` / `### As shipped` subsections, editing `## Clock Log`.
-- [ ] `spec_drift` returns hunks for: rewording or deleting an AC, adding an AC, editing
+- [x] `spec_drift` returns hunks for: rewording or deleting an AC, adding an AC, editing
       Decision / Design / Test plan text, changing another frontmatter key (e.g. `depends_on`).
-- [ ] `_do_open` writes `spec_at_open.md` with the worktree spec text.
-- [ ] `close_campaign` with drift returns `TRIAGING` with the `spec-changed` synthetic gate and a
+- [x] `_do_open` writes `spec_at_open.md` with the worktree spec text.
+- [x] `close_campaign` with drift returns `TRIAGING` with the `spec-changed` synthetic gate and a
       `must_fix` finding, before any rebase or merge; with no copy it adds an `info` finding and
       proceeds.
-- [ ] End to end with the fake runner: an implementer run that deletes an AC and marks the spec
+- [x] End to end with the fake runner: an implementer run that deletes an AC and marks the spec
       done never reaches `MERGED`; the ledger shows the `spec-changed` finding; main is unchanged.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -115,6 +115,29 @@ drift — the same routing the existing `spec-dod` failure uses, so the queue ne
   HEAD is unchanged; `_do_open` writes the copy.
 - **Manual verification:** none beyond the suite (the next real campaign exercises the guard).
 - **Regression guard:** full `uv run pytest`.
+
+### Test record (2026-10-25)
+
+- `tests/test_agentic_spec_drift.py`: 17 tests — 6 allowed-edit cases (status, tick, updated,
+  Test record, Clock Log, all combined) report no drift; 8 governing-edit cases (delete / reword
+  / add an AC, Decision, Design, Test plan, a frontmatter key, allowed edits plus a deleted AC)
+  report hunks; `spec_guard` without a copy ⇒ `info` finding and proceed; with drift ⇒
+  `spec-changed` synthetic gate + `must_fix` finding, and no events for allowed-only edits;
+  end to end with the fake runner, an implementer that deletes the only AC and marks the spec
+  done goes GATING → CLOSING → TRIAGING → PARKED, never MERGED, main HEAD unchanged,
+  `spec_at_open.md` holds the accepted text, the synthetic gate is in `last_gate`.
+- Mutation check: with `spec_drift` short-circuited to no hunks, the guard and e2e tests fail.
+- `tests/test_agentic_close.py` fixture now carries the open-time copy (as every new campaign
+  does); all 19 close tests and the queue / e2e suites pass unchanged otherwise.
+- Full `uv run pytest`: 1524 passed, 1 skipped, 0 failed (after the ledger regeneration).
+
+### As shipped
+
+- `_normalize_spec` re-serializes frontmatter minus `status`/`updated` with sorted keys, drops
+  `### Test record…` / `### As shipped…` subsections and the `## Clock Log` section, and
+  un-ticks checkboxes; `spec_drift` diffs the normalized texts (`n=1`) into `@@` hunks.
+- `spec_guard(cfg, state)` runs as step 0 of `close_campaign`; the drift diff is capped at 120
+  lines in the gate tail and finding detail.
 
 ## Clock Log
 
@@ -127,11 +150,11 @@ finding. The running loop must be restarted to load the new code.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

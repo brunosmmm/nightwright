@@ -9,9 +9,13 @@ Pure Python over `gitops` / `gates` / `verify`; it returns the ledger events for
 itself."""
 from __future__ import annotations
 
+import difflib
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import yaml
 
 from ..specmeta import sections, split_frontmatter
 from ..verify import verify_spec_file
@@ -67,6 +71,96 @@ def spec_dod(worktree, spec_rel_path) -> tuple[bool, dict | None]:
         return True, None
     return False, {"name": "spec-dod", "required": True, "ok": False, "exit_code": None,
                    "timed_out": False, "duration_s": 0.0, "log": "", "tail": "\n".join(failing)}
+
+
+# ---- spec-change guard (SPEC-0186) -----------------------------------------------------------
+
+SPEC_AT_OPEN = "spec_at_open.md"
+_ALLOWED_SUBSECTION_RE = re.compile(r"^###\s+(Test record|As shipped)\b", re.IGNORECASE)
+_HEADING_RE = re.compile(r"^(#{1,6})\s")
+_TICK_RE = re.compile(r"^(\s*[-*]\s+)\[[xX]\]")
+_DRIFT_TAIL_LINES = 120
+
+
+def _normalize_spec(text: str) -> str:
+    """The spec with every change an implementer is allowed to make erased: frontmatter
+    `status` / `updated`, checkbox ticks, `### Test record` / `### As shipped` subsections and
+    the `## Clock Log` section. Two specs normalize equal ⇔ no governing text changed."""
+    fm, body = split_frontmatter(text)
+    if fm is None:
+        fm, body = {}, text
+    fm = {k: v for k, v in fm.items() if k not in ("status", "updated")}
+    out = ["---", yaml.safe_dump(fm, sort_keys=True, default_flow_style=False).strip(), "---"]
+    skip_level = None          # heading level whose section we are skipping
+    for line in body.splitlines():
+        m = _HEADING_RE.match(line)
+        if m:
+            level = len(m.group(1))
+            if skip_level is not None and level <= skip_level:
+                skip_level = None
+            if skip_level is None:
+                if level == 3 and _ALLOWED_SUBSECTION_RE.match(line):
+                    skip_level = 3
+                    continue
+                if level == 2 and line.strip().lower() == "## clock log":
+                    skip_level = 2
+                    continue
+        if skip_level is not None:
+            continue
+        out.append(_TICK_RE.sub(r"\1[ ]", line).rstrip())
+    text = "\n".join(out)
+    return re.sub(r"\n{3,}", "\n\n", text).strip() + "\n"
+
+
+def spec_drift(old: str, new: str) -> list[str]:
+    """Unified-diff hunks of governing changes between the accepted spec (`old`) and the
+    worktree spec (`new`); empty ⇔ only allowed edits."""
+    a = _normalize_spec(old).splitlines()
+    b = _normalize_spec(new).splitlines()
+    if a == b:
+        return []
+    hunks, cur = [], []
+    for line in difflib.unified_diff(a, b, "accepted", "worktree", n=1, lineterm=""):
+        if line.startswith(("---", "+++")):
+            continue
+        if line.startswith("@@"):
+            if cur:
+                hunks.append("\n".join(cur))
+            cur = [line]
+        else:
+            cur.append(line)
+    if cur:
+        hunks.append("\n".join(cur))
+    return hunks
+
+
+def spec_guard(cfg, state: dict) -> tuple[bool, dict | None, list]:
+    """(ok, synthetic_gate, events). Compares the worktree spec with the open-time copy."""
+    rel = (state.get("spec") or {}).get("rel_path") or ""
+    worktree = (state.get("repo") or {}).get("worktree") or ""
+    copy = store.campaign_dir(cfg, state["id"]) / SPEC_AT_OPEN
+    if not copy.is_file():
+        return True, None, [("finding", {
+            "persona": "close", "severity": "info", "gate": "spec-changed",
+            "title": "spec-changed guard skipped: no open-time copy of the spec",
+            "detail": str(copy), "files": [rel]})]
+    try:
+        new = (Path(worktree) / rel).read_text(encoding="utf-8")
+    except OSError as e:
+        new = f"(spec unreadable: {e})"
+    hunks = spec_drift(copy.read_text(encoding="utf-8"), new)
+    if not hunks:
+        return True, None, []
+    diff = "\n".join(hunks).splitlines()
+    tail = "\n".join(diff[:_DRIFT_TAIL_LINES]
+                     + ([f"... ({len(diff) - _DRIFT_TAIL_LINES} more lines)"]
+                        if len(diff) > _DRIFT_TAIL_LINES else []))
+    gate = {"name": "spec-changed", "required": True, "ok": False, "exit_code": None,
+            "timed_out": False, "duration_s": 0.0, "log": "", "tail": tail}
+    return False, gate, [("finding", {
+        "persona": "close", "severity": "must_fix", "gate": "spec-changed",
+        "title": "spec text changed outside allowed sections",
+        "detail": tail, "files": [rel]})]
 
 
 def pr_body(state: dict, spec_fm: dict, spec_sections: dict, gate_run: G.GateRun | None) -> str:
@@ -135,6 +229,12 @@ def close_campaign(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
     base = mcfg.get("base") or project_cfg.get("base") or repo.get("base") or "main"
     remote = mcfg.get("remote") or "origin"
     rel = (state.get("spec") or {}).get("rel_path") or ""
+
+    # 0. spec-change guard (SPEC-0186): the governing text must be what was accepted
+    ok, synthetic, guard_events = spec_guard(cfg, state)
+    events.extend(guard_events)
+    if not ok:
+        return CloseOutcome("TRIAGING", synthetic_gate=synthetic, events=events)
 
     # 1. spec DoD in the worktree
     ok, synthetic = spec_dod(worktree, rel)

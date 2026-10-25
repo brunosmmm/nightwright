@@ -431,6 +431,12 @@ def _do_open(ctx: _Ctx, state: dict) -> StepResult:
         repo["head"] = git.rev_parse(worktree)
         spec = state.setdefault("spec", {})
         spec["sha256_at_open"] = _spec_sha(worktree / spec.get("rel_path", ""))
+        # SPEC-0186: keep the accepted text so the close step can detect spec drift
+        spec_file = worktree / spec.get("rel_path", "")
+        if spec.get("rel_path") and spec_file.is_file():
+            store.campaign_dir(ctx.cfg, state["id"]).mkdir(parents=True, exist_ok=True)
+            (store.campaign_dir(ctx.cfg, state["id"]) / CL.SPEC_AT_OPEN).write_text(
+                spec_file.read_text(encoding="utf-8"), encoding="utf-8")
     except (GitError, ValueError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
     return res

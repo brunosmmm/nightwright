@@ -111,7 +111,11 @@ def world(tmp_path):
         "counters": {"loops": 1, "runs": 2},
         "cost": {"total_usd": 1.5, "cap_usd": 10.0, "by_persona": {"implementer": 1.5}},
     }
-    (tmp_path / "data" / "agentic" / "campaigns" / state["id"]).mkdir(parents=True)
+    cdir = tmp_path / "data" / "agentic" / "campaigns" / state["id"]
+    cdir.mkdir(parents=True)
+    # SPEC-0186: the accepted text the queue saves at open (before the implementer's edits)
+    (cdir / "spec_at_open.md").write_text(
+        SPEC_DONE.replace("status: done", "status: accepted").replace("- [x]", "- [ ]"))
     return {"origin": origin, "root": root, "wt": wt_path, "cfg": cfg, "state": state,
             "tmp": tmp_path}
 
