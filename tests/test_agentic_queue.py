@@ -1069,6 +1069,15 @@ def test_plan_add_approved_and_forced_have_no_revision(tmp_path):
     assert [e["type"] for e in S.read_ledger(cfg, plan["campaign"])] == ["open"]
 
 
+def test_plan_add_forced_on_revise_reviewed_spec_has_no_revision(tmp_path):
+    repo, cfg, _ = _revised(tmp_path, [])
+    plan = Q.plan_add(cfg, "SPEC-0001", force=True)
+    assert plan["review"] == "forced" and plan["revision"] is None
+    state = Q.apply_add(cfg, plan)
+    assert state["pending_brief"] is None
+    assert [e["type"] for e in S.read_ledger(cfg, plan["campaign"])] == ["open"]
+
+
 def test_first_implementer_prompt_has_findings_second_does_not(tmp_path, monkeypatch):
     entries = [impl_done(), {"persona": "conformance_reviewer", "cost_usd": 0.2, "verdict": {
         "verdict": "fix", "score": 40, "ac_assessment": [], "fix_brief": "rewrite feature.txt",

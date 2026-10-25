@@ -308,3 +308,4 @@ def test_spec_review_second_round_needs_force(tmp_path, monkeypatch, by_path):
     assert r.exit_code == 0, r.output
     assert len(ran) == 2
     assert f"warning: extra review round for SPEC-0001 (previous: approve, {sha12})" in r.output
+    assert f"warning: extra review round for SPEC-0001 (previous: approve, {sha12})" in r.stderr

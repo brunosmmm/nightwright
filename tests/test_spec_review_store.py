@@ -315,3 +315,24 @@ def test_check_admissible_legacy_approve_and_corrupt_file(tmp_path):
         SR.check_admissible(cfg, spec, "SPEC-0001")
     _store(cfg, spec, "revise", 1, sha=OLDER)
     assert SR.check_admissible(cfg, spec, "SPEC-0001")["admission"] == "after_revision"
+
+
+def test_check_admissible_after_several_revises_latest_governs(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    spec = _spec(repo)
+    _store(cfg, spec, "revise", 1, sha=OLDER)
+    _store(cfg, spec, "revise", 2, sha=OLD)
+    got = SR.check_admissible(cfg, spec, "SPEC-0001")
+    assert got["admission"] == "after_revision" and got["spec_sha256"] == OLD
+    assert len(SR.list_reviews(cfg, "SPEC-0001")) == 2
+
+
+def test_check_admissible_current_approve_wins_over_later_review(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    spec = _spec(repo)
+    _store(cfg, spec, "approve", 1)                              # approve for the current sha
+    _store(cfg, spec, "split", 2, sha=OLD)                       # a later review for another sha
+    got = SR.check_admissible(cfg, spec, "SPEC-0001")
+    assert got["admission"] == "approved" and got["spec_sha256"] == SR.spec_sha256(spec)
+    _store(cfg, spec, "revise", 3, sha=OLDER)
+    assert SR.check_admissible(cfg, spec, "SPEC-0001")["admission"] == "approved"
