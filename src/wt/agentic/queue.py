@@ -47,7 +47,7 @@ RESUMABLE_STATES = ("IMPLEMENTING", "GATING", "REVIEWING", "CLOSING", "QUEUED")
 PARK_REASONS = frozenset({
     "cost_cap", "loop_exhausted", "implementer_blocked", "triage_escalated", "open_failed",
     "rebase_conflict", "main_dirty", "main_not_on_base", "base_moving", "gh_failed", "human",
-    "review_escalated",
+    "review_escalated", "config_invalid",
 })
 # How many times in a row the implementer may report `blocked` before the campaign parks.
 BLOCKED_STREAK_MAX = 2
@@ -406,6 +406,11 @@ def _spec_sha(path) -> str | None:
 
 # ---- step execution --------------------------------------------------------------------
 
+class ProjectConfigError(ValueError):
+    """The project's `.wt/project.yaml` could not be loaded (SPEC-0194): parks as
+    `config_invalid`, and the campaign resumes by itself once the config loads again."""
+
+
 @dataclass
 class StepResult:
     """What a step produced. Applied on the main thread by `_apply`."""
@@ -422,6 +427,7 @@ class StepResult:
     error: str | None = None
     interrupted: bool = False
     events_before: list = field(default_factory=list)
+    config_error: bool = False
 
 
 class _Ctx:
@@ -449,7 +455,10 @@ class _Ctx:
     def project(self, state) -> dict:
         name = state.get("project")
         if name not in self._projects:
-            self._projects[name] = P.project_config(self.cfg, name)
+            try:
+                self._projects[name] = P.project_config(self.cfg, name)
+            except ValueError as e:
+                raise ProjectConfigError(str(e)) from e
         return self._projects[name]
 
 
@@ -482,6 +491,7 @@ def _do_open(ctx: _Ctx, state: dict) -> StepResult:
                 spec_file.read_text(encoding="utf-8"), encoding="utf-8")
     except (GitError, ValueError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
+        res.config_error = isinstance(e, ProjectConfigError)
     return res
 
 
@@ -610,6 +620,11 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         return row
 
     kind = res.step.kind
+    if res.error and res.config_error:
+        resume = "QUEUED" if kind == "open" and res.from_state == "OPENING" else res.from_state
+        return finish("PARKED", "config_invalid", park={
+            "reason": "config_invalid", "detail": f"project config: {res.error}",
+            "resume_to": resume if resume in RESUMABLE_STATES else "IMPLEMENTING"})
     if res.error and kind != "close":
         reason = {"open": "open_failed"}.get(kind, "open_failed")
         detail = f"{kind} step failed: {res.error}"
@@ -794,6 +809,28 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
     busy = [s for s in items if s.get("state") in ACTIVE_STATES]
     queued = [s for s in items if s.get("state") == "QUEUED"]
 
+    # 0. campaigns parked on a bad project config resume once it loads (SPEC-0194) — into a
+    #    free slot only, so a recovery never runs more campaigns than the profile allows
+    for st in store.list_campaigns(cfg, state="PARKED"):
+        park = st.get("park") or {}
+        if park.get("reason") != "config_invalid":
+            continue
+        try:
+            ctx.project(st)
+        except ProjectConfigError:
+            continue
+        to = park.get("resume_to") or "QUEUED"
+        if to in ACTIVE_STATES and len(busy) >= slots:
+            continue
+        frm = st.get("state")
+        st["park"] = None
+        _transition(cfg, st, to, "config_recovered")
+        report.steps.append({"campaign": st["id"], "from": frm, "to": to,
+                             "action": "recover", "reason": "config_recovered",
+                             "run_id": None, "cost_usd": None})
+        report.idle = False
+        (busy if to in ACTIVE_STATES else queued).append(st)
+
     # 1. admission + opening (serial); an item admitted now waits for the next tick
     ready = {}
     for st in queued:
@@ -820,7 +857,8 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
             pcfg = ctx.project(st)
         except ValueError as e:
             report.steps.append(_apply(ctx, st, StepResult(
-                st["id"], Step("open"), st["state"], error=str(e))))
+                st["id"], Step("open"), st["state"], error=str(e),
+                config_error=isinstance(e, ProjectConfigError))))
             continue
         step = plan_step(st, profile, pcfg)
         if step.kind == "none":
@@ -923,12 +961,50 @@ def read_journal(cfg, *, tail=None) -> list[dict]:
     return out[-tail:] if tail else out
 
 
+# ---- code-change re-exec (SPEC-0194) ------------------------------------------------------------
+# The runner imports wt from a checkout (an editable install of main). When a merge changes
+# that code, a long-lived loop would keep running the old code — and reject config the new
+# code accepts. Between ticks nothing is in flight, so the loop checks the checkout's HEAD there
+# and re-executes itself, handing its lease over so the queue is never unowned.
+
+_CODE_PATHS = ("src/wt", "pyproject.toml")
+_EXEC = os.execve                      # tests replace this
+
+
+def code_checkout() -> Path | None:
+    """The git checkout this wt package is imported from, or None (not a checkout)."""
+    root = Path(__file__).resolve().parents[3]
+    return root if (root / ".git").exists() and (root / "src" / "wt").is_dir() else None
+
+
+def _git_out(root, *args) -> str | None:
+    try:
+        r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True,
+                           timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def code_changes(root, since: str) -> tuple[str | None, list[str]]:
+    """(current HEAD, wt code paths changed since `since`) for the checkout at `root`."""
+    head = _git_out(root, "rev-parse", "HEAD")
+    if not head or head == since:
+        return head, []
+    diff = _git_out(root, "diff", "--name-only", since, head, "--", *_CODE_PATHS)
+    return head, [p for p in (diff or "").splitlines() if p]
+
+
 def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=False,
-        on_tick=None, runner=None, argv=None) -> int:
+        on_tick=None, runner=None, argv=None, reexec=False, code_root=None) -> int:
     """The loop: take the lease, tick, heartbeat, sleep. SIGINT/SIGTERM stop admissions,
     forward SIGTERM to this process group's children (the `claude` runs) when we lead the
     group, let in-flight steps record themselves, and release the lease. Returns the number
-    of ticks performed."""
+    of ticks performed.
+
+    With `reexec` (SPEC-0194), when a commit to the wt checkout (`code_root`, default the one
+    this package is imported from) changes wt's code, the loop stops between ticks, journals
+    `stop` with reason `code_changed`, and re-executes the same command keeping its lease."""
     agentic = cfg.get("agentic") or {}
     interval = float(poll_interval_s if poll_interval_s is not None
                      else agentic.get("poll_interval_s") or 20)
@@ -954,7 +1030,11 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
             pass
     ticks = 0
     reason = "signal"
-    journal(cfg, "start", argv=list(argv or ["wt", "queue", "run"]), interval_s=interval)
+    watch_root = (code_root or code_checkout()) if reexec else None
+    code_sha = _git_out(watch_root, "rev-parse", "HEAD") if watch_root else None
+    restart = {}
+    journal(cfg, "start", argv=list(argv or ["wt", "queue", "run"]), interval_s=interval,
+            code_sha=code_sha)
     try:
         while not stop.is_set():
             report = tick(cfg, stop=stop, runner=runner)
@@ -969,6 +1049,13 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                 reason = "once" if once else ("max_ticks" if max_ticks and ticks >= max_ticks
                                               else "idle")
                 break
+            if code_sha:
+                head, changed = code_changes(watch_root, code_sha)
+                if changed:
+                    reason = "code_changed"
+                    restart = {"from_sha": code_sha, "to_sha": head, "paths": changed[:50]}
+                    break
+                code_sha = head or code_sha       # docs-only commits: keep running
             deadline = time.monotonic() + interval
             while time.monotonic() < deadline and not stop.is_set():
                 time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
@@ -981,13 +1068,19 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
         raise
     finally:
         if reason != "crash":
-            journal(cfg, "stop", ticks=ticks, reason=reason)
+            journal(cfg, "stop", ticks=ticks, reason=reason, **restart)
+        handover_env = lease.handover() if reason == "code_changed" else None
         lease.release()
         for sig, prev in previous.items():
             try:
                 signal.signal(sig, prev)
             except (ValueError, TypeError):
                 pass
+    if handover_env is not None:
+        import sys
+        sys.stdout.flush()
+        sys.stderr.flush()
+        _EXEC(sys.executable, [sys.executable, *sys.argv], {**os.environ, **handover_env})
     return ticks
 
 

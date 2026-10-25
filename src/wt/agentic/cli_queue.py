@@ -611,12 +611,16 @@ def attach(queue_group):
     @click.option("--until-idle", is_flag=True, help="exit when nothing is in flight")
     @click.option("--json-lines", "json_lines", is_flag=True,
                   help="one wt.queue.tick.v1 object per tick on stdout")
+    @click.option("--no-reexec", "no_reexec", is_flag=True,
+                  help="keep running old code when a merge changes wt (default: re-exec)")
     @click.pass_obj
-    def queue_run(cfg, once, max_ticks, poll_interval, until_idle, json_lines):
+    def queue_run(cfg, once, max_ticks, poll_interval, until_idle, json_lines, no_reexec):
         """The loop: tick, heartbeat, sleep. One process at a time (lease-guarded).
 
         SIGINT/SIGTERM stop admissions, let in-flight steps record themselves, and release
-        the lease; a run interrupted mid-persona is re-spawned fresh by the next loop.
+        the lease; a run interrupted mid-persona is re-spawned fresh by the next loop. When a
+        commit changes wt's own code, the loop re-executes itself between ticks, keeping the
+        lease (SPEC-0194).
         """
         def on_tick(report):
             if json_lines:
@@ -629,7 +633,7 @@ def attach(queue_group):
         try:
             ticks = Q.run(cfg, once=once, max_ticks=max_ticks, poll_interval_s=poll_interval,
                           until_idle=until_idle, on_tick=on_tick,
-                          argv=["wt", "queue", "run"])
+                          argv=["wt", "queue", "run"], reexec=not (once or no_reexec))
         except ValueError as e:
             raise click.ClickException(str(e))
         if not json_lines:

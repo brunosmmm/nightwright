@@ -35,12 +35,11 @@ change, these rules, and what to report.
   verifying a merged spec. Launch it in the background with a brief that names the campaign,
   the worktree, the exact goal, what it may change, and that it must report back with facts
   and a recommended `wt` action. You then apply that action yourself (a quick write).
-- **Restart with the merge.** When a merged change touches `src/wt/agentic/` or
-  `.wt/project.yaml`, restart the runner in the SAME step as the merge (stop runner,
-  ff-merge, start runner) at a quiet window: no campaign in OPENING, IMPLEMENTING, GATING,
-  TRIAGING, REVIEWING or CLOSING. A live old runner can reject new config (2026-10-25: both
-  campaigns parked `open_failed` after `merge.regenerate` landed under an old runner). Do it
-  from a background shell that waits for the quiet window.
+- **The runner follows merges by itself** (SPEC-0194): between ticks it re-executes when a
+  commit changes `src/wt/` or `pyproject.toml` (keeping its lease; `wt queue runner-log`
+  shows `stop code_changed` then `start`), and a campaign parked `config_invalid` resumes
+  once the config loads. Don't restart it by hand after a merge; only if `runner-log` shows
+  no `start` within a minute of a `code_changed` stop.
 - **Background shell** for long mechanical commands with no judgment (starting the loop,
   `wt queue gates <id>`, waiting for a reset time).
 
@@ -93,7 +92,7 @@ run, handle it — that is the point.
 | `parked` `open_failed` / `gh_failed` | read the detail; retry once with `wt queue resume`; if it fails again, dispatch a sub-agent to diagnose, then act or escalate |
 | `message` (`kind` answer) | apply it: `wt campaign note`, then resume / abandon / reprioritize as the answer says |
 | `message` (`kind` request) | a steward asks for a queue action (add, prioritize, park, resume): do it via dry-run then `--yes`, and reply with `wt mailbox send --to <from> --kind answer --re <msg_id> "done: …"` |
-| `merged` / `handed_off` | `wt spec reconcile --apply`; one-line report; if the merged change touches `src/wt/agentic/` or `.wt/project.yaml`, restart the runner in the same step as the merge, not later (see *Never block*); optional deeper verification goes to a sub-agent |
+| `merged` / `handed_off` | `wt spec reconcile --apply`; one-line report; the runner re-execs on code changes by itself (check `wt queue runner-log --tail 3`); optional deeper verification goes to a sub-agent |
 | `backlog` with `blocked_by` an unknown spec | the spec is wrong: escalate |
 | `admitted`, `resumed`, `cost_warning`, `abandoned` | informational; act only if it contradicts what you decided |
 

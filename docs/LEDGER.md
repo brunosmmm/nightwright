@@ -95,7 +95,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (19/20 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (20/21 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -116,6 +116,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0191](./specs/0191-deterministic-rebase-resolver-for-generated-files.md) Deterministic rebase resolver for generated files in the close step — done
   - [x] [SPEC-0192](./specs/0192-schema-d-agentic-logs-validated-ledger-run-json.md) Schema'd agentic logs: validated ledger, run.json, gate sidecars, runner journal — done
   - [x] [SPEC-0193](./specs/0193-persona-prompts-state-the-spec-change-guard-rules.md) Persona prompts state the spec-change guard rules — done
+  - [x] [SPEC-0194](./specs/0194-runner-follows-merged-code-re-exec-between-ticks.md) Runner follows merged code: re-exec between ticks, lease handover, config_invalid parks — done
 
 ## Active & planned
 
@@ -312,6 +313,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0191](./specs/0191-deterministic-rebase-resolver-for-generated-files.md) | Deterministic rebase resolver for generated files in the close step | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0192](./specs/0192-schema-d-agentic-logs-validated-ledger-run-json.md) | Schema'd agentic logs: validated ledger, run.json, gate sidecars, runner journal | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0193](./specs/0193-persona-prompts-state-the-spec-change-guard-rules.md) | Persona prompts state the spec-change guard rules | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0194](./specs/0194-runner-follows-merged-code-re-exec-between-ticks.md) | Runner follows merged code: re-exec between ticks, lease handover, config_invalid parks | feature | done | M9: agentic workflow | 2026-10-25 |
 
 ## Superseded / rejected
 

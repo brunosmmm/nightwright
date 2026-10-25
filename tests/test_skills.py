@@ -285,7 +285,7 @@ def test_orient_carries_working_rules_and_session_skills_require_it():
     assert "review_escalated" in conduct
     row = next(r for r in conduct.splitlines() if r.startswith("| `parked` `rebase_conflict`"))
     assert "resume to `GATING`" in row
-    assert "same step as the merge" in conduct
+    assert "follows merges by itself" in conduct and "code_changed" in conduct   # SPEC-0194
     for name in ("wt-orient", "wt-conduct"):
         text = (REPO_SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
         assert "fresh sub-agent" in text, name

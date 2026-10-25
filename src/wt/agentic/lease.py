@@ -15,6 +15,9 @@ from ..export import _atomic_write
 from .store import agentic_dir, now_iso
 
 
+HANDOVER_ENV = "WT_RUNNER_LEASE_FD"
+
+
 def lock_path(cfg) -> Path:
     return agentic_dir(cfg) / "queue.lock"
 
@@ -55,6 +58,15 @@ class Lease:
             os.close(self.fd)
             self.fd = None
 
+    def handover(self) -> dict:
+        """Keep the lease across `os.execv` (SPEC-0194): the flock lives on the open file
+        description, so making the descriptor inheritable and naming it in the environment
+        lets the re-executed loop adopt it — the lease is never free in between. Returns the
+        env additions; after this, `release()` is a no-op in this image."""
+        os.set_inheritable(self.fd, True)
+        fd, self.fd = self.fd, None
+        return {HANDOVER_ENV: str(fd)}
+
     def __enter__(self):
         return self
 
@@ -77,9 +89,21 @@ def _heartbeat_age(info, now=None) -> float | None:
 
 
 def acquire(cfg, argv=None, *, ttl_s=None, now=None) -> Lease:
-    """Take the runner lease or raise ValueError naming the current holder."""
+    """Take the runner lease or raise ValueError naming the current holder. A loop that
+    re-executed itself adopts the descriptor it handed over (`Lease.handover`)."""
     d = agentic_dir(cfg)
     d.mkdir(parents=True, exist_ok=True)
+    adopted = _adopt_handover(cfg)
+    if adopted is not None:
+        info = dict(read_lease(cfg) or {})
+        info.update({"pid": os.getpid(), "argv": list(argv or []),
+                     "heartbeat_at": now_iso(now), "restarted_at": now_iso(now)})
+        info.setdefault("host", socket.gethostname())
+        info.setdefault("started_at", now_iso(now))
+        info.setdefault("ttl_s", ttl_s or (cfg.get("agentic") or {}).get("lease_ttl_s") or 120)
+        lease = Lease(cfg, adopted, info)
+        _atomic_write(lease_path(cfg), json.dumps(info, indent=2) + "\n")
+        return lease
     fd = os.open(lock_path(cfg), os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -96,6 +120,22 @@ def acquire(cfg, argv=None, *, ttl_s=None, now=None) -> Lease:
     lease = Lease(cfg, fd, info)
     _atomic_write(lease_path(cfg), json.dumps(info, indent=2) + "\n")
     return lease
+
+
+def _adopt_handover(cfg):
+    """The handed-over descriptor when it still holds this lease's flock, else None."""
+    raw = os.environ.pop(HANDOVER_ENV, None)
+    if not raw:
+        return None
+    try:
+        fd = int(raw)
+        if os.fstat(fd).st_ino != os.stat(lock_path(cfg)).st_ino:
+            return None
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)     # we already hold it: succeeds
+        os.set_inheritable(fd, False)
+        return fd
+    except (ValueError, OSError):
+        return None
 
 
 def is_held(cfg) -> bool:
