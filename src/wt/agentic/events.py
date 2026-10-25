@@ -49,6 +49,8 @@ EVENT_TYPES = {
     "ready_not_admitted": ("ready_for_s", "active", "slots"),
     # SPEC-0224
     "runner_draining": ("reason", "draining_s", "waiting_on", "ready"),
+    # SPEC-0226
+    "runner_config_invalid": ("scope", "path", "error"),
 }
 
 # transient run failures: account limits, overload, network-ish API errors
@@ -466,6 +468,11 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
                         {"reason": draining.get("reason"), "draining_s": round(drained),
                          "waiting_on": list(draining.get("waiting_on") or []),
                          "ready": ready, "slots": slots_for(cfg)}))
+    for path, entry in sorted((lease.get("config_errors") or {}).items()):     # SPEC-0226
+        out.append((f"runner_config_invalid:{path}:{entry.get('mtime_ns')}",
+                    "runner_config_invalid", None,
+                    {"scope": entry.get("scope"), "path": path, "error": entry.get("error"),
+                     "since": entry.get("since")}))
     for r in active:
         cid = r["id"]
         run = running.get(cid)

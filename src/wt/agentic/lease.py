@@ -186,7 +186,8 @@ def is_held(cfg) -> bool:
 
 def lease_status(cfg, now=None) -> dict:
     """`{held, pid, host, started_at, heartbeat_at, heartbeat_age_s, ttl_s, stale}`, plus
-    `draining` (the runner's drain info or None) while held."""
+    `draining` (the runner's drain info or None) and `config_errors` (SPEC-0226: path -> broken
+    config entry, `{}` when none) while held."""
     info = read_lease(cfg) or {}
     held = is_held(cfg)
     age = _heartbeat_age(info, now) if held else None
@@ -203,5 +204,6 @@ def lease_status(cfg, now=None) -> dict:
     }
     if held:
         out["draining"] = info.get("draining") or None     # SPEC-0224
+        out["config_errors"] = info.get("config_errors") or {}     # SPEC-0226
     return out
 

@@ -25,6 +25,8 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 from .. import specs as SP
 from ..specmeta import split_frontmatter
 from . import close as CL
@@ -1914,6 +1916,186 @@ class _heartbeat_while:
         return False
 
 
+# ---- config reload (SPEC-0226) --------------------------------------------------------------
+# The loop re-reads the user config when its file changes (an invalid file never replaces the
+# working one), and journals what changed in every live project's `.wt/project.yaml`, which the
+# per-tick `_Ctx` already re-reads.
+
+_RUNTIME_PATHS = frozenset({"config_dir", "data_dir", "cache_dir"})
+_DIFF_CAP = 50
+_MISSING = object()
+
+
+def _flatten(doc: dict, prefix: str = "") -> dict:
+    out = {}
+    for k, v in doc.items():
+        k = str(k)
+        if k.startswith("_") or (not prefix and k in _RUNTIME_PATHS):
+            continue
+        if isinstance(v, dict) and v:
+            out.update(_flatten(v, f"{prefix}{k}."))
+        else:
+            out[f"{prefix}{k}"] = v
+    return out
+
+
+def config_diff(old: dict, new: dict) -> list[str]:
+    """Sorted dotted paths whose values differ (added and removed included); mappings are
+    flattened, lists compare whole, `_*` and runtime path keys are ignored. Capped at 50 with
+    a trailing `"…"`."""
+    a, b = _flatten(old or {}), _flatten(new or {})
+    keys = sorted(k for k in a.keys() | b.keys()
+                  if a.get(k, _MISSING) != b.get(k, _MISSING))
+    return keys[:_DIFF_CAP] + ["…"] if len(keys) > _DIFF_CAP else keys
+
+
+def _positive_number(agentic: dict, key: str) -> None:
+    v = agentic.get(key)
+    if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not v > 0):
+        raise ValueError(f"agentic.{key} must be a number > 0, got {v!r}")
+
+
+def validate_runner_cfg(cfg: dict, campaigns=()) -> None:
+    """ValueError when `cfg` cannot drive the runner: the default profile and every profile a
+    live campaign names must resolve with `slots` an int >= 1; `poll_interval_s` and
+    `lease_ttl_s` must be numbers > 0; `runner` must be claude or fake."""
+    agentic = cfg.get("agentic") or {}
+    if not isinstance(agentic, dict):
+        raise ValueError("agentic must be a mapping")
+    for name in [None, *sorted({c["profile"] for c in campaigns if c.get("profile")})]:
+        slots = resolve_profile(cfg, name).get("slots")
+        if isinstance(slots, bool) or not isinstance(slots, int) or slots < 1:
+            raise ValueError(f"profile {name or 'default'!r}: slots must be an int >= 1, "
+                             f"got {slots!r}")
+    _positive_number(agentic, "poll_interval_s")
+    _positive_number(agentic, "lease_ttl_s")
+    if agentic.get("runner") not in (None, "claude", "fake"):
+        raise ValueError(f"unknown agentic.runner {agentic['runner']!r} "
+                         f"(expected claude or fake)")
+
+
+def _stat_key(path) -> tuple | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _err(e: Exception) -> str:
+    return f"{type(e).__name__}: {e}"
+
+
+class ConfigWatch:
+    """Per-tick config change detection for `run()`. Compares `(mtime_ns, size)` of the user
+    config and of the `.wt/project.yaml` of every project with a live campaign against the last
+    seen; first sight seeds silently. Broken files are reported through the lease info
+    (`config_errors`, path -> entry), each file setting and clearing only its own entry."""
+
+    def __init__(self, cfg: dict, loader):
+        self.loader = loader
+        config_dir = cfg.get("config_dir")
+        self.user_path = Path(config_dir) / "config.yaml" if config_dir else None
+        self.user_key = _stat_key(self.user_path) if self.user_path else None
+        self._projects: dict = {}                 # path -> {"key", "doc" (last good or None)}
+        self._errors: dict = {}
+        self._first = True
+
+    def check(self, cfg: dict, lease, campaigns) -> dict:
+        """The cfg the next tick should use: the freshly loaded user config when it changed and
+        is valid, else `cfg`."""
+        if self._first:
+            self._first = False
+            if lease is not None and (lease.info or {}).get("config_errors"):
+                lease.pop_info("config_errors")       # left by the image before a re-exec
+        if self.user_path is not None:
+            key = _stat_key(self.user_path)
+            if key != self.user_key:
+                self.user_key = key
+                cfg = self._reload_user(cfg, lease, campaigns, key)
+        self._check_projects(cfg, lease, campaigns)
+        return cfg
+
+    def _read_user_file(self) -> None:
+        """Raise when the raw file is missing, empty or not a mapping: `load_config` would
+        otherwise return pure defaults for it."""
+        try:
+            text = self.user_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            raise ValueError(f"{self.user_path} is missing")
+        if not text.strip():
+            raise ValueError(f"{self.user_path} is empty")
+        doc = yaml.safe_load(text)
+        if not isinstance(doc, dict):
+            raise ValueError(f"{self.user_path} is not a mapping (got {type(doc).__name__})")
+
+    def _reload_user(self, cfg, lease, campaigns, key) -> dict:
+        path = str(self.user_path)
+        try:
+            self._read_user_file()
+            new = self.loader()
+            validate_runner_cfg(new, campaigns)
+        except Exception as e:
+            error = _err(e)
+            journal(cfg, "config_load_failed", scope="user", path=path, error=error)
+            self._set_error(lease, path, "user", error, key)
+            return cfg
+        self._clear_error(lease, path)
+        changed = config_diff(cfg, new)
+        if changed:
+            journal(cfg, "config_reloaded", scope="user", path=path, changed=changed,
+                    restart_required=[k for k in changed if k == "agentic.lease_ttl_s"])
+        return new
+
+    def _check_projects(self, cfg, lease, campaigns) -> None:
+        live = {}
+        for name in sorted({c["project"] for c in campaigns if c.get("project")}):
+            try:
+                live[name] = P.config_path(P.project_root(cfg, name))
+            except Exception:                         # the tick reports an unregistered project
+                continue
+        wanted = {str(p) for p in live.values()}
+        for path in [p for p in self._projects if p not in wanted]:
+            del self._projects[path]
+            self._clear_error(lease, path)
+        for name, p in live.items():
+            path, key, scope = str(p), _stat_key(p), f"project:{name}"
+            seen = self._projects.get(path)
+            if seen is not None and seen["key"] == key:
+                continue
+            last_good = seen["doc"] if seen else None
+            try:
+                doc = P.load_project_config(p)
+            except Exception as e:
+                error = _err(e)
+                journal(cfg, "config_load_failed", scope=scope, path=path, error=error)
+                self._set_error(lease, path, scope, error, key)
+                self._projects[path] = {"key": key, "doc": last_good}
+                continue
+            self._clear_error(lease, path)
+            changed = config_diff(last_good, doc) if last_good is not None else []
+            if changed:
+                journal(cfg, "config_reloaded", scope=scope, path=path, changed=changed)
+            self._projects[path] = {"key": key, "doc": doc}
+
+    def _set_error(self, lease, path, scope, error, key) -> None:
+        self._errors[path] = {"scope": scope, "error": error, "since": store.now_iso(),
+                              "mtime_ns": key[0] if key else 0}
+        self._publish(lease)
+
+    def _clear_error(self, lease, path) -> None:
+        if self._errors.pop(path, None) is not None:
+            self._publish(lease)
+
+    def _publish(self, lease) -> None:
+        if lease is None:
+            return
+        if self._errors:
+            lease.update_info(config_errors=dict(self._errors))   # always a new dict
+        else:
+            lease.pop_info("config_errors")
+
+
 def _waiting_on(cfg, pool: StepPool) -> list:
     """The in-flight flights as `{campaign, kind, run_ids, timeout_s}` (SPEC-0224)."""
     out = []
@@ -1965,7 +2147,8 @@ def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
 
 
 def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=False,
-        on_tick=None, runner=None, argv=None, reexec=False, code_root=None) -> int:
+        on_tick=None, runner=None, argv=None, reexec=False, code_root=None,
+        config_loader=None) -> int:
     """The loop: take the lease, tick, heartbeat, sleep. Agent steps run in a pool owned by
     the loop and carry across ticks (SPEC-0213); the wait between ticks ends early when one
     finishes. SIGINT/SIGTERM stop admissions, forward SIGTERM to this process group's children
@@ -1976,7 +2159,11 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
     With `reexec` (SPEC-0194), when a commit to the wt checkout (`code_root`, default the one
     this package is imported from) changes wt's code, the loop stops between ticks, journals
     `stop` with reason `code_changed` once its in-flight steps are drained, and re-executes
-    the same command keeping its lease."""
+    the same command keeping its lease.
+
+    With `config_loader` (SPEC-0226, a callable returning a fresh cfg), the loop re-reads the
+    user config before each tick when its file changed; in-flight steps keep the cfg they were
+    planned with. A config that fails to load or validate never replaces the working one."""
     agentic = cfg.get("agentic") or {}
     interval = float(poll_interval_s if poll_interval_s is not None
                      else agentic.get("poll_interval_s") or 20)
@@ -2006,6 +2193,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
     code_sha = _git_out(watch_root, "rev-parse", "HEAD") if watch_root else None
     restart = {}
     pool = StepPool()                                 # SPEC-0213: flights outlive ticks
+    watch = ConfigWatch(cfg, config_loader) if config_loader else None
 
     def emit(report):
         if report.steps or report.admitted or report.errors or report.started:
@@ -2023,6 +2211,15 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
         # drain — joined before the lease is released or handed over
         with _heartbeat_while(lease):
             while not stop.is_set():
+                if watch:
+                    live = [c for c in store.list_campaigns(cfg)
+                            if c.get("state") not in TERMINAL_STATES]
+                    new_cfg = watch.check(cfg, lease, live)
+                    if new_cfg is not cfg:
+                        cfg = new_cfg
+                        if poll_interval_s is None:
+                            interval = float((cfg.get("agentic") or {}).get("poll_interval_s")
+                                             or 20)
                 report = tick(cfg, stop=stop, runner=runner, pool=pool)
                 ticks += 1
                 lease.heartbeat()

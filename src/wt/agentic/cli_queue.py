@@ -21,6 +21,7 @@ from rich.text import Text
 
 from .. import completion as C
 from .. import render as R
+from ..config import load_config
 from ..console import console
 from ..report import _dump_json
 from . import gates as G
@@ -484,6 +485,20 @@ def _journal_lines(rec: dict) -> Group:
         head.append("✗ crash", style="bold red")
         head.append(f"  {rec.get('error')}", style="red")
         return Group(head)
+    if kind == "config_reloaded":                          # SPEC-0226
+        changed = list(rec.get("changed") or [])
+        keys = [k for k in changed if k != "…"]
+        more = len(keys) > 6 or len(keys) < len(changed)
+        head.append(f"⟳ config reloaded ({rec.get('scope')}): ", style="bold cyan")
+        head.append(", ".join(keys[:6]) + (", …" if more else ""))
+        if rec.get("restart_required"):
+            head.append(f"  restart required: {', '.join(rec['restart_required'])}",
+                        style="yellow")
+        return Group(head)
+    if kind == "config_load_failed":
+        head.append(f"✗ config load failed ({rec.get('scope')}): ", style="bold red")
+        head.append(f"{rec.get('error')}", style="red")
+        return Group(head)
     head.append("drain" if rec.get("drain") else f"tick {rec.get('tick')}", style="cyan")
     if rec.get("admitted"):
         head.append(f"  admitted {rec['admitted']}", style="green")
@@ -733,7 +748,8 @@ def attach(queue_group):
         try:
             ticks = Q.run(cfg, once=once, max_ticks=max_ticks, poll_interval_s=poll_interval,
                           until_idle=until_idle, on_tick=on_tick,
-                          argv=["wt", "queue", "run"], reexec=not (once or no_reexec))
+                          argv=["wt", "queue", "run"], reexec=not (once or no_reexec),
+                          config_loader=load_config)
         except ValueError as e:
             raise click.ClickException(str(e))
         if not json_lines:

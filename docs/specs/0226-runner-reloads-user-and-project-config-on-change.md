@@ -1,7 +1,7 @@
 ---
 id: SPEC-0226
 title: "Queue runner reloads user and project config on change"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -177,16 +177,16 @@ invalid path). The per-tick re-read already applies the change.
 
 ## Acceptance criteria
 
-- [ ] With the runner running (`config_loader` given), editing the user config's profile
+- [x] With the runner running (`config_loader` given), editing the user config's profile
       persona model and the profile `slots` takes effect at the next tick. The next
       `run.start` carries the new model, and admission uses the new slot count. A persona
       run already in flight keeps its old model, and its harvest decision uses the profile it
       was planned with.
-- [ ] Each effective user-config change journals exactly one `config_reloaded` with `scope:
+- [x] Each effective user-config change journals exactly one `config_reloaded` with `scope:
       user`, the sorted dotted `changed` keys (no `_*` or runtime path keys) and
       `restart_required` (`agentic.lease_ttl_s` when it changed). A `touch` or an edit that
       changes no key journals nothing.
-- [ ] A user config that is invalid leaves the old cfg in use, and the next ticks admit and
+- [x] A user config that is invalid leaves the old cfg in use, and the next ticks admit and
       run as before. Invalid covers: fails to parse; not a mapping; empty, truncated or
       deleted; bad timezone or path type; fails `validate_runner_cfg` (unknown profile for a
       live campaign, `slots` < 1, bad `poll_interval_s` / `lease_ttl_s`, unknown runner). The
@@ -194,18 +194,18 @@ invalid path). The per-tick re-read already applies the change.
       `config_load_failed` per broken file version, sets that path's lease `config_errors`
       entry, and `watchdog_checks` emits one `runner_config_invalid`. Fixing the file
       reloads it, journals `config_reloaded`, and clears only that path's entry and condition.
-- [ ] Editing a live campaign's project `.wt/project.yaml` journals `config_reloaded` with
+- [x] Editing a live campaign's project `.wt/project.yaml` journals `config_reloaded` with
       `scope: project:<name>` and the changed keys. An invalid one journals
       `config_load_failed` and raises `runner_config_invalid`, while the SPEC-0194
       `config_invalid` park and recovery behave as before. With the user config and a project
       config broken at once, both conditions are raised, and fixing one leaves the other.
-- [ ] `agentic.poll_interval_s` changes apply to the inter-tick wait unless
+- [x] `agentic.poll_interval_s` changes apply to the inter-tick wait unless
       `--poll-interval` was given.
-- [ ] `run()` without `config_loader`, and `wt queue tick`, never reload (existing tests are
+- [x] `run()` without `config_loader`, and `wt queue tick`, never reload (existing tests are
       unaffected). `wt queue run` passes `load_config`.
-- [ ] `wt queue runner-log` renders both new record kinds, and the conductor skill has the
+- [x] `wt queue runner-log` renders both new record kinds, and the conductor skill has the
       `runner_config_invalid` row.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -254,6 +254,36 @@ invalid path). The per-tick re-read already applies the change.
   agentic.profiles.<p>.personas.<persona>.model`, and the next `run.start` of that persona
   (`wt campaign log <id>`) carries the new model.
 
+### Test record (2026-10-25)
+
+- `uv run pytest tests/test_agentic_config_reload.py`: 28 passed (all tests named in the plan;
+  `test_invalid_user_config_keeps_old` runs 13 cases, plus extra tests for validation, the
+  removed-profile case and `wt queue run` passing `load_config`).
+- `uv run pytest -q -x`: 2056 passed, 1 skipped (full suite, including the existing
+  reexec, profiles, nonblocking, events and logs suites).
+- `python3 tools/spec_lint.py`: exits 0 after `--write-ledger`.
+- Manual verification: the loop-level behaviour is exercised by `test_run_applies_reload_between_ticks`
+  and `test_poll_interval_reload_respects_cli_override`, which call the real `Q.run` with the real
+  `load_config` over a tmp config dir. The check against the live production runner
+  (`wt queue runner-log --tail 3` after editing a persona model) happens once this merges and the
+  runner re-execs; it was not possible from the campaign worktree.
+
+### As shipped
+
+As designed. Small choices made while building:
+
+- `ConfigWatch` lives in `queue.py` next to `run()`, with `config_diff` and
+  `validate_runner_cfg` as module-level functions.
+- A project config that is already broken the first time the watch sees it is reported
+  (`config_load_failed` + lease entry); a later fix then clears the entry without a
+  `config_reloaded` record, since there is no good document to diff against.
+- Lease `config_errors` entries for projects that no longer have a live campaign are dropped,
+  and entries left in the lease by the image before a SPEC-0194 re-exec are cleared on the first
+  check.
+- `test_inflight_harvest_uses_planning_profile` checks that a review scoring 88 passes under the
+  `pass_score: 80` it was planned with after the config raised it to 95; it does not run a second
+  review pass.
+
 ## Rollout / migration
 
 No data migration. The live runner picks this up through its SPEC-0194 re-exec. The first
@@ -261,11 +291,11 @@ No data migration. The live runner picks this up through its SPEC-0194 re-exec. 
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

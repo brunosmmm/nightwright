@@ -50,7 +50,9 @@ RUNNER_KINDS = {"start": ("pid", "argv", "interval_s"),
                 "tick": ("tick", "steps", "admitted", "errors"),
                 "stop": ("ticks", "reason"),
                 "crash": ("ticks", "error"),
-                "heartbeat_error": ("error",)}
+                "heartbeat_error": ("error",),
+                "config_reloaded": ("scope", "path", "changed"),
+                "config_load_failed": ("scope", "path", "error")}
 
 
 def with_defaults(etype: str, payload: dict | None = None) -> dict:
