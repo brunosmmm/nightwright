@@ -1746,7 +1746,7 @@ def spec_review_cmd(cfg, spec_id, path, as_json, force):
             spec_path, origin = Path(path), "path"
         else:
             spec_path, origin = resolve_spec_path_for_cwd(cfg, spec_id)
-        prior = latest_review(cfg, spec_id)                            # SPEC-0230
+        prior = latest_review(cfg, spec_id, spec_path)                # SPEC-0230
         if prior is not None:
             what = f"{prior.get('verdict')}, {str(prior.get('spec_sha256') or '')[:12]}"
             if not force:

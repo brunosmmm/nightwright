@@ -336,3 +336,47 @@ def test_check_admissible_current_approve_wins_over_later_review(tmp_path):
     assert got["admission"] == "approved" and got["spec_sha256"] == SR.spec_sha256(spec)
     _store(cfg, spec, "revise", 3, sha=OLDER)
     assert SR.check_admissible(cfg, spec, "SPEC-0001")["admission"] == "approved"
+
+
+def _foreign(cfg, spec, verdict, at, root, sha=None):
+    """A review stored under the same spec id but recorded for another repository."""
+    p = _store(cfg, spec, verdict, at, sha=sha)
+    data = json.loads(p.read_text())
+    data["repo_root"] = str(root)
+    p.write_text(json.dumps(data))
+
+
+def test_foreign_repo_reviews_neither_admit_nor_block(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [])
+    spec = _spec(repo)
+    other, _ = _second_repo(tmp_path)
+    _foreign(cfg, spec, "revise", 1, other, sha=OLD)
+    assert SR.latest_review(cfg, "SPEC-0001") is not None            # unfiltered lookup sees it
+    assert SR.list_reviews(cfg, "SPEC-0001", spec) == []
+    with pytest.raises(ValueError, match="has no spec review"):
+        SR.check_admissible(cfg, spec, "SPEC-0001")
+    # a local review still governs, whatever the foreign one says
+    _foreign(cfg, spec, "split", 9, other, sha=OLDER)
+    _foreign(cfg, spec, "revise", 2, repo, sha=OLD)
+    got = SR.check_admissible(cfg, spec, "SPEC-0001")
+    assert got["admission"] == "after_revision" and got["spec_sha256"] == OLD
+    assert got["current_sha"] == SR.spec_sha256(spec)
+
+
+def test_linked_worktree_reviews_count_as_same_repo(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    spec = _spec(repo)
+    wt = tmp_path / "linked"
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(wt)], check=True)
+    _foreign(cfg, spec, "revise", 1, wt, sha=OLD)                  # reviewed from the worktree
+    assert SR.check_admissible(cfg, spec, "SPEC-0001")["admission"] == "after_revision"
+
+
+def test_reviews_sort_by_parsed_time_not_string(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    spec = _spec(repo)
+    write_review(cfg, spec, "SPEC-0001", "split", sha=OLD, reviewed_at="2026-10-25T10:00:00+00:00")
+    write_review(cfg, spec, "SPEC-0001", "revise", sha=OLDER,
+                 reviewed_at="2026-10-25T09:30:00-03:00")           # = 12:30Z, later
+    write_review(cfg, spec, "SPEC-0001", "approve", sha="c" * 64, reviewed_at="garbage")
+    assert [r["verdict"] for r in SR.list_reviews(cfg, "SPEC-0001")] == ["approve", "split", "revise"]

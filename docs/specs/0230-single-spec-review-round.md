@@ -260,6 +260,13 @@ is always 1. Neither spec needs a change.
   `tests/test_agentic_e2e.py` gained optional `sha`, `findings`, `reviewed_at` arguments.
 - The `revision` plan key is printed in the dry run as one line
   (`review <sha12> -> spec <sha12>, N findings`); `--json` carries it in full.
+- The review store is keyed by spec id only, so `list_reviews` / `latest_review` take an optional
+  `spec_path` and then ignore reviews recorded for another repository (`repo_root` resolved to
+  the git common dir, so linked-worktree reviews still count; an empty or missing `repo_root`
+  matches). `check_admissible` and `wt spec review` pass it, so a `--path` review of another
+  repository's spec with the same id neither admits nor blocks the local spec. Reviews sort by
+  parsed `reviewed_at` (unparsable first). `check_admissible` also returns `current_sha`, which
+  `plan_add` uses instead of hashing the file again.
 - SPEC-0214's overrides are not implemented here (that spec is unbuilt); only the
   admission, brief, event and `wt spec review --force` parts shipped.
 

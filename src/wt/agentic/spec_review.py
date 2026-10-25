@@ -81,19 +81,54 @@ def load_review(cfg, spec_id, sha):
     return _read_json_dict(store_path(cfg, spec_id, sha))
 
 
-def list_reviews(cfg, spec_id) -> list:
+def _repo_identity(root):
+    """What makes two checkouts the same repository: the resolved git common dir (main
+    checkout and linked worktrees share it), else the resolved path. None for an empty root."""
+    if not root:
+        return None
+    root = Path(root)
+    try:
+        checkout = SP._git_checkout(root) if root.is_dir() else None
+        return str(checkout[1] if checkout else root.resolve())
+    except OSError:
+        return str(root)
+
+
+def _reviewed_at_key(review):
+    """Sort key: the parsed aware `reviewed_at` (naive ⇒ UTC); unparsable or missing sorts first."""
+    try:
+        at = dt.datetime.fromisoformat(str(review.get("reviewed_at") or ""))
+    except ValueError:
+        return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    return at if at.tzinfo else at.replace(tzinfo=dt.timezone.utc)
+
+
+def list_reviews(cfg, spec_id, spec_path=None) -> list:
     """Every readable stored review of `spec_id` (all shas), oldest `reviewed_at` first.
-    Corrupt files and temp files are skipped."""
+    Corrupt files and temp files are skipped. With `spec_path`, reviews recorded for another
+    repository's spec of the same id (`--path` reviews, different `repo_root`) are ignored; an
+    empty or missing `repo_root` (legacy reviews) matches."""
     d = store_path(cfg, spec_id, "x").parent
     if not d.is_dir():
         return []
     out = [r for r in (_read_json_dict(p) for p in sorted(d.glob("*.json"))) if r]
-    return sorted(out, key=lambda r: str(r.get("reviewed_at") or ""))
+    if spec_path is not None:
+        mine, seen = _repo_identity(spec_root(cfg, spec_path)), {}
+        def same_repo(r):
+            root = str(r.get("repo_root") or "")
+            if not root:
+                return True
+            if root not in seen:
+                seen[root] = _repo_identity(root)
+            return seen[root] == mine
+        out = [r for r in out if same_repo(r)]
+    return sorted(out, key=_reviewed_at_key)
 
 
-def latest_review(cfg, spec_id):
-    """The most recent stored review of `spec_id`, or None."""
-    reviews = list_reviews(cfg, spec_id)
+def latest_review(cfg, spec_id, spec_path=None):
+    """The most recent stored review of `spec_id` (of this spec's repository when `spec_path`
+    is given), or None."""
+    reviews = list_reviews(cfg, spec_id, spec_path)
     return reviews[-1] if reviews else None
 
 
@@ -110,8 +145,8 @@ def check_admissible(cfg, spec_path, spec_id) -> dict:
         review = legacy if (legacy and legacy.get("verdict") == "approve"
                             and legacy.get("spec_sha256") == sha) else None
     if review:
-        return {**review, "admission": "approved"}
-    latest = latest_review(cfg, spec_id)
+        return {**review, "admission": "approved", "current_sha": sha}
+    latest = latest_review(cfg, spec_id, spec_path)
     if latest is None:
         raise ValueError(f"{spec_id} has no spec review; run wt spec review {spec_id}")
     verdict, rsha = latest.get("verdict"), str(latest.get("spec_sha256") or "")
@@ -123,7 +158,7 @@ def check_admissible(cfg, spec_path, spec_id) -> dict:
             raise ValueError(f"{spec_id}: the review asks for revisions that are not applied "
                              f"yet (the text is unchanged since {rsha[:12]}); edit the spec, "
                              f"then queue it (no second review needed)")
-        return {**latest, "admission": "after_revision"}
+        return {**latest, "admission": "after_revision", "current_sha": sha}
     raise ValueError(f"{spec_id} was edited after its approving review ({rsha[:12]}); "
                      f"run wt spec review {spec_id} --force")
 

@@ -2564,7 +2564,7 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         review = review_doc["admission"]
         if review == "after_revision":                                 # SPEC-0230
             revision = {"review_sha": review_doc.get("spec_sha256"),
-                        "current_sha": SR.spec_sha256(path),
+                        "current_sha": review_doc["current_sha"],
                         "findings": review_doc.get("findings") or []}
     pick = select_profile(cfg, flag=profile, review=review_doc)         # SPEC-0219
     prof = resolve_profile(cfg, pick["profile"])
