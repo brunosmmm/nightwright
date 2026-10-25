@@ -15,11 +15,12 @@ REVIEWER_ORDER = ("conformance_reviewer", "test_reviewer", "adversarial_reviewer
 SEVERITIES = ("must_fix", "major", "minor", "nit")
 DEFAULT_WEIGHTS = {"must_fix": 100, "major": 15, "minor": 4, "nit": 1}
 DEFAULT_PASS_SCORE = 80
-REVIEW_KEYS = frozenset({"pass_score", "weights", "triager"})
+REVIEW_KEYS = frozenset({"pass_score", "weights", "triager", "followups", "followups_nits"})
 
 BUILTIN_PROFILES = {
     "balanced": {
-        "review": {"pass_score": 80, "weights": dict(DEFAULT_WEIGHTS), "triager": True},
+        "review": {"pass_score": 80, "weights": dict(DEFAULT_WEIGHTS), "triager": True,
+                   "followups": True, "followups_nits": False},
         "slots": 2,
         "loop_max": 3,
         "campaign_cap_usd": 10.0,
@@ -41,7 +42,8 @@ BUILTIN_PROFILES = {
         },
     },
     "frugal": {
-        "review": {"pass_score": 70, "weights": dict(DEFAULT_WEIGHTS), "triager": False},
+        "review": {"pass_score": 70, "weights": dict(DEFAULT_WEIGHTS), "triager": False,
+                   "followups": True, "followups_nits": False},
         "slots": 1,
         "loop_max": 2,
         "campaign_cap_usd": 3.0,
@@ -63,7 +65,8 @@ BUILTIN_PROFILES = {
         },
     },
     "thorough": {
-        "review": {"pass_score": 90, "weights": dict(DEFAULT_WEIGHTS), "triager": True},
+        "review": {"pass_score": 90, "weights": dict(DEFAULT_WEIGHTS), "triager": True,
+                   "followups": True, "followups_nits": False},
         "slots": 3,
         "loop_max": 4,
         "campaign_cap_usd": 30.0,
@@ -156,8 +159,8 @@ def _is_int(value) -> bool:
 
 def _check_review(profile):
     """ValueError naming the key for a bad `review:` block (SPEC-0203): only `pass_score`
-    (int 0..100), `weights` (exactly the four severities, ints >= 0; no bools) and `triager`
-    (bool, SPEC-0206)."""
+    (int 0..100), `weights` (exactly the four severities, ints >= 0; no bools), `triager`
+    (bool, SPEC-0206) and the SPEC-0207 booleans `followups` / `followups_nits`."""
     name = profile.get("name")
     review = profile.get("review")
     if review is None:
@@ -175,6 +178,10 @@ def _check_review(profile):
     if "triager" in review and not isinstance(review["triager"], bool):
         raise ValueError(f"profile {name!r}: review.triager must be true or false, "
                          f"got {review['triager']!r}")
+    for key in ("followups", "followups_nits"):
+        if key in review and not isinstance(review[key], bool):
+            raise ValueError(f"profile {name!r}: review.{key} must be a boolean, "
+                             f"got {review[key]!r}")
     if "weights" in review:
         weights = review["weights"]
         if not isinstance(weights, dict):
@@ -205,6 +212,13 @@ def triager_enabled(profile) -> bool:
     has it off."""
     review = (profile or {}).get("review")
     return isinstance(review, dict) and review.get("triager") is True
+
+
+def followup_params(profile) -> tuple:
+    """`(followups, followups_nits)` of `profile["review"]` (SPEC-0207); a hand-built profile
+    without them behaves as the defaults (file follow-ups, no nits)."""
+    review = (profile or {}).get("review") or {}
+    return bool(review.get("followups", True)), bool(review.get("followups_nits", False))
 
 
 def persona_settings(profile, persona):

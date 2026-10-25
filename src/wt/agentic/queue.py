@@ -27,6 +27,7 @@ from pathlib import Path
 from .. import specs as SP
 from ..specmeta import split_frontmatter
 from . import close as CL
+from . import followups as FU
 from . import gates as G
 from . import gitops as git
 from . import lease as L
@@ -711,6 +712,7 @@ class StepResult:
     events_before: list = field(default_factory=list)
     config_error: bool = False
     reviews: list = field(default_factory=list)      # per-reviewer StepResults, profile order
+    followups: dict | None = None                    # SPEC-0207: the close step's filer summary
 
 
 class _Ctx:
@@ -884,10 +886,15 @@ def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
 
 def _do_close(ctx: _Ctx, state: dict) -> StepResult:
     res = StepResult(state["id"], Step("close"), "CLOSING")
+    # SPEC-0207: file the follow-up ideas first; the filer never raises, and its events and
+    # summary reach `_apply` whether or not the close then succeeds.
+    res.events_before, res.followups = FU.file_followups(ctx.cfg, state, ctx.profile(state))
     try:
         res.close_outcome = CL.close_campaign(ctx.cfg, state, ctx.project(state))
     except (GitError, ValueError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
+    except Exception as e:                      # nothing may drop the filer's events
+        res.error = repr(e)
     return res
 
 
@@ -929,7 +936,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             row["to"], row["reason"] = store.read_state(cfg, cid).get("state"), "superseded_by_human"
             return row
         for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
-                  "pending_brief", "close"):
+                  "pending_brief", "close", "review_carry"):
             if k in state:
                 current[k] = state[k]
         requested = current.get("park_requested") or state.get("park_requested")
@@ -1040,6 +1047,10 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
 
     if kind == "close":
         counters["close_attempts"] += 1
+        if res.followups is not None:
+            row["followups"] = {"filed": len(res.followups["filed"]),
+                                "unfiled": len(res.followups["unfiled"]),
+                                "ids": [f["idea_id"] for f in res.followups["filed"]]}
         if res.error:
             return finish("PARKED", "open_failed", park={
                 "reason": "open_failed", "detail": f"close step failed: {res.error}",
@@ -1055,7 +1066,9 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             if etype == "commit" and payload.get("sha"):
                 state.setdefault("repo", {})["head"] = payload["sha"]
         if oc.next_state in ("MERGED", "HANDED_OFF"):
-            state["close"] = oc.close
+            state["close"] = dict(oc.close)
+            if res.followups is not None:           # after the assignment replaced the dict
+                state["close"]["followups"] = res.followups
             state["park"] = None
             return finish(oc.next_state, "closed")
         if oc.next_state == "TRIAGING":
@@ -1177,6 +1190,27 @@ def _apply_triager(ctx, state, profile, counters, res, row, events):
     return None
 
 
+def _carry_source(state: dict, tri: dict) -> dict:
+    """The `{blocking, advisory, waived}` of a review, for `_merge_carry`."""
+    return {"blocking": tri["blocking"], "advisory": tri["advisory"],
+            "waived": (state.get("last_review") or {}).get("waived") or []}
+
+
+def _merge_carry(state: dict, review: dict) -> None:
+    """SPEC-0207: on a `fix` outcome merge the review's `advisory` and `waived` findings into
+    `state["review_carry"]` (de-duplicated by key, so re-merging the same review adds nothing)
+    and drop every key that is blocking in this review (the implementer is told to fix it).
+    `review` = `{blocking, advisory, waived}` of the triage."""
+    spec_id = state.get("spec_id")
+    blocking = {FU.finding_key(spec_id, f.get("title"), f.get("files"))
+                for f in review.get("blocking") or []}
+    carry = [e for e in state.get("review_carry") or [] if e["key"] not in blocking]
+    for e in FU.considered(spec_id, [], review):
+        if e["key"] not in blocking:
+            FU.merge_entry(carry, e)
+    state["review_carry"] = carry
+
+
 def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
     """Route the reviewers' results (SPEC-0187, SPEC-0201): record every run, store the valid
     verdicts in `last_review`, then follow `decide_reviews`. `res.reviews` is in profile
@@ -1267,6 +1301,8 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
                     events.append(("note", {"text": f"pass over major: {f['id']} {f['title']}",
                                             "author": "queue"}))
     if decision.kind == "park":
+        if decision.reason == "loop_exhausted" and decision.combined is not None:
+            _merge_carry(state, _carry_source(state, decision.combined["triage"]))
         return finish("PARKED", decision.reason, park={
             "reason": decision.reason, "detail": decision.detail,
             "resume_to": decision.resume_to})
@@ -1278,6 +1314,7 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
     counters["loops"] += 1
     counters["gate_retries"] = 0
     counters["triage_retries"] = 0
+    _merge_carry(state, _carry_source(state, decision.combined["triage"]))
     notes = ((state.get("pending_brief") or {}).get("human_notes") or [])
     brief = decision.combined["brief"]
     state["pending_brief"] = {

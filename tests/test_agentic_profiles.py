@@ -159,7 +159,8 @@ DEFAULT_WEIGHTS = {"must_fix": 100, "major": 15, "minor": 4, "nit": 1}
 def test_review_defaults(name, score):
     prof = P.resolve_profile({"agentic": {"profiles": {}}}, name)
     assert prof["review"] == {"pass_score": score, "weights": DEFAULT_WEIGHTS,
-                              "triager": name != "frugal"}
+                              "triager": name != "frugal",
+                              "followups": True, "followups_nits": False}
     assert P.review_params(prof) == (score, DEFAULT_WEIGHTS)
     assert P.review_params({}) == (80, DEFAULT_WEIGHTS)
     prof["review"]["weights"]["major"] = 1                      # a copy, not the builtin
@@ -171,7 +172,7 @@ def test_review_user_delta_merges_partial_weights():
                                                             "pass_score": 60}}}}}
     prof = P.resolve_profile(cfg, "balanced")
     assert prof["review"] == {"pass_score": 60, "weights": {**DEFAULT_WEIGHTS, "nit": 0},
-                              "triager": True}
+                              "triager": True, "followups": True, "followups_nits": False}
     new = P.resolve_profile({"agentic": {"profiles": {"mine": {"slots": 1}}}}, "mine")
     assert new["review"]["pass_score"] == 80
 
@@ -188,6 +189,10 @@ def test_review_user_delta_merges_partial_weights():
     ({"weights": {"major": -1}}, "review.weights.major"),
     ({"weights": {"minor": 1.5}}, "review.weights.minor"),
     ({"weights": [1]}, "review.weights"),
+    ({"followups": 1}, "review.followups"),
+    ({"followups": "yes"}, "review.followups"),
+    ({"followups_nits": None}, "review.followups_nits"),
+    ({"followups_nits": 0}, "review.followups_nits"),
 ])
 def test_review_rejects_bad_values(review, needle):
     cfg = {"agentic": {"profiles": {"balanced": {"review": review}}}}
@@ -247,4 +252,24 @@ def test_docs_describe_the_review_triager():
     doc = (Path(__file__).resolve().parent.parent / "docs/product/capabilities/agentic.md"
            ).read_text(encoding="utf-8")
     for needle in ("review_triager", "review.triager", "last_review.triage"):
+        assert needle in doc
+
+
+def test_followup_keys_default_validate_and_accept(tmp_path):                      # SPEC-0207 AC2
+    for name in ("balanced", "thorough", "frugal"):
+        prof = P.resolve_profile({"agentic": {"profiles": {}}}, name)
+        assert P.followup_params(prof) == (True, False)
+    assert P.followup_params({}) == (True, False)                  # hand-built profile
+    assert P.followup_params({"review": {"pass_score": 50}}) == (True, False)
+    cfg = {"agentic": {"profiles": {"balanced": {"review": {"followups": False,
+                                                            "followups_nits": True}}}}}
+    assert P.followup_params(P.resolve_profile(cfg, "balanced")) == (False, True)
+
+
+def test_docs_describe_the_followup_filer():                                       # SPEC-0207 AC8
+    from pathlib import Path
+    doc = (Path(__file__).resolve().parent.parent / "docs/product/capabilities/agentic.md"
+           ).read_text(encoding="utf-8")
+    for needle in ("wtfu:", "followups_nits", "review_carry", "`followup` event", "adopted",
+                   "unfiled"):
         assert needle in doc

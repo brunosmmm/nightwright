@@ -195,6 +195,8 @@ agentic:
         pass_score: 80          # int 0..100; thorough 90, frugal 70
         weights: {must_fix: 100, major: 15, minor: 4, nit: 1}   # a partial delta merges
         triager: true           # bool (SPEC-0206); true in balanced / thorough, false in frugal
+        followups: true         # file non-blocking findings as ideas at close (SPEC-0207)
+        followups_nits: false   # also file `nit` findings
 ```
 
 `last_review` in the campaign state is
@@ -235,6 +237,33 @@ never causes `review_escalated`) or `skipped` (the cost cap could not fit its bu
 `triager skipped: cost cap` note). It runs at most once per review; `triage`, `triager_run` and
 `waived` clear on every entry into REVIEWING. The score note is written once, after the final
 `triage_reviews` run. Set `review.triager: false` to opt out.
+
+### Follow-up ideas (SPEC-0207)
+
+What a change merges with is not forgotten. At the start of the close step a deterministic filer
+(`wt.agentic.followups`) files the `major`/`minor` findings (`nit` too with
+`review.followups_nits`) that were advisory or waived as **ideas** (`kind: improvement`, the
+campaign's project, the spec's `parent` epic when it has one); `review.followups: false` files
+nothing. It never blocks a merge: a capture failure is a `note` event and the finding is reported
+`unfiled`.
+
+- **Key.** `key = sha1(spec id | normalized title | sorted files)`; the first 12 hex characters
+  lead the idea text as the marker `wtfu:<key12>` (`wtfu:<key12> [SPEC-NNNN] persona/slot: title
+  - detail (files: …)`, sanitized and bounded). The key ignores persona and severity, so a finding
+  whose severity or reporters change keeps its key; a reworded title or other cited files is a new
+  finding (accepted: a spurious follow-up is cheaper than a lost one).
+- **Carry-over.** On every `fix` outcome `_merge_carry` merges the review's advisory and waived
+  findings into `state.review_carry` (de-duplicated by key) and drops every key that is blocking
+  in that review, so advisory findings of earlier loops are still filed at the close step.
+- **Idempotent and crash-safe.** A key with a `followup` ledger event is skipped (and still
+  reported); otherwise the marker is looked up in the ideas file and its archive and an existing
+  idea is **adopted** (its `:ID:` goes into the event) before anything is captured. A close step
+  that is re-run (resume, `regate_failed`) therefore files each finding once.
+- **Ledger and reports.** Each filing is a `followup` event
+  (`persona, severity, title, key, idea_id, origin`). `state.close.followups` holds
+  `{filed, unfiled, waived}`; `wt campaign show` lists the follow-ups (`IDEA-NNN severity
+  title`), the unfiled findings and the waivers with their reason, and the close row of
+  `wt.queue.tick.v1` carries a `followups` key (`filed`, `unfiled` counts and `ids`).
 
 ## Closing
 

@@ -165,6 +165,16 @@ def attach(campaign_group):
             majors = sum(1 for f in adv if f.get("severity") == "major")
             console.print(f"  review: score {lr.get('score')}  {lr['verdict']}  "
                           f"advisory {len(adv)} ({majors} major)")
+        fu = (st.get("close") or {}).get("followups") or {}
+        for f in fu.get("filed") or []:
+            console.print(Text(f"  follow-up {f.get('idea_id')} {f.get('severity')} "
+                               f"{f.get('title')}"), highlight=False)
+        for f in fu.get("unfiled") or []:
+            console.print(Text(f"  [unfiled] {f.get('severity')} {f.get('title')}: "
+                               f"{f.get('error')}", style="yellow"), highlight=False)
+        for f in fu.get("waived") or []:
+            console.print(Text(f"  [waived] {f.get('severity')} {f.get('title')}: "
+                               f"{f.get('waive_reason')}"), highlight=False)
         if st.get("park"):
             p = st["park"]
             console.print(f"  [yellow]parked[/] {p.get('reason')}: {p.get('detail', '')}  "

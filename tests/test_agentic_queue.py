@@ -742,3 +742,173 @@ def test_prepare_run_gives_the_triager_its_input(opened):
     assert f"{RV}#0" in req.prompt and f"{RV}#5" in req.prompt and '"score": 76' in req.prompt
     assert "{{" not in req.prompt and req.json_schema is PS.REVIEW_TRIAGER_SCHEMA
     assert "(none)" in req.prompt                  # previous verdicts blanked
+
+
+# ---- SPEC-0207: follow-up ideas ---------------------------------------------------------------
+
+from wt import org as ORG                                          # noqa: E402
+from wt.agentic import close as CL                                 # noqa: E402
+from wt.agentic import followups as FU                             # noqa: E402
+
+
+def _ideas(cfg):
+    ORG.invalidate_tasks_cache()
+    return [t for t in ORG.load_tasks(cfg) if t.is_idea]
+
+
+def _fu_review(verdict, *findings):
+    return {"verdict": verdict, "score": 50, "ac_assessment": [], "fix_brief": "do it",
+            "findings": [dict({"detail": "d", "files": ["a.py"]}, **f) for f in findings]}
+
+
+def _review_apply(ctx, cfg, cid, verdict, **counters):
+    st = S.read_state(cfg, cid)
+    st.update(state="REVIEWING")
+    st["counters"].update(counters)
+    S.write_state(cfg, cid, st)
+    return _apply(ctx, cfg, cid, "review", persona="conformance_reviewer",
+                  run_id="002-conformance_reviewer", run_result=_rr(verdict), budget=1.5)
+
+
+def test_fix_outcome_persists_the_review_carry(opened):               # AC4: finish persists it
+    cfg, cid, ctx = opened
+    v = _fu_review("fix", {"severity": "must_fix", "title": "broken"},
+                   {"severity": "minor", "title": "naming"})
+    row, st = _review_apply(ctx, cfg, cid, v)
+    assert row["to"] == "IMPLEMENTING"
+    assert [(e["title"], e["severity"], e["origin"]) for e in st["review_carry"]] == [
+        ("naming", "minor", "advisory")]
+    # next loop: "naming" turns blocking (any severity) ⇒ dropped; a new minor is carried
+    v = _fu_review("fix", {"severity": "major", "title": "Naming"},
+                   {"severity": "nit", "title": "typo", "files": ["b.py"]})
+    row, st = _review_apply(ctx, cfg, cid, v)
+    assert [e["title"] for e in st["review_carry"]] == ["typo"]
+
+
+def test_loop_exhausted_park_also_carries(opened):
+    cfg, cid, ctx = opened
+    v = _fu_review("fix", {"severity": "must_fix", "title": "broken"},
+                   {"severity": "minor", "title": "naming"})
+    row, st = _review_apply(ctx, cfg, cid, v, loops=3)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "loop_exhausted"
+    assert [e["title"] for e in st["review_carry"]] == ["naming"]
+
+
+def test_pass_does_not_touch_the_carry(opened):
+    cfg, cid, ctx = opened
+    row, st = _review_apply(ctx, cfg, cid, _fu_review("pass", {"severity": "minor", "title": "n"}))
+    assert row["to"] == "CLOSING" and "review_carry" not in st
+    assert st["last_review"]["advisory"][0]["title"] == "n"
+
+
+def _closing(cfg, cid, advisory, carry=None, waived=()):
+    st = S.read_state(cfg, cid)
+    st.update(state="CLOSING", last_review={"advisory": advisory, "waived": list(waived)})
+    if carry is not None:
+        st["review_carry"] = carry
+    S.write_state(cfg, cid, st)
+    return st
+
+
+def _adv(sev, title, **kw):
+    return dict({"id": "x#0", "personas": ["conformance_reviewer"], "severity": sev,
+                 "title": title, "detail": "d", "files": ["a.py"], "ac": None,
+                 "category": None}, **kw)
+
+
+def _merged_outcome():
+    close = {"mode": "merge", "merged_sha": "abc", "pr_url": None, "gates_seq": 1,
+             "target_sha": "def"}
+    return CL.CloseOutcome("MERGED", close=close, events=[("close", close)])
+
+
+def test_close_files_followups_and_state_close_keeps_them(opened, monkeypatch):    # AC5, AC6
+    cfg, cid, ctx = opened
+    carry = [FU.make_entry("SPEC-0001", _adv("minor", "earlier loop", files=["z.py"]),
+                           "advisory")]
+    st = _closing(cfg, cid, [_adv("major", "advisory one")], carry=carry,
+                  waived=[_adv("nit", "waived nit", files=["w.py"], reason="style")])
+    monkeypatch.setattr(CL, "close_campaign", lambda *a, **k: _merged_outcome())
+    res = Q._do_close(ctx, st)
+    assert res.error is None and len(res.events_before) == 2
+    row = Q._apply(ctx, st, res)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED" and row["to"] == "MERGED"
+    fu = st["close"]["followups"]
+    assert [f["title"] for f in fu["filed"]] == ["earlier loop", "advisory one"]
+    assert fu["unfiled"] == [] and fu["waived"] == [
+        {"severity": "nit", "title": "waived nit", "waive_reason": "style"}]
+    assert st["close"]["mode"] == "merge"
+    assert row["followups"] == {"filed": 2, "unfiled": 0,
+                                "ids": [f["idea_id"] for f in fu["filed"]]}
+    assert [e["title"] for e in S.read_ledger(cfg, cid, types=["followup"])] == [
+        "earlier loop", "advisory one"]
+    assert len(_ideas(cfg)) == 2
+    [close_ev] = S.read_ledger(cfg, cid, types=["close"])
+    assert "followups" not in close_ev                              # the event payload is untouched
+
+
+def test_close_raising_still_records_the_filer_events_and_parks(opened, monkeypatch):
+    cfg, cid, ctx = opened
+    st = _closing(cfg, cid, [_adv("minor", "keep me")])
+
+    def boom(*a, **k):
+        raise RuntimeError("close exploded")
+
+    monkeypatch.setattr(CL, "close_campaign", boom)
+    res = Q._do_close(ctx, st)
+    assert res.error == "RuntimeError('close exploded')" and res.followups["filed"]
+    row = Q._apply(ctx, st, res)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed"
+    assert st["park"]["resume_to"] == "CLOSING" and row["followups"]["filed"] == 1
+    [ev] = S.read_ledger(cfg, cid, types=["followup"])
+    assert ev["title"] == "keep me"
+    # the resume re-runs the close step: the finding is reported again, filed once
+    monkeypatch.setattr(CL, "close_campaign", lambda *a, **k: _merged_outcome())
+    st = S.read_state(cfg, cid)
+    st.update(state="CLOSING", park=None)
+    S.write_state(cfg, cid, st)
+    res = Q._do_close(ctx, st)
+    assert res.events_before == [] and res.followups["filed"][0]["idea_id"] == ev["idea_id"]
+    Q._apply(ctx, st, res)
+    assert len(_ideas(cfg)) == 1 and len(S.read_ledger(cfg, cid, types=["followup"])) == 1
+    assert S.read_state(cfg, cid)["close"]["followups"]["filed"][0]["idea_id"] == ev["idea_id"]
+
+
+def test_filer_failure_never_prevents_the_close(opened, monkeypatch):
+    cfg, cid, ctx = opened
+    st = _closing(cfg, cid, [_adv("minor", "x")])
+    monkeypatch.setattr(FU.OW, "add_idea", lambda *a, **k: (_ for _ in ()).throw(KeyError("org")))
+    monkeypatch.setattr(CL, "close_campaign", lambda *a, **k: _merged_outcome())
+    res = Q._do_close(ctx, st)
+    Q._apply(ctx, st, res)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED"
+    assert [u["title"] for u in st["close"]["followups"]["unfiled"]] == ["x"]
+    assert S.read_ledger(cfg, cid, types=["followup"]) == []
+
+
+def test_followups_false_files_nothing(opened, monkeypatch):
+    cfg, cid, ctx = opened
+    cfg["agentic"]["profiles"]["balanced"]["review"] = {"followups": False}
+    ctx = Q._Ctx(cfg)
+    st = _closing(cfg, cid, [_adv("major", "x")])
+    monkeypatch.setattr(CL, "close_campaign", lambda *a, **k: _merged_outcome())
+    Q._apply(ctx, st, Q._do_close(ctx, st))
+    assert S.read_state(cfg, cid)["close"]["followups"]["filed"] == [] and _ideas(cfg) == []
+
+
+def test_campaign_show_lists_followups_unfiled_and_waivers(opened, monkeypatch):    # AC6
+    cfg, cid, ctx = opened
+    st = S.read_state(cfg, cid)
+    st["close"] = {"mode": "merge", "followups": {
+        "filed": [{"idea_id": "IDEA-007", "severity": "minor", "title": "naming", "origin": "advisory"}],
+        "unfiled": [{"severity": "major", "title": "big one", "error": "OSError('full')"}],
+        "waived": [{"severity": "nit", "title": "tiny", "waive_reason": "style only"}]}}
+    S.write_state(cfg, cid, st)
+    r = run_cli(cfg, monkeypatch, ["campaign", "show", cid])
+    assert r.exit_code == 0, r.output
+    assert "follow-up IDEA-007 minor naming" in r.output
+    assert "[unfiled] major big one: OSError('full')" in r.output
+    assert "[waived] nit tiny: style only" in r.output

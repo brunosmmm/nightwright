@@ -37,6 +37,7 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "backlog": ("ready", "blocked_by"),
     "finding": ("persona", "severity", "gate", "title", "detail", "files"),
     "priority": ("from", "to"),
+    "followup": ("persona", "severity", "title", "key", "idea_id", "origin"),
 }
 
 RUN_KEYS = ("schema", "campaign", "run_id", "persona", "model", "effort", "max_budget_usd",

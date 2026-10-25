@@ -849,3 +849,89 @@ def test_e2e_cap_too_small_skips_the_triager(tmp_path, monkeypatch):            
     trans = [(e["from"], e["to"], e["reason"]) for e in S.read_ledger(cfg, cid, types=["transition"])]
     assert ("REVIEWING", "IMPLEMENTING", "review_fix") in trans      # the deterministic outcome
     assert st["state"] == "PARKED" and st["park"]["reason"] == "cost_cap"
+
+
+# ---- SPEC-0207: follow-up ideas, end to end ---------------------------------------------------
+
+def _fu_ideas(cfg):
+    from wt import org as ORG
+    ORG.invalidate_tasks_cache()
+    return [t for t in ORG.load_tasks(cfg) if t.is_idea]
+
+
+def test_e2e_followups_clean_pass_files_nothing(tmp_path, monkeypatch):               # AC7 (a)
+    cfg, cid, st = _triage_run(tmp_path, monkeypatch, [impl_done(), review("pass")])
+    assert st["state"] == "MERGED" and _fu_ideas(cfg) == []
+    assert st["close"]["followups"] == {"filed": [], "unfiled": [], "waived": []}
+    assert "followup" not in ledger_types(cfg, cid)
+
+
+def test_e2e_followups_advisory_findings_become_ideas(tmp_path, monkeypatch):         # AC7 (b)
+    rv = review("pass", findings=[_finding("major", "risky parse"), _finding("minor", "naming"),
+                                  _finding("nit", "typo")])
+    repo = make_repo(tmp_path, extra_fm="parent: SPEC-0169\n")
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(extra="parent: SPEC-0169\n"), rv]))
+    cid = added(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED", st
+    ideas = _fu_ideas(cfg)
+    assert len(ideas) == 2                                   # the nit is not filed
+    for t in ideas:
+        assert t.heading.startswith("wtfu:") and "[SPEC-0001]" in t.heading
+        assert t.properties["KIND"] == "improvement" and t.epic == "SPEC-0169"
+        assert t.project == st["project"]
+    assert {t.properties["ID"] for t in ideas} == {
+        f["idea_id"] for f in st["close"]["followups"]["filed"]}
+    evs = S.read_ledger(cfg, cid, types=["followup"])
+    assert [(e["severity"], e["title"], e["origin"]) for e in evs] == [
+        ("major", "risky parse", "advisory"), ("minor", "naming", "advisory")]
+    assert _git(repo, "status", "--porcelain") == ""         # the ideas live outside the repo
+    r = run_cli(cfg, monkeypatch, ["campaign", "show", cid])
+    assert "follow-up IDEA-" in r.output and "risky parse" in r.output
+
+
+def test_e2e_followups_fixed_finding_is_not_filed_but_earlier_advisory_is(tmp_path, monkeypatch):
+    first = review("fix", findings=[
+        _finding("must_fix", "wrong text", ac="feature.txt exists"),
+        _finding("minor", "naming", files=["feature.txt", "x.py"])], fix_brief="rewrite")
+    second = review("pass", findings=[_finding("nit", "typo")])          # a nit: not filed
+    entries = [impl_done(), first, impl_done(content="better\n"), second]
+    cfg, cid, st = _triage_run(tmp_path, monkeypatch, entries)                   # AC7 (c)
+    assert st["state"] == "MERGED" and st["counters"]["loops"] == 1, st
+    titles = [t.heading for t in _fu_ideas(cfg)]
+    assert len(titles) == 1 and "naming" in titles[0] and "wrong text" not in titles[0]
+    assert [f["title"] for f in st["close"]["followups"]["filed"]] == ["naming"]
+    assert [e["title"] for e in st["review_carry"]] == ["naming"]
+
+
+def test_e2e_followups_close_run_twice_files_each_once(tmp_path, monkeypatch):         # AC7 (d)
+    rv = review("pass", findings=[_finding("minor", "naming")])
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), rv]))
+    cid = added(cfg, monkeypatch)
+    (repo / "gates" / "lint.sh").write_text("true # edited\n")          # main dirty ⇒ close parks
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["resume_to"] == "CLOSING", st
+    assert len(_fu_ideas(cfg)) == 1 and len(S.read_ledger(cfg, cid, types=["followup"])) == 1
+    r = run_cli(cfg, monkeypatch, ["queue", "resume", cid, "--yes", "--json"])
+    assert r.exit_code == 0, r.output
+    _git(repo, "checkout", "--", "gates/lint.sh")
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED", st
+    assert len(_fu_ideas(cfg)) == 1 and len(S.read_ledger(cfg, cid, types=["followup"])) == 1
+    [f] = st["close"]["followups"]["filed"]                  # the second run still reports it
+    assert f["idea_id"] == _fu_ideas(cfg)[0].properties["ID"]
+
+
+def test_e2e_followups_disabled_by_profile_files_nothing(tmp_path, monkeypatch):
+    rv = review("pass", findings=[_finding("major", "risky"), _finding("minor", "naming")])
+    cfg, cid, st = _triage_run(tmp_path, monkeypatch, [impl_done(), rv],
+                               profile={"review": {"followups": False}})
+    assert st["state"] == "MERGED" and _fu_ideas(cfg) == []
+    assert st["close"]["followups"]["filed"] == [] and "followup" not in ledger_types(cfg, cid)

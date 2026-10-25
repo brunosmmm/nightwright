@@ -1,7 +1,7 @@
 ---
 id: SPEC-0207
 title: "Automatic follow-up ideas for non-blocking review findings"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -175,21 +175,21 @@ one.
 
 ## Acceptance criteria
 
-- [ ] AC1 (G2). `followup` is registered in `schemas.py` and valid under `ledger_problems`
+- [x] AC1 (G2). `followup` is registered in `schemas.py` and valid under `ledger_problems`
       (a missing key is rejected).
-- [ ] AC2 (G3). `resolve_profile` provides and validates `review.followups` /
+- [x] AC2 (G3). `resolve_profile` provides and validates `review.followups` /
       `review.followups_nits` (defaults above; bad values raise `ValueError` naming the key; the
       keys are accepted under `review:`).
-- [ ] AC3 (G1). The filer files `major`/`minor` advisory and waived findings (`nit` only with
+- [x] AC3 (G1). The filer files `major`/`minor` advisory and waived findings (`nit` only with
       `followups_nits`; nothing with `followups: false`) through `add_idea` with
       `kind="improvement"`, the campaign's project and its parent epic when it has one; the text
       starts with the `wtfu:<key12>` marker, is sanitized and bounded (a test files a finding
       with a 300-character title and 20 files and asserts the headline still starts with the
       marker); the key is the same for a changed severity or reporter set.
-- [ ] AC4 (G1). Carry-over: advisory findings of earlier `fix` loops are filed once; a key that is
+- [x] AC4 (G1). Carry-over: advisory findings of earlier `fix` loops are filed once; a key that is
       blocking in a later review (any copy, any severity) is removed from the carry and not
       filed; `review_carry` survives `_apply`'s `finish`.
-- [ ] AC5 (G1, G3). Idempotency: re-running the filer files each finding once, including after
+- [x] AC5 (G1, G3). Idempotency: re-running the filer files each finding once, including after
       a simulated crash between `add_idea` and the event (the marker lookup in ideas and archive
       adopts the idea) and after a capture error on the first attempt followed by a re-run (no
       duplicate); a capture failure does not block the merge and the finding is reported
@@ -200,14 +200,14 @@ one.
       a headline returned without the marker adds a `note` but still writes the `followup` event;
       a test through the real `add_task` path asserts the marker round-trips in the lookup;
       `review.followups: false` end to end files nothing.
-- [ ] AC6 (G2). `wt campaign show` and the close report row list follow-ups (`IDEA-NNN severity
+- [x] AC6 (G2). `wt campaign show` and the close report row list follow-ups (`IDEA-NNN severity
       title`), unfiled findings and waivers with their `waive_reason` (including waived nits that are not filed).
-- [ ] AC7. End to end with FakeRunner and a temp org data dir: (a) a clean pass, no findings ⇒
+- [x] AC7. End to end with FakeRunner and a temp org data dir: (a) a clean pass, no findings ⇒
       no ideas; (b) minor/major advisory findings with a passing score ⇒ `MERGED` and ideas filed
       with the right project/epic/kind and marker, read back from the temp data; (c) `must_fix`
       ⇒ `IMPLEMENTING` once, then pass: the fixed finding is not filed while an advisory finding
       of the first review is; (d) the close step run twice (resume) files each idea once.
-- [ ] AC8. `docs/product/capabilities/agentic.md` documents the filer (grep test); full
+- [x] AC8. `docs/product/capabilities/agentic.md` documents the filer (grep test); full
       `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
@@ -225,6 +225,36 @@ one.
   ideas (`wt idea list`) and record them here.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-25)
+
+Ran `uv run pytest -q` (full suite: all green except the generated-ledger staleness check until
+`python3 tools/spec_lint.py --write-ledger` ran; re-run green afterwards) and
+`python3 tools/spec_lint.py` (exit 0). New tests, by file:
+`tests/test_agentic_review_triage.py` (key stability, sanitizing/marker/bounds through the real
+`add_idea`, project/epic/kind read back, nits and `followups: false`, re-run reporting, crash
+adoption in ideas and archive, capture error then re-run, non-`OSError` org layer, marker-less
+headline, `_merge_carry` merge/removal/idempotency, considered set);
+`tests/test_agentic_profiles.py` (defaults, validation, docs grep); `tests/test_agentic_logs.py`
+(`followup` accepted, missing key rejected); `tests/test_agentic_queue.py` (carry persisted by
+`finish` on both `fix` branches, `state.close.followups` survives, `close_campaign` raising
+`RuntimeError`, filer failure, `campaign show`); `tests/test_agentic_e2e.py` (AC7 a-d plus a
+profile opt-out). Manual verification on a real campaign is pending the next one with advisory
+findings (`wt idea list`).
+
+### As shipped (2026-10-25)
+
+- New module `src/wt/agentic/followups.py` holds the pure helpers (key, entries, sanitizing,
+  marker lookup) and `file_followups(cfg, state, profile)`, which returns `(events, summary)`;
+  `queue._merge_carry` and `queue._do_close` call it. `finish` persists `review_carry`.
+- `followup_params(profile)` in `profiles.py` reads the two flags with the documented defaults.
+- Minor choices the spec left open: the `<slot>` (`ac`/`category`) is cut at 80 characters and at
+  most 5 file names are listed (`+N more`), so the text stays bounded; `waived` in the summary is
+  filled even with `review.followups: false`; the campaign show lines read `follow-up IDEA-NNN
+  severity title`, `[unfiled] ...` and `[waived] ...`.
+- The close tests that need a real campaign (filer events kept when `close_campaign` raises, the
+  summary in `state.close`) live in `tests/test_agentic_queue.py` rather than
+  `tests/test_agentic_close.py`; `campaign show` is covered there too.
+
 ## Rollout / migration
 
 Takes effect at the next close step; no data migration. Existing ledgers without `followup`
@@ -237,11 +267,11 @@ Built by the agentic loop or the human lane; idea bookkeeping via `wt spec recon
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

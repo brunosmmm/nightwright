@@ -149,3 +149,14 @@ def test_test_reviewer_records_are_valid_and_routed(tmp_path, monkeypatch):
         {"ac": "feature.txt exists", "covered": True, "tests": ["tests/test_feature.py::test_exists"]}]
     first = S.runs_dir(cfg, cid) / "003-test_reviewer" / "run.json"
     assert json.loads(first.read_text())["verdict"]["coverage_assessment"][0]["covered"] is True
+
+
+def test_followup_event_is_registered_and_requires_its_keys(tmp_path):              # SPEC-0207
+    keys = ("persona", "severity", "title", "key", "idea_id", "origin")
+    assert SC.EVENT_KEYS["followup"] == keys
+    rec = {"ts": "t", "seq": 1, "campaign": "c", "type": "followup", "by": "queue",
+           **{k: "x" for k in keys}}
+    assert SC.ledger_problems(rec) == []
+    del rec["idea_id"]
+    assert SC.ledger_problems(rec) == ["followup: missing 'idea_id'"]
+    assert SC.ledger_problems({**rec, "idea_id": "IDEA-001"}) == []
