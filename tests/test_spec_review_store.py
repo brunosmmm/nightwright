@@ -62,7 +62,7 @@ def test_review_writes_store_with_repo_root_and_nothing_in_repo(tmp_path, monkey
     path = Path(cfg["data_dir"]) / "agentic" / "reviews" / "SPEC-0001" / f"{sha}.json"
     assert path == SR.store_path(cfg, "SPEC-0001", sha)
     stored = json.loads(path.read_text())
-    assert stored == json.loads(r.output)
+    assert stored == json.loads(r.stdout)
     assert stored["repo_root"] == str(repo.resolve()) and stored["spec_sha256"] == sha
     assert not (repo / "docs" / "specs" / "reviews").exists()
     assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True,
@@ -112,7 +112,7 @@ def test_review_path_in_second_repo_uses_that_root_and_schema(tmp_path, monkeypa
     monkeypatch.undo()
     r = run_cli(cfg, monkeypatch, ["spec", "review", "--path", str(spec), "--json"])
     assert r.exit_code == 0, r.output
-    out = json.loads(r.output)
+    out = json.loads(r.stdout)
     assert out["repo_root"] == str(other.resolve()) and out["spec_id"] == "SPEC-0007"
     assert SR.load_review(cfg, "SPEC-0007", SR.spec_sha256(spec)) == out
     assert not (other / "docs" / "specs" / "reviews").exists()
@@ -132,7 +132,7 @@ def test_nested_spec_uses_git_toplevel_not_grandparent_or_meta_tools_root(tmp_pa
     assert spec.parent.parent.parent != other  # the grandparent fallback would differ
     r = run_cli(cfg, monkeypatch, ["spec", "review", "--path", str(spec), "--json"])
     assert r.exit_code == 0, r.output
-    assert json.loads(r.output)["repo_root"] == str(other.resolve())
+    assert json.loads(r.stdout)["repo_root"] == str(other.resolve())
     # a configured Meta-Tools root must not leak into a non-outbound spec's root
     monkeypatch.setattr(SR.P, "project_config", lambda cfg, name: {"_root": str(repo)})
     assert SR.spec_root(cfg, spec) == other.resolve()

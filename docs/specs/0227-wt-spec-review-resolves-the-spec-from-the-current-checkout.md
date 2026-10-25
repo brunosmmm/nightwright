@@ -1,7 +1,7 @@
 ---
 id: SPEC-0227
 title: "wt spec review resolves the spec from the current checkout"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -126,26 +126,26 @@ fallback to another copy is the bug this spec fixes. The CLI prints `reviewing <
 
 ## Acceptance criteria
 
-- [ ] Run inside a linked worktree of the registered repository (`git worktree add`),
+- [x] Run inside a linked worktree of the registered repository (`git worktree add`),
       `wt spec review SPEC-X` reviews `<worktree>/docs/specs/NNNN-*.md`. The store record is
       keyed by that file's sha. The reviewer's `cwd` is the worktree root. The record has
       `origin: "worktree <branch>"` and the worktree `spec_path`.
-- [ ] Run in the main checkout, it reviews the main checkout's file (`origin: main
+- [x] Run in the main checkout, it reviews the main checkout's file (`origin: main
       checkout`). Run outside any git repository, or inside a different repository
       (different `--git-common-dir`, including a separate clone of the same remote), it
       reviews the registered checkout's file (`origin: registered checkout`), as today.
-- [ ] Inside a same-repository checkout that has no file for the id, the command exits
+- [x] Inside a same-repository checkout that has no file for the id, the command exits
       non-zero with a message naming that checkout, the registered copy's path when it
       exists, and `--path`, and no review runs (FakeRunner cursor unchanged).
-- [ ] Before the run it prints `reviewing <rel path> @ <sha12> (<origin>)  <toplevel>`, to
+- [x] Before the run it prints `reviewing <rel path> @ <sha12> (<origin>)  <toplevel>`, to
       stdout, or to stderr with `--json`, and `--json` output stays valid JSON with
       `spec_path` and `origin`. `--path FILE` prints the same line with origin `path`.
-- [ ] Outbound ids resolve from the outbox as before. With `cfg["specs_dir"]` pointing into a
+- [x] Outbound ids resolve from the outbox as before. With `cfg["specs_dir"]` pointing into a
       tmp git repository, the worktree rule applies relative to that repository.
-- [ ] Other spec commands still resolve through `resolve_spec_path` (a test runs `wt spec
+- [x] Other spec commands still resolve through `resolve_spec_path` (a test runs `wt spec
       status SPEC-X` inside a worktree with a different text and gets the registered
       file).
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -177,6 +177,26 @@ fallback to another copy is the bug this spec fixes. The CLI prints `reviewing <
   prints `(worktree <branch>)` with that worktree's sha. `wt queue add SPEC-NNNN` after the
   merge (same text) is admitted without a new review.
 
+### Test record (2026-10-25)
+
+- New `tests/test_spec_review_cwd.py` (10 tests, all of the Test plan's names plus
+  `test_specs_dir_in_tmp_repo_rule_is_relative_to_that_repo`): pass.
+- Existing `tests/test_agentic_spec_review.py` and `tests/test_spec_review_store.py` pass; four
+  `json.loads(r.output)` assertions on `--json` runs became `json.loads(r.stdout)`, because the
+  reviewed-path line now goes to stderr and CliRunner's `output` interleaves both streams.
+- Full `uv run pytest`: green after regenerating the ledger; `python3 tools/spec_lint.py` exits 0.
+- Manual: `resolve_spec_path_for_cwd` run from this campaign's worktree against the real
+  registered checkout returned the worktree copy with origin `worktree wt/SPEC-0227-…`. The
+  post-merge `wt queue add` step was not run live (no merge yet); it relies on SPEC-0210's
+  sha-keyed `check_admissible`, covered by `tests/test_spec_review_store.py`.
+
+### As shipped
+
+As designed. Small additions: `reviewing_line()` in `agentic/spec_review.py` builds the printed
+line; `run_spec_review` and `review_payload` take optional `origin` / `spec_path` (omitted for
+library callers such as `review_spec`, so their records do not carry them). Git probes live in
+`specs._git_out` / `specs._git_checkout`.
+
 ## Rollout / migration
 
 Lands after SPEC-0210, which provides the store, `--path` and `spec_root`. No data
@@ -185,11 +205,11 @@ migration. Reviews already stored keep their keys, and only the new records carr
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

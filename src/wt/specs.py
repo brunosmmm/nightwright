@@ -23,6 +23,7 @@ import datetime as dt
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 
 from .render import warn
@@ -494,6 +495,62 @@ def resolve_spec_path(cfg, spec_id):
             raise ValueError(f"ambiguous outbound id {spec_id!r} -> {matches}")
         return matches[0]
     return _find_spec(_specs_dir(cfg), spec_id)
+
+
+def _git_out(cwd, *args):
+    """Stdout of `git -C cwd <args>` (stripped), or None when git fails, times out or is absent."""
+    try:
+        r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True,
+                           timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def _git_checkout(cwd):
+    """`(toplevel, common_dir)` of the git checkout containing `cwd` (both resolved), or None.
+    Uses `--path-format=absolute` (git >= 2.31) and resolves a relative answer against `cwd`
+    when the flag is unsupported."""
+    top = _git_out(cwd, "rev-parse", "--show-toplevel")
+    common = (_git_out(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
+              or _git_out(cwd, "rev-parse", "--git-common-dir"))
+    if not top or not common:
+        return None
+    return Path(top).resolve(), (Path(cwd) / common).resolve()
+
+
+def resolve_spec_path_for_cwd(cfg, spec_id, cwd=None):
+    """`(path, origin)` for `wt spec review` (SPEC-0227): like `resolve_spec_path`, but inside a
+    checkout (main or linked worktree) of the registered specs directory's repository the spec
+    comes from *that* checkout. `origin` is `outbox`, `main checkout`, `worktree <branch>` or
+    `registered checkout`. A same-repository checkout without the file is an error, never a
+    silent fallback to another copy."""
+    if not spec_id:
+        raise ValueError("spec id is required")
+    if _is_outbound_spec_id(spec_id):
+        return resolve_spec_path(cfg, spec_id), "outbox"
+    reg_dir = _specs_dir(cfg)
+    reg = _git_checkout(reg_dir) if Path(reg_dir).is_dir() else None
+    cwd = Path(cwd) if cwd is not None else Path.cwd()
+    cur = _git_checkout(cwd) if reg and cwd.is_dir() else None
+    if not (reg and cur and cur[1] == reg[1]):
+        return resolve_spec_path(cfg, spec_id), "registered checkout"
+    reg_top, cur_top = reg[0], cur[0]
+    if cur_top == reg_top:
+        origin = "main checkout"
+    else:
+        branch = _git_out(cwd, "rev-parse", "--abbrev-ref", "HEAD") or "detached"
+        origin = f"worktree {'detached' if branch == 'HEAD' else branch}"
+    try:
+        return _find_spec(cur_top / Path(reg_dir).resolve().relative_to(reg_top), spec_id), origin
+    except ValueError:
+        pass
+    msg = f"no spec file for {spec_id} in this checkout ({cur_top}, {origin})"
+    try:
+        msg += f"; the registered checkout has {resolve_spec_path(cfg, spec_id)}"
+    except ValueError:
+        pass
+    raise ValueError(msg + " — run from there, or use wt spec review --path FILE")
 
 
 SPEC_STATUSES = ("draft", "proposed", "accepted", "in-progress", "done", "superseded",

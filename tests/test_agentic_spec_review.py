@@ -38,7 +38,7 @@ def test_review_writes_valid_sidecar(tmp_path, monkeypatch):
     repo, cfg = _setup(tmp_path, [_review_entry()])
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
     assert r.exit_code == 0, r.output
-    out = json.loads(r.output)
+    out = json.loads(r.stdout)
     side = SR.load_review(cfg, "SPEC-0001", SR.spec_sha256(_spec(repo)))
     assert not (repo / "docs" / "specs" / "reviews").exists()
     assert out == side

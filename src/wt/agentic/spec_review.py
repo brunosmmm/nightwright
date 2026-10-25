@@ -156,19 +156,38 @@ def _check_verdict(spec_id, verdict) -> None:
         raise ValueError(f"spec review of {spec_id} is `approve` but lists a must_fix finding")
 
 
-def review_payload(spec_id, sha, *, model, cost_usd, verdict, root) -> dict:
-    """The `wt.spec.review.v1` dict; raises ValueError on an approve carrying a must_fix."""
+def review_payload(spec_id, sha, *, model, cost_usd, verdict, root, spec_path=None,
+                   origin=None) -> dict:
+    """The `wt.spec.review.v1` dict; raises ValueError on an approve carrying a must_fix.
+    `spec_path` (absolute) and `origin` (SPEC-0227) are recorded when given."""
     _check_verdict(spec_id, verdict)
+    extra = {}
+    if spec_path is not None:
+        extra["spec_path"] = str(Path(spec_path).resolve())
+    if origin is not None:
+        extra["origin"] = origin
     return {
         "schema": SCHEMA, "spec_id": spec_id, "verdict": verdict["verdict"],
         "spec_sha256": sha, "reviewed_at": store.now_iso(), "model": model,
         "cost_usd": cost_usd, "findings": verdict.get("findings") or [],
         "suggested_splits": verdict.get("suggested_splits") or [],
-        "repo_root": str(root),
+        "repo_root": str(root), **extra,
     }
 
 
 # ---- the run journal ---------------------------------------------------------------------------------
+
+def reviewing_line(cfg, spec_path, origin) -> str:
+    """`reviewing <rel path> @ <sha12> (<origin>)  <toplevel>`: which file a review reads
+    (SPEC-0227)."""
+    path = Path(spec_path).resolve()
+    root = spec_root(cfg, path).resolve()
+    try:
+        rel = str(path.relative_to(root))
+    except ValueError:
+        rel = str(path)
+    return f"reviewing {rel} @ {spec_sha256(path)[:12]} ({origin})  {root}"
+
 
 def journal_path(cfg) -> Path:
     return store.agentic_dir(cfg) / "spec-reviews.jsonl"
@@ -257,7 +276,8 @@ def _counts(findings) -> dict:
     return c
 
 
-def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None) -> dict:
+def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
+                    origin=None) -> dict:
     """Run the spec reviewer on the spec file, store the review and journal the run. A run
     error or a verdict that does not conform appends an `end` with `error`, raises ValueError
     and stores nothing."""
@@ -301,7 +321,8 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None) ->
                    else "returned a verdict that does not match the schema")
             raise ValueError(f"spec review of {spec_id} {why} (see {req.run_dir})")
         payload = review_payload(spec_id, sha, model=req.model, cost_usd=result.cost_usd,
-                                 verdict=result.verdict, root=root)
+                                 verdict=result.verdict, root=root, spec_path=path,
+                                 origin=origin)
         save_review(cfg, payload)
     except Exception as e:
         journal_end(cfg, run_id, spec_id, cost_usd=cost, error=str(e),

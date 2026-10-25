@@ -1715,6 +1715,9 @@ def spec_review_cmd(cfg, spec_id, path, as_json):
     (`<data>/agentic/reviews/<SPEC-ID>/<sha>.json`); `wt queue add` admits a spec only when
     its review for the current text is `approve`. Give exactly one of SPEC-ID and --path;
     --path reviews a file in any repository, with that repository as the reviewer's root.
+    Run inside a checkout (main or linked worktree) of the specs repository, a SPEC-ID
+    reviews that checkout's copy; elsewhere, the registered checkout's. The reviewed file
+    is printed first.
 
     \b
     wt spec review SPEC-0188
@@ -1725,8 +1728,9 @@ def spec_review_cmd(cfg, spec_id, path, as_json):
     import sys
     from pathlib import Path
 
-    from .agentic.spec_review import review_spec, run_spec_review
+    from .agentic.spec_review import reviewing_line, run_spec_review
     from .specmeta import split_frontmatter
+    from .specs import resolve_spec_path_for_cwd
     if bool(spec_id) == bool(path):
         raise click.UsageError("give exactly one of SPEC-ID and --path")
     try:
@@ -1735,9 +1739,15 @@ def spec_review_cmd(cfg, spec_id, path, as_json):
             spec_id = str((fm or {}).get("id") or "")
             if not spec_id:
                 raise click.ClickException(f"{path}: front matter has no `id`")
-            review = run_spec_review(cfg, Path(path), spec_id)
+            spec_path, origin = Path(path), "path"
         else:
-            review = review_spec(cfg, spec_id)
+            spec_path, origin = resolve_spec_path_for_cwd(cfg, spec_id)
+        line = reviewing_line(cfg, spec_path, origin)
+        if as_json:
+            click.echo(line, err=True)
+        else:
+            console.print(line, highlight=False, markup=False, soft_wrap=True)
+        review = run_spec_review(cfg, spec_path, spec_id, origin=origin)
     except ValueError as e:
         raise click.ClickException(str(e))
     if as_json:
