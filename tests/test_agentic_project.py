@@ -215,3 +215,21 @@ def test_cli_init_dry_run_then_write_then_refuse(tmp_path, monkeypatch):
 def test_starter_is_valid_yaml_and_strict():
     doc = yaml.safe_load(P.STARTER.format(project="X"))
     P.validate(doc)
+
+
+def _regen_doc(regen):
+    return {"schema": P.SCHEMA, "merge": {"regenerate": regen}}
+
+
+def test_merge_regenerate_default_and_valid():
+    assert P.PROJECT_DEFAULTS["merge"]["regenerate"] == []
+    P.validate(_regen_doc([{"path": "docs/LEDGER.md", "cmd": "make ledger"}]))
+    P.validate(_regen_doc([]))
+
+
+@pytest.mark.parametrize("bad", [
+    "nope", ["x"], [{"path": "a"}], [{"path": "", "cmd": "c"}],
+    [{"path": "a", "cmd": "c", "extra": 1}], [{"path": 1, "cmd": "c"}]])
+def test_merge_regenerate_rejects_bad(bad):
+    with pytest.raises(ValueError, match="merge.regenerate"):
+        P.validate(_regen_doc(bad))

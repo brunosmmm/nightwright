@@ -363,3 +363,30 @@ def test_verify_spec_file_matches_verify_spec(tmp_path):
                               if c["name"].startswith("epic_")] == ["skip", "skip"]
     with pytest.raises(ValueError, match="not found"):
         V.verify_spec_file(specs / "missing.md")
+
+
+# ---- SPEC-0191: generated-file conflicts are regenerated, gates still re-run -------------
+
+def test_ledger_style_conflict_is_regenerated_then_gated_and_merged(world):
+    _commit(world["root"], "gen.txt", "orig\n", "gen")
+    _git(world["wt"], "rebase", "-q", "main")
+    _commit(world["wt"], "gen.txt", "branch\n", "branch gen")
+    _commit(world["root"], "gen.txt", "main\n", "main gen")
+    pcfg = _pcfg(world)
+    pcfg["merge"]["regenerate"] = [{"path": "gen.txt", "cmd": "echo regenerated > gen.txt"}]
+    out = CL.close_campaign(world["cfg"], world["state"], pcfg)
+    assert out.next_state == "MERGED", out
+    assert (world["root"] / "gen.txt").read_text() == "regenerated\n"
+    gate_idx = [t for t, _ in out.events].index("gate")
+    info = [p for t, p in out.events if t == "finding"
+            and p["title"] == "generated files regenerated during rebase"]
+    assert info and info[0]["severity"] == "info" and "gen.txt" in info[0]["detail"]
+    assert gate_idx >= 0 and out.gate_run.ok
+
+
+def test_undeclared_conflict_still_parks(world):
+    pcfg = _pcfg(world)
+    pcfg["merge"]["regenerate"] = [{"path": "gen.txt", "cmd": "true"}]
+    _commit(world["root"], "feature.txt", "theirs\n", "conflicting base")
+    out = CL.close_campaign(world["cfg"], world["state"], pcfg)
+    assert out.next_state == "PARKED" and out.park["reason"] == "rebase_conflict"

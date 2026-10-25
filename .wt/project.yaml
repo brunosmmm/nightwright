@@ -19,6 +19,10 @@ merge:
   base: main
   push_after_merge: false
   delete_branch: true
+  # Generated files: a rebase conflict touching only these is resolved by regenerating (SPEC-0191).
+  regenerate:
+    - path: docs/LEDGER.md
+      cmd: python3 tools/spec_lint.py --write-ledger
 worktrees:
   setup:
     - uv sync --extra tui

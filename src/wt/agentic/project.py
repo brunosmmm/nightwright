@@ -35,6 +35,7 @@ PROJECT_DEFAULTS = {
         "push_after_merge": False,
         "delete_branch": True,
         "post_cmds": [],
+        "regenerate": [],        # [{path, cmd}]: generated files resolved by regeneration at rebase
         "pr": {"labels": [], "reviewers": [], "title_prefix": ""},
     },
     "worktrees": {
@@ -110,6 +111,21 @@ def _check_str_list(problems, value, path):
         problems.append(f"{path}: must be a list of strings")
 
 
+def _check_regenerate(problems, value):
+    if value is None:
+        return
+    if not isinstance(value, list):
+        problems.append("merge.regenerate: must be a list of {path, cmd} mappings")
+        return
+    for i, item in enumerate(value):
+        where = f"merge.regenerate[{i}]"
+        if not _check_mapping(problems, item, where, ("path", "cmd")):
+            continue
+        for key in ("path", "cmd"):
+            if not _is_str(item.get(key)):
+                problems.append(f"{where}.{key}: must be a non-empty string")
+
+
 def _check_bool(problems, value, path):
     if value is not None and not isinstance(value, bool):
         problems.append(f"{path}: must be true or false")
@@ -170,6 +186,7 @@ def validate(doc):
         _check_bool(problems, merge.get("push_after_merge"), "merge.push_after_merge")
         _check_bool(problems, merge.get("delete_branch"), "merge.delete_branch")
         _check_str_list(problems, merge.get("post_cmds"), "merge.post_cmds")
+        _check_regenerate(problems, merge.get("regenerate"))
         pr = merge.get("pr")
         if pr is not None and _check_mapping(problems, pr, "merge.pr",
                                              tuple(PROJECT_DEFAULTS["merge"]["pr"])):

@@ -95,7 +95,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (14/17 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (15/18 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -113,6 +113,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0186](./specs/0186-spec-change-guard-at-close-no-merge-when-the.md) Spec-change guard at close: no merge when the implementer altered the spec — done
   - [ ] [SPEC-0187](./specs/0187-conformance-review-reviewing-state-with-a-read.md) Conformance review: REVIEWING state with a read-only conformance-reviewer persona — accepted
   - [ ] [SPEC-0188](./specs/0188-spec-review-before-admission-wt-spec-review-and-a.md) Spec review before admission: wt spec review and a queue gate on an approving review — accepted
+  - [x] [SPEC-0191](./specs/0191-deterministic-rebase-resolver-for-generated-files.md) Deterministic rebase resolver for generated files in the close step — done
 
 ## Active & planned
 
@@ -306,6 +307,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0186](./specs/0186-spec-change-guard-at-close-no-merge-when-the.md) | Spec-change guard at close: no merge when the implementer altered the spec | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0189](./specs/0189-one-project-registry-for-capture-completion-and.md) | One project registry for capture, completion and promotion | feature | done | M4: cli ergonomics | 2026-10-25 |
 | [SPEC-0190](./specs/0190-concurrency-safe-org-writes-identity-checked.md) | Concurrency-safe org writes: identity-checked headlines and one write lock | feature | done | M4: cli ergonomics | 2026-10-25 |
+| [SPEC-0191](./specs/0191-deterministic-rebase-resolver-for-generated-files.md) | Deterministic rebase resolver for generated files in the close step | feature | done | M9: agentic workflow | 2026-10-25 |
 
 ## Superseded / rejected
 

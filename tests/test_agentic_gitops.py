@@ -190,3 +190,54 @@ def test_git_error_on_bad_command(repo):
 def test_no_new_dependency():
     text = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()
     assert "gitpython" not in text.lower() and "dulwich" not in text.lower()
+
+
+# ---- SPEC-0191: regenerate generated files on rebase conflict -------------------------------
+
+REGEN = {"gen.txt": "echo regenerated > gen.txt"}
+
+
+@pytest.fixture
+def conflicting(repo, tmp_path):
+    _write_commit(repo, "gen.txt", "orig\n", "gen")
+    w = G.worktree_add(repo, tmp_path / "wts" / "rg", "wt/rg", "main")
+    _write_commit(w, "gen.txt", "branch\n", "branch gen")
+    _write_commit(repo, "gen.txt", "main\n", "main gen")
+    return repo, w
+
+
+def test_rebase_regenerates_declared_conflict(conflicting):
+    repo, w = conflicting
+    r = G.rebase(w, G.rev_parse(repo), regenerate=REGEN)
+    assert r.ok and r.regenerated == ("gen.txt",)
+    assert (w / "gen.txt").read_text() == "regenerated\n"
+    assert G.is_clean(w)
+    assert _git(w, "merge-base", "--is-ancestor", "main", "HEAD") == ""
+
+
+def test_rebase_without_regenerate_still_aborts(conflicting):
+    repo, w = conflicting
+    head = G.rev_parse(w)
+    r = G.rebase(w, G.rev_parse(repo))
+    assert not r.ok and r.conflicts == ("gen.txt",) and r.regenerated == ()
+    assert G.rev_parse(w) == head
+
+
+def test_rebase_mixed_conflict_aborts_and_restores(conflicting):
+    repo, w = conflicting
+    _write_commit(w, "other.txt", "branch\n", "branch other")
+    _write_commit(repo, "other.txt", "main\n", "main other")
+    # make the branch's own commits conflict in both files at once
+    head, tree = G.rev_parse(w), _git(w, "rev-parse", "HEAD^{tree}")
+    r = G.rebase(w, G.rev_parse(repo), regenerate=REGEN)
+    assert not r.ok and "other.txt" in r.conflicts
+    assert G.rev_parse(w) == head and _git(w, "rev-parse", "HEAD^{tree}") == tree
+    assert G.is_clean(w)
+
+
+def test_rebase_failing_regen_cmd_aborts(conflicting):
+    repo, w = conflicting
+    head = G.rev_parse(w)
+    r = G.rebase(w, G.rev_parse(repo), regenerate={"gen.txt": "exit 3"})
+    assert not r.ok and r.conflicts == ("gen.txt",) and r.regenerated == ()
+    assert G.rev_parse(w) == head and G.is_clean(w)

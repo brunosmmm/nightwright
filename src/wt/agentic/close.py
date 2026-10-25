@@ -266,11 +266,19 @@ def close_campaign(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
                          "CLOSING", events, attempts=attempts)
 
         # 4. rebase
-        rb = git.rebase(worktree, target_sha)
+        regen = {r["path"]: r["cmd"] for r in (mcfg.get("regenerate") or [])}
+        rb = git.rebase(worktree, target_sha, regenerate=regen)
         if not rb.ok:
             return _park("rebase_conflict",
                          f"rebase onto {target} ({target_sha[:10]}) conflicts: "
                          f"{', '.join(rb.conflicts)}", "CLOSING", events, attempts=attempts)
+
+        if rb.regenerated:
+            events.append(("finding", {
+                "persona": "close", "severity": "info", "gate": "rebase",
+                "title": "generated files regenerated during rebase",
+                "detail": "regenerated: " + ", ".join(rb.regenerated),
+                "files": list(rb.regenerated)}))
 
         # 5. re-gate on the rebased tree
         seq = gate_seq if gate_seq is not None else G.next_gate_seq(cfg, state["id"])
