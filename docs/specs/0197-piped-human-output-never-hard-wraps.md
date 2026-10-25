@@ -13,44 +13,95 @@ source_idea: IDEA-058
 
 ## Context
 
-Promoted from bug `IDEA-058`. When stdout is not a terminal, the shared Rich console (`src/wt/console.py`, `console = Console()`) falls back to 80 columns and hard-wraps every `console.print`. So `~/.local/share/wt/agentic/runner.log` (the conductor's `nohup wt queue run >> runner.log`) and anything piped to `grep`/`awk` (`wt campaign log`, `wt queue tick`, `wt mailbox thread`) see one record split across lines. Tables should still lay out sensibly when piped.
+Promoted from bug `IDEA-058`. When stdout is not a terminal, the shared Rich console
+(`src/wt/console.py`, `console = Console()`) uses 80 columns and hard-wraps every
+`console.print` of text. So `~/.local/share/wt/agentic/runner.log` (the conductor's
+`nohup wt queue run >> runner.log`) and anything piped to `grep`/`awk` (`wt campaign log`,
+`wt queue tick`, `wt mailbox thread`, the dry-run `plan` blocks) see one record split
+across lines.
+
+Revised 2026-10-25 after `wt spec review` (`docs/specs/reviews/SPEC-0197.json`, verdict
+revise). The first design decided TTY-ness once at import (untestable) and widened piped
+output to 200 columns, which would have changed `report.py`'s width-budgeted idea table and
+the watch dashboard. This version changes only how *text* lines wrap, decided per call.
 
 ## Goals / Non-goals
 
 **Goals**
-- One-line renderables (event lines, tick rows, messages, plan lines) are never split across lines when stdout is not a terminal.
-- Tables and panels still render at a sane width when piped.
+- A line-shaped renderable — a `str`, a `rich.text.Text`, or a `Group` made only of those (for
+  example `render.plan`) — printed through the shared console while it is not a terminal is
+  never split across output lines.
+- Everything else is byte-for-byte unchanged: tables, panels and the console width (Rich's
+  default, which already honours `$COLUMNS`), and all terminal output.
 
 **Non-goals**
-- Changing terminal (TTY) behaviour.
-- `--json` outputs (unaffected; they never go through Rich).
+- Table and panel layout when piped (cells still wrap at the console width).
+- The runner's structured journal (`runner.jsonl`, SPEC-0192) and `--json` outputs; neither
+  goes through text wrapping. `runner.log` keeps its format, minus the broken lines.
 
 ## Decision
 
-When not a terminal, the shared console uses `soft_wrap=True` (Rich then never inserts line breaks into printed text), and its width comes from `$COLUMNS` if set, else 200, so tables don't collapse to 80.
+Replace the shared `Console()` with a small subclass, `WtConsole`. Its `print` defaults
+`soft_wrap=True` when the caller didn't pass `soft_wrap`, the console is not a terminal
+(`self.is_terminal`, evaluated at call time), and every object is line-shaped. Rich then emits
+the text with no inserted line breaks and no cropping.
 
 ## Design
 
-- `wt/console.py`: build the console as `Console(soft_wrap=not tty, width=None if tty else int(os.environ.get('COLUMNS') or 200))`, where `tty = sys.stdout.isatty()`. Keep `console` a module-level singleton (tests replace `sys.stdout`; Rich resolves `file` lazily).
-- `render.err_console` already has `soft_wrap=True`; leave it.
-- Callers that print tables keep working: `soft_wrap` only affects text wrapping, and tables use the console width.
+- `src/wt/console.py`:
+  - `def _line_shaped(obj) -> bool`: True for `str` and `Text`, and for a `Group` whose
+    `renderables` are all line-shaped (recursively); False for anything else (Table, Panel,
+    Syntax, Columns, …).
+  - `class WtConsole(Console)` overrides `print(self, *objects, soft_wrap=None, **kw)`. When
+    `soft_wrap is None and not self.is_terminal and objects and all(_line_shaped(o) …)`, it
+    sets `soft_wrap = True`, then calls `super().print(*objects, soft_wrap=soft_wrap, **kw)`.
+  - `console = WtConsole()`. The module stays import-safe: nothing is read from the
+    environment at import, and Rich resolves `file` and `is_terminal` lazily, so tests that
+    swap `sys.stdout` (CliRunner) or build their own `WtConsole(file=…, force_terminal=…)`
+    exercise both branches whatever pytest's own stdout is.
+- `render.err_console` already passes `soft_wrap=True`; leave it.
+- No call-site changes: every renderer from SPEC-0185 already returns `Text` or a `Group` of
+  `Text`.
 
 ## Alternatives considered
 
-- **`print(..., soft_wrap=True)` at each call site** — easy to forget; the SPEC-0185 guard can't enforce it.
-- **Plain `print` when piped** — loses the shared renderers and the guard.
+- **`soft_wrap=True` / `width=200` fixed at construction** (the first draft) — decided at
+  import (untestable under `pytest -s`), and it widened every piped table, changing
+  `report.py` and the watch dashboard.
+- **`soft_wrap=True` at each call site** — easy to forget, and the SPEC-0185 guard can't
+  enforce it.
+- **`soft_wrap` for every renderable when piped** — Rich passes `no_wrap`/`crop=False` into
+  table and panel rendering, changing their layout.
 
 ## Acceptance criteria
 
-- [ ] A tick row, a campaign event line and a mailbox message longer than 80 characters each print as exactly one line through CliRunner (not a TTY).
-- [ ] `wt queue list` and `wt projects` piped still render their tables with every column on one line per row at the default width.
-- [ ] TTY rendering is unchanged (a forced-terminal console of width 80 still wraps prose).
+- [ ] On a `WtConsole(file=StringIO(), width=80, force_terminal=False)`, each of these prints
+      as exactly one line, with the full text: a 200-character `str`; `render.tick_row` of a
+      row with a 150-character reason; `render.campaign_event` of an event with long
+      values; `render.message` of a 300-character mailbox message; `render.plan` with a
+      150-character value (one line per key).
+- [ ] On the same console with `force_terminal=True`, the 200-character `str` still wraps
+      onto more than one line (terminal behaviour unchanged).
+- [ ] A `rich.table.Table` printed on both piped consoles produces the same output as a plain
+      `rich.console.Console` with the same settings (tables unchanged).
+- [ ] Through CliRunner, `wt campaign log` on a campaign whose ledger has a note longer than
+      200 characters prints that note's event on one line, and `wt mailbox thread` prints a
+      300-character message on one line.
+- [ ] `soft_wrap=False` passed explicitly is respected (wraps when piped).
 - [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
-- **Automated tests:** `tests/test_console_piped.py`: `wt campaign log` on a campaign with a long note, `wt queue tick` with a long row, and `wt mailbox thread` with a long message each produce lines with no mid-record break (assert the full text appears on one line); `wt queue list` table rows each on one line; a forced-terminal Console still wraps. Update any existing test that relied on 80-column wrapping.
-- **Regression guard:** full `uv run pytest`.
+- **Automated tests:** `tests/test_console_piped.py`:
+  - one test per renderable in AC 1, on a piped `WtConsole`, asserting the output's line count
+    and that the full text appears on one line;
+  - AC 2 with `force_terminal=True`;
+  - AC 3: render one table with `WtConsole` and with `Console` (same width, `force_terminal`
+    and `color_system=None`) and assert equal `export_text()`;
+  - AC 4 via the `test_agentic_e2e` harness (`wt campaign note` with a long text, then
+    `wt campaign log`), plus `wt mailbox send` and `wt mailbox thread` with a long message;
+  - AC 5 explicit override.
+- **Regression guard:** full `uv run pytest` (the existing CLI tests run piped).
 
 ## Rollout / migration
 
