@@ -228,7 +228,8 @@ def test_apply_close_outcomes(opened):
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="CLOSING"))
     synthetic = {"name": "spec-dod", "required": True, "ok": False, "tail": "status: accepted"}
     oc = CloseOutcome("TRIAGING", synthetic_gate=synthetic,
-                      events=[("finding", {"persona": "close", "severity": "must_fix", "title": "dod"})])
+                      events=[("finding", {"persona": "close", "severity": "must_fix", "title": "dod",
+                                               "gate": "spec-dod", "detail": "", "files": []})])
     row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
     assert row["to"] == "TRIAGING" and row["reason"] == "spec_dod"
     assert st["last_gate"]["results"] == [synthetic] and st["counters"]["close_attempts"] == 1

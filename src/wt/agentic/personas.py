@@ -126,6 +126,8 @@ def render_gate_results(last_gate) -> str:
         status = "ok" if r.get("ok") else ("timed out" if r.get("timed_out") else "FAILED")
         req = "required" if r.get("required", True) else "optional"
         head = f"### gate `{r.get('name')}` — {status} ({req}, exit {r.get('exit_code')})"
+        if r.get("cmd"):
+            head += f"\ncommand: `{r['cmd']}`"
         tail_lines = (r.get("tail") or "").rstrip("\n").splitlines()[-_GATE_TAIL_LINES:]
         tail = "\n".join(tail_lines) if tail_lines else "(no output)"
         blocks.append(f"{head}\n```\n{tail}\n```")

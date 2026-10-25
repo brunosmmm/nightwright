@@ -10,6 +10,11 @@ from test_agentic_e2e import (SPEC_ACCEPTED, _git, _write, impl_done, make_cfg, 
 from wt.agentic import cli_queue as CQ
 from wt.agentic import queue as Q
 from wt.agentic import store as S
+from wt.agentic import schemas as SC
+
+def _ev(cfg, cid, etype, payload=None, **kw):
+    """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
+    return S.append_event(cfg, cid, etype, SC.with_defaults(etype, payload), **kw)
 
 NOW = dt.datetime.now().astimezone()
 
@@ -49,14 +54,14 @@ def _fixture(tmp_path):
                          {"name": "test", "ok": False, "required": True, "duration_s": 3.2}]},
                      last_verdict={"persona": "implementer", "run": "001-implementer",
                                    "verdict": {"status": "done", "summary": "first line\nmore"}})
-    S.append_event(cfg, impl, "run.start", {"persona": "implementer", "run_id": "002-implementer",
+    _ev(cfg, impl, "run.start", {"persona": "implementer", "run_id": "002-implementer",
                                             "model": "sonnet", "effort": "high",
                                             "timeout_s": 1800, "max_budget_usd": 4.0})
     gating = _campaign(cfg, repo, "SPEC-0001-gate", "GATING")
     parked = _campaign(cfg, repo, "SPEC-0001-park", "PARKED",
                        park={"reason": "rate_limited", "detail": "429 from the API",
                              "resume_to": "IMPLEMENTING"})
-    S.append_event(cfg, parked, "park", {"reason": "rate_limited"})
+    _ev(cfg, parked, "park", {"reason": "rate_limited"})
     ready = _campaign(cfg, repo, "SPEC-0001-ready", "QUEUED")
     blocked = _campaign(cfg, repo, "SPEC-0002-blk", "QUEUED", spec_id="SPEC-0002",
                         rel="docs/specs/0002-second.md")
@@ -109,7 +114,7 @@ def test_payload_sections_activity_and_totals(tmp_path):
 
 def test_run_end_closes_activity(tmp_path):
     repo, cfg, ids = _fixture(tmp_path)
-    S.append_event(cfg, ids["impl"], "run.end", {"persona": "implementer",
+    _ev(cfg, ids["impl"], "run.end", {"persona": "implementer",
                                                  "run_id": "002-implementer"})
     act = {it["campaign"]: it for it in Q.dashboard_payload(cfg)["active"]}
     assert act[ids["impl"]]["activity"] == {"kind": "idle"}

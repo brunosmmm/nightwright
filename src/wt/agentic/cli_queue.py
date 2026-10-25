@@ -380,6 +380,31 @@ def _dashboard(p: dict, width: int = 120, recent_hours: int = 24) -> Group:
     return Group(*parts)
 
 
+def _journal_lines(rec: dict) -> Group:
+    """One runner-journal record: a dim timestamp + pid, then what happened."""
+    head = Text.assemble((str(rec.get("ts", ""))[:19], "dim"), " ",
+                         (f"pid {rec.get('pid')}", "dim"), " ")
+    kind = rec.get("kind")
+    if kind == "start":
+        head.append("▶ start", style="bold green")
+        head.append(f"  every {rec.get('interval_s')}s", style="dim")
+        return Group(head)
+    if kind == "stop":
+        head.append("■ stop", style="bold")
+        head.append(f"  {rec.get('reason')} after {rec.get('ticks')} tick(s)", style="dim")
+        return Group(head)
+    if kind == "crash":
+        head.append("✗ crash", style="bold red")
+        head.append(f"  {rec.get('error')}", style="red")
+        return Group(head)
+    head.append(f"tick {rec.get('tick')}", style="cyan")
+    if rec.get("admitted"):
+        head.append(f"  admitted {rec['admitted']}", style="green")
+    rows = [head] + [Text("  ") + R.tick_row(row) for row in rec.get("steps") or []]
+    rows += [Text(f"  ! {e}", style="red") for e in rec.get("errors") or []]
+    return Group(*rows)
+
+
 def _print_plan(title: str, plan: dict) -> None:
     console.print(R.plan(title, plan), highlight=False)
 
@@ -609,6 +634,25 @@ def attach(queue_group):
             raise click.ClickException(str(e))
         if not json_lines:
             console.print(f"[dim]{ticks} tick(s); lease released[/]")
+
+    @queue_group.command("runner-log")
+    @click.option("--tail", type=int, default=30, show_default=True,
+                  help="last N records (0 = all)")
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.runner.log.v1 JSON")
+    @click.pass_obj
+    def queue_runner_log(cfg, tail, as_json):
+        """The runner's own journal (`runner.jsonl`, SPEC-0192): starts, stops, crashes and
+        every tick that did something — what `wt queue run` did, without reading free text."""
+        recs = Q.read_journal(cfg, tail=tail or None)
+        if as_json:
+            _dump_json({"schema": "wt.runner.log.v1", "path": str(Q.runner_journal_path(cfg)),
+                        "records": recs})
+            return
+        if not recs:
+            console.print(f"[dim]no runner records yet ({Q.runner_journal_path(cfg)})[/]")
+            return
+        for rec in recs:
+            console.print(_journal_lines(rec), highlight=False)
 
     @queue_group.command("park")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)

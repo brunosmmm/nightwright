@@ -6,6 +6,11 @@ from click.testing import CliRunner
 
 from wt.agentic import store as S
 from wt.cli import cli
+from wt.agentic import schemas as SC
+
+def _ev(cfg, cid, etype, payload=None, **kw):
+    """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
+    return S.append_event(cfg, cid, etype, SC.with_defaults(etype, payload), **kw)
 
 
 def _cfg(tmp_path):
@@ -69,7 +74,7 @@ def test_list_empty_data_dir(tmp_path, monkeypatch):
 def test_show_json_and_human(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     _seed(cfg)
-    S.append_event(cfg, "SPEC-0170-20261025-aaaa", "gate", {"ok": False})
+    _ev(cfg, "SPEC-0170-20261025-aaaa", "gate", {"ok": False})
     r = _run(cfg, monkeypatch, ["campaign", "show", "SPEC-0170-20261025-aaaa", "--json"])
     assert r.exit_code == 0, r.output
     d = json.loads(r.output)
@@ -86,8 +91,8 @@ def test_log_filters_and_json(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     _seed(cfg)
     cid = "SPEC-0170-20261025-aaaa"
-    S.append_event(cfg, cid, "transition", {"from": "QUEUED", "to": "OPENING"})
-    S.append_event(cfg, cid, "gate", {"ok": True})
+    _ev(cfg, cid, "transition", {"from": "QUEUED", "to": "OPENING"})
+    _ev(cfg, cid, "gate", {"ok": True})
     r = _run(cfg, monkeypatch, ["campaign", "log", cid, "--json"])
     d = json.loads(r.output)
     assert d["schema"] == "wt.campaign.log.v1" and d["campaign"] == cid

@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from . import schemas as SC
+
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n(.*?)\n\s*```\s*$", re.DOTALL)
 _TAIL_CHARS = 2000
 
@@ -172,6 +174,31 @@ def _save_inputs(req: RunRequest) -> None:
     (req.run_dir / "prompt.md").write_text(req.prompt, encoding="utf-8")
 
 
+def _now_iso() -> str:
+    import datetime as dt
+    return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def write_run_record(req: RunRequest, result: RunResult, started_at: str) -> RunResult:
+    """`runs/<run_id>/run.json` (`wt.run.v1`, SPEC-0192): the run normalized by wt, beside
+    the raw vendor `result.json` and `stderr.log` it points to. Returns `result`."""
+    rec = {
+        "schema": SC.RUN_SCHEMA, "campaign": req.run_dir.parent.parent.name,
+        "run_id": req.run_dir.name, "persona": req.persona, "model": req.model,
+        "effort": req.effort, "max_budget_usd": req.max_budget_usd, "timeout_s": req.timeout_s,
+        "permission_mode": req.permission_mode, "started_at": started_at,
+        "duration_s": result.duration_s, "exit_code": result.exit_code,
+        "timed_out": result.timed_out, "interrupted": result.interrupted,
+        "is_error": result.is_error, "cost_usd": result.cost_usd, "usage": result.usage,
+        "session_id": result.session_id, "verdict_ok": result.verdict_ok,
+        "verdict": result.verdict,
+        "files": {"prompt": "prompt.md", "raw": "result.json", "stderr": "stderr.log"},
+    }
+    (req.run_dir / "run.json").write_text(json.dumps(rec, indent=2, ensure_ascii=False) + "\n",
+                                          encoding="utf-8")
+    return result
+
+
 def _child_env(req: RunRequest) -> dict:
     return {**os.environ, **req.env}
 
@@ -185,6 +212,7 @@ class ClaudeRunner:
         _save_inputs(req)
         argv = build_argv(req)
         raw_path = req.run_dir / "result.json"
+        started_at = _now_iso()
         started = time.monotonic()
         timed_out = False
         try:
@@ -204,8 +232,9 @@ class ClaudeRunner:
         parsed = parse_result(stdout, req.json_schema, exit_code=code)
         if timed_out or code == -1:
             parsed["is_error"] = True
-        return RunResult(exit_code=code, timed_out=timed_out, interrupted=False,
-                         duration_s=round(duration, 3), raw_path=raw_path, **parsed)
+        return write_run_record(req, RunResult(
+            exit_code=code, timed_out=timed_out, interrupted=False,
+            duration_s=round(duration, 3), raw_path=raw_path, **parsed), started_at)
 
 
 # ---- offline stand-in ----------------------------------------------------------------------------
@@ -262,6 +291,7 @@ class FakeRunner:
     def run(self, req: RunRequest) -> RunResult:
         _save_inputs(req)
         entry = self._next_entry(req)
+        started_at = _now_iso()
         started = time.monotonic()
         if entry.get("sleep_s"):
             time.sleep(float(entry["sleep_s"]))
@@ -284,9 +314,10 @@ class FakeRunner:
         if timed_out:
             parsed["is_error"] = True
             parsed["verdict"], parsed["verdict_ok"] = None, False
-        return RunResult(exit_code=-1 if timed_out else exit_code, timed_out=timed_out,
-                         interrupted=False, duration_s=round(time.monotonic() - started, 3),
-                         raw_path=raw_path, **parsed)
+        return write_run_record(req, RunResult(
+            exit_code=-1 if timed_out else exit_code, timed_out=timed_out, interrupted=False,
+            duration_s=round(time.monotonic() - started, 3), raw_path=raw_path, **parsed),
+            started_at)
 
 
 def select_runner(cfg) -> PersonaRunner:

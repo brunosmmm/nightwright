@@ -91,7 +91,7 @@ def _kv(text: Text, key: str, value) -> None:
 
 def campaign_event(ev: dict) -> Text:
     """`wt campaign show|log` line: seq, ts, type, by, then key=value (values ≤ 60 chars)."""
-    skip = {"ts", "seq", "campaign", "type", "by"}
+    skip = {"schema", "ts", "seq", "campaign", "type", "by"}
     etype = ev.get("type", "?")
     style = _EVENT_STYLES.get(etype, "")
     if etype == "gate":

@@ -13,6 +13,11 @@ from wt.agentic import events as E
 from wt.agentic import lease as L
 from wt.agentic import store
 from wt.cli import cli
+from wt.agentic import schemas as SC
+
+def _ev(cfg, cid, etype, payload=None, **kw):
+    """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
+    return store.append_event(cfg, cid, etype, SC.with_defaults(etype, payload), **kw)
 
 
 def _cfg(tmp_path):
@@ -70,17 +75,17 @@ def test_concurrent_appends_have_unique_increasing_ids(tmp_path):
 def test_projection_maps_ledger_events_exactly_once(tmp_path):
     cfg = _cfg(tmp_path)
     cid = _campaign(cfg)
-    store.append_event(cfg, cid, "transition", {"from": "QUEUED", "to": "OPENING",
+    _ev(cfg, cid, "transition", {"from": "QUEUED", "to": "OPENING",
                                                 "reason": "admitted"})
-    store.append_event(cfg, cid, "run.end", {"persona": "implementer", "run_id": "001",
+    _ev(cfg, cid, "run.end", {"persona": "implementer", "run_id": "001",
                                              "is_error": True, "timed_out": False,
                                              "result_tail": "You've hit your session limit"})
-    store.append_event(cfg, cid, "run.end", {"persona": "implementer", "run_id": "002",
+    _ev(cfg, cid, "run.end", {"persona": "implementer", "run_id": "002",
                                              "is_error": True, "timed_out": False,
                                              "result_tail": "SyntaxError in foo.py"})
-    store.append_event(cfg, cid, "cost", {"total_usd": 8.5, "cap_usd": 10.0})
-    store.append_event(cfg, cid, "cost", {"total_usd": 9.0, "cap_usd": 10.0})
-    store.append_event(cfg, cid, "park", {"reason": "cost_cap", "detail": "d",
+    _ev(cfg, cid, "cost", {"total_usd": 8.5, "cap_usd": 10.0})
+    _ev(cfg, cid, "cost", {"total_usd": 9.0, "cap_usd": 10.0})
+    _ev(cfg, cid, "park", {"reason": "cost_cap", "detail": "d",
                                           "resume_to": "IMPLEMENTING"})
     _set_state(cfg, cid, state="PARKED")
     E.sync(cfg)
@@ -100,7 +105,7 @@ def test_merged_event_carries_sha(tmp_path):
     cfg = _cfg(tmp_path)
     cid = _campaign(cfg, state="CLOSING")
     _set_state(cfg, cid, state="MERGED", close={"mode": "merge", "merged_sha": "deadbeef"})
-    store.append_event(cfg, cid, "transition", {"from": "CLOSING", "to": "MERGED",
+    _ev(cfg, cid, "transition", {"from": "CLOSING", "to": "MERGED",
                                                 "reason": "closed"})
     E.sync(cfg)
     merged = [e for e in E.read_since(cfg, 0) if e["type"] == "merged"]
@@ -132,7 +137,7 @@ def test_run_overdue_and_silent(tmp_path):
     cfg = _cfg(tmp_path)
     a = _campaign(cfg, "SPEC-0901-20261025-aaaa")
     b = _campaign(cfg, "SPEC-0902-20261025-bbbb", state="GATING")
-    store.append_event(cfg, a, "run.start", {"persona": "implementer", "run_id": "001",
+    _ev(cfg, a, "run.start", {"persona": "implementer", "run_id": "001",
                                              "timeout_s": 60})
     lease = L.acquire(cfg, ["test"])
     try:
@@ -190,7 +195,7 @@ def test_cli_events_history_and_conduct_status(tmp_path, monkeypatch):
     cid = _campaign(cfg, state="PARKED")
     _set_state(cfg, cid, park={"reason": "cost_cap", "detail": "over",
                                "resume_to": "IMPLEMENTING"})
-    store.append_event(cfg, cid, "park", {"reason": "cost_cap", "detail": "over",
+    _ev(cfg, cid, "park", {"reason": "cost_cap", "detail": "over",
                                           "resume_to": "IMPLEMENTING"})
     r = CliRunner().invoke(cli, ["queue", "events"])
     assert r.exit_code == 0, r.output

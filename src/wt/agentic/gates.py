@@ -8,6 +8,7 @@ bounded tail travels in the result for prompts and `wt campaign show`. `required
 whether a failure blocks; optional failures are recorded and never block."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import signal
@@ -16,6 +17,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from . import schemas as SC
 from . import store
 from .project import expand_cmd
 
@@ -34,6 +36,8 @@ class GateResult:
     duration_s: float
     log: str          # path relative to the campaign dir
     tail: str         # last TAIL_LINES lines of the log
+    cmd: str = ""     # the expanded command (SPEC-0192; also in the gates/NNN-name.json sidecar)
+    cwd: str = ""
 
 
 @dataclass(frozen=True)
@@ -91,41 +95,57 @@ def _kill_group(proc: subprocess.Popen) -> None:
             continue
 
 
+def _write_sidecar(log_path: Path, result: GateResult, *, timeout_s: int, started_at: str,
+                   error: str | None) -> None:
+    """`gates/NNN-name.json` (`wt.gate.v1`, SPEC-0192): what wt knows about the run; the
+    `.log` beside it holds only the command's own output."""
+    rec = {"schema": SC.GATE_SCHEMA, "name": result.name, "cmd": result.cmd, "cwd": result.cwd,
+           "required": result.required, "ok": result.ok, "exit_code": result.exit_code,
+           "timed_out": result.timed_out, "timeout_s": timeout_s, "started_at": started_at,
+           "duration_s": result.duration_s, "log": log_path.name, "error": error}
+    log_path.with_suffix(".json").write_text(json.dumps(rec, indent=2, ensure_ascii=False)
+                                             + "\n", encoding="utf-8")
+
+
 def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
              log_rel: str | None = None) -> GateResult:
     """Run one gate in `worktree / gate["cwd"]`, combined output to `log_path`, timeout
-    `gate["timeout_s"]` (kills the whole process group). `ok` = exit code 0."""
+    `gate["timeout_s"]` (kills the whole process group). `ok` = exit code 0. The log is the
+    command's output only; command, cwd, exit, timing and errors go to the JSON sidecar."""
     cmd = expand_cmd(gate["cmd"], **placeholders)
     cwd = Path(worktree) / gate.get("cwd", ".")
     timeout_s = int(gate.get("timeout_s", 1200))
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     child_env = {**os.environ, **env}
+    started_at = store.now_iso()
     started = time.monotonic()
     timed_out = False
+    error = None
+    exit_code = None
     with open(log_path, "w", encoding="utf-8") as log:
-        log.write(f"# {gate['name']}: {cmd} (cwd {cwd})\n")
-        log.flush()
         try:
             proc = subprocess.Popen(cmd, shell=True, cwd=str(cwd), env=child_env,
                                     stdout=log, stderr=subprocess.STDOUT,
                                     start_new_session=True)
         except OSError as e:
-            log.write(f"# failed to start: {e}\n")
-            return GateResult(gate["name"], bool(gate.get("required", True)), False, None,
-                              False, round(time.monotonic() - started, 3),
-                              log_rel or str(log_path), tail(log_path))
-        try:
-            exit_code = proc.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _kill_group(proc)
-            exit_code = proc.returncode
-            log.write(f"# timed out after {timeout_s}s; process group killed\n")
+            proc = None
+            error = f"failed to start: {e}"
+        if proc is not None:
+            try:
+                exit_code = proc.wait(timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                _kill_group(proc)
+                exit_code = proc.returncode
+                error = f"timed out after {timeout_s}s; process group killed"
     duration = round(time.monotonic() - started, 3)
-    ok = (exit_code == 0) and not timed_out
-    return GateResult(gate["name"], bool(gate.get("required", True)), ok, exit_code,
-                      timed_out, duration, log_rel or str(log_path), tail(log_path))
+    ok = proc is not None and exit_code == 0 and not timed_out
+    result = GateResult(gate["name"], bool(gate.get("required", True)), ok, exit_code,
+                        timed_out, duration, log_rel or str(log_path), tail(log_path),
+                        cmd=cmd, cwd=str(cwd))
+    _write_sidecar(log_path, result, timeout_s=timeout_s, started_at=started_at, error=error)
+    return result
 
 
 def next_gate_seq(cfg, campaign_id) -> int:

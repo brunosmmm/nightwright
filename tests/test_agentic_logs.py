@@ -1,0 +1,123 @@
+"""SPEC-0192: every log the agentic layer saves is JSON/JSONL with a declared schema — the
+ledger (validated on append), `run.json` beside each persona run, a `.json` sidecar beside each
+raw gate log, and the runner's own `runner.jsonl` (+ `wt queue runner-log`)."""
+import json
+
+import pytest
+
+from test_agentic_e2e import added, impl_done, make_cfg, make_repo, run_cli, script, triage
+from wt.agentic import queue as Q
+from wt.agentic import schemas as SC
+from wt.agentic import store as S
+
+
+def _run_to_idle(tmp_path, monkeypatch, entries):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, entries))
+    cid = added(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    return cfg, cid
+
+
+def test_every_saved_record_matches_its_schema(tmp_path, monkeypatch):
+    cfg, cid = _run_to_idle(tmp_path, monkeypatch, [impl_done()])
+    assert S.read_state(cfg, cid)["state"] == "MERGED"
+    cdir = S.campaign_dir(cfg, cid)
+
+    ledger = [json.loads(line) for line in (cdir / "ledger.jsonl").read_text().splitlines()]
+    assert ledger and all(rec["schema"] == SC.LEDGER_SCHEMA for rec in ledger)
+    assert [p for rec in ledger for p in SC.ledger_problems(rec)] == []
+
+    runs = sorted(d for d in (cdir / "runs").iterdir() if d.is_dir())   # skip .fake-cursor
+    assert runs
+    ends = {e["run_id"]: e for e in S.read_ledger(cfg, cid, types=["run.end"])}
+    for d in runs:
+        rec = json.loads((d / "run.json").read_text())
+        assert SC.record_problems(rec, SC.RUN_KEYS, SC.RUN_SCHEMA) == []
+        assert rec["campaign"] == cid and rec["run_id"] == d.name
+        assert rec["cost_usd"] == ends[d.name]["cost_usd"]
+        assert rec["verdict_ok"] == ends[d.name]["verdict_ok"]
+        for f in rec["files"].values():
+            assert (d / f).is_file(), f
+
+    logs = sorted((cdir / "gates").glob("*.log"))
+    assert logs
+    for log in logs:
+        side = json.loads(log.with_suffix(".json").read_text())
+        assert SC.record_problems(side, SC.GATE_KEYS, SC.GATE_SCHEMA) == []
+        assert side["log"] == log.name and side["cmd"]
+        assert not log.read_text().startswith("# ")              # no wt text in raw output
+
+    journal = Q.read_journal(cfg)
+    assert [p for rec in journal for p in SC.runner_problems(rec)] == []
+    kinds = [rec["kind"] for rec in journal]
+    assert kinds[0] == "start" and kinds[-1] == "stop" and "tick" in kinds
+    assert journal[-1]["reason"] == "idle"
+    steps = [s for rec in journal if rec["kind"] == "tick" for s in rec["steps"]]
+    assert ("CLOSING", "MERGED") in [(s["from"], s["to"]) for s in steps]
+
+
+def test_triage_path_records_are_valid_too(tmp_path, monkeypatch):
+    """A failing gate → triage → fix loop exercises finding/park-free paths and more runs."""
+    repo = make_repo(tmp_path, test_gate="test -f feature.txt && grep -q fixed feature.txt")
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [
+        impl_done(), triage("fix"), impl_done(content="fixed\n")]))
+    cid = added(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    cdir = S.campaign_dir(cfg, cid)
+    ledger = [json.loads(line) for line in (cdir / "ledger.jsonl").read_text().splitlines()]
+    assert [p for rec in ledger for p in SC.ledger_problems(rec)] == []
+    assert len([d for d in (cdir / "runs").iterdir() if d.is_dir()]) == 3
+    failed = [json.loads(p.read_text()) for p in (cdir / "gates").glob("*.json")]
+    assert any(not g["ok"] for g in failed) and any(g["ok"] for g in failed)
+
+
+def test_append_event_rejects_unknown_type_and_missing_keys(tmp_path):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    S.create_campaign(cfg, {"id": "C1", "spec_id": "SPEC-0001", "state": "QUEUED"})
+    path = S.campaign_dir(cfg, "C1") / "ledger.jsonl"
+    before = path.read_text()
+    with pytest.raises(ValueError, match="unknown event type 'mystery'"):
+        S.append_event(cfg, "C1", "mystery", {})
+    with pytest.raises(ValueError, match="transition: missing 'reason'"):
+        S.append_event(cfg, "C1", "transition", {"from": "QUEUED", "to": "OPENING"})
+    assert path.read_text() == before
+    rec = S.append_event(cfg, "C1", "note", {"text": "ok"})
+    assert rec["schema"] == SC.LEDGER_SCHEMA and SC.ledger_problems(rec) == []
+
+
+def test_pre_schema_records_still_read_as_v1():
+    old = {"ts": "t", "seq": 1, "campaign": "c", "type": "note", "by": "human", "text": "x"}
+    assert SC.ledger_problems(old) == []
+    assert SC.ledger_problems({**old, "schema": "wt.ledger.event.v9"}) == [
+        "unknown schema 'wt.ledger.event.v9'"]
+
+
+def test_runner_crash_is_journaled(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+
+    def boom(*a, **k):
+        raise RuntimeError("tick exploded")
+
+    monkeypatch.setattr(Q, "tick", boom)
+    with pytest.raises(RuntimeError):
+        Q.run(cfg, once=True)
+    recs = Q.read_journal(cfg)
+    assert [r["kind"] for r in recs] == ["start", "crash"]
+    assert recs[-1]["error"] == "RuntimeError: tick exploded" and "Traceback" in recs[-1]["traceback"]
+    assert SC.runner_problems(recs[-1]) == []
+
+
+def test_runner_log_cli(tmp_path, monkeypatch):
+    cfg, cid = _run_to_idle(tmp_path, monkeypatch, [impl_done()])
+    r = run_cli(cfg, monkeypatch, ["queue", "runner-log", "--json"])
+    d = json.loads(r.output)
+    assert d["schema"] == "wt.runner.log.v1" and d["records"][-1]["kind"] == "stop"
+    r = run_cli(cfg, monkeypatch, ["queue", "runner-log", "--tail", "0"])
+    assert r.exit_code == 0 and "start" in r.output and "stop" in r.output and cid in r.output
+    r = run_cli(cfg, monkeypatch, ["queue", "runner-log", "--tail", "1", "--json"])
+    assert len(json.loads(r.output)["records"]) == 1

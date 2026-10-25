@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from ..export import _atomic_write
+from . import schemas as SC
 
 TERMINAL_STATES = frozenset({"MERGED", "HANDED_OFF", "ABANDONED"})
 
@@ -171,13 +172,18 @@ def _last_seq(path: Path) -> int:
 
 
 def append_event(cfg, campaign_id, type, payload=None, *, by="tick") -> dict:
-    """Append one ledger line `{ts, seq, campaign, type, by, **payload}` under the campaign
-    lock, with `O_APPEND` and a single `write()` so lines never interleave."""
+    """Append one `wt.ledger.event.v1` line `{schema, ts, seq, campaign, type, by, **payload}`
+    under the campaign lock, with `O_APPEND` and a single `write()` so lines never interleave.
+    The record is validated first (SPEC-0192): an unknown type or a missing per-type key
+    raises ValueError and nothing is written."""
     path = _ledger_path(cfg, campaign_id)
     with item_lock(cfg, campaign_id):
-        rec = {"ts": now_iso(), "seq": _last_seq(path) + 1, "campaign": campaign_id,
-               "type": type, "by": by}
+        rec = {"schema": SC.LEDGER_SCHEMA, "ts": now_iso(), "seq": _last_seq(path) + 1,
+               "campaign": campaign_id, "type": type, "by": by}
         rec.update(payload or {})
+        problems = SC.ledger_problems(rec)
+        if problems:
+            raise ValueError(f"invalid ledger event for {campaign_id}: {'; '.join(problems)}")
         line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
         try:

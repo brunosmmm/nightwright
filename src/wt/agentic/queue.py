@@ -31,6 +31,7 @@ from . import gitops as git
 from . import lease as L
 from . import personas as PS
 from . import project as P
+from . import schemas as SC
 from . import store
 from .gitops import GitError
 from .profiles import persona_settings, resolve_profile
@@ -801,6 +802,46 @@ def _park_row(cfg, state: dict, step: Step) -> dict:
             "run_id": None, "cost_usd": None, "reason": step.reason}
 
 
+def runner_journal_path(cfg) -> Path:
+    return store.agentic_dir(cfg) / "runner.jsonl"
+
+
+def journal(cfg, kind: str, **fields) -> dict:
+    """Append one `wt.runner.record.v1` line to `<agentic>/runner.jsonl` (SPEC-0192): a single
+    O_APPEND write, so concurrent writers never interleave. Never raises."""
+    import json
+    rec = {"schema": SC.RUNNER_SCHEMA, "ts": store.now_iso(), "kind": kind, "pid": os.getpid(),
+           **fields}
+    try:
+        path = runner_journal_path(cfg)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, (json.dumps(rec, ensure_ascii=False, default=str) + "\n").encode())
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+    return rec
+
+
+def read_journal(cfg, *, tail=None) -> list[dict]:
+    """`runner.jsonl` records in order (unparseable lines skipped)."""
+    import json
+    path = runner_journal_path(cfg)
+    if not path.is_file():
+        return []
+    out = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out[-tail:] if tail else out
+
+
 def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=False,
         on_tick=None, runner=None, argv=None) -> int:
     """The loop: take the lease, tick, heartbeat, sleep. SIGINT/SIGTERM stop admissions,
@@ -831,19 +872,35 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
         except ValueError:                                  # not the main thread (tests)
             pass
     ticks = 0
+    reason = "signal"
+    journal(cfg, "start", argv=list(argv or ["wt", "queue", "run"]), interval_s=interval)
     try:
         while not stop.is_set():
             report = tick(cfg, stop=stop, runner=runner)
             ticks += 1
             lease.heartbeat()
+            if report.steps or report.admitted or report.errors:      # idle ticks stay silent
+                journal(cfg, "tick", tick=ticks, steps=report.steps, admitted=report.admitted,
+                        errors=report.errors)
             if on_tick:
                 on_tick(report)
             if once or (max_ticks and ticks >= max_ticks) or (until_idle and report.idle):
+                reason = "once" if once else ("max_ticks" if max_ticks and ticks >= max_ticks
+                                              else "idle")
                 break
             deadline = time.monotonic() + interval
             while time.monotonic() < deadline and not stop.is_set():
                 time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+    except BaseException as e:
+        if not isinstance(e, (KeyboardInterrupt, SystemExit)):
+            import traceback
+            journal(cfg, "crash", ticks=ticks, error=f"{type(e).__name__}: {e}",
+                    traceback=traceback.format_exc()[-4000:])
+            reason = "crash"
+        raise
     finally:
+        if reason != "crash":
+            journal(cfg, "stop", ticks=ticks, reason=reason)
         lease.release()
         for sig, prev in previous.items():
             try:

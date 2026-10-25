@@ -10,6 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from wt.agentic import gates as G
+from wt.agentic import schemas as SC
 from wt.agentic import store as S
 from wt.cli import cli
 
@@ -67,8 +68,11 @@ def test_pass_fail_results_and_log(world, tmp_path):
     assert (bad.ok, bad.exit_code, bad.timed_out, bad.required) == (False, 3, False, False)
     assert ok.tail.splitlines()[-2:] == ["hello", "world"]
     assert "boom" in bad.tail                                 # stderr merged into the log
-    text = (tmp_path / "ok.log").read_text()
-    assert text.startswith("# ok: echo hello; echo world (cwd ")
+    assert (tmp_path / "ok.log").read_text() == "hello\nworld\n"   # raw output only (SPEC-0192)
+    side = json.loads((tmp_path / "ok.json").read_text())
+    assert SC.record_problems(side, SC.GATE_KEYS, SC.GATE_SCHEMA) == []
+    assert side["cmd"] == "echo hello; echo world" and side["exit_code"] == 0 and side["ok"]
+    assert side["log"] == "ok.log" and side["error"] is None and ok.cmd == side["cmd"]
     assert ok.duration_s >= 0 and ok.log == str(tmp_path / "ok.log")
 
 
@@ -89,7 +93,9 @@ def test_timeout_kills_the_process_group(world, tmp_path):
         time.sleep(0.1)
     else:
         pytest.fail(f"grandchild {child} survived the group kill")
-    assert "timed out after 1s" in (tmp_path / "slow.log").read_text()
+    side = json.loads((tmp_path / "slow.json").read_text())
+    assert side["timed_out"] and side["error"] == "timed out after 1s; process group killed"
+    assert "timed out" not in (tmp_path / "slow.log").read_text()
 
 
 def test_env_placeholders_and_cwd(world, tmp_path):
@@ -120,7 +126,8 @@ def test_unstartable_cwd_is_a_failed_result(world, tmp_path):
     r = G.run_gate(_gate("nocwd", "true", cwd="missing"), wt, G.gate_env(cfg, st),
                    tmp_path / "n.log", {})
     assert not r.ok and r.exit_code is None and not r.timed_out
-    assert "failed to start" in (tmp_path / "n.log").read_text()
+    side = json.loads((tmp_path / "n.json").read_text())
+    assert side["error"].startswith("failed to start") and side["exit_code"] is None
 
 
 # ---- run_all ------------------------------------------------------------------------------
@@ -156,7 +163,7 @@ def test_as_payload_and_next_seq(world):
     assert p["gate_seq"] == 1 and p["ok"] is True and p["results"][0]["name"] == "a"
     assert "seq" not in p                                      # never clobber the ledger seq
     assert set(p["results"][0]) == {"name", "required", "ok", "exit_code", "timed_out",
-                                    "duration_s", "log", "tail"}
+                                    "duration_s", "log", "tail", "cmd", "cwd"}
     json.dumps(p)                                               # ledger-serializable
     assert G.next_gate_seq(cfg, CID) == 2
 

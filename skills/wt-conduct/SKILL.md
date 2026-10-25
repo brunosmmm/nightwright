@@ -72,7 +72,7 @@ run, handle it — that is the point.
 
 | event `type` | action |
 |---|---|
-| `runner_dead` | start the loop (step 2); if it dies again within minutes, read the `runner.log` tail and escalate |
+| `runner_dead` | start the loop (step 2); if it dies again within minutes, read `wt queue runner-log --tail 30` (a `crash` record carries the error) and escalate |
 | `lease_stale` | the runner is hung (no run in flight within its timeout): report pid + heartbeat age to the human; do not kill it unless told |
 | `run_overdue` | a persona run exceeded its timeout + grace: dispatch a sub-agent to check the run's process and logs and recommend park+resume, wait, or escalate; apply its recommendation |
 | `campaign_silent` | no ledger activity for long while active: same as `run_overdue` (sub-agent investigates) |

@@ -10,6 +10,11 @@ from wt.agentic import personas as PS
 from wt.agentic import store as S
 from wt.agentic.profiles import resolve_profile
 from wt.cli import cli
+from wt.agentic import schemas as SC
+
+def _ev(cfg, cid, etype, payload=None, **kw):
+    """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
+    return S.append_event(cfg, cid, etype, SC.with_defaults(etype, payload), **kw)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -183,7 +188,7 @@ def test_build_request_unknown_persona(tmp_path):
 def test_cli_campaign_prompt(tmp_path, monkeypatch):
     cfg, st = _cfg(tmp_path), _state(tmp_path)
     S.create_campaign(cfg, st)
-    S.append_event(cfg, st["id"], "run.end", {"persona": "implementer", "run_id": "001",
+    _ev(cfg, st["id"], "run.end", {"persona": "implementer", "run_id": "001",
                                              "verdict": {"status": "partial", "summary": "half"}})
     monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["campaign", "prompt", st["id"], "implementer"])

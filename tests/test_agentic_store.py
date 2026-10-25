@@ -7,6 +7,11 @@ from pathlib import Path
 import pytest
 
 from wt.agentic import store as S
+from wt.agentic import schemas as SC
+
+def _ev(cfg, cid, etype, payload=None, **kw):
+    """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
+    return S.append_event(cfg, cid, etype, SC.with_defaults(etype, payload), **kw)
 
 
 def _cfg(tmp_path):
@@ -70,7 +75,7 @@ def test_write_state_is_atomic(tmp_path, monkeypatch):
 def test_append_event_envelope_and_seq(tmp_path):
     cfg = _cfg(tmp_path)
     S.create_campaign(cfg, _state("C1"))
-    rec = S.append_event(cfg, "C1", "transition", {"from": "QUEUED", "to": "OPENING"}, by="tick")
+    rec = _ev(cfg, "C1", "transition", {"from": "QUEUED", "to": "OPENING"}, by="tick")
     assert rec["seq"] == 2 and rec["campaign"] == "C1" and rec["by"] == "tick"
     assert rec["from"] == "QUEUED" and "ts" in rec
     raw = (S.campaign_dir(cfg, "C1") / "ledger.jsonl").read_text().splitlines()
@@ -83,7 +88,7 @@ def test_concurrent_appends_are_serialized(tmp_path):
 
     def worker(n):
         for i in range(50):
-            S.append_event(cfg, "C1", "note", {"text": f"{n}-{i}"}, by="human")
+            _ev(cfg, "C1", "note", {"text": f"{n}-{i}"}, by="human")
     threads = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
     for t in threads:
         t.start()
@@ -99,8 +104,8 @@ def test_concurrent_appends_are_serialized(tmp_path):
 def test_read_ledger_skips_truncated_line_and_filters(tmp_path):
     cfg = _cfg(tmp_path)
     S.create_campaign(cfg, _state("C1"))
-    S.append_event(cfg, "C1", "note", {"text": "a"})
-    S.append_event(cfg, "C1", "gate", {"ok": True})
+    _ev(cfg, "C1", "note", {"text": "a"})
+    _ev(cfg, "C1", "gate", {"ok": True})
     path = S.campaign_dir(cfg, "C1") / "ledger.jsonl"
     with open(path, "a") as f:
         f.write('{"ts": "2026", "seq": 4, "type": "cos')     # truncated last line
@@ -109,7 +114,7 @@ def test_read_ledger_skips_truncated_line_and_filters(tmp_path):
     assert [e["type"] for e in S.read_ledger(cfg, "C1", types=["gate"])] == ["gate"]
     assert [e["type"] for e in S.read_ledger(cfg, "C1", tail=1)] == ["gate"]
     # the next append still gets a monotonic seq despite the garbage line
-    assert S.append_event(cfg, "C1", "note", {"text": "b"})["seq"] == 4
+    assert _ev(cfg, "C1", "note", {"text": "b"})["seq"] == 4
 
 
 def test_read_ledger_missing_is_empty(tmp_path):
@@ -176,14 +181,14 @@ def test_item_lock_reentrant_and_append_inside(tmp_path):
     S.create_campaign(cfg, {"id": cid, "spec_id": "SPEC-0001", "state": "QUEUED"})
     with S.item_lock(cfg, cid):
         with S.item_lock(cfg, cid):                     # nested: must not deadlock
-            S.append_event(cfg, cid, "note", {"text": "inside"})
-        S.append_event(cfg, cid, "note", {"text": "still inside"})
+            _ev(cfg, cid, "note", {"text": "inside"})
+        _ev(cfg, cid, "note", {"text": "still inside"})
     assert [e["text"] for e in S.read_ledger(cfg, cid, types=["note"])] == ["inside", "still inside"]
 
     # another thread waits for the lock (RLock is per thread)
     order = []
     with S.item_lock(cfg, cid):
-        t = threading.Thread(target=lambda: (S.append_event(cfg, cid, "note", {"text": "thread"}),
+        t = threading.Thread(target=lambda: (_ev(cfg, cid, "note", {"text": "thread"}),
                                              order.append("thread")))
         t.start()
         time.sleep(0.2)
