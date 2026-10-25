@@ -121,14 +121,8 @@ def _process_lock(path: Path):
 
 
 @contextmanager
-def item_lock(cfg, campaign_id):
-    """Exclusive `flock` on `campaigns/<id>/.lock` for the duration of the block. Reentrant
-    within the process: nested use by the same thread re-enters the RLock and leaves the
-    single `flock` in place; other threads wait on the RLock; other processes wait on the
-    `flock`."""
-    d = campaign_dir(cfg, campaign_id)
-    d.mkdir(parents=True, exist_ok=True)
-    lock_file = d / ".lock"
+def _flocked(lock_file: Path):
+    """Process RLock + exclusive `flock` on `lock_file`, reentrant within the process."""
     rlock, meta = _process_lock(lock_file)
     with rlock:
         if meta["depth"] == 0:
@@ -150,6 +144,29 @@ def item_lock(cfg, campaign_id):
                     fcntl.flock(fd, fcntl.LOCK_UN)
                 finally:
                     os.close(fd)
+
+
+@contextmanager
+def item_lock(cfg, campaign_id):
+    """Exclusive `flock` on `campaigns/<id>/.lock` for the duration of the block. Reentrant
+    within the process: nested use by the same thread re-enters the RLock and leaves the
+    single `flock` in place; other threads wait on the RLock; other processes wait on the
+    `flock`."""
+    d = campaign_dir(cfg, campaign_id)
+    d.mkdir(parents=True, exist_ok=True)
+    with _flocked(d / ".lock"):
+        yield
+
+
+@contextmanager
+def add_lock(cfg):
+    """Queue-wide exclusive lock on `<agentic>/add.lock` (SPEC-0209): held around the
+    duplicate re-check and `create_campaign` of `wt queue add`, so two concurrent adds of the
+    same spec or idea create exactly one campaign. Built like `item_lock`."""
+    d = agentic_dir(cfg)
+    d.mkdir(parents=True, exist_ok=True)
+    with _flocked(d / "add.lock"):
+        yield
 
 
 # ---- ledger ----------------------------------------------------------------------------

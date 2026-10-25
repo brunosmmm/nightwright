@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -42,20 +43,20 @@ from .profiles import (SEVERITIES, persona_settings, resolve_profile, review_par
 from .events import settings as events_settings
 from .runner import RunResult, select_runner
 
-STATES = ("QUEUED", "WAITING", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
+STATES = ("QUEUED", "WAITING", "OPENING", "SPEC_WRITING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
           "CLOSING", "PARKED", "MERGED", "HANDED_OFF", "ABANDONED")
 # Slots are for campaigns that are open and delivering (ACTIVE_STATES). QUEUED = the backlog,
 # never started. WAITING (SPEC-0200) = started (worktree, commits, counters, brief) and ready to
 # continue, but no slot was free; it takes the next free slot ahead of the backlog and resumes
 # at `waiting.resume_to` without re-opening. PARKED = needs a decision; holds no slot.
 TERMINAL_STATES = store.TERMINAL_STATES
-ACTIVE_STATES = frozenset({"OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
+ACTIVE_STATES = frozenset({"OPENING", "SPEC_WRITING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
                            "CLOSING"})
-RESUMABLE_STATES = ("IMPLEMENTING", "GATING", "REVIEWING", "CLOSING", "QUEUED")
+RESUMABLE_STATES = ("SPEC_WRITING", "IMPLEMENTING", "GATING", "REVIEWING", "CLOSING", "QUEUED")
 PARK_REASONS = frozenset({
     "cost_cap", "loop_exhausted", "implementer_blocked", "triage_escalated", "open_failed",
     "rebase_conflict", "main_dirty", "main_not_on_base", "base_moving", "gh_failed", "human",
-    "review_escalated", "config_invalid",
+    "review_escalated", "config_invalid", "spec_writer_unavailable",
 })
 # How many times in a row the implementer may report `blocked` before the campaign parks.
 BLOCKED_STREAK_MAX = 2
@@ -136,6 +137,10 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
         return Step("none")
     if st == "OPENING":
         return Step("open")
+    if st == "SPEC_WRITING":
+        # SPEC-0209: SPEC-0215 replaces this park with the write step
+        return Step("park", reason="spec_writer_unavailable",
+                    detail="no spec writer yet (SPEC-0215)", resume_to="SPEC_WRITING")
     if st == "GATING":
         return Step("gate")
     if st == "CLOSING":
@@ -500,10 +505,47 @@ def pick_admissions(backlog, busy: int, slots: int, readiness) -> list:
     return picks
 
 
+def has_no_spec(st: dict) -> bool:
+    """SPEC-0209: an idea campaign whose spec is not written yet. Keys on `kind` first: spec
+    campaigns created earlier carry no `spec.id` and keep their old behaviour."""
+    return st.get("kind") == "idea" and not (st.get("spec") or {}).get("id")
+
+
+def idea_is_open(task) -> bool:
+    """SPEC-0209: an idea a campaign may still work: IDEA or INCUBATE, or SPECCED with no
+    `:SPEC:`."""
+    state = task.state or ""
+    return state in ("IDEA", "INCUBATE") or (
+        state == "SPECCED" and not (task.properties.get("SPEC") or "").strip())
+
+
+def _idea_task(cfg, idea_id):
+    """The idea task for `idea_id` (exact `:ID:` or task id), or None."""
+    from .. import org as ORG
+    ORG.invalidate_tasks_cache()          # org writes can land within one mtime tick
+    for t in ORG.filter_tasks(ORG.load_tasks(cfg), is_idea=True):
+        if idea_id in ((t.properties.get("ID") or "").strip(), t.id):
+            return t
+    return None
+
+
+def _idea_id_of(st: dict) -> str | None:
+    return (st.get("idea") or {}).get("id")
+
+
 def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
     """Can this queued campaign be admitted? Re-reads the spec and its `depends_on` from the
     project's base checkout (`repo.root`): the spec must still be `accepted` (`in-progress` for a
-    `--force` add) and every dependency `done` or `superseded`. Unknown ids block."""
+    `--force` add) and every dependency `done` or `superseded`. Unknown ids block. An idea
+    campaign without a spec (SPEC-0209) is ready while its idea is still open."""
+    if has_no_spec(state):
+        iid = _idea_id_of(state)
+        task = _idea_task(cfg, iid)
+        if task is None:
+            return False, [f"idea {iid} not found"]
+        if idea_is_open(task):
+            return True, []
+        return False, [f"idea {iid} is {task.state}"]
     root = Path((state.get("repo") or {}).get("root") or "")
     spec_path = root / ((state.get("spec") or {}).get("rel_path") or "")
     try:
@@ -542,6 +584,8 @@ def backlog_view(cfg, *, readiness=None) -> list[dict]:
         rows.append({"campaign": st.get("id"), "spec_id": st.get("spec_id"),
                      "project": st.get("project"), "priority": _priority(st), "position": pos, "ready": ready,
                      "blocked_by": blocked_by, "age_s": _age(st.get("created_at"))})
+        if st.get("kind") == "idea":
+            rows[-1]["idea_id"] = _idea_id_of(st)
     return rows
 
 
@@ -773,14 +817,15 @@ def _do_open(ctx: _Ctx, state: dict) -> StepResult:
                 raise GitError([cmd], r.returncode, tail)
         repo["base_sha_at_open"] = base_sha
         repo["head"] = git.rev_parse(worktree)
-        spec = state.setdefault("spec", {})
-        spec["sha256_at_open"] = _spec_sha(worktree / spec.get("rel_path", ""))
-        # SPEC-0186: keep the accepted text so the close step can detect spec drift
-        spec_file = worktree / spec.get("rel_path", "")
-        if spec.get("rel_path") and spec_file.is_file():
-            store.campaign_dir(ctx.cfg, state["id"]).mkdir(parents=True, exist_ok=True)
-            (store.campaign_dir(ctx.cfg, state["id"]) / CL.SPEC_AT_OPEN).write_text(
-                spec_file.read_text(encoding="utf-8"), encoding="utf-8")
+        if not has_no_spec(state):
+            spec = state.setdefault("spec", {})
+            spec["sha256_at_open"] = _spec_sha(worktree / spec.get("rel_path", ""))
+            # SPEC-0186: keep the accepted text so the close step can detect spec drift
+            spec_file = worktree / spec.get("rel_path", "")
+            if spec.get("rel_path") and spec_file.is_file():
+                store.campaign_dir(ctx.cfg, state["id"]).mkdir(parents=True, exist_ok=True)
+                (store.campaign_dir(ctx.cfg, state["id"]) / CL.SPEC_AT_OPEN).write_text(
+                    spec_file.read_text(encoding="utf-8"), encoding="utf-8")
     except (GitError, ValueError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
         res.config_error = isinstance(e, ProjectConfigError)
@@ -977,7 +1022,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                                                "resume_to": resume})
 
     if kind == "open":
-        return finish("IMPLEMENTING", "opened")
+        return finish("SPEC_WRITING" if has_no_spec(state) else "IMPLEMENTING", "opened")
 
     if kind == "review":
         return _apply_reviews(ctx, state, profile, counters, res, row, events, finish)
@@ -1989,6 +2034,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> d
         repo = r.get("repo") or {}
         items.append({
             "campaign": r.get("id"), "spec_id": r.get("spec_id"), "project": r.get("project"),
+            "kind": r.get("kind"), "idea_id": _idea_id_of(r),
             "profile": r.get("profile"), "state": r.get("state"),
             "loops": f"{counters.get('loops', 0)}/{loop_max if loop_max is not None else '?'}",
             "runs": counters.get("runs", 0),
@@ -2010,12 +2056,15 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> d
 
 # ---- dashboard (wt queue watch, SPEC-0185) -------------------------------------------------------
 
-PHASES = ("OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING", "CLOSING")
+PHASES = ("OPENING", "SPEC_WRITING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING", "CLOSING")
 _TITLE_CACHE: dict = {}
 
 
 def _spec_title(state: dict) -> str | None:
-    """The spec's frontmatter title in the project repo (cached on path + mtime)."""
+    """The spec's frontmatter title in the project repo (cached on path + mtime); the idea's
+    heading for an idea campaign without a spec (SPEC-0209)."""
+    if has_no_spec(state):
+        return (state.get("idea") or {}).get("heading")
     root = (state.get("repo") or {}).get("root")
     rel = (state.get("spec") or {}).get("rel_path")
     if not root or not rel:
@@ -2219,9 +2268,6 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
 def apply_add(cfg, plan: dict, *, by="human") -> dict:
     """Create the campaign in `QUEUED` from a `plan_add` plan. Re-checks the active-campaign
     guard against live state before writing."""
-    active = store.active_campaign_for_spec(cfg, plan["spec_id"])
-    if active:
-        raise ValueError(f"{plan['spec_id']} already has an active campaign {active['id']}")
     state = {
         "schema": "wt.campaign.v1", "id": plan["campaign"], "kind": "implement",
         "spec_id": plan["spec_id"], "project": plan["project"], "profile": plan["profile"],
@@ -2238,7 +2284,97 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
         "last_gate": None, "last_verdict": None,
         "pending_brief": None, "park": None, "close": None,
     }
-    store.create_campaign(cfg, state, by=by)
+    with store.add_lock(cfg):                                          # SPEC-0209
+        active = store.active_campaign_for_spec(cfg, plan["spec_id"])
+        if active:
+            raise ValueError(f"{plan['spec_id']} already has an active campaign {active['id']}")
+        store.create_campaign(cfg, state, by=by)
+    return state
+
+
+_IDEA_ID_RE = re.compile(r"^IDEA-\d+$")
+
+
+def _open_idea_campaign(cfg, idea_id) -> dict | None:
+    """The non-terminal `kind: idea` campaign for `idea_id`, or None."""
+    for st in store.list_campaigns(cfg):
+        if st.get("kind") == "idea" and _idea_id_of(st) == idea_id:
+            return st
+    return None
+
+
+def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
+                  priority=PRIORITY_DEFAULT) -> dict:
+    """`plan_add` for an idea (SPEC-0209): no writes. Refusals, first match wins: unknown idea,
+    idea with a `:SPEC:`, closed idea, open campaign for the idea, unloadable project."""
+    idea_id = (idea_id or "").strip()
+    priority = check_priority(priority)
+    task = _idea_task(cfg, idea_id)
+    if task is None:
+        raise ValueError(f"unknown idea {idea_id}")
+    spec = (task.properties.get("SPEC") or "").strip()
+    if spec:
+        raise ValueError(f"{idea_id} already has {spec}; queue that spec instead: "
+                         f"wt queue add {spec}")
+    if not idea_is_open(task):
+        raise ValueError(f"{idea_id} is {task.state}; only open ideas (IDEA, INCUBATE, or "
+                         f"SPECCED without a :SPEC:) are queued")
+    active = _open_idea_campaign(cfg, idea_id)
+    if active:
+        raise ValueError(f"{idea_id} already has an active campaign {active['id']} "
+                         f"({active.get('state')}); abandon it first")
+    project = project or (task.properties.get("PROJECT") or "").strip() or "Meta-Tools"
+    pcfg = P.project_config(cfg, project)
+    root = Path(pcfg["_root"])
+    prof = resolve_profile(cfg, profile)
+    base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
+    cid = store.new_campaign_id(cfg, idea_id)
+    worktree = P.worktree_root(pcfg, root, project) / cid
+    return {
+        "kind": "idea", "idea_id": idea_id, "campaign": cid, "project": project,
+        "profile": prof["name"], "priority": priority, "base": base, "repo_root": str(root),
+        "worktree": str(worktree), "branch": f"wt/{cid}",
+        "cap_usd": prof.get("campaign_cap_usd"), "loop_max": prof.get("loop_max"),
+        "slots": prof.get("slots"), "merge_policy": (pcfg.get("merge") or {}).get("policy"),
+    }
+
+
+def apply_add_idea(cfg, plan: dict, *, by="human") -> dict:
+    """Create the idea campaign in `QUEUED` from a `plan_add_idea` plan and link the idea
+    (`:CAMPAIGN:`). The duplicate re-check and the create run under the queue-wide add lock."""
+    from .. import explore as EX
+    from .. import org_write as OW
+    idea_id = plan["idea_id"]
+    with store.add_lock(cfg):
+        active = _open_idea_campaign(cfg, idea_id)
+        if active:
+            raise ValueError(f"{idea_id} already has an active campaign {active['id']} "
+                             f"({active.get('state')}); abandon it first")
+        task = _idea_task(cfg, idea_id)
+        if task is None:
+            raise ValueError(f"unknown idea {idea_id}")
+        idea = EX.idea_show_payload(cfg, task)
+        idea["epic"] = task.properties.get("EPIC")
+        idea["state_before"] = task.state
+        state = {
+            "schema": "wt.campaign.v1", "id": plan["campaign"], "kind": "idea",
+            "spec_id": None, "idea": idea, "project": plan["project"],
+            "profile": plan["profile"], "state": "QUEUED", "prev_state": None,
+            "created_at": store.now_iso(),
+            "priority": check_priority(plan.get("priority", PRIORITY_DEFAULT)),
+            "force": False, "backlog": None,
+            "repo": {"root": plan["repo_root"], "base": plan["base"], "base_sha_at_open": None,
+                     "branch": plan["branch"], "worktree": plan["worktree"], "head": None},
+            "spec": {"id": None, "rel_path": None, "internal": True},
+            "counters": {"loops": 0, "runs": 0, "gate_runs": 0, "gate_retries": 0,
+                         "triage_retries": 0, "blocked_streak": 0, "close_attempts": 0,
+                         "parks": 0},
+            "cost": {"total_usd": 0.0, "cap_usd": plan.get("cap_usd"), "by_persona": {}},
+            "last_gate": None, "last_verdict": None,
+            "pending_brief": None, "park": None, "close": None,
+        }
+        store.create_campaign(cfg, state, by=by)
+        OW.set_property(cfg, task, "CAMPAIGN", plan["campaign"])
     return state
 
 
@@ -2350,13 +2486,46 @@ def plan_abandon(cfg, campaign, *, keep_worktree=False) -> dict:
             "branch": repo.get("branch")}
 
 
+def _unlink_idea(cfg, st: dict) -> list:
+    """Abandoning an idea campaign (SPEC-0209): clear the idea's `:CAMPAIGN:` (and its `:SPEC:`
+    when that is this campaign's spec), restore its state when nobody moved it meanwhile, and
+    release the campaign's spec-number reservations. Returns ledger events."""
+    from .. import org_write as OW
+    from .. import spec_numbers as SN
+    cid, idea = st["id"], st.get("idea") or {}
+    spec_id = (st.get("spec") or {}).get("id")
+    events = []
+    task = _idea_task(cfg, idea.get("id"))
+    if task is not None:
+        cur, linked = task.state, (task.properties.get("SPEC") or "").strip()
+        restore = cur == idea.get("state_before") or (cur == "SPECCED" and linked == spec_id)
+        if task.properties.get("CAMPAIGN"):
+            OW.clear_property(cfg, task, "CAMPAIGN")
+            task = _idea_task(cfg, idea.get("id"))
+        if spec_id and linked == spec_id:
+            OW.clear_property(cfg, task, "SPEC")
+            task = _idea_task(cfg, idea.get("id"))
+        if restore and idea.get("state_before") and task.state != idea["state_before"]:
+            OW.set_state(cfg, task, idea["state_before"])
+        elif not restore:
+            events.append(("note", {"text": f"idea state kept: {cur}", "author": "queue"}))
+    specs_dir = Path((st.get("repo") or {}).get("root") or "") / "docs" / "specs"
+    for rec in SN.list_reservations(cfg, specs_dir=specs_dir):
+        if rec.get("campaign") == cid:
+            try:
+                SN.release(cfg, rec["number"], specs_dir=specs_dir)
+            except ValueError:
+                pass
+    return events
+
+
 def apply_abandon(cfg, plan: dict) -> dict:
     cid = plan["campaign"]
     with store.item_lock(cfg, cid):
         st = store.read_state(cfg, cid)
-        if st.get("state") not in ("PARKED", "QUEUED"):
-            raise ValueError(f"{cid} is {st.get('state')}; only PARKED or QUEUED campaigns can "
-                             f"be abandoned")
+        if st.get("state") not in ("PARKED", "QUEUED", "WAITING"):
+            raise ValueError(f"{cid} is {st.get('state')}; only PARKED, QUEUED or WAITING "
+                             f"campaigns can be abandoned")
         events = []
         if plan.get("remove_worktree"):
             try:
@@ -2366,7 +2535,10 @@ def apply_abandon(cfg, plan: dict) -> dict:
                                            "gate": "cleanup", "title": "worktree removal failed",
                                            "detail": e.tail, "files": []}))
         st["park"] = None
+        st.pop("waiting", None)
         st.pop("park_requested", None)
+        if st.get("kind") == "idea":
+            events += _unlink_idea(cfg, st)
         events.append(("close", {"mode": "abandoned", "merged_sha": None, "pr_url": None,
                                  "gates_seq": None, "worktree_removed": bool(plan.get("remove_worktree"))}))
         return _transition(cfg, st, "ABANDONED", "abandoned", by="human", extra_events=events)

@@ -283,7 +283,7 @@ def _active_panel(it: dict) -> Panel:
     grid = Table.grid(padding=(0, 1))
     grid.add_column(style="dim", no_wrap=True, justify="right")
     grid.add_column(overflow="fold")
-    grid.add_row("spec", _spec_cell(it["spec_id"], it.get("spec_title")))
+    grid.add_row("spec", _spec_cell(it["spec_id"] or it.get("idea_id"), it.get("spec_title")))
     where = R.project_text(it.get("project"))
     where.append(f" · {it.get('profile')} · {it.get('branch') or 'no branch yet'}", style="dim")
     grid.add_row("project", where)
@@ -508,7 +508,8 @@ def attach(queue_group):
     @queue_group.command("add")
     @click.argument("spec_id", shell_complete=C.complete_any_spec_id)
     @click.option("--project", shell_complete=C.complete_project,
-                  help="project (default: Meta-Tools for SPEC-NNNN, the outbox project otherwise)")
+                  help="project (default: Meta-Tools for SPEC-NNNN, the outbox project otherwise; "
+                       "the idea's :PROJECT: for IDEA-NNN)")
     @click.option("--profile", default=None, help="workflow profile (default: agentic.default_profile)")
     @click.option("--base", default=None, help="base branch (default: the project's merge.base)")
     @click.option("--force", is_flag=True, help="also admit an in-progress spec")
@@ -518,17 +519,24 @@ def attach(queue_group):
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.add.v1 JSON")
     @click.pass_obj
     def queue_add(cfg, spec_id, project, profile, base, force, priority, do_write, as_json):
-        """Queue an accepted spec as a new campaign (dry-run unless --yes).
+        """Queue an accepted spec, or an idea, as a new campaign (dry-run unless --yes).
 
         \b
         wt queue add SPEC-0170            show the plan
         wt queue add SPEC-0170 --yes      create the campaign in QUEUED
+        wt queue add IDEA-063 --yes       queue an idea: its campaign opens into SPEC_WRITING
         """
         try:
-            plan = Q.plan_add(cfg, spec_id, project=project, profile=profile, base=base,
-                              force=force, priority=priority)
-            if do_write:
-                Q.apply_add(cfg, plan)
+            if Q._IDEA_ID_RE.match((spec_id or "").strip()):
+                plan = Q.plan_add_idea(cfg, spec_id, project=project, profile=profile,
+                                       base=base, priority=priority)
+                if do_write:
+                    Q.apply_add_idea(cfg, plan)
+            else:
+                plan = Q.plan_add(cfg, spec_id, project=project, profile=profile, base=base,
+                                  force=force, priority=priority)
+                if do_write:
+                    Q.apply_add(cfg, plan)
         except ValueError as e:
             raise click.ClickException(str(e))
         if as_json:
@@ -564,7 +572,7 @@ def attach(queue_group):
         if as_json:
             _dump_json({"schema": "wt.queue.backlog.v1", "items": items})
             return
-        table = _backlog_table([{"campaign": b["campaign"], "spec_id": b["spec_id"],
+        table = _backlog_table([{"campaign": b["campaign"], "spec_id": b["spec_id"] or b.get("idea_id"),
                                  "project": b.get("project"),
                                  "age_s": b["age_s"], "backlog": b} for b in items])
         console.print(table)

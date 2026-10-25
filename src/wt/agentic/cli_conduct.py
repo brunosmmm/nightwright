@@ -38,10 +38,10 @@ def conduct_status(cfg, *, recent=10) -> dict:
             "queued": sum(1 for i in items if i["state"] == "QUEUED"),
             "parked": sum(1 for i in items if i["state"] == "PARKED"),
         },
-        "parked": [{"campaign": i["campaign"], "spec_id": i["spec_id"], "project": i["project"],
+        "parked": [{"campaign": i["campaign"], "spec_id": i["spec_id"] or i["idea_id"], "project": i["project"],
                     "park": i["park"], "cost_usd": i["cost_usd"], "loops": i["loops"]}
                    for i in items if i["state"] == "PARKED"],
-        "active": [{"campaign": i["campaign"], "spec_id": i["spec_id"], "state": i["state"],
+        "active": [{"campaign": i["campaign"], "spec_id": i["spec_id"] or i["idea_id"], "state": i["state"],
                     "loops": i["loops"], "cost_usd": i["cost_usd"],
                     "updated_age_s": i["updated_age_s"]}
                    for i in items if i["state"] in Q.ACTIVE_STATES],

@@ -22,6 +22,7 @@ def _summary(st: dict) -> dict:
     cost = st.get("cost") or {}
     return {
         "id": st.get("id"), "spec_id": st.get("spec_id"), "project": st.get("project"),
+        "kind": st.get("kind"), "idea_id": (st.get("idea") or {}).get("id"),
         "profile": st.get("profile"), "state": st.get("state"),
         "loops": counters.get("loops", 0), "runs": counters.get("runs", 0),
         "cost_usd": cost.get("total_usd", 0.0), "cap_usd": cost.get("cap_usd"),
@@ -130,7 +131,7 @@ def attach(campaign_group):
         for s in rows:
             r = _summary(s)
             cost = f"${r['cost_usd']:.2f}" + (f"/{r['cap_usd']:.0f}" if r["cap_usd"] else "")
-            table.add_row(str(r["id"]), str(r["spec_id"]), str(r["project"] or ""),
+            table.add_row(str(r["id"]), str(r["spec_id"] or r["idea_id"]), str(r["project"] or ""),
                           str(r["state"]), str(r["loops"]), cost, str(r["updated_at"] or ""))
         console.print(table)
 
@@ -152,7 +153,7 @@ def attach(campaign_group):
             _dump_json(st)
             return
         r = _summary(st)
-        console.print(f"[bold]{r['id']}[/]  {r['state']}  spec {r['spec_id']}  "
+        console.print(f"[bold]{r['id']}[/]  {r['state']}  spec {r['spec_id'] or r['idea_id']}  "
                       f"project {r['project'] or '-'}  profile {r['profile'] or '-'}")
         cap = f" / ${r['cap_usd']:.2f}" if r["cap_usd"] else ""
         est = f" (~${r['estimated_usd']:.2f} est.)" if r["estimated_usd"] > 0 else ""

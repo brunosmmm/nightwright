@@ -1,7 +1,7 @@
 ---
 id: SPEC-0209
 title: "Queue an idea: idea campaigns that open into SPEC_WRITING"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -149,28 +149,28 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
 
 ## Acceptance criteria
 
-- [ ] `wt queue add IDEA-NNN --priority 2 --profile lean --yes --json`:
+- [x] `wt queue add IDEA-NNN --priority 2 --profile lean --yes --json`:
   - creates a QUEUED campaign of kind `idea` with the snapshot (including `epic` from
     `:EPIC:` and `state_before`) and the given priority and profile;
   - sets the idea's `:CAMPAIGN:`;
   - the dry run writes nothing.
-- [ ] Each refusal errors with its message: unknown idea, closed idea, idea with `:SPEC:`,
+- [x] Each refusal errors with its message: unknown idea, closed idea, idea with `:SPEC:`,
       duplicate campaign (an open `kind: idea` campaign for the same `idea.id`; an abandoned
       one does not block), unloadable project. A SPECCED idea with `:SPEC:` gets the
       "queue that spec instead" message, not the closed one.
-- [ ] Two concurrent `apply_add_idea` calls for the same idea (threads, started together
+- [x] Two concurrent `apply_add_idea` calls for the same idea (threads, started together
       after both plans are made) create exactly one campaign; the other raises the
       duplicate refusal. `apply_add` holds the same `add.lock`.
-- [ ] A pre-existing spec campaign state without `spec.id` (only `spec_id` and
+- [x] A pre-existing spec campaign state without `spec.id` (only `spec_id` and
       `spec.rel_path`) is not treated as "no spec yet": its readiness still reads the spec
       file, and its open still hashes and copies the spec.
-- [ ] The backlog shows the campaign ready, and not ready once the idea is closed. Readiness
+- [x] The backlog shows the campaign ready, and not ready once the idea is closed. Readiness
       for an idea campaign never reads a spec file.
-- [ ] After admission and open, the campaign is in SPEC_WRITING with no spec hash. The next
+- [x] After admission and open, the campaign is in SPEC_WRITING with no spec hash. The next
       tick parks it `spec_writer_unavailable` (resume_to SPEC_WRITING).
-- [ ] With an idea campaign in SPEC_WRITING and in that park, every command and function
+- [x] With an idea campaign in SPEC_WRITING and in that park, every command and function
       under *Specless tolerance* runs without error, and the listing shows the idea id.
-- [ ] Abandoning:
+- [x] Abandoning:
   - a parked idea campaign restores the idea's state and clears `:CAMPAIGN:`;
   - a `:SPEC:` equal to the campaign's `state.spec.id` is cleared; a hand-set `:SPEC:`
     naming another spec is kept;
@@ -179,8 +179,8 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
   - an idea set to DROPPED by hand while the campaign was parked stays DROPPED;
   - a WAITING campaign can now be abandoned (`apply_abandon`);
   - `wt queue add IDEA-NNN` works again afterwards.
-- [ ] `render.STATE_STYLES` has `SPEC_WRITING`.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `render.STATE_STYLES` has `SPEC_WRITING`.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -199,6 +199,26 @@ QUEUED → OPENING → **SPEC_WRITING**. Until SPEC-0215 lands, SPEC_WRITING par
 - **Regression guard:** full `uv run pytest`. Spec campaigns are unaffected, and existing
   abandon tests still pass with WAITING now allowed.
 
+### Test record (2026-10-25)
+
+- `uv run pytest tests/test_agentic_idea_campaign.py -q`: 16 passed (one test per AC; the
+  specless tolerance test runs both SPEC_WRITING and the `spec_writer_unavailable` park).
+- Full `uv run pytest -q`: 2021 passed, 1 skipped; `python3 tools/spec_lint.py` exits 0.
+
+### As shipped
+
+- Idea campaigns add `kind` and `idea_id` to the `wt.queue.v1` items, and `idea_id` to
+  `wt.queue.backlog.v1` rows of idea campaigns only (spec rows keep their exact key set).
+  Listings, `campaign show`, `conduct-status` and the dashboard show the idea id / heading
+  where a spec id / title would be.
+- `wt queue add IDEA-NNN` also honours `--project` and `--base` (default: the idea's
+  `:PROJECT:`, the project's merge base); `--force` is ignored for ideas.
+- The abandon "idea state kept: <state>" message is a `note` event in the campaign ledger.
+- `_idea_task` invalidates the task cache before it reads, because the unlink writes the org
+  file several times within one mtime tick.
+- `docs/product/loop/operate.md` gained the `spec_writer_unavailable` park row (a docs test
+  requires every park reason there).
+
 ## Rollout / migration
 
 Ships through the agentic queue. Until SPEC-0215 lands, idea campaigns park
@@ -206,11 +226,11 @@ Ships through the agentic queue. Until SPEC-0215 lands, idea campaigns park
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`). (No manual steps.)
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`). (No manual steps.)
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
