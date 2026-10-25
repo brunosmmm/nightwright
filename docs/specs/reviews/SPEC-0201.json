@@ -1,0 +1,60 @@
+{
+  "schema": "wt.spec.review.v1",
+  "spec_id": "SPEC-0201",
+  "verdict": "revise",
+  "spec_sha256": "b2a622768c1652f67fbac91ecdeeeb645ca4816c91f7aaafc80d2af0bb1bb40f",
+  "reviewed_at": "2026-10-25T16:04:11-04:00",
+  "model": "sonnet",
+  "cost_usd": 0.1519598,
+  "findings": [
+    {
+      "severity": "major",
+      "section": "Design — Malformed verdicts / Acceptance criteria",
+      "title": "review_retries int→dict change conflicts with existing tests and in-flight state",
+      "detail": "`queue.py` defines `counters.review_retries` as an int. `_counters` seeds it with 0, and `decide_review` reads it with `int(counters.get(...))`. The existing tests treat it as an int: `tests/test_agentic_queue.py:171,188,195,214` and `tests/test_agentic_e2e.py:247,424` (the e2e test asserts the whole counters dict equals `{..., \"review_retries\": 0}`). The spec makes it `review_retries[persona]` but says nothing about the default shape, migrating in-flight campaigns that hold an int, or the reset rule. That contradicts the AC 'Existing queue, close and e2e tests still pass'. Either name a new key (e.g. `review_retries_by_persona`) and leave the int alone, or state the dict shape, an int→dict coercion on load, and which existing assertions the implementer may update."
+    },
+    {
+      "severity": "major",
+      "section": "Design — Shared (profile defaults) / Acceptance criteria",
+      "title": "Default `reviewers` for this spec is ambiguous, so the first AC can't be checked",
+      "detail": "The defaults list `adversarial_reviewer` for balanced/thorough, then add 'Until SPEC-0202 ships the defaults omit `adversarial_reviewer`'. `resolve_profile` rejects personas missing from `PERSONAS`, so listing it before 0202 would fail validation. State plainly that SPEC-0201 ships `[conformance_reviewer, test_reviewer]` for balanced/thorough and `[conformance_reviewer]` for frugal. SPEC-0202 then adds the third. The AC 'defaults above' should assert exactly those lists."
+    },
+    {
+      "severity": "major",
+      "section": "Design — Malformed verdicts / combiner",
+      "title": "Interaction of a valid `fix` with a malformed sibling is unspecified",
+      "detail": "Suppose reviewer A returns `fix` and B is malformed. Does the queue retry B first and combine afterwards, or send A's fix brief to the implementer straight away? The spec doesn't say. It also doesn't say how the retry pass is cost-checked: the full sum, or only the retried reviewers' budgets. And it doesn't say what 'one retry per loop in total per persona' resets on: a successful fix transition, a pass, or both. Specify the decision order (all verdicts valid, or retries exhausted, before `decide_review`/combine runs) and the cap check for a partial re-run. Add a unit test case for each."
+    },
+    {
+      "severity": "major",
+      "section": "Design — Cost cap",
+      "title": "Cost-cap description doesn't match the code and the default budget impact is unaddressed",
+      "detail": "The spec checks against `campaign_cap_usd - cost.total`, but the state key is `cost.total_usd`. The existing pessimistic check (queue.py ~L110-114) is per-persona and keyed on `PERSONAS` for the state. The spec should say how that function generalises to a step with several personas, and what `Step.persona` holds for a `review` step. Balanced adds $1.0 per loop by default. A note on whether the default `campaign_cap_usd` still fits `loop_max` loops of implementer plus two reviewers would help, since existing e2e tests set tight caps."
+    },
+    {
+      "severity": "minor",
+      "section": "Design — Persona test_reviewer inputs",
+      "title": "`test_files` extraction method not defined",
+      "detail": "'the added/changed test function names' per touched file needs a method: parsing diff hunk headers, running `ast`, or a regex on `def test_`. Parametrized, class-based and renamed tests, and deleted tests (needed for the 'deleted or weakened existing test' rule), all need a stated behavior. Without it the 'deterministic prompt includes the touched test functions' AC can be met in many incompatible ways. State the method and how deleted tests are surfaced."
+    },
+    {
+      "severity": "minor",
+      "section": "Test plan",
+      "title": "Independence and determinism claims are not backed by a named test",
+      "detail": "The AC says reviewers never receive each other's current-loop verdicts and that events are applied in profile-list order. The test plan mentions only 'run dirs and event order stable across repeated runs'. Add a test with FakeRunner finishing in reverse order (varying delays) that asserts ledger order follows the profile list. Add one asserting the second reviewer's request `previous_verdicts` has no current-loop content. Also add tests for the partial re-run (sibling not re-spawned) and for the pending_brief `source: review` change, which the existing queue test at line 198 asserts as `conformance_reviewer`."
+    },
+    {
+      "severity": "minor",
+      "section": "Design — State",
+      "title": "`last_review` shape change vs. retained consumers",
+      "detail": "`last_review` gains `verdicts` and the SPEC-0187 keys stay. Say whether `last_review.run` is the final reviewer's run or a list, and whether `verdicts` entries for a failed-then-retried persona are overwritten. Also check consumers (status/CLI/docs output) for the old shape."
+    },
+    {
+      "severity": "nit",
+      "section": "Size",
+      "title": "Two concerns in one spec",
+      "detail": "The multi-reviewer fan-out and the test_reviewer persona are separable, and the spec is at 9 ACs, so under the limit. Splitting would also help SPEC-0202/0203, which already depend on the shared mechanism. No action required."
+    }
+  ],
+  "suggested_splits": []
+}

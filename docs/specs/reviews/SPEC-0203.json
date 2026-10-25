@@ -1,0 +1,66 @@
+{
+  "schema": "wt.spec.review.v1",
+  "spec_id": "SPEC-0203",
+  "verdict": "revise",
+  "spec_sha256": "6649a308b4235f526da82ab399456c8d78e475648b4814f8262bf3acba0c36e1",
+  "reviewed_at": "2026-10-25T16:05:24-04:00",
+  "model": "sonnet",
+  "cost_usd": 0.1900903,
+  "findings": [
+    {
+      "severity": "major",
+      "section": "Design / Deterministic combiner",
+      "title": "Synthetic `major` contradicts the 'all findings waived ⇒ fix no longer counts' rule",
+      "detail": "The Design says a reviewer `fix` with no finding at or above `major` counts as one synthetic `major`. It also says waived findings are 'removed first', and that a `fix` reviewer whose findings were all waived no longer counts. Waivers only apply to `minor`/`nit`, and the synthetic `major` can never be waived. So a `fix` reviewer with only minor/nit findings always has the unwaivable synthetic `major`, and its `fix` always survives. Acceptance criterion 1 ('a `fix` reviewer whose findings were all waived no longer forces `fix`') is therefore unreachable, or depends on an unstated order of operations: waive first and then synthesize, or the reverse. Specify the exact order and give a worked example. Either synthesize only for reviewers with zero findings, or state that a fix reviewer is reconciled only when it has real findings and all of them were waived. Also say whether the triager can ever flip a `fix` verdict, and make `needs_triager` return false when it cannot. As written it may spend $0.5 on a run that cannot change the outcome."
+    },
+    {
+      "severity": "major",
+      "section": "Context vs Design",
+      "title": "The stated motivation is not addressed by the design",
+      "detail": "Context argues that one reviewer's `major` nit-pick burns an implementer loop. In the Design, a reviewer `fix` verdict with a `major` finding still forces `fix`, because a surviving `fix` blocks `pass` regardless of score. `major` is also non-waivable, so the triager cannot help. The only real new behaviour is that low-severity findings can tip a borderline score. Either narrow the Context's claim, or state when a `fix` verdict can be overridden by the score. Right now a reader cannot tell whether the score rule or the verdict rule governs."
+    },
+    {
+      "severity": "major",
+      "section": "Design / Follow-up filing",
+      "title": "Idempotency is under-specified for failed or mismatched captures and crashes between capture and event",
+      "detail": "A `followup` event is recorded per finding with a key, and resume skips keys already in the ledger. The spec also says a heading mismatch leaves the idea 'unfiled-recorded', and that `idea_id` is null when filing failed. It does not say whether a null-`idea_id` event is written and therefore skipped forever, or not written and therefore retried. If the idea was created but the mismatch left no event, a retry files a duplicate idea. If the process crashes between `add_idea` and `append_event`, the next resume files a duplicate, which breaks criterion (e). Decide this explicitly. For example: embed the key in the idea summary or a property and look it up before capturing, and say whether failures are retried on resume. Also the heading-verification step does not say how it handles org sanitizing of text such as brackets, em-dashes or newlines in the title."
+    },
+    {
+      "severity": "major",
+      "section": "Design / Follow-up filing",
+      "title": "Advisory findings from intermediate `fix` loops are silently dropped",
+      "detail": "Only the final passing review's findings are filed. In a `fix` loop the implementer receives only the blocking findings. Advisory major/minor findings from earlier loops are never fixed and never filed unless the final review happens to repeat them. That works against the stated goal that forwarded findings are not forgotten. Either record that as an accepted limitation in Non-goals/Design, or carry the unaddressed advisory findings forward, for example by de-duplicating on the key."
+    },
+    {
+      "severity": "minor",
+      "section": "Design / Routing and state, Follow-up filing",
+      "title": "Design promises are not covered by acceptance criteria or the test plan",
+      "detail": "The Design promises these, but no criterion or test names them: the score in the `transition` event reason and in `wt queue list`/`show`; the `wt campaign` summary listing follow-ups and waivers; `state.last_review` gaining `score`/`outcome`/`waived`/`advisory`/`triager_run`; the `followups: false` opt-out (and `followups_nits`); and a nit being filed only with `followups_nits`. Add them, or trim the Design. The merge-summary criterion mentions only `wt queue show`, not `wt campaign` or `queue list`."
+    },
+    {
+      "severity": "minor",
+      "section": "Design / Profile changes",
+      "title": "`followups_nits` is missing from the Profile changes list",
+      "detail": "The earlier bullet lists `followups_nits` as a profile key. The 'Profile changes' section lists `{pass_score, borderline_margin, weights, triager, followups}` without it. Make `BUILTIN_PROFILES`, `resolve_profile` validation, and criterion 2 consistent."
+    },
+    {
+      "severity": "minor",
+      "section": "Context / Decision",
+      "title": "The spec describes SPEC-0201's interim combiner as shipped, but SPEC-0201/0202 are only `accepted`",
+      "detail": "`combine_reviews` does not exist in `src/wt/agentic/queue.py` yet. The interim combiner returns `{verdict, must_fix, findings, fix_brief}` (SPEC-0201), while `triage_reviews` returns `{outcome, score, blocking, advisory, ...}`. 'Replace the body of `combine_reviews`' therefore also changes the return shape and its call sites. Reword to 'once SPEC-0201 lands', and say whether `combine_reviews` stays as a thin wrapper or its callers move. Rely on `depends_on` for ordering."
+    },
+    {
+      "severity": "minor",
+      "section": "Test plan",
+      "title": "`tests/test_agentic_schemas.py` does not exist, and `needs_triager` and the cap check are described inconsistently",
+      "detail": "The Test plan lists `tests/test_agentic_schemas.py` without marking it new. The existing ledger tests are in `tests/test_agentic_logs.py`. Fix the path or mark the file as new. The acceptance criterion says `needs_triager` is false when 'the cap cannot fit it', but the Design gives the predicate as `needs_triager(result, profile)`, with no cost input. Say that the cap check is a separate step in the queue, or add the budget to the signature."
+    },
+    {
+      "severity": "nit",
+      "section": "Design / Deterministic combiner",
+      "title": "Identical findings from several reviewers are scored twice",
+      "detail": "The `(files, title)` de-duplication is applied only to the merged brief, not to the score. If two reviewers report the same issue, the weights are summed twice. State whether that is intended."
+    }
+  ],
+  "suggested_splits": []
+}

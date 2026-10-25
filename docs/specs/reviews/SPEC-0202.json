@@ -1,0 +1,36 @@
+{
+  "schema": "wt.spec.review.v1",
+  "spec_id": "SPEC-0202",
+  "verdict": "approve",
+  "spec_sha256": "6ed3bcd5e70afc8495b27762b62b3427809e070e460d482874f5bb8d5530d0bc",
+  "reviewed_at": "2026-10-25T16:04:27-04:00",
+  "model": "sonnet",
+  "cost_usd": 0.09595699999999999,
+  "findings": [
+    {
+      "severity": "minor",
+      "section": "Design / Acceptance criteria",
+      "title": "Docs and severity/trigger rules have no acceptance criterion",
+      "detail": "The Design promises a capability page \"Reviews\" listing the three reviewers and their categories. It also promises the rule \"a finding without a trigger is at most `minor`\" and a `diff` input capped at 1500 lines. None of these appear in the Acceptance criteria or Test plan. Add an AC for the docs page. Add a template/prompt assertion for the severity and trigger rule, or say it is prompt-only guidance and not enforced."
+    },
+    {
+      "severity": "minor",
+      "section": "Design (Verdict schema)",
+      "title": "Ambiguous whether `trigger` is required and what type `lines` has",
+      "detail": "The schema shape lists `trigger` and `lines` without saying which finding keys are required, or whether `lines` is an int list, a string list, or a range string. If `trigger` is required, \"a finding without a trigger\" cannot occur and the 'at most minor' rule is moot. If it is optional, say so, and say whether the schema or the combiner downgrades severity. An unspecified `lines` type makes the schema test and the prompt unpinned."
+    },
+    {
+      "severity": "minor",
+      "section": "Acceptance criteria",
+      "title": "Combiner behaviour for `pass` with `must_fix` is not covered by an AC",
+      "detail": "The Design says `pass` with a `must_fix` is `fix`. That rule is owned by the SPEC-0201 combiner, but this spec restates it as part of its verdict contract. The e2e AC only covers `must_fix` with `verdict: fix`. Either add a case where the adversarial verdict is `pass` but a finding is `must_fix`, or drop the sentence and refer to SPEC-0201."
+    },
+    {
+      "severity": "nit",
+      "section": "Test plan",
+      "title": "Manual verification is not checkable",
+      "detail": "\"The next real campaign records this reviewer's verdict and cost here\" has no pass criterion. State what to check, for example that a `finding` event with `category` appears in the ledger and that the cost is within the persona's `max_budget_usd`."
+    }
+  ],
+  "suggested_splits": []
+}

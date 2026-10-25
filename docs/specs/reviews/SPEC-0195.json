@@ -1,0 +1,42 @@
+{
+  "schema": "wt.spec.review.v1",
+  "spec_id": "SPEC-0195",
+  "verdict": "approve",
+  "spec_sha256": "660ddf9255fa5d2ea31edc9f21c49fb0f58e8cea5742a62730375b32e52d12fa",
+  "reviewed_at": "2026-10-25T15:57:33-04:00",
+  "model": "sonnet",
+  "cost_usd": 0.1014734,
+  "findings": [
+    {
+      "severity": "minor",
+      "section": "Design",
+      "title": "Drawer-name regex is narrower than the Goals claim",
+      "detail": "Goals say \"any `:NAME:` … `:END:` drawer\", but `^\\s*:[A-Z_]+:\\s*$` misses lowercase names and names containing digits or hyphens. Org drawer names allow those characters, and `:END:` is matched case-insensitively. Either widen the pattern, for example `[\\w-]+` with the `:END:` case handled explicitly, or say in Design that only upper-case names are covered."
+    },
+    {
+      "severity": "minor",
+      "section": "Design",
+      "title": "A stray `:END:` matches the opener pattern",
+      "detail": "`:END:` itself matches `^\\s*:[A-Z_]+:\\s*$`. A lone `:END:` outside any drawer would open a drawer and could swallow text up to the next `:END:`. State that the opener must exclude `END`."
+    },
+    {
+      "severity": "minor",
+      "section": "Design",
+      "title": "Unterminated-drawer rule is not bounded by headlines",
+      "detail": "The body spans a whole subtree. An unterminated `:LOGBOOK:` followed by `** Summary` and then a later drawer's `:END:` would pair up and delete the Summary heading and text. \"Next `:END:`\" should stop at the next org headline (or a blank line). Add that to the Design and add a test for it, since the Goals say the headings must stay."
+    },
+    {
+      "severity": "minor",
+      "section": "Test plan",
+      "title": "Planning-line behaviour is only partly tested",
+      "detail": "The Test plan covers a CLOSED line but not SCHEDULED or DEADLINE. It also doesn't cover a `CLOSED:` line inside a src block, which Design says is never touched. Add those cases. Say how the `test_explore.py` test produces a clocked LOGBOOK entry, since `add_idea` alone creates only PROPERTIES."
+    },
+    {
+      "severity": "nit",
+      "section": "Design",
+      "title": "Unterminated src/example blocks are not specified",
+      "detail": "The Design doesn't say how strip_drawers finds src/example blocks when one has no `#+end_`. Reusing `_block_end` and `_ORG_BLOCK_OPEN_RE` from org_markup.py would keep it consistent with `from_org_body`, which treats that case as ordinary text."
+    }
+  ],
+  "suggested_splits": []
+}
