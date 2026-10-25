@@ -1,7 +1,7 @@
 ---
 id: SPEC-0179
 title: "wt spec status: one-line frontmatter status setter"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -77,17 +77,17 @@ schema's enum (`draft, proposed, accepted, in-progress, done, superseded, reject
 
 ## Acceptance criteria
 
-- [ ] `set_spec_status` on a fixture spec changes exactly the `status:` and `updated:`
+- [x] `set_spec_status` on a fixture spec changes exactly the `status:` and `updated:`
       lines (asserted by a line diff) and returns `(old, new)`; inserts `updated:` after
       `created:` when absent; refreshes `updated:` when setting the same status.
-- [ ] Invalid status, missing frontmatter and missing `status:` line each raise
+- [x] Invalid status, missing frontmatter and missing `status:` line each raise
       `ValueError` naming the problem.
-- [ ] `wt spec status SPEC_ID` prints the current status; `--set` writes and prints
+- [x] `wt spec status SPEC_ID` prints the current status; `--set` writes and prints
       `old → new`; `--json` emits `wt.spec.status.v1` with `id, path, status, updated`;
       an unknown id is a `ClickException`; `--set` rejects values outside the enum.
-- [ ] Completion guard passes (`spec_id` wired; `--set` is a Choice).
-- [ ] `docs/product/reference/index.md` lists `status` under `wt spec …`.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] Completion guard passes (`spec_id` wired; `--set` is a Choice).
+- [x] `docs/product/reference/index.md` lists `status` under `wt spec …`.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -97,6 +97,15 @@ schema's enum (`draft, proposed, accepted, in-progress, done, superseded, reject
   `specs_dir`.
 - **Manual verification:** none beyond the suite (the loop's gates run it).
 - **Regression guard:** full `uv run pytest`.
+
+### Test record (2026-10-25)
+
+- `uv run pytest -q tests/test_spec_status.py tests/test_completion.py` — 36 passed (library
+  line-diff, `updated:` insert/replace/refresh, CRLF + byte-identical rest, error cases, CLI
+  show/set/`--json`/unknown id/bad `--set`, completion guard).
+- Full `uv run pytest -q -x` — 1464 passed, 1 skipped.
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py` — exit 0.
+- Status was set with the new `wt spec status SPEC-0179 --set done`.
 
 ## Clock Log
 
@@ -109,11 +118,11 @@ Additive command. No migration.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

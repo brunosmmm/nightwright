@@ -42,7 +42,8 @@ from . import idea_ext as IX
 from .extension_schema import enum_values_for
 from .idea_ext import resolve_ext_project
 from .rules import add_override_rec, known_projects, load_mappings, set_facets
-from .specs import generate_from_spec, promote_idea, scaffold_outbound, seed_ideas_from_epic
+from .specs import (SPEC_STATUSES, generate_from_spec, promote_idea, scaffold_outbound,
+                    seed_ideas_from_epic)
 from . import skills as SK
 from . import sheet_sync as SHS
 
@@ -1552,6 +1553,46 @@ def spec_postmortem_cmd(cfg, spec_id, note):
     except ValueError as e:
         raise click.ClickException(str(e))
     console.print(f"[green]✓[/] postmortem ← {idea_id} ({spec_id})  [dim]{path}[/]")
+
+
+@spec_group.command("status")
+@click.argument("spec_id", shell_complete=C.complete_any_spec_id)
+@click.option("--set", "new_status", type=click.Choice(SPEC_STATUSES), default=None,
+              help="set the frontmatter status (edits only status: and updated:)")
+@click.option("--json", "as_json", is_flag=True, help="emit wt.spec.status.v1")
+@click.pass_obj
+def spec_status_cmd(cfg, spec_id, new_status, as_json):
+    """Show or set a spec's frontmatter status (SPEC-0179).
+
+    A pencil, not a judge: no lifecycle validation (`wt spec verify` and the linter own that)
+    and no ledger regeneration (run `python3 tools/spec_lint.py --write-ledger`).
+
+    \b
+    wt spec status SPEC-0179
+    wt spec status SPEC-0179 --set in-progress
+    wt spec status SPEC-0179 --json
+    """
+    import json as _json
+    import sys
+
+    from .specs import resolve_spec_path, set_spec_status, spec_status
+    try:
+        path = resolve_spec_path(cfg, spec_id)
+        old = None
+        if new_status:
+            old, _ = set_spec_status(path, new_status)
+        info = spec_status(path)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        _json.dump({"schema": "wt.spec.status.v1", "id": spec_id, "path": str(path),
+                    "status": info["status"], "updated": info["updated"]},
+                   sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+    elif new_status:
+        console.print(f"{spec_id}  {old} → {new_status}  [dim]{path}[/]")
+    else:
+        console.print(f"{spec_id}  {info['status']}")
 
 
 @spec_group.command("verify")

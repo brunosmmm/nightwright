@@ -52,7 +52,7 @@ Capture (`wt idea "…"`), `show`, `summary`, `log`, `questions`, `mark-explored
 
 ### `wt spec …`
 
-`new`, `generate`, `verify`, `export`, `pull-status`, `pull-clock`, `sweep`, `reconcile`,
+`new`, `generate`, `verify`, `status`, `export`, `pull-status`, `pull-clock`, `sweep`, `reconcile`,
 `schemes`, `seed-children`, `fit-log`, `postmortem`. Full list: `wt spec --help`.
 
 ### `wt projects …` / `wt sheet …` / `wt skills …` / `wt completion …` / `wt queue …` / `wt campaign …`

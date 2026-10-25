@@ -482,6 +482,58 @@ def resolve_spec_path(cfg, spec_id):
     return _find_spec(_specs_dir(cfg), spec_id)
 
 
+SPEC_STATUSES = ("draft", "proposed", "accepted", "in-progress", "done", "superseded",
+                 "rejected")
+
+_FM_BLOCK_RE = re.compile(r"\A---\n(.*?)\n---\n", re.S)
+_STATUS_LINE_RE = re.compile(r"^status:\s*(\S+)\s*$", re.M)
+
+
+def set_spec_status(path, status, *, today=None):
+    """Set a spec's `status:` (SPEC-0179), refreshing `updated:`; returns `(old, new)`.
+
+    Edits only the `status:` and `updated:` frontmatter lines (`updated:` is inserted after
+    `created:` when absent); the rest of the file is byte-identical. No lifecycle validation —
+    `wt spec verify` and the linter own that."""
+    if status not in SPEC_STATUSES:
+        raise ValueError(f"invalid status {status!r} (expected one of {', '.join(SPEC_STATUSES)})")
+    path = Path(path)
+    raw = path.read_bytes().decode("utf-8")
+    crlf = "\r\n" in raw
+    text = raw.replace("\r\n", "\n") if crlf else raw
+    fm, _ = split_frontmatter(text)
+    block = _FM_BLOCK_RE.match(text)
+    if fm is None or not block:
+        raise ValueError("no frontmatter")
+    head = block.group(1)
+    m = _STATUS_LINE_RE.search(head)
+    if not m:
+        raise ValueError("no status: line in frontmatter")
+    old = m.group(1).strip("\"'")
+    today = today or dt.date.today().isoformat()
+    head = head[:m.start()] + f"status: {status}" + head[m.end():]
+    if re.search(r"^updated:", head, re.M):
+        head = re.sub(r"^updated:.*$", lambda _m: f"updated: {today}", head, count=1, flags=re.M)
+    else:
+        created = re.search(r"^created:.*$", head, re.M)
+        if not created:
+            raise ValueError("no created: line to insert updated: after")
+        head = head[:created.end()] + f"\nupdated: {today}" + head[created.end():]
+    out = text[:block.start(1)] + head + text[block.end(1):]
+    path.write_bytes((out.replace("\n", "\r\n") if crlf else out).encode("utf-8"))
+    return old, status
+
+
+def spec_status(path):
+    """`{"status", "updated"}` from a spec's frontmatter (values as strings, or None)."""
+    fm, _ = split_frontmatter(Path(path).read_text(encoding="utf-8"))
+    if fm is None:
+        raise ValueError("no frontmatter")
+    status, updated = fm.get("status"), fm.get("updated")
+    return {"status": None if status is None else str(status),
+            "updated": None if updated is None else str(updated)}
+
+
 def _breakdown_idea_title(item: str) -> str:
     """Short idea heading from a Breakdown bullet (SPEC-0043)."""
     text = " ".join((item or "").split())
