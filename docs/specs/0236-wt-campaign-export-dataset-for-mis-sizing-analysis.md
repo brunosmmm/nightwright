@@ -79,10 +79,10 @@ succeeds, otherwise the command fails before writing anything.
   `outcome` str, `created_at` str, `ended_at` str, `wall_s` int, `active_s` int;
 - the sizing guess: `size` str, `tone` str, `profile` str, `profile_source` str,
   `sizing_rationale` str;
-- limits and spec shape: `loop_max` int, `cap_usd` float, `models` json, `ac_count` int,
-  `spec_lines` int;
-- runs, gates and parks: `loops` int, `runs` int, `runs_by_persona` json, `gate_runs` int,
-  `gate_failures` int, `gate_retries` int, `triage_retries` int, `parks` int,
+- limits and spec shape: `loop_max` int, `cap_usd` float, `cap_raises` int, `models` json,
+  `ac_count` int, `spec_lines` int;
+- runs, gates and parks: `loops` int, `loop_resets` int, `runs` int, `runs_by_persona` json,
+  `gate_runs` int, `gate_failures` int, `gate_retries` int, `triage_retries` int, `parks` int,
   `park_reasons` json;
 - cost, time and review: `cost_usd` float, `cost_by_persona` json, `cost_cap_frac` float,
   `time_in_state_s` json, `review_score` int, `must_fix_count` int, `finding_count` int,
@@ -121,8 +121,12 @@ succeeds, otherwise the command fails before writing anything.
   (campaigns created before SPEC-0219). `profile` is `state.profile`.
 - `loop_max`: `resolve_profile(cfg, state.profile)["loop_max"]` at export time, null on
   ValueError. It reflects the **current** profile config, because the campaign does not store
-  its loop limit. The manifest says so in `notes`. `cap_usd` is `state.cost.cap_usd`, which is
-  the historical value.
+  its loop limit. The manifest says so in `notes`.
+- `cap_usd` is `state.cost.cap_usd`: the **final** cap, because `apply_resume --raise-cap`
+  overwrites it. `cap_raises` counts the `resume` events with a non-null `cap_usd`. The manifest
+  `notes` say that `cap_usd`, `cost_cap_frac` and `cost_near_cap` use the final cap. The
+  opening cap is not recovered: no event records it before the first raise when no run has
+  happened yet, and a partial answer would be worse than a stated one.
 - `models`: `{persona: model}` from the last `run.start` per persona. `runs_by_persona`: count of
   `run.start` events per persona.
 - `ac_count`: the number of lines matching `^\s*[-*] \[[ xX]\]` in the `Acceptance criteria`
@@ -130,17 +134,33 @@ succeeds, otherwise the command fails before writing anything.
   line count. Both are null when the file is missing (merge campaigns, campaigns that never
   opened).
 - `gate_failures`: `gate` events with `ok: false`. `park_reasons`: the `reason` of every `park`
-  event, in order. `loops`, `runs`, `gate_runs`, `gate_retries`, `triage_retries`, `parks`:
-  `state.counters`.
-- `cost_usd`, `cost_by_persona`: `state.cost`. `cost_cap_frac`: `cost_usd / cap_usd` rounded to
-  3 places, null without a cap.
+  event, in order.
+- Totals come from the **ledger**, not `state.counters`. `counters.gate_retries` and
+  `counters.triage_retries` are per-loop streaks that `_apply` resets after each fix, and
+  `apply_resume --reset-loops` zeroes `loops`, `gate_retries` and `triage_retries`. So:
+  - `loops`: `transition` events to `IMPLEMENTING` with reason `triage_fix` or `review_fix`
+    (the only two fix-loop transitions in `_apply`);
+  - `gate_retries`: `transition` events with reason `retry_gate`;
+  - `triage_retries`: `run.end` events of persona `gate_triager` with `verdict_ok: false` and
+    `interrupted: false`. A triage retry stays in TRIAGING, and `_transition` writes no
+    `transition` event when the state does not change, so there is no transition to count.
+    `decide_triage` retries exactly on a malformed verdict, so these run ends are the
+    retries, plus a final one that escalates;
+  - `loop_resets`: `resume` events with `loops_reset: true`.
+
+  `runs`, `gate_runs` and `parks` are monotonic counters that are never reset, so they come
+  from `state.counters.runs / .gate_runs / .parks`.
+- `cost_usd`: `state.cost.total_usd`. `cost_by_persona`: `state.cost.by_persona`.
+  `cost_cap_frac`: `cost_usd / cap_usd` rounded to 3 places, null when `cap_usd` is null or
+  0.
 - `review_score`: `state.last_review.score`. `must_fix_count`: `finding` events with severity
   `must_fix`. `finding_count`: `finding` events with severity other than `info`.
   `waived_count`: `note` events with `author == "queue"` whose text starts with `waived `
   (written by `_apply_triager`, SPEC-0206).
 - `close_mode`, `merged_sha`: `state.close.mode / .merged_sha`.
 - Run rows: one per `runs.campaign_runs(cfg, cid)` record, projected onto `RUN_COLUMNS`.
-  - `budget_frac` is `charged_usd / max_budget_usd`.
+  - `budget_frac` is `charged_usd / max_budget_usd` rounded to 3 places. It is null when
+    either operand is null (runs with status `running` or `orphan`) or the budget is 0.
   - The token columns read `usage.input_tokens`, `usage.output_tokens` and
     `usage.cache_read_input_tokens`, null when missing.
 - Finding rows: one per `finding` event. `state_at` is the campaign state at the event's `seq`,
@@ -161,7 +181,9 @@ succeeds, otherwise the command fails before writing anything.
 
 Why these thresholds: they come from the SPEC-0219 rubric and the loop limits of the
 built-in profiles. `frugal` allows 2 loops, so a second fix loop already means the work was
-harder than "small". An `xs` (at most 3 ACs, one module) that keeps a slot for more than an
+harder than "small". `many_fix_loops` is size-agnostic on purpose: a second fix loop is
+worth a look at any size, and size-relative variants can be computed from the exported
+`loops`, `loop_max` and `size` columns. An `xs` (at most 3 ACs, one module) that keeps a slot for more than an
 hour is the idea's "xs that took several hours", with margin for gate time. The constants
 are module-level so the data can be used to tune them later. The rules are part of the v1
 contract.
@@ -171,7 +193,9 @@ contract.
 - `export_tables(cfg, *, project=None, since=None, terminal_only=False, now=None) -> dict`
   returns `{"campaigns": [...], "runs": [...], "findings": [...]}`. Campaigns come from
   `store.list_campaigns(cfg, include_terminal=True, project=project)`, filtered by
-  `created_at >= since` (a date) and by `terminal_only`, and sorted by `created_at` ascending
+  `since` and by `terminal_only`. `since` is a `datetime.date`: a campaign is kept when
+  `datetime.fromisoformat(created_at)`, converted to `cfg["_tz"]`, has a local date `>=
+  since`. The boundary day is included, in the user's configured timezone. and sorted by `created_at` ascending
   so the output is deterministic.
 - `write_export(tables, out_dir, fmt, *, filters) -> dict` writes `campaigns.<ext>`,
   `runs.<ext>`, `findings.<ext>` and `manifest.json`, and returns the manifest. The manifest
@@ -179,7 +203,7 @@ contract.
   - `schema`, `generated_at`, `wt_version` (`importlib.metadata.version("wt")`), `format`,
     `filters`;
   - `tables: {name: {file, rows, columns: [[name, type], ...]}}`;
-  - `notes` (the `loop_max` caveat).
+  - `notes` (the `loop_max` caveat and the final-cap caveat).
 
   Files are written with `export._atomic_write`.
   - JSONL: one `json.dumps(row, ensure_ascii=False)` per line.
@@ -190,10 +214,17 @@ contract.
     JSON) and written with `pyarrow.parquet.write_table`.
 - `wt campaign export [--format jsonl|csv|parquet] [--out DIR] [--project P] [--since
   YYYY-MM-DD] [--terminal-only] [--table campaigns|runs|findings --stdout] [--json]`:
-  - `--out` defaults to `<data_dir>/agentic/exports/<YYYYMMDD-HHMMSS>/`. The command prints the
-    directory and the row counts, or the manifest with `--json`.
-  - `--stdout` writes the single `--table` (required with it) to stdout in `jsonl` or `csv`
-    and writes no files.
+  - `--out` defaults to `<data_dir>/agentic/exports/<YYYYMMDD-HHMMSS>/`. When that directory
+    exists (two exports in the same second), `-2`, `-3`, … is appended. An explicit `--out`
+    must not exist or must be empty, otherwise ClickException `--out <dir> is not empty`. The
+    command never overwrites an earlier export. It prints the directory and the row counts,
+    or the manifest with `--json`.
+  - `--stdout` writes the single `--table` to stdout in `jsonl` or `csv` and writes no files.
+    Invalid combinations raise ClickException:
+    - `--stdout` without `--table`: `--stdout needs --table campaigns|runs|findings`;
+    - `--table` without `--stdout`: `--table is only used with --stdout`;
+    - `--stdout --format parquet`: `--stdout supports jsonl or csv`;
+    - `--stdout` with `--out`: `--out and --stdout are exclusive`.
   - `--format parquet` without an importable `pyarrow` raises ClickException `--format parquet
     needs pyarrow (pip install pyarrow); use jsonl or csv` before creating the directory.
     `pyarrow` is **not** added to the dependencies.
@@ -217,9 +248,12 @@ contract.
       row has exactly those keys in that order, with null for unknown values.
 - [ ] For a fixture campaign (state + ledger with transitions, runs, gates, parks, findings and
       waiver notes), the campaign row's `outcome`, `ended_at`, `wall_s`, `time_in_state_s`,
-      `active_s`, counters, `runs_by_persona`, `models`, `gate_failures`, `park_reasons`,
+      `active_s`, `runs_by_persona`, `models`, `gate_failures`, `park_reasons`,
       `cost_cap_frac`, `must_fix_count`, `finding_count`, `waived_count`, `close_mode` and
-      `merged_sha` equal the values derived by hand.
+      `merged_sha` equal the values derived by hand. The fixture includes a `--reset-loops`
+      resume, a mid-campaign `retry_gate` and a `triage_retry`, a `--raise-cap` resume, and
+      both kinds of fix loop: `loops`, `gate_retries`, `triage_retries`, `loop_resets` and
+      `cap_raises` equal the ledger totals, not the reset counters.
 - [ ] `size`, `tone`, `profile_source` and `sizing_rationale` come from `state.sizing` and are
       null for a campaign without it. `loop_max` comes from the current profile, and the
       manifest `notes` say so.
@@ -233,10 +267,14 @@ contract.
 - [ ] `wt campaign export` writes the three JSONL files and `manifest.json` (schema, row counts,
       column types) into the default or `--out` directory. `--format csv` encodes `json`
       columns as JSON strings. `--project`, `--since` and `--terminal-only` filter.
-      `--table X --stdout` prints one table and writes no files.
+      `--table X --stdout` prints one table and writes no files. Each invalid flag combination,
+      an existing non-empty `--out` and a same-second default directory behave as documented.
+      `--since` keeps the boundary day in `cfg["_tz"]`.
 - [ ] `--format parquet` writes typed Parquet files when `pyarrow` is importable (test skipped
       otherwise). With the import blocked, it fails with the documented message, exits non-zero
       and creates no directory.
+- [ ] The export writes nothing under `campaigns/`. `state.json` and `ledger.jsonl` mtimes
+      and contents are unchanged after a run.
 - [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
@@ -249,11 +287,16 @@ contract.
     with no `spec_at_open.md`;
   - `time_in_state_s` across QUEUED → OPENING → IMPLEMENTING → GATING → TRIAGING → … →
     MERGED, including a PARKED interval;
-  - run rows against `runs.campaign_runs` (one run with `usage`, one without);
+  - run rows against `runs.campaign_runs` (one run with `usage`, one without, and one
+    `running` run with a null `budget_frac`);
+  - `cost_cap_frac` null for `cap_usd` null and for `cap_usd` 0;
   - finding rows with `state_at`;
   - every signal on and off;
-  - CLI via `CliRunner`: default directory under a temp `WT_DATA_DIR`, `--out`, the filters,
-    `--stdout`, `--json` manifest, CSV encoding;
+  - CLI via `CliRunner`: default directory under a temp `WT_DATA_DIR` (and a second export
+    in the same second gets `-2`), `--out` (empty, missing, non-empty), the filters with a
+    `--since` boundary-day campaign, `--stdout`, each invalid flag combination, the `--json`
+    manifest and its `notes`, CSV encoding;
+  - read-only guard: mtimes and bytes of every `state.json` / `ledger.jsonl` before and after;
   - Parquet round trip with `pytest.importorskip("pyarrow")`;
   - the missing-pyarrow path with `monkeypatch.setitem(sys.modules, "pyarrow", None)`.
 - **Manual verification:** `uv run wt campaign export --json` against the real data dir. Load

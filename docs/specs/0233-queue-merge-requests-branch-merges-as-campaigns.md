@@ -113,8 +113,9 @@ when any check fails:
    - `--worktree PATH` given: it must equal `worktree_for_branch` (resolved paths).
    - Not given: the branch's existing worktree is adopted (`own_worktree: false`). If there is
      none, the plan names `P.worktree_root(pcfg, root, project) / <cid>` (`own_worktree: true`).
-   - An adopted worktree must be clean: `git.is_clean(path, untracked=False)`.
-7. `head_at_request = git.rev_parse(root, branch)`.
+   - An adopted worktree must be clean, untracked files included:
+     `git.is_clean(path, untracked=True)`. Ignored files (`.venv`, caches) do not count.
+7. `head_at_request = git.rev_parse(root, branch)` is recorded (it never raises).
 
 The plan carries `campaign, kind: "merge", branch, project, profile, priority, base, repo_root,
 worktree, own_worktree, head_at_request, ahead, requested_by, note, cap_usd, slots,
@@ -136,7 +137,8 @@ reuses `_print_plan` and then prints `✓ <cid>  QUEUED`.
   - `own_worktree`: a new `gitops.worktree_add_existing(repo, path, branch)` runs
     `git worktree add <path> <branch>` and errors if `path` exists. Then the project's
     `worktrees.setup` commands run, as for spec campaigns.
-  - Adopted: the worktree must still exist, be on `branch` and be clean (tracked files).
+  - Adopted: the worktree must still exist, be on `branch` and be clean (untracked files
+    included, as in check 6).
     Setup commands are not run: wt does not change the requester's environment.
   - Both record `repo.base_sha_at_open` and `repo.head`. A failure is a GitError/ValueError
     and takes the existing path: park `open_failed`, `resume_to: QUEUED`.
@@ -152,10 +154,28 @@ reuses `_print_plan` and then prints `✓ <cid>  QUEUED`.
 ### Close (SPEC-0220 `prepare_close` / `finish_close`)
 
 For `state["kind"] == "merge"`:
+- `_do_close` skips `FU.file_followups` (a merge campaign has no `last_review`, so it would
+  file nothing anyway; skipping it makes that explicit).
 - Step 0 (`spec_guard`) and step 1 (`spec_dod`) are skipped.
-- Step 2: a dirty worktree (`git.is_clean(worktree, untracked=False)` false) returns a park
-  `worktree_dirty` with the first 10 `status_porcelain` lines and `resume_to: CLOSING`. There
-  is no close-time snapshot commit.
+- Step 2: a dirty worktree (`git.is_clean(worktree, untracked=True)` false, so untracked
+  non-ignored files count too) returns a park `worktree_dirty` with the first 10
+  `status_porcelain(worktree, untracked=True)` lines and `resume_to: CLOSING`. There is no
+  close-time snapshot commit. Because untracked files park here, the rebase and the re-gate
+  never run on a tree that holds files outside the branch, and an untracked file can never
+  collide with a path the rebase brings in.
+- **Branch tip.** The close merges the branch tip at close time, not `head_at_request`. The
+  requester queues a branch, not a commit, and is the only one who commits to it. A steward
+  that wants to stop a merge parks the campaign (`wt queue park`). The `close` event gains the
+  extras `head_at_request` and `commits_since_request` (`git rev-list --count
+  <head_at_request>..<pre-rebase tip>`, or null when `head_at_request` is no longer an
+  ancestor), so a moved branch is visible after the fact.
+- **The requester's branch is rewritten in place.** The rebase runs in `repo.worktree`, which
+  for an adopted worktree is the requester's own checkout. After a successful rebase the
+  branch history is rewritten (new shas onto the new base), even when the re-gate then fails
+  (`gates_failed` leaves the branch rebased). `gitops.rebase` aborts a conflicting rebase, so
+  a `rebase_conflict` park leaves the branch at its pre-rebase tip with no rebase in progress.
+  The park detail of `gates_failed` says `branch rebased onto <base> <sha10>`, so the
+  conductor can tell the requester.
 - Steps 3–6 (target, rebase with `merge.regenerate`, re-gate, main-checkout checks, ff-merge,
   `post_cmds`, `push_after_merge`) are unchanged. The re-gate is the merge request's only gate
   run. There is no separate GATING phase.
@@ -166,6 +186,11 @@ For `state["kind"] == "merge"`:
 - `_cleanup`: for a merge campaign, the worktree is removed only when `merge.own_worktree` is
   true, following `worktrees.cleanup`. The branch is never deleted, whatever
   `merge.delete_branch` says: it belongs to the requester.
+- `plan_abandon` / `apply_abandon` (`wt queue abandon`): for a merge campaign with
+  `merge.own_worktree == false`, the plan's `remove_worktree` is always `false`, whatever
+  `--keep-worktree` says, so `apply_abandon` never runs `worktree_remove` on the requester's
+  worktree. No abandon path deletes a branch (true today, and kept). A created worktree
+  (`own_worktree: true`) is removed as for spec campaigns.
 - `PARK_REASONS` gains `gates_failed` and `worktree_dirty`. If
   [SPEC-0222](./0222-queue-watch-needs-you-vs-conductor-handling.md)'s park-owner map exists,
   both map to `conductor`, which relays them to the requester.
@@ -176,7 +201,9 @@ For `state["kind"] == "merge"`:
   `spec_id` is null. Every place that prints a campaign's spec id uses it:
   - `cli_queue._queue_table`, `_waiting_table`, `_backlog_table`;
   - the dashboard panels and tables;
-  - `cli_campaign` `list` / `show`;
+  - `cli_campaign` `list` / `show` (today `str(r["spec_id"])` at `cli_campaign.py:132`);
+  - `cli_conduct.py`: the `parked` / `active` items (built from `i["spec_id"]`) gain `label`,
+    and its parked table prints `label`;
   - the event and digest rows in `events.py` that carry `spec_id`, which gain `label`.
 - `_spec_title` returns the request's `note` (or `merge request`) for a merge campaign.
 - `queue_payload` and `dashboard_payload` items gain `kind` and `merge_branch` (null for
@@ -195,34 +222,44 @@ For `state["kind"] == "merge"`:
 - **A pseudo spec id (`MERGE:<branch>`) in `spec_id`**: rejected. Spec-id lookups
   (`active_campaign_for_spec`, `backlog_readiness`, completions) would treat it as a spec.
   A null `spec_id` with one label helper keeps those paths honest.
+- **Merge only `head_at_request`, park `branch_moved` otherwise**: rejected. The requester owns
+  the branch and is the only committer. Parking on every follow-up commit would add a
+  conductor round trip for the common case ("one more fix before it lands"). The close event
+  records the drift instead.
 - **A gate-triager loop for red gates**: rejected. The requester, not a persona, owns the
   content. The conductor relays the failure.
 
 ## Acceptance criteria
 
-- [ ] `plan_merge` enforces checks 1–7 with a ValueError naming the fix for each: the policy is
+- [ ] `plan_merge` enforces checks 2–6 with a ValueError naming the fix for each: the policy is
       not `merge`, the branch is missing or equals base, the main checkout is on the branch,
       the branch is not ahead of base, a non-terminal campaign already has the branch, a
-      `--worktree` mismatch, or a dirty adopted worktree. It adopts the branch's existing
+      `--worktree` mismatch, or an adopted worktree with tracked or untracked changes. It adopts the branch's existing
       worktree or plans `worktree_root/<cid>`.
 - [ ] `wt queue merge BRANCH` is a dry run without `--yes`. With `--yes` it creates a QUEUED
       campaign whose state has `kind: "merge"`, `spec_id: null`, `spec: null`, the `merge`
       block and priority 2. Its `open` event carries `kind` and `merge_branch` and passes
       `schemas.ledger_problems`. `--json` emits `wt.queue.merge.v1`.
 - [ ] `backlog_readiness` admits a merge campaign without reading a spec and blocks it with
-      `branch <b> missing` when the branch is gone.
+      `branch <b> missing` when the branch is gone. `plan_resume` on a merge campaign accepts
+      only `CLOSING` / `QUEUED`, and `plan_step` parks a merge campaign found in
+      IMPLEMENTING/GATING/TRIAGING/REVIEWING.
 - [ ] The open step adopts or creates the worktree (setup commands only for a created one) and
       transitions OPENING → CLOSING. No `run.start` event is ever written for a merge campaign.
 - [ ] Close on a merge campaign skips the spec guard and the DoD, rebases, re-gates and
-      ff-merges to MERGED with a `close` event. A dirty worktree parks `worktree_dirty`
-      without any commit. A red re-gate parks `gates_failed` (`resume_to: CLOSING`) with the
-      failing gate names.
+      ff-merges the branch tip to MERGED with a `close` event carrying `head_at_request` and
+      `commits_since_request` (1 in a test that commits after queueing). A worktree with
+      tracked or untracked changes parks `worktree_dirty` without any commit. A red re-gate
+      parks `gates_failed` (`resume_to: CLOSING`) with the failing gate names and the
+      rebased-branch note.
 - [ ] After MERGED, a created worktree is removed per `worktrees.cleanup` and an adopted one is
       left in place. The branch is never deleted.
-- [ ] `plan_resume` on a merge campaign accepts only `CLOSING` / `QUEUED`. `plan_step` parks
-      a merge campaign found in IMPLEMENTING/GATING/TRIAGING/REVIEWING.
+- [ ] `wt queue abandon` of a PARKED merge campaign with an adopted worktree leaves the worktree
+      (with its uncommitted and untracked files) and the branch in place, with or without
+      `--keep-worktree`. The plan shows `remove_worktree: false`.
 - [ ] `wt queue list` (table and `--json`), `wt queue watch`, `wt campaign list/show` and
-      `wt queue events` show the campaign as `merge:<branch>`. No output prints `None` for
+      `wt queue events` and the `cli_conduct` status tables show the campaign as
+      `merge:<branch>`. No output prints `None` for
       its spec id, and payload items carry `kind` / `merge_branch`.
 - [ ] A merge campaign and a spec campaign that are both ready for CLOSING never merge at the
       same time (the existing close serialization), proven by an e2e test with two campaigns.
@@ -237,17 +274,24 @@ For `state["kind"] == "merge"`:
     - `apply_merge` state shape and `open` event extras;
     - `backlog_readiness` both ways;
     - `plan_resume` restriction;
-    - `plan_step` defensive park.
+    - `plan_step` defensive park;
+    - `plan_abandon` / `apply_abandon` on an adopted worktree holding an uncommitted edit and an
+      untracked file: both survive, with and without `--keep-worktree`.
   - `tests/test_agentic_close.py`: a merge campaign closes to MERGED with no spec file in the
-    repo; dirty worktree ⇒ `worktree_dirty` and `git log` unchanged; red re-gate ⇒ TRIAGING
-    outcome; `_cleanup` keeps an adopted worktree and the branch.
+    repo; a tracked edit and, separately, an untracked file ⇒ `worktree_dirty` and `git log`
+    unchanged; red re-gate ⇒ TRIAGING outcome and the branch left rebased; a conflict ⇒
+    branch at its pre-rebase tip with no rebase in progress; a commit added after queueing is
+    merged and counted in `commits_since_request`; `_cleanup` keeps an adopted worktree and
+    the branch; `FU.file_followups` is not called (spy).
   - `tests/test_agentic_e2e.py`: `wt queue merge --yes` then `queue.run(until_idle=True)` merges
     the branch into `main`. A ledger check asserts no `run.start`. A red-gate variant parks
     `gates_failed` and resumes to MERGED after the branch is fixed. A merge campaign and a
     spec campaign queued together both reach MERGED, one close at a time.
   - `tests/test_agentic_queue_cli.py`, `tests/test_agentic_dashboard.py`,
     `tests/test_agentic_campaign_cli.py`: `merge:<branch>` label in tables and `--json`
-    `kind`/`merge_branch`; no `None` in output.
+    `kind`/`merge_branch`; no `None` in output (the `wt campaign list` table row is asserted
+    explicitly). `tests/test_agentic_conduct_cli.py` (new): the
+    parked table shows `merge:<branch>`.
   - `tests/test_agentic_events.py`: digest and event rows of a parked merge campaign carry
     `label`.
 - **Manual verification:** in a scratch worktree of this repo, commit a docs typo fix on a

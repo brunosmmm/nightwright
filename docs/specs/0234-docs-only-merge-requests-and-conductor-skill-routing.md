@@ -17,143 +17,218 @@ depends_on: [SPEC-0233]
 
 Child of epic [SPEC-0169](./0169-mini-agentic-workflow-queue-campaigns-headless.md), second half
 of `IDEA-080`. [SPEC-0233](./0233-queue-merge-requests-branch-merges-as-campaigns.md) adds
-`wt queue merge` and the `kind: "merge"` campaign. Its close re-runs **every** project gate.
-Most steward merge requests are spec or doc edits. For this repo that means a full
-`uv run pytest` (minutes), when only `spec-lint` can fail on such a change. The idea asks for
-`--docs-only`: skip the heavy gates but still lint.
+`wt queue merge` and the `kind: "merge"` campaign. Its close re-runs **every** project gate. For
+this repo that means a full `uv run pytest` (minutes). The idea asks for `--docs-only`, a
+lighter path for changes no gate can break.
+
+The idea's first framing ("docs paths still lint") does not hold in this repo, because the
+gates read most of `docs/` and many `*.md` files:
+- `tools/spec_lint.py` and pytest read `docs/specs/**` and `docs/LEDGER.md`;
+- `tests/test_docs_*.py` and the mkdocs build read `docs/product/**` and `README.md`;
+- `tests/test_skills.py` reads `skills/*/SKILL.md`;
+- `src/wt/agentic/personas/*.md` are packaged runtime prompts.
+
+A path-shape rule (`docs/` or `*.md`) would let any of these merge without the gate that checks
+them. Only paths that **no gate reads** can skip the gates, and only the project knows which
+those are.
 
 The conductor ([SPEC-0182](./0182-event-driven-wt-conduct-monitor-armed-conductor.md)) and the
 steward ([SPEC-0184](./0184-wt-steward-skill-monitor-armed-project-steward-on.md)) skills
-still tell agents to merge steward branches by hand or with a background shell job. Those are
+still have the conductor complete merges through sub-agents or background shells. Those are
 the jobs that stalled invisibly on 2026-10-25.
 
 ## Goals / Non-goals
 
 **Goals**
-- G1. `wt queue merge BRANCH --docs-only` creates a merge campaign whose close re-gate runs only
-  the gates the project marks `docs_only: true`.
-- G2. A docs-only request is refused at plan time, and parked at close time, when the branch
-  changes anything outside the docs paths. A code change can never merge on the light gates.
-- G3. `skills/wt-conduct/SKILL.md` and `skills/wt-steward/SKILL.md` route every branch merge
-  through `wt queue merge`. Shell-job merges are removed from both.
+- G1. A project can declare an explicit allowlist of docs-only paths in `.wt/project.yaml`
+  (`merge.docs_only_paths`, default empty, which means docs-only is disabled).
+- G2. `wt queue merge BRANCH --docs-only` is accepted only when every path the branch changes
+  is on the allowlist. Rename detection is off, so a deleted source path always counts. The
+  close repeats the check on the rebased tree and then merges without running gates.
+- G3. `skills/wt-conduct/SKILL.md` routes steward merge requests through `wt queue merge`, and
+  `skills/wt-steward/SKILL.md` tells the steward to request merges from the conductor.
 
 **Non-goals**
-- Configurable docs paths per project. The fixed rule below fits every current project; a
-  config key can follow from evidence.
+- Glob patterns. Entries are exact paths or directory prefixes. Globs can follow from evidence.
+- A lighter gate subset (per-gate flags). By definition no gate reads an allowlisted path, so
+  running any gate on such a change tests nothing the branch changed.
 - Changing which gates run for spec campaigns or for full merge requests.
 
 ## Decision
 
-Add an optional per-gate key `docs_only: bool` (default `false`) to `.wt/project.yaml`
-gates. For a merge campaign with `merge.docs_only: true`, `gates.run_all` runs only the gates
-that have `docs_only: true`. `queue.is_docs_path(path)` defines docs paths as anything under
-`docs/` or ending in `.md`. `plan_merge` refuses `--docs-only` when
-`git.changed_files(<branch>, base)` contains another path. The close repeats the check on the
-rebased tree before the re-gate and parks `not_docs_only` when it fails. This repo's
-`.wt/project.yaml` marks `spec-lint` as `docs_only: true`.
+Add `merge.docs_only_paths: [str]` (default `[]`) to the project config. Each entry is an exact
+repo-relative path (`docs/WORKFLOW.md`) or a directory prefix ending in `/` (`docs/design/`).
+`queue.docs_only_violations(paths, allow) -> list[str]` returns the paths not covered.
+`plan_merge(..., docs_only=True)` refuses when the allowlist is empty or when
+`gitops.changed_files(root, base, head=branch, renames=False)` (that is,
+`git diff --name-only --no-renames base...branch`) has any violation. The close checks the
+rebased tree again, parks `not_docs_only` on a violation, and otherwise skips the re-gate and
+merges. This repo's allowlist is `docs/design/` and `docs/WORKFLOW.md`. Spec files,
+`docs/LEDGER.md`, `docs/product/`, `README.md`, skills and persona templates are **not**
+docs-only, because `spec_lint` or pytest read them.
 
 ## Design
 
 ### Project config (`project.py`)
 
-- `GATE_DEFAULTS` gains `"docs_only": False`. `validate` accepts `gates[i].docs_only` as a bool
-  through `_check_bool` (path `gates[<i>].docs_only`). Any other value is an error by key path,
-  as for every gate key. `STARTER` documents it as a commented line under the example gate.
-- This repo's `.wt/project.yaml`: the `spec-lint` gate gets `docs_only: true`.
+- `PROJECT_DEFAULTS["merge"]` gains `"docs_only_paths": []`. `validate` checks
+  `merge.docs_only_paths` with `_check_str_list` and also rejects:
+  - absolute paths;
+  - entries containing `..`, `*`, `?` or `[`;
+  - the empty string.
 
-### Docs-path rule (`queue.py`)
+  Each error names its key path (`merge.docs_only_paths[<i>]`). `STARTER` gets the commented
+  line `  docs_only_paths: []  # paths no gate reads; enables wt queue merge --docs-only`.
+- This repo's `.wt/project.yaml`: `docs_only_paths: [docs/design/, docs/WORKFLOW.md]`. Why:
+  `grep -rn` over `tests/`, `src/` and `tools/` finds no reader of either. `docs/design/` holds
+  prototypes and `*.py` scratch that pytest does not collect (`testpaths = ["tests"]`), and
+  mkdocs builds only `docs/product`. A later test that reads one of them must remove it from
+  the list. That is noted in a YAML comment next to the key.
 
-`is_docs_path(path: str) -> bool` returns `path.startswith("docs/") or path.endswith(".md")`.
-Generated docs (`docs/LEDGER.md`) are inside `docs/`.
+### Path rule (`queue.py`, `gitops.py`)
+
+- `docs_only_violations(paths, allow) -> list[str]` keeps the paths `p` for which no entry `e`
+  satisfies `p == e` or (`e.endswith("/")` and `p.startswith(e)`).
+- `gitops.changed_files(repo, base, head="HEAD", *, renames=True)` gains `head` and `renames`.
+  With `renames=False` it passes `--no-renames`. The existing caller
+  (`personas.py:438`) keeps the defaults. With `--no-renames`, a move from `src/x.py` to
+  `docs/design/x.py` lists both paths, so the deletion of `src/x.py` is a violation.
 
 ### Planning and CLI
 
-- `plan_merge(..., docs_only=False)`. With `docs_only`, `git.changed_files` is called with the
-  worktree (or `root` for a not-yet-created worktree, diffing `base...<branch>`). Any path
-  where `is_docs_path` is false raises ValueError: `--docs-only refused: <n> non-docs paths
-  (<first 5>)`. When the project has no gate with `docs_only: true`, the plan carries
-  `warnings: ["no docs_only gates: the merge runs no gates"]` and is still allowed. The spec
-  linter is a gate only where the project says so.
-- The plan and `state.merge.docs_only` carry the flag. The `open` event gains the extra
-  `docs_only`.
-- `wt queue merge --docs-only`. The text plan prints `gates: <names> (docs-only)`, or the
-  warning.
+- `plan_merge(..., docs_only=False)`. With `docs_only`:
+  1. `pcfg.merge.docs_only_paths` must be non-empty, otherwise ValueError `--docs-only is
+     disabled for <project>: set merge.docs_only_paths in .wt/project.yaml`;
+  2. `violations = docs_only_violations(changed_files(root, base, head=branch,
+     renames=False), allow)`. Any violation raises ValueError `--docs-only refused: <n> paths
+     outside merge.docs_only_paths (<first 5>)`. Diffing from `root` with `head=branch` is
+     the single code path, whether or not the worktree exists yet.
+- The plan carries `docs_only: true` and `docs_only_paths` (the allowlist used).
+  `state.merge.docs_only` is set, and the `open` event gains the extra `docs_only`. Both are
+  part of `wt.queue.merge.v1` (`--json`).
+- `wt queue merge --docs-only`. The text plan prints `gates: none (docs-only; <n> paths within
+  merge.docs_only_paths)`.
 
-### Gates and close
+### Close (SPEC-0233's merge path in SPEC-0220 `prepare_close`)
 
-- `gates.run_all(project_cfg, campaign_state, cfg, *, seq)`: when
-  `(campaign_state.get("merge") or {}).get("docs_only")` is true, the gate list is filtered to
-  `g.get("docs_only")`. `GateRun` and the sidecars are unchanged, so the `gate` ledger event
-  lists only the gates that ran.
-- Close (SPEC-0233's merge path in `prepare_close`), after the rebase and before the re-gate:
-  for a docs-only merge, recompute `git.changed_files(worktree, target_sha)`. Any non-docs
-  path returns a park `not_docs_only` with `resume_to: QUEUED` and a detail listing the
-  paths. The requester then re-queues without `--docs-only`, or `wt queue resume` after
-  splitting the branch. `PARK_REASONS` gains `not_docs_only`. Its SPEC-0222 owner (when that
-  map exists) is `conductor`.
+For a merge campaign with `merge.docs_only`, after the rebase (step 4) and instead of the
+re-gate (step 5):
+- Recompute `docs_only_violations(changed_files(worktree, target_sha, renames=False), allow)`,
+  with `allow` re-read from the current project config. Diffing against the target means
+  commits that landed on base meanwhile never count. Any violation returns a park
+  `not_docs_only` with `resume_to: QUEUED`. The detail lists up to 10 paths and ends with
+  the recovery: `abandon this campaign (wt queue abandon <cid> --yes), then wt queue merge
+  <branch> --yes without --docs-only`. A plain resume would only park again.
+  `PARK_REASONS` gains `not_docs_only`. Its SPEC-0222 owner, when that map exists, is
+  `conductor`.
+- No violation: no gate runs and no `gate` event is written. The prepared result records the
+  rebased head as the head to merge, so SPEC-0220's gated-tree check (step 4) compares against
+  the tree the docs-only check ran on. The `close` event has `gates_seq: null` and the extra
+  `docs_only: true`. `close` requires only `mode`, so `schemas.ledger_problems` accepts it.
+- The SPEC-0233 abandon rule applies: abandoning a parked docs-only campaign with an adopted
+  worktree removes neither the worktree nor the branch. That is what makes the documented
+  recovery safe.
 
 ### Skills
 
-- `skills/wt-conduct/SKILL.md`: the decision-table row for a steward's merge request (mailbox
-  `merge` ask) becomes `wt queue merge <branch> --by steward:<Project> [--docs-only] --yes`.
-  New rows: `gates_failed` / `worktree_dirty` / `not_docs_only` on a merge campaign ⇒ mail
-  the requester (`merge.requested_by`) with the park detail and wait. The conductor no longer
-  fixes the branch itself. The `rebase_conflict` row gains: on a merge campaign, the resolver
-  sub-agent works in `repo.worktree` and the campaign resumes to `CLOSING` (merge campaigns
-  have no GATING, SPEC-0233). Every instruction to merge a branch with shell commands or a
-  background job is removed. The conductor's own branches (spec edits) also go through
-  `wt queue merge --by conductor`.
-- `skills/wt-steward/SKILL.md`: "to land a branch, ask the conductor for a queue merge (or
-  run `wt queue merge <branch> --by steward:<Project>` yourself when the conductor is not
-  running)". Never merge into `main` by hand.
+- `skills/wt-conduct/SKILL.md`:
+  - The `message` (`kind` request) row's action list "(add, prioritize, park, resume)" becomes
+    "(add, merge, prioritize, park, resume)". Its text gains: "a merge request runs `wt queue
+    merge <branch> --by steward:<Project> [--docs-only]` (dry run, then `--yes`); never merge a
+    branch any other way".
+  - The *Sub-agent* bullet's phrase "completing or retrying a merge," is deleted. Merges are
+    queue work, so no sub-agent completes them.
+  - The guardrail "Conflict resolution, merge repair and fixes are done by sub-agents" becomes
+    "Conflict resolution and fixes are done by sub-agents…; branch merges, including your own
+    spec edits, go through `wt queue merge --by conductor`".
+  - New decision-table rows:
+    - `parked` `gates_failed` / `worktree_dirty` on a merge campaign: mail the requester
+      (`merge.requested_by`) the park detail and wait. Never fix the branch yourself.
+    - `parked` `not_docs_only`: abandon the campaign, re-run `wt queue merge <branch>` without
+      `--docs-only`, and tell the requester.
+  - The `parked` `rebase_conflict` row gains: "on a merge campaign, the resolver sub-agent works
+    in `repo.worktree` and the campaign resumes to `CLOSING` (merge campaigns have no GATING,
+    SPEC-0233)".
+- `skills/wt-steward/SKILL.md`, add-only: procedure step 5's request examples gain `"merge
+  <branch>"` / `"merge <branch> docs-only"`. A guardrail bullet says: "Never merge into
+  `main` by hand or with a background job. Ask the conductor for a queue merge."
 
 ## Alternatives considered
 
-- **A `merge.docs_gates: [names]` list in the merge block**: rejected. A per-gate flag keeps
-  the gate's definition in one place, and a renamed gate cannot silently fall out of the list.
-- **Skipping gates entirely for docs-only** (the idea's "GATING skipped"): rejected. The idea
-  itself says docs-only "still lints". The flag lets each project name its lint.
+- **A fixed `docs/` or `*.md` rule** (the first draft): rejected by review. In this repo it lets
+  spec, ledger, product-doc, skill and persona-prompt changes merge with no pytest or spec-lint
+  run, and those gates read exactly those files.
+- **Glob patterns in the allowlist**: deferred. Exact paths and prefixes are enough for the one
+  configured project and keep the match rule obvious.
+- **A per-gate `docs_only` flag selecting a light gate subset**: rejected. With an allowlist
+  of paths no gate reads, a light subset has nothing to check. A project that wants a check
+  shortens its allowlist.
 - **Trusting the requester's `--docs-only` without a diff check**: rejected. A wrong flag would
-  merge code on the light gates. Both checks are cheap.
+  merge code with no gates. Both checks are cheap.
 
 ## Acceptance criteria
 
-- [ ] `.wt/project.yaml` validation accepts `gates[i].docs_only: true|false` and rejects a
-      non-bool with the key path. The default is `false`. This repo's `spec-lint` gate sets
-      it to `true`.
-- [ ] `plan_merge(docs_only=True)` refuses a branch that changes a non-docs path (message
-      names the count and up to 5 paths). It accepts `docs/**` and `*.md` changes, and warns
-      when the project has no `docs_only` gate.
-- [ ] A docs-only merge campaign's close re-gate runs only the `docs_only` gates. The `gate`
-      ledger event lists only those, and the campaign reaches MERGED.
-- [ ] A docs-only merge whose rebased diff contains a non-docs path parks `not_docs_only`
-      (`resume_to: QUEUED`) before any gate runs.
-- [ ] `skills/wt-conduct/SKILL.md` and `skills/wt-steward/SKILL.md` route branch merges through
-      `wt queue merge`, contain the three merge-park rows and the merge-campaign
-      `rebase_conflict` resume to `CLOSING`, and no longer describe merging a branch with
-      shell commands or a background job.
+- [ ] `.wt/project.yaml` validation accepts `merge.docs_only_paths` (default `[]`) and rejects
+      a non-list, a non-string, an absolute path, `..`, glob characters and an empty entry,
+      each with its key path. `STARTER` documents the key. This repo sets `[docs/design/,
+      docs/WORKFLOW.md]`.
+- [ ] `docs_only_violations` matches exact entries and `/`-terminated prefixes only.
+      `gitops.changed_files(..., head=branch, renames=False)` lists both sides of a rename.
+- [ ] `plan_merge(docs_only=True)` refuses when the allowlist is empty and refuses a branch
+      with any path outside it (count and up to 5 paths). In this repo that includes
+      `docs/specs/x.md`, `docs/LEDGER.md`, `README.md`, `skills/x/SKILL.md`,
+      `src/wt/agentic/personas/x.md`, and a rename of `src/x.py` to `docs/design/x.py`.
+      It accepts a branch that touches only `docs/design/` and `docs/WORKFLOW.md`.
+- [ ] `wt queue merge --docs-only --json` (`wt.queue.merge.v1`) carries `docs_only` and
+      `docs_only_paths`. The state has `merge.docs_only`, the `open` event carries
+      `docs_only`, and the text plan prints the `gates: none (docs-only; …)` line.
+- [ ] An allowlisted docs-only merge reaches MERGED with no gate run and no `gate` event. Its
+      `close` event has `gates_seq: null` and `docs_only: true` and passes
+      `schemas.ledger_problems`.
+- [ ] A docs-only merge whose rebased diff violates the allowlist parks `not_docs_only`
+      (`resume_to: QUEUED`) before merging, with the abandon-and-re-queue recovery in the
+      detail. Following that recovery reaches MERGED through the full gates.
+- [ ] `skills/wt-conduct/SKILL.md` has `merge` in the request row with the `wt queue merge`
+      command, the `gates_failed` / `worktree_dirty` / `not_docs_only` rows, and the
+      merge-campaign `rebase_conflict` resume to `CLOSING`. It no longer contains "completing
+      or retrying a merge" or "merge repair". `skills/wt-steward/SKILL.md` contains the merge
+      request example and the never-merge-by-hand guardrail.
 - [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
 - **Automated tests:**
-  - `tests/test_agentic_project.py`: `docs_only` default, bool accepted, a non-bool rejected
-    with `gates[0].docs_only` in the message.
-  - `tests/test_agentic_queue_merge.py`: `plan_merge(docs_only=True)` refusal and acceptance,
-    the no-docs-gate warning, `is_docs_path` cases (`docs/x`, `README.md`, `src/x.py`,
-    `docs.py`).
-  - `tests/test_agentic_gates.py`: `run_all` filters for a docs-only merge state and runs
-    everything otherwise.
-  - `tests/test_agentic_e2e.py`: docs-only merge to MERGED where the `pytest`-like gate (a
-    command that would fail) is not run. A base that gains a code change during the queue
-    wait does not trigger `not_docs_only`, because the diff is taken against the target. A
-    branch amended with a code file after queueing parks `not_docs_only`.
-  - `tests/test_skills.py` (or the existing skill-content test): both skills mention
-    `wt queue merge`, and the conduct skill names the three park reasons.
-- **Manual verification:** `uv run wt queue merge <a docs-only branch> --docs-only` (dry run)
-  lists `spec-lint` as the only gate. A dry run on a branch touching `src/` is refused.
+  - `tests/test_agentic_project.py`: `docs_only_paths` default and every rejection, each with
+    its key path; this repo's `.wt/project.yaml` loads with the two entries; `STARTER`
+    contains `docs_only_paths`.
+  - `tests/test_agentic_gitops.py`: `changed_files` with
+    `head=` and `renames=False` on a temp repo with a rename lists both paths.
+  - `tests/test_agentic_queue_merge.py`:
+    - `docs_only_violations` cases: exact, prefix, `docs/designer.md` not under `docs/design/`;
+    - every `plan_merge(docs_only=True)` refusal and acceptance listed in the criteria, against
+      a temp repo whose config mirrors this repo's allowlist;
+    - `--json` and text plan output, state and `open` event keys.
+  - `tests/test_agentic_close.py`: the docs-only close with no `gate` event, `close` with
+    `gates_seq: null`, and `ledger_problems` empty. A violation parks `not_docs_only` before
+    `ff_merge` (spy).
+  - `tests/test_agentic_e2e.py`:
+    - a docs-only merge to MERGED where the project's gate is a failing command, which proves
+      no gate ran;
+    - a code change landing on base during the queue wait does not trigger `not_docs_only`;
+    - a branch amended with `src/x.py` after queueing parks `not_docs_only`, then
+      `wt queue abandon --yes` and `wt queue merge` without `--docs-only` reach MERGED with
+      the gates run, and the adopted worktree survives the abandon.
+  - `tests/test_skills.py`:
+    - the conduct skill contains `wt queue merge`, the three park reasons, and a
+      `rebase_conflict` merge-campaign line naming `CLOSING`;
+    - negative assertions: no "completing or retrying a merge", no "merge repair";
+    - the steward skill contains `merge <branch>` and "Never merge into `main` by hand".
+- **Manual verification:** `uv run wt queue merge <branch touching docs/WORKFLOW.md>
+  --docs-only` (dry run) prints `gates: none (docs-only; 1 paths …)`. The same on a branch
+  touching `docs/specs/` is refused.
 - **Regression guard:** full `uv run pytest`. Gate runs for spec campaigns and full merges are
-  unchanged (existing gate and e2e tests).
+  unchanged (existing gate and e2e tests). `changed_files`' existing caller keeps its
+  behaviour.
 
 ## Clock Log
 
@@ -161,8 +236,8 @@ Built by the agentic loop or the human lane; idea bookkeeping via `wt spec recon
 
 ## Rollout / migration
 
-Ship with this repo's `.wt/project.yaml` change. Other projects get no `docs_only` gates until
-they opt in. Their docs-only merges then warn and run no gates, which the plan says up front.
+Ship with this repo's `.wt/project.yaml` change. Every other project has an empty allowlist,
+so `--docs-only` is refused there with a message naming the key until the project opts in.
 
 ## Definition of done
 
