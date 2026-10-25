@@ -94,15 +94,28 @@ budget is left the resolver runs again, otherwise the campaign parks `rebase_con
   returns the `rebase_conflict` park. The park payload gains (additive) `conflicts` (the list
   of paths), `target` and `target_sha`, so `_apply` can dispatch without re-parsing the
   detail string. `close_campaign` (serial wrapper) behaves as today.
-- New pure helper `resolve_context(state, target_sha, conflicts, project_cfg) -> dict`. It
-  builds the prompt values from git reads in the worktree. Each item is capped (constants in
-  `personas.py`):
+- `close.py` gets no resolver logic beyond these payload keys. The prompt context lives in
+  `personas.py` (next item), so `close.py` never imports `personas.py` and no import cycle
+  appears.
+
+### Prompt context (`personas.resolve_context`)
+
+- New helper `personas.resolve_context(state, resolve, project_cfg) -> dict`, where `resolve`
+  is `closing.resolve`. It builds the prompt values from git reads in the worktree, which
+  sits at `pre_head` at that point (the rebase was aborted). Each item is capped (constants
+  in `personas.py`).
+- **Fork point.** Every range below starts at `fork = git merge-base <pre_head>
+  <target_sha>`, computed at dispatch and stored in `closing.resolve.fork`. It does **not**
+  start at `repo.base_sha_at_open`. That sha never moves, so after an earlier close rebase
+  (a SPEC-0220 `base_moved` redo, or a previous resolution) it would show base commits the
+  branch already contains as if they were the campaign's own changes. The merge-base is the
+  point the campaign branch actually diverges from the target now.
   - `conflicts`: the paths.
-  - `campaign_diff`: `git diff <base_sha_at_open>..HEAD -- <conflicts>` (≤ 600 lines), what
-    this campaign changed.
-  - `base_diff`: `git diff <base_sha_at_open>..<target_sha> -- <conflicts>` (≤ 600 lines),
-    what landed on base meanwhile.
-  - `landed`: one line per commit in `git log <base_sha_at_open>..<target_sha>` that touches
+  - `campaign_diff`: `git diff <fork>..<pre_head> -- <conflicts>` (≤ 600 lines), what this
+    campaign changed.
+  - `base_diff`: `git diff <fork>..<target_sha> -- <conflicts>` (≤ 600 lines), what landed on
+    base meanwhile.
+  - `landed`: one line per commit in `git log <fork>..<target_sha>` that touches
     a conflicted path (sha, subject), plus the governing specs of those commits: every
     `SPEC-NNNN` id in the subjects, and every `docs/specs/NNNN-*.md` file the range adds or
     modifies. The full text of each spec is included, with the frontmatter and the
@@ -146,6 +159,10 @@ budget is left the resolver runs again, otherwise the campaign parks `rebase_con
   and adds `WT_REBASE_TARGET=<target_sha>` to the run env. The permission mode and allowlist
   follow the implementer's rules (the project's `agents.permission_mode` / `allowed_tools` +
   gate patterns).
+- The git allow/forbid list is guidance, not enforcement. The persona usually runs with
+  `bypassPermissions`, so nothing stops it from running a forbidden command. Safety comes
+  from the runner-side verification and restore in `_do_resolve` (below). Whatever the
+  persona does to the campaign branch is either verified or undone.
 
 ### Profiles (`profiles.py`)
 
@@ -160,36 +177,64 @@ with a smaller budget than the implementer:
 | thorough | opus   | high   | 4.0            |
 
 Project opt-out: `.wt/project.yaml` `merge.resolver: false` keeps today's behaviour (park at
-once). The default is `true`.
+once). The default is `true`. The key is added to `project.PROJECT_DEFAULTS["merge"]` as
+`"resolver": True`, so the strict project schema (`_check_mapping` over the `merge` keys)
+accepts it. A non-bool value is a config problem, like the other typed merge keys.
 
 ### Queue (`queue.py`)
 
 - **Dispatch (in `_apply`, close branch).** The outcome is a `rebase_conflict` park with
   `conflicts`, `merge.resolver` is not false, and `closing.resolve_attempts <
   MAX_RESOLVE_ATTEMPTS` (2). Then: no park. `closing.resolve = {target, target_sha,
-  conflicts, pre_head: <worktree HEAD>}`, plus a `finding` (persona `close`, severity
+  conflicts, pre_head, fork, branch}`, plus a `finding` (persona `close`, severity
   `info`, gate `rebase`, title "rebase conflict; resolver dispatched", files = conflicts).
   The transition stays CLOSING (row `reason: "resolve_dispatched"`). Otherwise the park is
   applied as today. When the budget is spent, the detail gets the suffix "(resolver: N
   attempts, last: <summary>)".
+- **`pre_head` is recorded once, at dispatch.** `PreparedClose` (SPEC-0220) gains `pre_head`:
+  the worktree HEAD `prepare_close` read before it started the rebase. `gitops.rebase`
+  aborts back to exactly that sha, and `prepare_close` asserts it. `_apply` copies
+  `prepared.pre_head` into `closing.resolve.pre_head`, together with `fork = merge-base
+  pre_head target_sha` and `branch = repo.branch` (the campaign branch `wt/<cid>`). Every
+  later restore resets to that **recorded** value, never to a HEAD read again after the
+  persona ran. A failed attempt leaves the head at `pre_head`, so the value stays the same
+  for the second attempt.
 - **Planning.** In `plan_step`, `CLOSING` + `closing.resolve` ⇒ `_cap_blocks(state,
   profile, "conflict_resolver")`. If the cap blocks, park `cost_cap`, `resume_to: CLOSING`.
   The resume resets `closing`, so the next close re-detects the conflict. Otherwise
   `Step("resolve", persona="conflict_resolver")`. It goes into `pending_agent` like an
   implement step.
-- **Worker `_do_resolve(ctx, state, step, run_id, req, budget)`.** Before the run, if a
-  rebase is in progress, abort it. Then, if HEAD is not `pre_head`, restore it with
-  `git reset --hard <pre_head>` in the worktree only. This is a campaign-scoped restore of
-  the runner's own recorded head, never the base. Run the persona. Then verify, without
-  trusting the verdict:
-  1. no rebase in progress (`.git/rebase-merge` / `rebase-apply` absent for the worktree's
-     gitdir);
-  2. no unmerged paths;
-  3. `git merge-base --is-ancestor <target_sha> HEAD`;
-  4. the worktree is tracked-clean.
+- **Restore procedure `_restore(worktree, branch, pre_head)`.** It is used before every run
+  and after every attempt that is not verified:
+  1. `rebase --abort` if a rebase is in progress (`rebase-merge` / `rebase-apply` in the
+     worktree's gitdir);
+  2. if `git symbolic-ref -q HEAD` is not `refs/heads/<branch>`, `git checkout -f <branch>`;
+  3. if `refs/heads/<branch>` is not `pre_head`, `git reset --hard <pre_head>` (on the
+     campaign branch, so only that ref moves).
 
-  The result is `verified = verdict.status == "resolved" and 1–4 hold`. If not verified, or
-  if the run was interrupted, the worker restores (abort rebase, `reset --hard pre_head`).
+  It ends by asserting that HEAD is attached to `<branch>` at `pre_head` with no rebase in
+  progress. If that assertion fails, the step errors and the close error path parks
+  `open_failed` (`resume_to: CLOSING`). This is a campaign-scoped restore of the runner's own
+  recorded head, never the base.
+- **Worker `_do_resolve(ctx, state, step, run_id, req, budget)`.** It runs `_restore`, then
+  the persona, then the verification below. The verification is all runner-side git reads
+  and does not trust the verdict:
+  1. HEAD is attached to the campaign branch: `git symbolic-ref HEAD` ==
+     `refs/heads/<branch>` (a detached HEAD or another branch fails);
+  2. no rebase in progress;
+  3. no unmerged paths;
+  4. `git merge-base --is-ancestor <target_sha> HEAD`;
+  5. **no campaign commit dropped or added.** `git rev-list --count <target_sha>..HEAD` equals
+     `git rev-list --count <fork>..<pre_head>`. Also, `git range-diff --creation-factor=95
+     <fork>..<pre_head> <target_sha>..HEAD` pairs every old commit with a new one: no `<`
+     (dropped) or `>` (added) lines. `=` and `!` (modified by the resolution) pass. The
+     creation factor is raised from git's default 60 so that commits reshaped by a conflict
+     still pair. A commit too different to pair fails verification, which is the safe
+     outcome;
+  6. the worktree is tracked-clean.
+
+  The result is `verified = verdict.status == "resolved" and 1–6 hold`. If not verified, or
+  if the run was interrupted, the worker runs `_restore` to the recorded `pre_head`.
   So a failed or discarded attempt leaves the branch byte-identical to before. The
   resolver's work exists only as commits on the campaign branch. Nothing outside the
   worktree and its branch is written. This keeps SPEC-0220's rule that a discardable
@@ -207,8 +252,8 @@ once). The default is `true`.
     triager briefs the implementer).
   - **gave_up / unverified / failed run:** a `finding` (severity `major`, gate `rebase`,
     title "conflict resolver did not resolve", detail = verdict summary or the failed check,
-    plus `questions`). Attempts left ⇒ stay CLOSING with `closing.resolve` kept (a fresh
-    `pre_head` equal to the restored head), and the resolver runs again. Otherwise ⇒ park
+    plus `questions`). Attempts left ⇒ stay CLOSING with `closing.resolve` kept unchanged
+    (the same recorded `pre_head`, `fork` and `target_sha`), and the resolver runs again. Otherwise ⇒ park
     `rebase_conflict`, `resume_to: CLOSING`, with the detail naming the paths and the last
     summary. Choice: a `gave_up` still uses the second attempt. A fresh run with the first
     run's `questions` in `previous_verdicts` often settles what the first could not, and the
@@ -266,21 +311,26 @@ table.
       `run.start`/`run.end` on the ledger).
 - [ ] `conflict_resolver` is registered (write-capable, own invariant, schema as above), its
       template carries the rules above, and its prompt contains the conflicted paths, both
-      diffs, the landed commits and their spec text, the regenerate map and the target sha.
-      Every builtin profile has its settings per the table.
+      diffs (computed from the current fork point `merge-base(pre_head, target_sha)`), the
+      landed commits and their spec text, the regenerate map and the target sha. Every
+      builtin profile has its settings per the table.
 - [ ] A verified `resolved` result records `rebase_resolved` with per-path `strategy`/`how`,
       and the following close re-gates the resolved tree and reaches MERGED (gates green),
       or TRIAGING `regate_failed` (gates red).
 - [ ] A resolver run that changes the campaign spec's governing text leads to TRIAGING
       `spec-changed` at the following close, not a merge.
-- [ ] `gave_up`, a `resolved` verdict that fails verification (rebase still in progress,
-      unmerged paths, target not an ancestor, dirty tree), a failed run and an interrupted
-      run each leave the worktree HEAD equal to `pre_head`, with no rebase in progress.
+- [ ] Runner-side verification rejects a `resolved` verdict when HEAD is detached or on
+      another branch, a rebase is in progress, paths are unmerged, the target is not an
+      ancestor, a campaign commit was dropped or added (range-diff/count against the
+      recorded `fork..pre_head`), or the tree is dirty. Those cases, `gave_up`, a failed
+      run and an interrupted run each restore the campaign branch, checked out and
+      attached, to the `pre_head` recorded at dispatch, with no rebase in progress.
 - [ ] After `MAX_RESOLVE_ATTEMPTS` (2) unsuccessful resolver runs in one CLOSING entry, the
       campaign parks `rebase_conflict` (`resume_to: CLOSING`), and the detail names the paths
       and the last summary. A resume resets the budget. An interrupted run does not count
       against it.
-- [ ] `merge.resolver: false` parks `rebase_conflict` at once, as before. A cost cap that
+- [ ] `merge.resolver` is in `PROJECT_DEFAULTS["merge"]` (default true) and passes the strict
+      project schema. `merge.resolver: false` parks `rebase_conflict` at once, as before. A cost cap that
       blocks the resolver parks `cost_cap` with `resume_to: CLOSING`.
 - [ ] Generated-only conflicts are still resolved by SPEC-0191 without a resolver run. The
       existing close, in-flight close (SPEC-0220) and e2e suites pass unchanged.
@@ -308,6 +358,10 @@ table.
   - `test_resolver_prompt_context`: the rendered prompt (via `wt campaign prompt` /
     `build_request`) contains `src/app.py`, both diff hunks, the `SPEC-9001` subject and the
     spec text, and `WT_REBASE_TARGET` is in the env.
+  - `test_resolver_context_uses_current_fork_point`: the campaign is first rebased by an
+    earlier close (base moved, no conflict), and then conflicts. `campaign_diff` does not
+    contain the base commit absorbed by the first rebase. `closing.resolve.fork` equals
+    `merge-base(pre_head, target_sha)`, not `base_sha_at_open`.
   - `test_resolved_but_regate_red_goes_triaging`: the gate fails on the merged tree ⇒
     TRIAGING `regate_failed`, and the triage/implement loop runs.
   - `test_resolver_edits_spec_triages_spec_changed`.
@@ -316,8 +370,12 @@ table.
     summary. Then `wt queue resume` ⇒ `closing` reset, and a third (resolving) entry merges.
   - `test_unverified_resolved_is_restored`: one parametrized test over (a) the verdict says
     `resolved` but the shell leaves the rebase in progress; (b) a dirty tree; (c) the rebase
-    was aborted (target not an ancestor). Each ⇒ restored to `pre_head`, `major` finding, a
-    second attempt.
+    was aborted (target not an ancestor); (d) the shell detaches HEAD (`git checkout
+    --detach`) after a correct rebase; (e) the shell ends on another branch (`git checkout -b
+    other`); (f) the shell drops a campaign commit (rebase with `git rebase --skip` on the
+    conflicting commit); (g) the shell adds an extra commit. Each ⇒ restored to the
+    recorded `pre_head` with HEAD attached to `wt/<cid>`, a `major` finding naming the
+    failed check, and a second attempt with the same `pre_head`.
   - `test_interrupted_resolver_not_counted`: `stop` set during the run (FakeRunner
     `sleep_s`) ⇒ restored, `resolve_attempts` unchanged, re-dispatched.
   - `test_resolver_opt_out_parks` (`merge.resolver: false`) and
@@ -328,8 +386,12 @@ table.
   allow/forbid list, `build_request` permission mode and allowlist.
 - `tests/test_agentic_profiles.py`: per-profile resolver settings.
 - `tests/test_agentic_logs.py`: `rebase_resolved` validates. `tests/test_agentic_events.py`:
-  projected.
-- **Sabotage checks:** drop the post-run verification. Drop the restore on `gave_up`. Count
+  projected. `tests/test_agentic_campaign_cli.py`: `wt campaign log <id>` on a ledger with a
+  `rebase_resolved` event prints `rebase resolved: 1 paths (both×1)`.
+- `tests/test_agentic_project.py` (the existing project-config tests): `merge.resolver`
+  defaults to true, `false` is accepted, and a non-bool value is reported.
+- **Sabotage checks:** drop the post-run verification. Drop the attached-branch check. Drop
+  the range-diff/count check. Drop the restore on `gave_up`. Count
   interrupted runs. Skip the budget check. Run the new suite after each and record in the
   spec that it fails.
 - **Regression guard:** full `uv run pytest`, in particular `tests/test_agentic_close.py`,
