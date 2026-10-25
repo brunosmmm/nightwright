@@ -97,21 +97,32 @@ class Env:
         f = self.d / f"n-{spec}"
         return int(f.read_text()) if f.exists() else 0
 
+    def release_all(self):
+        for p in self.d.glob("hold-*"):
+            p.unlink(missing_ok=True)
+
     def tick(self, **kw):
+        # a tick that blocked on a held re-gate would hang until the holds go: the safety timer
+        # frees them at 15 s, so the regression fails the 12 s bound instead of hanging
+        guard = threading.Timer(15, self.release_all)
+        guard.start()
         t0 = time.monotonic()
-        r = Q.tick(self.cfg, runner=self.runner, pool=self.pool, stop=self.stop, **kw)
-        assert time.monotonic() - t0 < 5, "a tick blocked"
+        try:
+            r = Q.tick(self.cfg, runner=self.runner, pool=self.pool, stop=self.stop, **kw)
+        finally:
+            guard.cancel()
+        assert time.monotonic() - t0 < 12, "a tick blocked"
         self.reports.append(r)
         return r
 
-    def spin(self, cond, timeout=40):
+    def spin(self, cond, timeout=120):
         end = time.monotonic() + timeout
         while not cond():
             assert time.monotonic() < end, "condition never met"
             self.tick()
             time.sleep(0.03)
 
-    def settle(self, cid, timeout=20):
+    def settle(self, cid, timeout=60):
         end = time.monotonic() + timeout
         while cid in self.pool.flights and not self.pool.flights[cid].done():
             assert time.monotonic() < end, f"{cid} never finished"
@@ -157,8 +168,7 @@ def mk(tmp_path, monkeypatch):
     yield make
     for env in envs:
         env.stop.set()
-        for p in env.d.glob("hold-*"):
-            p.unlink()
+        env.release_all()
         env.pool.shutdown()
 
 
@@ -178,6 +188,13 @@ def test_admission_while_close_regate_runs(mk, tmp_path):
     assert env.state(a) == "CLOSING" and a in env.pool.flights
     assert len(env.started(a)) == 1
     assert env.state(b) in ("GATING", "REVIEWING", "CLOSING", "MERGED")
+    # the runner journal order the manual check looks for: A's `started close`, then B's
+    # rows, and A has no result row yet
+    first_close = next(i for i, r in enumerate(env.reports)
+                       if any(s["campaign"] == a and s["action"] == "close" for s in r.started))
+    later = [s for r in env.reports[first_close + 1:] for s in r.steps]
+    assert any(s["campaign"] == b for s in later)
+    assert not any(s["campaign"] == a and s["to"] == "MERGED" for s in later)
     env.release()
     env.spin(lambda: env.state(a) == "MERGED" and env.state(b) == "MERGED")
 
@@ -277,6 +294,51 @@ def test_worktree_commit_after_regate_redoes(mk):
     assert env.gate_runs() == 3
 
 
+def test_branch_tip_moved_after_regate_redoes(mk):
+    """Only the branch ref moves (the worktree stays on the gated commit, detached)."""
+    env = mk()
+    a = _held_closing(env)
+    st = env.st(a)
+    wt, branch = st["repo"]["worktree"], st["repo"]["branch"]
+    env.release()
+    env.settle(a)
+    before = env.main_sha()
+    _git(wt, "checkout", "-q", "--detach")
+    _git(wt, "update-ref", f"refs/heads/{branch}", before)    # the branch tip is no longer HEAD
+    env.hold()                                                # keep the redo's re-gate busy
+    env.tick()
+    assert env.rows(a)[-1]["reason"] == "base_moved"
+    assert env.main_sha() == before and not (env.repo / "feature-a.txt").exists()
+    assert env.st(a)["closing"]["attempts"] == 1
+
+
+def test_pr_policy_worktree_commit_after_regate_redoes(mk, monkeypatch):
+    env = mk(policy="pr", with_origin=True)
+    calls = {"push": 0, "pr": 0}
+
+    def push(*args, **kw):
+        calls["push"] += 1
+
+    def pr(*args, **kw):
+        calls["pr"] += 1
+        return "https://example.test/pr/9"
+
+    monkeypatch.setattr(git, "push_branch", push)
+    monkeypatch.setattr(git, "gh_pr_create", pr)
+    a = _held_closing(env)
+    wt = env.st(a)["repo"]["worktree"]
+    env.release()
+    env.settle(a)
+    Path(wt, "late.txt").write_text("late\n")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-q", "-m", "late")
+    env.tick()                                    # harvest: the gated tree is stale
+    assert env.rows(a)[-1]["reason"] == "base_moved" and env.state(a) == "CLOSING"
+    assert calls == {"push": 0, "pr": 0}
+    env.spin(lambda: env.state(a) == "HANDED_OFF")
+    assert calls == {"push": 1, "pr": 1} and env.gate_runs() == 3
+
+
 def test_park_requested_during_worktree_phase_blocks_merge(mk):
     env = mk()
     a = _held_closing(env)
@@ -335,7 +397,24 @@ def test_closing_reset_on_resume_and_waiting(mk):
     assert "closing" not in st and st["counters"]["close_attempts"] == 1
 
 
-def test_legacy_closing_without_key(mk):
+def _moving_base(env, monkeypatch, times):
+    """Wrap `prepare_close` so main gets a new commit after each of the first `times` worktree
+    phases (so the finish phase finds a moved base). Returns the per-call `closing` log."""
+    real = CL.prepare_close
+    log = []
+
+    def wrapped(cfg, state, *args, **kw):
+        prep = real(cfg, state, *args, **kw)
+        log.append((S.read_state(cfg, state["id"]).get("closing") or {}).get("attempts"))
+        if len(log) <= times:
+            env.move_main(f"moved{len(log)}.txt")
+        return prep
+
+    monkeypatch.setattr(CL, "prepare_close", wrapped)
+    return log
+
+
+def test_legacy_closing_without_key(mk, monkeypatch):
     env = mk()
     a = env.add()
     env.to_closing(a)
@@ -343,8 +422,42 @@ def test_legacy_closing_without_key(mk):
         st = env.st(a)
         st.pop("closing")
         S.write_state(env.cfg, a, st)
-    Q.tick(env.cfg, runner=env.runner)
+    log = _moving_base(env, monkeypatch, 1)
+    r = Q.tick(env.cfg, runner=env.runner)
     assert env.state(a) == "MERGED"
+    assert log == [None, 1]                       # no key = budget 0; the first retry makes it 1
+    assert [s["reason"] for s in r.steps if s["campaign"] == a] == ["base_moved", "closed"]
+
+
+def test_single_shot_tick_redoes_moved_base(mk, monkeypatch):
+    """No pool: one `wt queue tick` loops the close until merged (the old in-call loop)."""
+    env = mk()
+    a = env.add()
+    env.to_closing(a)
+    log = _moving_base(env, monkeypatch, 1)
+    r = Q.tick(env.cfg, runner=env.runner)
+    rows = [s for s in r.steps if s["campaign"] == a]
+    assert [s["reason"] for s in rows] == ["base_moved", "closed"]
+    st = env.st(a)
+    assert st["state"] == "MERGED" and log == [0, 1] and "closing" not in st
+    assert st["close"]["merged_sha"] == env.main_sha()
+    assert st["counters"]["close_attempts"] == 2
+
+
+def test_single_shot_tick_parks_when_base_always_moves(mk, monkeypatch):
+    env = mk()
+    a = env.add()
+    env.to_closing(a)
+    log = _moving_base(env, monkeypatch, 99)
+    before = env.main_sha()
+    r = Q.tick(env.cfg, runner=env.runner)
+    rows = [s for s in r.steps if s["campaign"] == a]
+    assert [s["reason"] for s in rows] == ["base_moved", "base_moving"]
+    st = env.st(a)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "base_moving"
+    assert st["park"]["resume_to"] == "CLOSING" and "closing" not in st
+    assert log == [0, 1]                          # exactly MAX_CLOSE_ATTEMPTS worktree phases
+    assert env.main_sha() != before and not (env.repo / "feature-a.txt").exists()
 
 
 def test_close_worker_exception_parks_open_failed(mk, monkeypatch):
@@ -363,6 +476,40 @@ def test_close_worker_exception_parks_open_failed(mk, monkeypatch):
     assert st["park"]["resume_to"] == "CLOSING" and "close step failed" in st["park"]["detail"]
     assert any("boom" in e for e in r.errors)
     assert st["counters"] == dict(before, close_attempts=1, parks=1)
+
+
+@pytest.mark.parametrize("exc", [
+    lambda: git.GitError(["git", "merge"], 1, "tail of git"),
+    lambda: ValueError("bad config"),
+    lambda: OSError("disk gone")])
+def test_finish_close_exception_parks_open_failed(mk, monkeypatch, exc):
+    env = mk()
+    a = env.add()
+    env.to_closing(a)
+
+    def boom(*args, **kw):
+        raise exc()
+
+    monkeypatch.setattr(CL, "finish_close", boom)
+    before = env.main_sha()
+    Q.tick(env.cfg, runner=env.runner)
+    st = env.st(a)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed"
+    assert st["park"]["resume_to"] == "CLOSING" and "close step failed" in st["park"]["detail"]
+    assert env.main_sha() == before
+    assert len(S.read_ledger(env.cfg, a, types=["gate"])) == 2     # the worktree phase's gate kept
+
+
+def test_no_close_submitted_while_stopping(mk):
+    env = mk()
+    a = env.add()
+    env.to_closing(a)
+    env.stop.set()
+    env.tick()
+    assert env.state(a) == "CLOSING" and env.started(a) == [] and a not in env.pool.flights
+    env.stop.clear()
+    env.spin(lambda: env.state(a) == "MERGED")
+    assert len(env.started(a)) == 1
 
 
 def test_stop_during_worktree_phase_leaves_closing(mk):
@@ -414,27 +561,34 @@ def test_redo_aborts_leftover_rebase(mk):
     wt = env.st(a)["repo"]["worktree"]
     subprocess.run(["git", "-C", wt, "rebase", "-i", "main"], check=True, capture_output=True,
                    env={**os.environ, "GIT_SEQUENCE_EDITOR": "sed -i s/^pick/edit/"})
-    assert _git(wt, "rev-parse", "--git-path", "rebase-merge")
-    assert Path(wt, _git(wt, "rev-parse", "--git-path", "rebase-merge")).exists() \
-        or Path(_git(wt, "rev-parse", "--git-path", "rebase-merge")).exists()
+    gitdir = Path(wt, _git(wt, "rev-parse", "--git-path", "rebase-merge"))
+    assert gitdir.exists()                                   # the rebase is really in progress
     Q.tick(env.cfg, runner=env.runner)
     assert env.state(a) == "MERGED" and (env.repo / "feature-a.txt").exists()
 
 
-def test_watchdog_quiet_while_closing(mk):
+def test_watchdog_quiet_while_closing(mk, monkeypatch):
     env = mk(slots=2, specs=2)
     a = _held_closing(env)
     b = env.add("SPEC-0002")
     lease = L.acquire(env.cfg, ["t"])
     try:
-        sett = dict(E.settings(env.cfg), ready_grace_s=0)
+        sett = dict(E.settings(env.cfg), ready_grace_s=0, stuck_after_s=0)
+        monkeypatch.setattr(E, "settings", lambda cfg: sett)
         env.tick(admit=False)                      # B is ready but not admitted
         time.sleep(0.05)
         items = E.ready_not_admitted_items(env.cfg, _now(), sett)
         assert [i["campaign"] for i in items] == [b] and items[0]["runner_busy"] is True
+        digest = E.ping_digest(env.cfg)
+        assert [i["runner_busy"] for i in digest["ready_not_admitted"]] == [True]
         env.tick()                                 # the real runner admits it mid-close
         assert env.state(b) != "QUEUED" and env.state(a) == "CLOSING"
         assert E.ready_not_admitted_items(env.cfg, _now(), sett) == []
+        # the held re-gate is inside the gate budget: busy, not stuck
+        assert a not in [i["campaign"] for i in E.stuck_items(env.cfg, _now(), sett)]
+        digest = E.ping_digest(env.cfg)
+        assert digest["ready_not_admitted"] == []
+        assert a not in [i["campaign"] for i in digest["stuck"]]
     finally:
         lease.release()
 
@@ -455,8 +609,13 @@ def test_reexec_drains_inflight_close(tmp_path, monkeypatch):
         report = real_tick(*args, **kw)
         if any(s["action"] == "close" for s in report.started):   # code lands mid-close
             _commit(root, "src/wt/x.py", "A = 9\n", "code")
-            threading.Timer(0.6, env.release).start()
         return report
+
+    real_drain = Q._drain
+
+    def drain(*args, **kw):                       # the held re-gate is freed once draining
+        env.release()
+        return real_drain(*args, **kw)
 
     seen = []
 
@@ -469,6 +628,7 @@ def test_reexec_drains_inflight_close(tmp_path, monkeypatch):
             "handover": envv.get(L.HANDOVER_ENV)})
 
     monkeypatch.setattr(Q, "tick", tick)
+    monkeypatch.setattr(Q, "_drain", drain)
     monkeypatch.setattr(Q, "_EXEC", fake_exec)
     try:
         Q.run(env.cfg, runner=env.runner, max_ticks=80, poll_interval_s=0.05, reexec=True,

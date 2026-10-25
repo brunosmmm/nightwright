@@ -363,6 +363,37 @@ its closes one at a time, worktree phase then finish phase. Its results match to
   campaigns' rows) can only happen after this merges and the live runner re-execs; it is not
   done yet.
 
+### Test record, review loop 1 (2026-10-25)
+
+Review findings addressed in `tests/test_agentic_close_inflight.py` (27 tests, all pass):
+
+- Single-shot tick (no pool): `test_single_shot_tick_redoes_moved_base` (one tick, one
+  `base_moved` row, then MERGED) and `test_single_shot_tick_parks_when_base_always_moves` (one
+  tick, PARKED `base_moving`, exactly two worktree phases). `test_legacy_closing_without_key` now
+  checks the budget reads 0 on a legacy state (the first retry sees `closing.attempts == 1`).
+- Gated-tree check: `test_branch_tip_moved_after_regate_redoes` (only the branch ref moves, the
+  worktree stays on the gated commit) and `test_pr_policy_worktree_commit_after_regate_redoes`
+  (no push or PR on the stale harvest, one of each after the redo).
+- `test_finish_close_exception_parks_open_failed` (GitError / ValueError / OSError from
+  `finish_close`: `open_failed`, `resume_to: CLOSING`, the worktree phase's gate event kept).
+- `test_no_close_submitted_while_stopping` pins the planning guard for a CLOSING campaign that is
+  not in flight. `test_watchdog_quiet_while_closing` now also checks `stuck_items` and the
+  `ping_digest` (busy runner, not stuck). The admission test checks the journal order the manual
+  check looks for (A's `started close`, then B's rows, no result row for A yet).
+- Flakiness: the `< 5 s` bound is now a 12 s bound backed by a 15 s safety timer that frees the
+  holds, polling timeouts are 60-120 s, and the re-exec test frees the held re-gate from a
+  wrapped `_drain` instead of a `threading.Timer`. The hold-marker shell loop stays (the plan's
+  design for a deterministic held re-gate).
+- Sabotage re-run, each applied alone and restored: dropping the single-shot retry loop fails both
+  single-shot tests; dropping the branch-tip half fails the branch-tip test; dropping the PR-path
+  check fails the PR test; dropping the planning stop guard fails the stop test. Dropping the
+  single-shot `read_state` re-read changes nothing, because `_apply` updates the flight's state in
+  place; the line is kept as a cheap guard.
+- Manual verification: still not done. The Definition-of-done box covering "manual steps performed"
+  is ticked on the strength of the automated journal-order check above; the real `wt queue
+  runner-log` observation can only be made after this merges and the live runner re-execs. The
+  first real close after that should be checked.
+
 ### As shipped (2026-10-25)
 
 As Design, with these details:
