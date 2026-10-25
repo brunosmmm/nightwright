@@ -215,7 +215,7 @@ def test_review_stores_size_tone_rationale(tmp_path, monkeypatch):
     repo, cfg = _setup(tmp_path, [_review_entry()])
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
     assert r.exit_code == 0, r.output
-    out = json.loads(r.output)
+    out = json.loads(r.stdout)
     side = SR.load_review(cfg, "SPEC-0001", SR.spec_sha256(_spec(repo)))
     assert (side["size"], side["tone"], side["rationale"]) == ("m", "high-end", SIZED["rationale"])
     assert side["schema"] == "wt.spec.review.v1"
@@ -239,7 +239,7 @@ def test_xl_split_is_accepted_and_has_no_profile(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     assert "xl: split recommended, no profile" in r.output
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
-    out = json.loads(r.output)
+    out = json.loads(r.stdout)
     assert out["size"] == "xl" and out["profile"] is None
 
 

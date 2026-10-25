@@ -50,7 +50,7 @@ def test_worktree_copy_is_reviewed(tmp_path, monkeypatch):
     out = json.loads(r.stdout)
     assert out["spec_sha256"] == SR.spec_sha256(spec) != SR.spec_sha256(repo / SPEC_REL)
     assert out["origin"] == "worktree rev" and out["spec_path"] == str(spec.resolve())
-    assert SR.load_review(cfg, "SPEC-0001", out["spec_sha256"]) == out
+    assert SR.load_review(cfg, "SPEC-0001", out["spec_sha256"]) == {k: v for k, v in out.items() if k != "profile"}
     assert spy.seen[0].cwd == wt2.resolve()
 
 
