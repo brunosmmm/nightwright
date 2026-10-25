@@ -84,11 +84,12 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0145](./specs/0145-capability-showcase-pages-for-major-cli-surfaces.md) Capability showcase pages for major CLI surfaces — done
   - [x] [SPEC-0146](./specs/0146-command-reference-synced-to-live-cli.md) Command reference synced to live CLI — done
   - [x] [SPEC-0147](./specs/0147-root-readme-slim-front-door-into-docs-site.md) Root README slim front door into docs site — done
-- **[SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) — Example-heavy docs: SVG captures and workflow architecture** · accepted · (4/4 done)
+- **[SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) — Example-heavy docs: SVG captures and workflow architecture** · accepted · (4/5 done)
   - [x] [SPEC-0149](./specs/0149-demo-fixture-and-docs-svg-capture-toolchain.md) Demo fixture and docs SVG capture toolchain — done
   - [x] [SPEC-0150](./specs/0150-workflow-architecture-diagrams-in-product-docs.md) Workflow architecture diagrams in product docs — done
   - [x] [SPEC-0151](./specs/0151-example-heavy-guides-embedding-svg-captures.md) Example-heavy guides embedding SVG captures — done
   - [x] [SPEC-0152](./specs/0152-org-mode-storage-guide-and-expanded-cli-svg.md) Org-mode storage guide and expanded CLI SVG captures — done
+  - [ ] [SPEC-0218](./specs/0218-agentic-workflow-docs-refresh.md) Agentic workflow docs refresh: a guide, a coherent reference, concepts and front door — accepted
 - **[SPEC-0153](./specs/0153-full-surface-product-docs-remediation.md) — Full-surface product docs remediation** · done · (5/5 done)
   - [x] [SPEC-0154](./specs/0154-time-ops-demo-fixture-and-wave-a-b-svg-captures.md) Time+ops demo fixture and Wave A/B SVG captures — done
   - [x] [SPEC-0155](./specs/0155-journey-rewrite-home-getting-started-forks-daily.md) Journey rewrite: home, getting-started forks, daily/weekly guides — done
@@ -152,6 +153,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0209](./specs/0209-queue-an-idea-spec-writer-persona-and-spec-writing.md) | Queue an idea: spec_writer persona and the SPEC_WRITING step | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0210](./specs/0210-in-campaign-spec-review-and-revision-loop-auto-accept.md) | In-campaign spec review and revision loop with automatic acceptance | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0211](./specs/0211-spec-phases-and-review-status-in-watch-listing-events.md) | Spec phases and review status in queue watch, listing and events | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0218](./specs/0218-agentic-workflow-docs-refresh.md) | Agentic workflow docs refresh: a guide, a coherent reference, concepts and front door | feature | accepted | M8: product documentation | 2026-10-25 |
 
 ## Done
 
