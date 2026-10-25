@@ -192,8 +192,8 @@ def test_backlog_json_order_and_list_sections(tmp_path, monkeypatch):
     assert d["schema"] == "wt.queue.backlog.v1"
     assert [i["campaign"] for i in d["items"]] == [second, first]
     top = d["items"][0]
-    assert set(top) == {"campaign", "spec_id", "priority", "position", "ready", "blocked_by",
-                        "age_s"}
+    assert set(top) == {"campaign", "spec_id", "project", "priority", "position", "ready",
+                        "blocked_by", "age_s"}
     assert top["position"] == 1 and top["priority"] == 1 and top["ready"] is False
     assert top["blocked_by"] == ["waiting on SPEC-0001 (accepted)", "SPEC-0099 not found"]
     assert d["items"][1]["ready"] is True and d["items"][1]["blocked_by"] == []

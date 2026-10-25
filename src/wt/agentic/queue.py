@@ -235,7 +235,7 @@ def backlog_view(cfg, *, readiness=None) -> list[dict]:
     for pos, st in enumerate(queued, 1):
         ready, blocked_by = (readiness or (lambda s: backlog_readiness(cfg, s)))(st)
         rows.append({"campaign": st.get("id"), "spec_id": st.get("spec_id"),
-                     "priority": _priority(st), "position": pos, "ready": ready,
+                     "project": st.get("project"), "priority": _priority(st), "position": pos, "ready": ready,
                      "blocked_by": blocked_by, "age_s": _age(st.get("created_at"))})
     return rows
 
@@ -1022,12 +1022,19 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
     delivered.sort(key=lambda d: d["finished_age_s"])
     delivered = delivered[:recent]
     ready = sum(1 for b in backlog if b["ready"])
+    by_project: dict = {}
+    for key, rows in (("active", active), ("attention", attention), ("backlog", backlog),
+                      ("delivered", delivered)):
+        for r in rows:
+            c = by_project.setdefault(r.get("project") or "?", {"active": 0, "attention": 0,
+                                                                 "backlog": 0, "delivered": 0})
+            c[key] += 1
     return {
         "schema": "wt.queue.dashboard.v1", "generated_at": now.isoformat(timespec="seconds"),
         "project": project, "lease": base["lease"], "slots": base["slots"],
         "totals": {"active": len(active), "attention": len(attention), "backlog": len(backlog),
                    "ready": ready, "blocked": len(backlog) - ready, "delivered": len(delivered),
-                   "spend_today_usd": round(spend_today, 4)},
+                   "spend_today_usd": round(spend_today, 4), "by_project": by_project},
         "active": active, "attention": attention, "backlog": backlog, "delivered": delivered,
     }
 

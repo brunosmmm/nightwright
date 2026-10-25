@@ -54,7 +54,7 @@ def _queue_table(payload: dict) -> Group:
     table = Table(title=f"Active ({slots['busy']}/{slots['total']}) · {lease_txt}",
                   box=box.SIMPLE_HEAD, pad_edge=False)
     table.add_column("campaign", min_width=24, no_wrap=True)
-    table.add_column("spec", no_wrap=True)
+    table.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     table.add_column("state", no_wrap=True)
     table.add_column("loops")
     table.add_column("cost")
@@ -69,7 +69,8 @@ def _queue_table(payload: dict) -> Group:
             state = f"{state}:park?"
         color = {"PARKED": "yellow", "MERGED": "green", "HANDED_OFF": "green",
                  "ABANDONED": "dim"}.get(it["state"])
-        table.add_row(it["campaign"], it["spec_id"], f"[{color}]{state}[/]" if color else state,
+        table.add_row(it["campaign"], R.project_text(it.get("project")),
+                      f"[{color}]{state}[/]" if color else state,
                       it["loops"], cost, _age_txt(it.get("updated_age_s")))
     return Group(table, _backlog_table(backlog))
 
@@ -79,14 +80,15 @@ def _backlog_table(items: list) -> Table:
     table = Table(title=f"Backlog ({len(items)})", box=box.SIMPLE_HEAD, pad_edge=False)
     table.add_column("#", justify="right")
     table.add_column("campaign", min_width=24, no_wrap=True)
-    table.add_column("spec", no_wrap=True)
+    table.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     table.add_column("pri", justify="right")
     table.add_column("waiting on")
     table.add_column("age")
     for it in items:
         b = it["backlog"]
         waiting = "[green]ready[/]" if b["ready"] else "; ".join(b["blocked_by"])
-        table.add_row(str(b["position"]), it["campaign"], it["spec_id"], str(b["priority"]),
+        table.add_row(str(b["position"]), it["campaign"], R.project_text(it.get("project")),
+                      str(b["priority"]),
                       waiting, _age_txt(it.get("age_s")))
     return table
 
@@ -167,7 +169,18 @@ def _dash_header(p: dict) -> Panel:
     slot_txt.append_text(Text.assemble(("  today ", "dim"),
                                        (f"${tot['spend_today_usd']:.2f}", "bold")))
     grid.add_row(runner, slot_txt)
-    body = Group(grid, chips)
+    rows = [grid, chips]
+    by_project = tot.get("by_project") or {}
+    if len(by_project) > 1 or p.get("project"):
+        line = Text(" ")
+        for i, (name, c) in enumerate(sorted(by_project.items())):
+            if i:
+                line.append("   ")
+            line.append_text(R.project_text(name))
+            bits = [f"{c[k]} {k}" for k in ("active", "attention", "backlog", "delivered") if c.get(k)]
+            line.append(" ▸ " + (" · ".join(bits) or "idle"), style="dim")
+        rows.append(line)
+    body = Group(*rows)
     when = (p.get("generated_at") or "")[11:19]
     scope = f" · {p['project']}" if p.get("project") else ""
     return Panel(body, title=Text(f"wt queue{scope}", style="bold"),
@@ -246,8 +259,9 @@ def _active_panel(it: dict) -> Panel:
     grid.add_column(style="dim", no_wrap=True, justify="right")
     grid.add_column(overflow="fold")
     grid.add_row("spec", _spec_cell(it["spec_id"], it.get("spec_title")))
-    grid.add_row("where", Text(f"{it.get('project')} · {it.get('profile')} · "
-                               f"{it.get('branch') or 'no branch yet'}", style="dim"))
+    where = R.project_text(it.get("project"))
+    where.append(f" · {it.get('profile')} · {it.get('branch') or 'no branch yet'}", style="dim")
+    grid.add_row("project", where)
     grid.add_row("phase", _stepper(it["state"], it.get("phase_index")))
     grid.add_row("now", _activity_text(it.get("activity"), it["state"]))
     cap = it.get("cap_usd")
@@ -267,6 +281,7 @@ def _active_panel(it: dict) -> Panel:
     if it.get("park_requested"):
         state += " · park requested"
     return Panel(grid, title=Text.assemble((it["campaign"], "bold"), "  ",
+                                           R.project_text(it.get("project")), "  ",
                                            (state, R.state_style(it["state"]))),
                  title_align="left", border_style=R.state_style(it["state"]) or "cyan",
                  box=box.ROUNDED)
@@ -275,6 +290,7 @@ def _active_panel(it: dict) -> Panel:
 def _attention_table(items: list) -> Table:
     t = R.section_table(f"Needs attention ({len(items)})", border_style="yellow")
     t.add_column("campaign", no_wrap=True, style="bold")
+    t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
     t.add_column("reason", style="yellow", no_wrap=True)
     t.add_column("detail", overflow="fold", ratio=3)
@@ -283,7 +299,8 @@ def _attention_table(items: list) -> Table:
     for it in items:
         park = it.get("park") or {}
         reason = park.get("reason") or ("park requested" if it.get("park_requested") else "?")
-        t.add_row(it["campaign"], _title_cell(it.get("spec_title")), reason,
+        t.add_row(it["campaign"], R.project_text(it.get("project")),
+                  _title_cell(it.get("spec_title")), reason,
                   Text(str(park.get("detail") or ""), style="dim"),
                   Text(str(park.get("resume_to") or ""), style=R.state_style(park.get("resume_to"))),
                   _ago(it.get("park_age_s")))
@@ -297,6 +314,7 @@ def _dash_backlog(items: list):
     t = R.section_table(f"Backlog ({len(items)})")
     t.add_column("#", justify="right", style="dim")
     t.add_column("campaign", no_wrap=True)
+    t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
     t.add_column("pri", justify="right")
     t.add_column("status", overflow="fold", ratio=1, min_width=8)
@@ -306,7 +324,7 @@ def _dash_backlog(items: list):
                   else Text.assemble(("◌ waiting on ", "yellow"),
                                      ("; ".join(b.get("blocked_by") or []), "bold yellow")))
         pri = b.get("priority")
-        t.add_row(str(b.get("position")), b["campaign"],
+        t.add_row(str(b.get("position")), b["campaign"], R.project_text(b.get("project")),
                   _title_cell(b.get("spec_title")),
                   Text(str(pri), style="bold" if pri is not None and pri <= 2 else "dim"),
                   status, _ago(b.get("age_s")))
@@ -318,6 +336,7 @@ def _dash_delivered(items: list, hours: int, width: int = 120):
     t = R.section_table(f"Recently delivered ({len(items)}, last {hours}h)")
     t.add_column("ago", justify="right", no_wrap=True, style="dim")
     t.add_column("campaign", no_wrap=True)
+    t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
     t.add_column("outcome", no_wrap=True)
     if wide:
@@ -329,7 +348,8 @@ def _dash_delivered(items: list, hours: int, width: int = 120):
     for d in items:
         ref = d.get("pr_url") or ((d.get("merged_sha") or "")[:7])
         outcome = Text(glyph.get(d["state"], d["state"]), style=R.state_style(d["state"]))
-        cells = [_ago(d.get("finished_age_s")), d["campaign"], _title_cell(d.get("spec_title")),
+        cells = [_ago(d.get("finished_age_s")), d["campaign"], R.project_text(d.get("project")),
+                 _title_cell(d.get("spec_title")),
                  outcome] + ([ref] if wide else []) + [f"${d['cost_usd']:.2f}"]
         t.add_row(*cells + ([_dur(d.get("duration_s"))] if wide else []))
     if not items:
@@ -473,6 +493,7 @@ def attach(queue_group):
             _dump_json({"schema": "wt.queue.backlog.v1", "items": items})
             return
         table = _backlog_table([{"campaign": b["campaign"], "spec_id": b["spec_id"],
+                                 "project": b.get("project"),
                                  "age_s": b["age_s"], "backlog": b} for b in items])
         console.print(table)
 

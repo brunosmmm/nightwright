@@ -32,8 +32,25 @@ _MESSAGE_STYLES = {"question": "bold yellow", "answer": "bold green", "request":
                    "info": "dim"}
 
 
+_PROJECT_PALETTE = ("bright_cyan", "bright_magenta", "bright_green", "bright_yellow",
+                    "bright_blue", "orange1", "orchid", "turquoise2")
+
+
 def state_style(state) -> str:
     return STATE_STYLES.get(str(state or ""), "")
+
+
+def project_style(project) -> str:
+    """A stable colour per project name, so items of one project read as a group when several
+    projects are in flight at once."""
+    import zlib
+    if not project:
+        return "dim"
+    return _PROJECT_PALETTE[zlib.crc32(str(project).encode()) % len(_PROJECT_PALETTE)]
+
+
+def project_text(project) -> Text:
+    return Text(str(project or "—"), style=project_style(project))
 
 
 def warn(msg: str) -> None:

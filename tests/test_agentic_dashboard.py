@@ -154,3 +154,30 @@ def test_cli_once_json_and_project(tmp_path, monkeypatch):
     assert d["schema"] == "wt.queue.dashboard.v1" and len(d["delivered"]) == 1
     r = run_cli(cfg, monkeypatch, ["queue", "watch", "--json", "--project", "nobody"])
     assert json.loads(r.output)["active"] == []
+
+
+def test_multiple_projects_in_flight_are_labelled(tmp_path, monkeypatch):
+    """Several projects in flight at once: every row and panel names its project, the header
+    breaks counts down per project, and --project narrows the view."""
+    repo, cfg, ids = _fixture(tmp_path)
+    other = _campaign(cfg, repo, "COMF-0003-impl", "IMPLEMENTING", spec_id="COMF-0003",
+                      project="comfort-assistant")
+    p = Q.dashboard_payload(cfg)
+    by = p["totals"]["by_project"]
+    assert by["comfort-assistant"] == {"active": 1, "attention": 0, "backlog": 0, "delivered": 0}
+    assert by["Meta-Tools"]["active"] == 2 and by["Meta-Tools"]["backlog"] == 2
+    assert {it["campaign"]: it["project"] for it in p["active"]}[other] == "comfort-assistant"
+    assert all(b["project"] == "Meta-Tools" for b in p["backlog"])
+    out = _render(p, 120)
+    assert "comfort-assistant ▸ 1 active" in out and "Meta-Tools ▸ 2 active" in out
+    panel_title = next(line for line in out.splitlines() if other in line)
+    assert "comfort-assistant" in panel_title
+    only = Q.dashboard_payload(cfg, project="comfort-assistant")
+    assert [it["campaign"] for it in only["active"]] == [other] and only["backlog"] == []
+    for cmd in (["queue", "list"], ["queue", "backlog"]):
+        r = run_cli(cfg, monkeypatch, cmd)
+        assert r.exit_code == 0 and "project" in r.output and "Meta-Tools" in r.output, r.output
+    r = run_cli(cfg, monkeypatch, ["queue", "list"])
+    assert "comfort-assistant" in r.output
+    r = run_cli(cfg, monkeypatch, ["queue", "backlog", "--json"])
+    assert {b["project"] for b in json.loads(r.output)["items"]} == {"Meta-Tools"}
