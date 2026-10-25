@@ -2,8 +2,8 @@
 
 `plan_step` is a pure function from campaign state (+ profile + project config) to the one
 step the campaign needs next; `tick` executes those steps — agent steps (implement, gate,
-triage, review) concurrently in a thread pool, repository steps (open, close) serially — and applies
-every result on the main thread under the campaign lock, so `state.json` and `ledger.jsonl`
+triage, review) concurrently in a thread pool whose steps carry across ticks (SPEC-0213),
+repository steps (open, close) serially — and applies every result on the main thread under the campaign lock, so `state.json` and `ledger.jsonl`
 can never disagree: every transition goes through `_transition`, which records the event in
 the same locked section that writes the state.
 
@@ -19,7 +19,7 @@ import signal
 import subprocess
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,6 +62,8 @@ GATE_RETRY_MAX = 1
 # Malformed conformance-review verdicts tolerated per loop before the review escalates.
 REVIEW_RETRY_MAX = 1
 _STOP_GRACE_S = 30
+# With steps in flight, the loop never waits less than this between ticks (no busy spin).
+_MIN_INFLIGHT_WAIT_S = 0.1
 PRIORITY_MIN, PRIORITY_MAX, PRIORITY_DEFAULT = 1, 5, 3
 # A dependency counts as satisfied once its spec reached one of these in the base checkout.
 DEPENDENCY_SATISFIED = frozenset({"done", "superseded"})
@@ -1047,10 +1049,14 @@ class TickReport:
     admitted: int = 0
     idle: bool = True
     errors: list = field(default_factory=list)
+    started: list = field(default_factory=list)     # SPEC-0213: steps submitted this tick
+    in_flight: list = field(default_factory=list)   # campaigns still running at return
+    drain: bool = False                             # the shutdown / re-exec drain report
 
     def payload(self) -> dict:
         return {"schema": "wt.queue.tick.v1", "steps": self.steps, "admitted": self.admitted,
-                "idle": self.idle, "errors": self.errors}
+                "idle": self.idle, "errors": self.errors, "started": self.started,
+                "in_flight": self.in_flight, "drain": self.drain}
 
 
 def slots_for(cfg, profile_name=None) -> int:
@@ -1060,22 +1066,140 @@ def slots_for(cfg, profile_name=None) -> int:
         return 1
 
 
-def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -> TickReport:
-    """One bounded iteration: admit, open, plan, run agent steps concurrently, close serially,
-    apply everything on this thread. The caller holds the lease."""
+@dataclass
+class _Flight:
+    """One campaign's in-flight agent step (SPEC-0213): one task for implement / triage /
+    gate, one task per reviewer (and the `_ReviewGroup`) for a fan-out. Keeps the `_Ctx` it
+    was planned with; its state dict belongs to the workers until it is harvested."""
+    state: dict
+    ctx: "_Ctx"
+    tasks: list = field(default_factory=list)       # [(Step, Future)]
+    group: object = None
+    started_at: str = field(default_factory=lambda: store.now_iso())
+
+    def done(self) -> bool:
+        return all(f.done() for _, f in self.tasks)
+
+
+class StepPool:
+    """The persistent executor and the per-campaign flights (SPEC-0213). `run()` owns one for
+    its whole life; `tick()` without one makes a throwaway pool and waits for it. Threads are
+    created on demand, so the high cap never runs more than slots × reviewers at once."""
+
+    MAX_WORKERS = 64
+
+    def __init__(self):
+        self._pool: ThreadPoolExecutor | None = None
+        self.flights: dict = {}                    # campaign id -> _Flight, submission order
+
+    def submit(self, fn, *args) -> Future:
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=self.MAX_WORKERS,
+                                            thread_name_prefix="wt-step")
+        return self._pool.submit(fn, *args)
+
+    def ids(self) -> set:
+        return set(self.flights)
+
+    def any_done(self) -> bool:
+        return any(fl.done() for fl in self.flights.values())
+
+    def wait_any(self, timeout=None) -> None:
+        pending = [f for fl in self.flights.values() for _, f in fl.tasks if not f.done()]
+        if pending and not self.any_done():
+            wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
+
+    def wait_all(self) -> None:
+        wait([f for fl in self.flights.values() for _, f in fl.tasks])
+
+    def shutdown(self, *, cancel=False) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=True, cancel_futures=cancel)
+            self._pool = None
+
+
+def _harvest(pool: StepPool, report: TickReport) -> None:
+    """Main thread: apply every finished flight, in submission order (SPEC-0213)."""
+    for cid in [c for c, fl in pool.flights.items() if fl.done()]:
+        fl = pool.flights.pop(cid)
+        st, ctx = fl.state, fl.ctx
+        if fl.group is not None:
+            for step, fut in fl.tasks:
+                try:
+                    fl.group.results[step.persona] = fut.result()
+                except Exception as e:          # a bug in a step must park, not kill the loop
+                    fl.group.results[step.persona] = e
+            report.steps.append(_finish_reviews(ctx, report, fl.group))
+            continue
+        (_step, fut), = fl.tasks
+        try:
+            res = fut.result()
+        except Exception as e:
+            res = StepResult(st["id"], Step("implement"), st["state"], error=repr(e))
+            report.errors.append(f"{st['id']}: {e!r}")
+        report.steps.append(_apply(ctx, st, res))
+
+
+def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
+            groups: list) -> None:
+    """Submit the planned agent steps as one flight per campaign."""
+    rows = {}
+    for st, step, run_id, req, budget, group in pending_agent:
+        fl = pool.flights.get(st["id"])
+        if fl is None:
+            fl = pool.flights[st["id"]] = _Flight(st, ctx, group=group)
+            rows[st["id"]] = {"campaign": st["id"], "action": step.kind,
+                              "state": st.get("state"), "run_ids": []}
+            report.started.append(rows[st["id"]])
+        if step.kind == "gate":
+            fl.tasks.append((step, pool.submit(_do_gate, ctx, st)))
+        else:
+            fl.tasks.append((step, pool.submit(_do_persona, ctx, st, step, run_id, req, budget)))
+            rows[st["id"]]["run_ids"].append(run_id)
+    for group in groups:              # a fan-out whose every prepare failed: nothing to run
+        if group.state["id"] not in pool.flights:
+            report.steps.append(_finish_reviews(ctx, report, group))
+
+
+def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
+         pool: StepPool | None = None) -> TickReport:
+    """One bounded iteration: apply finished steps, admit, open, plan, submit agent steps,
+    close serially; every result is applied on this thread. The caller holds the lease.
+
+    With `pool` (SPEC-0213, owned by `run()`), agent steps outlive the tick: a campaign with a
+    step in flight is skipped (and counts as busy) until a later tick harvests its result.
+    Without one, the tick waits for its own steps before the closes (single shot)."""
+    own = pool is None
+    pool = StepPool() if own else pool
     ctx = _Ctx(cfg, stop=stop, runner=runner)
     report = TickReport()
+    try:
+        _tick(cfg, ctx, pool, report, admit=admit, own=own)
+    finally:
+        if own:
+            pool.shutdown()
+    report.in_flight = list(pool.flights)
+    remaining = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
+    report.idle = not remaining and not pool.flights
+    return report
+
+
+def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, own: bool):
+    _harvest(pool, report)            # finished steps first: their slots are free this tick
+    flying = pool.ids()
     items = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
-    report.idle = not items
     slots = slots_for(cfg)
     busy = [s for s in items if s.get("state") in ACTIVE_STATES]
     queued = [s for s in items if s.get("state") == "QUEUED"]
+
+    def n_busy() -> int:              # SPEC-0200 slots; in-flight campaigns always count
+        return len({s["id"] for s in busy} | flying)
 
     # 0. campaigns parked on a bad project config resume once it loads (SPEC-0194) — into a
     #    free slot only, so a recovery never runs more campaigns than the profile allows
     for st in store.list_campaigns(cfg, state="PARKED"):
         park = st.get("park") or {}
-        if park.get("reason") != "config_invalid":
+        if park.get("reason") != "config_invalid" or st["id"] in flying:
             continue
         try:
             ctx.project(st)
@@ -1084,11 +1208,10 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
         to = park.get("resume_to") or "QUEUED"
         frm = st.get("state")
         st["park"] = None
-        _enter_slot_or_wait(cfg, st, to, "config_recovered", busy=len(busy), slots=slots)
+        _enter_slot_or_wait(cfg, st, to, "config_recovered", busy=n_busy(), slots=slots)
         report.steps.append({"campaign": st["id"], "from": frm, "to": st["state"],
                              "action": "recover", "reason": "config_recovered",
                              "run_id": None, "cost_usd": None})
-        report.idle = False
         if st["state"] in ACTIVE_STATES:
             busy.append(st)
         elif st["state"] == "QUEUED":
@@ -1098,9 +1221,9 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
     #     stopped — no re-open — so their branch does not go stale behind new work
     waiting = sorted((s for s in items if s.get("state") == "WAITING"), key=admission_key)
     for st in waiting:
-        if not admit or ctx.stop.is_set() or len(busy) >= slots:
+        if not admit or ctx.stop.is_set() or n_busy() >= slots:
             break
-        if st.get("park_requested"):
+        if st.get("park_requested") or st["id"] in flying:
             continue
         to = (st.get("waiting") or {}).get("resume_to") or "IMPLEMENTING"
         st.pop("waiting", None)
@@ -1117,7 +1240,8 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
         _record_backlog(cfg, st, *ready[st["id"]])
     admitted_ids = set()
     if admit and not ctx.stop.is_set():
-        for st in pick_admissions(queued, len(busy), slots, lambda s: ready[s["id"]]):
+        for st in pick_admissions([s for s in queued if s["id"] not in flying], n_busy(),
+                                  slots, lambda s: ready[s["id"]]):
             _transition(cfg, st, "OPENING", "admitted")
             report.admitted += 1
             admitted_ids.add(st["id"])
@@ -1125,12 +1249,13 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
             if st.get("state") in ACTIVE_STATES:
                 busy.append(st)
 
-    # 2. plan every item that was already active at the start of the tick
-    pending_agent = []       # (state, step, run_id, req, budget, review group) for the pool
-    groups = []              # reviewer fan-outs, applied once each after the pool (SPEC-0201)
+    # 2. plan every active item without a step in flight (never a second step: SPEC-0213)
+    pending_agent = []       # (state, step, run_id, req, budget, review group) to submit
+    groups = []              # reviewer fan-outs, applied once each when harvested (SPEC-0201)
     pending_close = []
     for st in busy:
-        if st.get("state") not in ACTIVE_STATES or st["id"] in admitted_ids:
+        if st.get("state") not in ACTIVE_STATES or st["id"] in admitted_ids \
+                or st["id"] in flying:
             continue
         try:
             profile = ctx.profile(st)
@@ -1170,33 +1295,11 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
             continue
         pending_agent.append((st, step, run_id, req, budget, None))
 
-    # 3. agent steps concurrently
-    if pending_agent:
-        # sized to the tick's agent tasks so every campaign's reviewers run concurrently
-        with ThreadPoolExecutor(max_workers=max(1, slots, len(pending_agent))) as pool:
-            futures = []
-            for st, step, run_id, req, budget, group in pending_agent:
-                if step.kind == "gate":
-                    futures.append((st, None, pool.submit(_do_gate, ctx, st)))
-                else:
-                    futures.append((st, (step, group), pool.submit(
-                        _do_persona, ctx, st, step, run_id, req, budget)))
-            for st, review, fut in futures:
-                group = review[1] if review else None
-                try:
-                    res = fut.result()
-                except Exception as e:      # a bug in a step must park, not kill the loop
-                    if group is not None:
-                        group.results[review[0].persona] = e
-                        continue
-                    res = StepResult(st["id"], Step("implement"), st["state"], error=repr(e))
-                    report.errors.append(f"{st['id']}: {e!r}")
-                if group is not None:
-                    group.results[review[0].persona] = res
-                    continue
-                report.steps.append(_apply(ctx, st, res))
-        for group in groups:
-            report.steps.append(_finish_reviews(ctx, report, group))
+    # 3. agent steps: submitted; a single-shot tick waits for its own and applies them now
+    _submit(ctx, pool, report, pending_agent, groups)
+    if own:
+        pool.wait_all()
+        _harvest(pool, report)
 
     # 4. close steps serially (they touch the main checkout)
     for st in pending_close:
@@ -1204,17 +1307,13 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
             break
         report.steps.append(_apply(ctx, st, _do_close(ctx, st)))
 
-    remaining = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
-    report.idle = not remaining
-    return report
-
 
 def _prepare_reviews(ctx: _Ctx, st: dict, step: Step, profile: dict, pending_agent: list,
                      report: TickReport):
     """Prepare one run per pending reviewer, in profile order (run ids are allocated before any
     task starts). A failure with one reviewer configured is the campaign-wide error of
     SPEC-0187; with several it is that reviewer's missing result and its siblings still run.
-    Returns the `_ReviewGroup` to apply after the pool, or None."""
+    Returns the `_ReviewGroup` to apply when its flight is harvested, or None."""
     multi = len(reviewers_of(profile)) > 1
     group = _ReviewGroup(st, step)
     for persona in step.personas:
@@ -1323,8 +1422,9 @@ def read_journal(cfg, *, tail=None) -> list[dict]:
 # ---- code-change re-exec (SPEC-0194) ------------------------------------------------------------
 # The runner imports wt from a checkout (an editable install of main). When a merge changes
 # that code, a long-lived loop would keep running the old code — and reject config the new
-# code accepts. Between ticks nothing is in flight, so the loop checks the checkout's HEAD there
-# and re-executes itself, handing its lease over so the queue is never unowned.
+# code accepts. The loop checks the checkout's HEAD between ticks; on a change it stops
+# submitting, drains the in-flight steps (SPEC-0213), and re-executes itself, handing its lease
+# over so the queue is never unowned.
 
 _CODE_PATHS = ("src/wt", "pyproject.toml")
 _EXEC = os.execve                      # tests replace this
@@ -1355,9 +1455,10 @@ def code_changes(root, since: str) -> tuple[str | None, list[str]]:
 
 
 class _heartbeat_while:
-    """Heartbeat the lease from a daemon thread while a tick runs (SPEC-0204): a tick that
-    runs gates or waits on persona runs can outlast the lease TTL, and an alive runner must
-    never look stale. Beats every ttl/4 seconds (at least 1s)."""
+    """Heartbeat the lease from a daemon thread (SPEC-0204): a tick that runs a close's gates,
+    or the drain of long persona runs, can outlast the lease TTL, and an alive runner must
+    never look stale. `run()` holds it for the loop's whole life (SPEC-0213). Beats every
+    ttl/4 seconds (at least 1s)."""
 
     def __init__(self, lease, interval_s=None):
         self.lease = lease
@@ -1385,16 +1486,31 @@ class _heartbeat_while:
         return False
 
 
+def _drain(cfg, pool: StepPool, lease) -> TickReport:
+    """Join every flight, applying each as it finishes (main thread), before the loop stops
+    or re-execs (SPEC-0213). Returns once `pool.flights` is empty."""
+    report = TickReport(drain=True)
+    while pool.flights:
+        pool.wait_any(timeout=0.5)
+        _harvest(pool, report)
+    lease.heartbeat()
+    report.idle = not [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
+    return report
+
+
 def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=False,
         on_tick=None, runner=None, argv=None, reexec=False, code_root=None) -> int:
-    """The loop: take the lease, tick, heartbeat, sleep. SIGINT/SIGTERM stop admissions,
-    forward SIGTERM to this process group's children (the `claude` runs) when we lead the
-    group, let in-flight steps record themselves, and release the lease. Returns the number
-    of ticks performed.
+    """The loop: take the lease, tick, heartbeat, sleep. Agent steps run in a pool owned by
+    the loop and carry across ticks (SPEC-0213); the wait between ticks ends early when one
+    finishes. SIGINT/SIGTERM stop admissions, forward SIGTERM to this process group's children
+    (the `claude` runs) when we lead the group, drain the in-flight steps (each records
+    itself), and release the lease. Every exit drains first. Returns the number of ticks
+    performed.
 
     With `reexec` (SPEC-0194), when a commit to the wt checkout (`code_root`, default the one
     this package is imported from) changes wt's code, the loop stops between ticks, journals
-    `stop` with reason `code_changed`, and re-executes the same command keeping its lease."""
+    `stop` with reason `code_changed` once its in-flight steps are drained, and re-executes
+    the same command keeping its lease."""
     agentic = cfg.get("agentic") or {}
     interval = float(poll_interval_s if poll_interval_s is not None
                      else agentic.get("poll_interval_s") or 20)
@@ -1423,34 +1539,53 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
     watch_root = (code_root or code_checkout()) if reexec else None
     code_sha = _git_out(watch_root, "rev-parse", "HEAD") if watch_root else None
     restart = {}
+    pool = StepPool()                                 # SPEC-0213: flights outlive ticks
+
+    def emit(report):
+        if report.steps or report.admitted or report.errors or report.started:
+            journal(cfg, "tick", tick=ticks, steps=report.steps, admitted=report.admitted,
+                    errors=report.errors, started=report.started,
+                    in_flight=report.in_flight, drain=report.drain)
+        if on_tick:
+            on_tick(report)
+
     journal(cfg, "start", argv=list(argv or ["wt", "queue", "run"]), interval_s=interval,
             code_sha=code_sha)
+    crashed = False
     try:
-        while not stop.is_set():
-            with _heartbeat_while(lease):
-                report = tick(cfg, stop=stop, runner=runner)
-            ticks += 1
-            lease.heartbeat()
-            if report.steps or report.admitted or report.errors:      # idle ticks stay silent
-                journal(cfg, "tick", tick=ticks, steps=report.steps, admitted=report.admitted,
-                        errors=report.errors)
-            if on_tick:
-                on_tick(report)
-            if once or (max_ticks and ticks >= max_ticks) or (until_idle and report.idle):
-                reason = "once" if once else ("max_ticks" if max_ticks and ticks >= max_ticks
-                                              else "idle")
-                break
-            if code_sha:
-                head, changed = code_changes(watch_root, code_sha)
-                if changed:
-                    reason = "code_changed"
-                    restart = {"from_sha": code_sha, "to_sha": head, "paths": changed[:50]}
+        # SPEC-0204/0213: one heartbeat thread for the loop's whole life — ticks, waits, the
+        # drain — joined before the lease is released or handed over
+        with _heartbeat_while(lease):
+            while not stop.is_set():
+                report = tick(cfg, stop=stop, runner=runner, pool=pool)
+                ticks += 1
+                lease.heartbeat()
+                emit(report)
+                if once or (max_ticks and ticks >= max_ticks) or (until_idle and report.idle):
+                    reason = "once" if once else ("max_ticks" if max_ticks and ticks >= max_ticks
+                                                  else "idle")
                     break
-                code_sha = head or code_sha       # docs-only commits: keep running
-            deadline = time.monotonic() + interval
-            while time.monotonic() < deadline and not stop.is_set():
-                time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+                if code_sha:
+                    head, changed = code_changes(watch_root, code_sha)
+                    if changed:
+                        # SPEC-0194 + SPEC-0213: stop admitting and submitting; the drain
+                        # below records every in-flight step before the exec
+                        reason = "code_changed"
+                        restart = {"from_sha": code_sha, "to_sha": head, "paths": changed[:50]}
+                        break
+                    code_sha = head or code_sha       # docs-only commits: keep running
+                wait_s = max(interval, _MIN_INFLIGHT_WAIT_S) if pool.flights else interval
+                deadline = time.monotonic() + wait_s
+                while time.monotonic() < deadline and not stop.is_set():
+                    if pool.any_done():               # a finished step: apply it now
+                        break
+                    time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+            if pool.flights:
+                emit(_drain(cfg, pool, lease))
+            if reason == "code_changed" and stop.is_set():
+                reason, restart = "signal", {}        # signalled during the drain: no exec
     except BaseException as e:
+        crashed = True
         if not isinstance(e, (KeyboardInterrupt, SystemExit)):
             import traceback
             journal(cfg, "crash", ticks=ticks, error=f"{type(e).__name__}: {e}",
@@ -1458,6 +1593,9 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
             reason = "crash"
         raise
     finally:
+        if crashed:
+            stop.set()                                # workers see it: runs end as interrupted
+        pool.shutdown(cancel=crashed)
         if reason != "crash":
             journal(cfg, "stop", ticks=ticks, reason=reason, **restart)
         handover_env = lease.handover() if reason == "code_changed" else None

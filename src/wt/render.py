@@ -173,6 +173,19 @@ def tick_row(row: dict) -> Text:
     return t
 
 
+def started_row(row: dict) -> Text:
+    """A step `wt queue run` submitted this tick (SPEC-0213); its result row comes later."""
+    t = Text()
+    t.append(f"{row['campaign']}", style="bold")
+    t.append(": started ", style="dim")
+    t.append(str(row.get("action")))
+    t.append(" in ", style="dim")
+    t.append(str(row.get("state")), style=state_style(row.get("state")))
+    if row.get("run_ids"):
+        t.append(f" (run {', '.join(row['run_ids'])})", style="dim")
+    return t
+
+
 def plan(title: str, mapping: dict) -> Group:
     """A dry-run plan block: `plan  <title>`, then `  key: value` lines with dim keys (empty
     values skipped)."""

@@ -438,10 +438,11 @@ def _journal_lines(rec: dict) -> Group:
         head.append("✗ crash", style="bold red")
         head.append(f"  {rec.get('error')}", style="red")
         return Group(head)
-    head.append(f"tick {rec.get('tick')}", style="cyan")
+    head.append("drain" if rec.get("drain") else f"tick {rec.get('tick')}", style="cyan")
     if rec.get("admitted"):
         head.append(f"  admitted {rec['admitted']}", style="green")
     rows = [head] + [Text("  ") + R.tick_row(row) for row in rec.get("steps") or []]
+    rows += [Text("  ") + R.started_row(row) for row in rec.get("started") or []]
     rows += [Text(f"  ! {e}", style="red") for e in rec.get("errors") or []]
     return Group(*rows)
 
@@ -658,10 +659,12 @@ def attach(queue_group):
     def queue_run(cfg, once, max_ticks, poll_interval, until_idle, json_lines, no_reexec):
         """The loop: tick, heartbeat, sleep. One process at a time (lease-guarded).
 
+        Agent steps carry across ticks (SPEC-0213): a tick starts steps and applies the ones
+        that finished, so a slow step never holds up admission or other campaigns.
         SIGINT/SIGTERM stop admissions, let in-flight steps record themselves, and release
         the lease; a run interrupted mid-persona is re-spawned fresh by the next loop. When a
-        commit changes wt's own code, the loop re-executes itself between ticks, keeping the
-        lease (SPEC-0194).
+        commit changes wt's own code, the loop drains its in-flight steps and re-executes
+        itself, keeping the lease (SPEC-0194).
         """
         def on_tick(report):
             if json_lines:
@@ -670,6 +673,8 @@ def attach(queue_group):
                 return
             for row in report.steps:
                 console.print(R.tick_row(row), highlight=False)
+            for row in report.started:            # SPEC-0213: its result lands in a later tick
+                console.print(R.started_row(row), highlight=False)
 
         try:
             ticks = Q.run(cfg, once=once, max_ticks=max_ticks, poll_interval_s=poll_interval,
