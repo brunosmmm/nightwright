@@ -118,6 +118,36 @@ def test_review_path_in_second_repo_uses_that_root_and_schema(tmp_path, monkeypa
     assert not (other / "docs" / "specs" / "reviews").exists()
 
 
+def test_nested_spec_uses_git_toplevel_not_grandparent_or_meta_tools_root(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [_entry()])
+    other = tmp_path / "other"
+    nested = other / "sub" / "docs" / "specs"
+    nested.mkdir(parents=True)
+    (other / "docs" / "specs").mkdir(parents=True)
+    (other / "docs" / "specs" / "SCHEMA.md").write_text("OTHER-TOPLEVEL-SCHEMA-MARKER\n")
+    (nested / "SCHEMA.md").write_text("GRANDPARENT-SCHEMA-MARKER\n")
+    spec = nested / "0007-thing.md"
+    spec.write_text(SPEC_ACCEPTED.format(id="SPEC-0007", extra=""))
+    subprocess.run(["git", "-C", str(other), "init", "-q", "-b", "main"], check=True)
+    assert spec.parent.parent.parent != other  # the grandparent fallback would differ
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "--path", str(spec), "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["repo_root"] == str(other.resolve())
+    # a configured Meta-Tools root must not leak into a non-outbound spec's root
+    monkeypatch.setattr(SR.P, "project_config", lambda cfg, name: {"_root": str(repo)})
+    assert SR.spec_root(cfg, spec) == other.resolve()
+    spy = Spy()
+    monkeypatch.setattr(SR, "select_runner", lambda cfg: spy)
+    with pytest.raises(ValueError):
+        SR.run_spec_review(cfg, spec, "SPEC-0007")
+    req = spy.seen[0]
+    assert req.cwd == other.resolve() and req.add_dirs == (other.resolve(),)
+    assert "OTHER-TOPLEVEL-SCHEMA-MARKER" in req.prompt
+    assert "GRANDPARENT-SCHEMA-MARKER" not in req.prompt
+    ends = [j for j in SR.read_journal(cfg) if j["kind"] == "end"]
+    assert ends and ends[-1]["error"]
+
+
 def test_spec_root_outside_git_falls_back_to_grandparent(tmp_path):
     repo, cfg = _setup(tmp_path, [])
     other, spec = _second_repo(tmp_path, git=False)
