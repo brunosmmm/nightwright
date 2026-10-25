@@ -1707,13 +1707,17 @@ def spec_status_cmd(cfg, spec_id, new_status, as_json):
 @click.option("--path", "path", type=click.Path(exists=True, dir_okay=False),
               help="review this spec file (any repository) instead of a SPEC-ID")
 @click.option("--json", "as_json", is_flag=True, help="emit the wt.spec.review.v1 payload")
+@click.option("--force", is_flag=True,
+              help="review a spec that already has a stored review (an extra round)")
 @click.pass_obj
-def spec_review_cmd(cfg, spec_id, path, as_json):
+def spec_review_cmd(cfg, spec_id, path, as_json, force):
     """Review a spec with the read-only spec_reviewer persona (SPEC-0188).
 
     Stores the review in the data dir, keyed by the spec id and the file's hash
-    (`<data>/agentic/reviews/<SPEC-ID>/<sha>.json`); `wt queue add` admits a spec only when
-    its review for the current text is `approve`. Give exactly one of SPEC-ID and --path;
+    (`<data>/agentic/reviews/<SPEC-ID>/<sha>.json`); `wt queue add` admits a spec with an
+    `approve` for its current text, or one whose latest review is a `revise` and whose text
+    was edited since. A spec is reviewed once: reviewing an already-reviewed spec needs
+    --force and warns. Give exactly one of SPEC-ID and --path;
     --path reviews a file in any repository, with that repository as the reviewer's root.
     Run inside a checkout (main or linked worktree) of the specs repository, a SPEC-ID
     reviews that checkout's copy; elsewhere, the registered checkout's. The reviewed file
@@ -1728,7 +1732,7 @@ def spec_review_cmd(cfg, spec_id, path, as_json):
     import sys
     from pathlib import Path
 
-    from .agentic.spec_review import reviewing_line, run_spec_review, would_pick
+    from .agentic.spec_review import latest_review, reviewing_line, run_spec_review, would_pick
     from .specmeta import split_frontmatter
     from .specs import resolve_spec_path_for_cwd
     if bool(spec_id) == bool(path):
@@ -1742,6 +1746,15 @@ def spec_review_cmd(cfg, spec_id, path, as_json):
             spec_path, origin = Path(path), "path"
         else:
             spec_path, origin = resolve_spec_path_for_cwd(cfg, spec_id)
+        prior = latest_review(cfg, spec_id)                            # SPEC-0230
+        if prior is not None:
+            what = f"{prior.get('verdict')}, {str(prior.get('spec_sha256') or '')[:12]}"
+            if not force:
+                raise click.ClickException(
+                    f"{spec_id} was already reviewed ({what}); a revised spec is queued "
+                    f"without a second review. Pass --force for an extra round")
+            click.echo(f"warning: extra review round for {spec_id} (previous: {what})",
+                       err=True)
         line = reviewing_line(cfg, spec_path, origin)
         if as_json:
             click.echo(line, err=True)

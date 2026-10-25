@@ -1,7 +1,7 @@
 ---
 id: SPEC-0230
 title: "Single spec review round: admit a revised spec without re-review"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -197,28 +197,28 @@ is always 1. Neither spec needs a change.
 
 ## Acceptance criteria
 
-- [ ] `check_admissible` with store fixtures:
+- [x] `check_admissible` with store fixtures:
   - an approve for the current sha, and a legacy sidecar approve, each admit `approved`;
   - a latest `revise` for an earlier sha admits `after_revision`, also when older revise
     reviews exist;
   - no review, a latest `split` (current or earlier sha), a `revise` for the current sha, and
     an `approve` for an earlier sha each raise ValueError with the message fragment in Design;
   - a corrupt store file is skipped.
-- [ ] `revision_brief` returns the documented shape: every finding with severity, title,
+- [x] `revision_brief` returns the documented shape: every finding with severity, title,
       section and detail, plus the fix_brief naming the review sha12. Its
       `render_pending_brief` output contains each finding's title and detail.
-- [ ] `wt queue add SPEC` on an after-revision spec: the dry run prints the `revision` line,
+- [x] `wt queue add SPEC` on an after-revision spec: the dry run prints the `revision` line,
       and `--json` carries `review: "after_revision"` and `revision` with all findings.
       Nothing is written without `--yes`.
-- [ ] With `--yes`: the campaign's `pending_brief` equals `revision_brief(review)`, and the
+- [x] With `--yes`: the campaign's `pending_brief` equals `revision_brief(review)`, and the
       ledger has `admitted_after_revision {review_sha, current_sha, findings}` after `open`,
       valid under `schemas.ledger_problems`. The first implementer prompt (FakeRunner)
       contains every finding title, and the second run's prompt does not.
-- [ ] `wt spec review SPEC` with a prior stored review exits non-zero with the "already
+- [x] `wt spec review SPEC` with a prior stored review exits non-zero with the "already
       reviewed" message and runs no reviewer. With `--force` it runs and prints the
       extra-round warning. With no prior review it runs as before. The same holds for
       `--path`.
-- [ ] Existing approve-path tests pass unchanged. `uv run pytest` is green and
+- [x] Existing approve-path tests pass unchanged. `uv run pytest` is green and
       `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
@@ -244,6 +244,25 @@ is always 1. Neither spec needs a change.
 - **Regression guard:** full `uv run pytest`, in particular the e2e, waiting and dashboard
   tests that use the `write_review` approve helper.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q`: full suite green (new tests in `test_spec_review_store.py`,
+  `test_agentic_spec_review.py`, `test_agentic_queue.py`, `test_agentic_queue_cli.py`).
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: exit 0.
+- Manual verification (revise review saved, spec edited, `wt queue add` dry run shows
+  `after_revision`, `wt spec review` refuses without `--force`) is covered by the CLI tests
+  above, which run the same commands on a scratch data dir.
+
+### As shipped
+
+- Existing tests that asserted the old refusal text ("no approving review …") or reviewed the
+  same spec twice were updated to the new messages / `--force`; `write_review` in
+  `tests/test_agentic_e2e.py` gained optional `sha`, `findings`, `reviewed_at` arguments.
+- The `revision` plan key is printed in the dry run as one line
+  (`review <sha12> -> spec <sha12>, N findings`); `--json` carries it in full.
+- SPEC-0214's overrides are not implemented here (that spec is unbuilt); only the
+  admission, brief, event and `wt spec review --force` parts shipped.
+
 ## Rollout / migration
 
 None needed for stored data. Specs already parked behind a `revise` whose findings were
@@ -253,11 +272,11 @@ note`), and SPEC-0214's verification checks them.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

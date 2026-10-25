@@ -2556,11 +2556,16 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
     if active:
         raise ValueError(f"{spec_id} already has an active campaign {active['id']} "
                          f"({active.get('state')}); abandon it first")
+    revision = None
     if force:                                                          # SPEC-0188
         review, review_doc = "forced", None
     else:
         review_doc = SR.check_admissible(cfg, path, spec_id)
-        review = "approved"
+        review = review_doc["admission"]
+        if review == "after_revision":                                 # SPEC-0230
+            revision = {"review_sha": review_doc.get("spec_sha256"),
+                        "current_sha": SR.spec_sha256(path),
+                        "findings": review_doc.get("findings") or []}
     pick = select_profile(cfg, flag=profile, review=review_doc)         # SPEC-0219
     prof = resolve_profile(cfg, pick["profile"])
     base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
@@ -2568,7 +2573,8 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
     worktree = P.worktree_root(pcfg, root, project) / cid
     return {
         "campaign": cid, "spec_id": spec_id, "project": project, "profile": prof["name"],
-        "priority": priority, "force": bool(force), "review": review, "base": base, "repo_root": str(root), "spec_rel_path": rel, "spec_status": status,
+        "priority": priority, "force": bool(force), "review": review, "revision": revision, "base": base,
+        "repo_root": str(root), "spec_rel_path": rel, "spec_status": status,
         "internal": not outbound, "worktree": str(worktree), "branch": f"wt/{cid}",
         "cap_usd": prof.get("campaign_cap_usd"), "loop_max": prof.get("loop_max"),
         "slots": prof.get("slots"), "merge_policy": (pcfg.get("merge") or {}).get("policy"),
@@ -2602,11 +2608,17 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
                    "source": plan.get("profile_source"), "reason": plan.get("profile_reason"),
                    "review_sha256": plan.get("review_sha256")},
     }
+    revision = plan.get("revision")
+    if revision:                                                       # SPEC-0230
+        state["pending_brief"] = SR.revision_brief(
+            {"spec_sha256": revision["review_sha"], "findings": revision["findings"]})
     with store.add_lock(cfg):                                          # SPEC-0209
         active = store.active_campaign_for_spec(cfg, plan["spec_id"])
         if active:
             raise ValueError(f"{plan['spec_id']} already has an active campaign {active['id']}")
         store.create_campaign(cfg, state, by=by)
+    if revision:
+        store.append_event(cfg, plan["campaign"], "admitted_after_revision", revision, by=by)
     return state
 
 

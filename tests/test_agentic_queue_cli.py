@@ -322,3 +322,23 @@ def _render(renderable, width):
     c = Console(width=width, record=True, force_terminal=False)
     c.print(renderable)
     return c.export_text()
+
+
+def test_add_after_revision_dry_run_text_and_json(tmp_path, monkeypatch):      # SPEC-0230
+    repo = make_repo(tmp_path, review=False)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    spec = repo / "docs" / "specs" / "0001-trivial.md"
+    findings = [{"severity": "major", "title": "gap"}, {"severity": "nit", "title": "word"}]
+    write_review(cfg, spec, "SPEC-0001", "revise", sha="f" * 64, findings=findings)
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001"])
+    assert r.exit_code == 0, r.output
+    assert "revision:" in r.output and "ffffffffffff" in r.output and "2 findings" in r.output
+    assert "after_revision" in r.output and "not written" in r.output
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--json"])
+    d = json.loads(r.output)
+    assert d["review"] == "after_revision" and d["written"] is False
+    assert d["revision"]["review_sha"] == "f" * 64 and d["revision"]["findings"] == findings
+    assert d["revision"]["current_sha"] != "f" * 64
+    assert not S.list_campaigns(cfg)
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--yes", "--json"])
+    assert r.exit_code == 0 and len(S.list_campaigns(cfg)) == 1

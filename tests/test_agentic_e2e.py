@@ -92,14 +92,15 @@ def _write(repo, rel, text):
     return p
 
 
-def write_review(cfg, spec_path, spec_id, verdict="approve", **extra):
+def write_review(cfg, spec_path, spec_id, verdict="approve", *, sha=None, findings=None,
+                 reviewed_at="2026-10-25T00:00:00+00:00", **extra):
     """SPEC-0188/0210: the stored review `wt queue add` demands, keyed by the spec's sha."""
     from wt.agentic import spec_review as SR
     return SR.save_review(cfg, {
         "schema": SR.SCHEMA, "spec_id": spec_id, "verdict": verdict,
-        "spec_sha256": SR.spec_sha256(spec_path),
-        "reviewed_at": "2026-10-25T00:00:00+00:00", "model": "sonnet",
-        "cost_usd": 0.0, "findings": [], "suggested_splits": [], "repo_root": "", **extra})
+        "spec_sha256": sha or SR.spec_sha256(spec_path),
+        "reviewed_at": reviewed_at, "model": "sonnet",
+        "cost_usd": 0.0, "findings": findings or [], "suggested_splits": [], "repo_root": "", **extra})
 
 
 def make_repo(tmp_path, *, spec_id="SPEC-0001", policy="merge", lint_required="true",

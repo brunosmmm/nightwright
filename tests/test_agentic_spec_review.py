@@ -126,12 +126,12 @@ def _add(cfg, monkeypatch, *extra):
 
 def test_queue_add_refuses_without_approving_review(tmp_path, monkeypatch):
     repo, cfg = _setup(tmp_path, [])
-    want = "SPEC-0001 has no approving review for its current text; run wt spec review SPEC-0001"
+    want = "SPEC-0001 has no spec review; run wt spec review SPEC-0001"
     r = _add(cfg, monkeypatch)                                        # no review at all
-    assert r.exit_code != 0 and want in r.output and "--force" in r.output
-    write_review(cfg, _spec(repo), "SPEC-0001", verdict="revise")           # not approving
-    r = _add(cfg, monkeypatch)
     assert r.exit_code != 0 and want in r.output
+    write_review(cfg, _spec(repo), "SPEC-0001", verdict="revise")     # revision not applied yet
+    r = _add(cfg, monkeypatch)
+    assert r.exit_code != 0 and "not applied yet" in r.output
     write_review(cfg, _spec(repo), "SPEC-0001", verdict="split")
     assert _add(cfg, monkeypatch).exit_code != 0
 
@@ -144,7 +144,7 @@ def test_queue_add_accepts_matching_approve_and_refuses_stale_hash(tmp_path, mon
     assert json.loads(r.output)["review"] == "approved"
     _spec(repo).write_text(_spec(repo).read_text() + "\nedited after review\n")
     r = _add(cfg, monkeypatch)
-    assert r.exit_code != 0 and "no approving review" in r.output
+    assert r.exit_code != 0 and "edited after its approving review" in r.output
 
 
 def test_queue_add_force_admits_and_records_forced(tmp_path, monkeypatch):
@@ -260,3 +260,51 @@ def test_template_carries_the_rubric():
     for word in ("`xs`", "`s`", "`m`", "`l`", "`xl`", "`cost-effective`", "`high-end`",
                  "`critical`", "`rationale`"):
         assert word in t
+
+
+# ---- SPEC-0230: one review round ---------------------------------------------------------------
+
+FINDINGS = [{"severity": "major", "section": "Design", "title": "gap in step 2",
+             "detail": "say what happens on timeout"},
+            {"severity": "nit", "title": "wording", "detail": ""}]
+
+
+def test_revision_brief_shape_and_render():
+    review = {"spec_sha256": "ab" * 32, "verdict": "revise", "findings": FINDINGS}
+    brief = SR.revision_brief(review)
+    assert brief["source"] == "spec_review" and brief["human_notes"] == []
+    assert "review abababababab," in brief["fix_brief"] and "no second review" in brief["fix_brief"]
+    assert brief["must_fix"] == [
+        {"title": "[major] gap in step 2 (Design)", "detail": "say what happens on timeout"},
+        {"title": "[nit] wording", "detail": None}]
+    text = PS.render_pending_brief(brief)
+    assert "MUST FIX: [major] gap in step 2 (Design) — say what happens on timeout" in text
+    assert "MUST FIX: [nit] wording" in text and text.startswith("From: spec_review")
+
+
+@pytest.mark.parametrize("by_path", [False, True])
+def test_spec_review_second_round_needs_force(tmp_path, monkeypatch, by_path):
+    from wt.agentic.runner import FakeRunner
+    repo, cfg = _setup(tmp_path, [_review_entry(), _review_entry()])
+    ran = []
+    inner = FakeRunner(script(tmp_path, [_review_entry(), _review_entry()], "spy.json"))
+
+    class Spy:
+        def run(self, req):
+            ran.append(req)
+            return inner.run(req)
+
+    monkeypatch.setattr(SR, "select_runner", lambda cfg: Spy())
+    target = ["--path", str(_spec(repo))] if by_path else ["SPEC-0001"]
+    r = run_cli(cfg, monkeypatch, ["spec", "review", *target])          # no prior review: runs
+    assert r.exit_code == 0, r.output
+    assert len(ran) == 1 and "warning" not in r.output
+    sha12 = SR.spec_sha256(_spec(repo))[:12]
+    r = run_cli(cfg, monkeypatch, ["spec", "review", *target])
+    assert r.exit_code != 0 and len(ran) == 1                            # no reviewer ran
+    assert (f"SPEC-0001 was already reviewed (approve, {sha12}); a revised spec is queued "
+            "without a second review. Pass --force for an extra round") in r.output
+    r = run_cli(cfg, monkeypatch, ["spec", "review", *target, "--force"])
+    assert r.exit_code == 0, r.output
+    assert len(ran) == 2
+    assert f"warning: extra review round for SPEC-0001 (previous: approve, {sha12})" in r.output

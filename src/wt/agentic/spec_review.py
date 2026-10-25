@@ -1,8 +1,9 @@
 """Spec review before admission (SPEC-0188): a read-only `spec_reviewer` persona reads a spec,
 its source idea and the spec schema. Its verdict is stored in the data dir
 (`<data>/agentic/reviews/<SPEC-ID>/<sha256>.json`, SPEC-0210), keyed by the spec file's sha256 —
-so any later edit to the spec invalidates the review by itself. `wt queue add` admits a spec
-only on a matching `approve`. Every standalone run is journaled to `spec-reviews.jsonl`."""
+so any later edit to the spec invalidates an `approve` by itself. `wt queue add` admits a spec
+on a matching `approve`, or on a `revise` whose findings were applied by an edit (SPEC-0230:
+one review round, no second review). Every standalone run is journaled to `spec-reviews.jsonl`."""
 from __future__ import annotations
 
 import datetime as dt
@@ -80,19 +81,71 @@ def load_review(cfg, spec_id, sha):
     return _read_json_dict(store_path(cfg, spec_id, sha))
 
 
+def list_reviews(cfg, spec_id) -> list:
+    """Every readable stored review of `spec_id` (all shas), oldest `reviewed_at` first.
+    Corrupt files and temp files are skipped."""
+    d = store_path(cfg, spec_id, "x").parent
+    if not d.is_dir():
+        return []
+    out = [r for r in (_read_json_dict(p) for p in sorted(d.glob("*.json"))) if r]
+    return sorted(out, key=lambda r: str(r.get("reviewed_at") or ""))
+
+
+def latest_review(cfg, spec_id):
+    """The most recent stored review of `spec_id`, or None."""
+    reviews = list_reviews(cfg, spec_id)
+    return reviews[-1] if reviews else None
+
+
 def check_admissible(cfg, spec_path, spec_id) -> dict:
-    """The approving review for the spec's current text, or ValueError with the fix. A stored
-    review wins; a legacy sidecar with a matching sha still counts."""
+    """The review that admits the spec, or ValueError with the fix (SPEC-0230). An `approve`
+    for the current text admits it (`admission: "approved"`; a stored review wins, a legacy
+    sidecar with a matching sha still counts). Otherwise the latest stored review governs: a
+    `revise` for an earlier sha admits it (`admission: "after_revision"`, the revision
+    happened); a `split`, an unapplied `revise` or an edit after an `approve` is refused."""
     sha = spec_sha256(spec_path)
     review = load_review(cfg, spec_id, sha)
     if not (review and review.get("verdict") == "approve"):
         legacy = load_legacy_sidecar(spec_path, spec_id)
         review = legacy if (legacy and legacy.get("verdict") == "approve"
                             and legacy.get("spec_sha256") == sha) else None
-    if not review:
-        raise ValueError(f"{spec_id} has no approving review for its current text; "
-                         f"run wt spec review {spec_id} (or --force)")
-    return review
+    if review:
+        return {**review, "admission": "approved"}
+    latest = latest_review(cfg, spec_id)
+    if latest is None:
+        raise ValueError(f"{spec_id} has no spec review; run wt spec review {spec_id}")
+    verdict, rsha = latest.get("verdict"), str(latest.get("spec_sha256") or "")
+    if verdict == "split":
+        raise ValueError(f"{spec_id}: the spec review recommends a split ({rsha[:12]}); "
+                         f"split the spec and queue the parts")
+    if verdict == "revise":
+        if rsha == sha:
+            raise ValueError(f"{spec_id}: the review asks for revisions that are not applied "
+                             f"yet (the text is unchanged since {rsha[:12]}); edit the spec, "
+                             f"then queue it (no second review needed)")
+        return {**latest, "admission": "after_revision"}
+    raise ValueError(f"{spec_id} was edited after its approving review ({rsha[:12]}); "
+                     f"run wt spec review {spec_id} --force")
+
+
+def revision_brief(review) -> dict:
+    """The implementer's `pending_brief` for a spec admitted after one revision: every finding
+    of the `revise` review as a MUST FIX to check (nits included)."""
+    must_fix = []
+    for f in review.get("findings") or []:
+        title = f"[{f.get('severity')}] {f.get('title')}"
+        if f.get("section"):
+            title += f" ({f['section']})"
+        must_fix.append({"title": title, "detail": f.get("detail") or None})
+    sha12 = str(review.get("spec_sha256") or "")[:12]
+    return {
+        "source": "spec_review",
+        "fix_brief": (f"This spec was admitted after one revision of review {sha12}, with no "
+                      "second review. Before implementing, check that the spec text addresses "
+                      "each finding below. Implement the spec as written; where a finding is "
+                      "not addressed, apply its suggestion in a way consistent with the spec."),
+        "must_fix": must_fix, "human_notes": [],
+    }
 
 
 def would_pick(cfg, review) -> dict | None:

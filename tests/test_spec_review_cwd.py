@@ -76,7 +76,7 @@ def test_outside_repo_and_other_repo_fall_back(tmp_path, monkeypatch):
     (clone / SPEC_REL).write_text((clone / SPEC_REL).read_text() + "\nclone edit\n")
     for cwd in (elsewhere, clone):
         monkeypatch.chdir(cwd)
-        r = _review(cfg, monkeypatch, "SPEC-0001", "--json")
+        r = _review(cfg, monkeypatch, "SPEC-0001", "--json", "--force")   # SPEC-0230: 2nd round
         assert r.exit_code == 0, r.output
         out = json.loads(r.stdout)
         assert out["origin"] == "registered checkout" and out["spec_sha256"] == sha
@@ -104,7 +104,7 @@ def test_reviewed_line_stdout_and_json_stderr(tmp_path, monkeypatch):
     r = _review(cfg, monkeypatch, "SPEC-0001")
     assert r.exit_code == 0, r.output
     assert r.stdout.splitlines()[0] == line
-    r = _review(cfg, monkeypatch, "SPEC-0001", "--json")
+    r = _review(cfg, monkeypatch, "SPEC-0001", "--json", "--force")    # SPEC-0230: 2nd round
     assert r.exit_code == 0, r.output
     assert json.loads(r.stdout)["spec_path"] and line in r.stderr and line not in r.stdout
 
@@ -116,7 +116,7 @@ def test_path_option_prints_origin_path(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     assert r.stdout.splitlines()[0] == (
         f"reviewing {SPEC_REL} @ {SR.spec_sha256(spec)[:12]} (path)  {repo.resolve()}")
-    r = _review(cfg, monkeypatch, "--path", str(spec), "--json")
+    r = _review(cfg, monkeypatch, "--path", str(spec), "--json", "--force")   # SPEC-0230
     assert json.loads(r.stdout)["origin"] == "path" and "(path)" in r.stderr
 
 

@@ -76,13 +76,13 @@ def test_queue_add_gate_store_legacy_stale_and_revise(tmp_path, monkeypatch):
     spec = _spec(repo)
     write_review(cfg, spec, "SPEC-0001", verdict="revise")
     r = _add(cfg, monkeypatch)
-    assert r.exit_code != 0 and "no approving review" in r.output
+    assert r.exit_code != 0 and "not applied yet" in r.output
     write_review(cfg, spec, "SPEC-0001")                              # stored approve
     assert _add(cfg, monkeypatch).exit_code == 0
     # a stored review for an older text does not count for the new text
     spec.write_text(spec.read_text() + "\nedited\n")
     r = _add(cfg, monkeypatch)
-    assert r.exit_code != 0 and "no approving review" in r.output
+    assert r.exit_code != 0 and "edited after its approving review" in r.output
     # a legacy sidecar with a matching sha does
     side = SR.sidecar_path(spec, "SPEC-0001")
     side.parent.mkdir(parents=True)
@@ -216,7 +216,7 @@ def test_corrupt_store_file_refuses_admission_without_crash(tmp_path, monkeypatc
         p.write_text(junk)
         assert SR.load_review(cfg, "SPEC-0001", SR.spec_sha256(_spec(repo))) is None
         r = _add(cfg, monkeypatch)
-        assert r.exit_code != 0 and "no approving review for its current text" in r.output
+        assert r.exit_code != 0 and "no spec review" in r.output
         assert not isinstance(r.exception, (KeyError, TypeError, AttributeError))
 
 
@@ -245,3 +245,73 @@ def test_review_context_keys_and_payload_rejects_must_fix(tmp_path):
         SR.review_payload("SPEC-0001", "abc", model="m", cost_usd=0.1, verdict=MUST_FIX, root=repo)
     p = SR.review_payload("SPEC-0001", "abc", model="m", cost_usd=0.1, verdict=APPROVE, root=repo)
     assert p["schema"] == "wt.spec.review.v1" and p["repo_root"] == str(repo)
+
+
+# ---- SPEC-0230: the latest review governs admission ----------------------------------------------
+
+OLD, OLDER = "a" * 64, "b" * 64
+
+
+def _store(cfg, spec, verdict, at, sha=None, findings=None):
+    return write_review(cfg, spec, "SPEC-0001", verdict, sha=sha, findings=findings,
+                        reviewed_at=f"2026-10-25T00:00:{at:02d}+00:00")
+
+
+def test_list_and_latest_review_order_and_skip_junk(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    spec = _spec(repo)
+    assert SR.list_reviews(cfg, "SPEC-0001") == [] and SR.latest_review(cfg, "SPEC-0001") is None
+    _store(cfg, spec, "revise", 20, sha=OLD)
+    _store(cfg, spec, "split", 5, sha=OLDER)
+    _store(cfg, spec, "approve", 30)
+    d = SR.store_path(cfg, "SPEC-0001", OLD).parent
+    (d / f"{'c' * 64}.json").write_text("{not json")
+    (d / "d.json").write_text("[1]")
+    (d / f"{'e' * 64}.json.xyz.tmp").write_text(json.dumps({"reviewed_at": "2099", "verdict": "x"}))
+    got = SR.list_reviews(cfg, "SPEC-0001")
+    assert [r["verdict"] for r in got] == ["split", "revise", "approve"]
+    assert SR.latest_review(cfg, "SPEC-0001")["verdict"] == "approve"
+
+
+def test_check_admissible_cases(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    spec = _spec(repo)
+    sha = SR.spec_sha256(spec)
+    with pytest.raises(ValueError, match="SPEC-0001 has no spec review; run wt spec review"):
+        SR.check_admissible(cfg, spec, "SPEC-0001")
+    _store(cfg, spec, "split", 1, sha=OLD)                       # split, earlier sha
+    with pytest.raises(ValueError, match=r"recommends a split \(aaaaaaaaaaaa\); split the spec"):
+        SR.check_admissible(cfg, spec, "SPEC-0001")
+    _store(cfg, spec, "revise", 2, sha=OLDER)                    # older revise, then the latest
+    got = SR.check_admissible(cfg, spec, "SPEC-0001")
+    assert got["admission"] == "after_revision" and got["spec_sha256"] == OLDER
+    _store(cfg, spec, "revise", 3, sha=sha)                      # revise for the current text
+    with pytest.raises(ValueError, match=r"not applied yet \(the text is unchanged since "):
+        SR.check_admissible(cfg, spec, "SPEC-0001")
+    _store(cfg, spec, "split", 4, sha=sha)                       # split, current sha
+    with pytest.raises(ValueError, match="recommends a split"):
+        SR.check_admissible(cfg, spec, "SPEC-0001")
+    _store(cfg, spec, "approve", 5, sha=OLD)                     # approve for an earlier sha
+    with pytest.raises(ValueError, match=r"edited after its approving review \(aaaaaaaaaaaa\); "
+                                         r"run wt spec review SPEC-0001 --force"):
+        SR.check_admissible(cfg, spec, "SPEC-0001")
+    _store(cfg, spec, "approve", 6)                              # approve for the current sha
+    got = SR.check_admissible(cfg, spec, "SPEC-0001")
+    assert got["admission"] == "approved" and got["spec_sha256"] == sha
+
+
+def test_check_admissible_legacy_approve_and_corrupt_file(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    spec = _spec(repo)
+    side = SR.sidecar_path(spec, "SPEC-0001")
+    side.parent.mkdir(parents=True)
+    side.write_text(json.dumps({"verdict": "approve", "spec_sha256": SR.spec_sha256(spec)}))
+    assert SR.check_admissible(cfg, spec, "SPEC-0001")["admission"] == "approved"
+    side.unlink()
+    p = SR.store_path(cfg, "SPEC-0001", OLD)
+    p.parent.mkdir(parents=True)
+    p.write_text("{corrupt")
+    with pytest.raises(ValueError, match="no spec review"):
+        SR.check_admissible(cfg, spec, "SPEC-0001")
+    _store(cfg, spec, "revise", 1, sha=OLDER)
+    assert SR.check_admissible(cfg, spec, "SPEC-0001")["admission"] == "after_revision"

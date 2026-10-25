@@ -513,6 +513,11 @@ def _journal_lines(rec: dict) -> Group:
 
 
 def _print_plan(title: str, plan: dict) -> None:
+    rev = plan.get("revision")
+    if isinstance(rev, dict):                                          # SPEC-0230
+        plan = {**plan, "revision": (f"review {str(rev.get('review_sha'))[:12]} -> spec "
+                                     f"{str(rev.get('current_sha'))[:12]}, "
+                                     f"{len(rev.get('findings') or [])} findings")}
     console.print(R.plan(title, plan), highlight=False)
 
 

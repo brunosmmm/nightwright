@@ -1022,3 +1022,69 @@ def test_queue_payload_sizing_fields_null_without_sizing(tmp_path):    # SPEC-02
     assert (items["A"]["size"], items["A"]["tone"], items["A"]["profile_source"]) == (None,) * 3
     assert (items["B"]["size"], items["B"]["tone"], items["B"]["profile"],
             items["B"]["profile_source"]) == ("xs", "cost-effective", "frugal", "review")
+
+
+# ---- SPEC-0230: admission after one revision ------------------------------------------------------
+
+REV_FINDINGS = [{"severity": "major", "section": "Design", "title": "gap in step two",
+                 "detail": "state the timeout behaviour"},
+                {"severity": "nit", "title": "loose wording"}]
+
+
+def _revised(tmp_path, entries):
+    """A repo whose spec has a `revise` review for older text (the revision was applied)."""
+    from wt.agentic import spec_review as SR
+    repo = make_repo(tmp_path, review=False)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, entries))
+    spec = repo / "docs" / "specs" / "0001-trivial.md"
+    write_review(cfg, spec, "SPEC-0001", "revise", sha="f" * 64, findings=REV_FINDINGS)
+    return repo, cfg, SR.spec_sha256(spec)
+
+
+def test_plan_and_apply_add_after_revision(tmp_path, monkeypatch):
+    from wt.agentic import schemas as SC
+    from wt.agentic import spec_review as SR
+    repo, cfg, sha = _revised(tmp_path, [])
+    plan = Q.plan_add(cfg, "SPEC-0001")
+    assert plan["review"] == "after_revision"
+    assert plan["revision"] == {"review_sha": "f" * 64, "current_sha": sha,
+                                "findings": REV_FINDINGS}
+    state = Q.apply_add(cfg, plan)
+    assert state["pending_brief"] == SR.revision_brief({"spec_sha256": "f" * 64,
+                                                        "findings": REV_FINDINGS})
+    events = S.read_ledger(cfg, plan["campaign"])
+    assert [e["type"] for e in events] == ["open", "admitted_after_revision"]
+    assert all(SC.ledger_problems(e) == [] for e in events)
+    assert {k: events[1][k] for k in ("review_sha", "current_sha", "findings")} == plan["revision"]
+    assert S.read_state(cfg, plan["campaign"])["pending_brief"] == state["pending_brief"]
+
+
+def test_plan_add_approved_and_forced_have_no_revision(tmp_path):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    plan = Q.plan_add(cfg, "SPEC-0001")
+    assert plan["review"] == "approved" and plan["revision"] is None
+    state = Q.apply_add(cfg, plan)
+    assert state["pending_brief"] is None
+    assert [e["type"] for e in S.read_ledger(cfg, plan["campaign"])] == ["open"]
+
+
+def test_first_implementer_prompt_has_findings_second_does_not(tmp_path, monkeypatch):
+    entries = [impl_done(), {"persona": "conformance_reviewer", "cost_usd": 0.2, "verdict": {
+        "verdict": "fix", "score": 40, "ac_assessment": [], "fix_brief": "rewrite feature.txt",
+        "findings": [{"severity": "must_fix", "ac": "feature.txt exists", "title": "wrong text",
+                      "detail": "d", "files": ["feature.txt"]}]}},
+               impl_done(content="better\n"), {"persona": "conformance_reviewer", "cost_usd": 0.2,
+                                               "verdict": {"verdict": "pass", "score": 95,
+                                                           "findings": [], "ac_assessment": [],
+                                                           "fix_brief": ""}}]
+    repo, cfg, _ = _revised(tmp_path, entries)
+    cid = added(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    first = (S.runs_dir(cfg, cid) / "001-implementer" / "prompt.md").read_text()
+    second = (S.runs_dir(cfg, cid) / "003-implementer" / "prompt.md").read_text()
+    for title in ("[major] gap in step two (Design)", "[nit] loose wording"):
+        assert title in first and title not in second
+    assert "state the timeout behaviour" in first and "From: spec_review" in first
+    assert "From: spec_review" not in second
