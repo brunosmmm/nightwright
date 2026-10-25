@@ -1048,9 +1048,11 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     if kind == "close":
         counters["close_attempts"] += 1
         if res.followups is not None:
-            row["followups"] = {"filed": len(res.followups["filed"]),
-                                "unfiled": len(res.followups["unfiled"]),
-                                "ids": [f["idea_id"] for f in res.followups["filed"]]}
+            fu = res.followups                      # counts and ids, plus the detail lists
+            row["followups"] = {"filed": len(fu["filed"]), "unfiled": len(fu["unfiled"]),
+                                "ids": [f["idea_id"] for f in fu["filed"]],
+                                "items": list(fu["filed"]), "unfiled_items": list(fu["unfiled"]),
+                                "waived": list(fu["waived"])}
         if res.error:
             return finish("PARKED", "open_failed", park={
                 "reason": "open_failed", "detail": f"close step failed: {res.error}",

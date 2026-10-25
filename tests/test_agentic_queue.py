@@ -840,7 +840,13 @@ def test_close_files_followups_and_state_close_keeps_them(opened, monkeypatch): 
         {"severity": "nit", "title": "waived nit", "waive_reason": "style"}]
     assert st["close"]["mode"] == "merge"
     assert row["followups"] == {"filed": 2, "unfiled": 0,
-                                "ids": [f["idea_id"] for f in fu["filed"]]}
+                                "ids": [f["idea_id"] for f in fu["filed"]],
+                                "items": fu["filed"], "unfiled_items": [],
+                                "waived": fu["waived"]}
+    payload = json.loads(json.dumps(Q.TickReport(steps=[row], idle=False).payload()))
+    emitted = payload["steps"][0]["followups"]                      # survives wt.queue.tick.v1
+    assert emitted["items"][1]["title"] == "advisory one" and emitted["items"][1]["severity"] == "major"
+    assert emitted["waived"] == [{"severity": "nit", "title": "waived nit", "waive_reason": "style"}]
     assert [e["title"] for e in S.read_ledger(cfg, cid, types=["followup"])] == [
         "earlier loop", "advisory one"]
     assert len(_ideas(cfg)) == 2
@@ -912,3 +918,24 @@ def test_campaign_show_lists_followups_unfiled_and_waivers(opened, monkeypatch):
     assert "follow-up IDEA-007 minor naming" in r.output
     assert "[unfiled] major big one: OSError('full')" in r.output
     assert "[waived] nit tiny: style only" in r.output
+
+
+def test_regate_failed_rerun_reports_earlier_filings_without_duplicates(opened, monkeypatch):
+    cfg, cid, ctx = opened
+    st = _closing(cfg, cid, [_adv("minor", "keep me")])
+    monkeypatch.setattr(CL, "close_campaign", lambda *a, **k: CL.CloseOutcome("TRIAGING"))
+    res = Q._do_close(ctx, st)
+    row = Q._apply(ctx, st, res)
+    assert row["to"] == "TRIAGING" and row["reason"] == "regate_failed"
+    [ev] = S.read_ledger(cfg, cid, types=["followup"])
+    # TRIAGING -> ... -> CLOSING again: the re-run reports the filing and files nothing new
+    monkeypatch.setattr(CL, "close_campaign", lambda *a, **k: _merged_outcome())
+    st = S.read_state(cfg, cid)
+    st.update(state="CLOSING")
+    S.write_state(cfg, cid, st)
+    res = Q._do_close(ctx, st)
+    assert res.events_before == []
+    assert [f["idea_id"] for f in res.followups["filed"]] == [ev["idea_id"]]
+    Q._apply(ctx, st, res)
+    assert S.read_state(cfg, cid)["close"]["followups"]["filed"][0]["idea_id"] == ev["idea_id"]
+    assert len(_ideas(cfg)) == 1 and len(S.read_ledger(cfg, cid, types=["followup"])) == 1

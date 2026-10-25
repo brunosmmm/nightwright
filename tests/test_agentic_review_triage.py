@@ -1,5 +1,6 @@
 """SPEC-0203: `triage_reviews` (pure scorer) and `review_brief` — worked examples, dedup and
 canonical ids, `waived` handling, AC cover matching, brief shape."""
+import os
 import copy
 
 import pytest
@@ -494,7 +495,8 @@ def test_crash_adoption_finds_an_archived_idea(tmp_path):
     first = file_now(cfg, st, record=False)
     [t] = ideas(cfg)
     OW.archive_idea(cfg, t)
-    assert ideas(cfg) == [] or all(x.file != cfg["org_ideas_file"] for x in ideas(cfg))
+    assert not any("wtfu:" in x.heading and x.file == cfg["org_ideas_file"] for x in ideas(cfg))
+    assert os.path.exists(OW.ideas_archive_path(cfg))                # it really moved away
     second = file_now(cfg, st)
     assert second["filed"][0]["idea_id"] == first["filed"][0]["idea_id"]
     assert not any("wtfu:" in x.heading and x.file == cfg["org_ideas_file"] for x in ideas(cfg))
@@ -536,6 +538,18 @@ def test_non_oserror_from_the_org_layer_never_escapes(tmp_path, monkeypatch):
     events, summary = FU.file_followups(cfg, st, BAL)       # outer guard
     assert summary["filed"] == [] and events and events[0][0] == "note"
     assert "RuntimeError('no ledger')" in events[0][1]["text"]
+    assert [(u["severity"], u["title"], u["error"]) for u in summary["unfiled"]] == [
+        ("minor", "one", "RuntimeError('no ledger')")]            # reported, not dropped
+
+
+def test_idea_without_an_id_is_not_adopted_and_not_duplicated(tmp_path):
+    cfg = fu_cfg(tmp_path)
+    key = FU.make_entry(SPEC, adv("minor", "one"), "advisory")["key"][:12]
+    with open(cfg["org_ideas_file"], "w") as f:
+        f.write(f"* IDEA wtfu:{key} [{SPEC}] x: one\n")
+    events, summary = FU.file_followups(cfg, fu_state(tmp_path, [adv("minor", "one")]), BAL)
+    assert summary["filed"] == [] and "has no :ID:" in summary["unfiled"][0]["error"]
+    assert open(cfg["org_ideas_file"]).read().count(f"wtfu:{key}") == 1   # nothing captured
 
 
 def test_headline_without_the_marker_adds_a_note_but_still_records(tmp_path, monkeypatch):

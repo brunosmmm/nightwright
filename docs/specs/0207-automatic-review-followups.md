@@ -238,8 +238,17 @@ headline, `_merge_carry` merge/removal/idempotency, considered set);
 (`followup` accepted, missing key rejected); `tests/test_agentic_queue.py` (carry persisted by
 `finish` on both `fix` branches, `state.close.followups` survives, `close_campaign` raising
 `RuntimeError`, filer failure, `campaign show`); `tests/test_agentic_e2e.py` (AC7 a-d plus a
-profile opt-out). Manual verification on a real campaign is pending the next one with advisory
-findings (`wt idea list`).
+profile opt-out).
+
+Review loop 1 additions: the outer filer guard reports the not-yet-handled findings as `unfiled`
+(asserted); `find_marker` refuses to adopt an idea without `:ID:` (that finding is `unfiled`, no
+duplicate capture); `regate_failed` close re-run test; the `wt.queue.tick.v1` payload test;
+the archive-adoption precondition tightened.
+
+Manual verification (2026-10-25): filed a `major` advisory finding through `file_followups`
+against a scratch org data dir and ran `wt ideas` through the real CLI: the idea showed as
+`IDEA-001`, kind improvement, project `Meta-Tools`, epic `SPEC-0169`, headline starting
+`wtfu:<key12>`. A first run on a real campaign with advisory findings remains worth a glance.
 
 ### As shipped (2026-10-25)
 
@@ -254,6 +263,11 @@ findings (`wt idea list`).
 - The close tests that need a real campaign (filer events kept when `close_campaign` raises, the
   summary in `state.close`) live in `tests/test_agentic_queue.py` rather than
   `tests/test_agentic_close.py`; `campaign show` is covered there too.
+- The close report row's `followups` key carries more than the Design's counts and ids: it also
+  has `items` (filed: idea_id, severity, title, origin), `unfiled_items` and `waived` (with
+  `waive_reason`), so the row satisfies AC6 without a lookup in `campaign show`.
+- If the filer fails before the per-finding loop, the findings it had selected are reported
+  `unfiled` with the failure; an adopted idea without `:ID:` is `unfiled` rather than guessed.
 
 ## Rollout / migration
 

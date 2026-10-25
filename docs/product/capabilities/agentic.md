@@ -263,7 +263,8 @@ nothing. It never blocks a merge: a capture failure is a `note` event and the fi
   (`persona, severity, title, key, idea_id, origin`). `state.close.followups` holds
   `{filed, unfiled, waived}`; `wt campaign show` lists the follow-ups (`IDEA-NNN severity
   title`), the unfiled findings and the waivers with their reason, and the close row of
-  `wt.queue.tick.v1` carries a `followups` key (`filed`, `unfiled` counts and `ids`).
+  `wt.queue.tick.v1` carries a `followups` key (`filed`, `unfiled` counts and `ids`, plus the `items`,
+  `unfiled_items` and `waived` lists with severity, title and waive reason).
 
 ## Closing
 

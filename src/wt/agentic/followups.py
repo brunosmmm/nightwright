@@ -115,7 +115,10 @@ def find_marker(cfg, marker: str) -> str | None:
         root = orgparse.load(path, env=OrgEnv(todos=todos, dones=dones, filename=path))
         for node in root[1:]:
             if marker in (node.heading or ""):
-                return node.properties.get("ID") or f"{path}:{node.linenumber}"
+                idea_id = node.properties.get("ID")
+                if not idea_id:                             # cannot adopt it; never double-file
+                    raise ValueError(f"idea {marker} at {path}:{node.linenumber} has no :ID:")
+                return idea_id
     return None
 
 
@@ -143,14 +146,18 @@ def file_followups(cfg, state: dict, profile: dict) -> tuple[list, dict]:
     becomes a `note` event and the affected findings are `unfiled`."""
     events: list = []
     summary: dict = {"filed": [], "unfiled": [], "waived": []}
+    pending: list = []                                      # findings still to be handled
     try:
-        _file(cfg, state, profile or {}, events, summary)
+        _file(cfg, state, profile or {}, events, summary, pending)
     except Exception as e:                                  # the filer never blocks a merge
         events.append(_note(f"follow-ups: filer failed: {e!r}"))
+        for item in pending:                                # not reported anywhere yet
+            summary["unfiled"].append({"severity": item["severity"], "title": item["title"],
+                                       "error": repr(e)})
     return events, summary
 
 
-def _file(cfg, state, profile, events, summary) -> None:
+def _file(cfg, state, profile, events, summary, pending) -> None:
     spec_id = state.get("spec_id")
     enabled, nits = followup_params(profile)
     items = considered(spec_id, state.get("review_carry"), state.get("last_review") or {})
@@ -163,9 +170,11 @@ def _file(cfg, state, profile, events, summary) -> None:
     items = [e for e in items if e["severity"] in wanted]
     if not items:
         return
+    pending.extend(items)                                   # the outer guard reports leftovers
     known = {e["key"]: e for e in store.read_ledger(cfg, state["id"], types=["followup"])}
     epic = parent_epic(state)
     for e in items:
+        pending.remove(e)
         base = {"severity": e["severity"], "title": e["title"]}
         try:
             prior = known.get(e["key"])
