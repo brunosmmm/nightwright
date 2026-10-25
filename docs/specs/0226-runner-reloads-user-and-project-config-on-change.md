@@ -262,6 +262,10 @@ invalid path). The per-tick re-read already applies the change.
 - `uv run pytest -q -x`: 2056 passed, 1 skipped (full suite, including the existing
   reexec, profiles, nonblocking, events and logs suites).
 - `python3 tools/spec_lint.py`: exits 0 after `--write-ledger`.
+- Review round 1: added tests for the SKILL.md row, one record per broken version, fix order of
+  two broken files, leftover lease errors, dropped project entries, first-sight broken project
+  yaml, project name mismatch, the truncation race, and the deferred re-exec. Full suite
+  re-run: 2065 passed, 1 skipped.
 - Manual verification: the loop-level behaviour is exercised by `test_run_applies_reload_between_ticks`
   and `test_poll_interval_reload_respects_cli_override`, which call the real `Q.run` with the real
   `load_config` over a tmp config dir. The check against the live production runner
@@ -270,7 +274,7 @@ invalid path). The per-tick re-read already applies the change.
 
 ### As shipped
 
-As designed. Small choices made while building:
+As designed, plus the review-round changes below. Small choices made while building:
 
 - `ConfigWatch` lives in `queue.py` next to `run()`, with `config_diff` and
   `validate_runner_cfg` as module-level functions.
@@ -280,6 +284,18 @@ As designed. Small choices made while building:
 - Lease `config_errors` entries for projects that no longer have a live campaign are dropped,
   and entries left in the lease by the image before a SPEC-0194 re-exec are cleared on the first
   check.
+- Review round 1 changes. A SPEC-0194 re-exec while the user config is broken would start an
+  image that runs `load_config()` unprotected (crash, or pure defaults for an empty file) and
+  whose first check clears the condition. Instead of re-validating in the new image, `run()`
+  defers the code-change re-exec while `ConfigWatch.user_invalid()` is true and journals
+  `reexec_deferred {reason: "user_config_invalid", to_sha}` once per head (new additive runner
+  journal kind, rendered by `runner-log`). `code_sha` is kept, so the re-exec happens on the
+  first check after the file is fixed. The deferral sees a break one tick late: a commit that
+  lands in the same tick as the break can still re-exec.
+- `_reload_user` re-stats the file after `loader()`; if the stat key moved (a truncating write
+  in between) the result is dropped without a record and the file is re-read next tick.
+- `_check_projects` applies the same `project:` name check as `P.project_config`; a mismatch
+  is reported as an invalid project config.
 - `test_inflight_harvest_uses_planning_profile` checks that a review scoring 88 passes under the
   `pass_score: 80` it was planned with after the config raised it to 95; it does not run a second
   review pass.

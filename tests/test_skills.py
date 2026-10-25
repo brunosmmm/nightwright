@@ -305,3 +305,13 @@ def test_conduct_skill_has_runner_draining_row_spec_0224():
         assert word in draining, word
     (rna,) = [r for r in rows if r.startswith("| `ready_not_admitted`")]
     assert "`runner_draining: true`" in rna
+
+
+def test_conduct_skill_has_runner_config_invalid_row_spec_0226():
+    """SPEC-0226: the conductor table handles `runner_config_invalid` for both scopes."""
+    text = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    rows = [ln for ln in text.splitlines() if ln.startswith("| `")]
+    (row,) = [r for r in rows if r.startswith("| `runner_config_invalid`")]
+    assert "`scope: user`" in row and "do not edit their config" in row
+    assert "`scope: project:<P>`" in row and "`config_invalid`" in row
+    assert "steward" in row and "wt mailbox send" in row

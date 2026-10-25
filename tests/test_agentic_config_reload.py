@@ -299,6 +299,21 @@ def test_invalid_user_config_keeps_old(make_env, monkeypatch, name, break_it):
     assert env.cfg is not old and env.errors() == {} and env.conditions() == []
 
 
+def test_each_broken_version_gets_its_own_record_and_condition(make_env, monkeypatch):
+    env = make_env()
+    old = env.cfg
+    env.write_raw("agentic: [unclosed\n")
+    env.check()
+    env.check()                                             # same version: nothing new
+    (first,) = env.conditions()
+    env.write_raw("- a\n- b\n")                             # broken a second, different way
+    env.check()
+    assert env.cfg is old
+    assert len(env.records("config_load_failed")) == 2
+    (second,) = env.conditions()
+    assert second[0] != first[0] and list(env.errors()) == [str(env.path)]
+
+
 def test_removing_a_live_campaigns_profile_is_invalid(make_env, monkeypatch):
     env = make_env()
     env.edit(_set(["agentic", "profiles", "custom"], {"slots": 1}))
@@ -377,6 +392,100 @@ def test_two_broken_files_reported_independently(make_env, monkeypatch):
     assert env.conditions() == [] and env.errors() == {}
 
 
+def test_fixing_the_user_file_first_keeps_the_project_condition(make_env, monkeypatch):
+    import os
+    env = make_env()
+    added(env.cfg, monkeypatch)
+    env.check()
+    p = _project_yaml(env)
+    good = p.read_text()
+    env.write_raw("agentic: [unclosed\n")
+    p.write_text(good + "bogus_key: 1\n")
+    os.utime(p, ns=(env._t + 5 * 10**9,) * 2)
+    env.check()
+    assert len(env.conditions()) == 2
+
+    env.write(_apply(env.doc, _set(["agentic", "profiles", "balanced", "loop_max"], 5)))
+    env.check()
+    (cond,) = env.conditions()
+    assert cond[3]["path"] == str(p) and list(env.errors()) == [str(p)]
+
+
+def test_leftover_lease_errors_are_cleared_on_first_check(make_env):
+    env = make_env()
+    env.lease.update_info(config_errors={"/old.yaml": {"scope": "user", "error": "x",
+                                                         "since": "t", "mtime_ns": 1}})
+    assert len(env.conditions()) == 1
+    env.check()
+    assert env.errors() == {} and env.conditions() == []
+
+
+def test_project_entry_dropped_when_its_campaign_is_gone(make_env, monkeypatch):
+    import os
+    env = make_env()
+    added(env.cfg, monkeypatch)
+    env.check()
+    p = _project_yaml(env)
+    p.write_text(p.read_text() + "bogus_key: 1\n")
+    os.utime(p, ns=(env._t + 5 * 10**9,) * 2)
+    env.check()
+    assert list(env.errors()) == [str(p)]
+    env.watch.check(env.cfg, env.lease, [])                 # no live campaign any more
+    assert env.errors() == {} and env.conditions() == []
+
+
+def test_project_yaml_broken_at_first_sight_is_reported_then_cleared(make_env, monkeypatch):
+    import os
+    env = make_env()
+    added(env.cfg, monkeypatch)
+    p = _project_yaml(env)
+    good = p.read_text()
+    p.write_text(good + "bogus_key: 1\n")
+    os.utime(p, ns=(env._t + 5 * 10**9,) * 2)
+    env.check()                                             # the first time the watch sees it
+    (fail,) = env.records("config_load_failed")
+    assert "bogus_key" in fail["error"] and len(env.conditions()) == 1
+    p.write_text(good)
+    os.utime(p, ns=(env._t + 6 * 10**9,) * 2)
+    env.check()
+    assert env.conditions() == [] and env.errors() == {}
+    assert env.records("config_reloaded") == []             # no good document to diff against
+
+
+def test_project_name_mismatch_is_invalid(make_env, monkeypatch):
+    import os
+    env = make_env()
+    added(env.cfg, monkeypatch)
+    env.check()
+    p = _project_yaml(env)
+    p.write_text(p.read_text() + "project: somebody-else\n")
+    os.utime(p, ns=(env._t + 5 * 10**9,) * 2)
+    env.check()
+    (fail,) = env.records("config_load_failed")
+    assert "does not match" in fail["error"] and len(env.conditions()) == 1
+
+
+def test_user_file_rewritten_while_loading_is_retried_not_recorded(make_env, monkeypatch):
+    env = make_env()
+    old = env.cfg
+    env.edit(_set(["agentic", "profiles", "balanced", "loop_max"], 5))
+    real = env.watch.loader
+
+    def racing_loader():
+        out = real()
+        env.write_raw("")                                   # truncated right after we read it
+        return out
+    env.watch.loader = racing_loader
+    env.check()
+    assert env.cfg is old and env.records("config_reloaded", "config_load_failed") == []
+    env.watch.loader = real
+    env.check()                                             # next tick sees the truncated file
+    assert len(env.records("config_load_failed")) == 1 and env.cfg is old
+    env.edit(_set(["agentic", "profiles", "balanced", "loop_max"], 6))
+    env.check()
+    assert env.records("config_reloaded") and env.errors() == {}
+
+
 def test_config_errors_updates_race_heartbeat(make_env):
     env = make_env()
     with Q._heartbeat_while(env.lease, interval_s=0.0005):
@@ -424,6 +533,38 @@ def test_run_applies_reload_between_ticks(make_env, monkeypatch):
     assert slots == [2, 3, 3]
     assert len([r for r in Q.read_journal(env.cfg) if r["kind"] == "config_reloaded"]) == 1
     env.lease = L.acquire(env.cfg)
+
+
+def test_reexec_is_deferred_while_the_user_config_is_broken(make_env, monkeypatch):
+    from test_agentic_reexec import _code_repo, _commit
+    env = make_env()
+    env.lease.release()
+    root = _code_repo(env.tmp)
+    calls = []
+    monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, e: calls.append(e))
+    n = {"ticks": 0}
+
+    def on_tick(_report):
+        n["ticks"] += 1
+        if n["ticks"] == 1:
+            env.write_raw("")                               # seen by the check of tick 2
+        elif n["ticks"] == 2:
+            _commit(root, "src/wt/x.py", "A = 2\n", "code")
+        elif n["ticks"] == 4:
+            env.write(env.doc)                              # fixed
+
+    Q.run(env.cfg, max_ticks=8, poll_interval_s=0, on_tick=on_tick, config_loader=load_config,
+          reexec=True, code_root=root)
+    journal = Q.read_journal(env.cfg)
+    (deferred,) = [r for r in journal if r["kind"] == "reexec_deferred"]
+    assert deferred["reason"] == "user_config_invalid"
+    stop = journal[-1]
+    assert stop["kind"] == "stop" and stop["reason"] == "code_changed"
+    assert stop["ticks"] == 5 and len(calls) == 1           # re-exec only after the fix
+    assert [r["kind"] for r in journal].index("config_load_failed") < \
+        [r["kind"] for r in journal].index("reexec_deferred")
+    monkeypatch.setenv(L.HANDOVER_ENV, calls[0][L.HANDOVER_ENV])
+    env.lease = L.acquire(env.cfg, ["wt", "queue", "run"])  # adopt the handed-over lease
 
 
 def test_no_loader_no_reload(make_env, monkeypatch):
@@ -496,8 +637,10 @@ def test_runner_log_renders_config_records(make_env, monkeypatch):
     Q.journal(cfg, "config_reloaded", scope="user", path="/p", changed=["a.b", "c"],
               restart_required=["agentic.lease_ttl_s"])
     Q.journal(cfg, "config_load_failed", scope="project:wt", path="/q", error="boom")
+    Q.journal(cfg, "reexec_deferred", reason="user_config_invalid", to_sha="abcdef123456")
     r = run_cli(cfg, monkeypatch, ["queue", "runner-log", "--tail", "0"])
     assert r.exit_code == 0, r.output
     text = " ".join(r.output.split())
     assert "config reloaded (user): a.b, c" in text and "restart required" in text
     assert "config load failed (project:wt): boom" in text
+    assert "re-exec deferred user_config_invalid (code at abcdef12)" in text

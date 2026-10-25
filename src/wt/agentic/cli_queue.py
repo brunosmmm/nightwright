@@ -499,6 +499,10 @@ def _journal_lines(rec: dict) -> Group:
         head.append(f"✗ config load failed ({rec.get('scope')}): ", style="bold red")
         head.append(f"{rec.get('error')}", style="red")
         return Group(head)
+    if kind == "reexec_deferred":                          # SPEC-0226
+        head.append("⏸ re-exec deferred", style="bold yellow")
+        head.append(f"  {rec.get('reason')} (code at {str(rec.get('to_sha'))[:8]})")
+        return Group(head)
     head.append("drain" if rec.get("drain") else f"tick {rec.get('tick')}", style="cyan")
     if rec.get("admitted"):
         head.append(f"  admitted {rec['admitted']}", style="green")

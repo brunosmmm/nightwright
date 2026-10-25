@@ -1974,6 +1974,9 @@ def validate_runner_cfg(cfg: dict, campaigns=()) -> None:
                          f"(expected claude or fake)")
 
 
+_UNSEEN = object()                                # a stat key no file can have
+
+
 def _stat_key(path) -> tuple | None:
     try:
         st = os.stat(path)
@@ -2000,6 +2003,11 @@ class ConfigWatch:
         self._projects: dict = {}                 # path -> {"key", "doc" (last good or None)}
         self._errors: dict = {}
         self._first = True
+        self._moved = False
+
+    def user_invalid(self) -> bool:
+        """True while the user config on disk is broken and the old cfg is still in use."""
+        return any(e["scope"] == "user" for e in self._errors.values())
 
     def check(self, cfg: dict, lease, campaigns) -> dict:
         """The cfg the next tick should use: the freshly loaded user config when it changed and
@@ -2013,6 +2021,9 @@ class ConfigWatch:
             if key != self.user_key:
                 self.user_key = key
                 cfg = self._reload_user(cfg, lease, campaigns, key)
+                if self._moved:                       # rewritten while we read it: retry next tick
+                    self._moved = False
+                    self.user_key = _UNSEEN
         self._check_projects(cfg, lease, campaigns)
         return cfg
 
@@ -2035,6 +2046,9 @@ class ConfigWatch:
             self._read_user_file()
             new = self.loader()
             validate_runner_cfg(new, campaigns)
+            if _stat_key(self.user_path) != key:      # truncated or rewritten while we read it
+                self._moved = True
+                return cfg
         except Exception as e:
             error = _err(e)
             journal(cfg, "config_load_failed", scope="user", path=path, error=error)
@@ -2066,6 +2080,9 @@ class ConfigWatch:
             last_good = seen["doc"] if seen else None
             try:
                 doc = P.load_project_config(p)
+                if doc.get("project") and doc["project"] != name:
+                    raise ValueError(f"{p}: project: {doc['project']!r} does not match "
+                                     f"{name!r}")
             except Exception as e:
                 error = _err(e)
                 journal(cfg, "config_load_failed", scope=scope, path=path, error=error)
@@ -2192,6 +2209,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
     watch_root = (code_root or code_checkout()) if reexec else None
     code_sha = _git_out(watch_root, "rev-parse", "HEAD") if watch_root else None
     restart = {}
+    deferred = None                                   # head a re-exec was deferred for
     pool = StepPool()                                 # SPEC-0213: flights outlive ticks
     watch = ConfigWatch(cfg, config_loader) if config_loader else None
 
@@ -2230,13 +2248,23 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                     break
                 if code_sha:
                     head, changed = code_changes(watch_root, code_sha)
-                    if changed:
-                        # SPEC-0194 + SPEC-0213: stop admitting and submitting; the drain
-                        # below records every in-flight step before the exec
-                        reason = "code_changed"
-                        restart = {"from_sha": code_sha, "to_sha": head, "paths": changed[:50]}
-                        break
-                    code_sha = head or code_sha       # docs-only commits: keep running
+                    if changed and watch and watch.user_invalid():
+                        # SPEC-0226: the new image would load the broken user config (crash
+                        # or pure defaults); keep running on the last good one and keep
+                        # `code_sha`, so the re-exec happens once the file is fixed
+                        if deferred != head:
+                            deferred = head
+                            journal(cfg, "reexec_deferred", reason="user_config_invalid",
+                                    to_sha=head)
+                    else:
+                        if changed:
+                            # SPEC-0194 + SPEC-0213: stop admitting and submitting; the drain
+                            # below records every in-flight step before the exec
+                            reason = "code_changed"
+                            restart = {"from_sha": code_sha, "to_sha": head,
+                                       "paths": changed[:50]}
+                            break
+                        code_sha = head or code_sha   # docs-only commits: keep running
                 wait_s = max(interval, _MIN_INFLIGHT_WAIT_S) if pool.flights else interval
                 deadline = time.monotonic() + wait_s
                 while time.monotonic() < deadline and not stop.is_set():
