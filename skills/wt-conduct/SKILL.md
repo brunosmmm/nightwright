@@ -81,6 +81,10 @@ run, handle it — that is the point.
 | `lease_stale` | the runner is hung (no run in flight within its timeout): report pid + heartbeat age to the human; do not kill it unless told |
 | `run_overdue` | a persona run exceeded its timeout + grace: dispatch a sub-agent to check the run's process and logs and recommend park+resume, wait, or escalate; apply its recommendation |
 | `campaign_silent` | no ledger activity for long while active: same as `run_overdue` (sub-agent investigates) |
+| `conductor_ping` | periodic digest (SPEC-0212, every 10 min): read `data`; for each `blocked`, `stuck`, `ready_not_admitted` item and each `parked` item with `decided: false`, act per the table or dispatch a sub-agent; nothing needing action means do nothing, with no report to the human |
+| `backlog_blocked_long` | a queued item is blocked on its dependencies: read `blocked_by`; if the dependency is itself queued, parked or being merged, make sure it progresses (act on it); an unknown or wrong spec → escalate; else note and wait |
+| `state_stuck` | an active campaign sat in one state too long with no run in budget: same as `campaign_silent` (sub-agent checks the run, gate and process, recommends park+resume, wait or escalate) |
+| `ready_not_admitted` | a ready item is not starting with a free slot: check `wt queue runner-log --tail 5`; if the runner is mid-tick on a long step, that is the known head-of-line limitation (IDEA-081 / SPEC-0213): note it on the campaign and re-check after that step; if the runner is idle or dead, restart it; if it repeats after the step finishes, dispatch a sub-agent to diagnose admission |
 | `run_failed` with `transient: true` | account limit / overload: note the reset time from `error` if present; once it parks, resume after the reset with `--note "transient API failure"`; this is not the work failing |
 | `run_failed` (not transient) | informational; the queue's triage handles it — act only if it parks |
 | `parked` `cost_cap` | resume once with `--raise-cap` up to 2× the profile cap and a note; a second cost park → escalate |

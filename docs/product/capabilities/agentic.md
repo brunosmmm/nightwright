@@ -235,7 +235,14 @@ projected from the campaign ledgers exactly once, so the stream works with any l
 (a restarted follower resumes after the last delivered event) and runs a **watchdog** outside
 the loop: `runner_dead` (work pending, no runner), `lease_stale` (runner hung, no run in
 flight), `run_overdue` (a persona run past its timeout), `campaign_silent` (no activity for a
-long time). Each watchdog condition fires once until it clears.
+long time), `backlog_blocked_long` (a queued item blocked past `blocked_after_s`, default 1200),
+`state_stuck` (an active campaign in one state past `stuck_after_s`, default 900, unless a run
+or gate is in flight within budget) and `ready_not_admitted` (a ready item not starting with a
+free slot past `ready_grace_s`, default 60). Each watchdog condition fires once until it
+clears. The follower also appends a `conductor_ping` every `ping_interval_s` (default 600,
+SPEC-0212) with a digest of blocked, stuck, parked (and whether the conductor decided),
+waiting and ready-not-admitted items, so slow problems reach the conductor even when no
+event fires.
 
 ## Mailbox
 

@@ -95,7 +95,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (23/35 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (24/36 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -131,6 +131,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0209](./specs/0209-queue-an-idea-spec-writer-persona-and-spec-writing.md) Queue an idea: spec_writer persona and the SPEC_WRITING step — accepted
   - [ ] [SPEC-0210](./specs/0210-in-campaign-spec-review-and-revision-loop-auto-accept.md) In-campaign spec review and revision loop with automatic acceptance — accepted
   - [ ] [SPEC-0211](./specs/0211-spec-phases-and-review-status-in-watch-listing-events.md) Spec phases and review status in queue watch, listing and events — accepted
+  - [x] [SPEC-0212](./specs/0212-periodic-conductor-ping.md) Periodic conductor ping: a digest of blocked, stuck, parked and waiting items — done
 
 ## Active & planned
 
@@ -345,6 +346,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0198](./specs/0198-wt-queue-followers-who-is-armed.md) | wt queue followers: who is armed, with pids, cursors and lag | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0200](./specs/0200-waiting-state-started-campaigns-wait-for-a-slot.md) | WAITING state: started campaigns wait for a slot ahead of the backlog | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0204](./specs/0204-lease-heartbeat-during-long-ticks-an-alive-runner.md) | Lease heartbeat during long ticks: an alive runner never looks stale | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0212](./specs/0212-periodic-conductor-ping.md) | Periodic conductor ping: a digest of blocked, stuck, parked and waiting items | feature | done | M9: agentic workflow | 2026-10-25 |
 
 ## Superseded / rejected
 

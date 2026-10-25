@@ -42,6 +42,11 @@ EVENT_TYPES = {
     "run_overdue": ("persona", "run_id", "age_s", "timeout_s"),
     "campaign_silent": ("state", "silent_s"),
     "message": ("msg_id", "from", "kind", "text"),
+    # SPEC-0212
+    "conductor_ping": ("blocked", "parked", "stuck", "waiting", "ready_not_admitted", "counts"),
+    "backlog_blocked_long": ("blocked_for_s", "blocked_by"),
+    "state_stuck": ("state", "stuck_s"),
+    "ready_not_admitted": ("ready_for_s", "active", "slots"),
 }
 
 # transient run failures: account limits, overload, network-ish API errors
@@ -52,7 +57,10 @@ DEFAULTS = {"poll_s": 2.0, "silent_after_s": 900, "overdue_grace_s": 60,
             "cost_warning_ratio": 0.8,
             # a GATING / CLOSING item runs project gates (and a rebase) in-process; the loop
             # cannot heartbeat meanwhile, so its lease is not stale within this budget
-            "gate_budget_s": 1800}
+            "gate_budget_s": 1800,
+            # SPEC-0212: conductor ping interval and the "too long" thresholds
+            "ping_interval_s": 600, "blocked_after_s": 1200, "stuck_after_s": 900,
+            "ready_grace_s": 60}
 
 
 def settings(cfg) -> dict:
@@ -281,6 +289,136 @@ def _open_run(cfg, cid) -> dict | None:
     return open_runs[-1] if open_runs else None
 
 
+# ---- ping digest and long-item checks (SPEC-0212) -----------------------------------------------
+
+def _since_state(cfg, st: dict, now) -> float | None:
+    """Seconds since the campaign entered its current state (last `transition` into it)."""
+    for ev in reversed(store.read_ledger(cfg, st["id"], types=["transition"])):
+        if ev.get("to") == st.get("state"):
+            return _age_s(ev.get("ts"), now)
+    return _age_s(st.get("updated_at") or st.get("created_at"), now)
+
+
+def blocked_items(cfg, now, sett, *, after=None) -> list[dict]:
+    """QUEUED items whose stored readiness is `blocked`, for longer than `after` seconds
+    (default `blocked_after_s`)."""
+    after = sett["blocked_after_s"] if after is None else after
+    out = []
+    for st in store.list_campaigns(cfg, state="QUEUED"):
+        b = st.get("backlog") or {}
+        if b.get("ready") is not False:
+            continue
+        age = _age_s(b.get("since") or st.get("created_at"), now) or 0
+        if age > after:
+            out.append({"campaign": st["id"], "spec_id": st.get("spec_id"),
+                        "project": st.get("project"), "blocked_by": list(b.get("blocked_by") or []),
+                        "blocked_for_s": round(age)})
+    return sorted(out, key=lambda r: -r["blocked_for_s"])
+
+
+def stuck_items(cfg, now, sett) -> list[dict]:
+    """Active campaigns in one state longer than `stuck_after_s`, unless a persona run is in
+    flight within its budget, or (GATING/CLOSING) the in-process gate is within `gate_budget_s`."""
+    from .queue import ACTIVE_STATES
+    out = []
+    for st in store.list_campaigns(cfg):
+        if st.get("state") not in ACTIVE_STATES:
+            continue
+        age = _since_state(cfg, st, now)
+        if age is None or age <= sett["stuck_after_s"]:
+            continue
+        run = _open_run(cfg, st["id"])
+        if run:
+            if (_age_s(run.get("ts"), now) or 0) <= float(run.get("timeout_s") or 1800) \
+                    + sett["overdue_grace_s"]:
+                continue
+        elif st["state"] in ("GATING", "CLOSING") and age <= sett["gate_budget_s"]:
+            continue
+        out.append({"campaign": st["id"], "spec_id": st.get("spec_id"), "state": st["state"],
+                    "stuck_s": round(age)})
+    return out
+
+
+def ready_not_admitted_items(cfg, now, sett) -> list[dict]:
+    """Ready backlog items that are not starting although a slot is free, for longer than
+    `ready_grace_s`. Carries the runner pid and whether its tick has work in flight."""
+    from .queue import ACTIVE_STATES, slots_for
+    rows = store.list_campaigns(cfg)
+    active = [r for r in rows if r.get("state") in ACTIVE_STATES]
+    slots = slots_for(cfg)
+    if len(active) >= slots:
+        return []
+    lease = L.lease_status(cfg, now=now)
+    busy = any(_open_run(cfg, r["id"]) or r.get("state") in ("GATING", "CLOSING")
+               for r in active)
+    out = []
+    for st in rows:
+        b = st.get("backlog") or {}
+        if st.get("state") != "QUEUED" or b.get("ready") is not True or st.get("park_requested"):
+            continue
+        age = _age_s(b.get("since"), now) or 0
+        if age > sett["ready_grace_s"]:
+            out.append({"campaign": st["id"], "spec_id": st.get("spec_id"),
+                        "ready_for_s": round(age), "active": len(active), "slots": slots,
+                        "runner_pid": lease.get("pid") if lease.get("held") else None,
+                        "runner_busy": bool(lease.get("held") and busy)})
+    return sorted(out, key=lambda r: -r["ready_for_s"])
+
+
+def ping_digest(cfg, now=None) -> dict:
+    """The `conductor_ping` payload: what needs the conductor's eyes right now."""
+    from .queue import ACTIVE_STATES
+    now = now or dt.datetime.now().astimezone()
+    sett = settings(cfg)
+    rows = store.list_campaigns(cfg)
+    parked, waiting = [], []
+    for st in rows:
+        if st.get("state") == "PARKED":
+            park = st.get("park") or {}
+            since = park.get("since")
+            led = store.read_ledger(cfg, st["id"], types=["park", "note"])
+            last_park = max([e.get("seq") or 0 for e in led if e["type"] == "park"] or [0])
+            decided = any(e["type"] == "note" and (e.get("seq") or 0) > last_park for e in led)
+            parked.append({"campaign": st["id"], "spec_id": st.get("spec_id"),
+                           "reason": park.get("reason"), "detail": park.get("detail"),
+                           "since": since, "parked_for_s": round(_age_s(since, now) or 0),
+                           "decided": decided})
+        elif st.get("state") == "WAITING":
+            w = st.get("waiting") or {}
+            waiting.append({"campaign": st["id"], "spec_id": st.get("spec_id"),
+                            "waiting_for_s": round(_age_s(w.get("since"), now) or 0),
+                            "resume_to": w.get("resume_to")})
+    blocked = blocked_items(cfg, now, sett)
+    stuck = stuck_items(cfg, now, sett)
+    rna = ready_not_admitted_items(cfg, now, sett)
+    queued = [r for r in rows if r.get("state") == "QUEUED"]
+    ready = sum(1 for r in queued if (r.get("backlog") or {}).get("ready") is True)
+    counts = {"active": sum(1 for r in rows if r.get("state") in ACTIVE_STATES),
+              "queued": len(queued), "ready": ready,
+              "blocked": sum(1 for r in queued if (r.get("backlog") or {}).get("ready") is False),
+              "parked": len(parked), "undecided_parks": sum(1 for p in parked if not p["decided"]),
+              "stuck": len(stuck), "waiting": len(waiting)}
+    return {"blocked": blocked, "parked": parked, "stuck": stuck, "waiting": waiting,
+            "ready_not_admitted": rna, "counts": counts}
+
+
+def _ping(cfg, proj: dict, now) -> list[dict]:
+    """Append a `conductor_ping` when the interval since the persisted `last_ping` has passed.
+    The first ever call only seeds the clock."""
+    interval = float(settings(cfg)["ping_interval_s"])
+    if interval <= 0:
+        return []
+    now = now or dt.datetime.now().astimezone()
+    last = _age_s(proj.get("last_ping"), now)
+    if last is None:
+        proj["last_ping"] = store.now_iso(now)
+        return []
+    if last < interval:
+        return []
+    proj["last_ping"] = store.now_iso(now)
+    return [_append_locked(cfg, "conductor_ping", by="watchdog", data=ping_digest(cfg, now))]
+
+
 def watchdog_checks(cfg, now=None) -> list[tuple]:
     """Current problem conditions as `(key, type, campaign, data)`. Pure over the store, the
     ledgers and the runner lease; no writes."""
@@ -327,6 +465,16 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
         if silent is not None and silent > sett["silent_after_s"]:
             out.append((f"campaign_silent:{cid}:{r.get('state')}", "campaign_silent", cid,
                         {"state": r.get("state"), "silent_s": round(silent)}))
+    for b in blocked_items(cfg, now, sett):
+        out.append((f"backlog_blocked_long:{b['campaign']}", "backlog_blocked_long",
+                    b["campaign"], {k: b[k] for k in ("blocked_for_s", "blocked_by")}))
+    for s_ in stuck_items(cfg, now, sett):
+        out.append((f"state_stuck:{s_['campaign']}:{s_['state']}", "state_stuck", s_["campaign"],
+                    {"state": s_["state"], "stuck_s": s_["stuck_s"]}))
+    for r_ in ready_not_admitted_items(cfg, now, sett):
+        out.append((f"ready_not_admitted:{r_['campaign']}", "ready_not_admitted",
+                    r_["campaign"], {k: v for k, v in r_.items()
+                                     if k not in ("campaign", "spec_id")}))
     return out
 
 
@@ -348,7 +496,7 @@ def _watch(cfg, proj: dict, now=None) -> list[dict]:
     return out
 
 
-def sync(cfg, now=None) -> list[dict]:
+def sync(cfg, now=None, ping=False) -> list[dict]:
     """Project new ledger entries and run the watchdog; exactly once across concurrent
     callers (serialized by `events.lock`). Returns the events appended by this call."""
     sett = settings(cfg)
@@ -356,6 +504,8 @@ def sync(cfg, now=None) -> list[dict]:
         proj = _load_projector(cfg)
         out = _project(cfg, proj, sett)
         out += _watch(cfg, proj, now)
+        if ping:                                  # SPEC-0212: only followers ping
+            out += _ping(cfg, proj, now)
         _atomic_write(_projector_path(cfg), json.dumps(proj, indent=2) + "\n")
     return out
 
@@ -460,6 +610,13 @@ def summary_line(ev: dict) -> str:
     bits = " ".join(f"{k}={v}" for k, v in (ev.get("data") or {}).items()
                     if v not in (None, "", []))
     who = ev.get("campaign") or "-"
+    if ev.get("type") == "conductor_ping":
+        d, c = ev.get("data") or {}, (ev.get("data") or {}).get("counts") or {}
+        return (f"#{ev['id']} conductor_ping blocked={len(d.get('blocked') or [])} "
+                f"parked={c.get('parked', 0)}(undecided {c.get('undecided_parks', 0)}) "
+                f"stuck={len(d.get('stuck') or [])} waiting={c.get('waiting', 0)} "
+                f"ready_not_admitted={len(d.get('ready_not_admitted') or [])} "
+                f"active={c.get('active', 0)} queued={c.get('queued', 0)}")
     return f"#{ev['id']} {ev['type']} {who} {bits}".strip()
 
 
@@ -471,12 +628,12 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
     poll = float(poll_s if poll_s is not None else settings(cfg)["poll_s"])
     printed = 0
     with reader_lock(cfg, reader):
-        sync(cfg)
+        sync(cfg, ping=True)
         if not (cursors_dir(cfg) / f"{_safe(reader)}.json").is_file() and not from_start:
             # a brand-new reader starts at "now": history is for `wt queue events`, not alerts
             cursor_set(cfg, reader, _last_id(events_path(cfg)))
         while True:
-            sync(cfg)
+            sync(cfg, ping=True)
             after = cursor_get(cfg, reader)
             for ev in read_since(cfg, after, types=types):
                 out.write((json.dumps(ev, ensure_ascii=False) if as_json else summary_line(ev))

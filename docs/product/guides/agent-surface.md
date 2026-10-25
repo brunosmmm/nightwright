@@ -62,7 +62,7 @@ scraping tables. Shapes below are illustrative — fields evolve; trust the live
 | `wt.queue.add.v1` | `wt queue add SPEC --json [--yes]` | `{schema, campaign, spec_id, project, profile, base, worktree, branch, …, written}` (dry-run unless `--yes`) |
 | `wt.queue.tick.v1` | `wt queue tick --json` / `wt queue run --json-lines` | `{schema, steps:[{campaign,from,to,action,run_id,cost_usd,reason}], admitted, idle}` |
 | `wt.queue.park.v1` / `wt.queue.resume.v1` / `wt.queue.abandon.v1` | `wt queue park|resume|abandon ID --json [--yes]` | plan fields + `written` |
-| `wt.event.v1` | `wt queue events --follow --for READER` (one per line) | `{schema, id, ts, type, campaign, spec_id, project, by, data:{…}}` — parks, merges, failed runs, watchdog signals, mail (SPEC-0181) |
+| `wt.event.v1` | `wt queue events --follow --for READER` (one per line) | `{schema, id, ts, type, campaign, spec_id, project, by, data:{…}}` — parks, merges, failed runs, watchdog signals (`backlog_blocked_long`, `state_stuck`, `ready_not_admitted`), the periodic `conductor_ping` digest (SPEC-0212), mail (SPEC-0181) |
 | `wt.events.v1` | `wt queue events [--since ID] [--tail N]` | `{schema, events:[wt.event.v1…]}` |
 | `wt.conduct.status.v1` | `wt queue conduct-status --json` | `{schema, lease, slots, conductor_pid, counts, parked[], active[], unanswered_mail[], recent_events[]}` (SPEC-0182) |
 | `wt.message.v1` | `wt mailbox follow --to ADDR` (one per line) / `wt mailbox send --json` | `{schema, id, seq, ts, from, to, kind, campaign, re, text, needs_reply}` (SPEC-0183) |
