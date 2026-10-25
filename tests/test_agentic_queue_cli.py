@@ -177,7 +177,7 @@ def test_prioritize_dry_run_apply_ledger_and_errors(tmp_path, monkeypatch):
     st["state"] = "IMPLEMENTING"
     S.write_state(cfg, cid, st)
     r = run_cli(cfg, monkeypatch, ["queue", "prioritize", cid, "2", "--yes"])
-    assert r.exit_code != 0 and "only QUEUED or PARKED" in r.output
+    assert r.exit_code != 0 and "only QUEUED, WAITING or PARKED" in r.output
 
 
 def test_backlog_json_order_and_list_sections(tmp_path, monkeypatch):

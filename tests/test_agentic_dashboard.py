@@ -169,7 +169,8 @@ def test_multiple_projects_in_flight_are_labelled(tmp_path, monkeypatch):
                       project="comfort-assistant")
     p = Q.dashboard_payload(cfg)
     by = p["totals"]["by_project"]
-    assert by["comfort-assistant"] == {"active": 1, "attention": 0, "backlog": 0, "delivered": 0}
+    assert by["comfort-assistant"] == {"active": 1, "attention": 0, "waiting": 0, "backlog": 0,
+                                       "delivered": 0}
     assert by["Meta-Tools"]["active"] == 2 and by["Meta-Tools"]["backlog"] == 2
     assert {it["campaign"]: it["project"] for it in p["active"]}[other] == "comfort-assistant"
     assert all(b["project"] == "Meta-Tools" for b in p["backlog"])

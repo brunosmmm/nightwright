@@ -48,7 +48,8 @@ def _queue_table(payload: dict) -> Group:
         lease_txt = f"lease pid {lease.get('pid')} (heartbeat {hb}s ago){stale}"
     else:
         lease_txt = "no loop running"
-    active = [it for it in payload["items"] if it["state"] != "QUEUED"]
+    active = [it for it in payload["items"] if it["state"] not in ("QUEUED", "WAITING")]
+    waiting = [it for it in payload["items"] if it["state"] == "WAITING"]
     backlog = sorted((it for it in payload["items"] if it["state"] == "QUEUED"),
                      key=lambda it: it["backlog"]["position"])
     table = Table(title=f"Active ({slots['busy']}/{slots['total']}) · {lease_txt}",
@@ -72,7 +73,27 @@ def _queue_table(payload: dict) -> Group:
         table.add_row(it["campaign"], R.project_text(it.get("project")),
                       f"[{color}]{state}[/]" if color else state,
                       it["loops"], cost, _age_txt(it.get("updated_age_s")))
-    return Group(table, _backlog_table(backlog))
+    parts = [table]
+    if waiting:
+        parts.append(_waiting_table(waiting))
+    return Group(*parts, _backlog_table(backlog))
+
+
+def _waiting_table(items: list) -> Table:
+    """Started campaigns that need a slot (SPEC-0200): next in line, ahead of the backlog."""
+    table = Table(title=f"Waiting for a slot ({len(items)})", box=box.SIMPLE_HEAD, pad_edge=False)
+    table.add_column("campaign", min_width=24, no_wrap=True)
+    table.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
+    table.add_column("continues at", no_wrap=True)
+    table.add_column("pri", justify="right")
+    table.add_column("loops")
+    table.add_column("waiting", justify="right")
+    for it in items:
+        w = it.get("waiting") or {}
+        table.add_row(it["campaign"], R.project_text(it.get("project")),
+                      Text(str(w.get("resume_to") or "?"), style=R.state_style(w.get("resume_to"))),
+                      str(it.get("priority")), it["loops"], _age_txt(it.get("updated_age_s")))
+    return table
 
 
 def _backlog_table(items: list) -> Table:
@@ -160,7 +181,8 @@ def _dash_header(p: dict) -> Panel:
     slot_txt = Text.assemble(("slots ", "dim"), _bar(busy / total, width=max(total * 3, 6),
                                                     style="cyan"), f" {busy}/{slots.get('total')}")
     chips = Text(" ").join([
-        _chip("active", tot["active"], "cyan"), _chip("attention", tot["attention"], "yellow"),
+        _chip("active", tot["active"], "cyan"), _chip("waiting", tot.get("waiting", 0), "bright_blue"),
+        _chip("attention", tot["attention"], "yellow"),
         _chip("ready", tot["ready"], "green"), _chip("blocked", tot["blocked"], "magenta"),
         _chip("delivered", tot["delivered"], "green")])
     grid = Table.grid(expand=True, padding=(0, 2))
@@ -177,7 +199,8 @@ def _dash_header(p: dict) -> Panel:
             if i:
                 line.append("   ")
             line.append_text(R.project_text(name))
-            bits = [f"{c[k]} {k}" for k in ("active", "attention", "backlog", "delivered") if c.get(k)]
+            bits = [f"{c[k]} {k}" for k in ("active", "waiting", "attention", "backlog", "delivered")
+                    if c.get(k)]
             line.append(" ▸ " + (" · ".join(bits) or "idle"), style="dim")
         rows.append(line)
     body = Group(*rows)
@@ -307,6 +330,22 @@ def _attention_table(items: list) -> Table:
     return t
 
 
+def _dash_waiting(items: list) -> Table:
+    t = R.section_table(f"Waiting for a slot ({len(items)})", border_style="bright_blue")
+    t.add_column("campaign", no_wrap=True)
+    t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
+    t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
+    t.add_column("continues at", no_wrap=True)
+    t.add_column("pri", justify="right")
+    t.add_column("cost", justify="right", no_wrap=True)
+    t.add_column("for", justify="right", no_wrap=True)
+    for it in items:
+        t.add_row(it["campaign"], R.project_text(it.get("project")), _title_cell(it.get("spec_title")),
+                  Text(str(it.get("resume_to") or "?"), style=R.state_style(it.get("resume_to"))),
+                  str(it.get("priority")), f"${it['cost_usd']:.2f}", _ago(it.get("waiting_s")))
+    return t
+
+
 def _dash_backlog(items: list):
     if not items:
         return Group(Text("Backlog (0)", style="bold"),
@@ -375,6 +414,8 @@ def _dashboard(p: dict, width: int = 120, recent_hours: int = 24) -> Group:
         parts.extend(active)
     if p["attention"]:
         parts.append(_attention_table(p["attention"]))
+    if p.get("waiting"):
+        parts.append(_dash_waiting(p["waiting"]))
     parts.append(_dash_backlog(p["backlog"]))
     parts.append(_dash_delivered(p["delivered"], recent_hours, width))
     return Group(*parts)

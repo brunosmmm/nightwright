@@ -266,8 +266,8 @@ def complete_campaign_id(ctx, param, incomplete):
 @_soft
 def complete_campaign_state(ctx, param, incomplete):
     """Campaign state names (SPEC-0171/0176)."""
-    states = ["QUEUED", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING", "CLOSING",
-              "PARKED", "MERGED", "HANDED_OFF", "ABANDONED"]
+    states = ["QUEUED", "WAITING", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
+              "CLOSING", "PARKED", "MERGED", "HANDED_OFF", "ABANDONED"]
     return _items(states, incomplete)
 
 

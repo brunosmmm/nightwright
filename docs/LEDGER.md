@@ -95,7 +95,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (20/26 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (21/27 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -119,6 +119,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0194](./specs/0194-runner-follows-merged-code-re-exec-between-ticks.md) Runner follows merged code: re-exec between ticks, lease handover, config_invalid parks — done
   - [ ] [SPEC-0198](./specs/0198-wt-queue-followers-who-is-armed.md) wt queue followers: who is armed, with pids, cursors and lag — accepted
   - [ ] [SPEC-0199](./specs/0199-wt-campaign-runs-and-run.md) wt campaign runs / run: persona runs without reading run files — accepted
+  - [x] [SPEC-0200](./specs/0200-waiting-state-started-campaigns-wait-for-a-slot.md) WAITING state: started campaigns wait for a slot ahead of the backlog — done
   - [ ] [SPEC-0201](./specs/0201-test-reviewer-persona.md) Test reviewer persona: do the tests cover the spec, plus multi-reviewer REVIEWING — accepted
   - [ ] [SPEC-0202](./specs/0202-adversarial-reviewer-persona.md) Adversarial reviewer persona: security, logic and bug hunting — accepted
   - [ ] [SPEC-0203](./specs/0203-review-triage-combiner-waivers-and-automatic.md) Review triage: combiner, waivers and automatic follow-up ideas — accepted
@@ -327,6 +328,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0193](./specs/0193-persona-prompts-state-the-spec-change-guard-rules.md) | Persona prompts state the spec-change guard rules | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0194](./specs/0194-runner-follows-merged-code-re-exec-between-ticks.md) | Runner follows merged code: re-exec between ticks, lease handover, config_invalid parks | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0196](./specs/0196-set-property-reuses-a-drawer-after-body-text.md) | set_property reuses an existing drawer that sits after body text | feature | done | M4: cli ergonomics | 2026-10-25 |
+| [SPEC-0200](./specs/0200-waiting-state-started-campaigns-wait-for-a-slot.md) | WAITING state: started campaigns wait for a slot ahead of the backlog | feature | done | M9: agentic workflow | 2026-10-25 |
 
 ## Superseded / rejected
 

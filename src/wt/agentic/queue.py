@@ -38,8 +38,12 @@ from .gitops import GitError
 from .profiles import persona_settings, resolve_profile
 from .runner import select_runner
 
-STATES = ("QUEUED", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING", "CLOSING",
-          "PARKED", "MERGED", "HANDED_OFF", "ABANDONED")
+STATES = ("QUEUED", "WAITING", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
+          "CLOSING", "PARKED", "MERGED", "HANDED_OFF", "ABANDONED")
+# Slots are for campaigns that are open and delivering (ACTIVE_STATES). QUEUED = the backlog,
+# never started. WAITING (SPEC-0200) = started (worktree, commits, counters, brief) and ready to
+# continue, but no slot was free; it takes the next free slot ahead of the backlog and resumes
+# at `waiting.resume_to` without re-opening. PARKED = needs a decision; holds no slot.
 TERMINAL_STATES = store.TERMINAL_STATES
 ACTIVE_STATES = frozenset({"OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
                            "CLOSING"})
@@ -113,6 +117,25 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
     if blocked:
         return Step("park", persona=persona, reason="cost_cap", detail=blocked, resume_to=st)
     return Step(kind, persona=persona)
+
+
+def _active_count(cfg) -> int:
+    return sum(1 for s in store.list_campaigns(cfg) if s.get("state") in ACTIVE_STATES)
+
+
+def _enter_slot_or_wait(cfg, st: dict, to: str, reason: str, *, by="tick", busy=None,
+                        slots=None, extra_events=()) -> dict:
+    """Move a started campaign to `to`, or to WAITING when `to` needs a slot and none is free
+    (SPEC-0200). `busy`/`slots` default to the live counts."""
+    if to in ACTIVE_STATES:
+        busy = _active_count(cfg) if busy is None else busy
+        slots = slots_for(cfg) if slots is None else slots
+        if busy >= slots:
+            st["waiting"] = {"resume_to": to, "since": store.now_iso(), "reason": reason}
+            return _transition(cfg, st, "WAITING", f"{reason}_waiting", by=by,
+                               extra_events=extra_events)
+    st.pop("waiting", None)
+    return _transition(cfg, st, to, reason, by=by, extra_events=extra_events)
 
 
 def _resume_target(st: str) -> str:
@@ -820,16 +843,33 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True) -
         except ProjectConfigError:
             continue
         to = park.get("resume_to") or "QUEUED"
-        if to in ACTIVE_STATES and len(busy) >= slots:
-            continue
         frm = st.get("state")
         st["park"] = None
-        _transition(cfg, st, to, "config_recovered")
-        report.steps.append({"campaign": st["id"], "from": frm, "to": to,
+        _enter_slot_or_wait(cfg, st, to, "config_recovered", busy=len(busy), slots=slots)
+        report.steps.append({"campaign": st["id"], "from": frm, "to": st["state"],
                              "action": "recover", "reason": "config_recovered",
                              "run_id": None, "cost_usd": None})
         report.idle = False
-        (busy if to in ACTIVE_STATES else queued).append(st)
+        if st["state"] in ACTIVE_STATES:
+            busy.append(st)
+        elif st["state"] == "QUEUED":
+            queued.append(st)
+
+    # 0b. started campaigns waiting for a slot go first (SPEC-0200): they continue where they
+    #     stopped — no re-open — so their branch does not go stale behind new work
+    waiting = sorted((s for s in items if s.get("state") == "WAITING"), key=admission_key)
+    for st in waiting:
+        if not admit or ctx.stop.is_set() or len(busy) >= slots:
+            break
+        if st.get("park_requested"):
+            continue
+        to = (st.get("waiting") or {}).get("resume_to") or "IMPLEMENTING"
+        st.pop("waiting", None)
+        _transition(cfg, st, to, "slot_free")
+        report.steps.append({"campaign": st["id"], "from": "WAITING", "to": to,
+                             "action": "continue", "reason": "slot_free",
+                             "run_id": None, "cost_usd": None})
+        busy.append(st)
 
     # 1. admission + opening (serial); an item admitted now waits for the next tick
     ready = {}
@@ -1126,7 +1166,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> d
             "age_s": _age(r.get("created_at")), "updated_age_s": _age(r.get("updated_at")),
             "park": r.get("park"), "park_requested": bool(r.get("park_requested")),
             "worktree": repo.get("worktree"), "branch": repo.get("branch"),
-            "priority": _priority(r),
+            "priority": _priority(r), "waiting": r.get("waiting"),
         })
         b = backlog.get(r.get("id"))
         if b and r.get("state") == "QUEUED":
@@ -1210,7 +1250,7 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
     states = {s.get("id"): s for s in store.list_campaigns(cfg, include_terminal=True,
                                                             project=project)}
     base = queue_payload(cfg, include_terminal=True, project=project)
-    active, attention, backlog, delivered = [], [], [], []
+    active, attention, waiting, backlog, delivered = [], [], [], [], []
     spend_today = 0.0
     for it in base["items"]:
         st = states.get(it["campaign"]) or {}
@@ -1233,6 +1273,11 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                     "cost_usd": it["cost_usd"],
                     "duration_s": (_age(st.get("created_at"), now) or 0) - age,
                     "finished_age_s": age})
+            continue
+        if state == "WAITING":
+            waiting.append({**it, "spec_title": title,
+                            "resume_to": (st.get("waiting") or {}).get("resume_to"),
+                            "waiting_s": _age((st.get("waiting") or {}).get("since"), now)})
             continue
         if state == "QUEUED":
             backlog.append({"position": 0, "priority": it["priority"], "ready": True,
@@ -1260,19 +1305,23 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
     delivered = delivered[:recent]
     ready = sum(1 for b in backlog if b["ready"])
     by_project: dict = {}
-    for key, rows in (("active", active), ("attention", attention), ("backlog", backlog),
-                      ("delivered", delivered)):
+    waiting.sort(key=lambda w: (w.get("priority") or 3, -(w.get("waiting_s") or 0)))
+    for key, rows in (("active", active), ("attention", attention), ("waiting", waiting),
+                      ("backlog", backlog), ("delivered", delivered)):
         for r in rows:
             c = by_project.setdefault(r.get("project") or "?", {"active": 0, "attention": 0,
-                                                                 "backlog": 0, "delivered": 0})
+                                                                 "waiting": 0, "backlog": 0,
+                                                                 "delivered": 0})
             c[key] += 1
     return {
         "schema": "wt.queue.dashboard.v1", "generated_at": now.isoformat(timespec="seconds"),
         "project": project, "lease": base["lease"], "slots": base["slots"],
-        "totals": {"active": len(active), "attention": len(attention), "backlog": len(backlog),
+        "totals": {"active": len(active), "attention": len(attention), "waiting": len(waiting),
+                   "backlog": len(backlog),
                    "ready": ready, "blocked": len(backlog) - ready, "delivered": len(delivered),
                    "spend_today_usd": round(spend_today, 4), "by_project": by_project},
-        "active": active, "attention": attention, "backlog": backlog, "delivered": delivered,
+        "active": active, "attention": attention, "waiting": waiting, "backlog": backlog,
+        "delivered": delivered,
     }
 
 
@@ -1365,9 +1414,9 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
 def plan_prioritize(cfg, campaign, priority) -> dict:
     priority = check_priority(priority)
     st = store.read_state(cfg, campaign)
-    if st.get("state") not in ("QUEUED", "PARKED"):
-        raise ValueError(f"{campaign} is {st.get('state')}; only QUEUED or PARKED campaigns "
-                         f"can be re-prioritized")
+    if st.get("state") not in ("QUEUED", "WAITING", "PARKED"):
+        raise ValueError(f"{campaign} is {st.get('state')}; only QUEUED, WAITING or PARKED "
+                         f"campaigns can be re-prioritized")
     return {"campaign": campaign, "state": st.get("state"), "from": _priority(st),
             "to": priority}
 
@@ -1376,9 +1425,9 @@ def apply_prioritize(cfg, plan: dict) -> dict:
     cid = plan["campaign"]
     with store.item_lock(cfg, cid):
         st = store.read_state(cfg, cid)
-        if st.get("state") not in ("QUEUED", "PARKED"):
-            raise ValueError(f"{cid} is {st.get('state')}; only QUEUED or PARKED campaigns "
-                             f"can be re-prioritized")
+        if st.get("state") not in ("QUEUED", "WAITING", "PARKED"):
+            raise ValueError(f"{cid} is {st.get('state')}; only QUEUED, WAITING or PARKED "
+                             f"campaigns can be re-prioritized")
         ev = ("priority", {"from": _priority(st), "to": plan["to"]})
         st["priority"] = plan["to"]
         return _transition(cfg, st, st["state"], "prioritized", by="human", extra_events=[ev])
@@ -1394,7 +1443,8 @@ def plan_park(cfg, campaign, reason) -> dict:
             "mode": "deferred" if running else "immediate",
             "note": ("a loop holds the lease: the running step finishes and is recorded, then "
                      "the park applies" if running else "no loop is running: parks now"),
-            "resume_to": _resume_target(s) if s != "QUEUED" else "QUEUED"}
+            "resume_to": ((st.get("waiting") or {}).get("resume_to") or "IMPLEMENTING")
+            if s == "WAITING" else (_resume_target(s) if s != "QUEUED" else "QUEUED")}
 
 
 def apply_park(cfg, plan: dict) -> dict:
@@ -1421,9 +1471,11 @@ def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loop
     target = to or park.get("resume_to") or "IMPLEMENTING"
     if target not in RESUMABLE_STATES:
         raise ValueError(f"cannot resume to {target!r}; one of {', '.join(RESUMABLE_STATES)}")
+    waits = target in ACTIVE_STATES and _active_count(cfg) >= slots_for(cfg)
     return {"campaign": campaign, "from": "PARKED", "to": target, "note": note,
             "raise_cap": raise_cap, "reset_loops": bool(reset_loops),
-            "park": park, "cap_usd": (st.get("cost") or {}).get("cap_usd")}
+            "park": park, "cap_usd": (st.get("cost") or {}).get("cap_usd"),
+            "waits_for_slot": waits}
 
 
 def apply_resume(cfg, plan: dict) -> dict:
@@ -1449,14 +1501,14 @@ def apply_resume(cfg, plan: dict) -> dict:
         st.pop("park_requested", None)
         ev = ("resume", {"to": plan["to"], "note": plan.get("note"),
                          "cap_usd": plan.get("raise_cap"), "loops_reset": bool(plan.get("reset_loops"))})
-        return _transition(cfg, st, plan["to"], "resumed", by="human", extra_events=[ev])
+        return _enter_slot_or_wait(cfg, st, plan["to"], "resumed", by="human", extra_events=[ev])
 
 
 def plan_abandon(cfg, campaign, *, keep_worktree=False) -> dict:
     st = store.read_state(cfg, campaign)
-    if st.get("state") not in ("PARKED", "QUEUED"):
-        raise ValueError(f"{campaign} is {st.get('state')}; only PARKED or QUEUED campaigns can "
-                         f"be abandoned (park it first)")
+    if st.get("state") not in ("PARKED", "QUEUED", "WAITING"):
+        raise ValueError(f"{campaign} is {st.get('state')}; only PARKED, QUEUED or WAITING "
+                         f"campaigns can be abandoned (park it first)")
     repo = st.get("repo") or {}
     wt_path = repo.get("worktree")
     present = bool(wt_path and os.path.isdir(wt_path))

@@ -28,6 +28,7 @@ SCHEMA = "wt.event.v1"
 # type -> required data keys
 EVENT_TYPES = {
     "admitted": (),
+    "waiting": ("from",),
     "parked": ("reason", "detail", "resume_to"),
     "resumed": ("to",),
     "merged": ("merged_sha",),
@@ -182,6 +183,10 @@ def _project_ledger_event(ev: dict, st: dict, sett: dict, warned: bool):
         to, frm = ev.get("to"), ev.get("from")
         if to == "OPENING" and frm == "QUEUED":
             return "admitted", {}
+        if to == "WAITING":                                   # SPEC-0200
+            return "waiting", {"from": frm}
+        if frm == "WAITING":
+            return "admitted", {"from": "WAITING", "to": to}
         if to == "MERGED":
             return "merged", {"merged_sha": (st.get("close") or {}).get("merged_sha")}
         if to == "HANDED_OFF":
