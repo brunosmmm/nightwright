@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from test_agentic_e2e import added, impl_done, make_cfg, make_repo, run_cli, script, triage
+from test_agentic_e2e import added, impl_done, make_cfg, make_repo, review, run_cli, script, triage
 from wt.agentic import queue as Q
 from wt.agentic import schemas as SC
 from wt.agentic import store as S
@@ -21,7 +21,7 @@ def _run_to_idle(tmp_path, monkeypatch, entries):
 
 
 def test_every_saved_record_matches_its_schema(tmp_path, monkeypatch):
-    cfg, cid = _run_to_idle(tmp_path, monkeypatch, [impl_done()])
+    cfg, cid = _run_to_idle(tmp_path, monkeypatch, [impl_done(), review()])
     assert S.read_state(cfg, cid)["state"] == "MERGED"
     cdir = S.campaign_dir(cfg, cid)
 
@@ -62,14 +62,14 @@ def test_triage_path_records_are_valid_too(tmp_path, monkeypatch):
     """A failing gate → triage → fix loop exercises finding/park-free paths and more runs."""
     repo = make_repo(tmp_path, test_gate="test -f feature.txt && grep -q fixed feature.txt")
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [
-        impl_done(), triage("fix"), impl_done(content="fixed\n")]))
+        impl_done(), triage("fix"), impl_done(content="fixed\n"), review()]))
     cid = added(cfg, monkeypatch)
     r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
     assert r.exit_code == 0, r.output
     cdir = S.campaign_dir(cfg, cid)
     ledger = [json.loads(line) for line in (cdir / "ledger.jsonl").read_text().splitlines()]
     assert [p for rec in ledger for p in SC.ledger_problems(rec)] == []
-    assert len([d for d in (cdir / "runs").iterdir() if d.is_dir()]) == 3
+    assert len([d for d in (cdir / "runs").iterdir() if d.is_dir()]) == 4
     failed = [json.loads(p.read_text()) for p in (cdir / "gates").glob("*.json")]
     assert any(not g["ok"] for g in failed) and any(g["ok"] for g in failed)
 
@@ -113,7 +113,7 @@ def test_runner_crash_is_journaled(tmp_path, monkeypatch):
 
 
 def test_runner_log_cli(tmp_path, monkeypatch):
-    cfg, cid = _run_to_idle(tmp_path, monkeypatch, [impl_done()])
+    cfg, cid = _run_to_idle(tmp_path, monkeypatch, [impl_done(), review()])
     r = run_cli(cfg, monkeypatch, ["queue", "runner-log", "--json"])
     d = json.loads(r.output)
     assert d["schema"] == "wt.runner.log.v1" and d["records"][-1]["kind"] == "stop"
