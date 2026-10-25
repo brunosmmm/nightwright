@@ -163,9 +163,12 @@ _SEVERITIES = ["must_fix", "major", "minor", "nit"]
 
 SPEC_REVIEWER_SCHEMA = {
     "type": "object",
-    "required": ["verdict", "findings"],
+    "required": ["verdict", "findings", "size", "tone", "rationale"],
     "properties": {
         "verdict": {"type": "string", "enum": ["approve", "revise", "split"]},
+        "size": {"type": "string", "enum": ["xs", "s", "m", "l", "xl"]},
+        "tone": {"type": "string", "enum": ["cost-effective", "high-end", "critical"]},
+        "rationale": {"type": "string"},
         "findings": {"type": "array", "items": {
             "type": "object", "required": ["severity", "title"],
             "properties": {"severity": {"type": "string", "enum": _SEVERITIES},

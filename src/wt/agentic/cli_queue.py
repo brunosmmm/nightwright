@@ -36,7 +36,30 @@ def _age_txt(age) -> str:
     return f"{age}s" if age is not None and age < 120 else (f"{age // 60}m" if age else "")
 
 
-def _queue_table(payload: dict) -> Group:
+_WIDE_COLS = 110        # below this the list table has no room for size / tone / profile columns
+
+
+def _size_tone(it: dict) -> str:
+    """`m/high-end`, or `-` for a campaign without sizing (SPEC-0219)."""
+    size, tone = it.get("size"), it.get("tone")
+    return f"{size or '?'}/{tone or '?'}" if size or tone else "-"
+
+
+def _profile_text(it: dict) -> Text:
+    """The profile name, then a dim `(flag)`/`(default)` when it was not picked by the review."""
+    t = Text(str(it.get("profile") or "-"))
+    src = it.get("profile_source")
+    if src and src != "review":
+        t.append(f" ({src})", style="dim")
+    return t
+
+
+def _source_marker(it: dict) -> Text:
+    src = it.get("profile_source")
+    return Text(f" ({src})", style="dim") if src and src != "review" else Text()
+
+
+def _queue_table(payload: dict, width: int | None = None) -> Group:
     """The human listing: an Active table (the slots) and a Backlog table (admission order).
     Dense enough for an 80-column terminal, ids never cut (they are what a human copies into
     the next command); the park reason rides in the state cell."""
@@ -57,6 +80,11 @@ def _queue_table(payload: dict) -> Group:
     table.add_column("campaign", min_width=24, no_wrap=True)
     table.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     table.add_column("state", no_wrap=True)
+    wide = (width or console.width) >= _WIDE_COLS
+    if wide:
+        table.add_column("size", no_wrap=True)
+        table.add_column("tone", no_wrap=True)
+        table.add_column("profile", no_wrap=True)
     table.add_column("loops")
     table.add_column("cost")
     table.add_column("age")
@@ -72,8 +100,15 @@ def _queue_table(payload: dict) -> Group:
             state = f"{state}:park?"
         color = {"PARKED": "yellow", "MERGED": "green", "HANDED_OFF": "green",
                  "ABANDONED": "dim"}.get(it["state"])
-        table.add_row(it["campaign"], R.project_text(it.get("project")),
-                      f"[{color}]{state}[/]" if color else state,
+        campaign, extra = Text(it["campaign"]), []
+        if wide:
+            extra = [it.get("size") or "-", it.get("tone") or "-", _profile_text(it)]
+        elif it.get("size") or it.get("tone"):     # no room for columns: a dim line instead
+            campaign.append("\n" + _size_tone(it) + " → " + str(it.get("profile") or "-"),
+                            style="dim")
+            campaign.append_text(_source_marker(it))
+        table.add_row(campaign, R.project_text(it.get("project")),
+                      f"[{color}]{state}[/]" if color else state, *extra,
                       it["loops"], cost, _age_txt(it.get("updated_age_s")))
     parts = [table]
     if waiting:
@@ -87,6 +122,7 @@ def _waiting_table(items: list) -> Table:
     table.add_column("campaign", min_width=24, no_wrap=True)
     table.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     table.add_column("continues at", no_wrap=True)
+    table.add_column("size", no_wrap=True)
     table.add_column("pri", justify="right")
     table.add_column("loops")
     table.add_column("waiting", justify="right")
@@ -94,7 +130,7 @@ def _waiting_table(items: list) -> Table:
         w = it.get("waiting") or {}
         table.add_row(it["campaign"], R.project_text(it.get("project")),
                       Text(str(w.get("resume_to") or "?"), style=R.state_style(w.get("resume_to"))),
-                      str(it.get("priority")), it["loops"], _age_txt(it.get("updated_age_s")))
+                      _size_tone(it), str(it.get("priority")), it["loops"], _age_txt(it.get("updated_age_s")))
     return table
 
 
@@ -104,6 +140,7 @@ def _backlog_table(items: list) -> Table:
     table.add_column("#", justify="right")
     table.add_column("campaign", min_width=24, no_wrap=True)
     table.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
+    table.add_column("size", no_wrap=True)
     table.add_column("pri", justify="right")
     table.add_column("waiting on")
     table.add_column("age")
@@ -111,7 +148,7 @@ def _backlog_table(items: list) -> Table:
         b = it["backlog"]
         waiting = "[green]ready[/]" if b["ready"] else "; ".join(b["blocked_by"])
         table.add_row(str(b["position"]), it["campaign"], R.project_text(it.get("project")),
-                      str(b["priority"]),
+                      _size_tone(it), str(b["priority"]),
                       waiting, _age_txt(it.get("age_s")))
     return table
 
@@ -285,7 +322,9 @@ def _active_panel(it: dict) -> Panel:
     grid.add_column(overflow="fold")
     grid.add_row("spec", _spec_cell(it["spec_id"] or it.get("idea_id"), it.get("spec_title")))
     where = R.project_text(it.get("project"))
-    where.append(f" · {it.get('profile')} · {it.get('branch') or 'no branch yet'}", style="dim")
+    where.append(f" · {_size_tone(it)} → {it.get('profile')}", style="dim")
+    where.append_text(_source_marker(it))
+    where.append(f" · {it.get('branch') or 'no branch yet'}", style="dim")
     grid.add_row("project", where)
     grid.add_row("phase", _stepper(it["state"], it.get("phase_index")))
     grid.add_row("now", _activity_text(it.get("activity"), it["state"]))
@@ -340,13 +379,14 @@ def _dash_waiting(items: list) -> Table:
     t.add_column("campaign", no_wrap=True)
     t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
+    t.add_column("size", no_wrap=True)
     t.add_column("continues at", no_wrap=True)
     t.add_column("pri", justify="right")
     t.add_column("cost", justify="right", no_wrap=True)
     t.add_column("for", justify="right", no_wrap=True)
     for it in items:
         t.add_row(it["campaign"], R.project_text(it.get("project")), _title_cell(it.get("spec_title")),
-                  Text(str(it.get("resume_to") or "?"), style=R.state_style(it.get("resume_to"))),
+                  _size_tone(it), Text(str(it.get("resume_to") or "?"), style=R.state_style(it.get("resume_to"))),
                   str(it.get("priority")), f"${it['cost_usd']:.2f}", _ago(it.get("waiting_s")))
     return t
 
@@ -360,8 +400,9 @@ def _dash_backlog(items: list):
     t.add_column("campaign", no_wrap=True)
     t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
+    t.add_column("size", no_wrap=True)
     t.add_column("pri", justify="right")
-    t.add_column("status", overflow="fold", ratio=1, min_width=8)
+    t.add_column("status", overflow="fold", ratio=2, min_width=14)
     t.add_column("waiting", justify="right", no_wrap=True)
     for b in items:
         status = (Text("● ready", style="green") if b.get("ready")
@@ -369,7 +410,7 @@ def _dash_backlog(items: list):
                                      ("; ".join(b.get("blocked_by") or []), "bold yellow")))
         pri = b.get("priority")
         t.add_row(str(b.get("position")), b["campaign"], R.project_text(b.get("project")),
-                  _title_cell(b.get("spec_title")),
+                  _title_cell(b.get("spec_title")), _size_tone(b),
                   Text(str(pri), style="bold" if pri is not None and pri <= 2 else "dim"),
                   status, _ago(b.get("age_s")))
     return t

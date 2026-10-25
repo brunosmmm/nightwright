@@ -158,6 +158,14 @@ def attach(campaign_group):
         cap = f" / ${r['cap_usd']:.2f}" if r["cap_usd"] else ""
         est = f" (~${r['estimated_usd']:.2f} est.)" if r["estimated_usd"] > 0 else ""
         console.print(f"  loops {r['loops']}  runs {r['runs']}  cost ${r['cost_usd']:.2f}{est}{cap}")
+        sizing = st.get("sizing") or {}
+        if sizing:                                                     # SPEC-0219
+            src = f" ({sizing['source']})" if sizing.get("source") else ""
+            console.print(f"  size {sizing.get('size') or '-'}  tone {sizing.get('tone') or '-'}  "
+                          f"profile {r['profile'] or '-'}{src}", highlight=False)
+            console.print(f"  sizing: {sizing.get('reason') or '-'}"
+                          + (f" — {sizing['rationale']}" if sizing.get("rationale") else ""),
+                          highlight=False)
         repo = st.get("repo") or {}
         if repo:
             missing = "" if st["worktree_present"] else " (missing)"

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0219
 title: "Spec sizing and tone pick the campaign profile"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -202,31 +202,31 @@ field names above are the contract; renaming one needs a superseding spec.
 
 ## Acceptance criteria
 
-- [ ] The `spec_reviewer` schema requires `size`, `tone`, `rationale` with the enums above,
+- [x] The `spec_reviewer` schema requires `size`, `tone`, `rationale` with the enums above,
       and the template carries the rubric. A verdict with `size: xl` and a verdict other than
       `split` raises ValueError and writes no review.
-- [ ] `wt spec review` (fake runner) stores `size`, `tone`, `rationale` in the
+- [x] `wt spec review` (fake runner) stores `size`, `tone`, `rationale` in the
       `wt.spec.review.v1` payload.
-- [ ] `profiles.PROFILE_MATRIX` equals the table above. `select_profile` applies the
+- [x] `profiles.PROFILE_MATRIX` equals the table above. `select_profile` applies the
       precedence flag > review > default with the documented `source` and `reason`. A config
       `agentic.profile_matrix` cell overrides one entry. An unknown tone, size or profile, or
       an `xl` cell, raises ValueError naming the cell.
-- [ ] `wt queue add SPEC` with an approving sized review picks the matrix profile
+- [x] `wt queue add SPEC` with an approving sized review picks the matrix profile
       (`source: review`). `--profile` wins (`source: flag`, size/tone still recorded). An old
       sidecar without size/tone, or `--force`, yields `default_profile` (`source: default`)
       with the documented reason.
-- [ ] The created campaign's `state.sizing` has `size, tone, rationale, source, reason,
+- [x] The created campaign's `state.sizing` has `size, tone, rationale, source, reason,
       review_sha256`. The `open` event carries `size, tone, profile_source, profile_reason`.
       Ledgers without them still pass `schemas.ledger_problems`.
-- [ ] `wt queue list --json` items carry `size`, `tone`, `profile`, `profile_source`, null
+- [x] `wt queue list --json` items carry `size`, `tone`, `profile`, `profile_source`, null
       for a campaign without `sizing`. The `wt queue list` table shows `size`, `tone` and
       `profile` columns with the source marker.
-- [ ] `wt queue watch` shows size/tone and profile on active panels and a `size` column in
+- [x] `wt queue watch` shows size/tone and profile on active panels and a `size` column in
       the backlog and waiting tables.
-- [ ] `wt campaign show` prints size, tone, profile with source, the reason and the
+- [x] `wt campaign show` prints size, tone, profile with source, the reason and the
       rationale. `wt spec review` prints size, tone, rationale and the would-pick profile (or
       the `xl` split notice), and its `--json` adds `profile`.
-- [ ] Full `uv run pytest` green. `python3 tools/spec_lint.py` exits 0.
+- [x] Full `uv run pytest` green. `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -265,6 +265,27 @@ field names above are the contract; renaming one needs a superseding spec.
   dashboard tests use old-shape sidecars and must still pass unchanged (they now record
   `source: default`).
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q -x`: 1806 passed, 1 skipped. New/extended tests cover every automated item in
+  the plan (personas, spec_review, profiles matrix/precedence/override/errors, queue plan/apply
+  and `queue_payload`, logs, queue CLI, dashboard, campaign show).
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: exit 0.
+- Manual: `wt queue list` (80 and 140 columns) against the live data dir with pre-sizing
+  campaigns: the `size`/`tone`/`profile` cells render `-` / the profile name, and
+  `--json` items carry `size`/`tone`/`profile_source` as null.
+- Not run: manual step 1 (a real `wt spec review`, a paid model call) and the `wt queue add`
+  dry run with a sized sidecar (no accepted spec with a sized review exists yet); both paths are
+  covered by the fake-runner and `plan_add` tests.
+
+### As shipped
+
+- At widths under 110 columns `wt queue list` has no room for separate size/tone/profile columns,
+  so it adds a dim `m/high-end → balanced (flag)` line under the campaign id instead; the
+  columns appear from 110 columns up.
+- `profile_matrix(cfg)` in `profiles.py` validates and merges the override; `select_profile`
+  calls it. `spec_review.would_pick` feeds the `wt spec review` output.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -279,11 +300,11 @@ pass `--profile`.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

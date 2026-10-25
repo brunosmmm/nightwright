@@ -132,6 +132,69 @@ def resolve_profile(cfg, name=None):
     return profile
 
 
+# Spec sizing and tone pick the profile (SPEC-0219): tone -> size -> profile. `xl` is "too big
+# for one campaign" (the review verdict is `split`), so it has no cell.
+SIZES = ("xs", "s", "m", "l", "xl")
+TONES = ("cost-effective", "high-end", "critical")
+PROFILE_MATRIX = {
+    "cost-effective": {"xs": "frugal", "s": "frugal", "m": "balanced", "l": "balanced"},
+    "high-end": {"xs": "balanced", "s": "balanced", "m": "balanced", "l": "thorough"},
+    "critical": {"xs": "thorough", "s": "thorough", "m": "thorough", "l": "thorough"},
+}
+
+
+def profile_matrix(cfg):
+    """The builtin matrix with `agentic.profile_matrix` deep-merged over it. ValueError naming
+    the cell for an unknown tone, size or profile, or for an `xl` cell."""
+    delta = _agentic(cfg).get("profile_matrix") or {}
+    matrix = deep_merge(PROFILE_MATRIX, delta)
+    known = known_profiles(cfg)
+    for tone, row in delta.items():
+        if tone not in TONES:
+            raise ValueError(f"profile_matrix: unknown tone {tone!r}; known: {', '.join(TONES)}")
+        if not isinstance(row, dict):
+            raise ValueError(f"profile_matrix[{tone}]: expected a mapping of size to profile")
+        for size, name in row.items():
+            if size == "xl":
+                raise ValueError(f"profile_matrix[{tone}][xl]: xl has no profile "
+                                 f"(too big for one campaign: split it)")
+            if size not in SIZES:
+                raise ValueError(f"profile_matrix[{tone}][{size}]: unknown size {size!r}; "
+                                 f"known: {', '.join(s for s in SIZES if s != 'xl')}")
+            if name not in known:
+                raise ValueError(f"profile_matrix[{tone}][{size}]: unknown profile {name!r}; "
+                                 f"known: {', '.join(known)}")
+    return matrix
+
+
+def select_profile(cfg, *, flag=None, review=None) -> dict:
+    """Pick the campaign profile: `--profile` flag > the approving review's size and tone via
+    the matrix > `agentic.default_profile`. Pure (no I/O beyond `cfg`). Returns
+    `{profile, source: flag|review|default, reason, size, tone}`; size and tone are recorded
+    whenever the review has valid ones, even when the flag wins."""
+    matrix = profile_matrix(cfg)
+    review = review or {}
+    size, tone = review.get("size"), review.get("tone")
+    sized = (size in SIZES and tone in TONES) and review.get("verdict", "approve") == "approve"
+    if not sized:
+        size = tone = None
+    if flag:
+        return {"profile": flag, "source": "flag", "reason": f"--profile {flag}",
+                "size": size, "tone": tone}
+    if sized and size != "xl":
+        name = matrix[tone][size]
+        return {"profile": name, "source": "review", "size": size, "tone": tone,
+                "reason": f"size {size}, tone {tone} → {name}"}
+    default = _agentic(cfg).get("default_profile") or "balanced"
+    if not review:
+        why = "no approving review (--force)"
+    elif sized:
+        why = f"size {size} has no profile (split recommended)"
+    else:
+        why = "review predates sizing (no size/tone)"
+    return {"profile": default, "source": "default", "reason": why, "size": size, "tone": tone}
+
+
 def reviewers_of(profile):
     """The effective reviewer personas for REVIEWING (SPEC-0201): `profile["reviewers"]`, or
     `["conformance_reviewer"]` when the key is absent or empty (SPEC-0187 behavior)."""

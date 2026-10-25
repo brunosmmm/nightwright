@@ -16,7 +16,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import spec_lint as L  # noqa: E402
 
-APPROVE = {"verdict": "approve",
+SIZED = {"size": "m", "tone": "high-end", "rationale": "7 ACs across three modules."}
+APPROVE = {"verdict": "approve", **SIZED,
            "findings": [{"severity": "nit", "section": "Context", "title": "wording"}],
            "suggested_splits": []}
 
@@ -41,7 +42,7 @@ def test_review_writes_valid_sidecar(tmp_path, monkeypatch):
     out = json.loads(r.stdout)
     side = SR.load_review(cfg, "SPEC-0001", SR.spec_sha256(_spec(repo)))
     assert not (repo / "docs" / "specs" / "reviews").exists()
-    assert out == side
+    assert out.pop("profile") == "balanced" and out == side        # SPEC-0219: not stored
     assert side["schema"] == "wt.spec.review.v1" and side["spec_id"] == "SPEC-0001"
     assert side["verdict"] == "approve" and side["cost_usd"] == 0.42
     assert side["spec_sha256"] == SR.spec_sha256(_spec(repo)) and side["model"] == "sonnet"
@@ -50,7 +51,7 @@ def test_review_writes_valid_sidecar(tmp_path, monkeypatch):
 
 
 def test_review_pretty_output(tmp_path, monkeypatch):
-    split = {"verdict": "split", "findings": [{"severity": "major", "section": "Design",
+    split = {"verdict": "split", **SIZED, "findings": [{"severity": "major", "section": "Design",
                                                "title": "too big", "detail": "x"}],
              "suggested_splits": [{"title": "Part A", "scope": "first half"}]}
     repo, cfg = _setup(tmp_path, [_review_entry(split)])
@@ -62,8 +63,14 @@ def test_review_pretty_output(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("entry", [
     _review_entry(malformed=True),
-    _review_entry({"verdict": "maybe", "findings": []}),
-    _review_entry({"verdict": "approve", "findings": [{"severity": "must_fix", "title": "t"}]}),
+    _review_entry({"verdict": "maybe", **SIZED, "findings": []}),
+    _review_entry({"verdict": "approve", **SIZED, "findings": [{"severity": "must_fix",
+                                                                 "title": "t"}]}),
+    _review_entry({"verdict": "approve", "findings": []}),                 # SPEC-0219: unsized
+    _review_entry({"verdict": "approve", "size": "xl", "tone": "critical", "rationale": "r",
+                   "findings": []}),
+    _review_entry({"verdict": "revise", "size": "xl", "tone": "critical", "rationale": "r",
+                   "findings": [{"severity": "major", "title": "t"}]}),
     _review_entry(exit_code=1),
     _review_entry(timed_out=True),
 ])
@@ -76,7 +83,8 @@ def test_bad_review_errors_and_writes_nothing(tmp_path, monkeypatch, entry):
 
 def test_review_request_is_read_only_and_persona_has_defaults():
     p = PS.get_persona("spec_reviewer")
-    assert p.read_only and p.schema["required"] == ["verdict", "findings"]
+    assert p.read_only and p.schema["required"] == ["verdict", "findings", "size", "tone",
+                                                  "rationale"]
     assert p.schema["properties"]["verdict"]["enum"] == ["approve", "revise", "split"]
     for ph in ("{{spec_id}}", "{{spec_text}}", "{{idea_text}}", "{{schema_text}}"):
         assert ph in p.template
@@ -199,3 +207,56 @@ def test_current_corpus_has_no_placeholders():
     bad = [(s["file"], L.first_placeholder(s["text"])) for s in L.load_specs()
            if s["status"] in L.PLACEHOLDER_STATUSES and L.first_placeholder(s["text"])]
     assert bad == []
+
+
+# ---- sizing and tone (SPEC-0219) -------------------------------------------------------------
+
+def test_review_stores_size_tone_rationale(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [_review_entry()])
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
+    assert r.exit_code == 0, r.output
+    out = json.loads(r.output)
+    side = json.loads((repo / "docs" / "specs" / "reviews" / "SPEC-0001.json").read_text())
+    assert (side["size"], side["tone"], side["rationale"]) == ("m", "high-end", SIZED["rationale"])
+    assert side["schema"] == "wt.spec.review.v1"
+    assert out.pop("profile") == "balanced" and out == side      # would-pick, not stored
+    assert "profile" not in side
+
+
+def test_review_text_shows_size_tone_and_would_pick(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [_review_entry({**APPROVE, "size": "xs", "tone": "critical"})])
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001"])
+    assert r.exit_code == 0, r.output
+    assert "size xs" in r.output and "tone critical" in r.output
+    assert "rationale: 7 ACs" in r.output and "→ profile thorough" in r.output
+
+
+def test_xl_split_is_accepted_and_has_no_profile(tmp_path, monkeypatch):
+    xl = {"verdict": "split", "size": "xl", "tone": "high-end", "rationale": "12 ACs",
+          "findings": [], "suggested_splits": [{"title": "A"}]}
+    repo, cfg = _setup(tmp_path, [_review_entry(xl), _review_entry(xl)])
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001"])
+    assert r.exit_code == 0, r.output
+    assert "xl: split recommended, no profile" in r.output
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
+    out = json.loads(r.output)
+    assert out["size"] == "xl" and out["profile"] is None
+
+
+@pytest.mark.parametrize("verdict", ["approve", "revise"])
+def test_xl_without_split_is_rejected_and_writes_nothing(tmp_path, verdict):
+    repo, cfg = _setup(tmp_path, [_review_entry({"verdict": verdict, "size": "xl",
+                                                 "tone": "high-end", "rationale": "r",
+                                                 "findings": []})])
+    with pytest.raises(ValueError):
+        SR.review_spec(cfg, "SPEC-0001")
+    assert not (repo / "docs" / "specs" / "reviews").exists()
+    with pytest.raises(ValueError, match="xl"):
+        SR._check_verdict("SPEC-0001", {"verdict": verdict, "size": "xl", "findings": []})
+
+
+def test_template_carries_the_rubric():
+    t = PS.get_persona("spec_reviewer").template
+    for word in ("`xs`", "`s`", "`m`", "`l`", "`xl`", "`cost-effective`", "`high-end`",
+                 "`critical`", "`rationale`"):
+        assert word in t

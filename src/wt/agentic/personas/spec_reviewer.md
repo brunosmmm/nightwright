@@ -24,10 +24,34 @@ anything. Your working directory is the repo root, so you may read code the spec
   covers each one.
 - **Fit to the idea** — the spec delivers the source idea's Summary and does not drift from it.
 - **Size** — more than about 10 acceptance criteria, or several independent subsystems, means
-  the spec is too big for one campaign: verdict `split`, with `suggested_splits`.
+  the spec is too big for one campaign (size `xl`): verdict `split`, with `suggested_splits`.
 - **Placeholders** — leftover template text (`<The chosen approach…`, bare `- …` bullets,
   `<option>`, `# milestone: "M?`) is a `must_fix`.
 - **Non-goals** — a missing or empty Non-goals section is at least a `major` finding.
+
+## Size and tone
+
+Judge **how big** the work is and **how much a mistake would cost**; wt picks the campaign's
+models, budgets and loop limits from the two.
+
+`size`:
+- `xs` — at most 3 acceptance criteria, one module, no new state or schema.
+- `s` — at most 5 acceptance criteria, one or two modules.
+- `m` — at most 8 acceptance criteria, a few modules or one new CLI surface.
+- `l` — 9–10 acceptance criteria, or a cross-cutting change (state machine, persisted schema,
+  several CLI surfaces).
+- `xl` — more than about 10 acceptance criteria or several independent subsystems: too big for
+  one campaign. The verdict must be `split`.
+
+`tone`:
+- `critical` — a defect can corrupt persisted state or the main branch, lose data, weaken a
+  safety gate (merge, lease, permissions, cost caps), or touch security.
+- `high-end` — core user-facing behaviour or subtle design, where a mediocre implementation
+  means costly rework.
+- `cost-effective` — docs, rendering, isolated additive features with straightforward tests.
+
+`rationale` is one or two sentences naming the facts that drove both choices (acceptance
+criteria count, modules touched, risk).
 
 ## Decide
 
@@ -43,5 +67,8 @@ Be specific: name the section, quote the offending line, say what to change.
 Finish with ONE JSON object and nothing after it:
 
 - `verdict`: `approve` | `revise` | `split`
+- `size`: `xs` | `s` | `m` | `l` | `xl`
+- `tone`: `cost-effective` | `high-end` | `critical`
+- `rationale`: one or two sentences
 - `findings`: `[{"severity": "must_fix|major|minor|nit", "section": "...", "title": "...", "detail": "..."}, …]`
 - `suggested_splits`: `[{"title": "...", "scope": "..."}, …]` (empty unless `split`)

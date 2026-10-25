@@ -317,3 +317,69 @@ def test_capability_page_lists_reviewers_and_categories():
     from wt.agentic import personas as PS
     for needle in ("adversarial_reviewer", "conformance_reviewer", *PS.ADVERSARIAL_CATEGORIES):
         assert needle in text, needle
+||||||| parent of 03ed8e5 (wt(SPEC-0219-20261025-e1d5): implementer run 002 — SPEC-0219: spec sizing and tone now pick the campaign profile. The revie)
+
+
+
+
+# ---- sizing and tone pick the profile (SPEC-0219) ----------------------------------------------
+
+MATRIX = {
+    "cost-effective": ("frugal", "frugal", "balanced", "balanced"),
+    "high-end": ("balanced", "balanced", "balanced", "thorough"),
+    "critical": ("thorough", "thorough", "thorough", "thorough"),
+}
+SIZED_REVIEW = {"verdict": "approve", "size": "m", "tone": "high-end", "rationale": "r"}
+
+
+def _cfg(**agentic):
+    return {"agentic": {"default_profile": "balanced", **agentic}}
+
+
+@pytest.mark.parametrize("tone", sorted(MATRIX))
+def test_profile_matrix_every_cell(tone):
+    assert P.PROFILE_MATRIX[tone] == dict(zip(("xs", "s", "m", "l"), MATRIX[tone]))
+    for size, want in zip(("xs", "s", "m", "l"), MATRIX[tone]):
+        pick = P.select_profile(_cfg(), review={"verdict": "approve", "size": size, "tone": tone})
+        assert pick["profile"] == want and pick["source"] == "review"
+        assert (pick["size"], pick["tone"]) == (size, tone)
+        assert pick["reason"] == f"size {size}, tone {tone} → {want}"
+    assert all("xl" not in row for row in P.PROFILE_MATRIX.values())
+
+
+def test_select_profile_precedence_and_reasons():
+    cfg = _cfg(default_profile="frugal")
+    flag = P.select_profile(cfg, flag="thorough", review=SIZED_REVIEW)
+    assert flag == {"profile": "thorough", "source": "flag", "reason": "--profile thorough",
+                    "size": "m", "tone": "high-end"}
+    nothing = P.select_profile(cfg, flag="thorough")
+    assert nothing["size"] is None and nothing["tone"] is None
+    old = P.select_profile(cfg, review={"verdict": "approve"})
+    assert (old["profile"], old["source"]) == ("frugal", "default")
+    assert old["reason"] == "review predates sizing (no size/tone)"
+    forced = P.select_profile(cfg, review=None)
+    assert (forced["profile"], forced["source"]) == ("frugal", "default")
+    assert forced["reason"] == "no approving review (--force)"
+    xl = P.select_profile(cfg, review={"verdict": "approve", "size": "xl", "tone": "critical"})
+    assert xl["source"] == "default" and xl["size"] == "xl"
+
+
+def test_matrix_config_overrides_one_cell():
+    cfg = _cfg(profile_matrix={"high-end": {"m": "thorough"}})
+    assert P.select_profile(cfg, review=SIZED_REVIEW)["profile"] == "thorough"
+    assert P.select_profile(cfg, review={**SIZED_REVIEW, "size": "s"})["profile"] == "balanced"
+    assert P.PROFILE_MATRIX["high-end"]["m"] == "balanced"          # builtin untouched
+    custom = _cfg(profiles={"mine": {}}, profile_matrix={"high-end": {"m": "mine"}})
+    assert P.select_profile(custom, review=SIZED_REVIEW)["profile"] == "mine"
+
+
+@pytest.mark.parametrize("matrix,needle", [
+    ({"fancy": {"m": "frugal"}}, "profile_matrix: unknown tone 'fancy'"),
+    ({"high-end": {"huge": "frugal"}}, "profile_matrix[high-end][huge]"),
+    ({"high-end": {"m": "nope"}}, "profile_matrix[high-end][m]: unknown profile 'nope'"),
+    ({"critical": {"xl": "thorough"}}, "profile_matrix[critical][xl]"),
+])
+def test_matrix_config_errors_name_the_cell(matrix, needle):
+    with pytest.raises(ValueError) as e:
+        P.select_profile(_cfg(profile_matrix=matrix), review=SIZED_REVIEW)
+    assert needle in str(e.value)

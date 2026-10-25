@@ -21,7 +21,7 @@ from ..specmeta import split_frontmatter
 from . import personas as PS
 from . import project as P
 from . import store
-from .profiles import resolve_profile
+from .profiles import resolve_profile, select_profile
 from .runner import select_runner
 
 SCHEMA = "wt.spec.review.v1"
@@ -95,6 +95,14 @@ def check_admissible(cfg, spec_path, spec_id) -> dict:
     return review
 
 
+def would_pick(cfg, review) -> dict | None:
+    """What `wt queue add` would pick for `review` under the current config (SPEC-0219), or
+    None unless the review approves. Not stored: the matrix is config and may change."""
+    if not review or review.get("verdict") != "approve":
+        return None
+    return select_profile(cfg, review=review)
+
+
 # ---- root, context, payload ----------------------------------------------------------------------
 
 def _fallback_root(spec_path) -> Path:
@@ -154,6 +162,9 @@ def _check_verdict(spec_id, verdict) -> None:
     findings = verdict.get("findings") or []
     if verdict["verdict"] == "approve" and any(f.get("severity") == "must_fix" for f in findings):
         raise ValueError(f"spec review of {spec_id} is `approve` but lists a must_fix finding")
+    if verdict.get("size") == "xl" and verdict["verdict"] != "split":      # SPEC-0219
+        raise ValueError(f"spec review of {spec_id} sizes the spec `xl` (too big for one "
+                         f"campaign) but its verdict is `{verdict['verdict']}`, not `split`")
 
 
 def review_payload(spec_id, sha, *, model, cost_usd, verdict, root, spec_path=None,
@@ -169,7 +180,8 @@ def review_payload(spec_id, sha, *, model, cost_usd, verdict, root, spec_path=No
     return {
         "schema": SCHEMA, "spec_id": spec_id, "verdict": verdict["verdict"],
         "spec_sha256": sha, "reviewed_at": store.now_iso(), "model": model,
-        "cost_usd": cost_usd, "findings": verdict.get("findings") or [],
+        "cost_usd": cost_usd, "size": verdict.get("size"), "tone": verdict.get("tone"),
+        "rationale": verdict.get("rationale"), "findings": verdict.get("findings") or [],
         "suggested_splits": verdict.get("suggested_splits") or [],
         "repo_root": str(root), **extra,
     }

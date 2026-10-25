@@ -39,7 +39,7 @@ from . import schemas as SC
 from . import store
 from .gitops import GitError
 from .profiles import (SEVERITIES, persona_settings, resolve_profile, review_params,
-                       reviewers_of, triager_enabled)
+                       reviewers_of, select_profile, triager_enabled)
 from .events import settings as events_settings
 from .runner import RunResult, select_runner
 
@@ -2111,10 +2111,13 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None) -> d
         except ValueError:
             loop_max = None
         repo = r.get("repo") or {}
+        sizing = r.get("sizing") or {}
         items.append({
             "campaign": r.get("id"), "spec_id": r.get("spec_id"), "project": r.get("project"),
             "kind": r.get("kind"), "idea_id": _idea_id_of(r),
             "profile": r.get("profile"), "state": r.get("state"),
+            "size": sizing.get("size"), "tone": sizing.get("tone"),
+            "profile_source": sizing.get("source"),
             "loops": f"{counters.get('loops', 0)}/{loop_max if loop_max is not None else '?'}",
             "runs": counters.get("runs", 0),
             "cost_usd": round(float(cost.get("total_usd") or 0.0), 4),
@@ -2244,7 +2247,9 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
             backlog.append({"position": 0, "priority": it["priority"], "ready": True,
                             "blocked_by": [], **(it.get("backlog") or {}),
                             "campaign": it["campaign"], "spec_id": it["spec_id"],
-                            "spec_title": title, "project": it["project"], "age_s": it["age_s"]})
+                            "spec_title": title, "project": it["project"], "age_s": it["age_s"],
+                            "size": it["size"], "tone": it["tone"], "profile": it["profile"],
+                            "profile_source": it["profile_source"]})
             continue
         ledger = store.read_ledger(cfg, it["campaign"])
         if state == "PARKED" or it["park_requested"]:
@@ -2327,11 +2332,12 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         raise ValueError(f"{spec_id} already has an active campaign {active['id']} "
                          f"({active.get('state')}); abandon it first")
     if force:                                                          # SPEC-0188
-        review = "forced"
+        review, review_doc = "forced", None
     else:
-        SR.check_admissible(cfg, path, spec_id)
+        review_doc = SR.check_admissible(cfg, path, spec_id)
         review = "approved"
-    prof = resolve_profile(cfg, profile)
+    pick = select_profile(cfg, flag=profile, review=review_doc)         # SPEC-0219
+    prof = resolve_profile(cfg, pick["profile"])
     base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
     cid = store.new_campaign_id(cfg, spec_id)
     worktree = P.worktree_root(pcfg, root, project) / cid
@@ -2341,6 +2347,10 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         "internal": not outbound, "worktree": str(worktree), "branch": f"wt/{cid}",
         "cap_usd": prof.get("campaign_cap_usd"), "loop_max": prof.get("loop_max"),
         "slots": prof.get("slots"), "merge_policy": (pcfg.get("merge") or {}).get("policy"),
+        "size": pick["size"], "tone": pick["tone"],
+        "sizing_rationale": (review_doc or {}).get("rationale") if pick["size"] else None,
+        "profile_source": pick["source"], "profile_reason": pick["reason"],
+        "review_sha256": (review_doc or {}).get("spec_sha256"),
     }
 
 
@@ -2362,6 +2372,10 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
         "cost": {"total_usd": 0.0, "cap_usd": plan.get("cap_usd"), "by_persona": {}},
         "last_gate": None, "last_verdict": None,
         "pending_brief": None, "park": None, "close": None,
+        "sizing": {"size": plan.get("size"), "tone": plan.get("tone"),
+                   "rationale": plan.get("sizing_rationale"),
+                   "source": plan.get("profile_source"), "reason": plan.get("profile_reason"),
+                   "review_sha256": plan.get("review_sha256")},
     }
     with store.add_lock(cfg):                                          # SPEC-0209
         active = store.active_campaign_for_spec(cfg, plan["spec_id"])

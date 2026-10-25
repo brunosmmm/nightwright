@@ -83,11 +83,15 @@ def create_campaign(cfg, state: dict, *, by="human") -> Path:
     state.setdefault("created_at", now_iso())
     write_state(cfg, cid, state)
     repo = state.get("repo") or {}
+    sizing = state.get("sizing") or {}
     append_event(cfg, cid, "open", {
         "spec_id": state.get("spec_id"), "project": state.get("project"),
         "profile": state.get("profile"), "base": repo.get("base"),
         "base_sha": repo.get("base_sha_at_open"), "worktree": repo.get("worktree"),
         "branch": repo.get("branch"),
+        **({"size": sizing.get("size"), "tone": sizing.get("tone"),       # SPEC-0219
+            "profile_source": sizing.get("source"), "profile_reason": sizing.get("reason")}
+           if sizing else {}),
     }, by=by)
     return d
 

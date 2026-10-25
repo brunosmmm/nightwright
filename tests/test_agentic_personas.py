@@ -685,3 +685,18 @@ def test_render_pending_brief_bracket_prefers_gate_then_ac_then_category():
     assert "- MUST FIX: T" in brief()
     out = brief(category="path_traversal", files=["a.py"], detail="x\ntrigger: when ../")
     assert "[path_traversal]: T (a.py) — x\ntrigger: when ../" in out
+||||||| parent of 03ed8e5 (wt(SPEC-0219-20261025-e1d5): implementer run 002 — SPEC-0219: spec sizing and tone now pick the campaign profile. The revie)
+
+
+
+
+def test_spec_reviewer_schema_requires_size_tone_rationale():          # SPEC-0219
+    sch = PS.SPEC_REVIEWER_SCHEMA
+    assert {"size", "tone", "rationale"} <= set(sch["required"])
+    props = sch["properties"]
+    assert props["size"]["enum"] == ["xs", "s", "m", "l", "xl"]
+    assert props["tone"]["enum"] == ["cost-effective", "high-end", "critical"]
+    assert props["rationale"]["type"] == "string"
+    t = PS.PERSONAS["spec_reviewer"].template
+    for word in ("xs", "xl", "cost-effective", "high-end", "critical"):
+        assert word in t

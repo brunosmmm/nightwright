@@ -187,3 +187,28 @@ def test_multiple_projects_in_flight_are_labelled(tmp_path, monkeypatch):
     assert "comfort-assistant" in r.output
     r = run_cli(cfg, monkeypatch, ["queue", "backlog", "--json"])
     assert {b["project"] for b in json.loads(r.output)["items"]} == {"Meta-Tools"}
+
+
+def test_dashboard_shows_size_tone_and_profile(tmp_path):                  # SPEC-0219
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    sizing = {"size": "m", "tone": "high-end", "source": "flag", "reason": "--profile balanced"}
+    _campaign(cfg, repo, "SPEC-0001-act", "IMPLEMENTING", sizing=sizing)
+    _campaign(cfg, repo, "SPEC-0001-old", "IMPLEMENTING")
+    _campaign(cfg, repo, "SPEC-0001-q", "QUEUED", sizing={**sizing, "source": "review"})
+    _campaign(cfg, repo, "SPEC-0001-w", "WAITING", sizing=sizing,
+              waiting={"resume_to": "GATING", "since": _iso(5)})
+    p = Q.dashboard_payload(cfg)
+    act = {it["campaign"]: it for it in p["active"]}
+    assert (act["SPEC-0001-act"]["size"], act["SPEC-0001-act"]["tone"],
+            act["SPEC-0001-act"]["profile"], act["SPEC-0001-act"]["profile_source"]) == (
+        "m", "high-end", "balanced", "flag")
+    assert act["SPEC-0001-old"]["size"] is None
+    assert p["backlog"][0]["size"] == "m" and p["waiting"][0]["tone"] == "high-end"
+    out = _render(p, 140)
+    assert "m/high-end → balanced (flag)" in out
+    old_panel = out[out.index("SPEC-0001-old"):]
+    assert "- → balanced" in old_panel
+    backlog = out[out.index("Backlog ("):]
+    assert "size" in backlog and "m/high-end" in backlog
+    assert "m/high-end" in out[out.index("Waiting for a slot"):out.index("Backlog (")]

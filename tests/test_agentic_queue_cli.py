@@ -212,3 +212,112 @@ def test_backlog_json_order_and_list_sections(tmp_path, monkeypatch):
     assert items[second]["backlog"] == {"position": 1, "priority": 1, "ready": False,
                                         "blocked_by": top["blocked_by"]}
     assert items[first]["backlog"]["position"] == 2 and items[first]["backlog"]["ready"] is True
+
+
+# ---- sizing and tone pick the profile (SPEC-0219) ----------------------------------------------
+
+SIZED = {"size": "s", "tone": "cost-effective", "rationale": "2 ACs, one module."}
+
+
+def _sized(tmp_path, **extra):
+    repo, cfg = _cfg(tmp_path, review=False)
+    write_review(repo / "docs" / "specs" / "0001-trivial.md", "SPEC-0001", **(extra or SIZED))
+    return repo, cfg
+
+
+def _plan(cfg, monkeypatch, *args):
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--json", *args])
+    assert r.exit_code == 0, r.output
+    return json.loads(r.output)
+
+
+def test_add_picks_profile_from_sized_review(tmp_path, monkeypatch):
+    repo, cfg = _sized(tmp_path)
+    d = _plan(cfg, monkeypatch)
+    assert d["profile"] == "frugal" and d["profile_source"] == "review"
+    assert d["profile_reason"] == "size s, tone cost-effective → frugal"
+    assert (d["size"], d["tone"], d["sizing_rationale"]) == ("s", "cost-effective",
+                                                              SIZED["rationale"])
+    assert d["cap_usd"] == 3.0
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001"])
+    assert "profile_source: review" in r.output and "size: s" in r.output
+
+
+def test_add_records_sizing_on_state_and_open_event(tmp_path, monkeypatch):
+    from wt.agentic import schemas as SC
+    repo, cfg = _sized(tmp_path)
+    cid = added(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    assert st["profile"] == "frugal"
+    sha = json.loads(S.__file__ and (repo / "docs/specs/reviews/SPEC-0001.json").read_text())["spec_sha256"]
+    assert st["sizing"] == {"size": "s", "tone": "cost-effective", "rationale": SIZED["rationale"],
+                            "source": "review", "reason": "size s, tone cost-effective → frugal",
+                            "review_sha256": sha}
+    ev = S.read_ledger(cfg, cid)[0]
+    assert ev["type"] == "open" and SC.ledger_problems(ev) == []
+    assert (ev["size"], ev["tone"], ev["profile_source"]) == ("s", "cost-effective", "review")
+    assert ev["profile_reason"] == "size s, tone cost-effective → frugal"
+
+
+def test_add_flag_wins_but_still_records_sizing(tmp_path, monkeypatch):
+    repo, cfg = _sized(tmp_path)
+    cid = added(cfg, monkeypatch, "SPEC-0001", "--profile", "thorough")
+    st = S.read_state(cfg, cid)
+    assert st["profile"] == "thorough"
+    assert st["sizing"]["source"] == "flag" and st["sizing"]["reason"] == "--profile thorough"
+    assert (st["sizing"]["size"], st["sizing"]["tone"]) == ("s", "cost-effective")
+
+
+def test_add_old_sidecar_and_force_use_default_profile(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)                       # write_review without size/tone
+    d = _plan(cfg, monkeypatch)
+    assert (d["profile"], d["profile_source"]) == ("balanced", "default")
+    assert d["profile_reason"] == "review predates sizing (no size/tone)"
+    assert d["size"] is None and d["tone"] is None
+    write_review(repo / "docs" / "specs" / "0001-trivial.md", "SPEC-0001", **SIZED)
+    d = _plan(cfg, monkeypatch, "--force")           # a forced add never trusts the review
+    assert (d["profile"], d["profile_source"]) == ("balanced", "default")
+    assert d["profile_reason"] == "no approving review (--force)" and d["size"] is None
+
+
+def test_matrix_config_override_reaches_add(tmp_path, monkeypatch):
+    repo, cfg = _sized(tmp_path)
+    cfg["agentic"]["profile_matrix"] = {"cost-effective": {"s": "thorough"}}
+    assert _plan(cfg, monkeypatch)["profile"] == "thorough"
+
+
+def test_queue_list_json_and_table_show_sizing(tmp_path, monkeypatch):
+    from wt.agentic import cli_queue as CQ
+    from wt.agentic import queue as Q
+    repo, cfg = _sized(tmp_path)
+    sized = added(cfg, monkeypatch)
+    S.create_campaign(cfg, {"id": "SPEC-0002-old", "spec_id": "SPEC-0002", "project": "Meta-Tools",
+                            "profile": "balanced", "state": "IMPLEMENTING"})   # pre-sizing
+    r = run_cli(cfg, monkeypatch, ["queue", "list", "--json"])
+    items = {it["campaign"]: it for it in json.loads(r.output)["items"]}
+    assert (items[sized]["size"], items[sized]["tone"], items[sized]["profile"],
+            items[sized]["profile_source"]) == ("s", "cost-effective", "frugal", "review")
+    old = items["SPEC-0002-old"]
+    assert (old["size"], old["tone"], old["profile_source"]) == (None, None, None)
+    assert old["profile"] == "balanced"
+    # wide table: columns; the source marker shows only when the review did not pick
+    payload = Q.queue_payload(cfg)
+    for it in payload["items"]:
+        it["state"] = "IMPLEMENTING"
+    next(it for it in payload["items"] if it["campaign"] == sized)["profile_source"] = "flag"
+    out = _render(CQ._queue_table(payload, 140), 140)
+    for col in ("size", "tone", "profile"):
+        assert col in out
+    assert "cost-effective" in out and "(flag)" in out
+    old_row = next(line for line in out.splitlines() if "SPEC-0002-old" in line)
+    assert " -  " in old_row and "(" not in old_row
+    # narrow table keeps the columns it had; the sizing rides under the campaign id
+    narrow = _render(CQ._queue_table(payload, 80), 80)
+    assert "s/cost-effective → frugal (flag)" in narrow and max(map(len, narrow.splitlines())) <= 80
+
+
+def _render(renderable, width):
+    from rich.console import Console
+    c = Console(width=width, record=True, force_terminal=False)
+    c.print(renderable)
+    return c.export_text()

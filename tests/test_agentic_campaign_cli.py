@@ -128,3 +128,22 @@ def test_note_with_argument_env_and_usage_error(tmp_path, monkeypatch):
     assert r.exit_code != 0 and "set WT_CAMPAIGN" in r.output
     r = _run(cfg, monkeypatch, ["campaign", "note", "ghost text"], env={"WT_CAMPAIGN": "nope"})
     assert r.exit_code != 0 and "no campaign 'nope'" in r.output
+
+
+def test_show_prints_sizing_and_tolerates_pre_sizing(tmp_path, monkeypatch):     # SPEC-0219
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    S.create_campaign(cfg, {"id": "SPEC-0172-20261025-cccc", "spec_id": "SPEC-0172",
+                            "project": "Meta-Tools", "profile": "thorough", "state": "QUEUED",
+                            "repo": {}, "counters": {}, "cost": {},
+                            "sizing": {"size": "l", "tone": "high-end", "source": "review",
+                                       "reason": "size l, tone high-end → thorough",
+                                       "rationale": "10 ACs, state machine"}})
+    r = _run(cfg, monkeypatch, ["campaign", "show", "SPEC-0172-20261025-cccc"])
+    assert r.exit_code == 0, r.output
+    assert "size l  tone high-end  profile thorough (review)" in r.output
+    assert "sizing: size l, tone high-end → thorough — 10 ACs, state machine" in r.output
+    r = _run(cfg, monkeypatch, ["campaign", "show", "SPEC-0172-20261025-cccc", "--json"])
+    assert json.loads(r.output)["sizing"]["size"] == "l"
+    r = _run(cfg, monkeypatch, ["campaign", "show", "SPEC-0170-20261025-aaaa"])
+    assert r.exit_code == 0 and "sizing:" not in r.output

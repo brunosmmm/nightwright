@@ -1728,7 +1728,7 @@ def spec_review_cmd(cfg, spec_id, path, as_json):
     import sys
     from pathlib import Path
 
-    from .agentic.spec_review import reviewing_line, run_spec_review
+    from .agentic.spec_review import reviewing_line, run_spec_review, would_pick
     from .specmeta import split_frontmatter
     from .specs import resolve_spec_path_for_cwd
     if bool(spec_id) == bool(path):
@@ -1748,10 +1748,12 @@ def spec_review_cmd(cfg, spec_id, path, as_json):
         else:
             console.print(line, highlight=False, markup=False, soft_wrap=True)
         review = run_spec_review(cfg, spec_path, spec_id, origin=origin)
+        pick = would_pick(cfg, review)
     except ValueError as e:
         raise click.ClickException(str(e))
     if as_json:
-        _json.dump(review, sys.stdout, indent=2, ensure_ascii=False)
+        _json.dump({**review, "profile": pick["profile"] if pick else None}, sys.stdout,
+                   indent=2, ensure_ascii=False)
         sys.stdout.write("\n")
         return
     color = {"approve": "green", "revise": "yellow", "split": "yellow"}[review["verdict"]]
@@ -1759,6 +1761,13 @@ def spec_review_cmd(cfg, spec_id, path, as_json):
     cost_txt = f"  ${cost:.2f}" if cost is not None else ""
     console.print(f"[bold]{spec_id}[/]  [{color}]{review['verdict']}[/]  "
                   f"{review['model']}{cost_txt}")
+    if review.get("size"):
+        console.print(f"  size {review['size']}  tone {review.get('tone')}", highlight=False)
+        console.print(f"  rationale: {review.get('rationale') or '-'}", highlight=False)
+        if review["size"] == "xl":
+            console.print("  xl: split recommended, no profile", highlight=False)
+        elif pick:
+            console.print(f"  → profile [bold]{pick['profile']}[/]  [dim]{pick['reason']}[/]")
     if review["findings"]:
         from rich.table import Table
         table = Table(show_header=True, header_style="bold")

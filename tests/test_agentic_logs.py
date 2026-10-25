@@ -189,3 +189,20 @@ def test_adversarial_finding_with_category_is_a_valid_ledger_record(tmp_path, mo
     assert len(f) == 1 and f[0]["category"] == "path_traversal"
     assert f[0]["gate"] is None and f[0]["ac"] is None
     assert f[0]["detail"] == "joined unchecked\ntrigger: when name has ../"
+||||||| parent of 03ed8e5 (wt(SPEC-0219-20261025-e1d5): implementer run 002 — SPEC-0219: spec sizing and tone now pick the campaign profile. The revie)
+
+
+
+
+def test_open_event_without_sizing_keys_still_validates(tmp_path):      # SPEC-0219
+    cfg = {"data_dir": str(tmp_path / "data")}
+    S.create_campaign(cfg, {"id": "C1", "spec_id": "SPEC-0001", "state": "QUEUED"})
+    ev = S.read_ledger(cfg, "C1")[0]
+    assert ev["type"] == "open" and "size" not in ev and SC.ledger_problems(ev) == []
+    S.create_campaign(cfg, {"id": "C2", "spec_id": "SPEC-0001", "state": "QUEUED",
+                            "sizing": {"size": "m", "tone": "high-end", "source": "review",
+                                       "reason": "r"}})
+    ev = S.read_ledger(cfg, "C2")[0]
+    assert (ev["size"], ev["tone"], ev["profile_source"]) == ("m", "high-end", "review")
+    assert SC.ledger_problems(ev) == []
+    assert "size" not in SC.EVENT_KEYS["open"]
