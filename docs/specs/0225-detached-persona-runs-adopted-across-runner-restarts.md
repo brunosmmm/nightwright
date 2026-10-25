@@ -108,10 +108,14 @@ run ends. That has two consequences:
    that signal no longer reaches them. To avoid shipping a 30-minute stop, this spec keeps
    today's outcome explicitly: when `stop` is set (signal, or any caller setting
    `ctx.stop`), the drain sends TERM to the child process group (from `child.json`) and to
-   the wrapper of every ClaudeRunner task in `spawning` or `wait`. A task in `spawning` gets
-   it as soon as its `child.json` appears. The runs end with `killed_by: "signal"`, so they
-   are recorded as interrupted, as today, and the drain returns within seconds. SPEC-0229
-   replaces this with detach-on-stop.
+   the wrapper of every ClaudeRunner task in `spawning` or `wait`, and KILL to the group 10
+   s later if it is still alive. A task in `spawning` gets this as soon as its `child.json`
+   appears. The runs end with `killed_by: "signal"`, so they are recorded as interrupted,
+   as today, and the drain returns within about 10 s. SPEC-0229 replaces this with
+   detach-on-stop. Exception: runs already detached by a successful `try_detach_all` (the
+   code-change exec) are no longer in `flights`. A stop that arrives between that call and
+   `_EXEC` leaves them running, with no exec. They stay adoptable, the wrapper enforces
+   their timeout, and the `stop signal` record lists them under `detached`.
 8. **Only queue runs detach.** Detaching applies only to runs started with `hooks` (the
    queue runner). With `hooks=None` (callers outside the queue, such as `wt spec review`),
    the wrapper is still used, so the timeout and the files are the same, but the run is
@@ -150,6 +154,10 @@ different code versions. `request.json`, `launch.json`, `proc.json`, `child.json
 `exit.json` therefore only gain optional keys, and readers ignore unknown ones. The wrapper merges
 `launch.json.env` over its inherited environment and ignores SIGHUP. On SIGTERM it forwards
 TERM to the child's group and still writes `exit.json` (`killed_by: "signal"`, `signal: 15`).
+In general, `killed_by` is `"timeout"` only when the wrapper's own timeout killed the child.
+Whenever the child ended by any other signal (the wrapper's SIGTERM forward, a TERM sent to
+the group by the interim stop, an OOM kill, an external `kill`), it is `"signal"`, with the
+child's signal number in `signal`.
 
 ### The claim closes the spawn window
 
@@ -243,18 +251,32 @@ text ("wrapper died before recording its child") so that it is visible if it eve
 - **Adoption** (`_adopt(cfg, ctx, pool, report)`, called by `tick` when `pool.adopted` is
   False, before `_harvest`). For each campaign not in MERGED/HANDED_OFF and not in
   `pool.ids()`, it finds every open run in the ledger (the same pairing as
-  `events._open_run`, but returning all open runs). Each open run is classified by persona:
-  - `implementer` → `Step("implement", persona="implementer")`;
-  - `gate_triager` → `Step("triage", persona="gate_triager")`;
-  - a persona in `personas.REVIEWER_PERSONAS` (today `conformance_reviewer` and
-    `test_reviewer`, plus any reviewer added to that tuple later) → the campaign's reviewer
-    group;
-  - any other persona in a campaign ledger (for example a future resolver persona from
-    SPEC-0221; `wt spec review` runs have no campaign ledger and are never adopted) →
-    `unknown`: if the run is alive, its group is killed (TERM, 10 s, KILL). Then a synthetic
-    `run.end` is written (`is_error: true`, "open run of persona <p> cannot be adopted"),
-    with the cost from `result.json`, otherwise estimated. State unchanged. It never raises
-    out of the tick.
+  `events._open_run`, but returning all open runs). Each open run is classified **by the
+  step recorded with it, not by hardcoded persona names**:
+  - `_prepare_run` adds `step: {kind, personas}` to `run.start` (additive, optional in
+    `schemas.EVENT_KEYS`). `kind` is the planned `Step.kind` (`implement` / `triage` /
+    `review`), and `personas` is the `Step.personas` of a review step, for example
+    `["review_triager"]` or `["conformance_reviewer", "test_reviewer"]`. Adoption rebuilds
+    `Step(kind, persona=p, personas=tuple(personas))` from it;
+  - for a legacy `run.start` without `step`, kind and personas come from
+    `personas.ADOPT_REGISTRY`, a mapping defined next to `PERSONAS` that covers every
+    campaign persona:
+    - `implementer` → `implement`;
+    - `gate_triager` → `triage`;
+    - `review_triager` → `review`, personas `("review_triager",)`;
+    - each persona in `REVIEWER_PERSONAS` (including `adversarial_reviewer` when it is
+      added) → `review` in the campaign's reviewer group.
+    A test asserts that every persona in `PERSONAS` except `spec_reviewer` (which has no
+    campaign ledger) has an entry, so a new persona cannot be forgotten;
+  - **grouping:** runs whose `step.personas` are the same tuple form one `_ReviewGroup`,
+    applied through `_finish_reviews` as `_submit`/`_harvest` do today. `review_triager`
+    (personas `("review_triager",)`) is therefore always its own single-member group and
+    never grouped with the regular reviewers;
+  - **unknown:** a persona with no `step` and no registry entry is adopted and collected,
+    never killed. Adoption waits for it like any run, then records `run.end` + cost and a
+    `note` ("adopted run of unregistered persona <p>; result recorded, no transition"). The
+    state is unchanged, and the next plan decides the step afresh. It never raises out of
+    the tick.
 
   and by its files:
   - **no `proc.json`** after the 10 s grace: adoption claims it (`{orphaned: true}`). The
@@ -352,10 +374,13 @@ gets recorded in the spec.
 - [ ] Adoption classifies every open run and journals one `adopt` record listing each run's
       persona and status. `finished` is applied on the first tick. `orphaned` (no claim
       after 10 s) gives `run.end` interrupted and estimated, state unchanged, step
-      respawned. An `unknown` persona gets its group killed and a `run.end` error, without
-      crashing the tick.
+      respawned. Classification uses `run.start.step`, falling back to
+      `personas.ADOPT_REGISTRY` for legacy events, which covers every campaign persona. An
+      unregistered persona is adopted and collected (never killed), with a `note` and no
+      transition, without crashing the tick.
 - [ ] An adopted reviewer fan-out is applied once as one group, with every reviewer's verdict,
-      including reviewers that had finished before the detach. A campaign parked or
+      including reviewers that had finished before the detach. An adopted `review_triager`
+      run is applied as its own single-member group, never merged with the reviewers. A campaign parked or
       abandoned while its run was detached gets `run.end` + cost and no transition
       (`superseded_by_human`), and a `park_requested` one parks `human`.
 - [ ] Interim stop: with `ctx.stop` set during a live ClaudeRunner run, `run()` returns
@@ -421,6 +446,11 @@ gets recorded in the spec.
       no `launch.json` uses the `run.start` ts: not claimed at 5 s, claimed at 11 s.
     - `test_interim_stop_kills_runs`: `ctx.stop` is set while an implementer is in `wait`.
       `run()` returns in < 15 s, the child group is gone, and `run.end.interrupted` is true.
+      A `FAKE_CLAUDE_STUBBORN` variant (TERM ignored) still meets the 15 s bound through the
+      KILL escalation, with `killed_by: "signal"` and `signal: 9`.
+    - `test_stop_after_detach_leaves_runs`: `ctx.stop` is set after `try_detach_all`
+      returned but before `_EXEC` (patched hook). No exec, the run is alive, and `stop
+      signal` lists it under `detached`.
     - `test_collect_race_delays_exec`: `git.commit_all` is patched to block, and the run
       exits just before `try_detach_all`. `_EXEC` waits for the commit, and the `commit`
       event is recorded once.
@@ -428,10 +458,17 @@ gets recorded in the spec.
       wrapper start). `try_detach_all()` returns None. Once it reaches `wait`, the call
       returns both run ids.
     - `test_adopt_statuses`: pre-seeded finished, vanished, orphan_group, orphaned and
-      unknown-persona (a made-up `resolver` name, live) runs. One tick gives the right statuses and `run.end`
-      payloads, the unknown run's group is killed, and the tick does not raise.
+      unknown-persona (a made-up `resolver` name with no `step`, live) runs. One tick gives
+      the right statuses and `run.end` payloads. The unknown run is waited for, not killed,
+      then recorded with a `note` and no transition, and the tick does not raise.
     - `test_adopt_review_group_with_finished_member`: one reviewer finished before the
       detach, one running. Applied as one group with both verdicts.
+    - `test_adopt_review_triager`: an open `review_triager` run alongside open reviewer runs
+      of another campaign. The triager is applied through `_finish_reviews` as a
+      single-member group. A legacy `run.start` without `step` gives the same result through
+      the registry.
+    - `test_adopt_registry_complete`: every `PERSONAS` key except `spec_reviewer` is in
+      `ADOPT_REGISTRY`.
     - `test_adopt_after_abandon_and_park_request`: `superseded_by_human`, and a `human`
       park.
     - `test_run_finishing_while_stopping_is_not_interrupted`: `ctx.stop` is set while
@@ -452,6 +489,7 @@ gets recorded in the spec.
   confirm they fail:
   - spawn without `start_new_session`;
   - drop the `O_EXCL` claim;
+  - classify by persona name only (ignore `run.start.step`);
   - liveness from the wrapper pid only;
   - allow detach in `spawning` or in `collect`;
   - split `try_detach_all`'s check from its detach;

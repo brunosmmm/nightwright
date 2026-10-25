@@ -10,7 +10,7 @@ kind: feature
 parent: SPEC-0169
 tags: [agentic, runner, queue, concurrency, reexec]
 source_idea: IDEA-100
-depends_on: [SPEC-0224, SPEC-0225]
+depends_on: [SPEC-0220, SPEC-0224, SPEC-0225]
 ---
 
 
@@ -64,7 +64,7 @@ whose runner is not detachable (FakeRunner).
 | exit | admission after the trigger | in-process work | persona runs in `wait` | `spawning` / `collect` tasks | then |
 |---|---|---|---|---|---|
 | `code_changed` | **continues** (draining ticks): new admissions and **detachable** persona steps only; no gate, close or non-detachable step is planned | waited for (finite: nothing new of that kind starts) | detached by `try_detach_all` | waited for (seconds) | journal `stop code_changed detached=[…]`, exec |
-| `signal` / `ctx.stop` | stops | `_terminate_children()` kills gate process groups; results discarded (SPEC-0220); other in-process threads joined with a 30 s bound | detached | waited for, 30 s bound | journal `stop signal detached=[…]`, release lease, return |
+| `signal` / `ctx.stop` | stops | `_terminate_children()` kills gate process groups, and no further gate starts; gate results discarded (gate rule below), close results per SPEC-0220; other in-process threads joined with a 30 s bound | detached; at bound expiry every `wait` task is force-detached individually | waited for up to the 30 s bound, then abandoned to adoption | journal `stop signal detached=[…] abandoned=[…]`, release lease, return |
 | `once` / `max_ticks` | stops (the loop has ended) | waited for, as today | detached | waited for | journal `stop once/max_ticks detached=[…]`, release, return |
 | `idle` (`--until-idle`) | n/a | none: `idle` means no non-parked campaign and no flight | none | none | as today |
 | `crash` | stops | `_terminate_children()`, then not waited for beyond the 30 s bound | detached by the crash sweep | bounded re-sweep, then left to adoption | journal `crash`, release, re-raise |
@@ -72,30 +72,62 @@ whose runner is not detachable (FakeRunner).
 `detached` is empty when nothing was detached. SPEC-0225's interim kill-on-stop is removed:
 a stop now detaches.
 
-**Precedence.** If `once`, `max_ticks` or `until_idle` fires during draining ticks, that
-exit wins and is a plain exit after detaching. There is no exec, and `stop` carries
-`restart_pending: {to_sha}` so the next start runs the new code anyway. A signal during
+**Precedence.** If `max_ticks` or `until_idle` fires during draining ticks, that exit
+wins. `once` cannot fire there: it ends the loop after the first tick, before
+`code_changes` is ever polled. The winning exit is a plain exit after detaching. There is
+no exec, and `stop` carries `restart_pending: {to_sha}` so the next start runs the new code anyway. A signal during
 draining ticks becomes a `signal` exit, as today.
 
 ### Ending in-process work: `_terminate_children`
 
-- `gates.py` keeps a registry of live gate processes (`_LIVE: set[Popen]` under a lock).
-  `run_all` adds each Popen before waiting on it and removes it after.
-  `gates.terminate_all()` calls the existing `_kill_group` (TERM, grace, KILL) on each one.
-- `queue._terminate_children()` = `gates.terminate_all()`. It is called by `_handler` and
-  also by the main loop when it finds `stop` set, so a stop set through `ctx.stop` (tests,
-  library callers) gets exactly the signal path. It is called on the crash path too. The
-  killed gate fails, the stop set discards its result (SPEC-0220 rule), and the campaign
-  stays in its state for the next runner.
-- **Shutdown.** After `_terminate_children()` and the detach sweep: `pool.shutdown(wait=False,
-  cancel_futures=True)`, then join the pool's threads with a total bound of 30 s.
-  Thread-to-task bookkeeping is in `_Flight`, so the join covers every thread still
-  running. When the bound expires, the lease is released anyway. A thread left behind
-  holds no lease and has no subprocess left: its gate group is killed, and its run is
-  detached or claimed by its wrapper. It is not daemonic, and interpreter exit would join
-  it. So `wt queue run` (the CLI) ends with `os._exit(70)` after flushing the journal when
-  `Q.leftover_threads()` is non-empty, and no stale thread outlives the lease. The library
-  `run()` only re-raises or returns.
+- `gates.py` keeps a registry of live gate processes (`_LIVE: set[Popen]`) and a
+  `_stopping` flag, both under one lock. `run_gate` checks `_stopping` under that lock
+  immediately before its `Popen`. If the flag is set, it does not start the gate: it returns
+  a gate result with `interrupted: true`. Otherwise it adds the Popen to `_LIVE` while still
+  holding the lock, and removes it after the wait. `run_all(…, stop=None)` also checks
+  `stop.is_set()` before each next gate and stops the loop if it is set. `_do_gate` passes
+  `ctx.stop`. `gates.terminate_all()` sets `_stopping`, then calls the existing
+  `_kill_group` (TERM, grace, KILL) on each registered process. So a multi-gate project
+  (lint, then pytest) never starts its next gate after a stop. `gates.reset()` clears
+  `_stopping`, for tests and single-shot ticks.
+- `queue._terminate_children()` = `gates.terminate_all()`. **Only the main loop calls it**,
+  once, when it finds `stop` set. It polls `stop` every 0.2 s, so this covers signals and
+  `ctx.stop` alike. It is also called on the crash path. `_handler` only sets `stop` (and a
+  `signalled` flag for the `stop` reason). The old `killpg` of the runner's own group is dropped,
+  since it reached neither the gates nor the detached runs. It never blocks
+  in signal context and never takes `_LIVE`'s lock.
+- **Rule: a gate killed by a stop is discarded.** A `gate` StepResult harvested while
+  `stop` is set (killed, or not started because of `_stopping`) is not applied:
+  - no `gate` ledger event and no transition. The state stays GATING;
+  - `counters.gate_runs` and the loop counters are not incremented;
+  - the row reads `reason: "interrupted"`;
+  - the gate's log and its `wt.gate.v1` sidecar for that seq stay on disk, and the sidecar
+    gets `interrupted: true` so `wt campaign` views do not show it as a failure.
+  The next runner re-gates from scratch with the next seq. This mirrors the close rule of
+  [SPEC-0220](./0220-close-regate-off-main-thread.md) (Interrupt). If this spec lands before
+  SPEC-0220, closes still run serially on the main thread: a stop then waits for a running
+  close as today, within the 30 s bound only for detach purposes. The close finishes
+  before `_drain` is reached, because it runs inside `tick`.
+- **Bound expiry on a stop** (signal / `ctx.stop`). `_drain` loops harvest +
+  `try_detach_all()` for at most 30 s. All-or-nothing detach is right for the exec, but on a
+  stop a single stuck task must not keep every other run attached. So when the bound
+  expires, `pool.force_detach_waiting()` runs under the pool lock:
+  - it sets `pool.detach_all` (as the crash sweep does) and the detach flag of **every**
+    `wait` task individually. Those threads return within 0.2 s and never collect, so no
+    thread collects or commits after the lease is gone;
+  - it lists the remaining `spawning` and `collect` tasks as `abandoned`.
+  The abandoned tasks are journaled in `stop` (`abandoned: [{campaign, run_id, phase}]`)
+  and left to adoption:
+  - a `spawning` task's wrapper claims `proc.json` by itself (SPEC-0225);
+  - a `collect` thread is joined up to the same bound and then abandoned. Its run has
+    `exit.json` but possibly no `run.end`, so the next runner adopts it as `finished` and
+    collects it again. Before collecting an implementer run, adoption removes a stale
+    `<worktree git dir>/index.lock` (older than 60 s, with no live process of the run's
+    group), then lets `commit_all` commit whatever is left. SPEC-0225's adopted-run HEAD
+    rule records a commit the abandoned thread had already made, exactly once.
+- **Shutdown.** Then `pool.shutdown(wait=False, cancel_futures=True)`, and join the pool's
+  threads within whatever remains of the 30 s bound. The lease is released after that, even
+  if threads remain.
 
 ### Draining ticks
 
@@ -125,13 +157,18 @@ draining ticks becomes a `signal` exit, as today.
 ### Crash sweep
 
 In `run()`'s `finally`, when `crashed`:
+0. Harvest finished flights first: `_harvest` once, each `_apply` wrapped in `try/except`
+   and logged, inside the 30 s bound. A flight that already finished `collect` (it has
+   `run.end`, so adoption would skip it) is then applied instead of lost. A harvest that
+   raises is journaled, and its campaign is left to the next runner's planning.
 1. `_terminate_children()`.
 2. Under the pool lock, set `pool.detach_all = True` and the detach flag of every `wait`
    task. `RunHooks.spawned()` honours `detach_all`: a task that finishes spawning after this
    point is marked detached instead of entering `wait`. `enter_collect()` returns False under
    `detach_all`, so a run that exits now is left for adoption to collect.
-3. Re-sweep every 0.2 s until no task is in `spawning`, then shut down as above. The 30 s
-   bound covers steps 2–3 together. A thread still stuck in `spawning` after it (a hung
+3. Re-sweep every 0.2 s until no task is in `spawning` or `collect`, then shut down as
+   above. `collect` tasks that are still running when the bound expires are abandoned, and
+   handled by adoption as described above. The 30 s bound covers steps 0–3 together. A thread still stuck in `spawning` after it (a hung
    `Popen`) is left behind. The wrapper claims `proc.json` by itself (SPEC-0225), so the
    next runner adopts the run whatever this thread does.
 
@@ -162,8 +199,17 @@ The conductor skill rows change accordingly:
 - `_tick(..., draining=False)`: planning skips as described. Single-shot `tick()` and
   `wt queue tick` never drain.
 - `StepPool.detach_all: bool` (under `lock`), honoured by `RunHooks.spawned()` /
-  `enter_collect()`. `PersonaRunner.detachable` attribute: True for `ClaudeRunner`, False
-  for `FakeRunner`.
+  `enter_collect()`. `StepPool.force_detach_waiting() -> list` (abandoned tasks).
+  `PersonaRunner.detachable` attribute: True for `ClaudeRunner`, False for `FakeRunner`.
+- `gates.run_gate` registry + `_stopping`, `gates.run_all(…, stop=None)`,
+  `gates.terminate_all()`, `gates.reset()`, and `queue._terminate_children()`, called only
+  from the main loop and the crash path.
+- `Q.leftover_threads() -> list[threading.Thread]`: the pool's worker threads still alive
+  after shutdown. Executor threads are not daemonic, so interpreter exit would join them. The
+  `wt queue run` CLI, when `Q.run` returns or raises and `leftover_threads()` is
+  non-empty, flushes the journal (`journal` writes are already per-record `O_APPEND`;
+  stdout/stderr are flushed) and calls `os._exit(70)`. That way no stale thread outlives the
+  lease. The library `run()` only returns or re-raises.
 - **CLI help.** `wt queue run`: "SIGINT/SIGTERM stop admissions, end running gates, and
   return. Persona runs keep running and the next `wt queue run` adopts them (SPEC-0225/0229)."
   `--once` / `--max-ticks`: "persona runs still running at exit are left running; the next
@@ -203,19 +249,27 @@ The conductor skill rows change accordingly:
 - [ ] With a FakeRunner (non-detachable) step in flight, a code-change drain plans no new
       persona step, waits for the current one, and execs. A FakeRunner queue's re-exec
       journal matches today's for `tests/test_agentic_reexec.py`.
-- [ ] A stop set through `ctx.stop`, with a persona run in `wait` and a gate in flight: the
-      gate's process group is killed through `_terminate_children()`, and the gate result is
-      discarded. `run()` returns while the run's process is alive, `stop signal` lists the
-      run under `detached`, and a new `run()` adopts and applies it.
+- [ ] A stop set through `ctx.stop`, with a persona run in `wait` and a gate in flight in a
+      two-gate project: the gate's process group is killed through `_terminate_children()`,
+      the second gate never starts, and the killed gate is discarded. There is no `gate`
+      event, the state stays GATING, `gate_runs`/loops are not incremented, the row reason is
+      `interrupted`, and the next runner re-gates. `run()` returns while the run's process
+      is alive, `stop signal` lists the run under `detached`, and a new `run()` adopts and
+      applies it.
 - [ ] `--once` and `--max-ticks` exits detach wait-phase runs, and `run()` returns while they
-      are alive. `--until-idle` behaves as today. If one of these fires during draining
-      ticks, it is a plain exit with `restart_pending`.
+      are alive. `--until-idle` behaves as today. If `max_ticks` or `until_idle` fires
+      during draining ticks, it is a plain exit with `restart_pending`.
 - [ ] A crash raised inside `tick` with one task in `wait`, one in `spawning` (paused wrapper
-      start) and a gate in flight: the gate group is killed, `run()` re-raises within the
-      30 s bound, the lease is released, both runs' processes are alive, and the next
-      `run()` adopts both. A run that exits during the sweep is collected by the next runner.
-- [ ] A thread still stuck after the 30 s bound does not delay the lease release, and the
-      CLI process exits (`os._exit(70)`) instead of hanging.
+      start), a gate in flight and one finished-unharvested flight: the finished flight is
+      applied, the gate group is killed, `run()` re-raises within the 30 s bound, the lease
+      is released, both runs' processes are alive, and the next `run()` adopts both. A run
+      that exits during the sweep is collected by the next runner.
+- [ ] When the 30 s bound expires on a stop or crash, every `wait` task is detached
+      individually even though another task is stuck. Stuck `spawning`/`collect` tasks are
+      journaled as `abandoned`, and the next runner adopts them, including an abandoned
+      `collect` (`exit.json`, no `run.end`, stale `index.lock`), whose commit is recorded
+      once. A leftover thread does not delay the lease release, and the CLI exits with
+      `os._exit(70)`.
 - [ ] Results harvested during draining ticks are journaled as `tick(drain)` records, a
       second merge during draining updates `restart.to_sha`, and `draining.waiting_on`
       lists only blockers (in-process work, `spawning`, `collect`).
@@ -227,8 +281,9 @@ The conductor skill rows change accordingly:
 
 - **Fixture:** SPEC-0225's `tests/fixtures/fake_claude.py` on `PATH` and its paused-wrapper
   helper. Gate commands are real subprocesses that write their pid to a file and sleep, so
-  "the gate's group is killed" is checked by pid. Stops are driven by setting `ctx.stop`,
-  which takes the same `_terminate_children()` path as `_handler`. Code changes come from
+  "the gate's group is killed" is checked by pid. Stops are driven by setting `ctx.stop`.
+  The main loop then calls `_terminate_children()`, exactly as after a signal, because
+  `_handler` only sets the same event. Code changes come from
   the patched `code_changes`.
 - **Automated tests:** new `tests/test_agentic_exit_paths.py`.
   - `test_draining_ticks_admit_and_exec_promptly` (`poll_interval_s: 1`): A is GATING with
@@ -239,21 +294,32 @@ The conductor skill rows change accordingly:
   - `test_fakerunner_drain_converges`: FakeRunner, a `sleep_s: 1` implementer in flight
     and a second campaign ready. After detection, no new persona step is planned (the
     second campaign may be admitted and opened), and `_EXEC` follows the harvest.
-  - `test_stop_kills_gate_and_detaches_run`: `ctx.stop` is set. The gate pid is gone, the
-    run's `child.pid` is alive, `stop signal detached` is written, and a second `run()`
-    journals `adopt … running`.
+  - `test_stop_kills_gate_and_detaches_run`: a two-gate project, and `ctx.stop` is set
+    during gate 1. The gate-1 pid is gone, gate 2's pid file never appears, the state is
+    still GATING, and there is no `gate` event and no `gate_runs` increment. The run's
+    `child.pid` is alive, `stop signal detached` is written, and a second `run()` journals
+    `adopt … running` and re-gates.
+  - `test_handler_only_sets_stop`: `signal.getsignal(SIGTERM)` installed by `run()` on the
+    main thread, invoked with a gate in flight, returns at once without calling
+    `terminate_all` (spy). The main loop calls it within 0.5 s.
   - `test_once_and_max_ticks_detach` (parametrized): `run()` returns in < 2 s with the run
-    alive, and `stop` lists it. The variant fired during draining has `restart_pending` and
-    no `_EXEC`.
+    alive, and `stop` lists it. The `max_ticks` variant that fires during draining has
+    `restart_pending` and no `_EXEC`. There is no `once` variant: `once` cannot reach
+    draining.
   - `test_until_idle_unchanged`: FakeRunner e2e reaching idle gives the same journal as
     before.
-  - `test_crash_with_gate_wait_and_spawning`: `tick` raises on its second call. The gate
-    pid is gone, `run()` re-raises within 30 s, the lease file is released, both children
-    are alive, and the next `run()` adopts both.
-  - `test_crash_sweep_bound`: a `spawning` task paused past the bound (patched to 1 s).
-    `run()` re-raises after about 1 s, `Q.leftover_threads()` is non-empty, and the next
-    runner adopts the run once the wrapper claims it. The CLI's `os._exit` is checked with
-    a patched `os._exit`.
+  - `test_crash_with_gate_wait_and_spawning`: `tick` raises on its second call, with one
+    reviewer flight already finished and unharvested. That flight is applied, the gate pid
+    is gone, `run()` re-raises within 30 s, the lease file is released, both children are
+    alive, and the next `run()` adopts both.
+  - `test_bound_expiry_force_detach_and_abandon` (bound patched to 1 s), on a stop and on a
+    crash. One task is paused in `spawning` and one blocks in `collect` (patched
+    `commit_all` that commits, then hangs). The `wait` task is detached anyway, and its
+    thread exits without collecting. `stop` lists the other two as `abandoned`, and
+    `Q.leftover_threads()` is non-empty. The next runner adopts all three. The abandoned
+    collect's run (with `exit.json`, no `run.end`, a stale `index.lock` planted) is
+    collected, and its commit is recorded once. The CLI's `os._exit(70)` is checked with a
+    patched `os._exit`.
   - `test_drain_journal_redetect_and_waiting_on`: the drain's harvests appear as
     `tick(drain)` records, a second patched merge updates `restart.to_sha`, and
     `lease.draining.waiting_on` never lists a `wait`-phase run.
@@ -269,6 +335,9 @@ The conductor skill rows change accordingly:
   - plan FakeRunner steps while draining;
   - drop the 0.2 s detach poll;
   - skip `_terminate_children` on a `ctx.stop`;
+  - drop the stop check in `run_gate`/`run_all`;
+  - apply a gate result harvested during a stop;
+  - keep all-or-nothing detach at bound expiry;
   - `shutdown(wait=True)`;
   - ignore `detach_all` in `spawned()`.
   Record the outcomes in the spec.
