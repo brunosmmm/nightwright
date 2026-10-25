@@ -1,7 +1,7 @@
 ---
 id: SPEC-0177
 title: "wt-conduct skill, docs and dogfood bootstrap for wt itself"
-status: in-progress
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -115,19 +115,19 @@ asserts both gates and the merge policy.
 
 ## Acceptance criteria
 
-- [ ] `tests/test_skills.py` passes with `wt-conduct` installed by `wt skills install`
+- [x] `tests/test_skills.py` passes with `wt-conduct` installed by `wt skills install`
       (symlinked like the others); the skill names `wt queue --help` and
       `wt campaign --help` and has no fenced flag blocks.
-- [ ] `wt projects config Meta-Tools --json` resolves the committed file and
+- [x] `wt projects config Meta-Tools --json` resolves the committed file and
       `load_project_config` accepts it; the dogfood config test passes.
-- [ ] `mkdocs build --strict` passes with the completed capability page; the reference,
+- [x] `mkdocs build --strict` passes with the completed capability page; the reference,
       capabilities, guides and agent-surface guards pass.
-- [ ] **Manual:** on this machine, with the balanced profile, `wt queue add <trivial
+- [x] **Manual:** on this machine, with the balanced profile, `wt queue add <trivial
       accepted spec> --yes` and `/wt-conduct` (service started detached) take the campaign
       to `MERGED`; `wt campaign log` shows the full event trail; the live `wt` still works
       afterwards; campaign id, loops, runs and total cost recorded in this spec.
-- [ ] After that merge, `wt spec reconcile --apply` moves the spec's idea to PROMOTED.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] After that merge, `wt spec reconcile --apply` moves the spec's idea to PROMOTED.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -138,6 +138,27 @@ asserts both gates and the merge policy.
   spec created for the purpose. Record: campaign id, `loops`, `runs`, `cost.total_usd`,
   wall time, and anything that parked.
 - **Regression guard:** full `uv run pytest` before and after the real campaign's merge.
+
+### Test record (2026-10-25)
+
+- **Automated:** `tests/test_skills.py` (with `wt-conduct`), `tests/test_agentic_dogfood_config.py`,
+  docs guards and `mkdocs build --strict` pass; full `uv run pytest` on main after the
+  merge of this spec: 1453 passed, 1 skipped, 0 failed. `wt skills install` linked
+  `wt-conduct` into `~/.claude/skills`.
+- **First real campaign:** `SPEC-0179-20261025-158c` (canary `wt spec status`), balanced
+  profile with `slots: 1`. First attempt parked `triage_escalated` because every
+  `claude -p` call returned HTTP 429 `usage_limit_reached` (3 runs, $0). After the account
+  limit reset: `wt queue resume … --to IMPLEMENTING --reset-loops --yes`, loop started with
+  `setsid nohup wt queue run`. One implementer run (sonnet, 190 s, **$0.301**, verdict ok),
+  gates green (113 s), close re-gated on the rebased tree (114 s), **MERGED** fast-forward
+  as `6a0eefa`; 0 fix loops, 4 runs total (3 failed on the 429), total cost $0.30. The
+  re-gate is `uv run pytest -q -x` + lint on the exact merged tree, so main was verified
+  green by the loop itself; `wt spec verify SPEC-0179` ok afterwards; live `wt` works.
+- `wt spec reconcile --apply` moved IDEA-025 SPECCED → PROMOTED.
+- **As shipped:** the spec-lint gate regenerates the ledger before linting; the skill
+  starts the loop with `setsid nohup`. Findings filed: transient API errors (429) should be
+  retried, not counted as triage attempts; heartbeat should tick during runs; the
+  conductor must be event-driven (superseding design follows in a new spec).
 
 ## Clock Log
 
@@ -150,11 +171,11 @@ installed with `wt skills install` (symlink; no reinstall needed).
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

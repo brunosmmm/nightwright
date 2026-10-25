@@ -95,7 +95,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (8/9 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (9/9 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -103,7 +103,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0174](./specs/0174-headless-persona-runner-prompt-assembly-and.md) Headless persona runner, prompt assembly and verdict schemas — done
   - [x] [SPEC-0175](./specs/0175-close-step-rebase-re-gate-ff-only-merge-or-pr.md) Close step: rebase, re-gate, ff-only merge or PR hand-off — done
   - [x] [SPEC-0176](./specs/0176-queue-state-machine-with-lease-guarded-tick-run.md) Queue state machine with lease-guarded tick/run, park/resume and listing — done
-  - [ ] [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) wt-conduct skill, docs and dogfood bootstrap for wt itself — in-progress
+  - [x] [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) wt-conduct skill, docs and dogfood bootstrap for wt itself — done
   - [x] [SPEC-0179](./specs/0179-wt-spec-status-one-line-frontmatter-status-setter.md) wt spec status: one-line frontmatter status setter — done
 
 ## Active & planned
@@ -115,7 +115,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0087](./specs/0087-workstreams-and-concern-separation-routing.md) | Workstreams and concern separation (routing, streams, filters, hub; umbrella for priority & sort) | epic | accepted | M4: cli ergonomics | 2026-07-28 |
 | [SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) | Example-heavy docs: SVG captures and workflow architecture | epic | accepted | M8: product documentation | 2026-09-09 |
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) | wt-conduct skill, docs and dogfood bootstrap for wt itself | feature | in-progress | M9: agentic workflow | 2026-10-25 |
 
 ## Done
 
@@ -285,6 +284,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0174](./specs/0174-headless-persona-runner-prompt-assembly-and.md) | Headless persona runner, prompt assembly and verdict schemas | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0175](./specs/0175-close-step-rebase-re-gate-ff-only-merge-or-pr.md) | Close step: rebase, re-gate, ff-only merge or PR hand-off | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0176](./specs/0176-queue-state-machine-with-lease-guarded-tick-run.md) | Queue state machine with lease-guarded tick/run, park/resume and listing | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) | wt-conduct skill, docs and dogfood bootstrap for wt itself | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0178](./specs/0178-fix-two-textual-pilot-tests-that-assumed-meta.md) | Fix two Textual pilot tests that assumed Meta-Tools is the first chooser entry | feature | done | M0: process | 2026-10-25 |
 | [SPEC-0179](./specs/0179-wt-spec-status-one-line-frontmatter-status-setter.md) | wt spec status: one-line frontmatter status setter | feature | done | M9: agentic workflow | 2026-10-25 |
 
