@@ -10,7 +10,7 @@ kind: feature
 parent: SPEC-0169
 tags: [agentic, runner, watchdog, conductor, events]
 source_idea: IDEA-103
-depends_on: [SPEC-0224]
+depends_on: [SPEC-0224, SPEC-0226]
 ---
 
 ## Context
@@ -137,21 +137,25 @@ conductor never kills a runner in the middle of a merge.
   budget_s})`, and in `finally` it calls `pop_info("busy")`. `tick()` and `_Ctx` gain an
   optional `lease`. It is None in tests and one-shot ticks, and then the manager does
   nothing. Every main-thread step that can take long is wrapped:
-  - **`open`.** Each `_do_open` (step 1) runs as `_busy(lease, "open", campaign=cid,
-    budget_s=…)`. `_do_open` creates the worktree and then runs every
+  - **`open`.** Every call site of `_do_open` in `_tick` runs inside `_busy(lease,
+    "open", campaign=cid, budget_s=…)`. Today there are two: the step-1 admission open
+    and the step-2 open of an item that was admitted earlier. `_do_open` creates the worktree and then runs every
     `worktrees.setup` command with `subprocess.run`, one after another and with no timeout.
     wt's own setup is `uv sync --extra tui`, and other projects may run `npm ci`. So
     `budget_s` is the sum of the per-command `timeout_s` when setup entries carry one.
     Today they are plain strings, so it is the new events setting `open_budget_s`
     (default 600) for the whole open.
-  - **`close`.** Step 4 wraps each `_do_close` in `_busy(lease, "close", campaign=cid,
+  - **`close`.** Every call site of `_do_close` (today, step 4) runs inside `_busy(lease, "close", campaign=cid,
     budget_s=sett["gate_budget_s"])`. A close rebases and runs the project gates
     in-process, and `gate_budget_s` (1800) is already their budget. Once SPEC-0220 moves
     the close regate onto the pool, the window shrinks to the main-checkout merge phase.
     SPEC-0220 then narrows the wrap to that phase.
   - **`drain`.** `_drain` runs inside `_busy(lease, "drain", budget_s=…)`. The budget is
     the largest `waiting_on[].timeout_s` of SPEC-0224's draining info, or
-    `gate_budget_s` for gates. It is computed at drain start.
+    `gate_budget_s` for gates. It is computed at drain start. Flights that finish early
+    make this an over-estimate. That is safe: SPEC-0224's `runner_draining` still reports
+    the drain within 60 s, and an over-estimate only delays the extra
+    `runner_journal_silent` alarm. It never causes a false one.
 
   Nested use does not happen: steps 1 and 4 run in sequence, and the drain runs outside
   `tick`. The drain's readiness refresh and admission bookkeeping take seconds and are not
@@ -183,8 +187,10 @@ conductor never kills a runner in the middle of a merge.
   see the pool, so the runner publishes its flights. A campaign parked while its run is
   still in flight therefore counts, as it does in `_tick`. Without `in_flight` (legacy
   lease, runner down) the count is the state rows alone. `ready_not_admitted_items`
-  switches to the same helper in two places: its early return (`if _occupied(rows, lease)
-  >= slots: return []`, replacing `len(active) >= slots`) and its `active` field. A parked
+  switches to the same helper in two places. First, its early return: the function now
+  reads the lease (`L.lease_status`) before that check, then tests `if _occupied(rows,
+  lease) >= slots: return []` in place of `len(active) >= slots`. Second, its `active`
+  field. A parked
   campaign's in-flight run therefore suppresses that alert as well.
 
 ### `waiting_not_admitted`
@@ -276,8 +282,10 @@ conductor never kills a runner in the middle of a merge.
 - The `ready_not_admitted` row mentions `drain`. The `conductor_ping` row lists
   `waiting_not_admitted` and `runner`.
 - **Relation to SPEC-0224's planned `runner_draining` row** ("do not SIGTERM"). After
-  0224 was accepted, the human decided that a stalled queue is worse than an interrupted
-  persona run (commit a43fef6). When both events fire, the `runner_journal_silent` row
+  0224 was accepted, the human set the current policy in the wt-conduct `merged` row
+  (commit a43fef6): SIGTERM and restart at once if admission is blocked, never while
+  CLOSING / `busy` (open or close). That policy supersedes 0224's planned row. When both
+  events fire, the `runner_journal_silent` row
   decides, within the close guard. This spec depends on 0224, so that row exists when
   this spec is built. This spec edits it to add: "if `runner_journal_silent` also fired,
   follow that row (with the close guard)". The skill then has no two contradictory rows.
