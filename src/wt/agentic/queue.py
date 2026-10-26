@@ -31,6 +31,7 @@ import yaml
 from .. import specs as SP
 from ..specmeta import split_frontmatter
 from . import close as CL
+from . import divergence as DV
 from . import followups as FU
 from . import gates as G
 from . import gitops as git
@@ -66,6 +67,7 @@ PARK_REASONS = frozenset({
     "spec_review_unavailable", "human_decision",
     "gates_failed", "worktree_dirty",                  # SPEC-0233: merge campaigns
     "not_docs_only",                                   # SPEC-0234: --docs-only diff left the allowlist
+    "diverging",                                       # SPEC-0247: the fix loop is not converging
 })
 # SPEC-0222: who a park waits for. The human only for their own checkout and explicit
 # escalations (`human_decision`, SPEC-0232); everything else is the conductor's.
@@ -1619,7 +1621,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         state["pending_brief"] = {"source": "gate_triager", "fix_brief": v.get("fix_brief"),
                                   "must_fix": list(v.get("must_fix") or []),
                                   "human_notes": list(notes)}
-        return finish("IMPLEMENTING", "triage_fix")
+        return _finish_fix(ctx, state, events, finish, "gate", "triage_fix")
 
     if kind == "gate":
         run = res.gate_run
@@ -2006,6 +2008,18 @@ def _carry_source(state: dict, tri: dict) -> dict:
             "waived": (state.get("last_review") or {}).get("waived") or []}
 
 
+def _finish_fix(ctx, state, events, finish, kind, reason):
+    """The fix outcome of a review or a gate triage (`loops` already counted, `pending_brief`
+    set): back to IMPLEMENTING, or park `diverging` when the fix rounds show no convergence
+    (SPEC-0247). The park keeps the brief, so a resume continues with it."""
+    div = DV.check(ctx.cfg, state, events, kind)
+    if div is None:
+        return finish("IMPLEMENTING", reason)
+    events.append(("loop_divergence", div))
+    return finish("PARKED", "diverging", park={
+        "reason": "diverging", "detail": DV.summary(div), "resume_to": "IMPLEMENTING"})
+
+
 def _merge_carry(state: dict, review: dict) -> None:
     """SPEC-0207: on a `fix` outcome merge the review's `advisory` and `waived` findings into
     `state["review_carry"]` (de-duplicated by key, so re-merging the same review adds nothing)
@@ -2138,7 +2152,7 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
         "must_fix": brief["must_fix"], "human_notes": list(notes)}
     if multi:
         state["pending_brief"]["personas"] = brief["personas"]
-    return finish("IMPLEMENTING", "review_fix")
+    return _finish_fix(ctx, state, events, finish, "review", "review_fix")
 
 
 # ---- tick / run ------------------------------------------------------------------------------

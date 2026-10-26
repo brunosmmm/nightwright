@@ -1,10 +1,10 @@
 ---
 id: SPEC-0247
 title: "Divergence detection in the implementation loop: park diverging, conductor triages, rework as an outcome"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-10-25
-updated: 2026-10-25
+updated: 2026-10-26
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0169
@@ -202,35 +202,35 @@ A new decision-table row for `parked diverging`:
 
 ## Acceptance criteria
 
-- [ ] `rounds()` on a hand-built ledger yields one round per `review_fix`/`triage_fix`
+- [x] `rounds()` on a hand-built ledger yields one round per `review_fix`/`triage_fix`
       transition plus the pending one, with the right `kind`, counted findings (`nit`,
       `info`, and `implementer`, `human` and `close` findings excluded) and
       `failing_gates`. Rounds before the
       latest resume from a `diverging` park are dropped.
-- [ ] Finding matching: equal normalised keys match; titles at or above the Jaccard threshold
+- [x] Finding matching: equal normalised keys match; titles at or above the Jaccard threshold
       with the same `ac` match; different `ac`s never match; titles with empty word sets
       match only on equal keys.
-- [ ] `trend`, `churn`, `recurrence` and `gate_repeat` each fire on a minimal fixture (at
+- [x] `trend`, `churn`, `recurrence` and `gate_repeat` each fire on a minimal fixture (at
       their stated minimum round counts) and stay silent on a converging one (blocking
       counts 4→2→0, findings repeated rather than new). Two implementer blockers in
       rounds 1 and 3 do not fire `recurrence`. Two consecutive failed gate rounds fire
       neither `trend` nor `gate_repeat`; three consecutive rounds with the same gate
       failing and a steady blocking count fire both, and trip.
-- [ ] The trip rule: recurrence alone trips; any two of the other three trip; one of them
+- [x] The trip rule: recurrence alone trips; any two of the other three trip; one of them
       alone does not; fewer than `min_rounds` rounds, or `enabled: false`, never trip.
-- [ ] `divergence.settings` falls back to the default for each wrong-typed or out-of-range
+- [x] `divergence.settings` falls back to the default for each wrong-typed or out-of-range
       key.
-- [ ] A FakeRunner campaign under a profile with `loop_max` 4 parks `diverging` at the end
+- [x] A FakeRunner campaign under a profile with `loop_max` 4 parks `diverging` at the end
       of loop 3, before `loop_exhausted`. Its reviewer returns blocking finding X in loop
       1, a different, non-matching blocking finding Y in loop 2 (so the loop continues),
       and X again in loop 3. It has a `loop_divergence` event (signals include `recurrence`),
       `park.resume_to` `IMPLEMENTING`, `pending_brief` set, and `park_owner` `conductor`.
-- [ ] After `wt queue resume`, the next implementer run happens, and the campaign does not
+- [x] After `wt queue resume`, the next implementer run happens, and the campaign does not
       re-park `diverging` on the next fix round, which has fewer than `min_rounds` fresh
       rounds.
-- [ ] A ledger read error inside `check` yields a `divergence check skipped` note and the
+- [x] A ledger read error inside `check` yields a `divergence check skipped` note and the
       normal `IMPLEMENTING` transition.
-- [ ] `skills/wt-conduct/SKILL.md` has the `diverging` row (continue / rework / escalate with
+- [x] `skills/wt-conduct/SKILL.md` has the `diverging` row (continue / rework / escalate with
       the commands above). A new check in `tests/test_skills.py` asserts the row, including
       `--yes` on the escalate command; the existing skill tests pass.
 - [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
@@ -257,12 +257,42 @@ On by default. If it misfires, `agentic.divergence.enabled: false` turns it off 
 code change. Thresholds are tuned from the `loop_divergence` events that real campaigns
 record.
 
+### Test record (2026-10-26)
+
+- `uv run pytest tests/test_agentic_divergence.py tests/test_skills.py` — 77 passed: unit
+  tests for `rounds` (kinds, counted findings, failing gates, the reset after a `diverging`
+  resume), matching, the four signals and their minimum round counts, the trip rule, settings
+  fallbacks; FakeRunner campaigns (recurrence parks `diverging` at the end of loop 3 under
+  `loop_max` 4, then resume merges without a re-park; `loop_exhausted` wins when the budget is
+  spent; `enabled: false`; gate-repeat on the third failed fix; a ledger read error).
+- Full `uv run pytest -q`: 2695 passed, 3 failed, 137 errors in 549s. The run hit
+  "No space left on device" (the /tmp volume ran out of inodes), so the errors and the 3
+  failures could not be told apart from that. An earlier `-x` run failed once in
+  `tests/test_agentic_adopt.py::test_adopt_after_park_resume_while_no_runner` (process-adoption
+  timing, nothing to do with divergence); that file passes alone (37 passed). Not yet re-run
+  on a volume with free inodes, so the full suite is **unconfirmed**.
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exited 0 while the
+  spec said `done`; the spec is back at `in-progress`, so the ledger needs regenerating.
+- Manual verification (next real campaign that parks `diverging`) is pending by design.
+
+### As shipped (2026-10-26)
+
+- `divergence.check(cfg, state, pending_events, kind=None)` takes an optional `kind`
+  (`"review"` or `"gate"`); `queue._finish_fix` passes it, so the pending round's kind does
+  not depend on the campaign's state name. Without it a campaign in `TRIAGING` closes a gate
+  round.
+- Both fix branches share one helper, `queue._finish_fix`, instead of two inline calls.
+- `assess` returns `{signals, rounds}`; `check` adds `loop`.
+- Records up to the resume of a `diverging` park (also one escalated to `human_decision`
+  with `escalated_from: diverging`) are dropped before rounds are cut, because the tripped
+  round never gets a closing fix transition.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
+- [x] Acceptance criteria all met.
 - [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
 - [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
+- [x] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions

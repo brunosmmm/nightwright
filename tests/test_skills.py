@@ -297,6 +297,19 @@ def test_orient_carries_working_rules_and_session_skills_require_it():
         assert "Never use forks" in text, name
 
 
+def test_conduct_skill_has_diverging_row_spec_0247():
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    row = next(r for r in conduct.splitlines() if r.startswith("| `parked` `diverging`"))
+    for phrase in ("loop_divergence", "pending_brief", "wt queue resume <id>",
+                   "wt queue abandon <id>", "/wt-rework", "campaign note"):
+        assert phrase in row, phrase
+    for option in ("continue", "rework", "escalate"):
+        assert f"**{option}**" in row, option
+    escalate = row[row.index("wt queue escalate"):]
+    assert "--option continue --option rework --option split" in escalate
+    assert "--recommend N --fact <evidence> --yes" in escalate
+
+
 def test_conduct_skill_has_runner_draining_row_spec_0224():
     """SPEC-0224: the conductor table handles `runner_draining`, and `ready_not_admitted`
     points to it."""

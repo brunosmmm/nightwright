@@ -1,0 +1,315 @@
+"""SPEC-0247: divergence detection in the implementation loop — `rounds`, finding matching, the
+four signals, the trip rule, settings, and the queue integration (park `diverging`, resume)."""
+import json
+import types
+
+import pytest
+
+from wt.agentic import divergence as DV
+from wt.agentic import queue as Q
+from wt.agentic import schemas as SC
+from wt.agentic import store as S
+
+from test_agentic_e2e import (added, impl_done, make_cfg, make_repo, review, run_cli, script,
+                              triage)
+
+REV = "conformance_reviewer"
+F = DV.Finding
+
+
+def rec(etype, **payload):
+    return {"type": etype, **SC.with_defaults(etype, payload)}
+
+
+def finding(title, severity="must_fix", persona=REV, **kw):
+    return rec("finding", persona=persona, severity=severity, title=title, **kw)
+
+
+def gate(*results):
+    return rec("gate", ok=all(ok for _, ok in results),
+               results=[{"name": n, "ok": ok} for n, ok in results])
+
+
+def fix(reason="review_fix"):
+    return rec("transition", **{"from": "REVIEWING", "to": "IMPLEMENTING", "reason": reason})
+
+
+def rnd(kind="review", blocking=(), gates=(), *, minor=()):
+    return DV.Round(kind, [F(REV, "must_fix", t, None) for t in blocking]
+                    + [F(REV, "minor", t, None) for t in minor], frozenset(gates))
+
+
+# ---- rounds ----------------------------------------------------------------------------------
+
+def test_rounds_one_per_fix_transition_with_kind_findings_and_failing_gates():
+    ledger = [
+        rec("open"), gate(("test", False), ("lint", True)),
+        finding("gate broke", persona="gate_triager"), fix("triage_fix"),
+        gate(("test", True)),
+        finding("a defect"), finding("a nit", severity="nit"), finding("info", severity="info"),
+        finding("blocker", persona="implementer", severity="major"),
+        finding("human", persona="human"), finding("close", persona="close"),
+        finding("tri minor", severity="minor", persona="review_triager"), fix("review_fix"),
+        rec("transition", **{"from": "X", "to": "GATING", "reason": "implemented"}),
+    ]
+    first, second = DV.rounds(ledger)
+    assert (first.kind, first.failing_gates) == ("gate", frozenset({"test"}))
+    assert [f.title for f in first.findings] == ["gate broke"]
+    assert (second.kind, second.failing_gates) == ("review", frozenset())
+    assert [(f.persona, f.title) for f in second.findings] == [
+        (REV, "a defect"), ("review_triager", "tri minor")]
+    assert DV.rounds([]) == []
+
+
+def test_rounds_before_the_resume_of_a_diverging_park_are_dropped():
+    ledger = [finding("a"), fix(), finding("b"), fix(),
+              rec("park", reason="diverging"), rec("resume", to="IMPLEMENTING"),
+              finding("c"), fix()]
+    assert [[f.title for f in r.findings] for r in DV.rounds(ledger)] == [["c"]]
+    other = [finding("a"), fix(), rec("park", reason="cost_cap"), rec("resume"),
+             finding("b"), fix()]
+    assert len(DV.rounds(other)) == 2                     # another park resets nothing
+    escalated = [finding("a"), fix(), rec("park", reason="diverging"),
+                 rec("park", reason="human_decision", escalated_from="diverging"),
+                 rec("resume"), finding("b"), fix()]
+    assert len(DV.rounds(escalated)) == 1
+
+
+# ---- matching --------------------------------------------------------------------------------
+
+def test_matching():
+    m = DV.matches
+    assert m(F(REV, "must_fix", "Missing  test!", None), F("test_reviewer", "major", "missing test", None))
+    assert not m(F(REV, "must_fix", "Missing test", "AC1"), F(REV, "must_fix", "Missing test", "AC2"))
+    assert not m(F(REV, "must_fix", "Missing test", "AC1"), F(REV, "must_fix", "Missing test", None))
+    close = ("the parser drops trailing newline", "parser drops the trailing newline")
+    assert m(F(REV, "major", close[0], "AC1"), F(REV, "major", close[1], "AC1"))
+    assert m(F(REV, "major", close[0], None), F(REV, "major", close[1], None))
+    assert not m(F(REV, "major", close[0], "AC1"), F(REV, "major", close[1], "AC2"))
+    assert not m(F(REV, "major", "parser drops newline", None),
+                 F(REV, "major", "cache never expires entries", None))
+    assert not m(F(REV, "major", "UI", None), F(REV, "major", "a/b", None))    # empty word sets
+    assert m(F(REV, "major", "UI", None), F(REV, "major", "ui!", None))        # equal keys
+    assert not m(F(REV, "major", "UI", None), F(REV, "major", "UI bug on save", None))
+
+
+# ---- signals ---------------------------------------------------------------------------------
+
+def names(div):
+    return [s["name"] for s in div["signals"]] if div else []
+
+
+def sigs(rs, **cfg):
+    out = {"trend": DV._trend(rs, DV.DEFAULTS["window"]),
+           "churn": DV._churn(rs, DV.DEFAULTS["churn_ratio"], DV.DEFAULTS["similarity"]),
+           "recurrence": DV._recurrence(rs, DV.DEFAULTS["similarity"]),
+           "gate_repeat": DV._gate_repeat(rs, DV.DEFAULTS["window"])}
+    return {k for k, v in out.items() if v}
+
+
+def test_trend():
+    assert sigs([rnd(blocking="a"), rnd(blocking="b"), rnd(blocking="cd")]) >= {"trend"}
+    assert "trend" in sigs([rnd(blocking=["a"]), rnd(blocking=["b"]), rnd(blocking=["c"])])
+    assert "trend" not in sigs([rnd(blocking=list("abcd")), rnd(blocking=list("ab")), rnd()])
+    assert "trend" not in sigs([rnd(blocking=["a"]), rnd(blocking=["b"])])     # needs `window` rounds
+    assert "trend" not in sigs([rnd(blocking=list("ab")), rnd(blocking=["a"]), rnd(blocking=list("ab"))])
+
+
+def test_churn():
+    new = [rnd(blocking=["alpha one", "beta two"]), rnd(blocking=["gamma three", "delta four"]),
+           rnd(blocking=["epsilon five", "zeta six"])]
+    assert "churn" in sigs(new)
+    assert "churn" not in sigs(new[1:])                                        # needs 3 rounds
+    repeated = [rnd(blocking=["alpha one", "beta two"])] * 3
+    assert "churn" not in sigs(repeated)
+    one = [rnd(blocking=["alpha one", "beta two"]), rnd(blocking=["gamma three"]),
+           rnd(blocking=["epsilon five", "zeta six"])]
+    assert "churn" not in sigs(one)                                            # < 2 findings in a round
+    minors = [rnd(minor=["alpha one", "beta two"]), rnd(minor=["gamma three", "delta four"]),
+              rnd(minor=["epsilon five", "zeta six"])]
+    assert "churn" in sigs(minors)                                             # churn counts minors
+
+
+def test_recurrence():
+    x, y = "parser drops newline", "cache never expires"
+    assert sigs([rnd(blocking=[x]), rnd(blocking=[y]), rnd(blocking=[x])]) >= {"recurrence"}
+    div = DV._recurrence([rnd(blocking=[x]), rnd(blocking=[y]), rnd(blocking=[x])], 0.6)
+    assert div["evidence"] == [{"title": x, "rounds": [1, 3]}]
+    assert "recurrence" not in sigs([rnd(blocking=[x])] * 3)                   # never addressed
+    assert "recurrence" not in sigs([rnd(blocking=[x]), rnd(blocking=[x])])    # needs 3 rounds
+    assert "recurrence" not in sigs([rnd(blocking=[x]), rnd(), rnd(minor=[x])])  # only blocking
+    # converging: blocking 4 → 2 → 0, findings repeated rather than new
+    conv = [rnd(blocking=list("abcd")), rnd(blocking=list("ab")), rnd()]
+    assert DV.assess(conv) is None
+
+
+def test_implementer_blockers_do_not_recur():
+    ledger = [finding("implementer blocker", severity="major", persona="implementer"), fix(),
+              finding("something else"), fix(),
+              finding("implementer blocker", severity="major", persona="implementer"),
+              fix()]
+    rs = DV.rounds(ledger)
+    assert len(rs) == 3 and DV._recurrence(rs, 0.6) is None
+    assert DV.assess(rs) is None
+
+
+def test_gate_repeat_and_its_pairing_with_trend():
+    def gr():
+        return rnd("gate", blocking=["gate broke"], gates=["test"])
+    assert sigs([gr(), gr()]) == set()                       # two failed gate rounds: neither fires
+    assert DV.assess([gr(), gr()]) is None
+    three = [gr(), gr(), gr()]
+    assert {"trend", "gate_repeat"} <= sigs(three)
+    div = DV.assess(three)
+    assert names(div) == ["trend", "gate_repeat"] and div["rounds"] == 3
+    assert div["signals"][1]["evidence"] == {"gates": ["test"]}
+    review_between = [gr(), rnd("review", blocking=["x"]), gr()]
+    assert "gate_repeat" not in sigs(review_between)         # consecutive gate rounds only
+    other = [gr(), rnd("gate", blocking=["g"], gates=["lint"]), gr()]
+    assert "gate_repeat" not in sigs(other)
+
+
+# ---- trip rule -------------------------------------------------------------------------------
+
+def test_trip_rule():
+    x, y = "parser drops newline", "cache never expires"
+    only_recurrence = [rnd(blocking=[x, "q", "r"]), rnd(blocking=[y]), rnd(blocking=[x])]
+    assert sigs(only_recurrence) == {"recurrence"}           # counts 3→1→1: no trend
+    assert names(DV.assess(only_recurrence)) == ["recurrence"]
+    trend_churn = [rnd(blocking=["alpha one", "beta two"]), rnd(blocking=["gamma three", "delta four"]),
+                   rnd(blocking=["epsilon five", "zeta six"])]
+    assert sigs(trend_churn) == {"trend", "churn"}
+    assert names(DV.assess(trend_churn)) == ["trend", "churn"]
+    only_trend = [rnd(blocking=["a"]), rnd(blocking=["a"]), rnd(blocking=["a"])]
+    assert sigs(only_trend) == {"trend"} and DV.assess(only_trend) is None
+    only_churn = [rnd(minor=["alpha one", "beta two"]), rnd(minor=["gamma three", "delta four"]),
+                  rnd(minor=["epsilon five", "zeta six"])]
+    assert sigs(only_churn) == {"churn"} and DV.assess(only_churn) is None
+    only_gate = [rnd("gate", gates=["test"])] * 3
+    assert sigs(only_gate) == {"gate_repeat"} and DV.assess(only_gate) is None
+    # fewer than min_rounds rounds, or disabled, never trip
+    assert DV.assess([rnd(blocking=["a"])]) is None
+    assert DV.assess(trend_churn, {"enabled": False}) is None
+    assert DV.assess(trend_churn, {"min_rounds": 4}) is None
+
+
+# ---- settings --------------------------------------------------------------------------------
+
+def test_settings_defaults_and_fallbacks():
+    assert DV.settings({}) == DV.DEFAULTS
+    assert DV.settings({"agentic": {"divergence": "nope"}}) == DV.DEFAULTS
+    ok = {"enabled": False, "window": 4, "min_rounds": 3, "churn_ratio": 0.5, "similarity": 1}
+    assert DV.settings({"agentic": {"divergence": ok}}) == ok
+    bad = {"enabled": "yes", "window": 1, "min_rounds": 2.5, "churn_ratio": 0, "similarity": 1.5}
+    assert DV.settings({"agentic": {"divergence": bad}}) == DV.DEFAULTS
+    for key, value in (("window", True), ("window", "3"), ("min_rounds", 1), ("churn_ratio", "x"),
+                       ("churn_ratio", 1.01), ("similarity", -0.1), ("similarity", None)):
+        got = DV.settings({"agentic": {"divergence": {key: value}}})
+        assert got[key] == DV.DEFAULTS[key], (key, value)
+
+
+# ---- queue integration -----------------------------------------------------------------------
+
+X, Y = "feature.txt is wrong", "docs are missing entirely"
+
+
+def _fix_review(title):
+    return review("fix", findings=[{"severity": "must_fix", "ac": "feature.txt exists",
+                                    "title": title, "detail": "d", "files": ["feature.txt"]}])
+
+
+def _drive(tmp_path, monkeypatch, entries, **profile):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, entries), profile=profile)
+    cid = added(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    return cfg, cid
+
+
+def test_e2e_recurrence_parks_diverging_then_resume_continues(tmp_path, monkeypatch):
+    entries = [impl_done(), _fix_review(X), impl_done(), _fix_review(Y), impl_done(),
+               _fix_review(X),
+               # after the resume
+               impl_done(), _fix_review(Y), impl_done(), review("pass")]
+    cfg, cid = _drive(tmp_path, monkeypatch, entries, loop_max=4)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "diverging", st
+    assert st["park"]["resume_to"] == "IMPLEMENTING" and st["counters"]["loops"] == 3
+    assert st["pending_brief"] and st["pending_brief"]["fix_brief"]
+    assert Q.park_owner("diverging") == "conductor"
+    assert 'recurrence: "feature.txt is wrong" (r1, r3)' in st["park"]["detail"]
+    [div] = S.read_ledger(cfg, cid, types=["loop_divergence"])
+    assert "recurrence" in names(div) and div["rounds"] == 3 and div["loop"] == 3
+    assert SC.ledger_problems(div) == []
+    assert not any(e["to"] == "IMPLEMENTING" and e["reason"] == "review_fix"
+                   for e in S.read_ledger(cfg, cid, types=["transition"])[-1:])
+    # resume: the implementer runs again and the next fix round does not re-park
+    r = run_cli(cfg, monkeypatch, ["queue", "resume", cid, "--yes", "--json"])
+    assert r.exit_code == 0, r.output
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED", st
+    assert len(S.read_ledger(cfg, cid, types=["loop_divergence"])) == 1
+    assert [p["reason"] for p in S.read_ledger(cfg, cid, types=["park"])] == ["diverging"]
+
+
+def test_e2e_loop_exhausted_wins_over_diverging(tmp_path, monkeypatch):
+    entries = [impl_done(), _fix_review(X), impl_done(), _fix_review(Y), impl_done(),
+               _fix_review(X)]
+    cfg, cid = _drive(tmp_path, monkeypatch, entries, loop_max=2)
+    st = S.read_state(cfg, cid)
+    assert st["park"]["reason"] == "loop_exhausted" and st["counters"]["loops"] == 2
+    assert S.read_ledger(cfg, cid, types=["loop_divergence"]) == []
+
+
+def test_e2e_disabled_never_parks_diverging(tmp_path, monkeypatch):
+    entries = [impl_done(), _fix_review(X), impl_done(), _fix_review(Y), impl_done(),
+               _fix_review(X), impl_done(), review("pass")]
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, entries), profile={"loop_max": 4})
+    cfg["agentic"]["divergence"] = {"enabled": False}
+    cid = added(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED", st
+    assert S.read_ledger(cfg, cid, types=["loop_divergence"]) == []
+
+
+def test_e2e_gate_repeat_trips_on_the_third_failed_fix(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path, test_gate="exit 1")
+    entries = [impl_done(), triage("fix"), impl_done(), triage("fix"), impl_done(), triage("fix")]
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, entries), profile={"loop_max": 4})
+    cid = added(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["park"]["reason"] == "diverging" and st["counters"]["loops"] == 3, st
+    [div] = S.read_ledger(cfg, cid, types=["loop_divergence"])
+    assert names(div) == ["trend", "gate_repeat"]
+
+
+def test_check_read_error_notes_and_returns_none(monkeypatch):
+    def boom(*a, **kw):
+        raise OSError("disk gone")
+    monkeypatch.setattr(DV, "store", types.SimpleNamespace(read_ledger=boom))
+    pending = []
+    assert DV.check({}, {"id": "C-1"}, pending) is None
+    assert pending == [("note", {"text": "divergence check skipped: disk gone",
+                                 "author": "queue"})]
+
+
+def test_e2e_ledger_read_error_still_transitions_to_implementing(tmp_path, monkeypatch):
+    def boom(*a, **kw):
+        raise OSError("disk gone")
+    monkeypatch.setattr(DV, "store", types.SimpleNamespace(read_ledger=boom))
+    entries = [impl_done(), _fix_review(X), impl_done(), review("pass")]
+    cfg, cid = _drive(tmp_path, monkeypatch, entries)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED", st
+    notes = [e["text"] for e in S.read_ledger(cfg, cid, types=["note"])]
+    assert "divergence check skipped: disk gone" in notes
+    trans = [(e["from"], e["to"], e["reason"]) for e in S.read_ledger(cfg, cid, types=["transition"])]
+    assert ("REVIEWING", "IMPLEMENTING", "review_fix") in trans
