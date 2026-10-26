@@ -516,3 +516,110 @@ def test_a_failing_mail_does_not_fail_the_escalation(tmp_path, monkeypatch):
     rec = _esc(cfg, None)
     assert rec["mail_id"] is None and "mail: disk full" in rec["notified"]["error"]
     assert ESC.read(cfg, rec["id"])["status"] == "open"
+
+
+# ---- review round 3 ------------------------------------------------------------------------
+
+def test_escalating_again_withdraws_a_stale_open_record(tmp_path):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    old = _esc(cfg)
+    st = _state(cfg)
+    st["park"] = {**st["park"], "reason": "cost_cap"}      # hand edit: the escalation is lost
+    S.write_state(cfg, CID, st)
+    new = _esc(cfg, question="again")
+    assert ESC.read(cfg, old["id"])["status"] == "withdrawn"
+    assert [r["id"] for r in ESC.list_all(cfg, "open")] == [new["id"]]
+    assert ESC.open_for(cfg, CID)["id"] == new["id"]
+    assert [r["id"] for r in ESC.open_live(cfg)] == [new["id"]]
+
+
+def test_withdraw_for_campaign_closes_every_open_record(tmp_path):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    a = _esc(cfg)
+    ESC._create(cfg, {"by": "conductor", "campaign": CID, "spec_id": None, "project": None,
+                      "question": "dup", "options": [], "recommendation": None,
+                      "facts": [], "park": None})
+    ESC.withdraw_for_campaign(cfg, CID, "done", "conductor")
+    assert ESC.list_all(cfg, "open") == [] and ESC.read(cfg, a["id"])["status"] == "withdrawn"
+
+
+def test_remind_due_claims_under_the_escalations_lock(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, remind_s=60)
+    rec = _esc(cfg, None)
+    held = []
+    real_locked, real_write = E._locked, ESC._write
+
+    class _Tracked:
+        def __init__(self, path):
+            self.cm = real_locked(path)
+
+        def __enter__(self):
+            self.cm.__enter__()
+            held.append(1)
+
+        def __exit__(self, *exc):
+            held.pop()
+            return self.cm.__exit__(*exc)
+    writes = []
+
+    def write(c, r):
+        writes.append(bool(held))
+        real_write(c, r)
+    monkeypatch.setattr(E, "_locked", _Tracked)
+    monkeypatch.setattr(ESC, "_write", write)
+    ESC.remind_due(cfg, dt.datetime.fromisoformat(rec["created"]) + dt.timedelta(seconds=61))
+    assert writes and all(writes)            # the claim (and the outcome) write under the lock
+
+
+def test_remind_due_skips_a_record_that_raises(tmp_path, calls, monkeypatch):
+    cfg = _cfg(tmp_path, remind_s=60)
+    bad = _esc(cfg, None, question="bad")
+    good = _esc(cfg, None, question="good")
+    real = ESC._claim
+
+    def claim(c, esc_id, *a):
+        if esc_id == bad["id"]:
+            raise OSError("disk gone")
+        return real(c, esc_id, *a)
+    monkeypatch.setattr(ESC, "_claim", claim)
+    calls.clear()
+    out = ESC.remind_due(cfg, dt.datetime.fromisoformat(good["created"])
+                         + dt.timedelta(seconds=61))
+    assert [o["id"] for o in out] == [good["id"]] and len(calls) == 1
+
+
+def test_withdraw_still_mails_when_the_event_append_fails(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    rec = _esc(cfg)
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(E, "append", boom)
+    ESC.withdraw(cfg, rec["id"], "not needed", "conductor")
+    assert ESC.read(cfg, rec["id"])["status"] == "withdrawn"
+    [m] = _infos(cfg)
+    assert rec["id"] in m["text"]
+
+
+def test_malformed_escalations_config_uses_defaults(tmp_path, calls):
+    cfg = _cfg(tmp_path)
+    cfg["agentic"]["escalations"] = ["notify-send"]
+    _parked(cfg)
+    rec = _esc(cfg)
+    assert rec["mail_id"] and rec["notified"]["ok"] and rec["notified"]["via"] == "notify-send"
+    assert ESC.settings(cfg) == ESC.DEFAULTS
+    cfg["agentic"]["escalations"] = {"remind_s": "soon", "notify": 5}
+    ESC.remind_due(cfg, T0 + dt.timedelta(days=3))        # a bad remind_s falls back; no raise
+    assert ESC.notify(cfg, rec)["ok"] is False
+
+
+def test_campaign_record_and_event_carry_spec_id_and_project(tmp_path):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    rec = _esc(cfg)
+    assert (rec["spec_id"], rec["project"]) == (CID[:9], "Meta-Tools")
+    ev = [e for e in E.read_since(cfg, 0) if e["type"] == "escalation"][-1]
+    assert (ev["campaign"], ev["spec_id"], ev["project"]) == (CID, CID[:9], "Meta-Tools")

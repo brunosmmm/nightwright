@@ -28,7 +28,9 @@ _SUBST_RE = re.compile(r"\{(id|campaign|question|recommendation)\}")
 
 
 def settings(cfg) -> dict:
-    return {**DEFAULTS, **(((cfg.get("agentic") or {}).get("escalations")) or {})}
+    ag = cfg.get("agentic")
+    esc = ag.get("escalations") if isinstance(ag, dict) else None
+    return {**DEFAULTS, **(esc if isinstance(esc, dict) else {})}      # malformed: defaults
 
 
 # ---- storage ---------------------------------------------------------------------------------
@@ -223,6 +225,8 @@ def apply_escalate(cfg, plan: dict) -> dict:
         with store.item_lock(cfg, cid):
             st = store.read_state(cfg, cid)
             _revalidate(cfg, plan, st)
+            for stale in _open_records(cfg, cid):      # not live: open_for found none
+                _withdraw_stale(cfg, stale["id"])
             rec = _create(cfg, fields)
             detail = f"{rec['id']}: {plan['question']}"
             park = plan["park"]
@@ -310,7 +314,10 @@ def _notify_argv(cfg, rec: dict, title: str) -> tuple[str, list | None, str | No
 def notify(cfg, rec: dict, *, title: str | None = None) -> dict:
     """Run the configured notifier; never raises. The outcome is `notified`."""
     title = title or f"wt: {rec['id']} needs you"
-    via, argv, error = _notify_argv(cfg, rec, title)
+    try:
+        via, argv, error = _notify_argv(cfg, rec, title)
+    except Exception as e:                             # a malformed setting
+        via, argv, error = "none", None, f"{type(e).__name__}: {e}"[:300]
     ok = argv is not None
     if argv is not None:
         try:
@@ -330,7 +337,10 @@ def remind_due(cfg, now=None) -> list[dict]:
     ago; 0 disables. A due record is claimed under the escalations lock (`reminded_at` is
     written there) before the notifier runs outside it, so concurrent followers remind once.
     Open records whose campaign left the park by another route are withdrawn instead."""
-    remind_s = float(settings(cfg)["remind_s"] or 0)
+    try:
+        remind_s = float(settings(cfg)["remind_s"] or 0)
+    except (TypeError, ValueError):
+        remind_s = float(DEFAULTS["remind_s"])
     if remind_s <= 0:
         return []
     now = now or dt.datetime.now().astimezone()
@@ -406,6 +416,7 @@ def withdraw(cfg, esc_id, reason, by, *, clear_request=True) -> dict:
         E.append(cfg, "escalation_withdrawn", campaign=cid, spec_id=rec.get("spec_id"),
                  project=rec.get("project"), by=by,
                  data={"escalation_id": esc_id, "reason": reason})
+    with contextlib.suppress(ValueError, OSError):
         M.send(cfg, to="human", frm=frm, kind="info", campaign=cid,
                text=f"{esc_id} withdrawn by {by}: {reason}")
     return rec
@@ -415,12 +426,13 @@ def withdraw_for_campaign(cfg, cid, reason, by) -> dict | None:
     """Withdraw the campaign's `open` record, if any (the campaign left the park by a resume,
     an abandon or a terminal transition). The caller owns the campaign state; `answered`
     records are never touched. Never raises."""
+    out = None
     try:
         for rec in _open_records(cfg, cid):
-            return withdraw(cfg, rec["id"], reason, by, clear_request=False)
+            out = withdraw(cfg, rec["id"], reason, by, clear_request=False)
     except (ValueError, OSError):
         pass
-    return None
+    return out
 
 
 def _withdraw_stale(cfg, esc_id) -> None:

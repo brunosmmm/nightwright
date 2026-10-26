@@ -415,6 +415,13 @@ Matches the Design, with these additions and clarifications:
   `_announce` records an event or mail failure in `notified.error` instead of failing the
   apply, `remind_due` skips a record that raises, and `_park_row` gives `human_decision` parks
   the same `escalated_from: null` shape on both deferred paths.
+- Review round 3: `apply_escalate` withdraws the campaign's stale open records (not live, so
+  `open_for` skipped them) under `item_lock` before creating the new one, keeping one open
+  record per campaign; `withdraw_for_campaign` closes every open record, not just the first;
+  `withdraw` sends the `human` info mail even when the event append fails; a malformed
+  `agentic.escalations` section (or `remind_s`/`notify`) falls back to defaults or is recorded
+  in `notified.error` instead of raising. New tests pin each, plus the claim-under-lock write,
+  `remind_due` skipping a raising record, and `spec_id`/`project` on campaign records/events.
 
 ## Clock Log
 
