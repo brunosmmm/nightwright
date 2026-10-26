@@ -297,3 +297,31 @@ def test_wrapper_log_and_unknown_keys(tmp_path):
     t0 = time.monotonic()
     res = runner.run(bad)
     assert time.monotonic() - t0 < 5 and res.is_error
+
+
+def test_claim_never_exposes_partial_proc_json(tmp_path):
+    """`claim` links a fully written file into place: a reader polling for `proc.json` never sees
+    it empty, a second claim loses, and no temp file is left behind."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    seen, stop = [], threading.Event()
+
+    def poll():
+        while not stop.is_set():
+            try:
+                seen.append((run_dir / "proc.json").read_text())
+            except FileNotFoundError:
+                pass
+
+    t = threading.Thread(target=poll)
+    t.start()
+    try:
+        assert RP.claim(run_dir, {"wrapper_pid": 1, "pad": "x" * 100000})
+        time.sleep(0.05)
+    finally:
+        stop.set()
+        t.join()
+    assert seen and all(json.loads(s)["wrapper_pid"] == 1 for s in seen)
+    assert not RP.claim(run_dir, {"orphaned": True})
+    assert RP.read_json(run_dir / "proc.json")["wrapper_pid"] == 1
+    assert [p.name for p in run_dir.iterdir()] == ["proc.json"]

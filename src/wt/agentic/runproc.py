@@ -57,16 +57,23 @@ def _proc_state(pid: int) -> str | None:
 
 
 def claim(run_dir, payload: dict) -> bool:
-    """Create `proc.json` exclusively; False when someone else holds the claim."""
-    path = Path(run_dir) / "proc.json"
+    """Create `proc.json` exclusively; False when someone else holds the claim. The payload is
+    written to a temp file first and hard-linked into place, so `proc.json` never exists empty
+    or partial (`link` fails with FileExistsError when the claim is taken)."""
+    run_dir = Path(run_dir)
+    path = run_dir / "proc.json"
+    tmp = run_dir / f".proc.json.{os.getpid()}.tmp"
     try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-    except FileExistsError:
-        return False
-    with os.fdopen(fd, "w") as f:
-        f.write(json.dumps(payload) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+    finally:
+        tmp.unlink(missing_ok=True)
     dfd = os.open(run_dir, os.O_RDONLY)
     try:
         os.fsync(dfd)

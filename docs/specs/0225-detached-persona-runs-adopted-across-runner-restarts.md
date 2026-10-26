@@ -559,8 +559,8 @@ gets recorded in the spec.
 
 ### Test record (2026-10-25)
 
-Ran `uv run pytest -q` (whole suite: 2217 passed, 1 skipped) and `python3 tools/spec_lint.py`. New: `tests/fixtures/fake_claude.py`,
-`tests/test_agentic_runproc.py` (14 tests), `tests/test_agentic_adopt.py` (23 tests; runproc + adopt together: 37 passed).
+Ran `uv run pytest -q` (whole suite: 2218 passed, 1 skipped) and `python3 tools/spec_lint.py`. New: `tests/fixtures/fake_claude.py`,
+`tests/test_agentic_runproc.py` (15 tests), `tests/test_agentic_adopt.py` (23 tests; runproc + adopt together: 37 passed).
 `test_agentic_runner.py` and `test_agentic_cost_estimate.py` run the fake `claude` on PATH
 instead of patching `subprocess.run` (same assertions); two `_prepare_run` monkeypatches in
 `test_agentic_reviewers.py` take the new optional `step` argument.
@@ -588,6 +588,10 @@ journals `adopt … running` and records one `run.end`) and by the session/group
 
 ### As shipped
 
+- `claim()` writes the payload to `.proc.json.<pid>.tmp` (fsync) and `os.link`s it to `proc.json`, so the file
+  is exclusive (FileExistsError -> False) but never visible empty or partial; found by a race in
+  `test_orphan_claim_after_grace`. Pinned by `test_claim_never_exposes_partial_proc_json`. Readers go
+  through `runproc.read_json`, which treats undecodable content as absent (`unclaimed`).
 - Liveness helpers (`wrapper_alive`, `group_alive`, `run_status`, `claim`, `terminate_run`)
   live in `runproc.py` beside the wrapper, not in `runs.py` (`runs.py` is the `wt campaign
   runs` data module and would have imported the runner for nothing). `collect(req)` takes the
