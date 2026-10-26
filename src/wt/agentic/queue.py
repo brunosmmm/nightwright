@@ -867,12 +867,16 @@ def _busy(lease, kind: str, *, campaign: str | None = None, budget_s: float):
     if lease is None:
         yield
         return
+    prev = lease.info.get("busy")     # a harvest inside the drain can run a nested close
     lease.update_info(busy={"kind": kind, "campaign": campaign, "since": store.now_iso(),
                             "budget_s": budget_s})
     try:
         yield
     finally:
-        lease.pop_info("busy")
+        if prev is not None:
+            lease.update_info(busy=prev)
+        else:
+            lease.pop_info("busy")
 
 
 def _do_open(ctx: _Ctx, state: dict) -> StepResult:
@@ -2613,8 +2617,8 @@ def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
     report = TickReport(drain=True)
     since = store.now_iso()
     waiting_on = _waiting_on(cfg, pool)
-    budget = max((w["timeout_s"] for w in waiting_on if w.get("timeout_s") is not None),
-                 default=events_settings(cfg)["gate_budget_s"])
+    gate_budget = events_settings(cfg)["gate_budget_s"]
+    budget = max((w.get("timeout_s") or gate_budget for w in waiting_on), default=gate_budget)
     lease.update_info(draining={"reason": reason, "since": since, "waiting_on": waiting_on})
     try:
         with _busy(lease, "drain", budget_s=budget):
@@ -2717,6 +2721,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                         if poll_interval_s is None:
                             interval = float((cfg.get("agentic") or {}).get("poll_interval_s")
                                              or 20)
+                            lease.update_info(poll_interval_s=interval)   # SPEC-0228
                 report = tick(cfg, stop=stop, runner=runner, pool=pool, lease=lease)
                 ticks += 1
                 lease.heartbeat()

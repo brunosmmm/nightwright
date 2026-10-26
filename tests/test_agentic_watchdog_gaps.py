@@ -247,3 +247,30 @@ def test_drain_info_on_rows(tmp_path, held):
         assert drain == {"reason": "code_changed", "since": iso(100), "draining_s": 200,
                          "waiting_on": waiting_on}
     assert E.ready_not_admitted_items(cfg, at(300), sett)[0]["runner_draining"] is True
+
+
+def test_silence_threshold_uses_the_lease_interval_then_cfg(tmp_path, held):
+    cfg = _cfg(tmp_path)                                   # no agentic.poll_interval_s: default 20
+    lease = held(cfg, poll_interval_s=5, tick_at=iso(0))
+    sett = E.settings(cfg)
+    assert E.runner_silence(cfg, at(14), sett) is None     # 3 x 5 = 15
+    assert E.runner_silence(cfg, at(16), sett)["interval_s"] == 5
+    lease.pop_info("poll_interval_s")                      # lease lacks the key: cfg interval
+    cfg["agentic"]["poll_interval_s"] = 10
+    assert E.runner_silence(cfg, at(29), sett) is None
+    assert E.runner_silence(cfg, at(31), sett)["interval_s"] == 10
+
+
+def test_active_counts_in_flight_ids_that_are_not_active_campaigns(tmp_path, held):
+    cfg = _cfg(tmp_path)
+    cfg["agentic"]["profiles"] = {"balanced": {"slots": 3}}
+    held(cfg, slot_freed_at=iso(0), in_flight=[C])         # C parked, its run still in flight
+    _campaign(cfg, A, state="IMPLEMENTING")
+    _campaign(cfg, C, state="PARKED")
+    _waiting(cfg, B, since=0)
+    (row,) = E.waiting_not_admitted_items(cfg, at(300), E.settings(cfg))
+    assert row["active"] == 2 and row["slots"] == 3
+    _set_state(cfg, B, state="QUEUED", waiting=None)
+    _set_state(cfg, B, backlog={"ready": True, "blocked_by": [], "since": iso(0)})
+    (row,) = E.ready_not_admitted_items(cfg, at(300), E.settings(cfg))
+    assert row["active"] == 2 and row["campaign"] == B

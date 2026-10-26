@@ -216,3 +216,101 @@ def test_runner_journal_silent_suppressed_during_open_and_drain(tmp_path):
             assert d["busy"]["kind"] == kind
     finally:
         lease.release()
+
+
+def test_nested_busy_restores_the_outer_declaration(tmp_path):
+    from test_agentic_events import _cfg
+    lease = L.acquire(_cfg(tmp_path), ["test"], ttl_s=10 ** 6)
+    try:
+        with Q._busy(lease, "drain", budget_s=900):
+            with Q._busy(lease, "close", campaign="c1", budget_s=1800):
+                assert lease.info["busy"]["kind"] == "close"
+            assert lease.info["busy"]["kind"] == "drain" and lease.info["busy"]["budget_s"] == 900
+        assert "busy" not in lease.info
+    finally:
+        lease.release()
+
+
+def test_drain_keeps_busy_after_a_harvested_close(tmp_path, monkeypatch):
+    """A close flight harvested inside the drain runs `_busy("close")` (finish_close); the
+    drain's declaration must survive it while another flight is still in flight."""
+    from test_agentic_events import _cfg
+    cfg = _cfg(tmp_path)
+    lease = L.acquire(cfg, ["test"], ttl_s=10 ** 6)
+
+    class Fl:
+        tasks, runs = [], []
+
+    class FakePool:
+        def __init__(self):
+            self.flights = {"close1": Fl(), "impl1": Fl()}
+
+        def wait_any(self, timeout):
+            pass
+
+        def ids(self):
+            return set(self.flights)
+
+    pool, seen = FakePool(), []
+
+    def harvest(p, report):
+        if "close1" in p.flights:                  # the close finishes first, impl1 stays
+            del p.flights["close1"]
+            with Q._busy(lease, "close", campaign="close1", budget_s=1800):
+                pass
+            seen.append(dict(lease.info["busy"]))
+        else:
+            p.flights.clear()
+
+    monkeypatch.setattr(Q, "_harvest", harvest)
+    monkeypatch.setattr(Q, "_refresh_backlog", lambda cfg: None)
+    try:
+        Q._drain(cfg, pool, lease)
+        assert seen and seen[0]["kind"] == "drain"
+        assert "busy" not in lease.info and "draining" not in lease.info
+    finally:
+        lease.release()
+
+
+def test_drain_budget_counts_close_flights_as_gate_budget(tmp_path, monkeypatch):
+    from test_agentic_events import _cfg
+    cfg = _cfg(tmp_path)
+    lease = L.acquire(cfg, ["test"], ttl_s=10 ** 6)
+    monkeypatch.setattr(Q, "_waiting_on", lambda c, p: [
+        {"campaign": "c", "kind": "close", "run_ids": [], "timeout_s": None},
+        {"campaign": "d", "kind": "implement", "run_ids": [], "timeout_s": 60}])
+    seen = []
+
+    class FakePool:
+        flights = {}
+
+    real = Q._busy
+
+    def busy(lease, kind, **kw):
+        seen.append(kw["budget_s"])
+        return real(lease, kind, **kw)
+
+    monkeypatch.setattr(Q, "_busy", busy)
+    try:
+        Q._drain(cfg, FakePool(), lease)
+        assert seen == [E.settings(cfg)["gate_budget_s"]]
+    finally:
+        lease.release()
+
+
+def test_config_reload_republishes_poll_interval(tmp_path, monkeypatch, spy):
+    repo, cfg, _ = _env(tmp_path, monkeypatch)
+    cfg["agentic"]["poll_interval_s"] = 20
+    new_cfg = dict(cfg, agentic=dict(cfg["agentic"], poll_interval_s=120))
+
+    class Watch:
+        n = 0
+
+        def check(self, c, lease, live):
+            self.n += 1
+            return new_cfg if self.n == 2 else c
+
+    monkeypatch.setattr(Q, "ConfigWatch", lambda *a, **k: Watch())
+    Q.run(cfg, max_ticks=3, poll_interval_s=None, config_loader=lambda: new_cfg)
+    seen = [kw["poll_interval_s"] for kw, _ in spy if isinstance(kw, dict) and "poll_interval_s" in kw]
+    assert seen[:1] == [20.0] and 120.0 in seen

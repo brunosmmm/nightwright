@@ -467,6 +467,14 @@ conductor never kills a runner in the middle of a merge.
   new conditions.
 - SPEC-0226 (config reload) is `done` in the tree this was built on; the early-`waiting`
   window after raising `slots` lasts one interval.
+- **Review round 1.** `_busy` now restores the previous `busy` on exit (a close harvested
+  inside the drain no longer wipes the drain's declaration), so nesting does occur and is
+  safe. The config-reload branch of `run()` republishes `poll_interval_s` to the lease. The
+  drain budget counts a flight without a timeout (a close) as `gate_budget_s`. Tests added:
+  nested `_busy`, a drain that harvests a close flight, the drain budget, the reload
+  republish, a lease interval of 5 vs the cfg fallback, and `active` with an in-flight id
+  that is not an active-state campaign (slots 3, on `waiting_not_admitted` and
+  `ready_not_admitted`).
 
 ## Rollout / migration
 
