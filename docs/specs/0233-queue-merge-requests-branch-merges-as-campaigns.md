@@ -327,6 +327,15 @@ For `state["kind"] == "merge"`:
 - The two new park reasons are documented in `docs/product/loop/operate.md` (a docs test requires
   every park reason there).
 - Merge-request tables show the label as a dim second line under the campaign id.
+- Close does not abort a rebase in progress in an adopted merge worktree: that rebase is the
+  requester's, and `rebase --abort` would reset their partly resolved conflicts. It parks
+  `worktree_dirty` ("rebase in progress in the requester's worktree", `resume_to: CLOSING`).
+  The leftover-rebase abort still runs for created worktrees and spec campaigns.
+- `plan_merge` turns an unusable (missing/prunable) worktree into a ValueError suggesting
+  `git worktree prune`. A re-opened merge campaign whose branch has since been checked out in
+  another worktree adopts it (`merge.own_worktree` becomes false, `repo.worktree` follows); one
+  whose planned worktree already exists skips `git worktree add` and re-runs setup. The queue's
+  `finish` now carries the `merge` block across so that adoption is persisted.
 
 ## Clock Log
 

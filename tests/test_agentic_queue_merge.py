@@ -150,6 +150,15 @@ def test_plan_refuses_a_dirty_adopted_worktree(world):
     plan(cfg)
 
 
+def test_plan_names_git_worktree_prune_for_a_vanished_worktree(world):
+    import shutil
+    repo, cfg, tmp = world
+    wt = branch_wt(tmp, repo)
+    shutil.rmtree(wt)
+    with pytest.raises(ValueError, match="git worktree prune"):
+        plan(cfg)
+
+
 # ---- apply_merge --------------------------------------------------------------------------------
 
 def test_apply_merge_state_shape_and_open_event(world):
@@ -272,6 +281,20 @@ def test_open_parks_a_worktree_that_turned_dirty_while_queued(world, monkeypatch
     st = S.read_state(cfg, cid)
     assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed", st
     assert st["park"]["resume_to"] == "QUEUED"
+
+
+def test_open_adopts_a_worktree_the_branch_got_while_queued(world, monkeypatch):
+    repo, cfg, tmp = world
+    branch_wt(tmp, repo, adopt=False)
+    cid = queue_merge(cfg, monkeypatch)
+    assert S.read_state(cfg, cid)["merge"]["own_worktree"] is True
+    other = tmp / "elsewhere"
+    _git(repo, "worktree", "add", "-q", str(other), "fix/typo")
+    run_until_idle(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED", st
+    assert st["merge"]["own_worktree"] is False and Path(st["repo"]["worktree"]) == other.resolve()
+    assert other.is_dir()                                         # adopted, so left in place
 
 
 def test_e2e_merge_adopted_worktree(world, monkeypatch):

@@ -955,7 +955,15 @@ def _do_open_merge(ctx: _Ctx, state: dict, res: StepResult) -> StepResult:
         base = repo.get("base") or pcfg.get("base") or "main"
         base_sha = git.rev_parse(root, base)
         if merge.get("own_worktree"):
-            git.worktree_add_existing(root, worktree, branch)
+            elsewhere = git.worktree_for_branch(root, branch)
+            if elsewhere is not None and elsewhere != worktree.resolve():
+                # the branch got a worktree since the request: adopt it, never fight it
+                merge["own_worktree"] = False
+                repo["worktree"] = str(elsewhere)
+                worktree = elsewhere
+        if merge.get("own_worktree"):
+            if git.worktree_for_branch(root, branch) is None:
+                git.worktree_add_existing(root, worktree, branch)
             for cmd in (pcfg.get("worktrees") or {}).get("setup") or []:
                 r = subprocess.run(cmd, shell=True, cwd=str(worktree), capture_output=True,
                                    text=True)
@@ -1321,7 +1329,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             row["to"], row["reason"] = store.read_state(cfg, cid).get("state"), "superseded_by_human"
             return row
         for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
-                  "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id"):
+                  "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
+                  "merge"):
             if k in state:
                 current[k] = state[k]
         requested = current.get("park_requested") or state.get("park_requested")
@@ -3271,7 +3280,13 @@ def plan_merge(cfg, branch, *, project=None, worktree=None, profile=None,
             raise ValueError(f"--worktree {worktree} is not the worktree of {branch!r} "
                              f"({existing or 'none'}); drop --worktree to let wt choose")
     if existing is not None:
-        if not git.is_clean(existing, untracked=True):
+        try:
+            clean = git.is_clean(existing, untracked=True)
+        except (OSError, GitError) as e:
+            raise ValueError(f"worktree {existing} of {branch!r} is unusable "
+                             f"({getattr(e, 'tail', None) or e}); run `git worktree prune` "
+                             f"in {root}") from e
+        if not clean:
             raise ValueError(f"worktree {existing} has uncommitted or untracked changes; "
                              f"commit or stash them before queueing the merge")
         wt_path, own = existing, False

@@ -281,16 +281,21 @@ def _close_cfg(state: dict, project_cfg: dict) -> dict:
             "rel": (state.get("spec") or {}).get("rel_path") or ""}
 
 
-def _abort_leftover_rebase(worktree) -> None:
-    """A hard kill mid-rebase leaves one in progress; the redo must start clean."""
+def _rebase_in_progress(worktree) -> bool:
     for name in ("rebase-merge", "rebase-apply"):
         r = git.git(worktree, "rev-parse", "--git-path", name, check=False)
         path = Path((r.stdout or "").strip())
         if r.returncode == 0 and path.name and not path.is_absolute():
             path = Path(worktree) / path
         if r.returncode == 0 and path.exists():
-            git.git(worktree, "rebase", "--abort", check=False)
-            return
+            return True
+    return False
+
+
+def _abort_leftover_rebase(worktree) -> None:
+    """A hard kill mid-rebase leaves one in progress; the redo must start clean."""
+    if _rebase_in_progress(worktree):
+        git.git(worktree, "rebase", "--abort", check=False)
 
 
 def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> PreparedClose:
@@ -308,8 +313,15 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> Prep
     def decided(outcome: CloseOutcome) -> PreparedClose:
         return PreparedClose(outcome=outcome, policy=policy, events=events, pre_head=pre_head)
 
-    _abort_leftover_rebase(worktree)
     merge_request = _is_merge_request(state)
+    if merge_request and not (state.get("merge") or {}).get("own_worktree") \
+            and _rebase_in_progress(worktree):
+        # SPEC-0233 G3: a rebase in the requester's checkout is theirs, not a wt crash leftover;
+        # aborting it would reset their partly resolved conflicts
+        return decided(_park("worktree_dirty", "rebase in progress in the requester's "
+                             f"worktree {worktree}; finish or abort it, then resume",
+                             "CLOSING", events))
+    _abort_leftover_rebase(worktree)
 
     if not merge_request:
         # 0. spec-change guard (SPEC-0186): the governing text must be what was accepted

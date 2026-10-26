@@ -437,3 +437,16 @@ def test_merge_request_red_regate_is_triaging_with_the_branch_left_rebased(world
     assert out.gate_detail.startswith("gates failed: g0") and "boom" in out.gate_detail
     assert "branch rebased onto main" in out.gate_detail
     assert G.git(world["wt"], "merge-base", "--is-ancestor", "main", "HEAD", check=False).returncode == 0
+
+
+def test_merge_request_in_progress_rebase_of_the_requester_is_parked_not_aborted(world):
+    st = _merge_world(world)
+    _commit(world["root"], "feature.txt", "theirs\n", "conflicting base")
+    G.git(world["wt"], "rebase", "main", check=False)                # the requester's rebase
+    assert (world["wt"] / ".git").exists()
+    (world["wt"] / "feature.txt").write_text("resolved by hand\n")   # partly resolved
+    out = CL.close_campaign(world["cfg"], st, _pcfg(world))
+    assert out.next_state == "PARKED" and out.park["reason"] == "worktree_dirty"
+    assert out.park["resume_to"] == "CLOSING" and "rebase in progress" in out.park["detail"]
+    assert (world["wt"] / "feature.txt").read_text() == "resolved by hand\n"
+    assert CL._rebase_in_progress(world["wt"])
