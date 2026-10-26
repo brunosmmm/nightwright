@@ -1,0 +1,499 @@
+"""SPEC-0236: `wt campaign export` — flat campaign / run / finding tables."""
+import csv
+import datetime as dt
+import io
+import json
+import sys
+import types
+from zoneinfo import ZoneInfo
+
+import pytest
+from click.testing import CliRunner
+
+from wt.agentic import campaign_export as CE
+from wt.agentic import runs as RN
+from wt.agentic import schemas as SC
+from wt.agentic import store as S
+from wt.cli import cli
+
+TZ = ZoneInfo("America/New_York")
+T0 = dt.datetime(2026, 10, 20, 9, 0, 0, tzinfo=TZ)
+NOW = dt.datetime(2026, 10, 25, 12, 0, 0, tzinfo=TZ)
+
+SPEC_AT_OPEN = """---
+id: SPEC-0001
+---
+## Context
+
+x
+
+## Acceptance criteria
+
+- [ ] one
+- [x] two
+* [X] three
+      continuation text
+- not a box
+
+## Test plan
+
+- [ ] not an ac
+"""
+
+
+def ts(minutes):
+    return (T0 + dt.timedelta(minutes=minutes)).isoformat(timespec="seconds")
+
+
+@pytest.fixture
+def cfg(tmp_path):
+    (tmp_path / "data").mkdir()
+    return {"data_dir": str(tmp_path / "data"), "timezone": "America/New_York", "_tz": TZ,
+            "agentic": {"default_profile": "balanced"}}
+
+
+def make(cfg, cid, events=(), *, created=0, spec_at_open=SPEC_AT_OPEN, **state):
+    """A campaign whose ledger is exactly `events` (`(minute, type, payload)`), written with
+    explicit timestamps: an `open` event at `created` first."""
+    st = {"id": cid, "spec_id": "SPEC-0001", "project": "P", "kind": "spec",
+          "profile": "balanced", "state": "QUEUED", "created_at": ts(created),
+          "counters": {"loops": 0, "runs": 0, "gate_runs": 0, "gate_retries": 0,
+                       "triage_retries": 0, "parks": 0},
+          "cost": {"total_usd": 0.0, "cap_usd": None, "by_persona": {}}}
+    st.update(state)
+    S.create_campaign(cfg, st)
+    lines = [{"schema": SC.LEDGER_SCHEMA, "ts": ts(created), "seq": 1, "campaign": cid,
+              "type": "open", "by": "t",
+              **SC.with_defaults("open", {"spec_id": "SPEC-0001", "project": "P"})}]
+    for i, (minute, etype, payload) in enumerate(events, start=2):
+        rec = {"schema": SC.LEDGER_SCHEMA, "ts": ts(minute), "seq": i, "campaign": cid,
+               "type": etype, "by": "t", **SC.with_defaults(etype, payload)}
+        assert not SC.ledger_problems(rec), SC.ledger_problems(rec)
+        lines.append(rec)
+    (S.campaign_dir(cfg, cid) / "ledger.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in lines))
+    if spec_at_open is not None:
+        (S.campaign_dir(cfg, cid) / "spec_at_open.md").write_text(spec_at_open)
+    return S.campaign_dir(cfg, cid)
+
+
+def tr(frm, to, reason="x"):
+    return {"from": frm, "to": to, "reason": reason}
+
+
+def run_start(persona, run_id, model="m1", **kw):
+    return {"persona": persona, "run_id": run_id, "model": model, "effort": "high",
+            "max_budget_usd": 2.0, "timeout_s": 600, **kw}
+
+
+def run_end(persona, run_id, **kw):
+    base = {"exit_code": 0, "is_error": False, "timed_out": False, "interrupted": False,
+            "duration_s": 12.5, "cost_usd": 0.5, "charged_usd": 0.5, "verdict_ok": True,
+            "verdict": {"status": "done"}, "usage": None, "result_tail": None}
+    return {"persona": persona, "run_id": run_id, **base, **kw}
+
+
+def full_campaign(cfg, cid="C-FULL"):
+    """Hand-computed campaign: QUEUED 10m → OPENING 5m → IMPLEMENTING 30m → GATING 10m →
+    TRIAGING 5m → (retry_gate) GATING 5m → TRIAGING 5m → IMPLEMENTING (triage_fix) 20m →
+    REVIEWING 10m → IMPLEMENTING (review_fix) 15m → PARKED 60m → (resume, loops reset, cap
+    raise) REVIEWING 5m → CLOSING 5m → MERGED."""
+    events = [
+        (10, "transition", tr("QUEUED", "OPENING", "admit")),
+        (15, "transition", tr("OPENING", "IMPLEMENTING", "opened")),
+        (15, "run.start", run_start("implementer", "001-implementer", "m-impl")),
+        (40, "run.end", run_end("implementer", "001-implementer")),
+        (45, "transition", tr("IMPLEMENTING", "GATING", "implemented")),
+        (55, "gate", {"gate_seq": 1, "ok": False}),
+        (55, "transition", tr("GATING", "TRIAGING", "gate_failed")),
+        (55, "run.start", run_start("gate_triager", "002-gate_triager", "m-tri")),
+        (60, "run.end", run_end("gate_triager", "002-gate_triager", verdict_ok=False,
+                                verdict=None)),
+        (60, "run.start", run_start("gate_triager", "003-gate_triager", "m-tri2")),
+        (60, "run.end", run_end("gate_triager", "003-gate_triager", interrupted=True,
+                                verdict_ok=False)),
+        (60, "transition", tr("TRIAGING", "GATING", "retry_gate")),
+        (65, "gate", {"gate_seq": 2, "ok": False}),
+        (65, "transition", tr("GATING", "TRIAGING", "gate_failed")),
+        (70, "gate", {"gate_seq": 3, "ok": True}),
+        (70, "transition", tr("TRIAGING", "IMPLEMENTING", "triage_fix")),
+        (70, "finding", {"persona": "gate_triager", "severity": "must_fix", "gate": "pytest",
+                         "title": "t1", "detail": "d" * 600, "files": ["a.py"]}),
+        (75, "finding", {"persona": "gate_triager", "severity": "info", "title": "t2"}),
+        (90, "transition", tr("IMPLEMENTING", "REVIEWING", "implemented")),
+        (95, "finding", {"persona": "conformance_reviewer", "severity": "major", "title": "t3"}),
+        (100, "note", {"text": "waived F1: nope", "author": "queue"}),
+        (100, "note", {"text": "waived F2: nope", "author": "human"}),
+        (100, "note", {"text": "triager ignored F3", "author": "queue"}),
+        (100, "transition", tr("REVIEWING", "IMPLEMENTING", "review_fix")),
+        (115, "transition", tr("IMPLEMENTING", "PARKED", "loop_exhausted")),
+        (115, "park", {"reason": "loop_exhausted", "detail": "d", "resume_to": "REVIEWING"}),
+        (175, "resume", {"to": "REVIEWING", "note": None, "cap_usd": 20.0, "loops_reset": True}),
+        (175, "transition", tr("PARKED", "REVIEWING", "resume")),
+        (180, "resume", {"to": "REVIEWING", "note": None, "cap_usd": None, "loops_reset": False}),
+        (180, "run.start", run_start("implementer", "004-implementer", "m-impl2")),
+        (185, "transition", tr("REVIEWING", "CLOSING", "approved")),
+        (190, "transition", tr("CLOSING", "MERGED", "merged")),
+    ]
+    return make(cfg, cid, events, state="MERGED", profile="frugal",
+                counters={"loops": 0, "runs": 4, "gate_runs": 3, "gate_retries": 0,
+                          "triage_retries": 0, "parks": 1},
+                cost={"total_usd": 4.0, "cap_usd": 5.0, "by_persona": {"implementer": 3.0}},
+                last_review={"score": 88},
+                close={"mode": "merge", "merged_sha": "abc123"},
+                sizing={"size": "s", "tone": "mvp", "source": "review",
+                        "rationale": "small", "reason": "r"})
+
+
+def row_of(cfg, cid):
+    tables = CE.export_tables(cfg, now=NOW)
+    return next(r for r in tables["campaigns"] if r["campaign"] == cid)
+
+
+# ---- schema ------------------------------------------------------------------------------
+
+def test_columns_and_key_order(cfg):
+    assert [n for n, _ in CE.CAMPAIGN_COLUMNS] == [
+        "campaign", "kind", "spec_id", "project", "state", "outcome", "created_at", "ended_at",
+        "wall_s", "active_s", "size", "tone", "profile", "profile_source", "sizing_rationale",
+        "loop_max", "cap_usd", "cap_raises", "models", "ac_count", "spec_lines", "loops",
+        "loop_resets", "runs", "runs_by_persona", "gate_runs", "gate_failures", "gate_retries",
+        "triage_retries", "parks", "park_reasons", "cost_usd", "cost_by_persona",
+        "cost_cap_frac", "time_in_state_s", "review_score", "must_fix_count", "finding_count",
+        "waived_count", "close_mode", "merged_sha", "signals"]
+    assert [n for n, _ in CE.RUN_COLUMNS] == [
+        "campaign", "spec_id", "profile", "size", "tone", "run_id", "persona", "model", "effort",
+        "max_budget_usd", "timeout_s", "started_at", "duration_s", "cost_usd", "charged_usd",
+        "budget_frac", "exit_code", "is_error", "timed_out", "interrupted", "transient",
+        "verdict_status", "status", "input_tokens", "output_tokens", "cache_read_tokens"]
+    assert [n for n, _ in CE.FINDING_COLUMNS] == [
+        "campaign", "spec_id", "seq", "ts", "state_at", "persona", "severity", "gate", "ac",
+        "title", "detail", "files"]
+    full_campaign(cfg)
+    make(cfg, "C-BARE", [], spec_at_open=None, created=1)
+    tables = CE.export_tables(cfg, now=NOW)
+    for name, cols in CE.COLUMNS.items():
+        assert tables[name], name
+        for row in tables[name]:
+            assert list(row) == [n for n, _ in cols]
+
+
+# ---- the campaign row --------------------------------------------------------------------
+
+def test_hand_computed_campaign_row(cfg):
+    full_campaign(cfg)
+    r = row_of(cfg, "C-FULL")
+    assert r["outcome"] == "MERGED" and r["state"] == "MERGED"
+    assert r["ended_at"] == ts(190)
+    assert r["wall_s"] == 190 * 60
+    tis = r["time_in_state_s"]
+    # IMPLEMENTING: 15..45 (30m) + 70..90 (20m) + 100..115 (15m)
+    assert tis["IMPLEMENTING"] == 65 * 60
+    assert tis["QUEUED"] == 10 * 60 and tis["OPENING"] == 5 * 60
+    assert tis["GATING"] == (10 + 5) * 60            # 45..55, 60..65
+    assert tis["TRIAGING"] == (5 + 5) * 60           # 55..60, 65..70
+    assert tis["REVIEWING"] == (10 + 10) * 60        # 90..100, 175..185
+    assert tis["PARKED"] == 60 * 60 and tis["CLOSING"] == 5 * 60
+    assert sum(tis.values()) == r["wall_s"]
+    assert r["active_s"] == r["wall_s"] - (10 + 60) * 60      # not QUEUED, not PARKED
+    assert r["runs_by_persona"] == {"implementer": 2, "gate_triager": 2}
+    assert r["models"] == {"implementer": "m-impl2", "gate_triager": "m-tri2"}
+    assert r["gate_failures"] == 2 and r["gate_runs"] == 3
+    assert r["park_reasons"] == ["loop_exhausted"] and r["parks"] == 1
+    assert r["cost_usd"] == 4.0 and r["cap_usd"] == 5.0 and r["cost_cap_frac"] == 0.8
+    assert r["must_fix_count"] == 1 and r["finding_count"] == 2
+    assert r["waived_count"] == 1
+    assert r["close_mode"] == "merge" and r["merged_sha"] == "abc123"
+    assert r["review_score"] == 88 and r["runs"] == 4
+    assert r["cost_by_persona"] == {"implementer": 3.0}
+    # ledger totals, not the (reset) counters, which are all 0 in state.json
+    assert r["loops"] == 2 and r["gate_retries"] == 1 and r["triage_retries"] == 1
+    assert r["loop_resets"] == 1 and r["cap_raises"] == 1
+    assert r["signals"] == ["loops_exhausted", "cost_near_cap", "many_fix_loops"]
+
+
+def test_open_campaign_runs_to_now(cfg):
+    make(cfg, "C-OPEN", [(10, "transition", tr("QUEUED", "OPENING")),
+                         (20, "transition", tr("OPENING", "IMPLEMENTING"))],
+         state="IMPLEMENTING")
+    r = row_of(cfg, "C-OPEN")
+    assert r["outcome"] is None and r["ended_at"] is None
+    assert r["wall_s"] == int((NOW - T0).total_seconds())
+    assert r["time_in_state_s"]["IMPLEMENTING"] == int((NOW - T0).total_seconds()) - 20 * 60
+    assert r["active_s"] == r["wall_s"] - 10 * 60
+
+
+def test_pre_sizing_and_missing_spec(cfg):
+    make(cfg, "C-OLD", [], spec_at_open=None, profile="no-such-profile", state="QUEUED")
+    r = row_of(cfg, "C-OLD")
+    for k in ("size", "tone", "profile_source", "sizing_rationale", "ac_count", "spec_lines",
+              "loop_max", "review_score", "close_mode", "merged_sha"):
+        assert r[k] is None, k
+    assert "long_for_size" not in r["signals"]
+
+
+def test_sizing_ac_count_loop_max(cfg):
+    full_campaign(cfg)
+    r = row_of(cfg, "C-FULL")
+    assert (r["size"], r["tone"], r["profile_source"], r["sizing_rationale"]) == (
+        "s", "mvp", "review", "small")
+    assert r["ac_count"] == 3 and r["spec_lines"] == len(SPEC_AT_OPEN.splitlines())
+    assert r["loop_max"] == 2                       # builtin `frugal`
+
+
+@pytest.mark.parametrize("cap,frac", [(None, None), (0, None), (4.0, 0.5), (3.0, 0.667)])
+def test_cost_cap_frac(cfg, cap, frac):
+    make(cfg, "C-CAP", [], cost={"total_usd": 2.0, "cap_usd": cap, "by_persona": {}})
+    assert row_of(cfg, "C-CAP")["cost_cap_frac"] == frac
+
+
+# ---- runs, findings ----------------------------------------------------------------------
+
+def test_run_rows(cfg):
+    cid = "C-RUNS"
+    make(cfg, cid, [
+        (1, "run.start", run_start("implementer", "001-implementer")),
+        (2, "run.end", run_end("implementer", "001-implementer", cost_usd=1.0, charged_usd=1.0,
+                               usage={"input_tokens": 10, "output_tokens": 20,
+                                      "cache_read_input_tokens": 30})),
+        (3, "run.start", run_start("conformance_reviewer", "002-conformance_reviewer",
+                                   max_budget_usd=0)),
+        (4, "run.end", run_end("conformance_reviewer", "002-conformance_reviewer")),
+        (5, "run.start", run_start("implementer", "003-implementer")),
+    ], sizing={"size": "m", "tone": "solid"})
+    rows = CE.export_tables(cfg, now=NOW)["runs"]
+    by = {r["run_id"]: r for r in rows}
+    src = {r["run_id"]: r for r in RN.campaign_runs(cfg, cid)}
+    assert set(by) == set(src)
+    for rid, row in by.items():
+        for k, v in row.items():
+            if k in src[rid]:
+                assert v == src[rid][k], (rid, k)
+        assert (row["campaign"], row["size"], row["tone"], row["profile"]) == (
+            cid, "m", "solid", "balanced")
+    a = by["001-implementer"]
+    assert a["budget_frac"] == 0.5
+    assert (a["input_tokens"], a["output_tokens"], a["cache_read_tokens"]) == (10, 20, 30)
+    b = by["002-conformance_reviewer"]
+    assert b["budget_frac"] is None                     # budget 0
+    assert (b["input_tokens"], b["output_tokens"], b["cache_read_tokens"]) == (None,) * 3
+    c = by["003-implementer"]
+    assert c["status"] == "running" and c["budget_frac"] is None and c["charged_usd"] is None
+
+
+def test_finding_rows_state_at(cfg):
+    full_campaign(cfg)
+    rows = CE.export_tables(cfg, now=NOW)["findings"]
+    assert [(r["title"], r["state_at"]) for r in rows] == [
+        ("t1", "IMPLEMENTING"), ("t2", "IMPLEMENTING"), ("t3", "REVIEWING")]
+    assert rows[0]["files"] == ["a.py"] and len(rows[0]["detail"]) == CE.FINDING_DETAIL_MAX
+    assert rows[1]["detail"] is None
+    assert rows[0]["campaign"] == "C-FULL" and rows[0]["spec_id"] == "SPEC-0001"
+
+
+# ---- signals -----------------------------------------------------------------------------
+
+SIGNAL_CASES = {
+    "loops_exhausted": ({"park_reasons": ["loop_exhausted"]}, {"park_reasons": ["cost_cap"]}),
+    "cap_parked": ({"park_reasons": ["cost_cap"]}, {"park_reasons": []}),
+    "cost_near_cap": ({"cost_cap_frac": 0.8}, {"cost_cap_frac": 0.799}),
+    "many_fix_loops": ({"loops": 2}, {"loops": 1}),
+    "escalated": ({"park_reasons": ["review_escalated"]}, {"park_reasons": ["human"]}),
+    "gate_churn": ({"gate_failures": 3}, {"gate_failures": 2}),
+    "long_for_size": ({"size": "xs", "active_s": 3601}, {"size": "xs", "active_s": 3600}),
+    "abandoned": ({"outcome": "ABANDONED"}, {"outcome": "MERGED"}),
+}
+
+
+@pytest.mark.parametrize("name", CE.SIGNAL_ORDER)
+def test_signal_on_off(name):
+    on, off = SIGNAL_CASES[name]
+    assert name in CE.signals(on)
+    assert name not in CE.signals(off)
+    assert CE.signals({}) == []
+
+
+def test_signals_unknown_size_and_order():
+    assert CE.signals({"size": None, "active_s": 10 ** 9}) == []
+    assert CE.signals({"size": "xl", "active_s": 10 ** 9}) == []
+    assert "long_for_size" in CE.signals({"size": "l", "active_s": 28801})
+    row = {"park_reasons": ["cost_cap", "loop_exhausted", "triage_escalated"],
+           "cost_cap_frac": 1.0, "loops": 5, "gate_failures": 9, "size": "xs",
+           "active_s": 10 ** 6, "outcome": "ABANDONED"}
+    assert CE.signals(row) == list(CE.SIGNAL_ORDER)
+    assert list(SIGNAL_CASES) == list(CE.SIGNAL_ORDER)
+
+
+# ---- CLI ---------------------------------------------------------------------------------
+
+@pytest.fixture
+def invoke(cfg, monkeypatch):
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+
+    def run(*args):
+        return CliRunner().invoke(cli, ["campaign", "export", *args])
+    return run
+
+
+def read_jsonl(path):
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def test_default_dir_and_same_second(cfg, invoke, monkeypatch):
+    full_campaign(cfg)
+
+    class Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 25, 12, 0, 0, tzinfo=tz or TZ)
+
+        def astimezone(self, tz=None):
+            return self
+
+    monkeypatch.setattr("wt.agentic.cli_campaign.dt", types.SimpleNamespace(datetime=Frozen))
+    r1 = invoke("--json")
+    assert r1.exit_code == 0, r1.output
+    m1 = json.loads(r1.output)
+    root = S.agentic_dir(cfg) / "exports"
+    assert m1["out"] == str(root / "20261025-120000")
+    r2 = invoke("--json")
+    assert json.loads(r2.output)["out"] == str(root / "20261025-120000-2")
+    d = root / "20261025-120000"
+    assert sorted(p.name for p in d.iterdir()) == [
+        "campaigns.jsonl", "findings.jsonl", "manifest.json", "runs.jsonl"]
+    assert len(read_jsonl(d / "campaigns.jsonl")) == 1
+    on_disk = json.loads((d / "manifest.json").read_text())
+    assert on_disk["schema"] == "wt.campaign.export.v1" and on_disk["format"] == "jsonl"
+    assert on_disk["tables"]["campaigns"] == {
+        "file": "campaigns.jsonl", "rows": 1, "columns": [[n, t] for n, t in CE.CAMPAIGN_COLUMNS]}
+    assert on_disk["tables"]["runs"]["rows"] == 4
+    assert on_disk["tables"]["findings"]["rows"] == 3
+    assert on_disk["filters"] == {"project": None, "since": None, "terminal_only": False}
+    assert any("loop_max" in n for n in on_disk["notes"])
+    assert any("final cost cap" in n for n in on_disk["notes"])
+    assert on_disk["wt_version"] and on_disk["generated_at"]
+
+
+def test_out_dir_rules(cfg, invoke, tmp_path):
+    full_campaign(cfg)
+    new = tmp_path / "x" / "new"
+    assert invoke("--out", str(new)).exit_code == 0 and (new / "manifest.json").is_file()
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert invoke("--out", str(empty)).exit_code == 0
+    r = invoke("--out", str(new))
+    assert r.exit_code != 0 and f"--out {new} is not empty" in r.output
+    assert (new / "campaigns.jsonl").is_file()          # untouched
+
+
+def test_filters(cfg, invoke, tmp_path):
+    full_campaign(cfg, "C-A")                                              # P, MERGED, day 20
+    make(cfg, "C-B", [], project="Q", state="IMPLEMENTING",
+         created_at=dt.datetime(2026, 10, 21, 23, 30, tzinfo=TZ).isoformat())
+    # 2026-10-22 02:00 UTC is still 2026-10-21 in New York
+    make(cfg, "C-C", [], project="P", state="ABANDONED",
+         created_at=dt.datetime(2026, 10, 22, 2, 0, tzinfo=dt.timezone.utc).isoformat())
+
+    def ids(*args):
+        d = tmp_path / ("o" + str(len(list(tmp_path.iterdir()))))
+        r = invoke("--out", str(d), *args)
+        assert r.exit_code == 0, r.output
+        return [c["campaign"] for c in read_jsonl(d / "campaigns.jsonl")]
+
+    assert ids() == ["C-A", "C-B", "C-C"]
+    assert ids("--project", "Q") == ["C-B"]
+    assert ids("--terminal-only") == ["C-A", "C-C"]
+    assert ids("--since", "2026-10-21") == ["C-B", "C-C"]          # boundary day included (tz)
+    assert ids("--since", "2026-10-22") == []
+    assert ids("--since", "2026-10-20") == ["C-A", "C-B", "C-C"]
+    m = invoke("--json", "--out", str(tmp_path / "f"), "--since", "2026-10-21",
+               "--terminal-only", "--project", "P")
+    assert json.loads(m.output)["filters"] == {
+        "project": "P", "since": "2026-10-21", "terminal_only": True}
+
+
+def test_stdout(cfg, invoke, tmp_path):
+    full_campaign(cfg)
+    r = invoke("--table", "findings", "--stdout")
+    assert r.exit_code == 0, r.output
+    rows = [json.loads(line) for line in r.output.splitlines()]
+    assert [x["title"] for x in rows] == ["t1", "t2", "t3"]
+    c = invoke("--table", "campaigns", "--stdout", "--format", "csv")
+    got = list(csv.DictReader(io.StringIO(c.output)))
+    assert got[0]["campaign"] == "C-FULL"
+    assert not (S.agentic_dir(cfg) / "exports").exists()
+
+
+@pytest.mark.parametrize("args,msg", [
+    (["--stdout"], "--stdout needs --table campaigns|runs|findings"),
+    (["--table", "runs"], "--table is only used with --stdout"),
+    (["--stdout", "--table", "runs", "--format", "parquet"], "--stdout supports jsonl or csv"),
+    (["--stdout", "--table", "runs", "--out", "/tmp/nope-wt-export"],
+     "--out and --stdout are exclusive"),
+])
+def test_invalid_combinations(cfg, invoke, args, msg):
+    r = invoke(*args)
+    assert r.exit_code != 0 and msg in r.output
+    assert not (S.agentic_dir(cfg) / "exports").exists()
+
+
+def test_csv_encoding(cfg, invoke, tmp_path):
+    full_campaign(cfg)
+    d = tmp_path / "csv"
+    assert invoke("--format", "csv", "--out", str(d)).exit_code == 0
+    row = next(csv.DictReader((d / "campaigns.csv").open()))
+    assert list(row) == [n for n, _ in CE.CAMPAIGN_COLUMNS]
+    assert json.loads(row["runs_by_persona"]) == {"implementer": 2, "gate_triager": 2}
+    assert json.loads(row["signals"]) == ["loops_exhausted", "cost_near_cap", "many_fix_loops"]
+    assert row["loops"] == "2" and row["outcome"] == "MERGED"
+    runs = list(csv.DictReader((d / "runs.csv").open()))
+    assert runs[0]["is_error"] == "false" and runs[0]["input_tokens"] == ""
+    assert json.loads((d / "manifest.json").read_text())["format"] == "csv"
+
+
+def test_read_only(cfg, invoke, tmp_path):
+    full_campaign(cfg, "C-1")
+    make(cfg, "C-2", [(5, "run.start", run_start("implementer", "001-implementer"))],
+         created=3)
+    snap = {}
+    root = S.campaigns_dir(cfg)
+    for p in root.rglob("*"):
+        if p.is_file():
+            snap[p] = (p.stat().st_mtime_ns, p.read_bytes())
+    assert invoke("--out", str(tmp_path / "ro")).exit_code == 0
+    assert invoke("--table", "runs", "--stdout").exit_code == 0
+    after = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in root.rglob("*") if p.is_file()}
+    assert after == snap
+    assert not any(str(tmp_path / "ro") in str(p) for p in after)
+
+
+# ---- parquet -----------------------------------------------------------------------------
+
+def test_parquet_round_trip(cfg, invoke, tmp_path):
+    pq = pytest.importorskip("pyarrow.parquet")
+    import pyarrow as pa
+    full_campaign(cfg)
+    d = tmp_path / "pq"
+    r = invoke("--format", "parquet", "--out", str(d))
+    assert r.exit_code == 0, r.output
+    t = pq.read_table(d / "campaigns.parquet")
+    assert t.column_names == [n for n, _ in CE.CAMPAIGN_COLUMNS]
+    assert t.schema.field("loops").type == pa.int64()
+    assert t.schema.field("cost_usd").type == pa.float64()
+    assert t.schema.field("signals").type == pa.string()
+    row = t.to_pylist()[0]
+    assert row["loops"] == 2 and json.loads(row["signals"])[0] == "loops_exhausted"
+    runs = pq.read_table(d / "runs.parquet")
+    assert runs.schema.field("is_error").type == pa.bool_() and runs.num_rows == 4
+    assert json.loads((d / "manifest.json").read_text())["format"] == "parquet"
+
+
+def test_parquet_without_pyarrow(cfg, invoke, monkeypatch, tmp_path):
+    full_campaign(cfg)
+    monkeypatch.setitem(sys.modules, "pyarrow", None)
+    monkeypatch.setitem(sys.modules, "pyarrow.parquet", None)
+    d = tmp_path / "nope"
+    r = invoke("--format", "parquet", "--out", str(d))
+    assert r.exit_code != 0
+    assert "--format parquet needs pyarrow (pip install pyarrow); use jsonl or csv" in r.output
+    assert not d.exists() and not (S.agentic_dir(cfg) / "exports").exists()

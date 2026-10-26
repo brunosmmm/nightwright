@@ -26,6 +26,7 @@ ALLOWED = {
     ("agentic/cli_projects.py", "projects_config_cmd"): "JSON emitter (--json)",
     ("agentic/cli_queue.py", "on_tick"): "queue run --json-lines stream",
     ("agentic/cli_campaign.py", "campaign_prompt"): "raw prompt meant to be piped",
+    ("agentic/cli_campaign.py", "campaign_export"): "--stdout table for piping (SPEC-0236)",
 }
 
 

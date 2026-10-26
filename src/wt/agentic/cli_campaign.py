@@ -2,8 +2,11 @@
 is called by `wt.agentic.cli.register` with the `campaign` group."""
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
+import sys
+from pathlib import Path
 
 import click
 from rich.table import Table
@@ -14,6 +17,7 @@ from .. import render as R
 from ..console import console
 from ..report import _dump_json
 from . import queue as Q
+from . import campaign_export as CE
 from . import runs as RN
 from . import store
 
@@ -105,6 +109,28 @@ def _print_run(rec: dict) -> None:
             console.print(Text("    " + line), highlight=False)
     for key, path in rec["paths"].items():
         kv(key, path)
+
+
+def _export_dir(cfg, out, now) -> Path:
+    """The directory an export goes into, created. An explicit `--out` must be missing or empty;
+    the default is timestamped, with `-2`, `-3`, … when it exists. Never reuses an export."""
+    if out:
+        path = Path(out).expanduser()
+        if path.exists() and (not path.is_dir() or any(path.iterdir())):
+            raise click.ClickException(f"--out {out} is not empty")
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    root = store.agentic_dir(cfg) / "exports"
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = now.strftime("%Y%m%d-%H%M%S")
+    for n in range(1, 1000):
+        path = root / (stamp if n == 1 else f"{stamp}-{n}")
+        try:
+            path.mkdir()
+        except FileExistsError:
+            continue
+        return path
+    raise click.ClickException(f"could not find a free export directory under {root}")
 
 
 def attach(campaign_group):
@@ -294,6 +320,59 @@ def attach(campaign_group):
         rec = store.append_event(cfg, campaign, "note",
                                  {"text": text, "author": author or "human"}, by=by)
         console.print(f"[green]✓[/] note #{rec['seq']} ← {campaign}")
+
+    @campaign_group.command("export")
+    @click.option("--format", "fmt", type=click.Choice(CE.FORMATS), default="jsonl",
+                  show_default=True, help="jsonl and csv always; parquet needs pyarrow")
+    @click.option("--out", "out", type=click.Path(file_okay=False), default=None,
+                  help="export directory (must not exist or be empty); default "
+                       "<data_dir>/agentic/exports/<YYYYMMDD-HHMMSS>/")
+    @click.option("--project", shell_complete=C.complete_project, help="only this project")
+    @click.option("--since", type=click.DateTime(["%Y-%m-%d"]), default=None,
+                  help="only campaigns created on or after YYYY-MM-DD (configured timezone)")
+    @click.option("--terminal-only", is_flag=True, help="only MERGED / HANDED_OFF / ABANDONED")
+    @click.option("--table", type=click.Choice(CE.TABLES), default=None,
+                  help="with --stdout: the one table to print")
+    @click.option("--stdout", "to_stdout", is_flag=True,
+                  help="print --table as jsonl or csv instead of writing files")
+    @click.option("--json", "as_json", is_flag=True, help="emit the manifest as JSON")
+    @click.pass_obj
+    def campaign_export(cfg, fmt, out, project, since, terminal_only, table, to_stdout, as_json):
+        """Export campaigns, runs and findings as flat tables (wt.campaign.export.v1) for
+        analysing how well specs were sized. Read-only; every run is a full snapshot.
+
+        \b
+        wt campaign export                          jsonl files under <data_dir>/agentic/exports/
+        wt campaign export --format csv --out /tmp/x --since 2026-10-01
+        wt campaign export --table campaigns --stdout | duckdb -c "select * from read_json_auto('/dev/stdin')"
+        """
+        if to_stdout and not table:
+            raise click.ClickException("--stdout needs --table campaigns|runs|findings")
+        if table and not to_stdout:
+            raise click.ClickException("--table is only used with --stdout")
+        if to_stdout and fmt == "parquet":
+            raise click.ClickException("--stdout supports jsonl or csv")
+        if to_stdout and out:
+            raise click.ClickException("--out and --stdout are exclusive")
+        if fmt == "parquet" and not CE.have_pyarrow():
+            raise click.ClickException(
+                "--format parquet needs pyarrow (pip install pyarrow); use jsonl or csv")
+        now = dt.datetime.now().astimezone()
+        tables = CE.export_tables(cfg, project=project, since=since.date() if since else None,
+                                  terminal_only=terminal_only, now=now)
+        if to_stdout:
+            sys.stdout.write(CE.render(tables[table], CE.COLUMNS[table], fmt))
+            return
+        out_dir = _export_dir(cfg, out, now)
+        filters = {"project": project, "since": since.date().isoformat() if since else None,
+                   "terminal_only": terminal_only}
+        manifest = CE.write_export(tables, out_dir, fmt, filters=filters)
+        if as_json:
+            _dump_json({**manifest, "out": str(out_dir)})
+            return
+        console.print(f"[green]✓[/] exported to {out_dir}", highlight=False)
+        for name, t in manifest["tables"].items():
+            console.print(f"  {t['file']:<16} {t['rows']} rows", highlight=False)
 
     @campaign_group.command("prompt", hidden=True)
     @click.argument("campaign", shell_complete=C.complete_campaign_id)

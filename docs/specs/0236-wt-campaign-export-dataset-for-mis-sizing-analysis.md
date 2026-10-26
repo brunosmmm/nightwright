@@ -1,7 +1,7 @@
 ---
 id: SPEC-0236
 title: "`wt campaign export`: a flat campaign dataset for mis-sizing analysis"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -244,9 +244,9 @@ contract.
 
 ## Acceptance criteria
 
-- [ ] `CAMPAIGN_COLUMNS`, `RUN_COLUMNS`, `FINDING_COLUMNS` match the lists above. Every exported
+- [x] `CAMPAIGN_COLUMNS`, `RUN_COLUMNS`, `FINDING_COLUMNS` match the lists above. Every exported
       row has exactly those keys in that order, with null for unknown values.
-- [ ] For a fixture campaign (state + ledger with transitions, runs, gates, parks, findings and
+- [x] For a fixture campaign (state + ledger with transitions, runs, gates, parks, findings and
       waiver notes), the campaign row's `outcome`, `ended_at`, `wall_s`, `time_in_state_s`,
       `active_s`, `runs_by_persona`, `models`, `gate_failures`, `park_reasons`,
       `cost_cap_frac`, `must_fix_count`, `finding_count`, `waived_count`, `close_mode` and
@@ -254,28 +254,28 @@ contract.
       resume, a mid-campaign `retry_gate` and a `triage_retry`, a `--raise-cap` resume, and
       both kinds of fix loop: `loops`, `gate_retries`, `triage_retries`, `loop_resets` and
       `cap_raises` equal the ledger totals, not the reset counters.
-- [ ] `size`, `tone`, `profile_source` and `sizing_rationale` come from `state.sizing` and are
+- [x] `size`, `tone`, `profile_source` and `sizing_rationale` come from `state.sizing` and are
       null for a campaign without it. `loop_max` comes from the current profile, and the
       manifest `notes` say so.
-- [ ] `ac_count` and `spec_lines` come from `spec_at_open.md` (checked and unchecked boxes both
+- [x] `ac_count` and `spec_lines` come from `spec_at_open.md` (checked and unchecked boxes both
       count) and are null when the file is missing.
-- [ ] Run rows match `runs.campaign_runs` for every shared column, with `budget_frac` and the
+- [x] Run rows match `runs.campaign_runs` for every shared column, with `budget_frac` and the
       token columns derived as documented. Finding rows carry `state_at` replayed from the
       transitions.
-- [ ] `signals` implements the table: each rule is triggered and not triggered by a fixture, and
+- [x] `signals` implements the table: each rule is triggered and not triggered by a fixture, and
       the list order is the table order.
-- [ ] `wt campaign export` writes the three JSONL files and `manifest.json` (schema, row counts,
+- [x] `wt campaign export` writes the three JSONL files and `manifest.json` (schema, row counts,
       column types) into the default or `--out` directory. `--format csv` encodes `json`
       columns as JSON strings. `--project`, `--since` and `--terminal-only` filter.
       `--table X --stdout` prints one table and writes no files. Each invalid flag combination,
       an existing non-empty `--out` and a same-second default directory behave as documented.
       `--since` keeps the boundary day in `cfg["_tz"]`.
-- [ ] `--format parquet` writes typed Parquet files when `pyarrow` is importable (test skipped
+- [x] `--format parquet` writes typed Parquet files when `pyarrow` is importable (test skipped
       otherwise). With the import blocked, it fails with the documented message, exits non-zero
       and creates no directory.
-- [ ] The export writes nothing under `campaigns/`. `state.json` and `ledger.jsonl` mtimes
+- [x] The export writes nothing under `campaigns/`. `state.json` and `ledger.jsonl` mtimes
       and contents are unchanged after a run.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -306,6 +306,31 @@ contract.
 - **Regression guard:** full `uv run pytest`. The export only reads: no state or ledger file
   changes (the test compares file mtimes before and after).
 
+### Test record (2026-10-25)
+
+- `uv run pytest tests/test_agentic_campaign_export.py`: 31 passed, 1 skipped (Parquet round trip
+  needs `pyarrow`, which is not installed in the project env). Covers column constants and key
+  order, the hand-computed campaign row (reset-loops and raise-cap resumes, `retry_gate`, a
+  `triage_retry`, both fix-loop kinds, a PARKED interval), pre-SPEC-0219 and no-`spec_at_open.md`
+  campaigns, run rows, finding `state_at`, `cost_cap_frac` null cases, every signal on/off and
+  order, the CLI (default dir and same-second `-2`, `--out` rules, filters with a `--since`
+  boundary day in `cfg["_tz"]`, `--stdout`, invalid flag combinations, `--json` manifest and
+  notes, CSV encoding), the read-only guard and the missing-`pyarrow` path.
+- `uv run --with pyarrow pytest tests/test_agentic_campaign_export.py -k parquet`: 2 passed
+  (typed Parquet round trip and missing-pyarrow path).
+- Manual: `wt campaign export --json` against the real data dir (46 campaigns, 196 runs, 393
+  findings); sizing, profile and cost for the latest campaigns match `wt campaign show`.
+- Full `uv run pytest`: 2211 passed, 2 skipped. `python3 tools/spec_lint.py` (after
+  `--write-ledger`): exit 0. The raw-output guard (`tests/test_rich_output_guard.py`) got an
+  allowlist entry for the `--stdout` path of `campaign_export`.
+
+### As shipped (2026-10-25)
+
+- As designed. Small additions: `wt campaign export --json` prints the manifest plus an `out` key
+  with the export directory (the `manifest.json` file does not carry it); `--json` is ignored
+  with `--stdout`. A campaign with a null/unparseable `created_at` is dropped when `--since` is
+  given. `wall_s` is null for a terminal campaign with no terminal `transition` event.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -317,11 +342,11 @@ None required. The export works on campaigns from before SPEC-0219: their sizing
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
