@@ -898,6 +898,7 @@ class StepResult:
     crashed: str | None = None                       # unexpected worker exception caught in-step
     write: dict | None = None                        # SPEC-0215: a write_spec step's outcome
     detached: bool = False                           # SPEC-0225: the pool detached the run
+    lock_cleanup: dict | None = None                 # SPEC-0244: an adopted commit's index.lock outcome
 
 
 class _Ctx:
@@ -1289,6 +1290,8 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
                 msg += f"\n\n{trailer}"
             res.commit_message = msg
             worktree = (state.get("repo") or {}).get("worktree")
+            if adopted:     # a killed runner may have left index.lock; a fresh run never does
+                res.lock_cleanup = git.clear_stale_index_lock(worktree)
             res.commit_sha = git.commit_all(worktree, msg)
             if res.commit_sha is None and adopted and adopted.get("exited_before_start"):
                 head = git.rev_parse(worktree)
@@ -1401,6 +1404,14 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     row = {"campaign": cid, "from": res.from_state, "to": None, "action": res.step.kind,
            "run_id": res.run_id, "cost_usd": None, "reason": None}
     events: list = list(res.events_before)
+    if res.lock_cleanup is not None:       # first: the error/park paths below must carry it too
+        lc = res.lock_cleanup
+        events.append(("note", {
+            "text": (f"removed stale {lc['path']} (no process held it; left by a killed run)"
+                     if lc["removed"] else
+                     f"index.lock present and not removed ({lc['reason']}; "
+                     f"holders {lc['holders']}): {lc['path']}"),
+            "author": "queue"}))
     try:
         profile = ctx.profile(state)
     except ValueError:

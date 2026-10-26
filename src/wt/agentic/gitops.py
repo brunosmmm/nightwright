@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -193,6 +194,83 @@ def commit_all(worktree, message, env=None) -> str | None:
         return None
     git(worktree, "commit", "-q", "-m", message, env=env)
     return rev_parse(worktree)
+
+
+# ---- stale index.lock (SPEC-0244) -----------------------------------------------------------
+
+_LOCK_POLL_S = 0.5
+
+
+def index_lock_path(worktree) -> Path:
+    """Where git keeps this worktree's `index.lock` (for a linked worktree, under the main
+    repo's `.git/worktrees/<name>/`)."""
+    out = git(worktree, "rev-parse", "--git-path", "index.lock").stdout.strip()
+    p = Path(out)
+    return p if p.is_absolute() else Path(worktree) / p
+
+
+def lock_holders(lock, worktree, *, proc=Path("/proc")) -> list[int] | None:
+    """Pids (not ours) that hold `lock` open or have their cwd in `worktree`; None when
+    `proc` is not a directory, so holders cannot be determined. A pid whose entries vanish or
+    cannot be read (another user's) is skipped."""
+    proc = Path(proc)
+    if not proc.is_dir():
+        return None
+    lock_real = os.path.realpath(lock)
+    wt_real = os.path.realpath(worktree)
+    me = os.getpid()
+    found = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit() or int(entry.name) == me:
+            continue
+        try:
+            hit = os.path.realpath(os.readlink(entry / "cwd"))
+            hit = hit == wt_real or hit.startswith(wt_real + os.sep)
+            if not hit:
+                for fd in (entry / "fd").iterdir():
+                    try:
+                        if os.path.realpath(os.readlink(fd)) == lock_real:
+                            hit = True
+                            break
+                    except OSError:
+                        continue                # this descriptor closed under us
+        except OSError:
+            continue
+        if hit:
+            found.append(int(entry.name))
+    return sorted(found)
+
+
+def clear_stale_index_lock(worktree, *, wait_s=10, proc=Path("/proc"), clock=time) -> dict | None:
+    """Remove `worktree`'s `index.lock` when no live process holds it open or works in the
+    worktree. Returns None when there is no lock (at any check), else
+    `{"path", "removed", "reason", "holders"}`: removed, or kept with a `reason` of
+    "unverifiable" (no /proc), "held" (still held after `wait_s`) or "error: <e>". Every
+    0.5 s the lock is stat'ed and the holders re-read; nothing from an earlier look is trusted."""
+    lock = index_lock_path(worktree)
+    start = clock.monotonic()
+    while True:
+        if not os.path.lexists(lock):
+            return None
+        holders = lock_holders(lock, worktree, proc=proc)
+        out = {"path": str(lock), "removed": False, "reason": None, "holders": holders}
+        if holders is None:
+            out["reason"] = "unverifiable"
+            return out
+        if not holders:
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                return None
+            except OSError as e:
+                out["reason"] = f"error: {e}"
+                return out
+            out["removed"] = True
+            return out
+        if clock.monotonic() - start >= wait_s:
+            out["reason"] = "held"
+            return out
+        clock.sleep(_LOCK_POLL_S)
 
 
 # ---- history rewriting / integration ------------------------------------------------------

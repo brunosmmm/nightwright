@@ -1,10 +1,10 @@
 ---
 id: SPEC-0244
 title: "Adoption clears a stale .git/index.lock left by a killed implementer before collecting"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
-updated: 2026-10-25
+updated: 2026-10-26
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0169
@@ -126,13 +126,13 @@ recorded as a ledger `note`.
 
 ## Acceptance criteria
 
-- [ ] `index_lock_path` returns the linked worktree's `<main>/.git/worktrees/<name>/index.lock`
+- [x] `index_lock_path` returns the linked worktree's `<main>/.git/worktrees/<name>/index.lock`
       for a linked worktree, and `<repo>/.git/index.lock` for a main checkout.
-- [ ] `lock_holders`, on a fake `/proc` tree, finds a pid by an fd symlink to the lock and a
+- [x] `lock_holders`, on a fake `/proc` tree, finds a pid by an fd symlink to the lock and a
       pid by a cwd inside the worktree. It skips the current pid and pids whose entries
       raise `OSError`. It returns None when the proc dir is missing. On the real `/proc`, a
       `sleep` subprocess started with `cwd=worktree` is reported.
-- [ ] `clear_stale_index_lock` (fake clock and fake proc), with each case returning exactly
+- [x] `clear_stale_index_lock` (fake clock and fake proc), with each case returning exactly
       the specified keys:
       - no lock: None;
       - no holders: removed;
@@ -142,15 +142,15 @@ recorded as a ledger `note`.
       - a lock that disappears while waiting: None;
       - no proc dir: `unverifiable`;
       - an `unlink` OSError: `error: …`, not raised.
-- [ ] An adopted implementer flight whose worktree has uncommitted edits and an unheld
+- [x] An adopted implementer flight whose worktree has uncommitted edits and an unheld
       `index.lock` removes the lock, commits the edits (`commit` event with the sha), and
       records the `removed stale … index.lock` note.
-- [ ] An adopted flight whose lock is held (a live process with its cwd in the worktree)
+- [x] An adopted flight whose lock is held (a live process with its cwd in the worktree)
       keeps the lock, records the `not removed (held; …)` note **and** the commit-error
       park, and the tick does not raise.
-- [ ] A fresh (non-adopted) implementer flight with an `index.lock` present never calls the
+- [x] A fresh (non-adopted) implementer flight with an `index.lock` present never calls the
       helper (spy), and its behaviour is unchanged: commit error, no note.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -166,17 +166,29 @@ recorded as a ledger `note`.
 - **Regression guard:** full `uv run pytest`, in particular the SPEC-0225 adoption suite and
   `tests/test_agentic_e2e.py`.
 
+### Test record (2026-10-26)
+
+- `uv run pytest -q tests/test_agentic_index_lock.py`: 13 passed (`index_lock_path` on a main
+  checkout and a linked worktree; `lock_holders` on a fake `/proc` and on the real one with a
+  `sleep` subprocess; every `clear_stale_index_lock` case with a fake clock; adopted flight
+  removes the lock and commits; adopted flight with a held lock keeps it and parks; fresh
+  flight never calls the helper).
+- Full `uv run pytest -q`: 2794 passed, 3 skipped; the only two failures were the spec-lint
+  tests, which flagged the generated ledger being stale after the status change. Re-run after
+  `python3 tools/spec_lint.py --write-ledger` afterwards: `tests/test_specs.py`, `tests/test_export.py` and the new file passed (57), and
+  `python3 tools/spec_lint.py` exits 0.
+
 ## Rollout / migration
 
 Ships after SPEC-0225. No data changes.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
