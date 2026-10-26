@@ -294,17 +294,26 @@ def test_gave_up_twice_parks_rebase_conflict(tmp_path, monkeypatch):
     assert len(w.ledger("rebase_resolved")) == 1
 
 
+def _hook(body):
+    return ("H=$(git rev-parse --git-path hooks/pre-commit) && mkdir -p $(dirname $H) && "
+            f"printf '#!/bin/sh\\n{body}\\n' > $H && chmod +x $H")
+
+
 FAILS = {
     "rebase_left_running": (dict(shell=(), edits=False), "HEAD is not attached"),
-    "dirty_tree": (dict(shell=(CONTINUE + " && echo junk >> feature.txt",)), "dirty"),
     "rebase_aborted": (dict(pre=(), shell=(), edits=False), "not an ancestor"),
     "detached_head": (dict(shell=(CONTINUE + " && git checkout -q --detach",)), "not attached"),
     "other_branch": (dict(shell=(CONTINUE + " && git checkout -q -b other",)), "not attached"),
-    "dropped_commit": (dict(shell=("git rebase --skip",), edits=False), "commit count"),
+    "dropped_commit": (dict(shell=("git rebase --skip",), edits=False),
+                       "is missing after the resolution"),
     "swapped_commit": (dict(shell=("git rebase --skip && git commit -q --allow-empty -m swapped",),
-                            edits=False), "dropped or added"),
-    "extra_commit": (dict(shell=(CONTINUE + " && git commit -q --allow-empty -m extra",)),
-                     "commit count"),
+                            edits=False), "is missing after the resolution"),
+    "reverting_extra_commit": (dict(shell=(CONTINUE + " && git revert --no-edit HEAD",)),
+                               "reverts campaign commit"),
+    "unmerged_no_rebase": (dict(shell=(CONTINUE + "; git cherry-pick main || true",)),
+                           "unmerged paths remain"),
+    "hook_rejects_commit": (dict(shell=(CONTINUE + " && " + _hook("exit 1")
+                                        + " && echo junk >> feature.txt",)), "dirty"),
 }
 
 
@@ -329,6 +338,111 @@ def test_unverified_resolved_is_restored(tmp_path, monkeypatch, name):
     st = w.st()
     assert st["state"] == "PARKED" and st["park"]["reason"] == "rebase_conflict"
     assert w.head() == pre
+
+
+def _precommit_world(tmp_path, monkeypatch, resolver_entry, wt_script, main_script):
+    """A campaign with one commit made before the implementer runs, so the close sees two:
+    `wt_script` runs in the worktree, `main_script` in the main repo (before the conflict)."""
+    w = basic(tmp_path, monkeypatch, resolver_entry)
+    w.tick()
+    assert w.st()["state"] == "IMPLEMENTING"
+    subprocess.run(["sh", "-ce", wt_script], cwd=w.st()["repo"]["worktree"], check=True,
+                   capture_output=True)
+    subprocess.run(["sh", "-ce", main_script], cwd=w.repo, check=True, capture_output=True)
+    w.main_conflict()
+    return w
+
+
+def _merged(w):
+    w.drive(lambda s: s["state"] in ("MERGED", "PARKED"))
+    assert w.st()["state"] == "MERGED", (w.st()["state"], w.st().get("park"))
+    return w.ledger("rebase_resolved")
+
+
+def test_extra_commit_verified(tmp_path, monkeypatch):
+    w = basic(tmp_path, monkeypatch, resolver(
+        shell=(CONTINUE + " && echo port > port.txt && git add port.txt "
+               "&& git commit -q -m 'port commit'",)))
+    w.open_and_conflict()
+    ev, = _merged(w)
+    assert [c["subject"] for c in ev["extra_commits"]] == ["port commit"]
+    assert len(ev["extra_commits"][0]["sha"]) == 40
+    assert ev["absorbed_commits"] == [] and ev["resolver_commit"] is None
+    assert (w.repo / "port.txt").read_text() == "port\n"
+
+
+ADD_PRE = "echo x > pre.txt && git add pre.txt && git commit -q -m 'pre commit'"
+ADD_PRE_MAIN = ADD_PRE.replace("'pre commit'", "'landed on main'")   # else the same commit object
+
+
+@pytest.mark.parametrize("variant", ["patch_id", "context", "empty"])
+def test_emptied_commit_verified(tmp_path, monkeypatch, variant):
+    """A campaign commit the target already holds (or one empty from the start) is dropped by
+    the rebase: absorbed into HEAD, not a failure."""
+    pre = ("git rebase $WT_REBASE_TARGET || true",)
+    wt_script, main_script = ADD_PRE, ADD_PRE_MAIN
+    if variant == "context":                # a different patch-id: the target commit adds more
+        main_script = "echo y > other.txt && git add other.txt && " + ADD_PRE_MAIN
+    elif variant == "empty":
+        wt_script, main_script = "git commit -q --allow-empty -m 'pre commit'", "true"
+        pre = ("git rebase --no-keep-empty $WT_REBASE_TARGET || true",)
+    w = _precommit_world(tmp_path, monkeypatch, resolver(pre=pre), wt_script, main_script)
+    ev, = _merged(w)
+    assert [c["subject"] for c in ev["absorbed_commits"]] == ["pre commit"]
+    assert ev["extra_commits"] == []
+    assert "absorbed" in _render_resolved(ev)
+
+
+def test_rebase_resolved_text_extra_and_absorbed_and_old_events():
+    base = {"conflicts": ["a", "b"], "resolutions": [{"strategy": "both"}]}
+    assert _render_resolved(base) == "rebase resolved: 2 paths (both\u00d71)"
+    assert _render_resolved({**base, "extra_commits": [], "absorbed_commits": []}) \
+        == "rebase resolved: 2 paths (both\u00d71)"
+    assert _render_resolved({**base, "extra_commits": [{}], "absorbed_commits": [{}, {}]}) \
+        == "rebase resolved: 2 paths (both\u00d71); +1 extra, 2 absorbed"
+
+
+def _render_resolved(ev):
+    from wt import render
+    return render.rebase_resolved_text(ev)
+
+
+@pytest.mark.parametrize("summary", ["kept both sides", ""])
+def test_staged_changes_committed_by_runner(tmp_path, monkeypatch, summary):
+    w = basic(tmp_path, monkeypatch, resolver(
+        shell=(CONTINUE + " && echo staged > new.txt && git add new.txt && echo edit >> feature.txt"
+               " && echo o > app.py.orig",), verdict=_verdict(summary=summary)))
+    w.open_and_conflict()
+    w.drive(lambda s: len(w.ledger("rebase_resolved")) == 1)
+    wt = w.st()["repo"]["worktree"]
+    ev, = w.ledger("rebase_resolved")
+    head = _git(wt, "rev-parse", "HEAD")
+    assert ev["resolver_commit"] == head and ev["head"] == head
+    msg = _git(wt, "log", "-1", "--format=%B")
+    first = msg.splitlines()[0]
+    assert first == (f"wt({w.cid}): conflict resolver run 003"
+                     + (f" \u2014 {summary}" if summary else ""))
+    assert msg.rstrip().endswith("Co-Authored-By: wt test <wt@test>")
+    assert set(_git(wt, "show", "--name-only", "--format=", "HEAD").split()) \
+        == {"new.txt", "feature.txt"}
+    assert not (Path(wt) / "app.py.orig").exists()
+    assert "app.py.orig" not in _git(wt, "ls-tree", "-r", "--name-only", "HEAD")
+    assert ev["extra_commits"] and ev["extra_commits"][0]["sha"] == head
+    assert _merged(w)
+
+
+def test_unmerged_no_rebase_commits_nothing(tmp_path, monkeypatch):
+    calls = []
+    real = G.commit_tracked
+    monkeypatch.setattr(G, "commit_tracked", lambda *a, **kw: calls.append(a) or real(*a, **kw))
+    kw, check = FAILS["unmerged_no_rebase"]
+    w = basic(tmp_path, monkeypatch, resolver(**kw), gave_up())
+    w.open_and_conflict()
+    w.dispatched()
+    w.attempted(1)
+    assert calls == []
+    f, = w.findings("conflict resolver did not resolve")
+    assert check in f["detail"]
 
 
 def test_interrupted_resolver_not_counted(tmp_path, monkeypatch):
@@ -665,7 +779,7 @@ def test_verify_resolution_rebase_in_progress_fires_alone(grepo):
     gitdir.mkdir(parents=True)
     try:
         assert G.rebase_in_progress(r)
-        assert G.verify_resolution(r, "wt/x", target, fork, pre) == "a rebase is still in progress"
+        assert G.verify_resolution(r, "wt/x", target, fork, pre).failed == "a rebase is still in progress"
     finally:
         gitdir.rmdir()
 
@@ -674,7 +788,7 @@ def test_verify_resolution_unmerged_paths_fire_alone(grepo):
     r, fork, pre, target = grepo
     subprocess.run(["git", "merge", "main"], cwd=r, capture_output=True)       # conflicts, no rebase
     assert _git(r, "ls-files", "-u")
-    assert G.verify_resolution(r, "wt/x", target, fork, pre) == "unmerged paths remain"
+    assert G.verify_resolution(r, "wt/x", target, fork, pre).failed == "unmerged paths remain"
 
 
 def test_restore_branch_cleans_untracked_leftovers(grepo):
@@ -684,6 +798,119 @@ def test_restore_branch_cleans_untracked_leftovers(grepo):
     G.restore_branch(r, "wt/x", pre)
     assert not (r / "stray.orig").exists() and not (r / "d").exists()
     assert _git(r, "status", "--porcelain") == ""
+
+
+# ---- verify_resolution accounting (SPEC-0252) ------------------------------------------------
+
+def _sh(r, script):
+    subprocess.run(["sh", "-ce", script], cwd=r, check=True, capture_output=True, text=True)
+
+
+def vrepo(tmp_path, branch, target, resolve):
+    """A repo with `main` (base + `target` commits) and `wt/x` (base + `branch` commits), then
+    `resolve` run on wt/x. Returns (repo, fork, pre_head, target_sha)."""
+    r = tmp_path / "v"
+    r.mkdir()
+    _sh(r, "git init -q -b main && git config user.email t@t && git config user.name t "
+           "&& echo 1 > f.txt && git add -A && git commit -q -m base")
+    fork = _git(r, "rev-parse", "HEAD")
+    _sh(r, "git checkout -q -b wt/x\n" + branch)
+    pre = _git(r, "rev-parse", "HEAD")
+    _sh(r, "git checkout -q main\n" + target)
+    tgt = _git(r, "rev-parse", "HEAD")
+    _sh(r, "git checkout -q wt/x\n" + resolve)
+    return r, fork, pre, tgt
+
+
+def _write_cmd(name, data="x", binary=False):
+    return f"printf '\\000\\001{data}' > {name}" if binary else f"echo {data} > {name}"
+
+
+def _commit_file(name, data="x", msg=None, binary=False):
+    return (f"{_write_cmd(name, data, binary)} && git add {name} "
+            f"&& git commit -q -m '{msg or name}'\n")
+
+
+def _check(r, fork, pre, tgt):
+    return G.verify_resolution(r, "wt/x", tgt, fork, pre)
+
+
+def test_verify_resolution_paired_commit_passes_with_nothing_extra(tmp_path):
+    r, fork, pre, tgt = vrepo(tmp_path, _commit_file("a.txt"), _commit_file("m.txt"),
+                              "git rebase main -q")
+    c = _check(r, fork, pre, tgt)
+    assert c.failed is None and c.extra == [] and c.absorbed == []
+
+
+def test_verify_resolution_cherry_marked_commit_is_absorbed(tmp_path):
+    r, fork, pre, tgt = vrepo(tmp_path, _commit_file("a.txt", msg="mine"),
+                              _commit_file("a.txt", msg="landed"), "git rebase main -q")
+    c = _check(r, fork, pre, tgt)
+    assert c.failed is None and [a["subject"] for a in c.absorbed] == ["mine"]
+    assert c.absorbed[0]["sha"] == _git(r, "rev-parse", pre)
+
+
+def test_verify_resolution_empty_commit_is_absorbed(tmp_path):
+    r, fork, pre, tgt = vrepo(tmp_path, "git commit -q --allow-empty -m nothing\n",
+                              _commit_file("m.txt"), "git rebase --no-keep-empty main -q")
+    c = _check(r, fork, pre, tgt)
+    assert c.failed is None and [a["subject"] for a in c.absorbed] == ["nothing"]
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_verify_resolution_reverse_apply_absorbs_a_commit_with_another_patch_id(tmp_path, binary):
+    """The target lands the same file plus another: no patch-id match, but HEAD holds the change.
+    `--binary` is what lets a binary file reverse-apply."""
+    name = "a.dat" if binary else "a.txt"
+    write = _write_cmd(name, binary=binary)
+    r, fork, pre, tgt = vrepo(
+        tmp_path, _commit_file(name, msg="mine", binary=binary),
+        f"echo o > o.txt && {write} && git add -A && git commit -q -m landed\n",
+        "git rebase main -q")
+    c = _check(r, fork, pre, tgt)
+    assert c.failed is None and [a["subject"] for a in c.absorbed] == ["mine"]
+    assert _git(r, "cherry", tgt, pre).startswith("+")          # patch-ids differ
+
+
+def test_verify_resolution_missing_commit_fails_and_names_it(tmp_path):
+    r, fork, pre, tgt = vrepo(tmp_path, _commit_file("a.txt", msg="mine"), _commit_file("m.txt"),
+                              "git reset -q --hard main")
+    c = _check(r, fork, pre, tgt)
+    assert c.failed == f"campaign commit {pre[:10]} (mine) is missing after the resolution"
+
+
+def test_verify_resolution_unpaired_commit_is_extra_but_a_revert_fails(tmp_path):
+    r, fork, pre, tgt = vrepo(tmp_path, _commit_file("a.txt"), _commit_file("m.txt"),
+                              "git rebase main -q\n" + _commit_file("port.txt", msg="port"))
+    c = _check(r, fork, pre, tgt)
+    assert c.failed is None and [e["subject"] for e in c.extra] == ["port"]
+    _sh(r, "git revert --no-edit HEAD~1")
+    bad = _check(r, fork, pre, tgt)
+    assert bad.failed and "reverts campaign commit" in bad.failed and "Revert" in bad.failed
+
+
+def test_patch_applies_leaves_index_and_worktree_untouched(grepo):
+    r, fork, pre, target = grepo
+    _write(r, "dirty.txt", "x\n")
+    _git(r, "add", "dirty.txt")
+    before = (_git(r, "ls-files", "-s"), _git(r, "status", "--porcelain"),
+              (r / "f.txt").read_text())
+    assert G._patch_applies(r, pre, f"{pre}^", reverse=False)
+    assert G._patch_applies(r, pre, "HEAD", reverse=True)
+    assert not G._patch_applies(r, pre, target, reverse=False)
+    assert (_git(r, "ls-files", "-s"), _git(r, "status", "--porcelain"),
+            (r / "f.txt").read_text()) == before
+
+
+def test_commit_tracked_returns_none_when_nothing_is_staged(grepo):
+    r, *_ = grepo
+    _write(r, "stray.orig", "x\n")
+    head = _git(r, "rev-parse", "HEAD")
+    assert G.commit_tracked(r, "msg") is None and _git(r, "rev-parse", "HEAD") == head
+    _write(r, "f.txt", "changed\n")
+    sha = G.commit_tracked(r, "msg")
+    assert sha == _git(r, "rev-parse", "HEAD") != head
+    assert "stray.orig" not in _git(r, "ls-tree", "-r", "--name-only", "HEAD")
 
 
 # ---- review loop 3 --------------------------------------------------------------------------

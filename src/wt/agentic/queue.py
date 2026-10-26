@@ -1305,6 +1305,26 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     return res
 
 
+def _commit_resolver_changes(ctx: _Ctx, state: dict, worktree, branch, run_id: str,
+                             verdict: dict) -> str | None:
+    """SPEC-0252: after a `resolved` verdict commit the tracked and staged changes the resolver
+    left in the tree, as the implementer's are. Never over an unattached HEAD, a running
+    rebase, unmerged paths or other sequencer state: `git add -u` would hide those from the
+    verification. Returns the new sha, None when nothing was committed."""
+    if git.head_ref(worktree) != f"refs/heads/{branch}" or git.rebase_in_progress(worktree) \
+            or git.git(worktree, "ls-files", "-u").stdout.strip() \
+            or git.sequencer_in_progress(worktree):
+        return None
+    lines = str(verdict.get("summary") or "").strip().splitlines()
+    msg = f"wt({state['id']}): conflict resolver run {run_id[:3]}"
+    if lines:
+        msg += f" — {lines[0][:72]}"
+    trailer = ((ctx.project(state).get("agents") or {}).get("commit_trailer") or "").strip()
+    if trailer:
+        msg += f"\n\n{trailer}"
+    return git.commit_tracked(worktree, msg)
+
+
 def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float) -> StepResult:
     """Worker thread (SPEC-0221): restore the campaign branch to the recorded `pre_head`, run
     the resolver persona, then verify its work with runner-side git reads (the verdict is not
@@ -1325,7 +1345,7 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
             res.run_result = rr = _synthetic_failure(crash)
         res.interrupted = ctx.stop.is_set()
         verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
-        failed = None
+        failed = check = commit_sha = None
         if res.interrupted or rr.interrupted:
             failed = "interrupted"
         elif not rr.verdict_ok or rr.is_error or rr.exit_code != 0:
@@ -1333,12 +1353,20 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         elif verdict.get("status") != "resolved":
             failed = f"the resolver reported {verdict.get('status')}"
         else:
+            check = None
             try:
-                failed = git.verify_resolution(worktree, branch, rs["target_sha"], rs["fork"],
-                                               pre_head)
+                commit_sha = _commit_resolver_changes(ctx, state, worktree, branch, run_id, verdict)
+            except GitError:
+                pass                    # e.g. a hook rejected it: check 6 fails the dirty tree
+            try:
+                check = git.verify_resolution(worktree, branch, rs["target_sha"], rs["fork"],
+                                              pre_head)
+                failed = check.failed
             except (GitError, KeyError) as e:
                 failed = f"verification error: {getattr(e, 'tail', None) or e}"
-        res.resolution = {"verified": failed is None, "failed": failed, "head": None}
+        res.resolution = {"verified": failed is None, "failed": failed, "head": None,
+                          "extra": check.extra if check else [],
+                          "absorbed": check.absorbed if check else [], "commit": commit_sha}
         if failed is None:
             git.clean_untracked(worktree)   # residue must not reach the close-time snapshot
             res.resolution["head"] = git.rev_parse(worktree)
@@ -1749,7 +1777,10 @@ def _apply_resolve(state: dict, counters: dict, res: StepResult, rr, row: dict, 
             "run_id": res.run_id, "target_sha": rs.get("target_sha"),
             "conflicts": list(rs.get("conflicts") or []),
             "resolutions": list(verdict.get("resolutions") or []),
-            "summary": verdict.get("summary"), "head": head}))
+            "summary": verdict.get("summary"), "head": head,
+            "extra_commits": list(info.get("extra") or []),
+            "absorbed_commits": list(info.get("absorbed") or []),
+            "resolver_commit": info.get("commit")}))
         state.setdefault("repo", {})["head"] = head
         return finish("CLOSING", "rebase_resolved")
     why = str(verdict.get("summary") or "").strip() or str(info.get("failed") or "not resolved")

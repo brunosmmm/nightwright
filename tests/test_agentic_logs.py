@@ -208,7 +208,8 @@ def test_open_event_without_sizing_keys_still_validates(tmp_path):      # SPEC-0
 
 
 def test_rebase_resolved_event_is_registered_and_requires_its_keys():             # SPEC-0221
-    keys = ("run_id", "target_sha", "conflicts", "resolutions", "summary", "head")
+    keys = ("run_id", "target_sha", "conflicts", "resolutions", "summary", "head",
+            "extra_commits", "absorbed_commits", "resolver_commit")           # SPEC-0252
     assert SC.EVENT_KEYS["rebase_resolved"] == keys
     rec = {"ts": "t", "seq": 1, "campaign": "c", "type": "rebase_resolved", "by": "queue",
            **{k: "x" for k in keys}}

@@ -11,8 +11,9 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 _DEFAULT_TIMEOUT = 300
@@ -43,11 +44,11 @@ def _tail(text: str, n: int = _TAIL_LINES) -> str:
     return "\n".join(lines[-n:])
 
 
-def _run(cmd: list[str], *, cwd=None, check=True, timeout=_DEFAULT_TIMEOUT, env=None):
+def _run(cmd: list[str], *, cwd=None, check=True, timeout=_DEFAULT_TIMEOUT, env=None, input=None):
     merged_env = None if env is None else {**os.environ, **env}
     try:
         r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-                           env=merged_env)
+                           env=merged_env, input=input)
     except subprocess.TimeoutExpired as e:
         raise GitError(cmd, -1, f"timed out after {timeout}s") from e
     except OSError as e:
@@ -57,9 +58,11 @@ def _run(cmd: list[str], *, cwd=None, check=True, timeout=_DEFAULT_TIMEOUT, env=
     return r
 
 
-def git(repo, *args, check=True, timeout=_DEFAULT_TIMEOUT, env=None) -> subprocess.CompletedProcess:
+def git(repo, *args, check=True, timeout=_DEFAULT_TIMEOUT, env=None,
+        input=None) -> subprocess.CompletedProcess:
     """Run `git -C <repo> *args`; raise `GitError` on non-zero exit when `check`."""
-    return _run(["git", "-C", str(repo), *args], check=check, timeout=timeout, env=env)
+    return _run(["git", "-C", str(repo), *args], check=check, timeout=timeout, env=env,
+                input=input)
 
 
 # ---- read-only --------------------------------------------------------------------------
@@ -273,6 +276,17 @@ def clear_stale_index_lock(worktree, *, wait_s=10, proc=Path("/proc"), clock=tim
         clock.sleep(_LOCK_POLL_S)
 
 
+def commit_tracked(worktree, message, env=None) -> str | None:
+    """`add -u` (tracked changes; paths already staged stay staged, new files among them) then
+    commit; None when nothing is staged. Unlike `commit_all` it never picks up untracked
+    residue such as `.orig` backups (SPEC-0252)."""
+    git(worktree, "add", "-u", env=env)
+    if git(worktree, "diff", "--cached", "--quiet", check=False, env=env).returncode == 0:
+        return None
+    git(worktree, "commit", "-q", "-m", message, env=env)
+    return rev_parse(worktree)
+
+
 # ---- history rewriting / integration ------------------------------------------------------
 
 _REGEN_MAX_STEPS = 50
@@ -337,8 +351,8 @@ def merge_base(repo, a, b) -> str:
     return git(repo, "merge-base", a, b).stdout.strip()
 
 
-def rebase_in_progress(worktree) -> bool:
-    for name in ("rebase-merge", "rebase-apply"):
+def _git_path_exists(worktree, names) -> bool:
+    for name in names:
         r = git(worktree, "rev-parse", "--git-path", name, check=False)
         path = Path((r.stdout or "").strip())
         if r.returncode == 0 and path.name:
@@ -347,6 +361,16 @@ def rebase_in_progress(worktree) -> bool:
             if path.exists():
                 return True
     return False
+
+
+def rebase_in_progress(worktree) -> bool:
+    return _git_path_exists(worktree, ("rebase-merge", "rebase-apply"))
+
+
+def sequencer_in_progress(worktree) -> bool:
+    """A cherry-pick, merge, revert or multi-commit sequence is under way (SPEC-0252)."""
+    return _git_path_exists(worktree, ("CHERRY_PICK_HEAD", "MERGE_HEAD", "REVERT_HEAD",
+                                       "sequencer"))
 
 
 def head_ref(worktree) -> str | None:
@@ -381,34 +405,106 @@ def clean_untracked(worktree) -> None:
     git(worktree, "clean", "-fdq")
 
 
-_RANGE_DIFF_RE = re.compile(r"^\s*(?:-|\d+):\s+\S+\s+([=!<>])\s+(?:-|\d+):\s+\S+")
+_RANGE_DIFF_RE = re.compile(
+    r"^\s*(?:-|\d+):\s+([0-9a-f]+|-+)\s+([=!<>])\s+(?:-|\d+):\s+([0-9a-f]+|-+)")
 
 
-def verify_resolution(worktree, branch, target_sha, fork, pre_head) -> str | None:
-    """Runner-side check of a resolver's work (SPEC-0221); the name of the first failed
-    check, None when the branch is attached, rebased onto `target_sha`, still carries exactly
-    the campaign's commits and is tracked-clean."""
+@dataclass
+class ResolutionCheck:
+    """Outcome of `verify_resolution`: `failed` names the first failed check (None = verified);
+    `extra` are new commits that pair with no old one, `absorbed` old campaign commits whose
+    change `HEAD` already holds; each is `{"sha": <full sha>, "subject": ...}`."""
+    failed: str | None = None
+    extra: list = field(default_factory=list)
+    absorbed: list = field(default_factory=list)
+
+
+def _patch_applies(worktree, commit, tree, reverse) -> bool:
+    """Whether `commit`'s binary diff against its first parent applies (or, with `reverse`,
+    reverse-applies) to `tree`, checked in a temporary index so the worktree and the real
+    index are never touched. An empty diff applies."""
+    diff = git(worktree, "diff", "--binary", f"{commit}^", commit).stdout
+    if not diff:
+        return True
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        git(worktree, "read-tree", tree, env=env)
+        args = ["apply", "--cached", "--check"] + (["--reverse"] if reverse else [])
+        return git(worktree, *args, check=False, env=env, input=diff).returncode == 0
+
+
+def _is_empty(worktree, commit) -> bool:
+    return not git(worktree, "diff", "--binary", f"{commit}^", commit).stdout
+
+
+def _commit_entry(worktree, sha) -> dict:
+    return {"sha": sha, "subject": git(worktree, "log", "-1", "--format=%s", sha).stdout.strip()}
+
+
+def verify_resolution(worktree, branch, target_sha, fork, pre_head) -> ResolutionCheck:
+    """Runner-side check of a resolver's work (SPEC-0221, SPEC-0252): `failed` names the first
+    failed check, None when the branch is attached, rebased onto `target_sha`, still accounts
+    for every campaign commit and is tracked-clean. A campaign commit is accounted for when
+    range-diff pairs it, `git cherry` finds it in the target, it was empty, or its change
+    reverse-applies to `HEAD` (absorbed). New unpaired commits are allowed (`extra`) unless one
+    reverts a campaign commit."""
+    def fail(why):
+        return ResolutionCheck(failed=why)
+
     if head_ref(worktree) != f"refs/heads/{branch}":
-        return "HEAD is not attached to the campaign branch"
+        return fail("HEAD is not attached to the campaign branch")
     if rebase_in_progress(worktree):
-        return "a rebase is still in progress"
+        return fail("a rebase is still in progress")
     if git(worktree, "ls-files", "-u").stdout.strip():
-        return "unmerged paths remain"
+        return fail("unmerged paths remain")
     if git(worktree, "merge-base", "--is-ancestor", target_sha, "HEAD", check=False).returncode:
-        return "the rebase target is not an ancestor of HEAD"
-    new = int(git(worktree, "rev-list", "--count", f"{target_sha}..HEAD").stdout.strip())
-    old = int(git(worktree, "rev-list", "--count", f"{fork}..{pre_head}").stdout.strip())
-    if new != old:
-        return f"campaign commit count changed ({old} before, {new} after)"
-    out = git(worktree, "range-diff", "--no-color", "--creation-factor=95",
-              f"{fork}..{pre_head}", f"{target_sha}..HEAD").stdout
+        return fail("the rebase target is not an ancestor of HEAD")
+    old_commits = git(worktree, "rev-list", "--reverse", f"{fork}..{pre_head}").stdout.split()
+    new_commits = git(worktree, "rev-list", f"{target_sha}..HEAD").stdout.split()
+    out = ""
+    if old_commits and new_commits:             # range-diff refuses an empty range
+        out = git(worktree, "range-diff", "--no-color", "--creation-factor=95",
+                  f"{fork}..{pre_head}", f"{target_sha}..HEAD").stdout
+    paired: dict = {}                   # old sha -> the new commit range-diff pairs it with
     for line in out.splitlines():
         m = _RANGE_DIFF_RE.match(line)
-        if m and m.group(1) in "<>":
-            return "a campaign commit was dropped or added"
+        if not m:
+            continue
+        old, mark, new = m.groups()
+        if mark in "=!":
+            paired[rev_parse(worktree, old)] = rev_parse(worktree, new)
+    # the `>` lines of range-diff, by full sha: new commits nothing pairs with
+    added = [n for n in reversed(new_commits) if n not in paired.values()]
+    cherry_gone = {ln.split()[1] for ln in
+                   git(worktree, "cherry", target_sha, pre_head).stdout.splitlines()
+                   if ln.startswith("-") and len(ln.split()) > 1}
+    absorbed, guarded = [], []          # guarded: (old campaign sha, commit whose patch to guard)
+    for c in old_commits:
+        empty = _is_empty(worktree, c)
+        if c in paired:
+            # a resolution may have rewritten the patch (`!`): guard the new one, which is
+            # what the branch carries
+            if not empty and not _is_empty(worktree, paired[c]):
+                guarded.append((c, paired[c]))
+            continue
+        if not empty:
+            guarded.append((c, c))
+        if c in cherry_gone or empty or _patch_applies(worktree, c, "HEAD", reverse=True):
+            absorbed.append(_commit_entry(worktree, c))
+            continue
+        subject = _commit_entry(worktree, c)["subject"]
+        return fail(f"campaign commit {c[:10]} ({subject}) is missing after the resolution")
+    extra = []
+    for e in added:
+        for c, patch in guarded:
+            if _patch_applies(worktree, patch, f"{e}^", reverse=True) \
+                    and _patch_applies(worktree, patch, e, reverse=False):
+                return fail(f"extra commit {e[:10]} ({_commit_entry(worktree, e)['subject']}) "
+                            f"reverts campaign commit {c[:10]}")
+        extra.append(_commit_entry(worktree, e))
     if status_porcelain(worktree, untracked=False):
-        return "the worktree is dirty"
-    return None
+        return fail("the worktree is dirty")
+    return ResolutionCheck(None, extra, absorbed)
 
 
 def ff_merge(repo, branch) -> str:

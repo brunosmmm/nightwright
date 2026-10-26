@@ -97,7 +97,11 @@ def rebase_resolved_text(ev: dict) -> str:
         counts[key] = counts.get(key, 0) + 1
     paths = len(ev.get("conflicts") or [])
     by = ", ".join(f"{k}\u00d7{n}" for k, n in counts.items())
-    return f"rebase resolved: {paths} paths" + (f" ({by})" if by else "")
+    text = f"rebase resolved: {paths} paths" + (f" ({by})" if by else "")
+    extra, absorbed = len(ev.get("extra_commits") or []), len(ev.get("absorbed_commits") or [])
+    if extra or absorbed:                               # SPEC-0252
+        text += f"; +{extra} extra, {absorbed} absorbed"
+    return text
 
 
 def campaign_event(ev: dict) -> Text:

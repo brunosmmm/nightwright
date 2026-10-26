@@ -730,6 +730,10 @@ def test_conflict_resolver_registered_write_capable_with_own_invariant():
     assert s["properties"]["questions"]["items"] == {"type": "string"}
     inv = PS.RESOLVER_INVARIANT
     assert "Do not commit" not in inv
+    allowed_part = inv.split("Forbidden git:")[0]               # SPEC-0252
+    assert "`commit` (never `--amend`)" in allowed_part
+    assert "the runner commits any tracked or staged changes" in inv
+    assert "extra commit must not revert a campaign commit" in inv
     for allowed in ("rebase {{rebase_target}}", "rebase --continue", "rebase --abort", "add",
                     "checkout --ours/--theirs -- <path>", "status", "diff", "log", "show"):
         assert allowed in inv, allowed

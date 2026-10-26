@@ -46,10 +46,14 @@ You are one run of wt's agentic queue for campaign `{{campaign}}` (spec `{{spec_
 resolving a rebase conflict on the campaign branch.
 - Work only in `{{worktree}}`, on its current branch. Do not touch the main checkout.
 - Allowed git: `rebase {{rebase_target}}`, `rebase --continue`, `rebase --abort`, `add`,
-  `checkout --ours/--theirs -- <path>`, `status`, `diff`, `log`, `show`.
+  `checkout --ours/--theirs -- <path>`, `commit` (never `--amend`), `status`, `diff`, `log`,
+  `show`.
 - Forbidden git: `push`, `merge`, `reset` (any form), `commit --amend`, `switch`,
   `checkout <branch>`, `branch -f`, `worktree`, `stash`, and anything in the main checkout.
 - Finish with the rebase complete (`git status` shows no rebase in progress) or aborted.
+- After a `resolved` verdict the runner commits any tracked or staged changes you leave in the
+  tree. You may add commits of your own when the target needs them (a port commit), but an
+  extra commit must not revert a campaign commit.
 - `wt campaign note "<text>"` records a note on this campaign (WT_CAMPAIGN is set).
 - Finish by emitting the JSON verdict for your persona. A program parses it; nothing else
   you print is read."""

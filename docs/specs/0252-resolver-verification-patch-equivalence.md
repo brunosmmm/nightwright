@@ -1,10 +1,10 @@
 ---
 id: SPEC-0252
 title: "Conflict resolver verification by patch equivalence, runner commits resolver changes"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-10-25
-updated: 2026-10-25
+updated: 2026-10-26
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0169
@@ -158,21 +158,21 @@ no-unmerged-paths, target-is-ancestor and tracked-clean checks stay.
 
 ## Acceptance criteria
 
-- [ ] `gitops.verify_resolution` no longer compares commit counts. It returns a
+- [x] `gitops.verify_resolution` no longer compares commit counts. It returns a
       `ResolutionCheck(failed, extra, absorbed)` with full shas, and the string
       `campaign commit count changed` no longer appears in `src/`.
-- [ ] An old campaign commit is accepted in four cases: range-diff pairs it (`=`/`!`, with
+- [x] An old campaign commit is accepted in four cases: range-diff pairs it (`=`/`!`, with
       abbreviated shas resolved through `git rev-parse`); `git cherry <target_sha> <pre_head>`
       marks it `-`; it is empty; or its `git diff --binary` reverse-applies to the `HEAD` tree
       (absorbed into HEAD, through a temporary index). Any other missing commit fails with
       `campaign commit <short> (<subject>) is missing after the resolution`, and `pre_head` is
       restored.
-- [ ] Unpaired new commits (`>`) are returned in `extra` and pass, unless one reverts a
+- [x] Unpaired new commits (`>`) are returned in `extra` and pass, unless one reverts a
       non-empty campaign commit (that commit's patch reverse-applies to `e^` and forward-applies
       to `e`). That case fails with `extra commit <short> (<subject>) reverts campaign commit
       <short>`. The attached-HEAD, no-rebase, no-unmerged, target-ancestor and tracked-clean
       checks behave as before.
-- [ ] After a `resolved` verdict, `queue._do_resolve` commits tracked and staged changes
+- [x] After a `resolved` verdict, `queue._do_resolve` commits tracked and staged changes
       through `gitops.commit_tracked` before verifying. It does so only when HEAD is attached
       to the campaign branch, no rebase is in progress, `ls-files -u` is empty, and none of
       CHERRY_PICK_HEAD, MERGE_HEAD, REVERT_HEAD or sequencer exists. The message is
@@ -180,13 +180,13 @@ no-unmerged-paths, target-is-ancestor and tracked-clean checks stay.
       summary is non-empty, plus the project trailer. Untracked, unstaged files are not
       committed. A commit that fails (such as a hook rejection) is caught, and the attempt
       fails `the worktree is dirty` and is restored.
-- [ ] The `rebase_resolved` event carries `extra_commits`, `absorbed_commits` and
+- [x] The `rebase_resolved` event carries `extra_commits`, `absorbed_commits` and
       `resolver_commit`, which `schemas.py` lists. `render.rebase_resolved_text` shows
       `+N extra, M absorbed` when non-zero, and shows old events unchanged.
-- [ ] `personas.RESOLVER_INVARIANT` allows `commit` (never `--amend`). It says that the runner
+- [x] `personas.RESOLVER_INVARIANT` allows `commit` (never `--amend`). It says that the runner
       commits leftover changes after a `resolved` verdict and that an extra commit must not
       revert a campaign commit.
-- [ ] The Test plan's tests pass and `uv run pytest` is green.
+- [x] The Test plan's tests pass and `uv run pytest` is green.
 
 ## Test plan
 
@@ -241,6 +241,42 @@ no-unmerged-paths, target-is-ancestor and tracked-clean checks stay.
 - **Regression guard:** full `uv run pytest`. The remaining SPEC-0221 resolver cases
   (restore, budgets, interrupted, opt-out) pass unchanged.
 
+### Test record (2026-10-26)
+
+- `uv run pytest -q` (full suite): 2708 passed, 3 skipped. `python3 tools/spec_lint.py --write-ledger`
+  then `python3 tools/spec_lint.py`: 250 specs OK.
+- `tests/test_agentic_resolver.py` (62 tests): `test_extra_commit_verified`, `test_emptied_commit_verified`
+  (patch-id, context and empty variants), `test_staged_changes_committed_by_runner` (with and without a
+  summary), `test_unmerged_no_rebase_commits_nothing`, the `FAILS` cases (`dropped_commit`,
+  `swapped_commit`, `reverting_extra_commit`, `unmerged_no_rebase`, `hook_rejects_commit`), and unit
+  tests for each accounting branch (paired, cherry `-`, empty, reverse-apply with and without a
+  binary file, missing), the revert guard, `_patch_applies` and `commit_tracked`.
+  `tests/test_agentic_personas.py` and `tests/test_agentic_logs.py` cover the invariant text and the
+  `rebase_resolved` keys. `rebase_resolved_text` is tested for the new suffix and for old events.
+- Sabotage checks, each run against the named tests and each made them fail: no reverse-apply branch
+  (`test_emptied_commit_verified[context]`), no `--binary` (binary reverse-apply unit test), accepting
+  every missing commit (`dropped_commit`, `swapped_commit`), no revert guard
+  (`reverting_extra_commit`), no unmerged guard on the runner commit (`unmerged_no_rebase`; both the
+  `ls-files -u` check and the sequencer-state check had to go, as a conflicted cherry-pick trips both),
+  no runner commit (`test_staged_changes_committed_by_runner`). The sources were restored and the
+  resolver tests re-run green.
+- Manual verification (a real conflicted close recording `+N extra, M absorbed`) has not been done yet:
+  it needs the next real conflicted close.
+
+### As shipped (2026-10-26)
+
+- The revert guard checks the new commit that range-diff pairs with an old campaign commit (`=`/`!`),
+  not the old commit's own patch: a commit the resolution rewrote no longer reverse-applies to the
+  resolved tree. Unpaired old commits (absorbed or not) are guarded with their own patch. The guard
+  skips empty patches.
+- `range-diff` is not run when either commit range is empty (git rejects it); the extra commits are the
+  new commits no old commit pairs with, which is the same set as the `>` lines. Old and new shas from
+  the `=`/`!` lines are resolved with `git rev-parse`.
+- `_run`/`git` gained an `input` argument (stdin for `git apply`); `gitops.sequencer_in_progress` covers
+  CHERRY_PICK_HEAD, MERGE_HEAD, REVERT_HEAD and `sequencer`, and `rebase_in_progress` shares its path
+  helper. The runner commit is `queue._commit_resolver_changes`.
+- Short shas in failure messages are 10 characters.
+
 ## Clock Log
 
 ## Rollout / migration
@@ -249,11 +285,11 @@ No data migration. Old `rebase_resolved` events lack the new keys and render as 
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
+- [x] Acceptance criteria all met.
 - [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

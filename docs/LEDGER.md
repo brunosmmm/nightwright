@@ -168,7 +168,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0249](./specs/0249-tui-mailbox-tab.md) TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human — accepted
   - [ ] [SPEC-0250](./specs/0250-tui-escalation-inbox.md) TUI escalation inbox: open escalations first, answer by choice or text, withdraw — accepted
   - [ ] [SPEC-0251](./specs/0251-tui-events-tab.md) TUI events tab: live event stream with filters, current watchdog alerts, ping digest and followers — accepted
-  - [ ] [SPEC-0252](./specs/0252-resolver-verification-patch-equivalence.md) Conflict resolver verification by patch equivalence, runner commits resolver changes — accepted
+  - [ ] [SPEC-0252](./specs/0252-resolver-verification-patch-equivalence.md) Conflict resolver verification by patch equivalence, runner commits resolver changes — in-progress
 
 ## Active & planned
 
@@ -187,7 +187,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0249](./specs/0249-tui-mailbox-tab.md) | TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0250](./specs/0250-tui-escalation-inbox.md) | TUI escalation inbox: open escalations first, answer by choice or text, withdraw | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0251](./specs/0251-tui-events-tab.md) | TUI events tab: live event stream with filters, current watchdog alerts, ping digest and followers | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0252](./specs/0252-resolver-verification-patch-equivalence.md) | Conflict resolver verification by patch equivalence, runner commits resolver changes | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0252](./specs/0252-resolver-verification-patch-equivalence.md) | Conflict resolver verification by patch equivalence, runner commits resolver changes | feature | in-progress | M9: agentic workflow | 2026-10-26 |
 
 ## Done
 
