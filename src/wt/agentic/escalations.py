@@ -290,6 +290,11 @@ def _announce(cfg, rec: dict) -> dict:
 _NOTE_AC_CHARS, _NOTE_TEXT_CHARS, _NOTE_NOTE_CHARS = 60, 200, 200
 
 
+class AnswerFormError(ValueError):
+    """A wrong combination of answer options (mixed, absent or reason-less forms): the CLI shows
+    it as a usage error."""
+
+
 def _cut(text, n) -> str:
     text = " ".join(str(text).split())
     return text if len(text) <= n else text[:n] + "…"
@@ -299,7 +304,8 @@ def _check_parked(esc_id, st) -> None:
     """A campaign-bound record is answerable only once its campaign is PARKED `human_decision`; a
     deferred park request (SPEC-0232) has not parked yet and would park later, unanswered."""
     if st is None:
-        return
+        raise ValueError(f"{esc_id}: its campaign's state is missing or unreadable; "
+                         f"nothing to answer")
     if st.get("state") == "PARKED" and (st.get("park") or {}).get("reason") == "human_decision":
         return
     if (st.get("park_requested") or {}).get("reason") == "human_decision":
@@ -335,15 +341,27 @@ def _ids_hint(ids) -> str:
         if ids else "(none)"
 
 
+def _unmet_reach(text, unmet, what) -> list:
+    """The distinct unmet ACs `text` covers (`queue._covers`); ValueError when it covers more than
+    one and is not exactly one of them, because the substring rule would quietly widen it."""
+    from . import queue as Q
+    hits = [u for u in unmet if Q._covers(text, u)]
+    exact = [u for u in hits if Q.norm_finding_title(u) == Q.norm_finding_title(text)]
+    if len(hits) > 1 and not exact:
+        raise ValueError(f"{what} covers {len(hits)} ACs ({_ids_hint(hits)}); "
+                         f"use a longer text or a <persona>#ac<j> id")
+    return hits
+
+
 def _plan_override(cfg, rec, waive, attest, reason) -> dict:
     from . import queue as Q
     cid = rec.get("campaign")
     if not cid:
         raise ValueError(f"{rec['id']} has no campaign; there is no review to override")
     if not (reason or "").strip():
-        raise ValueError("an override needs a non-empty --reason")
+        raise AnswerFormError("an override needs a non-empty --reason")
     if not waive and not attest:
-        raise ValueError("an override needs --waive and/or --attest")
+        raise AnswerFormError("an override needs --waive and/or --attest")
     st = store.read_state(cfg, cid)
     findings, unmet, synthetic = _review_findings(cfg, st)
     by_id = {f["id"]: f for f in findings}
@@ -358,9 +376,10 @@ def _plan_override(cfg, rec, waive, attest, reason) -> dict:
         waived.append({"id": fid, "title": f["title"], "files": f["files"],
                        "severity": f["severity"], "ac": f.get("ac"),
                        "synthetic": fid in synthetic})
-        for u in unmet:
-            if f.get("ac") and Q._covers(f["ac"], u) and u not in implicit:
-                implicit.append(u)
+        if f.get("ac"):
+            for u in _unmet_reach(f["ac"], unmet, f"--waive {fid!r} (its ac {f['ac']!r})"):
+                if u not in implicit:
+                    implicit.append(u)
     attested, reach = [], {}
     for a in attest:
         a = (a or "").strip()
@@ -376,14 +395,10 @@ def _plan_override(cfg, rec, waive, attest, reason) -> dict:
             text, hits = f["ac"], [f["ac"]]
         else:
             text = a
-            hits = [u for u in unmet if Q._covers(a, u)]
+            hits = _unmet_reach(a, unmet, f"--attest {a!r}")
             if not hits:
                 raise ValueError(f"--attest {a!r} matches no unmet AC of the stored review; "
                                  f"unmet ACs: {_ids_hint(unmet)}")
-            exact = [u for u in hits if Q.norm_finding_title(u) == Q.norm_finding_title(a)]
-            if len(hits) > 1 and not exact:
-                raise ValueError(f"--attest {a!r} covers {len(hits)} ACs ({_ids_hint(hits)}); "
-                                 f"use a longer text or a <persona>#ac<j> id")
         if text not in attested:
             attested.append(text)
             reach[text] = hits
@@ -399,11 +414,11 @@ def plan_answer(cfg, esc_id, *, choose=None, text=None, waive=(), attest=(), rea
     forms = [k for k, on in (("choose", choose is not None), ("text", text is not None),
                              ("override", bool(waive or attest))) if on]
     if len(forms) != 1:
-        raise ValueError("give exactly one answer form: --choose, --text, or "
+        raise AnswerFormError("give exactly one answer form: --choose, --text, or "
                          "--waive/--attest with --reason" +
                          (f" (got {', '.join(forms)})" if forms else ""))
     if reason is not None and forms != ["override"]:
-        raise ValueError("--reason belongs to --waive/--attest")
+        raise AnswerFormError("--reason belongs to --waive/--attest")
     by = M.validate_address(cfg, by or "human")
     rec = read(cfg, esc_id)
     if rec.get("status") != "open":
@@ -472,7 +487,9 @@ def apply_answer(cfg, plan: dict) -> dict:
     Lock order: the campaign's `item_lock`, then the escalations lock, which is held across the
     record's read-check-write; `open` is re-checked inside it. Never moves the campaign."""
     esc_id, cid, by, answer = plan["id"], plan["campaign"], plan["by"], plan["answer"]
-    known = bool(cid) and _campaign_state(cfg, cid) is not None
+    known = bool(cid)
+    if known:
+        _check_parked(esc_id, _campaign_state(cfg, cid))   # unreadable ⇒ refused before any lock
     now = store.now_iso()
     with store.item_lock(cfg, cid) if known else contextlib.nullcontext():
         if known:

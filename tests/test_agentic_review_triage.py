@@ -332,6 +332,19 @@ def test_triage_input_renders_score_verdicts_and_waivable_findings():
     assert Q._triage_input(_state(vs, PROF2, waived=[{"id": f"{A}#0"}]), PROF2) == text
 
 
+def test_triage_input_leaves_out_human_waived_findings_and_counts_the_score_without_them():
+    vs = {A: v("pass", f("minor", "taste", files=["a.py"]), f("nit", "typo", files=["b.py"]))}
+    state = _state(vs, PROF2)
+    before = json.loads(Q._triage_input(state, PROF2))
+    assert [w["id"] for w in before["waivable"]] == [f"{A}#0", f"{A}#1"]
+    state["human_overrides"] = {"waive": [{"id": f"{A}#0", "title": "taste", "files": ["a.py"],
+                                           "severity": "minor", "synthetic": False}],
+                                "attest": []}
+    after = json.loads(Q._triage_input(state, PROF2))
+    assert [w["title"] for w in after["waivable"]] == ["typo"]
+    assert after["score"] > before["score"]
+
+
 # ---- SPEC-0207: follow-up ideas for non-blocking findings ---------------------------------------
 
 import subprocess

@@ -129,7 +129,9 @@ def escalations_answer(cfg, esc_id, choose, text, waive, attest, reason, note, b
                                attest=attest, reason=reason, note=note, by=by)
         if do_write:
             ESC.apply_answer(cfg, plan)
-    except ValueError as e:
+    except ESC.AnswerFormError as e:
+        raise click.UsageError(str(e))
+    except (ValueError, OSError) as e:
         raise click.ClickException(str(e))
     if as_json:
         _dump_json({"schema": "wt.escalation.answer.v1", "id": esc_id,

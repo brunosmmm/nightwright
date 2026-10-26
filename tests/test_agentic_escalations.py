@@ -805,31 +805,45 @@ def test_apply_after_a_withdrawal_is_refused_and_writes_nothing(tmp_path):
     assert len(E.read_since(cfg, 0)) == n_events
 
 
-def test_apply_takes_item_lock_then_the_escalations_lock(tmp_path, monkeypatch):
+def test_apply_takes_item_lock_then_the_escalations_lock_nested(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     _parked(cfg)
     _esc(cfg)
-    order = []
+    events = []
     real_item, real_lock = S.item_lock, E._locked
     import contextlib
 
     @contextlib.contextmanager
     def item(c, cid):
-        order.append("item")
-        with real_item(c, cid):
-            yield
+        events.append("item+")
+        try:
+            with real_item(c, cid):
+                yield
+        finally:
+            events.append("item-")
 
     @contextlib.contextmanager
     def locked(path):
-        order.append("esc" if str(path).endswith("escalations/.lock") else "other")
-        with real_lock(path):
-            yield
+        name = "esc" if str(path).endswith("escalations/.lock") else "other"
+        events.append(name + "+")
+        try:
+            with real_lock(path):
+                yield
+        finally:
+            events.append(name + "-")
     monkeypatch.setattr(S, "item_lock", item)
     monkeypatch.setattr(E, "_locked", locked)
     plan = ESC.plan_answer(cfg, "ESC-0001", choose="1")
-    order.clear()
+    events.clear()
     ESC.apply_answer(cfg, plan)
-    assert order.index("item") < order.index("esc")
+    # the escalations lock is entered and left while the item lock is held
+    assert events.index("item+") < events.index("esc+") < events.index("esc-") \
+        < events.index("item-")
+    held = 0
+    for ev in events:
+        held += (ev == "item+") - (ev == "item-")
+        if ev == "esc+":
+            assert held == 1
 
 
 def test_escalate_again_after_an_answered_text(tmp_path):
@@ -931,3 +945,66 @@ def test_two_overrides_accumulate(tmp_path):
     assert [w["id"] for w in ov["waive"]] == [f"{RV}#0", f"{RV}#1"]
     assert [a["ac"] for a in ov["attest"]] == [AC4]
     assert [w["escalation"] for w in ov["waive"]] == ["ESC-0001", "ESC-0002"]
+
+
+
+def test_apply_leaves_the_whole_park_unchanged_for_every_form(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    for n, kw in enumerate((dict(choose="1"), dict(text="go on"),
+                            dict(waive=[f"{RV}#0"], attest=[f"{RV}#ac0"], reason="r")), 1):
+        if n > 1:
+            _esc(cfg)                                    # a fresh record re-parks (own detail)
+        before = _state(cfg)["park"]
+        assert set(before) >= {"reason", "detail", "since", "resume_to"}
+        _answer(cfg, f"ESC-{n:04d}", **kw)
+        st = _state(cfg)
+        assert st["park"] == before and st["state"] == "PARKED"
+
+
+def test_a_repeated_waive_id_is_stored_once(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    plan, _ = _answer(cfg, waive=[f"{RV}#0", f"{RV}#0"], reason="r")
+    assert plan["answer"]["waive"] == [f"{RV}#0"]
+    assert [w["id"] for w in _state(cfg)["human_overrides"]["waive"]] == [f"{RV}#0"]
+    assert plan["summary"] == f"waived {RV}#0; reason: r"
+
+
+def test_mixed_and_reasonless_forms_raise_the_form_error(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    for kw in (dict(choose="1", text="x"), dict(), dict(choose="1", reason="r"),
+               dict(waive=[f"{RV}#0"])):
+        with pytest.raises(ESC.AnswerFormError):
+            ESC.plan_answer(cfg, "ESC-0001", **kw)
+    with pytest.raises(ValueError) as e:                  # other refusals are plain errors
+        ESC.plan_answer(cfg, "ESC-0001", choose="9")
+    assert not isinstance(e.value, ESC.AnswerFormError)
+
+
+def test_an_unreadable_campaign_state_refuses_every_answer_form(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    plan = ESC.plan_answer(cfg, "ESC-0001", choose="1")
+    S._state_path(cfg, CID).write_text("{not json")
+    for kw in (dict(choose="1"), dict(text="x"), dict(waive=[f"{RV}#0"], reason="r")):
+        with pytest.raises(ValueError, match="missing or unreadable"):
+            ESC.plan_answer(cfg, "ESC-0001", **kw)
+    n_events = len(E.read_since(cfg, 0))
+    with pytest.raises(ValueError, match="missing or unreadable"):
+        ESC.apply_answer(cfg, plan)
+    assert ESC.read(cfg, "ESC-0001")["status"] == "open"
+    assert len(E.read_since(cfg, 0)) == n_events
+
+
+def test_waiving_a_finding_whose_ac_covers_two_unmet_acs_is_refused(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg, extra_unmet=("AC 4 output is sorted and stable",))
+    st = _state(cfg)
+    st["last_review"]["verdicts"][RV]["findings"][0]["ac"] = "output is sorted"
+    S.write_state(cfg, CID, st)
+    with pytest.raises(ValueError) as e:
+        ESC.plan_answer(cfg, "ESC-0001", waive=[f"{RV}#0"], reason="r")
+    assert "covers 2 ACs" in str(e.value) and AC4 in str(e.value)
+    assert ESC.read(cfg, "ESC-0001")["status"] == "open"

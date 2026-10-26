@@ -335,6 +335,10 @@ record write. The event (step 4) is appended after both locks are released.
   `escalation_answered` (`kind: choose`, `summary: chose 2 (no)`); `wt escalations show
   ESC-0001` printed `answered by human at …: chose 2 (no)`.
 - Full gates: `uv run pytest -q -x` and `python3 tools/spec_lint.py` (see the run record).
+- Review round 3 additions (all pass): CLI usage errors (exit 2 + message), override plan /
+  `--json` / `show` output, nested lock order (enter/exit events), whole-`park` equality after
+  each answer form, repeated `--waive` stored once, unreadable campaign state refused, waived `ac`
+  reach refusal, and the review triager's input without a human-waived finding.
 
 ### As shipped
 
@@ -356,6 +360,15 @@ record write. The event (step 4) is appended after both locks are released.
   is pending: the campaign has not parked yet; answer once it parks", so the later park can never
   land on an already-answered record. Tests cover synthetic (`#ac`, `#fix`) and merged waive ids,
   the deferred refusal, and accumulating overrides.
+- Review round 3: wrong answer-form combinations (mixed, none, `--reason` without an override,
+  an override without a reason) raise `escalations.AnswerFormError` (a `ValueError`), which the CLI
+  shows as a `UsageError` (exit 2, usage text); every other refusal stays a `ClickException`. A
+  campaign-bound record whose campaign state is missing or unreadable is refused in `plan_answer`
+  and in `apply_answer` (before any lock) instead of being answered without a ledger entry.
+- Review round 3: waiving a real finding whose `ac` covers more than one distinct unmet AC (and
+  is not exactly one of them) is refused, like `--attest`, through the shared `_unmet_reach`
+  check. A later review that words an unmet AC differently can still be cleared by the substring
+  rule; that residual reach of `_covers` is the documented limit, not closed here.
 - If the final `escalation_answered` append fails, the answer stays recorded (the error is
   suppressed, as in `withdraw`).
 

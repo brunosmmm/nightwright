@@ -138,7 +138,46 @@ def test_answer_mixed_forms_and_missing_reason_are_usage_errors(tmp_path, monkey
     cfg = _cfg(tmp_path)
     _parked(cfg)
     run(cfg, monkeypatch, *ESCALATE, "--yes")
-    for args in (["--choose", "1", "--text", "x"], ["--waive", "a#0"], []):
+    for args, msg in ((["--choose", "1", "--text", "x"], "exactly one"),
+                      (["--waive", "a#0"], "non-empty --reason"),
+                      (["--choose", "1", "--reason", "r"], "--reason belongs"),
+                      ([], "exactly one")):
         r = run(cfg, monkeypatch, "escalations", "answer", "ESC-0001", *args, "--yes")
-        assert r.exit_code != 0, args
+        assert r.exit_code == 2, (args, r.output)
+        assert "Usage:" in r.output and msg in r.output, (args, r.output)
     assert ESC.read(cfg, "ESC-0001")["status"] == "open"
+    r = run(cfg, monkeypatch, "escalations", "answer", "ESC-0099", "--choose", "1", "--yes")
+    assert r.exit_code == 1 and "no escalation ESC-0099" in r.output       # not a usage error
+
+
+from test_agentic_escalations import AC4, RV  # noqa: E402
+
+
+def test_answer_override_plan_output_json_and_show(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    from test_agentic_escalations import _reviewed
+    _reviewed(cfg)
+    st = S.read_state(cfg, CID)
+    st["last_review"]["verdicts"][RV]["findings"][0]["ac"] = AC4
+    S.write_state(cfg, CID, st)
+    base = ["escalations", "answer", "ESC-0001", "--waive", f"{RV}#0", "--attest", AC4,
+            "--reason", "checked by hand"]
+    r = run(cfg, monkeypatch, *base)
+    assert r.exit_code == 0, r.output
+    assert f"waive {RV}#0" in r.output and "major Wrong order" in r.output
+    assert f"covers: {AC4}" in r.output and "implicitly attested" in r.output
+    assert "not written" in r.output and ESC.read(cfg, "ESC-0001")["status"] == "open"
+    assert "human_overrides" not in S.read_state(cfg, CID)
+    r = run(cfg, monkeypatch, *base, "--json")
+    d = json.loads(r.output)
+    assert d["schema"] == "wt.escalation.answer.v1" and d["written"] is False
+    ov = d["override"]
+    assert [w["id"] for w in ov["waive"]] == [f"{RV}#0"] and ov["attest"] == [AC4]
+    assert ov["implicitly_attested"] == [AC4] and ov["reach"] == {AC4: [AC4]}
+    assert d["answer"]["kind"] == "override" and d["answer"]["reason"] == "checked by hand"
+    r = run(cfg, monkeypatch, *base, "--yes", "--json")
+    assert r.exit_code == 0 and json.loads(r.output)["written"] is True
+    assert [w["id"] for w in S.read_state(cfg, CID)["human_overrides"]["waive"]] == [f"{RV}#0"]
+    r = run(cfg, monkeypatch, "escalations", "show", "ESC-0001")
+    assert f"answered by human at" in r.output and f"waived {RV}#0" in r.output
+    assert "reason: checked by hand" in r.output
