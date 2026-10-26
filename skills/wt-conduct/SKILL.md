@@ -115,6 +115,8 @@ Exact flags: `wt queue --help`, `wt campaign --help`, `wt mailbox --help`.
 
 ## Conventions / guardrails
 
+- **A re-exec drain stalls admitted campaigns too.** While the runner drains (lease `draining`), nothing new is submitted: campaigns sitting in GATING / REVIEWING / CLOSING with no child process of theirs (`ps --ppid <runner pid> -o comm=` shows only `claude`) are frozen, not just the backlog. If the drain waits only on long `implement` runs and other campaigns are frozen behind it, SIGTERM and restart; if a gate or close child (`uv`/`python`) is running, wait for it. (Until SPEC-0225/0229 land.)
+
 - **One spec review round, never more.** A spec gets exactly one `wt spec review`. `approve` ⇒ queue it. `revise` ⇒ the author applies the findings (with the conductor's decisions on each) and the spec is queued without a second review; the implementer's brief carries the findings. `split` ⇒ split, and each part gets its own single review. Until the single-round admission rule ships (IDEA-101 spec), `wt queue add` still demands an approve for the current text, so a revised spec waits for that rule instead of being re-reviewed. Never run review → revise → re-review loops.
 
 - **One conductor.** The `conductor` reader lock on the event follower enforces it.
