@@ -40,16 +40,22 @@ golden-snapshot update staged and uncommitted. Check 6 (dirty tree) then rejecte
 
 **Goals**
 - G1. A resolution is accepted when every pre-resolver campaign commit is still present
-  (equivalent patch), or is absorbed because the target already contains its change. Extra
-  commits are allowed and recorded.
+  (equivalent patch), or is **absorbed into HEAD**, meaning the resolved `HEAD` already
+  contains its change. That covers a change that landed on the target, and also one that a
+  resolver commit re-adds or squashes. Extra commits are allowed and recorded, unless one
+  reverts a campaign commit.
 - G2. Changes the resolver leaves in the tree after a `resolved` verdict are committed by the
-  runner, as is done for the implementer.
-- G3. A dropped campaign commit whose change is not in the target still fails verification and
+  runner, as is done for the implementer. The runner never commits over unmerged paths or an
+  in-progress sequencer operation.
+- G3. A dropped campaign commit whose change is not in `HEAD` still fails verification and
   restores `pre_head`.
 
 **Non-goals**
-- Limiting which files an extra commit may touch. The re-gate after the resolution (SPEC-0221)
-  and the review of the merged result are the guard.
+- Limiting which files an extra commit may touch. Before the merge, the resolved branch gets
+  only SPEC-0221's re-gate (the project's gates, tests only). No review persona runs on it.
+  This spec adds one structural guard: an extra commit that reverts a campaign commit fails
+  verification. Beyond that, the `extra_commits` list in the `rebase_resolved` event is the
+  audit trail.
 - Changing dispatch, attempt budgets, restore, or the close flow of SPEC-0220/0221.
 
 ## Decision
@@ -57,56 +63,84 @@ golden-snapshot update staged and uncommitted. Check 6 (dirty tree) then rejecte
 `verify_resolution` stops comparing commit counts. It accounts for each old campaign commit
 `c` in `<fork>..<pre_head>` and fails only when some `c` is unaccounted for. A commit counts as
 **present** when range-diff pairs it with a new commit (`=` for an identical patch-id, `!` for
-a commit the resolution changed). A commit counts as **absorbed** when its change is already
-upstream: either `git cherry <target_sha> <pre_head>` marks it `-` (a patch-id match in the
-target), or its own diff reverse-applies cleanly to `HEAD`, meaning the change is already
-there. New commits that pair with nothing (`>`) are allowed and returned as **extra**. After a
-`resolved` verdict, and before verification, the runner commits any tracked changes left in
-the worktree with a resolver commit message. The attached-HEAD, no-rebase-in-progress,
+a commit the resolution changed). A commit counts as **absorbed into HEAD** in any of these
+cases:
+
+- `git cherry <target_sha> <pre_head>` marks it `-` (a patch-id match in the target);
+- its own binary diff reverse-applies cleanly to the `HEAD` tree;
+- it was empty from the start.
+
+New commits that pair with nothing (`>`) are allowed and returned as **extra**, unless an
+extra commit reverts a non-empty campaign commit. After a `resolved` verdict, and before
+verification, the runner commits any tracked changes left in the worktree with a resolver
+commit message. It does this only when HEAD is attached, no rebase is running, there are no
+unmerged paths, and no other sequencer state exists. The attached-HEAD, no-rebase-in-progress,
 no-unmerged-paths, target-is-ancestor and tracked-clean checks stay.
 
 ## Design
 
+- **Helper `gitops._patch_applies(worktree, commit, tree, reverse) -> bool`** (new). It builds
+  a temporary index with `GIT_INDEX_FILE=<tmp>` and `git read-tree <tree>`. It then pipes
+  `git diff --binary <commit>^ <commit>` into `git apply --cached --check [--reverse]`, run
+  against that index. The worktree and the real index are never touched. An empty diff
+  returns `True`.
 - **`gitops.verify_resolution`** returns a `ResolutionCheck` dataclass
   (`failed: str | None`, `extra: list[dict]`, `absorbed: list[dict]`; each dict is
-  `{"sha", "subject"}`) instead of `str | None`. The checks run in this order:
+  `{"sha", "subject"}` with the full sha) instead of `str | None`. The checks run in this order:
   1. `head_ref(worktree) == refs/heads/<branch>`.
   2. `not rebase_in_progress`.
   3. `ls-files -u` is empty.
   4. `merge-base --is-ancestor <target_sha> HEAD`.
   5. **Commit accounting (replaces the count check).** Parse
      `git range-diff --no-color --creation-factor=95 <fork>..<pre_head> <target_sha>..HEAD`
-     with the existing `_RANGE_DIFF_RE`, extended to capture the old and new short shas. An
-     old commit on an `=`/`!` line is present. For each old commit on a `<` line:
-     (a) if `git cherry <target_sha> <pre_head>` lists it with `-`, it is absorbed;
-     (b) else, if `git diff <c>^ <c> | git apply --check --reverse` succeeds against the
-     `HEAD` tree (run with `--cached` on a temporary index read from `HEAD`, so the worktree is
-     never touched), it is absorbed;
-     (c) else the check fails with
+     with the existing `_RANGE_DIFF_RE`, extended to capture the old and new abbreviated shas.
+     Each abbreviated sha is resolved with `git rev-parse --verify <abbrev>^{commit}`, and all
+     comparisons use full shas. Subjects come from `git log -1 --format=%s <sha>`. The
+     `git cherry <target_sha> <pre_head>` output (full shas) is read once into a set of `-`
+     shas. An old commit on an `=`/`!` line is present. For each old commit `c` on a `<` line:
+     (a) if `c` is in the cherry `-` set, it is absorbed;
+     (b) else, if `c` is empty (`git diff --binary c^ c` produces nothing), it is absorbed;
+     (c) else, if `_patch_applies(worktree, c, "HEAD", reverse=True)`, it is absorbed;
+     (d) else the check fails with
      `campaign commit <short> (<subject>) is missing after the resolution`.
-     Every `>` line goes into `extra`.
+     For each new commit `e` on a `>` line, a **revert guard** runs. For every non-empty old
+     commit `c`, if `_patch_applies(worktree, c, e + "^", reverse=True)` and
+     `_patch_applies(worktree, c, e, reverse=False)`, then `e` removed `c`'s change, and the
+     check fails with `extra commit <short> (<subject>) reverts campaign commit <short>`.
+     Otherwise `e` goes into `extra`.
   6. `status_porcelain(worktree, untracked=False)` is empty → else `the worktree is dirty`.
+     After the runner commit, the only way to reach this is a commit that failed, for example
+     a `pre-commit` hook that rejected it.
 - **`gitops.commit_tracked(worktree, message, env=None) -> str | None`** (new): runs
   `git add -u`, then commits if `git diff --cached --quiet` reports changes. The commit
   includes paths the resolver already `git add`ed, new files among them. Other untracked files
   are not committed; the existing post-verify `clean_untracked` removes them. It returns the
   new sha, or `None` when nothing was staged. It does not use `commit_all`, because
-  `add -A` would commit `.orig` residue.
-- **`queue._do_resolve`**: when the verdict is `resolved` and the run did not fail, and only if
-  `git.head_ref(worktree) == f"refs/heads/{branch}"` and `not git.rebase_in_progress(worktree)`
-  (otherwise verification fails as before), it calls `git.commit_tracked` with
-  `wt(<campaign id>): conflict resolver run <run_id[:3]> — <first summary line[:72]>` plus the
-  project's `agents.commit_trailer` (built the same way as the implementer message). Then it
-  calls `verify_resolution`. `res.resolution` gains `extra`, `absorbed` and `commit`
-  (the runner's sha or `None`). A failed verification restores `pre_head`, so the runner commit
-  is discarded with the rest.
+  `add -A` would commit `.orig` residue. A failed `git commit` raises `GitError` as usual.
+- **`queue._do_resolve`**: when the verdict is `resolved` and the run did not fail, it calls
+  `git.commit_tracked` only when all of the following hold:
+  - `git.head_ref(worktree) == f"refs/heads/{branch}"`;
+  - `not git.rebase_in_progress(worktree)`;
+  - `git ls-files -u` is empty;
+  - none of `CHERRY_PICK_HEAD`, `MERGE_HEAD`, `REVERT_HEAD` or `sequencer` exists under
+    `git rev-parse --git-path`.
+
+  Otherwise nothing is committed and verification fails as before. A `GitError` from the
+  commit (such as a hook rejection) is caught. Verification still runs, fails check 6, and
+  the attempt is restored like any other failed attempt. The message is
+  `wt(<campaign id>): conflict resolver run <run_id[:3]> — <first summary line[:72]>`. When the
+  summary is empty it is `wt(<campaign id>): conflict resolver run <run_id[:3]>`, with no
+  ` — `. The project's `agents.commit_trailer` is appended, as for the implementer.
+  `res.resolution` gains `extra`, `absorbed` and `commit` (the runner's sha or `None`). A
+  failed verification restores `pre_head`, so the runner commit is discarded with the rest.
 - **`queue._apply_resolve`** adds `extra_commits`, `absorbed_commits` and `resolver_commit`
   to the `rebase_resolved` event. `schemas.py` lists the three keys for `rebase_resolved`.
   `render.rebase_resolved_text` appends `; +N extra, M absorbed` when either is non-zero, and
   shows old events without the keys unchanged.
-- **`personas.RESOLVER_INVARIANT`**: `commit` (never `--amend`) joins the allowed git list. A new
-  line says that changes left in the tree after a `resolved` verdict are committed by the
-  runner, and that additional commits are allowed when the target needs them.
+- **`personas.RESOLVER_INVARIANT`**: `commit` (never `--amend`) joins the allowed git list. New
+  lines say that changes left in the tree after a `resolved` verdict are committed by the
+  runner, that additional commits are allowed when the target needs them, and that an extra
+  commit must not revert a campaign commit.
 
 ## Alternatives considered
 
@@ -117,31 +151,41 @@ no-unmerged-paths, target-is-ancestor and tracked-clean checks stay.
   that forgets to commit (the observed failure) would still be rejected. The runner commit is
   deterministic, and the resolver may still commit too.
 - **Only allow extra commits that touch campaign or conflicted paths (IDEA-328's suggestion).**
-  Deferred. A port commit can legitimately touch target-side files. The re-gate is the guard.
+  Deferred. A port commit can legitimately touch target-side files. The revert guard and the
+  re-gate cover the dangerous case.
+- **Run a review persona on extra commits before the merge.** Deferred. It costs a run on
+  every resolution. The event's `extra_commits` list keeps the trail for later audit.
 
 ## Acceptance criteria
 
 - [ ] `gitops.verify_resolution` no longer compares commit counts. It returns a
-      `ResolutionCheck(failed, extra, absorbed)`, and the string
+      `ResolutionCheck(failed, extra, absorbed)` with full shas, and the string
       `campaign commit count changed` no longer appears in `src/`.
-- [ ] An old campaign commit is accepted when range-diff pairs it (`=`/`!`), when
-      `git cherry <target_sha> <pre_head>` marks it `-`, or when its diff reverse-applies to
-      `HEAD`. Any other missing commit fails with
+- [ ] An old campaign commit is accepted in four cases: range-diff pairs it (`=`/`!`, with
+      abbreviated shas resolved through `git rev-parse`); `git cherry <target_sha> <pre_head>`
+      marks it `-`; it is empty; or its `git diff --binary` reverse-applies to the `HEAD` tree
+      (absorbed into HEAD, through a temporary index). Any other missing commit fails with
       `campaign commit <short> (<subject>) is missing after the resolution`, and `pre_head` is
       restored.
-- [ ] Unpaired new commits (`>`) do not fail verification and are returned in `extra`. The
-      attached-HEAD, no-rebase, no-unmerged, target-ancestor and tracked-clean checks behave as
-      before.
-- [ ] After a `resolved` verdict with HEAD attached to the campaign branch and no rebase in
-      progress, `queue._do_resolve` commits tracked and staged changes through the new
-      `gitops.commit_tracked`, with the message
-      `wt(<id>): conflict resolver run <run_id[:3]> — <summary>` (plus the project trailer),
-      before verifying. Untracked, unstaged files are not committed.
+- [ ] Unpaired new commits (`>`) are returned in `extra` and pass, unless one reverts a
+      non-empty campaign commit (that commit's patch reverse-applies to `e^` and forward-applies
+      to `e`). That case fails with `extra commit <short> (<subject>) reverts campaign commit
+      <short>`. The attached-HEAD, no-rebase, no-unmerged, target-ancestor and tracked-clean
+      checks behave as before.
+- [ ] After a `resolved` verdict, `queue._do_resolve` commits tracked and staged changes
+      through `gitops.commit_tracked` before verifying. It does so only when HEAD is attached
+      to the campaign branch, no rebase is in progress, `ls-files -u` is empty, and none of
+      CHERRY_PICK_HEAD, MERGE_HEAD, REVERT_HEAD or sequencer exists. The message is
+      `wt(<id>): conflict resolver run <run_id[:3]>`, plus ` — <summary>` only when the
+      summary is non-empty, plus the project trailer. Untracked, unstaged files are not
+      committed. A commit that fails (such as a hook rejection) is caught, and the attempt
+      fails `the worktree is dirty` and is restored.
 - [ ] The `rebase_resolved` event carries `extra_commits`, `absorbed_commits` and
       `resolver_commit`, which `schemas.py` lists. `render.rebase_resolved_text` shows
       `+N extra, M absorbed` when non-zero, and shows old events unchanged.
-- [ ] `personas.RESOLVER_INVARIANT` allows `commit` (never `--amend`) and says that the runner
-      commits leftover changes after a `resolved` verdict.
+- [ ] `personas.RESOLVER_INVARIANT` allows `commit` (never `--amend`). It says that the runner
+      commits leftover changes after a `resolved` verdict and that an extra commit must not
+      revert a campaign commit.
 - [ ] The Test plan's tests pass and `uv run pytest` is green.
 
 ## Test plan
@@ -154,27 +198,44 @@ no-unmerged-paths, target-is-ancestor and tracked-clean checks stay.
     case.
   - `test_emptied_commit_verified`: the target already contains one campaign commit's change
     (cherry-picked to the base), so the rebase drops it as empty. The result is verified and
-    `absorbed_commits` names it. A second variant, where context differs so the patch-id does
-    not match but the change reverse-applies to `HEAD`, is also verified.
-  - `FAILS["dropped_commit"]` (`git rebase --skip` of a non-empty commit not in the target)
-    still fails, now with `is missing after the resolution`. `FAILS["swapped_commit"]` still
-    fails the same way.
+    `absorbed_commits` names it. Two more variants are also verified: in one, the context
+    differs so the patch-id does not match but the change reverse-applies to `HEAD`; in the
+    other, the commit was empty from the start (`--allow-empty`) and is dropped.
+  - `FAILS["dropped_commit"]` (`git rebase --skip` of a non-empty commit not in `HEAD`) still
+    fails, now with `is missing after the resolution`. `FAILS["swapped_commit"]` still fails
+    the same way.
+  - New `FAILS["reverting_extra_commit"]`: after `rebase --continue`, the resolver runs
+    `git revert --no-edit <a campaign commit>`. The attempt fails with
+    `reverts campaign commit`, and `pre_head` is restored.
+  - New `FAILS["unmerged_no_rebase"]`: the resolver finishes the rebase, then leaves a
+    conflicted `git cherry-pick` (unmerged paths, no rebase running) and reports `resolved`.
+    Nothing is committed (the branch tip is unchanged before the restore). The attempt fails
+    with `unmerged paths remain` and is restored.
+  - New `FAILS["hook_rejects_commit"]`: a `pre-commit` hook that exits 1 is installed, and the
+    resolver leaves a tracked edit. The attempt fails with `dirty`, and the branch is
+    restored. This is the reachable case for check 6.
   - `test_staged_changes_committed_by_runner`: the resolver finishes the rebase and leaves a
     `git add`ed file change plus an unstaged tracked edit and an untracked `.orig`. The
     result is verified, HEAD is a commit with the resolver message and the trailer containing
     both tracked changes, the `.orig` is neither committed nor left behind, and
-    `rebase_resolved.resolver_commit` equals that sha. `FAILS["dirty_tree"]` becomes this
-    passing case. A dirty tree remains a failure only when the commit cannot happen
-    (HEAD detached or rebase running), and those cases are already in `FAILS`.
-  - Direct unit tests of `verify_resolution` for each accounting branch (paired, cherry `-`,
-    reverse-apply, missing), and of `commit_tracked` (returns `None` when nothing is staged).
-  - `tests/test_agentic_personas.py`: the rendered invariant lists `commit` and the
-    runner-commit sentence. `tests/test_render*.py` / events: the extended
-    `rebase_resolved_text`, and an old event without the new keys renders unchanged.
-- **Sabotage checks:** reinstating the count check fails `test_extra_commit_verified` and
-  `test_emptied_commit_verified`. Dropping the reverse-apply branch fails the second emptied
-  variant. Accepting every `<` line fails `[dropped_commit]`. Removing the runner commit fails
-  `test_staged_changes_committed_by_runner`.
+    `rebase_resolved.resolver_commit` equals that sha. The old `FAILS["dirty_tree"]` becomes
+    this passing case. A variant with an empty summary asserts the message has no ` — `.
+  - Direct unit tests: `verify_resolution` for each accounting branch (paired, cherry `-`,
+    empty, reverse-apply including a binary file, missing) and the revert guard;
+    `_patch_applies` leaves the index and worktree untouched; `commit_tracked` returns `None`
+    when nothing is staged.
+  - `tests/test_agentic_personas.py`: the rendered invariant lists `commit`, the
+    runner-commit sentence and the no-revert rule. `tests/test_render*.py` / events: the
+    extended `rebase_resolved_text`, and an old event without the new keys renders unchanged.
+- **Sabotage checks:** each of these must make a test fail:
+  - reinstating the count check fails `test_extra_commit_verified` and
+    `test_emptied_commit_verified`;
+  - dropping the reverse-apply branch fails the context variant;
+  - dropping `--binary` fails the binary unit test;
+  - accepting every `<` line fails `[dropped_commit]`;
+  - dropping the revert guard fails `[reverting_extra_commit]`;
+  - dropping the `ls-files -u` guard on the runner commit fails `[unmerged_no_rebase]`;
+  - removing the runner commit fails `test_staged_changes_committed_by_runner`.
 - **Manual verification:** on the next real conflicted close, check that a resolver run that
   adds or empties a commit records `rebase resolved: … +N extra, M absorbed` and merges.
 - **Regression guard:** full `uv run pytest`. The remaining SPEC-0221 resolver cases
