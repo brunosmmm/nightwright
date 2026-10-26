@@ -140,6 +140,18 @@ ids are unique across projects. `apply_add` stores `state.admission`, and
   (`tools/spec_lint.py --write-ledger` not yet run after the status change) and passed on
   rerun. `python3 tools/spec_lint.py` exits 0.
 
+### As shipped (review round 1)
+
+- `list_reviews` for an outbox spec skips the same-repository filter but still ignores a stored
+  review whose recorded `spec_path` is outside the outbox (a review of the exported portable copy
+  that shares the id); legacy reviews without `spec_path` count.
+- `outbound_project` ignores a non-string or blank `target_project` and a non-mapping front
+  matter (falls to the directory name); `spec_root` also falls back to the Meta-Tools root on
+  unreadable files or invalid YAML.
+- Tests added: front matter beats the outbox directory name, odd front matter, exported-copy
+  review, idea campaigns / older states read `admission` as None (11 tests in
+  `tests/test_spec_review_outbound_root.py`).
+
 ## Rollout / migration
 
 None. Old outbound reviews keep admitting through the filter exception; new ones record the

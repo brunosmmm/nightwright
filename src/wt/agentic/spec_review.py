@@ -17,6 +17,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import yaml
+
 from .. import specs as SP
 from ..specmeta import split_frontmatter
 from . import personas as PS
@@ -113,7 +115,11 @@ def list_reviews(cfg, spec_id, spec_path=None) -> list:
     if not d.is_dir():
         return []
     out = [r for r in (_read_json_dict(p) for p in sorted(d.glob("*.json"))) if r]
-    if spec_path is not None and not _in_outbox(cfg, spec_path):    # SPEC-0243: ids are unique there
+    if spec_path is not None and _in_outbox(cfg, spec_path):
+        # SPEC-0243: any repo_root counts (legacy Meta-Tools roots), but not a review of another
+        # file of the same id (the exported portable copy in the target repo).
+        out = [r for r in out if not r.get("spec_path") or _in_outbox(cfg, r["spec_path"])]
+    elif spec_path is not None:
         mine, seen = _repo_identity(spec_root(cfg, spec_path)), {}
         def same_repo(r):
             root = str(r.get("repo_root") or "")
@@ -267,10 +273,10 @@ def spec_root(cfg, spec_path) -> Path:
     loaded); any other spec its own git toplevel, or outside git `<root>/docs/specs/<file>`."""
     path = Path(spec_path).resolve()
     if _in_outbox(cfg, path):
-        fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
         try:
+            fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
             return Path(P.project_config(cfg, SP.outbound_project(path, fm))["_root"])
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, OSError, yaml.YAMLError):   # unreadable/odd front matter too
             return _meta_tools_root(cfg, path)
     try:
         r = subprocess.run(["git", "-C", str(path.parent), "rev-parse", "--show-toplevel"],

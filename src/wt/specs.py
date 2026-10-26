@@ -395,7 +395,8 @@ def outbox_dir(cfg):
 def outbound_project(path, fm) -> str:
     """The project an outbox spec targets (SPEC-0243): its `target_project`, else the name of the
     outbox directory it sits in."""
-    return (fm or {}).get("target_project") or Path(path).parent.name
+    tp = fm.get("target_project") if isinstance(fm, dict) else None
+    return tp.strip() if isinstance(tp, str) and tp.strip() else Path(path).parent.name
 
 
 def _proj_code(project):

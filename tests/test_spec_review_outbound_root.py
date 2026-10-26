@@ -6,6 +6,8 @@ from pathlib import Path
 from test_agentic_e2e import SPEC_ACCEPTED, make_cfg, make_repo, run_cli, script, write_review
 from wt.agentic import queue as Q
 from wt.agentic import spec_review as SR
+from wt import org_write as OW
+from wt import specs as SP
 from wt.agentic import store
 
 SIZED = {"size": "m", "tone": "high-end", "rationale": "r"}
@@ -128,3 +130,45 @@ def test_forced_admission_is_recorded(tmp_path):
     plan = Q.plan_add(cfg, "ACME-0001", force=True)
     state = Q.apply_add(cfg, plan)
     assert state["admission"] == "forced" and _open_event(cfg, state["id"])["admission"] == "forced"
+
+
+def test_front_matter_beats_the_directory_name(tmp_path):
+    wt, target, spec, cfg = _world(tmp_path, outbox_dir="misc")      # dir `misc`, target_project acme
+    assert SR.spec_root(cfg, spec) == target
+    write_review(cfg, spec, "ACME-0001")
+    assert Q.plan_add(cfg, "ACME-0001")["project"] == "acme"
+
+
+def test_odd_front_matter_never_crashes_spec_root(tmp_path):
+    wt, target, spec, cfg = _world(tmp_path)
+    body = spec.read_text()
+    for bad in (body.replace("target_project: acme", "target_project: 123"),
+                body.replace("target_project: acme", "target_project: [a: b"),
+                "---\n- a\n- b\n---\nbody\n"):
+        spec.write_text(bad)
+        assert SR.spec_root(cfg, spec) in (target, wt)
+    assert SP.outbound_project(spec, ["x"]) == "acme"
+
+
+def test_a_review_of_the_exported_copy_does_not_govern_the_outbox_file(tmp_path):
+    wt, target, spec, cfg = _world(tmp_path)
+    exported = target / "docs" / "specs" / "ACME-0001-x.md"
+
+    def stored(sha, path, at):
+        SR.save_review(cfg, {"schema": SR.SCHEMA, "spec_id": "ACME-0001", "verdict": "revise",
+                             "spec_sha256": sha, "reviewed_at": at, "model": "sonnet",
+                             "cost_usd": 0.0, "findings": [], "suggested_splits": [],
+                             "repo_root": str(target), "spec_path": str(path)})
+    stored("b" * 64, exported, "2026-10-25T00:00:00+00:00")
+    assert SR.latest_review(cfg, "ACME-0001", spec) is None
+    stored("a" * 64, spec, "2026-10-24T00:00:00+00:00")
+    assert SR.latest_review(cfg, "ACME-0001", spec)["spec_sha256"] == "a" * 64
+
+
+def test_idea_campaigns_and_older_states_have_no_admission(tmp_path):
+    wt, target, spec, cfg = _world(tmp_path)
+    _, _, iid = OW.add_idea(cfg, "Add a thing")
+    state = Q.apply_add_idea(cfg, Q.plan_add_idea(cfg, iid))
+    assert state.get("admission") is None and _open_event(cfg, state["id"])["admission"] is None
+    store.create_campaign(cfg, {"id": "OLD-1", "spec_id": "ACME-0001", "project": "acme"})
+    assert _open_event(cfg, "OLD-1")["admission"] is None
