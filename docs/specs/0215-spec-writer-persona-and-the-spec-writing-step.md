@@ -137,7 +137,7 @@ unreviewed is ever implemented.
      absent or `feature`. `parent` must equal `state.idea.epic` when that is set (a missing
      parent is a problem), and must be absent otherwise.
   3. Body: the headings Context, Goals / Non-goals, Decision, Design, Acceptance criteria
-     (with at least one `- [x]`) and Test plan are present. There is no leftover template
+     (with at least one `- [ ]`) and Test plan are present. There is no leftover template
      placeholder, using the same rule as `tools/spec_lint.py`'s `first_placeholder`. A copy
      goes into `wt.specmeta`, and the linter keeps its own so it stays standalone (the
      existing `specmeta` convention). A test asserts that the two give the same result on
@@ -281,8 +281,9 @@ unreviewed is ever implemented.
 
 ### Test record (2026-10-25)
 
-- `uv run pytest tests/test_agentic_spec_writer.py`: 53 passed (write, revise, 18 parametrized
-  invalid-output cases, epic child, blocked/interrupted, generic error and failed rollback,
+- `uv run pytest tests/test_agentic_spec_writer.py`: 60 passed (write, revise, 20 parametrized
+  invalid-output cases (incl. timed-out run, unparseable verdict), rejected revise keeping the
+  review findings, wrong epic parent, non-Git worker exception, leftover spec file, off-branch HEAD, epic child, blocked/interrupted, generic error and failed rollback,
   cost cap, resumes, human state change, prompt/request, two campaigns in one tick, profiles,
   placeholder/`_normalize` parity with the linter).
 - Existing tests touched: `test_agentic_idea_campaign.py` (the SPEC-0209 park is replaced by the
@@ -306,6 +307,10 @@ unreviewed is ever implemented.
 - `render_pending_brief` also renders `section` as a tag and `suggested_splits`; a brief's
   `write_problems` are shown by the prompt's top block, not by the brief.
 - `docs/product/loop/operate.md` lists the new park reasons.
+- Hardening after review: `_prepare_spec_write` removes an untracked file at the wt-chosen path
+  and keeps it out of `untracked_before`; `_do_write_spec` rolls back on any exception (a
+  non-Git one is also a `report.errors` entry); if HEAD is no longer on the campaign branch
+  after the run, nothing is reset and the campaign parks `spec_write_failed` (rollback failed).
 
 ## Rollout / migration
 

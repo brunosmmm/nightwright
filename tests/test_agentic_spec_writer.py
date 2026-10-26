@@ -319,6 +319,8 @@ CASES = {
     "outside-specs": lambda n, i: spec_written(n, i, extra_files={"src/x.py": "x = 1\n"}),
     "runner-error": lambda n, i: {**spec_written(n, i), "exit_code": 1},
     "spec-path-mismatch": lambda n, i: spec_written(n, i, verdict={"spec_path": "docs/other.md"}),
+    "timed-out": lambda n, i: {**spec_written(n, i), "timed_out": True},
+    "unparseable-verdict": lambda n, i: spec_written(n, i, verdict={"status": "maybe"}),
 }
 
 
@@ -333,6 +335,7 @@ EXPECT = {
     "no-test-plan": "missing section '## Test plan'", "placeholder": "template placeholder",
     "outside-specs": "src/x.py was changed", "runner-error": "run failed (exit 1)",
     "spec-path-mismatch": "verdict spec_path 'docs/other.md' is not",
+    "timed-out": "run timed out", "unparseable-verdict": "no parseable verdict",
 }
 
 
@@ -362,6 +365,83 @@ def test_invalid_output_rolled_back_retried_once_then_parked(tmp_path, monkeypat
     assert any(f["gate"] == "spec-write" and f["severity"] == "major"
                for f in ledger(cfg, cid, "finding"))
     assert st["spec"]["id"] is None and "SPEC" not in idea(cfg, iid).properties
+
+
+def test_rejected_revise_keeps_the_review_findings_next_to_the_problems(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = wrote(tmp_path, monkeypatch, [
+        lambda i: spec_written(2, i, mode="revise", no_edit=True),
+        lambda i: spec_written(2, i, mode="revise", extra_body="Revised.")])
+    brief = {**BRIEF, "suggested_splits": [{"title": "Part A", "scope": "the core"}]}
+    _revise(cfg, cid, brief)                          # attempt 1: nothing changed, rejected
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_WRITING" and st["counters"]["spec_write_retries"] == 1
+    kept = st["pending_brief"]
+    assert kept["must_fix"] == BRIEF["must_fix"] and kept["suggested_splits"] == brief["suggested_splits"]
+    assert kept["write_problems"] and "no change made" in kept["write_problems"][0]
+    Q.tick(cfg)                                       # attempt 2: valid
+    retry = prompt(cfg, cid, 3)
+    assert "Your last attempt was rejected" in retry and "AC 1 is untestable" in retry
+    assert "narrow the spec to the first suggested split" in retry
+    assert S.read_state(cfg, cid)["pending_brief"] is None
+    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+
+
+def test_epic_child_with_a_different_parent_is_rejected(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch,
+                                lambda i: [spec_written(101, i, epic="SPEC-0099")] * 2,
+                                epic="SPEC-0100")
+    Q.tick(cfg)
+    Q.tick(cfg)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_write_failed" and "parent must be SPEC-0100" in park["detail"]
+
+
+def test_non_git_exception_in_the_worker_rolls_back_and_parks(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [spec_written(2, i)] * 2)
+    wt = wtree(cfg, cid)
+    head = _git(wt, "rev-parse", "HEAD")
+    real = SW.regenerate
+    monkeypatch.setattr(SW, "regenerate", lambda *a, **k: {}["boom"])
+    report = Q.tick(cfg)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_write_failed" and park["resume_to"] == "SPEC_WRITING"
+    assert "KeyError" in park["detail"] and any("KeyError" in e for e in report.errors)
+    assert _git(wt, "rev-parse", "HEAD") == head
+    assert _git(wt, "status", "--porcelain").splitlines() == ["?? setup-out.txt"]
+    monkeypatch.setattr(SW, "regenerate", real)
+    resume(cfg, cid)                                  # no leftover file to wedge the next run
+    Q.tick(cfg)
+    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    assert S.read_state(cfg, cid)["spec_id"] == "SPEC-0002"
+
+
+def test_a_leftover_spec_file_is_removed_and_never_hides_the_new_write(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [spec_written(2, i)] * 2)
+    wt = wtree(cfg, cid)
+    real_roll, real_regen = SW.rollback, SW.regenerate
+    monkeypatch.setattr(SW, "rollback", lambda *a, **k: None)       # a rollback that left it behind
+    monkeypatch.setattr(SW, "regenerate", lambda *a, **k: {}["boom"])
+    Q.tick(cfg)
+    leftover = wt / "docs/specs/0002-add-a-thing.md"
+    assert parked(cfg, cid)["reason"] == "spec_write_failed" and leftover.exists()
+    monkeypatch.setattr(SW, "rollback", real_roll)
+    monkeypatch.setattr(SW, "regenerate", real_regen)
+    resume(cfg, cid)
+    Q.tick(cfg)
+    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    st = S.read_state(cfg, cid)
+    assert st["spec_id"] == "SPEC-0002"
+    assert "docs/specs/0002-add-a-thing.md" not in st["spec_write"]["untracked_before"]
+
+
+def test_writer_leaving_the_branch_parks_without_a_reset(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [spec_written(2, i)])
+    wt = wtree(cfg, cid)
+    Q.tick(cfg, runner=Hooked(tmp_path, after=lambda req: _git(wt, "checkout", "-q", "--detach")))
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_write_failed"
+    assert park["detail"] == "rollback failed; clean the worktree, then resume"
+    assert (wt / "docs/specs/0002-add-a-thing.md").exists()
 
 
 def test_missing_parent_for_epic_idea_is_rejected(tmp_path, monkeypatch):

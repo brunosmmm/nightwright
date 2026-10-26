@@ -988,6 +988,12 @@ def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
     prior = state.get("spec_write") or {}
     if counters.get("spec_write_retries", 0) and prior.get("untracked_before") is not None:
         sw["untracked_before"] = prior["untracked_before"]      # a failed attempt's leftovers
+    if path in sw["untracked_before"]:      # the spec file is never setup output: a leftover of
+        sw["untracked_before"].remove(path)                     # an earlier attempt is removed,
+        try:                                                    # so it can neither hide the new
+            (worktree / path).unlink()                          # write nor survive a rollback
+        except OSError as e:
+            raise ValueError(f"cannot remove the leftover {path}: {e}") from e
     state["spec_write"] = sw                                    # never join the baseline
     brief = state.get("pending_brief")
     spec_id = SW.spec_id_of(number)
@@ -1019,6 +1025,7 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     res.write = {"problems": [], "blocked": None, "committed": False, "sha": None,
                  "title": None, "mode": sw["mode"], "rollback_failed": False}
     w = res.write
+    off_branch = False
 
     def roll_back():
         try:
@@ -1038,6 +1045,11 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
                 or [str(verdict.get("summary") or "no reason given")]
             roll_back()
         else:
+            branch = (state.get("repo") or {}).get("branch")
+            if branch and git.current_branch(worktree) != branch:
+                off_branch = True               # a reset here would hit the wrong branch
+                raise ValueError(f"HEAD is no longer on {branch}; check the worktree out on it, "
+                                 "clean it, then resume")
             problems = SW.verdict_problems(rr, sw)
             if not problems:
                 problems = SW.validate_spec_change(worktree, sw, state.get("idea"))
@@ -1061,9 +1073,14 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
                 w["sha"] = SW.commit_staged(worktree, [sw["path"], *generated], msg)
                 w["committed"] = True
                 w["head"] = git.rev_parse(worktree)
-    except (GitError, ValueError, OSError) as e:
+    except Exception as e:                      # nothing may leave the worktree unrolled
         res.error = getattr(e, "tail", None) or str(e)
-        if not w["rollback_failed"] and not res.interrupted:
+        if not isinstance(e, (GitError, ValueError, OSError)):
+            res.error = repr(e)
+            res.crashed = repr(e)               # still a report.errors entry
+        if off_branch:
+            w["rollback_failed"] = True         # not rolled back: a human fixes the worktree
+        elif not w["rollback_failed"] and not res.interrupted:
             try:
                 SW.rollback(worktree, sw)
             except GitError:
