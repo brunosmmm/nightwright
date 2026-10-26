@@ -1345,7 +1345,26 @@ def _spec_review_precheck(ctx: _Ctx, state: dict, step: Step) -> StepResult | No
     except (GitError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
         return res
+    prior = _prior_revision(ctx.cfg, state)
+    if prior is not None:               # SPEC-0230 step 0': one review per campaign
+        changed = _spec_sha(Path(worktree or ".") / spec.get("rel_path", "")) != prior["spec_sha256"]
+        res.spec_review = {"after_revision" if changed else "unchanged": prior}
+        return res
     return None
+
+
+def _prior_revision(cfg, state: dict) -> dict | None:
+    """SPEC-0230: this campaign's last `spec_review` ledger event when its verdict was `revise`
+    or `split` (the one review already ran), else None."""
+    evs = [e for e in store.read_ledger(cfg, state["id"], types=["spec_review"])
+           if e.get("verdict") in ("revise", "split") and e.get("spec_sha256")]
+    return evs[-1] if evs else None
+
+
+def _revision_pending_brief(cfg, state: dict, prior: dict) -> dict:
+    """SPEC-0230 accept step 5: the implementer's brief from the stored revise / split review."""
+    review = SR.load_review(cfg, (state.get("spec") or {}).get("id"), prior["spec_sha256"])
+    return SR.revision_brief(review or {"spec_sha256": prior["spec_sha256"], "findings": []})
 
 
 def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
@@ -2226,8 +2245,9 @@ def _apply_spec_write(ctx, state, counters, res, row, events, finish):
 def _apply_spec_review(ctx, state, profile, counters, res, row, events, finish):
     """A `spec_review` result (SPEC-0214): a dirty worktree parks, an already committed accept
     resumes at its bookkeeping, a failed run retries once then parks, a conforming verdict is
-    stored and recorded and routes to the accept (approve), the writer (revise / split) or a
-    `spec_review_exhausted` park."""
+    stored and recorded and routes to the accept (approve) or the writer (revise / split). Per
+    SPEC-0230 only one review runs: a revised spec is accepted without a second review, an
+    unchanged one parks `spec_review_exhausted`."""
     cfg, cid = ctx.cfg, state["id"]
     sr = res.spec_review or {}
     park_back = {"resume_to": "SPEC_REVIEW"}
@@ -2240,7 +2260,15 @@ def _apply_spec_review(ctx, state, profile, counters, res, row, events, finish):
         return exhausted("commit or discard the worktree changes, then resume")
     if sr.get("accepted"):              # an earlier accept committed, then failed after it
         return _accept_spec(ctx, state, counters, events, finish, committed=True,
-                            rnd=(state.get("spec_review") or {}).get("round"))
+                            rnd=(state.get("spec_review") or {}).get("round"),
+                            revision=_prior_revision(cfg, state))
+    if sr.get("after_revision"):        # SPEC-0230: the revision is accepted, no second review
+        return _accept_spec(ctx, state, counters, events, finish, committed=False,
+                            rnd=sr["after_revision"].get("round"), revision=sr["after_revision"])
+    if sr.get("unchanged"):
+        return finish("PARKED", "spec_review_exhausted", park={
+            "reason": "spec_review_exhausted", "resume_to": "SPEC_WRITING",
+            "detail": "the revision did not change the spec"})
     rr, persona = res.run_result, res.step.persona
     events += _record_run(state, persona, res.run_id, rr, res.budget, interrupted=res.interrupted)
     row["cost_usd"] = rr.cost_usd if rr.cost_usd is not None else res.budget
@@ -2285,17 +2313,11 @@ def _apply_spec_review(ctx, state, profile, counters, res, row, events, finish):
     events.append(("spec_review", {"verdict": payload["verdict"], "spec_sha256": sr["sha"],
                                    "round": rnd, "counts": counts, "run_id": res.run_id}))
     state["spec_review"] = {"round": rnd, "verdict": payload["verdict"], "sha": sr["sha"]}
-    counters["spec_rounds"] = counters.get("spec_rounds", 0) + 1
     counters["spec_review_retries"] = 0
     if payload["verdict"] == "approve":
         return _accept_spec(ctx, state, counters, events, finish, committed=False, rnd=rnd)
     state["pending_brief"] = _spec_review_brief(state, payload)
-    rounds, limit = counters["spec_rounds"], int(profile.get("spec_review_max", 3))
-    if rounds < limit:
-        return finish("SPEC_WRITING", "spec_revise")
-    return finish("PARKED", "spec_review_exhausted", park={
-        "reason": "spec_review_exhausted", "resume_to": "SPEC_WRITING",
-        "detail": f"{rounds} reviews without approval; last verdict {payload['verdict']}"})
+    return finish("SPEC_WRITING", "spec_revise")    # SPEC-0230: revised, then accepted unreviewed
 
 
 def _spec_review_brief(state: dict, review: dict) -> dict:
@@ -2316,7 +2338,7 @@ def _spec_review_brief(state: dict, review: dict) -> dict:
     return brief
 
 
-def _commit_accept(ctx: _Ctx, state: dict, rnd) -> str:
+def _commit_accept(ctx: _Ctx, state: dict, rnd, *, after_revision: bool = False) -> str:
     """Accept steps 1-3 (SPEC-0214): set the spec `accepted`, regenerate the project's generated
     files, commit exactly those. On any failure the touched paths are restored to HEAD (file,
     index and worktree) and the error is raised."""
@@ -2332,6 +2354,8 @@ def _commit_accept(ctx: _Ctx, state: dict, rnd) -> str:
         if problems:
             raise ValueError("; ".join(problems))
         msg = f"wt({state['id']}): accept {state['spec']['id']} (round {rnd})"
+        if after_revision:
+            msg += " (after revision)"
         trailer = ((ctx.project(state).get("agents") or {}).get("commit_trailer") or "").strip()
         if trailer:
             msg += f"\n\n{trailer}"
@@ -2347,7 +2371,7 @@ def _commit_accept(ctx: _Ctx, state: dict, rnd) -> str:
     return git.rev_parse(worktree)
 
 
-def _accept_spec(ctx, state, counters, events, finish, *, committed: bool, rnd):
+def _accept_spec(ctx, state, counters, events, finish, *, committed: bool, rnd, revision=None):
     """Accept the approved spec on the main thread under the campaign lock (SPEC-0214): the
     commit (skipped when `committed`: it landed earlier), then the idempotent bookkeeping. A
     human state change meanwhile skips the accept; `finish` then records `superseded_by_human`."""
@@ -2363,7 +2387,7 @@ def _accept_spec(ctx, state, counters, events, finish, *, committed: bool, rnd):
             return finish("IMPLEMENTING", "spec_accepted")      # superseded: nothing is accepted
         if not committed:
             try:
-                head = _commit_accept(ctx, state, rnd)
+                head = _commit_accept(ctx, state, rnd, after_revision=revision is not None)
             except (GitError, ValueError, OSError) as e:
                 return exhausted(f"accept failed: {getattr(e, 'tail', None) or e}")
             events.append(("commit", {"sha": head, "message": f"accept {spec['id']}"}))
@@ -2375,7 +2399,8 @@ def _accept_spec(ctx, state, counters, events, finish, *, committed: bool, rnd):
             shutil.copyfile(spec_file, dest)
             spec["sha256_at_open"] = _spec_sha(spec_file)
             events.append(("spec_accepted", {"spec_id": spec["id"], "round": rnd}))
-            state["pending_brief"] = None
+            state["pending_brief"] = (_revision_pending_brief(cfg, state, revision)
+                                      if revision is not None else None)
         except Exception as e:      # the accept is committed; the resume finishes this part
             return exhausted(f"accept failed after commit: {e}")
         return finish("IMPLEMENTING", "spec_accepted")
@@ -5281,7 +5306,6 @@ def apply_resume(cfg, plan: dict) -> dict:
             _reset_spec_write(cfg, st)
         if plan.get("reset_loops"):
             c = _counters(st)
-            c["spec_rounds"] = 0
             c["loops"] = 0
             c["blocked_streak"] = 0
             c["triage_retries"] = 0

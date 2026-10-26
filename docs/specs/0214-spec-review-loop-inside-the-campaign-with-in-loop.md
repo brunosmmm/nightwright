@@ -265,6 +265,9 @@ phase.
 - After the review-loop fixes: `uv run pytest tests/test_agentic_spec_review_loop.py`: 34 passed;
   full `uv run pytest -q -x`: 2411 passed, 1 skipped; `python3 tools/spec_lint.py` exits 0.
 - Manual verification: none beyond the automated end-to-end run, as planned.
+- After the rebase onto YAML profiles (SPEC-0237) and the SPEC-0230 single-round override:
+  `uv run pytest tests/test_agentic_spec_review_loop.py tests/test_agentic_spec_writer.py`: 96
+  passed; full `uv run pytest -q -x`: 2604 passed, 3 skipped; `python3 tools/spec_lint.py` exits 0.
 
 ### As shipped (2026-10-25)
 
@@ -282,6 +285,21 @@ phase.
   worktree-modifying-reviewer parks, timeout and interrupted reviews, a runner that raises
   after editing the spec.
 - `docs/product/loop/operate.md` lists the new park reason and marks `spec_review_unavailable` legacy.
+- **SPEC-0230 overrides applied (binding amendment): one spec review per campaign.**
+  `spec_review_max` is not a profile key (the builtin profiles are YAML since SPEC-0237 and
+  carry none) and `counters.spec_rounds` is gone. A `revise` or `split` always goes to the
+  writer's revise mode. Back in SPEC_REVIEW, the precheck's step 0′ finds the campaign's
+  prior revise/split `spec_review` event and runs no reviewer: a changed spec sha is accepted
+  (commit `accept <SPEC> (round 1) (after revision)`, `pending_brief =
+  revision_brief(<stored review>)`), an unchanged sha parks `spec_review_exhausted` ("the
+  revision did not change the spec", resume_to SPEC_WRITING). A resume after an accept failure
+  also goes to accept, never to a second review. `--reset-loops` has no spec-round effect.
+  This replaces the AC items "Revise path" (now writer → revise → writer → accept, one
+  `spec_review` event), "Exhaustion" (now the unchanged-sha park) and the `spec_rounds` /
+  "every builtin profile has `spec_review_max`" recording items (now: no builtin profile has
+  it). Tests: `test_revise_then_accept_after_revision_without_a_second_review`,
+  `test_an_unchanged_revision_parks_and_runs_no_second_review`,
+  `test_resume_with_a_note_revises_then_accepts`, `test_no_builtin_profile_has_spec_review_max`.
 
 ## Rollout / migration
 

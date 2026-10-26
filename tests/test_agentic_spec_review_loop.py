@@ -110,7 +110,7 @@ def test_approve_accepts_in_the_loop_and_runs_to_merged(tmp_path, monkeypatch):
     assert acc["spec_id"] == "SPEC-0002" and acc["round"] == 1
     assert SC.ledger_problems(ev) == [] and SC.ledger_problems(acc) == []
     assert st["spec_review"] == {"round": 1, "verdict": "approve", "sha": sha}
-    assert st["counters"]["spec_rounds"] == 1
+    assert "spec_rounds" not in st["counters"]
     trans = [(e["from"], e["to"], e["reason"]) for e in S.read_ledger(cfg, cid, types=["transition"])]
     assert ("SPEC_WRITING", "SPEC_REVIEW", "spec_written") in trans
     assert ("SPEC_REVIEW", "IMPLEMENTING", "spec_accepted") in trans
@@ -126,106 +126,88 @@ def test_approve_accepts_in_the_loop_and_runs_to_merged(tmp_path, monkeypatch):
 
 # ---- revise, split ---------------------------------------------------------------------------------
 
-def test_revise_loop_then_accept(tmp_path, monkeypatch):
+def test_revise_then_accept_after_revision_without_a_second_review(tmp_path, monkeypatch):
+    """SPEC-0230: one review per campaign; a revise is applied by the writer and accepted."""
     cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [
         reviewed("revise", findings=[finding(), finding("nit", "a nit")]), writes,
-        reviewed("approve")])
-    Q.tick(cfg)                                     # review 1: revise
+        reviewed("approve")])                       # a second review would consume this entry
+    Q.tick(cfg)                                     # the one review: revise
     st = S.read_state(cfg, cid)
-    assert st["state"] == "SPEC_WRITING" and st["counters"]["spec_rounds"] == 1
+    assert st["state"] == "SPEC_WRITING" and "spec_rounds" not in st["counters"]
     brief = st["pending_brief"]
     assert brief["source"] == "spec_reviewer" and brief["fix_brief"] == "revise it"
     assert [m["title"] for m in brief["must_fix"]] == ["[must_fix] AC 1 is untestable (Acceptance criteria)"]
+    review_sha = reviews(cfg, cid)[0]["spec_sha256"]
     Q.tick(cfg)                                     # the writer revises
     assert "AC 1 is untestable" in prompt(cfg, cid, 3) and "a nit" not in prompt(cfg, cid, 3)
     in_review(cfg, cid)
-    assert S.read_state(cfg, cid)["pending_brief"] is None
-    Q.tick(cfg)                                     # review 2: approve
-    assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
-    assert [e["round"] for e in reviews(cfg, cid)] == [1, 2]
+    Q.tick(cfg)                                     # no reviewer: accept after revision
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "IMPLEMENTING"
+    assert [e["round"] for e in reviews(cfg, cid)] == [1]
+    assert not (S.runs_dir(cfg, cid) / "004-spec_reviewer").exists()
     assert "status: accepted" in (wtree(cfg, cid) / SPEC).read_text()
     assert reviews(cfg, cid)[0]["counts"] == {"must_fix": 1, "major": 0, "minor": 0, "nit": 1}
-    assert _git(wtree(cfg, cid), "log", "-1", "--format=%s").endswith("accept SPEC-0002 (round 2)")
+    assert _git(wtree(cfg, cid), "log", "-1", "--format=%s").endswith(
+        "accept SPEC-0002 (round 1) (after revision)")
+    stored = SR.load_review(cfg, "SPEC-0002", review_sha)
+    assert st["pending_brief"] == SR.revision_brief(stored)
+    assert [m["title"] for m in st["pending_brief"]["must_fix"]] == [
+        "[must_fix] AC 1 is untestable (Acceptance criteria)", "[nit] a nit (Acceptance criteria)"]
+    (acc,) = ledger(cfg, cid, "spec_accepted")
+    assert acc["round"] == 1 and SC.ledger_problems(acc) == []
 
 
 def test_split_verdict_gives_the_writer_the_narrowing_rule(tmp_path, monkeypatch):
     cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [
         reviewed("split", findings=[finding("major", "too big")],
                  splits=[{"title": "Part A", "scope": "the core"}, {"title": "Part B"}]),
-        writes, reviewed("approve")])
+        writes])
     Q.tick(cfg)
     Q.tick(cfg)
     p = prompt(cfg, cid, 3)
     assert "narrow the spec to the first suggested split" in p
     assert "Part A" in p and "Part B" in p and "too big" in p
-    Q.tick(cfg)
+    Q.tick(cfg)                                     # the narrowing is the revision: accepted
     assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
+    assert len(reviews(cfg, cid)) == 1
 
 
-# ---- exhaustion ------------------------------------------------------------------------------------
+# ---- unchanged revision ----------------------------------------------------------------------------
 
-def exhaust(tmp_path, monkeypatch, more=()):
+def unchanged(tmp_path, monkeypatch, more=()):
+    """A revise review, then back in SPEC_REVIEW with the spec text unchanged."""
     cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [
-        reviewed("revise", findings=[finding(title="round one")]), writes,
-        reviewed("revise", findings=[finding(title="round two")]), *more],
-        profile={"spec_review_max": 2})
+        reviewed("revise", findings=[finding(title="round one")]), *more])
     Q.tick(cfg)
-    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_WRITING"
+    st["state"] = "SPEC_REVIEW"
+    S.write_state(cfg, cid, st)
     Q.tick(cfg)
     return cfg, repo, iid, cid
 
 
-def test_exhaustion_parks_with_the_last_findings(tmp_path, monkeypatch):
-    cfg, repo, iid, cid = exhaust(tmp_path, monkeypatch)
+def test_an_unchanged_revision_parks_and_runs_no_second_review(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = unchanged(tmp_path, monkeypatch, [reviewed("approve")])
     park = parked(cfg, cid)
     assert park["reason"] == "spec_review_exhausted" and park["resume_to"] == "SPEC_WRITING"
-    assert park["detail"] == "2 reviews without approval; last verdict revise"
-    st = S.read_state(cfg, cid)
-    assert [m["title"] for m in st["pending_brief"]["must_fix"]] \
-        == ["[must_fix] round two (Acceptance criteria)"]
-    assert st["counters"]["spec_rounds"] == 2
+    assert park["detail"] == "the revision did not change the spec"
+    assert len(reviews(cfg, cid)) == 1
+    assert "status: accepted" not in (wtree(cfg, cid) / SPEC).read_text()
 
 
-def test_resume_without_a_note_revises_then_gets_one_more_review(tmp_path, monkeypatch):
-    cfg, repo, iid, cid = exhaust(tmp_path, monkeypatch, [writes, reviewed("revise")])
-    resume(cfg, cid)
+def test_resume_with_a_note_revises_then_accepts(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = unchanged(tmp_path, monkeypatch, [writes])
+    resume(cfg, cid, note="keep it to the CLI")
     assert S.read_state(cfg, cid)["state"] == "SPEC_WRITING"
     Q.tick(cfg)
-    assert "round two" in prompt(cfg, cid, 5)
+    p = prompt(cfg, cid, 3)
+    assert "keep it to the CLI" in p and "round one" in p
     in_review(cfg, cid)
-    Q.tick(cfg)                                     # one past the limit: a non-approve parks
-    assert parked(cfg, cid)["reason"] == "spec_review_exhausted"
-    assert [e["round"] for e in reviews(cfg, cid)] == [1, 2, 3]
-
-
-def test_an_approve_on_the_review_past_the_limit_still_accepts(tmp_path, monkeypatch):
-    cfg, repo, iid, cid = exhaust(tmp_path, monkeypatch, [writes, reviewed("approve")])
-    resume(cfg, cid)
-    Q.tick(cfg)                                     # the writer revises
-    in_review(cfg, cid)
-    Q.tick(cfg)                                     # review 3 of a limit of 2: approve wins
-    st = S.read_state(cfg, cid)
-    assert st["state"] == "IMPLEMENTING" and st["counters"]["spec_rounds"] == 3
-    assert [e["round"] for e in reviews(cfg, cid)] == [1, 2, 3]
-    assert "status: accepted" in (wtree(cfg, cid) / SPEC).read_text()
-
-
-def test_resume_with_a_note_puts_it_in_the_writer_prompt(tmp_path, monkeypatch):
-    cfg, repo, iid, cid = exhaust(tmp_path, monkeypatch, [writes])
-    resume(cfg, cid, note="keep it to the CLI")
     Q.tick(cfg)
-    assert "keep it to the CLI" in prompt(cfg, cid, 5) and "round two" in prompt(cfg, cid, 5)
-
-
-def test_reset_loops_restores_the_rounds_and_keeps_counting(tmp_path, monkeypatch):
-    cfg, repo, iid, cid = exhaust(tmp_path, monkeypatch, [writes, reviewed("approve")])
-    resume(cfg, cid, reset_loops=True)
-    assert S.read_state(cfg, cid)["counters"]["spec_rounds"] == 0
-    Q.tick(cfg)
-    Q.tick(cfg)
-    assert [e["round"] for e in reviews(cfg, cid)] == [1, 2, 3]
-    assert S.read_state(cfg, cid)["counters"]["spec_rounds"] == 1
     assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
+    assert len(reviews(cfg, cid)) == 1
 
 
 # ---- reviewer failure ------------------------------------------------------------------------------
@@ -240,7 +222,7 @@ def test_runner_error_retries_once_then_parks_and_a_resume_costs_no_round(tmp_pa
     park = parked(cfg, cid)
     assert park["reason"] == "spec_review_exhausted" and park["resume_to"] == "SPEC_REVIEW"
     assert park["detail"].startswith("reviewer failed: ")
-    assert S.read_state(cfg, cid)["counters"].get("spec_rounds", 0) == 0 and not reviews(cfg, cid)
+    assert not reviews(cfg, cid)
     resume(cfg, cid)
     assert S.read_state(cfg, cid)["counters"]["spec_review_retries"] == 0
     Q.tick(cfg)
@@ -295,12 +277,12 @@ def test_resuming_the_worktree_modifying_reviewer_park_costs_no_round(tmp_path, 
     Q.tick(cfg)
     Q.tick(cfg)
     assert parked(cfg, cid)["detail"] == "reviewer failed: reviewer modified the worktree"
-    assert S.read_state(cfg, cid)["counters"].get("spec_rounds", 0) == 0
+    assert not reviews(cfg, cid)
     resume(cfg, cid)
     assert S.read_state(cfg, cid)["state"] == "SPEC_REVIEW"
     Q.tick(cfg)
     st = S.read_state(cfg, cid)
-    assert st["state"] == "IMPLEMENTING" and st["counters"]["spec_rounds"] == 1
+    assert st["state"] == "IMPLEMENTING"
     assert [e["round"] for e in reviews(cfg, cid)] == [1]
     assert "sneaky" not in (wtree(cfg, cid) / SPEC).read_text()
 
@@ -322,7 +304,7 @@ def test_an_interrupted_review_stays_in_spec_review_and_counts_no_round(tmp_path
     report = Q.tick(cfg, stop=stop, runner=Hooked(tmp_path, after=lambda req: stop.set()))
     st = S.read_state(cfg, cid)
     assert st["state"] == "SPEC_REVIEW" and report.steps[-1]["reason"] == "interrupted"
-    assert not reviews(cfg, cid) and st["counters"].get("spec_rounds", 0) == 0
+    assert not reviews(cfg, cid)
     assert "status: accepted" not in (wtree(cfg, cid) / SPEC).read_text()
 
 
@@ -556,9 +538,10 @@ def test_the_request_carries_the_campaign_invariant_and_is_read_only(tmp_path, m
     assert PS.get_persona("spec_reviewer").invariant == PS.SPEC_REVIEW_INVARIANT
 
 
-def test_every_builtin_profile_has_spec_review_max():
-    for name, prof in PR.BUILTIN_PROFILES.items():
-        assert prof["spec_review_max"] >= 1, name
+def test_no_builtin_profile_has_spec_review_max():
+    """SPEC-0230: the round count is fixed at one, not a profile setting."""
+    for name, prof in PR.builtin_profiles().items():
+        assert "spec_review_max" not in prof, name
     assert "spec_review_exhausted" in Q.PARK_REASONS
     assert "SPEC_REVIEW" in Q.ACTIVE_STATES and "SPEC_REVIEW" in Q.RESUMABLE_STATES
     assert Q._resume_target("SPEC_REVIEW") == "SPEC_REVIEW"
@@ -566,5 +549,5 @@ def test_every_builtin_profile_has_spec_review_max():
 
 def test_human_park_in_spec_review_resumes_to_it(tmp_path, monkeypatch):
     state = {"state": "SPEC_REVIEW", "park_requested": {"detail": "pause"}}
-    step = Q.plan_step(state, PR.BUILTIN_PROFILES["balanced"])
+    step = Q.plan_step(state, PR.builtin_profiles()["balanced"])
     assert step.kind == "park" and step.resume_to == "SPEC_REVIEW"
