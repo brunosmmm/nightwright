@@ -268,6 +268,11 @@ no-unmerged-paths, target-is-ancestor and tracked-clean checks stay.
   `apply.whitespace=error`), and an unusable patch raising `GitError`. Each was sabotaged alone and
   failed its test: only the `ls-files -u` guard, only the sequencer guard, `c in cherry_gone`, the
   empty-commit skip on the revert guard, and plain `git diff --binary` for the patches.
+- Review round 2 tests (`tests/test_agentic_resolver.py`, 76 tests, all green): the revert guard on an
+  absorbed (cherry `-`, unpaired) campaign commit; patches with CRLF and Latin-1 content verify with a
+  port commit and a revert is still caught; `queue._commit_resolver_changes` cuts a multi-line summary
+  to its first line at 72 chars and adds no trailer block when none is configured. Sabotage: dropping
+  `guarded.append((c, c))` fails the absorbed-revert test; text-mode patches fail both byte tests.
 - Manual verification (a real conflicted close recording `+N extra, M absorbed`) has not been done yet:
   it needs the next real conflicted close.
 
@@ -290,6 +295,9 @@ no-unmerged-paths, target-is-ancestor and tracked-clean checks stay.
   the equivalence checks. `_is_empty` compares the commit's tree with its parent's. A patch that
   fails to apply to its own parent raises `GitError` (a `verification error`) rather than counting
   as "does not apply", so the revert guard fails closed.
+- Review round 2: patches are handled as bytes end to end (`_run`/`git` gained a `binary` mode;
+  `_commit_patch` and the `git apply` call use it), so CRLF files and non-UTF-8 text neither fail
+  `does not apply to its own parent` nor raise `UnicodeDecodeError`.
 
 ## Clock Log
 

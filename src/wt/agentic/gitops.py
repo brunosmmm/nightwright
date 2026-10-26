@@ -44,25 +44,30 @@ def _tail(text: str, n: int = _TAIL_LINES) -> str:
     return "\n".join(lines[-n:])
 
 
-def _run(cmd: list[str], *, cwd=None, check=True, timeout=_DEFAULT_TIMEOUT, env=None, input=None):
+def _run(cmd: list[str], *, cwd=None, check=True, timeout=_DEFAULT_TIMEOUT, env=None, input=None,
+         binary=False):
     merged_env = None if env is None else {**os.environ, **env}
     try:
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=not binary, timeout=timeout,
                            env=merged_env, input=input)
     except subprocess.TimeoutExpired as e:
         raise GitError(cmd, -1, f"timed out after {timeout}s") from e
     except OSError as e:
         raise GitError(cmd, -1, str(e)) from e
     if check and r.returncode != 0:
-        raise GitError(cmd, r.returncode, _tail((r.stdout or "") + (r.stderr or "")))
+        out = (r.stdout or r.stdout[:0]) + (r.stderr or r.stderr[:0])
+        if binary:
+            out = out.decode("utf-8", "replace")
+        raise GitError(cmd, r.returncode, _tail(out))
     return r
 
 
 def git(repo, *args, check=True, timeout=_DEFAULT_TIMEOUT, env=None,
-        input=None) -> subprocess.CompletedProcess:
-    """Run `git -C <repo> *args`; raise `GitError` on non-zero exit when `check`."""
+        input=None, binary=False) -> subprocess.CompletedProcess:
+    """Run `git -C <repo> *args`; raise `GitError` on non-zero exit when `check`. With
+    `binary`, stdout/stderr and `input` are bytes (no decoding, no newline translation)."""
     return _run(["git", "-C", str(repo), *args], check=check, timeout=timeout, env=env,
-                input=input)
+                input=input, binary=binary)
 
 
 # ---- read-only --------------------------------------------------------------------------
@@ -419,13 +424,13 @@ class ResolutionCheck:
     absorbed: list = field(default_factory=list)
 
 
-def _commit_patch(worktree, commit) -> str:
+def _commit_patch(worktree, commit) -> bytes:
     """`commit`'s binary diff against its first parent, from plumbing with every output-shaping
     option pinned so user or repo diff config (`diff.noprefix`, colour, external diff, textconv)
-    cannot change what `git apply` is fed."""
+    cannot change what `git apply` is fed. Bytes, so CRLF and non-UTF-8 content survive."""
     return git(worktree, "diff-tree", "-p", "--binary", "--full-index", "--no-color",
                "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/",
-               f"{commit}^", commit).stdout
+               f"{commit}^", commit, binary=True).stdout
 
 
 def _apply_check(worktree, tree, diff, reverse) -> bool:
@@ -434,7 +439,8 @@ def _apply_check(worktree, tree, diff, reverse) -> bool:
         git(worktree, "read-tree", tree, env=env)
         args = ["-c", "apply.whitespace=nowarn", "apply", "--cached", "--check"] \
             + (["--reverse"] if reverse else [])
-        return git(worktree, *args, check=False, env=env, input=diff).returncode == 0
+        return git(worktree, *args, check=False, env=env, input=diff,
+                   binary=True).returncode == 0
 
 
 def _patch_applies(worktree, commit, tree, reverse) -> bool:

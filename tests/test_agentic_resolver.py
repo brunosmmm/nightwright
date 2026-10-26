@@ -947,9 +947,40 @@ def test_verify_resolution_ignores_user_diff_and_apply_config(tmp_path):
     assert bad.failed and "reverts campaign commit" in bad.failed
 
 
+def test_verify_resolution_revert_of_an_absorbed_commit_fails(tmp_path):
+    """The revert guard covers unpaired (absorbed) campaign commits too: the target holds the
+    change (cherry `-`, dropped by the rebase), and an extra commit removes it from HEAD."""
+    r, fork, pre, tgt = vrepo(tmp_path, _commit_file("a.txt", msg="mine"),
+                              _commit_file("a.txt", msg="landed"),
+                              "git rebase main -q\ngit revert --no-edit HEAD")
+    assert _git(r, "cherry", tgt, pre).startswith("-")
+    bad = _check(r, fork, pre, tgt)
+    assert bad.failed and bad.failed.endswith(f"reverts campaign commit {pre[:10]}")
+
+
+_CRLF = "printf 'a\\r\\nb\\r\\n' > w.txt && git add w.txt && git commit -q -m w0\n" \
+        "printf 'a\\r\\nb\\r\\nc\\r\\n' > w.txt && git commit -qam w1\n"
+_LATIN1 = "printf 'caf\\351\\nb\\n' > w.txt && git add w.txt && git commit -q -m w0\n" \
+          "printf 'caf\\351\\nb\\nc\\n' > w.txt && git commit -qam w1\n"
+
+
+@pytest.mark.parametrize("content", [_CRLF, _LATIN1], ids=["crlf", "latin1"])
+def test_verify_resolution_patches_survive_crlf_and_non_utf8_bytes(tmp_path, content):
+    """Patches go through `git apply` as bytes: CRLF line endings and non-UTF-8 text neither
+    break the revert guard on a port commit nor hide a real revert."""
+    r, fork, pre, tgt = vrepo(
+        tmp_path, "git config core.autocrlf false\n" + content, _commit_file("m.txt"),
+        "git rebase main -q\n" + _commit_file("port.txt", msg="port"))
+    c = _check(r, fork, pre, tgt)
+    assert c.failed is None and [e["subject"] for e in c.extra] == ["port"]
+    _sh(r, "git revert --no-edit HEAD~1")
+    bad = _check(r, fork, pre, tgt)
+    assert bad.failed and "reverts campaign commit" in bad.failed
+
+
 def test_patch_applies_unusable_patch_raises_instead_of_answering_no(grepo, monkeypatch):
     r, fork, pre, target = grepo
-    monkeypatch.setattr(G, "_commit_patch", lambda *a: "not a patch\n")
+    monkeypatch.setattr(G, "_commit_patch", lambda *a: b"not a patch\n")
     with pytest.raises(G.GitError):
         G._patch_applies(r, pre, target, reverse=False)
 
@@ -976,6 +1007,33 @@ def test_commit_tracked_returns_none_when_nothing_is_staged(grepo):
     sha = G.commit_tracked(r, "msg")
     assert sha == _git(r, "rev-parse", "HEAD") != head
     assert "stray.orig" not in _git(r, "ls-tree", "-r", "--name-only", "HEAD")
+
+
+class _Ctx:
+    def __init__(self, trailer=None):
+        self._project = {"agents": {"commit_trailer": trailer}} if trailer else {}
+
+    def project(self, state):
+        return self._project
+
+
+def test_resolver_commit_message_keeps_first_summary_line_cut_to_72(grepo):
+    r, *_ = grepo
+    _write(r, "f.txt", "changed\n")
+    summary = ("x" * 100) + "\nsecond line"
+    sha = Q._commit_resolver_changes(_Ctx("Co-Authored-By: t <t@t>"), {"id": "C1"}, r, "wt/x",
+                                     "abcdef", {"summary": summary})
+    assert sha == _git(r, "rev-parse", "HEAD")
+    msg = _git(r, "log", "-1", "--format=%B")
+    assert msg.splitlines()[0] == "wt(C1): conflict resolver run abc \u2014 " + "x" * 72
+    assert "second line" not in msg and msg.endswith("Co-Authored-By: t <t@t>")
+
+
+def test_resolver_commit_message_without_a_trailer_has_no_trailer_block(grepo):
+    r, *_ = grepo
+    _write(r, "f.txt", "changed\n")
+    Q._commit_resolver_changes(_Ctx(), {"id": "C1"}, r, "wt/x", "abcdef", {"summary": "ok"})
+    assert _git(r, "log", "-1", "--format=%B") == "wt(C1): conflict resolver run abc \u2014 ok"
 
 
 # ---- review loop 3 --------------------------------------------------------------------------
