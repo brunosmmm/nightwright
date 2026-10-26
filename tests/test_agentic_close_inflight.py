@@ -7,6 +7,7 @@ import os
 import subprocess
 import threading
 import time
+from concurrent import futures
 from pathlib import Path
 
 import pytest
@@ -103,30 +104,41 @@ class Env:
 
     def tick(self, **kw):
         # a tick that blocked on a held re-gate would hang until the holds go: the safety timer
-        # frees them at 15 s, so the regression fails the 12 s bound instead of hanging
-        guard = threading.Timer(15, self.release_all)
+        # notes that it fired, then frees them at 15 s, so the regression fails on
+        # `guard_fired` (and on the vanished holds) instead of hanging, with no elapsed-time
+        # bound (SPEC-0248)
+        holds = sorted(self.d.glob("hold-*"))
+        self.guard_fired = False
+
+        def fire():
+            self.guard_fired = True
+            self.release_all()
+
+        guard = threading.Timer(15, fire)
         guard.start()
-        t0 = time.monotonic()
         try:
             r = Q.tick(self.cfg, runner=self.runner, pool=self.pool, stop=self.stop, **kw)
         finally:
             guard.cancel()
-        assert time.monotonic() - t0 < 12, "a tick blocked"
+        assert not self.guard_fired, "a tick blocked: the safety timer had to free the holds"
+        assert all(p.exists() for p in holds), "a tick blocked: a hold was freed under it"
         self.reports.append(r)
         return r
 
-    def spin(self, cond, timeout=120):
-        end = time.monotonic() + timeout
-        while not cond():
-            assert time.monotonic() < end, "condition never met"
+    def spin(self, cond, max_ticks=400):
+        for _ in range(max_ticks):
+            if cond():
+                return
             self.tick()
-            time.sleep(0.03)
+            self.pool.wait_any(0.2)
+        assert cond(), f"condition never met in {max_ticks} ticks"
 
     def settle(self, cid, timeout=60):
-        end = time.monotonic() + timeout
-        while cid in self.pool.flights and not self.pool.flights[cid].done():
-            assert time.monotonic() < end, f"{cid} never finished"
-            time.sleep(0.02)
+        fl = self.pool.flights.get(cid)
+        if fl is None:
+            return
+        futures.wait([f for _, f, _h in fl.tasks], timeout=timeout)   # a hang guard only
+        assert fl.done(), f"{cid} never finished"
 
     def st(self, cid):
         return S.read_state(self.cfg, cid)

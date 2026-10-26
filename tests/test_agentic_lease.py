@@ -73,24 +73,32 @@ def test_lease_file_without_lock_is_not_held(tmp_path):
 
 def test_heartbeat_races_info_updates(tmp_path):
     """SPEC-0224: info changes and heartbeats serialise on the lease lock — no RuntimeError from
-    a dict changing under json.dumps, no half-written file, no removed key written back."""
+    a dict changing under json.dumps, no half-written file, no removed key written back.
+    SPEC-0248: a fixed iteration count behind a barrier, and each thread must iterate while the
+    main loop runs, so the race is exercised at any machine speed (no wall-clock deadline)."""
     import json
     import threading
-    import time
 
     cfg = _cfg(tmp_path)
     lease = L.acquire(cfg, ["t"])
     errors, reads = [], []
     stop = threading.Event()
+    start = threading.Barrier(3)
+    counts = {"beat": 0, "read": 0}
+    iterated = {k: threading.Event() for k in counts}
 
     def beat():
+        start.wait(60)
         try:
             while not stop.is_set():
                 lease.heartbeat()
+                counts["beat"] += 1
+                iterated["beat"].set()
         except BaseException as e:        # noqa: BLE001 - the test asserts nothing was raised
             errors.append(e)
 
     def read():
+        start.wait(60)
         while not stop.is_set():
             try:
                 reads.append(json.loads(L.lease_path(cfg).read_text()))
@@ -98,15 +106,18 @@ def test_heartbeat_races_info_updates(tmp_path):
                 pass
             except ValueError as e:
                 errors.append(e)
+            counts["read"] += 1
+            iterated["read"].set()
 
     threads = [threading.Thread(target=beat), threading.Thread(target=read)]
     for t in threads:
         t.start()
     try:
-        deadline = time.monotonic() + 2
-        n = 0
-        while time.monotonic() < deadline:
-            n += 1
+        start.wait(60)
+        for n in range(1, 501):
+            if n == 500:                  # both threads are racing before the last pair
+                for name, ev in iterated.items():
+                    assert ev.wait(60), f"never saw: a {name} iteration"
             lease.update_info(draining={"reason": "code_changed", "since": "t",
                                         "waiting_on": [{"campaign": f"c{i}"} for i in range(n % 50)]})
             lease.pop_info("draining")
@@ -114,8 +125,10 @@ def test_heartbeat_races_info_updates(tmp_path):
     finally:
         stop.set()
         for t in threads:
-            t.join(10)
+            t.join(60)
+    assert not any(t.is_alive() for t in threads)
     assert errors == []
+    assert counts["beat"] >= 1 and counts["read"] >= 1
     assert reads and all(isinstance(r, dict) for r in reads)
     lease.heartbeat()
     assert "draining" not in json.loads(L.lease_path(cfg).read_text())

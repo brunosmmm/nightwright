@@ -1,7 +1,7 @@
 ---
 id: SPEC-0248
 title: "Reliability follow-ups from review: flaky timing tests and error-handling gaps"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-10-25
 updated: 2026-10-25

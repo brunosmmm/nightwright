@@ -1,11 +1,11 @@
 """SPEC-0224: the runner announces a drain in its lease info, the out-of-process watchdog turns a
 long one into `runner_draining`, and the drain keeps the stored backlog readiness fresh so
 `ready_not_admitted` still works."""
+import copy
 import datetime as dt
 import json
 import os
 import threading
-import time
 
 from test_agentic_e2e import (_git, _write, added, impl_done, make_cfg, make_repo, review,
                               script, write_review)
@@ -28,7 +28,7 @@ class GatedRunner:
     def run(self, req):
         for spec, ev in self.gates.items():
             if spec in str(req.cwd):
-                assert ev.wait(30), f"test never released {spec}"
+                assert ev.wait(60), f"test never released {spec}"
         return self.inner.run(req)
 
     def release_all(self):
@@ -36,18 +36,61 @@ class GatedRunner:
             ev.set()
 
 
-def _poll(fn, what, timeout=20):
-    deadline = time.monotonic() + timeout
-    while True:
-        got = fn()
-        if got:
-            return got
-        assert time.monotonic() < deadline, f"never saw: {what}"
-        time.sleep(0.02)
+class _Signal:
+    """Events set from the runner's own calls (SPEC-0248), so an observer thread waits on what
+    the runner did instead of polling files. `watch(name, pred)` arms an event that is set, with
+    a copy of the lease info, the first time `pred(info)` holds right after a real
+    `Lease.update_info`/`Lease.pop_info`; `backlog_ready(cfg, cid)` arms "B stored ready", set
+    when `cid`'s stored `backlog.ready` is true right after a `queue._refresh_backlog`."""
+
+    def __init__(self, monkeypatch):
+        self.events, self.preds, self.seen = {}, {}, {}
+        real_update, real_pop = L.Lease.update_info, L.Lease.pop_info
+
+        def update_info(lease, **kv):
+            real_update(lease, **kv)
+            with lease._lock:                        # the heartbeat thread writes info too
+                self._check(lease.info)
+
+        def pop_info(lease, *keys):
+            real_pop(lease, *keys)
+            with lease._lock:
+                self._check(lease.info)
+
+        monkeypatch.setattr(L.Lease, "update_info", update_info)
+        monkeypatch.setattr(L.Lease, "pop_info", pop_info)
+        self.monkeypatch = monkeypatch
+
+    def watch(self, name, pred):
+        self.events[name], self.preds[name] = threading.Event(), pred
+
+    def _check(self, info):
+        for name, pred in self.preds.items():
+            if not self.events[name].is_set() and pred(info):
+                self.seen[name] = copy.deepcopy(info)
+                self.events[name].set()
+
+    def backlog_ready(self, cfg, cid, name="B stored ready"):
+        self.events[name] = threading.Event()
+        real = Q._refresh_backlog
+
+        def refresh(c):
+            real(c)
+            st = S.read_state(cfg, cid)
+            if not self.events[name].is_set() and st["backlog"].get("ready"):
+                self.seen[name] = st
+                self.events[name].set()
+
+        self.monkeypatch.setattr(Q, "_refresh_backlog", refresh)
+
+    def wait(self, name, timeout=60):
+        """The info (or state) seen when `name` fired; the timeout is only a hang guard."""
+        assert self.events[name].wait(timeout), f"never saw: {name}"
+        return self.seen[name]
 
 
-def _draining(cfg):
-    return (L.read_lease(cfg) or {}).get("draining")
+def _n_waiting(info):
+    return len((info.get("draining") or {}).get("waiting_on") or [])
 
 
 def test_drain_writes_and_clears_lease_draining(tmp_path, monkeypatch):
@@ -67,19 +110,21 @@ def test_drain_writes_and_clears_lease_draining(tmp_path, monkeypatch):
             _commit(root, "src/wt/x.py", "A = 9\n", "code")
         return report
 
-    seen = {"during": [], "exec": None}
+    seen = {"exec": None}
+    sig = _Signal(monkeypatch)
+    sig.watch("draining with both flights", lambda i: _n_waiting(i) > 0)
+    sig.watch("waiting_on shrinks", lambda i: _n_waiting(i) == 1)
+    sig.watch("draining cleared", lambda i: sig.events["draining with both flights"].is_set()
+              and "draining" not in i)
 
     def fake_exec(exe, argv, env):
         seen["exec"] = {"lease": dict(L.read_lease(cfg)), "env": env}
 
     def observer():
         try:
-            seen["during"].append(_poll(lambda: (_draining(cfg) or {}).get("waiting_on")
-                                        and _draining(cfg), "draining with both flights"))
+            sig.wait("draining with both flights")
             runner.gates["SPEC-0001"].set()
-            seen["during"].append(_poll(
-                lambda: (d := _draining(cfg)) and len(d["waiting_on"]) == 1 and d,
-                "waiting_on shrinks"))
+            sig.wait("waiting_on shrinks")
         finally:
             runner.release_all()
 
@@ -88,8 +133,11 @@ def test_drain_writes_and_clears_lease_draining(tmp_path, monkeypatch):
     side = threading.Thread(target=observer, daemon=True)
     side.start()
     Q.run(cfg, max_ticks=50, poll_interval_s=0.05, reexec=True, code_root=root, runner=runner)
-    side.join(30)
-    first, second = seen["during"]
+    side.join(60)
+    assert not side.is_alive()
+    first = sig.wait("draining with both flights")["draining"]
+    second = sig.wait("waiting_on shrinks")["draining"]
+    sig.wait("draining cleared")
     assert first["reason"] == "code_changed" and first["since"]
     assert {w["campaign"] for w in first["waiting_on"]} == {a, b}
     for w in first["waiting_on"]:
@@ -193,14 +241,14 @@ def test_ready_not_admitted_fires_during_drain(tmp_path, monkeypatch):
         return report
 
     seen = {}
+    sig = _Signal(monkeypatch)
+    sig.watch("drain started", lambda i: bool(i.get("draining")))
+    sig.backlog_ready(cfg, b)
 
     def observer():
         try:
-            _poll(lambda: _draining(cfg), "drain started")
-            st = _poll(lambda: (s := S.read_state(cfg, b))["backlog"].get("ready") and s,
-                       "B stored ready during the drain")
-            seen["since"] = st["backlog"]["since"]
-            seen["draining_since"] = _draining(cfg)["since"]
+            seen["draining_since"] = sig.wait("drain started")["draining"]["since"]
+            seen["since"] = sig.wait("B stored ready")["backlog"]["since"]
             later = dt.datetime.now().astimezone() + dt.timedelta(seconds=2)
             seen["items"] = E.ready_not_admitted_items(cfg, later, E.settings(cfg))
         finally:
@@ -212,7 +260,8 @@ def test_ready_not_admitted_fires_during_drain(tmp_path, monkeypatch):
     side = threading.Thread(target=observer, daemon=True)
     side.start()
     Q.run(cfg, max_ticks=50, poll_interval_s=0.05, reexec=True, code_root=root, runner=runner)
-    side.join(30)
+    side.join(60)
+    assert not side.is_alive()
     assert S.read_state(cfg, c)["state"] != "QUEUED" and len(calls) == 1
     assert seen["since"] >= seen["draining_since"]            # stored during the drain
     (item,) = seen["items"]
@@ -225,15 +274,18 @@ def test_heartbeat_thread_survives_errors_and_journals_once(tmp_path):
     cfg = make_cfg(tmp_path, make_repo(tmp_path), script(tmp_path, []))
     lease = L.acquire(cfg, ["t"])
     calls = []
+    several = threading.Event()
 
     def boom(now=None):
         calls.append(1)
+        if len(calls) >= 3:
+            several.set()
         raise RuntimeError("dict changed size during iteration")
 
     lease.heartbeat = boom
     try:
         with Q._heartbeat_while(lease, interval_s=0.02) as hb:
-            _poll(lambda: len(calls) >= 3, "several failing beats")
+            assert several.wait(60), "never saw: several failing beats"
             assert hb._thread.is_alive()
     finally:
         lease.release()

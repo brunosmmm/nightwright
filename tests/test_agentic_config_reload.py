@@ -500,12 +500,30 @@ def test_config_errors_updates_race_heartbeat(make_env):
 
 # ---- the loop ----------------------------------------------------------------------------------
 
+class FakeTime:
+    """Stands in for `queue.time` (SPEC-0248): `sleep(s)` advances `monotonic()` by `s` and
+    returns at once, so the loop's waits are exact arithmetic, not wall time. Everything
+    else (`time()`, …) is the real module."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, s):
+        self.now += s
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 def _spy_ticks(monkeypatch):
     seen = []
     real = Q.tick
 
     def tick(cfg, **kw):
-        seen.append((time.monotonic(), cfg))
+        seen.append((Q.time.monotonic(), cfg))           # the fake clock when one is installed
         return real(cfg, **kw)
     monkeypatch.setattr(Q, "tick", tick)
     return seen
@@ -581,14 +599,17 @@ def test_no_loader_no_reload(make_env, monkeypatch):
 def test_poll_interval_reload_respects_cli_override(make_env, monkeypatch):
     env = make_env()
     env.lease.release()
+    monkeypatch.setattr(Q, "time", FakeTime())
+    old = float(env.doc["agentic"]["poll_interval_s"])
     mutate = _set(["agentic", "poll_interval_s"], 0.6)
     seen = _run(env, monkeypatch, loader=load_config, mutate=mutate)
-    assert seen[2][0] - seen[1][0] >= 0.55                  # the new interval applies
-    assert seen[1][0] - seen[0][0] < 0.3                    # the old one before the reload
+    assert seen[2][0] - seen[1][0] == pytest.approx(0.6)    # the new interval applies
+    assert seen[1][0] - seen[0][0] == pytest.approx(old)    # the old one before the reload
     env.doc["agentic"]["poll_interval_s"] = 0.01
     env.write(env.doc)
     seen = _run(env, monkeypatch, loader=load_config, mutate=mutate, poll_interval_s=0.01)
-    assert seen[2][0] - seen[1][0] < 0.3                    # --poll-interval wins
+    assert seen[2][0] - seen[1][0] == pytest.approx(0.01)   # --poll-interval wins
+    assert seen[1][0] - seen[0][0] == pytest.approx(0.01)
     env.lease = L.acquire(env.cfg)
 
 

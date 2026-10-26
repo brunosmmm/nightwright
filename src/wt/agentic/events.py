@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import fcntl
 import json
+import math
 import os
 import sys
 import time
@@ -93,7 +94,25 @@ DEFAULTS = {"poll_s": 2.0, "silent_after_s": 900, "overdue_grace_s": 60,
 
 
 def settings(cfg) -> dict:
-    return {**DEFAULTS, **(((cfg.get("agentic") or {}).get("events")) or {})}
+    """`DEFAULTS` overlaid with `agentic.events`. A numeric key whose value is a bool, not a
+    number (or numeric string), negative or not finite falls back to its default (SPEC-0248):
+    the listing and the dashboard read these too, and must not crash on a bad threshold."""
+    out = {**DEFAULTS, **(((cfg.get("agentic") or {}).get("events")) or {})}
+    for k, default in DEFAULTS.items():
+        if isinstance(default, bool) or not isinstance(default, (int, float)):
+            continue
+        v = out[k]
+        try:
+            f = float(v)
+        except (TypeError, ValueError, OverflowError):
+            f = None
+        if isinstance(v, bool) or f is None or not math.isfinite(f) or f < 0:
+            out[k] = default
+        elif isinstance(default, int) and f.is_integer():
+            out[k] = int(f)
+        else:
+            out[k] = f
+    return out
 
 
 # ---- paths ------------------------------------------------------------------------------

@@ -173,6 +173,32 @@ def test_apply_add_holds_add_lock(env, monkeypatch):
     assert held == [1]
 
 
+def test_apply_add_idea_holds_add_lock(env, monkeypatch):
+    """SPEC-0248: the duplicate re-check and the create both run under the add lock, checked
+    directly, so a removed lock fails without needing two threads to interleave."""
+    cfg, _ = env
+    iid = capture(cfg)
+    plan = Q.plan_add_idea(cfg, iid)
+    held = {"recheck": [], "create": []}
+    real_open, real_create = Q._open_idea_campaign, S.create_campaign
+
+    def depth():
+        return S._process_lock(S.agentic_dir(cfg) / "add.lock")[1]["depth"]
+
+    def recheck(c, idea_id):
+        held["recheck"].append(depth())
+        return real_open(c, idea_id)
+
+    def create(c, state, **kw):
+        held["create"].append(depth())
+        return real_create(c, state, **kw)
+
+    monkeypatch.setattr(Q, "_open_idea_campaign", recheck)
+    monkeypatch.setattr(S, "create_campaign", create)
+    Q.apply_add_idea(cfg, plan)
+    assert held == {"recheck": [1], "create": [1]}
+
+
 # ---- AC4: legacy spec campaigns are not "no spec yet" -----------------------------------------
 
 def test_legacy_spec_campaign_state_is_not_specless(env, monkeypatch):
