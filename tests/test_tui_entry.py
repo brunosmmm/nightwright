@@ -108,3 +108,28 @@ def test_app_shell_constructs_and_runs_headless(tmp_path):
     import asyncio
 
     asyncio.run(drive())
+
+
+# --- SPEC-0241: `wt tui --tab` ------------------------------------------------------------
+
+def _capture_run(monkeypatch, tmp_path):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    seen = {}
+    monkeypatch.setattr(T, "run", lambda c, **kw: seen.update(kw))
+    return seen
+
+
+@pytest.mark.parametrize("args,expect", [([], "ideas"), (["--tab", "queue"], "queue"),
+                                         (["--tab", "HUB"], "hub"), (["--tab", "ideas"], "ideas")])
+def test_tui_tab_option_is_passed_through(tmp_path, monkeypatch, args, expect):
+    seen = _capture_run(monkeypatch, tmp_path)
+    r = CliRunner().invoke(cli, ["tui", *args])
+    assert r.exit_code == 0, r.output
+    assert seen["tab"] == expect
+
+
+def test_tui_tab_option_rejects_unknown_tab(tmp_path, monkeypatch):
+    seen = _capture_run(monkeypatch, tmp_path)
+    r = CliRunner().invoke(cli, ["tui", "--tab", "mailbox"])
+    assert r.exit_code != 0 and "tab" in r.output and not seen

@@ -1382,8 +1382,11 @@ def hub_cmd(cfg, as_json, tasks_slice, state, kind, tag, project, workstream, pr
 @click.option("--desc", is_flag=True, help="reverse --sort order")
 @click.option("--all", "all_done", is_flag=True, help="start with non-active ideas shown")
 @click.option("--query", default=None, help="open on a related-idea search (SPEC-0086)")
+@click.option("--tab", type=click.Choice(["ideas", "hub", "queue"], case_sensitive=False),
+              default="ideas", show_default=True, help="tab to open on (SPEC-0241)")
 @click.pass_obj
-def tui_cmd(cfg, state, kind, tag, project, workstream, priority, sort, desc, all_done, query):
+def tui_cmd(cfg, state, kind, tag, project, workstream, priority, sort, desc, all_done, query,
+            tab):
     """Interactive ideas desk (SPEC-0098/0099/0100). Needs the optional `tui` extra.
 
     Read-only in v1: browse, search, expand Summary / questions / Log. Human-only surface —
@@ -1395,11 +1398,12 @@ def tui_cmd(cfg, state, kind, tag, project, workstream, priority, sort, desc, al
     wt tui --all              start with non-active shown (`a` toggles in-app)
     wt tui --project Example    open pre-filtered
     wt tui --query textual    open on a search (`/` searches in-app)
+    wt tui --tab queue        open on the live agentic queue (`1`/`2`/`3` switch tabs)
     """
     from . import tui as T
 
     try:
-        T.run(cfg, all_done=all_done, query=query,
+        T.run(cfg, all_done=all_done, query=query, tab=tab.lower(),
               filters={"state": state, "kind": kind, "tag": tag, "project": project,
                        "workstream": workstream, "priority": priority,
                        "sort": sort, "desc": desc})

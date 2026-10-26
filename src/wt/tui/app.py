@@ -20,6 +20,7 @@ from textual.widgets import (DataTable, Footer, Header, Input, Label, Static, Ta
 
 from .. import report as R
 from . import model as M
+from .queue_tab import QueueView
 
 # Half the terminal, with a floor: proportional so a wide terminal spends the extra columns on
 # headings, floored so the metadata columns never get squeezed out (at 35% a 100-col terminal
@@ -357,6 +358,9 @@ class IdeaDesk(App):
     #panes { height: 1fr; }
     #hub { height: 1fr; }
     #hub-status { color: $text-muted; padding: 0 1; }
+    #queue-view { height: 1fr; }
+    #queue { height: 1fr; }
+    #queue-status { color: $text-muted; padding: 0 1; }
     #list-pane { width: LIST_W; min-width: LIST_MINW; }
     #list { height: 1fr; }
     #tree { height: 1fr; display: none; }
@@ -414,15 +418,21 @@ class IdeaDesk(App):
         # SPEC-0103 metadata + clock
         Binding("m", "metadata", "meta"),
         Binding("h", "toggle_hub", "hub"),
+        # SPEC-0241: number keys select tabs; later agentic tabs extend the digits.
+        Binding("1", "tab('tab-ideas')", "ideas", show=False),
+        Binding("2", "tab('tab-hub')", "hub", show=False),
+        Binding("3", "tab('tab-queue')", "queue", show=False),
         Binding("i", "clock_toggle", "clock"),
         Binding("X", "close_idea", "close", show=False),
         Binding("q", "quit", "quit"),
         Binding("escape", "clear_bars", "clear", show=False),
     ]
 
-    def __init__(self, cfg, *, all_done=False, query=None, filters=None):
+    def __init__(self, cfg, *, all_done=False, query=None, filters=None, tab="ideas"):
         super().__init__()
         self.cfg = cfg
+        self.tab = tab or "ideas"
+        self._active_tab = "tab-ideas"
         self.all_done = all_done
         self.query = query or ""
         self.filters = filters or {}
@@ -445,7 +455,7 @@ class IdeaDesk(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with TabbedContent(id="tabs"):
+        with TabbedContent(id="tabs", initial=f"tab-{self.tab}"):
             with TabPane("ideas", id="tab-ideas"):
                 with Horizontal(id="panes"):
                     with Vertical(id="list-pane"):
@@ -461,6 +471,9 @@ class IdeaDesk(App):
             with TabPane("hub", id="tab-hub"):
                 yield DataTable(id="hub", cursor_type="row")
                 yield Static("", id="hub-status")
+            # SPEC-0241: live view of the agentic queue (wt.queue.dashboard.v1).
+            with TabPane("queue", id="tab-queue"):
+                yield QueueView(self.cfg, id="queue-view")
         yield Input(placeholder="search ideas…", id="search")
         yield Input(placeholder="filter: project=X kind=bug priority=A …", id="filter")
         yield Static("", id="hint")
@@ -469,7 +482,8 @@ class IdeaDesk(App):
     def on_mount(self) -> None:
         table = self.query_one("#list", DataTable)
         # columns are planned per width in `paint`; nothing to add here
-        table.focus()
+        if self.tab == "ideas":
+            table.focus()       # focusing a hidden pane's widget would switch back to its tab
         # Paint *after* the first refresh: pane widths don't exist until layout has run, and the
         # heading column is clipped to a measured budget.
         self.call_after_refresh(self.reload)
@@ -1000,10 +1014,32 @@ class IdeaDesk(App):
         tabs = self.query_one("#tabs", TabbedContent)
         tabs.active = "tab-ideas" if tabs.active == "tab-hub" else "tab-hub"
 
+    def action_tab(self, name: str) -> None:
+        """Select a tab by id (`1`/`2`/`3`); loading and focus hang off `TabActivated`."""
+        self.query_one("#tabs", TabbedContent).active = name
+
+    # Idea-scoped actions act on the selected idea of the ideas list, which is hidden on any
+    # other tab. Disabled there so e.g. `x` on the queue tab cannot change org state.
+    _IDEA_ACTIONS = frozenset({
+        "search", "toggle_all", "filter", "cycle_sort", "toggle_desc", "toggle_wide",
+        "toggle_tree", "refresh_desk", "log", "summary", "questions", "capture", "retitle",
+        "explored", "metadata", "clock_toggle", "close_idea"})
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action in self._IDEA_ACTIONS and self._active_tab != "tab-ideas":
+            return False
+        return True
+
     @on(TabbedContent.TabActivated, "#tabs")
     def _tab_activated(self, event: TabbedContent.TabActivated) -> None:
         """Load + focus for whichever tab just became active, by whatever route."""
         active = self.query_one("#tabs", TabbedContent).active
+        self._active_tab = active
+        queue = self.query_one("#queue-view", QueueView)
+        if active == "tab-queue":
+            queue.activate()
+            return
+        queue.deactivate()
         if active == "tab-hub":
             # Reload every activation: the hub is triage over ideas/specs/outbox that this very
             # desk mutates, so a stale hub is worse than a cheap re-read. load_hub never writes.
@@ -1011,6 +1047,12 @@ class IdeaDesk(App):
             self.query_one("#hub", DataTable).focus()
         else:
             self.query_one("#list", DataTable).focus()
+
+    @on(QueueView.CampaignSelected)
+    def _campaign_selected(self, event: QueueView.CampaignSelected) -> None:
+        """`enter` on a queue row. The detail view (IDEA-084) will consume this; until then,
+        a CLI hint, as the hub does for spec rows."""
+        self.notify(f"wt campaign show {event.campaign_id}", title="run this in a shell")
 
     def load_hub(self) -> None:
         """Fill the hub tab from `hub_payload`. Read-only: no writer is reachable from here."""

@@ -158,7 +158,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0237](./specs/0237-workflow-profiles-as-yaml-files-builtin-user-project.md) Workflow profiles as YAML files: builtin package data, user and project layers — done
   - [ ] [SPEC-0238](./specs/0238-wt-profiles-list-show-with-provenance-and-recorded-sources.md) `wt profiles list/show/check` with per-value provenance; sources recorded on campaigns and runs — accepted
   - [x] [SPEC-0239](./specs/0239-grouped-review-follow-ups-one-idea-per-campaign.md) Grouped review follow-ups: one idea per campaign, and a migration for the singles — done
-  - [ ] [SPEC-0241](./specs/0241-tui-queue-tab-over-the-queue-dashboard.md) TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon — accepted
+  - [x] [SPEC-0241](./specs/0241-tui-queue-tab-over-the-queue-dashboard.md) TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon — done
   - [x] [SPEC-0242](./specs/0242-wt-spec-review-show-and-wt-spec-reviews.md) wt spec review --show and wt spec reviews: read stored reviews without re-running — done
   - [ ] [SPEC-0243](./specs/0243-outbound-spec-reviews-use-the-target-project-checkout.md) Outbound spec reviews use the target project's checkout; admission recorded on the campaign — accepted
   - [ ] [SPEC-0244](./specs/0244-adoption-clears-a-stale-index-lock-before-collecting.md) Adoption clears a stale .git/index.lock left by a killed implementer before collecting — accepted
@@ -186,7 +186,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0234](./specs/0234-docs-only-merge-requests-and-conductor-skill-routing.md) | Docs-only merge requests and conductor/steward skill routing | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0235](./specs/0235-escalation-answers-decide-waive-attest-conductor-applies.md) | Escalation answers: wt escalations answer (choose/waive/attest/text); the conductor applies them | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0238](./specs/0238-wt-profiles-list-show-with-provenance-and-recorded-sources.md) | `wt profiles list/show/check` with per-value provenance; sources recorded on campaigns and runs | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0241](./specs/0241-tui-queue-tab-over-the-queue-dashboard.md) | TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0243](./specs/0243-outbound-spec-reviews-use-the-target-project-checkout.md) | Outbound spec reviews use the target project's checkout; admission recorded on the campaign | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0244](./specs/0244-adoption-clears-a-stale-index-lock-before-collecting.md) | Adoption clears a stale .git/index.lock left by a killed implementer before collecting | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0246](./specs/0246-tui-campaign-detail-screen.md) | TUI campaign detail screen: header, filterable ledger timeline, runs, gates and reviews | feature | accepted | M9: agentic workflow | 2026-10-25 |
@@ -418,6 +417,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0236](./specs/0236-wt-campaign-export-dataset-for-mis-sizing-analysis.md) | `wt campaign export`: a flat campaign dataset for mis-sizing analysis | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0237](./specs/0237-workflow-profiles-as-yaml-files-builtin-user-project.md) | Workflow profiles as YAML files: builtin package data, user and project layers | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0239](./specs/0239-grouped-review-follow-ups-one-idea-per-campaign.md) | Grouped review follow-ups: one idea per campaign, and a migration for the singles | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0241](./specs/0241-tui-queue-tab-over-the-queue-dashboard.md) | TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0242](./specs/0242-wt-spec-review-show-and-wt-spec-reviews.md) | wt spec review --show and wt spec reviews: read stored reviews without re-running | feature | done | M9: agentic workflow | 2026-10-25 |
 
 ## Superseded / rejected

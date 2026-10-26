@@ -1,7 +1,7 @@
 ---
 id: SPEC-0241
 title: "TUI queue tab: live view of the agentic queue with park, resume, prioritize and abandon"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -215,26 +215,26 @@ functions' `ValueError` unchanged.
 
 ## Acceptance criteria
 
-- [ ] AC1. `wt tui` has a `queue` tab. `3`, a mouse click, and `wt tui --tab queue` open it, and
+- [x] AC1. `wt tui` has a `queue` tab. `3`, a mouse click, and `wt tui --tab queue` open it, and
       each loads and focuses the table. `1` and `2` select ideas and hub. `h` still toggles
       ideas and hub. On the queue tab the idea-scoped app actions are disabled: a pilot test
       presses `x`, `i`, `X`, `l` and `c` there and the ideas file is byte-identical afterwards.
-- [ ] AC2. `load_queue` emits the sections in the documented order with the documented `meta`
+- [x] AC2. `load_queue` emits the sections in the documented order with the documented `meta`
       text, from a seeded data dir with at least one campaign per section. Empty sections emit
       nothing, and an empty queue yields the single `queue is empty` row. A campaign with a
       deferred park appears in both its park section and `active` without a duplicate-key
       error, and `allowed_actions` does not offer `park` (nor `resume`) for it.
-- [ ] AC3. `header_line` shows the runner pid or `down`/`stale`, the heartbeat age, the slots,
+- [x] AC3. `header_line` shows the runner pid or `down`/`stale`, the heartbeat age, the slots,
       the held conductor pid or `none`, the held steward projects, and the spend today. The tab
       renders it under the table.
-- [ ] AC4. While the tab is active, a change of `queue_signature` (a campaign state write) reloads
+- [x] AC4. While the tab is active, a change of `queue_signature` (a campaign state write) reloads
       the rows within one poll interval, with no key press, and the cursor stays on the same
       campaign. No reload happens while the signature is unchanged and the 15 s interval has
       not elapsed. A load error shows `queue failed: …` and keeps the rows.
-- [ ] AC5. The tab never calls `events.sync`, `events.cursor_set`, `events.reader_lock`,
+- [x] AC5. The tab never calls `events.sync`, `events.cursor_set`, `events.reader_lock`,
       `events.follow` or `mailbox.follow`. A pilot test monkeypatches them to raise and drives
       load, refresh and every action.
-- [ ] AC6. Park, resume (with and without a note), prioritize and abandon (with and without
+- [x] AC6. Park, resume (with and without a note), prioritize and abandon (with and without
       keeping the worktree) each prompt, confirm with the plan summary, and then call the
       matching `plan_*`/`apply_*`. The campaign state afterwards equals what the CLI produces,
       compared on `state`, `priority`, `park`, `park_requested` (without its `at`),
@@ -244,9 +244,9 @@ functions' `ValueError` unchanged.
       Cancel or Esc at any step writes nothing. A `ValueError` from a plan or an apply is shown
       as an error notification and writes nothing. An action that is not allowed for the row's
       state notifies and opens no prompt.
-- [ ] AC7. `enter` posts `CampaignSelected`, and without the detail view the desk shows the
+- [x] AC7. `enter` posts `CampaignSelected`, and without the detail view the desk shows the
       `wt campaign show <id>` hint.
-- [ ] AC8. Full `uv run pytest` is green, the existing assertions in `tests/test_tui_*` are
+- [x] AC8. Full `uv run pytest` is green, the existing assertions in `tests/test_tui_*` are
       unchanged and green (new tests may be added to those files), and
       `python3 tools/spec_lint.py` exits 0.
 
@@ -279,6 +279,36 @@ functions' `ValueError` unchanged.
 - **Regression guard:** full `uv run pytest`, in particular `tests/test_tui_hub.py` and
   `tests/test_tui_desk.py`, unchanged.
 
+### Test record (2026-10-25)
+
+- `uv run pytest tests/test_tui_queue_model.py tests/test_tui_queue_tab.py tests/test_tui_entry.py`:
+  new model tests (25), pilot tests (27) and the `--tab` entry tests all pass.
+- Full `uv run pytest -q -x`: green except `test_internal_spec_lint_unaffected_by_outbox` on the first
+  run, which only flagged a stale `docs/LEDGER.md` (the spec status had just changed). After
+  `python3 tools/spec_lint.py --write-ledger` the full suite was rerun and is green (see below).
+- `python3 tools/spec_lint.py` exits 0.
+- Manual verification, read-only (no tty, so a headless `run_test` against the live data dir with
+  `POLL_S = 1.0`): `wt tui --tab queue` opened on the queue tab with 27 rows, and over 60 s the
+  tab reloaded 15 more times on its own as the live campaigns wrote state, a run's elapsed time
+  advancing with no key press. Park/resume of a queued test campaign was **not** done on the live
+  queue (it would mutate real work); those flows are covered by the pilot tests on a seeded
+  data dir, compared against the CLI's resulting state.
+
+### As shipped
+
+- `QueueRow` has one extra field, `priority` (default `None`), so the prioritize picker can show
+  the current value. `backlog` payload entries carry no `state`, so the model sets `QUEUED` for them.
+- `QueueView.CampaignSelected` also carries the row title (unused for now).
+- `wt tui --tab` accepts `ideas|hub|queue` case-insensitively. The initial tab is passed to
+  `TabbedContent(initial=...)`, and `on_mount` skips focusing the ideas list for other tabs
+  (focusing a hidden pane's widget switches back to that tab).
+- `IdeaDesk.check_action` tracks the active tab in `_active_tab` (set by the `TabActivated`
+  handler) rather than querying the DOM, so it also works while a modal is on top.
+- Refresh and action flows use async workers with `asyncio.to_thread` (the desk's SPEC-0134
+  pattern) instead of `run_worker(..., thread=True)`; the action flow awaits modals with
+  `push_screen_wait`. A deferred park is detected from the applied state (not `PARKED`).
+- The pilot tests press keys one at a time with a short pause so each modal can mount.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -290,11 +320,11 @@ Base installs are unaffected: `wt.tui` still imports Textual only inside `run()`
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
