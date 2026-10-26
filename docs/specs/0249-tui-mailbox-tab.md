@@ -61,24 +61,41 @@ two tables (inboxes, threads) and a thread pane. `IdeaDesk` adds `TabPane("mailb
 id="tab-mailbox")` on key `4` and `--tab mailbox`. Replies and new messages go through
 `mailbox.send`.
 
+Replying from another agent's inbox is intended: it is the human stepping in. A reply whose
+`re` is a steward's question in the conductor inbox answers that question, so it leaves
+`unanswered("conductor")` and the conductor is no longer expected to answer it. The
+confirmation says so explicitly (see Reply), so the human makes that choice knowingly.
+
 ## Design
 
 ### View model (`agentic_model.py`)
 
+- **One snapshot per reload.** Every function below takes `msgs = mailbox._all_messages(cfg)`,
+  read once per reload, and computes everything from it. That covers the per-inbox lists
+  (filter `to == addr`), the replied-id set (`{m["re"] for m in msgs if m.get("re")}`, the
+  rule `mailbox.unanswered` uses) and the thread closure (the transitive `re` closure, the rule
+  `mailbox.thread` uses). Rows within one reload therefore cannot disagree, and the cost is one
+  read of the inbox files per reload, not one per thread. Tests assert equality with
+  `mailbox.unanswered` / `mailbox.thread` on the same data.
 - `load_inboxes(cfg) -> list[InboxRow]`. `InboxRow` has `address`, `unanswered`, `total` and
   `last_ts`. There is one row per `mailbox.known_addresses(cfg)` entry, in that order
-  (conductor, human, stewards). `unanswered` is `len(mailbox.unanswered(cfg, addr))`, `total` is
-  `len(read_inbox(cfg, addr))`, and `last_ts` is the newest message `ts` or None.
+  (conductor, human, stewards). `unanswered` counts the inbox's `needs_reply` messages not in
+  the replied-id set, `total` counts the inbox's messages, and `last_ts` is the newest message
+  `ts` or None.
 - `thread_root(msgs_by_id, msg) -> str`: follow `re` up to a message without `re`, or whose `re`
-  is unknown, and return its id. A cycle guard stops after `len(msgs_by_id)` steps.
+  is unknown, and return its id. When the walk revisits an id (a cycle), the root is the
+  lexicographically smallest id in the cycle, so every member of the cycle maps to the same
+  root.
 - `load_threads(cfg, addr) -> list[ThreadRow]`. `ThreadRow` has `root_id`, `subject`, `peer`,
-  `campaign`, `count`, `last_ts`, `unanswered` and `reply_to`. It groups `read_inbox(cfg, addr)`
-  by `thread_root` over `_all_messages(cfg)` and fills the fields as follows:
+  `campaign`, `count`, `last_ts`, `unanswered` and `reply_to`. It groups the inbox's messages
+  by `thread_root` over the snapshot and fills the fields as follows:
   - `subject` is the root's text, first line, clipped to 80 characters;
-  - `peer` is the other party of the latest message in the thread;
-  - `count` is the size of the whole thread (`mailbox.thread(cfg, root_id)`);
-  - `unanswered` is true when any message of the thread in this inbox is in
-    `mailbox.unanswered(cfg, addr)`;
+  - `peer`: take the latest message of the thread that has `addr` as `from` or `to`; `peer`
+    is its other party. If no such message exists, `peer` is the `from` of the thread's latest
+    message;
+  - `count` is the size of the whole thread (the closure from the root);
+  - `unanswered` is true when any message of the thread in this inbox needs a reply and is not
+    in the replied-id set;
   - `reply_to` is the newest message of the thread in this inbox (the message a reply answers).
 
   Order: `unanswered` first, then `last_ts` descending.
@@ -96,7 +113,8 @@ id="tab-mailbox")` on key `4` and `--tab mailbox`. Replies and new messages go t
 ### Widget (`mailbox_tab.py`)
 
 - **Layout:** the left column (width 28) is the inboxes table (`address`, `open/total`, with a
-  bold address when `unanswered > 0`). The right column holds the threads table (`!` marker for
+  bold address when `unanswered > 0`; rows are keyed by address, and code and tests select
+  inbox rows by key, never by index). The right column holds the threads table (`!` marker for
   unanswered, `peer`, `subject`, `campaign`, `n`, `last` age) above a thread pane
   (`VerticalScroll`, about 50% of the height) showing `thread_text` for the highlighted thread.
 - **Opening:** the tab selects the first inbox with `unanswered > 0`, else `human`.
@@ -106,24 +124,35 @@ id="tab-mailbox")` on key `4` and `--tab mailbox`. Replies and new messages go t
   - `r` replies to the highlighted thread;
   - `n` writes a new message, and is also available on the inboxes table;
   - `enter` on a thread with a campaign posts `QueueView.CampaignSelected(campaign)`, which
-    opens the campaign detail screen when it exists (SPEC-0246) or the SPEC-0241 hint;
+    opens the campaign detail screen when it exists (SPEC-0246) or the SPEC-0241 hint. On a
+    thread without a campaign, `enter` moves focus to the thread pane (so it can be scrolled)
+    and posts nothing;
   - `j` / `k` move.
 - **Reply:**
-  1. The target is `reply_to.from`. A thread whose `reply_to` was sent by `human` itself
-     replies to `reply_to.to`.
+  1. The target is `reply_to.from`, with `re = reply_to.id`. When `reply_to` was sent by
+     `human` itself (a follow-up to the human's own message), the target is `reply_to.to` and
+     `re = reply_to.re` (None when it has no `re`). The human's follow-up therefore never
+     marks the human's own message as answered: a `request` the human sent stays unanswered
+     until its addressee replies.
   2. Pick the kind with `ChoiceScreen("kind", ["answer", "info", "request", "question"])`,
      defaulting to `answer` when `reply_to.kind` is `question` or `request`, else `info`.
   3. Enter the text with `BodyPrompt` (multi-line).
-  4. Confirm with `ChoiceScreen("send <kind> to <addr> re <reply_to.id>?", ["send",
-     "cancel"])`.
-  5. Call `send_apply` with `re=reply_to.id` and `campaign=reply_to.campaign`.
+  4. Confirm with `ChoiceScreen("send <kind> to <addr> re <re or '-'>?", ["send", "cancel"])`.
+     When the selected inbox is not `human` and `re` names a message that needs a reply, the
+     title adds `; this answers it for <inbox>`.
+  5. Call `send_apply` with that `re` and `campaign=reply_to.campaign`.
 - **New message:**
   1. Pick the address with `ChoiceScreen` (every known address except `human`).
   2. Pick the kind, defaulting to `request`.
   3. Pick the campaign with `ChoiceScreen` over `(none)` plus the non-terminal campaigns from
-     `store.list_campaigns`, shown as `<id>  <spec_id>`.
+     `store.list_campaigns`, shown as `<id>  <spec_id>`. The chosen label is mapped back to
+     its campaign id through a label→id dict built with the choices, and `(none)` maps to
+     `campaign=None`.
   4. Enter the text with `BodyPrompt`, confirm, and send.
-- After a send the tab reloads, and the cursor goes to the thread that holds the sent message.
+- After a reply the tab reloads, keeps the selected inbox (the thread touches it through
+  `reply_to`) and keeps the cursor on that thread. After a new message the tab selects the
+  **target** inbox and puts the cursor on the new thread, since the selected inbox usually
+  holds no thread with it.
 - A `ValueError` from the plan or the send is an error notification with nothing written. Esc
   or cancel at any step writes nothing.
 - **Live refresh:** while the tab is active, `set_interval(2.0)` compares `mailbox_signature`
@@ -162,18 +191,24 @@ id="tab-mailbox")` on key `4` and `--tab mailbox`. Replies and new messages go t
       the documented header line and full text, and marks unanswered `needs_reply` messages.
 - [ ] AC4. Reply sends one `mailbox.send` with `frm="human"`, the documented target and default
       kind, `re` = `reply_to.id` and the thread's campaign. Afterwards that message is no longer
-      in `mailbox.unanswered` for its inbox, and the thread loses its `!` marker after the
-      reload.
+      in `mailbox.unanswered` for its inbox, the thread loses its `!` marker after the reload,
+      and the cursor stays on the thread. A follow-up to the human's own `request` goes to its
+      addressee with `re = reply_to.re`, and the request stays unanswered. A reply from the
+      conductor inbox to a steward's question shows the "answers it for conductor" notice in
+      the confirmation and removes the question from `unanswered("conductor")`.
 - [ ] AC5. New message picks the address (never `human`), the kind, an optional campaign and the
       text, then sends. Cancel or Esc at any step writes nothing. An empty text or an invalid
-      address is refused with an error notification and nothing written.
+      address is refused with an error notification and nothing written. After a send the tab
+      shows the target inbox with the cursor on the new thread, and the chosen campaign label
+      maps to its id (`(none)` → no campaign).
 - [ ] AC6. A message appended to any inbox by another process shows within one poll interval
       with no key press, and the selected inbox and thread are kept. The tab never calls
       `mailbox.follow`, `events.reader_lock`, `events.cursor_set` or `events.sync`
       (monkeypatched to raise in the test).
-- [ ] AC7. `enter` on a thread with a campaign posts `CampaignSelected`.
-- [ ] AC8. Full `uv run pytest` is green, the existing `tests/test_tui_*` are unchanged and
-      green, and `python3 tools/spec_lint.py` exits 0.
+- [ ] AC7. `enter` on a thread with a campaign posts `CampaignSelected`. On a thread without one
+      it focuses the thread pane and posts nothing.
+- [ ] AC8. Full `uv run pytest` is green, the existing assertions in `tests/test_tui_*` are
+      unchanged and green (new tests may be added), and `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -181,7 +216,9 @@ id="tab-mailbox")` on key `4` and `--tab mailbox`. Replies and new messages go t
   - `tests/test_tui_mailbox_model.py` (new, no Textual). Seed messages with `mailbox.send` in a
     temp data dir with two registered projects, then test:
     - `load_inboxes` counts;
-    - `thread_root` with a dangling `re` and a hand-written cycle;
+    - `thread_root` with a dangling `re` and a hand-written cycle (every member maps to the
+      smallest id);
+    - snapshot results equal to `mailbox.unanswered` / `mailbox.thread` on the same data;
     - `load_threads` grouping across inboxes, ordering, `reply_to` and `peer` (including a
       thread whose last message is from `human`);
     - `thread_text` content;
@@ -191,6 +228,8 @@ id="tab-mailbox")` on key `4` and `--tab mailbox`. Replies and new messages go t
     - tab opening via `4` and `--tab mailbox`;
     - the initial inbox choice;
     - reply end to end (the message read back from the target inbox, unanswered cleared);
+    - a follow-up to the human's own request (`re = reply_to.re`, request still unanswered);
+    - a reply from the conductor inbox to a steward question (notice shown);
     - new message end to end;
     - cancel and Esc at each step;
     - an error notification;

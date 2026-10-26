@@ -73,6 +73,14 @@ and the existing `TabActivated` handler loads and focuses it.
 - Bindings specific to a tab live on its focused table subclass. Textual resolves the focused
   widget's bindings before the app's, so `p` and `r` mean park and refresh on the queue table
   while the ideas list keeps its own meaning.
+- **Idea-scoped app actions are gated.** Keys the queue table does not shadow would otherwise
+  resolve through `IdeaDesk.BINDINGS` and act on the selected idea of the hidden ideas list.
+  `IdeaDesk.check_action(action, parameters)` returns `False` for the idea-scoped actions
+  (`search`, `toggle_all`, `filter`, `cycle_sort`, `toggle_desc`, `toggle_wide`,
+  `toggle_tree`, `refresh_desk`, `log`, `summary`, `questions`, `capture`, `retitle`,
+  `explored`, `metadata`, `clock_toggle`, `close_idea`) unless `tab-ideas` is active. Textual
+  then neither runs them nor shows them in the footer. The keys that stay global are `q`
+  (quit), `1`–`3` (and the later tabs' digits), `h` (ideas/hub toggle) and `escape`.
 
 ### View model (`agentic_model.py`)
 
@@ -99,12 +107,14 @@ section emits no rows):
 
 `actions` is computed by `allowed_actions(state, park_requested)`. It mirrors the state guards
 of the plan functions, so the footer never offers an action that the plan would refuse:
-- `park`: not terminal, not PARKED;
+- `park`: not terminal, not PARKED, and `park_requested` not set (a second `p` would only
+  overwrite the pending deferred park; the row's `meta` already shows it);
 - `resume`: PARKED;
 - `prioritize`: QUEUED, WAITING, PARKED;
 - `abandon`: PARKED, QUEUED, WAITING.
 
-The plan functions still re-check every guard.
+`park_requested` changes nothing else: `resume` stays unavailable because the state is not
+PARKED. The plan functions still re-check every guard.
 
 `header_line(payload, followers) -> str` returns one line:
 `runner <pid|down|stale> · hb <heartbeat_age_s>s · slots <busy>/<total> · conductor <pid|none>
@@ -113,13 +123,20 @@ The plan functions still re-check every guard.
 - The conductor is the `events` reader named `conductor` with `held` true.
 - Stewards are the held `mailbox:steward:<P>` readers.
 - `draining` (SPEC-0224) appends ` · draining`.
+- Payload paths: `payload["lease"]` gives `held`, `pid`, `stale`, `heartbeat_age_s` and
+  `draining`; `payload["slots"]` gives `busy` / `total`; `payload["totals"]["spend_today_usd"]`
+  gives the spend. The runner cell is `down` when `lease.held` is false, `stale` (with the pid,
+  `stale <pid>`) when `lease.stale` is true, else the pid. `hb` shows `-` when
+  `heartbeat_age_s` is None.
 
 `queue_signature(cfg) -> tuple` is built from `stat()` calls only:
 - `(size, mtime_ns)` of `events.events_path(cfg)`;
-- `(size, mtime_ns)` of the lease file;
+- `(size, mtime_ns)` of `lease.lease_path(cfg)` (the file `lease.read_lease` reads);
 - the sorted `(name, mtime_ns)` of every `campaigns/*/state.json`.
 
-A missing path contributes `None`.
+A missing path contributes `None`. A follower taking or dropping its reader lock usually
+changes no mtime, so conductor and steward changes in the header show up on the 15 s reload
+(below), not on the 2 s poll. That is accepted.
 
 `queue_action(cfg, action, campaign, **kw) -> dict` dispatches the four actions:
 - `park` → `plan_park(cfg, c, reason)` then `apply_park`;
@@ -141,7 +158,11 @@ functions' `ValueError` unchanged.
     reloads in a thread worker (`run_worker(..., thread=True)`), as SPEC-0134 does for the desk;
   - a second interval of 15 s reloads anyway, because ages and the runner heartbeat change
     without any file write;
-  - a reload keeps the cursor on the same campaign id when it is still listed;
+  - rows are keyed by `(section, campaign)`, because a campaign with a deferred park
+    (`park_requested`) is listed both under its park section and under `active`
+    (`dashboard_payload` adds it to the attention list and then falls through). A reload
+    restores the cursor to the same `(section, campaign)`, else to the first row of that
+    campaign, else to the same row index clamped to the table;
   - a reload that raises `OSError` or `ValueError` shows `queue failed: <error>` in the status
     line and keeps the previous rows.
 - **Read-only by construction:** the tab never calls `events.sync`, `events.cursor_set`,
@@ -168,8 +189,11 @@ functions' `ValueError` unchanged.
      - prioritize: `priority <from> → <to>`;
      - abandon: `abandon <id>`, plus `, removes worktree <path>` when the plan removes it.
      The choices are `yes` and `cancel`. For abandon they are `abandon`, `abandon, keep
-     worktree` and `cancel`. Choosing keep re-plans with `keep_worktree=True`.
-  5. On yes, apply in a thread worker, notify `<action> <id> done`, and reload.
+     worktree` and `cancel` when the plan's `worktree_present` is true, else only `abandon`
+     and `cancel`. Choosing keep re-plans with `keep_worktree=True`.
+  5. On yes, apply in a thread worker, notify `<action> <id> done`, and reload. A park whose
+     plan `mode` is `deferred` notifies `park requested for <id> (applies after the running
+     step)` instead, since `apply_park` only sets `park_requested`.
   A `ValueError` at any step notifies with severity `error` and writes nothing. Esc or cancel at
   any step writes nothing.
 - **Enter:** posts `QueueView.CampaignSelected(campaign_id)`. `IdeaDesk` handles it. Until
@@ -193,10 +217,13 @@ functions' `ValueError` unchanged.
 
 - [ ] AC1. `wt tui` has a `queue` tab. `3`, a mouse click, and `wt tui --tab queue` open it, and
       each loads and focuses the table. `1` and `2` select ideas and hub. `h` still toggles
-      ideas and hub.
+      ideas and hub. On the queue tab the idea-scoped app actions are disabled: a pilot test
+      presses `x`, `i`, `X`, `l` and `c` there and the ideas file is byte-identical afterwards.
 - [ ] AC2. `load_queue` emits the sections in the documented order with the documented `meta`
       text, from a seeded data dir with at least one campaign per section. Empty sections emit
-      nothing, and an empty queue yields the single `queue is empty` row.
+      nothing, and an empty queue yields the single `queue is empty` row. A campaign with a
+      deferred park appears in both its park section and `active` without a duplicate-key
+      error, and `allowed_actions` does not offer `park` (nor `resume`) for it.
 - [ ] AC3. `header_line` shows the runner pid or `down`/`stale`, the heartbeat age, the slots,
       the held conductor pid or `none`, the held steward projects, and the spend today. The tab
       renders it under the table.
@@ -209,14 +236,19 @@ functions' `ValueError` unchanged.
       load, refresh and every action.
 - [ ] AC6. Park, resume (with and without a note), prioritize and abandon (with and without
       keeping the worktree) each prompt, confirm with the plan summary, and then call the
-      matching `plan_*`/`apply_*`. The campaign state afterwards equals what the CLI produces.
+      matching `plan_*`/`apply_*`. The campaign state afterwards equals what the CLI produces,
+      compared on `state`, `priority`, `park`, `park_requested` (without its `at`),
+      `pending_brief` and whether the worktree exists, ignoring timestamps. A deferred park
+      shows the `park requested` notification. The keep-worktree choice appears only when a
+      worktree exists.
       Cancel or Esc at any step writes nothing. A `ValueError` from a plan or an apply is shown
       as an error notification and writes nothing. An action that is not allowed for the row's
       state notifies and opens no prompt.
 - [ ] AC7. `enter` posts `CampaignSelected`, and without the detail view the desk shows the
       `wt campaign show <id>` hint.
-- [ ] AC8. Full `uv run pytest` is green, the existing `tests/test_tui_*` are unchanged and
-      green, and `python3 tools/spec_lint.py` exits 0.
+- [ ] AC8. Full `uv run pytest` is green, the existing assertions in `tests/test_tui_*` are
+      unchanged and green (new tests may be added to those files), and
+      `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -236,7 +268,11 @@ functions' `ValueError` unchanged.
     - the `enter` hint;
     - the AC5 forbidden-call monkeypatches;
     - a load error kept in the status line.
-  - `tests/test_tui_entry.py`: `wt tui --tab` option parsing and pass-through.
+  - `tests/test_tui_entry.py` (added tests only): `wt tui --tab` option parsing and
+    pass-through.
+  - `tests/test_tui_queue_tab.py` also covers: a deferred-park campaign listed twice with the
+    cursor restored, the `park requested` notification, abandon of a QUEUED campaign without a
+    worktree (no keep choice), and the idea-key gating (AC1).
 - **Manual verification:** `uv run wt tui --tab queue` against the live data dir while a
   campaign runs: watch a phase change appear without a key press, park and resume a queued test
   campaign, and record the result here.

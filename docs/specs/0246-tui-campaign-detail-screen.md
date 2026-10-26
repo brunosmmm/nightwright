@@ -76,8 +76,12 @@ same state keys):
 3. `branch <b>  worktree <path>`, with ` (missing)` when the directory is gone.
 4. When parked: `parked <reason>: <detail> → resume to <resume_to>`. When a park is requested:
    `park requested: <detail>`.
-5. When `state.close.followups.idea_id` is set (SPEC-0239) or follow-ups were filed:
-   `follow-ups <ids>`.
+5. When `state.close.followups` has any filed entry: `follow-ups <ids>`, where `<ids>` are the
+   distinct `filed[*].idea_id` values in first-seen order (this covers SPEC-0239's group id and
+   ids of other open groups, and SPEC-0207's single ideas on older campaigns), followed by
+   ` · <u> unfiled · <w> waived · <c> capped` for the non-zero counts (`capped` exists only
+   after SPEC-0239). When nothing was filed but some count is non-zero, the line shows only the
+   counts.
 
 `TimelineEntry` is a frozen dataclass: `seq`, `ts`, `type`, `group`, `text`, and `ref` (the
 run id for run events, the `gate_seq` for gate events, else None). There is one entry per
@@ -93,29 +97,49 @@ Groups:
 | `notes` | `note`, `commit`, `backlog`, and any type not listed |
 
 `entry_detail(cfg, cid, entry) -> Text` builds the detail pane for the selected entry:
-- **run** (`run.start` / `run.end` / `cost` with a run id):
+- **run** (`run.start` / `run.end`, which carry `run_id`; `cost` events have no `run_id` in
+  `schemas.EVENT_KEYS`, so they fall back to the payload detail below):
   - from `runs.campaign_run(cfg, cid, run_id)`: persona, model, effort, status,
     `verdict_status`, duration, cost and charged cost;
   - the verdict `summary` and its `must_fix` / `blockers` lists;
-  - the `permission_denials` count and the last 40 `stderr_tail` lines;
+  - the `permission_denials` count and the `stderr_tail` (already capped at
+    `runs.STDERR_TAIL_LINES`);
   - the `paths` (prompt, result, stderr, run.json).
 - **gate:** each entry of the event's `results` (name, ok, required, exit code, duration), then
   the last 40 lines of each failed gate's log. The log is read from `store.campaign_dir(cfg,
   cid) / result["log"]`, which is relative to the campaign dir (`gates.GateResult.log`).
 - **finding** / **followup:** every payload field, with `detail` unclipped.
-- **park** / **transition** / **resume** / **note:** every payload field unclipped.
+- **park** / **transition** / **resume** / **note** / **cost** / any other type: every payload
+  field unclipped.
 
-A file that cannot be read shows `(missing: <path>)`; the pane never raises.
+A file that cannot be read shows `(missing: <path>)`. A `ValueError` from
+`runs.campaign_run` (an unknown or ambiguous run id, for example a ledger `run_id` with no
+gathered record) is shown inline as `(run unavailable: <error>)`, followed by the event's own
+payload. The pane never raises.
 
 `review_text(cfg, state) -> Text` builds the review panel:
-- **Code review**, from `state.last_review`:
-  - `score <score> / pass <pass_score>  verdict <verdict>  loop <loop>`;
-  - then `blocking`, `advisory` and `waived` findings grouped by severity
-    (`critical`..`nit`), each as `<id> <severity> <personas> <title>  (<files>)`; waived
-    findings also show their `reason`.
-- **Spec review:** `spec_review.latest_review(cfg, spec_id, spec_path)` for the campaign's spec
-  in the main checkout. It shows the verdict, size/tone/rationale (SPEC-0219), the cost and
-  `reviewed_at`, then the findings (`severity title`).
+- **Code review.** `state.last_review` persists `verdict`, `score`, `advisory`, `waived`,
+  `loop` and the raw per-reviewer `verdicts` (queue.py `_store_verdicts` and the triage
+  update), but **not** `pass_score` or the blocking list. Rather than change the persisted
+  state, the panel derives both (the smaller change):
+  - `profile = profiles.resolve_profile(cfg, state.get("profile"))`; `pass_score` is
+    `profiles.review_params(profile)[0]`;
+  - the blocking list is `queue.triage_reviews(verdicts, profile, waived=[w["id"] for w in
+    last_review.waived])["blocking"]`, where `verdicts` is `last_review.verdicts` in
+    `profiles.reviewers_of(profile)` order (the same input SPEC-0235 uses). This is pure and
+    reproduces the triage of the stored verdicts.
+  - If the profile no longer resolves (`ValueError`), the panel shows `pass ?` and `blocking:
+    unavailable (<error>)`, and still shows the stored fields.
+  The panel shows `score <score> / pass <pass_score>  verdict <verdict>  loop <loop>`, then the
+  blocking (derived), advisory (stored) and waived (stored) findings grouped by severity
+  (`must_fix`, `major`, `minor`, `nit`), each as `<id> <severity> <personas> <title>
+  (<files>)`; waived findings also show their `reason`.
+- **Spec review:** for a campaign with a spec, `spec_review.latest_review(cfg, spec_id,
+  spec_path)` with `spec_path = Path(state.repo.root) / state.spec.rel_path` (the main
+  checkout, as `followups.parent_epic` and `queue._spec_title` resolve it). It shows the
+  verdict, size/tone/rationale (SPEC-0219), the cost and `reviewed_at`, then the findings
+  (`severity title`). An idea-only campaign (`queue.has_no_spec(state)`) or a missing
+  `repo.root` / `rel_path` reads `no spec review`.
 - Either part that is absent reads `no code review yet` / `no spec review`.
 
 `campaign_signature(cfg, cid)` is `(mtime_ns of state.json, size of ledger.jsonl)`.
@@ -123,12 +147,13 @@ A file that cannot be read shows `(missing: <path>)`; the pane never raises.
 ### Screen (`campaign_screen.py`)
 
 - **Layout:** the header as a `Static` (top), then a `DataTable` timeline (columns `seq`, `time`
-  (HH:MM:SS), `type`, `text`, clipped to the width), then a detail pane (`VerticalScroll`, about
-  40% of the height). The detail pane shows `entry_detail` for the highlighted row, or
+  (HH:MM:SS), `type`, `text`, clipped to the width), then a one-line status `Static`
+  (`#campaign-status`, under the timeline), then a detail pane (`VerticalScroll`, about 40% of
+  the height). The detail pane shows `entry_detail` for the highlighted row, or
   `review_text` while review mode is on.
 - **Bindings:**
   - `f` cycles the filter `all → transitions → runs → gates → findings → notes → all`. The
-    footer status shows `filter <group> · <shown>/<total> events`.
+    `#campaign-status` line shows `filter <group> · <shown>/<total> events`.
   - `v` toggles review mode for the detail pane.
   - `g` / `G` jump to the first or last row.
   - `escape` / `q` pop the screen.
@@ -138,6 +163,8 @@ A file that cannot be read shows `(missing: <path>)`; the pane never raises.
   worker on a change. The filter is kept. The cursor stays on the same `seq`, or follows the end
   when it was on the last row.
 - **Read-only**, like the queue tab: no `events.sync`, cursor or reader lock.
+- SPEC-0241's `IdeaDesk.check_action` gating also disables the idea-scoped app actions while
+  this screen is shown (the rule is "the default screen is on top and `tab-ideas` is active").
 - **Shared actions:** SPEC-0241's prompt → plan → confirm → apply flow moves into
   `QueueActions` (a mixin with `run_queue_action(action, campaign_id, state, actions)`). It is
   used by `QueueTable` and `CampaignScreen` with unchanged behaviour. After an apply the screen
@@ -179,10 +206,13 @@ A file that cannot be read shows `(missing: <path>)`; the pane never raises.
       starts on the last event.
 - [ ] AC4. The detail pane shows, for a run, the `campaign_run` fields, verdict lists, stderr tail
       and paths. For a gate it shows the per-gate results and the log tail of each failed gate.
-      For findings, parks, transitions and notes it shows their payloads unclipped. A missing
-      run directory or gate log shows `(missing: …)` without an exception.
-- [ ] AC5. `v` shows the review panel: the code review score, pass score, verdict and findings
-      grouped by severity, with waived reasons, and the latest spec review (verdict,
+      For findings, parks, transitions, notes and cost events it shows their payloads unclipped.
+      A missing run directory or gate log shows `(missing: …)`, and a `campaign_run`
+      `ValueError` shows `(run unavailable: …)`, without an exception.
+- [ ] AC5. `v` shows the review panel: the stored score and verdict, the pass score from
+      `review_params`, the blocking findings derived with `triage_reviews` from the stored
+      verdicts, and the stored advisory and waived findings grouped by severity, with waived
+      reasons (and the `unavailable` fallback for a profile that no longer resolves), and the latest spec review (verdict,
       size/tone/rationale, findings). When either review is absent, it shows the documented
       placeholder.
 - [ ] AC6. A ledger append while the screen is open adds the row within one poll interval with
@@ -201,10 +231,14 @@ A file that cannot be read shows `(missing: <path>)`; the pane never raises.
     - `load_campaign` header lines for the fresh, sized, parked and missing-worktree cases;
     - group membership for every `schemas.EVENT_KEYS` type plus an unknown type;
     - `entry_detail` for a run with a run dir (prompt/result/stderr written by the test), a run
-      without one, a gate with one failed gate whose log exists and one whose log is missing,
-      and a finding;
-    - `review_text` with a `last_review` holding blocking, advisory and waived findings, with a
-      stored spec review (`spec_review.save_review`), and with neither;
+      without one, a `run.end` whose run id `campaign_run` cannot resolve, a `cost` event, a
+      gate with one failed gate whose log exists and one whose log is missing, and a finding;
+    - the follow-ups header line for a SPEC-0207-style summary (several single ids) and for
+      counts only;
+    - `review_text` with a `last_review` whose stored `verdicts` yield a blocking finding
+      through `triage_reviews` plus stored advisory and waived findings, with a profile that no
+      longer resolves, with a stored spec review (`spec_review.save_review`), for an idea-only
+      campaign, and with neither;
     - `campaign_signature` changes on a ledger append.
   - `tests/test_tui_campaign_screen.py` (new, `needs_textual`):
     - open from the queue tab and Esc back with the cursor kept;

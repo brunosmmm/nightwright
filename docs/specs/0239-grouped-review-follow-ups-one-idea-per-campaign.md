@@ -91,8 +91,10 @@ the same module (`group_legacy`) behind a new `wt ideas group-followups` command
 ### Profile key
 
 - `profiles.REVIEW_KEYS` gains `followups_max`.
-- The three builtin profiles set `followups_max: 10`. If [SPEC-0237](./0237-workflow-profiles-as-yaml-files-builtin-user-project.md)
-  has landed, the builtin YAML files set it instead.
+- The three builtin profiles in `profiles.py` set `followups_max: 10`. They are the target of
+  this spec. [SPEC-0237](./0237-workflow-profiles-as-yaml-files-builtin-user-project.md)
+  (accepted, not done) moves the builtins to YAML; whichever of the two lands second carries the
+  key over into the other's format, so no `depends_on` is needed.
 - `_check_review` raises `ValueError` naming `review.followups_max` unless it is an integer
   (not a bool) and `>= 0`. `0` means no cap.
 - A new `followup_cap(profile) -> int` returns the value, or 10 when it is absent.
@@ -100,32 +102,50 @@ the same module (`group_legacy`) behind a new `wt ideas group-followups` command
 - `followups_nits` keeps its default `false` everywhere. A test asserts that each builtin
   profile resolves to `followups_nits: false`, so the default stays a regression guard.
 
+### Checklist lines
+
+A **checklist line** is any Summary line matching `^- \[[ Xx]\] wtfu:([0-9a-f]{12})\b`. A
+ticked line (`- [X]`) still counts and still dedups. `n` (the title count), `L` (below) and every
+"already listed" check use this pattern only; the overflow line and any hand-written text never
+match it. Filer lines (`checklist_line`) and migrated lines (`wtfu:<key12> <rest of heading>
+(was IDEA-NNN)`, no severity field) differ in shape on purpose: dedup only reads the key12
+token, so the two must not share a parser beyond this pattern.
+
 ### Filing (`followups._file`, rewritten)
 
-The considered set, `enabled`/`nits` and the `waived` summary are computed as today. Then:
+The considered set, `enabled`/`nits` and the `waived` summary are computed as today. Let
+`own` be this campaign's group (`find_marker(cfg, "wtfug:<campaign id>")`, or None) and
+`own_keys` the key12s of its checklist lines. Then:
 
 1. **Already filed in this campaign:** for each finding whose `key` has a `followup` event in
    the ledger, report it in `filed` with that event's `idea_id`, as today, and set it aside.
-2. **Listed in another open group of the same spec:** `open_group_keys(cfg, spec_id) -> dict[key12,
-   idea_id]`.
-   - It loads the ideas through the org reader, from the ideas file and its archive, the same
-     two paths `find_marker` uses.
-   - It keeps ideas in an active state whose heading contains `GROUP_MARKER` and `[<spec_id>]`.
-   - It maps every `wtfu:<key12>` token of each idea's Summary to that idea's `:ID:`. The
-     Summary is read with `explore.read_idea_enrichment(cfg, task)["summary"]`.
+2. **Recovered from the own group:** a remaining finding whose key12 is in `own_keys` (a crash
+   after its line was written but before its event) gets its `followup` event (`idea_id` =
+   `own`) and its `filed` entry. It is exempt from the cap and needs no new line.
+3. **Listed in another open group of the same spec:** `open_group_keys(cfg, spec_id, *,
+   exclude) -> dict[key12, idea_id]`, called with `exclude=own`.
+   - It reads `org.load_tasks(cfg)` and keeps ideas (`task.is_idea`) in an active state whose
+     heading contains `GROUP_MARKER` and `[<spec_id>]`, excluding `exclude`. Only active ideas
+     matter and archived ideas are closed by construction, so the archive is not read;
+     `add_idea`'s rotation moves only closed ideas and cannot hide an open group mid-run.
+   - It maps the key12 of each checklist line of each idea's Summary to that idea's `:ID:`.
+     The Summary is read with `explore.read_idea_enrichment(cfg, task)["summary"]`, where
+     `task` is the `Task` from `load_tasks` (it carries `task.file`, which the reader needs).
    A finding whose `key12` is in that map gets a `followup` event with that `idea_id` and is
    reported in `filed`. No line is written for it.
-3. **Sort and cap:** order the remaining findings by severity rank (`major`, `minor`, `nit`),
+4. **Sort and cap:** order the remaining findings by severity rank (`major`, `minor`, `nit`),
    then `advisory` before `waived`, then title. With cap `C > 0`:
-   - Count `L`, the lines already in this campaign's group. `L` is 0 when the group does not
-     exist yet.
-   - At most `max(0, C - L)` findings get a line.
+   - `L` = the number of checklist lines in `own` whose key12 is **not** among the findings
+     handled in step 2 (lines of earlier filings). `L` is 0 when `own` is None.
+   - At most `max(0, C - L - R)` findings get a line, where `R` is the number recovered in step
+     2 (they occupy lines too).
    - The rest go to the summary's new `capped` list (`[{severity, title}]`) and get **no**
      `followup` event, so a later re-run with a raised cap can still list them.
-4. **Write the group** (only when step 3 kept at least one finding):
-   - `idea_id = find_marker(cfg, "wtfug:<campaign id>")`. If it is None, create the idea with
-     `OW.add_idea(cfg, group_title(cid, spec_id, 0), …)`. If the returned headline lacks the
-     group marker, add a `note` event, as SPEC-0207 does for the single marker.
+5. **Write the group** when step 4 kept at least one finding, **or** when `own` exists (so a
+   crash between `set_summary` and `retitle` is always repaired):
+   - If `own` is None, create the idea with `OW.add_idea(cfg, group_title(cid, spec_id, 0),
+     …)`. If the returned headline lacks the group marker, add a `note` event, as SPEC-0207
+     does for the single marker.
    - Read the group's Summary and append the new lines whose `wtfu:<key12>` is not in it yet,
      followed by the overflow line, which replaces any previous overflow line. Write the
      Summary with `explore.set_summary`.
@@ -133,7 +153,7 @@ The considered set, `enabled`/`nits` and the `waived` summary are computed as to
      number of checklist lines now in the Summary.
    - Each newly listed finding then gets its `followup` event (`idea_id` = the group) and its
      `filed` entry.
-5. Any exception in step 4 makes every finding of that step `unfiled` (with the error) and adds
+6. Any exception in step 5 makes every finding of that step `unfiled` (with the error) and adds
    a `note` event, with no `followup` event. The outer `except Exception` of `file_followups`
    stays, so the filer still never blocks `close_campaign`.
 
@@ -142,10 +162,12 @@ events are returned and appended by `_apply`). A crash anywhere before the event
 the re-run **adopts** by its marker. It then appends only the lines that are missing and
 recounts the title. So a re-run writes no second idea and no second line.
 
-Summary shape: `{filed, unfiled, waived, capped, idea_id}`. `idea_id` is this campaign's group,
-or None when every finding was already listed elsewhere or nothing was filed. These are
-additive keys on `state.close.followups`, and on the `wt.queue.tick.v1` close row's
-`followups` (which also gains `capped` as a count).
+Summary shape: `{filed, unfiled, waived, capped, idea_id}`. `idea_id` is this campaign's group
+(`own` or the one just created), or None when no own group exists (every finding was listed
+elsewhere, or nothing was filed). These are additive keys on `state.close.followups`. The
+`wt.queue.tick.v1` close row's `followups` gains `idea_id` and `capped: int` (the count), and its
+existing `ids` becomes the **distinct** `filed[*].idea_id` values in first-seen order (no longer
+one entry per finding).
 
 ### Reporting
 
@@ -167,6 +189,11 @@ on `ideas_group` in `cli.py`.
   - the singles' ids;
   - the target, an existing open group with marker `wtfug:legacy-<SPEC-NNNN>` (found with
     `find_marker`) or `new`;
+  - the singles whose key12 is already listed in an open group of the spec
+    (`open_group_keys(cfg, spec)`, which includes `wtfug:<cid>` groups filed after the new code
+    shipped): no line is written for them, and they fold into **that** group instead. This keeps
+    G2 when a campaign of the same spec closed between shipping the filer and running the
+    migration;
   - the lines to add, one per distinct `key12`. A line is `- [ ] wtfu:<key12> <rest of
     heading> (was IDEA-NNN)`. When two singles share a key12, one line is written and both
     singles fold into the group.
@@ -227,20 +254,24 @@ on `ideas_group` in `cli.py`.
       carry that group's id. When every finding is listed elsewhere, no new idea is created and
       `idea_id` is None. A closed group does not suppress filing.
 - [ ] AC5. Idempotency: running the filer twice writes one idea and no duplicate line.
-      Simulated crashes after `add_idea`, and after `set_summary` before the events, are
-      recovered by adoption through the `wtfug:` marker, with the right count in the title. An
-      exception from `set_summary` reports those findings `unfiled` with a `note` event, and
-      `close_campaign` still runs.
+      Simulated crashes after `add_idea`, after `set_summary` (before `retitle`) and after
+      `retitle` (before the events) are recovered by adoption through the `wtfug:` marker: the
+      own group is not treated as "another group", recovered findings get their events with
+      the own id, `idea_id` is the own group, and the title count is right. With
+      `followups_max: 2`, two findings and a crash after `set_summary`, the re-run caps
+      nothing. Ticked (`- [X]`) lines still count and dedup. An exception from `set_summary`
+      reports those findings `unfiled` with a `note` event, and `close_campaign` still runs.
 - [ ] AC6. `wt campaign show` prints the `follow-ups IDEA-NNN (<n> listed, <k> capped)` line
       and the `[capped]` lines. The `wt.queue.tick.v1` close row's `followups` carries
-      `idea_id` and `capped`.
+      `idea_id`, `capped: int`, and `ids` de-duplicated.
 - [ ] AC7. `wt ideas group-followups` (dry run) lists one group per spec with its singles and
       target and writes nothing, and `--json` emits `wt.ideas.group_followups.v1` with
       `written: false`. With `--yes` it creates one grouped idea per spec (one line per
       distinct key12, project/epic from the lowest-numbered single) and closes each single as
       `DROPPED` with `CLOSE_REASON` and `FOLDED_INTO` set to the group. Closed singles are
-      untouched. A second `--yes` run is a no-op. A run after a crash mid-spec adopts the
-      legacy group and adds no duplicate line.
+      untouched. A single whose key12 is already in an open `wtfug:<cid>` group gets no line and
+      folds into that group. A second `--yes` run is a no-op. A run after a crash mid-spec adopts
+      the legacy group and adds no duplicate line.
 - [ ] AC8. `docs/product/capabilities/agentic.md` documents the grouped idea, `wtfug:`,
       `review.followups_max` and the migration (grep test). Full `uv run pytest` is green and
       `python3 tools/spec_lint.py` exits 0.
@@ -258,7 +289,8 @@ on `ideas_group` in `cli.py`.
     - `open_group_keys` across ideas file and archive, open vs closed groups, and
       `legacy-` groups (AC4);
     - re-run, the crash after `add_idea` (monkeypatch `set_summary` to raise once, re-run),
-      the crash before events, and the `set_summary` exception path (AC5).
+      the crash between `set_summary` and `retitle` under `followups_max: 2`, the crash before
+      events, a ticked line, and the `set_summary` exception path (AC5).
   - `tests/test_agentic_queue.py`: `campaign show` follow-up lines, `state.close.followups`
     keys, and the close row `idea_id` / `capped` (AC6).
   - `tests/test_agentic_e2e.py`: the SPEC-0207 AC7 paths (b)–(d) updated to assert one grouped
@@ -268,6 +300,7 @@ on `ideas_group` in `cli.py`.
     - dry run text and JSON;
     - `--yes` result read back (states, `CLOSE_REASON`, `FOLDED_INTO`, Summary lines, title
       count, project/epic);
+    - a single already listed in an open `wtfug:<cid>` group;
     - the second run as a no-op;
     - a crash between the group creation and the closes.
   - A docs grep test for AC8.

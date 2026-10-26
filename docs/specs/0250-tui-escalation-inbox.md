@@ -46,6 +46,10 @@ and answering from there would not set the record's answer.
   through SPEC-0235 / SPEC-0232's plan/apply functions with confirmation, as `human`.
 - G4. For the `override` form, show the exact CLI command template with the campaign's finding
   ids, instead of a TUI form.
+- G5. The escalation's mail in the `human` inbox points at the record: the SPEC-0249 thread pane
+  shows `answer in escalations: <ESC id>` under a message whose text carries `wt escalations show
+  <ESC id>`, so a plain mail reply is not mistaken for an answer. Such a reply is still allowed
+  (it is ordinary mail), but it does not answer the record.
 
 **Non-goals**
 - A TUI form for `override` (`--waive` / `--attest`). Choice: an override is a deliberate
@@ -61,8 +65,26 @@ and answering from there would not set the record's answer.
 Extend SPEC-0249's `MailboxView`. The inbox table gets a first row `escalations` whose content
 pane switches the threads table to an escalations table, backed by new view-model functions
 `load_escalations` / `escalation_text` in `agentic_model.py`. The answer and withdraw actions
-call `escalations.plan_answer` / `apply_answer` and the plan/apply behind `wt escalations
-withdraw`, always with `by="human"`.
+call `escalations.plan_answer` / `apply_answer` and `escalations.plan_withdraw` /
+`apply_withdraw`, always with `by="human"`.
+
+Library functions this spec relies on (all in `src/wt/agentic/escalations.py`). If SPEC-0232 or
+SPEC-0235 shipped any of them inline in a click handler, factoring them out with these names and
+unchanged CLI behaviour is in scope here:
+- `plan_withdraw(cfg, id, *, reason, by) -> dict` and `apply_withdraw(cfg, plan) -> dict`, the
+  logic behind `wt escalations withdraw ID --reason … --from ADDR` (`by` is the `--from`
+  value). `apply_withdraw` re-reads the record under the escalations lock and raises
+  `ValueError` unless it is still `open`. It returns the record plus `campaign_state` (the
+  campaign's state after the withdraw, or None).
+- `answer_summary(rec) -> str`, the pinned SPEC-0235 summary text of a stored answer, used by
+  both the ledger note and this tab, so the two cannot drift.
+- `answerable_findings(cfg, state) -> list[dict]`, the finding list `plan_answer` validates
+  `--waive` ids against: the `blocking` + `advisory` lists (synthetic findings included) of
+  `queue.triage_reviews(stored, profile, …)`, where `stored` is every verdict in
+  `state.last_review.verdicts` in profile order regardless of `loop`, `profile` is
+  `profiles.resolve_profile(cfg, state.get("profile"))`, and any `state["human_overrides"]` are
+  passed exactly as `plan_answer` passes them, so findings already waived are not offered
+  again. `plan_answer` and this tab call the same function.
 
 ## Design
 
@@ -83,22 +105,21 @@ withdraw`, always with `by="human"`.
   7. `notified via <via> ok|failed <error>` and the reminder time.
 
   Then the outcome:
-  - for an answered record, `answered by <by> at <at>`, followed by the stored answer in the
-    words of the SPEC-0235 summary format;
+  - for an answered record, `answered by <by> at <at>`, followed by `answer_summary(rec)`;
   - for a withdrawn record, `withdrawn by <by>: <reason>`;
   - for an open record with a campaign, a block `override (CLI):` with the template `wt
     escalations answer <id> --waive <finding-id> --attest <ac> --reason "<why>" --yes`, followed
-    by the campaign's finding ids (`<id> <severity> <title>`). The ids come from
-    `queue.triage_reviews` over `state.last_review.verdicts` and the resolved profile, the same
-    input `plan_answer` validates against (SPEC-0235). The list shows at most 15 ids, then
-    `+N more`.
-- `escalations_signature(cfg)`: the sorted `(name, mtime_ns)` of
+    by the campaign's finding ids (`<id> <severity> <title>`) from
+    `answerable_findings(cfg, state)`. The list shows at most 15 ids, then `+N more`.
+- `escalations_signature(cfg)`: the sorted `(name, size, mtime_ns)` of
   `<agentic_dir>/escalations/ESC-*.json`, merged into the tab's signature next to
   `mailbox_signature`.
 
 ### Widget (extends `mailbox_tab.py`)
 
-- The inbox table's first row is `escalations` with `open/total`, bold when `open > 0`. When an
+- The inbox table's first row is `escalations` with `open/total`. Inbox rows are keyed by
+  their address (`"escalations"` for this row), and code and tests select rows by key, never by
+  index. The row is bold when `open > 0`. When an
   escalation is open, the tab opens on this row and not on SPEC-0249's first unanswered inbox.
   Choice: an open escalation parks a campaign until a human acts, so it outranks mail.
 - With `escalations` selected, the right column shows the escalations table (`status`, `id`,
@@ -107,7 +128,9 @@ withdraw`, always with `by="human"`.
 - **Bindings** on the escalations table:
   - `c` choose: only for an open record with options. `ChoiceScreen("answer <id>",
     ["1. label", …])` starts on the recommended option.
-  - `t` text answer: only for an open record. Free text in a `BodyPrompt`.
+  - `t` text answer: only for an open record. Free text in a `BodyPrompt`. An empty or
+    whitespace-only text is refused with the notification `empty answer` and nothing is
+    written.
   - `w` withdraw: only for an open record. `TextPrompt("withdraw reason")`, non-empty.
   - `enter` on a record with a campaign posts `QueueView.CampaignSelected`.
   - On a record that is not open, `c`, `t` and `w` notify `<id> is <status>` and open nothing.
@@ -119,7 +142,11 @@ withdraw`, always with `by="human"`.
   3. Confirm with `ChoiceScreen` titled by the plan's resolved answer (`answer <id>: 2.
      <label>`, `answer <id>: "<text first line>"`, `withdraw <id>: <reason>`), with the choices
      `yes` and `cancel`.
-  4. On yes, apply, notify `<id> answered` or `<id> withdrawn`, and reload.
+  4. On yes, apply in a thread worker (`apply_answer` and `apply_withdraw` take
+     `store.item_lock` and the escalations lock and can block), notify `<id> answered` or
+     `<id> withdrawn`, and reload. After a withdraw whose `campaign_state` is `PARKED`, the
+     notification adds `<cid> is still PARKED (human_decision); resume it from the queue tab
+     (u)`, the TUI form of SPEC-0232's CLI hint.
   A `ValueError` from a plan or an apply (for example, the record was answered meanwhile) is an
   error notification with nothing written. Esc or cancel writes nothing.
 - **Live refresh:** the SPEC-0249 poll now also covers `escalations_signature`, so a new
@@ -143,22 +170,29 @@ withdraw`, always with `by="human"`.
       open records first and then newest.
 - [ ] AC2. The pane shows every documented field of the highlighted record, including the
       recommended marker, facts, park, notification, and the answer or withdrawal. For an open
-      record with a campaign it shows the override CLI template and up to 15 finding ids taken
-      from `triage_reviews` over the campaign's last review.
+      record with a campaign it shows the override CLI template and up to 15 finding ids from
+      `answerable_findings`, the same function `plan_answer` validates against (a finding
+      already in `human_overrides` is not listed). An answered record shows `answer_summary`.
+      In the `human` inbox, the escalation's mail shows the `answer in escalations: <ESC id>`
+      line (G5).
 - [ ] AC3. `c` on an open record answers it through `plan_answer` / `apply_answer` with the chosen
       option and `by="human"`. Afterwards the record is `answered` with that choice, which
       `wt escalations show` confirms.
-- [ ] AC4. `t` answers with free text, and `w` withdraws with a reason, through the SPEC-0235 /
-      SPEC-0232 functions. The record's status and fields afterwards equal what the CLI produces.
+- [ ] AC4. `t` answers with free text, and `w` withdraws with a reason, through `plan_answer` /
+      `apply_answer` and `plan_withdraw` / `apply_withdraw` (applies run in a worker). The
+      record's status and fields afterwards equal what the CLI produces, ignoring timestamps. A
+      withdraw of a campaign's escalation shows the still-PARKED resume hint.
 - [ ] AC5. Cancel or Esc at any step writes nothing. A `ValueError` (the record was answered
       meanwhile by the CLI) is an error notification and nothing is written. `c`, `t` and `w`
       on a record that is not open notify and open no prompt. `c` on a record without options
-      notifies.
+      notifies. An empty or whitespace-only text answer is refused with `empty answer` and
+      nothing is written.
 - [ ] AC6. An escalation created or answered by another process shows within one poll interval
       with no key press. The tab never calls `events.sync`, `events.reader_lock`,
       `events.cursor_set` or `mailbox.follow` (monkeypatched to raise).
-- [ ] AC7. Full `uv run pytest` is green, the SPEC-0249 mailbox tests are unchanged and green,
-      and `python3 tools/spec_lint.py` exits 0.
+- [ ] AC7. Full `uv run pytest` is green. The SPEC-0249 mailbox tests are green; the only
+      changes allowed in `tests/test_tui_mailbox_tab.py` are switching inbox-row selection from
+      index to key. `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -168,18 +202,23 @@ withdraw`, always with `by="human"`.
     notifier set to `"none"`, then test:
     - `load_escalations` ordering;
     - `escalation_text` for open, answered, withdrawn, campaign-less and gone-campaign records;
-    - the override block's finding ids from a seeded `last_review`, and its 15-id cap;
+    - the override block's finding ids from a seeded `last_review` (synthetic ids included, an
+      overridden finding excluded), and its 15-id cap;
+    - `answer_summary` output in the answered record's text;
+    - the G5 hint line under the escalation's mail in `thread_text`;
     - the signature changing on a write.
   - `tests/test_tui_escalations_tab.py` (new, `needs_textual`):
     - the opening choice with and without open escalations;
     - choose, text and withdraw end to end, read back with `escalations.read`;
     - cancel and Esc;
-    - the answered-meanwhile `ValueError`;
+    - the answered-meanwhile `ValueError` (for answer and for withdraw);
+    - an empty text answer;
+    - the still-PARKED hint after a withdraw;
     - a record that is not open;
     - a record without options;
     - live creation from outside;
     - the forbidden-call monkeypatches.
-  - `tests/test_tui_mailbox_tab.py` unchanged and green.
+  - `tests/test_tui_mailbox_tab.py` green (inbox rows selected by key).
 - **Manual verification:** create a test escalation (`uv run wt queue escalate --question … --option
   a --option b --recommend 2 --yes`, no campaign), answer it from `uv run wt tui --tab mailbox`
   with `c`, and check `uv run wt escalations show ESC-…`. Record the result here.
