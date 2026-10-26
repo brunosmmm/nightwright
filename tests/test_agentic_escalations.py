@@ -800,6 +800,8 @@ def test_apply_after_a_withdrawal_is_refused_and_writes_nothing(tmp_path):
         ESC.apply_answer(cfg, plan)
     assert ESC.read(cfg, "ESC-0001")["status"] == "withdrawn"
     assert S.read_ledger(cfg, CID, types=["human_decision"]) == []
+    assert not [n for n in S.read_ledger(cfg, CID, types=["note"]) if "ESC-0001" in n["text"]
+                and "chose" in n["text"]]
     assert len(E.read_since(cfg, 0)) == n_events
 
 
@@ -841,3 +843,91 @@ def test_escalate_again_after_an_answered_text(tmp_path):
     assert rec["id"] == "ESC-0002" and rec["status"] == "open"
     assert _state(cfg)["park"]["escalated_from"] == "loop_exhausted"
     assert ESC.read(cfg, "ESC-0001")["status"] == "answered"
+
+
+def test_waiving_a_synthetic_finding_is_accepted_and_stored_as_synthetic(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    plan, _ = _answer(cfg, waive=[f"{RV}#ac0"], reason="r")
+    assert plan["override"]["waive"][0]["synthetic"] is True
+    [w] = _state(cfg)["human_overrides"]["waive"]
+    assert w["id"] == f"{RV}#ac0" and w["synthetic"] is True and w["ac"] == AC4
+
+
+def test_waiving_the_synthetic_fix_finding_is_stored_as_synthetic(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    st = _state(cfg)
+    v = st["last_review"]["verdicts"][RV]
+    v["findings"] = []                      # `fix` with no finding ⇒ a synthetic `#fix`
+    v["ac_assessment"] = []
+    v["fix_brief"] = "please fix the ordering"
+    S.write_state(cfg, CID, st)
+    _answer(cfg, waive=[f"{RV}#fix"], reason="r")
+    [w] = _state(cfg)["human_overrides"]["waive"]
+    assert w["id"] == f"{RV}#fix" and w["synthetic"] is True and w["severity"] == "major"
+
+
+def test_waiving_a_merged_finding_by_its_merged_id(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    st = _state(cfg)
+    shared = {"severity": "major", "title": "Wrong order", "files": ["a.py"]}
+    base = {"verdict": "fix", "score": 40, "fix_brief": "x", "loop": 0, "run": "003-t",
+            "findings": [dict(shared)], "ac_assessment": []}
+    st["last_review"]["verdicts"][RV] = {**base, "run": "002-r"}
+    st["last_review"]["verdicts"]["test_reviewer"] = base
+    S.write_state(cfg, CID, st)
+    from wt.agentic import profiles as PR
+    tri = Q.triage_reviews(st["last_review"]["verdicts"], PR.resolve_profile(cfg, "balanced"))
+    [merged] = [f for f in tri["blocking"] if f["title"] == "Wrong order"]
+    assert sorted(merged["personas"]) == ["conformance_reviewer", "test_reviewer"]
+    plan, _ = _answer(cfg, waive=[merged["id"]], reason="r")
+    assert plan["answer"]["waive"] == [merged["id"]]
+    [w] = _state(cfg)["human_overrides"]["waive"]
+    assert (w["id"], w["title"], w["files"], w["synthetic"]) == (
+        merged["id"], "Wrong order", ["a.py"], False)
+
+
+def test_a_deferred_escalation_is_refused_until_the_campaign_parks(tmp_path):
+    cfg = _cfg(tmp_path)
+    _camp(cfg, "IMPLEMENTING")
+    lease = L.acquire(cfg, [CID])
+    try:
+        rec = _esc(cfg, frm="conductor")
+    finally:
+        lease.release()
+    assert rec["park"]["mode"] == "deferred"
+    with pytest.raises(ValueError, match="pending: the campaign has not parked yet"):
+        ESC.plan_answer(cfg, rec["id"], choose="1")
+    # the campaign changes under a plan made before: apply re-checks under the lock
+    st = _state(cfg)
+    before = dict(st)
+    # no plan is possible now, so build one by hand
+    plan = {"id": rec["id"], "campaign": CID, "by": "human", "summary": "chose 1 (yes)",
+            "answer": {"kind": "choose", "choice": 1, "label": "yes", "text": None, "waive": [],
+                       "attest": [], "reason": None, "note": None}, "override": None}
+    n_events = len(E.read_since(cfg, 0))
+    with pytest.raises(ValueError, match="pending"):
+        ESC.apply_answer(cfg, plan)
+    assert ESC.read(cfg, rec["id"])["status"] == "open"
+    assert _state(cfg) == before
+    assert S.read_ledger(cfg, CID, types=["human_decision"]) == []
+    assert len(E.read_since(cfg, 0)) == n_events
+    # once the park lands, the answer is accepted
+    step = Q.plan_step(_state(cfg), {"personas": {}})
+    Q._park_row(cfg, _state(cfg), step)
+    _, done = _answer(cfg, rec["id"], choose="1")
+    assert done["status"] == "answered"
+
+
+def test_two_overrides_accumulate(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    _answer(cfg, waive=[f"{RV}#0"], reason="first")
+    _esc(cfg, question="again?")
+    _answer(cfg, "ESC-0002", waive=[f"{RV}#1"], attest=[AC4], reason="second")
+    ov = _state(cfg)["human_overrides"]
+    assert [w["id"] for w in ov["waive"]] == [f"{RV}#0", f"{RV}#1"]
+    assert [a["ac"] for a in ov["attest"]] == [AC4]
+    assert [w["escalation"] for w in ov["waive"]] == ["ESC-0001", "ESC-0002"]

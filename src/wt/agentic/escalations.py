@@ -295,6 +295,20 @@ def _cut(text, n) -> str:
     return text if len(text) <= n else text[:n] + "…"
 
 
+def _check_parked(esc_id, st) -> None:
+    """A campaign-bound record is answerable only once its campaign is PARKED `human_decision`; a
+    deferred park request (SPEC-0232) has not parked yet and would park later, unanswered."""
+    if st is None:
+        return
+    if st.get("state") == "PARKED" and (st.get("park") or {}).get("reason") == "human_decision":
+        return
+    if (st.get("park_requested") or {}).get("reason") == "human_decision":
+        raise ValueError(f"{esc_id} is pending: the campaign has not parked yet; answer once "
+                         f"it parks")
+    raise ValueError(f"{esc_id}: its campaign is not parked human_decision "
+                     f"(state {st.get('state')}); nothing to answer")
+
+
 def _review_findings(cfg, st: dict) -> tuple[list, list, set]:
     """`(findings, unmet, synthetic ids)` of the review that led to the park: every `blocking` / `advisory`
     finding of `triage_reviews` over all stored verdicts (any loop), and the distinct `ac` texts
@@ -397,6 +411,8 @@ def plan_answer(cfg, esc_id, *, choose=None, text=None, waive=(), attest=(), rea
                 else (rec.get("withdrawn") or {}).get("at"))
         raise ValueError(f"{esc_id} is {rec.get('status')} since {when}; only an open "
                          f"escalation can be answered")
+    if rec.get("campaign"):
+        _check_parked(esc_id, _campaign_state(cfg, rec["campaign"]))
     kind = forms[0]
     answer = {"kind": kind, "choice": None, "label": None, "text": None, "waive": [],
               "attest": [], "reason": None, "note": (note or "").strip() or None}
@@ -459,6 +475,8 @@ def apply_answer(cfg, plan: dict) -> dict:
     known = bool(cid) and _campaign_state(cfg, cid) is not None
     now = store.now_iso()
     with store.item_lock(cfg, cid) if known else contextlib.nullcontext():
+        if known:
+            _check_parked(esc_id, _campaign_state(cfg, cid))
         def close(r):
             if r.get("status") != "open":
                 when = r.get("answered_at") or (r.get("withdrawn") or {}).get("at")

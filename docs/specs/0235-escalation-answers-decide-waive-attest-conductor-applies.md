@@ -350,6 +350,12 @@ record write. The event (step 4) is appended after both locks are released.
   set), otherwise `unmet` would keep the outcome at `fix`.
 - `wt escalations show` prints the answer; the plan output of `answer` lists `covers:` for each
   attestation. `_triage_input` (the review triager's input) also uses the overridden triage.
+- Review round 2: `plan_answer` and `apply_answer` (re-checked under `item_lock`, before the
+  record is written) refuse a campaign-bound record whose campaign is not PARKED
+  `human_decision`. A deferred escalation (SPEC-0232 `park_requested`) is refused with "ESC-NNNN
+  is pending: the campaign has not parked yet; answer once it parks", so the later park can never
+  land on an already-answered record. Tests cover synthetic (`#ac`, `#fix`) and merged waive ids,
+  the deferred refusal, and accumulating overrides.
 - If the final `escalation_answered` append fails, the answer stays recorded (the error is
   suppressed, as in `withdraw`).
 
