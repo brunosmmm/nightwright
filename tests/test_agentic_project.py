@@ -241,3 +241,33 @@ def test_merge_resolver_default_true_and_validated():                           
     P.validate({"schema": P.SCHEMA, "merge": {"resolver": True}})
     with pytest.raises(ValueError, match="merge.resolver"):
         P.validate({"schema": P.SCHEMA, "merge": {"resolver": "no"}})
+
+
+# ---- SPEC-0234: merge.docs_only_paths ---------------------------------------------------
+
+
+def _docs_doc(paths):
+    return {"schema": P.SCHEMA, "merge": {"docs_only_paths": paths}}
+
+
+def test_docs_only_paths_default_valid_and_in_starter():
+    assert P.PROJECT_DEFAULTS["merge"]["docs_only_paths"] == []
+    P.validate(_docs_doc(["docs/design/", "docs/WORKFLOW.md"]))
+    P.validate(_docs_doc([]))
+    assert "docs_only_paths" in P.STARTER
+
+
+@pytest.mark.parametrize("bad,where", [
+    ("docs/", "merge.docs_only_paths"), ([1], r"merge.docs_only_paths\[0\]"),
+    (["ok/", ""], r"merge.docs_only_paths\[1\]"), (["  "], r"merge.docs_only_paths\[0\]"),
+    (["/etc/x"], r"merge.docs_only_paths\[0\]"), (["docs/../src/"], r"merge.docs_only_paths\[0\]"),
+    (["docs/*.md"], r"merge.docs_only_paths\[0\]"), (["docs/?"], r"merge.docs_only_paths\[0\]"),
+    (["docs/[a]"], r"merge.docs_only_paths\[0\]")])
+def test_docs_only_paths_rejects_bad(bad, where):
+    with pytest.raises(ValueError, match=where):
+        P.validate(_docs_doc(bad))
+
+
+def test_this_repos_project_yaml_declares_the_docs_only_allowlist():
+    doc = P.load_project_config(Path(__file__).resolve().parent.parent / ".wt" / "project.yaml")
+    assert doc["merge"]["docs_only_paths"] == ["docs/design/", "docs/WORKFLOW.md"]

@@ -111,10 +111,19 @@ def diff_text(worktree, base, max_lines=1500) -> str:
                                           f"line(s); run `git diff {base}...HEAD` for the rest"])
 
 
-def changed_files(worktree, base) -> list[str]:
-    """Paths touched between `base` and HEAD (`git diff --name-only base...HEAD`)."""
-    return [p for p in git(worktree, "diff", "--name-only", f"{base}...HEAD").stdout.splitlines()
-            if p]
+def changed_files(repo, base, head="HEAD", *, renames=True) -> list[str]:
+    """Paths touched between `base` and `head` (`git diff --name-only base...head`).
+    `renames=False` passes `--no-renames`, so a moved file lists both its old and new path
+    (SPEC-0234: a deletion must not hide behind a rename)."""
+    args = ["diff", "--name-only"] + ([] if renames else ["--no-renames"])
+    return [p for p in git(repo, *args, f"{base}...{head}").stdout.splitlines() if p]
+
+
+def docs_only_violations(paths, allow) -> list[str]:
+    """SPEC-0234: the `paths` no `allow` entry covers. An entry covers a path equal to it, or
+    (when it ends in `/`) any path under that directory prefix."""
+    return [p for p in paths
+            if not any(p == e or (e.endswith("/") and p.startswith(e)) for e in allow)]
 
 
 def ahead_behind(worktree, base) -> tuple[int, int]:

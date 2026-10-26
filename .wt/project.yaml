@@ -23,6 +23,12 @@ merge:
   regenerate:
     - path: docs/LEDGER.md
       cmd: python3 tools/spec_lint.py --write-ledger
+  # SPEC-0234: paths no gate reads, so `wt queue merge --docs-only` may skip the gates. docs/specs/,
+  # docs/LEDGER.md, docs/product/, README.md, skills/ and persona prompts are read by spec-lint or
+  # pytest and stay out. A test that starts reading one of these must remove it from this list.
+  docs_only_paths:
+    - docs/design/
+    - docs/WORKFLOW.md
 worktrees:
   setup:
     - uv sync --extra tui

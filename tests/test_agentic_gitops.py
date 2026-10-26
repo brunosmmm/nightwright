@@ -241,3 +241,27 @@ def test_rebase_failing_regen_cmd_aborts(conflicting):
     r = G.rebase(w, G.rev_parse(repo), regenerate={"gen.txt": "exit 3"})
     assert not r.ok and r.conflicts == ("gen.txt",) and r.regenerated == ()
     assert G.rev_parse(w) == head and G.is_clean(w)
+
+
+def test_changed_files_head_and_no_renames(repo):
+    (repo / "src").mkdir()
+    _write_commit(repo, "src/x.py", "print('x')\n" * 20, "add x")
+    _git(repo, "checkout", "-q", "-b", "mv")
+    (repo / "docs").mkdir()
+    _git(repo, "mv", "src/x.py", "docs/x.py")
+    _git(repo, "commit", "-q", "-m", "move")
+    _git(repo, "checkout", "-q", "main")
+    assert G.changed_files(repo, "main", head="mv") == ["docs/x.py"]          # rename hides src/x.py
+    assert sorted(G.changed_files(repo, "main", head="mv", renames=False)) == [
+        "docs/x.py", "src/x.py"]
+    assert G.changed_files(repo, "main") == []                                # head defaults to HEAD
+
+
+def test_docs_only_violations_exact_and_prefix_only():
+    allow = ["docs/design/", "docs/WORKFLOW.md"]
+    assert G.docs_only_violations(["docs/design/a.py", "docs/design/sub/b.scss",
+                                   "docs/WORKFLOW.md"], allow) == []
+    paths = ["docs/designer.md", "docs/WORKFLOW.md.bak", "docs/design", "docs/specs/x.md",
+             "docs/LEDGER.md", "README.md", "skills/x/SKILL.md", "src/wt/agentic/personas/x.md"]
+    assert G.docs_only_violations(paths, allow) == paths
+    assert G.docs_only_violations(["a"], []) == ["a"]

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0234
 title: "Docs-only merge requests and conductor/steward skill routing"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -168,32 +168,32 @@ re-gate (step 5):
 
 ## Acceptance criteria
 
-- [ ] `.wt/project.yaml` validation accepts `merge.docs_only_paths` (default `[]`) and rejects
+- [x] `.wt/project.yaml` validation accepts `merge.docs_only_paths` (default `[]`) and rejects
       a non-list, a non-string, an absolute path, `..`, glob characters and an empty entry,
       each with its key path. `STARTER` documents the key. This repo sets `[docs/design/,
       docs/WORKFLOW.md]`.
-- [ ] `docs_only_violations` matches exact entries and `/`-terminated prefixes only.
+- [x] `docs_only_violations` matches exact entries and `/`-terminated prefixes only.
       `gitops.changed_files(..., head=branch, renames=False)` lists both sides of a rename.
-- [ ] `plan_merge(docs_only=True)` refuses when the allowlist is empty and refuses a branch
+- [x] `plan_merge(docs_only=True)` refuses when the allowlist is empty and refuses a branch
       with any path outside it (count and up to 5 paths). In this repo that includes
       `docs/specs/x.md`, `docs/LEDGER.md`, `README.md`, `skills/x/SKILL.md`,
       `src/wt/agentic/personas/x.md`, and a rename of `src/x.py` to `docs/design/x.py`.
       It accepts a branch that touches only `docs/design/` and `docs/WORKFLOW.md`.
-- [ ] `wt queue merge --docs-only --json` (`wt.queue.merge.v1`) carries `docs_only` and
+- [x] `wt queue merge --docs-only --json` (`wt.queue.merge.v1`) carries `docs_only` and
       `docs_only_paths`. The state has `merge.docs_only`, the `open` event carries
       `docs_only`, and the text plan prints the `gates: none (docs-only; …)` line.
-- [ ] An allowlisted docs-only merge reaches MERGED with no gate run and no `gate` event. Its
+- [x] An allowlisted docs-only merge reaches MERGED with no gate run and no `gate` event. Its
       `close` event has `gates_seq: null` and `docs_only: true` and passes
       `schemas.ledger_problems`.
-- [ ] A docs-only merge whose rebased diff violates the allowlist parks `not_docs_only`
+- [x] A docs-only merge whose rebased diff violates the allowlist parks `not_docs_only`
       (`resume_to: QUEUED`) before merging, with the abandon-and-re-queue recovery in the
       detail. Following that recovery reaches MERGED through the full gates.
-- [ ] `skills/wt-conduct/SKILL.md` has `merge` in the request row with the `wt queue merge`
+- [x] `skills/wt-conduct/SKILL.md` has `merge` in the request row with the `wt queue merge`
       command, the `gates_failed` / `worktree_dirty` / `not_docs_only` rows, and the
       merge-campaign `rebase_conflict` resume to `CLOSING`. It no longer contains "completing
       or retrying a merge" or "merge repair". `skills/wt-steward/SKILL.md` contains the merge
       request example and the never-merge-by-hand guardrail.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -230,6 +230,33 @@ re-gate (step 5):
   unchanged (existing gate and e2e tests). `changed_files`' existing caller keeps its
   behaviour.
 
+### Test record (2026-10-25)
+
+- `uv run pytest` (full suite): 2482 passed, 1 skipped.
+- New tests: `test_agentic_project.py` (default, every rejection with its key path, this repo's
+  allowlist, `STARTER`), `test_agentic_gitops.py` (`changed_files` with `head=` and
+  `renames=False` listing both sides of a rename; `docs_only_violations` exact / prefix),
+  `test_agentic_queue_merge.py` (every `plan_merge(docs_only=True)` refusal and acceptance,
+  rename out of `src/`, JSON and text plan, state and `open` event, and the three e2e cases),
+  `test_agentic_close.py` (no gate and no `gate` event, `gates_seq: null`; a violation parks
+  `not_docs_only` before `ff_merge`; the allowlist is re-read), `test_skills.py` (routing rows,
+  negative assertions).
+- Manual: `uv run wt queue merge <branch touching docs/WORKFLOW.md> --docs-only` (dry run)
+  printed `gates: none (docs-only; 1 paths within merge.docs_only_paths)`; the same on a
+  branch touching `docs/specs/zz.md` was refused with `--docs-only refused: 1 paths outside
+  merge.docs_only_paths (docs/specs/zz.md)`. (Throwaway branches built with git plumbing,
+  deleted afterwards.)
+
+### As shipped (2026-10-25)
+
+- `docs_only_violations` lives in `gitops.py` (the close shares it without importing `queue`);
+  `queue.docs_only_violations` is the same function re-exported.
+- The text plan's `gates: none (docs-only; …)` line comes from a `gates` key in the plan
+  mapping, so it is also in the `wt.queue.merge.v1` JSON (only for `--docs-only`).
+- The e2e cases are in `tests/test_agentic_queue_merge.py` (next to the merge-request helpers)
+  instead of `tests/test_agentic_e2e.py`.
+- The `not_docs_only` park is also documented in `docs/product/loop/operate.md`.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -241,11 +268,11 @@ so `--docs-only` is refused there with a message naming the key until the projec
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

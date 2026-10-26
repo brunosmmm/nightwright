@@ -36,6 +36,7 @@ PROJECT_DEFAULTS = {
         "delete_branch": True,
         "post_cmds": [],
         "regenerate": [],        # [{path, cmd}]: generated files resolved by regeneration at rebase
+        "docs_only_paths": [],   # SPEC-0234: paths no gate reads; [] ⇒ `wt queue merge --docs-only` off
         "resolver": True,        # SPEC-0221: a conflict_resolver persona run before parking rebase_conflict
         "pr": {"labels": [], "reviewers": [], "title_prefix": ""},
     },
@@ -73,6 +74,7 @@ merge:
   push_after_merge: false
   delete_branch: true
   post_cmds: []
+  docs_only_paths: []          # paths no gate reads; enables wt queue merge --docs-only
   pr:
     labels: []
     reviewers: []
@@ -125,6 +127,27 @@ def _check_regenerate(problems, value):
         for key in ("path", "cmd"):
             if not _is_str(item.get(key)):
                 problems.append(f"{where}.{key}: must be a non-empty string")
+
+
+def _check_docs_only_paths(problems, value):
+    """SPEC-0234: exact repo-relative paths or `/`-terminated directory prefixes, no globs."""
+    if value is None:
+        return
+    if not isinstance(value, list):
+        problems.append("merge.docs_only_paths: must be a list of repo-relative paths")
+        return
+    for i, item in enumerate(value):
+        where = f"merge.docs_only_paths[{i}]"
+        if not isinstance(item, str):
+            problems.append(f"{where}: must be a string")
+        elif not item.strip():
+            problems.append(f"{where}: must not be empty")
+        elif item.startswith("/"):
+            problems.append(f"{where}: must be repo-relative, not absolute")
+        elif ".." in item:
+            problems.append(f"{where}: must not contain '..'")
+        elif any(ch in item for ch in "*?["):
+            problems.append(f"{where}: globs are not supported (exact path or dir/ prefix)")
 
 
 def _check_bool(problems, value, path):
@@ -188,6 +211,7 @@ def validate(doc):
         _check_bool(problems, merge.get("delete_branch"), "merge.delete_branch")
         _check_bool(problems, merge.get("resolver"), "merge.resolver")
         _check_str_list(problems, merge.get("post_cmds"), "merge.post_cmds")
+        _check_docs_only_paths(problems, merge.get("docs_only_paths"))
         _check_regenerate(problems, merge.get("regenerate"))
         pr = merge.get("pr")
         if pr is not None and _check_mapping(problems, pr, "merge.pr",

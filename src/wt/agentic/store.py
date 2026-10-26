@@ -97,6 +97,7 @@ def create_campaign(cfg, state: dict, *, by="human") -> Path:
         "admission": state.get("admission"),                              # SPEC-0243
         **({"kind": "merge", "merge_branch": (state.get("merge") or {}).get("branch")}
            if state.get("kind") == "merge" else {}),               # SPEC-0233
+        **({"docs_only": True} if (state.get("merge") or {}).get("docs_only") else {}),  # SPEC-0234
     }, by=by)
     return d
 

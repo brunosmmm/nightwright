@@ -1,6 +1,7 @@
 """SPEC-0175: close step — rebase, re-gate, ff-only merge or PR hand-off. Every repo lives in
 tmp_path: a bare origin, a "main" clone (the main checkout), and a campaign worktree. `gh` is
 a fake script on PATH; nothing calls the real gh or claude."""
+import json
 import os
 import stat
 import subprocess
@@ -464,3 +465,49 @@ def test_merge_request_parks_when_the_adopted_worktree_left_the_branch(world):
     G.git(world["wt"], "switch", "-q", "--detach")
     out = CL.close_campaign(world["cfg"], st, _pcfg(world))
     assert out.park["reason"] == "worktree_dirty" and "detached HEAD" in out.park["detail"]
+
+
+# ---- SPEC-0234: a docs-only merge request skips the gates --------------------------------------
+
+def _docs_only_world(world, files, **cfg_kw):
+    st = _merge_world(world)
+    G.git(world["wt"], "reset", "-q", "--hard", "main")
+    for rel, text in files.items():
+        (world["wt"] / rel).parent.mkdir(parents=True, exist_ok=True)
+        (world["wt"] / rel).write_text(text)
+    G.commit_all(world["wt"], "docs")
+    st["merge"].update(head_at_request=G.rev_parse(world["wt"]), docs_only=True)
+    pcfg = _pcfg(world, gates=("echo boom >&2; false",),
+                 docs_only_paths=json.dumps(["docs/design/"]), **cfg_kw)
+    return st, pcfg
+
+
+def test_docs_only_merge_request_merges_with_no_gate(world):
+    st, pcfg = _docs_only_world(world, {"docs/design/a.md": "x\n"})
+    out = CL.close_campaign(world["cfg"], st, pcfg)
+    assert out.next_state == "MERGED", out
+    assert (world["root"] / "docs/design/a.md").exists()
+    assert _events(out, "gate") == [] and out.gate_run is None
+    close = _events(out, "close")[0]
+    assert close["gates_seq"] is None and close["docs_only"] is True
+
+
+def test_docs_only_violation_parks_before_ff_merge(world, monkeypatch):
+    st, pcfg = _docs_only_world(world, {"docs/design/a.md": "x\n", "src/x.py": "y\n"})
+    merged = []
+    monkeypatch.setattr(G, "ff_merge", lambda *a, **k: merged.append(1))
+    out = CL.close_campaign(world["cfg"], st, pcfg)
+    assert out.next_state == "PARKED" and merged == []
+    assert out.park["reason"] == "not_docs_only" and out.park["resume_to"] == "QUEUED"
+    assert "1 paths outside merge.docs_only_paths: src/x.py" in out.park["detail"]
+    assert "wt queue abandon SPEC-0001-20261025-abcd --yes" in out.park["detail"]
+    assert "wt queue merge wt/c1 --yes without --docs-only" in out.park["detail"]
+    assert _events(out, "gate") == []
+
+
+def test_docs_only_close_rereads_the_current_allowlist(world):
+    st, _ = _docs_only_world(world, {"docs/design/a.md": "x\n"})
+    pcfg = _pcfg(world, gates=("false",), docs_only_paths=json.dumps(["docs/other/"]))
+    out = CL.close_campaign(world["cfg"], st, pcfg)
+    assert out.next_state == "PARKED" and out.park["reason"] == "not_docs_only"
+    assert "docs/design/a.md" in out.park["detail"]

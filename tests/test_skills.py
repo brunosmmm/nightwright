@@ -370,3 +370,22 @@ def test_conduct_skill_escalates_through_records_spec_0232():
     assert "wt escalations withdraw" in row and "wt queue resume" in row
     assert any(r.startswith("| `escalation` / `escalation_withdrawn`")
                for r in conduct.splitlines())
+
+
+def test_conduct_and_steward_route_merges_through_the_queue_spec_0234():
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    steward = (REPO_SKILLS_DIR / "wt-steward" / "SKILL.md").read_text(encoding="utf-8")
+    rows = [ln for ln in conduct.splitlines() if ln.startswith("| `")]
+    (request,) = [r for r in rows if r.startswith("| `message` (`kind` request)")]
+    assert "(add, merge, prioritize, park, resume)" in request
+    assert "wt queue merge <branch> --by steward:<Project> [--docs-only]" in request
+    assert any(r.startswith("| `parked` `gates_failed` / `worktree_dirty`") for r in rows)
+    (not_docs,) = [r for r in rows if r.startswith("| `parked` `not_docs_only`")]
+    assert "wt queue abandon" in not_docs and "without `--docs-only`" in not_docs
+    (rebase,) = [r for r in rows if r.startswith("| `parked` `rebase_conflict`")]
+    assert "On a merge campaign" in rebase and "resumes to `CLOSING`" in rebase
+    for gone in ("completing or retrying a merge", "merge repair", "git merge"):
+        assert gone not in conduct, gone
+    assert "go through `wt queue merge --by conductor`" in conduct
+    assert "merge <branch>" in steward
+    assert "Never merge into `main` by hand" in steward

@@ -65,6 +65,7 @@ PARK_REASONS = frozenset({
     "review_escalated", "config_invalid", "spec_writer_unavailable", "spec_write_failed",
     "spec_review_unavailable", "human_decision",
     "gates_failed", "worktree_dirty",                  # SPEC-0233: merge campaigns
+    "not_docs_only",                                   # SPEC-0234: --docs-only diff left the allowlist
 })
 # SPEC-0222: who a park waits for. The human only for their own checkout and explicit
 # escalations (`human_decision`, SPEC-0232); everything else is the conductor's.
@@ -3591,10 +3592,15 @@ def _campaign_on_branch(cfg, project, branch) -> dict | None:
     return None
 
 
+docs_only_violations = git.docs_only_violations      # SPEC-0234 (lives in gitops: close shares it)
+
+
 def plan_merge(cfg, branch, *, project=None, worktree=None, profile=None,
-               priority=MERGE_PRIORITY_DEFAULT, note=None, requested_by="human") -> dict:
+               priority=MERGE_PRIORITY_DEFAULT, note=None, requested_by="human",
+               docs_only=False) -> dict:
     """SPEC-0233: resolve everything `wt queue merge` needs and return the plan (no writes).
-    Raises ValueError naming the fix when the branch cannot be queued for a merge."""
+    Raises ValueError naming the fix when the branch cannot be queued for a merge.
+    SPEC-0234: `docs_only` also needs every changed path to be on `merge.docs_only_paths`."""
     branch = (branch or "").strip()
     if not branch:
         raise ValueError("branch is required")
@@ -3620,6 +3626,17 @@ def plan_merge(cfg, branch, *, project=None, worktree=None, profile=None,
     if active:
         raise ValueError(f"{branch!r} already has an active campaign {active['id']} "
                          f"({active.get('state')}); abandon it first")
+    allow = list((pcfg.get("merge") or {}).get("docs_only_paths") or [])
+    changed = []
+    if docs_only:
+        if not allow:
+            raise ValueError(f"--docs-only is disabled for {project}: set "
+                             f"merge.docs_only_paths in .wt/project.yaml")
+        changed = git.changed_files(root, base, head=branch, renames=False)
+        bad = docs_only_violations(changed, allow)
+        if bad:
+            raise ValueError(f"--docs-only refused: {len(bad)} paths outside "
+                             f"merge.docs_only_paths ({', '.join(bad[:5])})")
     existing = git.worktree_for_branch(root, branch)
     cid = store.new_campaign_id(cfg, "MERGE")
     if worktree is not None:
@@ -3647,6 +3664,9 @@ def plan_merge(cfg, branch, *, project=None, worktree=None, profile=None,
         "head_at_request": git.rev_parse(root, branch), "ahead": ahead,
         "requested_by": requested_by, "note": note, "cap_usd": prof.get("campaign_cap_usd"),
         "slots": prof.get("slots"), "merge_policy": policy,
+        **({"docs_only": True, "docs_only_paths": allow,
+            "gates": f"none (docs-only; {len(changed)} paths within merge.docs_only_paths)"}
+           if docs_only else {}),
     }
 
 
@@ -3664,7 +3684,8 @@ def apply_merge(cfg, plan: dict, *, by="human") -> dict:
         "spec": None,
         "merge": {"branch": plan["branch"], "requested_by": plan.get("requested_by") or by,
                   "note": plan.get("note"), "head_at_request": plan["head_at_request"],
-                  "own_worktree": bool(plan["own_worktree"]), "docs_only": False},
+                  "own_worktree": bool(plan["own_worktree"]),
+                  "docs_only": bool(plan.get("docs_only"))},
         "counters": {"loops": 0, "runs": 0, "gate_runs": 0, "gate_retries": 0,
                      "triage_retries": 0, "blocked_streak": 0, "close_attempts": 0, "parks": 0},
         "cost": {"total_usd": 0.0, "cap_usd": plan.get("cap_usd"), "by_persona": {}},

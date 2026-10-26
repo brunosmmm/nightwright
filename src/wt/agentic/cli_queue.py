@@ -722,20 +722,24 @@ def attach(queue_group):
     @click.option("--note", default=None, help="why this merge (shown in the queue)")
     @click.option("--by", "requested_by", default="human", show_default=True,
                   help="who asks: human, conductor, steward:<Project>")
+    @click.option("--docs-only", "docs_only", is_flag=True,
+                  help="skip the gates; only if every changed path is in merge.docs_only_paths")
     @click.option("--yes", "do_write", is_flag=True, help="create the campaign (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.merge.v1 JSON")
     @click.pass_obj
     def queue_merge(cfg, branch, project, worktree, profile, priority, note, requested_by,
-                    do_write, as_json):
+                    docs_only, do_write, as_json):
         """Queue a local branch for a rebase + re-gate + ff-only merge (dry-run unless --yes).
 
         \b
         wt queue merge fix/typo           show the plan
         wt queue merge fix/typo --yes     create the merge campaign in QUEUED
+        wt queue merge fix/doc --docs-only    gate-free, for allowlisted docs paths only
         """
         try:
             plan = Q.plan_merge(cfg, branch, project=project, worktree=worktree, profile=profile,
-                                priority=priority, note=note, requested_by=requested_by)
+                                priority=priority, note=note, requested_by=requested_by,
+                                docs_only=docs_only)
             if do_write:
                 Q.apply_merge(cfg, plan, by=requested_by)
         except ValueError as e:

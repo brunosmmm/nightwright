@@ -583,3 +583,161 @@ def test_apply_abandon_rederives_remove_worktree_from_live_state(world):
     p["remove_worktree"] = True                      # a stale or forged plan
     Q.apply_abandon(cfg, p)
     assert wt.exists() and _git(repo, "rev-parse", "--verify", "fix/typo")
+
+
+# ---- SPEC-0234: --docs-only ---------------------------------------------------------------------
+
+ALLOW = ["docs/design/", "docs/WORKFLOW.md"]
+
+
+def allow_docs(repo, paths=ALLOW):
+    """Commit an allowlist into the project config on main (the main checkout stays clean)."""
+    f = repo / ".wt" / "project.yaml"
+    f.write_text(f.read_text().replace("merge:\n", f"merge:\n  docs_only_paths: {json.dumps(paths)}\n", 1))
+    _git(repo, "commit", "-q", "-am", "allow docs-only paths")
+
+
+def test_docs_only_is_refused_without_an_allowlist(world):
+    repo, cfg, tmp = world
+    branch_wt(tmp, repo, files={"docs/WORKFLOW.md": "x\n"})
+    with pytest.raises(ValueError, match=r"--docs-only is disabled for Meta-Tools: set "
+                                          r"merge\.docs_only_paths in \.wt/project\.yaml"):
+        plan(cfg, docs_only=True)
+    assert "docs_only" not in plan(cfg)                         # the flag is opt-in
+
+
+@pytest.mark.parametrize("bad", [
+    "docs/specs/x.md", "docs/LEDGER.md", "README.md", "skills/x/SKILL.md",
+    "src/wt/agentic/personas/x.md", "docs/designer.md"])
+def test_docs_only_refuses_paths_outside_the_allowlist(world, bad):
+    repo, cfg, tmp = world
+    allow_docs(repo)
+    branch_wt(tmp, repo, files={"docs/WORKFLOW.md": "x\n", bad: "y\n"})
+    with pytest.raises(ValueError, match=rf"--docs-only refused: 1 paths outside "
+                                          rf"merge\.docs_only_paths \({bad}\)"):
+        plan(cfg, docs_only=True)
+
+
+def test_docs_only_refusal_counts_and_caps_the_listed_paths(world):
+    repo, cfg, tmp = world
+    allow_docs(repo)
+    branch_wt(tmp, repo, files={f"src/f{i}.py": "x\n" for i in range(7)})
+    with pytest.raises(ValueError) as e:
+        plan(cfg, docs_only=True)
+    msg = str(e.value)
+    assert "7 paths outside" in msg and "src/f4.py" in msg and "src/f5.py" not in msg
+
+
+def test_docs_only_refuses_a_rename_out_of_src(world):
+    repo, cfg, tmp = world
+    _write(repo, "src/x.py", "print('x')\n" * 20)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add src/x.py")
+    allow_docs(repo)
+    wt = branch_wt(tmp, repo, files={"docs/WORKFLOW.md": "x\n"})
+    (wt / "docs" / "design").mkdir(parents=True, exist_ok=True)
+    _git(wt, "mv", "src/x.py", "docs/design/x.py")
+    _git(wt, "commit", "-q", "-m", "move")
+    with pytest.raises(ValueError, match=r"1 paths outside .*src/x\.py"):
+        plan(cfg, docs_only=True)
+
+
+def test_docs_only_accepts_allowlisted_paths_and_records_them(world):
+    repo, cfg, tmp = world
+    allow_docs(repo)
+    branch_wt(tmp, repo, files={"docs/WORKFLOW.md": "x\n", "docs/design/p/a.py": "y\n"})
+    p = plan(cfg, docs_only=True)
+    assert p["docs_only"] is True and p["docs_only_paths"] == ALLOW
+    assert p["gates"] == "none (docs-only; 2 paths within merge.docs_only_paths)"
+    st = Q.apply_merge(cfg, p)
+    assert S.read_state(cfg, st["id"])["merge"]["docs_only"] is True
+    ev = S.read_ledger(cfg, st["id"], types=["open"])[0]
+    assert ev["docs_only"] is True and SC.ledger_problems(ev) == []
+
+
+def test_cli_docs_only_dry_run_json_and_text(world, monkeypatch):
+    repo, cfg, tmp = world
+    allow_docs(repo)
+    branch_wt(tmp, repo, files={"docs/WORKFLOW.md": "x\n"})
+    r = run_cli(cfg, monkeypatch, ["queue", "merge", "fix/typo", "--project", "Meta-Tools",
+                                   "--docs-only"])
+    assert r.exit_code == 0, r.output
+    assert "gates: none (docs-only; 1 paths within merge.docs_only_paths)" in r.output
+    assert S.list_campaigns(cfg) == []
+    r = run_cli(cfg, monkeypatch, ["queue", "merge", "fix/typo", "--project", "Meta-Tools",
+                                   "--docs-only", "--json"])
+    d = json.loads(r.output)
+    assert d["schema"] == "wt.queue.merge.v1" and d["docs_only"] is True
+    assert d["docs_only_paths"] == ALLOW and d["written"] is False
+
+
+def test_cli_docs_only_refused_exits_nonzero(world, monkeypatch):
+    repo, cfg, tmp = world
+    allow_docs(repo)
+    branch_wt(tmp, repo, files={"docs/specs/x.md": "x\n"})
+    r = run_cli(cfg, monkeypatch, ["queue", "merge", "fix/typo", "--project", "Meta-Tools",
+                                   "--docs-only"])
+    assert r.exit_code != 0 and "--docs-only refused: 1 paths" in r.output
+
+
+def test_e2e_docs_only_merges_without_running_a_gate(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path, test_gate="exit 1")              # any gate that ran would be red
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    allow_docs(repo)
+    wt = branch_wt(tmp_path, repo, files={"docs/WORKFLOW.md": "workflow\n"})
+    cid = queue_merge(cfg, monkeypatch, "fix/typo", "--docs-only")
+    run_until_idle(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED", st
+    assert (repo / "docs" / "WORKFLOW.md").exists() and wt.is_dir()
+    ledger = S.read_ledger(cfg, cid)
+    assert "gate" not in [e["type"] for e in ledger] and st["counters"]["gate_runs"] == 0
+    close = next(e for e in ledger if e["type"] == "close")
+    assert close["gates_seq"] is None and close["docs_only"] is True
+    assert close["mode"] == "merge" and close["merged_sha"] == _git(repo, "rev-parse", "main")
+    assert SC.ledger_problems(close) == []
+
+
+def test_e2e_docs_only_ignores_code_that_landed_on_base_while_queued(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path, test_gate="exit 1")
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    allow_docs(repo)
+    branch_wt(tmp_path, repo, files={"docs/design/a.md": "design\n"})
+    cid = queue_merge(cfg, monkeypatch, "fix/typo", "--docs-only")
+    _write(repo, "src/wt/landed.py", "x = 1\n")                 # code lands on main meanwhile
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "code on main")
+    run_until_idle(cfg, monkeypatch)
+    assert S.read_state(cfg, cid)["state"] == "MERGED"
+    assert (repo / "docs" / "design" / "a.md").exists() and (repo / "src/wt/landed.py").exists()
+
+
+def test_e2e_docs_only_amended_with_code_parks_then_recovers_through_the_gates(tmp_path,
+                                                                                monkeypatch):
+    repo = make_repo(tmp_path, test_gate="true")
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    allow_docs(repo)
+    wt = branch_wt(tmp_path, repo, files={"docs/WORKFLOW.md": "workflow\n"})
+    cid = queue_merge(cfg, monkeypatch, "fix/typo", "--docs-only")
+    _write(wt, "src/x.py", "print('x')\n")                      # amended after queueing
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-q", "-m", "sneak in code")
+    run_until_idle(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "not_docs_only", st
+    assert st["park"]["resume_to"] == "QUEUED" and "src/x.py" in st["park"]["detail"]
+    assert f"wt queue abandon {cid} --yes" in st["park"]["detail"]
+    assert "without --docs-only" in st["park"]["detail"]
+    assert not (repo / "src" / "x.py").exists()                  # nothing merged
+    assert "gate" not in [e["type"] for e in S.read_ledger(cfg, cid)]
+    assert Q.park_owner("not_docs_only") == "conductor"
+    # the recovery: abandon, then queue the same branch without --docs-only
+    r = run_cli(cfg, monkeypatch, ["queue", "abandon", cid, "--yes"])
+    assert r.exit_code == 0, r.output
+    assert wt.is_dir() and _git(repo, "rev-parse", "--verify", "fix/typo")   # adopted: kept
+    cid2 = queue_merge(cfg, monkeypatch)
+    run_until_idle(cfg, monkeypatch)
+    st2 = S.read_state(cfg, cid2)
+    assert st2["state"] == "MERGED", st2
+    assert (repo / "src" / "x.py").exists()
+    assert [e["type"] for e in S.read_ledger(cfg, cid2)].count("gate") == 1

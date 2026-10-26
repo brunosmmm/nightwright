@@ -44,7 +44,9 @@ decides queue actions.
    human's decision on <question>".
 5. **Human requests in this session** ("queue SPEC-X", "pause that campaign", "bump this
    up"): send a request to the conductor rather than running queue writes yourself:
-   `wt mailbox send --to conductor --kind request "queue SPEC-0190 priority 2"`; tell the
+   `wt mailbox send --to conductor --kind request "queue SPEC-0190 priority 2"`; to land a
+   branch ask for `"merge <branch>"` or, for a branch touching only the project's
+   `merge.docs_only_paths`, `"merge <branch> docs-only"`; tell the
    human the conductor will act and confirm when its `answer` arrives on your Monitor.
 6. **Spec work belongs to you:** when your answer is "the spec is wrong", fix it the normal
    way (`/wt-rework` or a superseding spec), then tell the conductor what to queue.
@@ -55,6 +57,9 @@ decides queue actions.
   implements. Reading worktrees is fine.
 - **Queue writes go through the conductor** (requests), so the ledger's attribution stays
   honest and one place arbitrates.
+- **Never merge into `main` by hand or with a background job.** Ask the conductor for a
+  queue merge (`wt queue merge`); it is the only path that rebases and re-gates the branch
+  against the current base.
 - **Be concrete.** The conductor acts on your text; a vague answer costs a loop.
 - **One steward per project** (the mailbox reader lock enforces it).
 - **Shared ideas file:** verify headings before any `wt idea …` write.

@@ -406,6 +406,25 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> Prep
     if merge_request:
         moved_since = _commits_since_request(root, state, pre_rebase)
 
+    if merge_request and (state.get("merge") or {}).get("docs_only"):
+        # SPEC-0234: no gate runs; the rebased diff must still be inside the (current) allowlist.
+        # Diffing against the target keeps commits that landed on base meanwhile out of it.
+        bad = git.docs_only_violations(
+            git.changed_files(worktree, target_sha, renames=False),
+            list(mcfg.get("docs_only_paths") or []))
+        if bad:
+            more = f" (+{len(bad) - 10} more)" if len(bad) > 10 else ""
+            cid = state.get("id")
+            return decided(_park(
+                "not_docs_only",
+                f"--docs-only merge changes {len(bad)} paths outside merge.docs_only_paths: "
+                f"{', '.join(bad[:10])}{more}. Recovery: abandon this campaign "
+                f"(wt queue abandon {cid} --yes), then wt queue merge {c['branch']} --yes "
+                f"without --docs-only", "QUEUED", events))
+        return PreparedClose(target=target, target_sha=target_sha, head=head, policy=policy,
+                             events=events, commits_since_request=moved_since,
+                             pre_head=pre_head)
+
     # 5. re-gate on the rebased tree
     seq = gate_seq if gate_seq is not None else G.next_gate_seq(cfg, state["id"])
     gate_run = G.run_all(project_cfg, state, cfg, seq=seq)
@@ -482,6 +501,8 @@ def finish_close(cfg, state: dict, project_cfg: dict, prepared: PreparedClose, *
         close = {"mode": "merge", "merged_sha": merged, "pr_url": None, "gates_seq": seq,
                  "target_sha": target_sha}
         merge_request = _is_merge_request(state)
+        if merge_request and (state.get("merge") or {}).get("docs_only"):
+            close["docs_only"] = True                # SPEC-0234: merged without gates
         if merge_request:                           # SPEC-0233: make a moved branch visible
             close["head_at_request"] = (state.get("merge") or {}).get("head_at_request")
             close["commits_since_request"] = prepared.commits_since_request
