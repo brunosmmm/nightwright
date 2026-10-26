@@ -602,12 +602,17 @@ def _event_text(ev) -> str:
 
 
 def load_events(cfg, after_id=0, limit=EVENT_LIMIT) -> list[EventRow]:
-    events = EV.read_since(cfg, after_id)[-limit:]
-    return [EventRow(id=ev["id"], ts=str(ev.get("ts") or ""), type=str(ev.get("type") or ""),
-                     campaign=str(ev.get("campaign") or ""), text=_event_text(ev),
-                     style=event_style(ev.get("type"), ev.get("data")),
-                     data=ev.get("data") if isinstance(ev.get("data"), dict) else {})
-            for ev in events]
+    rows = []
+    for ev in EV.read_since(cfg, after_id)[-limit:]:
+        try:
+            rows.append(EventRow(
+                id=ev["id"], ts=str(ev.get("ts") or ""), type=str(ev.get("type") or ""),
+                campaign=str(ev.get("campaign") or ""), text=_event_text(ev),
+                style=event_style(ev.get("type"), ev.get("data")),
+                data=ev.get("data") if isinstance(ev.get("data"), dict) else {}))
+        except (AttributeError, TypeError, ValueError):
+            continue                        # a malformed record must not take the desk down
+    return rows
 
 
 def matches(row, f) -> bool:

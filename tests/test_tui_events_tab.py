@@ -179,6 +179,52 @@ def test_the_table_keeps_the_newest_events_only(tmp_path, monkeypatch):
     _run(drive())
 
 
+def test_the_cursor_keeps_its_event_when_an_append_trims_the_table(tmp_path, monkeypatch):
+    monkeypatch.setattr(AM, "EVENT_LIMIT", 6)
+    cfg = _cfg(tmp_path)
+    _seed(cfg, 6)
+    app = _desk(cfg, tab="events")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await pilot.press("k", "k")                       # off the tail: event 4
+            assert view(app).current_row().id == 4
+            _add(cfg, campaign="SPEC-0099-x")
+            await until(app, pilot, lambda: ids(app)[-1] == 7, "event 7")
+            assert ids(app) == [2, 3, 4, 5, 6, 7]
+            assert view(app).current_row().id == 4
+            _add(cfg, campaign="SPEC-0098-x")
+            await until(app, pilot, lambda: ids(app)[-1] == 8, "event 8")
+            assert view(app).current_row().id == 4
+            for _ in range(3):                                # trims event 4 away: tail
+                _add(cfg, campaign="SPEC-0097-x")
+            await until(app, pilot, lambda: ids(app)[-1] == 11, "event 11")
+            assert view(app).table.cursor_row == 5
+
+    _run(drive())
+
+
+def test_a_malformed_record_does_not_break_the_stream(tmp_path):
+    cfg = _cfg(tmp_path)
+    _seed(cfg, 2)
+    with open(EV.events_path(cfg), "a", encoding="utf-8") as f:
+        f.write(json.dumps({"id": 50, "type": None, "data": "x", "campaign": 7}) + "\n")
+        f.write(json.dumps({"id": 51, "type": "parked", "data": [1, 2]}) + "\n")
+    rows = AM.load_events(cfg)
+    assert [r.id for r in rows][:2] == [1, 2]
+    app = _desk(cfg, tab="events")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            assert ids(app)[:2] == [1, 2]
+            _add(cfg, campaign="SPEC-0010-x")
+            await until(app, pilot, lambda: len(ids(app)) > len(rows), "new event")
+
+    _run(drive())
+
+
 # --- live updates (AC3) ------------------------------------------------------------------
 
 def test_an_appended_event_appears_and_the_tail_is_followed(tmp_path):

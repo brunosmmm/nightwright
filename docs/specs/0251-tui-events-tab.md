@@ -238,6 +238,14 @@ Matches the Design, with these details:
   the old filter active. `c` on an event without a campaign notifies instead of filtering.
 - `wt tui --tab events` is added to the click choice and the `wt tui` help text.
 
+### As shipped, review round 1 (2026-10-26)
+
+- `EventsView._append` captures the selected row before `shown` is rebuilt, and `_repaint`
+  takes it as `keep`, so a trimming append keeps the cursor on the same event id (on the tail
+  when that event was trimmed or filtered out). Full tests: 2830 passed, 3 skipped.
+- `load_events` skips a malformed record and the stream worker catches any exception, so one
+  bad line in `events.jsonl` cannot exit the desk. Pilot tests cover both.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.

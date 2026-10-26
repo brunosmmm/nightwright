@@ -163,7 +163,7 @@ class EventsView(Horizontal):
                     full = await asyncio.to_thread(AM.load_events, self.cfg, 0, AM.EVENT_LIMIT)
                     if not full or full[-1].id < self._last_id:
                         reset, rows = True, full
-            except (OSError, ValueError) as e:
+            except Exception as e:  # a bad line must not take the desk down
                 self.query_one("#events-status", Static).update(
                     f"[red]events failed: {escape(str(e))}[/]")
                 return
@@ -184,6 +184,7 @@ class EventsView(Horizontal):
     def _append(self, rows) -> None:
         table = self.table
         first = not self.loaded
+        selected = self.current_row()       # before `shown` changes: the cursor indexes the old list
         at_tail = first or table.row_count == 0 or table.cursor_row >= table.row_count - 1
         if rows:
             self._last_id = rows[-1].id
@@ -193,7 +194,7 @@ class EventsView(Horizontal):
             self.loaded = self.loaded[-AM.EVENT_LIMIT:]
         if trimmed or first:
             self.shown = [r for r in self.loaded if AM.matches(r, self.event_filter)]
-            self._repaint(tail=at_tail, keep=not at_tail)
+            self._repaint(tail=at_tail, keep=selected)
         else:
             new = [r for r in rows if AM.matches(r, self.event_filter)]
             width = self._text_width()
@@ -212,10 +213,11 @@ class EventsView(Horizontal):
         return (str(r.id), AM.event_time(r.ts), Text(r.type, style=r.style),
                 R._clip(r.campaign, _CAMPAIGN_W), R._clip(r.text, width))
 
-    def _repaint(self, *, tail=False, keep=False) -> None:
-        """Rebuild the table from `self.shown`; `keep` holds the cursor on the same event."""
+    def _repaint(self, *, tail=False, keep=None) -> None:
+        """Rebuild the table from `self.shown`; `keep` (an EventRow, or True for the one under
+        the cursor) holds the cursor on that event, or on the tail when it is gone."""
         table = self.table
-        row = self.current_row() if keep else None
+        row = self.current_row() if keep is True else keep
         table.clear()
         width = self._text_width()
         for r in self.shown:
@@ -305,12 +307,12 @@ class EventsView(Horizontal):
         try:
             try:
                 conditions = await asyncio.to_thread(AM.load_conditions, self.cfg)
-            except (OSError, ValueError) as e:
+            except Exception as e:  # a bad line must not take the desk down
                 conditions = f"conditions failed: {e}"
             try:
                 followers = await asyncio.to_thread(AM.load_followers, self.cfg)
                 self.health = AM.stream_health(self.cfg, followers)
-            except (OSError, ValueError) as e:
+            except Exception as e:  # a bad line must not take the desk down
                 followers = f"followers failed: {e}"
             self._render_conditions(conditions)
             self._render_followers(followers)
