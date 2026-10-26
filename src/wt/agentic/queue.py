@@ -3457,7 +3457,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
             exit_fields = {}
             if reason == "code_changed":
                 exit_fields.update(restart)
-            elif draining and restart.get("to_sha"):
+            elif draining and reason in ("max_ticks", "idle") and restart.get("to_sha"):
                 exit_fields["restart_pending"] = {"to_sha": restart["to_sha"]}
             if abandoned or crash:
                 exit_fields["abandoned"] = abandoned

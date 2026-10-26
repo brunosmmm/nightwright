@@ -396,6 +396,32 @@ The conductor skill rows change accordingly:
   and a persona run, adoption by the next `run()`, SIGTERM in a subprocess) are covered by the
   automated tests above, using real subprocesses and `fake_claude`.
 
+### Test record (2026-10-26, review round)
+
+- Code fix: a signal (or `ctx.stop`) during draining ticks no longer journals `restart_pending`;
+  it is reserved for a `max_ticks` / `idle` exit (`test_signal_during_draining_clears_restart`).
+- Tests added or tightened in `tests/test_agentic_exit_paths.py`, all with real `fake_claude`
+  processes (`ClaudeRunner`) where a run must be adopted:
+  - `test_draining_ticks_admit_exec_promptly_and_new_process_adopts`: `_EXEC` < 0.5 s after the
+    gate's `_apply`, B admitted and its implementer detached, a second `code_changes` result
+    moves `to_sha`/`paths`, `tick(drain)` journals the gate harvest, `waiting_on` lists only the
+    gate, and the next `run()` adopts B's run.
+  - `test_stop_with_wait_run_and_gate_then_next_runner_adopts_and_regates`: wait run plus gate
+    in a two-gate project, row reason `interrupted`, `detached` listed, adopted and applied,
+    re-gate at seq 2.
+  - `test_crash_with_gate_wait_spawning_and_finished_flight`: finished flight applied, gate
+    killed, `wait` and paused-`spawning` runs alive, `crash` carries `detached`/`abandoned`,
+    next `run()` adopts both.
+  - `test_crash_sweep_journals_harvest_error_and_applies_the_rest`.
+  - `test_bound_expiry_abandons_collect_and_next_runner_commits_once[stop|crash]`: a `collect`
+    thread that commits then hangs is `abandoned` (`phase: collect`), the `wait` run is
+    detached, the next runner adopts it as `finished` and the commit is recorded once.
+  - CLI: the traceback reaches stderr and `os._exit(70)` follows, on both the raise and the
+    normal-return paths (via `wt queue run`).
+- Sabotage rechecks: restoring the unconditional `restart_pending` fails
+  `test_signal_during_draining_clears_restart`; dropping the `_harvest` call in `_crash_sweep`
+  fails the two crash-sweep tests.
+
 ## Rollout / migration
 
 Lands after SPEC-0225. No data migration. Journal addition: `detached` on every `stop`

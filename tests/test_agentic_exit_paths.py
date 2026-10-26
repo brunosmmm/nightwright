@@ -4,6 +4,8 @@ exactly what the signal handler does."""
 import json
 import os
 import signal
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -20,6 +22,7 @@ from wt.agentic import gates as G
 from wt.agentic import lease as L
 from wt.agentic import queue as Q
 from wt.agentic import runner as R
+from wt.agentic import runproc as RP
 from wt.agentic import store as S
 
 
@@ -50,7 +53,6 @@ def run_with_stop(cfg, when, **kw):
         return real_tick(cfg_, stop=stop, **k)
 
     def side():
-        until(lambda: when() and "stop" in holder, timeout=30) if False else None
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             if "stop" in holder and when():
@@ -139,12 +141,11 @@ def test_handler_only_sets_stop(tmp_path, monkeypatch):
 
 
 def test_fakerunner_drain_converges_and_admits(tmp_path, monkeypatch):
-    root, state = None, {"changed": False}
+    state = {"changed": False}
     repo, cfg, a = gate_world(tmp_path, monkeypatch)
     _second_spec(repo)
     cfg["agentic"]["profiles"]["balanced"]["slots"] = 2
     b = None
-    real = Q.code_changes
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
         ("newsha", ["src/wt/x.py"]) if state["changed"] else (since, [])))
     calls = []
@@ -176,8 +177,6 @@ def test_fakerunner_drain_converges_and_admits(tmp_path, monkeypatch):
     assert stop["reason"] == "code_changed" and "detached" in stop
     assert journal(cfg, "draining")
     assert calls[0] - seen["rel"] < 5
-    os.environ[L.HANDOVER_ENV] = "x"
-    os.environ.pop(L.HANDOVER_ENV)
 
 
 class Det:
@@ -198,44 +197,6 @@ class Det:
         if hooks and not hooks.enter_collect():
             return R.DETACHED
         return self.inner.run(req)
-
-
-def test_draining_submits_detachable_step_and_execs_promptly(tmp_path, monkeypatch):
-    repo, cfg, a = gate_world(tmp_path, monkeypatch, entries=[impl_done(), review()])
-    _second_spec(repo)
-    cfg["agentic"]["profiles"]["balanced"]["slots"] = 2
-    runner = Det(cfg)
-    state = {"changed": False}
-    monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if state["changed"] else (since, [])))
-    calls, seen = [], {}
-    monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(time.monotonic()))
-    started = []
-
-    def on_tick(report):
-        started.extend(report.started)
-        if not state["changed"] and pid_file(tmp_path):         # A is in its (held) gate
-            b = added(cfg, monkeypatch, "SPEC-0002")
-            seen["b"] = b
-            runner.release.clear()
-            state["changed"] = True
-        if seen.get("b") and "b_run" not in seen:
-            runs = S.read_ledger(cfg, seen["b"], types=["run.start"])
-            if runs:
-                seen["b_run"] = runs[0]["run_id"]
-                seen["rel"] = time.monotonic()
-                (tmp_path / "g1.rel").write_text("")
-
-    runner.release.set()                                         # A's implementer finishes
-    Q.run(cfg, poll_interval_s=1, reexec=True, code_root=repo, on_tick=on_tick,
-          runner=runner, max_ticks=100)
-    runner.release.set()
-    assert calls and seen.get("b_run"), (seen, started)
-    assert calls[0] - seen["rel"] < 3.5
-    stop, = journal(cfg, "stop")
-    assert stop["reason"] == "code_changed"
-    assert stop["detached"] == [{"campaign": seen["b"], "run_ids": [seen["b_run"]]}]
-    assert len(S.read_ledger(cfg, a, types=["gate"])) == 1
 
 
 def test_stop_with_run_in_wait_detaches_and_leaves_it_alive(world):
@@ -384,14 +345,6 @@ def test_bound_expiry_abandons_stuck_tasks(tmp_path, monkeypatch):
     time.sleep(0.2)
 
 
-def test_cli_exits_70_on_leftover_threads(tmp_path, monkeypatch, capsys):
-    exits = []
-    monkeypatch.setattr(cli_queue.os, "_exit", lambda code: exits.append(code))
-    monkeypatch.setattr(Q, "leftover_threads", lambda: [object()])
-    cli_queue._exit_leftover()
-    assert exits == [70]
-
-
 def test_waiting_on_lists_only_blockers(tmp_path):
     pool = Q.StepPool()
     f_wait, f_gate = pool.submit(time.sleep, 0.3), pool.submit(time.sleep, 0.3)
@@ -458,20 +411,30 @@ def test_bound_expiry_through_run(tmp_path, monkeypatch, how):
         time.sleep(0.2)
 
 
-def test_cli_prints_traceback_and_exits_70(tmp_path, monkeypatch, capsys):
+def _cli_queue_run(tmp_path, monkeypatch, run):
     from click.testing import CliRunner
     from wt.cli import cli
     exits = []
     monkeypatch.setattr("wt.cli.load_config", lambda: {"data_dir": str(tmp_path)})
+    monkeypatch.setattr(Q, "run", run)
+    monkeypatch.setattr(Q, "leftover_threads", lambda: [object()])
+    monkeypatch.setattr(cli_queue.os, "_exit", lambda code: exits.append(code))
+    return CliRunner().invoke(cli, ["queue", "run", "--once"]), exits
 
+
+def test_cli_prints_traceback_and_exits_70(tmp_path, monkeypatch):
     def boom(cfg, **kw):
         raise RuntimeError("kaboom")
 
-    monkeypatch.setattr(Q, "run", boom)
-    monkeypatch.setattr(Q, "leftover_threads", lambda: [object()])
-    monkeypatch.setattr(cli_queue.os, "_exit", lambda code: exits.append(code))
-    CliRunner().invoke(cli, ["queue", "run", "--once"])
+    res, exits = _cli_queue_run(tmp_path, monkeypatch, boom)
     assert exits == [70]
+    assert "Traceback" in res.output and "kaboom" in res.output     # stderr (mixed by CliRunner)
+    assert isinstance(res.exception, RuntimeError)                  # then it re-raises
+
+
+def test_cli_exits_70_when_run_returns_with_leftover_threads(tmp_path, monkeypatch):
+    res, exits = _cli_queue_run(tmp_path, monkeypatch, lambda cfg, **kw: 3)
+    assert exits == [70] and res.exception is None and "Traceback" not in res.output
 
 
 def test_draining_starts_no_gate_for_a_harvested_campaign(tmp_path, monkeypatch):
@@ -504,3 +467,318 @@ def test_draining_starts_no_gate_for_a_harvested_campaign(tmp_path, monkeypatch)
     b = seen["b"]
     assert calls and S.read_state(cfg, b)["state"] == "GATING"
     assert not S.read_ledger(cfg, b, types=["gate"]) and not S.gates_dir(cfg, b).exists()
+
+
+def test_signal_during_draining_clears_restart(tmp_path, monkeypatch):
+    """Precedence: a human stop during draining ticks is a plain `signal` exit: no exec, no
+    `restart_pending`."""
+    repo, cfg, a = gate_world(tmp_path, monkeypatch)
+    monkeypatch.setattr(Q, "code_changes", lambda r, since: (
+        ("newsha", ["src/wt/x.py"]) if pid_file(tmp_path) else (since, [])))
+    monkeypatch.setattr(Q, "_EXEC", lambda *a: pytest.fail("exec despite a signal"))
+    run_with_stop(cfg, lambda: bool(journal(cfg, "draining")), reexec=True, code_root=repo)
+    stop, = journal(cfg, "stop")
+    assert stop["reason"] == "signal" and "restart_pending" not in stop
+    assert "to_sha" not in stop and not pid_alive(pid_file(tmp_path))
+
+
+def test_crash_sweep_journals_harvest_error_and_applies_the_rest(tmp_path, monkeypatch):
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+    cfg = {"data_dir": str(tmp_path / "d")}
+    pool = Q.StepPool()
+    applied = []
+
+    def apply(ctx, st, res):
+        if st["id"] == "bad":
+            raise ValueError("cannot apply")
+        applied.append(st["id"])
+        return {"campaign": st["id"]}
+
+    monkeypatch.setattr(Q, "_apply", apply)
+    for cid in ("bad", "good"):
+        fut = Future()
+        fut.set_result(Q.StepResult(cid, Q.Step("implement"), "IMPLEMENTING"))
+        fl = Q._Flight({"id": cid}, SimpleNamespace(cfg=cfg))
+        fl.tasks.append((Q.Step("implement"), fut, pool.hooks(None, "wait")))
+        pool.flights[cid] = fl
+    detached, abandoned = Q._crash_sweep(cfg, pool, 1.0)
+    assert applied == ["good"] and not pool.flights and not abandoned
+    err, = journal(cfg, "harvest_error")
+    assert err["campaign"] == "bad" and "cannot apply" in err["error"]
+    assert [r for r in journal(cfg, "tick") if r["drain"]][0]["steps"] == [{"campaign": "good"}]
+
+
+# ---- real detached runs: ClaudeRunner + fake claude, several campaigns ---------------------------
+
+@pytest.fixture
+def reap(world):
+    """Campaign ids whose runs are terminated at teardown (the `world` fixture reaps its own)."""
+    cids = []
+    yield cids
+    for cid in cids:
+        for d in S.runs_dir(world.cfg, cid).glob("*"):
+            RP.terminate_run(d)
+            RP.terminate_run(d, kill=True)
+
+
+def multi_world(world, monkeypatch, reap, n):
+    """`world` with SPEC-0001..n queued, a held two-gate project (test gate waits for g1.rel,
+    lint gate touches g2.started), n slots, and a release file per worktree."""
+    repo = world.tmp / "repo"
+    monkeypatch.delenv("FAKE_CLAUDE_RELEASE")
+    (repo / "gates" / "test.sh").write_text(gate_script(world.tmp) + "\n")
+    (repo / "gates" / "lint.sh").write_text(f"touch {world.tmp}/g2.started\n")
+    world.cfg["agentic"]["profiles"]["balanced"]["slots"] = n
+    world.cids = [world.cid]
+    reap.append(world.cid)
+    for i in range(2, n + 1):
+        _second_spec(repo, f"SPEC-000{i}", f"docs/specs/000{i}-x.md")
+        world.cids.append(added(world.cfg, monkeypatch, f"SPEC-000{i}"))
+        reap.append(world.cids[-1])
+    return repo
+
+
+def wt_of(world, cid):
+    return Path(S.read_state(world.cfg, cid)["repo"]["worktree"])
+
+
+def child_of(world, cid):
+    try:
+        f = wt_of(world, cid) / "child.pid"
+        return int(f.read_text()) if f.exists() and f.read_text().strip() else None
+    except (KeyError, TypeError, ValueError):               # not opened yet
+        return None
+
+
+def release_run(world, cid):
+    (wt_of(world, cid) / "release").write_text("")
+
+
+def adopted(world):
+    return [r for rec in journal(world.cfg, "adopt") for r in rec["runs"]]
+
+
+def test_draining_ticks_admit_exec_promptly_and_new_process_adopts(world, monkeypatch, reap):
+    repo = multi_world(world, monkeypatch, reap, 1)
+    _second_spec(repo)                                  # SPEC-0002: queued later, during the drain
+    world.cfg["agentic"]["profiles"]["balanced"]["slots"] = 2
+    cfg, a = world.cfg, world.cid
+    seen, calls = {}, []
+    monkeypatch.setattr(Q, "code_changes", lambda r, since: (
+        (since, []) if "changed" not in seen else
+        ("sha2", ["src/wt/y.py"]) if "second" in seen else ("sha1", ["src/wt/x.py"])))
+    monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: (calls.append(time.monotonic()),
+                                                           seen.update(env=env)))
+    real_apply = Q._apply
+
+    def apply(ctx, st, res):
+        out = real_apply(ctx, st, res)
+        if res.step.kind == "gate":
+            seen["harvest"] = time.monotonic()
+        return out
+
+    monkeypatch.setattr(Q, "_apply", apply)
+
+    def on_tick(report):
+        if "a_released" not in seen and child_of(world, a):
+            seen["a_released"] = True
+            release_run(world, a)                       # A's implementer ends; A reaches its gate
+        if "changed" not in seen and pid_file(world.tmp):
+            seen["changed"] = True                      # A is in its held gate
+            seen["b"] = added(cfg, monkeypatch, "SPEC-0002")
+            reap.append(seen["b"])
+        b = seen.get("b")
+        if b and "second" not in seen and child_of(world, b):
+            seen["second"] = True                       # a later merge moves the target
+            info = L.read_lease(cfg)["draining"]
+            seen["waiting_on"] = [w["campaign"] for w in info["waiting_on"]]
+            (world.tmp / "g1.rel").write_text("")       # the gate ends, B's run is in `wait`
+
+    Q.run(cfg, poll_interval_s=1, reexec=True, code_root=repo, on_tick=on_tick,
+          runner=world.runner, max_ticks=100)
+    b = seen["b"]
+    assert calls and "harvest" in seen
+    assert calls[0] - seen["harvest"] < 0.5             # exec at the first 0.2 s check
+    assert seen["waiting_on"] == [a]                    # the gate blocks; B's run in `wait` does not
+    stop, = journal(cfg, "stop")
+    b_run = S.read_ledger(cfg, b, types=["run.start"])[0]["run_id"]
+    assert stop["reason"] == "code_changed" and stop["to_sha"] == "sha2"
+    assert stop["paths"] == ["src/wt/y.py"]
+    assert stop["detached"] == [{"campaign": b, "run_ids": [b_run]}]
+    assert len(S.read_ledger(cfg, a, types=["gate"])) == 1            # no gate after detection
+    drain_ticks = [r for r in journal(cfg, "tick") if r.get("drain")]
+    assert any(s["campaign"] == a and s["action"] == "gate"
+               for r in drain_ticks for s in r["steps"])              # the harvest was journaled
+    assert drain_ticks[0]["ts"] <= stop["ts"]
+    pid = child_of(world, b)
+    assert pid_alive(pid)
+    # the new process (the same, here: it inherits the handed-over lease) adopts B's implementer
+    for k in (L.HANDOVER_ENV,):
+        monkeypatch.setenv(k, seen["env"][k])
+    Q.run(cfg, max_ticks=2, poll_interval_s=0.1, runner=world.runner)
+    assert [r["status"] for r in adopted(world) if r["campaign"] == b] == ["running"]
+    assert pid_alive(pid) and not [e for e in S.read_ledger(cfg, b, types=["run.end"])]
+
+
+def test_stop_with_wait_run_and_gate_then_next_runner_adopts_and_regates(world, monkeypatch, reap):
+    multi_world(world, monkeypatch, reap, 2)
+    cfg, (a, b) = world.cfg, world.cids
+    seen = {}
+
+    def when():
+        if "a_rel" not in seen and child_of(world, a):
+            seen["a_rel"] = True
+            release_run(world, a)                       # A's implementer ends; A starts its gate
+        return pid_file(world.tmp) is not None and child_of(world, b) is not None
+
+    n, took = run_with_stop(cfg, when, runner=world.runner)
+    gate_pid, b_pid = pid_file(world.tmp), child_of(world, b)
+    assert not pid_alive(gate_pid) and pid_alive(b_pid) and took < 20
+    assert not (world.tmp / "g2.started").exists()                # the second gate never started
+    st = S.read_state(cfg, a)
+    assert st["state"] == "GATING" and st["counters"]["gate_runs"] == 0
+    assert st["counters"]["loops"] == 0 and not S.read_ledger(cfg, a, types=["gate"])
+    rows = [s for r in journal(cfg, "tick") for s in r["steps"]
+            if s["campaign"] == a and s["action"] == "gate"]
+    assert [r["reason"] for r in rows] == ["interrupted"]
+    b_run = S.read_ledger(cfg, b, types=["run.start"])[0]["run_id"]
+    stop, = journal(cfg, "stop")
+    assert stop["reason"] == "signal" and stop["detached"] == [{"campaign": b, "run_ids": [b_run]}]
+    assert not S.read_ledger(cfg, b, types=["run.end"])
+
+    # a new run() adopts B's run and applies it, and re-gates A with the next seq
+    (world.tmp / "g1.rel").write_text("")
+    release_run(world, b)
+    run_with_stop(cfg, lambda: S.read_ledger(cfg, b, types=["run.end"])
+                  and S.read_ledger(cfg, a, types=["gate"]), runner=world.runner)
+    assert [r["status"] for r in adopted(world) if r["campaign"] == b] == ["running"]
+    assert len(S.read_ledger(cfg, b, types=["run.end"])) == 1
+    assert S.read_ledger(cfg, a, types=["gate"])[0]["gate_seq"] == 2
+
+
+def test_crash_with_gate_wait_spawning_and_finished_flight(world, monkeypatch, reap):
+    multi_world(world, monkeypatch, reap, 4)
+    monkeypatch.setattr(Q, "_STOP_BOUND_S", 2.0)
+    cfg, (a, b, c, d) = world.cfg, world.cids
+    go, real_popen, seen = world.tmp / "go", subprocess.Popen, {}
+    code = ("import os, sys, time, runpy\nwhile not os.path.exists(sys.argv[1]): time.sleep(0.05)\n"
+            "sys.argv = ['x', sys.argv[2]]\n"
+            "runpy.run_module('wt.agentic.runproc', run_name='__main__')")
+
+    def paused(argv, **kw):                                     # C's wrapper start is held
+        if "wt.agentic.runproc" in argv and c in argv[-1]:
+            proc = real_popen([sys.executable, "-c", code, str(go), argv[-1]], **kw)
+            seen["c_pid"] = proc.pid
+            return proc
+        return real_popen(argv, **kw)
+
+    monkeypatch.setattr(R.subprocess, "Popen", paused)
+    real_tick = Q.tick
+
+    def tick(*args, pool=None, **kw):
+        if "a_rel" not in seen and child_of(world, a):
+            seen["a_rel"] = True
+            release_run(world, a)                       # A's implementer ends; A starts its gate
+        if (pid_file(world.tmp) and child_of(world, b) and child_of(world, d)
+                and c in pool.flights and pool.flights[c].tasks[0][2].phase == "spawning"):
+            release_run(world, d)                       # D finishes: a done, unharvested flight
+            assert until(lambda: pool.flights[d].done())
+            seen["pool"] = pool
+            raise RuntimeError("boom")
+        return real_tick(*args, pool=pool, **kw)
+
+    monkeypatch.setattr(Q, "tick", tick)
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError, match="boom"):
+        Q.run(cfg, poll_interval_s=0.05, runner=world.runner)
+    assert time.monotonic() - t0 < 30 and not L.is_held(cfg)
+    runs = {cid: S.read_ledger(cfg, cid, types=["run.start"])[0]["run_id"] for cid in (b, c, d)}
+    assert not pid_alive(pid_file(world.tmp))                   # the gate group was killed
+    assert [e["run_id"] for e in S.read_ledger(cfg, d, types=["run.end"])] == [runs[d]]
+    assert S.read_state(cfg, d)["state"] != "IMPLEMENTING"      # the finished flight was applied
+    assert not journal(cfg, "harvest_error")
+    assert S.read_state(cfg, a)["state"] == "GATING" and not S.read_ledger(cfg, a, types=["gate"])
+    crash, = journal(cfg, "crash")
+    assert crash["detached"] == [{"campaign": b, "run_ids": [runs[b]]}]
+    assert crash["abandoned"] == [{"campaign": c, "run_id": runs[c], "phase": "spawning"}]
+    assert [r["kind"] for r in Q.read_journal(cfg)][-1] == "crash"
+    b_pid = child_of(world, b)
+    assert pid_alive(b_pid) and pid_alive(seen["c_pid"])        # both runs outlived the crash
+    # the next runner adopts both
+    go.write_text("")
+    assert until(lambda: (S.runs_dir(cfg, c) / runs[c] / "proc.json").exists())
+    (world.tmp / "g1.rel").write_text("")
+    monkeypatch.setattr(Q, "tick", real_tick)
+    Q.run(cfg, max_ticks=2, poll_interval_s=0.1, runner=world.runner)
+    assert {r["campaign"]: r["status"] for r in adopted(world)
+            if r["campaign"] in (b, c)} == {b: "running", c: "running"}
+    assert pid_alive(b_pid)
+
+
+@pytest.mark.parametrize("how", ["stop", "crash"])
+def test_bound_expiry_abandons_collect_and_next_runner_commits_once(world, monkeypatch, reap, how):
+    """A's `collect` thread commits, then hangs (the process 'dies' there); B waits. At the
+    bound B is detached anyway and A is abandoned; the next runner adopts A as finished and
+    records the commit it already made exactly once."""
+    multi_world(world, monkeypatch, reap, 2)
+    monkeypatch.setattr(Q, "_STOP_BOUND_S", 1.0)
+    cfg, (a, b) = world.cfg, world.cids
+    reached, hang, seen = threading.Event(), threading.Event(), {}
+    real_commit = Q.git.commit_all
+
+    def commit_all(worktree, message, env=None):
+        sha = real_commit(worktree, message, env)
+        if not reached.is_set():
+            reached.set()
+            hang.wait(60)
+            raise RuntimeError("the runner died while collecting")
+        return sha
+
+    monkeypatch.setattr(Q.git, "commit_all", commit_all)
+
+    def ready():
+        if "a_rel" not in seen and child_of(world, a):
+            seen["a_rel"] = True
+            release_run(world, a)
+        return reached.is_set() and child_of(world, b) is not None
+
+    real_tick = Q.tick
+    try:
+        t0 = time.monotonic()
+        if how == "stop":
+            run_with_stop(cfg, ready, runner=world.runner)
+        else:
+            def tick(*args, **kw):
+                if ready():
+                    raise RuntimeError("boom")
+                return real_tick(*args, **kw)
+
+            monkeypatch.setattr(Q, "tick", tick)
+            with pytest.raises(RuntimeError, match="boom"):
+                Q.run(cfg, poll_interval_s=0.05, runner=world.runner)
+            monkeypatch.setattr(Q, "tick", real_tick)
+        assert time.monotonic() - t0 < 20 and not L.is_held(cfg)
+        a_run = S.read_ledger(cfg, a, types=["run.start"])[0]["run_id"]
+        b_run = S.read_ledger(cfg, b, types=["run.start"])[0]["run_id"]
+        rec, = journal(cfg, "stop" if how == "stop" else "crash")
+        assert rec["abandoned"] == [{"campaign": a, "run_id": a_run, "phase": "collect"}]
+        assert rec["detached"] == [{"campaign": b, "run_ids": [b_run]}]
+        assert Q.leftover_threads()                             # the lease did not wait for it
+        a_dir = S.runs_dir(cfg, a) / a_run
+        assert (a_dir / "exit.json").exists() and not S.read_ledger(cfg, a, types=["run.end"])
+        # the next runner: A is `finished` (collected again), B is still `running`
+        run_with_stop(cfg, lambda: S.read_ledger(cfg, a, types=["run.end"]), runner=world.runner)
+        assert {r["campaign"]: r["status"] for r in adopted(world)} == {a: "finished",
+                                                                        b: "running"}
+        assert len(S.read_ledger(cfg, a, types=["run.end"])) == 1
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=wt_of(world, a), text=True,
+                              capture_output=True, check=True).stdout.strip()
+        subjects = subprocess.run(["git", "log", "--format=%s"], cwd=wt_of(world, a), text=True,
+                                  capture_output=True, check=True).stdout.splitlines()
+        assert len([x for x in subjects if x.startswith(f"wt({a}): implementer run")]) == 1
+        commits = S.read_ledger(cfg, a, types=["commit"])
+        assert [c["sha"] for c in commits] == [head]            # recorded once
+    finally:
+        hang.set()
+        time.sleep(0.2)
