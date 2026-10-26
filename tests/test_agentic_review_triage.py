@@ -457,14 +457,14 @@ def test_filer_files_one_group_with_project_epic_kind_and_ordered_lines(tmp_path
     st = fu_state(tmp_path, [adv("minor", "small", files=["b.py"]), adv("major", "big"),
                              adv("nit", "tiny", files=["c.py"]),
                              adv("minor", "alpha", files=["e.py"])],
-                  waived=[adv("minor", "waived one", files=["d.py"], reason="not worth it"),
+                  waived=[adv("minor", "aaa waived", files=["d.py"], reason="not worth it"),
                           adv("nit", "waived nit", files=["e.py"], reason="style")])
     summary = file_now(cfg, st)
     order = [("major", "big", "advisory"), ("minor", "alpha", "advisory"),
-             ("minor", "small", "advisory"), ("minor", "waived one", "waived")]
+             ("minor", "small", "advisory"), ("minor", "aaa waived", "waived")]
     assert [(f["severity"], f["title"], f["origin"]) for f in summary["filed"]] == order
     assert [(w["title"], w["waive_reason"]) for w in summary["waived"]] == [
-        ("waived one", "not worth it"), ("waived nit", "style")]
+        ("aaa waived", "not worth it"), ("waived nit", "style")]
     t = group_of(cfg)
     assert t.heading == f"wtfug:{CID} [{SPEC}] review follow-ups (4 findings)"
     assert t.project == "Meta-Tools" and t.epic == "SPEC-0169"
@@ -473,7 +473,7 @@ def test_filer_files_one_group_with_project_epic_kind_and_ordered_lines(tmp_path
     assert [ln.split()[4] for ln in lines] == ["major", "minor", "minor", "minor"]
     assert [FU.summary_keys(ln)[0] for ln in lines] == [
         k12("big"), k12("alpha", ["e.py"]), k12("small", ["b.py"]),
-        k12("waived one", ["d.py"])]
+        k12("aaa waived", ["d.py"])]
     evs = S.read_ledger(cfg, CID, types=["followup"])
     assert [(e["severity"], e["origin"], e["persona"]) for e in evs] == [
         ("major", "advisory", A), ("minor", "advisory", A), ("minor", "advisory", A),
@@ -676,6 +676,25 @@ def test_a_ticked_line_still_counts_and_dedups(tmp_path):                       
     t = group_of(cfg)
     assert body(cfg, t).count("wtfu:") == 2 and "- [X]" in body(cfg, t)
     assert "(2 findings)" in t.heading
+
+
+def test_crash_adoption_finds_an_archived_own_group(tmp_path):                         # AC5
+    cfg = fu_cfg(tmp_path)
+    st = fu_state(tmp_path, [adv("minor", "one")])
+    first = file_now(cfg, st, record=False)                  # the events never reached the ledger
+    t = group_of(cfg)
+    EX.close_idea(cfg, t.properties["ID"], "drop", reason="done")
+    t = next(x for x in ideas(cfg) if x.properties["ID"] == first["idea_id"])
+    OW.archive_idea(cfg, t)
+    assert os.path.exists(OW.ideas_archive_path(cfg))        # it really moved away
+    assert f"wtfug:{CID}" not in open(cfg["org_ideas_file"]).read()
+    second = file_now(cfg, st)
+    assert second["idea_id"] == first["idea_id"] and second["unfiled"] == []
+    assert [f["idea_id"] for f in second["filed"]] == [first["idea_id"]]
+    assert [e["idea_id"] for e in S.read_ledger(cfg, CID, types=["followup"])] == [
+        first["idea_id"]]                                    # recovered, no second group
+    assert not any(f"wtfug:{CID}" in x.heading and x.file == cfg["org_ideas_file"]
+                   for x in ideas(cfg))
 
 
 def test_capture_error_is_unfiled_then_a_rerun_files_without_duplicates(tmp_path, monkeypatch):

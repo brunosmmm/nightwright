@@ -885,6 +885,38 @@ def test_close_raising_still_records_the_filer_events_and_parks(opened, monkeypa
     assert S.read_state(cfg, cid)["close"]["followups"]["filed"][0]["idea_id"] == ev["idea_id"]
 
 
+def test_close_row_reports_capped_and_distinct_ids_over_two_groups(opened, monkeypatch):  # AC6
+    cfg, cid, ctx = opened
+    cfg["agentic"]["profiles"]["balanced"]["review"] = {"followups_max": 1}
+    other = FU.OW.add_idea(cfg, FU.group_title("SPEC-0001-20261025-bbbb", "SPEC-0001", 1),
+                           kind="improvement")[2]
+    key = FU.make_entry("SPEC-0001", _adv("minor", "elsewhere", files=["e.py"]), "advisory")["key"]
+    FU.EX.set_summary(cfg, other, f"- [ ] wtfu:{key[:12]} minor x: y")
+    carry = [FU.make_entry("SPEC-0001", _adv("minor", "elsewhere", files=["e.py"]), "advisory")]
+    st = _closing(cfg, cid, [_adv("major", "kept"), _adv("minor", "cut one"),
+                             _adv("minor", "cut two", files=["b.py"])], carry=carry)
+    monkeypatch.setattr(CL, "prepare_close", lambda *a, **k: CL.PreparedClose(outcome=_merged_outcome()))
+    row = Q._apply(ctx, st, Q._do_prepare_close(ctx, st))
+    fu = row["followups"]
+    own = S.read_state(cfg, cid)["close"]["followups"]["idea_id"]
+    assert own and own != other and fu["capped"] == 2 and fu["idea_id"] == own
+    assert fu["filed"] == 2 and fu["ids"] == [other, own] and len(fu["items"]) == 2
+
+
+def test_set_summary_failure_never_prevents_the_merge(opened, monkeypatch):
+    cfg, cid, ctx = opened
+    st = _closing(cfg, cid, [_adv("minor", "x")])
+    monkeypatch.setattr(FU.EX, "set_summary", lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
+    monkeypatch.setattr(CL, "prepare_close", lambda *a, **k: CL.PreparedClose(outcome=_merged_outcome()))
+    row = Q._apply(ctx, st, Q._do_prepare_close(ctx, st))
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED" and row["to"] == "MERGED"
+    assert [u["title"] for u in st["close"]["followups"]["unfiled"]] == ["x"]
+    assert S.read_ledger(cfg, cid, types=["followup"]) == []
+    assert any("follow-ups not filed" in e.get("text", "")
+               for e in S.read_ledger(cfg, cid, types=["note"]))
+
+
 def test_filer_failure_never_prevents_the_close(opened, monkeypatch):
     cfg, cid, ctx = opened
     st = _closing(cfg, cid, [_adv("minor", "x")])

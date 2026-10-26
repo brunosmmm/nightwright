@@ -324,7 +324,9 @@ on `ideas_group` in `cli.py`.
   (`idea_id`, `capped`, distinct `ids`); e2e AC7 paths (b)-(d) with one grouped idea; the
   migration (dry run text/JSON, `--yes` read back, already-listed single, second run no-op, crash
   between group and closes); the docs grep.
-- Full `uv run pytest -q`: 2237 passed, 1 skipped. `python3 tools/spec_lint.py`: exit 0.
+- Full `uv run pytest -q`: 2243 passed, 1 skipped (after the test-review fixes: archived own group
+  adoption, closed legacy group, waived-after-advisory ordering, capped close row, `set_summary`
+  failure at queue level). `python3 tools/spec_lint.py`: exit 0.
 - Manual: see "As shipped".
 
 ### As shipped
@@ -340,6 +342,15 @@ on `ideas_group` in `cli.py`.
   `group_id` per group when written and a total `singles` count.
 - `wt ideas group-followups` is JSON-emitting via `click.echo`, so it is on the
   `test_rich_output_guard` allowlist.
+- `group_legacy` takes as its target only an **open** `wtfug:legacy-<SPEC>` group (a new
+  `_open_group` scan of the active ideas), never a closed or archived one via `find_marker`. If
+  the legacy group was closed (for example by the human after the first run) and the old-code loop
+  filed another single, the re-run creates a fresh open legacy group for it instead of folding
+  into a closed idea or failing to resolve an archive outside `org_files`. Tests:
+  `test_a_closed_legacy_group_is_not_the_target` (closed, and closed + archived).
+- An own `wtfug:<cid>` group that was closed and archived before the close step re-ran is still
+  adopted through `find_marker` (it searches the archive): no second group, recovered findings
+  get their events with the archived group's id (`test_crash_adoption_finds_an_archived_own_group`).
 - Manual check on a scratch copy of the live ideas file (131 open singles over 10 specs): dry run planned 131
   singles into 10 groups (one per spec); `--yes` created the 10 `wtfug:legacy-SPEC-NNNN` groups and
   closed all 131 singles (they rotated into the archive as closed ideas); the second `--yes` run

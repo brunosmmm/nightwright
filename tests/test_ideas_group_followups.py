@@ -167,3 +167,32 @@ def test_a_crash_between_the_group_and_the_closes_is_adopted(cfg, monkeypatch):
         assert f"({len(keys)} finding" in g.heading
     assert t["IDEA-002"].properties["FOLDED_INTO"] == t["IDEA-001"].properties["FOLDED_INTO"]
     assert report["written"] is True
+
+
+@pytest.mark.parametrize("archive", [False, True])
+def test_a_closed_legacy_group_is_not_the_target(cfg, archive):
+    old = FU.group_title(f"legacy-{S1}", S1, 1)
+    _, _, closed = OW.add_idea(cfg, old, kind="improvement")
+    EX.set_summary(cfg, closed, f"- [ ] wtfu:{K1} minor x: y (was IDEA-900)")
+    EX.close_idea(cfg, closed, "drop", reason="done")
+    if archive:
+        OW.archive_idea(cfg, tasks(cfg)[closed])
+    single(cfg, K1, S1, "again")                              # the old loop filed another single
+    plan = as_json(run("--json").output)
+    assert plan["groups"][0]["target"] == "new" and len(plan["groups"][0]["lines"]) == 1
+    run("--yes")
+    [fresh] = groups(cfg)
+    assert fresh.properties["ID"] != closed and f"wtfug:legacy-{S1}" in fresh.heading
+    assert FU.summary_keys(EX.read_idea_enrichment(cfg, fresh)["summary"]) == [K1]
+    t = [x for x in tasks(cfg).values() if x.heading.startswith("wtfu:")]
+    assert [x.properties["FOLDED_INTO"] for x in t] == [fresh.properties["ID"]]
+    assert as_json(run("--yes", "--json").output)["groups"] == []
+
+
+def test_dry_run_names_an_existing_open_legacy_group_as_the_target(cfg):
+    _, _, legacy = OW.add_idea(cfg, FU.group_title(f"legacy-{S1}", S1, 1), kind="improvement")
+    EX.set_summary(cfg, legacy, f"- [ ] wtfu:{K2} minor x: y")
+    single(cfg, K1, S1, "new one")
+    g = as_json(run("--json").output)["groups"][0]
+    assert g["target"] == legacy and len(g["lines"]) == 1
+    assert "group_id" not in g

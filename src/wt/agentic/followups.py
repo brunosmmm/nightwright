@@ -188,6 +188,15 @@ def open_group_keys(cfg, spec_id, *, exclude=None) -> dict:
     return out
 
 
+def _open_group(cfg, marker: str) -> tuple:
+    """`(idea_id, Task)` of the open (active) idea whose heading contains `marker`, else
+    `(None, None)`; a closed group is never a migration target."""
+    for t in ORG.load_tasks(cfg):
+        if t.is_idea and not t.is_done and marker in t.heading and t.properties.get("ID"):
+            return t.properties["ID"], t
+    return None, None
+
+
 def _note(text: str):
     return ("note", {"text": text, "author": "queue"})
 
@@ -340,11 +349,9 @@ def group_legacy(cfg, *, apply: bool) -> dict:
     for spec_id in sorted(by_spec):
         singles = by_spec[spec_id]
         token = f"legacy-{spec_id}"
-        target = find_marker(cfg, f"{GROUP_MARKER}{token}")
+        target, target_task = _open_group(cfg, f"{GROUP_MARKER}{token}")
         listed = open_group_keys(cfg, spec_id)              # includes the target
-        text = ""
-        if target:
-            text = EX.read_idea_enrichment(cfg, _group_task(cfg, target))["summary"]
+        text = EX.read_idea_enrichment(cfg, target_task)["summary"] if target else ""
         lines, new_keys, fold = [], set(summary_keys(text)), {}
         for t, key, rest in singles:
             sid = t.properties["ID"]
