@@ -345,8 +345,8 @@ def test_interrupted_resolver_not_counted(tmp_path, monkeypatch):
     st = w.st()
     assert st["state"] == "CLOSING" and st["closing"]["resolve"]["pre_head"] == pre
     assert not st["closing"].get("resolve_attempts")
-    assert w.head() == pre and not w.ledger("rebase_resolved")
-    assert _git(st["repo"]["worktree"], "status", "--porcelain") == ""
+    assert not w.ledger("rebase_resolved")
+    _assert_restored(w, st, pre)
     assert [e["interrupted"] for e in w.ledger("run.end")
             if e["persona"] == "conflict_resolver"] == [True]
     w.drive(lambda s: s["state"] in ("MERGED", "PARKED"))
@@ -371,8 +371,17 @@ def test_resolver_cost_cap_parks(tmp_path, monkeypatch):
     w.open_and_conflict()
     st = w.drive(lambda s: s["state"] == "PARKED")
     assert st["park"]["reason"] == "cost_cap" and st["park"]["resume_to"] == "CLOSING"
+    assert "conflict_resolver" in st["park"]["detail"]          # parked at the resolve step
+    assert len(w.findings("rebase conflict; resolver dispatched")) == 1
     assert w.run_ids() == []
-    assert "closing" not in st or not st["closing"].get("resolve")
+    # the resume resets `closing`; the next close re-detects the conflict and parks again
+    r = run_cli(w.cfg, monkeypatch, ["queue", "resume", w.cid, "--yes"])
+    assert r.exit_code == 0, r.output
+    assert w.st()["closing"] == {"attempts": 0}
+    w.dispatched()
+    st = w.drive(lambda s: s["state"] == "PARKED")
+    assert st["park"]["reason"] == "cost_cap" and "conflict_resolver" in st["park"]["detail"]
+    assert len(w.findings("rebase conflict; resolver dispatched")) == 2 and w.run_ids() == []
 
 
 def test_generated_only_conflict_no_resolver(tmp_path, monkeypatch):
@@ -405,8 +414,11 @@ def test_attempt_budget_spans_resolved_runs_in_one_closing_entry(tmp_path, monke
     assert w.st()["closing"]["resolve_attempts"] == 2
     w.main_conflict("a\nb\nc-main3\nd\ne\n")
     st = w.drive(lambda s: s["state"] == "PARKED")
-    assert st["park"]["reason"] == "rebase_conflict" and "2 attempts" in st["park"]["detail"]
-    assert "kept both sides" in st["park"]["detail"]
+    assert st["park"]["reason"] == "rebase_conflict" and "src/app.py" in st["park"]["detail"]
+    # no resolver failure happened: the detail must not read like one
+    assert "2 resolutions verified" in st["park"]["detail"]
+    assert "last:" not in st["park"]["detail"] and "kept both sides" not in st["park"]["detail"]
+    assert not w.findings("conflict resolver did not resolve")
     assert len(w.run_ids()) == 2
 
 
@@ -489,6 +501,28 @@ def test_restore_failure_parks_open_failed_keeping_the_run(tmp_path, monkeypatch
         == ["003-conflict_resolver"]
 
 
+def test_pre_run_restore_failure_still_ends_the_run(tmp_path, monkeypatch):
+    """The first restore (before the persona) raising must not leave a run.start without a
+    run.end, and must not charge a run that never happened."""
+    w = basic(tmp_path, monkeypatch, gave_up())
+    w.open_and_conflict()
+    w.dispatched()
+    before = w.st()["cost"]["total_usd"]
+
+    def broken(*a, **kw):
+        raise G.GitError(["git", "restore"], 1, "index.lock exists")
+
+    monkeypatch.setattr(G, "restore_branch", broken)
+    w.tick()
+    st = w.st()
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed"
+    assert st["park"]["resume_to"] == "CLOSING" and "index.lock" in st["park"]["detail"]
+    ends = [e for e in w.ledger("run.end") if e["persona"] == "conflict_resolver"]
+    assert [e["run_id"] for e in ends] == w.run_ids() == ["003-conflict_resolver"]
+    assert ends[0]["is_error"] is True and ends[0]["exit_code"] == -1
+    assert st["cost"]["total_usd"] == before
+
+
 def test_verified_resolver_untracked_leftovers_are_not_merged(tmp_path, monkeypatch):
     w = basic(tmp_path, monkeypatch, resolver(
         shell=(CONTINUE + " && echo x > app.py.orig && mkdir -p scratch && echo y > scratch/m.txt",)))
@@ -525,6 +559,58 @@ def test_attempts_survive_a_base_moved_redo(tmp_path, monkeypatch):
     assert len(seen) == 2 and [c["attempts"] for c in seen] == [1, 2], seen
     assert all(c["resolve_attempts"] == 1 for c in seen), seen
     assert len(w.run_ids()) == 1
+
+
+# ---- dispatch fallbacks and the spent-budget detail ---------------------------------------------
+
+def test_merge_base_failure_falls_back_to_the_park(tmp_path, monkeypatch):
+    w = basic(tmp_path, monkeypatch, resolver())
+
+    def broken(*a, **kw):
+        raise G.GitError(["git", "merge-base"], 1, "no merge base")
+
+    w.open_and_conflict()
+    monkeypatch.setattr(G, "merge_base", broken)
+    st = w.drive(lambda s: s["state"] == "PARKED")
+    assert st["park"]["reason"] == "rebase_conflict" and st["park"]["resume_to"] == "CLOSING"
+    assert "src/app.py" in st["park"]["detail"] and "resolver" not in st["park"]["detail"]
+    assert w.run_ids() == [] and not w.findings("rebase conflict; resolver dispatched")
+    assert not (st.get("closing") or {}).get("resolve")
+
+
+@pytest.mark.parametrize("pre_head,target_sha", [("", "abc"), ("abc", ""), (None, None)])
+def test_dispatch_needs_pre_head_and_target_sha(tmp_path, pre_head, target_sha):
+    class Prepared:
+        pass
+
+    prepared = Prepared()
+    if pre_head is not None:
+        prepared.pre_head = pre_head
+    res = Q.StepResult("c", Q.Step("close"), "CLOSING", prepared=prepared)
+    state = {"id": "c", "repo": {"worktree": str(tmp_path), "branch": "wt/c"}, "closing": {"attempts": 0}}
+    park = {"reason": "rebase_conflict", "detail": "conflicts: a.py", "conflicts": ["a.py"],
+            "target": "main", "target_sha": target_sha}
+    events = []
+    ctx = type("Ctx", (), {"project": lambda self, st: {}})()
+    assert Q._dispatch_resolver(ctx, state, res, park, events) is False
+    assert events == [] and "resolve" not in state["closing"]
+
+
+def test_spent_resolver_park_detail_cases():
+    park = {"reason": "rebase_conflict", "detail": "conflicts: a.py", "resume_to": "CLOSING"}
+    # no resolver run in this CLOSING entry (opt-out): unchanged
+    assert Q._spent_resolver_park({"closing": {"attempts": 0}}, park) == park
+    assert Q._spent_resolver_park({}, park) == park
+    # the last verdict is some other persona's, but the resolver failed: its own failure is named
+    st = {"closing": {"resolve_attempts": 2, "resolve_failed": {"n": 1, "last": "cannot decide"}},
+          "last_verdict": {"persona": "implementer", "verdict": {"summary": "other"}}}
+    d = Q._spent_resolver_park(st, park)["detail"]
+    assert d.endswith("(resolver: 2 attempts, last: cannot decide)") and "other" not in d
+    # all verified: no `last:`, and nothing that reads like a failure
+    st = {"closing": {"resolve_attempts": 2}, "last_verdict": {
+        "persona": "conflict_resolver", "verdict": {"summary": "kept both sides"}}}
+    d = Q._spent_resolver_park(st, park)["detail"]
+    assert "2 resolutions verified" in d and "last:" not in d and "kept both" not in d
 
 
 # ---- gitops: the verification and restore helpers on their own --------------------------------

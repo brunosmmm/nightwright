@@ -22,7 +22,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -1112,8 +1112,9 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         resume = {"open": "QUEUED", "implement": "IMPLEMENTING", "gate": "GATING",
                   "triage": "GATING", "review": "REVIEWING",
                   "resolve": "CLOSING"}.get(kind, "IMPLEMENTING")
-        if kind == "resolve" and res.run_result is not None:     # keep the run.end of a run that happened
-            events += _record_run(state, res.step.persona, res.run_id, res.run_result, res.budget,
+        if kind == "resolve":           # the run.start is on the ledger: close it, run or no run
+            rr = res.run_result or replace(_synthetic_failure(str(res.error)), cost_usd=0.0)
+            events += _record_run(state, res.step.persona, res.run_id, rr, res.budget,
                                   interrupted=res.interrupted)
         return finish("PARKED", reason, park={"reason": reason, "detail": detail,
                                                "resume_to": resume})
@@ -1296,15 +1297,19 @@ def _dispatch_resolver(ctx: _Ctx, state: dict, res: StepResult, park: dict, even
 
 
 def _spent_resolver_park(state: dict, park: dict) -> dict:
-    """The park detail after resolver runs were used up: how many, and what the last said."""
-    used = int((state.get("closing") or {}).get("resolve_attempts") or 0)
+    """The park detail after resolver runs were used up. Failed attempts are reported with the
+    last failure; runs that were all verified (the base moved and conflicted again each time)
+    are reported as such, so the conductor does not hunt for a failure that never happened."""
+    closing = state.get("closing") or {}
+    used = int(closing.get("resolve_attempts") or 0)
     if not used:
         return park
-    last = state.get("last_verdict") or {}
-    summary = (last.get("verdict") or {}).get("summary") if last.get("persona") == "conflict_resolver" \
-        else None
-    return {**park, "detail": f"{park['detail']} (resolver: {used} attempts"
-                              + (f", last: {summary}" if summary else "") + ")"}
+    failed = closing.get("resolve_failed") or {}
+    if failed.get("n"):
+        tail = f" (resolver: {used} attempts, last: {failed.get('last')})"
+    else:
+        tail = f" (resolver: {used} resolutions verified; the base moved and conflicted again)"
+    return {**park, "detail": park["detail"] + tail}
 
 
 def _apply_resolve(state: dict, counters: dict, res: StepResult, rr, row: dict, events: list,
@@ -1333,6 +1338,8 @@ def _apply_resolve(state: dict, counters: dict, res: StepResult, rr, row: dict, 
     if verdict.get("summary") and info.get("failed"):
         why += f" [{info['failed']}]"
     questions = [str(q) for q in verdict.get("questions") or []]
+    closing["resolve_failed"] = {"n": int((closing.get("resolve_failed") or {}).get("n") or 0) + 1,
+                                 "last": why}
     events.append(("finding", {
         "persona": "conflict_resolver", "severity": "major", "gate": "rebase",
         "title": "conflict resolver did not resolve",

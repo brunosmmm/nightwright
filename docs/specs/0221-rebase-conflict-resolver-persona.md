@@ -434,6 +434,16 @@ table.
 - **Manual verification** (a real conflicted close shows `resolver dispatched`, the resolver run,
   `rebase resolved: …`, the re-gate and the merge, and the resolver cost): not yet performed. It
   needs a live conflicted close; the offline end-to-end tests above cover the same sequence.
+  **Deferred, not performed.** The Definition-of-done box "manual steps performed" is ticked only
+  because the offline end-to-end suite covers the same sequence; the live check remains to do on
+  the next real conflicted close.
+- Review loop 2: `tests/test_agentic_resolver.py` now has 34 cases. Added: the cost-cap park is
+  proven to come from the resolve step (dispatch finding, `conflict_resolver` in the detail) and a
+  resume re-detects the conflict; the interrupted-run test checks the full restore through
+  `_assert_restored` (attached HEAD, no rebase dir); the dispatch fallbacks (`merge_base` raising;
+  missing `pre_head` / `target_sha`) park as before; `_spent_resolver_park` detail cases; a
+  pre-run restore failure still writes a `run.end` and charges nothing. The budget-span test now
+  asserts the park detail names verified resolutions, not a failure. `uv run pytest -q`: 2139 passed, 1 skipped; `python3 tools/spec_lint.py` exits 0.
 
 ### As shipped (2026-10-25)
 
@@ -457,6 +467,14 @@ Deviations from Design, none of which change a decision:
 - A run that exited non-zero or reported `is_error` counts as failed even when its verdict parses
   and its tree would verify; it is restored like any other failed attempt.
 - Landed specs are included as their full text from the target, cut to 400 lines each.
+- `closing.resolve_failed` (`{n, last}`) counts unverified attempts. The spent-budget park detail
+  says `(resolver: N attempts, last: <failure>)` only when an attempt failed. When every run was
+  verified (each followed by a base move that conflicted again) it says `(resolver: N resolutions
+  verified; the base moved and conflicted again)` instead, so nobody looks for a failure that did
+  not happen. The `wt-conduct` row describes both.
+- A resolve step that errors before or after the run (for example the pre-run restore raising)
+  always closes its `run.start`: a synthetic failed `run.end` with zero cost is written when no
+  run result exists.
 - The failure detail written to the `major` finding appends the failed check to the resolver's
   own summary, and the final park detail ends with `(resolver: N attempts, last: …)`.
 
