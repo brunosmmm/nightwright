@@ -505,6 +505,28 @@ def test_docs_only_violation_parks_before_ff_merge(world, monkeypatch):
     assert _events(out, "gate") == []
 
 
+def test_docs_only_violation_lists_at_most_ten_paths(world):
+    files = {f"src/m{i:02d}.py": "y\n" for i in range(12)}
+    st, pcfg = _docs_only_world(world, files)
+    out = CL.close_campaign(world["cfg"], st, pcfg)
+    assert out.park["reason"] == "not_docs_only"
+    detail = out.park["detail"]
+    assert "changes 12 paths outside" in detail and "(+2 more)" in detail
+    assert "src/m09.py" in detail and "src/m10.py" not in detail
+
+
+def test_docs_only_close_counts_a_rename_out_of_src_as_a_violation(world):
+    _commit(world["root"], "src/x.py", "print('x')\n" * 20, "add x")
+    st, pcfg = _docs_only_world(world, {})
+    (world["wt"] / "docs/design").mkdir(parents=True)
+    G.git(world["wt"], "mv", "src/x.py", "docs/design/x.py")
+    G.commit_all(world["wt"], "move")
+    st["merge"]["head_at_request"] = G.rev_parse(world["wt"])
+    out = CL.close_campaign(world["cfg"], st, pcfg)
+    assert out.next_state == "PARKED" and out.park["reason"] == "not_docs_only"
+    assert "src/x.py" in out.park["detail"] and "docs/design/x.py" not in out.park["detail"]
+
+
 def test_docs_only_close_rereads_the_current_allowlist(world):
     st, _ = _docs_only_world(world, {"docs/design/a.md": "x\n"})
     pcfg = _pcfg(world, gates=("false",), docs_only_paths=json.dumps(["docs/other/"]))

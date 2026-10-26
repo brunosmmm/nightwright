@@ -669,6 +669,7 @@ def test_cli_docs_only_dry_run_json_and_text(world, monkeypatch):
     d = json.loads(r.output)
     assert d["schema"] == "wt.queue.merge.v1" and d["docs_only"] is True
     assert d["docs_only_paths"] == ALLOW and d["written"] is False
+    assert d["gates"].startswith("none (docs-only; 1 paths")
 
 
 def test_cli_docs_only_refused_exits_nonzero(world, monkeypatch):

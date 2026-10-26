@@ -257,6 +257,19 @@ def test_changed_files_head_and_no_renames(repo):
     assert G.changed_files(repo, "main") == []                                # head defaults to HEAD
 
 
+def test_changed_files_returns_unquoted_unusual_names(repo):
+    _git(repo, "checkout", "-q", "-b", "odd")
+    (repo / "docs").mkdir()
+    names = ["docs/caf\u00e9.md", 'docs/a "q" b.md', "docs/tab\there.md"]
+    for n in names:
+        (repo / n).write_text("x\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "odd")
+    _git(repo, "checkout", "-q", "main")
+    assert sorted(G.changed_files(repo, "main", head="odd")) == sorted(names)
+    assert G.docs_only_violations(G.changed_files(repo, "main", head="odd"), ["docs/"]) == []
+
+
 def test_docs_only_violations_exact_and_prefix_only():
     allow = ["docs/design/", "docs/WORKFLOW.md"]
     assert G.docs_only_violations(["docs/design/a.py", "docs/design/sub/b.scss",

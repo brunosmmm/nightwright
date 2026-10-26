@@ -115,8 +115,8 @@ def changed_files(repo, base, head="HEAD", *, renames=True) -> list[str]:
     """Paths touched between `base` and `head` (`git diff --name-only base...head`).
     `renames=False` passes `--no-renames`, so a moved file lists both its old and new path
     (SPEC-0234: a deletion must not hide behind a rename)."""
-    args = ["diff", "--name-only"] + ([] if renames else ["--no-renames"])
-    return [p for p in git(repo, *args, f"{base}...{head}").stdout.splitlines() if p]
+    args = ["diff", "--name-only", "-z"] + ([] if renames else ["--no-renames"])    # -z: no C-quoting
+    return [p for p in git(repo, *args, f"{base}...{head}").stdout.split("\0") if p]
 
 
 def docs_only_violations(paths, allow) -> list[str]:
