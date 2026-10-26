@@ -68,6 +68,7 @@ it would do.
 | `main_not_on_base` | The main checkout isn't on the base branch | Switch it back, then resume |
 | `gates_failed` | A merge request (`wt queue merge`) failed its re-gate; its branch is left rebased onto main | Tell the requester; once the branch is fixed, resume |
 | `worktree_dirty` | A merge request's worktree has uncommitted or untracked changes (nothing is committed for the requester) | Commit or stash them, then resume |
+| `human_decision` | The conductor escalated a decision to you (`wt queue escalate`): the detail starts with the `ESC-NNNN` id and the question | `wt escalations show ESC-NNNN`. If it resolves without you, `wt escalations withdraw` it and resume the campaign |
 | `open_failed` | Creating the worktree or a step failed unexpectedly | Read the detail and retry once; if it fails again, investigate |
 | `gh_failed` | Opening the PR (`pr` / `draft-pr` policy) failed | Check `gh auth`, then resume |
 | `config_invalid` | `.wt/project.yaml` didn't load | Fix the config. The campaign resumes **by itself** once it loads |

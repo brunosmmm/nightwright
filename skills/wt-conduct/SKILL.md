@@ -101,6 +101,8 @@ run, handle it — that is the point.
 | `parked` `main_dirty` / `main_not_on_base` | someone edited the main checkout in place: dispatch a sub-agent to move the uncommitted work intact onto a new branch in its own worktree (copy changed + untracked files, commit as WIP there, verify the copy, then restore main with `git checkout -- <files>` / remove the moved untracked files), notify the owner (steward) by mail where the work now lives, then resume the campaign to `CLOSING`. Off-base main: switch it back to the base branch only if clean; otherwise move the work first the same way |
 | live `wt` broken (any `wt` command fails to import) | same as `main_dirty`: move the in-place WIP to a worktree branch, restore main, notify the owner; use `uv run wt` from a worktree meanwhile |
 | `waiting` | none: a started campaign resumed with no free slot (SPEC-0200); it takes the next free slot ahead of the backlog by itself |
+| `parked` `human_decision` | waiting for the human's answer (SPEC-0232; `detail` starts with the `ESC-NNNN` id, `escalated_from` is the original reason). Do nothing. If the situation resolves without the human, `wt escalations withdraw <id> --reason … --yes`, then `wt queue resume <campaign> --yes` (a withdraw does not resume) |
+| `escalation` / `escalation_withdrawn` | informational: an escalation you or a steward opened or closed (`data.escalation_id`); act only if it contradicts what you decided |
 | `parked` `open_failed` / `gh_failed` | read the detail; retry once with `wt queue resume`; if it fails again, dispatch a sub-agent to diagnose, then act or escalate |
 | `message` (`kind` answer) | apply it: `wt campaign note`, then resume / abandon / reprioritize as the answer says |
 | `message` (`kind` request) | a steward asks for a queue action (add, prioritize, park, resume): do it via dry-run then `--yes`, and reply with `wt mailbox send --to <from> --kind answer --re <msg_id> "done: …"` |
@@ -133,7 +135,12 @@ Exact flags: `wt queue --help`, `wt campaign --help`, `wt mailbox --help`.
 - **Escalate crisply** (decisions about what gets built only: scope, priorities between
   features, product direction, or anything touching the human's own checkout): campaign, the
   facts, what you recommend, what you need decided. Routine recovery, blocker clearing and
-  judgment calls never go to the human.
+  judgment calls never go to the human. Every "escalate" in the table above means this:
+  `wt queue escalate <campaign> --question "…" --option "…" --option "…" --recommend N
+  --fact "…" --yes` (no campaign for a runner or global matter). It writes the `ESC-NNNN`
+  record, parks the campaign as `human_decision`, mails `human` and sends a desktop
+  notification (SPEC-0232). Then give the human exactly one chat line:
+  `escalated ESC-NNNN: <question>`. One open escalation per campaign.
 - **Mail identity:** send with `WT_MAILBOX_ADDR=conductor` set (or `--from conductor`).
 - **Shared ideas file:** verify headings before any `wt idea …` write.
 - **SPEC-0138:** the spec in the queue is the governing design.

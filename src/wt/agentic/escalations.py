@@ -1,0 +1,427 @@
+"""Escalation records (SPEC-0232): `ESC-NNNN` question-to-the-human files under
+`<agentic_dir>/escalations/`, created by `wt queue escalate`, which also parks the campaign as
+`human_decision` (the human-owned reason of SPEC-0222), appends an `escalation` event, mails
+`human` and runs a configurable desktop notifier. Answering is SPEC-0235.
+
+Lock order is always the campaign's `item_lock`, then the escalations lock."""
+from __future__ import annotations
+
+import contextlib
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess
+
+from ..export import _atomic_write
+from . import events as E
+from . import mailbox as M
+from . import store
+
+SCHEMA = "wt.escalation.v1"
+STATUSES = ("open", "answered", "withdrawn")
+DEFAULTS = {"notify": "auto", "remind_s": 3600}
+NOTIFY_TIMEOUT_S = 5
+_ID_RE = re.compile(r"^ESC-(\d{4,})$")
+_SUBST_RE = re.compile(r"\{(id|campaign|question|recommendation)\}")
+
+
+def settings(cfg) -> dict:
+    return {**DEFAULTS, **(((cfg.get("agentic") or {}).get("escalations")) or {})}
+
+
+# ---- storage ---------------------------------------------------------------------------------
+
+def escalations_dir(cfg):
+    return store.agentic_dir(cfg) / "escalations"
+
+
+def _lock_path(cfg):
+    return escalations_dir(cfg) / ".lock"
+
+
+def _path(cfg, esc_id):
+    return escalations_dir(cfg) / f"{esc_id}.json"
+
+
+def _ids(cfg) -> list[int]:
+    d = escalations_dir(cfg)
+    if not d.is_dir():
+        return []
+    return sorted(int(m.group(1)) for p in d.glob("ESC-*.json")
+                  if (m := _ID_RE.match(p.stem)))
+
+
+def _write(cfg, rec: dict) -> None:
+    _atomic_write(_path(cfg, rec["id"]), json.dumps(rec, indent=2, ensure_ascii=False) + "\n")
+
+
+def read(cfg, esc_id) -> dict:
+    """The record, or ValueError for an unknown or unreadable id."""
+    if not _ID_RE.match(esc_id or ""):
+        raise ValueError(f"not an escalation id: {esc_id!r} (ESC-NNNN)")
+    p = _path(cfg, esc_id)
+    if not p.is_file():
+        raise ValueError(f"no escalation {esc_id}")
+    try:
+        rec = json.loads(p.read_text(encoding="utf-8"))
+    except ValueError as e:
+        raise ValueError(f"escalation {esc_id} is unreadable: {e}")
+    if not isinstance(rec, dict):
+        raise ValueError(f"escalation {esc_id} is unreadable: not an object")
+    return rec
+
+
+def list_all(cfg, status=None) -> list[dict]:
+    """Records, newest first; only those with `status` when given."""
+    out = []
+    for n in reversed(_ids(cfg)):
+        try:
+            rec = read(cfg, f"ESC-{n:04d}")
+        except ValueError:
+            continue
+        if status is None or rec.get("status") == status:
+            out.append(rec)
+    return out
+
+
+def _campaign_state(cfg, cid) -> dict | None:
+    try:
+        return store.read_state(cfg, cid)
+    except (ValueError, OSError):
+        return None
+
+
+def _live(cfg, rec: dict) -> bool:
+    """An open record is live while its campaign is PARKED `human_decision` or holds a
+    `human_decision` park request (a campaign-less record is always live)."""
+    cid = rec.get("campaign")
+    if not cid:
+        return True
+    st = _campaign_state(cfg, cid)
+    if st is None:
+        return False
+    if st.get("state") == "PARKED" and (st.get("park") or {}).get("reason") == "human_decision":
+        return True
+    return (st.get("park_requested") or {}).get("reason") == "human_decision"
+
+
+def _open_records(cfg, campaign) -> list[dict]:
+    return [r for r in list_all(cfg, "open") if r.get("campaign") == campaign]
+
+
+def open_for(cfg, campaign) -> dict | None:
+    """The live open escalation of `campaign`, or None. A record whose campaign left the
+    `human_decision` park by another route does not count."""
+    for rec in _open_records(cfg, campaign):
+        if _live(cfg, rec):
+            return rec
+    return None
+
+
+def open_live(cfg) -> list[dict]:
+    return [r for r in list_all(cfg, "open") if _live(cfg, r)]
+
+
+def _mutate(cfg, esc_id, fn) -> dict:
+    """Re-read `esc_id` under the escalations lock, apply `fn(rec)` and write it back."""
+    with E._locked(_lock_path(cfg)):
+        rec = read(cfg, esc_id)
+        fn(rec)
+        _write(cfg, rec)
+    return rec
+
+
+def _create(cfg, fields: dict) -> dict:
+    """Allocate the next id and write the `open` record, both under the escalations lock."""
+    with E._locked(_lock_path(cfg)):
+        ids = _ids(cfg)
+        esc_id = f"ESC-{(ids[-1] if ids else 0) + 1:04d}"
+        rec = {"schema": SCHEMA, "id": esc_id, "created": store.now_iso(), **fields,
+               "status": "open", "mail_id": None, "notified": None, "reminded_at": None,
+               "answer": None, "answered_by": None, "answered_at": None, "withdrawn": None}
+        _write(cfg, rec)
+    return rec
+
+
+# ---- escalate --------------------------------------------------------------------------------
+
+def plan_escalate(cfg, campaign, *, question, options=(), recommend=None, facts=(),
+                  frm=None) -> dict:
+    """Validate and describe an escalation (pure: writes nothing)."""
+    from . import queue as Q
+    frm = M.validate_address(cfg, frm or os.environ.get("WT_MAILBOX_ADDR") or "conductor")
+    question = (question or "").strip()
+    if not question:
+        raise ValueError("an escalation needs a --question")
+    opts = [{"n": i, "label": str(o).strip()} for i, o in enumerate(options, 1)]
+    if any(not o["label"] for o in opts):
+        raise ValueError("empty --option")
+    if recommend is not None:
+        if not opts:
+            raise ValueError("--recommend needs at least one --option")
+        if not 1 <= recommend <= len(opts):
+            raise ValueError(f"--recommend {recommend} is not an option (1-{len(opts)})")
+    facts = [str(f) for f in facts]
+    plan = {"campaign": campaign, "spec_id": None, "project": None, "state": None,
+            "park_reason_now": None, "by": frm, "question": question, "options": opts,
+            "recommendation": recommend, "facts": facts, "park": None}
+    if not campaign:
+        return plan
+    st = store.read_state(cfg, campaign)           # ValueError when unknown
+    s = st.get("state")
+    if s in Q.TERMINAL_STATES:
+        raise ValueError(f"{campaign} is {s}; nothing to escalate")
+    other = open_for(cfg, campaign)
+    if other:
+        raise ValueError(f"{campaign} already has an open escalation, {other['id']}; "
+                         f"withdraw it first (wt escalations withdraw {other['id']})")
+    plan.update(spec_id=st.get("spec_id"), project=st.get("project"), state=s)
+    if s == "PARKED":
+        park = st.get("park") or {}
+        reason = park.get("reason")
+        plan["park_reason_now"] = reason
+        # a re-park keeps what an earlier escalation recorded: the situation did not change
+        origin = park.get("escalated_from") if reason == "human_decision" else reason
+        plan["park"] = {"escalated_from": origin, "resume_to": park.get("resume_to"),
+                        "mode": "immediate"}
+        return plan
+    pp = Q.plan_park(cfg, campaign, question)
+    plan["park"] = {"escalated_from": None, "resume_to": pp["resume_to"], "mode": pp["mode"]}
+    earlier = st.get("park_requested") or {}
+    if pp["mode"] == "deferred" and earlier.get("reason") == "human":
+        plan["facts"] = facts + [f"park requested earlier: {earlier.get('detail')}"]
+    return plan
+
+
+def _revalidate(cfg, plan: dict, st: dict) -> None:
+    from . import queue as Q
+    cid = plan["campaign"]
+    moved = st.get("state") != plan["state"] or st.get("state") in Q.TERMINAL_STATES
+    if not moved and plan["state"] == "PARKED":
+        moved = (st.get("park") or {}).get("reason") != plan["park_reason_now"]
+    if moved or open_for(cfg, cid):
+        raise ValueError(f"{cid} changed since the plan; re-run")
+
+
+def apply_escalate(cfg, plan: dict) -> dict:
+    """Write the record, park the campaign, then announce (event, mail, notification). The
+    record is removed again when the park fails, so no orphan `open` record blocks a retry."""
+    from . import queue as Q
+    cid = plan["campaign"]
+    fields = {"by": plan["by"], "campaign": cid, "spec_id": plan["spec_id"],
+              "project": plan["project"], "question": plan["question"],
+              "options": plan["options"], "recommendation": plan["recommendation"],
+              "facts": plan["facts"], "park": plan["park"]}
+    if not cid:
+        rec = _create(cfg, fields)
+    else:
+        with store.item_lock(cfg, cid):
+            st = store.read_state(cfg, cid)
+            _revalidate(cfg, plan, st)
+            rec = _create(cfg, fields)
+            detail = f"{rec['id']}: {plan['question']}"
+            park = plan["park"]
+            try:
+                if park["mode"] == "deferred":
+                    st["park_requested"] = {"reason": "human_decision", "detail": detail,
+                                            "at": store.now_iso(), "by": plan["by"]}
+                    store.append_event(cfg, cid, "note", {
+                        "text": f"escalation {rec['id']} requested; parks after the running "
+                                f"step", "author": plan["by"]}, by=plan["by"])
+                    store.write_state(cfg, cid, st)
+                else:
+                    Q._park(cfg, st, "human_decision", detail, park["resume_to"],
+                            by=plan["by"], extra={"escalated_from": park["escalated_from"]},
+                            count=plan["state"] != "PARKED")
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    _path(cfg, rec["id"]).unlink()
+                raise
+    return _announce(cfg, rec)
+
+
+def _mail_text(rec: dict) -> str:
+    lines = [rec["question"]]
+    for o in rec["options"]:
+        mark = " (recommended)" if o["n"] == rec.get("recommendation") else ""
+        lines.append(f"  {o['n']}. {o['label']}{mark}")
+    lines.append(f"answer: wt escalations show {rec['id']}")
+    return "\n".join(lines)
+
+
+def _announce(cfg, rec: dict) -> dict:
+    """Event, human mail, notification (after the locks are released)."""
+    by = rec["by"]
+    E.append(cfg, "escalation", campaign=rec["campaign"], spec_id=rec["spec_id"],
+             project=rec["project"], by=by,
+             data={"escalation_id": rec["id"], "question": rec["question"],
+                   "options": rec["options"], "recommendation": rec["recommendation"]})
+    msg = M.send(cfg, to="human", frm=by, kind="question", campaign=rec["campaign"],
+                 needs_reply=False, text=_mail_text(rec))
+    outcome = notify(cfg, rec)
+    return _mutate(cfg, rec["id"], lambda r: r.update(mail_id=msg["id"], notified=outcome))
+
+
+# ---- notification ----------------------------------------------------------------------------
+
+def _run_notify(argv):
+    return subprocess.run(argv, capture_output=True, text=True, timeout=NOTIFY_TIMEOUT_S)
+
+
+def _notify_argv(cfg, rec: dict, title: str) -> tuple[str, list | None, str | None]:
+    """`(via, argv, error)`; `argv` None when nothing is to run."""
+    mode = settings(cfg)["notify"]
+    if mode == "none":
+        return "none", None, None
+    if mode == "auto":
+        exe = shutil.which("notify-send")
+        if not exe:
+            return "none", None, "notify-send not found"
+        return "notify-send", [exe, "--app-name=wt", "--urgency=critical", title,
+                               rec["question"]], None
+    if isinstance(mode, list) and mode and all(isinstance(a, str) for a in mode):
+        vals = {"id": rec["id"], "campaign": rec.get("campaign") or "",
+                "question": rec["question"],
+                "recommendation": "" if rec.get("recommendation") is None
+                else str(rec["recommendation"])}
+        return "command", [_SUBST_RE.sub(lambda m: vals[m.group(1)], a) for a in mode], None
+    return "none", None, f"bad agentic.escalations.notify: {mode!r}"
+
+
+def notify(cfg, rec: dict, *, title: str | None = None) -> dict:
+    """Run the configured notifier; never raises. The outcome is `notified`."""
+    title = title or f"wt: {rec['id']} needs you"
+    via, argv, error = _notify_argv(cfg, rec, title)
+    ok = argv is not None
+    if argv is not None:
+        try:
+            r = _run_notify(argv)
+            if r.returncode != 0:
+                ok = False
+                error = (f"exit {r.returncode}: " + (r.stderr or r.stdout or "").strip())[:300]
+        except Exception as e:                         # OSError, timeout, a broken notifier
+            ok, error = False, f"{type(e).__name__}: {e}"[:300]
+    elif via == "none" and error is None:
+        ok = True
+    return {"via": via, "ok": ok, "error": error, "at": store.now_iso()}
+
+
+def remind_due(cfg, now=None) -> list[dict]:
+    """Re-notify each open record last notified (`reminded_at` or `created`) over `remind_s`
+    ago; 0 disables. A due record is claimed under the escalations lock (`reminded_at` is
+    written there) before the notifier runs outside it, so concurrent followers remind once.
+    Open records whose campaign left the park by another route are withdrawn instead."""
+    remind_s = float(settings(cfg)["remind_s"] or 0)
+    if remind_s <= 0:
+        return []
+    now = now or dt.datetime.now().astimezone()
+    out = []
+    for rec in list_all(cfg, "open"):
+        if not _live(cfg, rec):
+            _withdraw_stale(cfg, rec["id"])
+            continue
+        if not _claim(cfg, rec["id"], now, remind_s):
+            continue
+        claimed = read(cfg, rec["id"])
+        outcome = notify(cfg, claimed, title=f"wt: {claimed['id']} still needs you")
+        with contextlib.suppress(ValueError, OSError):
+            _mutate(cfg, claimed["id"], lambda r: r.update(notified=outcome))
+        out.append({"id": claimed["id"], "notified": outcome})
+    return out
+
+
+def _claim(cfg, esc_id, now, remind_s) -> bool:
+    with E._locked(_lock_path(cfg)):
+        try:
+            rec = read(cfg, esc_id)
+        except ValueError:
+            return False
+        if rec.get("status") != "open":
+            return False
+        age = E._age_s(rec.get("reminded_at") or rec.get("created"), now)
+        if age is None or age < remind_s:
+            return False
+        rec["reminded_at"] = store.now_iso(now)
+        _write(cfg, rec)
+    return True
+
+
+# ---- withdrawal ------------------------------------------------------------------------------
+
+def withdraw(cfg, esc_id, reason, by, *, clear_request=True) -> dict:
+    """Close an `open` record as `withdrawn`: ledger note, `escalation_withdrawn` event and a
+    `human` info mail. A deferred `human_decision` park request that has not parked yet is
+    dropped (`clear_request`; callers that own the campaign state pass False). Never resumes
+    the campaign. ValueError when the record is not open."""
+    rec = read(cfg, esc_id)
+    cid = rec.get("campaign")
+    known = bool(cid) and _campaign_state(cfg, cid) is not None   # item_lock would mkdir
+    with store.item_lock(cfg, cid) if known else contextlib.nullcontext():
+        def close(r):
+            if r.get("status") != "open":
+                raise ValueError(f"{esc_id} is {r.get('status')}, not open")
+            r["status"] = "withdrawn"
+            r["withdrawn"] = {"reason": reason, "by": by, "at": store.now_iso()}
+        rec = _mutate(cfg, esc_id, close)
+        if known:
+            st = _campaign_state(cfg, cid)
+            if clear_request and st and st.get("state") != "PARKED" \
+                    and (st.get("park_requested") or {}).get("reason") == "human_decision":
+                st.pop("park_requested")
+                store.write_state(cfg, cid, st)
+            with contextlib.suppress(ValueError, OSError):
+                store.append_event(cfg, cid, "note", {
+                    "text": f"escalation {esc_id} withdrawn: {reason}", "author": by}, by=by)
+    try:
+        frm = M.validate_address(cfg, by)
+    except ValueError:                    # `tick`, `wt`: not a mailbox address
+        frm = "conductor"
+    with contextlib.suppress(ValueError, OSError):
+        E.append(cfg, "escalation_withdrawn", campaign=cid, spec_id=rec.get("spec_id"),
+                 project=rec.get("project"), by=by,
+                 data={"escalation_id": esc_id, "reason": reason})
+        M.send(cfg, to="human", frm=frm, kind="info", campaign=cid,
+               text=f"{esc_id} withdrawn by {by}: {reason}")
+    return rec
+
+
+def withdraw_for_campaign(cfg, cid, reason, by) -> dict | None:
+    """Withdraw the campaign's `open` record, if any (the campaign left the park by a resume,
+    an abandon or a terminal transition). The caller owns the campaign state; `answered`
+    records are never touched. Never raises."""
+    try:
+        for rec in _open_records(cfg, cid):
+            return withdraw(cfg, rec["id"], reason, by, clear_request=False)
+    except (ValueError, OSError):
+        pass
+    return None
+
+
+def _withdraw_stale(cfg, esc_id) -> None:
+    """Backstop: close a record whose campaign is no longer in the `human_decision` park."""
+    cid = read(cfg, esc_id).get("campaign")
+    known = _campaign_state(cfg, cid) is not None
+    with store.item_lock(cfg, cid) if known else contextlib.nullcontext():
+        rec = read(cfg, esc_id)
+        if rec.get("status") == "open" and not _live(cfg, rec):
+            with contextlib.suppress(ValueError, OSError):
+                withdraw(cfg, esc_id, "campaign left the park", "wt", clear_request=False)
+
+
+def note_park(cfg, cid, *, escalated_from, resume_to) -> None:
+    """Keep the open record's `park` in step with a park the tick resolved differently from
+    the plan (the running step parked by itself)."""
+    for rec in _open_records(cfg, cid):
+        def upd(r):
+            r["park"] = {**(r.get("park") or {}), "escalated_from": escalated_from,
+                         "resume_to": resume_to}
+        with contextlib.suppress(ValueError, OSError):
+            _mutate(cfg, rec["id"], upd)
+
+
+def digest_rows(cfg, now) -> list[dict]:
+    """`ping_digest.escalations_open`: live open records."""
+    return [{"id": r["id"], "campaign": r.get("campaign"),
+             "age_s": round(E._age_s(r.get("created"), now) or 0)} for r in open_live(cfg)]

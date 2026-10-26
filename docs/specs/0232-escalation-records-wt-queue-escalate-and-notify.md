@@ -1,7 +1,7 @@
 ---
 id: SPEC-0232
 title: "Escalation records: wt queue escalate parks human_decision, mails and notifies the human"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -276,42 +276,42 @@ wt queue escalate [CAMPAIGN] --question TEXT [--option TEXT]... [--recommend N]
 
 ## Acceptance criteria
 
-- [ ] `wt queue escalate … --yes` writes `<agentic_dir>/escalations/ESC-NNNN.json`
+- [x] `wt queue escalate … --yes` writes `<agentic_dir>/escalations/ESC-NNNN.json`
       (`wt.escalation.v1`, every field above), with sequential ids under the lock. Without
       `--yes` it writes nothing and prints the plan. A campaign-less escalation works.
-- [ ] `queue.PARK_REASONS` contains `human_decision`. Escalating a PARKED campaign re-parks it
+- [x] `queue.PARK_REASONS` contains `human_decision`. Escalating a PARKED campaign re-parks it
       as `human_decision` with `park.escalated_from` set, the original `resume_to` kept and
       `counters.parks` unchanged. A `human_decision` park with no open escalation can be
       re-parked. A QUEUED, WAITING or idle active campaign parks immediately. Apply
       re-validates under `item_lock` and leaves no record when the campaign changed after
       the plan.
-- [ ] With the lease held, an active campaign gets `park_requested = {reason:
+- [x] With the lease held, an active campaign gets `park_requested = {reason:
       "human_decision", by}`, replacing a `human` request (whose detail goes to `facts`).
       The tick parks it with that reason, `by` the escalating actor (`plan_step`,
       `_park_row`, `_apply`). A step that parks by itself parks as `human_decision` with
       `escalated_from` = the step's reason. A terminal campaign and a second open
       escalation for one campaign are refused.
-- [ ] Apply appends one `escalation` event (registered in `EVENT_TYPES`) and one `human` inbox
+- [x] Apply appends one `escalation` event (registered in `EVENT_TYPES`) and one `human` inbox
       message (`kind question`, `needs_reply: false`, the text naming the id and the options).
       The record carries `mail_id`.
-- [ ] `notify` runs `notify-send` with `auto` when it is on PATH and nothing when it is not.
+- [x] `notify` runs `notify-send` with `auto` when it is on PATH and nothing when it is not.
       `none` never runs. A list setting runs the substituted argv. A failing or missing
       command is recorded in `notified` and the escalation still succeeds.
-- [ ] `remind_due` claims due records under the escalations lock and re-notifies an open record
+- [x] `remind_due` claims due records under the escalations lock and re-notifies an open record
       once per `remind_s` (not a withdrawn one, and once even with two concurrent callers).
       It is off at 0. `ping_digest` carries `escalations_open` and `counts.escalations_open`.
-- [ ] `wt escalations list` (open by default, `--all`, `--json` as
+- [x] `wt escalations list` (open by default, `--all`, `--json` as
       `wt.escalation.list.v1`) and `show ID` (`--json` is the record) work. An unknown id is a
       clean error.
-- [ ] `wt escalations withdraw ID --reason … --yes` sets `withdrawn`, notes the campaign, emits
+- [x] `wt escalations withdraw ID --reason … --yes` sets `withdrawn`, notes the campaign, emits
       `escalation_withdrawn` and mails `human`. It leaves the campaign PARKED and refuses a
       non-open record, and prints the resume hint. The `wt-conduct` skill carries the escalate convention and the
       `human_decision` row.
-- [ ] An open escalation is withdrawn automatically when its campaign is resumed, abandoned or
+- [x] An open escalation is withdrawn automatically when its campaign is resumed, abandoned or
       reaches a terminal state, and an answered record is never touched.
       `remind_due` / `ping_digest` / `open_for` skip, and `remind_due` withdraws, an open
       record whose campaign has left the `human_decision` park by another route.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -360,6 +360,46 @@ wt queue escalate [CAMPAIGN] --question TEXT [--option TEXT]... [--recommend N]
 - **Regression guard:** full `uv run pytest`. The park-request tests that assert reason
   `human` for `wt queue park` still pass, because only `human_decision` requests change.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q`: whole suite green (1135+ tests), including the new
+  `tests/test_agentic_escalations.py` (26 tests: records, parks, the race, a raising park,
+  deferred requests, resume/abandon/terminal withdrawal, the backstop, notifier modes,
+  reminders incl. a second caller at the same `now`, `ping_digest`),
+  `tests/test_agentic_escalations_cli.py` (dry-run vs `--yes`, `list`/`--all`/`--json`, `show`,
+  `withdraw`, unknown id), the `_apply` cases in `tests/test_agentic_queue.py` (pending
+  escalation + gate, + a `loop_exhausted` triage, + a merging close), `_park` `extra`/`count`,
+  and the `wt-conduct` row checks in `tests/test_skills.py`.
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`: exit 0.
+- Manual (throwaway `WT_DATA_DIR`): `uv run wt queue escalate --question "test?" --option yes
+  --option no --recommend 1 --yes` wrote `ESC-0001.json` with `notified: {via: notify-send,
+  ok: true}` (`notify-send` is on this machine's PATH), mailed `human:1`; `wt escalations
+  list` showed it; `wt escalations withdraw ESC-0001 --reason "manual check" --yes` set
+  `withdrawn` and mailed `human:2` (`info`). The desktop popup itself was not observed (headless
+  session); the notifier ran and exited 0.
+
+### As shipped
+
+Matches the Design, with these additions and clarifications:
+
+- `escalations.note_park` keeps the open record's `park.escalated_from` / `resume_to` in step
+  when the running step parked by itself (`_apply`), so the record agrees with the campaign.
+- Withdrawing a record whose `human_decision` park request is still pending (deferred, nothing
+  parked yet) also drops that `park_requested`; otherwise the tick would park the campaign for
+  an escalation that no longer exists. A campaign already PARKED stays parked.
+- `notify` in `auto` mode with no `notify-send` on PATH records `via: none, ok: false, error:
+  "notify-send not found"` (and runs nothing); `none` records `ok: true`. A malformed
+  `notify` setting is recorded the same way, as an error.
+- `remind_due` also writes the reminder's outcome into `notified`.
+- Mail from a withdraw uses `conductor` as sender when the actor is not a mailbox address
+  (`tick`, `wt`).
+- `wt escalations withdraw --json` is `wt.escalation.withdraw.v1` and carries
+  `campaign_state` and `hint`; without `--yes` it prints the plan.
+- The existing `test_park_owner_table` asserted `human_decision not in PARK_REASONS`; it now
+  asserts the opposite. `docs/product/loop/operate.md` (park table) and
+  `docs/product/reference/index.md` (top-level commands) gained the `human_decision` row and
+  the `escalations` command, which existing docs tests require.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -372,11 +412,11 @@ lands) and uses `wt queue escalate` from then on.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

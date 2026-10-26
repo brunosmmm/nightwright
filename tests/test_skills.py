@@ -361,3 +361,12 @@ def test_rows_mention_new_fields():
 def test_runner_draining_row_points_to_silent_row():
     row = _conduct_row("runner_draining")
     assert "`runner_journal_silent`" in row and "follow that row" in row
+
+
+def test_conduct_skill_escalates_through_records_spec_0232():
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    assert "wt queue escalate" in conduct and "escalated ESC-NNNN" in conduct
+    row = next(r for r in conduct.splitlines() if r.startswith("| `parked` `human_decision`"))
+    assert "wt escalations withdraw" in row and "wt queue resume" in row
+    assert any(r.startswith("| `escalation` / `escalation_withdrawn`")
+               for r in conduct.splitlines())

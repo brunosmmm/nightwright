@@ -43,3 +43,5 @@ def register(cli, projects_group):
         mailbox_group = None
     if mailbox_group is not None:
         cli.add_command(mailbox_group)
+    from .cli_escalations import escalations_group      # SPEC-0232
+    cli.add_command(escalations_group)

@@ -24,6 +24,7 @@ Claude-generating vs your-turn diagnostic.
 | `ideas` | List / filter / query / tree ideas | [Ideas](../capabilities/ideas.md) |
 | `ingest-meetings` | Filter a raw calendar JSON dump | [Meetings](../capabilities/meetings.md) |
 | `mailbox` | Conductor ↔ steward messages (agentic loop) | [Agentic loop](../capabilities/agentic.md) |
+| `escalations` | Questions escalated to the human: list, show, withdraw (agentic loop) | [Agentic loop](../capabilities/agentic.md) |
 | `map` | Assign facets to a base topic | [Report](../capabilities/report.md) |
 | `next` | Next-step hints for open ideas | [Ideas](../capabilities/ideas.md) |
 | `override` | Time-scoped reclassification | [Report](../capabilities/report.md) |

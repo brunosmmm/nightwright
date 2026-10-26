@@ -63,11 +63,11 @@ PARK_REASONS = frozenset({
     "cost_cap", "loop_exhausted", "implementer_blocked", "triage_escalated", "open_failed",
     "rebase_conflict", "main_dirty", "main_not_on_base", "base_moving", "gh_failed", "human",
     "review_escalated", "config_invalid", "spec_writer_unavailable", "spec_write_failed",
-    "spec_review_unavailable",
+    "spec_review_unavailable", "human_decision",
     "gates_failed", "worktree_dirty",                  # SPEC-0233: merge campaigns
 })
 # SPEC-0222: who a park waits for. The human only for their own checkout and explicit
-# escalations (`human_decision` is reserved for IDEA-087); everything else is the conductor's.
+# escalations (`human_decision`, SPEC-0232); everything else is the conductor's.
 PARK_OWNERS = {"main_dirty": "human", "main_not_on_base": "human", "human_decision": "human"}
 
 
@@ -113,6 +113,7 @@ class Step:
     missing: tuple = ()
     escalated: tuple = ()
     combined: dict | None = None
+    by: str | None = None                  # SPEC-0232: who requested a deferred park
 
 
 def _cap_blocks(state: dict, profile: dict, persona) -> str | None:
@@ -164,8 +165,9 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
     st = state.get("state")
     if state.get("park_requested") and st not in TERMINAL_STATES and st != "PARKED":
         req = state["park_requested"]
-        return Step("park", reason="human", detail=req.get("detail") or req.get("reason"),
-                    resume_to=_resume_target(st))
+        return Step("park", reason="human_decision" if req.get("reason") == "human_decision"
+                    else "human", detail=req.get("detail") or req.get("reason"),
+                    resume_to=_resume_target(st), by=req.get("by"))
     if st in TERMINAL_STATES or st in ("PARKED", "QUEUED"):
         return Step("none")
     if st == "OPENING":
@@ -726,14 +728,20 @@ def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_even
             store.append_event(cfg, cid, "transition", {"from": frm, "to": to, "reason": reason},
                                by=by)
         store.write_state(cfg, cid, state)
+        if to in TERMINAL_STATES:               # SPEC-0232: nobody will answer a dead campaign
+            from . import escalations as ESC
+            ESC.withdraw_for_campaign(cfg, cid, f"campaign {to}", by)
     return state
 
 
 def _park(cfg, state: dict, reason: str, detail: str, resume_to: str, *, by="tick",
-          extra_events=()):
-    _counters(state)["parks"] += 1
+          extra_events=(), extra=None, count=True):
+    """Park `state`. `extra` is merged into `state["park"]` (SPEC-0232 `escalated_from`);
+    `count=False` keeps a PARKED→PARKED re-park out of `counters.parks`."""
+    if count:
+        _counters(state)["parks"] += 1
     state["park"] = {"reason": reason, "detail": detail, "since": store.now_iso(),
-                     "resume_to": resume_to}
+                     "resume_to": resume_to, **(extra or {})}
     state.pop("park_requested", None)
     events = list(extra_events) + [("park", dict(state["park"]))]
     return _transition(cfg, state, "PARKED", reason, by=by, extra_events=events)
@@ -1377,11 +1385,31 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             if k in state:
                 current[k] = state[k]
         requested = current.get("park_requested") or state.get("park_requested")
+        escalating = bool(requested) and requested.get("reason") == "human_decision"
         if requested and park is None and to not in TERMINAL_STATES:
             req = requested
-            _park(cfg, current, "human", req.get("detail") or req.get("reason") or "parked",
-                  _resume_target(to), by="human", extra_events=events)
+            detail = req.get("detail") or req.get("reason") or "parked"
+            if escalating:                               # SPEC-0232
+                _park(cfg, current, "human_decision", detail, _resume_target(to),
+                      by=req.get("by") or "human", extra={"escalated_from": None},
+                      extra_events=events)
+                row["to"], row["reason"] = "PARKED", "human_decision"
+                return row
+            _park(cfg, current, "human", detail, _resume_target(to), by="human",
+                  extra_events=events)
             row["to"], row["reason"] = "PARKED", "human"
+            return row
+        if park and escalating:
+            # the step parked by itself while an escalation was pending: park as the human's,
+            # keeping the step's reason as `escalated_from`, so the record matches the park
+            req = requested
+            _park(cfg, current, "human_decision",
+                  f"{req.get('detail')} (step parked: {park['detail']})", park["resume_to"],
+                  by=req.get("by") or "human", extra={"escalated_from": park["reason"]},
+                  extra_events=events)
+            from . import escalations as ESC
+            ESC.note_park(cfg, cid, escalated_from=park["reason"], resume_to=park["resume_to"])
+            row["to"], row["reason"] = "PARKED", "human_decision"
             return row
         if park:
             _park(cfg, current, park["reason"], park["detail"], park["resume_to"],
@@ -2618,7 +2646,7 @@ def _finish_reviews(ctx: _Ctx, report: TickReport, group: _ReviewGroup) -> dict:
 
 def _park_row(cfg, state: dict, step: Step) -> dict:
     frm = state.get("state")
-    by = "human" if step.reason == "human" else "tick"
+    by = step.by or ("human" if step.reason == "human" else "tick")
     _park(cfg, state, step.reason, step.detail or step.reason, step.resume_to or frm, by=by)
     return {"campaign": state["id"], "from": frm, "to": "PARKED", "action": "park",
             "run_id": None, "cost_usd": None, "reason": step.reason}
@@ -3824,6 +3852,8 @@ def apply_resume(cfg, plan: dict) -> dict:
             c["gate_retries"] = 0
         st["park"] = None
         st.pop("park_requested", None)
+        from . import escalations as ESC            # SPEC-0232
+        ESC.withdraw_for_campaign(cfg, cid, "campaign resumed by human", "human")
         ev = ("resume", {"to": plan["to"], "note": plan.get("note"),
                          "cap_usd": plan.get("raise_cap"), "loops_reset": bool(plan.get("reset_loops"))})
         return _enter_slot_or_wait(cfg, st, plan["to"], "resumed", by="human", extra_events=[ev])
@@ -3914,6 +3944,8 @@ def apply_abandon(cfg, plan: dict) -> dict:
         st["park"] = None
         st.pop("waiting", None)
         st.pop("park_requested", None)
+        from . import escalations as ESC            # SPEC-0232
+        ESC.withdraw_for_campaign(cfg, cid, "campaign abandoned by human", "human")
         if st.get("kind") == "idea":
             events += _unlink_idea(cfg, st)
         events.append(("close", {"mode": "abandoned", "merged_sha": None, "pr_url": None,

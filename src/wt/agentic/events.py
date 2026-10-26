@@ -60,6 +60,9 @@ EVENT_TYPES = {
     # SPEC-0228
     "waiting_not_admitted": ("waiting_for_s", "active", "slots"),
     "runner_journal_silent": ("last_journal_ts", "silent_s", "heartbeat_age_s"),
+    # SPEC-0232
+    "escalation": ("escalation_id", "question", "options"),
+    "escalation_withdrawn": ("escalation_id", "reason"),
 }
 
 # transient run failures: account limits, overload, network-ish API errors
@@ -536,8 +539,11 @@ def ping_digest(cfg, now=None) -> dict:
                                      if p["owner"] == "conductor" and not p["decided"]),
               "stuck": len(stuck), "waiting": len(waiting),
               "waiting_not_admitted": len(wna)}
+    from . import escalations as ESC                          # SPEC-0232
+    esc = ESC.digest_rows(cfg, now)
+    counts["escalations_open"] = len(esc)
     return {"blocked": blocked, "parked": parked, "stuck": stuck, "waiting": waiting,
-            "ready_not_admitted": rna, "waiting_not_admitted": wna,
+            "ready_not_admitted": rna, "waiting_not_admitted": wna, "escalations_open": esc,
             "runner": runner_silence(cfg, now, sett), "counts": counts}
 
 
@@ -684,6 +690,12 @@ def sync(cfg, now=None, ping=False) -> list[dict]:
         if ping:                                  # SPEC-0212: only followers ping
             out += _ping(cfg, proj, now)
         _atomic_write(_projector_path(cfg), json.dumps(proj, indent=2) + "\n")
+    if ping:                                      # SPEC-0232: remind outside the events lock
+        from . import escalations as ESC
+        try:
+            ESC.remind_due(cfg, now)
+        except Exception:                         # a reminder never breaks the follower
+            pass
     return out
 
 

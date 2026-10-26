@@ -1145,10 +1145,11 @@ def test_park_owner_table():
     assert Q.PARK_OWNERS == {"main_dirty": "human", "main_not_on_base": "human",
                              "human_decision": "human"}
     for reason in Q.PARK_REASONS:
-        assert Q.park_owner(reason) == ("human" if reason in ("main_dirty", "main_not_on_base")
+        assert Q.park_owner(reason) == ("human" if reason in ("main_dirty", "main_not_on_base",
+                                                               "human_decision")
                                         else "conductor"), reason
     assert Q.park_owner("human_decision") == "human"
-    assert "human_decision" not in Q.PARK_REASONS
+    assert "human_decision" in Q.PARK_REASONS                                # SPEC-0232
     assert Q.park_owner(None) == "conductor" and Q.park_owner("whatever") == "conductor"
 
 
@@ -1326,3 +1327,82 @@ def test_queue_payload_uses_the_campaigns_project_layer_for_loop_max(tmp_path, m
     _project_profile(repo, "loop_max: 9\n")
     [item] = [i for i in Q.queue_payload(cfg)["items"] if i["campaign"] == cid]
     assert item["loops"].endswith("/9")
+
+
+# ---- SPEC-0232: `_park` extra / count ------------------------------------------------------------
+
+def test_park_extra_merges_and_count_false_skips_counter(opened):
+    cfg, cid, _ = opened
+    st = S.read_state(cfg, cid)
+    before = st["counters"]["parks"]
+    Q._park(cfg, st, "human_decision", "ESC-0001: q", "IMPLEMENTING", by="conductor",
+            extra={"escalated_from": "loop_exhausted"}, count=False)
+    st = S.read_state(cfg, cid)
+    assert st["park"]["escalated_from"] == "loop_exhausted"
+    assert st["park"]["reason"] == "human_decision"
+    assert st["counters"]["parks"] == before
+    assert "human_decision" in Q.PARK_REASONS
+
+
+# ---- SPEC-0232: a pending escalation meets the running step's outcome ------------------------------
+
+@pytest.fixture
+def pending_escalation(opened, monkeypatch):
+    from wt.agentic import escalations as ESC
+    monkeypatch.setattr(ESC, "_run_notify", lambda argv: type("R", (), {"returncode": 0})())
+    cfg, cid, ctx = opened
+    lease = L.acquire(cfg, [cid])
+    try:
+        plan = ESC.plan_escalate(cfg, cid, question="scope?", options=["a", "b"], frm="conductor")
+        rec = ESC.apply_escalate(cfg, plan)
+    finally:
+        lease.release()
+    assert S.read_state(cfg, cid)["park_requested"]["reason"] == "human_decision"
+    return cfg, cid, ctx, rec, ESC
+
+
+def _set(cfg, cid, **kw):
+    st = S.read_state(cfg, cid)
+    st.update({k: v for k, v in kw.items() if k != "counters"})
+    st["counters"].update(kw.get("counters", {}))
+    S.write_state(cfg, cid, st)
+
+
+def test_apply_pending_escalation_parks_as_human_decision(pending_escalation):
+    from wt.agentic.gates import GateResult, GateRun
+    cfg, cid, ctx, rec, ESC = pending_escalation
+    _set(cfg, cid, state="GATING")
+    good = GateRun(1, True, (GateResult("test", True, True, 0, False, 0.1, "gates/001-test.log", ""),),
+                   "2026-10-25T00:00:00", 0.1)
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=good)
+    assert row["to"] == "PARKED" and row["reason"] == "human_decision"
+    assert st["park"]["reason"] == "human_decision" and "park_requested" not in st
+    assert st["park"]["detail"].startswith(rec["id"])
+    assert S.read_ledger(cfg, cid, types=["park"])[-1]["by"] == "conductor"
+    assert ESC.open_for(cfg, cid)["id"] == rec["id"]
+
+
+def test_apply_step_park_with_pending_escalation_keeps_the_step_reason(pending_escalation):
+    cfg, cid, ctx, rec, ESC = pending_escalation
+    _set(cfg, cid, state="TRIAGING", counters={"loops": 3})
+    verdict = _verdict("fix", fix_brief="write it", must_fix=[{"gate": "test", "title": "t"}])
+    row, st = _apply(ctx, cfg, cid, "triage", persona="gate_triager", run_id="002-gate_triager",
+                     run_result=_rr(verdict), budget=0.5)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "human_decision"
+    assert st["park"]["escalated_from"] == "loop_exhausted"
+    assert "(step parked:" in st["park"]["detail"] and st["park"]["detail"].startswith(rec["id"])
+    assert ESC.read(cfg, rec["id"])["park"]["escalated_from"] == "loop_exhausted"
+    assert ESC.open_for(cfg, cid)["id"] == rec["id"]
+
+
+def test_apply_step_that_merges_withdraws_the_pending_escalation(pending_escalation):
+    cfg, cid, ctx, rec, ESC = pending_escalation
+    from wt.agentic.close import CloseOutcome
+    _set(cfg, cid, state="CLOSING")
+    oc = CloseOutcome("MERGED", close={"mode": "merge", "merged_sha": "abc", "pr_url": None,
+                                        "gates_seq": 3, "target_sha": "def"},
+                      events=[("close", {"mode": "merge"})])
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED"
+    got = ESC.read(cfg, rec["id"])
+    assert got["status"] == "withdrawn" and got["withdrawn"]["reason"] == "campaign MERGED"

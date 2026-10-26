@@ -940,6 +940,38 @@ def attach(queue_group):
         _print_plan(f"park {campaign}", plan)
         console.print(f"[green]✓[/] {campaign} park {plan['mode']}" if do_write else _NOT_WRITTEN)
 
+    @queue_group.command("escalate")
+    @click.argument("campaign", required=False, shell_complete=C.complete_campaign_id)
+    @click.option("--question", required=True, help="what the human must decide")
+    @click.option("--option", "options", multiple=True, help="a numbered choice (repeatable)")
+    @click.option("--recommend", type=int, default=None, help="the recommended option, 1-based")
+    @click.option("--fact", "facts", multiple=True, help="a fact the decision rests on")
+    @click.option("--from", "frm", default=None,
+                  help="who escalates (default: $WT_MAILBOX_ADDR, then conductor)")
+    @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.escalate.v1 JSON")
+    @click.pass_obj
+    def queue_escalate(cfg, campaign, question, options, recommend, facts, frm, do_write,
+                       as_json):
+        """Escalate a decision to the human (SPEC-0232): an ESC record, the campaign parked as
+        `human_decision`, mail to `human` and a desktop notification. Without CAMPAIGN the
+        escalation is about the runner or the queue as a whole and parks nothing."""
+        from . import escalations as ESC
+        try:
+            plan = ESC.plan_escalate(cfg, campaign, question=question, options=options,
+                                     recommend=recommend, facts=facts, frm=frm)
+            rec = ESC.apply_escalate(cfg, plan) if do_write else None
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        if as_json:
+            _dump_json({"schema": "wt.queue.escalate.v1", **plan, "written": bool(do_write),
+                        "escalation": rec})
+            return
+        shown = {**plan, "options": "; ".join(f"{o['n']}. {o['label']}" for o in plan["options"]),
+                 "park": plan["park"] and f"{plan['park']['mode']} → human_decision"}
+        _print_plan("escalate" + (f" {campaign}" if campaign else ""), shown)
+        console.print(f"[green]✓[/] {rec['id']} opened" if do_write else _NOT_WRITTEN)
+
     @queue_group.command("resume")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)
     @click.option("--to", type=click.Choice(Q.RESUMABLE_STATES), default=None,
