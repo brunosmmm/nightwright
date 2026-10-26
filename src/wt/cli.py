@@ -1764,7 +1764,8 @@ def spec_review_cmd(cfg, spec_id, path, as_json, force):
     import sys
     from pathlib import Path
 
-    from .agentic.spec_review import latest_review, reviewing_line, run_spec_review, would_pick
+    from .agentic.spec_review import (latest_review, reviewing_line, run_spec_review,
+                                      spec_root, would_pick)
     from .specmeta import split_frontmatter
     from .specs import resolve_spec_path_for_cwd
     if bool(spec_id) == bool(path):
@@ -1793,7 +1794,7 @@ def spec_review_cmd(cfg, spec_id, path, as_json, force):
         else:
             console.print(line, highlight=False, markup=False, soft_wrap=True)
         review = run_spec_review(cfg, spec_path, spec_id, origin=origin)
-        pick = would_pick(cfg, review)
+        pick = would_pick(cfg, review, project_root=spec_root(cfg, spec_path))
     except ValueError as e:
         raise click.ClickException(str(e))
     if as_json:

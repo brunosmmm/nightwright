@@ -3383,7 +3383,7 @@ def plan_add_idea(cfg, idea_id, *, project=None, profile=None, base=None,
     project = project or (task.properties.get("PROJECT") or "").strip() or "Meta-Tools"
     pcfg = P.project_config(cfg, project)
     root = Path(pcfg["_root"])
-    prof = resolve_profile(cfg, profile)
+    prof = resolve_profile(cfg, profile, project_root=root)
     base = base or (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
     cid = store.new_campaign_id(cfg, idea_id)
     worktree = P.worktree_root(pcfg, root, project) / cid

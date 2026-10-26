@@ -301,6 +301,10 @@ format, the precedence and an `extends` example. The existing doc tests
   in `src/` or `tests/`; the file-name tests match the full path; the packaging test no longer
   skips without `uv`. `sources` is built without duplicates, but a chain is linear and a cycle
   raises, so no origin can repeat; the test pins the four-layer order instead.
+- Review round 2 additions: the idea-campaign `plan_add` and `would_pick` (`wt spec review`) now
+  pass the project root. New tests: an idea campaign records the project file's
+  `campaign_cap_usd`/`loop_max` and accepts a project-only `--profile`; `wt spec review` accepts a
+  `profile_matrix` cell naming a project-only profile. Full `uv run pytest`: 2181 passed, 1 skipped.
 
 ### As shipped (2026-10-25)
 

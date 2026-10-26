@@ -331,3 +331,31 @@ def test_abandon_waiting_campaign(env, monkeypatch):
     out = _abandon(cfg, cid)
     assert out["state"] == "ABANDONED" and "waiting" not in out
     assert idea(cfg, iid).state == "IDEA" and "CAMPAIGN" not in idea(cfg, iid).properties
+
+
+# ---- SPEC-0237: idea campaigns see the project's profile layer -----------------------------
+
+def _project_profile(repo, name, text):
+    d = repo / ".wt" / "profiles"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.yaml").write_text("schema: wt.profile.v1\n" + text, encoding="utf-8")
+
+
+def test_idea_campaign_records_the_project_profile_cap(env, monkeypatch):
+    cfg, repo = env
+    _project_profile(repo, "balanced", "campaign_cap_usd: 25.0\nloop_max: 5\n")
+    plan = Q.plan_add_idea(cfg, capture(cfg))
+    assert plan["cap_usd"] == 25.0 and plan["loop_max"] == 5
+    cid = add_idea_campaign(cfg, monkeypatch, capture(cfg, "second"))
+    assert S.read_state(cfg, cid)["cost"]["cap_usd"] == 25.0
+
+
+def test_idea_campaign_accepts_a_project_only_profile(env, monkeypatch):
+    cfg, repo = env
+    iid = capture(cfg)
+    with pytest.raises(ValueError, match="unknown profile 'careful'"):
+        Q.plan_add_idea(cfg, iid, profile="careful")
+    _project_profile(repo, "careful", "extends: balanced\ncampaign_cap_usd: 4.0\n")
+    assert Q.plan_add_idea(cfg, iid, profile="careful")["cap_usd"] == 4.0
+    cid = add_idea_campaign(cfg, monkeypatch, iid, "--profile", "careful")
+    assert S.read_state(cfg, cid)["profile"] == "careful"

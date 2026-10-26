@@ -367,3 +367,14 @@ def test_spec_review_still_blocks_after_review_from_removed_worktree(tmp_path, m
     ran = _spy(monkeypatch, tmp_path)
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001"])
     assert r.exit_code != 0 and not ran and "already reviewed (revise, aaaaaaaaaaaa)" in r.output
+
+
+def test_review_accepts_a_matrix_cell_naming_a_project_only_profile(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [_review_entry()])                  # SPEC-0237
+    cfg.setdefault("agentic", {})["profile_matrix"] = {"high-end": {"m": "careful"}}
+    prof = repo / ".wt" / "profiles"
+    prof.mkdir(parents=True, exist_ok=True)
+    (prof / "careful.yaml").write_text("schema: wt.profile.v1\nextends: balanced\n")
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.stdout)["profile"] == "careful"

@@ -184,12 +184,12 @@ def revision_brief(review) -> dict:
     }
 
 
-def would_pick(cfg, review) -> dict | None:
+def would_pick(cfg, review, *, project_root=None) -> dict | None:
     """What `wt queue add` would pick for `review` under the current config (SPEC-0219), or
     None unless the review approves. Not stored: the matrix is config and may change."""
     if not review or review.get("verdict") != "approve":
         return None
-    return select_profile(cfg, review=review)
+    return select_profile(cfg, review=review, project_root=project_root)
 
 
 # ---- root, context, payload ----------------------------------------------------------------------
