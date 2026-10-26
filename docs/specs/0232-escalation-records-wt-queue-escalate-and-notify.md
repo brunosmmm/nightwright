@@ -399,6 +399,15 @@ Matches the Design, with these additions and clarifications:
   asserts the opposite. `docs/product/loop/operate.md` (park table) and
   `docs/product/reference/index.md` (top-level commands) gained the `human_decision` row and
   the `escalations` command, which existing docs tests require.
+- Review round 1 hardening: `wt queue park` (plan and apply, both modes) now refuses, naming
+  the ESC id, while a `human_decision` park request is pending, instead of overwriting or
+  popping it; `notify-send` in `auto` mode gets `--` before the title and question;
+  `apply_resume` withdraws after the transition succeeds, and `apply_abandon` passes the reason
+  `campaign abandoned by human` into `_transition`'s terminal withdrawal (`withdraw_reason`);
+  `wt escalations withdraw` reads the campaign state defensively and `wt queue escalate`
+  reports `OSError` as a ClickException. New tests cover the `open_for` double-plan race, a
+  changed park reason, the `human` info mail on manual and automatic withdrawals, and the park
+  guard.
 
 ## Clock Log
 

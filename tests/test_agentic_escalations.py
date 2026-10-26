@@ -312,7 +312,7 @@ def test_notify_auto_runs_notify_send(tmp_path, calls):
     cfg = _cfg(tmp_path)
     rec = _esc(cfg, None)
     assert calls == [["/usr/bin/notify-send", "--app-name=wt", "--urgency=critical",
-                      f"wt: {rec['id']} needs you", "ship it?"]]
+                      "--", f"wt: {rec['id']} needs you", "ship it?"]]
     assert rec["notified"]["via"] == "notify-send" and rec["notified"]["ok"] is True
 
 
@@ -400,3 +400,79 @@ def test_ping_digest_lists_open_escalations(tmp_path):
     assert d["escalations_open"] == [{"id": rec["id"], "campaign": CID, "age_s": 90}]
     assert d["counts"]["escalations_open"] == 1 and d["counts"]["needs_you"] == 1
     json.dumps(d)
+
+
+# ---- review hardening ---------------------------------------------------------------------
+
+def _infos(cfg):
+    return [m for m in M.read_inbox(cfg, "human") if m["kind"] == "info"]
+
+
+def test_two_plans_before_a_deferred_apply_make_one_record(tmp_path):
+    cfg = _cfg(tmp_path)
+    _camp(cfg, "IMPLEMENTING")
+    lease = L.acquire(cfg, [CID])
+    try:
+        a = ESC.plan_escalate(cfg, CID, question="a")
+        b = ESC.plan_escalate(cfg, CID, question="b")
+        ESC.apply_escalate(cfg, a)
+        with pytest.raises(ValueError, match="changed since the plan"):
+            ESC.apply_escalate(cfg, b)
+    finally:
+        lease.release()
+    assert len(list(ESC.escalations_dir(cfg).glob("ESC-*.json"))) == 1
+
+
+def test_park_reason_changed_between_plan_and_apply_is_refused(tmp_path):
+    cfg = _cfg(tmp_path)
+    _parked(cfg, "loop_exhausted")
+    plan = ESC.plan_escalate(cfg, CID, question="q")
+    st = _state(cfg)
+    st["park"]["reason"] = "cost_cap"
+    S.write_state(cfg, CID, st)
+    with pytest.raises(ValueError, match="changed since the plan"):
+        ESC.apply_escalate(cfg, plan)
+    assert not list(ESC.escalations_dir(cfg).glob("ESC-*.json"))
+
+
+def test_withdraw_mails_human_info_for_manual_and_automatic_withdrawals(tmp_path):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    rec = _esc(cfg)
+    ESC.withdraw(cfg, rec["id"], "not needed", "conductor")
+    [m] = _infos(cfg)
+    assert rec["id"] in m["text"] and m["from"] == "conductor"
+    rec2 = _esc(cfg)
+    Q.apply_resume(cfg, Q.plan_resume(cfg, CID))
+    assert [rec["id"], rec2["id"]] == [r["id"] for r in reversed(ESC.list_all(cfg))]
+    assert len(_infos(cfg)) == 2 and rec2["id"] in _infos(cfg)[-1]["text"]
+    _parked_again = _camp(cfg, "QUEUED", cid="SPEC-0901-20261025-bbbb")
+    rec3 = _esc(cfg, _parked_again)
+    Q._transition(cfg, _state(cfg, _parked_again), "ABANDONED", "x", by="tick")
+    last = _infos(cfg)[-1]
+    assert rec3["id"] in last["text"] and last["from"] == "conductor"
+
+
+@pytest.mark.parametrize("leased", [True, False])
+def test_park_does_not_cancel_a_pending_escalation(tmp_path, leased):
+    cfg = _cfg(tmp_path)
+    _camp(cfg, "IMPLEMENTING")
+    lease = L.acquire(cfg, [CID])
+    try:
+        rec = _esc(cfg)
+    finally:
+        lease.release()
+    lease = L.acquire(cfg, [CID]) if leased else None
+    try:
+        with pytest.raises(ValueError, match=rec["id"]):
+            Q.plan_park(cfg, CID, "x")
+        plan = {"campaign": CID, "state": "IMPLEMENTING", "reason": "x", "resume_to": "IMPLEMENTING",
+                "mode": "deferred" if leased else "immediate"}
+        with pytest.raises(ValueError, match=rec["id"]):
+            Q.apply_park(cfg, plan)
+    finally:
+        if lease:
+            lease.release()
+    st = _state(cfg)
+    assert st["state"] == "IMPLEMENTING" and st["park_requested"]["reason"] == "human_decision"
+    assert ESC.open_for(cfg, CID)["id"] == rec["id"]

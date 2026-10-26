@@ -961,7 +961,7 @@ def attach(queue_group):
             plan = ESC.plan_escalate(cfg, campaign, question=question, options=options,
                                      recommend=recommend, facts=facts, frm=frm)
             rec = ESC.apply_escalate(cfg, plan) if do_write else None
-        except ValueError as e:
+        except (ValueError, OSError) as e:
             raise click.ClickException(str(e))
         if as_json:
             _dump_json({"schema": "wt.queue.escalate.v1", **plan, "written": bool(do_write),

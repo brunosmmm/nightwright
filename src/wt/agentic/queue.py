@@ -707,7 +707,8 @@ def _begin_review(state: dict) -> None:
     counters.pop("review_retries_by_persona", None)
 
 
-def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_events=()):
+def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_events=(),
+                withdraw_reason=None):
     """Record `extra_events` then the transition, and write the state — all under the
     campaign lock, so the ledger and `state.json` cannot disagree. Mutates and returns
     `state`."""
@@ -730,7 +731,7 @@ def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_even
         store.write_state(cfg, cid, state)
         if to in TERMINAL_STATES:               # SPEC-0232: nobody will answer a dead campaign
             from . import escalations as ESC
-            ESC.withdraw_for_campaign(cfg, cid, f"campaign {to}", by)
+            ESC.withdraw_for_campaign(cfg, cid, withdraw_reason or f"campaign {to}", by)
     return state
 
 
@@ -3782,11 +3783,23 @@ def apply_prioritize(cfg, plan: dict) -> dict:
         return _transition(cfg, st, st["state"], "prioritized", by="human", extra_events=[ev])
 
 
+def _refuse_pending_escalation(cfg, st: dict) -> None:
+    """SPEC-0232: a pending `human_decision` park request is the stronger hold; a plain
+    `wt queue park` must not overwrite or pop it."""
+    if (st.get("park_requested") or {}).get("reason") == "human_decision":
+        from . import escalations as ESC
+        rec = ESC.open_for(cfg, st["id"])
+        which = f"escalation {rec['id']}" if rec else "a human_decision escalation"
+        raise ValueError(f"{st['id']} has {which} pending; it parks as human_decision. "
+                         f"Withdraw it first (wt escalations withdraw) to park differently")
+
+
 def plan_park(cfg, campaign, reason) -> dict:
     st = store.read_state(cfg, campaign)
     s = st.get("state")
     if s in TERMINAL_STATES or s == "PARKED":
         raise ValueError(f"{campaign} is {s}; nothing to park")
+    _refuse_pending_escalation(cfg, st)
     running = L.is_held(cfg) and s in ACTIVE_STATES
     return {"campaign": campaign, "state": s, "reason": reason,
             "mode": "deferred" if running else "immediate",
@@ -3802,6 +3815,7 @@ def apply_park(cfg, plan: dict) -> dict:
         st = store.read_state(cfg, cid)
         if st.get("state") in TERMINAL_STATES or st.get("state") == "PARKED":
             raise ValueError(f"{cid} is {st.get('state')}; nothing to park")
+        _refuse_pending_escalation(cfg, st)
         if plan["mode"] == "deferred":
             st["park_requested"] = {"reason": "human", "detail": plan["reason"],
                                     "at": store.now_iso()}
@@ -3852,11 +3866,12 @@ def apply_resume(cfg, plan: dict) -> dict:
             c["gate_retries"] = 0
         st["park"] = None
         st.pop("park_requested", None)
-        from . import escalations as ESC            # SPEC-0232
-        ESC.withdraw_for_campaign(cfg, cid, "campaign resumed by human", "human")
         ev = ("resume", {"to": plan["to"], "note": plan.get("note"),
                          "cap_usd": plan.get("raise_cap"), "loops_reset": bool(plan.get("reset_loops"))})
-        return _enter_slot_or_wait(cfg, st, plan["to"], "resumed", by="human", extra_events=[ev])
+        st = _enter_slot_or_wait(cfg, st, plan["to"], "resumed", by="human", extra_events=[ev])
+        from . import escalations as ESC            # SPEC-0232: after the transition succeeded
+        ESC.withdraw_for_campaign(cfg, cid, "campaign resumed by human", "human")
+        return st
 
 
 def _reset_spec_write(cfg, st: dict) -> None:
@@ -3944,13 +3959,12 @@ def apply_abandon(cfg, plan: dict) -> dict:
         st["park"] = None
         st.pop("waiting", None)
         st.pop("park_requested", None)
-        from . import escalations as ESC            # SPEC-0232
-        ESC.withdraw_for_campaign(cfg, cid, "campaign abandoned by human", "human")
         if st.get("kind") == "idea":
             events += _unlink_idea(cfg, st)
         events.append(("close", {"mode": "abandoned", "merged_sha": None, "pr_url": None,
                                  "gates_seq": None, "worktree_removed": remove}))
-        return _transition(cfg, st, "ABANDONED", "abandoned", by="human", extra_events=events)
+        return _transition(cfg, st, "ABANDONED", "abandoned", by="human", extra_events=events,
+                           withdraw_reason="campaign abandoned by human")
 
 
 def tick_row_text(row: dict) -> str:

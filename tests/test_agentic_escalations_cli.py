@@ -6,6 +6,7 @@ from click.testing import CliRunner
 
 from test_agentic_escalations import CID, _camp, _cfg, _parked, calls  # noqa: F401 (autouse)
 from wt.agentic import escalations as ESC
+from wt.agentic import mailbox as M
 from wt.agentic import store as S
 from wt.cli import cli
 
@@ -100,6 +101,8 @@ def test_withdraw_dry_run_then_yes_leaves_campaign_parked(two, monkeypatch):
     assert st["state"] == "PARKED" and st["park"]["reason"] == "human_decision"
     assert any("ESC-0001 withdrawn: settled" in e["text"]
                for e in S.read_ledger(cfg, CID, types=["note"]))
+    infos = [m for m in M.read_inbox(cfg, "human") if m["kind"] == "info"]
+    assert len(infos) == 1 and "ESC-0001" in infos[0]["text"] and "settled" in infos[0]["text"]
     r = run(cfg, monkeypatch, "escalations", "withdraw", "ESC-0001", "--reason", "again",
             "--yes", "--json")
     assert r.exit_code != 0 and "not open" in r.output

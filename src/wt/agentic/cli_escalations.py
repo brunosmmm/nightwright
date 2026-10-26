@@ -120,7 +120,10 @@ def escalations_withdraw(cfg, esc_id, reason, frm, do_write, as_json):
     except ValueError as e:
         raise click.ClickException(str(e))
     cid = rec.get("campaign")
-    st = store.read_state(cfg, cid) if cid else {}
+    try:
+        st = store.read_state(cfg, cid) if cid else {}
+    except (ValueError, OSError):
+        st = {}
     cstate = st.get("state")
     hint = None
     if cid and cstate == "PARKED" and (st.get("park") or {}).get("reason") == "human_decision":

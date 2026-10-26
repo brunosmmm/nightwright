@@ -279,8 +279,8 @@ def _notify_argv(cfg, rec: dict, title: str) -> tuple[str, list | None, str | No
         exe = shutil.which("notify-send")
         if not exe:
             return "none", None, "notify-send not found"
-        return "notify-send", [exe, "--app-name=wt", "--urgency=critical", title,
-                               rec["question"]], None
+        return "notify-send", [exe, "--app-name=wt", "--urgency=critical", "--",
+                               title, rec["question"]], None
     if isinstance(mode, list) and mode and all(isinstance(a, str) for a in mode):
         vals = {"id": rec["id"], "campaign": rec.get("campaign") or "",
                 "question": rec["question"],
