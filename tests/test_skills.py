@@ -371,9 +371,10 @@ def test_rows_mention_new_fields():
     assert "waiting_not_admitted" in ping and "`runner`" in ping
 
 
-def test_runner_draining_row_points_to_silent_row():
+def test_runner_draining_row_waits_on_in_process_work_spec_0229():
     row = _conduct_row("runner_draining")
-    assert "`runner_journal_silent`" in row and "follow that row" in row
+    assert "gate, close or FakeRunner step" in row and "so wait" in row
+    assert "`lease_stale`" in row and "`waiting_on[].timeout_s` + 5 min" in row
 
 
 def test_conduct_skill_escalates_through_records_spec_0232():
