@@ -433,6 +433,19 @@ The conductor skill rows change accordingly:
 - Optional hardening items (no hooks for non-detachable tasks; recording `spawned()` runs in
   `pool.forced`) were skipped and left as follow-ups.
 
+### Test record (2026-10-26, test review round)
+
+- Tests added to `tests/test_agentic_exit_paths.py`:
+  - `test_fakerunner_step_in_flight_is_waited_for_and_never_detached`: A's `sleep_s: 1`
+    FakeRunner implementer is in flight when the change lands and B is added. A's `run.end` is in
+    the ledger when `_EXEC` runs, `stop.detached` is `[]`, B is admitted but has no `run.start`.
+  - `test_close_step_is_not_started_while_draining`: a detachable runner, A reaches CLOSING during
+    draining ticks while B's held gate blocks the exec. `CL.prepare_close` is never called and A
+    stays CLOSING.
+- Sabotage rechecks: dropping `"close"` from the draining skip tuple in `_tick` fails the close
+  test; treating `spawning` tasks as detachable in `StepPool.try_detach_all` fails the FakeRunner
+  in-flight test.
+
 ## Rollout / migration
 
 Lands after SPEC-0225. No data migration. Journal addition: `detached` on every `stop`

@@ -807,3 +807,90 @@ def test_bound_expiry_abandons_collect_and_next_runner_commits_once(world, monke
     finally:
         hang.set()
         time.sleep(0.2)
+
+
+# ---- FakeRunner steps in flight at detection; close steps while draining ---------------------------
+
+def test_fakerunner_step_in_flight_is_waited_for_and_never_detached(tmp_path, monkeypatch):
+    """AC2: A's non-detachable implementer is mid-sleep when the change lands. It is neither
+    detached nor abandoned: the exec waits for its run.end. B is admitted but gets no step."""
+    repo = make_repo(tmp_path)
+    _second_spec(repo)
+    cfg = make_cfg(tmp_path, repo,
+                   script(tmp_path, [dict(impl_done(), sleep_s=1), review()]))
+    cfg["agentic"]["profiles"]["balanced"]["slots"] = 2
+    a = added(cfg, monkeypatch)
+    state, seen, calls = {"changed": False}, {}, []
+    monkeypatch.setattr(Q, "code_changes", lambda r, since: (
+        ("newsha", ["src/wt/x.py"]) if state["changed"] else (since, [])))
+
+    def fake_exec(exe, argv, env):
+        calls.append(1)
+        seen["a_ends"] = len(S.read_ledger(cfg, a, types=["run.end"]))
+        seen["stop"] = [r for r in journal(cfg, "stop")]
+
+    monkeypatch.setattr(Q, "_EXEC", fake_exec)
+
+    def on_tick(report):
+        if not state["changed"] and a in Q._LAST_POOL.ids():
+            assert not S.read_ledger(cfg, a, types=["run.end"])   # the implementer is in flight
+            seen["b"] = added(cfg, monkeypatch, "SPEC-0002")
+            state["changed"] = True
+        if "b" in seen and S.read_state(cfg, seen["b"])["state"] != "QUEUED":
+            seen["b_admitted"] = True
+
+    Q.run(cfg, poll_interval_s=0.2, reexec=True, code_root=repo, on_tick=on_tick, max_ticks=100)
+    b = seen["b"]
+    assert calls and seen["a_ends"] == 1                  # the exec followed A's harvest
+    stop, = seen["stop"]
+    assert stop["reason"] == "code_changed"
+    assert stop["detached"] == [] and not stop.get("abandoned")
+    assert seen.get("b_admitted")
+    assert not S.read_ledger(cfg, b, types=["run.start"])  # B ran no persona step while draining
+
+
+def test_close_step_is_not_started_while_draining(tmp_path, monkeypatch):
+    """AC1: A reaches CLOSING during draining ticks while B's held gate blocks the exec. With a
+    detachable runner, only the draining skip of "close" keeps `prepare_close` from starting."""
+    repo = make_repo(tmp_path,
+                     test_gate=(f"if grep -qs \"$(basename \"$PWD\")\" {tmp_path}/holdid; then "
+                                f"echo $$ > {tmp_path}/g1.pid; "
+                                f"while [ ! -f {tmp_path}/g1.rel ]; do sleep 0.05; done; fi; "
+                                "test -f feature.txt"))
+    _second_spec(repo)
+    cfg = make_cfg(tmp_path, repo,
+                   script(tmp_path, [impl_done(), review()]))
+    cfg["agentic"]["profiles"]["balanced"]["slots"] = 2
+    cfg_script = json.loads((tmp_path / "script.json").read_text())
+    cfg_script[1]["sleep_s"] = 1                          # A's review is in flight at detection
+    (tmp_path / "script.json").write_text(json.dumps(cfg_script))
+    a = added(cfg, monkeypatch)
+    b = added(cfg, monkeypatch, "SPEC-0002")
+    (tmp_path / "holdid").write_text(b)                  # only B's gate is held
+    runner = Det(cfg)
+    runner.release.set()
+    state, seen, calls, closes = {"changed": False}, {"closing": 0}, [], []
+    monkeypatch.setattr(Q, "code_changes", lambda r, since: (
+        ("newsha", ["src/wt/x.py"]) if state["changed"] else (since, [])))
+    monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(1))
+    real_prepare = Q.CL.prepare_close
+    monkeypatch.setattr(Q.CL, "prepare_close", lambda *a_, **k: (closes.append(1),
+                                                                   real_prepare(*a_, **k))[1])
+
+    def on_tick(report):
+        if not state["changed"] and pid_file(tmp_path) and a in Q._LAST_POOL.ids() \
+                and S.read_state(cfg, a)["state"] == "REVIEWING":
+            state["changed"] = True                       # B's gate held, A's review in flight
+        if state["changed"] and S.read_state(cfg, a)["state"] == "CLOSING":
+            seen["closing"] += 1
+            if seen["closing"] >= 3:                      # several draining ticks went by
+                (tmp_path / "g1.rel").write_text("")
+
+    Q.run(cfg, poll_interval_s=0.2, reexec=True, code_root=repo, on_tick=on_tick,
+          runner=runner, max_ticks=200)
+    assert calls and seen["closing"] >= 3
+    assert S.read_state(cfg, a)["state"] == "CLOSING"     # left for the new process
+    assert not closes                                      # no prepare_close before the exec
+    assert not S.read_ledger(cfg, a, types=["close"])
+    stop, = journal(cfg, "stop")
+    assert stop["reason"] == "code_changed"
