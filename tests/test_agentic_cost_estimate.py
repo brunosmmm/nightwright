@@ -75,10 +75,12 @@ def test_partial_stdout_cost_is_used_on_timeout(tmp_path, monkeypatch):
     out = json.dumps({"type": "result", "is_error": False, "total_cost_usd": 1.23,
                       "result": "", "usage": {}, "session_id": "s"})
 
-    def boom(argv, **kw):
-        raise subprocess.TimeoutExpired(argv, kw.get("timeout"), output=out.encode())
-
-    monkeypatch.setattr(R.subprocess, "run", boom)
+    bindir = tmp_path / "bin"                 # SPEC-0225: the fake `claude`, killed at its timeout
+    bindir.mkdir()
+    (bindir / "claude").symlink_to(Path(__file__).parent / "fixtures" / "fake_claude.py")
+    monkeypatch.setenv("PATH", f"{bindir}:/usr/bin:/bin")
+    monkeypatch.setenv("FAKE_CLAUDE_STDOUT", out)
+    monkeypatch.setenv("FAKE_CLAUDE_SLEEP_S", "30")
     run_dir = tmp_path / "campaign" / "runs" / "001-implementer"
     req = R.RunRequest(persona="implementer", model="m", effort=None, max_budget_usd=4.0,
                        timeout_s=1, permission_mode="acceptEdits", cwd=tmp_path,

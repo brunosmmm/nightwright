@@ -1,7 +1,6 @@
 """SPEC-0174: headless persona runner — argv, result parsing, FakeRunner, select_runner.
-Never calls the real `claude`: `subprocess.run` is monkeypatched."""
+Never calls the real `claude`: `tests/fixtures/fake_claude.py` is put on PATH (SPEC-0225)."""
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -38,23 +37,34 @@ def _result_json(**over):
     return json.dumps(obj)
 
 
-def _capture_run(monkeypatch, stdout=None, returncode=0, raise_exc=None):
-    calls = {}
+FAKE_CLAUDE = Path(__file__).parent / "fixtures" / "fake_claude.py"
 
-    def fake_run(argv, **kw):
-        calls["argv"], calls["kw"] = argv, kw
-        if raise_exc is not None:
-            raise raise_exc
-        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
 
-    monkeypatch.setattr(R.subprocess, "run", fake_run)
-    return calls
+def _capture_run(monkeypatch, tmp_path, stdout=None, returncode=0, missing=False):
+    """Put the fake `claude` on PATH; the run's argv / stdin / cwd / env land in `calls`."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    if not missing:
+        (bindir / "claude").symlink_to(FAKE_CLAUDE)
+    monkeypatch.setenv("PATH", f"{bindir}:/usr/bin:/bin")
+    record = tmp_path / "record.json"
+    monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record))
+    monkeypatch.setenv("FAKE_CLAUDE_RC", str(returncode))
+    if stdout is not None:
+        monkeypatch.setenv("FAKE_CLAUDE_STDOUT", stdout)
+
+    class Calls(dict):
+        def __missing__(self, key):
+            data = json.loads(record.read_text())
+            return {"argv": ["claude", *data["argv"][1:]], "kw": {"input": data["stdin"], "cwd": data["cwd"],
+                                                 "env": data["env"]}}[key]
+    return Calls()
 
 
 # ---- argv --------------------------------------------------------------------------------
 
 def test_claude_runner_argv_and_stdin(tmp_path, monkeypatch):
-    calls = _capture_run(monkeypatch, stdout=_result_json())
+    calls = _capture_run(monkeypatch, tmp_path, stdout=_result_json())
     req = _req(tmp_path)
     R.ClaudeRunner().run(req)
     argv, kw = calls["argv"], calls["kw"]
@@ -71,13 +81,12 @@ def test_claude_runner_argv_and_stdin(tmp_path, monkeypatch):
     assert "--max-turns" not in argv
     assert kw["input"] == "do the thing"
     assert kw["cwd"] == str(tmp_path / "wt")
-    assert kw["timeout"] == 30
     for k, v in req.env.items():
         assert kw["env"][k] == v
 
 
 def test_read_only_persona_gets_restricted_and_no_effort_when_none(tmp_path, monkeypatch):
-    calls = _capture_run(monkeypatch, stdout=_result_json())
+    calls = _capture_run(monkeypatch, tmp_path, stdout=_result_json())
     R.ClaudeRunner().run(_req(tmp_path, persona="gate_triager", read_only=True, effort=None,
                               permission_mode="dontAsk", allowed_tools=(),
                               json_schema=GATE_TRIAGER_SCHEMA))
@@ -89,7 +98,7 @@ def test_read_only_persona_gets_restricted_and_no_effort_when_none(tmp_path, mon
 # ---- parsing matrix ----------------------------------------------------------------------
 
 def test_parse_structured_output_cost_usage_session(tmp_path, monkeypatch):
-    _capture_run(monkeypatch, stdout=_result_json())
+    _capture_run(monkeypatch, tmp_path, stdout=_result_json())
     res = R.ClaudeRunner().run(_req(tmp_path))
     assert res.verdict == {"status": "done", "summary": "implemented"}
     assert res.verdict_ok and not res.is_error and not res.timed_out
@@ -104,56 +113,57 @@ def test_parse_falls_back_to_result_text(tmp_path, monkeypatch):
     obj = json.loads(_result_json())
     del obj["structured_output"]
     obj["result"] = "```json\n" + json.dumps(verdict) + "\n```"
-    _capture_run(monkeypatch, stdout=json.dumps(obj))
+    _capture_run(monkeypatch, tmp_path, stdout=json.dumps(obj))
     res = R.ClaudeRunner().run(_req(tmp_path))
     assert res.verdict == verdict and res.verdict_ok
 
 
 def test_parse_invalid_stdout_is_error(tmp_path, monkeypatch):
-    _capture_run(monkeypatch, stdout="not json at all", returncode=0)
+    _capture_run(monkeypatch, tmp_path, stdout="not json at all", returncode=0)
     res = R.ClaudeRunner().run(_req(tmp_path))
     assert res.verdict is None and not res.verdict_ok and res.is_error
     assert "not json" in res.result_text
 
 
 def test_parse_wrong_enum_is_not_ok(tmp_path, monkeypatch):
-    _capture_run(monkeypatch, stdout=_result_json(
+    _capture_run(monkeypatch, tmp_path, stdout=_result_json(
         structured_output={"status": "maybe", "summary": "x"}))
     res = R.ClaudeRunner().run(_req(tmp_path))
     assert res.verdict == {"status": "maybe", "summary": "x"} and not res.verdict_ok
 
 
 def test_parse_missing_required_key_is_not_ok(tmp_path, monkeypatch):
-    _capture_run(monkeypatch, stdout=_result_json(structured_output={"status": "done"}))
+    _capture_run(monkeypatch, tmp_path, stdout=_result_json(structured_output={"status": "done"}))
     assert not R.ClaudeRunner().run(_req(tmp_path)).verdict_ok
 
 
 def test_parse_missing_cost_is_none(tmp_path, monkeypatch):
     obj = json.loads(_result_json())
     del obj["total_cost_usd"]
-    _capture_run(monkeypatch, stdout=json.dumps(obj))
+    _capture_run(monkeypatch, tmp_path, stdout=json.dumps(obj))
     assert R.ClaudeRunner().run(_req(tmp_path)).cost_usd is None
 
 
 def test_timeout_sets_timed_out(tmp_path, monkeypatch):
-    _capture_run(monkeypatch, raise_exc=subprocess.TimeoutExpired(["claude"], 30, output="partial"))
-    res = R.ClaudeRunner().run(_req(tmp_path))
+    _capture_run(monkeypatch, tmp_path, stdout="partial")
+    monkeypatch.setenv("FAKE_CLAUDE_SLEEP_S", "30")
+    res = R.ClaudeRunner().run(_req(tmp_path, timeout_s=1))
     assert res.timed_out and res.is_error and res.exit_code == -1 and res.verdict is None
 
 
 def test_is_error_flag_from_claude(tmp_path, monkeypatch):
-    _capture_run(monkeypatch, stdout=_result_json(is_error=True), returncode=0)
+    _capture_run(monkeypatch, tmp_path, stdout=_result_json(is_error=True), returncode=0)
     assert R.ClaudeRunner().run(_req(tmp_path)).is_error
 
 
 def test_claude_missing_is_error(tmp_path, monkeypatch):
-    _capture_run(monkeypatch, raise_exc=FileNotFoundError("claude"))
+    _capture_run(monkeypatch, tmp_path, missing=True)
     res = R.ClaudeRunner().run(_req(tmp_path))
     assert res.is_error and res.exit_code == -1
 
 
 def test_run_dir_files(tmp_path, monkeypatch):
-    _capture_run(monkeypatch, stdout=_result_json())
+    _capture_run(monkeypatch, tmp_path, stdout=_result_json())
     req = _req(tmp_path)
     res = R.ClaudeRunner().run(req)
     assert (req.run_dir / "prompt.md").read_text() == "do the thing"

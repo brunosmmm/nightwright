@@ -1,7 +1,7 @@
 ---
 id: SPEC-0225
 title: "Detached persona runs, adopted across runner restarts"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -376,34 +376,34 @@ gets recorded in the spec.
 
 ## Acceptance criteria
 
-- [ ] `ClaudeRunner.run` starts the wrapper in its own session. The wrapper claims
+- [x] `ClaudeRunner.run` starts the wrapper in its own session. The wrapper claims
       `proc.json` with `O_EXCL` before starting `claude` in its own process group, records
       `child.json`, streams `result.json`/`stderr.log` and writes `exit.json` atomically.
       For a run that completes, the `RunResult` and `run.json` equal today's. The wrapper
       enforces `timeout_s` (TERM, 10 s, KILL) and records `timed_out: true`, `killed_by:
       "timeout"` with no runner alive.
-- [ ] A wrapper whose claim is already taken (`{orphaned: true}`) exits without starting
+- [x] A wrapper whose claim is already taken (`{orphaned: true}`) exits without starting
       `claude`, and adoption never claims a run dir whose wrapper claimed it first. A run dir
       never has two agents. A runner SIGKILLed right after `Popen` leaves a run that the next
       runner reports `running` or `finished`, not `orphaned`. A wrapper that never claims
       within `spawn_timeout_s` gives a `run.end` error carrying the `wrapper.log` tail, and a
       late wrapper cannot start. A `claude` that fails to start gives `exit.json` with
       `error`.
-- [ ] On a code change with a persona run in `wait` and no in-process work, the runner execs
+- [x] On a code change with a persona run in `wait` and no in-process work, the runner execs
       while the run's process is alive. At `_EXEC` no `wt-step` thread for that run is alive,
       and `stop code_changed` lists it under `detached`. The new process adopts it and applies
       it exactly once (one `run.end`) when it exits.
-- [ ] `try_detach_all` is atomic with `enter_collect`. A task in `spawning` or `collect`
+- [x] `try_detach_all` is atomic with `enter_collect`. A task in `spawning` or `collect`
       blocks it, a task entering `collect` concurrently delays the exec, and the
       implementer's commit is recorded once. A reviewer group with one task in `spawning` or
       `collect` is not detached until that task reaches `wait` or `done`.
-- [ ] A run whose wrapper died while `claude` still runs (`orphan_group`) is never classified
+- [x] A run whose wrapper died while `claude` still runs (`orphan_group`) is never classified
       `vanished` and never respawned while the group lives. Adoption waits for the group,
       kills it at `run.start.ts + timeout_s` (TERM, 10 s, KILL), synthesizes `exit.json`,
       and applies the run once. A run whose wrapper and group are both gone, or whose pids
       were reused, is `vanished`: `run.end` with `exit_code: -1`, `is_error`, and the cost
       from `result.json` or estimated.
-- [ ] Adoption classifies every open run and journals one `adopt` record listing each run's
+- [x] Adoption classifies every open run and journals one `adopt` record listing each run's
       persona and status. `finished` is applied on the first tick. `orphaned` (no claim
       after 10 s) gives `run.end` interrupted and estimated, state unchanged, step
       respawned. A legacy survivor is never killed and is closed as "legacy orphan" after
@@ -411,24 +411,24 @@ gets recorded in the spec.
       `personas.ADOPT_REGISTRY` for legacy events, which covers every campaign persona. An
       unregistered persona is adopted and collected (never killed), with a `note` and no
       transition, without crashing the tick.
-- [ ] An adopted reviewer fan-out is applied once as one group, with every reviewer's verdict,
+- [x] An adopted reviewer fan-out is applied once as one group, with every reviewer's verdict,
       including reviewers that had finished before the detach. An adopted `review_triager`
       run is applied as its own single-member group, never merged with the reviewers. A
       campaign parked or abandoned while its run was detached, including a park-then-resume
       done while no runner was alive (same state name), gets `run.end` + cost and no
       transition (`superseded_by_human`), and a `park_requested` one parks `human`.
-- [ ] Interim stop: with `ctx.stop` set during a live ClaudeRunner run, `run()` returns
+- [x] Interim stop: with `ctx.stop` set during a live ClaudeRunner run, `run()` returns
       within 20 s, the run's process group is gone, and `run.end` is `interrupted: true`. A
       run whose `exit.json` already existed at stop time is collected as finished, not
       interrupted. A child killed by an external signal is `killed_by: "external"`, an
       error and not interrupted.
       With `hooks=None`, a `KeyboardInterrupt` raised while waiting kills the group before
       it propagates.
-- [ ] A ClaudeRunner run that exits normally while the loop is stopping is collected with
+- [x] A ClaudeRunner run that exits normally while the loop is stopping is collected with
       `interrupted: false`, and its implementer work is committed. Only an adopted run whose
       `exit.json.ended_at` predates the lease `started_at` records an unrecorded HEAD as its
       commit, exactly once. Fresh runs never do.
-- [ ] FakeRunner-based suites behave as before (FakeRunner tasks never leave `spawning`), `wt
+- [x] FakeRunner-based suites behave as before (FakeRunner tasks never leave `spawning`), `wt
       queue tick` adopts and applies finished runs, `uv run pytest` passes and
       `python3 tools/spec_lint.py` exits 0.
 
@@ -557,6 +557,70 @@ gets recorded in the spec.
   `start` and `adopt … running`. `ps -o pid,pgid,sid,cmd` shows the wrapper in its own
   session and `claude` in its own group. The run's `run.end` appears once.
 
+### Test record (2026-10-25)
+
+Ran `uv run pytest -q` (whole suite: 2217 passed, 1 skipped) and `python3 tools/spec_lint.py`. New: `tests/fixtures/fake_claude.py`,
+`tests/test_agentic_runproc.py` (14 tests), `tests/test_agentic_adopt.py` (23 tests; runproc + adopt together: 37 passed).
+`test_agentic_runner.py` and `test_agentic_cost_estimate.py` run the fake `claude` on PATH
+instead of patching `subprocess.run` (same assertions); two `_prepare_run` monkeypatches in
+`test_agentic_reviewers.py` take the new optional `step` argument.
+
+Sabotage checks (source restored after each; each run failed the named test):
+spawn without `start_new_session` (`test_detached_waiter_returns_fast`), drop `O_EXCL`
+(`test_claim_taken_wrapper_exits`), liveness from the wrapper pid only
+(`test_orphan_group_*`/`test_vanished_*`), allow detach in `spawning`/`collect`
+(`test_try_detach_all_phases`), ignore the detach flag (`test_detached_waiter_returns_fast`),
+skip adoption (`test_adopt_running_then_finished_once` and others), drop the ledger-seq check
+(`test_adopt_after_park_resume_while_no_runner`), `interrupted` from the stop flag
+(`test_run_finishing_while_stopping_is_not_interrupted`), drop the interim-stop TERM/KILL
+(`test_interim_stop_kills_runs`), drop the kill-on-exception `finally`
+(`test_attached_run_killed_on_keyboard_interrupt`). Not run as a separate sabotage: "classify by
+persona name only" (the registry and recorded `step` give the same kind for the personas
+exercised end to end; `test_adopt_classification_triager_and_legacy_reviewers` pins both
+paths) and "split `try_detach_all`'s check from its detach" (`test_collect_race_delays_exec`
+covers the race it guards, but the sabotage itself was not run).
+
+Manual verification (live implementer + a real merge) was not performed on a live runner; the
+same scenario is covered by `test_reexec_does_not_wait_for_persona_run` (exec while the child
+lives, no `wt-step` thread, `stop code_changed` lists `detached`, the adopting process
+journals `adopt … running` and records one `run.end`) and by the session/group assertions in
+`test_detached_waiter_returns_fast`.
+
+### As shipped
+
+- Liveness helpers (`wrapper_alive`, `group_alive`, `run_status`, `claim`, `terminate_run`)
+  live in `runproc.py` beside the wrapper, not in `runs.py` (`runs.py` is the `wt campaign
+  runs` data module and would have imported the runner for nothing). `collect(req)` takes the
+  `RunRequest` (rebuilt from `request.json` + `prompt.md` by `rebuild_request` for adopted runs)
+  instead of a bare run dir.
+- `run.start` also records `state` (the campaign state at planning time) next to `step`; the
+  adoption snapshot is built from it (legacy events: derived from the step kind). Adoption
+  skips MERGED and HANDED_OFF campaigns; an ABANDONED one is adopted and its run recorded
+  (`run.end` + cost, no transition, no commit).
+- Orphan-group timeouts are measured from `request.json.started_at` (written by the runner just
+  before it spawns), not from the `run.start` ts; they differ by milliseconds.
+- Adoption of a run with no `proc.json` is done in the waiting thread (`hooks.adopt =
+  ("claim" | "legacy", epoch)`): it waits for a wrapper claim until the grace has passed, then
+  claims the run as orphaned (synthetic interrupted result) or, for a legacy survivor, closes it
+  as "legacy orphan" (also interrupted: state unchanged) at `run.start.ts + timeout_s + 60 s`.
+  Adoption is skipped for runners that are not `detachable` (FakeRunner).
+- The interim stop sends TERM to the wrapper (which forwards it and escalates to KILL after
+  `WT_RUNPROC_GRACE_S`, default 10 s) from `_drain`, and a backstop KILL to the group 15 s later.
+  On a crash the pool releases (`detach_force`) the waiting threads instead of waiting for them;
+  the runs stay adoptable (SPEC-0229 owns the other exit paths).
+- `spawn_timeout_s` is read from `agentic.spawn_timeout_s`. A wrapper that exits before claiming
+  returns an error result at once (`wrapper.log` tail), without waiting for the timeout.
+- `interrupted` for detachable runners is `exit.json.killed_by == "signal"`; non-detachable
+  runners keep `ctx.stop.is_set()`. The mechanism is the runner's `detachable` attribute.
+- Not covered by a test of its own: adoption of an `orphan_group` run (the wait loop duties are
+  covered at the runner level by `test_orphan_group_waited_and_killed_at_timeout`), the
+  `test_fanout_detach_precondition` shape (the phase rule is tested on a single flight in
+  `test_try_detach_all_phases`), and the one-time legacy edge from the review brief: a `claude`
+  left by a SIGKILLed pre-SPEC-0225 runner is held for `timeout_s` + 60 s and never killed, so it
+  is not duplicated in the worktree either.
+- Rollout edge (legacy `claude` that survived an old runner): handled by the legacy-survivor rule
+  above, not by a worktree-cwd process scan.
+
 ## Rollout / migration
 
 The first runner on this code (after the SPEC-0194 re-exec from the previous code) finds
@@ -567,11 +631,11 @@ additions: `adopt` records, and the `detached` field on `stop`.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

@@ -15,11 +15,14 @@ import json
 import os
 import re
 import subprocess
+import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from . import runproc as RP
 from . import schemas as SC
 
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n(.*?)\n\s*```\s*$", re.DOTALL)
@@ -61,8 +64,53 @@ class RunResult:
     raw_path: Path | None = None
 
 
+class _Detached:
+    """Outcome of `run()` when the pool detached the task: the run lives on, to be adopted."""
+    def __repr__(self):
+        return "DETACHED"
+
+
+DETACHED = _Detached()
+
+
+class RunHooks:
+    """The pool's view of one persona task (SPEC-0225): its phase and a set-once detach flag.
+    Phases: `spawning` -> `wait` -> `collect` -> `done`; every change happens under `lock`."""
+
+    def __init__(self, lock, run_dir=None, phase: str = "spawning"):
+        self.lock = lock
+        self.run_dir = Path(run_dir) if run_dir else None
+        self.phase = phase
+        self.detach = threading.Event()
+        self.signalled_at: float | None = None      # interim stop: when TERM was sent
+        # adoption of a run with no `proc.json`: ("claim" | "legacy", epoch_s) — wait until
+        # then for a wrapper to claim it, then claim it as orphaned / close it as legacy
+        self.adopt: tuple | None = None
+
+    def spawned(self) -> None:
+        with self.lock:
+            if self.phase == "spawning":
+                self.phase = "wait"
+
+    def detached(self) -> bool:
+        return self.detach.is_set()
+
+    def enter_collect(self) -> bool:
+        with self.lock:
+            if self.detach.is_set():
+                return False
+            self.phase = "collect"
+            return True
+
+    def done(self) -> None:
+        with self.lock:
+            self.phase = "done"
+
+
 class PersonaRunner(Protocol):
-    def run(self, req: RunRequest) -> RunResult: ...
+    detachable: bool
+
+    def run(self, req: RunRequest, *, hooks: RunHooks | None = None) -> RunResult: ...
 
 
 # ---- schema conformance (no jsonschema at runtime) --------------------------------------------
@@ -206,36 +254,237 @@ def _child_env(req: RunRequest) -> dict:
 
 # ---- the real thing ---------------------------------------------------------------------------
 
-class ClaudeRunner:
-    """Spawn `claude -p` per `build_argv`; prompt on stdin; `subprocess.run(timeout=…)`."""
+def _request_doc(req: RunRequest, started_at: str) -> dict:
+    return {"schema": "wt.run.request.v1", "persona": req.persona, "model": req.model,
+            "effort": req.effort, "max_budget_usd": req.max_budget_usd,
+            "timeout_s": req.timeout_s, "permission_mode": req.permission_mode,
+            "read_only": req.read_only, "cwd": str(req.cwd), "json_schema": req.json_schema,
+            "started_at": started_at}
 
-    def run(self, req: RunRequest) -> RunResult:
+
+def rebuild_request(run_dir, *, budget: float | None = None) -> RunRequest:
+    """The `RunRequest` of a run already started, from `request.json` + `prompt.md`
+    (adoption). Only the fields collecting a result needs are restored."""
+    run_dir = Path(run_dir)
+    doc = RP.read_json(run_dir / "request.json") or {}
+    try:
+        prompt = (run_dir / "prompt.md").read_text(encoding="utf-8")
+    except OSError:
+        prompt = ""
+    return RunRequest(
+        persona=doc.get("persona") or run_dir.name.split("-", 1)[-1], prompt=prompt,
+        system_append="", cwd=Path(doc.get("cwd") or "."), model=doc.get("model") or "",
+        effort=doc.get("effort"),
+        max_budget_usd=float(budget if budget is not None else doc.get("max_budget_usd") or 0),
+        timeout_s=int(doc.get("timeout_s") or 0),
+        permission_mode=doc.get("permission_mode") or "", read_only=bool(doc.get("read_only")),
+        allowed_tools=(), add_dirs=(), json_schema=doc.get("json_schema") or {}, env={},
+        run_dir=run_dir)
+
+
+def _read_text(path) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def collect(req: RunRequest) -> RunResult:
+    """Turn a finished (or vanished) run's files into the `RunResult` and `run.json`.
+    Idempotent: it only reads the run dir and rewrites `run.json`."""
+    run_dir = req.run_dir
+    ex = RP.read_json(run_dir / "exit.json")
+    started_at = (RP.read_json(run_dir / "request.json") or {}).get("started_at") or _now_iso()
+    stdout, stderr = _read_text(run_dir / "result.json"), _read_text(run_dir / "stderr.log")
+    proc = RP.read_json(run_dir / "proc.json") or {}
+    if proc.get("wrapper_pid"):                      # reap a zombie wrapper left across an exec
+        try:
+            os.waitpid(int(proc["wrapper_pid"]), os.WNOHANG)
+        except (ChildProcessError, OSError):
+            pass
+    if ex is None:
+        code, timed_out, interrupted, duration, killed_by = -1, False, False, 0.0, None
+        parsed = parse_result(stdout, req.json_schema, exit_code=-1)
+        why = ("run process vanished" if (run_dir / "child.json").is_file()
+               else "run process vanished (wrapper died before recording its child)")
+        parsed["is_error"] = True
+        parsed["result_text"] = _tail((stderr + "\n" + why).strip())
+    else:
+        code = int(ex.get("exit_code", -1))
+        timed_out, killed_by = bool(ex.get("timed_out")), ex.get("killed_by")
+        interrupted, duration = killed_by == "signal", float(ex.get("duration_s") or 0.0)
+        parsed = parse_result(stdout, req.json_schema, exit_code=code)
+        if timed_out or code == -1 or killed_by == "external":
+            parsed["is_error"] = True
+        if ex.get("error"):
+            parsed["result_text"] = _tail(str(ex["error"]))
+    return write_run_record(req, RunResult(
+        exit_code=code, timed_out=timed_out, interrupted=interrupted,
+        duration_s=round(duration, 3), raw_path=run_dir / "result.json", **parsed), started_at)
+
+
+def _error_result(req: RunRequest, text: str, started_at: str, duration: float) -> RunResult:
+    return write_run_record(req, RunResult(
+        exit_code=-1, timed_out=False, interrupted=False, duration_s=round(duration, 3),
+        is_error=True, cost_usd=None, result_text=_tail(text), raw_path=req.run_dir / "result.json"),
+        started_at)
+
+
+def _synthetic(req: RunRequest, text: str) -> RunResult:
+    """An interrupted run that never produced output: the state stays, the step respawns."""
+    started_at = (RP.read_json(req.run_dir / "request.json") or {}).get("started_at") or _now_iso()
+    return write_run_record(req, RunResult(
+        exit_code=-1, timed_out=False, interrupted=True, duration_s=0.0, is_error=True,
+        cost_usd=None, result_text=text, raw_path=req.run_dir / "result.json"), started_at)
+
+
+class ClaudeRunner:
+    """Spawn `claude -p` per `build_argv` through the detached wrapper (SPEC-0225): the run
+    lives in its own session and records itself in files, so `run` is idempotent per run dir
+    (it attaches when `proc.json` exists) and the run can outlive this process."""
+
+    detachable = True
+
+    def __init__(self, spawn_timeout_s: float = 30.0):
+        self.spawn_timeout_s = spawn_timeout_s
+
+    def run(self, req: RunRequest, *, hooks: RunHooks | None = None):
         _save_inputs(req)
-        argv = build_argv(req)
-        raw_path = req.run_dir / "result.json"
+        run_dir = req.run_dir
         started_at = _now_iso()
         started = time.monotonic()
-        timed_out = False
+        wrapper = None
+        if not (run_dir / "proc.json").exists() and not (hooks and hooks.adopt):
+            RP.write_json_atomic(run_dir / "request.json", _request_doc(req, started_at))
+            RP.write_json_atomic(run_dir / "launch.json", {
+                "argv": build_argv(req), "cwd": str(req.cwd), "env": dict(req.env)})
+            with open(run_dir / "wrapper.log", "ab") as log:
+                wrapper = subprocess.Popen(
+                    [sys.executable, "-m", "wt.agentic.runproc", str(run_dir)],
+                    stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+            err = self._await_claim(req, wrapper, started)
+            if err:
+                return _error_result(req, err, started_at, time.monotonic() - started)
+        if hooks:
+            hooks.spawned()
         try:
-            r = subprocess.run(argv, input=req.prompt, capture_output=True, text=True,
-                               cwd=str(req.cwd), env=_child_env(req), timeout=req.timeout_s)
-            stdout, stderr, code = r.stdout or "", r.stderr or "", r.returncode
-        except subprocess.TimeoutExpired as e:  # subprocess.run already killed the child
-            timed_out = True
-            stdout = (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-            stderr = (e.stderr or b"").decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
-            code = -1
-        except OSError as e:               # claude not installed, etc.
-            stdout, stderr, code = "", str(e), -1
-        duration = time.monotonic() - started
-        raw_path.write_text(stdout, encoding="utf-8")
-        (req.run_dir / "stderr.log").write_text(stderr, encoding="utf-8")
-        parsed = parse_result(stdout, req.json_schema, exit_code=code)
-        if timed_out or code == -1:
-            parsed["is_error"] = True
-        return write_run_record(req, RunResult(
-            exit_code=code, timed_out=timed_out, interrupted=False,
-            duration_s=round(duration, 3), raw_path=raw_path, **parsed), started_at)
+            return self._wait(req, hooks)
+        except BaseException:
+            if hooks is None:                       # attached: stopping the caller stops the agent
+                self._kill(run_dir)
+            raise
+        finally:
+            if wrapper is not None:
+                wrapper.poll()                      # reap it when it is already gone
+
+    def _await_claim(self, req: RunRequest, wrapper, started: float) -> str | None:
+        """Wait for the wrapper's `proc.json`. An error text when the launch failed: the
+        wrapper exited without claiming, or `spawn_timeout_s` passed (then the runner claims
+        the run itself, so a late wrapper can never start `claude`)."""
+        run_dir = req.run_dir
+        while not (run_dir / "proc.json").exists():
+            if wrapper.poll() is not None:
+                if (run_dir / "proc.json").exists():
+                    break
+                return ("launch failed: the wrapper exited without claiming the run\n"
+                        + _tail(_read_text(run_dir / "wrapper.log")))
+            if time.monotonic() - started > self.spawn_timeout_s:
+                if RP.claim(run_dir, {"orphaned": True, "by": "spawn_timeout", "ts": _now_iso()}):
+                    return (f"launch failed: no claim within {self.spawn_timeout_s:g}s\n"
+                            + _tail(_read_text(run_dir / "wrapper.log")))
+                break                               # the wrapper won the claim at the last moment
+            time.sleep(0.05)
+        return None
+
+    def _poll(self) -> None:
+        time.sleep(0.2)
+
+    def _wait(self, req: RunRequest, hooks: RunHooks | None):
+        run_dir = req.run_dir
+        term_at = kill_at = None
+        while True:
+            if hooks and hooks.detached():
+                return DETACHED
+            status = RP.run_status(run_dir)
+            if status == "unclaimed" and hooks and hooks.adopt:
+                mode, at = hooks.adopt
+                if time.time() >= at:
+                    if mode == "legacy":
+                        if not hooks.enter_collect():
+                            return DETACHED
+                        return _synthetic(req, "legacy orphan: started by an earlier runner, "
+                                               "no process record")
+                    if RP.claim(run_dir, {"orphaned": True, "by": "adopt", "ts": _now_iso()}):
+                        if not hooks.enter_collect():
+                            return DETACHED
+                        return _synthetic(req, "orphaned: no wrapper claimed the run")
+                self._poll()
+                continue
+            if status == "orphaned":
+                if hooks and not hooks.enter_collect():
+                    return DETACHED
+                return _synthetic(req, "orphaned: no wrapper claimed the run")
+            if status == "vanished" and term_at is not None:    # the group we killed ended
+                self._orphan_duties(req, term_at, kill_at)
+                status = "finished"
+            if status in ("finished", "vanished"):
+                if hooks and not hooks.enter_collect():
+                    return DETACHED
+                return collect(req)
+            if status == "orphan_group":            # the wrapper died, `claude` did not
+                term_at, kill_at = self._orphan_duties(req, term_at, kill_at)
+            self._poll()
+
+    def _orphan_duties(self, req, term_at, kill_at):
+        """Enforce the timeout on a group whose wrapper is gone; synthesize `exit.json` once
+        the group is empty (the status check then sees it as finished)."""
+        run_dir = req.run_dir
+        child = RP.read_json(run_dir / "child.json")
+        started = (RP.read_json(run_dir / "request.json") or {}).get("started_at")
+        now = time.time()
+        due = _epoch(started) + req.timeout_s if started and req.timeout_s else None
+        if due and now >= due and term_at is None:
+            term_at = now
+            try:
+                os.killpg(int(child["pgid"]), 15)
+            except OSError:
+                pass
+        if term_at and now >= term_at + RP.GRACE_S and kill_at is None:
+            kill_at = now
+            try:
+                os.killpg(int(child["pgid"]), 9)
+            except OSError:
+                pass
+        if not RP.group_alive(child) and not (run_dir / "exit.json").exists():
+            parsed = parse_result(_read_text(run_dir / "result.json"), req.json_schema,
+                                  exit_code=0)
+            ok = bool(_loads_lenient(_read_text(run_dir / "result.json"))) and not parsed["is_error"]
+            RP.write_json_atomic(run_dir / "exit.json", {
+                "exit_code": 0 if ok else -1, "timed_out": term_at is not None,
+                "killed_by": "timeout" if term_at else None, "signal": None,
+                "ended_at": _now_iso(), "duration_s": round(now - _epoch(started or _now_iso()), 3),
+                "synthesized": True})
+        return term_at, kill_at
+
+    @staticmethod
+    def _kill(run_dir) -> None:
+        child = RP.read_json(run_dir / "child.json")
+        proc = RP.read_json(run_dir / "proc.json")
+        RP.terminate_run(run_dir)
+        RP.kill_group(child)
+        if proc and RP.wrapper_alive(proc):
+            try:
+                os.kill(int(proc["wrapper_pid"]), 9)
+            except OSError:
+                pass
+
+
+def _epoch(iso: str) -> float:
+    import datetime as dt
+    try:
+        return dt.datetime.fromisoformat(iso).timestamp()
+    except ValueError:
+        return time.time()
 
 
 # ---- offline stand-in ----------------------------------------------------------------------------
@@ -249,6 +498,7 @@ class FakeRunner:
     runs dir so the script advances across separate `wt` processes."""
 
     CURSOR_NAME = ".fake-cursor"
+    detachable = False
 
     def __init__(self, script_path):
         self.script_path = Path(script_path)
@@ -296,7 +546,7 @@ class FakeRunner:
             subprocess.run(cmd, shell=True, cwd=str(req.cwd), env=_child_env(req),
                            capture_output=True, text=True)
 
-    def run(self, req: RunRequest) -> RunResult:
+    def run(self, req: RunRequest, *, hooks: RunHooks | None = None) -> RunResult:
         _save_inputs(req)
         entry = self._next_entry(req)
         started_at = _now_iso()
@@ -342,4 +592,4 @@ def select_runner(cfg) -> PersonaRunner:
         return FakeRunner(script)
     if kind != "claude":
         raise ValueError(f"unknown agentic.runner {kind!r} (expected claude or fake)")
-    return ClaudeRunner()
+    return ClaudeRunner(float(agentic.get("spawn_timeout_s") or 30.0))

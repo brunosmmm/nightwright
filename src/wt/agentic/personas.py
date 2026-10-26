@@ -272,6 +272,16 @@ PERSONAS = {
 # in a profile's `reviewers` (SPEC-0201).
 REVIEWER_PERSONAS = ("conformance_reviewer", "test_reviewer", "adversarial_reviewer")
 
+# SPEC-0225: how adoption classifies an open run that has no `step` in its `run.start` (written
+# by an earlier runner): persona -> (step kind, review personas or None = the reviewer group).
+# Every campaign persona must be here; `spec_reviewer` has no campaign ledger.
+ADOPT_REGISTRY = {
+    "implementer": ("implement", ()),
+    "gate_triager": ("triage", ()),
+    "review_triager": ("review", ("review_triager",)),
+    **{p: ("review", None) for p in REVIEWER_PERSONAS},
+}
+
 PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree", "base",
                 "loop", "loop_max", "context_files", "gate_results", "pending_brief",
                 "previous_verdicts", "diff", "test_files", "tests_touched", "changed_files",

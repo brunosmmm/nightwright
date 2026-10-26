@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (51/70 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (52/70 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -143,7 +143,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0221](./specs/0221-rebase-conflict-resolver-persona.md) Rebase-conflict resolver persona — done
   - [x] [SPEC-0222](./specs/0222-queue-watch-needs-you-vs-conductor-handling.md) queue watch: split parks into 'Needs you' and 'Conductor handling' — done
   - [x] [SPEC-0224](./specs/0224-honest-run-cost-on-interrupt-and-a-runner-draining.md) Honest run cost on interrupt, and a runner_draining signal to the conductor — done
-  - [ ] [SPEC-0225](./specs/0225-detached-persona-runs-adopted-across-runner-restarts.md) Detached persona runs, adopted across runner restarts — accepted
+  - [x] [SPEC-0225](./specs/0225-detached-persona-runs-adopted-across-runner-restarts.md) Detached persona runs, adopted across runner restarts — done
   - [x] [SPEC-0226](./specs/0226-runner-reloads-user-and-project-config-on-change.md) Queue runner reloads user and project config on change — done
   - [x] [SPEC-0227](./specs/0227-wt-spec-review-resolves-the-spec-from-the-current-checkout.md) wt spec review resolves the spec from the current checkout — done
   - [x] [SPEC-0228](./specs/0228-watchdog-waiting-not-admitted-and-silent-runner-journal.md) Watchdog: waiting_not_admitted and runner_journal_silent, with the drain in ready_not_admitted — done
@@ -181,7 +181,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) | Spec phases and review rounds in queue watch and listing | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0214](./specs/0214-spec-review-loop-inside-the-campaign-with-in-loop.md) | Spec review loop inside the campaign, with in-loop acceptance | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0225](./specs/0225-detached-persona-runs-adopted-across-runner-restarts.md) | Detached persona runs, adopted across runner restarts | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0229](./specs/0229-runner-exit-paths-and-draining-ticks-with-detached-runs.md) | Runner exit paths and draining ticks with detached runs | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0232](./specs/0232-escalation-records-wt-queue-escalate-and-notify.md) | Escalation records: wt queue escalate parks human_decision, mails and notifies the human | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0234](./specs/0234-docs-only-merge-requests-and-conductor-skill-routing.md) | Docs-only merge requests and conductor/steward skill routing | feature | accepted | M9: agentic workflow | 2026-10-25 |
@@ -408,6 +407,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0222](./specs/0222-queue-watch-needs-you-vs-conductor-handling.md) | queue watch: split parks into 'Needs you' and 'Conductor handling' | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0223](./specs/0223-use-case-oriented-docs-two-pillars-diagrams.md) | Use-case oriented docs: two pillars, bootstrap path and rich diagrams | feature | done | M8: product documentation | 2026-10-25 |
 | [SPEC-0224](./specs/0224-honest-run-cost-on-interrupt-and-a-runner-draining.md) | Honest run cost on interrupt, and a runner_draining signal to the conductor | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0225](./specs/0225-detached-persona-runs-adopted-across-runner-restarts.md) | Detached persona runs, adopted across runner restarts | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0226](./specs/0226-runner-reloads-user-and-project-config-on-change.md) | Queue runner reloads user and project config on change | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0227](./specs/0227-wt-spec-review-resolves-the-spec-from-the-current-checkout.md) | wt spec review resolves the spec from the current checkout | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0228](./specs/0228-watchdog-waiting-not-admitted-and-silent-runner-journal.md) | Watchdog: waiting_not_admitted and runner_journal_silent, with the drain in ready_not_admitted | feature | done | M9: agentic workflow | 2026-10-25 |

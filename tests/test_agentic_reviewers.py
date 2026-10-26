@@ -549,11 +549,11 @@ def test_e2e_prepare_failure_for_second_reviewer_leaves_no_trace(e2e, monkeypatc
                                   B: [b_entry("pass")]})
     real, fails = Q._prepare_run, []
 
-    def flaky(ctx, state, persona):
+    def flaky(ctx, state, persona, step=None):
         if persona == B and not fails:
             fails.append(1)
             raise ValueError("cannot build request")
-        return real(ctx, state, persona)
+        return real(ctx, state, persona, step)
     monkeypatch.setattr(Q, "_prepare_run", flaky)
     drive(cfg, runner)
     st = S.read_state(cfg, cid)
@@ -568,10 +568,10 @@ def test_e2e_config_error_of_one_reviewer_parks_config_invalid(e2e, monkeypatch)
                                   B: [b_entry("pass")]})
     real = Q._prepare_run
 
-    def broken(ctx, state, persona):
+    def broken(ctx, state, persona, step=None):
         if persona == B:
             raise Q.ProjectConfigError("yaml broke")
-        return real(ctx, state, persona)
+        return real(ctx, state, persona, step)
     monkeypatch.setattr(Q, "_prepare_run", broken)
     # the interrupted/prepare precedence: config_error parks, A's cost recorded
     drive(cfg, runner, ticks=4)

@@ -46,7 +46,8 @@ from .gitops import GitError
 from .profiles import (SEVERITIES, persona_settings, resolve_profile, review_params,
                        reviewers_of, select_profile, triager_enabled)
 from .events import settings as events_settings
-from .runner import RunResult, select_runner
+from . import runproc as RP
+from .runner import DETACHED, RunHooks, RunResult, rebuild_request, select_runner
 
 STATES = ("QUEUED", "WAITING", "OPENING", "SPEC_WRITING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
           "CLOSING", "PARKED", "MERGED", "HANDED_OFF", "ABANDONED")
@@ -848,6 +849,7 @@ class StepResult:
     followups: dict | None = None                    # SPEC-0207: the close step's filer summary
     crashed: str | None = None                       # unexpected worker exception caught in-step
     write: dict | None = None                        # SPEC-0215: a write_spec step's outcome
+    detached: bool = False                           # SPEC-0225: the pool detached the run
 
 
 class _Ctx:
@@ -1030,7 +1032,10 @@ def _triage_input(state: dict, profile: dict) -> str:
     }, indent=2, sort_keys=True)
 
 
-def _prepare_run(ctx: _Ctx, state: dict, persona: str):
+_KIND_OF_PERSONA = {"implementer": "implement", "gate_triager": "triage"}
+
+
+def _prepare_run(ctx: _Ctx, state: dict, persona: str, step: Step | None = None):
     """Main thread: mint the run id, build the request, append `run.start`, bump `runs` and
     write the state. Returns (run_id, request, budget). Everything that can raise happens
     before the `run.start` append; a failure after it raises `_RunStarted`."""
@@ -1056,6 +1061,10 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str):
             "persona": persona, "run_id": run_id, "model": req.model, "effort": req.effort,
             "max_budget_usd": budget, "timeout_s": req.timeout_s,
             "permission_mode": req.permission_mode, "prompt_sha256": PS.prompt_sha256(req.prompt),
+            # SPEC-0225: what adoption needs to rebuild the step and its snapshot
+            "state": state.get("state"),
+            "step": {"kind": step.kind if step else _KIND_OF_PERSONA.get(persona, "implement"),
+                     "personas": list(step.personas) if step else []},
         })
         counters["runs"] = run_no
         try:
@@ -1198,14 +1207,25 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     return res
 
 
-def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float) -> StepResult:
+def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float,
+                hooks: RunHooks | None = None, adopted: dict | None = None) -> StepResult:
     """Worker thread: run the persona; for the implementer, commit afterwards (the triager and
-    the reviewer are read-only and commit nothing)."""
+    the reviewer are read-only and commit nothing). With `hooks` (SPEC-0225) the run may be
+    detached by the pool: then nothing happens here and the result says so. `adopted` marks a
+    run found open by a new runner (`exited_before_start`: its process ended before this
+    runner's lease started, so a commit made but never recorded is recorded now)."""
     res = StepResult(state["id"], step, state["state"], run_id=run_id, budget=budget)
+    detachable = bool(getattr(ctx.runner, "detachable", False))
     try:
-        res.run_result = ctx.runner.run(req)
-        res.interrupted = ctx.stop.is_set()
-        if step.kind == "implement" and not res.interrupted:
+        outcome = ctx.runner.run(req, hooks=hooks) if (hooks and detachable) \
+            else ctx.runner.run(req)
+        if outcome is DETACHED:
+            res.detached = True
+            return res
+        res.run_result = outcome
+        res.interrupted = bool(outcome.interrupted) if detachable else ctx.stop.is_set()
+        # an adopted run a human moved past (parked, abandoned) is recorded, never committed
+        if step.kind == "implement" and not res.interrupted and not state.get("_superseded"):
             pcfg = ctx.project(state)
             summary = ""
             if isinstance(res.run_result.verdict, dict):
@@ -1218,9 +1238,17 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
             if trailer:
                 msg += f"\n\n{trailer}"
             res.commit_message = msg
-            res.commit_sha = git.commit_all((state.get("repo") or {}).get("worktree"), msg)
+            worktree = (state.get("repo") or {}).get("worktree")
+            res.commit_sha = git.commit_all(worktree, msg)
+            if res.commit_sha is None and adopted and adopted.get("exited_before_start"):
+                head = git.rev_parse(worktree)
+                if head != (state.get("repo") or {}).get("head"):
+                    res.commit_sha = head
     except (GitError, ValueError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
+    finally:
+        if hooks:
+            hooks.done()
     return res
 
 
@@ -1307,7 +1335,7 @@ def _fresh(cfg, state: dict) -> dict | None:
     """Re-read the campaign from disk; None when a human moved it meanwhile (parked, abandoned
     or resumed) — then the step's events are still recorded but the transition is skipped."""
     on_disk = store.read_state(cfg, state["id"])
-    if on_disk.get("state") != state.get("state"):
+    if on_disk.get("state") != state.get("state") or state.get("_superseded"):
         return None
     return on_disk
 
@@ -1365,6 +1393,22 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         return row
 
     kind = res.step.kind
+    if kind == "unknown":              # SPEC-0225: an adopted run of an unregistered persona
+        rr = res.run_result
+        persona = res.step.persona
+        events += _record_run(state, persona, res.run_id, rr, res.budget,
+                              interrupted=res.interrupted)
+        events.append(("note", {"text": f"adopted run of unregistered persona {persona}; "
+                                        "result recorded, no transition", "author": "queue"}))
+        with store.item_lock(cfg, cid):
+            for etype, payload in events:
+                store.append_event(cfg, cid, etype, payload)
+            current = store.read_state(cfg, cid)
+            current["cost"] = state.get("cost", current.get("cost"))
+            store.write_state(cfg, cid, current)
+        row["cost_usd"] = rr.cost_usd if rr.cost_usd is not None else res.budget
+        row["to"], row["reason"] = store.read_state(cfg, cid).get("state"), "unregistered_persona"
+        return row
     if res.error and res.config_error:
         resume = "QUEUED" if kind == "open" and res.from_state == "OPENING" else res.from_state
         return finish("PARKED", "config_invalid", park={
@@ -1413,6 +1457,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         state["last_verdict"] = {"persona": persona, "run": res.run_id, "verdict": rr.verdict,
                                  "verdict_ok": rr.verdict_ok}
         if res.interrupted or rr.interrupted:
+            if _fresh(cfg, state) is None:               # an adopted run a human moved past
+                return finish(state["state"], "interrupted")
             # State unchanged: the next tick spawns a fresh agent (run.end carries interrupted).
             with store.item_lock(cfg, cid):
                 for etype, payload in events:
@@ -1988,6 +2034,7 @@ class TickReport:
     started: list = field(default_factory=list)     # SPEC-0213: steps submitted this tick
     in_flight: list = field(default_factory=list)   # campaigns still running at return
     drain: bool = False                             # the shutdown / re-exec drain report
+    detached: list = field(default_factory=list)    # SPEC-0225: runs left running at the exec
 
     def payload(self) -> dict:
         return {"schema": "wt.queue.tick.v1", "steps": self.steps, "admitted": self.admitted,
@@ -2009,13 +2056,13 @@ class _Flight:
     was planned with; its state dict belongs to the workers until it is harvested."""
     state: dict
     ctx: "_Ctx"
-    tasks: list = field(default_factory=list)       # [(Step, Future)]
+    tasks: list = field(default_factory=list)       # [(Step, Future, RunHooks | None)]
     group: object = None
     started_at: str = field(default_factory=lambda: store.now_iso())
     runs: list = field(default_factory=list)        # [(run_id, timeout_s)] of its persona runs
 
     def done(self) -> bool:
-        return all(f.done() for _, f in self.tasks)
+        return all(f.done() for _, f, _h in self.tasks)
 
 
 class StepPool:
@@ -2028,6 +2075,38 @@ class StepPool:
     def __init__(self):
         self._pool: ThreadPoolExecutor | None = None
         self.flights: dict = {}                    # campaign id -> _Flight, submission order
+        self.lock = threading.RLock()              # SPEC-0225: task phases and detaching
+        self.adopted = False                       # the first tick adopts open runs
+
+    def hooks(self, run_dir=None, phase: str = "spawning") -> RunHooks:
+        return RunHooks(self.lock, run_dir, phase)
+
+    def try_detach_all(self) -> list | None:
+        """Atomically detach every remaining persona run, so the loop can exec. None when any
+        unfinished task is in-process (gate / close / FakeRunner) or in `spawning` /
+        `collect`; otherwise `pool.flights` is empty afterwards and the result lists
+        `{campaign, run_ids}` of the runs left running."""
+        with self.lock:
+            for fl in self.flights.values():
+                for _step, fut, hk in fl.tasks:
+                    if not fut.done() and (hk is None or hk.phase not in ("wait",)):
+                        return None
+            out = []
+            for cid in list(self.flights):
+                fl = self.flights.pop(cid)
+                for _step, fut, hk in fl.tasks:
+                    if not fut.done():
+                        hk.detach.set()
+                out.append({"campaign": cid, "run_ids": [r for r, _ in fl.runs]})
+            return out
+
+    def detach_force(self) -> None:
+        """Crash path: release every waiting thread; the runs stay adoptable."""
+        with self.lock:
+            for fl in self.flights.values():
+                for _step, _fut, hk in fl.tasks:
+                    if hk is not None:
+                        hk.detach.set()
 
     def submit(self, fn, *args) -> Future:
         if self._pool is None:
@@ -2042,12 +2121,12 @@ class StepPool:
         return any(fl.done() for fl in self.flights.values())
 
     def wait_any(self, timeout=None) -> None:
-        pending = [f for fl in self.flights.values() for _, f in fl.tasks if not f.done()]
+        pending = [f for fl in self.flights.values() for _, f, _h in fl.tasks if not f.done()]
         if pending and not self.any_done():
             wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
 
     def wait_all(self) -> None:
-        wait([f for fl in self.flights.values() for _, f in fl.tasks])
+        wait([f for fl in self.flights.values() for _, f, _h in fl.tasks])
 
     def shutdown(self, *, cancel=False) -> None:
         if self._pool is not None:
@@ -2061,16 +2140,18 @@ def _harvest(pool: StepPool, report: TickReport) -> None:
         fl = pool.flights.pop(cid)
         st, ctx = fl.state, fl.ctx
         if fl.group is not None:
-            for step, fut in fl.tasks:
+            for step, fut, _h in fl.tasks:
                 try:
                     fl.group.results[step.persona] = fut.result()
                 except Exception as e:          # a bug in a step must park, not kill the loop
                     fl.group.results[step.persona] = e
             report.steps.append(_finish_reviews(ctx, report, fl.group))
             continue
-        (_step, fut), = fl.tasks
+        (_step, fut, _h), = fl.tasks
         try:
             res = fut.result()
+            if res.detached:                        # defensive: detached flights are not here
+                continue
         except Exception as e:
             res = StepResult(st["id"], _step, st["state"], error=repr(e))
             report.errors.append(f"{st['id']}: {e!r}")
@@ -2091,20 +2172,22 @@ def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
                               "state": st.get("state"), "run_ids": []}
             report.started.append(rows[st["id"]])
         if step.kind == "gate":
-            fl.tasks.append((step, pool.submit(_do_gate, ctx, st)))
+            fl.tasks.append((step, pool.submit(_do_gate, ctx, st), None))
         elif step.kind == "close":
-            fl.tasks.append((step, pool.submit(_do_prepare_close, ctx, st)))
+            fl.tasks.append((step, pool.submit(_do_prepare_close, ctx, st), None))
         elif step.kind == "resolve":
-            fl.tasks.append((step, pool.submit(_do_resolve, ctx, st, step, run_id, req, budget)))
+            fl.tasks.append((step, pool.submit(_do_resolve, ctx, st, step, run_id, req, budget), None))
             rows[st["id"]]["run_ids"].append(run_id)
             fl.runs.append((run_id, getattr(req, "timeout_s", None)))
         elif step.kind == "write_spec":
             fl.tasks.append((step, pool.submit(_do_write_spec, ctx, st, step, run_id, req,
-                                               budget)))
+                                               budget), None))
             rows[st["id"]]["run_ids"].append(run_id)
             fl.runs.append((run_id, getattr(req, "timeout_s", None)))
         else:
-            fl.tasks.append((step, pool.submit(_do_persona, ctx, st, step, run_id, req, budget)))
+            hooks = pool.hooks(req.run_dir)
+            fl.tasks.append((step, pool.submit(_do_persona, ctx, st, step, run_id, req, budget,
+                                               hooks), hooks))
             rows[st["id"]]["run_ids"].append(run_id)
             fl.runs.append((run_id, getattr(req, "timeout_s", None)))
     for group in groups:              # a fan-out whose every prepare failed: nothing to run
@@ -2137,6 +2220,8 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
 
 
 def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, own: bool):
+    if not pool.adopted:
+        _adopt(cfg, ctx, pool, report)
     _harvest(pool, report)            # finished steps first: their slots are free this tick
     flying = pool.ids()
     items = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
@@ -2245,7 +2330,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
                 groups.append(group)
             continue
         try:
-            run_id, req, budget = _prepare_run(ctx, st, step.persona)
+            run_id, req, budget = _prepare_run(ctx, st, step.persona, step)
         except (ValueError, OSError) as e:
             started = e if isinstance(e, _RunStarted) else None     # run.start is on the ledger
             report.steps.append(_apply(ctx, st, StepResult(
@@ -2266,12 +2351,163 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     for st in pending_close:
         while not ctx.stop.is_set():
             pool.flights[st["id"]] = fl = _Flight(st, ctx)
-            fl.tasks.append((Step("close"), pool.submit(_do_prepare_close, ctx, st)))
+            fl.tasks.append((Step("close"), pool.submit(_do_prepare_close, ctx, st), None))
             pool.wait_all()
             _harvest(pool, report)
             if report.steps[-1].get("reason") != "base_moved":
                 break
             st = store.read_state(cfg, st["id"])
+
+
+# ---- adoption of runs left open by an earlier runner (SPEC-0225) -------------------------
+
+_ADOPT_GRACE_S = 10.0              # a wrapper that was just started may still claim its run dir
+_LEGACY_EXTRA_S = 60.0             # slack after `timeout_s` before a pre-wrapper run is closed
+_HUMAN_EVENTS = frozenset({"transition", "park", "resume", "resumed", "abandon", "abandoned"})
+_STATE_OF_KIND = {"implement": "IMPLEMENTING", "triage": "TRIAGING", "review": "REVIEWING"}
+
+
+def _open_runs(cfg, cid) -> list:
+    """Every `run.start` with no `run.end` for its run id, in ledger order."""
+    starts, ended = {}, set()
+    for ev in store.read_ledger(cfg, cid, types=["run.start", "run.end"]):
+        if ev["type"] == "run.start":
+            starts[ev.get("run_id")] = ev
+        else:
+            ended.add(ev.get("run_id"))
+    return [e for rid, e in starts.items() if rid not in ended]
+
+
+def _adopt_class(ev: dict):
+    """(kind, personas) of an open run, from its recorded `step`, else the registry; None for
+    a persona nobody knows. Personas None means the campaign's reviewer group."""
+    step = ev.get("step")
+    if isinstance(step, dict) and step.get("kind"):
+        return step["kind"], tuple(step.get("personas") or ()) or None
+    entry = PS.ADOPT_REGISTRY.get(ev.get("persona"))
+    return (entry[0], entry[1] or None) if entry else None
+
+
+def _adopt_request(rd: Path, ev: dict):
+    req = rebuild_request(rd, budget=ev.get("max_budget_usd"))
+    if (rd / "request.json").is_file():
+        return req
+    import dataclasses
+    persona = PS.PERSONAS.get(ev.get("persona"))
+    return dataclasses.replace(
+        req, persona=ev.get("persona") or req.persona, model=ev.get("model") or "",
+        effort=ev.get("effort"), timeout_s=int(ev.get("timeout_s") or 0),
+        permission_mode=ev.get("permission_mode") or "",
+        json_schema=persona.schema if persona else {})
+
+
+def _adopt(cfg, ctx: _Ctx, pool: StepPool, report: TickReport) -> None:
+    """First tick of a pool: every open run in the campaign ledgers becomes a flight in phase
+    `wait`, handled by its files (`ClaudeRunner.run` attaches). Finished runs are applied by the
+    harvest that follows; live ones are waited for. Terminal campaigns other than
+    MERGED / HANDED_OFF (ABANDONED) are adopted too: their run is recorded, no transition."""
+    from .runner import _epoch
+    pool.adopted = True
+    try:
+        if not getattr(ctx.runner, "detachable", False):
+            return
+    except ValueError:
+        return
+    lease_started = (L.read_lease(cfg) or {}).get("started_at")
+    now = time.time()
+    rows = []
+    for st in store.list_campaigns(cfg, include_terminal=True):
+        cid = st["id"]
+        if st.get("state") in ("MERGED", "HANDED_OFF") or cid in pool.flights:
+            continue
+        opens = _open_runs(cfg, cid)
+        if not opens:
+            continue
+        last = opens[-1]
+        cls = _adopt_class(last)
+        if cls and cls[0] == "review":              # the open runs of the same review group
+            key = cls[1]
+            members = [e for e in opens if (c := _adopt_class(e)) and c[0] == "review"
+                       and c[1] == key]
+            order = key or tuple(p for p in PS.REVIEWER_PERSONAS)
+            members.sort(key=lambda e: order.index(e["persona"]) if e["persona"] in order
+                         else len(order))
+        else:
+            members = [last]
+        snap = store.read_state(cfg, cid)
+        start_state = members[0].get("state") or (
+            _STATE_OF_KIND.get(cls[0]) if cls else snap.get("state"))
+        first_seq = min(e.get("seq") or 0 for e in members)
+        if snap.get("state") != start_state or any(
+                e["type"] in _HUMAN_EVENTS and e.get("by") != "tick"
+                and (e.get("seq") or 0) > first_seq for e in store.read_ledger(cfg, cid)):
+            snap["_superseded"] = True
+        snap["state"] = start_state
+        fl = pool.flights[cid] = _Flight(snap, ctx)
+        group = None
+        if cls and cls[0] == "review":
+            personas = tuple(e["persona"] for e in members)
+            group = fl.group = _ReviewGroup(snap, Step(
+                "review", persona=personas[0], personas=personas))
+        for ev in members:
+            rid, persona = ev["run_id"], ev["persona"]
+            rd = store.runs_dir(cfg, cid) / rid
+            req = _adopt_request(rd, ev)
+            budget = float(ev.get("max_budget_usd") or req.max_budget_usd or 0.0)
+            hooks = pool.hooks(rd, phase="wait")
+            label = RP.run_status(rd)
+            if label == "unclaimed":
+                legacy = not (rd / "launch.json").exists() and not ev.get("step")
+                if legacy:
+                    hooks.adopt = ("legacy", _epoch(ev["ts"]) + req.timeout_s + _LEGACY_EXTRA_S)
+                    label = "legacy"
+                else:
+                    try:
+                        anchor = (rd / "launch.json").stat().st_mtime
+                    except OSError:
+                        anchor = _epoch(ev["ts"])
+                    hooks.adopt = ("claim", anchor + _ADOPT_GRACE_S)
+                    label = "orphaned" if now >= hooks.adopt[1] else "running"
+            ex = RP.read_json(rd / "exit.json") or {}
+            adopted = {"exited_before_start": bool(
+                ex.get("ended_at") and lease_started
+                and _epoch(ex["ended_at"]) < _epoch(lease_started))}
+            if cls is None:
+                step, label = Step("unknown", persona=persona), "unknown"
+            elif group is not None:
+                step = Step("review", persona=persona, personas=group.step.personas)
+                group.meta[persona] = (rid, budget)
+            else:
+                step = Step(cls[0], persona=persona)
+            fl.tasks.append((step, pool.submit(_do_persona, ctx, snap, step, rid, req, budget,
+                                               hooks, adopted), hooks))
+            fl.runs.append((rid, req.timeout_s))
+            rows.append({"campaign": cid, "run_id": rid, "persona": persona, "status": label})
+        report.started.append({"campaign": cid, "action": "adopt", "state": start_state,
+                               "run_ids": [e["run_id"] for e in members]})
+    if rows:
+        journal(cfg, "adopt", runs=rows)
+
+
+_STOP_KILL_AFTER_S = 15.0          # interim stop: KILL the group this long after TERM
+
+
+def _stop_runs(pool: StepPool) -> None:
+    """Interim stop (SPEC-0225 Decision 7): while a flight's loop is stopping, TERM the wrapper
+    of every run that is still running (the wrapper forwards it to the group and escalates to
+    KILL); a run whose `exit.json` exists is left to be collected as finished. A backstop KILLs
+    the group `_STOP_KILL_AFTER_S` after the TERM."""
+    for fl in list(pool.flights.values()):
+        if not fl.ctx.stop.is_set():
+            continue
+        for _step, fut, hk in fl.tasks:
+            if fut.done() or hk is None or hk.run_dir is None or hk.phase in ("collect", "done"):
+                continue
+            if hk.signalled_at is None:
+                if RP.terminate_run(hk.run_dir):
+                    hk.signalled_at = time.monotonic()
+            elif time.monotonic() - hk.signalled_at > _STOP_KILL_AFTER_S:
+                RP.terminate_run(hk.run_dir, kill=True)
 
 
 def _prepare_reviews(ctx: _Ctx, st: dict, step: Step, profile: dict, pending_agent: list,
@@ -2288,7 +2524,7 @@ def _prepare_reviews(ctx: _Ctx, st: dict, step: Step, profile: dict, pending_age
             break
         sub = Step("review", persona=persona, personas=step.personas)
         try:
-            run_id, req, budget = _prepare_run(ctx, st, persona)
+            run_id, req, budget = _prepare_run(ctx, st, persona, step)
         except (ValueError, OSError) as e:
             if not multi:
                 report.steps.append(_apply(ctx, st, StepResult(
@@ -2722,9 +2958,16 @@ def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
                 if time.monotonic() >= next_refresh:
                     _refresh_backlog(cfg)
                     next_refresh = time.monotonic() + interval
-                pool.wait_any(timeout=0.5)
+                _stop_runs(pool)
+                pool.wait_any(timeout=0.2)
                 before = len(pool.flights)
                 _harvest(pool, report)
+                if reason == "code_changed" and pool.flights \
+                        and not any(fl.ctx.stop.is_set() for fl in pool.flights.values()):
+                    detached = pool.try_detach_all()      # SPEC-0225: persona runs outlive the exec
+                    if detached is not None:
+                        report.detached = detached
+                        break
                 if len(pool.flights) != before:
                     lease.update_info(draining={"reason": reason, "since": since,
                                                 "waiting_on": _waiting_on(cfg, pool)})
@@ -2853,9 +3096,14 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                         break
                     time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
             if pool.flights:
-                emit(_drain(cfg, pool, lease, reason=reason, interval=interval, slots=slots))
+                drained = _drain(cfg, pool, lease, reason=reason, interval=interval, slots=slots)
+                emit(drained)
+                if drained.detached:
+                    restart["detached"] = drained.detached
             if reason == "code_changed" and stop.is_set():
-                reason, restart = "signal", {}        # signalled during the drain: no exec
+                # signalled during the drain: no exec; runs already detached keep running
+                reason, restart = "signal", ({"detached": restart["detached"]}
+                                             if restart.get("detached") else {})
     except BaseException as e:
         crashed = True
         if not isinstance(e, (KeyboardInterrupt, SystemExit)):
@@ -2867,6 +3115,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
     finally:
         if crashed:
             stop.set()                                # workers see it: runs end as interrupted
+            pool.detach_force()                       # SPEC-0225: runs stay adoptable
         pool.shutdown(cancel=crashed)
         if reason != "crash":
             journal(cfg, "stop", ticks=ticks, reason=reason, **restart)
