@@ -419,22 +419,43 @@ class ResolutionCheck:
     absorbed: list = field(default_factory=list)
 
 
-def _patch_applies(worktree, commit, tree, reverse) -> bool:
-    """Whether `commit`'s binary diff against its first parent applies (or, with `reverse`,
-    reverse-applies) to `tree`, checked in a temporary index so the worktree and the real
-    index are never touched. An empty diff applies."""
-    diff = git(worktree, "diff", "--binary", f"{commit}^", commit).stdout
-    if not diff:
-        return True
+def _commit_patch(worktree, commit) -> str:
+    """`commit`'s binary diff against its first parent, from plumbing with every output-shaping
+    option pinned so user or repo diff config (`diff.noprefix`, colour, external diff, textconv)
+    cannot change what `git apply` is fed."""
+    return git(worktree, "diff-tree", "-p", "--binary", "--full-index", "--no-color",
+               "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/",
+               f"{commit}^", commit).stdout
+
+
+def _apply_check(worktree, tree, diff, reverse) -> bool:
     with tempfile.TemporaryDirectory() as tmp:
         env = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}
         git(worktree, "read-tree", tree, env=env)
-        args = ["apply", "--cached", "--check"] + (["--reverse"] if reverse else [])
+        args = ["-c", "apply.whitespace=nowarn", "apply", "--cached", "--check"] \
+            + (["--reverse"] if reverse else [])
         return git(worktree, *args, check=False, env=env, input=diff).returncode == 0
 
 
+def _patch_applies(worktree, commit, tree, reverse) -> bool:
+    """Whether `commit`'s binary diff against its first parent applies (or, with `reverse`,
+    reverse-applies) to `tree`, checked in a temporary index so the worktree and the real
+    index are never touched. An empty diff applies. A patch that does not even apply to the
+    commit's own parent is unusable, not a "no": that raises `GitError` (fail closed)."""
+    diff = _commit_patch(worktree, commit)
+    if not diff:
+        return True
+    if _apply_check(worktree, tree, diff, reverse):
+        return True
+    if not _apply_check(worktree, f"{commit}^", diff, reverse=False):
+        raise GitError(["git", "apply", "--check"], 1,
+                       f"the patch of {commit[:10]} does not apply to its own parent")
+    return False
+
+
 def _is_empty(worktree, commit) -> bool:
-    return not git(worktree, "diff", "--binary", f"{commit}^", commit).stdout
+    return git(worktree, "rev-parse", f"{commit}^{{tree}}").stdout \
+        == git(worktree, "rev-parse", f"{commit}^^{{tree}}").stdout
 
 
 def _commit_entry(worktree, sha) -> dict:

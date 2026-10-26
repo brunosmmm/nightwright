@@ -260,6 +260,14 @@ no-unmerged-paths, target-is-ancestor and tracked-clean checks stay.
   `ls-files -u` check and the sequencer-state check had to go, as a conflicted cherry-pick trips both),
   no runner commit (`test_staged_changes_committed_by_runner`). The sources were restored and the
   resolver tests re-run green.
+- Review round 1 tests (`tests/test_agentic_resolver.py`, 71 tests, all green): runner-commit guards
+  one at a time (`FAILS["unmerged_no_sequencer"]`, unmerged index entries with no sequencer;
+  `FAILS["sequencer_only"]`, a clean `git merge --no-commit` leaving MERGE_HEAD), the cherry-only
+  absorption (target holds the patch, then changes the lines again), an empty campaign commit plus a
+  port commit (kept and dropped), user diff/apply config (`diff.noprefix`, `color.diff=always`,
+  `apply.whitespace=error`), and an unusable patch raising `GitError`. Each was sabotaged alone and
+  failed its test: only the `ls-files -u` guard, only the sequencer guard, `c in cherry_gone`, the
+  empty-commit skip on the revert guard, and plain `git diff --binary` for the patches.
 - Manual verification (a real conflicted close recording `+N extra, M absorbed`) has not been done yet:
   it needs the next real conflicted close.
 
@@ -276,6 +284,12 @@ no-unmerged-paths, target-is-ancestor and tracked-clean checks stay.
   CHERRY_PICK_HEAD, MERGE_HEAD, REVERT_HEAD and `sequencer`, and `rebase_in_progress` shares its path
   helper. The runner commit is `queue._commit_resolver_changes`.
 - Short shas in failure messages are 10 characters.
+- Review round 1: the patches come from `git diff-tree -p --binary --full-index --no-color
+  --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/` (not porcelain `git diff`), and
+  `git apply` runs with `apply.whitespace=nowarn`, so user or repo diff/apply config cannot change
+  the equivalence checks. `_is_empty` compares the commit's tree with its parent's. A patch that
+  fails to apply to its own parent raises `GitError` (a `verification error`) rather than counting
+  as "does not apply", so the revert guard fails closed.
 
 ## Clock Log
 

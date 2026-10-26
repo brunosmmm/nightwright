@@ -299,6 +299,16 @@ def _hook(body):
             f"printf '#!/bin/sh\\n{body}\\n' > $H && chmod +x $H")
 
 
+_UNMERGED = ("B=$(git rev-parse HEAD:src/app.py) && printf "
+             "'100644 %s 1\\tsrc/app.py\\n100644 %s 2\\tsrc/app.py\\n100644 %s 3\\tsrc/app.py\\n' "
+             "$B $B $B | git update-index --index-info")
+_MERGE_NO_COMMIT = (
+    "I=$(mktemp -u) && GIT_INDEX_FILE=$I git read-tree HEAD~1 && "
+    "GIT_INDEX_FILE=$I git update-index --add --cacheinfo "
+    "100644,$(echo s | git hash-object -w --stdin),side.txt && "
+    "S=$(git commit-tree $(GIT_INDEX_FILE=$I git write-tree) -p HEAD~1 -m side) && "
+    "rm -f $I && git merge -q --no-commit --no-ff $S")
+
 FAILS = {
     "rebase_left_running": (dict(shell=(), edits=False), "HEAD is not attached"),
     "rebase_aborted": (dict(pre=(), shell=(), edits=False), "not an ancestor"),
@@ -312,6 +322,11 @@ FAILS = {
                                "reverts campaign commit"),
     "unmerged_no_rebase": (dict(shell=(CONTINUE + "; git cherry-pick main || true",)),
                            "unmerged paths remain"),
+    # unmerged index entries with no sequencer state (e.g. a conflicted `git apply --3way`)
+    "unmerged_no_sequencer": (dict(shell=(CONTINUE + " && " + _UNMERGED,)),
+                              "unmerged paths remain"),
+    # a clean `git merge --no-commit`: MERGE_HEAD and a staged change, no unmerged paths
+    "sequencer_only": (dict(shell=(CONTINUE + " && " + _MERGE_NO_COMMIT,)), "dirty"),
     "hook_rejects_commit": (dict(shell=(CONTINUE + " && " + _hook("exit 1")
                                         + " && echo junk >> feature.txt",)), "dirty"),
 }
@@ -431,11 +446,14 @@ def test_staged_changes_committed_by_runner(tmp_path, monkeypatch, summary):
     assert _merged(w)
 
 
-def test_unmerged_no_rebase_commits_nothing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("name", ["unmerged_no_rebase", "unmerged_no_sequencer", "sequencer_only"])
+def test_unmerged_no_rebase_commits_nothing(tmp_path, monkeypatch, name):
+    """Each runner-commit guard alone: unmerged paths (with and without a sequencer) and a
+    sequencer operation with no unmerged paths."""
     calls = []
     real = G.commit_tracked
     monkeypatch.setattr(G, "commit_tracked", lambda *a, **kw: calls.append(a) or real(*a, **kw))
-    kw, check = FAILS["unmerged_no_rebase"]
+    kw, check = FAILS[name]
     w = basic(tmp_path, monkeypatch, resolver(**kw), gave_up())
     w.open_and_conflict()
     w.dispatched()
@@ -887,6 +905,53 @@ def test_verify_resolution_unpaired_commit_is_extra_but_a_revert_fails(tmp_path)
     _sh(r, "git revert --no-edit HEAD~1")
     bad = _check(r, fork, pre, tgt)
     assert bad.failed and "reverts campaign commit" in bad.failed and "Revert" in bad.failed
+    assert _git(r, "rev-parse", pre)[:10] in bad.failed
+
+
+def test_verify_resolution_cherry_absorbs_what_the_target_changed_again(tmp_path):
+    """The target holds the commit's exact patch, then changes the same lines: `git cherry`
+    marks it `-`, but it no longer reverse-applies to HEAD."""
+    r, fork, pre, tgt = vrepo(
+        tmp_path, _commit_file("a.txt", "x", msg="mine"),
+        _commit_file("a.txt", "x", msg="landed") + _commit_file("a.txt", "y", msg="later"),
+        "git rebase main -q")
+    assert _git(r, "cherry", tgt, pre).startswith("-")
+    assert not G._patch_applies(r, pre, "HEAD", reverse=True)
+    c = _check(r, fork, pre, tgt)
+    assert c.failed is None and [a["subject"] for a in c.absorbed] == ["mine"]
+
+
+@pytest.mark.parametrize("rebase", ["git rebase main -q", "git rebase --no-keep-empty main -q"])
+def test_verify_resolution_empty_commit_does_not_trip_the_revert_guard(tmp_path, rebase):
+    """An empty campaign commit (kept or dropped) is no revert target for a port commit."""
+    r, fork, pre, tgt = vrepo(tmp_path, "git commit -q --allow-empty -m nothing\n",
+                              _commit_file("m.txt"),
+                              rebase + "\n" + _commit_file("port.txt", msg="port"))
+    c = _check(r, fork, pre, tgt)
+    assert c.failed is None and [e["subject"] for e in c.extra] == ["port"]
+
+
+def test_verify_resolution_ignores_user_diff_and_apply_config(tmp_path):
+    """The patch-equivalence checks do not depend on diff/apply UI config: absorption still
+    holds and the revert guard still fires."""
+    r, fork, pre, tgt = vrepo(
+        tmp_path, _commit_file("a.txt", msg="mine") + _commit_file("b.txt", msg="two"),
+        f"echo o > o.txt && {_write_cmd('a.txt')} && git add -A && git commit -q -m landed\n",
+        "git rebase main -q")
+    _sh(r, "git config diff.noprefix true && git config color.diff always "
+           "&& git config diff.external false && git config apply.whitespace error")
+    c = _check(r, fork, pre, tgt)
+    assert c.failed is None and [e["subject"] for e in c.extra] == []
+    _sh(r, "git revert --no-edit HEAD")
+    bad = _check(r, fork, pre, tgt)
+    assert bad.failed and "reverts campaign commit" in bad.failed
+
+
+def test_patch_applies_unusable_patch_raises_instead_of_answering_no(grepo, monkeypatch):
+    r, fork, pre, target = grepo
+    monkeypatch.setattr(G, "_commit_patch", lambda *a: "not a patch\n")
+    with pytest.raises(G.GitError):
+        G._patch_applies(r, pre, target, reverse=False)
 
 
 def test_patch_applies_leaves_index_and_worktree_untouched(grepo):
