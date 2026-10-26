@@ -48,6 +48,8 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "idea_reconciled": ("spec_id", "idea_id", "from", "to"),     # SPEC-0257
     "idea_handed_off": ("spec_id", "idea_id", "pr_url"),         # SPEC-0280
     "loop_divergence": ("loop", "signals", "rounds"),
+    "spec_review": ("verdict", "spec_sha256", "round", "counts", "run_id"),
+    "spec_accepted": ("spec_id", "round"),
     "followup": ("persona", "severity", "title", "key", "idea_id", "origin"),
     "human_decision": ("escalation", "kind"),                  # SPEC-0235
 }

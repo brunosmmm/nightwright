@@ -16,7 +16,7 @@ from rich.text import Text
 err_console = Console(stderr=True, soft_wrap=True, highlight=False)
 
 STATE_STYLES = {
-    "QUEUED": "dim", "WAITING": "bright_blue", "OPENING": "cyan", "SPEC_WRITING": "cyan", "IMPLEMENTING": "cyan", "GATING": "blue",
+    "QUEUED": "dim", "WAITING": "bright_blue", "OPENING": "cyan", "SPEC_WRITING": "cyan", "SPEC_REVIEW": "magenta", "IMPLEMENTING": "cyan", "GATING": "blue",
     "TRIAGING": "magenta", "REVIEWING": "magenta", "CLOSING": "green", "PARKED": "yellow",
     "MERGED": "bold green", "HANDED_OFF": "bold green", "ABANDONED": "dim red",
 }

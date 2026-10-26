@@ -1,7 +1,7 @@
 ---
 id: SPEC-0214
 title: "Spec review loop inside the campaign, with in-loop acceptance"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -184,7 +184,7 @@ phase.
 
 ## Acceptance criteria
 
-- [ ] **Approve path** (FakeRunner: writer, then reviewer approve):
+- [x] **Approve path** (FakeRunner: writer, then reviewer approve):
   - SPEC_WRITING → SPEC_REVIEW → IMPLEMENTING;
   - the spec is `accepted`, and the accept commit contains only the spec file and the
     regenerated `docs/LEDGER.md` (an untracked setup file stays uncommitted);
@@ -193,18 +193,18 @@ phase.
   - the store holds the review for S;
   - the ledger has `spec_review` (round 1, with `run_id`) and `spec_accepted`;
   - the run continues to MERGED with no human step, with the spec and the feature on main.
-- [ ] **Revise path** (writer → reviewer revise → writer → reviewer approve):
+- [x] **Revise path** (writer → reviewer revise → writer → reviewer approve):
   - two `spec_review` events, rounds 1 and 2;
   - the second writer prompt contains the round-1 findings;
   - accepted after round 2.
   A `split` verdict behaves the same, and the writer prompt contains the narrowing rule.
-- [ ] **Exhaustion:** with `spec_review_max: 2` and reviewer → revise twice, the campaign
+- [x] **Exhaustion:** with `spec_review_max: 2` and reviewer → revise twice, the campaign
       parks `spec_review_exhausted` (resume_to SPEC_WRITING), with the round-2 findings in
       `pending_brief`.
   - A resume with no note runs the writer with those findings, then exactly one more review.
   - `wt queue resume --note …` puts the note in the writer prompt.
   - `--reset-loops` resets `spec_rounds`, and the next `spec_review` event's round is 3.
-- [ ] **Reviewer failure** (each case is its own test):
+- [x] **Reviewer failure** (each case is its own test):
   - a runner error retries once, then parks `spec_review_exhausted` ("reviewer failed"),
     resume_to SPEC_REVIEW;
   - a reviewer that edits the spec or another tracked file, or commits, has the worktree
@@ -214,32 +214,32 @@ phase.
   - a tracked uncommitted edit parks it before any run ("commit or discard");
   - an untracked setup file alone doesn't block;
   - resuming any of these consumes no round.
-- [ ] **Accept failure:** an injected commit failure leaves the worktree clean (the file,
+- [x] **Accept failure:** an injected commit failure leaves the worktree clean (the file,
       `docs/LEDGER.md` and the index restored) and parks `spec_review_exhausted` ("accept
       failed"). Resuming re-reviews, then accepts. A failure injected after the accept commit
       (in the `spec_at_open.md` copy) parks. The resume runs no reviewer and no writer, and
       reaches IMPLEMENTING.
-- [ ] **Cost cap:** with `cap_usd` below `total_usd + spec_reviewer budget`, a campaign
+- [x] **Cost cap:** with `cap_usd` below `total_usd + spec_reviewer budget`, a campaign
       entering SPEC_REVIEW parks `cost_cap` (resume_to SPEC_REVIEW) without a run. `wt
       queue resume --raise-cap` runs the review.
-- [ ] **Slots:** with `slots=1` and one other campaign QUEUED, the approved campaign goes
+- [x] **Slots:** with `slots=1` and one other campaign QUEUED, the approved campaign goes
       straight to IMPLEMENTING (it keeps its slot).
-- [ ] **Human change:** when the on-disk state is no longer SPEC_REVIEW at accept time, no
+- [x] **Human change:** when the on-disk state is no longer SPEC_REVIEW at accept time, no
       accept commit is made.
-- [ ] **Generic errors:** an OSError raised in the `write_spec` worker parks
+- [x] **Generic errors:** an OSError raised in the `write_spec` worker parks
       `spec_write_failed` (resume_to SPEC_WRITING). One raised in the `spec_review` worker
       parks `spec_review_exhausted` (resume_to SPEC_REVIEW).
-- [ ] **Legacy park:** resuming a `spec_review_unavailable` park without a note goes to
+- [x] **Legacy park:** resuming a `spec_review_unavailable` park without a note goes to
       SPEC_REVIEW with no writer run. With a note, it goes to SPEC_WRITING, and the note
       reaches the writer prompt.
-- [ ] **Recording:**
+- [x] **Recording:**
   - `spec_review` and `spec_accepted` validate against `schemas.EVENT_KEYS`;
   - `state.spec_review` survives `_apply`;
   - `counters.spec_rounds` matches the number of reviews since the last `--reset-loops`;
   - the reviewer run's cost is added to `state.cost.total_usd`;
   - every builtin profile has `spec_review_max`;
   - the in-campaign request's system prompt contains the campaign invariant.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -257,6 +257,24 @@ phase.
   `spec_review_unavailable` after a write change to expect SPEC_REVIEW. Its AC "Resuming
   `spec_review_unavailable` without a note re-parks it" changes to expect SPEC_REVIEW.
 
+### Test record (2026-10-25)
+
+- `uv run pytest tests/test_agentic_spec_review_loop.py tests/test_agentic_spec_writer.py`:
+  92 passed (the new SPEC-0214 tests plus SPEC-0215's, updated to expect SPEC_REVIEW after a write).
+- Full `uv run pytest -q -x`: 2404 passed, 1 skipped. `python3 tools/spec_lint.py` exits 0.
+- Manual verification: none beyond the automated end-to-end run, as planned.
+
+### As shipped (2026-10-25)
+
+- The worker steps 0 and 1 (already-accepted HEAD, tracked changes) run in a main-thread
+  `_spec_review_precheck` just before `run.start`, not in the worker, so a dirty or already
+  accepted campaign spends no run id. Behavior is as specified: `dirty` and `accepted` results
+  go straight to `_apply`.
+- `build_prompt` also takes `invariant=`, because `build_request` renders through it.
+- Resuming any of `spec_write_failed`, `spec_review_exhausted`, `spec_review_unavailable`
+  refreshes the idea snapshot and resets both retry counters (`SPEC_PHASE_PARKS`).
+- `docs/product/loop/operate.md` lists the new park reason and marks `spec_review_unavailable` legacy.
+
 ## Rollout / migration
 
 Ships through the agentic queue after SPEC-0215 and SPEC-0210. Once it lands, ideas can be
@@ -265,11 +283,11 @@ resume into SPEC_REVIEW.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

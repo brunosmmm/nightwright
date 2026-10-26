@@ -123,6 +123,17 @@ def parked(cfg, cid):
     return st["park"]
 
 
+def in_review(cfg, cid):
+    """SPEC-0214: a committed write goes on to SPEC_REVIEW (it used to park)."""
+    assert S.read_state(cfg, cid)["state"] == "SPEC_REVIEW"
+
+
+def to_writer_park(cfg, cid):
+    """Park a campaign in SPEC_REVIEW the way the old `spec_review_unavailable` park did."""
+    st = S.read_state(cfg, cid)
+    Q._park(cfg, st, "spec_review_unavailable", "test", "SPEC_WRITING")
+
+
 def ledger(cfg, cid, *types):
     return S.read_ledger(cfg, cid, types=list(types))
 
@@ -132,11 +143,11 @@ def resume(cfg, cid, **kw):
 
 
 def wrote(tmp_path, monkeypatch, extra_entries=(), **kw):
-    """Run the first write to its `spec_review_unavailable` park."""
+    """Run the first write; the campaign is then in SPEC_REVIEW."""
     cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [
         spec_written(2, i), *[e(i) if callable(e) else e for e in extra_entries]], **kw)
     Q.tick(cfg)
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)
     return cfg, repo, iid, cid
 
 
@@ -164,8 +175,7 @@ def test_write_mode_commits_spec_and_ledger(tmp_path, monkeypatch):
     wt = wtree(cfg, cid)
     path = "docs/specs/0002-add-a-thing.md"
     head_before = st["spec_write"]["head_before"]
-    assert parked(cfg, cid) == {**st["park"], "reason": "spec_review_unavailable",
-                                "resume_to": "SPEC_WRITING"}
+    in_review(cfg, cid)
     changed = _git(wt, "diff", "--name-only", head_before, "HEAD").splitlines()
     assert sorted(changed) == sorted([path, "docs/LEDGER.md"])
     assert _git(wt, "rev-list", "--count", f"{head_before}..HEAD") == "1"
@@ -223,7 +233,7 @@ def test_writer_committed_itself_and_nothing_to_regenerate(tmp_path, monkeypatch
     Q.tick(cfg, runner=Hooked(tmp_path, after=commit_all))
     st = S.read_state(cfg, cid)
     wt = wtree(cfg, cid)
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)
     assert _git(wt, "rev-list", "--count", f"{st['spec_write']['head_before']}..HEAD") == "1"
     assert _git(wt, "show", "-s", "--format=%s", "HEAD") == "writer's own commit"
     assert st["spec_id"] == "SPEC-0002"
@@ -236,7 +246,7 @@ def test_no_regenerate_entries_commits_spec_alone(tmp_path, monkeypatch):
     st, wt = S.read_state(cfg, cid), wtree(cfg, cid)
     assert _git(wt, "diff", "--name-only", st["spec_write"]["head_before"], "HEAD") \
         == "docs/specs/0002-add-a-thing.md"
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)
 
 
 # ---- AC2: revise mode --------------------------------------------------------------------------
@@ -248,11 +258,13 @@ BRIEF = {"source": "spec_reviewer", "fix_brief": "tighten the spec",
 
 
 def _revise(cfg, cid, brief):
+    if S.read_state(cfg, cid)["state"] != "PARKED":
+        to_writer_park(cfg, cid)
     with S.item_lock(cfg, cid):
         st = S.read_state(cfg, cid)
         st["pending_brief"] = brief
         S.write_state(cfg, cid, st)
-    resume(cfg, cid)
+    resume(cfg, cid, to="SPEC_WRITING")
     Q.tick(cfg)
 
 
@@ -270,7 +282,7 @@ def test_revise_mode_edits_commits_and_clears_brief(tmp_path, monkeypatch):
     assert st["spec_write"]["mode"] == "revise" and st["pending_brief"] is None
     assert "Revised: exit code 2." in (wt / "docs/specs/0002-add-a-thing.md").read_text()
     assert _git(wt, "diff", "--name-only", before, "HEAD") == "docs/specs/0002-add-a-thing.md"
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)
     modes = [e["mode"] for e in ledger(cfg, cid, "spec_written")]
     assert modes == ["write", "revise"]
 
@@ -400,7 +412,7 @@ def test_rejected_revise_keeps_the_review_findings_next_to_the_problems(tmp_path
     assert "Your last attempt was rejected" in retry and "AC 1 is untestable" in retry
     assert "narrow the spec to the first suggested split" in retry
     assert S.read_state(cfg, cid)["pending_brief"] is None
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)
 
 
 def test_epic_child_with_a_different_parent_is_rejected(tmp_path, monkeypatch):
@@ -428,7 +440,7 @@ def test_non_git_exception_in_the_worker_rolls_back_and_parks(tmp_path, monkeypa
     monkeypatch.setattr(SW, "regenerate", real)
     resume(cfg, cid)                                  # no leftover file to wedge the next run
     Q.tick(cfg)
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)
     assert S.read_state(cfg, cid)["spec_id"] == "SPEC-0002"
 
 
@@ -445,7 +457,7 @@ def test_a_leftover_spec_file_is_removed_and_never_hides_the_new_write(tmp_path,
     monkeypatch.setattr(SW, "regenerate", real_regen)
     resume(cfg, cid)
     Q.tick(cfg)
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)
     st = S.read_state(cfg, cid)
     assert st["spec_id"] == "SPEC-0002"
     assert "docs/specs/0002-add-a-thing.md" not in st["spec_write"]["untracked_before"]
@@ -692,7 +704,7 @@ def test_git_error_in_commit_parks_and_a_resume_writes(tmp_path, monkeypatch):
     assert _git(wt, "status", "--porcelain").splitlines() == ["?? setup-out.txt"]   # rolled back
     resume(cfg, cid)
     Q.tick(cfg)
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)
     assert S.read_state(cfg, cid)["spec_id"] == "SPEC-0002"
     assert _git(wt, "show", "-s", "--format=%s", "HEAD").startswith("wt(")
     assert [e["type"] for e in S.read_ledger(cfg, cid) if e["type"] == "run.end"] \
@@ -739,7 +751,7 @@ def test_cost_cap_parks_without_a_run_and_raise_cap_resumes(tmp_path, monkeypatc
     assert S.read_state(cfg, cid)["counters"]["runs"] == 0
     resume(cfg, cid, raise_cap=10.0)
     Q.tick(cfg)
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)
 
 
 def test_empty_brief_in_revise_mode_wins_over_the_cap():
@@ -773,19 +785,20 @@ def test_resume_spec_write_failed_with_note_refreshes_idea_and_resets_retries(tm
     Q.tick(cfg)
     p = prompt(cfg, cid, 3)
     assert "please keep it small" in p and "frobnicators" in p
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)
 
 
-def test_resume_review_unavailable_without_note_reparks_with_note_revises(tmp_path, monkeypatch):
+def test_resume_review_unavailable_without_note_reviews_with_note_revises(tmp_path, monkeypatch):
     cfg, repo, iid, cid = wrote(tmp_path, monkeypatch, [
         lambda i: spec_written(2, i, mode="revise", extra_body="noted")])
-    resume(cfg, cid)
-    Q.tick(cfg)
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    to_writer_park(cfg, cid)
+    resume(cfg, cid)                                  # SPEC-0214: no note goes to the review
+    assert S.read_state(cfg, cid)["state"] == "SPEC_REVIEW"
     assert S.read_state(cfg, cid)["counters"]["runs"] == 1
+    to_writer_park(cfg, cid)
     resume(cfg, cid, note="mention the exit code")
     Q.tick(cfg)
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)
     st = S.read_state(cfg, cid)
     assert st["counters"]["runs"] == 2 and st["spec_write"]["mode"] == "revise"
     assert "mention the exit code" in prompt(cfg, cid, 2)
@@ -796,7 +809,7 @@ def test_legacy_spec_writer_unavailable_park_resumes_into_the_writer(tmp_path, m
     Q._park(cfg, S.read_state(cfg, cid), "spec_writer_unavailable", "old", "SPEC_WRITING")
     resume(cfg, cid)
     Q.tick(cfg)
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)
     assert S.read_state(cfg, cid)["spec_id"] == "SPEC-0002"
 
 
@@ -824,7 +837,7 @@ def test_epic_child_is_written_with_the_parent_and_the_prompt_names_the_epic(tmp
                                 lambda i: [spec_written(101, i, epic="SPEC-0100")],
                                 epic="SPEC-0100")
     Q.tick(cfg)
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)
     p = prompt(cfg, cid)
     assert "The big epic" in p and "SPEC-0099: Sibling child" in p and "parent: SPEC-0100" in p
     text = (wtree(cfg, cid) / "docs/specs/0101-add-a-thing.md").read_text()
@@ -903,7 +916,7 @@ def test_two_campaigns_in_one_tick_get_different_numbers(tmp_path, monkeypatch):
     Q.tick(cfg, runner=Smart())
     ids = {S.read_state(cfg, c)["spec_id"] for c in cids}
     assert len(ids) == 2 and None not in ids
-    assert {parked(cfg, c)["reason"] for c in cids} == {"spec_review_unavailable"}
+    assert {S.read_state(cfg, c)["state"] for c in cids} == {"SPEC_REVIEW"}
 
 
 # ---- profiles, placeholder parity --------------------------------------------------------------------------

@@ -206,6 +206,12 @@ You are one run of `wt spec review` on spec `{{spec_id}}`. There is no campaign 
 - Finish by emitting the JSON verdict for your persona. A program parses it; nothing else
   you print is read."""
 
+SPEC_REVIEW_CAMPAIGN_INVARIANT = """\
+## wt spec review invariants (read before anything else)
+
+You are the spec-review step of campaign {{campaign}} on {{spec_id}}, in its worktree. Read only.
+Finish with the JSON verdict."""
+
 SPEC_WRITER_INVARIANT = """\
 ## wt spec writer invariants (read before anything else)
 
@@ -729,10 +735,12 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
     return ctx
 
 
-def build_prompt(persona, ctx: dict) -> str:
-    """Persona template + invariant block, both rendered from `ctx`. Deterministic."""
+def build_prompt(persona, ctx: dict, invariant: str | None = None) -> str:
+    """Persona template + invariant block, both rendered from `ctx`. Deterministic.
+    `invariant` replaces the persona's own block (SPEC-0214)."""
     p = get_persona(persona) if isinstance(persona, str) else persona
-    return render(p.template, ctx).rstrip("\n") + "\n\n" + render(p.invariant, ctx) + "\n"
+    inv = p.invariant if invariant is None else invariant
+    return render(p.template, ctx).rstrip("\n") + "\n\n" + render(inv, ctx) + "\n"
 
 
 def prompt_sha256(prompt: str) -> str:
@@ -751,14 +759,15 @@ def _gate_tool_patterns(project_cfg) -> list[str]:
 
 
 def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
-                  previous=None, extra=None) -> RunRequest:
+                  previous=None, extra=None, invariant=None) -> RunRequest:
     """Turn profile + project config + campaign state into a `RunRequest` for `persona`.
 
     Model / effort / budget come from the profile's persona settings. The implementer's
     permission mode follows the project (`agents.permission_mode`, default bypassPermissions,
     so a project can opt into an allowlist); read-only personas keep the profile's mode and run
     `--restricted`. The implementer's allowlist is the project's `agents.allowed_tools` plus a
-    `Bash(<gate cmd>*)` pattern per gate. `extra` = additional prompt values (`triage_input`)."""
+    `Bash(<gate cmd>*)` pattern per gate. `extra` = additional prompt values (`triage_input`).
+    `invariant` overrides the persona's invariant block (the in-campaign spec reviewer)."""
     p = get_persona(persona)
     settings = persona_settings(profile, persona)
     repo = state.get("repo") or {}
@@ -792,8 +801,8 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         env["WT_REBASE_TARGET"] = str(ctx.get("rebase_target") or "")
     return RunRequest(
         persona=persona,
-        prompt=build_prompt(p, ctx),
-        system_append=render(p.invariant, ctx),
+        prompt=build_prompt(p, ctx) if invariant is None else build_prompt(p, ctx, invariant),
+        system_append=render(p.invariant if invariant is None else invariant, ctx),
         cwd=worktree,
         model=str(settings.get("model") or "sonnet"),
         effort=settings.get("effort"),

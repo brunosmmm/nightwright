@@ -61,7 +61,8 @@ it would do.
 | `implementer_blocked` | The implementer reported the spec can't be built as written | Read its blockers. Usually the spec needs a fix: rework it |
 | `review_escalated` | The conformance reviewer produced no usable verdict twice | Re-run the review (resume to REVIEWING), or read the diff yourself |
 | `spec_write_failed` | The spec writer's output was rejected twice (wrong file, bad front matter, missing section, placeholder, failing generated-file command), it answered `blocked`, or its idea's `:EPIC:` names no epic spec | Read the detail; resume with a `--note` to steer the writer (the idea snapshot is refreshed and the retry count reset), or abandon |
-| `spec_review_unavailable` | The spec was written and committed on the campaign branch, and there is no spec review step yet | Resume with a `--note` to have the writer revise it, or abandon |
+| `spec_review_exhausted` | The spec review loop stopped: `spec_review_max` reviews without approval (resumes to the writer, which revises against the last findings), the reviewer failed twice or changed the worktree, the worktree had uncommitted tracked changes, or the accept commit failed (these resume to the review) | Read the detail. Resume (add a `--note` to steer the writer; `--reset-loops` restores the review rounds), or abandon |
+| `spec_review_unavailable` | Legacy park (the spec review is now part of the campaign) | Resume: it goes to the spec review, or to the writer when you give a `--note` |
 | `spec_writer_unavailable` | Legacy park of an idea campaign from before the spec writer shipped | Resume: it now runs the writer |
 | `rebase_conflict` | Main moved and the branch no longer rebases cleanly | Resolve on the branch, or resume to GATING after main settles. Generated-file conflicts are resolved automatically |
 | `base_moving` | Main changed while the close step was merging | Resume; it retries the close on the new main |
