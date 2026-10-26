@@ -1765,16 +1765,20 @@ def _print_review(review, pick):
             console.print("  xl: split recommended, no profile", highlight=False)
         elif pick:
             console.print(f"  → profile [bold]{pick['profile']}[/]  [dim]{pick['reason']}[/]")
-    if review.get("findings"):
+    findings = [f for f in review.get("findings") or [] if isinstance(f, dict)] \
+        if isinstance(review.get("findings"), list) else []
+    if findings:
         from rich.table import Table
         table = Table(show_header=True, header_style="bold")
         for col in ("severity", "section", "title", "detail"):
             table.add_column(col, overflow="fold")
-        for f in review["findings"]:
-            table.add_row(f.get("severity", ""), f.get("section", ""), f.get("title", ""),
-                          f.get("detail", ""))
+        for f in findings:
+            table.add_row(*(str(f.get(k) or "") for k in ("severity", "section", "title", "detail")))
         console.print(table)
-    for sp in review.get("suggested_splits") or []:
+    splits = review.get("suggested_splits")
+    for sp in splits if isinstance(splits, list) else []:
+        if not isinstance(sp, dict):
+            continue
         console.print(f"  split: [bold]{sp.get('title')}[/] — {sp.get('scope', '')}",
                       highlight=False)
 
@@ -1887,19 +1891,19 @@ def spec_reviews_cmd(cfg, verdict, as_json):
     import sys
 
     from .agentic.spec_review import all_latest_reviews
-    rows = [r for r in all_latest_reviews(cfg) if not verdict or r["verdict"] == verdict]
+    every = all_latest_reviews(cfg)
+    rows = [r for r in every if not verdict or r["verdict"] == verdict]
     if as_json:
         _json.dump({"schema": "wt.spec.reviews.v1", "reviews": rows}, sys.stdout, indent=2,
                    ensure_ascii=False)
         sys.stdout.write("\n")
         return
-    if not rows:
-        console.print("[dim]no stored spec reviews[/]")
-        return
     from rich.table import Table
-    table = Table(show_header=True, header_style="bold")
+    table = Table(show_header=True, header_style="bold", box=None,
+                  pad_edge=False, collapse_padding=True)
     for col in ("spec", "verdict", "size", "tone", "findings", "reviewed", "current"):
-        table.add_column(col, overflow="fold", no_wrap=col != "tone")
+        table.add_column(col, overflow="fold", no_wrap=col not in ("tone", "findings"),
+                         min_width=20 if col == "findings" else None)
     order = ("must_fix", "major", "minor", "nit")
     for r in rows:
         counts = r["counts"]
@@ -1907,9 +1911,12 @@ def spec_reviews_cmd(cfg, verdict, as_json):
         found = " · ".join(f"{counts[s]} {s}" for s in sevs) or "-"
         at = str(r.get("reviewed_at") or "")[:16].replace("T", " ")
         cur = {True: "yes", False: "edited", None: "?"}[r["matches_current"]]
-        table.add_row(r["spec_id"], r["verdict"] or "", r.get("size") or "-",
-                      r.get("tone") or "-", found, at or "-", cur)
+        table.add_row(r["spec_id"], str(r["verdict"] or ""), str(r.get("size") or "-"),
+                      str(r.get("tone") or "-"), found, at or "-", cur)
     console.print(table)
+    if not rows:
+        console.print(f"[dim]no {verdict} spec reviews[/]" if every and verdict
+                      else "[dim]no stored spec reviews[/]")
 
 
 @spec_group.command("verify")

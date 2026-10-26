@@ -215,13 +215,14 @@ def show_payload(cfg, spec_path, spec_id) -> dict | None:
 def all_latest_reviews(cfg) -> list:
     """`wt spec reviews` (SPEC-0242): one row per spec id in the review store, its latest review.
     `matches_current` is None when the spec id no longer resolves (another repository's `--path`
-    review, a deleted spec). Ids without a readable review are skipped."""
+    review, a deleted spec). The spec resolves as `wt spec review --show` does, from the checkout
+    of the current directory. Ids without a readable review are skipped."""
     root = Path(cfg["data_dir"]) / "agentic" / REVIEWS_DIRNAME
     rows = []
     for d in sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
         spec_id = d.name
         try:
-            path = SP.resolve_spec_path(cfg, spec_id)
+            path = SP.resolve_spec_path_for_cwd(cfg, spec_id)[0]
         except ValueError:
             path = None
         review = latest_review(cfg, spec_id, path)
@@ -418,8 +419,9 @@ def read_journal(cfg, *, since_ts=None, tail=2000) -> list:
 
 def _counts(findings) -> dict:
     c: dict = {}
-    for f in findings or []:
-        sev = f.get("severity") or "unknown"
+    for f in findings if isinstance(findings, list) else []:
+        sev = f.get("severity") if isinstance(f, dict) else None
+        sev = sev if sev and isinstance(sev, str) else "unknown"
         c[sev] = c.get(sev, 0) + 1
     return c
 

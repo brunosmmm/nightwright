@@ -150,6 +150,10 @@ renderer, extracted from `spec_review_cmd` as `_print_review`.
   revise with no reviewer run and no journal record; edited/approved status lines and profile;
   `--json` payload preferring the current-sha review; no-review hint, `--show --force`, `--path`
   scope; `wt spec reviews` list, `--verdict`, `--json`, unresolvable id, empty store): pass.
+- Review round 2: added tests for skipping empty/corrupt store directories, the findings
+  column order and `-`, malformed stored reviews, cwd-worktree comparison, and the empty/filtered
+  messages; `tests/test_spec_review_show.py` (11 tests), `tests/test_agentic_spec_review.py` and
+  `tests/test_spec_review_store.py` pass (83 passed).
 - Regression: `tests/test_agentic_spec_review.py`, `tests/test_spec_review_store.py` pass
   unchanged; full `uv run pytest` and `python3 tools/spec_lint.py` pass (see the run below).
 
@@ -166,6 +170,17 @@ Review fixes: when a store directory's id resolves locally but holds only anothe
 stored review missing `spec_id`/`verdict` or with a non-numeric `cost_usd`. The `--path FILE
 --show` scope test now stores a newer SPEC-0007 review of a different existing repository and
 asserts it is not shown.
+
+Second review round: `wt spec reviews` resolves each spec with `resolve_spec_path_for_cwd`, so
+inside a linked worktree it compares against that worktree's copy exactly as `--show` does
+(elsewhere: the registered checkout). A review whose recorded `repo_root` no longer exists
+still counts as the local spec's (a removed campaign worktree is the common case) and shows
+`edited`/`yes`, not `?`. The list path tolerates malformed stored reviews (`findings` not a
+list of objects, a non-string severity or size: counted as `unknown`/ignored, never a
+traceback), and `_print_review` skips non-object findings and splits. An empty store prints
+the (empty) table and `no stored spec reviews`; `--verdict V` matching nothing prints `no V
+spec reviews`. The table has no box borders and collapsed padding so the findings column
+(`1 must_fix · 1 major`) and `current` fit in 80 columns.
 
 ## Rollout / migration
 
