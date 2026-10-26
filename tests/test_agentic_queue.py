@@ -1218,7 +1218,6 @@ def test_overdue_threshold_and_setting(tmp_path):
     assert _pk(cfg, at(610))[cid]["overdue"] is True
     ev_at(cfg, cid, "note", {"text": "done", "author": "conductor"}, ago_s=-400)
     assert _pk(cfg, at(610))[cid]["overdue"] is False
-||||||| parent of f3d7d49 (wt(SPEC-0237-20261025-bc02): implementer run 001 — Workflow profiles are now YAML files in four layers: builtin package dat)
 
 
 
