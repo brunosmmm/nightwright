@@ -1360,7 +1360,12 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     res.spec_review = sr = {"sha": _spec_sha(spec_file), "modified": None}
     try:
         head = git.rev_parse(worktree)
-        res.run_result = ctx.runner.run(req)
+        try:
+            res.run_result = ctx.runner.run(req)
+        except Exception as e:                  # the reset below must still run
+            res.error = getattr(e, "tail", None) or str(e)
+            if not isinstance(e, (GitError, ValueError, OSError)):
+                res.error = repr(e)
         res.interrupted = ctx.stop.is_set()
         if git.rev_parse(worktree) != head or _spec_sha(spec_file) != sr["sha"] \
                 or not git.is_clean(worktree, untracked=False):

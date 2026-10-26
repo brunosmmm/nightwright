@@ -3,6 +3,7 @@ SPEC-0215's FakeRunner helpers and ledger fixture repo (`test_agentic_spec_write
 import itertools
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -197,6 +198,18 @@ def test_resume_without_a_note_revises_then_gets_one_more_review(tmp_path, monke
     assert [e["round"] for e in reviews(cfg, cid)] == [1, 2, 3]
 
 
+def test_an_approve_on_the_review_past_the_limit_still_accepts(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = exhaust(tmp_path, monkeypatch, [writes, reviewed("approve")])
+    resume(cfg, cid)
+    Q.tick(cfg)                                     # the writer revises
+    in_review(cfg, cid)
+    Q.tick(cfg)                                     # review 3 of a limit of 2: approve wins
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "IMPLEMENTING" and st["counters"]["spec_rounds"] == 3
+    assert [e["round"] for e in reviews(cfg, cid)] == [1, 2, 3]
+    assert "status: accepted" in (wtree(cfg, cid) / SPEC).read_text()
+
+
 def test_resume_with_a_note_puts_it_in_the_writer_prompt(tmp_path, monkeypatch):
     cfg, repo, iid, cid = exhaust(tmp_path, monkeypatch, [writes])
     resume(cfg, cid, note="keep it to the CLI")
@@ -275,6 +288,69 @@ def test_reviewer_modifying_the_worktree_is_reset_retried_and_parked(tmp_path, m
     assert "sneaky" not in (wt / SPEC).read_text()
 
 
+def test_resuming_the_worktree_modifying_reviewer_park_costs_no_round(tmp_path, monkeypatch):
+    bad = {"edits": [{"path": SPEC, "append": "\nsneaky\n"}]}
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [
+        reviewed("approve", **bad), reviewed("approve", **bad), reviewed("approve")])
+    Q.tick(cfg)
+    Q.tick(cfg)
+    assert parked(cfg, cid)["detail"] == "reviewer failed: reviewer modified the worktree"
+    assert S.read_state(cfg, cid)["counters"].get("spec_rounds", 0) == 0
+    resume(cfg, cid)
+    assert S.read_state(cfg, cid)["state"] == "SPEC_REVIEW"
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "IMPLEMENTING" and st["counters"]["spec_rounds"] == 1
+    assert [e["round"] for e in reviews(cfg, cid)] == [1]
+    assert "sneaky" not in (wtree(cfg, cid) / SPEC).read_text()
+
+
+def test_a_timed_out_review_is_a_failed_run(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [
+        reviewed(timed_out=True), reviewed(timed_out=True)])
+    Q.tick(cfg)
+    assert S.read_state(cfg, cid)["state"] == "SPEC_REVIEW"
+    Q.tick(cfg)
+    park = parked(cfg, cid)
+    assert park["detail"] == "reviewer failed: the run timed out" and park["resume_to"] == "SPEC_REVIEW"
+    assert not reviews(cfg, cid)
+
+
+def test_an_interrupted_review_stays_in_spec_review_and_counts_no_round(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed("approve")])
+    stop = threading.Event()
+    report = Q.tick(cfg, stop=stop, runner=Hooked(tmp_path, after=lambda req: stop.set()))
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_REVIEW" and report.steps[-1]["reason"] == "interrupted"
+    assert not reviews(cfg, cid) and st["counters"].get("spec_rounds", 0) == 0
+    assert "status: accepted" not in (wtree(cfg, cid) / SPEC).read_text()
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("bug"), OSError("disk full")])
+def test_a_runner_that_raises_after_editing_is_reset_and_its_run_closed(tmp_path, monkeypatch, exc):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed("approve")])
+    wt = wtree(cfg, cid)
+    head = _git(wt, "rev-parse", "HEAD")
+
+    def edit_then_raise(req):
+        with open(wt / SPEC, "a") as f:
+            f.write("\nsneaky\n")
+        raise exc
+
+    Q.tick(cfg, runner=Hooked(tmp_path, before=edit_then_raise))
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_review_exhausted" and park["resume_to"] == "SPEC_REVIEW"
+    assert _git(wt, "rev-parse", "HEAD") == head
+    assert _git(wt, "status", "--porcelain", "--untracked-files=no") == ""
+    assert "sneaky" not in (wt / SPEC).read_text()
+    starts = [e["run_id"] for e in ledger(cfg, cid, "run.start") if e["run_id"].endswith("spec_reviewer")]
+    ends = [e["run_id"] for e in ledger(cfg, cid, "run.end") if e["run_id"].endswith("spec_reviewer")]
+    assert starts and starts == ends
+    resume(cfg, cid)                                # the clean worktree needs no manual recovery
+    Q.tick(cfg)
+    assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
+
+
 def test_tracked_uncommitted_edit_parks_before_any_run(tmp_path, monkeypatch):
     cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed("approve")])
     wt = wtree(cfg, cid)
@@ -330,6 +406,34 @@ def test_commit_failure_restores_the_worktree_then_a_resume_re_reviews_and_accep
     assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
     assert "status: accepted" in (wt / SPEC).read_text()
     assert len(reviews(cfg, cid)) == 2
+
+
+def test_regeneration_failure_restores_the_spec_and_the_ledger_file(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed(), reviewed()])
+    wt = wtree(cfg, cid)
+    head = _git(wt, "rev-parse", "HEAD")
+    ledger_before = (wt / "docs/LEDGER.md").read_text()
+    real = Q.SW.regenerate
+
+    def failing(worktree, regen, snap):
+        real(worktree, regen, snap)                 # the generated file really changes first
+        assert (wt / "docs/LEDGER.md").read_text() != ledger_before
+        return ["regenerate exploded"], []
+
+    monkeypatch.setattr(Q.SW, "regenerate", failing)
+    Q.tick(cfg)
+    monkeypatch.setattr(Q.SW, "regenerate", real)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_review_exhausted" and park["resume_to"] == "SPEC_REVIEW"
+    assert park["detail"].startswith("accept failed: ") and "regenerate exploded" in park["detail"]
+    assert _git(wt, "rev-parse", "HEAD") == head
+    assert _git(wt, "status", "--porcelain", "--untracked-files=no") == ""
+    assert _git(wt, "diff", "--cached", "--name-only") == ""
+    assert "status: accepted" not in (wt / SPEC).read_text()
+    assert (wt / "docs/LEDGER.md").read_text() == ledger_before
+    resume(cfg, cid)
+    Q.tick(cfg)
+    assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
 
 
 def test_failure_after_the_accept_commit_resumes_without_a_review(tmp_path, monkeypatch):
@@ -420,8 +524,8 @@ def test_exception_in_the_review_worker_parks_spec_review_exhausted(tmp_path, mo
     Q.tick(cfg, runner=Hooked(tmp_path, before=boom(exc)))
     park = parked(cfg, cid)
     assert park["reason"] == "spec_review_exhausted" and park["resume_to"] == "SPEC_REVIEW"
-    assert park["detail"].startswith("spec_review step failed: ") and "disk full" in park["detail"] \
-        or "bug" in park["detail"]
+    assert park["detail"].startswith("spec_review step failed: ")
+    assert ("disk full" if isinstance(exc, OSError) else "bug") in park["detail"]
     assert S.read_state(cfg, cid)["counters"].get("spec_rounds", 0) == 0
 
 

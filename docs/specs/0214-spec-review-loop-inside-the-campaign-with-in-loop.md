@@ -262,6 +262,8 @@ phase.
 - `uv run pytest tests/test_agentic_spec_review_loop.py tests/test_agentic_spec_writer.py`:
   92 passed (the new SPEC-0214 tests plus SPEC-0215's, updated to expect SPEC_REVIEW after a write).
 - Full `uv run pytest -q -x`: 2404 passed, 1 skipped. `python3 tools/spec_lint.py` exits 0.
+- After the review-loop fixes: `uv run pytest tests/test_agentic_spec_review_loop.py`: 34 passed;
+  full `uv run pytest -q -x`: 2411 passed, 1 skipped; `python3 tools/spec_lint.py` exits 0.
 - Manual verification: none beyond the automated end-to-end run, as planned.
 
 ### As shipped (2026-10-25)
@@ -273,6 +275,12 @@ phase.
 - `build_prompt` also takes `invariant=`, because `build_request` renders through it.
 - Resuming any of `spec_write_failed`, `spec_review_exhausted`, `spec_review_unavailable`
   refreshes the idea snapshot and resets both retry counters (`SPEC_PHASE_PARKS`).
+- `_do_spec_review` catches any exception from the runner, still runs the reset-to-H check, and
+  returns it as `error`, so a crashing runner leaves a clean worktree and `_apply` closes the
+  run (`run.end`, cost) before parking `spec_review_exhausted` ("spec_review step failed: …").
+- Review-round tests added: an approve one past the limit accepts, the regenerate-failure and
+  worktree-modifying-reviewer parks, timeout and interrupted reviews, a runner that raises
+  after editing the spec.
 - `docs/product/loop/operate.md` lists the new park reason and marks `spec_review_unavailable` legacy.
 
 ## Rollout / migration
