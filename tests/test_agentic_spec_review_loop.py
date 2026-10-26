@@ -381,9 +381,9 @@ def test_an_untracked_file_alone_does_not_block(tmp_path, monkeypatch):
 
 # ---- accept failure --------------------------------------------------------------------------------
 
-def test_commit_failure_restores_the_worktree_then_a_resume_re_reviews_and_accepts(
+def test_commit_failure_restores_the_worktree_then_a_resume_accepts_without_a_second_review(
         tmp_path, monkeypatch):
-    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed(), reviewed()])
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed()])
     wt = wtree(cfg, cid)
     head = _git(wt, "rev-parse", "HEAD")
     real = gitops.git
@@ -407,11 +407,36 @@ def test_commit_failure_restores_the_worktree_then_a_resume_re_reviews_and_accep
     Q.tick(cfg)
     assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
     assert "status: accepted" in (wt / SPEC).read_text()
-    assert len(reviews(cfg, cid)) == 2
+    assert len(reviews(cfg, cid)) == 1              # SPEC-0230: no second review, no new run
+    (acc,) = ledger(cfg, cid, "spec_accepted")
+    assert acc["round"] == 1
+
+
+def test_a_human_edit_of_the_approved_spec_re_reviews_after_an_accept_failure(
+        tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed(), reviewed()])
+    wt = wtree(cfg, cid)
+    real = gitops.git
+
+    def failing(repo_, *args, **kw):
+        if args and args[0] == "commit":
+            raise GitError(["git", "commit"], 1, "boom")
+        return real(repo_, *args, **kw)
+
+    monkeypatch.setattr(gitops, "git", failing)
+    Q.tick(cfg)
+    monkeypatch.setattr(gitops, "git", real)
+    assert parked(cfg, cid)["resume_to"] == "SPEC_REVIEW"
+    (wt / SPEC).write_text((wt / SPEC).read_text() + "\nA human sentence.\n")
+    _git(wt, "commit", "-am", "human edit")
+    resume(cfg, cid)
+    Q.tick(cfg)
+    assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
+    assert [e["round"] for e in reviews(cfg, cid)] == [1, 2]
 
 
 def test_regeneration_failure_restores_the_spec_and_the_ledger_file(tmp_path, monkeypatch):
-    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed(), reviewed()])
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed()])
     wt = wtree(cfg, cid)
     head = _git(wt, "rev-parse", "HEAD")
     ledger_before = (wt / "docs/LEDGER.md").read_text()
@@ -436,6 +461,7 @@ def test_regeneration_failure_restores_the_spec_and_the_ledger_file(tmp_path, mo
     resume(cfg, cid)
     Q.tick(cfg)
     assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
+    assert len(reviews(cfg, cid)) == 1
 
 
 def test_failure_after_the_accept_commit_resumes_without_a_review(tmp_path, monkeypatch):

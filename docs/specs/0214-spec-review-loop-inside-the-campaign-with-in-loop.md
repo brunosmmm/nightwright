@@ -268,6 +268,8 @@ phase.
 - After the rebase onto YAML profiles (SPEC-0237) and the SPEC-0230 single-round override:
   `uv run pytest tests/test_agentic_spec_review_loop.py tests/test_agentic_spec_writer.py`: 96
   passed; full `uv run pytest -q -x`: 2604 passed, 3 skipped; `python3 tools/spec_lint.py` exits 0.
+- Loop-3 fix: `uv run pytest tests/test_agentic_spec_review_loop.py tests/test_agentic_spec_writer.py`:
+  102 passed (accept-failure resumes assert one review; new human-edit re-review test).
 - Loop-2 fixes: `uv run pytest tests/test_agentic_spec_review_loop.py`: 36 passed (new: plain
   resume of the unchanged park, after-revision accept failures before and after the commit,
   stray-file cleanup, dirty-over-accepted precheck order).
@@ -312,6 +314,20 @@ phase.
   changed paths restored, untracked files created since the snapshot removed). An accept failure
   after a revision resumes to the accept again, never to a second review (tests added for both
   failure points).
+
+- **Loop-3 review fix: an approve whose accept failed resumes to the accept.** `_spec_review_precheck`
+  now looks up the campaign's last `spec_review` event (`_last_review_event`; `_prior_revision` is
+  that event when its verdict is revise / split). When it is `approve` and its `spec_sha256`
+  equals the current spec sha, the precheck returns `approved` and `_apply_spec_review` calls
+  `_accept_spec(committed=False, rnd=<event round>, revision=None)`: no reviewer runs and no
+  second `spec_review` event is written. When the sha differs, a human edited the approved spec
+  after the failure; the choice is deterministic: the precheck returns None and the spec is
+  re-reviewed (that is the only case where a second review of an approve happens; its round is
+  the next one). The Exhaustion / accept-failure ACs' "Resuming re-reviews, then accepts" is thereby
+  replaced by "Resuming accepts without a review" (test
+  `test_commit_failure_restores_the_worktree_then_a_resume_accepts_without_a_second_review`; the
+  regeneration-failure test asserts one review too; the human-edit case is
+  `test_a_human_edit_of_the_approved_spec_re_reviews_after_an_accept_failure`).
 
 ## Rollout / migration
 

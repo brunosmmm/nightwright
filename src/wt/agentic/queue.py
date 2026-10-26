@@ -1350,15 +1350,26 @@ def _spec_review_precheck(ctx: _Ctx, state: dict, step: Step) -> StepResult | No
         changed = _spec_sha(Path(worktree or ".") / spec.get("rel_path", "")) != prior["spec_sha256"]
         res.spec_review = {"after_revision" if changed else "unchanged": prior}
         return res
-    return None
+    last = _last_review_event(ctx.cfg, state)
+    if last is not None and last.get("verdict") == "approve" \
+            and _spec_sha(Path(worktree or ".") / spec.get("rel_path", "")) == last["spec_sha256"]:
+        res.spec_review = {"approved": last}    # an accept failed: resume it, no second review
+        return res
+    return None                         # no review yet, or a human edited the approved spec
+
+
+def _last_review_event(cfg, state: dict) -> dict | None:
+    """This campaign's last `spec_review` ledger event, or None."""
+    evs = [e for e in store.read_ledger(cfg, state["id"], types=["spec_review"])
+           if e.get("spec_sha256")]
+    return evs[-1] if evs else None
 
 
 def _prior_revision(cfg, state: dict) -> dict | None:
     """SPEC-0230: this campaign's last `spec_review` ledger event when its verdict was `revise`
     or `split` (the one review already ran), else None."""
-    evs = [e for e in store.read_ledger(cfg, state["id"], types=["spec_review"])
-           if e.get("verdict") in ("revise", "split") and e.get("spec_sha256")]
-    return evs[-1] if evs else None
+    last = _last_review_event(cfg, state)
+    return last if last and last.get("verdict") in ("revise", "split") else None
 
 
 def _revision_pending_brief(cfg, state: dict, prior: dict) -> dict:
@@ -2262,6 +2273,9 @@ def _apply_spec_review(ctx, state, profile, counters, res, row, events, finish):
         return _accept_spec(ctx, state, counters, events, finish, committed=True,
                             rnd=(state.get("spec_review") or {}).get("round"),
                             revision=_prior_revision(cfg, state))
+    if sr.get("approved"):              # an approve whose accept failed: accept again, no review
+        return _accept_spec(ctx, state, counters, events, finish, committed=False,
+                            rnd=sr["approved"].get("round"), revision=None)
     if sr.get("after_revision"):        # SPEC-0230: the revision is accepted, no second review
         return _accept_spec(ctx, state, counters, events, finish, committed=False,
                             rnd=sr["after_revision"].get("round"), revision=sr["after_revision"])
