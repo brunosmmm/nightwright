@@ -320,6 +320,14 @@ contract.
   notes, CSV encoding), the read-only guard and the missing-`pyarrow` path.
 - `uv run --with pyarrow pytest tests/test_agentic_campaign_export.py`: 43 passed (loop 2); earlier `-k parquet`: 2 passed
   (typed Parquet round trip and missing-pyarrow path).
+- Loop 3 (review fixes): `uv run pytest tests/test_agentic_campaign_export.py`: 47 passed, 1
+  skipped; with `--with pyarrow`: 48 passed. New cases: counters that differ from the ledger pin
+  `runs`/`gate_runs`/`parks` to `state.counters`; an `open` event later than `created_at`
+  separates the `time_in_state_s` and `wall_s` starts; `loop_max` follows an overridden profile;
+  fix-reason transitions to other states and IMPLEMENTING transitions with other reasons are not
+  counted as loops; off-type values (float review score, non-string `ac`/`title`) are coerced to
+  the declared column types, including through Parquet; a foreign subdirectory in `--out` cannot
+  make the failure cleanup raise.
 - Manual: `wt campaign export --json` against the real data dir (46 campaigns, 196 runs, 393
   findings); sizing, profile and cost for the latest campaigns match `wt campaign show`.
 - Full `uv run pytest`: 2211 passed, 2 skipped. `python3 tools/spec_lint.py` (after
@@ -328,6 +336,11 @@ contract.
 
 ### As shipped (2026-10-25)
 
+- Every row is coerced to the declared column types when it is projected (`str` of non-strings,
+  `int` rounded from floats, null when a value cannot convert), so one off-type value from an LLM
+  verdict or config cannot fail a Parquet export or ship the wrong type in JSONL/CSV. The failure
+  cleanup removes only the export's own files (and the new directory when it is empty), ignoring
+  OS errors, so it cannot mask the `export failed` error.
 - As designed. Small additions: `wt campaign export --json` prints the manifest plus an `out` key
   with the export directory (the `manifest.json` file does not carry it); `--json` is ignored
   with `--stdout`. A campaign with a null/unparseable `created_at` is dropped when `--since` is

@@ -92,6 +92,29 @@ def _secs(a, b):
     return max(0, int((b - a).total_seconds())) if a and b else None
 
 
+def _coerce(value, typ):
+    """`value` as the declared column type, or null when it cannot be. Values from LLM verdicts
+    and config (a float review score, a non-string `ac`) must not break a typed column."""
+    if value is None or typ == "json":
+        return value
+    try:
+        if typ == "str":
+            return value if isinstance(value, str) else (
+                json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list))
+                else str(value))
+        if typ == "bool":
+            return bool(value)
+        if typ == "float":
+            return float(value)
+        return value if type(value) is int else int(round(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _project(row, columns):
+    return {name: _coerce(row.get(name), typ) for name, typ in columns}
+
+
 def _frac(num, den):
     if num is None or not den:
         return None
@@ -223,7 +246,7 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
         "close_mode": close.get("mode"), "merged_sha": close.get("merged_sha"),
     }
     row["signals"] = signals(row)
-    return {name: row.get(name) for name, _ in CAMPAIGN_COLUMNS}
+    return _project(row, CAMPAIGN_COLUMNS)
 
 
 def _active_states():
@@ -240,7 +263,7 @@ def run_rows(cfg, crow: dict) -> list[dict]:
                "input_tokens": usage.get("input_tokens"),
                "output_tokens": usage.get("output_tokens"),
                "cache_read_tokens": usage.get("cache_read_input_tokens")}
-        out.append({name: row.get(name) for name, _ in RUN_COLUMNS})
+        out.append(_project(row, RUN_COLUMNS))
     return out
 
 
@@ -252,7 +275,7 @@ def finding_rows(crow: dict, events: list[dict]) -> list[dict]:
         elif e.get("type") == "finding":
             row = {**{k: crow.get(k) for k in ("campaign", "spec_id")}, **e, "state_at": cur,
                    "detail": (e.get("detail") or None) and str(e["detail"])[:FINDING_DETAIL_MAX]}
-            out.append({name: row.get(name) for name, _ in FINDING_COLUMNS})
+            out.append(_project(row, FINDING_COLUMNS))
     return out
 
 

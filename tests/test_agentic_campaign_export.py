@@ -52,9 +52,9 @@ def cfg(tmp_path):
             "agentic": {"default_profile": "balanced"}}
 
 
-def make(cfg, cid, events=(), *, created=0, spec_at_open=SPEC_AT_OPEN, **state):
+def make(cfg, cid, events=(), *, created=0, opened=None, spec_at_open=SPEC_AT_OPEN, **state):
     """A campaign whose ledger is exactly `events` (`(minute, type, payload)`), written with
-    explicit timestamps: an `open` event at `created` first."""
+    explicit timestamps: an `open` event first, at `opened` (default: `created`)."""
     st = {"id": cid, "spec_id": "SPEC-0001", "project": "P", "kind": "spec",
           "profile": "balanced", "state": "QUEUED", "created_at": ts(created),
           "counters": {"loops": 0, "runs": 0, "gate_runs": 0, "gate_retries": 0,
@@ -62,8 +62,8 @@ def make(cfg, cid, events=(), *, created=0, spec_at_open=SPEC_AT_OPEN, **state):
           "cost": {"total_usd": 0.0, "cap_usd": None, "by_persona": {}}}
     st.update(state)
     S.create_campaign(cfg, st)
-    lines = [{"schema": SC.LEDGER_SCHEMA, "ts": ts(created), "seq": 1, "campaign": cid,
-              "type": "open", "by": "t",
+    lines = [{"schema": SC.LEDGER_SCHEMA, "ts": ts(created if opened is None else opened), "seq": 1,
+              "campaign": cid, "type": "open", "by": "t",
               **SC.with_defaults("open", {"spec_id": "SPEC-0001", "project": "P"})}]
     for i, (minute, etype, payload) in enumerate(events, start=2):
         rec = {"schema": SC.LEDGER_SCHEMA, "ts": ts(minute), "seq": i, "campaign": cid,
@@ -136,8 +136,8 @@ def full_campaign(cfg, cid="C-FULL"):
         (190, "transition", tr("CLOSING", "MERGED", "merged")),
     ]
     return make(cfg, cid, events, state="MERGED", profile="frugal",
-                counters={"loops": 0, "runs": 4, "gate_runs": 3, "gate_retries": 0,
-                          "triage_retries": 0, "parks": 1},
+                counters={"loops": 0, "runs": 7, "gate_runs": 5, "gate_retries": 0,
+                          "triage_retries": 0, "parks": 2},   # != ledger (4, 3, 1): pins the source
                 cost={"total_usd": 4.0, "cap_usd": 5.0, "by_persona": {"implementer": 3.0}},
                 last_review={"score": 88},
                 close={"mode": "merge", "merged_sha": "abc123"},
@@ -236,13 +236,13 @@ def test_hand_computed_campaign_row(cfg):
     assert r["active_s"] == r["wall_s"] - (10 + 60) * 60      # not QUEUED, not PARKED
     assert r["runs_by_persona"] == {"implementer": 2, "gate_triager": 2}
     assert r["models"] == {"implementer": "m-impl2", "gate_triager": "m-tri2"}
-    assert r["gate_failures"] == 2 and r["gate_runs"] == 3
-    assert r["park_reasons"] == ["loop_exhausted"] and r["parks"] == 1
+    assert r["gate_failures"] == 2 and r["gate_runs"] == 5
+    assert r["park_reasons"] == ["loop_exhausted"] and r["parks"] == 2
     assert r["cost_usd"] == 4.0 and r["cap_usd"] == 5.0 and r["cost_cap_frac"] == 0.8
     assert r["must_fix_count"] == 1 and r["finding_count"] == 2
     assert r["waived_count"] == 1
     assert r["close_mode"] == "merge" and r["merged_sha"] == "abc123"
-    assert r["review_score"] == 88 and r["runs"] == 4
+    assert r["review_score"] == 88 and r["runs"] == 7
     assert r["cost_by_persona"] == {"implementer": 3.0}
     # ledger totals, not the (reset) counters, which are all 0 in state.json
     assert r["loops"] == 2 and r["gate_retries"] == 1 and r["triage_retries"] == 1
@@ -259,6 +259,29 @@ def test_open_campaign_runs_to_now(cfg):
     assert r["wall_s"] == int((NOW - T0).total_seconds())
     assert r["time_in_state_s"]["IMPLEMENTING"] == int((NOW - T0).total_seconds()) - 20 * 60
     assert r["active_s"] == r["wall_s"] - 10 * 60
+
+
+def test_open_event_later_than_created_at(cfg):
+    """QUEUED starts at the `open` event's ts; `wall_s` starts at `created_at`."""
+    make(cfg, "C-LATE", [(12, "transition", tr("QUEUED", "OPENING")),
+                         (20, "transition", tr("OPENING", "MERGED", "x"))],
+         created=0, opened=5, state="MERGED")
+    r = row_of(cfg, "C-LATE")
+    assert r["time_in_state_s"] == {"QUEUED": 7 * 60, "OPENING": 8 * 60}
+    assert r["wall_s"] == 20 * 60 and r["ended_at"] == ts(20)
+
+
+def test_loops_count_only_fix_transitions_into_implementing(cfg):
+    make(cfg, "C-LOOPS", [
+        (1, "transition", tr("QUEUED", "OPENING", "admit")),
+        (2, "transition", tr("OPENING", "IMPLEMENTING", "opened")),
+        (3, "transition", tr("IMPLEMENTING", "GATING", "implemented")),
+        (4, "transition", tr("GATING", "PARKED", "triage_fix")),       # fix reason, other target
+        (5, "transition", tr("PARKED", "IMPLEMENTING", "resume")),     # IMPLEMENTING, other reason
+        (6, "transition", tr("IMPLEMENTING", "REVIEWING", "review_fix")),
+        (7, "transition", tr("REVIEWING", "IMPLEMENTING", "review_fix")),    # the only one
+    ], state="IMPLEMENTING")
+    assert row_of(cfg, "C-LOOPS")["loops"] == 1
 
 
 def test_terminal_without_terminal_transition(cfg):
@@ -285,6 +308,13 @@ def test_sizing_ac_count_loop_max(cfg):
         "s", "mvp", "review", "small")
     assert r["ac_count"] == 3 and r["spec_lines"] == len(SPEC_AT_OPEN.splitlines())
     assert r["loop_max"] == 2                       # builtin `frugal`
+
+
+def test_loop_max_follows_current_profile_config(cfg):
+    full_campaign(cfg)
+    assert row_of(cfg, "C-FULL")["loop_max"] == 2
+    cfg["agentic"]["profiles"] = {"frugal": {"loop_max": 7}}
+    assert row_of(cfg, "C-FULL")["loop_max"] == 7           # not what was in force during the run
 
 
 @pytest.mark.parametrize("cap,frac", [(None, None), (0, None), (4.0, 0.5), (3.0, 0.667)])
@@ -335,6 +365,31 @@ def test_finding_rows_state_at(cfg):
     assert rows[0]["files"] == ["a.py"] and len(rows[0]["detail"]) == CE.FINDING_DETAIL_MAX
     assert rows[1]["detail"] is None
     assert rows[0]["campaign"] == "C-FULL" and rows[0]["spec_id"] == "SPEC-0001"
+
+
+def test_off_type_values_are_coerced_to_the_declared_types(cfg, invoke, tmp_path):
+    make(cfg, "C-ODD", [
+        (1, "finding", {"persona": "p", "severity": "major", "ac": 3, "title": 42,
+                        "gate": ["pytest"], "detail": 7}),
+    ], last_review={"score": 92.5}, cost={"total_usd": 2, "cap_usd": 4, "by_persona": {}},
+        sizing={"size": "s", "tone": "t", "source": 1, "rationale": None})
+    t = CE.export_tables(cfg, now=NOW)
+    c, f = t["campaigns"][0], t["findings"][0]
+    assert c["review_score"] == 92 and c["cost_usd"] == 2.0
+    assert c["cap_usd"] == 4.0 and isinstance(c["cap_usd"], float)
+    assert c["profile_source"] == "1"
+    assert (f["ac"], f["title"], f["gate"], f["detail"]) == ("3", "42", '["pytest"]', "7")
+    for name, cols in CE.COLUMNS.items():
+        for row in t[name]:
+            for col, typ in cols:
+                v = row[col]
+                ok = {"str": str, "int": int, "float": float, "bool": bool, "json": object}[typ]
+                assert v is None or isinstance(v, ok), (name, col, v)
+    pq = pytest.importorskip("pyarrow.parquet")
+    d = tmp_path / "pq"
+    r = invoke("--format", "parquet", "--out", str(d))
+    assert r.exit_code == 0, r.output
+    assert pq.read_table(d / "campaigns.parquet").to_pylist()[0]["review_score"] == 92
 
 
 # ---- signals -----------------------------------------------------------------------------
@@ -640,3 +695,23 @@ def test_parquet_type_error_writes_nothing(cfg, invoke, tmp_path, monkeypatch):
     r = invoke("--format", "parquet", "--out", str(d))
     assert r.exit_code != 0 and "Expected bytes, got int" in r.output
     assert written == [] and not d.exists()
+
+
+def test_failed_write_cleanup_cannot_mask_the_error(cfg, invoke, tmp_path, monkeypatch):
+    """A foreign subdirectory (a concurrent writer) must neither crash the cleanup nor be removed."""
+    full_campaign(cfg)
+    real, calls = CE._atomic_write, []
+
+    def flaky(path, content, **kw):
+        calls.append(path)
+        if len(calls) == 3:
+            (path.parent / "foreign").mkdir()
+            raise OSError("disk full")
+        return real(path, content, **kw)
+
+    monkeypatch.setattr(CE, "_atomic_write", flaky)
+    d = tmp_path / "raced"
+    r = invoke("--out", str(d))
+    assert r.exit_code != 0 and "export failed, nothing written: disk full" in r.output
+    assert isinstance(r.exception, SystemExit)               # a ClickException, not a traceback
+    assert [p.name for p in d.iterdir()] == ["foreign"]

@@ -370,11 +370,19 @@ def attach(campaign_group):
         try:
             manifest = CE.write_export(tables, out_dir, fmt, filters=filters)
         except Exception as e:
-            # never leave a half-written export: the directory was new or empty before
-            for p in out_dir.iterdir():
-                p.unlink()
+            # never leave a half-written export: the directory was new or empty before.
+            # Best effort and limited to our own files, so cleanup cannot mask `e`.
+            for p in (*(out_dir / f"{n}.{fmt}" for n in CE.TABLES), out_dir / "manifest.json",
+                      *out_dir.glob(".wt-export-*")):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
             if not existed:
-                out_dir.rmdir()
+                try:
+                    out_dir.rmdir()
+                except OSError:
+                    pass
             raise click.ClickException(f"export failed, nothing written: {e}")
         if as_json:
             _dump_json({**manifest, "out": str(out_dir)})
