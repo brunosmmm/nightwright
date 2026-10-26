@@ -66,6 +66,8 @@ it would do.
 | `base_moving` | Main changed while the close step was merging | Resume; it retries the close on the new main |
 | `main_dirty` | Someone left uncommitted changes in the main checkout | Move that work to a branch, then resume. Never edit the main checkout while the loop runs |
 | `main_not_on_base` | The main checkout isn't on the base branch | Switch it back, then resume |
+| `gates_failed` | A merge request (`wt queue merge`) failed its re-gate; its branch is left rebased onto main | Tell the requester; once the branch is fixed, resume |
+| `worktree_dirty` | A merge request's worktree has uncommitted or untracked changes (nothing is committed for the requester) | Commit or stash them, then resume |
 | `open_failed` | Creating the worktree or a step failed unexpectedly | Read the detail and retry once; if it fails again, investigate |
 | `gh_failed` | Opening the PR (`pr` / `draft-pr` policy) failed | Check `gh auth`, then resume |
 | `config_invalid` | `.wt/project.yaml` didn't load | Fix the config. The campaign resumes **by itself** once it loads |

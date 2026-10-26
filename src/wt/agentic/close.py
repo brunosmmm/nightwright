@@ -38,6 +38,7 @@ class CloseOutcome:
     events: list = field(default_factory=list)   # [(type, payload)] for the caller to append
     attempts: int = 0                     # target-capture → merge attempts made
     retry: bool = False                   # CLOSING + redo the worktree phase (never persisted)
+    gate_detail: str = ""                 # SPEC-0233: the red re-gate of a merge request, for its park
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,31 @@ class PreparedClose:
     policy: str = "merge"
     events: list = field(default_factory=list)
     pre_head: str = ""                    # SPEC-0221: worktree HEAD before the rebase started
+    commits_since_request: int | None = None   # SPEC-0233: merge request only
+
+
+def _commits_since_request(root, state: dict, tip: str) -> int | None:
+    """Commits added to a merge request's branch after it was queued; None when the recorded
+    head is no longer an ancestor of the pre-rebase tip."""
+    recorded = (state.get("merge") or {}).get("head_at_request")
+    if not recorded:
+        return None
+    anc = git.git(root, "merge-base", "--is-ancestor", recorded, tip, check=False)
+    if anc.returncode != 0:
+        return None
+    return int(git.git(root, "rev-list", "--count", f"{recorded}..{tip}").stdout.strip() or 0)
+
+
+def _gate_failure_detail(gate_run, target: str, target_sha: str) -> str:
+    """The park detail of a red merge-request re-gate: the failing gates, their tails and the
+    fact that the requester's branch now sits rebased onto the base."""
+    failing = [r for r in gate_run.results if not r.ok]
+    lines = ["gates failed: " + ", ".join(r.name for r in failing)]
+    for r in failing:
+        lines.append(f"--- {r.name}")
+        lines.extend((r.tail or "").splitlines()[-20:])
+    lines.append(f"branch rebased onto {target} {target_sha[:10]}")
+    return "\n".join(lines)
 
 
 def _park(reason, detail, resume_to, events, *, conflicts=None, target=None, target_sha=None,
@@ -213,11 +239,20 @@ def pr_body(state: dict, spec_fm: dict, spec_sections: dict, gate_run: G.GateRun
     return "\n".join(lines)
 
 
-def _cleanup(root, worktree, branch, project_cfg, mode, events) -> None:
+def _is_merge_request(state: dict) -> bool:
+    """SPEC-0233: a campaign that merges an existing branch (no spec, no personas)."""
+    return state.get("kind") == "merge"
+
+
+def _cleanup(root, worktree, branch, project_cfg, mode, events, *, merge_request=None) -> None:
+    """`merge_request` is the campaign's `merge` block for a SPEC-0233 merge request: only a
+    worktree wt created is removed, and the requester's branch is never deleted."""
     wcfg = project_cfg.get("worktrees") or {}
     mcfg = project_cfg.get("merge") or {}
     policy = wcfg.get("cleanup", "on_merge")
     if policy == "never" or (policy == "on_merge" and mode != "merge"):
+        return
+    if merge_request is not None and not merge_request.get("own_worktree"):
         return
     try:
         git.worktree_remove(root, worktree, force=True)
@@ -226,7 +261,7 @@ def _cleanup(root, worktree, branch, project_cfg, mode, events) -> None:
                                    "title": "worktree removal failed", "detail": e.tail,
                                    "files": []}))
         return
-    if mode == "merge" and mcfg.get("delete_branch", True):
+    if mode == "merge" and mcfg.get("delete_branch", True) and merge_request is None:
         try:
             git.branch_delete(root, branch)
         except GitError as e:
@@ -274,25 +309,35 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> Prep
         return PreparedClose(outcome=outcome, policy=policy, events=events, pre_head=pre_head)
 
     _abort_leftover_rebase(worktree)
+    merge_request = _is_merge_request(state)
 
-    # 0. spec-change guard (SPEC-0186): the governing text must be what was accepted
-    ok, synthetic, guard_events = spec_guard(cfg, state)
-    events.extend(guard_events)
-    if not ok:
-        return decided(CloseOutcome("TRIAGING", synthetic_gate=synthetic, events=events))
+    if not merge_request:
+        # 0. spec-change guard (SPEC-0186): the governing text must be what was accepted
+        ok, synthetic, guard_events = spec_guard(cfg, state)
+        events.extend(guard_events)
+        if not ok:
+            return decided(CloseOutcome("TRIAGING", synthetic_gate=synthetic, events=events))
 
-    # 1. spec DoD in the worktree
-    ok, synthetic = spec_dod(worktree, rel)
-    if not ok:
-        events.append(("finding", {"persona": "close", "severity": "must_fix", "gate": "spec-dod",
-                                   "title": "spec Definition of Done not met",
-                                   "detail": synthetic["tail"], "files": [rel]}))
-        return decided(CloseOutcome("TRIAGING", synthetic_gate=synthetic, events=events))
+        # 1. spec DoD in the worktree
+        ok, synthetic = spec_dod(worktree, rel)
+        if not ok:
+            events.append(("finding", {"persona": "close", "severity": "must_fix",
+                                       "gate": "spec-dod",
+                                       "title": "spec Definition of Done not met",
+                                       "detail": synthetic["tail"], "files": [rel]}))
+            return decided(CloseOutcome("TRIAGING", synthetic_gate=synthetic, events=events))
 
     # 2. worktree clean
     if not git.is_clean(worktree, untracked=True):
+        if merge_request:
+            # SPEC-0233: the requester's unfinished work is never committed for them, and
+            # untracked files never reach the rebase or the re-gate
+            dirty = git.status_porcelain(worktree, untracked=True)
+            return decided(_park("worktree_dirty", "worktree has uncommitted or untracked "
+                                 "changes: " + ", ".join(dirty[:10]), "CLOSING", events))
         sha = git.commit_all(worktree, f"wt({state.get('id')}): close-time snapshot")
         events.append(("commit", {"sha": sha, "message": "close-time snapshot"}))
+    pre_rebase = git.rev_parse(worktree) if merge_request else None
 
     # 3. target
     try:
@@ -327,15 +372,21 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> Prep
             "detail": "regenerated: " + ", ".join(rb.regenerated),
             "files": list(rb.regenerated)}))
     head = git.rev_parse(worktree)
+    moved_since = None
+    if merge_request:
+        moved_since = _commits_since_request(root, state, pre_rebase)
 
     # 5. re-gate on the rebased tree
     seq = gate_seq if gate_seq is not None else G.next_gate_seq(cfg, state["id"])
     gate_run = G.run_all(project_cfg, state, cfg, seq=seq)
     events.append(("gate", G.as_payload(gate_run)))
     if not gate_run.ok:
-        return decided(CloseOutcome("TRIAGING", gate_run=gate_run, events=events))
+        detail = _gate_failure_detail(gate_run, target, target_sha) if merge_request else ""
+        return decided(CloseOutcome("TRIAGING", gate_run=gate_run, events=events,
+                                    gate_detail=detail))
     return PreparedClose(target=target, target_sha=target_sha, head=head, gate_run=gate_run,
-                         seq=seq, policy=policy, events=events, pre_head=pre_head)
+                         seq=seq, policy=policy, events=events,
+                         commits_since_request=moved_since, pre_head=pre_head)
 
 
 def finish_close(cfg, state: dict, project_cfg: dict, prepared: PreparedClose, *, attempts=1,
@@ -390,8 +441,13 @@ def finish_close(cfg, state: dict, project_cfg: dict, prepared: PreparedClose, *
                                            "detail": e.tail, "files": []}))
         close = {"mode": "merge", "merged_sha": merged, "pr_url": None, "gates_seq": seq,
                  "target_sha": target_sha}
+        merge_request = _is_merge_request(state)
+        if merge_request:                           # SPEC-0233: make a moved branch visible
+            close["head_at_request"] = (state.get("merge") or {}).get("head_at_request")
+            close["commits_since_request"] = prepared.commits_since_request
         events.append(("close", close))
-        _cleanup(root, worktree, branch, project_cfg, "merge", events)
+        _cleanup(root, worktree, branch, project_cfg, "merge", events,
+                 merge_request=(state.get("merge") or {}) if merge_request else None)
         return CloseOutcome("MERGED", close=close, gate_run=gate_run, events=events,
                             attempts=attempts)
 

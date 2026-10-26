@@ -137,6 +137,34 @@ def worktree_add(repo, path, branch, base) -> Path:
     return path
 
 
+def branch_exists(repo, branch) -> bool:
+    return git(repo, "rev-parse", "--verify", "-q", f"refs/heads/{branch}",
+               check=False).returncode == 0
+
+
+def worktree_for_branch(repo, branch) -> Path | None:
+    """The worktree (the main checkout included) that has `branch` checked out, or None.
+    Parsed from `git worktree list --porcelain`."""
+    path = None
+    for line in git(repo, "worktree", "list", "--porcelain").stdout.splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree "):]
+        elif line == f"branch refs/heads/{branch}" and path:
+            return Path(path).resolve()
+    return None
+
+
+def worktree_add_existing(repo, path, branch) -> Path:
+    """`git worktree add <path> <branch>` for a branch that already exists; errors if `path`
+    exists."""
+    path = Path(path).resolve()
+    if path.exists():
+        raise GitError(["git", "worktree", "add", str(path)], 1, f"{path} already exists")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    git(repo, "worktree", "add", str(path), branch)
+    return path
+
+
 def worktree_remove(repo, path, force=False) -> None:
     args = ["worktree", "remove"]
     if force:

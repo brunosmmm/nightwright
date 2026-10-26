@@ -105,7 +105,7 @@ def _queue_table(payload: dict, width: int | None = None) -> Group:
         if it["state"] == "PARKED" and park.get("owner") != "human":
             color = "dim"           # SPEC-0222: the conductor's, not the human's
             suffix = " [red]![/]" if park.get("overdue") else ""
-        campaign, extra = Text(it["campaign"]), []
+        campaign, extra = _campaign_cell(it), []
         if wide:
             extra = [it.get("size") or "-", it.get("tone") or "-", _profile_text(it)]
         elif it.get("size") or it.get("tone"):     # no room for columns: a dim line instead
@@ -135,7 +135,7 @@ def _list_needs_you(items: list) -> Table:
     table.add_column("resume to", no_wrap=True)
     for it in items:
         park = it.get("park") or {}
-        table.add_row(it["campaign"], str(park.get("reason") or "?"),
+        table.add_row(_campaign_cell(it), str(park.get("reason") or "?"),
                       Text(str(park.get("detail") or ""), style="dim"),
                       Text(str(park.get("resume_to") or ""), style=R.state_style(park.get("resume_to"))))
     return table
@@ -153,7 +153,7 @@ def _waiting_table(items: list) -> Table:
     table.add_column("waiting", justify="right")
     for it in items:
         w = it.get("waiting") or {}
-        table.add_row(it["campaign"], R.project_text(it.get("project")),
+        table.add_row(_campaign_cell(it), R.project_text(it.get("project")),
                       Text(str(w.get("resume_to") or "?"), style=R.state_style(w.get("resume_to"))),
                       _size_tone(it), str(it.get("priority")), it["loops"], _age_txt(it.get("updated_age_s")))
     return table
@@ -172,7 +172,7 @@ def _backlog_table(items: list) -> Table:
     for it in items:
         b = it["backlog"]
         waiting = "[green]ready[/]" if b["ready"] else "; ".join(b["blocked_by"])
-        table.add_row(str(b["position"]), it["campaign"], R.project_text(it.get("project")),
+        table.add_row(str(b["position"]), _campaign_cell(it), R.project_text(it.get("project")),
                       _size_tone(it), str(b["priority"]),
                       waiting, _age_txt(it.get("age_s")))
     return table
@@ -209,6 +209,14 @@ def _spec_cell(spec_id, title) -> Text:
     if title:
         t.append("  ")
         t.append(title, style="dim")
+    return t
+
+
+def _campaign_cell(it: dict) -> Text:
+    """The campaign id; a merge request (SPEC-0233) also shows its `merge:<branch>` label."""
+    t = Text(it["campaign"])
+    if it.get("kind") == "merge" and it.get("label"):
+        t.append("\n" + it["label"], style="dim")
     return t
 
 
@@ -361,7 +369,8 @@ def _active_panel(it: dict) -> Panel:
     grid = Table.grid(padding=(0, 1))
     grid.add_column(style="dim", no_wrap=True, justify="right")
     grid.add_column(overflow="fold")
-    grid.add_row("spec", _spec_cell(it["spec_id"] or it.get("idea_id"), it.get("spec_title")))
+    grid.add_row("spec", _spec_cell(it.get("label") or it["spec_id"] or it.get("idea_id"),
+                                    it.get("spec_title")))
     where = R.project_text(it.get("project"))
     where.append(f" · {_size_tone(it)} → {it.get('profile')}", style="dim")
     where.append_text(_source_marker(it))
@@ -407,7 +416,7 @@ def _needs_you_table(items: list) -> Table:
     for it in items:
         park = it.get("park") or {}
         reason = park.get("reason") or "?"
-        t.add_row(it["campaign"], R.project_text(it.get("project")),
+        t.add_row(_campaign_cell(it), R.project_text(it.get("project")),
                   _title_cell(it.get("spec_title")), reason,
                   Text(str(park.get("detail") or ""), style="dim"),
                   Text(str(park.get("resume_to") or ""), style=R.state_style(park.get("resume_to"))),
@@ -455,7 +464,7 @@ def _conductor_table(items: list) -> Table:
     for it in items:
         park = it.get("park") or {}
         reason = park.get("reason") or "park requested"
-        t.add_row(it["campaign"], R.project_text(it.get("project")),
+        t.add_row(_campaign_cell(it), R.project_text(it.get("project")),
                   _title_cell(it.get("spec_title")), reason, _decision_cell(it),
                   _ago(it.get("park_age_s")))
     return t
@@ -472,7 +481,7 @@ def _dash_waiting(items: list) -> Table:
     t.add_column("cost", justify="right", no_wrap=True)
     t.add_column("for", justify="right", no_wrap=True)
     for it in items:
-        t.add_row(it["campaign"], R.project_text(it.get("project")), _title_cell(it.get("spec_title")),
+        t.add_row(_campaign_cell(it), R.project_text(it.get("project")), _title_cell(it.get("spec_title")),
                   _size_tone(it), Text(str(it.get("resume_to") or "?"), style=R.state_style(it.get("resume_to"))),
                   str(it.get("priority")), f"${it['cost_usd']:.2f}", _ago(it.get("waiting_s")))
     return t
@@ -496,7 +505,7 @@ def _dash_backlog(items: list):
                   else Text.assemble(("◌ waiting on ", "yellow"),
                                      ("; ".join(b.get("blocked_by") or []), "bold yellow")))
         pri = b.get("priority")
-        t.add_row(str(b.get("position")), b["campaign"], R.project_text(b.get("project")),
+        t.add_row(str(b.get("position")), _campaign_cell(b), R.project_text(b.get("project")),
                   _title_cell(b.get("spec_title")), _size_tone(b),
                   Text(str(pri), style="bold" if pri is not None and pri <= 2 else "dim"),
                   status, _ago(b.get("age_s")))
@@ -701,6 +710,45 @@ def attach(queue_group):
         else:
             console.print(_NOT_WRITTEN)
 
+    @queue_group.command("merge")
+    @click.argument("branch")
+    @click.option("--project", shell_complete=C.complete_project,
+                  help="project (default: the one whose repo the cwd is in, else Meta-Tools)")
+    @click.option("--worktree", default=None, type=click.Path(),
+                  help="the branch's worktree (default: its existing worktree, else a new one)")
+    @click.option("--profile", default=None, help="workflow profile (sizes the cap and slots)")
+    @click.option("--priority", type=int, default=Q.MERGE_PRIORITY_DEFAULT, show_default=True,
+                  help="backlog priority 1..5 (1 = admitted first)")
+    @click.option("--note", default=None, help="why this merge (shown in the queue)")
+    @click.option("--by", "requested_by", default="human", show_default=True,
+                  help="who asks: human, conductor, steward:<Project>")
+    @click.option("--yes", "do_write", is_flag=True, help="create the campaign (default is dry-run)")
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.merge.v1 JSON")
+    @click.pass_obj
+    def queue_merge(cfg, branch, project, worktree, profile, priority, note, requested_by,
+                    do_write, as_json):
+        """Queue a local branch for a rebase + re-gate + ff-only merge (dry-run unless --yes).
+
+        \b
+        wt queue merge fix/typo           show the plan
+        wt queue merge fix/typo --yes     create the merge campaign in QUEUED
+        """
+        try:
+            plan = Q.plan_merge(cfg, branch, project=project, worktree=worktree, profile=profile,
+                                priority=priority, note=note, requested_by=requested_by)
+            if do_write:
+                Q.apply_merge(cfg, plan, by=requested_by)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        if as_json:
+            _dump_json({"schema": "wt.queue.merge.v1", **plan, "written": bool(do_write)})
+            return
+        _print_plan(f"queue merge {branch}", plan)
+        if do_write:
+            console.print(f"[green]✓[/] {plan['campaign']}  QUEUED  [dim]{plan['worktree']}[/]")
+        else:
+            console.print(_NOT_WRITTEN)
+
     @queue_group.command("list")
     @click.option("--all", "include_terminal", is_flag=True, help="include terminal campaigns")
     @click.option("--project", shell_complete=C.complete_project, help="filter by project")
@@ -726,6 +774,7 @@ def attach(queue_group):
             _dump_json({"schema": "wt.queue.backlog.v1", "items": items})
             return
         table = _backlog_table([{"campaign": b["campaign"], "spec_id": b["spec_id"] or b.get("idea_id"),
+                                 "kind": b.get("kind"), "label": b.get("label"),
                                  "project": b.get("project"),
                                  "age_s": b["age_s"], "backlog": b} for b in items])
         console.print(table)

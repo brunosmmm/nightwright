@@ -63,6 +63,7 @@ PARK_REASONS = frozenset({
     "rebase_conflict", "main_dirty", "main_not_on_base", "base_moving", "gh_failed", "human",
     "review_escalated", "config_invalid", "spec_writer_unavailable", "spec_write_failed",
     "spec_review_unavailable",
+    "gates_failed", "worktree_dirty",                  # SPEC-0233: merge campaigns
 })
 # SPEC-0222: who a park waits for. The human only for their own checkout and explicit
 # escalations (`human_decision` is reserved for IDEA-087); everything else is the conductor's.
@@ -89,6 +90,8 @@ _STOP_GRACE_S = 30
 # With steps in flight, the loop never waits less than this between ticks (no busy spin).
 _MIN_INFLIGHT_WAIT_S = 0.1
 PRIORITY_MIN, PRIORITY_MAX, PRIORITY_DEFAULT = 1, 5, 3
+# SPEC-0233: a merge request is short and usually unblocks a person, so it goes first.
+MERGE_PRIORITY_DEFAULT = 2
 # A dependency counts as satisfied once its spec reached one of these in the base checkout.
 DEPENDENCY_SATISFIED = frozenset({"done", "superseded"})
 
@@ -145,6 +148,16 @@ def _pending_reviewers(state: dict, profile: dict) -> list:
     return [p for p in reviewers_of(profile) if p not in valid] or reviewers_of(profile)
 
 
+def campaign_label(state: dict) -> str:
+    """What a human sees for a campaign: its spec id, `merge:<branch>` for a merge request
+    (SPEC-0233), else its idea id."""
+    if state.get("spec_id"):
+        return str(state["spec_id"])
+    if state.get("kind") == "merge":
+        return f"merge:{(state.get('merge') or {}).get('branch') or (state.get('repo') or {}).get('branch') or '?'}"
+    return str((state.get("idea") or {}).get("id") or "?")
+
+
 def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> Step:
     """Pure: the next step for `state`. Never touches disk."""
     st = state.get("state")
@@ -156,6 +169,9 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
         return Step("none")
     if st == "OPENING":
         return Step("open")
+    if state.get("kind") == "merge" and st != "CLOSING":
+        # SPEC-0233: open goes straight to CLOSING; no persona ever runs for a merge request
+        return Step("park", reason="human", detail=f"merge campaign in {st}", resume_to="CLOSING")
     if st == "SPEC_WRITING":
         # SPEC-0215: the spec writer writes (no spec yet) or revises (findings in the brief)
         if (state.get("spec") or {}).get("id") and not state.get("pending_brief"):
@@ -585,7 +601,14 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
     """Can this queued campaign be admitted? Re-reads the spec and its `depends_on` from the
     project's base checkout (`repo.root`): the spec must still be `accepted` (`in-progress` for a
     `--force` add) and every dependency `done` or `superseded`. Unknown ids block. An idea
-    campaign without a spec (SPEC-0209) is ready while its idea is still open."""
+    campaign without a spec (SPEC-0209) is ready while its idea is still open. A merge request
+    (SPEC-0233) is ready while its branch exists."""
+    if state.get("kind") == "merge":
+        repo = state.get("repo") or {}
+        branch = repo.get("branch") or ""
+        if branch and git.branch_exists(repo.get("root") or ".", branch):
+            return True, []
+        return False, [f"branch {branch} missing"]
     if has_no_spec(state):
         iid = _idea_id_of(state)
         task = _idea_task(cfg, iid)
@@ -634,6 +657,8 @@ def backlog_view(cfg, *, readiness=None) -> list[dict]:
                      "blocked_by": blocked_by, "age_s": _age(st.get("created_at"))})
         if st.get("kind") == "idea":
             rows[-1]["idea_id"] = _idea_id_of(st)
+        if st.get("kind") == "merge":                                   # SPEC-0233
+            rows[-1].update(kind="merge", label=campaign_label(st))
     return rows
 
 
@@ -888,6 +913,8 @@ def _do_open(ctx: _Ctx, state: dict) -> StepResult:
 def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
     res = StepResult(state["id"], Step("open"), "OPENING")
     repo = state.setdefault("repo", {})
+    if state.get("kind") == "merge":
+        return _do_open_merge(ctx, state, res)
     try:
         pcfg = ctx.project(state)
         root = Path(repo["root"])
@@ -911,6 +938,39 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
                 store.campaign_dir(ctx.cfg, state["id"]).mkdir(parents=True, exist_ok=True)
                 (store.campaign_dir(ctx.cfg, state["id"]) / CL.SPEC_AT_OPEN).write_text(
                     spec_file.read_text(encoding="utf-8"), encoding="utf-8")
+    except (GitError, ValueError, OSError) as e:
+        res.error = getattr(e, "tail", None) or str(e)
+        res.config_error = isinstance(e, ProjectConfigError)
+    return res
+
+
+def _do_open_merge(ctx: _Ctx, state: dict, res: StepResult) -> StepResult:
+    """SPEC-0233: a merge request opens its worktree and nothing else. A created worktree gets
+    the project's setup commands; an adopted one is the requester's and stays as it is."""
+    repo = state["repo"]
+    merge = state.get("merge") or {}
+    try:
+        pcfg = ctx.project(state)
+        root, worktree, branch = Path(repo["root"]), Path(repo["worktree"]), repo["branch"]
+        base = repo.get("base") or pcfg.get("base") or "main"
+        base_sha = git.rev_parse(root, base)
+        if merge.get("own_worktree"):
+            git.worktree_add_existing(root, worktree, branch)
+            for cmd in (pcfg.get("worktrees") or {}).get("setup") or []:
+                r = subprocess.run(cmd, shell=True, cwd=str(worktree), capture_output=True,
+                                   text=True)
+                if r.returncode != 0:
+                    tail = "\n".join(((r.stdout or "") + (r.stderr or "")).splitlines()[-20:])
+                    raise GitError([cmd], r.returncode, tail)
+        else:
+            if not worktree.is_dir():
+                raise ValueError(f"worktree {worktree} no longer exists")
+            if git.current_branch(worktree) != branch:
+                raise ValueError(f"worktree {worktree} is not on branch {branch}")
+            if not git.is_clean(worktree, untracked=True):
+                raise ValueError(f"worktree {worktree} has uncommitted or untracked changes")
+        repo["base_sha_at_open"] = base_sha
+        repo["head"] = git.rev_parse(worktree)
     except (GitError, ValueError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
         res.config_error = isinstance(e, ProjectConfigError)
@@ -1211,7 +1271,8 @@ def _do_prepare_close(ctx: _Ctx, state: dict) -> StepResult:
     res = StepResult(state["id"], Step("close"), "CLOSING")
     # SPEC-0207: file the follow-up ideas first; the filer never raises, and its events and
     # summary reach `_apply` whether or not the close then succeeds.
-    res.events_before, res.followups = FU.file_followups(ctx.cfg, state, ctx.profile(state))
+    if state.get("kind") != "merge":            # SPEC-0233: a merge request has no review
+        res.events_before, res.followups = FU.file_followups(ctx.cfg, state, ctx.profile(state))
     try:
         res.prepared = CL.prepare_close(ctx.cfg, state, ctx.project(state))
     except (GitError, ValueError, OSError) as e:
@@ -1304,6 +1365,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                                                "resume_to": resume})
 
     if kind == "open":
+        if state.get("kind") == "merge":
+            return finish("CLOSING", "opened")
         return finish("SPEC_WRITING" if has_no_spec(state) else "IMPLEMENTING", "opened")
 
     if kind == "review":
@@ -1441,6 +1504,11 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 state["close"]["followups"] = res.followups
             state["park"] = None
             return finish(oc.next_state, "closed")
+        if oc.next_state == "TRIAGING" and state.get("kind") == "merge":
+            # SPEC-0233: no gate triager for a merge request; the conductor relays the failure
+            return finish("PARKED", "gates_failed", park={
+                "reason": "gates_failed", "detail": oc.gate_detail or "gates failed",
+                "resume_to": "CLOSING"})
         if oc.next_state == "TRIAGING":
             if oc.synthetic_gate is not None:
                 state["last_gate"] = {"gate_seq": None, "ok": False, "started_at": store.now_iso(),
@@ -2856,7 +2924,8 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
             park = {**(park or {}), **{k: view[k] for k in _PARK_VIEW_KEYS}}
         items.append({
             "campaign": r.get("id"), "spec_id": r.get("spec_id"), "project": r.get("project"),
-            "kind": r.get("kind"), "idea_id": _idea_id_of(r),
+            "kind": r.get("kind"), "idea_id": _idea_id_of(r), "label": campaign_label(r),
+            "merge_branch": (r.get("merge") or {}).get("branch") if r.get("kind") == "merge" else None,
             "profile": r.get("profile"), "state": r.get("state"),
             "size": sizing.get("size"), "tone": sizing.get("tone"),
             "profile_source": sizing.get("source"),
@@ -2887,6 +2956,8 @@ _TITLE_CACHE: dict = {}
 def _spec_title(state: dict) -> str | None:
     """The spec's frontmatter title in the project repo (cached on path + mtime); the idea's
     heading for an idea campaign without a spec (SPEC-0209)."""
+    if state.get("kind") == "merge":
+        return (state.get("merge") or {}).get("note") or "merge request"
     if has_no_spec(state):
         return (state.get("idea") or {}).get("heading")
     root = (state.get("repo") or {}).get("root")
@@ -2974,6 +3045,7 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                 close = st.get("close") or {}
                 delivered.append({
                     "campaign": it["campaign"], "spec_id": it["spec_id"], "spec_title": title,
+                    "kind": it["kind"], "merge_branch": it["merge_branch"], "label": it["label"],
                     "project": it["project"], "state": state,
                     "merged_sha": close.get("merged_sha"), "pr_url": close.get("pr_url"),
                     "cost_usd": it["cost_usd"],
@@ -2989,6 +3061,8 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
             backlog.append({"position": 0, "priority": it["priority"], "ready": True,
                             "blocked_by": [], **(it.get("backlog") or {}),
                             "campaign": it["campaign"], "spec_id": it["spec_id"],
+                            "kind": it["kind"], "merge_branch": it["merge_branch"],
+                            "label": it["label"],
                             "spec_title": title, "project": it["project"], "age_s": it["age_s"],
                             "size": it["size"], "tone": it["tone"], "profile": it["profile"],
                             "profile_source": it["profile_source"]})
@@ -3153,6 +3227,96 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
     return state
 
 
+def _campaign_on_branch(cfg, project, branch) -> dict | None:
+    """The non-terminal campaign of `project` whose branch is `branch`, or None."""
+    for st in store.list_campaigns(cfg):
+        if st.get("project") == project and (st.get("repo") or {}).get("branch") == branch:
+            return st
+    return None
+
+
+def plan_merge(cfg, branch, *, project=None, worktree=None, profile=None,
+               priority=MERGE_PRIORITY_DEFAULT, note=None, requested_by="human") -> dict:
+    """SPEC-0233: resolve everything `wt queue merge` needs and return the plan (no writes).
+    Raises ValueError naming the fix when the branch cannot be queued for a merge."""
+    branch = (branch or "").strip()
+    if not branch:
+        raise ValueError("branch is required")
+    priority = check_priority(priority)
+    project = project or P.find_project_for_cwd(cfg) or "Meta-Tools"
+    pcfg = P.project_config(cfg, project)
+    root = Path(pcfg["_root"])
+    policy = (pcfg.get("merge") or {}).get("policy")
+    if policy != "merge":
+        raise ValueError(f"{project} merges with policy {policy!r}; `wt queue merge` needs "
+                         f"merge.policy: merge")
+    base = (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
+    if not git.branch_exists(root, branch):
+        raise ValueError(f"branch {branch!r} does not exist in {root}; it must be a local branch")
+    if branch == base:
+        raise ValueError(f"{branch!r} is the base branch; nothing to merge")
+    if git.current_branch(root) == branch:
+        raise ValueError(f"the main checkout {root} is on {branch!r}; switch it to {base} first")
+    ahead = int(git.git(root, "rev-list", "--count", f"{base}..{branch}").stdout.strip() or 0)
+    if ahead < 1:
+        raise ValueError(f"nothing to merge: {branch!r} is not ahead of {base}")
+    active = _campaign_on_branch(cfg, project, branch)
+    if active:
+        raise ValueError(f"{branch!r} already has an active campaign {active['id']} "
+                         f"({active.get('state')}); abandon it first")
+    existing = git.worktree_for_branch(root, branch)
+    cid = store.new_campaign_id(cfg, "MERGE")
+    if worktree is not None:
+        if existing is None or Path(worktree).resolve() != existing:
+            raise ValueError(f"--worktree {worktree} is not the worktree of {branch!r} "
+                             f"({existing or 'none'}); drop --worktree to let wt choose")
+    if existing is not None:
+        if not git.is_clean(existing, untracked=True):
+            raise ValueError(f"worktree {existing} has uncommitted or untracked changes; "
+                             f"commit or stash them before queueing the merge")
+        wt_path, own = existing, False
+    else:
+        wt_path, own = P.worktree_root(pcfg, root, project) / cid, True
+    prof = resolve_profile(cfg, profile)
+    return {
+        "campaign": cid, "kind": "merge", "branch": branch, "project": project,
+        "profile": prof["name"], "priority": priority, "base": base, "repo_root": str(root),
+        "worktree": str(wt_path), "own_worktree": own,
+        "head_at_request": git.rev_parse(root, branch), "ahead": ahead,
+        "requested_by": requested_by, "note": note, "cap_usd": prof.get("campaign_cap_usd"),
+        "slots": prof.get("slots"), "merge_policy": policy,
+    }
+
+
+def apply_merge(cfg, plan: dict, *, by="human") -> dict:
+    """Create the merge campaign in `QUEUED` from a `plan_merge` plan. Re-checks the
+    one-campaign-per-branch guard against live state before writing."""
+    state = {
+        "schema": "wt.campaign.v1", "id": plan["campaign"], "kind": "merge",
+        "spec_id": None, "project": plan["project"], "profile": plan["profile"],
+        "state": "QUEUED", "prev_state": None, "created_at": store.now_iso(),
+        "priority": check_priority(plan.get("priority", MERGE_PRIORITY_DEFAULT)),
+        "force": False, "backlog": None,
+        "repo": {"root": plan["repo_root"], "base": plan["base"], "base_sha_at_open": None,
+                 "branch": plan["branch"], "worktree": plan["worktree"], "head": None},
+        "spec": None,
+        "merge": {"branch": plan["branch"], "requested_by": plan.get("requested_by") or by,
+                  "note": plan.get("note"), "head_at_request": plan["head_at_request"],
+                  "own_worktree": bool(plan["own_worktree"]), "docs_only": False},
+        "counters": {"loops": 0, "runs": 0, "gate_runs": 0, "gate_retries": 0,
+                     "triage_retries": 0, "blocked_streak": 0, "close_attempts": 0, "parks": 0},
+        "cost": {"total_usd": 0.0, "cap_usd": plan.get("cap_usd"), "by_persona": {}},
+        "last_gate": None, "last_verdict": None,
+        "pending_brief": None, "park": None, "close": None,
+    }
+    with store.add_lock(cfg):
+        active = _campaign_on_branch(cfg, plan["project"], plan["branch"])
+        if active:
+            raise ValueError(f"{plan['branch']!r} already has an active campaign {active['id']}")
+        store.create_campaign(cfg, state, by=by)
+    return state
+
+
 _IDEA_ID_RE = re.compile(r"^IDEA-\d+$")
 
 
@@ -3299,6 +3463,8 @@ def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loop
         raise ValueError(f"{campaign} is {st.get('state')}, not PARKED")
     park = st.get("park") or {}
     target = to or park.get("resume_to") or "IMPLEMENTING"
+    if st.get("kind") == "merge" and target not in ("CLOSING", "QUEUED"):
+        raise ValueError(f"a merge campaign resumes to CLOSING or QUEUED, not {target!r}")
     if target not in RESUMABLE_STATES:
         raise ValueError(f"cannot resume to {target!r}; one of {', '.join(RESUMABLE_STATES)}")
     waits = target in ACTIVE_STATES and _active_count(cfg) >= slots_for(cfg)
@@ -3358,8 +3524,11 @@ def plan_abandon(cfg, campaign, *, keep_worktree=False) -> dict:
     repo = st.get("repo") or {}
     wt_path = repo.get("worktree")
     present = bool(wt_path and os.path.isdir(wt_path))
+    # SPEC-0233: a worktree wt did not create belongs to the requester and is never removed
+    adopted = st.get("kind") == "merge" and not (st.get("merge") or {}).get("own_worktree")
     return {"campaign": campaign, "from": st.get("state"), "worktree": wt_path,
-            "worktree_present": present, "remove_worktree": present and not keep_worktree,
+            "worktree_present": present,
+            "remove_worktree": present and not keep_worktree and not adopted,
             "branch": repo.get("branch")}
 
 

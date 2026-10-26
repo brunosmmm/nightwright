@@ -121,7 +121,7 @@ def campaign_event(ev: dict) -> Text:
         return t
     first = True
     for k, v in ev.items():
-        if k in skip:
+        if k in skip or (k == "spec_id" and v is None):   # a merge request has no spec id
             continue
         txt = v if isinstance(v, str) else str(v)
         if len(txt) > 60:

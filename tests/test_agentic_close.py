@@ -390,3 +390,50 @@ def test_undeclared_conflict_still_parks(world):
     _commit(world["root"], "feature.txt", "theirs\n", "conflicting base")
     out = CL.close_campaign(world["cfg"], world["state"], pcfg)
     assert out.next_state == "PARKED" and out.park["reason"] == "rebase_conflict"
+
+
+# ---- SPEC-0233: a merge request closes without a spec ------------------------------------------
+
+def _merge_world(world):
+    """The campaign becomes a merge request for `wt/c1` (adopted worktree, no spec file)."""
+    head = G.rev_parse(world["wt"])
+    G.git(world["wt"], "reset", "-q", "--hard", "main")             # drop the spec commit
+    (world["wt"] / "feature.txt").write_text("yes\n")
+    G.commit_all(world["wt"], "feature")
+    st = world["state"]
+    st.update(kind="merge", spec_id=None, spec=None, merge={
+        "branch": "wt/c1", "head_at_request": G.rev_parse(world["wt"]), "own_worktree": False})
+    (world["tmp"] / "data" / "agentic" / "campaigns" / st["id"] / "spec_at_open.md").unlink()
+    return st
+
+
+def test_merge_request_closes_without_a_spec_and_keeps_the_adopted_worktree(world):
+    st = _merge_world(world)
+    pcfg = _pcfg(world, delete_branch="true")
+    out = CL.close_campaign(world["cfg"], st, pcfg)
+    assert out.next_state == "MERGED", out
+    assert (world["root"] / "feature.txt").exists()
+    assert world["wt"].is_dir()                                      # not ours to remove
+    assert "wt/c1" in _git(world["root"], "branch", "--list", "wt/c1")   # never deleted
+    close = _events(out, "close")[0]
+    assert close["commits_since_request"] == 0 and close["head_at_request"]
+
+
+def test_merge_request_dirty_worktree_parks_without_a_commit(world):
+    st = _merge_world(world)
+    before = _git(world["wt"], "log", "--format=%H")
+    (world["wt"] / "feature.txt").write_text("edited\n")
+    out = CL.close_campaign(world["cfg"], st, _pcfg(world))
+    assert out.next_state == "PARKED" and out.park["reason"] == "worktree_dirty"
+    assert out.park["resume_to"] == "CLOSING" and "feature.txt" in out.park["detail"]
+    assert _git(world["wt"], "log", "--format=%H") == before
+
+
+def test_merge_request_red_regate_is_triaging_with_the_branch_left_rebased(world):
+    st = _merge_world(world)
+    pcfg = _pcfg(world, gates=("echo boom >&2; false",))
+    out = CL.close_campaign(world["cfg"], st, pcfg)
+    assert out.next_state == "TRIAGING" and not out.gate_run.ok
+    assert out.gate_detail.startswith("gates failed: g0") and "boom" in out.gate_detail
+    assert "branch rebased onto main" in out.gate_detail
+    assert G.git(world["wt"], "merge-base", "--is-ancestor", "main", "HEAD", check=False).returncode == 0

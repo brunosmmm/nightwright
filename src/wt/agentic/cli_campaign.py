@@ -13,6 +13,7 @@ from .. import completion as C
 from .. import render as R
 from ..console import console
 from ..report import _dump_json
+from . import queue as Q
 from . import runs as RN
 from . import store
 
@@ -22,6 +23,7 @@ def _summary(st: dict) -> dict:
     cost = st.get("cost") or {}
     return {
         "id": st.get("id"), "spec_id": st.get("spec_id"), "project": st.get("project"),
+        "label": Q.campaign_label(st),
         "kind": st.get("kind"), "idea_id": (st.get("idea") or {}).get("id"),
         "profile": st.get("profile"), "state": st.get("state"),
         "loops": counters.get("loops", 0), "runs": counters.get("runs", 0),
@@ -131,7 +133,7 @@ def attach(campaign_group):
         for s in rows:
             r = _summary(s)
             cost = f"${r['cost_usd']:.2f}" + (f"/{r['cap_usd']:.0f}" if r["cap_usd"] else "")
-            table.add_row(str(r["id"]), str(r["spec_id"] or r["idea_id"]), str(r["project"] or ""),
+            table.add_row(str(r["id"]), r["label"], str(r["project"] or ""),
                           str(r["state"]), str(r["loops"]), cost, str(r["updated_at"] or ""))
         console.print(table)
 
@@ -153,7 +155,7 @@ def attach(campaign_group):
             _dump_json(st)
             return
         r = _summary(st)
-        console.print(f"[bold]{r['id']}[/]  {r['state']}  spec {r['spec_id'] or r['idea_id']}  "
+        console.print(f"[bold]{r['id']}[/]  {r['state']}  spec {r['label']}  "
                       f"project {r['project'] or '-'}  profile {r['profile'] or '-'}")
         cap = f" / ${r['cap_usd']:.2f}" if r["cap_usd"] else ""
         est = f" (~${r['estimated_usd']:.2f} est.)" if r["estimated_usd"] > 0 else ""
@@ -170,6 +172,13 @@ def attach(campaign_group):
         if repo:
             missing = "" if st["worktree_present"] else " (missing)"
             console.print(f"  branch {repo.get('branch') or '-'}  worktree {wt_path or '-'}{missing}")
+        merge = st.get("merge") or {}
+        if st.get("kind") == "merge":                                  # SPEC-0233
+            console.print(f"  merge {merge.get('branch')} (requested by "
+                          f"{merge.get('requested_by')}; head at request "
+                          f"{str(merge.get('head_at_request') or '-')[:10]}; worktree "
+                          f"{'created' if merge.get('own_worktree') else 'adopted'})",
+                          highlight=False)
         lr = st.get("last_review") or {}
         if lr.get("verdict") is not None:
             adv = lr.get("advisory") or []

@@ -150,13 +150,27 @@ def validate(type_: str, data: dict) -> None:
         raise ValueError(f"event {type_!r} missing data keys: {', '.join(missing)}")
 
 
+def _label(st: dict) -> str:
+    """`queue.campaign_label` (SPEC-0233); imported lazily, `queue` imports this module."""
+    from .queue import campaign_label
+    return campaign_label(st)
+
+
+def _label_kw(st: dict) -> dict:
+    """`{"label": ...}` for a campaign without a spec id (a merge request, SPEC-0233); empty for
+    spec campaigns, whose rows keep their shape."""
+    return {} if st.get("spec_id") else {"label": _label(st)}
+
+
 def _append_locked(cfg, type_, *, campaign=None, spec_id=None, project=None, by, data,
-                   source=None) -> dict:
+                   source=None, label=None) -> dict:
     validate(type_, data)
     path = events_path(cfg)
     rec = {"schema": SCHEMA, "id": _last_id(path) + 1, "ts": store.now_iso(), "type": type_,
            "campaign": campaign, "spec_id": spec_id, "project": project, "by": by,
            "data": dict(data or {})}
+    if label:
+        rec["label"] = label
     if source:
         rec["source"] = source
     line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
@@ -283,7 +297,7 @@ def _project(cfg, proj: dict, sett: dict) -> list[dict]:
                 if type_ == "cost_warning":
                     proj["warned"].append(cid)
                 out.append(_append_locked(
-                    cfg, type_, campaign=cid, spec_id=st.get("spec_id"),
+                    cfg, type_, campaign=cid, spec_id=st.get("spec_id"), label=_label_kw(st).get("label"),
                     project=st.get("project"), by=ev.get("by") or "tick", data=data,
                     source={"ledger_seq": ev.get("seq")}))
             proj["seen"][cid] = max(int(proj["seen"].get(cid, 0)), int(ev.get("seq") or 0))
@@ -337,7 +351,7 @@ def blocked_items(cfg, now, sett, *, after=None) -> list[dict]:
             continue
         age = _age_s(b.get("since") or st.get("created_at"), now) or 0
         if age > after:
-            out.append({"campaign": st["id"], "spec_id": st.get("spec_id"),
+            out.append({"campaign": st["id"], "spec_id": st.get("spec_id"), **_label_kw(st),
                         "project": st.get("project"), "blocked_by": list(b.get("blocked_by") or []),
                         "blocked_for_s": round(age)})
     return sorted(out, key=lambda r: -r["blocked_for_s"])
@@ -361,7 +375,7 @@ def stuck_items(cfg, now, sett) -> list[dict]:
                 continue
         elif st["state"] in ("GATING", "CLOSING") and age <= sett["gate_budget_s"]:
             continue
-        out.append({"campaign": st["id"], "spec_id": st.get("spec_id"), "state": st["state"],
+        out.append({"campaign": st["id"], "spec_id": st.get("spec_id"), **_label_kw(st), "state": st["state"],
                     "stuck_s": round(age)})
     return out
 
@@ -409,7 +423,7 @@ def ready_not_admitted_items(cfg, now, sett) -> list[dict]:
             continue
         age = _age_s(b.get("since"), now) or 0
         if age > sett["ready_grace_s"]:
-            out.append({"campaign": st["id"], "spec_id": st.get("spec_id"),
+            out.append({"campaign": st["id"], "spec_id": st.get("spec_id"), **_label_kw(st),
                         "ready_for_s": round(age), "active": occupied, "slots": slots,
                         "runner_pid": lease.get("pid") if lease.get("held") else None,
                         "runner_draining": bool(lease.get("held") and lease.get("draining")),
@@ -497,14 +511,14 @@ def ping_digest(cfg, now=None) -> dict:
             park = st.get("park") or {}
             since = park.get("since")
             view = park_view(cfg, st, now, sett)
-            parked.append({"campaign": st["id"], "spec_id": st.get("spec_id"),
+            parked.append({"campaign": st["id"], "spec_id": st.get("spec_id"), **_label_kw(st),
                            "reason": park.get("reason"), "detail": park.get("detail"),
                            "since": since, "parked_for_s": round(_age_s(since, now) or 0),
                            "decided": view["decided"], "owner": view["owner"],
                            "overdue": view["overdue"]})
         elif st.get("state") == "WAITING":
             w = st.get("waiting") or {}
-            waiting.append({"campaign": st["id"], "spec_id": st.get("spec_id"),
+            waiting.append({"campaign": st["id"], "spec_id": st.get("spec_id"), **_label_kw(st),
                             "waiting_for_s": round(_age_s(w.get("since"), now) or 0),
                             "resume_to": w.get("resume_to")})
     blocked = blocked_items(cfg, now, sett)
@@ -615,7 +629,7 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
     for r_ in ready_not_admitted_items(cfg, now, sett):
         out.append((f"ready_not_admitted:{r_['campaign']}", "ready_not_admitted",
                     r_["campaign"], {k: v for k, v in r_.items()
-                                     if k not in ("campaign", "spec_id")}))
+                                     if k not in ("campaign", "spec_id", "label")}))
     for st in rows:
         if st.get("state") != "PARKED":
             continue
@@ -629,7 +643,7 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
         out.append((f"waiting_not_admitted:{w_['campaign']}:{w_['waiting_since']}",
                     "waiting_not_admitted", w_["campaign"],
                     {k: v for k, v in w_.items()
-                     if k not in ("campaign", "spec_id", "waiting_since")}))
+                     if k not in ("campaign", "spec_id", "label", "waiting_since")}))
     silent_ = runner_silence(cfg, now, sett)
     if silent_:
         last = min((t for t in (silent_["last_tick_at"], silent_["last_journal_ts"],
@@ -653,6 +667,7 @@ def _watch(cfg, proj: dict, now=None) -> list[dict]:
             except ValueError:
                 st = {}
         out.append(_append_locked(cfg, type_, campaign=cid, spec_id=st.get("spec_id"),
+                                  label=_label_kw(st).get("label") if st else None,
                                   project=st.get("project"), by="watchdog", data=data))
     proj["conditions"] = {key: True for key in current}
     return out

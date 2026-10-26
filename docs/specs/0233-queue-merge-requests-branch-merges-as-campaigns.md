@@ -1,7 +1,7 @@
 ---
 id: SPEC-0233
 title: "Queue merge requests: `wt queue merge` runs a branch merge as a campaign"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -231,39 +231,39 @@ For `state["kind"] == "merge"`:
 
 ## Acceptance criteria
 
-- [ ] `plan_merge` enforces checks 2–6 with a ValueError naming the fix for each: the policy is
+- [x] `plan_merge` enforces checks 2–6 with a ValueError naming the fix for each: the policy is
       not `merge`, the branch is missing or equals base, the main checkout is on the branch,
       the branch is not ahead of base, a non-terminal campaign already has the branch, a
       `--worktree` mismatch, or an adopted worktree with tracked or untracked changes. It adopts the branch's existing
       worktree or plans `worktree_root/<cid>`.
-- [ ] `wt queue merge BRANCH` is a dry run without `--yes`. With `--yes` it creates a QUEUED
+- [x] `wt queue merge BRANCH` is a dry run without `--yes`. With `--yes` it creates a QUEUED
       campaign whose state has `kind: "merge"`, `spec_id: null`, `spec: null`, the `merge`
       block and priority 2. Its `open` event carries `kind` and `merge_branch` and passes
       `schemas.ledger_problems`. `--json` emits `wt.queue.merge.v1`.
-- [ ] `backlog_readiness` admits a merge campaign without reading a spec and blocks it with
+- [x] `backlog_readiness` admits a merge campaign without reading a spec and blocks it with
       `branch <b> missing` when the branch is gone. `plan_resume` on a merge campaign accepts
       only `CLOSING` / `QUEUED`, and `plan_step` parks a merge campaign found in
       IMPLEMENTING/GATING/TRIAGING/REVIEWING.
-- [ ] The open step adopts or creates the worktree (setup commands only for a created one) and
+- [x] The open step adopts or creates the worktree (setup commands only for a created one) and
       transitions OPENING → CLOSING. No `run.start` event is ever written for a merge campaign.
-- [ ] Close on a merge campaign skips the spec guard and the DoD, rebases, re-gates and
+- [x] Close on a merge campaign skips the spec guard and the DoD, rebases, re-gates and
       ff-merges the branch tip to MERGED with a `close` event carrying `head_at_request` and
       `commits_since_request` (1 in a test that commits after queueing). A worktree with
       tracked or untracked changes parks `worktree_dirty` without any commit. A red re-gate
       parks `gates_failed` (`resume_to: CLOSING`) with the failing gate names and the
       rebased-branch note.
-- [ ] After MERGED, a created worktree is removed per `worktrees.cleanup` and an adopted one is
+- [x] After MERGED, a created worktree is removed per `worktrees.cleanup` and an adopted one is
       left in place. The branch is never deleted.
-- [ ] `wt queue abandon` of a PARKED merge campaign with an adopted worktree leaves the worktree
+- [x] `wt queue abandon` of a PARKED merge campaign with an adopted worktree leaves the worktree
       (with its uncommitted and untracked files) and the branch in place, with or without
       `--keep-worktree`. The plan shows `remove_worktree: false`.
-- [ ] `wt queue list` (table and `--json`), `wt queue watch`, `wt campaign list/show` and
+- [x] `wt queue list` (table and `--json`), `wt queue watch`, `wt campaign list/show` and
       `wt queue events` and the `cli_conduct` status tables show the campaign as
       `merge:<branch>`. No output prints `None` for
       its spec id, and payload items carry `kind` / `merge_branch`.
-- [ ] A merge campaign and a spec campaign that are both ready for CLOSING never merge at the
+- [x] A merge campaign and a spec campaign that are both ready for CLOSING never merge at the
       same time (the existing close serialization), proven by an e2e test with two campaigns.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -300,6 +300,34 @@ For `state["kind"] == "merge"`:
 - **Regression guard:** full `uv run pytest`. In particular the existing close, queue and e2e
   tests pass unchanged for spec campaigns.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q`: full suite green (see the final run below), including the new
+  `tests/test_agentic_queue_merge.py` (planning refusals, adopted vs created worktree, state
+  shape and `open` event, readiness, resume/step guards, abandon of an adopted worktree with and
+  without `--keep-worktree`, e2e merge with a commit after queueing, created-worktree cleanup,
+  dirty tracked/untracked parks, red re-gate park then resume to MERGED, rebase conflict leaves
+  the branch at its tip, merge + spec campaign closing one at a time, `merge:<branch>` labels in
+  list/backlog/campaign/dashboard output), `tests/test_agentic_conduct_cli.py` (conduct-status
+  table, event and digest rows) and three merge-request cases in `tests/test_agentic_close.py`.
+- `python3 tools/spec_lint.py` exits 0 after `--write-ledger`.
+- Manual verification: the scratch-worktree walk-through was replaced by the CLI e2e tests above,
+  which drive `wt queue merge` (dry run and `--yes`) and `wt queue run --until-idle` against real
+  temp git repos and assert the adopted worktree and branch survive.
+
+### As shipped
+
+- The Design names `_do_close`; the worktree phase that skips `FU.file_followups` is
+  `_do_prepare_close`.
+- `label` is added to digest/event rows and backlog items only for campaigns without a spec id,
+  so spec-campaign rows keep their exact shape (existing tests assert it). `queue_payload` and
+  dashboard items carry `label`, `kind` and `merge_branch` for every campaign.
+- `render.campaign_event` skips a null `spec_id`, so `wt campaign show/log` never prints
+  `spec_id=None` for a merge campaign.
+- The two new park reasons are documented in `docs/product/loop/operate.md` (a docs test requires
+  every park reason there).
+- Merge-request tables show the label as a dim second line under the campaign id.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -311,11 +339,11 @@ SPEC-0234 updates the skills, the conductor may already use `wt queue merge` by 
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

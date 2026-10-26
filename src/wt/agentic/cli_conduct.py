@@ -38,10 +38,12 @@ def conduct_status(cfg, *, recent=10) -> dict:
             "queued": sum(1 for i in items if i["state"] == "QUEUED"),
             "parked": sum(1 for i in items if i["state"] == "PARKED"),
         },
-        "parked": [{"campaign": i["campaign"], "spec_id": i["spec_id"] or i["idea_id"], "project": i["project"],
+        "parked": [{"campaign": i["campaign"], "spec_id": i["spec_id"] or i["idea_id"],
+                    "label": i["label"], "project": i["project"],
                     "park": i["park"], "cost_usd": i["cost_usd"], "loops": i["loops"]}
                    for i in items if i["state"] == "PARKED"],
-        "active": [{"campaign": i["campaign"], "spec_id": i["spec_id"] or i["idea_id"], "state": i["state"],
+        "active": [{"campaign": i["campaign"], "spec_id": i["spec_id"] or i["idea_id"],
+                    "label": i["label"], "state": i["state"],
                     "loops": i["loops"], "cost_usd": i["cost_usd"],
                     "updated_age_s": i["updated_age_s"]}
                    for i in items if i["state"] in Q.ACTIVE_STATES],
@@ -129,7 +131,7 @@ def attach(queue_group):
                 t.add_column(col)
             for p in st["parked"]:
                 park = p["park"] or {}
-                t.add_row(p["campaign"], p["spec_id"], str(park.get("reason")),
+                t.add_row(p["campaign"], p["label"], str(park.get("reason")),
                           str(park.get("detail") or "")[:60], f"${p['cost_usd']:.2f}")
             console.print(t)
         if st["unanswered_mail"]:
