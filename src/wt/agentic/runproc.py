@@ -177,6 +177,15 @@ def terminate_run(run_dir, *, kill: bool = False) -> bool:
             sent = True
         except OSError:
             pass
+    elif proc and not kill and not proc.get("orphaned") and group_alive(child):
+        # the wrapper is gone: TERM the group ourselves, and leave a mark so the synthesized
+        # `exit.json` says `killed_by: "signal"` (the run is interrupted, not an error)
+        try:
+            write_json_atomic(run_dir / "term.json", {"ts": time.time()})
+            os.killpg(int(child["pgid"]), sig)
+            sent = True
+        except OSError:
+            pass
     return sent
 
 
@@ -269,8 +278,9 @@ def main(argv=None) -> int:
         rc = child.returncode
         _killpg(child.pid, signal.SIGKILL) if (timed_out or state["term"]) else None
         sig = -rc if rc < 0 else None
-        if killed_by is None and state["term"] and sig is not None:
+        if killed_by is None and state["term"]:     # we forwarded a TERM: however the child ended
             killed_by = "signal"
+            sig = sig or signal.SIGTERM
         elif killed_by is None and sig is not None:
             killed_by = "external"
         finish(-1 if rc < 0 else rc, timed_out=timed_out, killed_by=killed_by, sig=sig)

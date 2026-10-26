@@ -299,6 +299,68 @@ def test_interim_stop_kills_runs(world):
     assert json.loads((run_dir / "exit.json").read_text())["killed_by"] == "signal"
 
 
+def test_interim_stop_child_exits_normally_on_term(world, monkeypatch):
+    """`claude` handles the forwarded TERM and exits 143: still interrupted, nothing committed."""
+    monkeypatch.setenv("FAKE_CLAUDE_TERM_EXIT", "143")
+    pool, run_dir = start_impl(world)
+    pool.flights[world.cid].ctx.stop.set()
+    lease = L.acquire(world.cfg, ["wt", "queue", "run"])
+    try:
+        Q._drain(world.cfg, pool, lease, reason="signal")
+    finally:
+        lease.release()
+    ex = json.loads((run_dir / "exit.json").read_text())
+    assert ex["killed_by"] == "signal" and ex["exit_code"] == 143
+    end, = run_ends(world)
+    assert end["interrupted"]
+    assert not S.read_ledger(world.cfg, world.cid, types=["commit"])
+    assert S.read_state(world.cfg, world.cid)["state"] == "IMPLEMENTING"
+
+
+def test_adopt_orphan_group_finishing_on_its_own(world):
+    """The wrapper died and `claude` then completes: adopted, synthesized, applied once."""
+    pool, run_dir = start_impl(world)
+    die(pool)
+    os.kill(RP.read_json(run_dir / "proc.json")["wrapper_pid"], 9)
+    assert until(lambda: RP.run_status(run_dir) == "orphan_group")
+    new = Q.StepPool()
+    world.pools.append(new)
+    Q.tick(world.cfg, runner=world.runner, pool=new)
+    assert adopt_journal(world)[-1]["runs"][0]["status"] == "orphan_group"
+    time.sleep(0.5)
+    world.release()
+    assert tick_until(world, new, lambda: run_ends(world), n=150)
+    ex = json.loads((run_dir / "exit.json").read_text())
+    assert ex["synthesized"] and ex["exit_code"] == 0 and ex["killed_by"] is None
+    end, = run_ends(world)
+    assert not end["is_error"] and not end["interrupted"]
+    assert S.read_state(world.cfg, world.cid)["state"] == "GATING"
+
+
+def test_adopt_closes_stale_open_runs(world):
+    """A dangling older run is classified, listed in `adopt` and closed with no transition; only
+    the latest review round forms the group."""
+    pool, run_dir = start_impl(world)
+    die(pool)
+    world.release()
+    assert until((run_dir / "exit.json").exists)
+    import shutil
+    start, = S.read_ledger(world.cfg, world.cid, types=["run.start"])
+    stale_id, latest_id = start["run_id"], "002-implementer"     # an older crash-left run, then a newer
+    shutil.copytree(run_dir, S.runs_dir(world.cfg, world.cid) / latest_id)
+    S.append_event(world.cfg, world.cid, "run.start", {
+        **{k: v for k, v in start.items() if k not in ("seq", "ts", "type", "run_id")},
+        "run_id": latest_id})
+    new = Q.StepPool()
+    world.pools.append(new)
+    Q.tick(world.cfg, runner=world.runner, pool=new)
+    rows = {r["run_id"]: r["status"] for r in adopt_journal(world)[-1]["runs"]}
+    assert rows == {stale_id: "stale_finished", latest_id: "finished"}
+    assert stale_id in {e["run_id"] for e in run_ends(world)}
+    assert tick_until(world, new, lambda: {e["run_id"] for e in run_ends(world)} == {stale_id, latest_id})
+    assert S.read_state(world.cfg, world.cid)["state"] == "GATING"
+
+
 def test_interim_stop_stubborn_child_is_killed(world, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_STUBBORN", "1")
     pool, run_dir = start_impl(world)

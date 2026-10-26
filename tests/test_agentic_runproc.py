@@ -158,6 +158,53 @@ def test_orphan_group_waited_and_killed_at_timeout(tmp_path):
     assert not pid_alive(pid)
 
 
+def test_orphan_group_finishing_on_its_own_is_synthesized(tmp_path):
+    """SIGKILL only the wrapper, then let `claude` finish: the result is not lost."""
+    req = mkreq(tmp_path, FAKE_CLAUDE_SLEEP_S="60", FAKE_CLAUDE_COST="0.25",
+                FAKE_CLAUDE_VERDICT='{"status": "done", "summary": "ok"}')
+    hooks = R.RunHooks(threading.RLock(), req.run_dir)
+    t, out = start_thread(R.ClaudeRunner(), req, hooks)
+    assert until(lambda: (req.run_dir / "child.json").exists() and (req.cwd / "child.pid").exists())
+    os.kill(json.loads((req.run_dir / "proc.json").read_text())["wrapper_pid"], signal.SIGKILL)
+    assert until(lambda: RP.run_status(req.run_dir) == "orphan_group")
+    time.sleep(0.5)                                  # the wait loop has seen the orphan group
+    release(req)
+    t.join(15)
+    res = out["res"]
+    ex = json.loads((req.run_dir / "exit.json").read_text())
+    assert ex["synthesized"] and ex["exit_code"] == 0 and ex["killed_by"] is None
+    assert not res.is_error and not res.interrupted and res.cost_usd == 0.25
+    assert res.verdict and res.verdict["summary"] == "ok"
+
+
+def test_term_handled_by_child_is_still_signal(tmp_path):
+    """`claude` catches the forwarded TERM and exits normally: still `killed_by: signal`."""
+    req = mkreq(tmp_path, FAKE_CLAUDE_SLEEP_S="60", FAKE_CLAUDE_TERM_EXIT="143")
+    hooks = R.RunHooks(threading.RLock(), req.run_dir)
+    t, out = start_thread(R.ClaudeRunner(), req, hooks)
+    assert until(lambda: (req.run_dir / "child.json").exists() and (req.cwd / "child.pid").exists())
+    os.kill(json.loads((req.run_dir / "proc.json").read_text())["wrapper_pid"], signal.SIGTERM)
+    t.join(10)
+    ex = json.loads((req.run_dir / "exit.json").read_text())
+    assert ex["killed_by"] == "signal" and ex["signal"] == 15 and ex["exit_code"] == 143
+    assert out["res"].interrupted
+
+
+def test_orphan_group_stopped_is_interrupted(tmp_path):
+    """`terminate_run` on a run whose wrapper is dead TERMs the group; it collects interrupted."""
+    req = mkreq(tmp_path, FAKE_CLAUDE_SLEEP_S="60")
+    hooks = R.RunHooks(threading.RLock(), req.run_dir)
+    t, out = start_thread(R.ClaudeRunner(), req, hooks)
+    assert until(lambda: (req.run_dir / "child.json").exists() and (req.cwd / "child.pid").exists())
+    pid = child_pid(req)
+    os.kill(json.loads((req.run_dir / "proc.json").read_text())["wrapper_pid"], signal.SIGKILL)
+    assert until(lambda: RP.run_status(req.run_dir) == "orphan_group")
+    assert RP.terminate_run(req.run_dir)
+    t.join(15)
+    assert not pid_alive(pid)
+    assert out["res"].interrupted
+
+
 def test_vanished_when_group_gone(tmp_path):
     req = mkreq(tmp_path, FAKE_CLAUDE_SLEEP_S="60")
     hooks = R.RunHooks(threading.RLock(), req.run_dir)

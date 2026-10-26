@@ -602,6 +602,10 @@ lives, no `wt-step` thread, `stop code_changed` lists `detached`, the adopting p
 journals `adopt … running` and records one `run.end`) and by the session/group assertions in
 `test_detached_waiter_returns_fast`.
 
+### Test record (2026-10-25, review round 3)
+
+Added `test_orphan_group_finishing_on_its_own_is_synthesized`, `test_term_handled_by_child_is_still_signal`, `test_orphan_group_stopped_is_interrupted` (runproc), `test_interim_stop_child_exits_normally_on_term`, `test_adopt_orphan_group_finishing_on_its_own`, `test_adopt_closes_stale_open_runs` (adopt); `fake_claude.py` gained `FAKE_CLAUDE_TERM_EXIT`. Sabotage: dropping the `seen_orphan` condition fails the orphan-completion test. Full `uv run pytest` and `spec_lint` re-run (see verdict).
+
 ### As shipped
 
 - `claim()` writes the payload to `.proc.json.<pid>.tmp` (fsync) and `os.link`s it to `proc.json`, so the file
@@ -643,6 +647,21 @@ journals `adopt … running` and records one `run.end`) and by the session/group
   exists or `hooks.adopt` is set), and `_await_claim` is inside the kill-on-exception `try`.
 - The legacy `claude` left by a SIGKILLed pre-SPEC-0225 runner is held for `timeout_s` + 60 s and
   never killed, so it is not duplicated in the worktree either.
+- Review round 3 fixes. (1) `ClaudeRunner._wait` converts `vanished` to a synthesized `exit.json`
+  not only after our timeout TERM but also after any earlier `orphan_group` observation, so a
+  `claude` that finishes after its wrapper died is collected with its own result
+  (`exit_code` 0, `killed_by` null). (2) The wrapper decides `killed_by: "signal"` from having
+  forwarded a SIGTERM (`signal` 15 unless the child died from a signal), however the child ended,
+  so a `claude` that handles TERM and exits 143/0 is still interrupted. (3) `_adopt` handles every
+  open run: the latest step (or the trailing block of the latest review round, one run per
+  persona) is adopted; every older open run is closed by `_close_stale` (`run.end` + cost + a
+  `note`, no transition; a live process is sent TERM) and listed in the `adopt` record as
+  `stale_<status>`. (4) `terminate_run` on a run whose wrapper is dead sends TERM to the group
+  and leaves `term.json`, so the synthesized `exit.json` says `killed_by: "signal"` and the
+  interim stop holds for adopted `orphan_group` runs (backstop KILL as before). (5) `collect`
+  checks the wrapper's `start_ticks` before `waitpid`; the unknown-persona branch of `_apply`
+  copes with a missing `run_result`. Not done: bounding adopted `claim` / `legacy` waits at an
+  interim stop.
 - Rollout edge (legacy `claude` that survived an old runner): handled by the legacy-survivor rule
   above, not by a worktree-cwd process scan.
 

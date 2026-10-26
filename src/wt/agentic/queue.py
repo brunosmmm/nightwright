@@ -1394,7 +1394,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
 
     kind = res.step.kind
     if kind == "unknown":              # SPEC-0225: an adopted run of an unregistered persona
-        rr = res.run_result
+        rr = res.run_result or _synthetic_failure(res.error or "run produced no result")
         persona = res.step.persona
         events += _record_run(state, persona, res.run_id, rr, res.budget,
                               interrupted=res.interrupted)
@@ -2403,6 +2403,36 @@ def _adopt_request(rd: Path, ev: dict):
         json_schema=persona.schema if persona else {})
 
 
+def _close_stale(cfg, cid: str, ev: dict, ctx: _Ctx) -> str:
+    """Close an open run that is not the campaign's latest step (a crash left it behind, the
+    loop moved on): `run.end` + cost, no transition. A finished or vanished run keeps its own
+    result; anything else is interrupted (a live process is sent TERM, a legacy run with no
+    process record is just closed). Returns the status for the `adopt` record."""
+    from .runner import _synthetic, collect
+    rid, persona = ev["run_id"], ev["persona"]
+    rd = store.runs_dir(cfg, cid) / rid
+    label = RP.run_status(rd)
+    req = _adopt_request(rd, ev)
+    budget = float(ev.get("max_budget_usd") or req.max_budget_usd or 0.0)
+    if label in ("finished", "vanished"):
+        rr = collect(req)
+    else:
+        if label in ("running", "orphan_group"):
+            RP.terminate_run(rd)
+        elif label == "unclaimed" and (rd / "launch.json").exists():
+            RP.claim(rd, {"orphaned": True, "by": "adopt", "ts": store.now_iso()})
+        rr = _synthetic(req, f"stale run ({label}): a newer step superseded it")
+    with store.item_lock(cfg, cid):
+        current = store.read_state(cfg, cid)
+        events = _record_run(current, persona, rid, rr, budget, interrupted=rr.interrupted)
+        events.append(("note", {"text": f"closed stale open run {rid} ({persona}, {label}); "
+                                        "no transition", "author": "queue"}))
+        for etype, payload in events:
+            store.append_event(cfg, cid, etype, payload)
+        store.write_state(cfg, cid, current)
+    return f"stale_{label}"
+
+
 def _adopt(cfg, ctx: _Ctx, pool: StepPool, report: TickReport) -> None:
     """First tick of a pool: every open run in the campaign ledgers becomes a flight in phase
     `wait`, handled by its files (`ClaudeRunner.run` attaches). Finished runs are applied by the
@@ -2427,15 +2457,24 @@ def _adopt(cfg, ctx: _Ctx, pool: StepPool, report: TickReport) -> None:
             continue
         last = opens[-1]
         cls = _adopt_class(last)
-        if cls and cls[0] == "review":              # the open runs of the same review group
+        if cls and cls[0] == "review":              # the open runs of the latest review round
             key = cls[1]
-            members = [e for e in opens if (c := _adopt_class(e)) and c[0] == "review"
-                       and c[1] == key]
+            members = []                             # the trailing block: stops at a repeat
+            for e in reversed(opens):
+                c = _adopt_class(e)
+                if not (c and c[0] == "review" and c[1] == key) \
+                        or any(m["persona"] == e["persona"] for m in members):
+                    break
+                members.append(e)
             order = key or tuple(p for p in PS.REVIEWER_PERSONAS)
             members.sort(key=lambda e: order.index(e["persona"]) if e["persona"] in order
                          else len(order))
         else:
             members = [last]
+        for e in opens:                              # everything else is stale: close it
+            if not any(e is m for m in members):
+                rows.append({"campaign": cid, "run_id": e["run_id"], "persona": e["persona"],
+                             "status": _close_stale(cfg, cid, e, ctx)})
         snap = store.read_state(cfg, cid)
         start_state = members[0].get("state") or (
             _STATE_OF_KIND.get(cls[0]) if cls else snap.get("state"))

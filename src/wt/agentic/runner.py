@@ -297,8 +297,9 @@ def collect(req: RunRequest) -> RunResult:
     started_at = (RP.read_json(run_dir / "request.json") or {}).get("started_at") or _now_iso()
     stdout, stderr = _read_text(run_dir / "result.json"), _read_text(run_dir / "stderr.log")
     proc = RP.read_json(run_dir / "proc.json") or {}
-    if proc.get("wrapper_pid"):                      # reap a zombie wrapper left across an exec
-        try:
+    ticks = proc.get("wrapper_start_ticks")
+    if proc.get("wrapper_pid") and (ticks is None or RP.start_ticks(int(proc["wrapper_pid"])) == ticks):
+        try:                                         # reap a zombie wrapper left across an exec
             os.waitpid(int(proc["wrapper_pid"]), os.WNOHANG)
         except (ChildProcessError, OSError):
             pass
@@ -404,6 +405,7 @@ class ClaudeRunner:
     def _wait(self, req: RunRequest, hooks: RunHooks | None):
         run_dir = req.run_dir
         term_at = kill_at = None
+        seen_orphan = False
         while True:
             if hooks and hooks.detached():
                 return DETACHED
@@ -426,7 +428,9 @@ class ClaudeRunner:
                 if hooks and not hooks.enter_collect():
                     return DETACHED
                 return _synthetic(req, "orphaned: no wrapper claimed the run")
-            if status == "vanished" and term_at is not None:    # the group we killed ended
+            if status == "vanished" and (term_at is not None or seen_orphan
+                                         or (run_dir / "term.json").exists()):
+                # the orphaned group ended (we killed it, or `claude` finished on its own)
                 self._orphan_duties(req, term_at, kill_at)
                 status = "finished"
             if status in ("finished", "vanished"):
@@ -434,6 +438,7 @@ class ClaudeRunner:
                     return DETACHED
                 return collect(req)
             if status == "orphan_group":            # the wrapper died, `claude` did not
+                seen_orphan = True
                 term_at, kill_at = self._orphan_duties(req, term_at, kill_at)
             self._poll()
 
@@ -458,12 +463,14 @@ class ClaudeRunner:
             except OSError:
                 pass
         if not RP.group_alive(child) and not (run_dir / "exit.json").exists():
+            stopped = (run_dir / "term.json").exists()
             parsed = parse_result(_read_text(run_dir / "result.json"), req.json_schema,
                                   exit_code=0)
             ok = bool(_loads_lenient(_read_text(run_dir / "result.json"))) and not parsed["is_error"]
             RP.write_json_atomic(run_dir / "exit.json", {
                 "exit_code": 0 if ok else -1, "timed_out": term_at is not None,
-                "killed_by": "timeout" if term_at else None, "signal": None,
+                "killed_by": "timeout" if term_at else ("signal" if stopped else None),
+                "signal": 15 if stopped and not term_at else None,
                 "ended_at": _now_iso(), "duration_s": round(now - _epoch(started or _now_iso()), 3),
                 "synthesized": True})
         return term_at, kill_at
