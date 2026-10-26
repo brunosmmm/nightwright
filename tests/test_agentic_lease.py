@@ -1,5 +1,6 @@
 """SPEC-0171: singleton runner lease — flock is the exclusion, the TTL is advisory."""
 import datetime as dt
+import json
 import os
 
 import pytest
@@ -16,7 +17,8 @@ def test_acquire_release_and_status(tmp_path):
     cfg = _cfg(tmp_path)
     assert L.lease_status(cfg) == {"held": False, "pid": None, "host": None, "started_at": None,
                                    "heartbeat_at": None, "heartbeat_age_s": None,
-                                   "ttl_s": 120, "stale": False}
+                                   "ttl_s": 120, "stale": False, "draining": None,
+                                   **{k: None for k in L.LOOP_KEYS}}
     lease = L.acquire(cfg, ["wt", "queue", "run"])
     st = L.lease_status(cfg)
     assert st["held"] and st["pid"] == os.getpid() and st["ttl_s"] == 120 and not st["stale"]
@@ -118,3 +120,41 @@ def test_heartbeat_races_info_updates(tmp_path):
     lease.heartbeat()
     assert "draining" not in json.loads(L.lease_path(cfg).read_text())
     lease.release()
+
+
+def test_lease_status_exposes_loop_state(tmp_path):
+    cfg = _cfg(tmp_path)
+    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    st = L.lease_status(cfg)
+    assert all(st[k] is None for k in (*L.LOOP_KEYS, "draining"))      # a legacy lease: no keys
+    busy = {"kind": "close", "campaign": "c1", "since": "t", "budget_s": 1800}
+    drain = {"reason": "code_changed", "since": "t", "waiting_on": []}
+    lease.update_info(tick_at="t1", poll_interval_s=20, in_flight=["c1"], slot_freed_at="t0",
+                      busy=busy, draining=drain)
+    st = L.lease_status(cfg)
+    assert (st["tick_at"], st["poll_interval_s"], st["in_flight"], st["slot_freed_at"]) \
+        == ("t1", 20, ["c1"], "t0")
+    assert st["busy"] == busy and st["draining"] == drain
+    lease.release()
+    st = L.lease_status(cfg)
+    assert all(st[k] is None for k in (*L.LOOP_KEYS, "draining"))
+
+
+def test_handover_drops_busy(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    lease = L.acquire(cfg, ["t"])
+    lease.update_info(busy={"kind": "drain", "campaign": None, "since": "t", "budget_s": 1},
+                      tick_at="t1", in_flight=["c1"])
+    env = lease.handover()
+    assert "busy" not in L.read_lease(cfg)                  # the old image already dropped it
+    info = L.read_lease(cfg)                                # a crash in between left it behind
+    info["busy"] = {"kind": "open", "campaign": "c1", "since": "t", "budget_s": 1}
+    L._atomic_write(L.lease_path(cfg), json.dumps(info))
+    monkeypatch.setenv(L.HANDOVER_ENV, env[L.HANDOVER_ENV])
+    adopted = L.acquire(cfg, ["t"])
+    try:
+        assert "busy" not in adopted.info and "busy" not in L.read_lease(cfg)
+        st = L.lease_status(cfg)
+        assert st["tick_at"] == "t1" and st["in_flight"] == ["c1"] and st["busy"] is None
+    finally:
+        adopted.release()

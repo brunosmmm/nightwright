@@ -18,6 +18,8 @@ from .store import agentic_dir, now_iso
 
 
 HANDOVER_ENV = "WT_RUNNER_LEASE_FD"
+# SPEC-0228: the loop state the runner publishes in the lease info (read by the watchdog)
+LOOP_KEYS = ("tick_at", "poll_interval_s", "in_flight", "slot_freed_at", "busy")
 
 
 def lock_path(cfg) -> Path:
@@ -90,6 +92,7 @@ class Lease:
         env additions; after this, `release()` is a no-op in this image."""
         with self._lock:
             self.info.pop("draining", None)       # the drain ends with this process image
+            self.info.pop("busy", None)           # SPEC-0228: so does a declared long step
             self._write()
             os.set_inheritable(self.fd, True)
             fd, self.fd = self.fd, None
@@ -125,6 +128,7 @@ def acquire(cfg, argv=None, *, ttl_s=None, now=None) -> Lease:
     if adopted is not None:
         info = dict(read_lease(cfg) or {})
         info.pop("draining", None)
+        info.pop("busy", None)
         info.update({"pid": os.getpid(), "argv": list(argv or []),
                      "heartbeat_at": now_iso(now), "restarted_at": now_iso(now)})
         info.setdefault("host", socket.gethostname())
@@ -186,8 +190,10 @@ def is_held(cfg) -> bool:
 
 def lease_status(cfg, now=None) -> dict:
     """`{held, pid, host, started_at, heartbeat_at, heartbeat_age_s, ttl_s, stale}`, plus
-    `draining` (the runner's drain info or None) and `config_errors` (SPEC-0226: path -> broken
-    config entry, `{}` when none) while held."""
+    `draining` (the runner's drain info or None), `config_errors` (SPEC-0226: path -> broken
+    config entry, `{}` when none) and the loop state of SPEC-0228 (`tick_at`, `poll_interval_s`,
+    `in_flight`, `slot_freed_at`, `busy`; each None when the runner has not written it) while
+    held."""
     info = read_lease(cfg) or {}
     held = is_held(cfg)
     age = _heartbeat_age(info, now) if held else None
@@ -202,8 +208,10 @@ def lease_status(cfg, now=None) -> dict:
         "ttl_s": ttl,
         "stale": bool(held and age is not None and age > ttl),
     }
+    out["draining"] = (info.get("draining") or None) if held else None     # SPEC-0224
     if held:
-        out["draining"] = info.get("draining") or None     # SPEC-0224
         out["config_errors"] = info.get("config_errors") or {}     # SPEC-0226
+    for key in LOOP_KEYS:                                          # SPEC-0228
+        out[key] = info.get(key) if held else None
     return out
 

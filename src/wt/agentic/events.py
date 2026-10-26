@@ -57,6 +57,9 @@ EVENT_TYPES = {
     "code_changed": ("from_sha", "to_sha", "paths", "skills_changed"),
     # SPEC-0222
     "park_undecided": ("reason", "parked_for_s", "owner"),
+    # SPEC-0228
+    "waiting_not_admitted": ("waiting_for_s", "active", "slots"),
+    "runner_journal_silent": ("last_journal_ts", "silent_s", "heartbeat_age_s"),
 }
 
 # transient run failures: account limits, overload, network-ish API errors
@@ -77,7 +80,11 @@ DEFAULTS = {"poll_s": 2.0, "silent_after_s": 900, "overdue_grace_s": 60,
             # SPEC-0231: followers exit with `code_changed` when wt's code changes; 0 = off
             "code_check_s": 10,
             # SPEC-0222: a conductor-owned park without a decision note after this is overdue
-            "park_decide_s": 300}
+            "park_decide_s": 300,
+            # SPEC-0228: a WAITING item not resumed although a slot has been free this long;
+            # the loop is "silent" after this many poll intervals without a tick or a journal
+            # record; an `open` (worktree setup) is a declared long step of this budget
+            "waiting_grace_s": 60, "journal_silent_factor": 3, "open_budget_s": 600}
 
 
 def settings(cfg) -> dict:
@@ -359,16 +366,40 @@ def stuck_items(cfg, now, sett) -> list[dict]:
     return out
 
 
+def _occupied(rows, lease) -> int:
+    """Slots in use (SPEC-0228): campaigns in an active state plus the runner's in-flight
+    ids, the union `_tick` counts as `n_busy`. The watchdog cannot see the pool, so the
+    runner publishes its flights; a parked campaign whose run is still in flight counts.
+    Without `in_flight` (legacy lease, runner down) it is the state rows alone."""
+    from .queue import ACTIVE_STATES
+    ids = {r["id"] for r in rows if r.get("state") in ACTIVE_STATES}
+    return len(ids | set((lease or {}).get("in_flight") or ()))
+
+
+def _drain_info(lease, now=None) -> dict | None:
+    """`{reason, since, draining_s, waiting_on}` of the runner's drain, else None."""
+    d = lease.get("draining") if lease.get("held") else None
+    if not isinstance(d, dict) or not d.get("since"):
+        return None
+    now = now or dt.datetime.now().astimezone()
+    return {"reason": d.get("reason"), "since": d["since"],
+            "draining_s": round(_age_s(d["since"], now) or 0),
+            "waiting_on": list(d.get("waiting_on") or [])}
+
+
 def ready_not_admitted_items(cfg, now, sett) -> list[dict]:
     """Ready backlog items that are not starting although a slot is free, for longer than
-    `ready_grace_s`. Carries the runner pid and whether its tick has work in flight."""
+    `ready_grace_s`. Carries the runner pid, whether its tick has work in flight and the
+    drain info."""
     from .queue import ACTIVE_STATES, slots_for
     rows = store.list_campaigns(cfg)
     active = [r for r in rows if r.get("state") in ACTIVE_STATES]
     slots = slots_for(cfg)
-    if len(active) >= slots:
+    lease = L.lease_status(cfg, now=now)      # read first: the early return counts its flights
+    occupied = _occupied(rows, lease)
+    if occupied >= slots:
         return []
-    lease = L.lease_status(cfg, now=now)
+    drain = _drain_info(lease, now)
     busy = any(_open_run(cfg, r["id"]) or r.get("state") in ("GATING", "CLOSING")
                for r in active)
     out = []
@@ -379,11 +410,77 @@ def ready_not_admitted_items(cfg, now, sett) -> list[dict]:
         age = _age_s(b.get("since"), now) or 0
         if age > sett["ready_grace_s"]:
             out.append({"campaign": st["id"], "spec_id": st.get("spec_id"),
-                        "ready_for_s": round(age), "active": len(active), "slots": slots,
+                        "ready_for_s": round(age), "active": occupied, "slots": slots,
                         "runner_pid": lease.get("pid") if lease.get("held") else None,
                         "runner_draining": bool(lease.get("held") and lease.get("draining")),
-                        "runner_busy": bool(lease.get("held") and busy)})
+                        "runner_busy": bool(lease.get("held") and busy),
+                        "drain": drain})
     return sorted(out, key=lambda r: -r["ready_for_s"])
+
+
+def waiting_not_admitted_items(cfg, now, sett) -> list[dict]:
+    """WAITING campaigns (SPEC-0228) that were not resumed although a slot has been free, both
+    for longer than `waiting_grace_s`: the age is the younger of the wait and the free slot
+    (the runner's `slot_freed_at`). Skipped without a held lease or a `slot_freed_at`."""
+    from .queue import slots_for
+    lease = L.lease_status(cfg, now=now)
+    freed = _age_s(lease.get("slot_freed_at"), now)
+    if not lease.get("held") or freed is None:
+        return []
+    rows = store.list_campaigns(cfg)
+    slots = slots_for(cfg)
+    occupied = _occupied(rows, lease)
+    if occupied >= slots:
+        return []
+    drain = _drain_info(lease, now)
+    out = []
+    for st in rows:
+        if st.get("state") != "WAITING" or st.get("park_requested"):
+            continue
+        w = st.get("waiting") or {}
+        waited = _age_s(w.get("since"), now)
+        if waited is None or min(waited, freed) <= sett["waiting_grace_s"]:
+            continue
+        out.append({"campaign": st["id"], "spec_id": st.get("spec_id"),
+                    "waiting_since": w.get("since"), "waiting_for_s": round(waited),
+                    "slot_free_s": round(freed), "resume_to": w.get("resume_to"),
+                    "active": occupied, "slots": slots, "runner_pid": lease.get("pid"),
+                    "drain": drain})
+    return sorted(out, key=lambda r: -r["waiting_for_s"])
+
+
+def runner_silence(cfg, now, sett) -> dict | None:
+    """The `runner_journal_silent` data (SPEC-0228), else None: the loop of a live runner has
+    not ticked for `journal_silent_factor` poll intervals. Silence runs from the newer of the
+    lease's `tick_at` and the holder's newest journal record (idle ticks are not journaled).
+    Quiet while the lease is free or stale, for a runner that predates `tick_at`, and while a
+    declared `busy` step is within its budget. One helper for the watchdog and the ping."""
+    lease = L.lease_status(cfg, now=now)
+    tick_at = lease.get("tick_at")
+    if not lease.get("held") or lease.get("stale") or not tick_at:
+        return None
+    from .queue import journal_tail_for_pid
+    rec = journal_tail_for_pid(cfg, lease.get("pid"))
+    journal_ts = rec.get("ts") if rec else None
+    ages = [a for a in (_age_s(tick_at, now), _age_s(journal_ts, now)) if a is not None]
+    if not ages:
+        return None
+    silent = min(ages)
+    interval = float(lease.get("poll_interval_s")
+                     or (cfg.get("agentic") or {}).get("poll_interval_s") or 20)
+    if silent <= float(sett["journal_silent_factor"]) * interval:
+        return None
+    busy = lease.get("busy")
+    if isinstance(busy, dict):
+        if (_age_s(busy.get("since"), now) or 0) <= float(busy.get("budget_s") or 0) \
+                + sett["overdue_grace_s"]:
+            return None
+    else:
+        busy = None
+    return {"pid": lease.get("pid"), "last_journal_ts": journal_ts, "last_tick_at": tick_at,
+            "silent_s": round(silent), "interval_s": interval,
+            "heartbeat_age_s": lease.get("heartbeat_age_s"),
+            "draining": _drain_info(lease, now), "busy": busy}
 
 
 def ping_digest(cfg, now=None) -> dict:
@@ -411,6 +508,7 @@ def ping_digest(cfg, now=None) -> dict:
     blocked = blocked_items(cfg, now, sett)
     stuck = stuck_items(cfg, now, sett)
     rna = ready_not_admitted_items(cfg, now, sett)
+    wna = waiting_not_admitted_items(cfg, now, sett)
     queued = [r for r in rows if r.get("state") == "QUEUED"]
     ready = sum(1 for r in queued if (r.get("backlog") or {}).get("ready") is True)
     counts = {"active": sum(1 for r in rows if r.get("state") in ACTIVE_STATES),
@@ -420,9 +518,11 @@ def ping_digest(cfg, now=None) -> dict:
               "needs_you": sum(1 for p in parked if p["owner"] == "human"),
               "undecided_parks": sum(1 for p in parked
                                      if p["owner"] == "conductor" and not p["decided"]),
-              "stuck": len(stuck), "waiting": len(waiting)}
+              "stuck": len(stuck), "waiting": len(waiting),
+              "waiting_not_admitted": len(wna)}
     return {"blocked": blocked, "parked": parked, "stuck": stuck, "waiting": waiting,
-            "ready_not_admitted": rna, "counts": counts}
+            "ready_not_admitted": rna, "waiting_not_admitted": wna,
+            "runner": runner_silence(cfg, now, sett), "counts": counts}
 
 
 def _ping(cfg, proj: dict, now) -> list[dict]:
@@ -523,6 +623,17 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
                         st["id"], {"reason": (st.get("park") or {}).get("reason"),
                                    "parked_for_s": round(view["parked_for_s"]),
                                    "owner": view["owner"]}))
+    for w_ in waiting_not_admitted_items(cfg, now, sett):                     # SPEC-0228
+        out.append((f"waiting_not_admitted:{w_['campaign']}:{w_['waiting_since']}",
+                    "waiting_not_admitted", w_["campaign"],
+                    {k: v for k, v in w_.items()
+                     if k not in ("campaign", "spec_id", "waiting_since")}))
+    silent_ = runner_silence(cfg, now, sett)
+    if silent_:
+        last = min((t for t in (silent_["last_tick_at"], silent_["last_journal_ts"]) if t),
+                   key=lambda t: _age_s(t, now) or 0)
+        out.append((f"runner_journal_silent:{silent_['pid']}:{last}", "runner_journal_silent",
+                    None, silent_))
     return out
 
 

@@ -22,6 +22,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -827,9 +828,10 @@ class StepResult:
 class _Ctx:
     """Per-tick context: cfg, resolved profiles / project configs, the runner, the stop flag."""
 
-    def __init__(self, cfg, *, stop: threading.Event | None = None, runner=None):
+    def __init__(self, cfg, *, stop: threading.Event | None = None, runner=None, lease=None):
         self.cfg = cfg
         self.stop = stop or threading.Event()
+        self.lease = lease            # SPEC-0228: where `_busy` declares long main-thread steps
         self._runner = runner
         self._profiles: dict = {}
         self._projects: dict = {}
@@ -856,9 +858,33 @@ class _Ctx:
         return self._projects[name]
 
 
+@contextmanager
+def _busy(lease, kind: str, *, campaign: str | None = None, budget_s: float):
+    """Declare a long main-thread step (`open` | `close` | `drain`) in the lease info for the
+    out-of-process watchdog (SPEC-0228): the loop cannot tick meanwhile, so a silent journal
+    is not a stall within `budget_s`. Cleared in `finally`. Without a lease (one-shot ticks,
+    tests) it does nothing. A new long main-thread step must use it."""
+    if lease is None:
+        yield
+        return
+    lease.update_info(busy={"kind": kind, "campaign": campaign, "since": store.now_iso(),
+                            "budget_s": budget_s})
+    try:
+        yield
+    finally:
+        lease.pop_info("busy")
+
+
 def _do_open(ctx: _Ctx, state: dict) -> StepResult:
     """Create the worktree + branch, run the project's setup commands, record base sha and
-    spec hash. Serial (touches the main repository)."""
+    spec hash. Serial (touches the main repository). Declared `busy` (SPEC-0228): the setup
+    commands (`uv sync`, `npm ci`) run here with no timeout — both call sites of `_tick`."""
+    with _busy(ctx.lease, "open", campaign=state["id"],
+               budget_s=events_settings(ctx.cfg)["open_budget_s"]):
+        return _do_open_unwrapped(ctx, state)
+
+
+def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
     res = StepResult(state["id"], Step("open"), "OPENING")
     repo = state.setdefault("repo", {})
     try:
@@ -1390,8 +1416,10 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             state["closing"] = {**(state.get("closing") or {}), "attempts": attempts,
                                 "target_sha": res.prepared.target_sha}
             try:
-                oc = CL.finish_close(cfg, state, ctx.project(state), res.prepared,
-                                     attempts=attempts)
+                with _busy(ctx.lease, "close", campaign=cid,
+                           budget_s=events_settings(cfg)["gate_budget_s"]):
+                    oc = CL.finish_close(cfg, state, ctx.project(state), res.prepared,
+                                         attempts=attempts)
             except (GitError, ValueError, OSError) as e:
                 _absorb_close_events(state, counters, events, absorbed)
                 return finish("PARKED", "open_failed", park={
@@ -1986,16 +2014,17 @@ def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
 
 
 def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
-         pool: StepPool | None = None) -> TickReport:
+         pool: StepPool | None = None, lease=None) -> TickReport:
     """One bounded iteration: apply finished steps, admit, open, plan, submit agent steps,
     close serially; every result is applied on this thread. The caller holds the lease.
 
     With `pool` (SPEC-0213, owned by `run()`), agent steps outlive the tick: a campaign with a
     step in flight is skipped (and counts as busy) until a later tick harvests its result.
-    Without one, the tick waits for its own steps before the closes (single shot)."""
+    Without one, the tick waits for its own steps before the closes (single shot). With `lease`
+    (SPEC-0228, passed by `run()`), the long main-thread steps declare themselves `busy`."""
     own = pool is None
     pool = StepPool() if own else pool
-    ctx = _Ctx(cfg, stop=stop, runner=runner)
+    ctx = _Ctx(cfg, stop=stop, runner=runner, lease=lease)
     report = TickReport()
     try:
         _tick(cfg, ctx, pool, report, admit=admit, own=own)
@@ -2256,6 +2285,32 @@ def read_journal(cfg, *, tail=None) -> list[dict]:
         if isinstance(rec, dict):
             out.append(rec)
     return out[-tail:] if tail else out
+
+
+def journal_tail_for_pid(cfg, pid, max_bytes: int = 262144) -> dict | None:
+    """The newest `runner.jsonl` record written by `pid` within the last `max_bytes` of the
+    file (SPEC-0228), else None. A bounded backwards read — never the whole journal; the
+    partial first line of the window and unparseable lines are skipped."""
+    path = runner_journal_path(cfg)
+    try:
+        with open(path, "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            start = max(0, size - max_bytes)
+            f.seek(start)
+            data = f.read()
+    except OSError:
+        return None
+    lines = data.split(b"\n")
+    if start > 0:
+        lines = lines[1:]                           # the window began mid-line
+    for raw in reversed(lines):
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("pid") == pid:
+            return rec
+    return None
 
 
 # ---- code-change re-exec (SPEC-0194) ------------------------------------------------------------
@@ -2523,28 +2578,61 @@ def _refresh_backlog(cfg) -> None:
         _record_backlog(cfg, st, *backlog_readiness(cfg, st))
 
 
+class _SlotWatch:
+    """The runner's last seen occupied count — the tick's `n_busy`, active-state campaigns
+    plus flights (SPEC-0228). `check` stamps `slot_freed_at` in the lease when it drops, so
+    the watchdog reads when a slot freed instead of guessing it from state rows."""
+
+    def __init__(self, cfg, pool: StepPool):
+        self.cfg, self.pool = cfg, pool
+        self.last = self.count()
+
+    def count(self) -> int:
+        active = {s["id"] for s in store.list_campaigns(self.cfg)
+                  if s.get("state") in ACTIVE_STATES}
+        return len(active | self.pool.ids())
+
+    def check(self, lease, **info) -> None:
+        """One `update_info` call: `info` plus `in_flight` and, on a drop, `slot_freed_at`."""
+        now = self.count()
+        if now < self.last:
+            info["slot_freed_at"] = store.now_iso()
+        self.last = now
+        lease.update_info(in_flight=sorted(self.pool.ids()), **info)
+
+
 def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
-           interval: float = 20.0) -> TickReport:
+           interval: float = 20.0, slots: "_SlotWatch | None" = None) -> TickReport:
     """Join every flight, applying each as it finishes (main thread), before the loop stops
     or re-execs (SPEC-0213). Returns once `pool.flights` is empty. While it waits, the lease
     info carries `draining` (SPEC-0224) for the out-of-process watchdog, and the stored
-    backlog readiness is refreshed every `interval` seconds."""
+    backlog readiness is refreshed every `interval` seconds. The drain is a declared `busy`
+    step (SPEC-0228), so the watchdog does not call a quiet journal a stall within its budget:
+    the largest flight timeout, from drain start — conservative on purpose, since flights
+    began earlier. A harvest refreshes `in_flight` (and `slot_freed_at` on a drop)."""
     report = TickReport(drain=True)
     since = store.now_iso()
-    lease.update_info(draining={"reason": reason, "since": since,
-                                "waiting_on": _waiting_on(cfg, pool)})
+    waiting_on = _waiting_on(cfg, pool)
+    budget = max((w["timeout_s"] for w in waiting_on if w.get("timeout_s") is not None),
+                 default=events_settings(cfg)["gate_budget_s"])
+    lease.update_info(draining={"reason": reason, "since": since, "waiting_on": waiting_on})
     try:
-        next_refresh = time.monotonic()
-        while pool.flights:
-            if time.monotonic() >= next_refresh:
-                _refresh_backlog(cfg)
-                next_refresh = time.monotonic() + interval
-            pool.wait_any(timeout=0.5)
-            before = len(pool.flights)
-            _harvest(pool, report)
-            if len(pool.flights) != before:
-                lease.update_info(draining={"reason": reason, "since": since,
-                                            "waiting_on": _waiting_on(cfg, pool)})
+        with _busy(lease, "drain", budget_s=budget):
+            next_refresh = time.monotonic()
+            while pool.flights:
+                if time.monotonic() >= next_refresh:
+                    _refresh_backlog(cfg)
+                    next_refresh = time.monotonic() + interval
+                pool.wait_any(timeout=0.5)
+                before = len(pool.flights)
+                _harvest(pool, report)
+                if len(pool.flights) != before:
+                    lease.update_info(draining={"reason": reason, "since": since,
+                                                "waiting_on": _waiting_on(cfg, pool)})
+                    if slots is not None:
+                        slots.check(lease)
+                    else:
+                        lease.update_info(in_flight=sorted(pool.ids()))
     finally:
         lease.pop_info("draining")
     lease.heartbeat()
@@ -2575,6 +2663,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                      else agentic.get("poll_interval_s") or 20)
     stop = threading.Event()
     lease = L.acquire(cfg, argv or ["wt", "queue", "run"])
+    lease.update_info(poll_interval_s=interval, slot_freed_at=store.now_iso())   # SPEC-0228
     previous = {}
 
     def _handler(signum, _frame):
@@ -2601,6 +2690,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
     deferred = None                                   # head a re-exec was deferred for
     pool = StepPool()                                 # SPEC-0213: flights outlive ticks
     watch = ConfigWatch(cfg, config_loader) if config_loader else None
+    slots = _SlotWatch(cfg, pool)
 
     def emit(report):
         if report.steps or report.admitted or report.errors or report.started:
@@ -2627,9 +2717,11 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                         if poll_interval_s is None:
                             interval = float((cfg.get("agentic") or {}).get("poll_interval_s")
                                              or 20)
-                report = tick(cfg, stop=stop, runner=runner, pool=pool)
+                report = tick(cfg, stop=stop, runner=runner, pool=pool, lease=lease)
                 ticks += 1
                 lease.heartbeat()
+                # SPEC-0228: stamp before `emit`, so a slow `on_tick` never delays it
+                slots.check(lease, tick_at=store.now_iso())
                 emit(report)
                 if once or (max_ticks and ticks >= max_ticks) or (until_idle and report.idle):
                     reason = "once" if once else ("max_ticks" if max_ticks and ticks >= max_ticks
@@ -2661,7 +2753,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                         break
                     time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
             if pool.flights:
-                emit(_drain(cfg, pool, lease, reason=reason, interval=interval))
+                emit(_drain(cfg, pool, lease, reason=reason, interval=interval, slots=slots))
             if reason == "code_changed" and stop.is_set():
                 reason, restart = "signal", {}        # signalled during the drain: no exec
     except BaseException as e:

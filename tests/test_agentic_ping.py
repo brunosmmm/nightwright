@@ -199,3 +199,32 @@ def test_new_types_validate_and_summary_line(tmp_path):
     E.sync(cfg, now=at(600), ping=True)
     line = E.summary_line(_pings(cfg)[0])
     assert "\n" not in line and line.startswith("#1 conductor_ping blocked=0 parked=0")
+
+
+def test_ping_digest_lists_waiting_and_runner(tmp_path):
+    from wt.agentic import lease as L
+    from test_agentic_watchdog_gaps import _waiting
+    cfg = _cfg(tmp_path)
+    real = dt.datetime.now().astimezone().replace(microsecond=0)
+    lease = L.acquire(cfg, ["test"], ttl_s=10 ** 6)
+    try:
+        lease.update_info(slot_freed_at=real.isoformat(), tick_at=real.isoformat(),
+                          poll_interval_s=20)
+        _waiting(cfg, "SPEC-0950-20261025-aaaa", since=-3600)
+        now = real + dt.timedelta(seconds=300)
+        d = E.ping_digest(cfg, now)
+        assert [w["campaign"] for w in d["waiting_not_admitted"]] == ["SPEC-0950-20261025-aaaa"]
+        assert d["counts"]["waiting_not_admitted"] == 1
+        assert d["runner"] == E.runner_silence(cfg, now, E.settings(cfg))
+        assert d["runner"]["silent_s"] == 300
+        assert E.ping_digest(cfg, real)["runner"] is None
+    finally:
+        lease.release()
+
+
+def test_old_ping_event_validates(tmp_path):
+    cfg = _cfg(tmp_path)
+    old = {"blocked": [], "parked": [], "stuck": [], "waiting": [], "ready_not_admitted": [],
+           "counts": {}}
+    E.validate("conductor_ping", old)               # no waiting_not_admitted / runner keys
+    assert E.append(cfg, "conductor_ping", data=old)["type"] == "conductor_ping"

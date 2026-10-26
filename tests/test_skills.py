@@ -325,3 +325,39 @@ def test_monitor_owner_skills_handle_code_changed(name):
     text = (REPO_SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
     assert "code_changed" in text and "skills_changed" in text
     assert f"/{name}" in text and "/wt-orient" in text
+
+
+def _conduct_rows():
+    text = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    return [ln for ln in text.splitlines() if ln.startswith("| `")]
+
+
+def _conduct_row(name):
+    (row,) = [r for r in _conduct_rows() if r.startswith(f"| `{name}`")]
+    return row
+
+
+def test_new_watchdog_rows_present():
+    """SPEC-0228: the conductor acts at once on both new watchdog events."""
+    wna = _conduct_row("waiting_not_admitted")
+    assert "within one event" in wna and "SIGTERM" in wna and "`drain`" in wna
+    silent = _conduct_row("runner_journal_silent")
+    assert "immediately" in silent and "SIGTERM" in silent and "`busy`" in silent
+
+
+def test_close_guard_in_rows():
+    for name in ("waiting_not_admitted", "runner_journal_silent", "ready_not_admitted"):
+        row = _conduct_row(name)
+        assert "`busy.kind`" in row and "`open` or `close`" in row, name
+        assert "never SIGTERM" in row, name
+
+
+def test_rows_mention_new_fields():
+    assert "`drain`" in _conduct_row("ready_not_admitted")
+    ping = _conduct_row("conductor_ping")
+    assert "waiting_not_admitted" in ping and "`runner`" in ping
+
+
+def test_runner_draining_row_points_to_silent_row():
+    row = _conduct_row("runner_draining")
+    assert "`runner_journal_silent`" in row and "follow that row" in row
