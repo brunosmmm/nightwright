@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (42/61 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (42/62 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -159,6 +159,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0238](./specs/0238-wt-profiles-list-show-with-provenance-and-recorded-sources.md) `wt profiles list/show/check` with per-value provenance; sources recorded on campaigns and runs — accepted
   - [ ] [SPEC-0242](./specs/0242-wt-spec-review-show-and-wt-spec-reviews.md) wt spec review --show and wt spec reviews: read stored reviews without re-running — accepted
   - [ ] [SPEC-0243](./specs/0243-outbound-spec-reviews-use-the-target-project-checkout.md) Outbound spec reviews use the target project's checkout; admission recorded on the campaign — accepted
+  - [ ] [SPEC-0244](./specs/0244-adoption-clears-a-stale-index-lock-before-collecting.md) Adoption clears a stale .git/index.lock left by a killed implementer before collecting — accepted
 
 ## Active & planned
 
@@ -188,6 +189,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0238](./specs/0238-wt-profiles-list-show-with-provenance-and-recorded-sources.md) | `wt profiles list/show/check` with per-value provenance; sources recorded on campaigns and runs | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0242](./specs/0242-wt-spec-review-show-and-wt-spec-reviews.md) | wt spec review --show and wt spec reviews: read stored reviews without re-running | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0243](./specs/0243-outbound-spec-reviews-use-the-target-project-checkout.md) | Outbound spec reviews use the target project's checkout; admission recorded on the campaign | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0244](./specs/0244-adoption-clears-a-stale-index-lock-before-collecting.md) | Adoption clears a stale .git/index.lock left by a killed implementer before collecting | feature | accepted | M9: agentic workflow | 2026-10-25 |
 
 ## Done
 
