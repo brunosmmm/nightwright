@@ -273,6 +273,12 @@ no-unmerged-paths, target-is-ancestor and tracked-clean checks stay.
   port commit and a revert is still caught; `queue._commit_resolver_changes` cuts a multi-line summary
   to its first line at 72 chars and adds no trailer block when none is configured. Sabotage: dropping
   `guarded.append((c, c))` fails the absorbed-revert test; text-mode patches fail both byte tests.
+- Review round 3 test (`tests/test_agentic_resolver.py`, 77 tests): a campaign commit and the target
+  edit the same Latin-1 line, the resolver rewrites the commit (a `!` pair) and the commit subject is
+  non-UTF-8; `verify_resolution` returns a verified `ResolutionCheck` instead of raising. Sabotage:
+  range-diff in text mode without `-s` fails it with `UnicodeDecodeError`. A campaign-level variant
+  (full close with a Latin-1 commit) was tried and parks earlier, in the review step's own diff
+  decoding, which is outside this spec (filed as a follow-up idea).
 - Manual verification (a real conflicted close recording `+N extra, M absorbed`) has not been done yet:
   it needs the next real conflicted close.
 
@@ -298,6 +304,12 @@ no-unmerged-paths, target-is-ancestor and tracked-clean checks stay.
 - Review round 2: patches are handled as bytes end to end (`_run`/`git` gained a `binary` mode;
   `_commit_patch` and the `git apply` call use it), so CRLF files and non-UTF-8 text neither fail
   `does not apply to its own parent` nor raise `UnicodeDecodeError`.
+- Review round 3: round 2 covered the patches only. `git range-diff` also printed raw file content
+  (the diff-of-diffs body of every `!` pair, i.e. every commit the resolver changed), and decoding it
+  as strict UTF-8 raised `UnicodeDecodeError` (parked as `open_failed`). Now `range-diff` runs with
+  `-s` (headers only, so body lines can no longer be mistaken for pairings either) and its output is
+  read as bytes and decoded with `errors="replace"`; `_commit_entry` reads `git log --format=%s` the
+  same way, so a non-UTF-8 commit subject cannot crash verification.
 
 ## Clock Log
 

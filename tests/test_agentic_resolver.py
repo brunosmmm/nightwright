@@ -978,6 +978,29 @@ def test_verify_resolution_patches_survive_crlf_and_non_utf8_bytes(tmp_path, con
     assert bad.failed and "reverts campaign commit" in bad.failed
 
 
+def test_verify_resolution_conflicted_latin1_commit_does_not_raise(tmp_path):
+    """The campaign commit and the target both edit a Latin-1 line of `w.txt` and the resolver
+    rewrites the commit, so range-diff pairs it `!` and would print a diff-of-diffs holding the
+    raw 0xE9 byte. Verification reads only the pair headers and tolerates a non-UTF-8 subject."""
+    r = tmp_path / "l"
+    r.mkdir()
+    _sh(r, "git init -q -b main && git config user.email t@t && git config user.name t "
+           "&& git config core.autocrlf false && printf 'l1\\nl2\\ncaf\\351\\nl4\\nl5\\nl6\\n' > w.txt "
+           "&& git add -A && git commit -q -m base")
+    fork = _git(r, "rev-parse", "HEAD")
+    _sh(r, "git checkout -q -b wt/x\n"
+           "printf 'l1\\nl2\\ncaf\\351 branch\\nl4\\nl5\\nl6\\n' > w.txt && git commit -qam \"$(printf 'caf\\351')\"")
+    pre = _git(r, "rev-parse", "HEAD")
+    _sh(r, "git checkout -q main\n"
+           "printf 'l1\\nl2\\ncaf\\351 main\\nl4\\nl5\\nl6\\n' > w.txt && git commit -qam landed")
+    tgt = _git(r, "rev-parse", "HEAD")
+    _sh(r, "git checkout -q wt/x\n"
+           "git rebase main -q || true\n"
+           "printf 'l1\\nl2\\ncaf\\351 merged\\nl4\\nl5\\nl6\\n' > w.txt && git add w.txt && GIT_EDITOR=true git rebase --continue")
+    c = _check(r, fork, pre, tgt)
+    assert c.failed is None and c.extra == [] and c.absorbed == []
+
+
 def test_patch_applies_unusable_patch_raises_instead_of_answering_no(grepo, monkeypatch):
     r, fork, pre, target = grepo
     monkeypatch.setattr(G, "_commit_patch", lambda *a: b"not a patch\n")

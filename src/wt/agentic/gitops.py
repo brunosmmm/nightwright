@@ -465,7 +465,8 @@ def _is_empty(worktree, commit) -> bool:
 
 
 def _commit_entry(worktree, sha) -> dict:
-    return {"sha": sha, "subject": git(worktree, "log", "-1", "--format=%s", sha).stdout.strip()}
+    raw = git(worktree, "log", "-1", "--format=%s", sha, binary=True).stdout
+    return {"sha": sha, "subject": raw.decode("utf-8", "replace").strip()}
 
 
 def verify_resolution(worktree, branch, target_sha, fork, pre_head) -> ResolutionCheck:
@@ -490,8 +491,10 @@ def verify_resolution(worktree, branch, target_sha, fork, pre_head) -> Resolutio
     new_commits = git(worktree, "rev-list", f"{target_sha}..HEAD").stdout.split()
     out = ""
     if old_commits and new_commits:             # range-diff refuses an empty range
-        out = git(worktree, "range-diff", "--no-color", "--creation-factor=95",
-                  f"{fork}..{pre_head}", f"{target_sha}..HEAD").stdout
+        # `-s`: only the pair headers matter; the diff-of-diffs body holds raw file content
+        raw = git(worktree, "range-diff", "-s", "--no-color", "--creation-factor=95",
+                  f"{fork}..{pre_head}", f"{target_sha}..HEAD", binary=True).stdout
+        out = raw.decode("utf-8", "replace")
     paired: dict = {}                   # old sha -> the new commit range-diff pairs it with
     for line in out.splitlines():
         m = _RANGE_DIFF_RE.match(line)
