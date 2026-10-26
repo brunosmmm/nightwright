@@ -75,8 +75,23 @@ def die(pool):
     pool.shutdown()
 
 
-def run_ends(w):
-    return S.read_ledger(w.cfg, w.cid, types=["run.end"])
+def run_ends(w, run_id=None):
+    ends = S.read_ledger(w.cfg, w.cid, types=["run.end"])
+    return [e for e in ends if run_id in (None, e.get("run_id"))]
+
+
+def applied_after_end(w, run_id):
+    """Ledger events a run's `run.end` led to, up to the next `run.start`. A tick that closes a
+    superseded run may start a fresh step at once (its own run.start/run.end), so the tests
+    look at what follows the adopted run instead of at the state name."""
+    out, seen = [], False
+    for ev in S.read_ledger(w.cfg, w.cid):
+        if seen and ev["type"] == "run.start":
+            break
+        if seen:
+            out.append(ev["type"])
+        seen = seen or (ev["type"] == "run.end" and ev.get("run_id") == run_id)
+    return out
 
 
 def adopt_journal(w):
@@ -151,8 +166,8 @@ def test_adopt_after_park_resume_while_no_runner(world):
     report = Q.tick(world.cfg, runner=world.runner)
     row = next(s for s in report.steps if s.get("run_id") == run_dir.name)
     assert row["reason"] == "superseded_by_human"
-    assert len(run_ends(world)) == 1
-    assert S.read_state(world.cfg, world.cid)["state"] != "GATING"
+    assert len(run_ends(world, run_dir.name)) == 1
+    assert not {"commit", "transition"} & set(applied_after_end(world, run_dir.name))
 
 
 def test_adopt_after_abandon(world):
@@ -277,10 +292,10 @@ def test_adopt_unknown_persona_collected_with_note(world):
     assert until((run_dir / "exit.json").exists)
     Q.tick(world.cfg, runner=world.runner)
     assert adopt_journal(world)[-1]["runs"][0]["status"] == "unknown"
-    assert len(run_ends(world)) == 1
+    assert len(run_ends(world, run_dir.name)) == 1
     notes = S.read_ledger(world.cfg, world.cid, types=["note"])
     assert any("unregistered persona resolver" in n["text"] for n in notes)
-    assert S.read_state(world.cfg, world.cid)["state"] == "IMPLEMENTING"
+    assert not {"commit", "transition"} & set(applied_after_end(world, run_dir.name))
 
 
 def test_interim_stop_kills_runs(world):
