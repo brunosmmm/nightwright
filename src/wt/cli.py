@@ -1734,6 +1734,51 @@ def spec_status_cmd(cfg, spec_id, new_status, as_json):
         console.print(f"{spec_id}  {info['status']}")
 
 
+def _show_review(shown, as_json):
+    """`wt spec review --show` output (SPEC-0242): the review, then one status line."""
+    import json as _json
+    import sys
+    if as_json:
+        _json.dump(shown, sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return
+    review, adm = shown["review"], shown["admission"]
+    _print_review(review, shown["profile"])
+    admissible = adm["kind"] if adm["ok"] else f"no — {adm['message']}"
+    console.print(f"reviewed {str(review.get('spec_sha256') or '')[:12]} · "
+                  f"{'current' if shown['matches_current'] else 'edited since'} · "
+                  f"admissible: {admissible}", highlight=False, markup=False, soft_wrap=True)
+
+
+def _print_review(review, pick):
+    """The human rendering of a stored or fresh spec review (SPEC-0188, SPEC-0242)."""
+    spec_id = review["spec_id"]
+    color = {"approve": "green", "revise": "yellow", "split": "yellow"}[review["verdict"]]
+    cost = review.get("cost_usd")
+    cost_txt = f"  ${cost:.2f}" if cost is not None else ""
+    console.print(f"[bold]{spec_id}[/]  [{color}]{review['verdict']}[/]  "
+                  f"{review.get('model')}{cost_txt}")
+    if review.get("size"):
+        console.print(f"  size {review['size']}  tone {review.get('tone')}", highlight=False)
+        console.print(f"  rationale: {review.get('rationale') or '-'}", highlight=False)
+        if review["size"] == "xl":
+            console.print("  xl: split recommended, no profile", highlight=False)
+        elif pick:
+            console.print(f"  → profile [bold]{pick['profile']}[/]  [dim]{pick['reason']}[/]")
+    if review.get("findings"):
+        from rich.table import Table
+        table = Table(show_header=True, header_style="bold")
+        for col in ("severity", "section", "title", "detail"):
+            table.add_column(col, overflow="fold")
+        for f in review["findings"]:
+            table.add_row(f.get("severity", ""), f.get("section", ""), f.get("title", ""),
+                          f.get("detail", ""))
+        console.print(table)
+    for sp in review.get("suggested_splits") or []:
+        console.print(f"  split: [bold]{sp.get('title')}[/] — {sp.get('scope', '')}",
+                      highlight=False)
+
+
 @spec_group.command("review")
 @click.argument("spec_id", required=False, shell_complete=C.complete_any_spec_id)
 @click.option("--path", "path", type=click.Path(exists=True, dir_okay=False),
@@ -1741,8 +1786,10 @@ def spec_status_cmd(cfg, spec_id, new_status, as_json):
 @click.option("--json", "as_json", is_flag=True, help="emit the wt.spec.review.v1 payload")
 @click.option("--force", is_flag=True,
               help="review a spec that already has a stored review (an extra round)")
+@click.option("--show", is_flag=True,
+              help="print the stored review without running a reviewer (SPEC-0242)")
 @click.pass_obj
-def spec_review_cmd(cfg, spec_id, path, as_json, force):
+def spec_review_cmd(cfg, spec_id, path, as_json, force, show):
     """Review a spec with the read-only spec_reviewer persona (SPEC-0188).
 
     Stores the review in the data dir, keyed by the spec id and the file's hash
@@ -1755,9 +1802,14 @@ def spec_review_cmd(cfg, spec_id, path, as_json, force):
     reviews that checkout's copy; elsewhere, the registered checkout's. The reviewed file
     is printed first.
 
+    --show prints the stored review instead (no reviewer runs, nothing is journaled): the
+    verdict and findings, whether the file changed since, the profile `wt queue add` would
+    pick and whether it would admit the spec now. `wt spec reviews` lists them all.
+
     \b
     wt spec review SPEC-0188
     wt spec review SPEC-0188 --json
+    wt spec review SPEC-0188 --show
     wt spec review --path ~/code/other/docs/specs/0007-thing.md
     """
     import json as _json
@@ -1765,11 +1817,13 @@ def spec_review_cmd(cfg, spec_id, path, as_json, force):
     from pathlib import Path
 
     from .agentic.spec_review import (latest_review, reviewing_line, run_spec_review,
-                                      spec_root, would_pick)
+                                      show_payload, spec_root, would_pick)
     from .specmeta import split_frontmatter
     from .specs import resolve_spec_path_for_cwd
     if bool(spec_id) == bool(path):
         raise click.UsageError("give exactly one of SPEC-ID and --path")
+    if show and force:
+        raise click.UsageError("--show and --force cannot be combined")
     try:
         if path:
             fm, _ = split_frontmatter(Path(path).read_text(encoding="utf-8"))
@@ -1779,6 +1833,13 @@ def spec_review_cmd(cfg, spec_id, path, as_json, force):
             spec_path, origin = Path(path), "path"
         else:
             spec_path, origin = resolve_spec_path_for_cwd(cfg, spec_id)
+        if show:
+            shown = show_payload(cfg, spec_path, spec_id)
+            if shown is None:
+                raise click.ClickException(
+                    f"{spec_id} has no stored review; run wt spec review {spec_id}")
+            _show_review(shown, as_json)
+            return
         prior = latest_review(cfg, spec_id, spec_path)                # SPEC-0230
         if prior is not None:
             what = f"{prior.get('verdict')}, {str(prior.get('spec_sha256') or '')[:12]}"
@@ -1802,30 +1863,53 @@ def spec_review_cmd(cfg, spec_id, path, as_json, force):
                    indent=2, ensure_ascii=False)
         sys.stdout.write("\n")
         return
-    color = {"approve": "green", "revise": "yellow", "split": "yellow"}[review["verdict"]]
-    cost = review.get("cost_usd")
-    cost_txt = f"  ${cost:.2f}" if cost is not None else ""
-    console.print(f"[bold]{spec_id}[/]  [{color}]{review['verdict']}[/]  "
-                  f"{review['model']}{cost_txt}")
-    if review.get("size"):
-        console.print(f"  size {review['size']}  tone {review.get('tone')}", highlight=False)
-        console.print(f"  rationale: {review.get('rationale') or '-'}", highlight=False)
-        if review["size"] == "xl":
-            console.print("  xl: split recommended, no profile", highlight=False)
-        elif pick:
-            console.print(f"  → profile [bold]{pick['profile']}[/]  [dim]{pick['reason']}[/]")
-    if review["findings"]:
-        from rich.table import Table
-        table = Table(show_header=True, header_style="bold")
-        for col in ("severity", "section", "title", "detail"):
-            table.add_column(col, overflow="fold")
-        for f in review["findings"]:
-            table.add_row(f.get("severity", ""), f.get("section", ""), f.get("title", ""),
-                          f.get("detail", ""))
-        console.print(table)
-    for sp in review["suggested_splits"]:
-        console.print(f"  split: [bold]{sp.get('title')}[/] — {sp.get('scope', '')}",
-                      highlight=False)
+    _print_review(review, pick)
+
+
+@spec_group.command("reviews")
+@click.option("--verdict", type=click.Choice(["approve", "revise", "split"]),
+              help="only reviews with this verdict")
+@click.option("--json", "as_json", is_flag=True, help="emit wt.spec.reviews.v1")
+@click.pass_obj
+def spec_reviews_cmd(cfg, verdict, as_json):
+    """List the latest stored review of every spec (SPEC-0242).
+
+    One row per spec in the review store: verdict, size, tone, finding counts, when it was
+    reviewed and whether it still matches the spec file (`edited` = the spec changed since;
+    `?` = the spec id no longer resolves here). Read one with `wt spec review SPEC-ID --show`.
+
+    \b
+    wt spec reviews
+    wt spec reviews --verdict revise
+    wt spec reviews --json
+    """
+    import json as _json
+    import sys
+
+    from .agentic.spec_review import all_latest_reviews
+    rows = [r for r in all_latest_reviews(cfg) if not verdict or r["verdict"] == verdict]
+    if as_json:
+        _json.dump({"schema": "wt.spec.reviews.v1", "reviews": rows}, sys.stdout, indent=2,
+                   ensure_ascii=False)
+        sys.stdout.write("\n")
+        return
+    if not rows:
+        console.print("[dim]no stored spec reviews[/]")
+        return
+    from rich.table import Table
+    table = Table(show_header=True, header_style="bold")
+    for col in ("spec", "verdict", "size", "tone", "findings", "reviewed", "current"):
+        table.add_column(col, overflow="fold", no_wrap=col != "tone")
+    order = ("must_fix", "major", "minor", "nit")
+    for r in rows:
+        counts = r["counts"]
+        sevs = [s for s in order if counts.get(s)] + sorted(s for s in counts if s not in order)
+        found = " · ".join(f"{counts[s]} {s}" for s in sevs) or "-"
+        at = str(r.get("reviewed_at") or "")[:16].replace("T", " ")
+        cur = {True: "yes", False: "edited", None: "?"}[r["matches_current"]]
+        table.add_row(r["spec_id"], r["verdict"] or "", r.get("size") or "-",
+                      r.get("tone") or "-", found, at or "-", cur)
+    console.print(table)
 
 
 @spec_group.command("verify")

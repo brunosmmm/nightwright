@@ -387,6 +387,8 @@ invalidates it. `wt queue add --force` skips the check and records `review: forc
 
 ```bash
 wt spec review SPEC-0170          # approve | revise | split, with findings
+wt spec review SPEC-0170 --show   # read the stored review; runs nothing (SPEC-0242)
+wt spec reviews --verdict revise  # the latest review of every spec
 wt queue add SPEC-0170            # plan only (dry-run)
 wt queue add SPEC-0170 --yes      # create the campaign in QUEUED
 wt queue list                     # Active (slots) and Backlog (admission order) tables

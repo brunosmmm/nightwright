@@ -1,7 +1,7 @@
 ---
 id: SPEC-0242
 title: "wt spec review --show and wt spec reviews: read stored reviews without re-running"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -114,26 +114,26 @@ renderer, extracted from `spec_review_cmd` as `_print_review`.
 
 ## Acceptance criteria
 
-- [ ] `wt spec review SPEC-X --show` with a stored `revise` prints the verdict, findings table
+- [x] `wt spec review SPEC-X --show` with a stored `revise` prints the verdict, findings table
       and the status line (`current`, `admissible: no — …`), runs no reviewer (the FakeRunner
       script is untouched and the journal gains no record), and works when the spec already
       has a review (no `--force` needed).
-- [ ] After the spec file is edited, `--show` reports `edited since` and `admissible:
+- [x] After the spec file is edited, `--show` reports `edited since` and `admissible:
       after_revision`; for a stored `approve` of the current text it reports `admissible:
       approved` and the `→ profile` line.
-- [ ] `--show --json` emits `wt.spec.review.show.v1` with `current_sha`, `matches_current`,
+- [x] `--show --json` emits `wt.spec.review.show.v1` with `current_sha`, `matches_current`,
       `review`, `admission {ok, kind, message}`, `profile` and `stored`; when both an older
       review and one for the current sha exist, `review` is the current-sha one.
-- [ ] `--show` on a spec with no stored review exits 1 with the `run wt spec review` hint;
+- [x] `--show` on a spec with no stored review exits 1 with the `run wt spec review` hint;
       `--show --force` is a usage error; `--path FILE --show` shows the review of that
       file's repository only.
-- [ ] `wt spec reviews` lists the latest review per spec with verdict, size, tone, counts and
+- [x] `wt spec reviews` lists the latest review per spec with verdict, size, tone, counts and
       `current`; `--verdict revise` keeps only revise rows; `--json` emits
       `wt.spec.reviews.v1`; a store entry whose spec id no longer resolves shows `current`
       `?` (`matches_current: null`) instead of failing; an empty store exits 0.
-- [ ] A real `wt spec review` run prints the same output as before the `_print_review`
+- [x] A real `wt spec review` run prints the same output as before the `_print_review`
       extraction (existing SPEC-0188/0219/0230 CLI tests pass unchanged).
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -144,17 +144,33 @@ renderer, extracted from `spec_review_cmd` as `_print_review`.
 - **Regression guard:** full `uv run pytest`, in particular `tests/test_agentic_spec_review.py`,
   `tests/test_spec_review_store.py` and the SPEC-0230 tests.
 
+### Test record (2026-10-25)
+
+- `uv run pytest tests/test_spec_review_show.py` — 5 tests, one per AC group (show on a stored
+  revise with no reviewer run and no journal record; edited/approved status lines and profile;
+  `--json` payload preferring the current-sha review; no-review hint, `--show --force`, `--path`
+  scope; `wt spec reviews` list, `--verdict`, `--json`, unresolvable id, empty store): pass.
+- Regression: `tests/test_agentic_spec_review.py`, `tests/test_spec_review_store.py` pass
+  unchanged; full `uv run pytest` and `python3 tools/spec_lint.py` pass (see the run below).
+
+### As shipped (2026-10-25)
+
+As designed. Details: the `reviews` table keeps every column on one line except `tone`, so it
+stays readable at 80 columns; `_print_review` reads `findings`, `suggested_splits` and `model`
+with `.get` so a stored review missing a field still renders. `wt.spec.review.show.v1` and
+`wt.spec.reviews.v1` are listed in `docs/product/guides/agent-surface.md`.
+
 ## Rollout / migration
 
 Additive CLI. No stored data changes.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

@@ -192,6 +192,51 @@ def would_pick(cfg, review, *, project_root=None) -> dict | None:
     return select_profile(cfg, review=review, project_root=project_root)
 
 
+def show_payload(cfg, spec_path, spec_id) -> dict | None:
+    """`wt spec review --show` (SPEC-0242): the stored review of the spec, with whether it still
+    matches the file, whether `wt queue add` admits the spec now and the profile it would pick.
+    None when the spec has no stored review. Runs nothing, writes nothing."""
+    stored = list_reviews(cfg, spec_id, spec_path)
+    if not stored:
+        return None
+    current = spec_sha256(spec_path)
+    review = load_review(cfg, spec_id, current) or stored[-1]
+    try:
+        admitted = check_admissible(cfg, spec_path, spec_id)
+        admission = {"ok": True, "kind": admitted["admission"], "message": None}
+    except ValueError as e:
+        admission = {"ok": False, "kind": None, "message": str(e)}
+    return {"schema": "wt.spec.review.show.v1", "spec_id": spec_id, "spec_path": str(spec_path),
+            "current_sha": current, "matches_current": review.get("spec_sha256") == current,
+            "review": review, "admission": admission, "profile": would_pick(cfg, review),
+            "stored": len(stored)}
+
+
+def all_latest_reviews(cfg) -> list:
+    """`wt spec reviews` (SPEC-0242): one row per spec id in the review store, its latest review.
+    `matches_current` is None when the spec id no longer resolves (another repository's `--path`
+    review, a deleted spec). Ids without a readable review are skipped."""
+    root = Path(cfg["data_dir"]) / "agentic" / REVIEWS_DIRNAME
+    rows = []
+    for d in sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
+        spec_id = d.name
+        try:
+            path = SP.resolve_spec_path(cfg, spec_id)
+        except ValueError:
+            path = None
+        review = latest_review(cfg, spec_id, path)
+        if review is None:
+            continue
+        rows.append({
+            "spec_id": spec_id, "verdict": review.get("verdict"), "size": review.get("size"),
+            "tone": review.get("tone"), "counts": _counts(review.get("findings")),
+            "reviewed_at": review.get("reviewed_at"), "spec_sha256": review.get("spec_sha256"),
+            "matches_current": (None if path is None
+                                else review.get("spec_sha256") == spec_sha256(path)),
+            "model": review.get("model"), "cost_usd": review.get("cost_usd")})
+    return rows
+
+
 # ---- root, context, payload ----------------------------------------------------------------------
 
 def _fallback_root(spec_path) -> Path:
