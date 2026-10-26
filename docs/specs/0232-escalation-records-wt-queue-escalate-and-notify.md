@@ -408,6 +408,13 @@ Matches the Design, with these additions and clarifications:
   reports `OSError` as a ClickException. New tests cover the `open_for` double-plan race, a
   changed park reason, the `human` info mail on manual and automatic withdrawals, and the park
   guard.
+- Review round 2: a deferred escalation that replaces a pending `human` park request keeps it
+  on the new request as `park_requested.replaces`; `withdraw` restores it instead of dropping
+  the request, so the human's `wt queue park` still parks the campaign. `apply_escalate`
+  refuses (`changed since the plan`) when the pending request changed after the plan.
+  `_announce` records an event or mail failure in `notified.error` instead of failing the
+  apply, `remind_due` skips a record that raises, and `_park_row` gives `human_decision` parks
+  the same `escalated_from: null` shape on both deferred paths.
 
 ## Clock Log
 

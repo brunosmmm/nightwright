@@ -2648,7 +2648,9 @@ def _finish_reviews(ctx: _Ctx, report: TickReport, group: _ReviewGroup) -> dict:
 def _park_row(cfg, state: dict, step: Step) -> dict:
     frm = state.get("state")
     by = step.by or ("human" if step.reason == "human" else "tick")
-    _park(cfg, state, step.reason, step.detail or step.reason, step.resume_to or frm, by=by)
+    extra = {"escalated_from": None} if step.reason == "human_decision" else None
+    _park(cfg, state, step.reason, step.detail or step.reason, step.resume_to or frm, by=by,
+          extra=extra)
     return {"campaign": state["id"], "from": frm, "to": "PARKED", "action": "park",
             "run_id": None, "cost_usd": None, "reason": step.reason}
 

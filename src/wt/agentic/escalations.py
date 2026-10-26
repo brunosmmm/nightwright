@@ -190,6 +190,7 @@ def plan_escalate(cfg, campaign, *, question, options=(), recommend=None, facts=
     pp = Q.plan_park(cfg, campaign, question)
     plan["park"] = {"escalated_from": None, "resume_to": pp["resume_to"], "mode": pp["mode"]}
     earlier = st.get("park_requested") or {}
+    plan["request_now"] = earlier.get("reason")
     if pp["mode"] == "deferred" and earlier.get("reason") == "human":
         plan["facts"] = facts + [f"park requested earlier: {earlier.get('detail')}"]
     return plan
@@ -201,6 +202,8 @@ def _revalidate(cfg, plan: dict, st: dict) -> None:
     moved = st.get("state") != plan["state"] or st.get("state") in Q.TERMINAL_STATES
     if not moved and plan["state"] == "PARKED":
         moved = (st.get("park") or {}).get("reason") != plan["park_reason_now"]
+    if not moved and plan["state"] != "PARKED":
+        moved = (st.get("park_requested") or {}).get("reason") != plan.get("request_now")
     if moved or open_for(cfg, cid):
         raise ValueError(f"{cid} changed since the plan; re-run")
 
@@ -225,8 +228,12 @@ def apply_escalate(cfg, plan: dict) -> dict:
             park = plan["park"]
             try:
                 if park["mode"] == "deferred":
+                    earlier = st.get("park_requested")
                     st["park_requested"] = {"reason": "human_decision", "detail": detail,
                                             "at": store.now_iso(), "by": plan["by"]}
+                    if (earlier or {}).get("reason") == "human":
+                        # kept so a withdrawal gives the human's own request back
+                        st["park_requested"]["replaces"] = earlier
                     store.append_event(cfg, cid, "note", {
                         "text": f"escalation {rec['id']} requested; parks after the running "
                                 f"step", "author": plan["by"]}, by=plan["by"])
@@ -254,14 +261,24 @@ def _mail_text(rec: dict) -> str:
 def _announce(cfg, rec: dict) -> dict:
     """Event, human mail, notification (after the locks are released)."""
     by = rec["by"]
-    E.append(cfg, "escalation", campaign=rec["campaign"], spec_id=rec["spec_id"],
-             project=rec["project"], by=by,
-             data={"escalation_id": rec["id"], "question": rec["question"],
-                   "options": rec["options"], "recommendation": rec["recommendation"]})
-    msg = M.send(cfg, to="human", frm=by, kind="question", campaign=rec["campaign"],
-                 needs_reply=False, text=_mail_text(rec))
+    errors = []
+    try:
+        E.append(cfg, "escalation", campaign=rec["campaign"], spec_id=rec["spec_id"],
+                 project=rec["project"], by=by,
+                 data={"escalation_id": rec["id"], "question": rec["question"],
+                       "options": rec["options"], "recommendation": rec["recommendation"]})
+    except (ValueError, OSError) as e:
+        errors.append(f"event: {e}")
+    mail_id = None
+    try:
+        mail_id = M.send(cfg, to="human", frm=by, kind="question", campaign=rec["campaign"],
+                         needs_reply=False, text=_mail_text(rec))["id"]
+    except (ValueError, OSError) as e:
+        errors.append(f"mail: {e}")
     outcome = notify(cfg, rec)
-    return _mutate(cfg, rec["id"], lambda r: r.update(mail_id=msg["id"], notified=outcome))
+    if errors:                    # the record is already parked: report, do not fail the apply
+        outcome = {**outcome, "error": "; ".join([*errors, outcome.get("error") or ""]).strip("; ")[:300]}
+    return _mutate(cfg, rec["id"], lambda r: r.update(mail_id=mail_id, notified=outcome))
 
 
 # ---- notification ----------------------------------------------------------------------------
@@ -319,12 +336,15 @@ def remind_due(cfg, now=None) -> list[dict]:
     now = now or dt.datetime.now().astimezone()
     out = []
     for rec in list_all(cfg, "open"):
-        if not _live(cfg, rec):
-            _withdraw_stale(cfg, rec["id"])
+        try:
+            if not _live(cfg, rec):
+                _withdraw_stale(cfg, rec["id"])
+                continue
+            if not _claim(cfg, rec["id"], now, remind_s):
+                continue
+            claimed = read(cfg, rec["id"])
+        except (ValueError, OSError):                  # one bad record must not stop the pass
             continue
-        if not _claim(cfg, rec["id"], now, remind_s):
-            continue
-        claimed = read(cfg, rec["id"])
         outcome = notify(cfg, claimed, title=f"wt: {claimed['id']} still needs you")
         with contextlib.suppress(ValueError, OSError):
             _mutate(cfg, claimed["id"], lambda r: r.update(notified=outcome))
@@ -369,7 +389,11 @@ def withdraw(cfg, esc_id, reason, by, *, clear_request=True) -> dict:
             st = _campaign_state(cfg, cid)
             if clear_request and st and st.get("state") != "PARKED" \
                     and (st.get("park_requested") or {}).get("reason") == "human_decision":
-                st.pop("park_requested")
+                back = st["park_requested"].get("replaces")
+                if back:
+                    st["park_requested"] = back
+                else:
+                    st.pop("park_requested")
                 store.write_state(cfg, cid, st)
             with contextlib.suppress(ValueError, OSError):
                 store.append_event(cfg, cid, "note", {

@@ -192,6 +192,35 @@ def test_deferred_escalation_replaces_a_human_park_request(tmp_path):
     assert "park requested earlier: hold on" in rec["facts"]
 
 
+def test_withdrawing_a_replacing_escalation_restores_the_human_request(tmp_path):
+    cfg = _cfg(tmp_path)
+    earlier = {"reason": "human", "detail": "hold on", "at": S.now_iso()}
+    _camp(cfg, "IMPLEMENTING", park_requested=dict(earlier))
+    lease = L.acquire(cfg, [CID])
+    try:
+        rec = _esc(cfg)
+    finally:
+        lease.release()
+    ESC.withdraw(cfg, rec["id"], "resolved", "conductor")
+    assert _state(cfg)["park_requested"] == earlier
+
+
+def test_apply_refuses_when_the_park_request_changed_since_the_plan(tmp_path):
+    cfg = _cfg(tmp_path)
+    _camp(cfg, "IMPLEMENTING")
+    lease = L.acquire(cfg, [CID])
+    try:
+        plan = ESC.plan_escalate(cfg, CID, question="ship it?")
+        st = _state(cfg)
+        st["park_requested"] = {"reason": "human", "detail": "hold on", "at": S.now_iso()}
+        S.write_state(cfg, CID, st)
+        with pytest.raises(ValueError, match="changed since the plan"):
+            ESC.apply_escalate(cfg, plan)
+    finally:
+        lease.release()
+    assert ESC.open_for(cfg, CID) is None
+
+
 def test_withdrawing_a_deferred_escalation_drops_the_pending_request(tmp_path):
     cfg = _cfg(tmp_path)
     _camp(cfg, "IMPLEMENTING")
@@ -476,3 +505,14 @@ def test_park_does_not_cancel_a_pending_escalation(tmp_path, leased):
     st = _state(cfg)
     assert st["state"] == "IMPLEMENTING" and st["park_requested"]["reason"] == "human_decision"
     assert ESC.open_for(cfg, CID)["id"] == rec["id"]
+
+
+def test_a_failing_mail_does_not_fail_the_escalation(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(M, "send", boom)
+    rec = _esc(cfg, None)
+    assert rec["mail_id"] is None and "mail: disk full" in rec["notified"]["error"]
+    assert ESC.read(cfg, rec["id"])["status"] == "open"
