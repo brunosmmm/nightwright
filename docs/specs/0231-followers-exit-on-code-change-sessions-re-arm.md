@@ -236,6 +236,17 @@ As designed. Notes: the follower's return value counts real events/messages only
 so tests drive a fake clock. The `AUTO` sentinel for `code_root` is `codewatch.AUTO`;
 `events.code_changed_line` builds the envelope for both followers.
 
+A failed `git diff` in `Watcher.poll` keeps the baseline and retries at the next check (it is no
+longer read as a docs-only commit); the runner's `code_changes` is unchanged. The diff runs with
+`core.quotePath=false`, so non-ASCII skill names reach `skills_changed`.
+
+### Test record (2026-10-25, review round)
+
+Added tests for the `code_check_s` default and config key, `code_root=AUTO` through
+`code_checkout()` (checkout and non-checkout), poll-after-batch ordering, `from_sha`/`to_sha`/
+`paths`, a failed `git diff`, and a non-ASCII skill path. Full `uv run pytest` and
+`python3 tools/spec_lint.py` pass.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.

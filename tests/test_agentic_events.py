@@ -197,25 +197,30 @@ def test_follow_exits_with_code_changed_and_resumes(tmp_path, code_repo):
     E.cursor_set(cfg, "conductor", 0)
     e1 = E.append(cfg, "admitted", campaign="a")
     e2 = E.append(cfg, "admitted", campaign="b")
-    out, calls = io.StringIO(), {"n": 0}
+    out, calls = io.StringIO(), {"n": 0, "late": None}
+    start = code_repo.head()
 
     def stop():
         calls["n"] += 1
         if calls["n"] == 1:
+            # an event and a code commit land together: the event must still come first
+            calls["late"] = E.append(cfg, "admitted", campaign="late")
             code_repo.commit({"skills/wt-conduct/SKILL.md": "new\n"})
         return False
 
-    assert _code_follow(cfg, code_repo, out, stop=stop) == 2
+    assert _code_follow(cfg, code_repo, out, stop=stop) == 3
     lines = [json.loads(x) for x in out.getvalue().splitlines()]
-    assert [x["id"] for x in lines] == [e1["id"], e2["id"], None]
+    late = calls["late"]
+    assert [x["id"] for x in lines] == [e1["id"], e2["id"], late["id"], None]
     cc = lines[-1]
+    assert cc["data"]["from_sha"] == start
     assert cc["type"] == "code_changed" and cc["by"] == "follower" and cc["schema"] == E.SCHEMA
     assert cc["campaign"] is None and cc["spec_id"] is None and cc["project"] is None
     assert cc["data"]["reader"] == "conductor"
     assert cc["data"]["skills_changed"] == ["wt-conduct"]
     assert cc["data"]["paths"] == ["skills/wt-conduct/SKILL.md"]
     assert cc["data"]["to_sha"] == code_repo.head()
-    assert E.cursor_get(cfg, "conductor") == e2["id"]
+    assert E.cursor_get(cfg, "conductor") == late["id"]
     assert all(e["type"] != "code_changed" for e in E.read_since(cfg, 0))
     # restart: the next event is delivered once, nothing repeated
     e3 = E.append(cfg, "abandoned", campaign="c")
@@ -263,6 +268,52 @@ def test_follow_without_code_watch_keeps_looping(tmp_path, code_repo):
     assert calls["n"] == 5 and out.getvalue() == ""
 
 
+def _watch_exits(follow_kw, cfg, code_repo, **kw):
+    """Run E.follow with a code commit on the first stop(); return (printed lines, stop calls)."""
+    out, calls = io.StringIO(), {"n": 0}
+
+    def stop():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            code_repo.commit({"src/wt/x.py": f"x = {code_repo.head()}\n"})
+        return calls["n"] >= 6
+
+    E.follow(cfg, "conductor", poll_s=0.01, out=out, stop=stop, **follow_kw, **kw)
+    return out.getvalue().splitlines(), calls["n"]
+
+
+def test_code_check_s_default_and_config_key(tmp_path, code_repo, monkeypatch):
+    assert E.DEFAULTS["code_check_s"] == 10
+    assert E.settings(_cfg(tmp_path))["code_check_s"] == 10
+    monkeypatch.setattr(E.CW, "code_checkout", lambda: code_repo.root)
+    cfg = _cfg(tmp_path)
+    E.cursor_set(cfg, "conductor", 0)
+    # default 10 s: the follower is still running after a few fast iterations
+    lines, n = _watch_exits({}, cfg, code_repo)
+    assert lines == [] and n == 6
+    # the config key is what the follower reads
+    cfg["agentic"]["events"] = {"code_check_s": 0.01}
+    lines, n = _watch_exits({}, cfg, code_repo)
+    assert len(lines) == 1 and json.loads(lines[0])["type"] == "code_changed"
+    # 0 turns it off
+    cfg["agentic"]["events"] = {"code_check_s": 0}
+    lines, n = _watch_exits({}, cfg, code_repo)
+    assert lines == [] and n == 6
+
+
+def test_follow_auto_code_root_uses_code_checkout(tmp_path, code_repo, monkeypatch):
+    cfg = _cfg(tmp_path)
+    cfg["agentic"]["events"] = {"code_check_s": 0.01}
+    E.cursor_set(cfg, "conductor", 0)
+    monkeypatch.setattr(E.CW, "code_checkout", lambda: code_repo.root)
+    lines, _ = _watch_exits({}, cfg, code_repo)
+    assert json.loads(lines[-1])["type"] == "code_changed"
+    # a non-checkout install (code_checkout() is None): the follower keeps running
+    monkeypatch.setattr(E.CW, "code_checkout", lambda: None)
+    lines, n = _watch_exits({}, cfg, code_repo)
+    assert lines == [] and n == 6
+
+
 def test_summary_line_null_id():
     line = E.summary_line({"id": None, "type": "admitted", "campaign": None, "data": {}})
     assert line.startswith("#- admitted")
@@ -282,6 +333,7 @@ def test_cli_events_follow_no_code_watch(tmp_path, monkeypatch):
                                  "--no-code-watch"])
     assert r.exit_code == 0, r.output
     assert seen[-1]["code_root"] is None
+
 
 def test_cli_events_history_and_conduct_status(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)

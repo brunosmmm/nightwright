@@ -31,13 +31,19 @@ def _git_out(root, *args) -> str | None:
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+def _changed_paths(root, since: str, head: str, paths) -> list[str] | None:
+    """`paths` changed between two shas, or None when `git diff` fails (unlike an empty diff)."""
+    diff = _git_out(root, "-c", "core.quotePath=false", "diff", "--name-only", since, head,
+                    "--", *paths)
+    return None if diff is None else [p for p in diff.splitlines() if p]
+
+
 def code_changes(root, since: str, paths=_CODE_PATHS) -> tuple[str | None, list[str]]:
     """(current HEAD, `paths` changed since `since`) for the checkout at `root`."""
     head = _git_out(root, "rev-parse", "HEAD")
     if not head or head == since:
         return head, []
-    diff = _git_out(root, "diff", "--name-only", since, head, "--", *paths)
-    return head, [p for p in (diff or "").splitlines() if p]
+    return head, _changed_paths(root, since, head, paths) or []
 
 
 class Watcher:
@@ -59,8 +65,11 @@ class Watcher:
         if not self.enabled or now_monotonic - self._last < self.check_s:
             return None
         self._last = now_monotonic
-        head, changed = code_changes(self.root, self.sha, FOLLOWER_PATHS)
+        head = _git_out(self.root, "rev-parse", "HEAD")
         if not head or head == self.sha:
+            return None
+        changed = _changed_paths(self.root, self.sha, head, FOLLOWER_PATHS)
+        if changed is None:                  # git diff failed: keep the baseline, retry next check
             return None
         old, self.sha = self.sha, head
         if not changed:                      # docs/specs/tests only: not our code

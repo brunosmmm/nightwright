@@ -105,26 +105,54 @@ def test_follow_exits_with_code_changed(tmp_path, code_repo):
     M.send(cfg, to="conductor", frm="human", text="a")
     m2 = M.send(cfg, to="conductor", frm="human", text="b")
     out = io.StringIO()
+    start = code_repo.head()
 
     def stop():
         calls["n"] += 1
         if calls["n"] == 1:
+            # a message and a code commit land together: the message must still come first
+            calls["m3"] = M.send(cfg, to="conductor", frm="human", text="late")
             code_repo.commit({"skills/wt-steward/SKILL.md": "new\n"})
         return False
 
-    assert M.follow(cfg, "conductor", out=out, stop=stop, **kw) == 2
+    assert M.follow(cfg, "conductor", out=out, stop=stop, **kw) == 3
     lines = [json.loads(x) for x in out.getvalue().splitlines()]
-    assert [x.get("text") for x in lines[:2]] == ["a", "b"]
-    cc = lines[2]
+    assert [x.get("text") for x in lines[:3]] == ["a", "b", "late"]
+    cc = lines[3]
+    assert cc["data"]["from_sha"] == start and cc["data"]["to_sha"] == code_repo.head()
+    assert cc["data"]["paths"] == ["skills/wt-steward/SKILL.md"]
     assert cc["type"] == "code_changed" and cc["id"] is None and cc["by"] == "follower"
     assert cc["data"]["reader"] == "mailbox:conductor"
     assert cc["data"]["skills_changed"] == ["wt-steward"]
-    assert E.cursor_get(cfg, "mailbox:conductor") == m2["seq"]
+    assert E.cursor_get(cfg, "mailbox:conductor") == calls["m3"]["seq"]
     # restart: only the new message, none repeated
     M.send(cfg, to="conductor", frm="human", text="c")
     out2 = io.StringIO()
     assert M.follow(cfg, "conductor", out=out2, max_events=1, **kw) == 1
     assert [json.loads(x)["text"] for x in out2.getvalue().splitlines()] == ["c"]
+
+
+def test_follow_auto_root_and_config_key(tmp_path, code_repo, monkeypatch):
+    cfg = _cfg(tmp_path)
+
+    def run():
+        out, calls = io.StringIO(), {"n": 0}
+
+        def stop():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                code_repo.commit({"src/wt/x.py": f"x = {code_repo.head()}\n"})
+            return calls["n"] >= 5
+
+        M.follow(cfg, "human", out=out, poll_s=0.01, stop=stop)
+        return out.getvalue()
+
+    monkeypatch.setattr(E.CW, "code_checkout", lambda: code_repo.root)
+    assert run() == ""                                   # default 10 s: not yet
+    cfg["agentic"] = {"events": {"code_check_s": 0.01}}
+    assert json.loads(run())["type"] == "code_changed"   # AUTO root + config key
+    monkeypatch.setattr(E.CW, "code_checkout", lambda: None)
+    assert run() == ""                                   # non-checkout install
 
 
 def test_follow_code_root_none_keeps_running(tmp_path, code_repo):

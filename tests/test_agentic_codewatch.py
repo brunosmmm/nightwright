@@ -71,3 +71,22 @@ def test_watcher_disabled(code_repo, tmp_path):
               CW.Watcher(tmp_path / "nogit", 10, now=0.0)):
         assert not w.enabled
         assert w.poll(1000.0) is None
+
+
+def test_watcher_failed_diff_keeps_baseline(code_repo, monkeypatch):
+    w = CW.Watcher(code_repo.root, 10, now=0.0)
+    base = w.sha
+    code_repo.commit({"src/wt/x.py": "x = 2\n"})
+    real = CW._git_out
+    monkeypatch.setattr(CW, "_git_out",
+                        lambda root, *a: None if "diff" in a else real(root, *a))
+    assert w.poll(11.0) is None and w.sha == base        # not mistaken for a docs-only commit
+    monkeypatch.setattr(CW, "_git_out", real)
+    assert w.poll(22.0)["paths"] == ["src/wt/x.py"]
+
+
+def test_watcher_non_ascii_skill_path(code_repo):
+    w = CW.Watcher(code_repo.root, 10, now=0.0)
+    code_repo.commit({"skills/café/SKILL.md": "b\n"})
+    got = w.poll(11.0)
+    assert got["paths"] == ["skills/café/SKILL.md"] and got["skills_changed"] == ["café"]
