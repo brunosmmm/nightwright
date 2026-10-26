@@ -210,7 +210,8 @@ def test_spawn_timeout_failed_launch(tmp_path, monkeypatch):
 
     def slow_wrapper(argv, **kw):                 # the wrapper hangs before it can claim
         if "wt.agentic.runproc" in argv:
-            argv = [sys.executable, "-c", "import time, sys; time.sleep(float(sys.argv[1]));"
+            argv = [sys.executable, "-c", "import time, sys; print('hung-wrapper-marker', flush=True);"
+                    "time.sleep(float(sys.argv[1]));"
                     "import runpy; sys.argv = ['x', sys.argv[2]];"
                     "runpy.run_module('wt.agentic.runproc', run_name='__main__')",
                     "3", argv[-1]]
@@ -221,6 +222,7 @@ def test_spawn_timeout_failed_launch(tmp_path, monkeypatch):
     res = R.ClaudeRunner(spawn_timeout_s=1).run(req)
     assert time.monotonic() - t0 < 3 and res.is_error and res.exit_code == -1
     assert "launch failed" in res.result_text
+    assert "hung-wrapper-marker" in res.result_text            # the wrapper.log tail
     proc = json.loads((req.run_dir / "proc.json").read_text())
     assert proc["orphaned"] and proc["by"] == "spawn_timeout"
     time.sleep(3.5)                                # the late wrapper loses the claim

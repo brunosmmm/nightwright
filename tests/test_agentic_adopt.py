@@ -3,13 +3,15 @@ the fake `claude` of tests/fixtures/fake_claude.py through the wrapper; a "dead 
 StepPool that is discarded while its runs keep going."""
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from test_agentic_e2e import added, impl_done, make_cfg, make_repo, script
+from test_agentic_e2e import _git, added, impl_done, make_cfg, make_repo, review, script, tr_review
 from test_agentic_reexec import _code_repo
 from test_agentic_runproc import child_pid, pid_alive, until
 from wt.agentic import lease as L
@@ -81,9 +83,11 @@ def adopt_journal(w):
     return [r for r in Q.read_journal(w.cfg) if r["kind"] == "adopt"]
 
 
-def tick_until(w, pool, cond, n=60):
+def tick_until(w, pool, cond, n=60, steps=None):
     for _ in range(n):
-        Q.tick(w.cfg, runner=w.runner, pool=pool)
+        report = Q.tick(w.cfg, runner=w.runner, pool=pool)
+        if steps is not None:
+            steps.extend(report.steps)
         if cond():
             return True
         time.sleep(0.1)
@@ -161,30 +165,70 @@ def test_adopt_after_abandon(world):
     assert S.read_state(world.cfg, world.cid)["state"] == "ABANDONED"
 
 
-def test_orphan_claim_after_grace(world, monkeypatch):
+def _orphan_world(world, monkeypatch, *, launch_json):
+    """An old runner's run: finished or not, nobody claimed it. Returns (run_dir, at) where
+    `at(age)` sets the patched clock `age` seconds after the grace anchor (the `launch.json`
+    mtime, else the `run.start` ts)."""
     pool, run_dir = start_impl(world)
     die(pool)
     world.release()
     assert until((run_dir / "exit.json").exists)
-    for name in ("proc.json", "exit.json", "child.json"):      # an old runner's run: no claim
+    for name in ("proc.json", "exit.json", "child.json"):
         (run_dir / name).unlink()
-    (run_dir / "launch.json").write_text("{}")
     real, offset = time.time, {"s": 0.0}
     monkeypatch.setattr(time, "time", lambda: real() + offset["s"])
-    os.utime(run_dir / "launch.json", (real() - 5, real() - 5))
+    if launch_json:
+        (run_dir / "launch.json").write_text("{}")
+        anchor = real() - 5
+        os.utime(run_dir / "launch.json", (anchor, anchor))
+    else:
+        (run_dir / "launch.json").unlink()
+        anchor = R._epoch(S.read_ledger(world.cfg, world.cid, types=["run.start"])[0]["ts"])
+
+    def at(age):
+        offset["s"] = anchor + age - real()
+
+    return run_dir, at
+
+
+def _orphan_claimed_and_respawned(world, run_dir, new):
+    assert json.loads((run_dir / "proc.json").read_text())["by"] == "adopt"
+    assert tick_until(world, new, lambda: run_ends(world))
+    end = run_ends(world)[0]
+    assert end["interrupted"] and end["cost_usd"] is None and end["cost_estimated"]
+    assert S.read_state(world.cfg, world.cid)["state"] == "IMPLEMENTING"
+    assert tick_until(world, new, lambda: len(S.read_ledger(
+        world.cfg, world.cid, types=["run.start"])) == 2)          # the step is respawned
+    assert [e["persona"] for e in S.read_ledger(world.cfg, world.cid, types=["run.start"])] \
+        == ["implementer", "implementer"]
+
+
+def test_orphan_claim_after_grace(world, monkeypatch):
+    run_dir, at = _orphan_world(world, monkeypatch, launch_json=True)
+    at(5)
     new = Q.StepPool()
     world.pools.append(new)
     Q.tick(world.cfg, runner=world.runner, pool=new)
     assert adopt_journal(world)[-1]["runs"][0]["status"] == "running"
     time.sleep(0.6)
     assert not (run_dir / "proc.json").exists()                # 5 s: not claimed
-    offset["s"] = 6.0
+    at(11)
     assert until((run_dir / "proc.json").exists)
-    assert json.loads((run_dir / "proc.json").read_text())["by"] == "adopt"
-    assert tick_until(world, new, lambda: run_ends(world))
-    end = run_ends(world)[0]
-    assert end["interrupted"] and end["cost_usd"] is None
-    assert S.read_state(world.cfg, world.cid)["state"] in ("IMPLEMENTING",)
+    _orphan_claimed_and_respawned(world, run_dir, new)
+
+
+def test_orphan_claim_without_launch_json_uses_run_start_ts(world, monkeypatch):
+    run_dir, at = _orphan_world(world, monkeypatch, launch_json=False)
+    at(5)
+    new = Q.StepPool()
+    world.pools.append(new)
+    Q.tick(world.cfg, runner=world.runner, pool=new)
+    assert adopt_journal(world)[-1]["runs"][0]["status"] == "running"
+    time.sleep(0.6)
+    assert not (run_dir / "proc.json").exists()                # 5 s after run.start: not claimed
+    at(11)
+    assert until((run_dir / "proc.json").exists)
+    _orphan_claimed_and_respawned(world, run_dir, new)
 
 
 def test_legacy_survivor_not_killed(world, monkeypatch):
@@ -212,8 +256,7 @@ def test_legacy_survivor_not_killed(world, monkeypatch):
     offset["s"] = 3600 + 61
     assert tick_until(world, new, lambda: run_ends(world))
     end = run_ends(world)[0]
-    assert end["is_error"] and "legacy orphan" in (end["result_tail"] or "") \
-        or end["interrupted"]
+    assert end["is_error"] and "legacy orphan" in (end["result_tail"] or "")
     assert S.read_state(world.cfg, world.cid)["state"] == "IMPLEMENTING"
     assert pid_alive(pid)                                      # never killed
 
@@ -261,10 +304,12 @@ def test_interim_stop_stubborn_child_is_killed(world, monkeypatch):
     pool, run_dir = start_impl(world)
     pool.flights[world.cid].ctx.stop.set()
     lease = L.acquire(world.cfg, ["wt", "queue", "run"])
+    t0 = time.monotonic()
     try:
         Q._drain(world.cfg, pool, lease, reason="signal")
     finally:
         lease.release()
+    assert time.monotonic() - t0 < 20                          # the wrapper's KILL escalation
     ex = json.loads((run_dir / "exit.json").read_text())
     assert ex["killed_by"] == "signal" and ex["signal"] == 9
 
@@ -282,6 +327,9 @@ def test_run_finishing_while_stopping_is_not_interrupted(world):
     end, = run_ends(world)
     assert not end["interrupted"]
     assert json.loads((run_dir / "exit.json").read_text())["killed_by"] is None
+    commit, = S.read_ledger(world.cfg, world.cid, types=["commit"])     # the work is committed
+    wt = Path(S.read_state(world.cfg, world.cid)["repo"]["worktree"])
+    assert commit["sha"] and commit["sha"] == _git(wt, "rev-parse", "HEAD")
 
 
 def test_try_detach_all_phases():
@@ -541,6 +589,39 @@ def test_adopt_classification_triager_and_legacy_reviewers():
     assert Q._adopt_class({"persona": "resolver"}) is None
 
 
+def test_adopt_classification_recorded_step_beats_registry():
+    # the registry says implement / reviewer group; the recorded step says otherwise
+    assert Q._adopt_class({"persona": "implementer", "step": {
+        "kind": "review", "personas": ["a_reviewer", "b_reviewer"]}}) \
+        == ("review", ("a_reviewer", "b_reviewer"))
+    assert Q._adopt_class({"persona": "test_reviewer", "step": {
+        "kind": "review", "personas": ["test_reviewer", "conformance_reviewer"]}}) \
+        == ("review", ("test_reviewer", "conformance_reviewer"))
+    assert Q._adopt_class({"persona": "resolver", "step": {"kind": "triage", "personas": []}}) \
+        == ("triage", None)                                    # unregistered, but recorded
+
+
+def test_adopt_uses_recorded_step_end_to_end(world):
+    """A persona the registry does not know, with a recorded `implement` step, is applied as
+    the implementer's step, not parked as unknown."""
+    pool, run_dir = start_impl(world)
+    die(pool)
+    ledger = S.runs_dir(world.cfg, world.cid).parent / "ledger.jsonl"
+    recs = [json.loads(x) for x in ledger.read_text().splitlines()]
+    for rec in recs:
+        if rec["type"] == "run.start":
+            rec["persona"] = "resolver"                        # `step` stays: kind implement
+    ledger.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    world.release()
+    assert until((run_dir / "exit.json").exists)
+    Q.tick(world.cfg, runner=world.runner)
+    assert adopt_journal(world)[-1]["runs"][0]["status"] == "finished"
+    assert len(run_ends(world)) == 1
+    assert S.read_state(world.cfg, world.cid)["state"] != "IMPLEMENTING"
+    assert not any("unregistered persona" in n["text"]
+                   for n in S.read_ledger(world.cfg, world.cid, types=["note"]))
+
+
 def test_adopt_review_triager_is_its_own_group(world, monkeypatch):
     from test_agentic_e2e import review
     cfg = world.cfg
@@ -601,3 +682,224 @@ def test_runner_killed_after_popen_is_adopted_running(world, monkeypatch):
     Q.tick(world.cfg, runner=world.runner, pool=new)
     assert adopt_journal(world)[-1]["runs"][0]["status"] == "running"
     assert "orphaned" not in (run_dir / "proc.json").read_text()
+
+
+# ---- fan-out detach, finished members, orphan_group, unrecorded commit ------------------------
+
+def reviewing_flight(world, monkeypatch, by_argv, prep=None):
+    """Drive the campaign to a two-reviewer fan-out in flight; returns (pool, {persona: run_dir}).
+    `by_argv` is the fake claude's per-reviewer env override; `prep` runs just before the
+    reviewers are spawned."""
+    cfg = world.cfg
+    cfg["agentic"]["profiles"]["balanced"]["reviewers"] = ["conformance_reviewer", "test_reviewer"]
+    pool, _ = start_impl(world)
+    monkeypatch.setenv("FAKE_CLAUDE_SLEEP_S", "0")
+    world.release()
+    assert tick_until(world, pool, lambda: S.read_state(cfg, world.cid)["state"] == "GATING")
+    (world.tmp / "release").unlink()
+    monkeypatch.setenv("FAKE_CLAUDE_SLEEP_S", "60")
+    monkeypatch.setenv("FAKE_CLAUDE_EDITS", "[]")
+    monkeypatch.setenv("FAKE_CLAUDE_BY_ARGV", json.dumps(by_argv))
+    if prep:
+        prep()
+    assert tick_until(world, pool, lambda: pool.flights.get(world.cid) is not None
+                      and len(pool.flights[world.cid].tasks) == 2)
+    starts = [e for e in S.read_ledger(cfg, world.cid, types=["run.start"])
+              if e["persona"] in PS.REVIEWER_PERSONAS]
+    return pool, {e["persona"]: S.runs_dir(cfg, world.cid) / e["run_id"] for e in starts}
+
+
+def both_fix():
+    """conformance exits at once (must_fix); the test reviewer waits for the release."""
+    return [["ac_assessment", {"FAKE_CLAUDE_SLEEP_S": "0",
+                               "FAKE_CLAUDE_VERDICT": json.dumps(review("fix")["verdict"])}],
+            ["coverage_assessment", {"FAKE_CLAUDE_VERDICT": json.dumps(tr_review("fix")["verdict"])}]]
+
+
+def _group_flight(phases):
+    from concurrent.futures import Future
+    pool, fl, hooks, futs = Q.StepPool(), Q._Flight({"id": "C"}, None), [], []
+    for i, phase in enumerate(phases):
+        hk, fut = pool.hooks(phase="wait"), Future()
+        hk.phase = phase
+        fl.tasks.append((Q.Step("review", persona=f"r{i}", personas=("r0", "r1")), fut, hk))
+        fl.runs.append((f"00{i}-r{i}", 60))
+        hooks.append(hk), futs.append(fut)
+    pool.flights["C"] = fl
+    return pool, hooks, futs
+
+
+def test_fanout_detach_precondition_phases():
+    # whichever task is held back (first or second), nothing detaches
+    for held in ("spawning", "collect"):
+        for order in ((held, "wait"), ("wait", held)):
+            pool, hooks, _ = _group_flight(order)
+            assert pool.try_detach_all() is None and "C" in pool.flights
+            assert not any(h.detached() for h in hooks)
+    pool, hooks, futs = _group_flight(("wait", "collect"))
+    hooks[1].phase = "wait"                                    # it reached `wait`: both go
+    assert pool.try_detach_all() == [{"campaign": "C", "run_ids": ["000-r0", "001-r1"]}]
+    assert all(h.detached() for h in hooks) and not pool.flights
+    # a finished reviewer next to a waiting one: both run ids (adoption re-collects the first)
+    pool, hooks, futs = _group_flight(("done", "wait"))
+    futs[0].set_result(None)
+    assert pool.try_detach_all() == [{"campaign": "C", "run_ids": ["000-r0", "001-r1"]}]
+    assert hooks[1].detached() and not hooks[0].detached()
+    # a flight whose tasks are all done is harvested, never detached
+    pool, hooks, futs = _group_flight(("done", "done"))
+    for f in futs:
+        f.set_result(None)
+    assert pool.try_detach_all() is None and "C" in pool.flights
+    pool, hooks, futs = _group_flight(("wait",))
+    futs[0].set_result(None)                                   # an unharvested implementer
+    assert pool.try_detach_all() is None
+
+
+def test_fanout_detach_precondition(world, monkeypatch):
+    """Two reviewers, one wrapper start paused: the fan-out stays attached until it claims."""
+    go, real_popen = world.tmp / "go", subprocess.Popen
+    code = ("import os, sys, time, runpy\nwhile not os.path.exists(sys.argv[1]): time.sleep(0.05)\n"
+            "sys.argv = ['x', sys.argv[2]]\n"
+            "runpy.run_module('wt.agentic.runproc', run_name='__main__')")
+
+    def paused(argv, **kw):
+        if "wt.agentic.runproc" in argv and "test_reviewer" in argv[-1]:
+            argv = [sys.executable, "-c", code, str(go), argv[-1]]
+        return real_popen(argv, **kw)
+
+    pool, rdirs = reviewing_flight(world, monkeypatch, both_fix(), prep=lambda: monkeypatch.setattr(
+        R.subprocess, "Popen", paused))
+    (_, _, h_conf), (_, _, h_test) = pool.flights[world.cid].tasks
+    assert until(lambda: h_conf.phase == "wait")
+    assert h_test.phase == "spawning"
+    assert pool.try_detach_all() is None and world.cid in pool.flights
+    go.write_text("")
+    assert until(lambda: h_test.phase == "wait" and RP.read_json(rdirs["test_reviewer"] / "child.json"))
+    assert pool.try_detach_all() == [{"campaign": world.cid, "run_ids": [
+        rdirs[p].name for p in ("conformance_reviewer", "test_reviewer")]}]
+    assert h_conf.detached() and h_test.detached() and not pool.flights
+
+
+def test_adopt_review_group_with_finished_member(world, monkeypatch):
+    """One reviewer exits before the detach (its task is done, never harvested) and one is
+    still running: the new pool applies both, once, as one group."""
+    pool, rdirs = reviewing_flight(world, monkeypatch, both_fix())
+    (_, f_conf, _), (_, f_test, _) = pool.flights[world.cid].tasks
+    assert until(lambda: f_conf.done() and (rdirs["conformance_reviewer"] / "run.json").exists())
+    assert not f_test.done() and not (rdirs["test_reviewer"] / "exit.json").exists()
+    detached = pool.try_detach_all()                           # the real detach, not detach_force
+    assert detached == [{"campaign": world.cid, "run_ids": [
+        rdirs[p].name for p in ("conformance_reviewer", "test_reviewer")]}]
+    pool.shutdown()
+    new, steps = Q.StepPool(), []
+    world.pools.append(new)
+    Q.tick(world.cfg, runner=world.runner, pool=new)
+    adopted = {r["persona"]: r["status"] for r in adopt_journal(world)[-1]["runs"]}
+    assert adopted == {"conformance_reviewer": "finished", "test_reviewer": "running"}
+    assert not [e for e in run_ends(world) if e["persona"] in PS.REVIEWER_PERSONAS]
+    world.release()
+    assert tick_until(world, new, lambda: any(
+        s["action"] == "review" for s in steps), steps=steps)
+    ends = [e for e in run_ends(world) if e["persona"] in PS.REVIEWER_PERSONAS]
+    assert sorted(e["persona"] for e in ends) == ["conformance_reviewer", "test_reviewer"]
+    rows = [s for s in steps if s["campaign"] == world.cid and s["action"] == "review"]
+    assert len(rows) == 1 and rows[0]["reason"] == "review_fix"      # both verdicts were valid
+    fixes = [t for t in S.read_ledger(world.cfg, world.cid, types=["transition"])
+             if t.get("reason") == "review_fix"]
+    assert len(fixes) == 1
+    brief = S.read_state(world.cfg, world.cid)["pending_brief"]
+    assert sorted(brief["personas"]) == ["conformance_reviewer", "test_reviewer"]
+
+
+def test_adopt_orphan_group_waited_and_killed(world):
+    """The wrapper died, `claude` did not: adoption waits (no respawn), kills the group at the
+    timeout, synthesizes `exit.json`, and records exactly one `run.end`."""
+    pool, run_dir = start_impl(world)
+    pid = int((Path(S.read_state(world.cfg, world.cid)["repo"]["worktree"]) / "child.pid").read_text())
+    die(pool)
+    os.kill(RP.read_json(run_dir / "proc.json")["wrapper_pid"], 9)
+    assert until(lambda: RP.run_status(run_dir) == "orphan_group")
+    req = json.loads((run_dir / "request.json").read_text())
+    req["timeout_s"] = 3
+    (run_dir / "request.json").write_text(json.dumps(req))
+    new = Q.StepPool()
+    world.pools.append(new)
+    Q.tick(world.cfg, runner=world.runner, pool=new)
+    assert adopt_journal(world)[-1]["runs"][0]["status"] == "orphan_group"
+    for _ in range(4):                                           # the group lives: nothing happens
+        Q.tick(world.cfg, runner=world.runner, pool=new)
+        time.sleep(0.2)
+    assert pid_alive(pid) and not run_ends(world)
+    assert len(S.read_ledger(world.cfg, world.cid, types=["run.start"])) == 1
+    assert tick_until(world, new, lambda: run_ends(world), n=150)
+    ex = json.loads((run_dir / "exit.json").read_text())
+    assert ex["synthesized"] and ex["killed_by"] == "timeout"
+    assert not pid_alive(pid)
+    assert len(run_ends(world)) == 1
+
+
+@pytest.mark.parametrize("mode,recorded", [("earlier", True), ("later", False), ("handover", False)])
+def test_adopt_exited_before_start_from_ended_at(world, monkeypatch, mode, recorded):
+    """An unrecorded worktree commit is recorded only when the run's `exit.json.ended_at` is
+    earlier than the lease `started_at`; a handover keeps the lease `started_at`."""
+    import datetime as dt
+    cfg = world.cfg
+    lease = L.acquire(cfg, ["wt", "queue", "run"]) if mode == "handover" else None
+    pool, run_dir = start_impl(world)
+    die(pool)
+    world.release()
+    assert until((run_dir / "exit.json").exists)
+    wt = Path(S.read_state(cfg, world.cid)["repo"]["worktree"])
+    _git(wt, "add", "-A")                                        # the crash-during-collect case:
+    _git(wt, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "agent commit")
+    head = _git(wt, "rev-parse", "HEAD")
+    if mode == "handover":
+        monkeypatch.setenv(L.HANDOVER_ENV, lease.handover()[L.HANDOVER_ENV])
+        started = L.read_lease(cfg)["started_at"]
+        lease = L.acquire(cfg, ["wt", "queue", "run"])
+        assert L.read_lease(cfg)["started_at"] == started
+        assert dt.datetime.fromisoformat(json.loads(
+            (run_dir / "exit.json").read_text())["ended_at"]) >= dt.datetime.fromisoformat(started)
+    else:
+        lease = L.acquire(cfg, ["wt", "queue", "run"])
+        started = dt.datetime.fromisoformat(L.read_lease(cfg)["started_at"])
+        ex = json.loads((run_dir / "exit.json").read_text())
+        delta = dt.timedelta(seconds=-5 if mode == "earlier" else 5)
+        ex["ended_at"] = (started + delta).isoformat(timespec="seconds")
+        (run_dir / "exit.json").write_text(json.dumps(ex))
+    try:
+        Q.tick(cfg, runner=world.runner)
+    finally:
+        lease.release()
+    commit, = S.read_ledger(cfg, world.cid, types=["commit"])
+    assert commit["sha"] == (head if recorded else None)
+    assert len(run_ends(world)) == 1
+
+
+def test_try_detach_all_never_drops_a_finished_implementer(world, monkeypatch):
+    """The implementer's task completes after `_harvest` built its list but before the detach:
+    the flight is not detached, the next iteration harvests it, and its commit is recorded."""
+    import concurrent.futures as cf
+    pool, run_dir = start_impl(world)
+    (_, fut, _), = pool.flights[world.cid].tasks
+    real, calls = Q._harvest, []
+
+    def late(p, report):
+        real(p, report)
+        if not calls:
+            calls.append(1)
+            world.release()
+            cf.wait([fut], timeout=30)
+            assert fut.done()
+
+    monkeypatch.setattr(Q, "_harvest", late)
+    lease = L.acquire(world.cfg, ["wt", "queue", "run"])
+    try:
+        report = Q._drain(world.cfg, pool, lease, reason="code_changed")
+    finally:
+        lease.release()
+    assert not report.detached and not pool.flights
+    commit, = S.read_ledger(world.cfg, world.cid, types=["commit"])
+    assert commit["sha"]
+    assert len(run_ends(world)) == 1
+    assert S.read_state(world.cfg, world.cid)["repo"]["head"] == commit["sha"]

@@ -5,7 +5,9 @@ Env: FAKE_CLAUDE_SLEEP_S sleep that long, or until a `release` file exists in th
 FAKE_CLAUDE_VERDICT JSON of the structured output; FAKE_CLAUDE_COST total_cost_usd;
 FAKE_CLAUDE_STDOUT raw stdout instead of a result JSON; FAKE_CLAUDE_RC exit code;
 FAKE_CLAUDE_STUBBORN ignore SIGTERM; FAKE_CLAUDE_RELEASE path of the release file (default ./release); FAKE_CLAUDE_RECORD path for {argv, stdin, cwd, env};
-FAKE_CLAUDE_EDITS JSON [{path, write}] and FAKE_CLAUDE_EDIT a file to write in the cwd (an implementer's work). Writes `child.pid`."""
+FAKE_CLAUDE_EDITS JSON [{path, write}] and FAKE_CLAUDE_EDIT a file to write in the cwd (an implementer's work);
+FAKE_CLAUDE_BY_ARGV JSON [[substring, {ENV: value}]] env overrides for runs whose argv contains
+the substring (different reviewers behave differently). Writes `child.pid`."""
 import json
 import os
 import signal
@@ -13,6 +15,9 @@ import sys
 import time
 
 stdin = sys.stdin.read()
+for _needle, _env in json.loads(os.environ.get("FAKE_CLAUDE_BY_ARGV") or "[]"):
+    if _needle in " ".join(sys.argv):
+        os.environ.update(_env)
 with open("child.pid", "w") as f:
     f.write(str(os.getpid()))
 if os.environ.get("FAKE_CLAUDE_RECORD"):

@@ -2088,6 +2088,8 @@ class StepPool:
         `{campaign, run_ids}` of the runs left running."""
         with self.lock:
             for fl in self.flights.values():
+                if fl.done():                   # finished, not harvested yet: harvest, never drop
+                    return None
                 for _step, fut, hk in fl.tasks:
                     if not fut.done() and (hk is None or hk.phase not in ("wait",)):
                         return None
@@ -2440,6 +2442,7 @@ def _adopt(cfg, ctx: _Ctx, pool: StepPool, report: TickReport) -> None:
         first_seq = min(e.get("seq") or 0 for e in members)
         if snap.get("state") != start_state or any(
                 e["type"] in _HUMAN_EVENTS and e.get("by") != "tick"
+                and not (e["type"] == "transition" and e.get("from") == e.get("to"))
                 and (e.get("seq") or 0) > first_seq for e in store.read_ledger(cfg, cid)):
             snap["_superseded"] = True
         snap["state"] = start_state

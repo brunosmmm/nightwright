@@ -349,25 +349,27 @@ class ClaudeRunner:
         self.spawn_timeout_s = spawn_timeout_s
 
     def run(self, req: RunRequest, *, hooks: RunHooks | None = None):
-        _save_inputs(req)
         run_dir = req.run_dir
+        attach = (run_dir / "proc.json").exists() or bool(hooks and hooks.adopt)
+        if not attach:
+            _save_inputs(req)
         started_at = _now_iso()
         started = time.monotonic()
         wrapper = None
-        if not (run_dir / "proc.json").exists() and not (hooks and hooks.adopt):
-            RP.write_json_atomic(run_dir / "request.json", _request_doc(req, started_at))
-            RP.write_json_atomic(run_dir / "launch.json", {
-                "argv": build_argv(req), "cwd": str(req.cwd), "env": dict(req.env)})
-            with open(run_dir / "wrapper.log", "ab") as log:
-                wrapper = subprocess.Popen(
-                    [sys.executable, "-m", "wt.agentic.runproc", str(run_dir)],
-                    stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
-            err = self._await_claim(req, wrapper, started)
-            if err:
-                return _error_result(req, err, started_at, time.monotonic() - started)
-        if hooks:
-            hooks.spawned()
         try:
+            if not attach and not (run_dir / "proc.json").exists():
+                RP.write_json_atomic(run_dir / "request.json", _request_doc(req, started_at))
+                RP.write_json_atomic(run_dir / "launch.json", {
+                    "argv": build_argv(req), "cwd": str(req.cwd), "env": dict(req.env)})
+                with open(run_dir / "wrapper.log", "ab") as log:
+                    wrapper = subprocess.Popen(
+                        [sys.executable, "-m", "wt.agentic.runproc", str(run_dir)],
+                        stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+                err = self._await_claim(req, wrapper, started)
+                if err:
+                    return _error_result(req, err, started_at, time.monotonic() - started)
+            if hooks:
+                hooks.spawned()
             return self._wait(req, hooks)
         except BaseException:
             if hooks is None:                       # attached: stopping the caller stops the agent

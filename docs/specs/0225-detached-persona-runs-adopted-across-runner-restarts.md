@@ -574,11 +574,27 @@ skip adoption (`test_adopt_running_then_finished_once` and others), drop the led
 (`test_adopt_after_park_resume_while_no_runner`), `interrupted` from the stop flag
 (`test_run_finishing_while_stopping_is_not_interrupted`), drop the interim-stop TERM/KILL
 (`test_interim_stop_kills_runs`), drop the kill-on-exception `finally`
-(`test_attached_run_killed_on_keyboard_interrupt`). Not run as a separate sabotage: "classify by
-persona name only" (the registry and recorded `step` give the same kind for the personas
-exercised end to end; `test_adopt_classification_triager_and_legacy_reviewers` pins both
-paths) and "split `try_detach_all`'s check from its detach" (`test_collect_race_delays_exec`
-covers the race it guards, but the sabotage itself was not run).
+(`test_attached_run_killed_on_keyboard_interrupt`). Not run as a separate sabotage: "split
+`try_detach_all`'s check from its detach" (`test_collect_race_delays_exec` covers the race it guards,
+but the sabotage itself was not run). "Classify by persona name only" was run in review round 2.
+
+Review round 2 added (all pass; `tests/test_agentic_adopt.py` + `test_agentic_runproc.py`: 49 passed):
+`test_fanout_detach_precondition` (end to end, one reviewer wrapper held in `spawning` by a paused
+start) and `test_fanout_detach_precondition_phases` (either task held in `spawning`/`collect`, a
+finished reviewer next to a waiting one, all-done and unharvested-implementer flights),
+`test_adopt_review_group_with_finished_member` (real `try_detach_all`; one `review_fix` transition
+whose brief carries both reviewers), `test_adopt_orphan_group_waited_and_killed` (SIGKILL the
+wrapper only; `adopt` says `orphan_group`, no second `run.start`, killed at the timeout, one
+`run.end`), `test_adopt_exited_before_start_from_ended_at` (earlier / later / real lease handover),
+`test_adopt_classification_recorded_step_beats_registry` + `test_adopt_uses_recorded_step_end_to_end`,
+the respawn / `cost_estimated` asserts and the no-`launch.json` variant of the orphan claim tests,
+the commit assert in `test_run_finishing_while_stopping_is_not_interrupted`, and the minor
+tightenings. `tests/fixtures/fake_claude.py` gained `FAKE_CLAUDE_BY_ARGV` (per-reviewer env).
+Sabotage runs added, each failing the named test: no `fl.done()` check in `try_detach_all`
+(`test_try_detach_all_never_drops_a_finished_implementer`, `..._phases`), `exited_before_start`
+inverted (`test_adopt_exited_before_start_from_ended_at[earlier-True]`), classify by persona only
+(`test_adopt_classification_recorded_step_beats_registry`, `test_adopt_uses_recorded_step_end_to_end`),
+checking only the first task of a flight in `try_detach_all` (`test_fanout_detach_precondition_phases`).
 
 Manual verification (live implementer + a real merge) was not performed on a live runner; the
 same scenario is covered by `test_reexec_does_not_wait_for_persona_run` (exec while the child
@@ -616,12 +632,17 @@ journals `adopt … running` and records one `run.end`) and by the session/group
   returns an error result at once (`wrapper.log` tail), without waiting for the timeout.
 - `interrupted` for detachable runners is `exit.json.killed_by == "signal"`; non-detachable
   runners keep `ctx.stop.is_set()`. The mechanism is the runner's `detachable` attribute.
-- Not covered by a test of its own: adoption of an `orphan_group` run (the wait loop duties are
-  covered at the runner level by `test_orphan_group_waited_and_killed_at_timeout`), the
-  `test_fanout_detach_precondition` shape (the phase rule is tested on a single flight in
-  `test_try_detach_all_phases`), and the one-time legacy edge from the review brief: a `claude`
-  left by a SIGKILLed pre-SPEC-0225 runner is held for `timeout_s` + 60 s and never killed, so it
-  is not duplicated in the worktree either.
+- `try_detach_all` also returns None while any flight is `done()` (all its tasks finished, not yet
+  harvested), so an implementer whose future completed after `_harvest` built its list is harvested
+  on the next loop iteration (its `commit` recorded) instead of being dropped; only `wait` tasks
+  and finished reviewers of a still-running group are detached. Pinned by
+  `test_try_detach_all_never_drops_a_finished_implementer` (a patched `_harvest` finishes the
+  implementer after its scan) and `test_fanout_detach_precondition_phases`.
+- The adoption snapshot check ignores `transition` events whose `from` equals `to` (such as
+  `prioritized`). `ClaudeRunner.run` does not rewrite `prompt.md` when it attaches (`proc.json`
+  exists or `hooks.adopt` is set), and `_await_claim` is inside the kill-on-exception `try`.
+- The legacy `claude` left by a SIGKILLed pre-SPEC-0225 runner is held for `timeout_s` + 60 s and
+  never killed, so it is not duplicated in the worktree either.
 - Rollout edge (legacy `claude` that survived an old runner): handled by the legacy-survivor rule
   above, not by a worktree-cwd process scan.
 
