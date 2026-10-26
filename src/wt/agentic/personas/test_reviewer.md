@@ -38,6 +38,8 @@ a renamed test shows as one removed and one changed name; parametrized tests are
 
 {{previous_verdicts}}
 
+{{human_overrides}}
+
 ## Brief that was given to the implementer
 
 {{pending_brief}}

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0235
 title: "Escalation answers: wt escalations answer (choose/waive/attest/text); the conductor applies them"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -246,34 +246,34 @@ record write. The event (step 4) is appended after both locks are released.
 
 ## Acceptance criteria
 
-- [ ] `wt escalations answer` accepts exactly one form (`--choose`, `--text`, or `--waive` /
+- [x] `wt escalations answer` accepts exactly one form (`--choose`, `--text`, or `--waive` /
       `--attest` with `--reason`). Mixing forms, a missing reason, a non-open record and an
       unknown option are refused. Without `--yes` nothing is written.
-- [ ] `--choose` resolves a 1-based number or a case-insensitive label. The record becomes
+- [x] `--choose` resolves a 1-based number or a case-insensitive label. The record becomes
       `answered` with `answer`, `answered_by` (default `human`) and `answered_at` set.
-- [ ] `--waive` accepts any finding id of the stored review (any severity, synthetic and merged
+- [x] `--waive` accepts any finding id of the stored review (any severity, synthetic and merged
       included) and refuses other ids. `--attest` accepts a `#ac` finding id or an AC text
       covering exactly one distinct unmet AC, and refuses others (listing the matches when
       more than one). Overrides without a campaign are refused.
-- [ ] Apply takes `item_lock` then the escalations lock, re-checks `open` (a record withdrawn
+- [x] Apply takes `item_lock` then the escalations lock, re-checks `open` (a record withdrawn
       after the plan is refused, with nothing written), appends a `human_decision` ledger event
       and a `note` in the pinned summary format, stores override items in
       `state["human_overrides"]`, and leaves the campaign `PARKED` with its `park` unchanged.
-- [ ] Apply appends exactly one `escalation_answered` event (registered in `EVENT_TYPES`,
+- [x] Apply appends exactly one `escalation_answered` event (registered in `EVENT_TYPES`,
       with `escalation_id`, `kind`, `summary`). The ledger `human_decision` event projects no
       queue event.
-- [ ] `triage_reviews` drops human-waived findings of any severity, both by id and, for a
+- [x] `triage_reviews` drops human-waived findings of any severity, both by id and, for a
       fresh review, by (normalized title, files). Attested ACs, and the ACs of waived real
       findings, are neither unmet nor synthetic findings. A review whose only blockers are
       overridden routes to `pass`, including a waived real `major` that covers an unmet AC.
-- [ ] `state["human_overrides"]` survives `_begin_review`. `_route_reviews` notes applied
+- [x] `state["human_overrides"]` survives `_begin_review`. `_route_reviews` notes applied
       overrides. `_accept_waivers` does not list a human-waived finding as waivable. The
       reviewer prompts receive `{{human_overrides}}` (empty when there are none).
-- [ ] After an answered `text`, `wt queue escalate <cid>` on the still-`human_decision` park
+- [x] After an answered `text`, `wt queue escalate <cid>` on the still-`human_decision` park
       succeeds with a new id (SPEC-0232 re-park rule).
-- [ ] The `wt-conduct` skill has the `escalation_answered` row (choose / override ⇒ resume to
+- [x] The `wt-conduct` skill has the `escalation_answered` row (choose / override ⇒ resume to
       REVIEWING / text), and `wt-steward` has the relay rule.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -324,6 +324,35 @@ record write. The event (step 4) is appended after both locks are released.
 - **Regression guard:** full `uv run pytest`. With no overrides, the existing SPEC-0203/0206
   triage tests are unchanged, because the new arguments default to empty.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q tests/test_agentic_review_triage.py tests/test_agentic_escalations.py
+  tests/test_agentic_escalations_cli.py tests/test_agentic_queue.py
+  tests/test_agentic_personas.py tests/test_skills.py`: all new SPEC-0235 cases pass.
+- Manual, throwaway `WT_DATA_DIR`: `wt queue escalate --question "ship it?" --option yes
+  --option no --yes`, then `wt escalations answer ESC-0001 --choose 2 --yes` printed
+  `✓ ESC-0001 answered`; `wt queue events --tail 2` showed `escalation` then
+  `escalation_answered` (`kind: choose`, `summary: chose 2 (no)`); `wt escalations show
+  ESC-0001` printed `answered by human at …: chose 2 (no)`.
+- Full gates: `uv run pytest -q -x` and `python3 tools/spec_lint.py` (see the run record).
+
+### As shipped
+
+- `human_decision` had to be registered as a ledger event type
+  (`schemas.EVENT_KEYS["human_decision"] = ("escalation", "kind")`); it was not known before.
+- Re-park after an answered `text` needed no code change: SPEC-0232's `plan_escalate` only
+  refuses while another record is *open*; a test pins it.
+- An attestation whose text is exactly an unmet AC is accepted even when `_covers` also matches
+  a longer/shorter variant (the plan lists the whole reach); only an inexact text covering
+  several distinct ACs is refused. `triage_reviews` still uses `_covers`, so such a variant is
+  cleared too, as listed in `reach`.
+- A human waiver of a synthetic `#ac` finding also clears its AC (its `ac` joins the attested
+  set), otherwise `unmet` would keep the outcome at `fix`.
+- `wt escalations show` prints the answer; the plan output of `answer` lists `covers:` for each
+  attestation. `_triage_input` (the review triager's input) also uses the overridden triage.
+- If the final `escalation_answered` append fails, the answer stays recorded (the error is
+  suppressed, as in `withdraw`).
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -336,11 +365,11 @@ SPEC-0232 before this merge can be answered at once.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

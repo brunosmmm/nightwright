@@ -41,6 +41,7 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "rebase_resolved": ("run_id", "target_sha", "conflicts", "resolutions", "summary", "head"),
     "spec_written": ("spec_id", "rel_path", "title", "mode"),
     "followup": ("persona", "severity", "title", "key", "idea_id", "origin"),
+    "human_decision": ("escalation", "kind"),                  # SPEC-0235
 }
 
 RUN_KEYS = ("schema", "campaign", "run_id", "persona", "model", "effort", "max_budget_usd",

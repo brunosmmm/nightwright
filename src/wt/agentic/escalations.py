@@ -1,7 +1,7 @@
 """Escalation records (SPEC-0232): `ESC-NNNN` question-to-the-human files under
 `<agentic_dir>/escalations/`, created by `wt queue escalate`, which also parks the campaign as
 `human_decision` (the human-owned reason of SPEC-0222), appends an `escalation` event, mails
-`human` and runs a configurable desktop notifier. Answering is SPEC-0235.
+`human` and runs a configurable desktop notifier. Answering (SPEC-0235) only records the answer; the conductor applies it.
 
 Lock order is always the campaign's `item_lock`, then the escalations lock."""
 from __future__ import annotations
@@ -283,6 +283,213 @@ def _announce(cfg, rec: dict) -> dict:
     if errors:                    # the record is already parked: report, do not fail the apply
         outcome = {**outcome, "error": "; ".join([*errors, outcome.get("error") or ""]).strip("; ")[:300]}
     return _mutate(cfg, rec["id"], lambda r: r.update(mail_id=mail_id, notified=outcome))
+
+
+# ---- answer (SPEC-0235) ----------------------------------------------------------------------
+
+_NOTE_AC_CHARS, _NOTE_TEXT_CHARS, _NOTE_NOTE_CHARS = 60, 200, 200
+
+
+def _cut(text, n) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= n else text[:n] + "…"
+
+
+def _review_findings(cfg, st: dict) -> tuple[list, list, set]:
+    """`(findings, unmet, synthetic ids)` of the review that led to the park: every `blocking` / `advisory`
+    finding of `triage_reviews` over all stored verdicts (any loop), and the distinct `ac` texts
+    of their `met: false` `ac_assessment` entries."""
+    from . import profiles as PR
+    from . import queue as Q
+    stored = (st.get("last_review") or {}).get("verdicts") or {}
+    profile = PR.resolve_profile(cfg, st.get("profile"))
+    valid = {p: stored[p] for p in Q.reviewers_of(profile)
+             if isinstance(stored.get(p), dict)}
+    tri = Q.triage_reviews(valid, profile)
+    unmet = []
+    for v in valid.values():
+        for e in v.get("ac_assessment") or []:
+            if isinstance(e, dict) and e.get("met") is False and e.get("ac") \
+                    and e["ac"] not in unmet:
+                unmet.append(e["ac"])
+    return tri["blocking"] + tri["advisory"], unmet, set(tri["synthetic"])
+
+
+def _ids_hint(ids) -> str:
+    ids = list(ids)
+    return ", ".join(ids[:10]) + (f", … ({len(ids)} in all)" if len(ids) > 10 else "") \
+        if ids else "(none)"
+
+
+def _plan_override(cfg, rec, waive, attest, reason) -> dict:
+    from . import queue as Q
+    cid = rec.get("campaign")
+    if not cid:
+        raise ValueError(f"{rec['id']} has no campaign; there is no review to override")
+    if not (reason or "").strip():
+        raise ValueError("an override needs a non-empty --reason")
+    if not waive and not attest:
+        raise ValueError("an override needs --waive and/or --attest")
+    st = store.read_state(cfg, cid)
+    findings, unmet, synthetic = _review_findings(cfg, st)
+    by_id = {f["id"]: f for f in findings}
+    waived, implicit = [], []
+    for fid in waive:
+        f = by_id.get(fid)
+        if f is None:
+            raise ValueError(f"--waive {fid!r} is not a finding of the stored review; "
+                             f"valid ids: {_ids_hint(by_id)}")
+        if fid in [w["id"] for w in waived]:
+            continue
+        waived.append({"id": fid, "title": f["title"], "files": f["files"],
+                       "severity": f["severity"], "ac": f.get("ac"),
+                       "synthetic": fid in synthetic})
+        for u in unmet:
+            if f.get("ac") and Q._covers(f["ac"], u) and u not in implicit:
+                implicit.append(u)
+    attested, reach = [], {}
+    for a in attest:
+        a = (a or "").strip()
+        if not a:
+            raise ValueError("empty --attest")
+        m = re.match(r"^(\w+)#ac\d+$", a)
+        if m:
+            f = by_id.get(a)
+            if f is None or not f.get("ac"):
+                ids = [i for i in by_id if re.search(r"#ac\d+$", i)]
+                raise ValueError(f"--attest {a!r} is not an AC finding of the stored review; "
+                                 f"valid ids: {_ids_hint(ids)}")
+            text, hits = f["ac"], [f["ac"]]
+        else:
+            text = a
+            hits = [u for u in unmet if Q._covers(a, u)]
+            if not hits:
+                raise ValueError(f"--attest {a!r} matches no unmet AC of the stored review; "
+                                 f"unmet ACs: {_ids_hint(unmet)}")
+            exact = [u for u in hits if Q.norm_finding_title(u) == Q.norm_finding_title(a)]
+            if len(hits) > 1 and not exact:
+                raise ValueError(f"--attest {a!r} covers {len(hits)} ACs ({_ids_hint(hits)}); "
+                                 f"use a longer text or a <persona>#ac<j> id")
+        if text not in attested:
+            attested.append(text)
+            reach[text] = hits
+    return {"waive": waived, "attest": attested, "reason": reason.strip(),
+            "implicitly_attested": implicit, "reach": reach}
+
+
+def plan_answer(cfg, esc_id, *, choose=None, text=None, waive=(), attest=(), reason=None,
+                note=None, by=None) -> dict:
+    """Validate and describe an answer (pure: writes nothing). Exactly one form: `choose`, `text`
+    or an override (`waive` / `attest` with `reason`)."""
+    waive, attest = list(waive or ()), list(attest or ())
+    forms = [k for k, on in (("choose", choose is not None), ("text", text is not None),
+                             ("override", bool(waive or attest))) if on]
+    if len(forms) != 1:
+        raise ValueError("give exactly one answer form: --choose, --text, or "
+                         "--waive/--attest with --reason" +
+                         (f" (got {', '.join(forms)})" if forms else ""))
+    if reason is not None and forms != ["override"]:
+        raise ValueError("--reason belongs to --waive/--attest")
+    by = M.validate_address(cfg, by or "human")
+    rec = read(cfg, esc_id)
+    if rec.get("status") != "open":
+        when = (rec.get("answered_at") if rec.get("status") == "answered"
+                else (rec.get("withdrawn") or {}).get("at"))
+        raise ValueError(f"{esc_id} is {rec.get('status')} since {when}; only an open "
+                         f"escalation can be answered")
+    kind = forms[0]
+    answer = {"kind": kind, "choice": None, "label": None, "text": None, "waive": [],
+              "attest": [], "reason": None, "note": (note or "").strip() or None}
+    plan = {"id": esc_id, "campaign": rec.get("campaign"), "by": by,
+            "question": rec["question"], "options": rec.get("options") or [],
+            "answer": answer, "override": None}
+    if kind == "choose":
+        opts = rec.get("options") or []
+        if not opts:
+            raise ValueError(f"{esc_id} has no options to choose from; use --text")
+        v = str(choose).strip()
+        hit = None
+        if v.isdigit():
+            hit = next((o for o in opts if o["n"] == int(v)), None)
+        if hit is None and not v.isdigit():
+            hit = next((o for o in opts if o["label"].strip().casefold() == v.casefold()), None)
+        if hit is None:
+            raise ValueError(f"--choose {v!r} is not an option of {esc_id} "
+                             f"(1-{len(opts)} or a label: {', '.join(o['label'] for o in opts)})")
+        answer.update(choice=hit["n"], label=hit["label"])
+    elif kind == "text":
+        if not str(text).strip():
+            raise ValueError("empty --text")
+        answer["text"] = str(text).strip()
+    else:
+        ov = _plan_override(cfg, rec, waive, attest, reason)
+        answer.update(waive=[w["id"] for w in ov["waive"]], attest=ov["attest"],
+                      reason=ov["reason"])
+        plan["override"] = ov
+    plan["summary"] = summarize(answer)
+    return plan
+
+
+def summarize(answer: dict) -> str:
+    """The pinned one-line summary of an answer (ledger note, `escalation_answered`)."""
+    kind = answer["kind"]
+    if kind == "choose":
+        out = f"chose {answer['choice']} ({answer['label']})"
+    elif kind == "text":
+        out = f"text: {_cut(answer['text'], _NOTE_TEXT_CHARS)}"
+    else:
+        sections = []
+        if answer["waive"]:
+            sections.append("waived " + ", ".join(answer["waive"]))
+        if answer["attest"]:
+            sections.append("attested " + ", ".join(
+                f'"{_cut(a, _NOTE_AC_CHARS)}"' for a in answer["attest"]))
+        sections.append(f"reason: {answer['reason']}")
+        out = "; ".join(sections)
+    if answer.get("note"):
+        out += f" — note: {_cut(answer['note'], _NOTE_NOTE_CHARS)}"
+    return out
+
+
+def apply_answer(cfg, plan: dict) -> dict:
+    """Record the answer, ledger it, store the overrides, then append `escalation_answered`.
+    Lock order: the campaign's `item_lock`, then the escalations lock, which is held across the
+    record's read-check-write; `open` is re-checked inside it. Never moves the campaign."""
+    esc_id, cid, by, answer = plan["id"], plan["campaign"], plan["by"], plan["answer"]
+    known = bool(cid) and _campaign_state(cfg, cid) is not None
+    now = store.now_iso()
+    with store.item_lock(cfg, cid) if known else contextlib.nullcontext():
+        def close(r):
+            if r.get("status") != "open":
+                when = r.get("answered_at") or (r.get("withdrawn") or {}).get("at")
+                raise ValueError(f"{esc_id} is {r.get('status')} since {when}")
+            r.update(status="answered", answer=answer, answered_by=by, answered_at=now)
+        rec = _mutate(cfg, esc_id, close)
+        if known:
+            summary = plan["summary"]
+            store.append_event(cfg, cid, "human_decision",
+                               {"escalation": esc_id, **answer}, by=by)
+            store.append_event(cfg, cid, "note", {"text": f"{by}: {esc_id} {summary}",
+                                                  "author": by}, by=by)
+            ov = plan.get("override")
+            if ov:
+                st = store.read_state(cfg, cid)
+                h = st.setdefault("human_overrides", {"waive": [], "attest": []})
+                h.setdefault("waive", [])
+                h.setdefault("attest", [])
+                for w in ov["waive"]:
+                    h["waive"].append({**w, "reason": ov["reason"], "escalation": esc_id,
+                                       "at": now})
+                for a in ov["attest"]:
+                    h["attest"].append({"ac": a, "reason": ov["reason"], "escalation": esc_id,
+                                        "at": now})
+                store.write_state(cfg, cid, st)
+    with contextlib.suppress(ValueError, OSError):
+        E.append(cfg, "escalation_answered", campaign=cid, spec_id=rec.get("spec_id"),
+                 project=rec.get("project"), by=by,
+                 data={"escalation_id": esc_id, "kind": answer["kind"],
+                       "summary": plan["summary"], "answer": answer})
+    return rec
 
 
 # ---- notification ----------------------------------------------------------------------------

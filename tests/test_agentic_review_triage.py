@@ -808,3 +808,88 @@ def test_considered_set_unions_carry_and_the_final_review():
                                       "waived": []})
     assert [(e["title"], e["severity"]) for e in out] == [("old", "major"), ("new", "minor")]
     assert carry[0]["severity"] == "minor"                   # inputs are not mutated
+
+
+# ---- SPEC-0235: human overrides ----------------------------------------------------------
+
+def hw(fid, title, files=(), **kw):
+    return dict({"id": fid, "title": title, "files": list(files), "severity": "major",
+                 "synthetic": False, "ac": None}, **kw)
+
+
+def htri(verdicts, human_waived=(), attested=(), profile=BAL):
+    return Q.triage_reviews(verdicts, profile, (), human_waived, attested)
+
+
+def test_human_waiver_by_id_drops_a_must_fix_and_routes_pass():
+    vs = {A: v("fix", f("must_fix", "broken", files=["a.py"]), f("minor", "taste"))}
+    assert tri(vs)["outcome"] == "fix"
+    out = htri(vs, [hw(f"{A}#0", "broken", ["a.py"], severity="must_fix")])
+    assert out["outcome"] == "pass" and out["fixing"] == [] and out["human_waived"] == [f"{A}#0"]
+    assert [x["id"] for x in out["advisory"]] == [f"{A}#1"]
+
+
+def test_human_waiver_matches_a_fresh_review_by_title_and_files():
+    old = {A: v("fix", f("major", "Sorted output", files=["b.py", "a.py"]))}
+    waiver = hw(f"{A}#0", "Sorted output", ["b.py", "a.py"])
+    fresh = {A: v("fix", f("minor", "other"), f("major", " sorted  OUTPUT ", files=["a.py", "b.py"]))}
+    assert tri(fresh)["outcome"] == "fix"
+    out = htri(fresh, [waiver])
+    assert out["outcome"] == "pass" and out["human_waived"] == [f"{A}#1"]
+    assert htri(old, [waiver])["outcome"] == "pass"
+
+
+def test_a_reworded_title_on_re_review_is_not_matched():
+    waiver = hw(f"{A}#0", "Sorted output", ["a.py"])
+    fresh = {A: v("fix", f("minor", "other"), f("major", "Output must be sorted", files=["a.py"]))}
+    assert htri(fresh, [waiver])["outcome"] == "fix"            # documented limit
+
+
+def test_synthetic_waiver_matches_by_id_and_title_only():
+    vs = {A: v("fix", brief="rewrite it")}
+    waiver = hw(f"{A}#fix", "rewrite it", synthetic=True)
+    assert htri(vs, [waiver])["outcome"] == "pass"
+    assert htri({A: v("fix", brief="rewrite it differently")}, [waiver])["outcome"] == "fix"
+
+
+def test_attested_ac_is_neither_unmet_nor_synthetic():
+    vs = {A: v("pass", ac=[("AC 4 output is sorted", False), ("AC 5 other thing", True)])}
+    assert tri(vs)["outcome"] == "fix" and tri(vs)["synthetic"] == [f"{A}#ac0"]
+    out = htri(vs, attested=["AC 4 output is sorted"])
+    assert out["outcome"] == "pass" and out["synthetic"] == [] and out["blocking"] == []
+    assert out["attested"] == ["AC 4 output is sorted"]
+
+
+def test_waiving_a_real_major_that_covers_an_unmet_ac_clears_the_ac():
+    vs = {A: v("fix", f("major", "unsorted", ac="AC 4 output is sorted"),
+               ac=[("AC 4 output is sorted", False)])}
+    assert tri(vs)["outcome"] == "fix"
+    out = htri(vs, [hw(f"{A}#0", "unsorted", ac="AC 4 output is sorted")])
+    assert out["outcome"] == "pass" and out["blocking"] == []
+    assert out["attested"] == ["AC 4 output is sorted"]
+
+
+def test_a_merged_finding_is_waived_by_its_merged_id():
+    one = f("major", "shared", files=["a.py"])
+    vs = {A: v("fix", one), B: v("fix", dict(one))}
+    out = tri(vs)
+    [m] = out["blocking"]
+    assert m["personas"] == [A, B]
+    out = htri(vs, [hw(m["id"], "shared", ["a.py"])])
+    assert out["outcome"] == "pass" and out["human_waived"] == [m["id"]]
+
+
+def test_no_overrides_leave_the_result_unchanged():
+    vs = {A: v("fix", f("major"))}
+    assert Q.triage_reviews(vs, BAL)["human_waived"] == []
+    assert Q.triage_reviews(vs, BAL)["attested"] == []
+
+
+def test_accept_waivers_does_not_offer_a_human_waived_finding():
+    state = _state({A: minors(2)}, ON)
+    state["human_overrides"] = {"waive": [hw(f"{A}#0", f"{A} m0", severity="minor")],
+                                "attest": []}
+    got, ignored = Q._accept_waivers(state, ON, [{"id": f"{A}#0", "reason": "r"},
+                                                 {"id": f"{A}#1", "reason": "r"}])
+    assert [w["id"] for w in got] == [f"{A}#1"]
+    assert ignored == [(f"{A}#0", "not a finding of this review")]

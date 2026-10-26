@@ -63,6 +63,8 @@ EVENT_TYPES = {
     # SPEC-0232
     "escalation": ("escalation_id", "question", "options"),
     "escalation_withdrawn": ("escalation_id", "reason"),
+    # SPEC-0235
+    "escalation_answered": ("escalation_id", "kind", "summary"),
 }
 
 # transient run failures: account limits, overload, network-ish API errors

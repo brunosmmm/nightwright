@@ -321,7 +321,17 @@ def _covers(finding_ac, entry_ac) -> bool:
     return a == b or (a in b and len(a) >= 8) or (b in a and len(b) >= 8)
 
 
-def triage_reviews(verdicts: dict, profile: dict, waived=()) -> dict:
+def human_overrides_of(state: dict) -> tuple:
+    """`(human_waived, attested)` from `state["human_overrides"]` (SPEC-0235): the waive dicts
+    and the attested AC texts; both empty when the campaign has none."""
+    ov = state.get("human_overrides") if isinstance(state.get("human_overrides"), dict) else {}
+    waive = [w for w in ov.get("waive") or [] if isinstance(w, dict)]
+    attest = [a["ac"] for a in ov.get("attest") or [] if isinstance(a, dict) and a.get("ac")]
+    return waive, attest
+
+
+def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
+                   attested=()) -> dict:
     """Pure (SPEC-0203): score and route the reviewers' verdicts `{persona: verdict}` (valid
     verdicts, in profile order) into `{outcome, score, score_only, blocking, advisory,
     waivable_weight, fixing, synthetic}`.
@@ -331,11 +341,30 @@ def triage_reviews(verdicts: dict, profile: dict, waived=()) -> dict:
     verdict survives iff unexplained or backed by a `major`/`must_fix` ⇒ score
     `max(0, 100 - Σ weight)` ⇒ `fix` on a `must_fix`, a surviving `fix` verdict, an unmet AC
     or `score < pass_score`. `fixing` = the personas whose `fix` verdict survived; `synthetic`
-    = ids of the synthetic findings."""
+    = ids of the synthetic findings.
+
+    SPEC-0235: `human_waived` (stored waive dicts) removes a finding of any severity, synthetic
+    included, by id + normalized title, or (real findings) by normalized title + sorted files;
+    `attested` ACs (plus the `ac` of every human-waived finding that has one) make a matching unmet
+    `ac_assessment` entry met. The result also lists `human_waived` ids and `attested` texts
+    that applied."""
     pass_score, weights = review_params(profile)
     personas = list(verdicts)
     own = {}                      # persona -> its finding records, in order
     wants_fix, unmet = {}, False
+    human_waived = [w for w in human_waived or () if isinstance(w, dict)]
+    by_id = {(w.get("id"), norm_finding_title(w.get("title"))) for w in human_waived}
+    by_key = {(norm_finding_title(w.get("title")), tuple(sorted(w.get("files") or [])))
+              for w in human_waived}
+
+    def human_gone(r):
+        return (r["id"], norm_finding_title(r["title"])) in by_id or (
+            not r["synthetic"] and (norm_finding_title(r["title"]),
+                                    tuple(sorted(r["files"]))) in by_key)
+
+    attest_all = [a for a in attested or () if a] + [
+        w["ac"] for w in human_waived if w.get("ac")]
+    attest_hit = []
     for p in personas:
         v = verdicts[p]
         raw = [f for f in v.get("findings") or [] if isinstance(f, dict)]
@@ -355,6 +384,11 @@ def triage_reviews(verdicts: dict, profile: dict, waived=()) -> dict:
                          "files": [], "ac": None, "category": None, "synthetic": True})
         for j, entry in enumerate(v.get("ac_assessment") or []):
             if not isinstance(entry, dict) or entry.get("met") is not False:
+                continue
+            hit = next((a for a in attest_all if _covers(a, entry.get("ac"))), None)
+            if hit is not None:
+                if hit not in attest_hit:
+                    attest_hit.append(hit)
                 continue
             unmet = True
             if any(not r["synthetic"] and r["severity"] in ("major", "must_fix")
@@ -390,6 +424,8 @@ def triage_reviews(verdicts: dict, profile: dict, waived=()) -> dict:
     waived = set(waived or ())
     gone = {id(m) for m in merged if m["id"] in waived and not m["synthetic"]
             and m["severity"] in ("minor", "nit")}
+    human_ids = [m["id"] for m in merged if human_gone(m)]
+    gone |= {id(m) for m in merged if human_gone(m)}
     surviving = [m for m in merged if id(m) not in gone]
     # 3: a fix verdict survives iff backed by a surviving major/must_fix (synthetics are majors)
     fixing = [p for p in personas if wants_fix[p] and any(
@@ -414,7 +450,8 @@ def triage_reviews(verdicts: dict, profile: dict, waived=()) -> dict:
             "blocking": out(blocking), "advisory": out(advisory),
             "waivable_weight": sum(weights[m["severity"]] for m in surviving
                                    if m["severity"] in ("minor", "nit")),
-            "fixing": fixing, "synthetic": [m["id"] for m in surviving if m["synthetic"]]}
+            "fixing": fixing, "synthetic": [m["id"] for m in surviving if m["synthetic"]],
+            "human_waived": human_ids, "attested": attest_hit}
 
 
 def _bullet(f: dict) -> str:
@@ -477,7 +514,8 @@ def needs_triager(result: dict, profile: dict) -> bool:
     return result["score"] + result["waivable_weight"] >= review_params(profile)[0]
 
 
-def decide_reviews(state: dict, profile: dict, valid: dict, failed=(), waived=()) -> Step:
+def decide_reviews(state: dict, profile: dict, valid: dict, failed=(), waived=(),
+                   human_waived=(), attested=()) -> Step:
     """Pure: the transition the reviewers' verdicts imply (SPEC-0187, SPEC-0201).
 
     `valid` = ordered `{persona: verdict}` of every reviewer with a valid current-loop
@@ -503,7 +541,7 @@ def decide_reviews(state: dict, profile: dict, valid: dict, failed=(), waived=()
                         detail=f"{who} returned no usable verdict twice", resume_to="REVIEWING")
         return Step("none", reason="review_retry", missing=missing)
     valid = {p: valid[p] for p in reviewers}
-    tri = triage_reviews(valid, profile, waived)
+    tri = triage_reviews(valid, profile, waived, human_waived, attested)
     pass_score = review_params(profile)[0]
     combined = {"triage": tri, "pass_score": pass_score, "brief": None}
     if tri["outcome"] == "pass":
@@ -1031,7 +1069,8 @@ def _triage_input(state: dict, profile: dict) -> str:
     """The `triage_input` prompt value of the review triager (SPEC-0206): the score, the
     reviewers' verdict and brief, and the waivable (surviving `minor`/`nit`) findings."""
     valid = _valid_verdicts(state, profile)
-    tri = triage_reviews(valid, profile)
+    hw, at = human_overrides_of(state)
+    tri = triage_reviews(valid, profile, human_waived=hw, attested=at)
     keys = ("id", "personas", "severity", "title", "detail", "files")
     return json.dumps({
         "score": tri["score"], "pass_score": review_params(profile)[0],
@@ -1852,7 +1891,8 @@ def _accept_waivers(state: dict, profile: dict, items) -> tuple:
     """`(accepted, ignored)` for the triager's `waive` list (SPEC-0206): accepted = waived
     findings `{id, personas, severity, title, detail, files, ac, category, reason}`; ignored =
     `[(id, why)]`. Only a surviving `minor`/`nit` finding with a non-empty reason, once."""
-    tri = triage_reviews(_valid_verdicts(state, profile), profile)
+    hw, at = human_overrides_of(state)
+    tri = triage_reviews(_valid_verdicts(state, profile), profile, human_waived=hw, attested=at)
     found = {f["id"]: f for f in tri["blocking"] + tri["advisory"]}
     accepted, ignored, seen = [], [], set()
     for item in items:
@@ -2000,7 +2040,8 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
     valid = _valid_verdicts(state, profile)
     lr = state.get("last_review") or {}
     decision = decide_reviews(state, profile, valid, [p for p in reviewers if p not in valid],
-                              [w["id"] for w in lr.get("waived") or [] if isinstance(w, dict)])
+                              [w["id"] for w in lr.get("waived") or [] if isinstance(w, dict)],
+                              *human_overrides_of(state))
     if decision.kind == "none":                          # missing verdicts, retry allowed
         by = counters.setdefault("review_retries_by_persona", {})
         for p in decision.missing:
@@ -2024,6 +2065,10 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
             waived=lr.get("waived") or [], advisory=tri["advisory"], loop=counters["loops"])
         events.append(("note", {"text": f"review score {tri['score']}/{c['pass_score']} "
                                         f"{tri['outcome']}", "author": "queue"}))
+        if tri["human_waived"] or tri["attested"]:
+            events.append(("note", {"text": f"human override: waived {len(tri['human_waived'])}, "
+                                            f"attested {len(tri['attested'])}",
+                                    "author": "queue"}))
         if tri["outcome"] == "pass":
             for f in tri["advisory"]:
                 if f["severity"] == "major":

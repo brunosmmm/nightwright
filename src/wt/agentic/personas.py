@@ -287,7 +287,7 @@ PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree",
                 "previous_verdicts", "diff", "test_files", "tests_touched", "changed_files",
                 "schema_text", "idea_text", "triage_input", "rebase_target", "conflicts",
                 "campaign_diff", "base_diff", "landed", "regenerate", "template_text",
-                "write_problems", "write_rules", "epic_text")
+                "write_problems", "write_rules", "epic_text", "human_overrides")
 
 
 def get_persona(name) -> Persona:
@@ -359,6 +359,28 @@ def render_pending_brief(brief) -> str:
     for note in brief.get("human_notes") or []:
         parts.append(f"- Human note: {note}")
     return "\n".join(parts) if parts else "(none)"
+
+
+def render_human_overrides(state) -> str:
+    """SPEC-0235: the human's waivers and attestations of this campaign, as "do not re-raise"
+    lists for the reviewers; `""` when there are none."""
+    ov = (state or {}).get("human_overrides") or {}
+    waive = [w for w in ov.get("waive") or [] if isinstance(w, dict)]
+    attest = [a for a in ov.get("attest") or [] if isinstance(a, dict)]
+    parts = []
+    if waive:
+        lines = ["The human waived these findings; do not raise them again, even reworded:"]
+        for w in waive:
+            files = f" ({', '.join(w.get('files') or [])})" if w.get("files") else ""
+            lines.append(f"- {w.get('severity')} {w.get('title')}{files} — {w.get('reason')}")
+        parts.append("\n".join(lines))
+    if attest:
+        lines = ["The human attested these ACs as met; do not assess them as unmet:"]
+        lines += [f"- {a.get('ac')} — {a.get('reason')}" for a in attest]
+        parts.append("\n".join(lines))
+    if not parts:
+        return ""
+    return "## Human overrides\n\n" + "\n\n".join(parts)
 
 
 def render_previous_verdicts(events) -> str:
@@ -665,6 +687,7 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
         "gate_results": render_gate_results(state.get("last_gate")),
         "pending_brief": render_pending_brief(state.get("pending_brief")),
         "previous_verdicts": render_previous_verdicts(previous),
+        "human_overrides": render_human_overrides(state),
         "diff": diff,
         "test_files": test_files,
         "tests_touched": touched,

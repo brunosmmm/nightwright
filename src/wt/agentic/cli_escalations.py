@@ -1,4 +1,4 @@
-"""`wt escalations list|show|withdraw` (SPEC-0232): the human's view of escalation records."""
+"""`wt escalations list|show|answer|withdraw` (SPEC-0232, SPEC-0235): the human's view of escalation records."""
 from __future__ import annotations
 
 import os
@@ -28,6 +28,7 @@ def escalations_group():
     \b
     wt escalations list                open escalations
     wt escalations show ESC-0001       the question, options, recommendation and facts
+    wt escalations answer ESC-0001 --choose 2 --yes     (or --text, or --waive/--attest)
     wt escalations withdraw ESC-0001 --reason "…" --yes
     """
 
@@ -93,9 +94,66 @@ def escalations_show(cfg, esc_id, as_json):
     if park:
         console.print(f"\npark: {park.get('escalated_from') or '(none)'} → "
                       f"{park.get('resume_to')}  [{park.get('mode')}]", highlight=False)
+    if rec.get("answer"):
+        a = rec["answer"]
+        console.print(f"\nanswered by {rec.get('answered_by')} at {rec.get('answered_at')}: "
+                      f"{ESC.summarize(a)}", highlight=False)
     if rec.get("withdrawn"):
         w = rec["withdrawn"]
         console.print(f"\nwithdrawn by {w.get('by')}: {w.get('reason')}", highlight=False)
+
+
+@escalations_group.command("answer")
+@click.argument("esc_id", metavar="ID", shell_complete=complete_escalation_id)
+@click.option("--choose", default=None, help="an option: its number or its label")
+@click.option("--text", default=None, help="a free-text answer")
+@click.option("--waive", "waive", multiple=True,
+              help="override: a finding id of the stored review (any severity); repeatable")
+@click.option("--attest", "attest", multiple=True,
+              help="override: an AC finding id (<persona>#ac<j>) or text of an unmet AC "
+                   "as met; repeatable")
+@click.option("--reason", default=None, help="why (required with --waive / --attest)")
+@click.option("--note", default=None, help="optional free text kept with the answer")
+@click.option("--by", default=None, help="who answers (default: human; the steward passes "
+                                         "steward:<Project>)")
+@click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
+@click.option("--json", "as_json", is_flag=True, help="emit wt.escalation.answer.v1 JSON")
+@click.pass_obj
+def escalations_answer(cfg, esc_id, choose, text, waive, attest, reason, note, by, do_write,
+                       as_json):
+    """Answer an open escalation. Records the answer and wakes the conductor, which applies it;
+    the campaign stays PARKED until then. Exactly one form: --choose, --text, or --waive /
+    --attest with --reason."""
+    try:
+        plan = ESC.plan_answer(cfg, esc_id, choose=choose, text=text, waive=waive,
+                               attest=attest, reason=reason, note=note, by=by)
+        if do_write:
+            ESC.apply_answer(cfg, plan)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        _dump_json({"schema": "wt.escalation.answer.v1", "id": esc_id,
+                    "campaign": plan["campaign"], "by": plan["by"],
+                    "answer": plan["answer"], "summary": plan["summary"],
+                    "override": plan["override"], "written": bool(do_write)})
+        return
+    console.print(f"{esc_id}: {plan['question']}", highlight=False)
+    for o in plan["options"]:
+        console.print(f"  {o['n']}. {o['label']}", highlight=False)
+    rows = {"campaign": plan["campaign"], "by": plan["by"], "answer": plan["summary"]}
+    ov = plan["override"]
+    if ov:
+        for w in ov["waive"]:
+            rows[f"waive {w['id']}"] = f"{w['severity']} {w['title']}"
+        for a in ov["attest"]:
+            rows[f"attest {len(rows)}"] = f"{a}  (covers: {'; '.join(ov['reach'][a])})"
+        for a in ov["implicitly_attested"]:
+            rows[f"implicitly attested {len(rows)}"] = a
+    console.print(R.plan(f"answer {esc_id}", rows), highlight=False)
+    if not do_write:
+        console.print("[yellow]not written — re-run with --yes to commit[/]")
+        return
+    console.print(f"[green]✓[/] {esc_id} answered; the conductor applies it")
 
 
 @escalations_group.command("withdraw")

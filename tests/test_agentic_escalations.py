@@ -623,3 +623,221 @@ def test_campaign_record_and_event_carry_spec_id_and_project(tmp_path):
     assert (rec["spec_id"], rec["project"]) == (CID[:9], "Meta-Tools")
     ev = [e for e in E.read_since(cfg, 0) if e["type"] == "escalation"][-1]
     assert (ev["campaign"], ev["spec_id"], ev["project"]) == (CID, CID[:9], "Meta-Tools")
+
+
+# ---- SPEC-0235: answers ------------------------------------------------------------------
+
+RV = "conformance_reviewer"
+AC4 = "AC 4 output is sorted"
+
+
+def _reviewed(cfg, extra_unmet=()):
+    """A campaign parked `human_decision` after a review with a major, a minor and an unmet
+    AC; returns its open escalation."""
+    verdict = {"verdict": "fix", "score": 40, "fix_brief": "x", "loop": 0, "run": "002-r",
+               "findings": [{"severity": "major", "title": "Wrong order", "files": ["a.py"]},
+                            {"severity": "minor", "title": "Typo", "files": ["b.py"]}],
+               "ac_assessment": [{"ac": AC4, "met": False}, {"ac": "AC 5 other", "met": True},
+                                 *[{"ac": a, "met": False} for a in extra_unmet]]}
+    _camp(cfg, "PARKED", last_review={"verdicts": {RV: verdict}},
+          park={"reason": "loop_exhausted", "detail": "d", "since": S.now_iso(),
+                "resume_to": "IMPLEMENTING"})
+    return _esc(cfg, question="waive?", options=["yes", "no"])
+
+
+def _answer(cfg, esc_id="ESC-0001", **kw):
+    plan = ESC.plan_answer(cfg, esc_id, **kw)
+    return plan, ESC.apply_answer(cfg, plan)
+
+
+def test_choose_by_number_and_by_label(tmp_path):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    _esc(cfg, options=["Resume now", "Abandon"])
+    plan = ESC.plan_answer(cfg, "ESC-0001", choose="2")
+    assert plan["answer"]["choice"] == 2 and ESC.read(cfg, "ESC-0001")["status"] == "open"
+    _, rec = _answer(cfg, choose="  resume NOW ")
+    assert rec["status"] == "answered" and rec["answered_by"] == "human" and rec["answered_at"]
+    assert rec["answer"] == {"kind": "choose", "choice": 1, "label": "Resume now", "text": None,
+                             "waive": [], "attest": [], "reason": None, "note": None}
+    assert _state(cfg)["state"] == "PARKED" and _state(cfg)["park"]["reason"] == "human_decision"
+    notes = [n["text"] for n in S.read_ledger(cfg, CID, types=["note"])]
+    assert notes[-1] == "human: ESC-0001 chose 1 (Resume now)"
+    [hd] = S.read_ledger(cfg, CID, types=["human_decision"])
+    assert hd["escalation"] == "ESC-0001" and hd["kind"] == "choose"
+
+
+def test_text_answer_by_steward_and_pinned_notes(tmp_path):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    _esc(cfg)
+    long = "line one\n  line two " + "x" * 300
+    plan, rec = _answer(cfg, text=long, note="n" * 250, by="steward:Meta-Tools")
+    assert rec["answered_by"] == "steward:Meta-Tools"
+    one = " ".join(long.split())[:200] + "…"
+    assert plan["summary"] == f"text: {one} — note: {'n' * 200}…"
+    assert [n["text"] for n in S.read_ledger(cfg, CID, types=["note"])][-1] == (
+        f"steward:Meta-Tools: ESC-0001 {plan['summary']}")
+
+
+def test_override_stores_overrides_and_wakes_once(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    plan, rec = _answer(cfg, waive=[f"{RV}#0"], attest=[f"{RV}#ac0"], reason="checked by hand",
+                        note="see PR")
+    assert plan["summary"] == (f'waived {RV}#0; attested "{AC4}"; reason: checked by hand'
+                               ' — note: see PR')
+    st = _state(cfg)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "human_decision"
+    ov = st["human_overrides"]
+    [w] = ov["waive"]
+    assert (w["id"], w["title"], w["files"], w["severity"], w["synthetic"], w["ac"]) == (
+        f"{RV}#0", "Wrong order", ["a.py"], "major", False, None)
+    assert (w["reason"], w["escalation"]) == ("checked by hand", "ESC-0001") and w["at"]
+    [a] = ov["attest"]
+    assert (a["ac"], a["reason"], a["escalation"]) == (AC4, "checked by hand", "ESC-0001")
+    assert len(S.read_ledger(cfg, CID, types=["human_decision"])) == 1
+    assert S.read_ledger(cfg, CID, types=["note"])[-1]["text"] == f"human: ESC-0001 {plan['summary']}"
+    got = [e for e in E.read_since(cfg, 0) if e["type"] == "escalation_answered"]
+    assert len(got) == 1 and got[0]["data"]["escalation_id"] == "ESC-0001"
+    assert got[0]["data"]["kind"] == "override" and got[0]["data"]["summary"] == plan["summary"]
+    before = len(E.read_since(cfg, 0))
+    E.sync(cfg)
+    assert [e["type"] for e in E.read_since(cfg, 0)[before:]].count("escalation_answered") == 0
+    assert all(e["type"] != "human_decision" for e in E.read_since(cfg, 0))
+
+
+def test_override_note_cuts_long_ac_text(tmp_path):
+    cfg = _cfg(tmp_path)
+    long_ac = "AC 9 " + "y" * 100
+    _reviewed(cfg, extra_unmet=(long_ac,))
+    plan = ESC.plan_answer(cfg, "ESC-0001", attest=[long_ac], reason="r")
+    assert plan["summary"] == f'attested "{long_ac[:60]}…"; reason: r'
+    plan = ESC.plan_answer(cfg, "ESC-0001", waive=[f"{RV}#1", f"{RV}#0"], reason="r")
+    assert plan["summary"] == f"waived {RV}#1, {RV}#0; reason: r"
+
+
+def test_waiving_a_real_finding_lists_its_ac_as_implicitly_attested(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    st = _state(cfg)
+    st["last_review"]["verdicts"][RV]["findings"][0]["ac"] = AC4
+    S.write_state(cfg, CID, st)
+    plan = ESC.plan_answer(cfg, "ESC-0001", waive=[f"{RV}#0"], reason="r")
+    assert plan["override"]["implicitly_attested"] == [AC4]
+
+
+@pytest.mark.parametrize("kw,msg", [
+    (dict(choose="3"), "not an option"),
+    (dict(choose="maybe"), "not an option"),
+    (dict(choose="1", text="x"), "exactly one"),
+    (dict(), "exactly one"),
+    (dict(text="x", waive=["a#0"], reason="r"), "exactly one"),
+    (dict(choose="1", reason="r"), "--reason belongs"),
+    (dict(waive=[f"{RV}#0"]), "non-empty --reason"),
+    (dict(waive=[f"{RV}#0"], reason="   "), "non-empty --reason"),
+    (dict(waive=["nobody#9"], reason="r"), "not a finding"),
+    (dict(attest=["no such criterion at all"], reason="r"), "matches no unmet AC"),
+    (dict(attest=[f"{RV}#ac7"], reason="r"), "not an AC finding"),
+    (dict(text="  "), "empty --text"),
+    (dict(text="x", by="not an address"), "address"),
+])
+def test_answer_refusals(tmp_path, kw, msg):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    with pytest.raises(ValueError, match=msg):
+        ESC.plan_answer(cfg, "ESC-0001", **kw)
+    assert ESC.read(cfg, "ESC-0001")["status"] == "open"
+
+
+def test_attest_text_covering_two_acs_is_refused_listing_both(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg, extra_unmet=("AC 4 output is sorted and stable",))
+    with pytest.raises(ValueError) as e:
+        ESC.plan_answer(cfg, "ESC-0001", attest=["output is sorted"], reason="r")
+    assert AC4 in str(e.value) and "AC 4 output is sorted and stable" in str(e.value)
+    plan = ESC.plan_answer(cfg, "ESC-0001", attest=["AC 4 output is sorted and stable"],
+                           reason="r")                     # an exact text is precise enough
+    assert plan["answer"]["attest"] == ["AC 4 output is sorted and stable"]
+    assert plan["override"]["reach"]["AC 4 output is sorted and stable"] == [
+        AC4, "AC 4 output is sorted and stable"]
+
+
+def test_choose_needs_options_and_overrides_need_a_campaign(tmp_path):
+    cfg = _cfg(tmp_path)
+    _esc(cfg, None, options=[], recommend=None)
+    with pytest.raises(ValueError, match="no options"):
+        ESC.plan_answer(cfg, "ESC-0001", choose="1")
+    with pytest.raises(ValueError, match="no campaign"):
+        ESC.plan_answer(cfg, "ESC-0001", waive=["a#0"], reason="r")
+    plan, rec = _answer(cfg, text="go on")                  # campaign-less: record + event only
+    assert rec["status"] == "answered"
+    assert [e["type"] for e in E.read_since(cfg, 0)].count("escalation_answered") == 1
+
+
+def test_answered_and_withdrawn_records_are_refused(tmp_path):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    _esc(cfg)
+    _answer(cfg, choose="1")
+    with pytest.raises(ValueError, match="answered since"):
+        ESC.plan_answer(cfg, "ESC-0001", choose="2")
+    # a fresh record, withdrawn
+    new = _esc(cfg)["id"]
+    ESC.withdraw(cfg, new, "gone", "conductor")
+    with pytest.raises(ValueError, match="withdrawn since"):
+        ESC.plan_answer(cfg, new, choose="1")
+
+
+def test_apply_after_a_withdrawal_is_refused_and_writes_nothing(tmp_path):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    _esc(cfg)
+    plan = ESC.plan_answer(cfg, "ESC-0001", choose="1")
+    ESC.withdraw(cfg, "ESC-0001", "gone", "conductor")
+    n_events = len(E.read_since(cfg, 0))
+    with pytest.raises(ValueError, match="withdrawn since"):
+        ESC.apply_answer(cfg, plan)
+    assert ESC.read(cfg, "ESC-0001")["status"] == "withdrawn"
+    assert S.read_ledger(cfg, CID, types=["human_decision"]) == []
+    assert len(E.read_since(cfg, 0)) == n_events
+
+
+def test_apply_takes_item_lock_then_the_escalations_lock(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    _esc(cfg)
+    order = []
+    real_item, real_lock = S.item_lock, E._locked
+    import contextlib
+
+    @contextlib.contextmanager
+    def item(c, cid):
+        order.append("item")
+        with real_item(c, cid):
+            yield
+
+    @contextlib.contextmanager
+    def locked(path):
+        order.append("esc" if str(path).endswith("escalations/.lock") else "other")
+        with real_lock(path):
+            yield
+    monkeypatch.setattr(S, "item_lock", item)
+    monkeypatch.setattr(E, "_locked", locked)
+    plan = ESC.plan_answer(cfg, "ESC-0001", choose="1")
+    order.clear()
+    ESC.apply_answer(cfg, plan)
+    assert order.index("item") < order.index("esc")
+
+
+def test_escalate_again_after_an_answered_text(tmp_path):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    _esc(cfg)
+    _answer(cfg, text="not sure, look at the logs")
+    assert _state(cfg)["park"]["reason"] == "human_decision"
+    plan = ESC.plan_escalate(cfg, CID, question="which logs?", options=["a", "b"])
+    rec = ESC.apply_escalate(cfg, plan)
+    assert rec["id"] == "ESC-0002" and rec["status"] == "open"
+    assert _state(cfg)["park"]["escalated_from"] == "loop_exhausted"
+    assert ESC.read(cfg, "ESC-0001")["status"] == "answered"

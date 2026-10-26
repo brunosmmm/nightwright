@@ -108,3 +108,37 @@ def test_withdraw_dry_run_then_yes_leaves_campaign_parked(two, monkeypatch):
     assert r.exit_code != 0 and "not open" in r.output
     r = run(cfg, monkeypatch, "escalations", "withdraw", "ESC-0099", "--reason", "x", "--yes")
     assert r.exit_code != 0
+
+
+# ---- SPEC-0235: wt escalations answer ----------------------------------------------------
+
+def test_answer_dry_run_then_yes(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    run(cfg, monkeypatch, *ESCALATE, "--yes")
+    r = run(cfg, monkeypatch, "escalations", "answer", "ESC-0001", "--choose", "no", "--json")
+    assert r.exit_code == 0, r.output
+    d = json.loads(r.output)
+    assert d["schema"] == "wt.escalation.answer.v1" and d["written"] is False
+    assert d["answer"]["choice"] == 2 and d["by"] == "human"
+    assert ESC.read(cfg, "ESC-0001")["status"] == "open"
+    r = run(cfg, monkeypatch, "escalations", "answer", "ESC-0001", "--choose", "no")
+    assert r.exit_code == 0 and "not written" in r.output
+    assert ESC.read(cfg, "ESC-0001")["status"] == "open"
+    r = run(cfg, monkeypatch, "escalations", "answer", "ESC-0001", "--choose", "2", "--yes",
+            "--json")
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["written"] is True
+    assert ESC.read(cfg, "ESC-0001")["status"] == "answered"
+    r = run(cfg, monkeypatch, "escalations", "answer", "ESC-0001", "--text", "again", "--yes")
+    assert r.exit_code != 0 and "answered" in r.output
+
+
+def test_answer_mixed_forms_and_missing_reason_are_usage_errors(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    run(cfg, monkeypatch, *ESCALATE, "--yes")
+    for args in (["--choose", "1", "--text", "x"], ["--waive", "a#0"], []):
+        r = run(cfg, monkeypatch, "escalations", "answer", "ESC-0001", *args, "--yes")
+        assert r.exit_code != 0, args
+    assert ESC.read(cfg, "ESC-0001")["status"] == "open"

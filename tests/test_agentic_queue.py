@@ -1048,8 +1048,6 @@ def test_cap_sum_includes_the_adversarial_reviewer():
     assert "adversarial_reviewer" in step.detail and "$4.00" in step.detail
 
 
-
-
 def test_queue_payload_sizing_fields_null_without_sizing(tmp_path):    # SPEC-0219
     cfg = {"data_dir": str(tmp_path / "data"), "agentic": {}}
     S.create_campaign(cfg, {"id": "A", "spec_id": "SPEC-0001", "profile": "balanced",
@@ -1138,7 +1136,6 @@ def test_first_implementer_prompt_has_findings_second_does_not(tmp_path, monkeyp
     assert "From: spec_review" not in second
 
 
-
 # ---- SPEC-0222: park owner / decision / overdue --------------------------------------------
 
 def test_park_owner_table():
@@ -1219,7 +1216,6 @@ def test_overdue_threshold_and_setting(tmp_path):
     assert _pk(cfg, at(610))[cid]["overdue"] is True
     ev_at(cfg, cid, "note", {"text": "done", "author": "conductor"}, ago_s=-400)
     assert _pk(cfg, at(610))[cid]["overdue"] is False
-
 
 
 # ---- SPEC-0237: the project's profile layer ---------------------------------------------------
@@ -1422,3 +1418,45 @@ def test_plan_and_apply_add_record_profile_sources(tmp_path):                   
     (ev,) = S.read_ledger(cfg, plan["campaign"])
     assert ev["profile_sources"] == want and SC.ledger_problems(ev) == []
     assert "profile_sources" not in SC.EVENT_KEYS["open"]
+
+
+# ---- SPEC-0235: human overrides ----------------------------------------------------------
+
+def _human_override(cfg, cid, **over):
+    st = S.read_state(cfg, cid)
+    st["human_overrides"] = {"waive": [{"id": f"{RV}#0", "title": "bad", "files": ["a.py"],
+                                        "severity": "must_fix", "synthetic": False, "ac": None,
+                                        "reason": "r", "escalation": "ESC-0001", "at": "t"}],
+                             "attest": [], **over}
+    S.write_state(cfg, cid, st)
+
+
+def test_begin_review_keeps_human_overrides():
+    state = {"counters": {"runs": 4}, "last_review": {"verdicts": {"x": 1}},
+             "human_overrides": {"waive": [{"id": "a"}], "attest": []}}
+    Q._begin_review(state)
+    assert state["human_overrides"] == {"waive": [{"id": "a"}], "attest": []}
+    assert "verdicts" not in state["last_review"]
+
+
+def test_review_with_human_overrides_routes_to_closing_with_a_note(opened):
+    cfg, cid, ctx = opened
+    _reviewing(cfg, cid)
+    _human_override(cfg, cid)
+    fix = {"verdict": "fix", "score": 20, "fix_brief": "x", "ac_assessment": [],
+           "findings": [{"severity": "must_fix", "title": "Bad", "files": ["a.py"]}]}
+    row, st = _review_in(ctx, cfg, cid, fix)
+    assert (row["to"], row["reason"]) == ("CLOSING", "review_pass"), row
+    assert "human override: waived 1, attested 0" in _notes(cfg, cid)
+    assert st["human_overrides"]["waive"][0]["id"] == f"{RV}#0"      # on-disk value kept
+
+
+def test_accept_waivers_ignores_a_human_waived_id(opened):
+    cfg, cid, ctx = opened
+    _reviewing(cfg, cid)
+    _human_override(cfg, cid, waive=[{"id": f"{RV}#0", "title": "m0", "files": ["a.py"],
+                                      "severity": "minor", "synthetic": False, "ac": None}])
+    st = S.read_state(cfg, cid)
+    st["last_review"] = {"verdicts": {RV: dict(_minors(2), loop=0, run="002-x")}}
+    got, ignored = Q._accept_waivers(st, ctx.profile(st), [{"id": f"{RV}#0", "reason": "r"}])
+    assert got == [] and ignored == [(f"{RV}#0", "not a finding of this review")]

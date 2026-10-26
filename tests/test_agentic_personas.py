@@ -703,8 +703,6 @@ def test_render_pending_brief_bracket_prefers_gate_then_ac_then_category():
     assert "[path_traversal]: T (a.py) — x\ntrigger: when ../" in out
 
 
-
-
 def test_spec_reviewer_schema_requires_size_tone_rationale():          # SPEC-0219
     sch = PS.SPEC_REVIEWER_SCHEMA
     assert {"size", "tone", "rationale"} <= set(sch["required"])
@@ -793,3 +791,35 @@ def test_run_request_defaults_and_run_record(tmp_path):                         
     RU.write_run_record(new, result, "t")
     rec = json.loads((run_dir / "run.json").read_text())
     assert rec["profile"] == "x" and rec["profile_sources"] == ["builtin:x.yaml", "config.yaml:y"]
+
+
+# ---- SPEC-0235: human overrides in the reviewer brief ------------------------------------
+
+OVERRIDES = {"waive": [{"id": "conformance_reviewer#0", "title": "Wrong order",
+                        "files": ["a.py"], "severity": "major", "reason": "intended"}],
+             "attest": [{"ac": "AC 4 output is sorted", "reason": "checked by hand"}]}
+
+
+def test_render_human_overrides_empty_and_populated():
+    assert PS.render_human_overrides({}) == ""
+    assert PS.render_human_overrides({"human_overrides": {"waive": [], "attest": []}}) == ""
+    out = PS.render_human_overrides({"human_overrides": OVERRIDES})
+    assert "do not raise them again, even reworded" in out
+    assert "major Wrong order (a.py) — intended" in out
+    assert "do not assess them as unmet" in out
+    assert "AC 4 output is sorted — checked by hand" in out
+    assert "human_overrides" in PS.PLACEHOLDERS
+
+
+@pytest.mark.parametrize("persona", ["conformance_reviewer", "test_reviewer"])
+def test_reviewer_prompts_carry_the_human_overrides(tmp_path, persona):
+    _git_repo_with_change(tmp_path)
+    cfg = _cfg(tmp_path)
+    plain = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(),
+                             _state(tmp_path, state="REVIEWING"), persona, run_dir=tmp_path / "r")
+    assert "Wrong order" not in plain.prompt and "Human overrides" not in plain.prompt
+    st = dict(_state(tmp_path, state="REVIEWING"), human_overrides=OVERRIDES)
+    req = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, persona,
+                           run_dir=tmp_path / "r")
+    assert "Wrong order" in req.prompt and "AC 4 output is sorted — checked by hand" in req.prompt
+    assert "{{" not in req.prompt

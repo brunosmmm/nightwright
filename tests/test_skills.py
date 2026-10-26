@@ -389,3 +389,12 @@ def test_conduct_and_steward_route_merges_through_the_queue_spec_0234():
     assert "go through `wt queue merge --by conductor`" in conduct
     assert "merge <branch>" in steward
     assert "Never merge into `main` by hand" in steward
+
+
+def test_conduct_and_steward_handle_escalation_answers_spec_0235():
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    (row,) = [r for r in conduct.splitlines() if r.startswith("| `escalation_answered`")]
+    for word in ("choose", "override", "--to REVIEWING", "text", "wt queue escalate"):
+        assert word in row, word
+    steward = (REPO_SKILLS_DIR / "wt-steward" / "SKILL.md").read_text(encoding="utf-8")
+    assert "wt escalations answer" in steward and "--by steward:" in steward

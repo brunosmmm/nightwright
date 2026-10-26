@@ -31,6 +31,8 @@ anything that changes the tree. You have read-only tools only.
 
 {{previous_verdicts}}
 
+{{human_overrides}}
+
 ## Brief that was given to the implementer
 
 {{pending_brief}}

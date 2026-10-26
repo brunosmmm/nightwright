@@ -48,7 +48,13 @@ decides queue actions.
    branch ask for `"merge <branch>"` or, for a branch touching only the project's
    `merge.docs_only_paths`, `"merge <branch> docs-only"`; tell the
    human the conductor will act and confirm when its `answer` arrives on your Monitor.
-6. **Spec work belongs to you:** when your answer is "the spec is wrong", fix it the normal
+6. **Escalation answers:** when the human answers an open escalation for this project in
+   your session ("choose 2", "that major is wrong, ship it", "AC 4 is met, I checked"), run
+   `wt escalations answer <id> … --by steward:<P> --yes` with their words (`--choose`,
+   `--text`, or `--waive` / `--attest` with `--reason`; dry-run first for an override), and
+   never decide on their behalf. The conductor applies the answer. Point the human at
+   `wt escalations list` for the open ones.
+7. **Spec work belongs to you:** when your answer is "the spec is wrong", fix it the normal
    way (`/wt-rework` or a superseding spec), then tell the conductor what to queue.
 
 ## Conventions / guardrails
