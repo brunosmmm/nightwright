@@ -727,3 +727,73 @@ def test_yaml_builtins_equal_the_last_python_builtin_profiles():         # resol
         for key, value in prof.items():
             assert got[name][key] == value, (name, key)
     assert golden["balanced"]["reviewers"][-1] == "adversarial_reviewer"
+
+
+# ---- SPEC-0238: provenance ---------------------------------------------------------------------
+
+def _leaves(tree, prefix=""):
+    out = []
+    for k, v in tree.items():
+        path = f"{prefix}{k}"
+        out += _leaves(v, path + ".") if isinstance(v, dict) and v else [path]
+    return out
+
+
+def test_provenance_builtin_only_covers_every_leaf(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    prov = P.profile_provenance(cfg, "balanced")
+    got = P.resolve_profile(cfg, "balanced")
+    expect = _leaves({k: v for k, v in got.items() if k not in ("name", "description", "sources")})
+    assert list(prov) == expect                                   # same keys, same order
+    assert set(prov.values()) == {"builtin:balanced.yaml"}
+    assert "reviewers" in prov and "review.weights.major" in prov
+    assert "personas.implementer.model" in prov
+
+
+def test_provenance_last_layer_wins_per_leaf(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    u = _put(user, "balanced", SCHEMA + "slots: 5\npersonas: {implementer: {model: opus}}\n")
+    cfg["agentic"]["profiles"]["balanced"] = {"slots": 6, "review": {"weights": {"major": 20}}}
+    pr = _put(_pdir(proj), "balanced", SCHEMA + "loop_max: 7\n")
+    prov = P.profile_provenance(cfg, "balanced", project_root=proj)
+    cfgo = "config.yaml:agentic.profiles.balanced"
+    assert prov["slots"] == cfgo and prov["review.weights.major"] == cfgo
+    assert prov["personas.implementer.model"] == u
+    assert prov["personas.implementer.effort"] == "builtin:balanced.yaml"
+    assert prov["review.weights.minor"] == "builtin:balanced.yaml"
+    assert prov["loop_max"] == pr
+    assert P.profile_provenance(cfg, "balanced")["loop_max"] == "builtin:balanced.yaml"
+
+
+def test_provenance_list_is_replaced_whole(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    pr = _put(_pdir(proj), "balanced", SCHEMA + "reviewers: [conformance_reviewer]\n")
+    prov = P.profile_provenance(cfg, "balanced", project_root=proj)
+    assert prov["reviewers"] == pr
+    assert not any(k.startswith("reviewers.") for k in prov)
+
+
+def test_provenance_follows_extends_chain(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    u = _put(user, "mine", SCHEMA + "extends: frugal\nslots: 3\n")
+    cfg["agentic"]["profiles"]["mine"] = {"campaign_cap_usd": 2.0}
+    prov = P.profile_provenance(cfg, "mine")
+    assert prov["slots"] == u and prov["campaign_cap_usd"] == "config.yaml:agentic.profiles.mine"
+    assert prov["loop_max"] == "builtin:frugal.yaml"
+    assert list(prov) == _leaves({k: v for k, v in P.resolve_profile(cfg, "mine").items()
+                                  if k not in ("name", "description", "sources")})
+    with pytest.raises(ValueError, match="unknown profile 'nope'"):
+        P.profile_provenance(cfg, "nope")
+
+
+def test_short_origin_forms(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    assert P.short_origin(cfg, "builtin:balanced.yaml") == "builtin"
+    assert P.short_origin(cfg, "config.yaml:agentic.profiles.x") == "config.yaml"
+    assert P.short_origin(cfg, str(user / "a.yaml")) == str(user / "a.yaml")        # not under $HOME
+    home = Path.home()
+    homey = {"config_dir": str(home / ".config" / "wt")}
+    assert P.short_origin(homey, str(home / ".config" / "wt" / "profiles" / "a.yaml")) \
+        == "~/.config/wt/profiles/a.yaml"
+    assert P.short_origin(cfg, str(_pdir(proj) / "a.yaml"), project="Proj") \
+        == "Proj:.wt/profiles/a.yaml"

@@ -92,6 +92,8 @@ def create_campaign(cfg, state: dict, *, by="human") -> Path:
         **({"size": sizing.get("size"), "tone": sizing.get("tone"),       # SPEC-0219
             "profile_source": sizing.get("source"), "profile_reason": sizing.get("reason")}
            if sizing else {}),
+        **({"profile_sources": state["profile_sources"]}              # SPEC-0238
+           if state.get("profile_sources") else {}),
         **({"kind": "merge", "merge_branch": (state.get("merge") or {}).get("branch")}
            if state.get("kind") == "merge" else {}),               # SPEC-0233
     }, by=by)

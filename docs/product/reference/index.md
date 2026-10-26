@@ -28,6 +28,7 @@ Claude-generating vs your-turn diagnostic.
 | `map` | Assign facets to a base topic | [Report](../capabilities/report.md) |
 | `next` | Next-step hints for open ideas | [Ideas](../capabilities/ideas.md) |
 | `override` | Time-scoped reclassification | [Report](../capabilities/report.md) |
+| `profiles` | Agentic workflow profiles: list / show (with sources) / check | [Agentic loop](../capabilities/agentic.md) |
 | `projects` | List / register outbox + research targets | [Projects](../capabilities/projects.md) |
 | `queue` | Agentic work queue: add / list / run / park / resume | [Agentic loop](../capabilities/agentic.md) |
 | `refresh-meetings` | Pull Outlook meetings into meetings.jsonl | [Meetings](../capabilities/meetings.md) |

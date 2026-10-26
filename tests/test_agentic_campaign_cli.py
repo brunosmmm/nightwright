@@ -159,3 +159,21 @@ def test_log_renders_rebase_resolved(tmp_path, monkeypatch):                    
     r = _run(cfg, monkeypatch, ["campaign", "log", cid, "--tail", "1"])
     assert r.exit_code == 0, r.output
     assert "rebase resolved: 1 paths (both×1)" in r.output
+
+
+def test_show_prints_profile_sources_and_tolerates_old_campaigns(tmp_path, monkeypatch):   # SPEC-0238
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    S.create_campaign(cfg, {"id": "SPEC-0173-20261025-dddd", "spec_id": "SPEC-0173",
+                            "project": "Meta-Tools", "profile": "balanced", "state": "QUEUED",
+                            "repo": {}, "counters": {}, "cost": {},
+                            "profile_sources": ["builtin:balanced.yaml",
+                                                "config.yaml:agentic.profiles.balanced"]})
+    r = _run(cfg, monkeypatch, ["campaign", "show", "SPEC-0173-20261025-dddd"])
+    assert r.exit_code == 0, r.output
+    assert "profile balanced (builtin + config.yaml)" in r.output
+    r = _run(cfg, monkeypatch, ["campaign", "show", "SPEC-0170-20261025-aaaa"])
+    assert r.exit_code == 0 and "profile balanced" in r.output and "profile balanced (" not in r.output
+    d = json.loads(_run(cfg, monkeypatch, ["campaign", "show", "SPEC-0173-20261025-dddd",
+                                           "--json"]).output)
+    assert d["profile_sources"][0] == "builtin:balanced.yaml"

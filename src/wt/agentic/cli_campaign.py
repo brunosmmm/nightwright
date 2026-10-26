@@ -50,6 +50,17 @@ def _cost_text(rec: dict) -> str:
     return ""
 
 
+def _sources_suffix(cfg, st: dict) -> str:
+    """` (builtin + config.yaml)`: the files that shaped the campaign's profile (SPEC-0238);
+    empty for a campaign from before they were recorded."""
+    from . import profiles as PR
+    sources = st.get("profile_sources") or []
+    if not sources:
+        return ""
+    return " (" + " + ".join(PR.short_origin(cfg, o, project=st.get("project"))
+                              for o in sources) + ")"
+
+
 def _flag(value, style) -> Text:
     return Text("yes", style=style) if value else Text("")
 
@@ -182,7 +193,8 @@ def attach(campaign_group):
             return
         r = _summary(st)
         console.print(f"[bold]{r['id']}[/]  {r['state']}  spec {r['label']}  "
-                      f"project {r['project'] or '-'}  profile {r['profile'] or '-'}")
+                      f"project {r['project'] or '-'}  profile {r['profile'] or '-'}"
+                      + _sources_suffix(cfg, st), highlight=False)
         cap = f" / ${r['cap_usd']:.2f}" if r["cap_usd"] else ""
         est = f" (~${r['estimated_usd']:.2f} est.)" if r["estimated_usd"] > 0 else ""
         console.print(f"  loops {r['loops']}  runs {r['runs']}  cost ${r['cost_usd']:.2f}{est}{cap}")

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0238
 title: "`wt profiles list/show/check` with per-value provenance; sources recorded on campaigns and runs"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -117,25 +117,25 @@ Origins are shortened for display only. The JSON keeps the full origin:
 
 ## Acceptance criteria
 
-- [ ] `profile_provenance` returns, for every leaf path of the resolved profile, the origin of
+- [x] `profile_provenance` returns, for every leaf path of the resolved profile, the origin of
       the layer that set it last. That holds for builtin-only, user-file, `config.yaml` and
       project overrides, and for a list replaced at a higher layer.
-- [ ] `wt profiles list` shows every known profile with scope, key settings, the default marker
+- [x] `wt profiles list` shows every known profile with scope, key settings, the default marker
       and an ok or error status. `--json` emits `wt.profiles.v1`. It exits 0 with a broken
       profile present.
-- [ ] `wt profiles show NAME` prints every resolved key with its value and short source, and
+- [x] `wt profiles show NAME` prints every resolved key with its value and short source, and
       `--json` emits `wt.profile.show.v1` with full origins. An unknown or invalid name exits 1
       with the resolver's message. `--project` and cwd detection select the project layer.
-- [ ] `wt profiles check` exits 0 when every profile and the default resolve. It exits 1 and
+- [x] `wt profiles check` exits 0 when every profile and the default resolve. It exits 1 and
       names the profile and key path otherwise, and `--json` emits `wt.profiles.check.v1`.
-- [ ] A campaign created by `wt queue add --yes` has `state.profile_sources`, and its `open`
+- [x] A campaign created by `wt queue add --yes` has `state.profile_sources`, and its `open`
       event carries `profile_sources`. Ledgers without it still pass `schemas.ledger_problems`.
-- [ ] `run.json` of a persona run has `profile` and `profile_sources`, and the `run.start`
+- [x] `run.json` of a persona run has `profile` and `profile_sources`, and the `run.start`
       event has `profile`. The same holds for a `wt spec review` run. Existing `RunRequest`
       constructions in tests still work unchanged.
-- [ ] `wt campaign show` prints the sources after the profile name, and the name alone for an
+- [x] `wt campaign show` prints the sources after the profile name, and the name alone for an
       old campaign.
-- [ ] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
+- [x] Full `uv run pytest` green; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -164,6 +164,25 @@ Origins are shortened for display only. The JSON keeps the full origin:
      `Meta-Tools`.
 - **Regression guard:** full `uv run pytest`. All changes to records are additive.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q -x`: full suite green (see the gate run below).
+- New: `tests/test_agentic_profiles_cli.py` (list/show/check text and `--json`, exit codes,
+  unknown/invalid name, `--project` and cwd selection); provenance cases in
+  `tests/test_agentic_profiles.py` (builtin, user file, `config.yaml`, project, list
+  replacement, `extends` chain, `short_origin`); `profile_sources` / `profile` recording in
+  `test_agentic_queue.py`, `test_agentic_logs.py`, `test_agentic_personas.py`,
+  `test_agentic_spec_review.py` and the `wt campaign show` suffix in `test_agentic_campaign_cli.py`.
+- Manual: `uv run wt profiles check` exits 0; `uv run wt profiles show balanced` names `config.yaml`
+  for `slots`, `campaign_cap_usd` and the `spec_reviewer` keys the user config overrides;
+  `uv run wt profiles list` from this repo prints the project context `Meta-Tools`.
+
+### As shipped
+
+As designed. Additions beyond the text: `profiles.short_origin(cfg, origin, project=)` does the
+display shortening (also used by `wt campaign show`), and `check` appends `agentic.default_profile`
+to the checked names when no layer defines it, so a dangling default is reported as a failure.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -176,11 +195,11 @@ someone asks which model a persona uses. That skill wording is a doc edit, not r
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

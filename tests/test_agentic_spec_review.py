@@ -379,3 +379,19 @@ def test_review_accepts_a_matrix_cell_naming_a_project_only_profile(tmp_path, mo
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
     assert r.exit_code == 0, r.output
     assert json.loads(r.stdout)["profile"] == "careful"
+
+
+def test_spec_review_run_json_records_profile(tmp_path, monkeypatch):            # SPEC-0238
+    repo, cfg = _setup(tmp_path, [_review_entry()])
+    prof = repo / ".wt" / "profiles"
+    prof.mkdir(parents=True, exist_ok=True)
+    (prof / "balanced.yaml").write_text(
+        "schema: wt.profile.v1\npersonas: {spec_reviewer: {model: opus}}\n")
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
+    assert r.exit_code == 0, r.output
+    (run_json,) = (Path(cfg["data_dir"])).rglob("spec-reviews/*/run.json")
+    rec = json.loads(run_json.read_text())
+    assert rec["profile"] == "balanced"
+    assert rec["profile_sources"] == ["builtin:balanced.yaml",
+                                      "config.yaml:agentic.profiles.balanced",
+                                      str(prof / "balanced.yaml")]

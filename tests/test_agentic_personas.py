@@ -761,3 +761,35 @@ def test_conflict_resolver_build_request_follows_implementer_rules(tmp_path):
     assert req.system_append.startswith("## wt queue invariants")
     assert "rebase abc123" in req.system_append and "{{" not in req.prompt
     assert req.prompt.endswith(req.system_append + "\n")
+
+
+def test_build_request_carries_profile_and_sources(tmp_path):                    # SPEC-0238
+    cfg, st = _cfg(tmp_path), _state(tmp_path)
+    prof = resolve_profile(cfg)
+    req = PS.build_request(cfg, prof, _project_cfg(), st, "implementer",
+                           run_dir=tmp_path / "runs" / "001-implementer")
+    assert req.profile == "balanced" and req.profile_sources == ("builtin:balanced.yaml",)
+    hand = PS.build_request(cfg, {k: v for k, v in prof.items() if k != "sources"},
+                            _project_cfg(), st, "implementer", run_dir=tmp_path / "r2")
+    assert hand.profile_sources == ()
+
+
+def test_run_request_defaults_and_run_record(tmp_path):                          # SPEC-0238
+    import json
+    from wt.agentic import runner as RU
+    run_dir = tmp_path / "camp" / "runs" / "001-implementer"
+    run_dir.mkdir(parents=True)
+    kw = dict(persona="implementer", prompt="p", system_append="s", cwd=tmp_path, model="sonnet",
+              effort=None, max_budget_usd=1.0, timeout_s=10, permission_mode="dontAsk",
+              read_only=True, allowed_tools=(), add_dirs=(), json_schema={}, env={},
+              run_dir=run_dir)
+    result = RU.RunResult(0, False, False, 1.0, False, 0.1)
+    old = RU.RunRequest(**kw)                                    # existing constructions still work
+    assert old.profile is None and old.profile_sources == ()
+    RU.write_run_record(old, result, "t")
+    rec = json.loads((run_dir / "run.json").read_text())
+    assert rec["profile"] is None and rec["profile_sources"] == []
+    new = RU.RunRequest(**kw, profile="x", profile_sources=("builtin:x.yaml", "config.yaml:y"))
+    RU.write_run_record(new, result, "t")
+    rec = json.loads((run_dir / "run.json").read_text())
+    assert rec["profile"] == "x" and rec["profile_sources"] == ["builtin:x.yaml", "config.yaml:y"]

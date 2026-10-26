@@ -1,6 +1,6 @@
 """Click surface for the agentic workflow (SPEC-0169). The groups are created here; each child
 spec fills its own submodule via `attach(group)` so parallel branches never edit the same
-file: `cli_projects` (SPEC-0170), `cli_campaign` (SPEC-0171), `cli_queue` (SPEC-0173/0176).
+file: `cli_projects` (SPEC-0170), `cli_campaign` (SPEC-0171), `cli_queue` (SPEC-0173/0176); `cli_profiles` (SPEC-0238) owns its group.
 `register(cli, projects_group)` is called once from `wt.cli`."""
 import click
 
@@ -29,7 +29,7 @@ def campaign_group():
 
 def register(cli, projects_group):
     """Attach the agentic commands to the root `cli` and the existing `projects` group."""
-    from . import cli_campaign, cli_conduct, cli_projects, cli_queue
+    from . import cli_campaign, cli_conduct, cli_profiles, cli_projects, cli_queue
 
     cli_projects.attach(projects_group)
     cli_campaign.attach(campaign_group)
@@ -37,6 +37,7 @@ def register(cli, projects_group):
     cli_conduct.attach(queue_group)
     cli.add_command(queue_group)
     cli.add_command(campaign_group)
+    cli.add_command(cli_profiles.profiles_group)
     try:  # SPEC-0183 mailbox (registered when present)
         from .cli_mailbox import mailbox_group
     except ImportError:

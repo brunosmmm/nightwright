@@ -1406,3 +1406,19 @@ def test_apply_step_that_merges_withdraws_the_pending_escalation(pending_escalat
     assert st["state"] == "MERGED"
     got = ESC.read(cfg, rec["id"])
     assert got["status"] == "withdrawn" and got["withdrawn"]["reason"] == "campaign MERGED"
+
+
+def test_plan_and_apply_add_record_profile_sources(tmp_path):                    # SPEC-0238
+    from wt.agentic import schemas as SC
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    cfg["agentic"]["profiles"]["balanced"] = {"slots": 3}
+    plan = Q.plan_add(cfg, "SPEC-0001")
+    want = ["builtin:balanced.yaml", "config.yaml:agentic.profiles.balanced"]
+    assert plan["profile_sources"] == want
+    state = Q.apply_add(cfg, plan)
+    assert state["profile_sources"] == want
+    assert S.read_state(cfg, plan["campaign"])["profile_sources"] == want
+    (ev,) = S.read_ledger(cfg, plan["campaign"])
+    assert ev["profile_sources"] == want and SC.ledger_problems(ev) == []
+    assert "profile_sources" not in SC.EVENT_KEYS["open"]

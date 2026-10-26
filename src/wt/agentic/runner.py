@@ -46,6 +46,8 @@ class RunRequest:
     json_schema: dict
     env: dict[str, str]
     run_dir: Path
+    profile: str | None = None                  # SPEC-0238: the resolved profile and its sources
+    profile_sources: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -241,6 +243,7 @@ def write_run_record(req: RunRequest, result: RunResult, started_at: str) -> Run
         "cost_estimated": result.cost_usd is None, "usage": result.usage,
         "session_id": result.session_id, "verdict_ok": result.verdict_ok,
         "verdict": result.verdict,
+        "profile": req.profile, "profile_sources": list(req.profile_sources),
         "files": {"prompt": "prompt.md", "raw": "result.json", "stderr": "stderr.log"},
     }
     (req.run_dir / "run.json").write_text(json.dumps(rec, indent=2, ensure_ascii=False) + "\n",

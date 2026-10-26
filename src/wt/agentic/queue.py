@@ -1074,6 +1074,7 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str, step: Step | None = None)
             "state": state.get("state"),
             "step": {"kind": step.kind if step else _KIND_OF_PERSONA.get(persona, "implement"),
                      "personas": list(step.personas) if step else []},
+            "profile": req.profile,                                    # SPEC-0238
         })
         counters["runs"] = run_no
         try:
@@ -3539,6 +3540,7 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         "sizing_rationale": (review_doc or {}).get("rationale") if pick["size"] else None,
         "profile_source": pick["source"], "profile_reason": pick["reason"],
         "review_sha256": (review_doc or {}).get("spec_sha256"),
+        "profile_sources": list(prof.get("sources") or ()),             # SPEC-0238
     }
 
 
@@ -3551,6 +3553,7 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
         "state": "QUEUED", "prev_state": None, "created_at": store.now_iso(),
         "priority": check_priority(plan.get("priority", PRIORITY_DEFAULT)),
         "force": bool(plan.get("force")), "backlog": None,
+        "profile_sources": list(plan.get("profile_sources") or ()),    # SPEC-0238
         "repo": {"root": plan["repo_root"], "base": plan["base"], "base_sha_at_open": None,
                  "branch": plan["branch"], "worktree": plan["worktree"], "head": None},
         "spec": {"rel_path": plan["spec_rel_path"], "internal": plan["internal"],

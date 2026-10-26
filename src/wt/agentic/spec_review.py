@@ -459,6 +459,8 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
         env={"WT_DATA_DIR": str(cfg.get("data_dir") or ""),
              "WT_CONFIG_DIR": str(cfg.get("config_dir") or ""), "WT_SPEC_ID": spec_id},
         run_dir=store.agentic_dir(cfg) / "spec-reviews" / run_id,
+        profile=prof.get("name"),
+        profile_sources=tuple(prof.get("sources") or ()),
     )
     journal_start(cfg, run_id, spec_id, req.timeout_s, req.run_dir)
     t0 = time.monotonic()

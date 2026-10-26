@@ -256,6 +256,63 @@ def profile_chain(cfg, name, *, project_root=None) -> list:
     return _chain_of(load_layers(cfg, project_root=project_root), name)
 
 
+def _prov_tree(value, origin):
+    """The provenance of a value `origin` just set: a dict node per non-empty mapping, else the
+    origin as a leaf (lists and empty mappings are leaves, as `deep_merge` replaces them whole)."""
+    if isinstance(value, dict) and value:
+        return {k: _prov_tree(v, origin) for k, v in value.items()}
+    return origin
+
+
+def _prov_merge(base, delta, origin):
+    """`deep_merge` over provenance trees: the last layer to set a leaf owns it."""
+    if not isinstance(base, dict) or not isinstance(delta, dict):
+        return _prov_tree(delta, origin)
+    out = dict(base)
+    for k, v in delta.items():
+        out[k] = _prov_merge(out[k], v, origin) if k in out else _prov_tree(v, origin)
+    return out
+
+
+def _prov_flatten(tree, prefix="") -> dict:
+    out = {}
+    for k, v in tree.items():
+        path = f"{prefix}{k}"
+        if isinstance(v, dict):
+            out.update(_prov_flatten(v, path + "."))
+        else:
+            out[path] = v
+    return out
+
+
+def profile_provenance(cfg, name, *, project_root=None) -> dict:
+    """`{key.path: origin}` for every leaf of profile `name` (SPEC-0238): the origin of the last
+    delta in `profile_chain` that set it. Paths are dot-joined (`personas.implementer.model`);
+    lists are leaves. The keys are the leaf paths of `resolve_profile` minus `name`,
+    `description` and `sources`, in the profile's key order. Origins are the full strings
+    (`short_origin` shortens them for display)."""
+    tree = {}
+    for origin, delta in profile_chain(cfg, name, project_root=project_root):
+        tree = _prov_merge(tree, {k: v for k, v in delta.items() if k not in META_KEYS}, origin)
+    return _prov_flatten(tree)
+
+
+def short_origin(cfg, origin, *, project=None) -> str:
+    """A display form of a layer origin: `builtin`, `~/.config/wt/profiles/<f>`, `config.yaml`,
+    or `<project>:.wt/profiles/<f>`. The full origin stays in JSON."""
+    if origin.startswith("builtin:"):
+        return "builtin"
+    if origin.startswith("config.yaml:"):
+        return "config.yaml"
+    path = Path(origin)
+    cfg_dir = (cfg or {}).get("config_dir")
+    if cfg_dir and path.parent == Path(cfg_dir) / "profiles":
+        home = str(Path.home())
+        text = str(path)
+        return "~" + text[len(home):] if text.startswith(home + "/") else text
+    return f"{project or path.parents[2].name}:.wt/profiles/{path.name}"
+
+
 def _known(layers) -> list:
     return sorted({n for layer in layers for n in layer.defs})
 

@@ -215,3 +215,31 @@ def test_rebase_resolved_event_is_registered_and_requires_its_keys():           
     assert SC.ledger_problems(rec) == []
     del rec["head"]
     assert SC.ledger_problems(rec) == ["rebase_resolved: missing 'head'"]
+
+
+def test_open_event_profile_sources_is_optional(tmp_path):                       # SPEC-0238
+    cfg = {"data_dir": str(tmp_path / "data")}
+    S.create_campaign(cfg, {"id": "C1", "spec_id": "SPEC-0001", "state": "QUEUED"})
+    ev = S.read_ledger(cfg, "C1")[0]
+    assert "profile_sources" not in ev and SC.ledger_problems(ev) == []      # an old ledger
+    S.create_campaign(cfg, {"id": "C2", "spec_id": "SPEC-0001", "state": "QUEUED",
+                            "profile_sources": ["builtin:balanced.yaml"]})
+    ev = S.read_ledger(cfg, "C2")[0]
+    assert ev["profile_sources"] == ["builtin:balanced.yaml"] and SC.ledger_problems(ev) == []
+
+
+def test_runs_and_run_start_carry_the_profile(tmp_path, monkeypatch):           # SPEC-0238
+    cfg, cid = _run_to_idle(tmp_path, monkeypatch, [impl_done(), review()])
+    state = S.read_state(cfg, cid)
+    want = ["builtin:balanced.yaml", "config.yaml:agentic.profiles.balanced"]   # make_cfg's delta
+    assert state["profile_sources"] == want
+    (opened,) = S.read_ledger(cfg, cid, types=["open"])
+    assert opened["profile_sources"] == state["profile_sources"]
+    starts = S.read_ledger(cfg, cid, types=["run.start"])
+    assert starts and all(e["profile"] == "balanced" for e in starts)
+    for d in (S.campaign_dir(cfg, cid) / "runs").iterdir():
+        if d.is_dir() and (d / "run.json").is_file():
+            rec = json.loads((d / "run.json").read_text())
+            assert rec["profile"] == "balanced"
+            assert rec["profile_sources"] == want
+            assert SC.record_problems(rec, SC.RUN_KEYS, SC.RUN_SCHEMA) == []

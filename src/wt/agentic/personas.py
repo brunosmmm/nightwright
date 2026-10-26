@@ -747,4 +747,6 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         json_schema=p.schema,
         env=env,
         run_dir=Path(run_dir),
+        profile=profile.get("name"),
+        profile_sources=tuple(profile.get("sources") or ()),
     )
