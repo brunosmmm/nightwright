@@ -161,7 +161,8 @@ def test_review_defaults(name, score):
     prof = P.resolve_profile({"agentic": {"profiles": {}}}, name)
     assert prof["review"] == {"pass_score": score, "weights": DEFAULT_WEIGHTS,
                               "triager": name != "frugal",
-                              "followups": True, "followups_nits": False}
+                              "followups": True, "followups_nits": False,
+                              "followups_max": 10}
     assert P.review_params(prof) == (score, DEFAULT_WEIGHTS)
     assert P.review_params({}) == (80, DEFAULT_WEIGHTS)
     prof["review"]["weights"]["major"] = 1                      # a copy, not the builtin
@@ -173,7 +174,8 @@ def test_review_user_delta_merges_partial_weights():
                                                             "pass_score": 60}}}}}
     prof = P.resolve_profile(cfg, "balanced")
     assert prof["review"] == {"pass_score": 60, "weights": {**DEFAULT_WEIGHTS, "nit": 0},
-                              "triager": True, "followups": True, "followups_nits": False}
+                              "triager": True, "followups": True, "followups_nits": False,
+                              "followups_max": 10}
     new = P.resolve_profile({"agentic": {"profiles": {"mine": {"slots": 1}}}}, "mine")
     assert new["review"]["pass_score"] == 80
 
@@ -194,6 +196,10 @@ def test_review_user_delta_merges_partial_weights():
     ({"followups": "yes"}, "review.followups"),
     ({"followups_nits": None}, "review.followups_nits"),
     ({"followups_nits": 0}, "review.followups_nits"),
+    ({"followups_max": True}, "review.followups_max"),
+    ({"followups_max": -1}, "review.followups_max"),
+    ({"followups_max": "10"}, "review.followups_max"),
+    ({"followups_max": 2.5}, "review.followups_max"),
 ])
 def test_review_rejects_bad_values(review, needle):
     cfg = {"agentic": {"profiles": {"balanced": {"review": review}}}}
@@ -267,12 +273,23 @@ def test_followup_keys_default_validate_and_accept(tmp_path):                   
     assert P.followup_params(P.resolve_profile(cfg, "balanced")) == (False, True)
 
 
+def test_followups_max_validates_defaults_and_builtins():                        # SPEC-0239 AC1
+    assert P.followup_cap({}) == 10 and P.followup_cap({"review": {"pass_score": 50}}) == 10
+    for good in (0, 1, 25):
+        cfg = {"agentic": {"profiles": {"balanced": {"review": {"followups_max": good}}}}}
+        assert P.followup_cap(P.resolve_profile(cfg, "balanced")) == good
+    for name in ("balanced", "thorough", "frugal"):
+        prof = P.resolve_profile({"agentic": {"profiles": {}}}, name)
+        assert P.followup_cap(prof) == 10
+        assert P.followup_params(prof) == (True, False)           # nits stay off
+
+
 def test_docs_describe_the_followup_filer():                                       # SPEC-0207 AC8
     from pathlib import Path
     doc = (Path(__file__).resolve().parent.parent / "docs/product/capabilities/agentic.md"
            ).read_text(encoding="utf-8")
     for needle in ("wtfu:", "followups_nits", "review_carry", "`followup` event", "adopted",
-                   "unfiled"):
+                   "unfiled", "wtfug:", "review.followups_max", "wt ideas group-followups"):
         assert needle in doc
 
 

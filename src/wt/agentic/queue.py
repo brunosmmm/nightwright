@@ -1395,7 +1395,9 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         if res.followups is not None:
             fu = res.followups                      # counts and ids, plus the detail lists
             row["followups"] = {"filed": len(fu["filed"]), "unfiled": len(fu["unfiled"]),
-                                "ids": [f["idea_id"] for f in fu["filed"]],
+                                "capped": len(fu.get("capped") or []),
+                                "idea_id": fu.get("idea_id"),
+                                "ids": list(dict.fromkeys(f["idea_id"] for f in fu["filed"])),
                                 "items": list(fu["filed"]), "unfiled_items": list(fu["unfiled"]),
                                 "waived": list(fu["waived"])}
         if res.error:

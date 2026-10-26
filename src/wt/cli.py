@@ -1195,6 +1195,38 @@ def ideas_list_cmd(cfg, state, kind, tag, project, epic, workstream, priority, a
             priority=priority, sort=sort, desc=desc, tree=tree, epic=epic)
 
 
+@ideas_group.command("group-followups")
+@click.option("--yes", "apply", is_flag=True, help="write the groups and close the singles")
+@click.option("--json", "as_json", is_flag=True, help="emit wt.ideas.group_followups.v1 JSON")
+@click.pass_obj
+def ideas_group_followups_cmd(cfg, apply, as_json):
+    """Fold the open single `wtfu:` review follow-up ideas into one grouped idea per spec
+    (SPEC-0239). Dry run unless --yes; the singles are closed as DROPPED, FOLDED_INTO the group.
+
+    \b
+    wt ideas group-followups          plan only
+    wt ideas group-followups --yes    write it
+    """
+    from .agentic import followups as FU
+    try:
+        report = FU.group_legacy(cfg, apply=apply)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        click.echo(json.dumps(report, indent=2))
+        return
+    if not report["groups"]:
+        console.print("[dim]no open single follow-up ideas to group[/]")
+        return
+    for g in report["groups"]:
+        ids = ", ".join(g["singles"])
+        target = (g.get("group_id") or g["target"]) if apply else g["target"]
+        console.print(f"{g['spec_id']}  {len(g['singles'])} singles ({escape(ids)})  "
+                      f"\u2192 {target}  ({len(g['lines'])} new lines)", highlight=False)
+    console.print(f"{len(report['groups'])} groups, {report['singles']} singles"
+                  + ("" if apply else "  \u2014 re-run with --yes"), highlight=False)
+
+
 @ideas_group.command("export")
 @click.option("--state", help="only this idea state",
               shell_complete=C.complete_idea_state)

@@ -835,21 +835,24 @@ def test_close_files_followups_and_state_close_keeps_them(opened, monkeypatch): 
     st = S.read_state(cfg, cid)
     assert st["state"] == "MERGED" and row["to"] == "MERGED"
     fu = st["close"]["followups"]
-    assert [f["title"] for f in fu["filed"]] == ["earlier loop", "advisory one"]
+    assert [f["title"] for f in fu["filed"]] == ["advisory one", "earlier loop"]     # by severity
     assert fu["unfiled"] == [] and fu["waived"] == [
         {"severity": "nit", "title": "waived nit", "waive_reason": "style"}]
     assert st["close"]["mode"] == "merge"
-    assert row["followups"] == {"filed": 2, "unfiled": 0,
-                                "ids": [f["idea_id"] for f in fu["filed"]],
+    [group] = _ideas(cfg)
+    assert fu["idea_id"] == group.properties["ID"] and fu["capped"] == []
+    assert row["followups"] == {"filed": 2, "unfiled": 0, "capped": 0,
+                                "idea_id": group.properties["ID"],
+                                "ids": [group.properties["ID"]],        # distinct, not per finding
                                 "items": fu["filed"], "unfiled_items": [],
                                 "waived": fu["waived"]}
     payload = json.loads(json.dumps(Q.TickReport(steps=[row], idle=False).payload()))
     emitted = payload["steps"][0]["followups"]                      # survives wt.queue.tick.v1
-    assert emitted["items"][1]["title"] == "advisory one" and emitted["items"][1]["severity"] == "major"
+    assert emitted["items"][0]["title"] == "advisory one" and emitted["items"][0]["severity"] == "major"
     assert emitted["waived"] == [{"severity": "nit", "title": "waived nit", "waive_reason": "style"}]
     assert [e["title"] for e in S.read_ledger(cfg, cid, types=["followup"])] == [
-        "earlier loop", "advisory one"]
-    assert len(_ideas(cfg)) == 2
+        "advisory one", "earlier loop"]
+    assert len(_ideas(cfg)) == 1
     [close_ev] = S.read_ledger(cfg, cid, types=["close"])
     assert "followups" not in close_ev                              # the event payload is untouched
 
@@ -911,11 +914,14 @@ def test_campaign_show_lists_followups_unfiled_and_waivers(opened, monkeypatch):
     st["close"] = {"mode": "merge", "followups": {
         "filed": [{"idea_id": "IDEA-007", "severity": "minor", "title": "naming", "origin": "advisory"}],
         "unfiled": [{"severity": "major", "title": "big one", "error": "OSError('full')"}],
-        "waived": [{"severity": "nit", "title": "tiny", "waive_reason": "style only"}]}}
+        "waived": [{"severity": "nit", "title": "tiny", "waive_reason": "style only"}],
+        "capped": [{"severity": "minor", "title": "left out"}], "idea_id": "IDEA-009"}}
     S.write_state(cfg, cid, st)
     r = run_cli(cfg, monkeypatch, ["campaign", "show", cid])
     assert r.exit_code == 0, r.output
     assert "follow-up IDEA-007 minor naming" in r.output
+    assert "follow-ups IDEA-009 (1 listed, 1 capped)" in r.output
+    assert "[capped] minor left out" in r.output
     assert "[unfiled] major big one: OSError('full')" in r.output
     assert "[waived] nit tiny: style only" in r.output
 

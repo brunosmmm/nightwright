@@ -260,33 +260,49 @@ never causes `review_escalated`) or `skipped` (the cost cap could not fit its bu
 `waived` clear on every entry into REVIEWING. The score note is written once, after the final
 `triage_reviews` run. Set `review.triager: false` to opt out.
 
-### Follow-up ideas (SPEC-0207)
+### Follow-up ideas (SPEC-0207, grouped by SPEC-0239)
 
 What a change merges with is not forgotten. At the start of the close step a deterministic filer
-(`wt.agentic.followups`) files the `major`/`minor` findings (`nit` too with
-`review.followups_nits`) that were advisory or waived as **ideas** (`kind: improvement`, the
-campaign's project, the spec's `parent` epic when it has one); `review.followups: false` files
-nothing. It never blocks a merge: a capture failure is a `note` event and the finding is reported
-`unfiled`.
+(`wt.agentic.followups`) lists the `major`/`minor` findings (`nit` too with
+`review.followups_nits`) that were advisory or waived in **one grouped idea per campaign**
+(`kind: improvement`, the campaign's project, the spec's `parent` epic when it has one);
+`review.followups: false` files nothing. It never blocks a merge: a failure is a `note` event and
+the findings are reported `unfiled`.
 
+- **The grouped idea.** Its heading carries the marker `wtfug:<campaign id>` and the count
+  (`wtfug:<cid> [SPEC-NNNN] review follow-ups (<n> findings)`); its Summary is a checklist with one
+  line per finding (`- [ ] wtfu:<key12> <severity> persona/slot: title - detail (files: …)`),
+  ordered by severity, `advisory` before `waived`, then title. Ticked (`- [X]`) lines still count.
 - **Key.** `key = sha1(spec id | normalized title | sorted files)`; the first 12 hex characters
-  lead the idea text as the marker `wtfu:<key12>` (`wtfu:<key12> [SPEC-NNNN] persona/slot: title
-  - detail (files: …)`, sanitized and bounded). The key ignores persona and severity, so a finding
-  whose severity or reporters change keeps its key; a reworded title or other cited files is a new
-  finding (accepted: a spurious follow-up is cheaper than a lost one).
+  are the `wtfu:<key12>` token of the checklist line. The key ignores persona and severity, so a
+  finding whose severity or reporters change keeps its key; a reworded title or other cited files
+  is a new finding (accepted: a spurious follow-up is cheaper than a lost one).
+- **Listed once.** A finding already listed in another **open** grouped idea of the same spec
+  (including a `legacy-` group) gets no new line; its `followup` event points at that group. A
+  closed group does not suppress filing.
+- **Cap.** `review.followups_max` (integer >= 0, default 10, `0` = no cap) bounds the lines per
+  campaign. The findings past the cap are reported as `capped` (no `followup` event, so a re-run
+  with a raised cap can still list them) and an overflow line
+  `- +K more findings not listed (wt campaign show <cid>)` ends the Summary.
 - **Carry-over.** On every `fix` outcome `_merge_carry` merges the review's advisory and waived
   findings into `state.review_carry` (de-duplicated by key) and drops every key that is blocking
   in that review, so advisory findings of earlier loops are still filed at the close step.
 - **Idempotent and crash-safe.** A key with a `followup` ledger event is skipped (and still
-  reported); otherwise the marker is looked up in the ideas file and its archive and an existing
-  idea is **adopted** (its `:ID:` goes into the event) before anything is captured. A close step
-  that is re-run (resume, `regate_failed`) therefore files each finding once.
-- **Ledger and reports.** Each filing is a `followup` event
-  (`persona, severity, title, key, idea_id, origin`). `state.close.followups` holds
-  `{filed, unfiled, waived}`; `wt campaign show` lists the follow-ups (`IDEA-NNN severity
-  title`), the unfiled findings and the waivers with their reason, and the close row of
-  `wt.queue.tick.v1` carries a `followups` key (`filed`, `unfiled` counts and `ids`, plus the `items`,
-  `unfiled_items` and `waived` lists with severity, title and waive reason).
+  reported). Otherwise the group is looked up by its `wtfug:` marker in the ideas file and its
+  archive and **adopted**: the filer writes add_idea, Summary, title, then the events, and a
+  re-run appends only the missing lines and recounts the title, so a crash anywhere leaves no
+  second idea and no second line.
+- **Ledger and reports.** Each listed finding is a `followup` event
+  (`persona, severity, title, key, idea_id, origin`), whose `idea_id` is the group. `state.close.followups`
+  holds `{filed, unfiled, waived, capped, idea_id}`; `wt campaign show` prints
+  `follow-ups IDEA-NNN (<n> listed, <k> capped)`, the follow-up lines (`IDEA-NNN severity
+  title`), the `[capped]`, unfiled and waived findings. The close row of `wt.queue.tick.v1`
+  carries a `followups` key (`filed`, `unfiled` and `capped` counts, `idea_id`, the distinct
+  `ids`, plus the `items`, `unfiled_items` and `waived` lists).
+- **Migration.** `wt ideas group-followups [--yes] [--json]` folds the open single `wtfu:` ideas
+  that SPEC-0207 used to file into one `wtfug:legacy-<SPEC-NNNN>` idea per spec and closes each
+  single as `DROPPED` with `FOLDED_INTO` the group. Without `--yes` it only prints the plan
+  (`wt.ideas.group_followups.v1`, `written: false`); a re-run is a no-op.
 
 ## Closing
 

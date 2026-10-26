@@ -864,7 +864,8 @@ def _fu_ideas(cfg):
 def test_e2e_followups_clean_pass_files_nothing(tmp_path, monkeypatch):               # AC7 (a)
     cfg, cid, st = _triage_run(tmp_path, monkeypatch, [impl_done(), review("pass")])
     assert st["state"] == "MERGED" and _fu_ideas(cfg) == []
-    assert st["close"]["followups"] == {"filed": [], "unfiled": [], "waived": []}
+    assert st["close"]["followups"] == {"filed": [], "unfiled": [], "waived": [],
+                                        "capped": [], "idea_id": None}
     assert "followup" not in ledger_types(cfg, cid)
 
 
@@ -878,20 +879,22 @@ def test_e2e_followups_advisory_findings_become_ideas(tmp_path, monkeypatch):   
     assert r.exit_code == 0, r.output
     st = S.read_state(cfg, cid)
     assert st["state"] == "MERGED", st
-    ideas = _fu_ideas(cfg)
-    assert len(ideas) == 2                                   # the nit is not filed
-    for t in ideas:
-        assert t.heading.startswith("wtfu:") and "[SPEC-0001]" in t.heading
-        assert t.properties["KIND"] == "improvement" and t.epic == "SPEC-0169"
-        assert t.project == st["project"]
-    assert {t.properties["ID"] for t in ideas} == {
-        f["idea_id"] for f in st["close"]["followups"]["filed"]}
+    [group] = _fu_ideas(cfg)                                 # ONE idea; the nit is not listed
+    assert group.heading == f"wtfug:{cid} [SPEC-0001] review follow-ups (2 findings)"
+    assert group.properties["KIND"] == "improvement" and group.epic == "SPEC-0169"
+    assert group.project == st["project"]
+    from wt import explore as EX
+    summary = EX.read_idea_enrichment(cfg, group)["summary"].splitlines()
+    assert [ln.split()[4] for ln in summary] == ["major", "minor"]
+    assert st["close"]["followups"]["idea_id"] == group.properties["ID"]
+    assert {f["idea_id"] for f in st["close"]["followups"]["filed"]} == {group.properties["ID"]}
     evs = S.read_ledger(cfg, cid, types=["followup"])
     assert [(e["severity"], e["title"], e["origin"]) for e in evs] == [
         ("major", "risky parse", "advisory"), ("minor", "naming", "advisory")]
     assert _git(repo, "status", "--porcelain") == ""         # the ideas live outside the repo
     r = run_cli(cfg, monkeypatch, ["campaign", "show", cid])
     assert "follow-up IDEA-" in r.output and "risky parse" in r.output
+    assert f"follow-ups {group.properties['ID']} (2 listed, 0 capped)" in r.output
 
 
 def test_e2e_followups_fixed_finding_is_not_filed_but_earlier_advisory_is(tmp_path, monkeypatch):
@@ -902,8 +905,10 @@ def test_e2e_followups_fixed_finding_is_not_filed_but_earlier_advisory_is(tmp_pa
     entries = [impl_done(), first, impl_done(content="better\n"), second]
     cfg, cid, st = _triage_run(tmp_path, monkeypatch, entries)                   # AC7 (c)
     assert st["state"] == "MERGED" and st["counters"]["loops"] == 1, st
-    titles = [t.heading for t in _fu_ideas(cfg)]
-    assert len(titles) == 1 and "naming" in titles[0] and "wrong text" not in titles[0]
+    [group] = _fu_ideas(cfg)
+    from wt import explore as EX
+    body = EX.read_idea_enrichment(cfg, group)["summary"]
+    assert "(1 finding)" in group.heading and "naming" in body and "wrong text" not in body
     assert [f["title"] for f in st["close"]["followups"]["filed"]] == ["naming"]
     assert [e["title"] for e in st["review_carry"]] == ["naming"]
 

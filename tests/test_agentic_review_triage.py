@@ -338,6 +338,7 @@ import subprocess
 from zoneinfo import ZoneInfo
 
 from wt import org as ORG
+from wt import explore as EX
 from wt import org_write as OW
 from wt.agentic import followups as FU
 from wt.agentic import store as S
@@ -392,6 +393,33 @@ def ideas(cfg):
     return [t for t in ORG.load_tasks(cfg) if t.is_idea]
 
 
+def group_of(cfg):
+    [t] = ideas(cfg)                                         # exactly one idea
+    return t
+
+
+def body(cfg, t):
+    return EX.read_idea_enrichment(cfg, t)["summary"]
+
+
+def k12(title, files=("a.py",)):
+    return FU.finding_key(SPEC, title, list(files))[:12]
+
+
+def capped_profile(n):
+    return {"review": dict(BAL["review"], followups_max=n)}
+
+
+def seed_group(cfg, token, keys, spec=SPEC, close=False):
+    """An existing grouped idea (another campaign's, or `legacy-<SPEC>`) listing `keys`."""
+    _, _, idea_id = OW.add_idea(cfg, FU.group_title(token, spec, len(keys)),
+                                kind="improvement")
+    EX.set_summary(cfg, idea_id, "\n".join(f"- [ ] wtfu:{k} minor x: y" for k in keys))
+    if close:
+        EX.close_idea(cfg, idea_id, "drop", reason="done")
+    return idea_id
+
+
 def test_key_ignores_severity_and_persona_but_not_title_or_files():
     k = FU.finding_key(SPEC, "Naming  is Off", ["b.py", "a.py"])
     assert k == FU.finding_key(SPEC, "naming is off", ["a.py", "b.py"])
@@ -403,47 +431,56 @@ def test_key_ignores_severity_and_persona_but_not_title_or_files():
     assert a["key"] == b["key"]
 
 
-def test_idea_text_is_sanitized_and_bounded(tmp_path):
-    cfg = fu_cfg(tmp_path)
+def test_group_title_and_checklist_line_shapes_and_bounds():                        # AC2
+    assert FU.group_title("c1", SPEC, 3) == f"wtfug:c1 [{SPEC}] review follow-ups (3 findings)"
+    assert FU.group_title("c1", SPEC, 1).endswith("(1 finding)")
+    assert FU.group_title("c1", SPEC, 0).endswith("(0 findings)")
+    assert FU.MARKER not in FU.GROUP_MARKER                  # find_marker("wtfu:…") never hits one
     nasty = adv("minor", ("T:itle [x] — *bold*\n" + "y" * 300)[:300],
                 detail="line1\nline2\t[z] :tag: " + "d" * 400,
                 files=[f"src/dir{i}/file:{i}.py" for i in range(20)], ac="AC [1]: ok")
-    st = fu_state(tmp_path, [nasty])
-    summary = file_now(cfg, st)
-    assert len(summary["filed"]) == 1 and summary["unfiled"] == []
-    [t] = ideas(cfg)
-    key12 = FU.finding_key(SPEC, nasty["title"], nasty["files"])[:12]
-    assert t.heading.startswith(f"wtfu:{key12} [{SPEC}] {A}/AC 1 ok: ")
-    assert len(t.heading) < 560 and "\n" not in t.heading
-    assert t.tags == frozenset() and "+15 more" in t.heading
+    entry = FU.make_entry(SPEC, nasty, "advisory")
+    line = FU.checklist_line(SPEC, entry)
+    assert line.startswith(f"- [ ] wtfu:{entry['key'][:12]} minor {A}/AC 1 ok: ")
+    assert f"[{SPEC}]" not in line and len(line) < 560 and "\n" not in line
+    assert "+15 more" in line and line.count("—") == 1
     for bad in ("[x]", "[z]", "*bold*", ":tag:"):
-        assert bad not in t.heading.split(": ", 1)[1]
-    assert t.heading.count("—") == 1                         # only the template's separator
-    title_part = t.heading.split(": ", 1)[1].split(" — ")[0]
-    assert len(title_part) <= 120
+        assert bad not in line.split(": ", 1)[1]
+    assert len(line.split(": ", 1)[1].split(" — ")[0]) <= 120
+    assert FU.summary_keys(line) == [entry["key"][:12]]
+    assert FU.summary_keys(f"- [X] wtfu:{entry['key'][:12]} ticked\n- +3 more findings\nfree") == [
+        entry["key"][:12]]                                   # a ticked line still counts
 
 
-def test_filer_files_major_minor_with_project_epic_kind(tmp_path):
+def test_filer_files_one_group_with_project_epic_kind_and_ordered_lines(tmp_path):  # AC2
     cfg = fu_cfg(tmp_path)
-    st = fu_state(tmp_path, [adv("major", "big"), adv("minor", "small", files=["b.py"]),
-                             adv("nit", "tiny", files=["c.py"])],
+    st = fu_state(tmp_path, [adv("minor", "small", files=["b.py"]), adv("major", "big"),
+                             adv("nit", "tiny", files=["c.py"]),
+                             adv("minor", "alpha", files=["e.py"])],
                   waived=[adv("minor", "waived one", files=["d.py"], reason="not worth it"),
                           adv("nit", "waived nit", files=["e.py"], reason="style")])
     summary = file_now(cfg, st)
-    assert [(f["severity"], f["title"], f["origin"]) for f in summary["filed"]] == [
-        ("major", "big", "advisory"), ("minor", "small", "advisory"),
-        ("minor", "waived one", "waived")]
+    order = [("major", "big", "advisory"), ("minor", "alpha", "advisory"),
+             ("minor", "small", "advisory"), ("minor", "waived one", "waived")]
+    assert [(f["severity"], f["title"], f["origin"]) for f in summary["filed"]] == order
     assert [(w["title"], w["waive_reason"]) for w in summary["waived"]] == [
         ("waived one", "not worth it"), ("waived nit", "style")]
-    got = ideas(cfg)
-    assert len(got) == 3
-    for t in got:
-        assert t.project == "Meta-Tools" and t.epic == "SPEC-0169"
-        assert t.properties["KIND"] == "improvement" and t.properties["ID"].startswith("IDEA-")
+    t = group_of(cfg)
+    assert t.heading == f"wtfug:{CID} [{SPEC}] review follow-ups (4 findings)"
+    assert t.project == "Meta-Tools" and t.epic == "SPEC-0169"
+    assert t.properties["KIND"] == "improvement" and t.properties["ID"].startswith("IDEA-")
+    lines = body(cfg, t).splitlines()
+    assert [ln.split()[4] for ln in lines] == ["major", "minor", "minor", "minor"]
+    assert [FU.summary_keys(ln)[0] for ln in lines] == [
+        k12("big"), k12("alpha", ["e.py"]), k12("small", ["b.py"]),
+        k12("waived one", ["d.py"])]
     evs = S.read_ledger(cfg, CID, types=["followup"])
     assert [(e["severity"], e["origin"], e["persona"]) for e in evs] == [
-        ("major", "advisory", A), ("minor", "advisory", A), ("minor", "waived", A)]
-    assert [e["idea_id"] for e in evs] == [f["idea_id"] for f in summary["filed"]]
+        ("major", "advisory", A), ("minor", "advisory", A), ("minor", "advisory", A),
+        ("minor", "waived", A)]
+    assert {e["idea_id"] for e in evs} == {t.properties["ID"]} == {
+        f["idea_id"] for f in summary["filed"]}
+    assert summary["idea_id"] == t.properties["ID"] and summary["capped"] == []
 
 
 def test_nits_only_with_the_flag_and_nothing_when_disabled(tmp_path):
@@ -453,53 +490,192 @@ def test_nits_only_with_the_flag_and_nothing_when_disabled(tmp_path):
     off = {"review": {"followups": False, "followups_nits": True}}
     assert file_now(cfg, st, off)["filed"] == [] and ideas(cfg) == []
     assert S.read_ledger(cfg, CID, types=["followup"]) == []
-    assert [f["severity"] for f in file_now(cfg, st, nits)["filed"]] == ["nit", "minor"]
-    assert len(ideas(cfg)) == 2
+    assert [f["severity"] for f in file_now(cfg, st, nits)["filed"]] == ["minor", "nit"]
+    assert "(2 findings)" in group_of(cfg).heading
     assert FU.file_followups(cfg, dict(st, id="other"), {"review": {"followups": False}}) == (
-        [], {"filed": [], "unfiled": [], "waived": []})
+        [], {"filed": [], "unfiled": [], "waived": [], "capped": [], "idea_id": None})
 
 
 def test_no_parent_means_no_epic(tmp_path):
     cfg = fu_cfg(tmp_path)
     file_now(cfg, fu_state(tmp_path, [adv("minor")], parent=None))
-    [t] = ideas(cfg)
-    assert t.epic is None
+    assert group_of(cfg).epic is None
 
 
-def test_rerun_files_once_and_reports_skipped_in_filed(tmp_path):
+def test_cap_lists_the_most_severe_and_writes_an_overflow_line(tmp_path):            # AC3
+    cfg = fu_cfg(tmp_path)
+    advs = [adv("minor", f"m{i}", files=[f"{i}.py"]) for i in range(4)] + [adv("major", "big")]
+    st = fu_state(tmp_path, advs)
+    summary = file_now(cfg, st, capped_profile(2))
+    t = group_of(cfg)
+    lines = body(cfg, t).splitlines()
+    assert len(lines) == 3 and lines[2] == f"- +3 more findings not listed (wt campaign show {CID})"
+    assert [f["title"] for f in summary["filed"]] == ["big", "m0"]
+    assert [(c["severity"], c["title"]) for c in summary["capped"]] == [
+        ("minor", "m1"), ("minor", "m2"), ("minor", "m3")]
+    assert "(2 findings)" in t.heading                       # the overflow line is not counted
+    assert [e["title"] for e in S.read_ledger(cfg, CID, types=["followup"])] == ["big", "m0"]
+    # a raised cap on a re-run lists the rest and drops the overflow line
+    again = file_now(cfg, st, capped_profile(0))
+    assert again["capped"] == [] and len(again["filed"]) == 5
+    assert len(ideas(cfg)) == 1 and "more findings" not in body(cfg, group_of(cfg))
+    assert "(5 findings)" in group_of(cfg).heading
+    assert len(S.read_ledger(cfg, CID, types=["followup"])) == 5
+
+
+def test_cap_zero_means_no_cap(tmp_path):
+    cfg = fu_cfg(tmp_path)
+    advs = [adv("minor", f"m{i}", files=[f"{i}.py"]) for i in range(5)]
+    summary = file_now(cfg, fu_state(tmp_path, advs), capped_profile(0))
+    assert len(summary["filed"]) == 5 and summary["capped"] == []
+    assert len(body(cfg, group_of(cfg)).splitlines()) == 5
+
+
+def test_open_group_keys_reads_open_groups_of_the_spec_only(tmp_path):                # AC4
+    cfg = fu_cfg(tmp_path)
+    other = seed_group(cfg, "SPEC-0207-20261025-bbbb", ["aaaaaaaaaaaa", "bbbbbbbbbbbb"])
+    legacy = seed_group(cfg, f"legacy-{SPEC}", ["cccccccccccc"])
+    seed_group(cfg, "SPEC-0207-20261025-cccc", ["dddddddddddd"], close=True)
+    seed_group(cfg, "SPEC-0001-20261025-dddd", ["eeeeeeeeeeee"], spec="SPEC-0001")
+    OW.add_idea(cfg, f"wtfu:ffffffffffff [{SPEC}] a single, not a group", kind="improvement")
+    got = FU.open_group_keys(cfg, SPEC)
+    assert got == {"aaaaaaaaaaaa": other, "bbbbbbbbbbbb": other, "cccccccccccc": legacy}
+    assert FU.open_group_keys(cfg, SPEC, exclude=other) == {"cccccccccccc": legacy}
+    assert FU.open_group_keys(cfg, "SPEC-0999") == {}
+
+
+def test_finding_listed_in_another_open_group_gets_no_line(tmp_path):                # AC4
+    cfg = fu_cfg(tmp_path)
+    other = seed_group(cfg, f"legacy-{SPEC}", [k12("one")])
+    st = fu_state(tmp_path, [adv("minor", "one"), adv("minor", "two", files=["b.py"])])
+    summary = file_now(cfg, st)
+    assert {f["title"]: f["idea_id"] for f in summary["filed"]}["one"] == other
+    mine = summary["idea_id"]
+    assert mine and mine != other and "(1 finding)" in [t for t in ideas(cfg)
+                                                        if t.properties["ID"] == mine][0].heading
+    assert FU.summary_keys(body(cfg, [t for t in ideas(cfg) if t.properties["ID"] == mine][0])) == [
+        k12("two", ["b.py"])]
+    assert {e["title"]: e["idea_id"] for e in S.read_ledger(cfg, CID, types=["followup"])} == {
+        "one": other, "two": mine}
+
+
+def test_everything_listed_elsewhere_creates_no_idea_and_no_idea_id(tmp_path):        # AC4
+    cfg = fu_cfg(tmp_path)
+    other = seed_group(cfg, "SPEC-0207-20261025-bbbb", [k12("one")])
+    summary = file_now(cfg, fu_state(tmp_path, [adv("minor", "one")]))
+    assert summary["idea_id"] is None and [f["idea_id"] for f in summary["filed"]] == [other]
+    assert len(ideas(cfg)) == 1
+
+
+def test_a_closed_group_does_not_suppress_filing(tmp_path):                           # AC4
+    cfg = fu_cfg(tmp_path)
+    closed = seed_group(cfg, "SPEC-0207-20261025-bbbb", [k12("one")], close=True)
+    summary = file_now(cfg, fu_state(tmp_path, [adv("minor", "one")]))
+    assert summary["idea_id"] and summary["idea_id"] != closed
+    assert [f["idea_id"] for f in summary["filed"]] == [summary["idea_id"]]
+
+
+def test_rerun_files_once_and_reports_skipped_in_filed(tmp_path):                     # AC5
     cfg = fu_cfg(tmp_path)
     st = fu_state(tmp_path, [adv("minor", "one"), adv("major", "two", files=["b.py"])])
     first = file_now(cfg, st)
+    before = open(cfg["org_ideas_file"]).read()
     second = file_now(cfg, st)
-    assert len(ideas(cfg)) == 2 and len(S.read_ledger(cfg, CID, types=["followup"])) == 2
+    assert len(ideas(cfg)) == 1 and len(S.read_ledger(cfg, CID, types=["followup"])) == 2
     assert [(f["idea_id"], f["title"]) for f in second["filed"]] == [
         (f["idea_id"], f["title"]) for f in first["filed"]]
-    assert all(f["idea_id"] for f in second["filed"])
+    assert second["idea_id"] == first["idea_id"] and len(body(cfg, group_of(cfg)).splitlines()) == 2
+    assert open(cfg["org_ideas_file"]).read() == before      # a no-op re-run writes nothing
 
 
-def test_crash_between_add_idea_and_event_adopts(tmp_path):
+def test_crash_between_add_idea_and_set_summary_adopts_the_group(tmp_path, monkeypatch):  # AC5
     cfg = fu_cfg(tmp_path)
-    st = fu_state(tmp_path, [adv("minor", "one")])
-    first = file_now(cfg, st, record=False)               # the events never reached the ledger
+    st = fu_state(tmp_path, [adv("minor", "one"), adv("minor", "two", files=["b.py"])])
+    real = EX.set_summary
+    calls = []
+
+    def flaky(cfg_, sel, text):
+        calls.append(sel)
+        if len(calls) == 1:
+            raise OSError("disk full")
+        return real(cfg_, sel, text)
+
+    monkeypatch.setattr(EX, "set_summary", flaky)
+    first = file_now(cfg, st)
+    assert first["filed"] == [] and [u["error"] for u in first["unfiled"]] == [
+        "OSError('disk full')"] * 2                           # reported, merge still goes on
+    assert "(0 findings)" in group_of(cfg).heading
     assert S.read_ledger(cfg, CID, types=["followup"]) == []
+    assert any("follow-ups not filed" in n["text"] for n in S.read_ledger(cfg, CID, types=["note"]))
     second = file_now(cfg, st)
-    assert len(ideas(cfg)) == 1
-    assert second["filed"][0]["idea_id"] == first["filed"][0]["idea_id"]
-    [ev] = S.read_ledger(cfg, CID, types=["followup"])
-    assert ev["idea_id"] == first["filed"][0]["idea_id"]
+    assert second["unfiled"] == [] and len(second["filed"]) == 2
+    t = group_of(cfg)
+    assert "(2 findings)" in t.heading and second["idea_id"] == t.properties["ID"]
+    assert len(body(cfg, t).splitlines()) == 2
 
 
-def test_crash_adoption_finds_an_archived_idea(tmp_path):
+def test_crash_between_set_summary_and_retitle_is_repaired_under_a_tight_cap(tmp_path,
+                                                                             monkeypatch):  # AC5
     cfg = fu_cfg(tmp_path)
-    st = fu_state(tmp_path, [adv("minor", "one")])
-    first = file_now(cfg, st, record=False)
-    [t] = ideas(cfg)
-    OW.archive_idea(cfg, t)
-    assert not any("wtfu:" in x.heading and x.file == cfg["org_ideas_file"] for x in ideas(cfg))
-    assert os.path.exists(OW.ideas_archive_path(cfg))                # it really moved away
+    st = fu_state(tmp_path, [adv("minor", "one"), adv("minor", "two", files=["b.py"])])
+    real = EX.retitle_idea
+    calls = []
+
+    def flaky(cfg_, sel, title):
+        calls.append(sel)
+        if len(calls) == 1:
+            raise OSError("boom")
+        return real(cfg_, sel, title)
+
+    monkeypatch.setattr(EX, "retitle_idea", flaky)
+    first = file_now(cfg, st, capped_profile(2))
+    assert len(first["unfiled"]) == 2 and "(0 findings)" in group_of(cfg).heading
+    assert len(body(cfg, group_of(cfg)).splitlines()) == 2    # the lines were written
+    second = file_now(cfg, st, capped_profile(2))
+    t = group_of(cfg)
+    assert second["capped"] == [] and second["unfiled"] == []  # the own lines are not "L"
+    assert len(second["filed"]) == 2 and second["idea_id"] == t.properties["ID"]
+    assert "(2 findings)" in t.heading and len(body(cfg, t).splitlines()) == 2
+    assert {e["idea_id"] for e in S.read_ledger(cfg, CID, types=["followup"])} == {
+        t.properties["ID"]}
+
+
+def test_crash_before_the_events_recovers_from_the_own_group(tmp_path):               # AC5
+    cfg = fu_cfg(tmp_path)
+    st = fu_state(tmp_path, [adv("minor", "one"), adv("minor", "two", files=["b.py"])])
+    first = file_now(cfg, st, capped_profile(2), record=False)  # the events never reached the ledger
+    assert S.read_ledger(cfg, CID, types=["followup"]) == []
+    second = file_now(cfg, st, capped_profile(2))
+    assert len(ideas(cfg)) == 1 and second["capped"] == []
+    assert second["idea_id"] == first["idea_id"]
+    assert [e["idea_id"] for e in S.read_ledger(cfg, CID, types=["followup"])] == [
+        first["idea_id"]] * 2
+    assert len(body(cfg, group_of(cfg)).splitlines()) == 2
+
+
+def test_recovered_lines_count_against_the_cap_of_the_remaining_findings(tmp_path):    # AC5
+    cfg = fu_cfg(tmp_path)
+    advs = [adv("major", "one"), adv("minor", "two", files=["b.py"]),
+            adv("minor", "three", files=["c.py"])]
+    file_now(cfg, fu_state(tmp_path, advs[:1]), capped_profile(2), record=False)
+    summary = file_now(cfg, fu_state(tmp_path, advs), capped_profile(2))
+    assert [f["title"] for f in summary["filed"]] == ["one", "three"]   # by title
+    assert [c["title"] for c in summary["capped"]] == ["two"]
+    assert "(2 findings)" in group_of(cfg).heading
+
+
+def test_a_ticked_line_still_counts_and_dedups(tmp_path):                              # AC5
+    cfg = fu_cfg(tmp_path)
+    st = fu_state(tmp_path, [adv("minor", "one"), adv("minor", "two", files=["b.py"])])
+    file_now(cfg, st, record=False)
+    t = group_of(cfg)
+    ticked = body(cfg, t).replace("- [ ]", "- [X]", 1)
+    EX.set_summary(cfg, t.properties["ID"], ticked)
     second = file_now(cfg, st)
-    assert second["filed"][0]["idea_id"] == first["filed"][0]["idea_id"]
-    assert not any("wtfu:" in x.heading and x.file == cfg["org_ideas_file"] for x in ideas(cfg))
+    assert len(second["filed"]) == 2 and len(ideas(cfg)) == 1
+    t = group_of(cfg)
+    assert body(cfg, t).count("wtfu:") == 2 and "- [X]" in body(cfg, t)
+    assert "(2 findings)" in t.heading
 
 
 def test_capture_error_is_unfiled_then_a_rerun_files_without_duplicates(tmp_path, monkeypatch):
@@ -517,13 +693,13 @@ def test_capture_error_is_unfiled_then_a_rerun_files_without_duplicates(tmp_path
     monkeypatch.setattr(OW, "add_idea", flaky)
     first = file_now(cfg, st)
     assert [(u["title"], u["error"]) for u in first["unfiled"]] == [
-        ("one", "OSError('disk full')")]
-    assert [f["title"] for f in first["filed"]] == ["two"]
-    assert [e["title"] for e in S.read_ledger(cfg, CID, types=["followup"])] == ["two"]
-    assert any("follow-up not filed" in n["text"] for n in S.read_ledger(cfg, CID, types=["note"]))
+        ("one", "OSError('disk full')"), ("two", "OSError('disk full')")]
+    assert first["filed"] == [] and first["idea_id"] is None
+    assert S.read_ledger(cfg, CID, types=["followup"]) == []
+    assert any("follow-ups not filed" in n["text"] for n in S.read_ledger(cfg, CID, types=["note"]))
     second = file_now(cfg, st)
     assert second["unfiled"] == [] and [f["title"] for f in second["filed"]] == ["one", "two"]
-    assert len(ideas(cfg)) == 2
+    assert len(ideas(cfg)) == 1
 
 
 def test_non_oserror_from_the_org_layer_never_escapes(tmp_path, monkeypatch):
@@ -542,14 +718,13 @@ def test_non_oserror_from_the_org_layer_never_escapes(tmp_path, monkeypatch):
         ("minor", "one", "RuntimeError('no ledger')")]            # reported, not dropped
 
 
-def test_idea_without_an_id_is_not_adopted_and_not_duplicated(tmp_path):
+def test_group_without_an_id_is_not_adopted_and_not_duplicated(tmp_path):
     cfg = fu_cfg(tmp_path)
-    key = FU.make_entry(SPEC, adv("minor", "one"), "advisory")["key"][:12]
-    with open(cfg["org_ideas_file"], "w") as f:
-        f.write(f"* IDEA wtfu:{key} [{SPEC}] x: one\n")
+    with open(cfg["org_ideas_file"], "w") as fh:
+        fh.write(f"* IDEA wtfug:{CID} [{SPEC}] review follow-ups (0 findings)\n")
     events, summary = FU.file_followups(cfg, fu_state(tmp_path, [adv("minor", "one")]), BAL)
     assert summary["filed"] == [] and "has no :ID:" in summary["unfiled"][0]["error"]
-    assert open(cfg["org_ideas_file"]).read().count(f"wtfu:{key}") == 1   # nothing captured
+    assert open(cfg["org_ideas_file"]).read().count(f"wtfug:{CID}") == 1
 
 
 def test_headline_without_the_marker_adds_a_note_but_still_records(tmp_path, monkeypatch):
@@ -563,18 +738,18 @@ def test_headline_without_the_marker_adds_a_note_but_still_records(tmp_path, mon
     monkeypatch.setattr(OW, "add_idea", lossy)
     events, summary = FU.file_followups(cfg, fu_state(tmp_path, [adv("minor")]), BAL)
     assert [e[0] for e in events] == ["note", "followup"]
-    assert "lost its wtfu:" in events[0][1]["text"]
+    assert f"lost its {FU.GROUP_MARKER}" in events[0][1]["text"]
     assert len(summary["filed"]) == 1 and summary["unfiled"] == []
 
 
-def test_marker_round_trips_through_the_real_add_task_path(tmp_path):
+def test_group_marker_round_trips_through_the_real_add_task_path(tmp_path):
     cfg = fu_cfg(tmp_path)
-    entry = FU.make_entry(SPEC, adv("minor", "round: trip [it]", detail="x — y"), "advisory")
-    marker = f"wtfu:{entry['key'][:12]}"
+    marker = f"wtfug:{CID}"
     assert FU.find_marker(cfg, marker) is None             # no ideas file yet
-    _, headline, idea_id = OW.add_idea(cfg, FU.idea_text(SPEC, entry), kind="improvement")
+    _, headline, idea_id = OW.add_idea(cfg, FU.group_title(CID, SPEC, 0), kind="improvement")
     assert marker in headline and FU.find_marker(cfg, marker) == idea_id
     assert FU.find_marker(cfg, "wtfu:000000000000") is None
+    assert FU.find_marker(cfg, f"wtfu:{CID}") is None       # a group is never a single
 
 
 # carry-over ------------------------------------------------------------------------------------

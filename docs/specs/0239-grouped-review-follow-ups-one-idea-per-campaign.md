@@ -1,7 +1,7 @@
 ---
 id: SPEC-0239
 title: "Grouped review follow-ups: one idea per campaign, and a migration for the singles"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -236,24 +236,24 @@ on `ideas_group` in `cli.py`.
 
 ## Acceptance criteria
 
-- [ ] AC1. `review.followups_max` is accepted and validated: an integer `>= 0` (not a bool);
+- [x] AC1. `review.followups_max` is accepted and validated: an integer `>= 0` (not a bool);
       any other value raises `ValueError` naming the key. `followup_cap` returns 10 when the key
       is absent. Every builtin profile has `followups_max: 10` and `followups_nits: false`.
-- [ ] AC2. A merged campaign with several major/minor findings produces **one** idea: kind
+- [x] AC2. A merged campaign with several major/minor findings produces **one** idea: kind
       improvement, the campaign's project and parent epic, titled
       `wtfug:<cid> [<spec>] review follow-ups (<n> findings)`. Its Summary has one
       `- [ ] wtfu:<key12> <severity> …` line per finding, ordered by severity, `advisory`
       before `waived`, then title. Each finding has a `followup` event whose `idea_id` is the
       group.
-- [ ] AC3. With `followups_max: 2` and five findings, two lines and an overflow line
+- [x] AC3. With `followups_max: 2` and five findings, two lines and an overflow line
       `- +3 more findings not listed (wt campaign show <cid>)` are written. The summary's
       `capped` lists three findings, which get no `followup` event. With `0`, all five are
       listed.
-- [ ] AC4. A finding whose key12 already appears in another **open** group of the same spec
+- [x] AC4. A finding whose key12 already appears in another **open** group of the same spec
       (including a `legacy-` group) gets no new line. Its `followup` event and `filed` entry
       carry that group's id. When every finding is listed elsewhere, no new idea is created and
       `idea_id` is None. A closed group does not suppress filing.
-- [ ] AC5. Idempotency: running the filer twice writes one idea and no duplicate line.
+- [x] AC5. Idempotency: running the filer twice writes one idea and no duplicate line.
       Simulated crashes after `add_idea`, after `set_summary` (before `retitle`) and after
       `retitle` (before the events) are recovered by adoption through the `wtfug:` marker: the
       own group is not treated as "another group", recovered findings get their events with
@@ -261,10 +261,10 @@ on `ideas_group` in `cli.py`.
       `followups_max: 2`, two findings and a crash after `set_summary`, the re-run caps
       nothing. Ticked (`- [X]`) lines still count and dedup. An exception from `set_summary`
       reports those findings `unfiled` with a `note` event, and `close_campaign` still runs.
-- [ ] AC6. `wt campaign show` prints the `follow-ups IDEA-NNN (<n> listed, <k> capped)` line
+- [x] AC6. `wt campaign show` prints the `follow-ups IDEA-NNN (<n> listed, <k> capped)` line
       and the `[capped]` lines. The `wt.queue.tick.v1` close row's `followups` carries
       `idea_id`, `capped: int`, and `ids` de-duplicated.
-- [ ] AC7. `wt ideas group-followups` (dry run) lists one group per spec with its singles and
+- [x] AC7. `wt ideas group-followups` (dry run) lists one group per spec with its singles and
       target and writes nothing, and `--json` emits `wt.ideas.group_followups.v1` with
       `written: false`. With `--yes` it creates one grouped idea per spec (one line per
       distinct key12, project/epic from the lowest-numbered single) and closes each single as
@@ -272,7 +272,7 @@ on `ideas_group` in `cli.py`.
       untouched. A single whose key12 is already in an open `wtfug:<cid>` group gets no line and
       folds into that group. A second `--yes` run is a no-op. A run after a crash mid-spec adopts
       the legacy group and adds no duplicate line.
-- [ ] AC8. `docs/product/capabilities/agentic.md` documents the grouped idea, `wtfug:`,
+- [x] AC8. `docs/product/capabilities/agentic.md` documents the grouped idea, `wtfug:`,
       `review.followups_max` and the migration (grep test). Full `uv run pytest` is green and
       `python3 tools/spec_lint.py` exits 0.
 
@@ -311,6 +311,43 @@ on `ideas_group` in `cli.py`.
 - **Regression guard:** full `uv run pytest`. The SPEC-0207 idempotency, carry-over and
   never-block tests must pass with their expectations moved from singles to the group.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q tests/test_agentic_review_triage.py tests/test_agentic_profiles.py
+  tests/test_agentic_queue.py tests/test_agentic_e2e.py tests/test_ideas_group_followups.py
+  tests/test_rich_output_guard.py`: green. New/reworked: `followups_max` validation, `followup_cap`
+  and builtin values; `group_title` / `checklist_line` shapes; one group per campaign with
+  ordering and events; cap + overflow line + raised-cap re-run; `open_group_keys` (open, closed,
+  `legacy-`, other spec); finding listed elsewhere / everything listed elsewhere; re-run writes
+  nothing; crashes after `add_idea`, between `set_summary` and `retitle` under `followups_max: 2`
+  and before the events; ticked `- [X]` line; `campaign show` lines and the close row
+  (`idea_id`, `capped`, distinct `ids`); e2e AC7 paths (b)-(d) with one grouped idea; the
+  migration (dry run text/JSON, `--yes` read back, already-listed single, second run no-op, crash
+  between group and closes); the docs grep.
+- Full `uv run pytest -q`: 2237 passed, 1 skipped. `python3 tools/spec_lint.py`: exit 0.
+- Manual: see "As shipped".
+
+### As shipped
+
+- `followups._file` sorts all considered findings once (severity, `advisory` before `waived`,
+  title) so `filed` has one order on first run and re-runs. A re-run that changes nothing writes
+  nothing (no `set_summary` / `retitle` when the text and title already match).
+- Findings recovered from the own group get their events immediately (step 2), before the
+  group write; a step-5 failure leaves them recorded and reports only the newly kept findings
+  `unfiled`.
+- `group_legacy` always re-sets Summary and title of an adopted legacy group (a no-op when
+  unchanged), which also repairs a crash between `set_summary` and `retitle`. Its report adds
+  `group_id` per group when written and a total `singles` count.
+- `wt ideas group-followups` is JSON-emitting via `click.echo`, so it is on the
+  `test_rich_output_guard` allowlist.
+- Manual check on a scratch copy of the live ideas file (131 open singles over 10 specs): dry run planned 131
+  singles into 10 groups (one per spec); `--yes` created the 10 `wtfug:legacy-SPEC-NNNN` groups and
+  closed all 131 singles (they rotated into the archive as closed ideas); the second `--yes` run
+  reported "no open single follow-up ideas to group" and `wt ideas` showed 10 groups and 0
+  `wtfu:` singles. It is slow (~15 min: each close reparses the org files). The migration on the live data dir is rollout step 2 and is left to the
+  operator after the loop restarts on this code; it was not run from this worktree because the
+  running loop still files singles with the old code.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -326,11 +363,11 @@ Built by the agentic loop or the human lane; idea bookkeeping via `wt spec recon
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

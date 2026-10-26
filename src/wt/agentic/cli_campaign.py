@@ -177,6 +177,13 @@ def attach(campaign_group):
             console.print(f"  review: score {lr.get('score')}  {lr['verdict']}  "
                           f"advisory {len(adv)} ({majors} major)")
         fu = (st.get("close") or {}).get("followups") or {}
+        if fu.get("idea_id"):
+            console.print(f"  follow-ups {fu['idea_id']} "
+                          f"({len(fu.get('filed') or [])} listed, {len(fu.get('capped') or [])} "
+                          f"capped)", highlight=False)
+        for f in fu.get("capped") or []:
+            console.print(Text(f"  [capped] {f.get('severity')} {f.get('title')}",
+                               style="yellow"), highlight=False)
         for f in fu.get("filed") or []:
             console.print(Text(f"  follow-up {f.get('idea_id')} {f.get('severity')} "
                                f"{f.get('title')}"), highlight=False)
