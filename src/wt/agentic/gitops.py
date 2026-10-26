@@ -252,12 +252,18 @@ def restore_branch(worktree, branch, pre_head) -> None:
     tip = git(worktree, "rev-parse", "--verify", "-q", ref, check=False).stdout.strip()
     if tip != pre_head or status_porcelain(worktree, untracked=False):
         git(worktree, "reset", "--hard", pre_head)
-    git(worktree, "clean", "-fdq")
+    clean_untracked(worktree)
     if rebase_in_progress(worktree) or head_ref(worktree) != ref \
             or rev_parse(worktree) != pre_head or status_porcelain(worktree, untracked=False):
         raise GitError(["git", "restore", branch], 1,
                        f"cannot restore {branch} to {pre_head}: "
                        f"HEAD {rev_parse(worktree)}, ref {head_ref(worktree)}")
+
+
+def clean_untracked(worktree) -> None:
+    """Remove untracked, non-ignored leftovers (`.orig` backups, scratch files) so the close
+    snapshot cannot commit a resolver's residue onto the campaign branch."""
+    git(worktree, "clean", "-fdq")
 
 
 _RANGE_DIFF_RE = re.compile(r"^\s*(?:-|\d+):\s+\S+\s+([=!<>])\s+(?:-|\d+):\s+\S+")

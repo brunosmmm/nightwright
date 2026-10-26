@@ -2,6 +2,7 @@
 run (a step within CLOSING) instead of parking. Offline: FakeRunner entries drive a real git
 conflict in a tmp repo (`pre_shell` / `shell` run git in the campaign worktree)."""
 import json
+import subprocess
 import threading
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 from test_agentic_e2e import (_git, _write, added, fake_gh, impl_done, make_cfg, make_repo,
                               review, run_cli, script, triage)
 from wt.agentic import personas as PS
+from wt.agentic import gitops as G
 from wt.agentic import profiles as PR
 from wt.agentic import project as P
 from wt.agentic import queue as Q
@@ -406,3 +408,174 @@ def test_attempt_budget_spans_resolved_runs_in_one_closing_entry(tmp_path, monke
     assert st["park"]["reason"] == "rebase_conflict" and "2 attempts" in st["park"]["detail"]
     assert "kept both sides" in st["park"]["detail"]
     assert len(w.run_ids()) == 2
+
+
+# ---- a failed run (non-zero exit, malformed verdict, crash) and a failed restore ---------------
+
+class CrashingRunner(FakeRunner):
+    """Starts the rebase like a resolver would, then raises on its first conflict_resolver run."""
+    crashed = False
+
+    def run(self, req):
+        if req.persona == "conflict_resolver" and not self.crashed:
+            type(self).crashed = self.crashed = True
+            self._shell(req, ["git rebase $WT_REBASE_TARGET || true"])
+            raise RuntimeError("resolver blew up")
+        return super().run(req)
+
+
+def _assert_restored(w, st, pre):
+    wt, branch = st["repo"]["worktree"], st["repo"]["branch"]
+    assert st["closing"]["resolve"]["pre_head"] == pre
+    assert _git(wt, "symbolic-ref", "HEAD") == f"refs/heads/{branch}"
+    assert _git(wt, "rev-parse", "HEAD") == _git(wt, "rev-parse", branch) == pre
+    assert _git(wt, "status", "--porcelain") == ""
+    for d in ("rebase-merge", "rebase-apply"):
+        assert not Path(wt, _git(wt, "rev-parse", "--git-path", d)).exists()
+
+
+@pytest.mark.parametrize("how", ["exit_code", "malformed", "crash"])
+def test_failed_resolver_run_is_restored_and_counted(tmp_path, monkeypatch, how):
+    failing = resolver(shell=(), edits=False, exit_code=1) if how == "exit_code" \
+        else resolver(shell=(), edits=False, malformed=True)
+    w = basic(tmp_path, monkeypatch, *([] if how == "crash" else [failing]), gave_up())
+    if how == "crash":
+        CrashingRunner.crashed = False
+        w.runner = CrashingRunner(w.script)
+    w.open_and_conflict()
+    pre = w.dispatched()["closing"]["resolve"]["pre_head"]
+    st = w.attempted(1)
+    assert st["state"] == "CLOSING" and st["closing"]["resolve_attempts"] == 1
+    assert not w.ledger("rebase_resolved")
+    _assert_restored(w, st, pre)
+    f, = w.findings("conflict resolver did not resolve")
+    assert f["severity"] == "major"
+    if how == "crash":
+        assert "resolver blew up" in f["detail"]
+    end, = [e for e in w.ledger("run.end") if e["persona"] == "conflict_resolver"]
+    if how == "exit_code":
+        assert end["exit_code"] == 1 and end["is_error"] is True
+    else:
+        assert end["verdict_ok"] is False
+    if how == "crash":
+        assert end["exit_code"] == -1 and end["is_error"] is True
+    w.tick()                                                          # the second attempt (gave_up)
+    st = w.st()
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "rebase_conflict"
+    assert st["park"]["resume_to"] == "CLOSING"
+    assert len(w.run_ids()) == 2 and len(w.findings("conflict resolver did not resolve")) == 2
+    assert w.head() == pre
+
+
+def test_restore_failure_parks_open_failed_keeping_the_run(tmp_path, monkeypatch):
+    w = basic(tmp_path, monkeypatch, gave_up(), gave_up())
+    w.open_and_conflict()
+    w.dispatched()
+    real, calls = G.restore_branch, []
+
+    def flaky(*a, **kw):
+        calls.append(a)
+        if len(calls) > 1:                  # the restore before the run works; the one after fails
+            raise G.GitError(["git", "restore"], 1, "cannot restore")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(G, "restore_branch", flaky)
+    w.tick()
+    st = w.st()
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed"
+    assert st["park"]["resume_to"] == "CLOSING" and "cannot restore" in st["park"]["detail"]
+    assert w.run_ids() == ["003-conflict_resolver"]
+    assert [e["run_id"] for e in w.ledger("run.end") if e["persona"] == "conflict_resolver"] \
+        == ["003-conflict_resolver"]
+
+
+def test_verified_resolver_untracked_leftovers_are_not_merged(tmp_path, monkeypatch):
+    w = basic(tmp_path, monkeypatch, resolver(
+        shell=(CONTINUE + " && echo x > app.py.orig && mkdir -p scratch && echo y > scratch/m.txt",)))
+    w.open_and_conflict()
+    w.drive(lambda s: len(w.ledger("rebase_resolved")) == 1)
+    assert not (Path(w.st()["repo"]["worktree"]) / "app.py.orig").exists()
+    w.drive(lambda s: s["state"] in ("MERGED", "PARKED"))
+    assert w.st()["state"] == "MERGED"
+    assert (w.repo / "src" / "app.py").read_text() == APP_MERGED
+    assert not (w.repo / "app.py.orig").exists() and not (w.repo / "scratch").exists()
+    assert "close-time snapshot" not in _git(w.repo, "log", "--format=%s")
+
+
+def test_attempts_survive_a_base_moved_redo(tmp_path, monkeypatch):
+    """The re-gate of the resolved tree moves `main` once: the close redoes (`base_moved`),
+    and the finish phase's `closing` write keeps `resolve_attempts` and the resolver budget."""
+    flag = tmp_path / "moved.flag"
+    gate = ("test -f feature.txt && { if grep -q c-main src/app.py && ! test -f %s; then "
+            "touch %s; git -C %s commit -q --allow-empty -m moved; fi; }"
+            % (flag, flag, tmp_path / "repo"))
+    w = World(tmp_path, monkeypatch, [impl_with_app(), review(), resolver()], test_gate=gate)
+    w.open_and_conflict()
+    seen, real = [], Q.CL.finish_close
+
+    def spy(cfg, state, pcfg, prepared, **kw):
+        seen.append(dict(state.get("closing") or {}))          # what the finish phase wrote
+        return real(cfg, state, pcfg, prepared, **kw)
+
+    monkeypatch.setattr(Q.CL, "finish_close", spy)
+    w.drive(lambda s: s["state"] in ("MERGED", "PARKED"))
+    assert flag.exists(), "the re-gate never ran on the resolved tree"
+    assert w.st()["state"] == "MERGED"
+    assert w.findings("base moved during re-gate; redoing close")
+    assert len(seen) == 2 and [c["attempts"] for c in seen] == [1, 2], seen
+    assert all(c["resolve_attempts"] == 1 for c in seen), seen
+    assert len(w.run_ids()) == 1
+
+
+# ---- gitops: the verification and restore helpers on their own --------------------------------
+
+@pytest.fixture
+def grepo(tmp_path):
+    r = tmp_path / "g"
+    r.mkdir()
+    _git(r, "init", "-q", "-b", "main")
+    _git(r, "config", "user.email", "t@t")
+    _git(r, "config", "user.name", "t")
+    _write(r, "f.txt", "1\n2\n3\n")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-q", "-m", "base")
+    fork = _git(r, "rev-parse", "HEAD")
+    _git(r, "checkout", "-q", "-b", "wt/x")
+    _write(r, "f.txt", "1\n2\nbranch\n")
+    _git(r, "commit", "-qam", "branch edit")
+    pre = _git(r, "rev-parse", "HEAD")
+    _git(r, "checkout", "-q", "main")
+    _write(r, "f.txt", "1\n2\nmain\n")
+    _git(r, "commit", "-qam", "main edit")
+    target = _git(r, "rev-parse", "HEAD")
+    _git(r, "checkout", "-q", "wt/x")
+    return r, fork, pre, target
+
+
+def test_verify_resolution_rebase_in_progress_fires_alone(grepo):
+    r, fork, pre, target = grepo
+    # a conflicted rebase stops with the branch detached: attached check passes only after
+    # re-attaching, so exercise the in-progress check by faking the rebase dir on an attached HEAD
+    gitdir = Path(r, _git(r, "rev-parse", "--git-path", "rebase-merge"))
+    gitdir.mkdir(parents=True)
+    try:
+        assert G.rebase_in_progress(r)
+        assert G.verify_resolution(r, "wt/x", target, fork, pre) == "a rebase is still in progress"
+    finally:
+        gitdir.rmdir()
+
+
+def test_verify_resolution_unmerged_paths_fire_alone(grepo):
+    r, fork, pre, target = grepo
+    subprocess.run(["git", "merge", "main"], cwd=r, capture_output=True)       # conflicts, no rebase
+    assert _git(r, "ls-files", "-u")
+    assert G.verify_resolution(r, "wt/x", target, fork, pre) == "unmerged paths remain"
+
+
+def test_restore_branch_cleans_untracked_leftovers(grepo):
+    r, fork, pre, target = grepo
+    _write(r, "stray.orig", "x\n")
+    _write(r, "d/inner.txt", "y\n")
+    G.restore_branch(r, "wt/x", pre)
+    assert not (r / "stray.orig").exists() and not (r / "d").exists()
+    assert _git(r, "status", "--porcelain") == ""

@@ -996,7 +996,7 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         failed = None
         if res.interrupted or rr.interrupted:
             failed = "interrupted"
-        elif not rr.verdict_ok:
+        elif not rr.verdict_ok or rr.is_error or rr.exit_code != 0:
             failed = crash or "the run failed or returned no valid verdict"
         elif verdict.get("status") != "resolved":
             failed = f"the resolver reported {verdict.get('status')}"
@@ -1008,6 +1008,7 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
                 failed = f"verification error: {getattr(e, 'tail', None) or e}"
         res.resolution = {"verified": failed is None, "failed": failed, "head": None}
         if failed is None:
+            git.clean_untracked(worktree)   # residue must not reach the close-time snapshot
             res.resolution["head"] = git.rev_parse(worktree)
         else:
             git.restore_branch(worktree, branch, pre_head)

@@ -422,6 +422,15 @@ table.
   `test_gave_up_twice_parks_rebase_conflict`; counting interrupted runs fails
   `test_interrupted_resolver_not_counted`; skipping the budget check fails
   `test_attempt_budget_spans_resolved_runs_in_one_closing_entry`.
+- Review loop 1: added to `tests/test_agentic_resolver.py` (now 28 cases) a failed-run matrix
+  (non-zero exit, malformed verdict, runner exception; each restores to `pre_head` attached with no
+  rebase and a clean tree, records a `major` finding, counts one attempt, runs the second attempt and
+  parks `rebase_conflict`; the crash leaves a synthetic failed `run.end`), a `restore_branch` failure
+  test (PARKED `open_failed`, `resume_to: CLOSING`, the resolver `run.end` kept), untracked leftovers of
+  a verified resolver not merged, `resolve_attempts` surviving a `base_moved` redo, and direct tests of
+  `verify_resolution` (rebase-in-progress and unmerged-paths checks each alone) and `restore_branch`
+  with untracked leftovers. Sabotage: dropping the post-verification clean, the `"resolve": "CLOSING"`
+  resume mapping, or the restore on a failed attempt each fails the new suite.
 - **Manual verification** (a real conflicted close shows `resolver dispatched`, the resolver run,
   `rebase resolved: …`, the re-gate and the merge, and the resolver cost): not yet performed. It
   needs a live conflicted close; the offline end-to-end tests above cover the same sequence.
@@ -443,6 +452,10 @@ Deviations from Design, none of which change a decision:
 - The template also carries the last gate results and pending brief (a resume `--note` reaches
   the resolver through the brief). The hidden `wt campaign prompt conflict_resolver` renders the
   resolver context too (`personas.persona_extra`).
+- A verified resolution is followed by `git clean -fd` (untracked, not ignored), so leftovers such as
+  `.orig` backups cannot be picked up by the next close's snapshot commit and merged unreviewed.
+- A run that exited non-zero or reported `is_error` counts as failed even when its verdict parses
+  and its tree would verify; it is restored like any other failed attempt.
 - Landed specs are included as their full text from the target, cut to 400 lines each.
 - The failure detail written to the `major` finding appends the failed check to the resolver's
   own summary, and the final park detail ends with `(resolver: N attempts, last: …)`.
