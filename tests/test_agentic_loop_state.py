@@ -303,6 +303,7 @@ def test_drain_keeps_busy_after_a_harvested_close(tmp_path, monkeypatch):
 
     class Fl:
         tasks, runs = [], []
+        ctx = type("C", (), {"stop": type("S", (), {"is_set": staticmethod(lambda: False)})()})()
 
     class FakePool:
         def __init__(self):

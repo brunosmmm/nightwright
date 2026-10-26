@@ -95,7 +95,9 @@ def tick_until(w, pool, cond, n=60, steps=None):
 
 
 def test_adopt_registry_complete():
-    assert set(PS.PERSONAS) - {"spec_reviewer"} <= set(PS.ADOPT_REGISTRY)
+    # spec_reviewer, conflict_resolver and spec_writer run in-process (no hooks, never detached)
+    assert set(PS.PERSONAS) - {"spec_reviewer", "conflict_resolver", "spec_writer"} \
+        <= set(PS.ADOPT_REGISTRY)
     assert PS.ADOPT_REGISTRY["review_triager"] == ("review", ("review_triager",))
 
 
