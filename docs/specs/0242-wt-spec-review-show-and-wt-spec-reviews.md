@@ -160,6 +160,13 @@ stays readable at 80 columns; `_print_review` reads `findings`, `suggested_split
 with `.get` so a stored review missing a field still renders. `wt.spec.review.show.v1` and
 `wt.spec.reviews.v1` are listed in `docs/product/guides/agent-surface.md`.
 
+Review fixes: when a store directory's id resolves locally but holds only another repository's
+`--path` reviews, `wt spec reviews` falls back to the unfiltered latest review and shows
+`current ?` (`matches_current: null`) instead of dropping the row; `_print_review` tolerates a
+stored review missing `spec_id`/`verdict` or with a non-numeric `cost_usd`. The `--path FILE
+--show` scope test now stores a newer SPEC-0007 review of a different existing repository and
+asserts it is not shown.
+
 ## Rollout / migration
 
 Additive CLI. No stored data changes.

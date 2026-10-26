@@ -225,6 +225,8 @@ def all_latest_reviews(cfg) -> list:
         except ValueError:
             path = None
         review = latest_review(cfg, spec_id, path)
+        if review is None and path is not None:      # only another repository's `--path` reviews
+            review, path = latest_review(cfg, spec_id), None
         if review is None:
             continue
         rows.append({

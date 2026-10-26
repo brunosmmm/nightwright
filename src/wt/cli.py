@@ -1752,11 +1752,11 @@ def _show_review(shown, as_json):
 
 def _print_review(review, pick):
     """The human rendering of a stored or fresh spec review (SPEC-0188, SPEC-0242)."""
-    spec_id = review["spec_id"]
-    color = {"approve": "green", "revise": "yellow", "split": "yellow"}[review["verdict"]]
+    spec_id, verdict = review.get("spec_id"), review.get("verdict")
+    color = {"approve": "green", "revise": "yellow", "split": "yellow"}.get(verdict, "default")
     cost = review.get("cost_usd")
-    cost_txt = f"  ${cost:.2f}" if cost is not None else ""
-    console.print(f"[bold]{spec_id}[/]  [{color}]{review['verdict']}[/]  "
+    cost_txt = f"  ${cost:.2f}" if isinstance(cost, (int, float)) else ""
+    console.print(f"[bold]{spec_id}[/]  [{color}]{verdict}[/]  "
                   f"{review.get('model')}{cost_txt}")
     if review.get("size"):
         console.print(f"  size {review['size']}  tone {review.get('tone')}", highlight=False)

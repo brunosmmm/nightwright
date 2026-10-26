@@ -33,6 +33,9 @@ def test_show_revise_runs_nothing_and_needs_no_force(tmp_path, monkeypatch):
     assert f"reviewed {sha12} · current · admissible: no — " in r.output
     assert "not applied yet" in r.output
     assert ran == [] and SR.read_journal(cfg) == []
+    adm = json.loads(_show(cfg, monkeypatch, "--json").stdout)["admission"]
+    assert adm["ok"] is False and adm["kind"] is None
+    assert isinstance(adm["message"], str) and adm["message"]
 
 
 def test_show_after_edit_and_approve_profile(tmp_path, monkeypatch):
@@ -73,13 +76,22 @@ def test_show_errors_and_path_scope(tmp_path, monkeypatch):
     r = _show(cfg, monkeypatch, "--force")
     assert r.exit_code == 2 and "--force" in r.output
     other, ospec = _second_repo(tmp_path)
-    write_review(cfg, spec, "SPEC-0001", "revise")                     # repo's review only
-    r = run_cli(cfg, monkeypatch, ["spec", "review", "--path", str(ospec), "--show"])
+    write_review(cfg, spec, "SPEC-0001", "revise")                     # an unrelated spec id
+    show_ospec = ["spec", "review", "--path", str(ospec), "--show"]
+    r = run_cli(cfg, monkeypatch, show_ospec)
     assert r.exit_code == 1 and "SPEC-0007 has no stored review" in r.output
-    p = write_review(cfg, ospec, "SPEC-0007", "split", repo_root=str(other), **SIZED)
-    assert p.is_file()
-    r = run_cli(cfg, monkeypatch, ["spec", "review", "--path", str(ospec), "--show", "--json"])
-    assert r.exit_code == 0 and json.loads(r.stdout)["review"]["verdict"] == "split"
+    # a SPEC-0007 review of a different, existing repository, newer and with another verdict
+    write_review(cfg, ospec, "SPEC-0007", "revise", repo_root=str(repo),
+                 reviewed_at="2026-10-26T00:00:00+00:00", **SIZED)
+    r = run_cli(cfg, monkeypatch, show_ospec)
+    assert r.exit_code == 1 and "SPEC-0007 has no stored review" in r.output
+    r = run_cli(cfg, monkeypatch, [*show_ospec, "--json"])
+    assert r.exit_code == 1
+    write_review(cfg, ospec, "SPEC-0007", "split", repo_root=str(other), **SIZED)
+    r = run_cli(cfg, monkeypatch, [*show_ospec, "--json"])
+    assert r.exit_code == 0, r.output
+    out = json.loads(r.stdout)
+    assert out["review"]["verdict"] == "split" and out["stored"] == 1
 
 
 def test_reviews_list_filter_json_and_unresolvable(tmp_path, monkeypatch):
@@ -98,9 +110,27 @@ def test_reviews_list_filter_json_and_unresolvable(tmp_path, monkeypatch):
     assert set(rows) == {"SPEC-0001", "SPEC-0999"}
     assert rows["SPEC-0001"]["matches_current"] is True
     assert rows["SPEC-0001"]["counts"] == {"must_fix": 1, "major": 1}
+    assert rows["SPEC-0001"]["size"] == "m" and rows["SPEC-0001"]["tone"] == "high-end"
     assert rows["SPEC-0999"]["matches_current"] is None and rows["SPEC-0999"]["verdict"] == "approve"
     r = run_cli(cfg, monkeypatch, ["spec", "reviews"])
     assert r.exit_code == 0 and "must_fix" in r.output and "2026-10-26 00:00" in r.output
-    assert "yes" in r.output and "?" in r.output
+    assert "yes" in r.output and "?" in r.output and "edited" not in r.output
+    spec.write_text(spec.read_text() + "\nedited\n")
+    r = run_cli(cfg, monkeypatch, ["spec", "reviews"])
+    assert "edited" in r.output and "yes" not in r.output
     r = run_cli(cfg, monkeypatch, ["spec", "reviews", "--verdict", "revise", "--json"])
     assert [x["spec_id"] for x in json.loads(r.stdout)["reviews"]] == ["SPEC-0001"]
+
+
+def test_reviews_lists_other_repo_review_with_colliding_local_id(tmp_path, monkeypatch):
+    repo, cfg, spec = _setup(tmp_path)
+    other, ospec = _second_repo(tmp_path)
+    write_review(cfg, spec, "SPEC-0001", "split", repo_root=str(other), **SIZED)   # no local review
+    out = json.loads(run_cli(cfg, monkeypatch, ["spec", "reviews", "--json"]).stdout)
+    rows = {x["spec_id"]: x for x in out["reviews"]}
+    assert rows["SPEC-0001"]["verdict"] == "split" and rows["SPEC-0001"]["matches_current"] is None
+    r = run_cli(cfg, monkeypatch, ["spec", "reviews"])
+    assert r.exit_code == 0 and "SPEC-0001" in r.output and "?" in r.output
+    write_review(cfg, spec, "SPEC-0001", "approve", repo_root=str(repo), **SIZED)  # local review wins
+    rows = json.loads(run_cli(cfg, monkeypatch, ["spec", "reviews", "--json"]).stdout)["reviews"]
+    assert rows[0]["verdict"] == "approve" and rows[0]["matches_current"] is True
