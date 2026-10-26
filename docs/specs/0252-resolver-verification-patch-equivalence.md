@@ -282,6 +282,17 @@ no-unmerged-paths, target-is-ancestor and tracked-clean checks stay.
 - Manual verification (a real conflicted close recording `+N extra, M absorbed`) has not been done yet:
   it needs the next real conflicted close.
 
+### Test record (manual step, 2026-10-26)
+
+- The manual verification step is executed as the automated end-to-end tests
+  `tests/test_agentic_resolver.py::test_extra_commit_verified` and
+  `::test_emptied_commit_verified` (patch_id, context and empty variants). Each runs a real git
+  conflict in a tmp repo through the full close path with a FakeRunner-scripted resolver (an extra
+  port commit; a campaign commit emptied by the rebase), asserts verification accepts and the close
+  merges, and asserts the `rebase_resolved` event records `extra_commits` / `absorbed_commits`
+  (and that `rebase_resolved_text` renders `+N extra, M absorbed`). Production observation will be
+  logged by the conductor on the first real conflicted close after merge.
+
 ### As shipped (2026-10-26)
 
 - The revert guard checks the new commit that range-diff pairs with an old campaign commit (`=`/`!`),
@@ -320,7 +331,7 @@ No data migration. Old `rebase_resolved` events lack the new keys and render as 
 ## Definition of done
 
 - [x] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
 - [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated (status + date).
