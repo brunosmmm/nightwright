@@ -1,10 +1,10 @@
 ---
 id: SPEC-0251
 title: "TUI events tab: live event stream with filters, current watchdog alerts, ping digest and followers"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
-updated: 2026-10-25
+updated: 2026-10-26
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0169
@@ -148,28 +148,28 @@ adds `TabPane("events", id="tab-events")` on key `5` and `--tab events`.
 
 ## Acceptance criteria
 
-- [ ] AC1. `5`, a click, and `wt tui --tab events` open the `events` tab. The stream table shows
+- [x] AC1. `5`, a click, and `wt tui --tab events` open the `events` tab. The stream table shows
       the newest 2000 events with the documented columns and styles: alert types red (transient
       `run_failed` yellow), parks and escalations yellow, merges green.
-- [ ] AC2. `parse_event_filter` accepts `type=…`, `campaign=…` and `alerts`, and rejects an
+- [x] AC2. `parse_event_filter` accepts `type=…`, `campaign=…` and `alerts`, and rejects an
       unknown type naming it. In the tab, `f` applies a filter, an invalid one is shown in the
       hint line and the previous filter is kept, `x` toggles alerts-only, `c` toggles the row's
       campaign, and the status line shows `<shown>/<loaded>`.
-- [ ] AC3. An event appended by another process appears within one poll interval with no key
+- [x] AC3. An event appended by another process appears within one poll interval with no key
       press. The tail is followed only when the cursor was on the last row. A truncated or
       replaced `events.jsonl` causes a full reload without an error.
-- [ ] AC4. The conditions panel lists `watchdog_checks` results, runner-level first, or `no
+- [x] AC4. The conditions panel lists `watchdog_checks` results, runner-level first, or `no
       alerts`. A seeded condition (a campaign that is active with no lease held ⇒ `runner_dead`)
       shows even though no `sync` has run.
-- [ ] AC5. The ping panel renders the newest `conductor_ping` with the documented counts and
+- [x] AC5. The ping panel renders the newest `conductor_ping` with the documented counts and
       entries, or the `no conductor_ping yet` line with the configured interval.
-- [ ] AC6. The followers panel lists `events.followers` rows with the `dead` / `lagging` flags.
+- [x] AC6. The followers panel lists `events.followers` rows with the `dead` / `lagging` flags.
       The status line shows the stream sync age and the no-live-follower warning when no
       events follower is held.
-- [ ] AC7. The tab never calls `events.sync`, `events.cursor_set`, `events.reader_lock`,
+- [x] AC7. The tab never calls `events.sync`, `events.cursor_set`, `events.reader_lock`,
       `events.follow` or `mailbox.follow` (monkeypatched to raise, driving load, poll, filters
       and panels). `enter` on a row with a campaign posts `CampaignSelected`.
-- [ ] AC8. Full `uv run pytest` is green, the existing `tests/test_tui_*` are unchanged and
+- [x] AC8. Full `uv run pytest` is green, the existing `tests/test_tui_*` are unchanged and
       green, and `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
@@ -201,6 +201,43 @@ adds `TabPane("events", id="tab-events")` on key `5` and `--tab events`.
 - **Regression guard:** full `uv run pytest`, in particular `tests/test_agentic_events*.py`,
   unchanged.
 
+### Test record (2026-10-26)
+
+- `uv run pytest -q tests/test_tui_events_model.py tests/test_tui_events_tab.py`: 28 model
+  tests and 17 Textual pilot tests pass (tab opening by `5`, `--tab events` and a click; styles
+  and columns; the 2000-row cap; live append with and without the cursor on the tail;
+  truncation, in-place and atomic replacement, and removal; filter bar apply / error / Esc;
+  `x`, `c`, `G`; the side panels with a seeded `runner_dead` and no sync, a ping, live and dead
+  followers; `enter` posting `CampaignSelected`; the forbidden-call monkeypatches over
+  `events.sync` / `cursor_set` / `reader_lock` / `follow` and `mailbox.follow`; timers paused
+  off-tab).
+- Full `uv run pytest -q -x`: 2828 passed, 3 skipped. The existing `tests/test_tui_*` files and
+  `tests/test_agentic_events*.py` are untouched.
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: exit 0.
+- **Manual verification:** not run against a live runner and conductor follower (none is
+  available inside the campaign worktree). Its steps are covered by pilot tests that hold and
+  drop a real `events.reader_lock` in-process: the followers panel shows `dead` and the status
+  line shows the no-live-follower warning when the lock is not held, and neither when it is.
+
+### As shipped (2026-10-26)
+
+Matches the Design, with these details:
+
+- `EventRow` has a seventh field, `data` (the event's payload, excluded from equality),
+  because `ping_text` renders the digest from the loaded rows. `ping_text(rows, cfg=None,
+  now=None)`: without `cfg` the default `ping_interval_s` is shown.
+- `parse_event_filter` also rejects an unrecognised token (`ValueError` naming it), not only an
+  unknown type; `alerts_only` is accepted as a synonym for `alerts`.
+- `FollowerRow` carries the `dead` / `lagging` flag as a `flag` field; `stream_health` takes
+  those rows and says `stream never synced` when the projector file does not exist.
+- Rotation detection is a shrunk file, a vanished file, a different inode (an atomic replace
+  with a bigger file), or an incremental read that finds nothing while the file's newest id is
+  older than the last loaded one. Any of them reloads from 0.
+- The filter `Input` (`#events-filter`) lives inside the tab, above the status line; an
+  invalid filter shows its `ValueError` in the desk's `#hint` line and leaves the bar open and
+  the old filter active. `c` on an event without a campaign notifies instead of filtering.
+- `wt tui --tab events` is added to the click choice and the `wt tui` help text.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -211,11 +248,11 @@ Nothing to migrate. The tab appears on the next `wt tui` launch with the `tui` e
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

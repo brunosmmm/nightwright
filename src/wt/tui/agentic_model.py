@@ -1,12 +1,16 @@
-"""View model for the TUI queue tab (SPEC-0241) and campaign screen (SPEC-0246). No Textual
-import.
+"""View model for the TUI queue tab (SPEC-0241), campaign screen (SPEC-0246) and events tab
+(SPEC-0251). No Textual import.
 
 Turns `queue.dashboard_payload` and `events.followers` into rows and a header line, computes a
 `stat()`-only change signature, and wraps the four human queue actions. `load_campaign` builds
 one campaign's header, ledger timeline and review panel. Read-only except `queue_action`, which
-goes through the same `plan_*` / `apply_*` functions as the CLI.
+goes through the same `plan_*` / `apply_*` functions as the CLI. The events half (stream,
+conditions, ping digest, followers) is read-only throughout: it never syncs the stream or takes
+a reader.
 """
+import datetime as dt
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -504,3 +508,216 @@ def review_text(cfg, state) -> Text:
     _spec_review(t, cfg, state)
     t.rstrip()
     return t
+
+
+# --- events tab (SPEC-0251) ---------------------------------------------------------------
+
+ALERT_TYPES = frozenset({
+    "runner_dead", "lease_stale", "run_overdue", "campaign_silent", "backlog_blocked_long",
+    "state_stuck", "ready_not_admitted", "runner_draining", "runner_config_invalid",
+    "run_failed"})
+_YELLOW_TYPES = frozenset({"parked", "escalation"})
+_GREEN_TYPES = frozenset({"merged", "handed_off"})
+EVENT_LIMIT = 2000
+LAG_CURSOR_AGE_S = 60
+NO_ALERTS = "no alerts"
+NO_FOLLOWER_WARNING = " · no live follower: the stream may lag, conditions are live"
+
+
+def event_style(type_, data=None) -> str:
+    if type_ == "run_failed" and (data or {}).get("transient"):
+        return "yellow"
+    if type_ in ALERT_TYPES:
+        return "red"
+    if type_ in _YELLOW_TYPES:
+        return "yellow"
+    if type_ in _GREEN_TYPES:
+        return "green"
+    return ""
+
+
+@dataclass(frozen=True)
+class EventRow:
+    id: int
+    ts: str
+    type: str
+    campaign: str
+    text: str
+    style: str
+    data: dict = field(default_factory=dict, compare=False)
+
+
+@dataclass(frozen=True)
+class EventFilter:
+    types: frozenset = frozenset()
+    campaign: str | None = None
+    alerts_only: bool = False
+
+
+def parse_event_filter(text) -> EventFilter:
+    """`type=parked,merged campaign=SPEC-0230 alerts` -> EventFilter; ValueError names a bad
+    token so the hint line can say what was wrong."""
+    types: set = set()
+    campaign = None
+    alerts = False
+    for token in str(text or "").split():
+        key, eq, value = token.partition("=")
+        if key == "type" and eq:
+            for t in filter(None, value.split(",")):
+                if t not in EV.EVENT_TYPES:
+                    raise ValueError(f"unknown event type {t!r}")
+                types.add(t)
+        elif key == "campaign" and eq and value:
+            campaign = value
+        elif token in ("alerts", "alerts_only") and not eq:
+            alerts = True
+        else:
+            raise ValueError(f"unknown filter token {token!r} (type=… campaign=… alerts)")
+    return EventFilter(frozenset(types), campaign, alerts)
+
+
+def format_event_filter(f) -> str:
+    bits = []
+    if f.types:
+        bits.append("type=" + ",".join(sorted(f.types)))
+    if f.campaign:
+        bits.append(f"campaign={f.campaign}")
+    if f.alerts_only:
+        bits.append("alerts")
+    return " ".join(bits)
+
+
+def _event_text(ev) -> str:
+    """`events.summary_line` without its `#id type campaign` prefix (the table has columns)."""
+    line = EV.summary_line(ev)
+    prefix = f"#{ev.get('id')} {ev.get('type')}"
+    if not line.startswith(prefix):
+        return line
+    rest = line[len(prefix):].lstrip()
+    if ev.get("type") != "conductor_ping":
+        who = ev.get("campaign") or "-"
+        if rest.startswith(who):
+            rest = rest[len(who):].lstrip()
+    return rest
+
+
+def load_events(cfg, after_id=0, limit=EVENT_LIMIT) -> list[EventRow]:
+    events = EV.read_since(cfg, after_id)[-limit:]
+    return [EventRow(id=ev["id"], ts=str(ev.get("ts") or ""), type=str(ev.get("type") or ""),
+                     campaign=str(ev.get("campaign") or ""), text=_event_text(ev),
+                     style=event_style(ev.get("type"), ev.get("data")),
+                     data=ev.get("data") if isinstance(ev.get("data"), dict) else {})
+            for ev in events]
+
+
+def matches(row, f) -> bool:
+    if f.types and row.type not in f.types:
+        return False
+    if f.campaign and f.campaign not in row.campaign:
+        return False
+    return not (f.alerts_only and row.type not in ALERT_TYPES)
+
+
+def event_time(ts, now=None) -> str:
+    """HH:MM:SS local, with the date when it is not today."""
+    try:
+        when = dt.datetime.fromisoformat(ts).astimezone()
+    except (TypeError, ValueError):
+        return str(ts or "")[:19]
+    today = (now or dt.datetime.now().astimezone()).date()
+    return when.strftime("%H:%M:%S" if when.date() == today else "%m-%d %H:%M:%S")
+
+
+@dataclass(frozen=True)
+class ConditionRow:
+    type: str
+    campaign: str
+    text: str
+    style: str
+
+
+def _kv(data) -> str:
+    return " ".join(f"{k}={v}" for k, v in (data or {}).items() if v not in (None, "", []))
+
+
+def load_conditions(cfg) -> list[ConditionRow]:
+    """The watchdog conditions true now (`events.watchdog_checks`, pure), runner-level first."""
+    rows = [ConditionRow(type_, cid or "", _kv(data),
+                         "red" if type_ in ALERT_TYPES else "yellow")
+            for _key, type_, cid, data in EV.watchdog_checks(cfg)]
+    return sorted(rows, key=lambda r: (bool(r.campaign), r.type, r.campaign))
+
+
+def _ping_lines(data) -> list[tuple]:
+    out = []
+    for item in data.get("blocked") or []:
+        out.append(("blocked", item.get("campaign"), item.get("blocked_for_s")))
+    for item in data.get("stuck") or []:
+        out.append(("stuck", item.get("campaign"), item.get("stuck_s")))
+    for item in data.get("ready_not_admitted") or []:
+        out.append(("ready_not_admitted", item.get("campaign"), item.get("ready_for_s")))
+    for item in data.get("parked") or []:
+        if item.get("owner") == "conductor" and not item.get("decided"):
+            out.append(("parked", item.get("campaign"), item.get("parked_for_s")))
+    return out
+
+
+def ping_text(rows, cfg=None, now=None) -> Text:
+    """The newest `conductor_ping` among the loaded rows, as a panel body."""
+    ping = next((r for r in reversed(rows) if r.type == "conductor_ping"), None)
+    if ping is None:
+        interval = (EV.settings(cfg) if cfg is not None else EV.DEFAULTS)["ping_interval_s"]
+        return Text(f"no conductor_ping yet (interval {interval}s)", style="dim")
+    c = ping.data.get("counts") or {}
+    out = Text(f"active {c.get('active', 0)} · queued {c.get('queued', 0)} · "
+               f"ready {c.get('ready', 0)} · blocked {c.get('blocked', 0)} · "
+               f"parked {c.get('parked', 0)} (undecided {c.get('undecided_parks', 0)}) · "
+               f"stuck {c.get('stuck', 0)} · waiting {c.get('waiting', 0)}")
+    for kind, campaign, age in _ping_lines(ping.data):
+        out.append(f"\n{kind} {campaign or '-'} {_ago(age)}", style="yellow")
+    age = EV._age_s(ping.ts, now or dt.datetime.now().astimezone())
+    out.append(f"\nping {_ago(age)} ago", style="dim")
+    return out
+
+
+@dataclass(frozen=True)
+class FollowerRow:
+    reader: str
+    kind: str
+    pid: str
+    held: bool
+    lag: int
+    cursor_age_s: int | None
+    flag: str = ""          # "dead" (red) | "lagging" (yellow) | ""
+
+
+def load_followers(cfg) -> list[FollowerRow]:
+    rows = []
+    for f in EV.followers(cfg):
+        age = f.get("cursor_age_s")
+        if not f["held"]:
+            flag = "dead"
+        elif f["lag"] > 0 and age is not None and age > LAG_CURSOR_AGE_S:
+            flag = "lagging"
+        else:
+            flag = ""
+        rows.append(FollowerRow(f["reader"], f["kind"], "-" if f["pid"] is None else str(f["pid"]),
+                                f["held"], f["lag"], age, flag))
+    return rows
+
+
+def stream_health(cfg, followers) -> str:
+    """How fresh the stream is: the projector file is rewritten by every `sync`. `followers`
+    are `load_followers` rows."""
+    try:
+        age = max(0, int(time.time() - EV._projector_path(cfg).stat().st_mtime))
+        line = f"stream synced {_ago(age)} ago"
+    except OSError:
+        line = "stream never synced"
+    if not any(f.kind == "events" and f.held for f in followers):
+        line += NO_FOLLOWER_WARNING
+    return line
+
+
+def events_signature(cfg):
+    return _stat(EV.events_path(cfg))

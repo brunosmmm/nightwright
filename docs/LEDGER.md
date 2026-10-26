@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (65/74 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (66/74 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -167,7 +167,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0248](./specs/0248-reliability-follow-ups-flaky-timing-tests-and-error-handling.md) Reliability follow-ups from review: flaky timing tests and error-handling gaps — done
   - [ ] [SPEC-0249](./specs/0249-tui-mailbox-tab.md) TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human — accepted
   - [ ] [SPEC-0250](./specs/0250-tui-escalation-inbox.md) TUI escalation inbox: open escalations first, answer by choice or text, withdraw — accepted
-  - [ ] [SPEC-0251](./specs/0251-tui-events-tab.md) TUI events tab: live event stream with filters, current watchdog alerts, ping digest and followers — accepted
+  - [x] [SPEC-0251](./specs/0251-tui-events-tab.md) TUI events tab: live event stream with filters, current watchdog alerts, ping digest and followers — done
   - [x] [SPEC-0252](./specs/0252-resolver-verification-patch-equivalence.md) Conflict resolver verification by patch equivalence, runner commits resolver changes — done
   - [ ] [SPEC-0257](./specs/0257-close-step-does-the-spec-and-idea-bookkeeping.md) Reconcile walks spec source_idea; close reconciles the merged spec's idea — accepted
   - [ ] [SPEC-0258](./specs/0258-merge-campaigns-on-an-adopted-worktree-skip.md) Merge campaigns run worktrees.setup in an adopted worktree before gating — accepted
@@ -187,7 +187,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0249](./specs/0249-tui-mailbox-tab.md) | TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0250](./specs/0250-tui-escalation-inbox.md) | TUI escalation inbox: open escalations first, answer by choice or text, withdraw | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0251](./specs/0251-tui-events-tab.md) | TUI events tab: live event stream with filters, current watchdog alerts, ping digest and followers | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0253](./specs/0253-gate-pytest-exhausts-tmp-inodes-basetemp-dirs.md) | Per-campaign TMPDIR for gates and personas, plus a temp-filesystem admission guard | feature | accepted | — | 2026-10-26 |
 | [SPEC-0257](./specs/0257-close-step-does-the-spec-and-idea-bookkeeping.md) | Reconcile walks spec source_idea; close reconciles the merged spec's idea | feature | accepted | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0258](./specs/0258-merge-campaigns-on-an-adopted-worktree-skip.md) | Merge campaigns run worktrees.setup in an adopted worktree before gating | feature | accepted | M9: agentic workflow | 2026-10-26 |
@@ -425,6 +424,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0246](./specs/0246-tui-campaign-detail-screen.md) | TUI campaign detail screen: header, filterable ledger timeline, runs, gates and reviews | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0247](./specs/0247-divergence-detection-in-the-implementation-loop.md) | Divergence detection in the implementation loop: park diverging, conductor triages, rework as an outcome | feature | done | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0248](./specs/0248-reliability-follow-ups-flaky-timing-tests-and-error-handling.md) | Reliability follow-ups from review: flaky timing tests and error-handling gaps | feature | done | M9: agentic workflow | 2026-10-26 |
+| [SPEC-0251](./specs/0251-tui-events-tab.md) | TUI events tab: live event stream with filters, current watchdog alerts, ping digest and followers | feature | done | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0252](./specs/0252-resolver-verification-patch-equivalence.md) | Conflict resolver verification by patch equivalence, runner commits resolver changes | feature | done | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0254](./specs/0254-lost-update-in-apply-finish-fresh-read-outside.md) | Take item_lock around the fresh read and write in _apply.finish | feature | done | — | 2026-10-26 |
 | [SPEC-0255](./specs/0255-conflict-resolver-leaves-docs-ledger-md-stale.md) | Close regenerates declared generated files after a rebase and commits them before re-gating | feature | done | — | 2026-10-26 |
