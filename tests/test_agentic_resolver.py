@@ -611,6 +611,25 @@ def test_spent_resolver_park_detail_cases():
         "persona": "conflict_resolver", "verdict": {"summary": "kept both sides"}}}
     d = Q._spent_resolver_park(st, park)["detail"]
     assert "2 resolutions verified" in d and "last:" not in d and "kept both" not in d
+    # attempt 1 failed, attempt 2 verified, then the base moved: the failure is not "the last"
+    st = {"closing": {"resolve_attempts": 2, "resolve_last_verified": True,
+                      "resolve_failed": {"n": 1, "last": "cannot decide"}}}
+    d = Q._spent_resolver_park(st, park)["detail"]
+    assert "the last was verified" in d and "an earlier attempt failed: cannot decide" in d
+    assert "last: cannot decide" not in d
+
+
+def test_failed_then_verified_then_conflict_again_names_no_stale_failure(tmp_path, monkeypatch):
+    w = basic(tmp_path, monkeypatch, gave_up("cannot decide"), resolver(), resolver())
+    w.open_and_conflict()
+    w.drive(lambda s: len(w.ledger("rebase_resolved")) == 1)
+    assert w.st()["closing"]["resolve_attempts"] == 2
+    w.main_conflict("a\nb\nc-main2\nd\ne\n")
+    st = w.drive(lambda s: s["state"] == "PARKED")
+    d = st["park"]["detail"]
+    assert st["park"]["reason"] == "rebase_conflict"
+    assert "the last was verified" in d and "last: cannot decide" not in d
+    assert len(w.run_ids()) == 2
 
 
 # ---- gitops: the verification and restore helpers on their own --------------------------------
@@ -665,3 +684,219 @@ def test_restore_branch_cleans_untracked_leftovers(grepo):
     G.restore_branch(r, "wt/x", pre)
     assert not (r / "stray.orig").exists() and not (r / "d").exists()
     assert _git(r, "status", "--porcelain") == ""
+
+
+# ---- review loop 3 --------------------------------------------------------------------------
+
+def test_pre_head_mismatch_after_abort_is_an_error_not_a_dispatch(tmp_path, monkeypatch):
+    """`prepare_close` refuses to dispatch from a worktree whose HEAD is not the pre-rebase head
+    after the abort (the restore target would be wrong)."""
+    w = basic(tmp_path, monkeypatch, resolver())
+    w.open_and_conflict()
+    real = G.rebase
+
+    def lying(worktree, onto, **kw):
+        rb = real(worktree, onto, **kw)
+        from dataclasses import replace
+        return replace(rb, head="0" * 40)
+
+    monkeypatch.setattr(G, "rebase", lying)
+    st = w.drive(lambda s: s["state"] == "PARKED")
+    assert st["park"]["reason"] == "open_failed" and st["park"]["resume_to"] == "CLOSING"
+    assert "not the pre-rebase" in st["park"]["detail"]
+    assert not w.run_ids() and not w.ledger("rebase_resolved")
+
+
+def test_head_moved_after_abort_is_an_error_not_a_dispatch(tmp_path, monkeypatch):
+    w = basic(tmp_path, monkeypatch, resolver())
+    w.open_and_conflict()
+    real = G.rebase
+
+    def moving(worktree, onto, **kw):
+        rb = real(worktree, onto, **kw)
+        _git(worktree, "commit", "-q", "--allow-empty", "-m", "drift")
+        return rb
+
+    monkeypatch.setattr(G, "rebase", moving)
+    st = w.drive(lambda s: s["state"] == "PARKED")
+    assert st["park"]["reason"] == "open_failed" and "not the pre-rebase" in st["park"]["detail"]
+    assert not w.run_ids()
+
+
+def test_verified_then_git_error_is_restored_not_merged_unrecorded(tmp_path, monkeypatch):
+    """A git error after verification (the post-verify clean) must not leave the resolver's
+    rewritten head on the branch without a `rebase_resolved` record."""
+    w = basic(tmp_path, monkeypatch, resolver(), gave_up())
+    w.open_and_conflict()
+    pre = w.dispatched()["closing"]["resolve"]["pre_head"]
+    real, calls = G.clean_untracked, []
+
+    def flaky(worktree):
+        calls.append(1)
+        if len(calls) == 2:             # 1: the restore before the run; 2: after verification
+            raise G.GitError(["git", "clean"], 1, "cannot remove scratch/")
+        return real(worktree)
+
+    monkeypatch.setattr(G, "clean_untracked", flaky)
+    w.tick()
+    st = w.st()
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed"
+    assert st["park"]["resume_to"] == "CLOSING" and "cannot remove scratch/" in st["park"]["detail"]
+    assert not w.ledger("rebase_resolved")
+    assert w.head() == pre
+    wt = st["repo"]["worktree"]
+    assert _git(wt, "symbolic-ref", "HEAD") == f"refs/heads/{st['repo']['branch']}"
+    assert _git(wt, "status", "--porcelain") == ""
+    assert [e["run_id"] for e in w.ledger("run.end") if e["persona"] == "conflict_resolver"] \
+        == w.run_ids()
+
+
+def test_resolve_prepare_failure_before_run_start_writes_no_run_end(tmp_path, monkeypatch):
+    w = basic(tmp_path, monkeypatch, resolver())
+    w.open_and_conflict()
+    w.dispatched()
+    real = PS.build_request
+
+    def boom(cfg, profile, pcfg, state, persona, **kw):
+        if persona == "conflict_resolver":
+            raise ValueError("prompt template broke")
+        return real(cfg, profile, pcfg, state, persona, **kw)
+
+    monkeypatch.setattr(PS, "build_request", boom)
+    w.tick()
+    st = w.st()
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed"
+    assert "prompt template broke" in st["park"]["detail"]
+    assert not w.run_ids()
+    assert all(e.get("run_id") for e in w.ledger("run.end"))
+
+
+def test_resolve_prepare_failure_after_run_start_closes_that_run(tmp_path, monkeypatch):
+    w = basic(tmp_path, monkeypatch, resolver())
+    w.open_and_conflict()
+    w.dispatched()
+    real_build, real_write, armed = PS.build_request, S.write_state, []
+
+    def build(cfg, profile, pcfg, state, persona, **kw):
+        if persona == "conflict_resolver":
+            armed.append(1)
+        return real_build(cfg, profile, pcfg, state, persona, **kw)
+
+    def write(cfg, cid, state):
+        if armed:                       # the write right after the resolver's run.start
+            armed.clear()
+            raise OSError("disk full")
+        return real_write(cfg, cid, state)
+
+    monkeypatch.setattr(PS, "build_request", build)
+    monkeypatch.setattr(S, "write_state", write)
+    w.tick()
+    st = w.st()
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed"
+    starts = w.run_ids()
+    assert len(starts) == 1
+    ends = [e for e in w.ledger("run.end") if e["persona"] == "conflict_resolver"]
+    assert [e["run_id"] for e in ends] == starts and ends[0]["is_error"] is True
+    assert all(e.get("run_id") for e in w.ledger("run.end"))
+
+
+# ---- resolve_context caps ---------------------------------------------------------------------
+
+OWN_SPEC = "docs/specs/0500-own.md"
+
+
+def _spec_text(n, lines=450):
+    return f"---\nid: SPEC-{n}\n---\n" + "".join(f"line {i}\n" for i in range(lines))
+
+
+def _ctx_repo(tmp_path, *, commits, unnamed=False, base_specs=(2001, 2002, 2003, 2004)):
+    """A repo with a campaign branch rewriting a big f.txt and `commits` commits on main that
+    rewrite it too, each with a `SPEC-NNNN:` subject. Returns (repo, state, resolve)."""
+    r = tmp_path / "ctx"
+    r.mkdir()
+    _git(r, "init", "-q", "-b", "main")
+    _git(r, "config", "user.email", "t@t")
+    _git(r, "config", "user.name", "t")
+    _write(r, "f.txt", "".join(f"L{i}\n" for i in range(800)))
+    for n in base_specs:
+        _write(r, f"docs/specs/{n}-s.md", _spec_text(n))
+    _write(r, OWN_SPEC, _spec_text(500, 5))
+    _git(r, "add", "-A")
+    _git(r, "commit", "-q", "-m", "base")
+    fork = _git(r, "rev-parse", "HEAD")
+    _git(r, "checkout", "-q", "-b", "wt/x")
+    _write(r, "f.txt", "".join(f"B{i}\n" for i in range(800)))
+    _git(r, "commit", "-qam", "branch edit")
+    pre = _git(r, "rev-parse", "HEAD")
+    _git(r, "checkout", "-q", "main")
+    ids = [2001, 2002, 2003, 2004]
+    for i in range(commits):
+        _write(r, "f.txt", "".join(f"M{i}-{j}\n" for j in range(800)))
+        _git(r, "commit", "-qam", f"SPEC-{ids[i % 4]}: tweak {i}")
+    if unnamed:
+        _write(r, "docs/specs/3001-unnamed.md", _spec_text(3001, 3))
+    _write(r, OWN_SPEC, _spec_text(500, 6))          # the campaign's own spec: must be skipped
+    _git(r, "add", "-A")
+    _git(r, "commit", "-q", "-m", "docs only")
+    target = _git(r, "rev-parse", "HEAD")
+    _git(r, "checkout", "-q", "wt/x")
+    state = {"repo": {"worktree": str(r)}, "spec": {"rel_path": OWN_SPEC}}
+    resolve = {"fork": fork, "pre_head": pre, "target_sha": target, "conflicts": ["f.txt"]}
+    return r, state, resolve
+
+
+def test_resolve_context_caps(tmp_path, monkeypatch):
+    r, state, resolve = _ctx_repo(tmp_path, commits=55)
+    calls = []
+    real = PS._git_text
+
+    def counting(worktree, *args):
+        calls.append(args)
+        return real(worktree, *args)
+
+    monkeypatch.setattr(PS, "_git_text", counting)
+    ctx = PS.resolve_context(state, resolve, {})
+    for key in ("campaign_diff", "base_diff"):               # 600 lines + the truncation note
+        lines = ctx[key].splitlines()
+        assert len(lines) == PS._RESOLVE_DIFF_MAX_LINES + 1 and "truncated" in lines[-1]
+    landed = ctx["landed"].splitlines()
+    commit_lines = [ln for ln in landed if ln.startswith("- ")]
+    assert len(commit_lines) == PS._RESOLVE_LANDED_MAX == 50
+    assert "\u2026 5 more commit(s)" in landed
+    heads = [ln for ln in landed if ln.startswith("### Governing spec")]
+    assert len(heads) == PS._RESOLVE_SPECS_MAX == 3
+    assert not any("0500" in h for h in heads)                # the campaign's own spec is skipped
+    assert sum("truncated: 53 more line(s)" in ln for ln in landed) == 3   # 3+450 lines, cut at 400
+    block = "\n".join(landed[landed.index(heads[0]):])
+    assert block.count("line 396") == 3 and "line 397" not in block
+    # one listing of the target's specs, however many subjects name an unchanged spec
+    assert sum(1 for a in calls if a[0] == "ls-tree") <= 1
+
+
+def test_resolve_context_ls_tree_runs_once_and_stops_at_three_specs(tmp_path, monkeypatch):
+    r, state, resolve = _ctx_repo(tmp_path, commits=40)
+    calls = []
+    real = PS._git_text
+    monkeypatch.setattr(PS, "_git_text", lambda w, *a: (calls.append(a), real(w, *a))[1])
+    ctx = PS.resolve_context(state, resolve, {})
+    assert sum(1 for a in calls if a[0] == "ls-tree") == 1
+    assert ctx["landed"].count("### Governing spec") == 3
+
+
+def test_resolve_context_picks_up_an_unnamed_changed_spec(tmp_path):
+    r, state, resolve = _ctx_repo(tmp_path, commits=1, unnamed=True)
+    landed = PS.resolve_context(state, resolve, {})["landed"]
+    assert "docs/specs/2001-s.md" in landed                   # named by the subject
+    assert "docs/specs/3001-unnamed.md" in landed             # named by no subject, changed in range
+    assert "0500-own" not in landed                           # the campaign's own spec
+
+
+def test_resolve_context_skips_the_campaign_spec_named_in_a_subject(tmp_path):
+    r, state, resolve = _ctx_repo(tmp_path, commits=0)
+    _git(r, "checkout", "-q", "main")
+    _write(r, "f.txt", "".join(f"X{j}\n" for j in range(800)))
+    _git(r, "commit", "-qam", "SPEC-0500: touches the campaign's own spec id")
+    resolve["target_sha"] = _git(r, "rev-parse", "HEAD")
+    _git(r, "checkout", "-q", "wt/x")
+    landed = PS.resolve_context(state, resolve, {})["landed"]
+    assert "SPEC-0500: touches" in landed and "### Governing spec" not in landed

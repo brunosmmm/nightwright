@@ -547,13 +547,21 @@ def resolve_context(state, resolve, project_cfg) -> dict:
                                     f"{fork}..{target_sha}", "--", "docs/specs").splitlines()
                if _SPEC_FILE_RE.match(p) and p != spec_rel]
     by_num = {_SPEC_FILE_RE.match(p).group(1): p for p in changed}
-    files = []
+    files, tree = [], None
     for _sha, subject in log:
+        if len(files) >= _RESOLVE_SPECS_MAX:
+            break
         for num in _SPEC_ID_RE.findall(subject):
-            hit = by_num.get(num) or next(
-                (p for p in _git_text(worktree, "ls-tree", "-r", "--name-only", target_sha,
-                                      "--", "docs/specs").splitlines()
-                 if (m := _SPEC_FILE_RE.match(p)) and m.group(1) == num and p != spec_rel), None)
+            hit = by_num.get(num)
+            if hit is None:
+                if tree is None:        # one listing of the target's specs, only when needed
+                    tree = {}
+                    for p in _git_text(worktree, "ls-tree", "-r", "--name-only", target_sha,
+                                       "--", "docs/specs").splitlines():
+                        m = _SPEC_FILE_RE.match(p)
+                        if m and p != spec_rel:
+                            tree.setdefault(m.group(1), p)
+                hit = tree.get(num)
             if hit and hit not in files:
                 files.append(hit)
     files += [p for p in sorted(changed) if p not in files]

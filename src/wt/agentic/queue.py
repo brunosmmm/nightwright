@@ -1014,6 +1014,12 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
             git.restore_branch(worktree, branch, pre_head)
     except (GitError, ValueError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
+        res.resolution = None
+        if pre_head and worktree and branch:    # a verified result that errored after is undone
+            try:
+                git.restore_branch(worktree, branch, pre_head)
+            except (GitError, ValueError, OSError):
+                pass                            # the park detail already names the first error
     return res
 
 
@@ -1112,7 +1118,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         resume = {"open": "QUEUED", "implement": "IMPLEMENTING", "gate": "GATING",
                   "triage": "GATING", "review": "REVIEWING",
                   "resolve": "CLOSING"}.get(kind, "IMPLEMENTING")
-        if kind == "resolve":           # the run.start is on the ledger: close it, run or no run
+        if kind == "resolve" and res.run_id:    # run.start is on the ledger: close it, run or no run
             rr = res.run_result or replace(_synthetic_failure(str(res.error)), cost_usd=0.0)
             events += _record_run(state, res.step.persona, res.run_id, rr, res.budget,
                                   interrupted=res.interrupted)
@@ -1305,7 +1311,10 @@ def _spent_resolver_park(state: dict, park: dict) -> dict:
     if not used:
         return park
     failed = closing.get("resolve_failed") or {}
-    if failed.get("n"):
+    if failed.get("n") and closing.get("resolve_last_verified"):
+        tail = (f" (resolver: {used} attempts; the last was verified but the base moved and "
+                f"conflicted again; an earlier attempt failed: {failed.get('last')})")
+    elif failed.get("n"):
         tail = f" (resolver: {used} attempts, last: {failed.get('last')})"
     else:
         tail = f" (resolver: {used} resolutions verified; the base moved and conflicted again)"
@@ -1323,6 +1332,7 @@ def _apply_resolve(state: dict, counters: dict, res: StepResult, rr, row: dict, 
     info = res.resolution or {}
     verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
     closing["resolve_attempts"] = used = int(closing.get("resolve_attempts") or 0) + 1
+    closing["resolve_last_verified"] = bool(info.get("verified"))
     state["closing"] = closing
     if info.get("verified"):
         closing.pop("resolve", None)
@@ -1875,8 +1885,11 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
         try:
             run_id, req, budget = _prepare_run(ctx, st, step.persona)
         except (ValueError, OSError) as e:
+            started = e if isinstance(e, _RunStarted) else None     # run.start is on the ledger
             report.steps.append(_apply(ctx, st, StepResult(
-                st["id"], step, st["state"], error=str(e))))
+                st["id"], step, st["state"], error=str(e),
+                run_id=started.run_id if started else None,
+                budget=started.budget if started else 0.0)))
             continue
         pending_agent.append((st, step, run_id, req, budget, None))
 

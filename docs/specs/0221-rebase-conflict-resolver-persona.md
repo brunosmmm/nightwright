@@ -444,6 +444,14 @@ table.
   missing `pre_head` / `target_sha`) park as before; `_spent_resolver_park` detail cases; a
   pre-run restore failure still writes a `run.end` and charges nothing. The budget-span test now
   asserts the park detail names verified resolutions, not a failure. `uv run pytest -q`: 2139 passed, 1 skipped; `python3 tools/spec_lint.py` exits 0.
+- Review loop 3: `tests/test_agentic_resolver.py` now has 44 cases. Added: the `resolve_context` caps
+  (600-line diffs, 50 landed commits, 3 governing specs, 400-line spec cut, an unnamed changed spec
+  picked up, the campaign's own spec skipped, one `ls-tree` listing); the `prepare_close` pre-head
+  guard (reported HEAD mismatch and a moved HEAD, each `open_failed` with no dispatch); a git error
+  after a verified resolution restores `pre_head` and records no `rebase_resolved`; a resolve step whose
+  `_prepare_run` fails before or after `run.start` writes no orphan `run.end` / closes the real one; the
+  spent-budget detail after a failed then a verified attempt. Sabotage: removing the pre-head guard,
+  the `run_id` guard on the error-path `run.end`, or the spec cap each fails the new tests.
 
 ### As shipped (2026-10-25)
 
@@ -475,6 +483,12 @@ Deviations from Design, none of which change a decision:
 - A resolve step that errors before or after the run (for example the pre-run restore raising)
   always closes its `run.start`: a synthetic failed `run.end` with zero cost is written when no
   run result exists.
+- A git error after a verified resolution (the post-verify clean) restores `pre_head` and parks
+  `open_failed`, so no resolver head is merged without a `rebase_resolved` record. A `_prepare_run`
+  failure carries the started `run_id` (if any) into the error path, which writes a `run.end` only when a
+  `run.start` exists. `closing.resolve_last_verified` lets the spent-budget detail say the last attempt
+  was verified when an earlier one failed. `resolve_context` lists the target's specs once, lazily, and
+  stops after three governing specs.
 - The failure detail written to the `major` finding appends the failed check to the resolver's
   own summary, and the final park detail ends with `(resolver: N attempts, last: …)`.
 
