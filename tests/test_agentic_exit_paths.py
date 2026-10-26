@@ -432,6 +432,31 @@ def test_cli_prints_traceback_and_exits_70(tmp_path, monkeypatch):
     assert isinstance(res.exception, RuntimeError)                  # then it re-raises
 
 
+def test_cli_exits_70_when_run_raises_value_error_with_leftover_threads(tmp_path, monkeypatch):
+    def boom(cfg, **kw):
+        raise ValueError("bad json")
+
+    res, exits = _cli_queue_run(tmp_path, monkeypatch, boom)
+    assert exits == [70]
+    assert "Traceback" in res.output and "bad json" in res.output
+
+
+def test_cli_value_error_without_leftover_threads_is_a_click_exception(tmp_path, monkeypatch):
+    def boom(cfg, **kw):
+        raise ValueError("bad json")
+
+    monkeypatch.setattr(Q, "leftover_threads", lambda: [])
+    exits = []
+    monkeypatch.setattr("wt.cli.load_config", lambda: {"data_dir": str(tmp_path)})
+    monkeypatch.setattr(Q, "run", boom)
+    monkeypatch.setattr(cli_queue.os, "_exit", lambda code: exits.append(code))
+    from click.testing import CliRunner
+    from wt.cli import cli
+    res = CliRunner().invoke(cli, ["queue", "run", "--once"])
+    assert exits == [] and res.exit_code == 1
+    assert "bad json" in res.output and "Traceback" not in res.output
+
+
 def test_cli_exits_70_when_run_returns_with_leftover_threads(tmp_path, monkeypatch):
     res, exits = _cli_queue_run(tmp_path, monkeypatch, lambda cfg, **kw: 3)
     assert exits == [70] and res.exception is None and "Traceback" not in res.output

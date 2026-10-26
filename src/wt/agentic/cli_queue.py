@@ -914,6 +914,10 @@ def attach(queue_group):
                           argv=["wt", "queue", "run"], reexec=not (once or no_reexec),
                           config_loader=load_config)
         except ValueError as e:
+            if Q.leftover_threads():       # SPEC-0229: a stuck thread would hang the exit
+                import traceback
+                traceback.print_exc()
+                _exit_leftover()
             raise click.ClickException(str(e))
         except BaseException:
             if Q.leftover_threads():       # SPEC-0229: no stale thread outlives the lease

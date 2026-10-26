@@ -422,6 +422,17 @@ The conductor skill rows change accordingly:
   `test_signal_during_draining_clears_restart`; dropping the `_harvest` call in `_crash_sweep`
   fails the two crash-sweep tests.
 
+### Test record (2026-10-26, adversarial round)
+
+- Code fix: in `wt queue run`, the `except ValueError` branch now checks `Q.leftover_threads()`
+  first. When non-empty it prints the traceback and calls `_exit_leftover()` (`os._exit(70)`);
+  otherwise it raises the `ClickException` as before.
+- Tests added: `test_cli_exits_70_when_run_raises_value_error_with_leftover_threads` and
+  `test_cli_value_error_without_leftover_threads_is_a_click_exception`. The CLI tests pass,
+  and the full `tests/test_agentic_*.py` run is below.
+- Optional hardening items (no hooks for non-detachable tasks; recording `spawned()` runs in
+  `pool.forced`) were skipped and left as follow-ups.
+
 ## Rollout / migration
 
 Lands after SPEC-0225. No data migration. Journal addition: `detached` on every `stop`
