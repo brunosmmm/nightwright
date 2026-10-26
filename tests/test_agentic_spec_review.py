@@ -239,7 +239,7 @@ def test_xl_split_is_accepted_and_has_no_profile(tmp_path, monkeypatch):
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001"])
     assert r.exit_code == 0, r.output
     assert "xl: split recommended, no profile" in r.output
-    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json", "--force"])   # SPEC-0230: 2nd round
     out = json.loads(r.stdout)
     assert out["size"] == "xl" and out["profile"] is None
 
