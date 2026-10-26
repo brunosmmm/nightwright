@@ -50,6 +50,14 @@ def changed_paths(worktree, head_before, untracked_before) -> dict:
     while i + 1 < len(raw) and raw[i]:
         out[raw[i + 1]] = raw[i][0] if raw[i][0] in "AMD" else "M"
         i += 2
+    # what the writer committed: a file committed and then deleted (or reverted) in the working
+    # tree is absent from the diff above but still sits in HEAD
+    raw = git.git(worktree, "-c", "core.quotepath=off", "diff", "--no-renames", "--name-status",
+                  "-z", head_before, "HEAD").stdout.split("\0")
+    i = 0
+    while i + 1 < len(raw) and raw[i]:
+        out.setdefault(raw[i + 1], "M" if (Path(worktree) / raw[i + 1]).exists() else "D")
+        i += 2
     before = set(untracked_before or ())
     for p in untracked(worktree):
         if p not in before:
@@ -144,8 +152,12 @@ def validate_spec_change(worktree, spec_write, idea) -> list:
     worktree = Path(worktree)
     path, mode = spec_write["path"], spec_write["mode"]
     spec_id = spec_id_of(spec_write["number"])
-    changed = changed_paths(worktree, spec_write["head_before"], spec_write.get("untracked_before"))
     out = []
+    if git.git(worktree, "merge-base", "--is-ancestor", spec_write["head_before"], "HEAD",
+               check=False).returncode != 0:
+        out.append("HEAD no longer descends from the commit the run started at "
+                   "(the writer rewrote history)")
+    changed = changed_paths(worktree, spec_write["head_before"], spec_write.get("untracked_before"))
     for p, st in sorted(changed.items()):
         if p == path:
             if st == "D":

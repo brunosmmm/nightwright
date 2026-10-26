@@ -281,7 +281,7 @@ unreviewed is ever implemented.
 
 ### Test record (2026-10-25)
 
-- `uv run pytest tests/test_agentic_spec_writer.py`: 60 passed (write, revise, 20 parametrized
+- `uv run pytest tests/test_agentic_spec_writer.py`: 65 passed (write, revise, 20 parametrized
   invalid-output cases (incl. timed-out run, unparseable verdict), rejected revise keeping the
   review findings, wrong epic parent, non-Git worker exception, leftover spec file, off-branch HEAD, epic child, blocked/interrupted, generic error and failed rollback,
   cost cap, resumes, human state change, prompt/request, two campaigns in one tick, profiles,
@@ -311,6 +311,12 @@ unreviewed is ever implemented.
   and keeps it out of `untracked_before`; `_do_write_spec` rolls back on any exception (a
   non-Git one is also a `report.errors` entry); if HEAD is no longer on the campaign branch
   after the run, nothing is reset and the campaign parks `spec_write_failed` (rollback failed).
+- Review loop 2: the HEAD-on-campaign-branch guard now sits inside `roll_back()` (queue.py), so
+  the blocked, interrupted, invalid-output and generic-exception rollbacks all refuse to
+  `reset --hard` when HEAD is detached or on another branch (`rollback_failed`, park
+  `spec_write_failed`). Validation also requires `git merge-base --is-ancestor <head_before>
+  HEAD` and folds `git diff --name-status <head_before> HEAD` into `changed_paths`, so a file
+  the writer committed and then deleted, or an amended base commit, is a problem.
 
 ## Rollout / migration
 

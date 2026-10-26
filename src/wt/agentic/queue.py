@@ -1025,9 +1025,18 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     res.write = {"problems": [], "blocked": None, "committed": False, "sha": None,
                  "title": None, "mode": sw["mode"], "rollback_failed": False}
     w = res.write
-    off_branch = False
+    branch = (state.get("repo") or {}).get("branch")
+
+    def on_branch():
+        """A reset must only ever hit the campaign branch: the writer runs with full permissions
+        and may have switched or detached HEAD. Otherwise nothing is reset and a human fixes it."""
+        if branch and git.current_branch(worktree) != branch:
+            w["rollback_failed"] = True
+            raise ValueError(f"HEAD is no longer on {branch}; check the worktree out on it, "
+                             "clean it, then resume")
 
     def roll_back():
+        on_branch()
         try:
             SW.rollback(worktree, sw)
         except GitError:
@@ -1045,11 +1054,7 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
                 or [str(verdict.get("summary") or "no reason given")]
             roll_back()
         else:
-            branch = (state.get("repo") or {}).get("branch")
-            if branch and git.current_branch(worktree) != branch:
-                off_branch = True               # a reset here would hit the wrong branch
-                raise ValueError(f"HEAD is no longer on {branch}; check the worktree out on it, "
-                                 "clean it, then resume")
+            on_branch()
             problems = SW.verdict_problems(rr, sw)
             if not problems:
                 problems = SW.validate_spec_change(worktree, sw, state.get("idea"))
@@ -1078,13 +1083,11 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
         if not isinstance(e, (GitError, ValueError, OSError)):
             res.error = repr(e)
             res.crashed = repr(e)               # still a report.errors entry
-        if off_branch:
-            w["rollback_failed"] = True         # not rolled back: a human fixes the worktree
-        elif not w["rollback_failed"] and not res.interrupted:
+        if not w["rollback_failed"] and not res.interrupted:
             try:
-                SW.rollback(worktree, sw)
-            except GitError:
-                w["rollback_failed"] = True
+                roll_back()
+            except (GitError, ValueError):
+                pass                            # roll_back marked rollback_failed
         if w["rollback_failed"]:
             res.error = "rollback failed; clean the worktree, then resume"
     return res

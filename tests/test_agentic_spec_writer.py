@@ -444,6 +444,61 @@ def test_writer_leaving_the_branch_parks_without_a_reset(tmp_path, monkeypatch):
     assert (wt / "docs/specs/0002-add-a-thing.md").exists()
 
 
+def _switch_away(wt):
+    """The writer hops to another branch and commits there."""
+    def hop(req):
+        _git(wt, "checkout", "-q", "-b", "other")
+        (wt / "other.txt").write_text("work\n")
+        _git(wt, "add", "other.txt")
+        _git(wt, "commit", "-q", "-m", "other work")
+    return hop
+
+
+@pytest.mark.parametrize("how", ["blocked", "interrupted", "crash"])
+def test_off_branch_rollback_never_resets_the_other_branch(tmp_path, monkeypatch, how):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [
+        spec_written(2, i, no_edit=True, verdict={"status": "blocked", "blockers": ["no"]})
+        if how == "blocked" else spec_written(2, i)])
+    wt = wtree(cfg, cid)
+    stop = threading.Event()
+    hop = _switch_away(wt)
+    if how == "crash":
+        monkeypatch.setattr(SW, "validate_spec_change", lambda *a, **k: {}["boom"])
+    Q.tick(cfg, stop=stop, runner=Hooked(tmp_path, after=lambda req: (
+        hop(req), stop.set() if how == "interrupted" else None)))
+    other = _git(wt, "rev-parse", "other")
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_write_failed"
+    assert park["detail"] == "rollback failed; clean the worktree, then resume"
+    assert _git(wt, "rev-parse", "other") == other and (wt / "other.txt").exists()
+    assert _git(wt, "log", "-1", "--format=%s", "other") == "other work"
+
+
+def test_file_committed_then_deleted_by_the_writer_is_a_problem(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [spec_written(2, i)] * 2)
+    wt = wtree(cfg, cid)
+
+    def commit_and_delete(req):
+        (wt / "stray.txt").write_text("x\n")
+        _git(wt, "add", "stray.txt")
+        _git(wt, "commit", "-q", "-m", "stray")
+        (wt / "stray.txt").unlink()
+    head = _git(wt, "rev-parse", "HEAD")
+    Q.tick(cfg, runner=Hooked(tmp_path, after=commit_and_delete))
+    assert _git(wt, "rev-parse", "HEAD") == head            # rolled back, not kept on the branch
+    assert S.read_state(cfg, cid)["counters"]["spec_write_retries"] == 1
+
+
+def test_amended_base_commit_is_a_problem(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [spec_written(2, i)] * 2)
+    wt = wtree(cfg, cid)
+    head = _git(wt, "rev-parse", "HEAD")
+    Q.tick(cfg, runner=Hooked(tmp_path, after=lambda req: _git(
+        wt, "commit", "-q", "--amend", "--allow-empty", "-m", "rewritten")))
+    assert _git(wt, "rev-parse", "HEAD") == head
+    assert S.read_state(cfg, cid)["counters"]["spec_write_retries"] == 1
+
+
 def test_missing_parent_for_epic_idea_is_rejected(tmp_path, monkeypatch):
     cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [spec_written(101, i)] * 2,
                                 epic="SPEC-0100")
