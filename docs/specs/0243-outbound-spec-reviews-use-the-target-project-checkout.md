@@ -1,7 +1,7 @@
 ---
 id: SPEC-0243
 title: "Outbound spec reviews use the target project's checkout; admission recorded on the campaign"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -100,21 +100,21 @@ ids are unique across projects. `apply_add` stores `state.admission`, and
 
 ## Acceptance criteria
 
-- [ ] `wt spec review PROJ-0001` for an outbox spec whose `target_project` is a registered
+- [x] `wt spec review PROJ-0001` for an outbox spec whose `target_project` is a registered
       project (scratch git repo) runs the FakeRunner reviewer with `cwd` and `add_dirs`
       equal to that project's root, records it as `repo_root`, and prints it in the
       `reviewing` line.
-- [ ] With no `target_project` key, the outbox directory name picks the project. With an
+- [x] With no `target_project` key, the outbox directory name picks the project. With an
       unregistered project, the review falls back to the Meta-Tools root, as before.
-- [ ] The prompt carries the target's `docs/specs/SCHEMA.md` when it exists, else wt's.
-- [ ] An outbound spec with a stored `revise` whose `repo_root` is the Meta-Tools root, edited
+- [x] The prompt carries the target's `docs/specs/SCHEMA.md` when it exists, else wt's.
+- [x] An outbound spec with a stored `revise` whose `repo_root` is the Meta-Tools root, edited
       afterwards, is admitted by `wt queue add` as `after_revision`; a stored `approve` of the
       current text with that legacy root is admitted as `approved`.
-- [ ] `plan_add` picks the same default project as before for outbound specs (existing
+- [x] `plan_add` picks the same default project as before for outbound specs (existing
       outbound queue tests pass unchanged).
-- [ ] After `wt queue add`, `state.json` has `admission` (`approved`, `after_revision` or
+- [x] After `wt queue add`, `state.json` has `admission` (`approved`, `after_revision` or
       `forced` for `--force`), and the campaign's `open` event carries the same value.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -128,6 +128,18 @@ ids are unique across projects. `apply_add` stores `state.admission`, and
   (the SPEC-0210 outbound test is updated to the new root and documented as such) and the
   outbound cases in `tests/test_agentic_queue.py`.
 
+### Test record (2026-10-25)
+
+- `uv run pytest tests/test_spec_review_outbound_root.py` — 7 passed (one test per AC; the
+  `revise`/`approve` legacy-root admission, the `reviewing` line, `repo_root`, schema choice,
+  fallback to the Meta-Tools root, `open` event `admission` incl. `forced`).
+- `tests/test_spec_review_store.py` outbound test renamed to
+  `test_outbound_spec_unloadable_project_falls_back_to_meta_tools_root` (the SPEC-0210 rule now
+  applies only when the target project cannot be loaded).
+- Full `uv run pytest -q`: 2694 passed; the three failures of that run were ledger drift
+  (`tools/spec_lint.py --write-ledger` not yet run after the status change) and passed on
+  rerun. `python3 tools/spec_lint.py` exits 0.
+
 ## Rollout / migration
 
 None. Old outbound reviews keep admitting through the filter exception; new ones record the
@@ -135,11 +147,11 @@ target root.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

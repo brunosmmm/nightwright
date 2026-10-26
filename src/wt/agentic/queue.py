@@ -3492,7 +3492,7 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         raise ValueError(f"{spec_id} is {status or 'missing status'!r}; only `accepted` specs are "
                          f"queued (pass --force for in-progress)")
     if outbound:
-        project = project or fm.get("target_project") or path.parent.name
+        project = project or SP.outbound_project(path, fm)
     else:
         project = project or "Meta-Tools"
     pcfg = P.project_config(cfg, project)
@@ -3563,6 +3563,7 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
         "cost": {"total_usd": 0.0, "cap_usd": plan.get("cap_usd"), "by_persona": {}},
         "last_gate": None, "last_verdict": None,
         "pending_brief": None, "park": None, "close": None,
+        "admission": plan.get("review"),                               # SPEC-0243
         "sizing": {"size": plan.get("size"), "tone": plan.get("tone"),
                    "rationale": plan.get("sizing_rationale"),
                    "source": plan.get("profile_source"), "reason": plan.get("profile_reason"),

@@ -392,6 +392,12 @@ def outbox_dir(cfg):
     return Path(base)
 
 
+def outbound_project(path, fm) -> str:
+    """The project an outbox spec targets (SPEC-0243): its `target_project`, else the name of the
+    outbox directory it sits in."""
+    return (fm or {}).get("target_project") or Path(path).parent.name
+
+
 def _proj_code(project):
     """Uppercased short code for a project name, e.g. 'acme' -> 'ACME'."""
     code = re.sub(r"[^A-Za-z0-9]+", "", project).upper()

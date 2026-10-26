@@ -220,13 +220,18 @@ def test_corrupt_store_file_refuses_admission_without_crash(tmp_path, monkeypatc
         assert not isinstance(r.exception, (KeyError, TypeError, AttributeError))
 
 
-def test_outbound_spec_uses_meta_tools_root(tmp_path, monkeypatch):
+def test_outbound_spec_unloadable_project_falls_back_to_meta_tools_root(   # SPEC-0243: was the rule
+        tmp_path, monkeypatch):
     repo, cfg = _setup(tmp_path, [])
     outbox = tmp_path / "outbox" / "acme"
     outbox.mkdir(parents=True)
     spec = outbox / "ACME-0001-thing.md"
     spec.write_text(SPEC_ACCEPTED.format(id="ACME-0001", extra=""))
-    monkeypatch.setattr(SR.P, "project_config", lambda cfg, name: {"_root": str(repo)})
+    def project_config(cfg, name):
+        if name != "Meta-Tools":
+            raise ValueError(f"no project {name}")
+        return {"_root": str(repo)}
+    monkeypatch.setattr(SR.P, "project_config", project_config)
     assert SR.spec_root(cfg, spec) == repo
     spy = Spy()
     monkeypatch.setattr(SR, "select_runner", lambda cfg: spy)

@@ -113,7 +113,7 @@ def list_reviews(cfg, spec_id, spec_path=None) -> list:
     if not d.is_dir():
         return []
     out = [r for r in (_read_json_dict(p) for p in sorted(d.glob("*.json"))) if r]
-    if spec_path is not None:
+    if spec_path is not None and not _in_outbox(cfg, spec_path):    # SPEC-0243: ids are unique there
         mine, seen = _repo_identity(spec_root(cfg, spec_path)), {}
         def same_repo(r):
             root = str(r.get("repo_root") or "")
@@ -246,20 +246,32 @@ def _fallback_root(spec_path) -> Path:
     return Path(spec_path).resolve().parent.parent.parent
 
 
-def spec_root(cfg, spec_path) -> Path:
-    """The repository whose checkout and SCHEMA.md the reviewer sees. Outbound specs (in the
-    outbox) use the Meta-Tools checkout; any other spec its own git toplevel, or outside git
-    `<root>/docs/specs/<file>`."""
-    path = Path(spec_path).resolve()
+def _in_outbox(cfg, spec_path) -> bool:
     try:
-        path.relative_to(Path(SP.outbox_dir(cfg)).resolve())
+        Path(spec_path).resolve().relative_to(Path(SP.outbox_dir(cfg)).resolve())
     except ValueError:
-        pass
-    else:
+        return False
+    return True
+
+
+def _meta_tools_root(cfg, path) -> Path:
+    try:
+        return Path(P.project_config(cfg, "Meta-Tools")["_root"])
+    except (ValueError, KeyError):
+        return _fallback_root(path)
+
+
+def spec_root(cfg, spec_path) -> Path:
+    """The repository whose checkout the reviewer sees. Outbound specs (in the outbox) use their
+    target project's checkout (SPEC-0243; the Meta-Tools checkout when that project cannot be
+    loaded); any other spec its own git toplevel, or outside git `<root>/docs/specs/<file>`."""
+    path = Path(spec_path).resolve()
+    if _in_outbox(cfg, path):
+        fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
         try:
-            return Path(P.project_config(cfg, "Meta-Tools")["_root"])
+            return Path(P.project_config(cfg, SP.outbound_project(path, fm))["_root"])
         except (ValueError, KeyError):
-            return _fallback_root(path)
+            return _meta_tools_root(cfg, path)
     try:
         r = subprocess.run(["git", "-C", str(path.parent), "rev-parse", "--show-toplevel"],
                            capture_output=True, text=True, check=True)
@@ -280,12 +292,12 @@ def _idea_text(cfg, idea_id) -> str:
     return json.dumps(idea_show_payload(cfg, task), indent=2, ensure_ascii=False)
 
 
-def review_context(spec_path, spec_id, *, idea_text, root=None) -> dict:
-    """The persona context: spec id, path relative to the root, spec text, SCHEMA.md text (or
-    None) and the source-idea text."""
+def review_context(spec_path, spec_id, *, idea_text, root=None, schema_root=None) -> dict:
+    """The persona context: spec id, path relative to the root, spec text, SCHEMA.md text (read
+    from `schema_root`, default the root; None when absent) and the source-idea text."""
     path = Path(spec_path)
     root = Path(root) if root is not None else _fallback_root(path)
-    schema_file = root / "docs" / "specs" / "SCHEMA.md"
+    schema_file = Path(schema_root or root) / "docs" / "specs" / "SCHEMA.md"
     schema_text = schema_file.read_text(encoding="utf-8") if schema_file.is_file() else None
     try:
         rel = str(path.resolve().relative_to(root.resolve()))
@@ -437,7 +449,11 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
     if idea_text is None:
         fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
         idea_text = _idea_text(cfg, (fm or {}).get("source_idea"))
-    ctx = review_context(path, spec_id, idea_text=idea_text, root=root)
+    schema_root = None
+    if _in_outbox(cfg, path):          # SPEC-0243: the target's schema, else wt's (the portable format)
+        schema_root = root if (root / "docs" / "specs" / "SCHEMA.md").is_file() \
+            else _meta_tools_root(cfg, path)
+    ctx = review_context(path, spec_id, idea_text=idea_text, root=root, schema_root=schema_root)
     persona = PS.get_persona(PERSONA)
     prof = resolve_profile(cfg, profile, project_root=root)
     settings = PS.persona_settings(prof, PERSONA)
