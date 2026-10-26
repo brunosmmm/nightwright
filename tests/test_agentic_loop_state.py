@@ -178,7 +178,6 @@ def test_busy_without_lease_does_nothing():
 
 
 def test_drain_stamps_busy_in_flight_and_slot_freed_at(tmp_path, monkeypatch, spy):
-    root = _code_repo(tmp_path)
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [dict(impl_done(), sleep_s=1.0), review()]))
     a = added(cfg, monkeypatch)
@@ -186,12 +185,11 @@ def test_drain_stamps_busy_in_flight_and_slot_freed_at(tmp_path, monkeypatch, sp
 
     def tick(*args, **kw):
         report = real_tick(*args, **kw)
-        if report.started:                         # code lands mid-run; a park is pending
+        if report.started:                         # an exit (max_ticks) lands mid-run; a park is pending
             with S.item_lock(cfg, a):
                 st = S.read_state(cfg, a)
                 st["park_requested"] = {"reason": "human", "detail": "drain test"}
                 S.write_state(cfg, a, st)
-            _commit(root, "src/wt/x.py", "A = 9\n", "code")
         return report
 
     seen = {}
@@ -202,7 +200,7 @@ def test_drain_stamps_busy_in_flight_and_slot_freed_at(tmp_path, monkeypatch, sp
 
     monkeypatch.setattr(Q, "tick", tick)
     monkeypatch.setattr(Q, "_EXEC", fake_exec)
-    Q.run(cfg, max_ticks=50, poll_interval_s=0.05, reexec=True, code_root=root)
+    Q.run(cfg, max_ticks=2, poll_interval_s=0.05)     # the exit drain, SPEC-0229
     assert S.read_state(cfg, a)["state"] == "PARKED"
     drain_calls = [(kw, b) for kw, b in spy
                    if isinstance(kw, dict) and b and b["kind"] == "drain"]
@@ -216,8 +214,6 @@ def test_drain_stamps_busy_in_flight_and_slot_freed_at(tmp_path, monkeypatch, sp
     assert all("tick_at" not in kw for kw, _ in drain_calls)    # a drain does not tick
     busy = drain_calls[0][1]
     assert busy["budget_s"] > 0 and busy["campaign"] is None
-    assert "busy" not in seen["lease"] and "draining" not in seen["lease"]   # gone by the exec
-    os.environ[L.HANDOVER_ENV] = seen["env"][L.HANDOVER_ENV]
     L.acquire(cfg, ["t"]).release()
 
 
@@ -314,6 +310,9 @@ def test_drain_keeps_busy_after_a_harvested_close(tmp_path, monkeypatch):
 
         def ids(self):
             return set(self.flights)
+
+        def try_detach_all(self):                  # SPEC-0229: every drain tries to detach
+            return None
 
     pool, seen = FakePool(), []
 

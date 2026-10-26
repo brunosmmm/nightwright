@@ -305,7 +305,8 @@ def _abort_leftover_rebase(worktree) -> None:
         git.git(worktree, "rebase", "--abort", check=False)
 
 
-def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> PreparedClose:
+def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
+                  stop=None) -> PreparedClose:
     """The worktree phase (SPEC-0220): spec guard, spec DoD, snapshot commit, target capture,
     rebase (with regenerate resolution) and the re-gate. Its only side effects are in the
     campaign worktree and branch (and `fetch` into shared refs), so it may run on a worker
@@ -427,7 +428,7 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> Prep
 
     # 5. re-gate on the rebased tree
     seq = gate_seq if gate_seq is not None else G.next_gate_seq(cfg, state["id"])
-    gate_run = G.run_all(project_cfg, state, cfg, seq=seq)
+    gate_run = G.run_all(project_cfg, state, cfg, seq=seq, stop=stop)
     events.append(("gate", G.as_payload(gate_run)))
     if not gate_run.ok:
         detail = ""

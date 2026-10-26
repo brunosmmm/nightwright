@@ -264,8 +264,8 @@ def test_ready_not_admitted_fires_during_drain(tmp_path, monkeypatch):
     assert not side.is_alive()
     assert S.read_state(cfg, c)["state"] != "QUEUED" and len(calls) == 1
     assert seen["since"] >= seen["draining_since"]            # stored during the drain
-    (item,) = seen["items"]
-    assert item["campaign"] == b and item["runner_draining"] is True
+    # SPEC-0229: admission continues while draining, so B is admitted, not stuck ready
+    assert seen["items"] == [] and S.read_state(cfg, b)["state"] != "QUEUED"
     os.environ[L.HANDOVER_ENV] = calls[0][L.HANDOVER_ENV]
     L.acquire(cfg, ["t"]).release()
 

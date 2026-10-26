@@ -60,6 +60,14 @@ def _source_marker(it: dict) -> Text:
     return Text(f" ({src})", style="dim") if src and src != "review" else Text()
 
 
+def _exit_leftover() -> None:
+    """Worker threads outlived `Q.run` (SPEC-0229): flush and leave with status 70; executor
+    threads are not daemonic, so a normal interpreter exit would join them."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(70)
+
+
 def _queue_table(payload: dict, width: int | None = None) -> Group:
     """The human listing: an Active table (the slots) and a Backlog table (admission order).
     Dense enough for an 80-column terminal, ids never cut (they are what a human copies into
@@ -95,6 +103,8 @@ def _queue_table(payload: dict, width: int | None = None) -> Group:
                 + (f"/{it['cap_usd']:.0f}" if it.get("cap_usd") else ""))
         park = it.get("park") or {}
         state = it["state"]
+        if it.get("run"):
+            state = f"{state} ({it['run']})"           # SPEC-0229: run: detached (pid N)
         if park.get("reason"):
             state = f"{state}:{park['reason']}"
         elif it.get("park_requested"):
@@ -880,10 +890,13 @@ def attach(queue_group):
 
         Agent steps carry across ticks (SPEC-0213): a tick starts steps and applies the ones
         that finished, so a slow step never holds up admission or other campaigns.
-        SIGINT/SIGTERM stop admissions, let in-flight steps record themselves, and release
-        the lease; a run interrupted mid-persona is re-spawned fresh by the next loop. When a
-        commit changes wt's own code, the loop drains its in-flight steps and re-executes
-        itself, keeping the lease (SPEC-0194).
+        SIGINT/SIGTERM stop admissions, end running gates, and return. Persona runs keep
+        running and the next `wt queue run` adopts them (SPEC-0225/0229). If worker threads
+        are still stuck after the 30 s bound, the traceback (if any) is printed to stderr and
+        the process exits with status 70. --once / --max-ticks: persona runs still running at
+        exit are left running; the next `wt queue run` collects them. When a commit changes
+        wt's own code, the loop keeps admitting while it drains (no new gate or close), then
+        re-executes itself, keeping the lease (SPEC-0194/0229).
         """
         def on_tick(report):
             if json_lines:
@@ -902,6 +915,14 @@ def attach(queue_group):
                           config_loader=load_config)
         except ValueError as e:
             raise click.ClickException(str(e))
+        except BaseException:
+            if Q.leftover_threads():       # SPEC-0229: no stale thread outlives the lease
+                import traceback
+                traceback.print_exc()
+                _exit_leftover()
+            raise
+        if Q.leftover_threads():
+            _exit_leftover()
         if not json_lines:
             console.print(f"[dim]{ticks} tick(s); lease released[/]")
 

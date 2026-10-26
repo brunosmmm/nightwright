@@ -298,40 +298,20 @@ def test_adopt_unknown_persona_collected_with_note(world):
     assert not {"commit", "transition"} & set(applied_after_end(world, run_dir.name))
 
 
-def test_interim_stop_kills_runs(world):
+def test_stop_detaches_runs_instead_of_killing(world):
+    """SPEC-0229: the interim kill-on-stop is gone; a stop leaves the run running."""
     pool, run_dir = start_impl(world)
     stop = pool.flights[world.cid].ctx.stop
     pid = child_pid(type("r", (), {"cwd": Path(S.read_state(world.cfg, world.cid)["repo"]["worktree"])}))
     stop.set()
     lease = L.acquire(world.cfg, ["wt", "queue", "run"])
     try:
-        t0 = time.monotonic()
-        Q._drain(world.cfg, pool, lease, reason="signal")
+        report = Q._drain(world.cfg, pool, lease, reason="signal", stop=stop)
     finally:
         lease.release()
-    assert time.monotonic() - t0 < 20 and not pool.flights
-    assert not pid_alive(pid)
-    end, = run_ends(world)
-    assert end["interrupted"]
-    assert json.loads((run_dir / "exit.json").read_text())["killed_by"] == "signal"
-
-
-def test_interim_stop_child_exits_normally_on_term(world, monkeypatch):
-    """`claude` handles the forwarded TERM and exits 143: still interrupted, nothing committed."""
-    monkeypatch.setenv("FAKE_CLAUDE_TERM_EXIT", "143")
-    pool, run_dir = start_impl(world)
-    pool.flights[world.cid].ctx.stop.set()
-    lease = L.acquire(world.cfg, ["wt", "queue", "run"])
-    try:
-        Q._drain(world.cfg, pool, lease, reason="signal")
-    finally:
-        lease.release()
-    ex = json.loads((run_dir / "exit.json").read_text())
-    assert ex["killed_by"] == "signal" and ex["exit_code"] == 143
-    end, = run_ends(world)
-    assert end["interrupted"]
-    assert not S.read_ledger(world.cfg, world.cid, types=["commit"])
-    assert S.read_state(world.cfg, world.cid)["state"] == "IMPLEMENTING"
+    assert not pool.flights and pid_alive(pid)
+    assert report.detached == [{"campaign": world.cid, "run_ids": ["001-implementer"]}]
+    assert not run_ends(world)
 
 
 def test_adopt_orphan_group_finishing_on_its_own(world):
@@ -376,21 +356,6 @@ def test_adopt_closes_stale_open_runs(world):
     assert stale_id in {e["run_id"] for e in run_ends(world)}
     assert tick_until(world, new, lambda: {e["run_id"] for e in run_ends(world)} == {stale_id, latest_id})
     assert S.read_state(world.cfg, world.cid)["state"] == "GATING"
-
-
-def test_interim_stop_stubborn_child_is_killed(world, monkeypatch):
-    monkeypatch.setenv("FAKE_CLAUDE_STUBBORN", "1")
-    pool, run_dir = start_impl(world)
-    pool.flights[world.cid].ctx.stop.set()
-    lease = L.acquire(world.cfg, ["wt", "queue", "run"])
-    t0 = time.monotonic()
-    try:
-        Q._drain(world.cfg, pool, lease, reason="signal")
-    finally:
-        lease.release()
-    assert time.monotonic() - t0 < 20                          # the wrapper's KILL escalation
-    ex = json.loads((run_dir / "exit.json").read_text())
-    assert ex["killed_by"] == "signal" and ex["signal"] == 9
 
 
 def test_run_finishing_while_stopping_is_not_interrupted(world):

@@ -1389,7 +1389,8 @@ def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
     res = StepResult(state["id"], Step("gate"), "GATING")
     try:
         pcfg = ctx.project(state)
-        res.gate_run = G.run_all(pcfg, state, ctx.cfg, seq=G.next_gate_seq(ctx.cfg, state["id"]))
+        res.gate_run = G.run_all(pcfg, state, ctx.cfg, seq=G.next_gate_seq(ctx.cfg, state["id"]),
+                                 stop=ctx.stop)
     except (ValueError, OSError) as e:
         res.error = str(e)
     return res
@@ -1403,7 +1404,7 @@ def _do_prepare_close(ctx: _Ctx, state: dict) -> StepResult:
     if state.get("kind") != "merge":            # SPEC-0233: a merge request has no review
         res.events_before, res.followups = FU.file_followups(ctx.cfg, state, ctx.profile(state))
     try:
-        res.prepared = CL.prepare_close(ctx.cfg, state, ctx.project(state))
+        res.prepared = CL.prepare_close(ctx.cfg, state, ctx.project(state), stop=ctx.stop)
     except (GitError, ValueError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
     except Exception as e:                      # nothing may drop the filer's events
@@ -1625,6 +1626,11 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
 
     if kind == "gate":
         run = res.gate_run
+        if run is not None and run.interrupted and ctx.stop.is_set():
+            # SPEC-0229: a gate a stop killed (or never started) is discarded: no event, no
+            # transition, no counters; the next runner re-gates from scratch
+            row["to"], row["reason"] = "GATING", "interrupted"
+            return row
         counters["gate_runs"] += 1
         payload = G.as_payload(run)
         events.append(("gate", payload))
@@ -2180,6 +2186,7 @@ class TickReport:
     in_flight: list = field(default_factory=list)   # campaigns still running at return
     drain: bool = False                             # the shutdown / re-exec drain report
     detached: list = field(default_factory=list)    # SPEC-0225: runs left running at the exec
+    abandoned: list = field(default_factory=list)   # SPEC-0229: spawning / collect tasks left
 
     def payload(self) -> dict:
         return {"schema": "wt.queue.tick.v1", "steps": self.steps, "admitted": self.admitted,
@@ -2222,9 +2229,12 @@ class StepPool:
         self.flights: dict = {}                    # campaign id -> _Flight, submission order
         self.lock = threading.RLock()              # SPEC-0225: task phases and detaching
         self.adopted = False                       # the first tick adopts open runs
+        self._seen: list = []                      # SPEC-0229: worker threads of ended executors
+        self.forced: dict = {}                     # SPEC-0229: campaign -> run ids force-detached
+        self.detach_all = False                    # SPEC-0229: set by the stop / crash sweep
 
     def hooks(self, run_dir=None, phase: str = "spawning") -> RunHooks:
-        return RunHooks(self.lock, run_dir, phase)
+        return RunHooks(self.lock, run_dir, phase, self)
 
     def try_detach_all(self) -> list | None:
         """Atomically detach every remaining persona run, so the loop can exec. None when any
@@ -2247,13 +2257,55 @@ class StepPool:
                 out.append({"campaign": cid, "run_ids": [r for r, _ in fl.runs]})
             return out
 
-    def detach_force(self) -> None:
-        """Crash path: release every waiting thread; the runs stay adoptable."""
+    def force_detach_waiting(self) -> list:
+        """Stop / crash sweep (SPEC-0229): under the lock set `detach_all` and the detach flag of
+        every `wait` task, so those threads return without collecting; the runs stay adoptable
+        (recorded in `forced`, as `detached_view`). Returns the unfinished `spawning` /
+        `collect` tasks as `{campaign, run_id, phase}`: what the caller abandons."""
+        left = []
         with self.lock:
-            for fl in self.flights.values():
-                for _step, _fut, hk in fl.tasks:
-                    if hk is not None:
+            self.detach_all = True
+            for cid, fl in self.flights.items():
+                run_ids = [r for r, _ in fl.runs]
+                for i, (_step, fut, hk) in enumerate(fl.tasks):
+                    if hk is None or fut.done():
+                        continue
+                    rid = (hk.run_dir.name if hk.run_dir else
+                           (run_ids[i] if i < len(run_ids) else None))
+                    if hk.phase == "wait":
                         hk.detach.set()
+                        ids = self.forced.setdefault(cid, [])
+                        if rid not in ids:
+                            ids.append(rid)
+                    elif hk.phase in ("spawning", "collect"):
+                        left.append({"campaign": cid, "run_id": rid, "phase": hk.phase})
+        return left
+
+    def detached_view(self) -> list:
+        """`[{campaign, run_ids}]` of the runs `force_detach_waiting` released."""
+        return [{"campaign": c, "run_ids": list(r)} for c, r in self.forced.items()]
+
+    def detach_force(self) -> None:
+        """Release every waiting thread; the runs stay adoptable."""
+        self.force_detach_waiting()
+
+    def leftover_threads(self) -> list:
+        """Worker threads still alive: after `end`, the ones it could not join (SPEC-0229)."""
+        live = list(getattr(self._pool, "_threads", ())) if self._pool is not None else []
+        return [t for t in self._seen + live if t.is_alive()]
+
+    def end(self, timeout: float = 0.0) -> None:
+        """Shut down without waiting, then join the worker threads within `timeout`; threads
+        still alive are reported by `leftover_threads` (SPEC-0229)."""
+        pool, self._pool = self._pool, None
+        if pool is None:
+            return
+        threads = list(getattr(pool, "_threads", ()))
+        self._seen += threads
+        pool.shutdown(wait=False, cancel_futures=True)
+        deadline = time.monotonic() + timeout
+        for t in threads:
+            t.join(max(0.0, deadline - time.monotonic()))
 
     def submit(self, fn, *args) -> Future:
         if self._pool is None:
@@ -2281,8 +2333,9 @@ class StepPool:
             self._pool = None
 
 
-def _harvest(pool: StepPool, report: TickReport) -> None:
-    """Main thread: apply every finished flight, in submission order (SPEC-0213)."""
+def _harvest(pool: StepPool, report: TickReport, *, guard: bool = False) -> None:
+    """Main thread: apply every finished flight, in submission order (SPEC-0213). With `guard`
+    (the crash sweep, SPEC-0229) an `_apply` that raises is journaled and skipped."""
     for cid in [c for c, fl in pool.flights.items() if fl.done()]:
         fl = pool.flights.pop(cid)
         st, ctx = fl.state, fl.ctx
@@ -2292,7 +2345,8 @@ def _harvest(pool: StepPool, report: TickReport) -> None:
                     fl.group.results[step.persona] = fut.result()
                 except Exception as e:          # a bug in a step must park, not kill the loop
                     fl.group.results[step.persona] = e
-            report.steps.append(_finish_reviews(ctx, report, fl.group))
+            _guarded(guard, ctx, st, lambda: report.steps.append(
+                _finish_reviews(ctx, report, fl.group)))
             continue
         (_step, fut, _h), = fl.tasks
         try:
@@ -2304,7 +2358,17 @@ def _harvest(pool: StepPool, report: TickReport) -> None:
             report.errors.append(f"{st['id']}: {e!r}")
         if res.crashed:
             report.errors.append(f"{st['id']}: {res.crashed}")
-        report.steps.append(_apply(ctx, st, res))
+        _guarded(guard, ctx, st, lambda: report.steps.append(_apply(ctx, st, res)))
+
+
+def _guarded(guard: bool, ctx: _Ctx, st: dict, fn) -> None:
+    if not guard:
+        fn()
+        return
+    try:
+        fn()
+    except Exception as e:           # the campaign is left to the next runner's planning
+        journal(ctx.cfg, "harvest_error", campaign=st.get("id"), error=f"{type(e).__name__}: {e}")
 
 
 def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
@@ -2343,7 +2407,7 @@ def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
 
 
 def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
-         pool: StepPool | None = None, lease=None) -> TickReport:
+         pool: StepPool | None = None, lease=None, draining: bool = False) -> TickReport:
     """One bounded iteration: apply finished steps, admit, open, plan, submit agent steps,
     close serially; every result is applied on this thread. The caller holds the lease.
 
@@ -2356,7 +2420,7 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
     ctx = _Ctx(cfg, stop=stop, runner=runner, lease=lease)
     report = TickReport()
     try:
-        _tick(cfg, ctx, pool, report, admit=admit, own=own)
+        _tick(cfg, ctx, pool, report, admit=admit, own=own, draining=draining and not own)
     finally:
         if own:
             pool.shutdown()
@@ -2366,7 +2430,8 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
     return report
 
 
-def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, own: bool):
+def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, own: bool,
+          draining: bool = False):
     if not pool.adopted:
         _adopt(cfg, ctx, pool, report)
     _harvest(pool, report)            # finished steps first: their slots are free this tick
@@ -2458,6 +2523,9 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
         if step.kind == "open":
             report.steps.append(_apply(ctx, st, _do_open(ctx, st)))
             continue
+        if draining and (step.kind in ("gate", "close", "resolve", "write_spec")
+                         or not getattr(ctx.runner, "detachable", False)):
+            continue                 # SPEC-0229: a draining tick starts no in-process work
         if step.kind == "close":
             if ctx.stop.is_set():
                 continue
@@ -2674,27 +2742,6 @@ def _adopt(cfg, ctx: _Ctx, pool: StepPool, report: TickReport) -> None:
                                "run_ids": [e["run_id"] for e in members]})
     if rows:
         journal(cfg, "adopt", runs=rows)
-
-
-_STOP_KILL_AFTER_S = 15.0          # interim stop: KILL the group this long after TERM
-
-
-def _stop_runs(pool: StepPool) -> None:
-    """Interim stop (SPEC-0225 Decision 7): while a flight's loop is stopping, TERM the wrapper
-    of every run that is still running (the wrapper forwards it to the group and escalates to
-    KILL); a run whose `exit.json` exists is left to be collected as finished. A backstop KILLs
-    the group `_STOP_KILL_AFTER_S` after the TERM."""
-    for fl in list(pool.flights.values()):
-        if not fl.ctx.stop.is_set():
-            continue
-        for _step, fut, hk in fl.tasks:
-            if fut.done() or hk is None or hk.run_dir is None or hk.phase in ("collect", "done"):
-                continue
-            if hk.signalled_at is None:
-                if RP.terminate_run(hk.run_dir):
-                    hk.signalled_at = time.monotonic()
-            elif time.monotonic() - hk.signalled_at > _STOP_KILL_AFTER_S:
-                RP.terminate_run(hk.run_dir, kill=True)
 
 
 def _prepare_reviews(ctx: _Ctx, st: dict, step: Step, profile: dict, pending_agent: list,
@@ -3082,9 +3129,13 @@ class ConfigWatch:
 
 
 def _waiting_on(cfg, pool: StepPool) -> list:
-    """The in-flight flights as `{campaign, kind, run_ids, timeout_s}` (SPEC-0224)."""
+    """The flights that block an exec, as `{campaign, kind, run_ids, timeout_s}` (SPEC-0224):
+    in-process work and tasks in `spawning` / `collect`. A detachable persona run in `wait`
+    does not block (SPEC-0229), so it is not listed."""
     out = []
     for cid, fl in pool.flights.items():
+        if all(f.done() or (hk is not None and hk.phase == "wait") for _s, f, hk in fl.tasks):
+            continue
         kind = fl.tasks[0][0].kind if fl.tasks else "implement"
         if kind == "gate":
             timeout = events_settings(cfg)["gate_budget_s"]
@@ -3125,21 +3176,37 @@ class _SlotWatch:
         lease.update_info(in_flight=sorted(self.pool.ids()), **info)
 
 
+_STOP_BOUND_S = 30.0               # SPEC-0229: how long a stop or a crash waits for in-process work
+
+
+def _terminate_children() -> None:
+    """End in-process children that a signal to the runner's group never reaches: the gates
+    (own sessions). Main loop and crash path only, never a signal handler (SPEC-0229)."""
+    G.terminate_all()
+
+
 def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
-           interval: float = 20.0, slots: "_SlotWatch | None" = None) -> TickReport:
-    """Join every flight, applying each as it finishes (main thread), before the loop stops
-    or re-execs (SPEC-0213). Returns once `pool.flights` is empty. While it waits, the lease
-    info carries `draining` (SPEC-0224) for the out-of-process watchdog, and the stored
-    backlog readiness is refreshed every `interval` seconds. The drain is a declared `busy`
-    step (SPEC-0228), so the watchdog does not call a quiet journal a stall within its budget:
-    the largest flight timeout, from drain start — conservative on purpose, since flights
-    began earlier. A harvest refreshes `in_flight` (and `slot_freed_at` on a drop)."""
+           interval: float = 20.0, slots: "_SlotWatch | None" = None,
+           stop: "threading.Event | None" = None) -> TickReport:
+    """Wait for the flights the exit cannot leave behind, applying each as it finishes (main
+    thread), before the loop stops or re-execs (SPEC-0213). Persona runs in `wait` are detached
+    (`pool.try_detach_all`, SPEC-0225/0229), so this returns once `pool.flights` is empty. While
+    it waits, the lease info carries `draining` (SPEC-0224) for the out-of-process watchdog, and
+    the stored backlog readiness is refreshed every `interval` seconds. The drain is a declared
+    `busy` step (SPEC-0228): the largest flight timeout, from drain start. A harvest refreshes
+    `in_flight` (and `slot_freed_at` on a drop).
+
+    With `stop` set (a signal or `ctx.stop`): the gates are ended once (`_terminate_children`),
+    and after `_STOP_BOUND_S` every `wait` task is force-detached and the remaining `spawning` /
+    `collect` tasks are reported as `abandoned` and left to adoption."""
     report = TickReport(drain=True)
     since = store.now_iso()
     waiting_on = _waiting_on(cfg, pool)
     gate_budget = events_settings(cfg)["gate_budget_s"]
     budget = max((w.get("timeout_s") or gate_budget for w in waiting_on), default=gate_budget)
     lease.update_info(draining={"reason": reason, "since": since, "waiting_on": waiting_on})
+    terminated = False
+    bound_at = None
     try:
         with _busy(lease, "drain", budget_s=budget):
             next_refresh = time.monotonic()
@@ -3147,16 +3214,24 @@ def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
                 if time.monotonic() >= next_refresh:
                     _refresh_backlog(cfg)
                     next_refresh = time.monotonic() + interval
-                _stop_runs(pool)
+                if stop is not None and stop.is_set() and not terminated:
+                    terminated = True
+                    bound_at = time.monotonic() + _STOP_BOUND_S
+                    _terminate_children()
                 pool.wait_any(timeout=0.2)
                 before = len(pool.flights)
                 _harvest(pool, report)
-                if reason == "code_changed" and pool.flights \
-                        and not any(fl.ctx.stop.is_set() for fl in pool.flights.values()):
-                    detached = pool.try_detach_all()      # SPEC-0225: persona runs outlive the exec
+                if pool.flights:
+                    detached = pool.try_detach_all()      # SPEC-0225: persona runs outlive us
                     if detached is not None:
                         report.detached = detached
                         break
+                if bound_at is not None and pool.flights and time.monotonic() >= bound_at:
+                    report.abandoned = pool.force_detach_waiting()
+                    time.sleep(0.3)                       # the wait threads return in 0.2 s
+                    report.detached = pool.detached_view()
+                    pool.flights.clear()
+                    break
                 if len(pool.flights) != before:
                     lease.update_info(draining={"reason": reason, "since": since,
                                                 "waiting_on": _waiting_on(cfg, pool)})
@@ -3171,42 +3246,73 @@ def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
     return report
 
 
+def _crash_sweep(cfg, pool: StepPool, bound_s: float) -> tuple:
+    """The crash path's `finally` (SPEC-0229), inside one bound: apply what already finished,
+    end the gates, detach every `wait` task, re-sweep until no task is in `spawning` / `collect`
+    (the ones still there at the bound are abandoned). Returns `(detached, abandoned)`."""
+    deadline = time.monotonic() + bound_s
+    abandoned: list = []
+    try:
+        rep = TickReport(drain=True)
+        _harvest(pool, rep, guard=True)
+        if rep.steps or rep.errors:
+            journal(cfg, "tick", tick=None, steps=rep.steps, admitted=0, errors=rep.errors,
+                    started=[], in_flight=[], drain=True)
+    except Exception as e:
+        journal(cfg, "harvest_error", campaign=None, error=f"{type(e).__name__}: {e}")
+    try:
+        _terminate_children()
+    except Exception:
+        pass
+    while True:
+        abandoned = pool.force_detach_waiting()
+        if not abandoned or time.monotonic() >= deadline:
+            break
+        time.sleep(0.2)
+    return pool.detached_view(), abandoned
+
+
+_LAST_POOL: "StepPool | None" = None
+
+
+def leftover_threads() -> list:
+    """The last `run()`'s pool threads still alive after shutdown (SPEC-0229). Executor threads
+    are not daemonic, so interpreter exit would join them: the CLI exits 70 instead."""
+    return _LAST_POOL.leftover_threads() if _LAST_POOL is not None else []
+
+
 def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=False,
         on_tick=None, runner=None, argv=None, reexec=False, code_root=None,
         config_loader=None) -> int:
     """The loop: take the lease, tick, heartbeat, sleep. Agent steps run in a pool owned by
     the loop and carry across ticks (SPEC-0213); the wait between ticks ends early when one
-    finishes. SIGINT/SIGTERM stop admissions, forward SIGTERM to this process group's children
-    (the `claude` runs) when we lead the group, drain the in-flight steps (each records
-    itself), and release the lease. Every exit drains first. Returns the number of ticks
-    performed.
+    finishes. SIGINT/SIGTERM only set a flag (SPEC-0229): the loop then stops admissions, ends
+    the gates, detaches persona runs (the next runner adopts them), records the in-process
+    steps that finish within a bound, and releases the lease. Every exit drains first.
+    Returns the number of ticks performed.
 
     With `reexec` (SPEC-0194), when a commit to the wt checkout (`code_root`, default the one
-    this package is imported from) changes wt's code, the loop stops between ticks, journals
-    `stop` with reason `code_changed` once its in-flight steps are drained, and re-executes
-    the same command keeping its lease.
+    this package is imported from) changes wt's code, the loop keeps ticking in *draining*
+    mode (SPEC-0229: it admits and opens, plans detachable persona steps only, starts no gate,
+    close or FakeRunner step) and re-executes the same command, keeping its lease, at the first
+    0.2 s check where nothing blocks: persona runs in `wait` are detached, in-process work
+    done. `stop` is journaled with reason `code_changed`.
 
     With `config_loader` (SPEC-0226, a callable returning a fresh cfg), the loop re-reads the
     user config before each tick when its file changed; in-flight steps keep the cfg they were
     planned with. A config that fails to load or validate never replaces the working one."""
+    global _LAST_POOL
     agentic = cfg.get("agentic") or {}
     interval = float(poll_interval_s if poll_interval_s is not None
                      else agentic.get("poll_interval_s") or 20)
     stop = threading.Event()
     lease = L.acquire(cfg, argv or ["wt", "queue", "run"])
+    G.reset()                                          # SPEC-0229: no stale stop flag
     lease.update_info(poll_interval_s=interval, slot_freed_at=store.now_iso())   # SPEC-0228
     previous = {}
 
     def _handler(signum, _frame):
-        if stop.is_set():
-            return
-        stop.set()
-        try:
-            if os.getpgid(0) == os.getpid():                # we lead the group (setsid/nohup)
-                signal.signal(signal.SIGTERM, signal.SIG_IGN)
-                os.killpg(os.getpgid(0), signal.SIGTERM)
-        except OSError:
-            pass
+        stop.set()                      # the main loop does the rest (SPEC-0229)
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -3218,10 +3324,15 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
     watch_root = (code_root or code_checkout()) if reexec else None
     code_sha = _git_out(watch_root, "rev-parse", "HEAD") if watch_root else None
     restart = {}
+    draining = False                                  # a code change was detected (SPEC-0229)
+    detached: list = []
+    abandoned: list = []
     deferred = None                                   # head a re-exec was deferred for
     pool = StepPool()                                 # SPEC-0213: flights outlive ticks
+    _LAST_POOL = pool
     watch = ConfigWatch(cfg, config_loader) if config_loader else None
     slots = _SlotWatch(cfg, pool)
+    drain_since = None
 
     def emit(report):
         if report.steps or report.admitted or report.errors or report.started:
@@ -3231,9 +3342,14 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
         if on_tick:
             on_tick(report)
 
+    def drain_info():
+        lease.update_info(draining={"reason": "code_changed", "since": drain_since,
+                                    "waiting_on": _waiting_on(cfg, pool)})
+
     journal(cfg, "start", argv=list(argv or ["wt", "queue", "run"]), interval_s=interval,
             code_sha=code_sha)
     crashed = False
+    crash = None
     try:
         # SPEC-0204/0213: one heartbeat thread for the loop's whole life — ticks, waits, the
         # drain — joined before the lease is released or handed over
@@ -3249,7 +3365,8 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                             interval = float((cfg.get("agentic") or {}).get("poll_interval_s")
                                              or 20)
                             lease.update_info(poll_interval_s=interval)   # SPEC-0228
-                report = tick(cfg, stop=stop, runner=runner, pool=pool, lease=lease)
+                report = tick(cfg, stop=stop, runner=runner, pool=pool, lease=lease,
+                              draining=draining)
                 ticks += 1
                 lease.heartbeat()
                 # SPEC-0228: stamp before `emit`, so a slow `on_tick` never delays it
@@ -3269,52 +3386,97 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                             deferred = head
                             journal(cfg, "reexec_deferred", reason="user_config_invalid",
                                     to_sha=head)
-                    else:
-                        if changed:
-                            # SPEC-0194 + SPEC-0213: stop admitting and submitting; the drain
-                            # below records every in-flight step before the exec
-                            reason = "code_changed"
+                    elif changed or draining:
+                        if changed:               # a later merge moves the target (SPEC-0229)
                             restart = {"from_sha": code_sha, "to_sha": head,
                                        "paths": changed[:50]}
-                            break
+                        if not draining:
+                            # SPEC-0194 + SPEC-0229: keep admitting; no new in-process work;
+                            # exec once nothing blocks it
+                            draining, drain_since = True, store.now_iso()
+                            journal(cfg, "draining", ticks=ticks, **restart)
+                            drain_info()
+                    else:
                         code_sha = head or code_sha   # docs-only commits: keep running
                 wait_s = max(interval, _MIN_INFLIGHT_WAIT_S) if pool.flights else interval
                 deadline = time.monotonic() + wait_s
-                while time.monotonic() < deadline and not stop.is_set():
-                    if pool.any_done():               # a finished step: apply it now
+                exec_now = False
+                while not stop.is_set():
+                    if draining:
+                        # SPEC-0229: poll every 0.2 s (at least once per tick); harvest what
+                        # finished, exec as soon as nothing blocks (persona runs in `wait` are
+                        # detached)
+                        if pool.any_done():
+                            before = set(pool.flights)
+                            rep = TickReport(drain=True)
+                            _harvest(pool, rep)
+                            emit(rep)
+                            if set(pool.flights) != before:
+                                slots.check(lease)
+                                drain_info()
+                        got = pool.try_detach_all()
+                        if got is not None:
+                            detached, reason, exec_now = got, "code_changed", True
+                            break
+                    if time.monotonic() >= deadline:
                         break
-                    time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+                    if draining:
+                        pool.wait_any(timeout=min(0.2, max(0.0, deadline - time.monotonic())))
+                    elif pool.any_done():             # a finished step: apply it now
+                        break
+                    else:
+                        time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+                if exec_now:
+                    break
             if pool.flights:
-                drained = _drain(cfg, pool, lease, reason=reason, interval=interval, slots=slots)
+                drained = _drain(cfg, pool, lease, reason=reason, interval=interval,
+                                 slots=slots, stop=stop)
                 emit(drained)
-                if drained.detached:
-                    restart["detached"] = drained.detached
+                detached, abandoned = drained.detached, drained.abandoned
+            elif stop.is_set():
+                _terminate_children()
+            pool.end(timeout=0.5 if abandoned else 5.0)    # stuck threads are left behind
             if reason == "code_changed" and stop.is_set():
-                # signalled during the drain: no exec; runs already detached keep running
-                reason, restart = "signal", ({"detached": restart["detached"]}
-                                             if restart.get("detached") else {})
+                reason = "signal"             # signalled before the exec: no exec; runs stay
     except BaseException as e:
         crashed = True
         if not isinstance(e, (KeyboardInterrupt, SystemExit)):
             import traceback
-            journal(cfg, "crash", ticks=ticks, error=f"{type(e).__name__}: {e}",
-                    traceback=traceback.format_exc()[-4000:])
+            crash = {"ticks": ticks, "error": f"{type(e).__name__}: {e}",
+                     "traceback": traceback.format_exc()[-4000:]}
             reason = "crash"
         raise
     finally:
-        if crashed:
-            stop.set()                                # workers see it: runs end as interrupted
-            pool.detach_force()                       # SPEC-0225: runs stay adoptable
-        pool.shutdown(cancel=crashed)
-        if reason != "crash":
-            journal(cfg, "stop", ticks=ticks, reason=reason, **restart)
-        handover_env = lease.handover() if reason == "code_changed" else None
-        lease.release()
-        for sig, prev in previous.items():
-            try:
-                signal.signal(sig, prev)
-            except (ValueError, TypeError):
-                pass
+        try:
+            if crashed:
+                stop.set()                            # workers see it: runs end as interrupted
+                detached, abandoned = _crash_sweep(cfg, pool, _STOP_BOUND_S)
+                pool.end(timeout=0.5)
+            else:
+                pool.end(timeout=0.0)
+            exit_fields = {}
+            if reason == "code_changed":
+                exit_fields.update(restart)
+            elif draining and restart.get("to_sha"):
+                exit_fields["restart_pending"] = {"to_sha": restart["to_sha"]}
+            if abandoned or crash:
+                exit_fields["abandoned"] = abandoned
+            if crash:
+                journal(cfg, "crash", detached=detached, **crash, **exit_fields)
+            else:
+                journal(cfg, "stop", ticks=ticks, reason=reason, detached=detached,
+                        **exit_fields)
+            if draining:
+                lease.pop_info("draining")
+            handover_env = lease.handover() if reason == "code_changed" else None
+            G.reset()
+        finally:
+            lease.release()
+            for sig, prev in previous.items():
+                try:
+                    signal.signal(sig, prev)
+                except (ValueError, TypeError):
+                    pass
     if handover_env is not None:
         import sys
         sys.stdout.flush()
@@ -3363,6 +3525,24 @@ def park_view(cfg, state: dict, now, sett) -> dict:
 _PARK_VIEW_KEYS = ("owner", "decision", "decided", "overdue", "parked_at")
 
 
+def _detached_run(cfg, state: dict) -> str | None:
+    """`detached (pid N)` when the campaign's open run has a live process and no runner holds
+    the lease (SPEC-0229); read from the run dir. None otherwise."""
+    if state.get("state") not in ACTIVE_STATES:
+        return None
+    cid = state.get("id")
+    try:
+        for ev in _open_runs(cfg, cid):
+            rd = store.runs_dir(cfg, cid) / str(ev.get("run_id"))
+            if RP.run_status(rd) in ("running", "orphan_group"):
+                proc = RP.read_json(rd / "proc.json") or {}
+                child = RP.read_json(rd / "child.json") or {}
+                return f"detached (pid {child.get('pid') or proc.get('pid')})"
+    except OSError:
+        return None
+    return None
+
+
 def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=None) -> dict:
     """`wt.queue.v1`: the lease, the slots and every in-flight item."""
     import datetime as dt
@@ -3374,6 +3554,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
     slots = slots_for(cfg)
     busy = sum(1 for r in rows if r.get("state") in ACTIVE_STATES)
     backlog = {b["campaign"]: b for b in backlog_view(cfg)}
+    held = L.is_held(cfg)
     items = []
     for r in rows:
         counters = r.get("counters") or {}
@@ -3406,6 +3587,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
             "worktree": repo.get("worktree"), "branch": repo.get("branch"),
             "priority": _priority(r), "waiting": r.get("waiting"),
             "review_score": (r.get("last_review") or {}).get("score"),
+            "run": None if held else _detached_run(cfg, r),
         })
         b = backlog.get(r.get("id"))
         if b and r.get("state") == "QUEUED":

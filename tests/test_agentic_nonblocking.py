@@ -231,7 +231,7 @@ def test_reexec_drains_inflight_before_exec(tmp_path, monkeypatch):
     kinds = got["journal"]
     assert kinds[-1] == ("stop", None, "code_changed")
     assert kinds[-2] == ("tick", True, None)                     # the drain, just before
-    assert ticks == 2                                            # admit/open, then submit
+    assert ticks >= 2          # admit/open, then submit; draining ticks follow (SPEC-0229)
     os.environ[L.HANDOVER_ENV] = got["handover"]                 # adopt + release the lease
     L.acquire(cfg, ["t"]).release()
 

@@ -13,6 +13,7 @@ import os
 import re
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -24,6 +25,12 @@ from .project import expand_cmd
 TAIL_LINES = 60
 _KILL_GRACE_S = 5
 _LOG_SEQ_RE = re.compile(r"^(\d{3})-")
+
+# SPEC-0229: live gate processes, so a stop can end them (gates run in their own sessions, out of
+# reach of any signal sent to the runner's group). `_stopping` makes a stop sticky until reset().
+_LOCK = threading.Lock()
+_LIVE: set = set()
+_stopping = False
 
 
 @dataclass(frozen=True)
@@ -38,6 +45,7 @@ class GateResult:
     tail: str         # last TAIL_LINES lines of the log
     cmd: str = ""     # the expanded command (SPEC-0192; also in the gates/NNN-name.json sidecar)
     cwd: str = ""
+    interrupted: bool = False   # SPEC-0229: killed by a stop, or not started because of one
 
 
 @dataclass(frozen=True)
@@ -47,6 +55,26 @@ class GateRun:
     results: tuple[GateResult, ...]
     started_at: str
     duration_s: float
+    interrupted: bool = False   # SPEC-0229: a gate was ended by a stop, or the run was cut short
+
+
+def terminate_all() -> None:
+    """Stop every gate: no further gate starts, and each live gate's process group gets TERM,
+    then KILL (SPEC-0229). Called from the main loop only, never from a signal handler."""
+    global _stopping
+    with _LOCK:
+        _stopping = True
+        live = list(_LIVE)
+    for proc in live:
+        _kill_group(proc)
+
+
+def reset() -> None:
+    """Clear the stop flag and the registry (a new loop, a single-shot tick, tests)."""
+    global _stopping
+    with _LOCK:
+        _stopping = False
+        _LIVE.clear()
 
 
 def tail(path, n: int = TAIL_LINES) -> str:
@@ -103,6 +131,8 @@ def _write_sidecar(log_path: Path, result: GateResult, *, timeout_s: int, starte
            "required": result.required, "ok": result.ok, "exit_code": result.exit_code,
            "timed_out": result.timed_out, "timeout_s": timeout_s, "started_at": started_at,
            "duration_s": result.duration_s, "log": log_path.name, "error": error}
+    if result.interrupted:
+        rec["interrupted"] = True
     log_path.with_suffix(".json").write_text(json.dumps(rec, indent=2, ensure_ascii=False)
                                              + "\n", encoding="utf-8")
 
@@ -123,27 +153,42 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
     timed_out = False
     error = None
     exit_code = None
+    interrupted = False
     with open(log_path, "w", encoding="utf-8") as log:
+        proc = None
         try:
-            proc = subprocess.Popen(cmd, shell=True, cwd=str(cwd), env=child_env,
-                                    stdout=log, stderr=subprocess.STDOUT,
-                                    start_new_session=True)
+            with _LOCK:                 # SPEC-0229: check the stop flag and register atomically
+                if _stopping:
+                    interrupted = True
+                    error = "not started: the runner is stopping"
+                else:
+                    proc = subprocess.Popen(cmd, shell=True, cwd=str(cwd), env=child_env,
+                                            stdout=log, stderr=subprocess.STDOUT,
+                                            start_new_session=True)
+                    _LIVE.add(proc)
         except OSError as e:
-            proc = None
             error = f"failed to start: {e}"
         if proc is not None:
             try:
-                exit_code = proc.wait(timeout=timeout_s)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                _kill_group(proc)
-                exit_code = proc.returncode
-                error = f"timed out after {timeout_s}s; process group killed"
+                try:
+                    exit_code = proc.wait(timeout=timeout_s)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    _kill_group(proc)
+                    exit_code = proc.returncode
+                    error = f"timed out after {timeout_s}s; process group killed"
+            finally:
+                with _LOCK:
+                    _LIVE.discard(proc)
+                    stopping = _stopping
+            if stopping and not timed_out and exit_code != 0:
+                interrupted = True
+                error = "interrupted: the runner is stopping; process group killed"
     duration = round(time.monotonic() - started, 3)
     ok = proc is not None and exit_code == 0 and not timed_out
     result = GateResult(gate["name"], bool(gate.get("required", True)), ok, exit_code,
                         timed_out, duration, log_rel or str(log_path), tail(log_path),
-                        cmd=cmd, cwd=str(cwd))
+                        cmd=cmd, cwd=str(cwd), interrupted=interrupted)
     _write_sidecar(log_path, result, timeout_s=timeout_s, started_at=started_at, error=error)
     return result
 
@@ -158,7 +203,8 @@ def next_gate_seq(cfg, campaign_id) -> int:
     return (max(seqs) + 1) if seqs else 1
 
 
-def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int) -> GateRun:
+def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
+            stop: threading.Event | None = None) -> GateRun:
     """Run every gate of `project_cfg` in the campaign's worktree; logs land at
     `gates/<seq:03>-<name>.log` under the campaign dir. `ok` = every *required* gate ok."""
     cid = campaign_state["id"]
@@ -171,11 +217,16 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int) -> GateRu
     started_at = store.now_iso()
     t0 = time.monotonic()
     results = []
+    cut = False
     for gate in project_cfg.get("gates") or []:
+        if stop is not None and stop.is_set():      # SPEC-0229: no next gate after a stop
+            cut = True
+            break
         rel = f"gates/{seq:03d}-{gate['name']}.log"
         results.append(run_gate(gate, worktree, env, cdir / rel, ph, log_rel=rel))
     ok = all(r.ok for r in results if r.required)
-    return GateRun(seq, ok, tuple(results), started_at, round(time.monotonic() - t0, 3))
+    return GateRun(seq, ok, tuple(results), started_at, round(time.monotonic() - t0, 3),
+                   interrupted=cut or any(r.interrupted for r in results))
 
 
 def blocking_failures(run: GateRun) -> list[GateResult]:
@@ -186,8 +237,13 @@ def as_payload(run: GateRun) -> dict:
     """Shape shared by the `gate` ledger event and `last_gate` in state. The run number is
     `gate_seq`, not `seq`: ledger events carry their own `seq` in the envelope and
     `append_event` merges the payload over it."""
+    results = [asdict(r) for r in run.results]
+    for r in results:
+        if not r.pop("interrupted"):      # SPEC-0229: only recorded when true
+            continue
+        r["interrupted"] = True
     return {"gate_seq": run.seq, "ok": run.ok, "started_at": run.started_at,
-            "duration_s": run.duration_s, "results": [asdict(r) for r in run.results]}
+            "duration_s": run.duration_s, "results": results}
 
 
 def run_and_log(cfg, campaign_state: dict, project_cfg: dict, *, seq=None, by="tick") -> GateRun:

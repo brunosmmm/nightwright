@@ -79,8 +79,9 @@ class RunHooks:
     """The pool's view of one persona task (SPEC-0225): its phase and a set-once detach flag.
     Phases: `spawning` -> `wait` -> `collect` -> `done`; every change happens under `lock`."""
 
-    def __init__(self, lock, run_dir=None, phase: str = "spawning"):
+    def __init__(self, lock, run_dir=None, phase: str = "spawning", pool=None):
         self.lock = lock
+        self.pool = pool                # SPEC-0229: its `detach_all` flag (crash / stop sweep)
         self.run_dir = Path(run_dir) if run_dir else None
         self.phase = phase
         self.detach = threading.Event()
@@ -93,13 +94,15 @@ class RunHooks:
         with self.lock:
             if self.phase == "spawning":
                 self.phase = "wait"
+                if getattr(self.pool, "detach_all", False):
+                    self.detach.set()           # spawned after the sweep: leave it for adoption
 
     def detached(self) -> bool:
         return self.detach.is_set()
 
     def enter_collect(self) -> bool:
         with self.lock:
-            if self.detach.is_set():
+            if self.detach.is_set() or getattr(self.pool, "detach_all", False):
                 return False
             self.phase = "collect"
             return True

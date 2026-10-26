@@ -623,11 +623,12 @@ def test_reexec_drains_inflight_close(tmp_path, monkeypatch):
             _commit(root, "src/wt/x.py", "A = 9\n", "code")
         return report
 
-    real_drain = Q._drain
+    real_journal = Q.journal
 
-    def drain(*args, **kw):                       # the held re-gate is freed once draining
-        env.release()
-        return real_drain(*args, **kw)
+    def journal(cfg, kind, **fields):             # the held re-gate is freed once draining
+        if kind == "draining":
+            env.release()
+        return real_journal(cfg, kind, **fields)
 
     seen = []
 
@@ -640,7 +641,7 @@ def test_reexec_drains_inflight_close(tmp_path, monkeypatch):
             "handover": envv.get(L.HANDOVER_ENV)})
 
     monkeypatch.setattr(Q, "tick", tick)
-    monkeypatch.setattr(Q, "_drain", drain)
+    monkeypatch.setattr(Q, "journal", journal)
     monkeypatch.setattr(Q, "_EXEC", fake_exec)
     try:
         Q.run(env.cfg, runner=env.runner, max_ticks=80, poll_interval_s=0.05, reexec=True,
