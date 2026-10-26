@@ -97,6 +97,51 @@ def test_follow_from_start_and_single_follower(tmp_path):
             M.follow(cfg, "human", out=io.StringIO(), poll_s=0, stop=lambda: True)
 
 
+def test_follow_exits_with_code_changed(tmp_path, code_repo):
+    cfg = _cfg(tmp_path)
+    out, calls = io.StringIO(), {"n": 0}
+    kw = dict(poll_s=0.01, code_root=code_repo.root, code_check_s=0.01)
+    assert M.follow(cfg, "conductor", out=out, stop=lambda: True, **kw) == 0   # new reader
+    M.send(cfg, to="conductor", frm="human", text="a")
+    m2 = M.send(cfg, to="conductor", frm="human", text="b")
+    out = io.StringIO()
+
+    def stop():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            code_repo.commit({"skills/wt-steward/SKILL.md": "new\n"})
+        return False
+
+    assert M.follow(cfg, "conductor", out=out, stop=stop, **kw) == 2
+    lines = [json.loads(x) for x in out.getvalue().splitlines()]
+    assert [x.get("text") for x in lines[:2]] == ["a", "b"]
+    cc = lines[2]
+    assert cc["type"] == "code_changed" and cc["id"] is None and cc["by"] == "follower"
+    assert cc["data"]["reader"] == "mailbox:conductor"
+    assert cc["data"]["skills_changed"] == ["wt-steward"]
+    assert E.cursor_get(cfg, "mailbox:conductor") == m2["seq"]
+    # restart: only the new message, none repeated
+    M.send(cfg, to="conductor", frm="human", text="c")
+    out2 = io.StringIO()
+    assert M.follow(cfg, "conductor", out=out2, max_events=1, **kw) == 1
+    assert [json.loads(x)["text"] for x in out2.getvalue().splitlines()] == ["c"]
+
+
+def test_follow_code_root_none_keeps_running(tmp_path, code_repo):
+    cfg = _cfg(tmp_path)
+    out, calls = io.StringIO(), {"n": 0}
+
+    def stop():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            code_repo.commit({"src/wt/x.py": "x = 2\n"})
+        return calls["n"] >= 4
+
+    assert M.follow(cfg, "human", out=out, poll_s=0, code_root=None, code_check_s=0.01,
+                    stop=stop) == 0
+    assert calls["n"] == 4 and out.getvalue() == ""
+
+
 def test_unanswered_and_thread(tmp_path):
     cfg = _cfg(tmp_path)
     q = M.send(cfg, to="steward:Demo", frm="conductor", text="resume?", kind="question")
@@ -138,3 +183,14 @@ def test_cli_send_list_thread(tmp_path):
     assert r.exit_code == 0 and "hello there" in r.output
     r = _invoke(cfg, ["mailbox", "send", "--to", "steward:Nope", "--from", "conductor", "x"])
     assert r.exit_code != 0 and "unknown steward project" in r.output
+
+
+def test_cli_follow_no_code_watch(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    seen = []
+    monkeypatch.setattr(M, "follow", lambda *a, **kw: seen.append(kw) or 0)
+    assert _invoke(cfg, ["mailbox", "follow", "--to", "human"]).exit_code == 0
+    assert "code_root" not in seen[-1]
+    r = _invoke(cfg, ["mailbox", "follow", "--to", "human", "--no-code-watch"])
+    assert r.exit_code == 0, r.output
+    assert seen[-1]["code_root"] is None

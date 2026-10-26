@@ -315,3 +315,11 @@ def test_conduct_skill_has_runner_config_invalid_row_spec_0226():
     assert "`scope: user`" in row and "do not edit their config" in row
     assert "`scope: project:<P>`" in row and "`config_invalid`" in row
     assert "steward" in row and "wt mailbox send" in row
+
+
+@pytest.mark.parametrize("name", ["wt-conduct", "wt-steward"])
+def test_monitor_owner_skills_handle_code_changed(name):
+    """SPEC-0231: the Monitor owners re-arm on `code_changed` and re-read changed skills."""
+    text = (REPO_SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
+    assert "code_changed" in text and "skills_changed" in text
+    assert f"/{name}" in text and "/wt-orient" in text

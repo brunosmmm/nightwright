@@ -1,7 +1,7 @@
 ---
 id: SPEC-0231
 title: "Followers exit with code_changed on new wt code; conductor and steward re-arm and re-read skills"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -164,26 +164,26 @@ class Watcher:
 
 ## Acceptance criteria
 
-- [ ] `codewatch.py` holds `code_checkout`, `_git_out`, `code_changes(root, since,
+- [x] `codewatch.py` holds `code_checkout`, `_git_out`, `code_changes(root, since,
       paths=_CODE_PATHS)` and `Watcher`. `queue.code_checkout` / `queue.code_changes` still
       resolve, and the runner's re-exec tests pass unchanged.
-- [ ] `Watcher.poll` returns None before `code_check_s` has elapsed, with no HEAD change, and
+- [x] `Watcher.poll` returns None before `code_check_s` has elapsed, with no HEAD change, and
       for a commit touching only non-watched paths (and moves its baseline). It returns
       `{from_sha, to_sha, paths, skills_changed}` for a commit under `src/wt`,
       `pyproject.toml` or `skills/`. `skills_changed` lists the skill directory names.
-- [ ] `events.follow` with a watched repo prints all pending events, then exactly one
+- [x] `events.follow` with a watched repo prints all pending events, then exactly one
       `code_changed` envelope (`id` null, `by: follower`, the payload above) after a code
       commit, and returns. The reader's cursor equals the id of the last real event.
       Restarting the follower delivers the next event and does not repeat any.
-- [ ] `mailbox.follow` behaves the same way: pending messages first, then the `code_changed`
+- [x] `mailbox.follow` behaves the same way: pending messages first, then the `code_changed`
       line, cursor at the last message's seq, and no lost or repeated messages on restart.
-- [ ] `code_root=None`, `--no-code-watch`, `agentic.events.code_check_s: 0` and a
+- [x] `code_root=None`, `--no-code-watch`, `agentic.events.code_check_s: 0` and a
       non-checkout install each disable the watch, and the follower keeps running.
-- [ ] `EVENT_TYPES` has `code_changed`, the text mode prints `code_changed <from>..<to>
+- [x] `EVENT_TYPES` has `code_changed`, the text mode prints `code_changed <from>..<to>
       skills=…`, and `summary_line` handles `id: null`.
-- [ ] `wt-conduct` and `wt-steward` skills carry the `code_changed` rule (re-arm; re-invoke own
+- [x] `wt-conduct` and `wt-steward` skills carry the `code_changed` rule (re-arm; re-invoke own
       skill / `wt-orient` when listed in `skills_changed`).
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -217,6 +217,25 @@ class Watcher:
 - **Regression guard:** full `uv run pytest`, including the SPEC-0194 re-exec tests that patch
   `queue.code_checkout` / `queue.code_changes`.
 
+### Test record (2026-10-25)
+
+- `uv run pytest -q`: full suite passes (new: `tests/test_agentic_codewatch.py`, follower
+  exit/resume/disable tests in `tests/test_agentic_events.py` and `tests/test_agentic_mailbox.py`,
+  `--no-code-watch` CLI tests, `code_changed` skill test in `tests/test_skills.py`; shared
+  `code_repo` fixture in `tests/conftest.py`). The SPEC-0194 re-exec tests pass unchanged.
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`: exit 0.
+- Manual: in a throwaway clone (not a worktree) holding this change, armed
+  `python -c "from wt.cli import cli; cli()" mailbox follow --to human --text` (isolated XDG
+  dirs), then committed a one-line change to `skills/wt-conduct/SKILL.md`. After the next 10 s
+  check it printed `code_changed 05cfcb3..e6345d4 skills=wt-conduct (re-arm)` and exited 0.
+
+### As shipped
+
+As designed. Notes: the follower's return value counts real events/messages only (not the
+`code_changed` line). `Watcher.__init__` takes an optional `now` (default `time.monotonic()`)
+so tests drive a fake clock. The `AUTO` sentinel for `code_root` is `codewatch.AUTO`;
+`events.code_changed_line` builds the envelope for both followers.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -230,11 +249,11 @@ themselves.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

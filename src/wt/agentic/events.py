@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from ..export import _atomic_write
+from . import codewatch as CW
 from . import lease as L
 from . import store
 
@@ -51,6 +52,8 @@ EVENT_TYPES = {
     "runner_draining": ("reason", "draining_s", "waiting_on", "ready"),
     # SPEC-0226
     "runner_config_invalid": ("scope", "path", "error"),
+    # SPEC-0231: synthetic follower line (never appended to events.jsonl)
+    "code_changed": ("from_sha", "to_sha", "paths", "skills_changed"),
 }
 
 # transient run failures: account limits, overload, network-ish API errors
@@ -67,7 +70,9 @@ DEFAULTS = {"poll_s": 2.0, "silent_after_s": 900, "overdue_grace_s": 60,
             "ready_grace_s": 60,
             # SPEC-0224: a drain (the runner waits for in-flight steps before a stop or exec)
             # older than this is reported as `runner_draining`
-            "drain_grace_s": 60}
+            "drain_grace_s": 60,
+            # SPEC-0231: followers exit with `code_changed` when wt's code changes; 0 = off
+            "code_check_s": 10}
 
 
 def settings(cfg) -> dict:
@@ -634,24 +639,44 @@ def summary_line(ev: dict) -> str:
     bits = " ".join(f"{k}={v}" for k, v in (ev.get("data") or {}).items()
                     if v not in (None, "", []))
     who = ev.get("campaign") or "-"
+    evid = "-" if ev.get("id") is None else ev["id"]
+    if ev.get("type") == "code_changed":
+        d = ev.get("data") or {}
+        return (f"code_changed {str(d.get('from_sha'))[:7]}..{str(d.get('to_sha'))[:7]} "
+                f"skills={','.join(d.get('skills_changed') or []) or '-'} (re-arm)")
     if ev.get("type") == "conductor_ping":
         d, c = ev.get("data") or {}, (ev.get("data") or {}).get("counts") or {}
-        return (f"#{ev['id']} conductor_ping blocked={len(d.get('blocked') or [])} "
+        return (f"#{evid} conductor_ping blocked={len(d.get('blocked') or [])} "
                 f"parked={c.get('parked', 0)}(undecided {c.get('undecided_parks', 0)}) "
                 f"stuck={len(d.get('stuck') or [])} waiting={c.get('waiting', 0)} "
                 f"ready_not_admitted={len(d.get('ready_not_admitted') or [])} "
                 f"active={c.get('active', 0)} queued={c.get('queued', 0)}")
-    return f"#{ev['id']} {ev['type']} {who} {bits}".strip()
+    return f"#{evid} {ev['type']} {who} {bits}".strip()
+
+
+def code_changed_line(reader, change: dict, *, as_json=True) -> str:
+    """The synthetic `code_changed` line a follower prints before exiting (SPEC-0231). Not an
+    event of the stream: `id` is null, nothing is appended to events.jsonl."""
+    data = {"reader": reader, **change}
+    validate("code_changed", data)
+    ev = {"schema": SCHEMA, "id": None, "ts": store.now_iso(), "type": "code_changed",
+          "campaign": None, "spec_id": None, "project": None, "by": "follower", "data": data}
+    return (json.dumps(ev, ensure_ascii=False) if as_json else summary_line(ev)) + "\n"
 
 
 def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_events=None,
-           stop=None, from_start=False) -> int:
+           stop=None, from_start=False, code_root=CW.AUTO, code_check_s=None) -> int:
     """Stream events after the reader's cursor forever: sync, print, advance cursor, sleep.
-    Holds the reader lock for its lifetime. Returns the number of events printed."""
+    Holds the reader lock for its lifetime. Returns the number of events printed. When wt's
+    code changes (SPEC-0231) it prints one `code_changed` line and returns; `code_root=None`
+    turns that watch off."""
     out = out or sys.stdout
     poll = float(poll_s if poll_s is not None else settings(cfg)["poll_s"])
     printed = 0
     with reader_lock(cfg, reader):
+        watcher = CW.Watcher(CW.code_checkout() if code_root is CW.AUTO else code_root,
+                             settings(cfg)["code_check_s"] if code_check_s is None
+                             else code_check_s)
         sync(cfg, ping=True)
         if not (cursors_dir(cfg) / f"{_safe(reader)}.json").is_file() and not from_start:
             # a brand-new reader starts at "now": history is for `wt queue events`, not alerts
@@ -667,6 +692,11 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                 printed += 1
                 if max_events and printed >= max_events:
                     return printed
+            change = watcher.poll(time.monotonic())
+            if change:
+                out.write(code_changed_line(reader, change, as_json=as_json))
+                out.flush()
+                return printed
             if stop is not None and stop():
                 return printed
             time.sleep(poll)

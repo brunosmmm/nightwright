@@ -39,6 +39,7 @@ from . import project as P
 from . import spec_review as SR
 from . import schemas as SC
 from . import store
+from .codewatch import _CODE_PATHS, _git_out, code_changes, code_checkout  # noqa: F401
 from .gitops import GitError
 from .profiles import (SEVERITIES, persona_settings, resolve_profile, review_params,
                        reviewers_of, select_profile, triager_enabled)
@@ -1851,32 +1852,7 @@ def read_journal(cfg, *, tail=None) -> list[dict]:
 # submitting, drains the in-flight steps (SPEC-0213), and re-executes itself, handing its lease
 # over so the queue is never unowned.
 
-_CODE_PATHS = ("src/wt", "pyproject.toml")
 _EXEC = os.execve                      # tests replace this
-
-
-def code_checkout() -> Path | None:
-    """The git checkout this wt package is imported from, or None (not a checkout)."""
-    root = Path(__file__).resolve().parents[3]
-    return root if (root / ".git").exists() and (root / "src" / "wt").is_dir() else None
-
-
-def _git_out(root, *args) -> str | None:
-    try:
-        r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True,
-                           timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return r.stdout.strip() if r.returncode == 0 else None
-
-
-def code_changes(root, since: str) -> tuple[str | None, list[str]]:
-    """(current HEAD, wt code paths changed since `since`) for the checkout at `root`."""
-    head = _git_out(root, "rev-parse", "HEAD")
-    if not head or head == since:
-        return head, []
-    diff = _git_out(root, "diff", "--name-only", since, head, "--", *_CODE_PATHS)
-    return head, [p for p in (diff or "").splitlines() if p]
 
 
 class _heartbeat_while:

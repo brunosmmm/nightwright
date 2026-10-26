@@ -29,6 +29,11 @@ decides queue actions.
    and a description like "mailbox steward:<Project>". Each stdout line is one
    `wt.message.v1` message and wakes you. The follower holds the reader lock for that
    address, so there is one steward per project. Re-arm on expiry (the cursor resumes).
+   The follower also exits after one `code_changed` line (a JSON line whose `type` is
+   `code_changed`, not a message) when wt's code changes; that is not an error: **re-arm
+   the Monitor at once**, with the same command. If `skills_changed` has `wt-steward`,
+   re-invoke `/wt-steward` (re-read it); if it has `wt-orient`, re-read `/wt-orient` first.
+   No report to the human.
 4. **Per question** (`kind` question, usually with a `campaign`): read
    `wt campaign show <id>`, `wt campaign log <id> --tail 30`, the spec, and — read-only —
    the code in the campaign's worktree. Decide what the project needs and reply:

@@ -66,12 +66,16 @@ def mailbox_send(cfg, to, frm, kind, campaign, re_, no_reply, as_json, text):
               help="JSON lines (default) or one-line summaries")
 @click.option("--from-start", is_flag=True, help="new reader: start at the first message")
 @click.option("--poll", "poll_s", type=float, default=2.0, show_default=True)
+@click.option("--no-code-watch", is_flag=True,
+              help="never exit when wt's code changes (default: print `code_changed` and "
+                   "exit 0 so the Monitor owner re-arms)")
 @click.pass_obj
-def mailbox_follow(cfg, to, as_json, from_start, poll_s):
+def mailbox_follow(cfg, to, as_json, from_start, poll_s, no_code_watch):
     """Stream new messages for TO forever (one line each; cursor persisted; one follower
-    per inbox)."""
+    per inbox). Exits with a `code_changed` line when wt's code changes."""
     try:
-        M.follow(cfg, to, as_json=as_json, poll_s=poll_s, from_start=from_start)
+        M.follow(cfg, to, as_json=as_json, poll_s=poll_s, from_start=from_start,
+                 **({"code_root": None} if no_code_watch else {}))
     except ValueError as e:
         raise click.ClickException(str(e))
     except KeyboardInterrupt:

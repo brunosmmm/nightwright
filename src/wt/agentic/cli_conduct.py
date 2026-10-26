@@ -65,8 +65,12 @@ def attach(queue_group):
     @click.option("--from-start", is_flag=True,
                   help="a new --follow reader replays history instead of starting at now")
     @click.option("--poll", "poll_s", type=float, default=None, help="poll interval seconds")
+    @click.option("--no-code-watch", is_flag=True,
+                  help="--follow never exits when wt's code changes (default: it prints "
+                       "`code_changed` and exits 0 so the Monitor owner re-arms)")
     @click.pass_obj
-    def queue_events(cfg, do_follow, reader, since, types, tail, as_text, from_start, poll_s):
+    def queue_events(cfg, do_follow, reader, since, types, tail, as_text, from_start, poll_s,
+                     no_code_watch):
         """The queue's alert stream: parks, merges, failed runs, watchdog signals, mail.
 
         \b
@@ -78,7 +82,8 @@ def attach(queue_group):
                 raise click.UsageError("--follow needs --for READER (e.g. conductor)")
             try:
                 E.follow(cfg, reader, as_json=not as_text, poll_s=poll_s,
-                         types=list(types) or None, from_start=from_start)
+                         types=list(types) or None, from_start=from_start,
+                         **({"code_root": None} if no_code_watch else {}))
             except ValueError as e:
                 raise click.ClickException(str(e))
             except (KeyboardInterrupt, BrokenPipeError):

@@ -14,6 +14,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import codewatch as CW
 from . import events as E
 from . import store
 
@@ -180,15 +181,19 @@ def summary_line(m: dict) -> str:
 
 
 def follow(cfg, addr, *, as_json=True, poll_s=2, out=None, max_events=None, stop=None,
-           from_start=False) -> int:
+           from_start=False, code_root=CW.AUTO, code_check_s=None) -> int:
     """Stream new messages for `addr` forever (one line each), holding the reader lock and
     advancing the cursor after each printed message. A new reader starts at the current end
-    unless `from_start`. Returns the number printed."""
+    unless `from_start`. Returns the number printed. When wt's code changes (SPEC-0231) it
+    prints one `code_changed` envelope and returns; `code_root=None` turns that watch off."""
     addr = validate_address(cfg, addr)
     out = out or sys.stdout
     reader = f"mailbox:{addr}"
     printed = 0
     with E.reader_lock(cfg, reader):
+        watcher = CW.Watcher(CW.code_checkout() if code_root is CW.AUTO else code_root,
+                             E.settings(cfg)["code_check_s"] if code_check_s is None
+                             else code_check_s)
         cpath = E.cursors_dir(cfg) / f"{E._safe(reader)}.json"
         if not cpath.is_file():
             E.cursor_set(cfg, reader, 0 if from_start else _last_seq(_inbox_path(cfg, addr)))
@@ -202,6 +207,11 @@ def follow(cfg, addr, *, as_json=True, poll_s=2, out=None, max_events=None, stop
                 printed += 1
                 if max_events and printed >= max_events:
                     return printed
+            change = watcher.poll(time.monotonic())
+            if change:
+                out.write(E.code_changed_line(reader, change, as_json=as_json))
+                out.flush()
+                return printed
             if stop is not None and stop():
                 return printed
             time.sleep(poll_s)

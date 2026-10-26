@@ -65,7 +65,8 @@ run, handle it — that is the point.
    and a description like "wt queue events (conductor)". Each stdout line is one
    `wt.event.v1` JSON event and wakes you. The follower holds the `conductor` reader lock, so
    a second conductor cannot arm. When the Monitor expires, **re-arm it** (the cursor resumes
-   after the last delivered event; nothing is lost or repeated).
+   after the last delivered event; nothing is lost or repeated). The follower also exits
+   after one `code_changed` line when wt's code changes; that is not an error (see the table).
 5. **Per event:** look up its `type` in the table, gather facts (`wt campaign show <id>`,
    `wt campaign log <id> --tail 20`), act with `wt` commands (dry-run first for writes, then
    `--yes`), and record the decision on the campaign: `wt campaign note <id> "conductor: …"`.
@@ -101,6 +102,7 @@ run, handle it — that is the point.
 | `message` (`kind` answer) | apply it: `wt campaign note`, then resume / abandon / reprioritize as the answer says |
 | `message` (`kind` request) | a steward asks for a queue action (add, prioritize, park, resume): do it via dry-run then `--yes`, and reply with `wt mailbox send --to <from> --kind answer --re <msg_id> "done: …"` |
 | `merged` / `handed_off` | `wt spec reconcile --apply`; one-line report. If the merge touched `src/wt/agentic/` or `.wt/project.yaml`, check `wt queue runner-log --tail 3` within one poll interval: if the runner has not re-exec'd (drain waiting on an in-flight persona run), SIGTERM and restart it right away (but never while a campaign is CLOSING), do not wait for the drain (IDEA-100; SPEC-0225 removes this). Optional deeper verification goes to a sub-agent |
+| `code_changed` | wt's code or skills changed under the follower (it printed this line and exited 0): **re-arm the Monitor now**, with the same command. If `skills_changed` has `wt-conduct`, re-invoke `/wt-conduct` (re-read it) before handling the next event; if it has `wt-orient`, re-read `/wt-orient` first. If the paths touch `src/wt/agentic/`, check the runner re-exec'd (the `merged` row). No report to the human |
 | `backlog` with `blocked_by` an unknown spec | the spec is wrong: escalate |
 | `admitted`, `resumed`, `cost_warning`, `abandoned` | informational; act only if it contradicts what you decided |
 
