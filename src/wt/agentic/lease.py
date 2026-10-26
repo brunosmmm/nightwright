@@ -19,7 +19,8 @@ from .store import agentic_dir, now_iso
 
 HANDOVER_ENV = "WT_RUNNER_LEASE_FD"
 # SPEC-0228: the loop state the runner publishes in the lease info (read by the watchdog)
-LOOP_KEYS = ("tick_at", "poll_interval_s", "in_flight", "slot_freed_at", "busy")
+LOOP_KEYS = ("tick_at", "poll_interval_s", "in_flight", "slot_freed_at", "busy",
+             "busy_ended_at")
 
 
 def lock_path(cfg) -> Path:
@@ -72,6 +73,18 @@ class Lease:
         with self._lock:
             for k in keys:
                 self.info.pop(k, None)
+            self._write()
+
+    def end_busy(self, prev=None):
+        """Leave a declared long step in one locked write: restore `prev` (an enclosing
+        step) or drop `busy`, and stamp `busy_ended_at`, so the watchdog never sees `busy`
+        gone without a fresh activity mark (SPEC-0228)."""
+        with self._lock:
+            if prev is None:
+                self.info.pop("busy", None)
+            else:
+                self.info["busy"] = copy.deepcopy(prev)
+            self.info["busy_ended_at"] = now_iso()
             self._write()
 
     def release(self):
@@ -192,7 +205,7 @@ def lease_status(cfg, now=None) -> dict:
     """`{held, pid, host, started_at, heartbeat_at, heartbeat_age_s, ttl_s, stale}`, plus
     `draining` (the runner's drain info or None), `config_errors` (SPEC-0226: path -> broken
     config entry, `{}` when none) and the loop state of SPEC-0228 (`tick_at`, `poll_interval_s`,
-    `in_flight`, `slot_freed_at`, `busy`; each None when the runner has not written it) while
+    `in_flight`, `slot_freed_at`, `busy`, `busy_ended_at`; each None when the runner has not written it) while
     held."""
     info = read_lease(cfg) or {}
     held = is_held(cfg)

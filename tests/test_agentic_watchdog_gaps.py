@@ -78,6 +78,16 @@ def test_waiting_not_admitted_after_grace(tmp_path, held):
     assert E.ping_digest(cfg, at(200))["counts"]["waiting_not_admitted"] == 1
 
 
+def test_waiting_not_admitted_quiet_at_exactly_the_grace(tmp_path, held):
+    cfg = _cfg(tmp_path)
+    held(cfg, slot_freed_at=iso(0), tick_at=iso(0), poll_interval_s=20)
+    _campaign(cfg, A, state="IMPLEMENTING")
+    _waiting(cfg, B, since=0)
+    grace = E.settings(cfg)["waiting_grace_s"]
+    assert _of(E.sync(cfg, now=at(grace)), "waiting_not_admitted") == []
+    assert len(_of(E.sync(cfg, now=at(grace + 1)), "waiting_not_admitted")) == 1
+
+
 def test_waiting_not_admitted_counts_in_flight(tmp_path, held):
     cfg = _cfg(tmp_path)
     held(cfg, slot_freed_at=iso(0), in_flight=[C])        # C parked, its run still in flight
@@ -159,6 +169,16 @@ def test_runner_journal_silent_once_per_episode(tmp_path, held):
     assert _of(E.sync(cfg, now=at(120)), "runner_journal_silent") == []
     again = _of(E.sync(cfg, now=at(200)), "runner_journal_silent")
     assert len(again) == 1 and again[0]["data"]["last_tick_at"] == iso(110)
+
+
+def test_runner_journal_silent_rearms_on_a_new_holder_record(tmp_path, held):
+    cfg = _cfg(tmp_path)
+    lease = held(cfg, poll_interval_s=20, tick_at=iso(0))
+    assert len(_of(E.sync(cfg, now=at(70)), "runner_journal_silent")) == 1
+    _journal(cfg, {"ts": iso(100), "kind": "tick", "pid": lease.info["pid"]})
+    assert _of(E.sync(cfg, now=at(110)), "runner_journal_silent") == []       # cleared
+    again = _of(E.sync(cfg, now=at(200)), "runner_journal_silent")
+    assert len(again) == 1 and again[0]["data"]["last_journal_ts"] == iso(100)
 
 
 def test_runner_journal_silent_skips_free_stale_or_legacy_lease(tmp_path, held):

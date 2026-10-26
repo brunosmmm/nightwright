@@ -19,9 +19,10 @@ from wt.agentic.gitops import GitError
 
 @pytest.fixture
 def spy(monkeypatch):
-    """Every `update_info` call as `(kwargs, busy in force)`; every `pop_info` as `("pop", keys)`."""
+    """Every `update_info` call as `(kwargs, busy in force)`; every `pop_info` as `("pop", keys)`,
+    every `end_busy` as `("end_busy", restored busy)`."""
     calls = []
-    real_update, real_pop = L.Lease.update_info, L.Lease.pop_info
+    real_update, real_pop, real_end = L.Lease.update_info, L.Lease.pop_info, L.Lease.end_busy
 
     def update_info(self, **kv):
         calls.append((dict(kv), self.info.get("busy")))
@@ -31,6 +32,11 @@ def spy(monkeypatch):
         calls.append(("pop", keys))
         return real_pop(self, *keys)
 
+    def end_busy(self, prev=None):
+        calls.append(("end_busy", prev))
+        return real_end(self, prev)
+
+    monkeypatch.setattr(L.Lease, "end_busy", end_busy)
     monkeypatch.setattr(L.Lease, "update_info", update_info)
     monkeypatch.setattr(L.Lease, "pop_info", pop_info)
     return calls
@@ -63,6 +69,18 @@ def test_run_stamps_slot_freed_at_on_drop(tmp_path, monkeypatch, spy):
     assert sum("slot_freed_at" in kw for kw in ticks) == 1
 
 
+def test_run_publishes_real_pool_ids_in_flight(tmp_path, monkeypatch, spy):
+    """The watchdog's `_occupied` depends on `in_flight` holding the pool's ids."""
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [dict(impl_done(), sleep_s=0.5), review()]))
+    cid = added(cfg, monkeypatch)
+    Q.run(cfg, until_idle=True, poll_interval_s=0.05)
+    assert S.read_state(cfg, cid)["state"] == "MERGED"
+    ticks = [kw["in_flight"] for kw, _ in spy if isinstance(kw, dict) and "tick_at" in kw]
+    assert [cid] in ticks                         # the tick while the run was in flight
+    assert ticks[-1] == []
+
+
 def test_close_sets_and_clears_busy(tmp_path, monkeypatch, spy):
     _repo, cfg, cid = _env(tmp_path, monkeypatch)
     seen = []
@@ -77,7 +95,7 @@ def test_close_sets_and_clears_busy(tmp_path, monkeypatch, spy):
     (busy,) = seen
     assert busy["kind"] == "close" and busy["campaign"] == cid
     assert busy["budget_s"] == E.settings(cfg)["gate_budget_s"] and busy["since"]
-    assert ("pop", ("busy",)) in spy
+    assert ("end_busy", None) in spy
 
 
 def test_close_busy_cleared_when_close_raises(tmp_path, monkeypatch):
@@ -191,6 +209,10 @@ def test_drain_stamps_busy_in_flight_and_slot_freed_at(tmp_path, monkeypatch, sp
     assert drain_calls, spy
     harvest = [kw for kw, _ in drain_calls if "in_flight" in kw]
     assert harvest and harvest[-1]["in_flight"] == [] and "slot_freed_at" in harvest[-1]
+    listed = [i for i, (kw, _) in enumerate(spy) if isinstance(kw, dict)
+              and kw.get("in_flight") == [a]]
+    last = max(i for i, (kw, _) in enumerate(spy) if isinstance(kw, dict) and "in_flight" in kw)
+    assert listed and listed[0] < last           # the flight was published before it emptied
     assert all("tick_at" not in kw for kw, _ in drain_calls)    # a drain does not tick
     busy = drain_calls[0][1]
     assert busy["budget_s"] > 0 and busy["campaign"] is None
@@ -214,6 +236,47 @@ def test_runner_journal_silent_suppressed_during_open_and_drain(tmp_path):
             assert E.runner_silence(cfg, at(660), sett) is None        # budget + overdue_grace_s
             d = E.runner_silence(cfg, at(661), sett)
             assert d["busy"]["kind"] == kind
+    finally:
+        lease.release()
+
+
+def test_ending_a_step_stamps_activity_in_the_same_write(tmp_path, monkeypatch):
+    """Between clearing `busy` and the end-of-tick `tick_at` the watchdog must not see a
+    quiet loop: `_busy` drops `busy` and stamps `busy_ended_at` together."""
+    from test_agentic_events import _cfg
+    from test_agentic_watchdog_gaps import at, iso
+    cfg = _cfg(tmp_path)
+    sett = E.settings(cfg)
+    lease = L.acquire(cfg, ["test"], ttl_s=10 ** 6)
+    try:
+        lease.update_info(poll_interval_s=20, tick_at=iso(-20))
+        with Q._busy(lease, "open", campaign="c1", budget_s=600):
+            assert E.runner_silence(cfg, at(100), sett) is None      # within the budget
+            monkeypatch.setattr(L, "now_iso", lambda now=None: iso(100))
+        info = L.read_lease(cfg)
+        assert "busy" not in info and info["busy_ended_at"] == iso(100)
+        assert L.lease_status(cfg)["busy_ended_at"] == iso(100)
+        assert E.runner_silence(cfg, at(101), sett) is None
+        assert E.runner_silence(cfg, at(160), sett) is None
+        d = E.runner_silence(cfg, at(161), sett)                      # a real stall again
+        assert d["busy_ended_at"] == iso(100) and d["silent_s"] == 61
+        keys = {k for k, *_ in E.watchdog_checks(cfg, at(161))}
+        assert f"runner_journal_silent:{lease.info['pid']}:{iso(100)}" in keys
+    finally:
+        lease.release()
+
+
+def test_unparseable_busy_since_is_over_budget(tmp_path):
+    from test_agentic_events import _cfg
+    from test_agentic_watchdog_gaps import at, iso
+    cfg = _cfg(tmp_path)
+    lease = L.acquire(cfg, ["test"], ttl_s=10 ** 6)
+    try:
+        lease.update_info(poll_interval_s=20, tick_at=iso(0),
+                          busy={"kind": "open", "campaign": None, "since": "garbage",
+                                "budget_s": 600})
+        d = E.runner_silence(cfg, at(100), E.settings(cfg))
+        assert d is not None and d["busy"]["since"] == "garbage"
     finally:
         lease.release()
 

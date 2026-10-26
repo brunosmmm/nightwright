@@ -873,10 +873,7 @@ def _busy(lease, kind: str, *, campaign: str | None = None, budget_s: float):
     try:
         yield
     finally:
-        if prev is not None:
-            lease.update_info(busy=prev)
-        else:
-            lease.pop_info("busy")
+        lease.end_busy(prev)          # one write: drop `busy` and stamp `busy_ended_at`
 
 
 def _do_open(ctx: _Ctx, state: dict) -> StepResult:

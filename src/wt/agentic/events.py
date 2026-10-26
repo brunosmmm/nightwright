@@ -462,7 +462,9 @@ def runner_silence(cfg, now, sett) -> dict | None:
     from .queue import journal_tail_for_pid
     rec = journal_tail_for_pid(cfg, lease.get("pid"))
     journal_ts = rec.get("ts") if rec else None
-    ages = [a for a in (_age_s(tick_at, now), _age_s(journal_ts, now)) if a is not None]
+    ended = lease.get("busy_ended_at")       # a step just ended; the tick stamp comes later
+    ages = [a for a in (_age_s(tick_at, now), _age_s(journal_ts, now), _age_s(ended, now))
+            if a is not None]
     if not ages:
         return None
     silent = min(ages)
@@ -472,13 +474,13 @@ def runner_silence(cfg, now, sett) -> dict | None:
         return None
     busy = lease.get("busy")
     if isinstance(busy, dict):
-        if (_age_s(busy.get("since"), now) or 0) <= float(busy.get("budget_s") or 0) \
-                + sett["overdue_grace_s"]:
+        age = _age_s(busy.get("since"), now)       # unparseable counts as over budget
+        if age is not None and age <= float(busy.get("budget_s") or 0) + sett["overdue_grace_s"]:
             return None
     else:
         busy = None
     return {"pid": lease.get("pid"), "last_journal_ts": journal_ts, "last_tick_at": tick_at,
-            "silent_s": round(silent), "interval_s": interval,
+            "busy_ended_at": ended, "silent_s": round(silent), "interval_s": interval,
             "heartbeat_age_s": lease.get("heartbeat_age_s"),
             "draining": _drain_info(lease, now), "busy": busy}
 
@@ -630,7 +632,8 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
                      if k not in ("campaign", "spec_id", "waiting_since")}))
     silent_ = runner_silence(cfg, now, sett)
     if silent_:
-        last = min((t for t in (silent_["last_tick_at"], silent_["last_journal_ts"]) if t),
+        last = min((t for t in (silent_["last_tick_at"], silent_["last_journal_ts"],
+                          silent_["busy_ended_at"]) if t),
                    key=lambda t: _age_s(t, now) or 0)
         out.append((f"runner_journal_silent:{silent_['pid']}:{last}", "runner_journal_silent",
                     None, silent_))

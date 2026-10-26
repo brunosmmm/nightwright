@@ -475,6 +475,16 @@ conductor never kills a runner in the middle of a merge.
   republish, a lease interval of 5 vs the cfg fallback, and `active` with an in-flight id
   that is not an active-state campaign (slots 3, on `waiting_not_admitted` and
   `ready_not_admitted`).
+- **Review round 2.** `_busy` now leaves a step through `Lease.end_busy(prev)`: one locked
+  write that drops `busy` (or restores the enclosing step) and stamps `busy_ended_at`, so no
+  false `runner_journal_silent` fires between the end of an open or close and the end-of-tick
+  `tick_at`. `busy_ended_at` is a lease loop key; `runner_silence` measures silence from the
+  newest of `tick_at`, `busy_ended_at` and the holder's journal record, carries
+  `busy_ended_at` in its data, and the watchdog key uses the same `last`. `tick_at` itself is
+  unchanged (the drain still does not tick). An unparseable `busy.since` counts as over
+  budget. Tests added: published `in_flight` holds the real pool ids (run and drain), the
+  end-of-step stamp, the unparseable `since`, re-arm on a new holder record, and no
+  `waiting_not_admitted` at exactly `waiting_grace_s`.
 
 ## Rollout / migration
 
