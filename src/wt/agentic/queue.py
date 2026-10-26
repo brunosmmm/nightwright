@@ -3009,7 +3009,7 @@ def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
             fl.runs.append((run_id, getattr(req, "timeout_s", None)))
         elif step.kind == "spec_review":
             fl.tasks.append((step, pool.submit(_do_spec_review, ctx, st, step, run_id, req,
-                                               budget)))
+                                               budget), None))
             rows[st["id"]]["run_ids"].append(run_id)
             fl.runs.append((run_id, getattr(req, "timeout_s", None)))
         else:
