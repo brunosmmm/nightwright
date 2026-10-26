@@ -61,7 +61,8 @@ def test_review_uses_the_project_profile_layer(tmp_path, monkeypatch):          
     assert r.exit_code == 0, r.output
     assert json.loads(r.stdout)["model"] == "opus"
     (prof / "balanced.yaml").write_text("schema: wt.profile.v1\nbogus: 1\n")
-    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json",
+                                   "--force"])                         # SPEC-0230: 2nd round
     assert r.exit_code != 0 and "balanced.yaml: bogus: unknown key" in r.output
 
 
