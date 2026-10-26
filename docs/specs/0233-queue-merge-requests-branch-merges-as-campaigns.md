@@ -336,6 +336,10 @@ For `state["kind"] == "merge"`:
   another worktree adopts it (`merge.own_worktree` becomes false, `repo.worktree` follows); one
   whose planned worktree already exists skips `git worktree add` and re-runs setup. The queue's
   `finish` now carries the `merge` block across so that adoption is persisted.
+- Close parks `worktree_dirty` ("worktree <path> is on <cur>, not <branch>", `resume_to:
+  CLOSING`) when a merge request's worktree is no longer on the requested branch, before any
+  rebase. The re-open never adopts the main checkout: it parks `open_failed` ("the main checkout
+  is on <branch>; switch it to <base>").
 
 ## Clock Log
 

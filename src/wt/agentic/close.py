@@ -323,6 +323,15 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> Prep
                              "CLOSING", events))
     _abort_leftover_rebase(worktree)
 
+    if merge_request:
+        # SPEC-0233 G3: the requester may have switched their checkout while we waited; never
+        # rebase or gate a branch other than the requested one
+        cur = git.current_branch(worktree)
+        if cur != state["repo"]["branch"]:
+            return decided(_park("worktree_dirty", f"worktree {worktree} is on "
+                                 f"{cur or 'a detached HEAD'}, not {state['repo']['branch']}",
+                                 "CLOSING", events))
+
     if not merge_request:
         # 0. spec-change guard (SPEC-0186): the governing text must be what was accepted
         ok, synthetic, guard_events = spec_guard(cfg, state)

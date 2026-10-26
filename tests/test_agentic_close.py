@@ -450,3 +450,17 @@ def test_merge_request_in_progress_rebase_of_the_requester_is_parked_not_aborted
     assert out.park["resume_to"] == "CLOSING" and "rebase in progress" in out.park["detail"]
     assert (world["wt"] / "feature.txt").read_text() == "resolved by hand\n"
     assert CL._rebase_in_progress(world["wt"])
+
+
+def test_merge_request_parks_when_the_adopted_worktree_left_the_branch(world):
+    st = _merge_world(world)
+    G.git(world["wt"], "switch", "-q", "-c", "wip")                  # the requester moved on
+    wip = G.rev_parse(world["wt"])
+    _commit(world["root"], "other.txt", "x\n", "base moves")
+    out = CL.close_campaign(world["cfg"], st, _pcfg(world))
+    assert out.next_state == "PARKED" and out.park["reason"] == "worktree_dirty"
+    assert out.park["resume_to"] == "CLOSING" and "not wt/c1" in out.park["detail"]
+    assert G.rev_parse(world["wt"]) == wip                           # nothing was rebased
+    G.git(world["wt"], "switch", "-q", "--detach")
+    out = CL.close_campaign(world["cfg"], st, _pcfg(world))
+    assert out.park["reason"] == "worktree_dirty" and "detached HEAD" in out.park["detail"]

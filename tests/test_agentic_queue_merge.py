@@ -297,6 +297,19 @@ def test_open_adopts_a_worktree_the_branch_got_while_queued(world, monkeypatch):
     assert other.is_dir()                                         # adopted, so left in place
 
 
+def test_open_never_adopts_the_main_checkout(world, monkeypatch):
+    repo, cfg, tmp = world
+    branch_wt(tmp, repo, adopt=False)
+    cid = queue_merge(cfg, monkeypatch)
+    assert S.read_state(cfg, cid)["merge"]["own_worktree"] is True
+    _git(repo, "checkout", "-q", "fix/typo")                      # the human looks at it
+    run_until_idle(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed", st
+    assert st["park"]["resume_to"] == "QUEUED" and "main checkout" in st["park"]["detail"]
+    assert st["merge"]["own_worktree"] is True and st["repo"]["worktree"] != str(repo)
+
+
 def test_e2e_merge_adopted_worktree(world, monkeypatch):
     repo, cfg, tmp = world
     wt = branch_wt(tmp, repo)

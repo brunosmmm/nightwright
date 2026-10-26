@@ -957,6 +957,8 @@ def _do_open_merge(ctx: _Ctx, state: dict, res: StepResult) -> StepResult:
         if merge.get("own_worktree"):
             elsewhere = git.worktree_for_branch(root, branch)
             if elsewhere is not None and elsewhere != worktree.resolve():
+                if elsewhere == root.resolve():
+                    raise ValueError(f"the main checkout is on {branch}; switch it to {base}")
                 # the branch got a worktree since the request: adopt it, never fight it
                 merge["own_worktree"] = False
                 repo["worktree"] = str(elsewhere)
@@ -971,8 +973,11 @@ def _do_open_merge(ctx: _Ctx, state: dict, res: StepResult) -> StepResult:
                     tail = "\n".join(((r.stdout or "") + (r.stderr or "")).splitlines()[-20:])
                     raise GitError([cmd], r.returncode, tail)
         else:
+            if worktree.resolve() == root.resolve():
+                raise ValueError(f"the main checkout is on {branch}; switch it to {base}")
             if not worktree.is_dir():
-                raise ValueError(f"worktree {worktree} no longer exists")
+                raise ValueError(f"worktree {worktree} no longer exists "
+                                 "(git worktree prune if it was removed)")
             if git.current_branch(worktree) != branch:
                 raise ValueError(f"worktree {worktree} is not on branch {branch}")
             if not git.is_clean(worktree, untracked=True):
