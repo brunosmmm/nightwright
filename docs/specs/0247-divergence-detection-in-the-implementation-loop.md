@@ -88,8 +88,17 @@ row.
 - `Round = {kind: "review"|"gate", findings: [Finding], failing_gates: frozenset[str]}`.
   `kind` comes from the closing reason. `failing_gates` are the `name`s of the results with
   `ok: false` in the round's last `gate` event.
-- Only findings with `severity` in `{must_fix, major, minor}` count. `nit`, `info` and
-  findings by `persona` `human` or `close` are ignored.
+- Only findings with `severity` in `{must_fix, major, minor}` count, and only those whose
+  `persona` is a reviewer (`personas.REVIEWER_PERSONAS`), `review_triager` or
+  `gate_triager`. `nit` and `info` are ignored, and so are the personas `implementer`,
+  `human` and `close`. `implementer` is excluded because `queue._record_run` writes each
+  implementer `blockers` entry as a `major` finding with the fixed title "implementer
+  blocker". Two unrelated blockers would match each other and trip a false `recurrence`.
+- **Waived findings** (SPEC-0206) remain as `finding` events. The ledger does not link a
+  waiver id to its event, so they are not removed. Waivers are only allowed on `minor`/`nit`
+  findings, and `trend` and `recurrence` count only `must_fix`/`major` (below). So a waived
+  finding can affect only `churn`, which is intended: reviewers who keep raising new minors
+  are part of the churn picture.
 - **Reset point:** rounds that end before the latest `resume` event whose preceding park was
   `diverging` are dropped. A resumed campaign has to diverge again, on fresh rounds, before
   it trips again.
@@ -99,7 +108,8 @@ row.
 `key(f)`: the lower-cased title with every run of non-alphanumerics collapsed to one space,
 plus `f.ac` when present. Two findings **match** when their keys are equal, or when they have
 the same `ac` (or both have none) and the Jaccard similarity of their title word sets
-(words of 3+ letters) is at least `similarity` (default 0.6). Persona is not part of the
+(words of 3+ letters) is at least `similarity` (default 0.6). When either word set is empty
+(titles such as "UI" or "a/b"), only equal keys match. Persona is not part of the
 identity: a test reviewer and a conformance reviewer raising the same defect is the same
 defect.
 
@@ -107,20 +117,33 @@ defect.
 
 Signals are computed over the last `window` rounds (default 3). Nothing is assessed with
 fewer than `min_rounds` rounds (default 2).
-- **trend**: the blocking count (`must_fix` + `major`) does not decrease from one round to
-  the next across the window, and the last count is above 0. Evidence: the counts.
-- **churn**: in each of the last two rounds, at least `churn_ratio` (default 0.75) of the
-  findings have no match in the round before, and the round has at least 2 findings.
-  Evidence: the ratios.
-- **recurrence**: a finding of the last round matches a finding of some earlier round *i*,
-  and has no match in some round *j* with i < j < last (it was addressed, then came back).
-  Evidence: the recurring titles with their round numbers.
-- **gate_repeat**: the same gate name is in `failing_gates` of each of the last
-  `min_rounds` gate rounds. Evidence: the gate names.
+- **trend** (needs `window` rounds): the blocking count (`must_fix` + `major`) does not
+  decrease from one round to the next across the last `window` rounds, and the last count
+  is above 0. Evidence: the counts.
+- **churn** (needs 3 rounds, because it compares rounds 2 and 3 of the window with the
+  round before each): in each of the last two rounds, at least `churn_ratio` (default
+  0.75) of the findings have no match in the round before, and the round has at least 2
+  findings. Evidence: the ratios.
+- **recurrence** (needs 3 rounds): a `must_fix`/`major` finding of the last round matches a
+  `must_fix`/`major` finding of some earlier round *i*, and has no match in some round *j*
+  with i < j < last (it was addressed, then came back). Evidence: the recurring titles with
+  their round numbers.
+- **gate_repeat** (needs `window` rounds): the last `window` rounds are all gate rounds
+  (consecutive, with no review round between them), and the same gate name is in the
+  `failing_gates` of each. Evidence: the gate names.
 
 **Trip rule:** `recurrence` alone trips, and so do any two of the other three. `recurrence` is
 the strongest evidence that fixes are not sticking. A single trend or churn reading is common
-in a loop that is healthy. Result: `{"signals": [{"name", "evidence"}], "rounds": n,
+in a loop that is healthy.
+
+`trend` and `gate_repeat` are correlated: each failed gate round also carries the gate
+triager's `must_fix`, so a gate that fails three times in a row with no drop in blocking
+count fires both. That pairing tripping is **intended**. Three consecutive triage-fix
+rounds on the same failing gate, with nothing getting better, is a stuck loop. Because
+both signals need `window` (3) rounds, a gate that needs a second or third attempt never
+trips. Only the third failed fix in a row can trip, and that is the point where today's
+`thorough` profile still has a loop left and `balanced` is one loop from
+`loop_exhausted`. Result: `{"signals": [{"name", "evidence"}], "rounds": n,
 "loop": counters.loops}`.
 
 ### Settings
@@ -162,7 +185,8 @@ A new decision-table row for `parked diverging`:
      spec.
    - **escalate**: a scope decision (split or narrow what gets built) or no clear pick.
      Apply with `wt queue escalate <id> --question … --option continue --option rework
-     --option split --recommend N --fact <evidence>`.
+     --option split --recommend N --fact <evidence> --yes`. Without `--yes`, SPEC-0232's
+     command is a dry run.
 2. Record the decision as a campaign note.
 
 ## Alternatives considered
@@ -180,19 +204,26 @@ A new decision-table row for `parked diverging`:
 
 - [ ] `rounds()` on a hand-built ledger yields one round per `review_fix`/`triage_fix`
       transition plus the pending one, with the right `kind`, counted findings (`nit`,
-      `info`, human and close findings excluded) and `failing_gates`. Rounds before the
+      `info`, and `implementer`, `human` and `close` findings excluded) and
+      `failing_gates`. Rounds before the
       latest resume from a `diverging` park are dropped.
 - [ ] Finding matching: equal normalised keys match; titles at or above the Jaccard threshold
-      with the same `ac` match; different `ac`s never match.
-- [ ] `trend`, `churn`, `recurrence` and `gate_repeat` each fire on a minimal fixture and stay
-      silent on a converging one (blocking counts 4→2→0, findings repeated rather than new).
+      with the same `ac` match; different `ac`s never match; titles with empty word sets
+      match only on equal keys.
+- [ ] `trend`, `churn`, `recurrence` and `gate_repeat` each fire on a minimal fixture (at
+      their stated minimum round counts) and stay silent on a converging one (blocking
+      counts 4→2→0, findings repeated rather than new). Two implementer blockers in
+      rounds 1 and 3 do not fire `recurrence`. Two consecutive failed gate rounds fire
+      neither `trend` nor `gate_repeat`; three consecutive rounds with the same gate
+      failing and a steady blocking count fire both, and trip.
 - [ ] The trip rule: recurrence alone trips; any two of the other three trip; one of them
       alone does not; fewer than `min_rounds` rounds, or `enabled: false`, never trip.
 - [ ] `divergence.settings` falls back to the default for each wrong-typed or out-of-range
       key.
-- [ ] A FakeRunner campaign under a profile with `loop_max` 4, whose reviewer returns a
-      finding in loops 1 and 3 but not 2, parks `diverging` at the end of loop 3, before
-      `loop_exhausted`. It has a `loop_divergence` event (signals include `recurrence`),
+- [ ] A FakeRunner campaign under a profile with `loop_max` 4 parks `diverging` at the end
+      of loop 3, before `loop_exhausted`. Its reviewer returns blocking finding X in loop
+      1, a different, non-matching blocking finding Y in loop 2 (so the loop continues),
+      and X again in loop 3. It has a `loop_divergence` event (signals include `recurrence`),
       `park.resume_to` `IMPLEMENTING`, `pending_brief` set, and `park_owner` `conductor`.
 - [ ] After `wt queue resume`, the next implementer run happens, and the campaign does not
       re-park `diverging` on the next fix round, which has fewer than `min_rounds` fresh
@@ -200,8 +231,8 @@ A new decision-table row for `parked diverging`:
 - [ ] A ledger read error inside `check` yields a `divergence check skipped` note and the
       normal `IMPLEMENTING` transition.
 - [ ] `skills/wt-conduct/SKILL.md` has the `diverging` row (continue / rework / escalate with
-      the commands above), asserted by a new check in `tests/test_skills.py`; the existing
-      skill tests pass.
+      the commands above). A new check in `tests/test_skills.py` asserts the row, including
+      `--yes` on the escalate command; the existing skill tests pass.
 - [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
