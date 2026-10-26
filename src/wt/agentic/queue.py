@@ -3596,9 +3596,13 @@ def apply_abandon(cfg, plan: dict) -> dict:
             raise ValueError(f"{cid} is {st.get('state')}; only PARKED, QUEUED or WAITING "
                              f"campaigns can be abandoned")
         events = []
-        if plan.get("remove_worktree"):
+        # re-derived from live state: never remove a merge request's adopted (requester's) worktree
+        adopted = st.get("kind") == "merge" and not (st.get("merge") or {}).get("own_worktree")
+        live_wt = (st.get("repo") or {}).get("worktree")
+        remove = bool(plan.get("remove_worktree")) and not adopted and bool(live_wt)
+        if remove:
             try:
-                git.worktree_remove((st.get("repo") or {}).get("root"), plan["worktree"], force=True)
+                git.worktree_remove((st.get("repo") or {}).get("root"), live_wt, force=True)
             except GitError as e:
                 events.append(("finding", {"persona": "human", "severity": "minor",
                                            "gate": "cleanup", "title": "worktree removal failed",
@@ -3609,7 +3613,7 @@ def apply_abandon(cfg, plan: dict) -> dict:
         if st.get("kind") == "idea":
             events += _unlink_idea(cfg, st)
         events.append(("close", {"mode": "abandoned", "merged_sha": None, "pr_url": None,
-                                 "gates_seq": None, "worktree_removed": bool(plan.get("remove_worktree"))}))
+                                 "gates_seq": None, "worktree_removed": remove}))
         return _transition(cfg, st, "ABANDONED", "abandoned", by="human", extra_events=events)
 
 

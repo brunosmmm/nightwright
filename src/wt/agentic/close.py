@@ -414,9 +414,12 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> Prep
         detail = ""
         if merge_request:
             detail = _gate_failure_detail(gate_run, target, target_sha)
-            # the tree held no untracked files before the gate, so what is untracked now is the
-            # gate's own output (reports, coverage); leaving it would park the resume as dirty
-            git.git(worktree, "clean", "-fdq", check=False)
+            # In a worktree wt created, the tree held no untracked files before the gate, so what
+            # is untracked now is the gate's own output (reports, coverage); leaving it would park
+            # the resume as dirty. An adopted worktree is the requester's: anything untracked there
+            # may be their new work, so nothing is deleted (the resume parks `worktree_dirty`).
+            if (state.get("merge") or {}).get("own_worktree"):
+                git.git(worktree, "clean", "-fdq", check=False)
         return decided(CloseOutcome("TRIAGING", gate_run=gate_run, events=events,
                                     gate_detail=detail))
     return PreparedClose(target=target, target_sha=target_sha, head=head, gate_run=gate_run,

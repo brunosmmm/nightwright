@@ -530,14 +530,16 @@ def test_close_parks_when_the_policy_changed_to_pr(world, monkeypatch):
     assert _git(wt, "rev-parse", "HEAD") == tip                    # nothing rebased or pushed
 
 
-def test_red_gate_cleans_the_untracked_gate_artifacts(tmp_path, monkeypatch):
+def test_red_gate_cleans_the_untracked_gate_artifacts_of_a_created_worktree(tmp_path, monkeypatch):
     repo = make_repo(tmp_path, test_gate="echo report > report.out; test -f feature.txt")
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
-    wt = branch_wt(tmp_path, repo, files={"other.txt": "no feature.txt yet\n"})
+    branch_wt(tmp_path, repo, files={"other.txt": "no feature.txt yet\n"}, adopt=False)
     cid = queue_merge(cfg, monkeypatch)
     run_until_idle(cfg, monkeypatch)
     st = S.read_state(cfg, cid)
     assert st["state"] == "PARKED" and st["park"]["reason"] == "gates_failed", st
+    wt = Path(st["repo"]["worktree"])
+    assert st["merge"]["own_worktree"] is True
     assert not (wt / "report.out").exists() and _git(wt, "status", "--porcelain") == ""
     _write(wt, "feature.txt", "fixed\n")
     _git(wt, "add", "-A")
@@ -546,3 +548,38 @@ def test_red_gate_cleans_the_untracked_gate_artifacts(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     run_until_idle(cfg, monkeypatch)
     assert S.read_state(cfg, cid)["state"] == "MERGED"
+
+
+def test_red_gate_never_deletes_files_in_an_adopted_worktree(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path, test_gate="echo report > report.out; test -f feature.txt")
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    wt = branch_wt(tmp_path, repo, files={"other.txt": "no feature.txt yet\n"})
+    cid = queue_merge(cfg, monkeypatch)
+    run_until_idle(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "gates_failed", st
+    assert st["merge"]["own_worktree"] is False
+    assert (wt / "report.out").exists()              # nothing is deleted in the requester's tree
+    _write(wt, "notes.txt", "requester's new work\n")
+    _write(wt, "feature.txt", "fixed\n")
+    _git(wt, "add", "feature.txt")
+    _git(wt, "commit", "-q", "-m", "fix")
+    r = run_cli(cfg, monkeypatch, ["queue", "resume", cid, "--yes"])
+    assert r.exit_code == 0, r.output
+    run_until_idle(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "worktree_dirty", st
+    assert (wt / "notes.txt").read_text() == "requester's new work\n"
+    assert (wt / "report.out").exists()
+
+
+def test_apply_abandon_rederives_remove_worktree_from_live_state(world):
+    repo, cfg, tmp = world
+    wt = branch_wt(tmp, repo)
+    st = Q.apply_merge(cfg, plan(cfg))
+    st["state"], st["park"] = "PARKED", {"reason": "human", "resume_to": "CLOSING"}
+    S.write_state(cfg, st["id"], st)
+    p = Q.plan_abandon(cfg, st["id"])
+    p["remove_worktree"] = True                      # a stale or forged plan
+    Q.apply_abandon(cfg, p)
+    assert wt.exists() and _git(repo, "rev-parse", "--verify", "fix/typo")
