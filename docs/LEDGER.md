@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (52/70 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (52/71 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -168,6 +168,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0249](./specs/0249-tui-mailbox-tab.md) TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human — accepted
   - [ ] [SPEC-0250](./specs/0250-tui-escalation-inbox.md) TUI escalation inbox: open escalations first, answer by choice or text, withdraw — accepted
   - [ ] [SPEC-0251](./specs/0251-tui-events-tab.md) TUI events tab: live event stream with filters, current watchdog alerts, ping digest and followers — accepted
+  - [ ] [SPEC-0252](./specs/0252-resolver-verification-patch-equivalence.md) Conflict resolver verification by patch equivalence, runner commits resolver changes — accepted
 
 ## Active & planned
 
@@ -196,6 +197,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0249](./specs/0249-tui-mailbox-tab.md) | TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0250](./specs/0250-tui-escalation-inbox.md) | TUI escalation inbox: open escalations first, answer by choice or text, withdraw | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0251](./specs/0251-tui-events-tab.md) | TUI events tab: live event stream with filters, current watchdog alerts, ping digest and followers | feature | accepted | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0252](./specs/0252-resolver-verification-patch-equivalence.md) | Conflict resolver verification by patch equivalence, runner commits resolver changes | feature | accepted | M9: agentic workflow | 2026-10-25 |
 
 ## Done
 
