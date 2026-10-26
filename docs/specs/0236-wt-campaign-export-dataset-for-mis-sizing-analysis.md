@@ -308,7 +308,9 @@ contract.
 
 ### Test record (2026-10-25)
 
-- `uv run pytest tests/test_agentic_campaign_export.py`: 31 passed, 1 skipped (Parquet round trip
+- `uv run pytest tests/test_agentic_campaign_export.py`: 42 passed, 1 skipped (loop 2 added the
+  pinned column types, the terminal-state/edge/escalation cases, `--json` notes, plain output,
+  UTF-8 writes under an ASCII default encoding and failed-write cleanup); earlier: 31 passed, 1 skipped (Parquet round trip
   needs `pyarrow`, which is not installed in the project env). Covers column constants and key
   order, the hand-computed campaign row (reset-loops and raise-cap resumes, `retry_gate`, a
   `triage_retry`, both fix-loop kinds, a PARKED interval), pre-SPEC-0219 and no-`spec_at_open.md`
@@ -316,7 +318,7 @@ contract.
   order, the CLI (default dir and same-second `-2`, `--out` rules, filters with a `--since`
   boundary day in `cfg["_tz"]`, `--stdout`, invalid flag combinations, `--json` manifest and
   notes, CSV encoding), the read-only guard and the missing-`pyarrow` path.
-- `uv run --with pyarrow pytest tests/test_agentic_campaign_export.py -k parquet`: 2 passed
+- `uv run --with pyarrow pytest tests/test_agentic_campaign_export.py`: 43 passed (loop 2); earlier `-k parquet`: 2 passed
   (typed Parquet round trip and missing-pyarrow path).
 - Manual: `wt campaign export --json` against the real data dir (46 campaigns, 196 runs, 393
   findings); sizing, profile and cost for the latest campaigns match `wt campaign show`.
@@ -330,6 +332,10 @@ contract.
   with the export directory (the `manifest.json` file does not carry it); `--json` is ignored
   with `--stdout`. A campaign with a null/unparseable `created_at` is dropped when `--since` is
   given. `wall_s` is null for a terminal campaign with no terminal `transition` event.
+- Files are written as UTF-8 (`export._atomic_write` got an optional `encoding`, default
+  unchanged). Parquet tables are all built before any file is written, and a failed write removes
+  what it wrote (and the directory, if it was new) and exits with `export failed, nothing
+  written: <reason>`, so the same `--out` can be retried.
 
 ## Clock Log
 

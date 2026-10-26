@@ -321,16 +321,20 @@ def have_pyarrow() -> bool:
     return True
 
 
-def _write_parquet(path: Path, rows, columns) -> None:
+def _parquet_table(rows, columns):
     import pyarrow as pa
-    import pyarrow.parquet as pq
 
     kinds = {"str": pa.string(), "int": pa.int64(), "float": pa.float64(), "bool": pa.bool_(),
              "json": pa.string()}
     schema = pa.schema([(n, kinds[t]) for n, t in columns])
     cells = [{n: (None if r.get(n) is None else json.dumps(r[n], ensure_ascii=False) if t == "json"
                   else r[n]) for n, t in columns} for r in rows]
-    table = pa.Table.from_pylist(cells, schema=schema)
+    return pa.Table.from_pylist(cells, schema=schema)
+
+
+def _write_parquet(path: Path, table) -> None:
+    import pyarrow.parquet as pq
+
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".wt-export-", suffix=".tmp")
     os.close(fd)
@@ -355,17 +359,22 @@ def write_export(tables, out_dir, fmt, *, filters) -> dict:
         raise ValueError(f"unknown format {fmt!r}")
     out_dir = Path(out_dir)
     manifest_tables = {}
+    # Build every Parquet table before writing one: a value that does not fit its column type
+    # (a hand-edited ledger) must fail before the directory holds a partial export.
+    arrow = ({name: _parquet_table(tables[name], COLUMNS[name]) for name in TABLES}
+             if fmt == "parquet" else {})
     for name in TABLES:
         columns, rows = COLUMNS[name], tables[name]
         fname = f"{name}.{fmt}"
         if fmt == "parquet":
-            _write_parquet(out_dir / fname, rows, columns)
+            _write_parquet(out_dir / fname, arrow[name])
         else:
-            _atomic_write(out_dir / fname, render(rows, columns, fmt))
+            _atomic_write(out_dir / fname, render(rows, columns, fmt), encoding="utf-8")
         manifest_tables[name] = {"file": fname, "rows": len(rows),
                                  "columns": [[n, t] for n, t in columns]}
     manifest = {"schema": EXPORT_SCHEMA, "generated_at": store.now_iso(),
                 "wt_version": _wt_version(), "format": fmt, "filters": filters,
                 "tables": manifest_tables, "notes": list(NOTES)}
-    _atomic_write(out_dir / "manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    _atomic_write(out_dir / "manifest.json",
+                  json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return manifest

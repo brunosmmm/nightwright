@@ -363,10 +363,19 @@ def attach(campaign_group):
         if to_stdout:
             sys.stdout.write(CE.render(tables[table], CE.COLUMNS[table], fmt))
             return
+        existed = bool(out) and Path(out).expanduser().exists()
         out_dir = _export_dir(cfg, out, now)
         filters = {"project": project, "since": since.date().isoformat() if since else None,
                    "terminal_only": terminal_only}
-        manifest = CE.write_export(tables, out_dir, fmt, filters=filters)
+        try:
+            manifest = CE.write_export(tables, out_dir, fmt, filters=filters)
+        except Exception as e:
+            # never leave a half-written export: the directory was new or empty before
+            for p in out_dir.iterdir():
+                p.unlink()
+            if not existed:
+                out_dir.rmdir()
+            raise click.ClickException(f"export failed, nothing written: {e}")
         if as_json:
             _dump_json({**manifest, "out": str(out_dir)})
             return

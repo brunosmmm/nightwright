@@ -29,12 +29,12 @@ from .specs import outbox_dir, write_outbox_index
 from .org import load_tasks, filter_tasks
 
 
-def _atomic_write(path, content):
+def _atomic_write(path, content, encoding=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".wt-export-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(content)
         os.replace(tmp, path)
     finally:

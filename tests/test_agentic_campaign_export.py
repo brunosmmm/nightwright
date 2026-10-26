@@ -178,6 +178,41 @@ def test_columns_and_key_order(cfg):
             assert list(row) == [n for n, _ in cols]
 
 
+def test_column_types_pinned():
+    """Under v1 a column may not be retyped (SPEC-0236 Design): pin every (name, type)."""
+    assert CE.CAMPAIGN_COLUMNS == (
+        ("campaign", "str"), ("kind", "str"), ("spec_id", "str"), ("project", "str"),
+        ("state", "str"), ("outcome", "str"), ("created_at", "str"), ("ended_at", "str"),
+        ("wall_s", "int"), ("active_s", "int"),
+        ("size", "str"), ("tone", "str"), ("profile", "str"), ("profile_source", "str"),
+        ("sizing_rationale", "str"),
+        ("loop_max", "int"), ("cap_usd", "float"), ("cap_raises", "int"), ("models", "json"),
+        ("ac_count", "int"), ("spec_lines", "int"),
+        ("loops", "int"), ("loop_resets", "int"), ("runs", "int"), ("runs_by_persona", "json"),
+        ("gate_runs", "int"), ("gate_failures", "int"), ("gate_retries", "int"),
+        ("triage_retries", "int"), ("parks", "int"), ("park_reasons", "json"),
+        ("cost_usd", "float"), ("cost_by_persona", "json"), ("cost_cap_frac", "float"),
+        ("time_in_state_s", "json"), ("review_score", "int"), ("must_fix_count", "int"),
+        ("finding_count", "int"), ("waived_count", "int"),
+        ("close_mode", "str"), ("merged_sha", "str"), ("signals", "json"))
+    assert CE.RUN_COLUMNS == (
+        ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"),
+        ("tone", "str"),
+        ("run_id", "str"), ("persona", "str"), ("model", "str"), ("effort", "str"),
+        ("max_budget_usd", "float"), ("timeout_s", "int"), ("started_at", "str"),
+        ("duration_s", "float"), ("cost_usd", "float"), ("charged_usd", "float"),
+        ("budget_frac", "float"),
+        ("exit_code", "int"), ("is_error", "bool"), ("timed_out", "bool"),
+        ("interrupted", "bool"), ("transient", "bool"), ("verdict_status", "str"),
+        ("status", "str"),
+        ("input_tokens", "int"), ("output_tokens", "int"), ("cache_read_tokens", "int"))
+    assert CE.FINDING_COLUMNS == (
+        ("campaign", "str"), ("spec_id", "str"),
+        ("seq", "int"), ("ts", "str"), ("state_at", "str"),
+        ("persona", "str"), ("severity", "str"), ("gate", "str"), ("ac", "str"),
+        ("title", "str"), ("detail", "str"), ("files", "json"))
+
+
 # ---- the campaign row --------------------------------------------------------------------
 
 def test_hand_computed_campaign_row(cfg):
@@ -195,6 +230,9 @@ def test_hand_computed_campaign_row(cfg):
     assert tis["REVIEWING"] == (10 + 10) * 60        # 90..100, 175..185
     assert tis["PARKED"] == 60 * 60 and tis["CLOSING"] == 5 * 60
     assert sum(tis.values()) == r["wall_s"]
+    assert "MERGED" not in tis                      # a terminal state gets no interval
+    assert set(tis) == {"QUEUED", "OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING",
+                        "PARKED", "CLOSING"}
     assert r["active_s"] == r["wall_s"] - (10 + 60) * 60      # not QUEUED, not PARKED
     assert r["runs_by_persona"] == {"implementer": 2, "gate_triager": 2}
     assert r["models"] == {"implementer": "m-impl2", "gate_triager": "m-tri2"}
@@ -221,6 +259,14 @@ def test_open_campaign_runs_to_now(cfg):
     assert r["wall_s"] == int((NOW - T0).total_seconds())
     assert r["time_in_state_s"]["IMPLEMENTING"] == int((NOW - T0).total_seconds()) - 20 * 60
     assert r["active_s"] == r["wall_s"] - 10 * 60
+
+
+def test_terminal_without_terminal_transition(cfg):
+    make(cfg, "C-NT", [(10, "transition", tr("QUEUED", "OPENING"))], state="ABANDONED")
+    r = row_of(cfg, "C-NT")
+    assert r["outcome"] == "ABANDONED" and r["ended_at"] is None and r["wall_s"] is None
+    assert "ABANDONED" not in r["time_in_state_s"]
+    assert r["signals"] == ["abandoned"]
 
 
 def test_pre_sizing_and_missing_spec(cfg):
@@ -313,6 +359,12 @@ def test_signal_on_off(name):
     assert CE.signals({}) == []
 
 
+@pytest.mark.parametrize("reason", ["triage_escalated", "review_escalated",
+                                    "implementer_blocked"])
+def test_escalated_each_reason(reason):
+    assert CE.signals({"park_reasons": [reason]}) == ["escalated"]
+
+
 def test_signals_unknown_size_and_order():
     assert CE.signals({"size": None, "active_s": 10 ** 9}) == []
     assert CE.signals({"size": "xl", "active_s": 10 ** 9}) == []
@@ -372,6 +424,23 @@ def test_default_dir_and_same_second(cfg, invoke, monkeypatch):
     assert any("loop_max" in n for n in on_disk["notes"])
     assert any("final cost cap" in n for n in on_disk["notes"])
     assert on_disk["wt_version"] and on_disk["generated_at"]
+    assert {k: v for k, v in m1.items() if k != "out"} == on_disk
+    assert m1["schema"] == "wt.campaign.export.v1" and m1["notes"] == on_disk["notes"]
+    assert any("loop_max" in n for n in m1["notes"])
+    assert any("final cost cap" in n for n in m1["notes"])
+    assert m1["tables"]["findings"]["rows"] == 3
+    assert m1["tables"]["campaigns"]["columns"] == [[n, t] for n, t in CE.CAMPAIGN_COLUMNS]
+
+
+def test_plain_output(cfg, invoke, tmp_path):
+    full_campaign(cfg)
+    d = tmp_path / "plain"
+    r = invoke("--out", str(d))
+    assert r.exit_code == 0, r.output
+    flat = " ".join(r.output.split())
+    assert "exported to" in flat and d.name in flat
+    for line in ("campaigns.jsonl 1 rows", "runs.jsonl 4 rows", "findings.jsonl 3 rows"):
+        assert line in flat
 
 
 def test_out_dir_rules(cfg, invoke, tmp_path):
@@ -412,6 +481,20 @@ def test_filters(cfg, invoke, tmp_path):
         "project": "P", "since": "2026-10-21", "terminal_only": True}
 
 
+def test_since_drops_unparseable_created_at(cfg, invoke, tmp_path):
+    make(cfg, "C-OK", [])
+    make(cfg, "C-NULL", [], created_at=None)
+    make(cfg, "C-BAD", [], created_at="not a date")
+
+    def ids(*args):
+        d = tmp_path / f"o{len(list(tmp_path.iterdir()))}"
+        assert invoke("--out", str(d), *args).exit_code == 0
+        return sorted(c["campaign"] for c in read_jsonl(d / "campaigns.jsonl"))
+
+    assert ids() == ["C-BAD", "C-NULL", "C-OK"]
+    assert ids("--since", "2026-10-01") == ["C-OK"]
+
+
 def test_stdout(cfg, invoke, tmp_path):
     full_campaign(cfg)
     r = invoke("--table", "findings", "--stdout")
@@ -428,13 +511,13 @@ def test_stdout(cfg, invoke, tmp_path):
     (["--stdout"], "--stdout needs --table campaigns|runs|findings"),
     (["--table", "runs"], "--table is only used with --stdout"),
     (["--stdout", "--table", "runs", "--format", "parquet"], "--stdout supports jsonl or csv"),
-    (["--stdout", "--table", "runs", "--out", "/tmp/nope-wt-export"],
-     "--out and --stdout are exclusive"),
+    (["--stdout", "--table", "runs", "--out", "{out}"], "--out and --stdout are exclusive"),
 ])
-def test_invalid_combinations(cfg, invoke, args, msg):
-    r = invoke(*args)
+def test_invalid_combinations(cfg, invoke, tmp_path, args, msg):
+    out = tmp_path / "never-created"
+    r = invoke(*[a.format(out=out) for a in args])
     assert r.exit_code != 0 and msg in r.output
-    assert not (S.agentic_dir(cfg) / "exports").exists()
+    assert not (S.agentic_dir(cfg) / "exports").exists() and not out.exists()
 
 
 def test_csv_encoding(cfg, invoke, tmp_path):
@@ -497,3 +580,63 @@ def test_parquet_without_pyarrow(cfg, invoke, monkeypatch, tmp_path):
     assert r.exit_code != 0
     assert "--format parquet needs pyarrow (pip install pyarrow); use jsonl or csv" in r.output
     assert not d.exists() and not (S.agentic_dir(cfg) / "exports").exists()
+
+
+# ---- failure handling --------------------------------------------------------------------
+
+def test_non_ascii_written_as_utf8(cfg, invoke, tmp_path, monkeypatch):
+    import os
+    make(cfg, "C-U", [(1, "finding", {"persona": "p", "severity": "major",
+                                      "title": "naïve — café → ok"})])
+    real = os.fdopen
+
+    def ascii_locale(fd, mode="r", *a, encoding=None, **kw):
+        return real(fd, mode, *a, encoding=encoding or "ascii", **kw)   # the "locale" default
+
+    monkeypatch.setattr(os, "fdopen", ascii_locale)
+    for fmt in ("jsonl", "csv"):
+        d = tmp_path / fmt
+        r = invoke("--format", fmt, "--out", str(d))
+        assert r.exit_code == 0, r.output
+        assert "naïve — café → ok" in (d / f"findings.{fmt}").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("existed", [False, True])
+def test_failed_write_leaves_no_partial_export(cfg, invoke, tmp_path, monkeypatch, existed):
+    full_campaign(cfg)
+    real, calls = CE._atomic_write, []
+
+    def flaky(path, content, **kw):
+        calls.append(path)
+        if len(calls) == 3:
+            raise OSError("disk full")
+        return real(path, content, **kw)
+
+    monkeypatch.setattr(CE, "_atomic_write", flaky)
+    d = tmp_path / "half"
+    if existed:
+        d.mkdir()
+    r = invoke("--out", str(d))
+    assert r.exit_code != 0 and "export failed, nothing written: disk full" in r.output
+    assert len(calls) == 3
+    assert d.is_dir() == existed and (not existed or list(d.iterdir()) == [])
+    monkeypatch.setattr(CE, "_atomic_write", real)
+    assert invoke("--out", str(d)).exit_code == 0           # the same --out can be retried
+
+
+def test_parquet_type_error_writes_nothing(cfg, invoke, tmp_path, monkeypatch):
+    full_campaign(cfg)
+    monkeypatch.setattr(CE, "have_pyarrow", lambda: True)
+    written = []
+    monkeypatch.setattr(CE, "_write_parquet", lambda *a: written.append(a))
+
+    def table(rows, columns):
+        if columns is CE.RUN_COLUMNS:
+            raise TypeError("Expected bytes, got int")
+        return object()
+
+    monkeypatch.setattr(CE, "_parquet_table", table)
+    d = tmp_path / "pqfail"
+    r = invoke("--format", "parquet", "--out", str(d))
+    assert r.exit_code != 0 and "Expected bytes, got int" in r.output
+    assert written == [] and not d.exists()
