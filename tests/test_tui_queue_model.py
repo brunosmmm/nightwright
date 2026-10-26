@@ -18,20 +18,31 @@ def test_load_queue_sections_order_and_meta(tmp_path):
     repo, cfg, ids = _fixture(tmp_path)
     _campaign(cfg, repo, "SPEC-0001-wait", "WAITING", waiting={"resume_to": "GATING",
                                                                "since": _iso(5)})
+    _campaign(cfg, repo, "SPEC-0001-dirty", "PARKED",
+              park={"reason": "main_dirty", "detail": "main_dirty detail", "resume_to": "GATING"})
+    _campaign(cfg, repo, "SPEC-0001-sized", "QUEUED",
+              sizing={"size": "m", "tone": "high-end", "source": "flag", "reason": "x"})
+    _campaign(cfg, repo, "SPEC-0001-pr", "MERGED", created_min=50, updated_min=4,
+              close={"mode": "pr", "merged_sha": None, "pr_url": "https://x/pull/7"})
     rows, header = AM.load_queue(cfg)
     order = []
     for r in rows:
         if not order or order[-1] != r.section:
             order.append(r.section)
-    assert order == ["conductor", "active", "waiting", "backlog", "delivered"]
+    assert order == ["needs you", "conductor", "active", "waiting", "backlog", "delivered"]
     by = _by(rows)
+    assert by[("needs you", "SPEC-0001-dirty")].meta.startswith("main_dirty · ")
+    assert by[("backlog", "SPEC-0001-sized")].meta.endswith(" · m/high-end")
+    assert "/" not in by[("backlog", ids["ready"])].meta
+    pr = by[("delivered", "SPEC-0001-pr")]
+    assert pr.meta.startswith("MERGED https://x/pull/7 · $1.25 · ")
     park = by[("conductor", ids["parked"])]
     assert park.meta.startswith("rate_limited · ") and park.meta.endswith("429 from the API")
     assert park.actions == ("resume", "prioritize", "abandon")
     impl = by[("active", ids["impl"])]
     assert impl.meta.startswith("IMPLEMENTING · implementer ")
-    assert impl.meta.endswith(" · loops 1/? · $1.25") or " · loops 1/" in impl.meta
-    assert "$1.25" in impl.meta and impl.title == "Trivial feature" and impl.spec == "SPEC-0001"
+    assert " · loops 1/" in impl.meta and impl.meta.endswith(" · $1.25")
+    assert impl.title == "Trivial feature" and impl.spec == "SPEC-0001"
     assert by[("active", ids["gating"])].meta.startswith("GATING · gates · loops")
     wait = by[("waiting", "SPEC-0001-wait")]
     assert wait.meta.endswith("→ GATING") and wait.meta.startswith("waiting ")
@@ -179,3 +190,29 @@ def test_queue_action_raises_plan_errors_and_writes_nothing(tmp_path):
     with pytest.raises(ValueError):
         AM.queue_action(cfg, "prioritize", ids["ready"], priority=9)
     assert _view(cfg, ids["merged"]) == before
+
+
+def test_summary_text_for_each_action():
+    from wt.tui.queue_tab import QueueView
+    s = QueueView._summary
+    assert s("park", "C", {"mode": "immediate", "note": "why"}) == "park C (immediate): why"
+    assert s("park", "C", {"mode": "deferred", "note": "later"}) == "park C (deferred): later"
+    assert s("resume", "C", {"to": "GATING"}) == "resume C → GATING"
+    assert s("resume", "C", {"to": "IMPLEMENTING", "waits_for_slot": True}) == (
+        "resume C → IMPLEMENTING (waits for a slot)")
+    assert s("prioritize", "C", {"from": 3, "to": 1}) == "priority 3 → 1"
+    assert s("abandon", "C", {"remove_worktree": False}) == "abandon C"
+    assert s("abandon", "C", {"remove_worktree": True, "worktree": "/w/C"}) == (
+        "abandon C, removes worktree /w/C")
+
+
+def test_plans_carry_the_keys_the_summary_reads(tmp_path):
+    repo, cfg, ids = _fixture(tmp_path)
+    for action, cid, kw in (("park", ids["ready"], {"reason": "r"}),
+                            ("resume", ids["parked"], {}),
+                            ("prioritize", ids["ready"], {"priority": 1}),
+                            ("abandon", ids["ready"], {})):
+        plan = AM.plan_queue_action(cfg, action, cid, **kw)
+        from wt.tui.queue_tab import QueueView
+        assert QueueView._summary(action, cid, plan).startswith(
+            {"prioritize": "priority"}.get(action, action))

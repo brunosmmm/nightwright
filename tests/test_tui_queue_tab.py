@@ -1,6 +1,7 @@
 """SPEC-0241: the TUI queue tab (Textual pilot tests)."""
 import asyncio
 import json
+import subprocess
 
 import pytest
 
@@ -64,6 +65,24 @@ async def open_queue(app, pilot):
 
 def state_of(cfg, cid):
     return S.read_state(cfg, cid)
+
+
+class spy_titles:
+    """Record every ChoiceScreen (title, choices) while the context is open."""
+    def __enter__(self):
+        from wt.tui.app import ChoiceScreen
+        self.titles, self.cls = [], ChoiceScreen
+        self.real = ChoiceScreen.__init__
+        titles, real = self.titles, self.real
+
+        def spy(this, title, choices, current=""):
+            titles.append((title, list(choices)))
+            real(this, title, choices, current)
+        ChoiceScreen.__init__ = spy
+        return self.titles
+
+    def __exit__(self, *exc):
+        self.cls.__init__ = self.real
 
 
 def snapshot(cfg, cid):
@@ -178,6 +197,20 @@ def test_state_write_reloads_without_a_key_and_keeps_the_cursor(tmp_path, monkey
     _run(drive())
 
 
+def test_status_line_renders_the_header(tmp_path):
+    repo, cfg, ids = _fixture(tmp_path)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            text = str(app.query_one("#queue-status").render())
+            assert view(app).header.startswith("runner down · hb -s · slots ")
+            assert view(app).header in text
+
+    _run(drive())
+
+
 def test_no_reload_while_the_signature_is_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(QT, "POLL_S", 0.05)
     monkeypatch.setattr(QT, "RELOAD_S", 100.0)
@@ -262,6 +295,7 @@ def test_timers_pause_when_the_tab_is_left(tmp_path, monkeypatch):
 # --- read-only by construction (AC5) -----------------------------------------------------
 
 def test_the_tab_never_touches_followers(tmp_path, monkeypatch):
+    monkeypatch.setattr(QT, "POLL_S", 0.05)         # the signature poll runs under the patches too
     repo, cfg, ids = _fixture(tmp_path)
 
     def forbidden(name):
@@ -280,6 +314,7 @@ def test_the_tab_never_touches_followers(tmp_path, monkeypatch):
             await settle(app, pilot)
             for action, section, cid, keys in (
                     ("park", "backlog", ids["ready"], ["p", *"why", "enter", "enter"]),
+                    ("prioritize", "backlog", ids["blocked"], ["P", "enter", "escape"]),
                     ("prioritize", "backlog", ids["blocked"], ["P", "enter", "enter"]),
                     ("abandon", "backlog", ids["blocked"], ["A", "enter"]),
                     ("resume", "conductor", ids["parked"], ["u", "enter", "enter"])):
@@ -329,6 +364,25 @@ def test_park_immediate_confirm_cancel_and_esc(tmp_path):
             st = state_of(cfg, cid)
             assert st["state"] == "PARKED" and st["park"]["detail"] == "hold"
             assert (f"park {cid} done", {}) in [(m, {}) for m, _ in app.notes]
+
+    _run(drive())
+
+
+def test_park_confirm_titles_show_the_plan_summary(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    monkeypatch.setattr(L, "is_held", lambda *a, **k: True)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            with spy_titles() as titles:
+                await act(app, pilot, "backlog", ids["ready"], ["p", *"hold", "enter", "escape"])
+                await act(app, pilot, "active", ids["impl"], ["p", *"later", "enter", "escape"])
+            ready, impl = (Q.plan_park(cfg, ids[k], "x") for k in ("ready", "impl"))
+            assert (ready["mode"], impl["mode"]) == ("immediate", "deferred")
+            assert titles == [(f"park {ids['ready']} (immediate): {ready['note']}", ["yes", "cancel"]),
+                              (f"park {ids['impl']} (deferred): {impl['note']}", ["yes", "cancel"])]
 
     _run(drive())
 
@@ -423,6 +477,29 @@ def test_resume_with_and_without_a_note(tmp_path, monkeypatch, note, keys):
     assert bool(mine.get("pending_brief")) == bool(note)
 
 
+def test_resume_confirm_title_and_slot_wait(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["parked"]
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            with spy_titles() as titles:
+                monkeypatch.setattr(Q, "slots_for", lambda *a, **k: 9)
+                assert not Q.plan_resume(cfg, cid)["waits_for_slot"]
+                await act(app, pilot, "conductor", cid, ["u", "enter", "escape"])
+                monkeypatch.setattr(Q, "slots_for", lambda *a, **k: 1)   # impl + gating fill it
+                assert Q.plan_resume(cfg, cid)["waits_for_slot"]
+                await act(app, pilot, "conductor", cid, ["u", "enter", "escape"])
+            assert [t for t, _ in titles] == [
+                f"resume {cid} → IMPLEMENTING",
+                f"resume {cid} → IMPLEMENTING (waits for a slot)"]
+            assert all(c == ["yes", "cancel"] for _, c in titles)
+
+    _run(drive())
+
+
 def test_resume_cancel_writes_nothing(tmp_path):
     repo, cfg, ids = _fixture(tmp_path)
     cid = ids["parked"]
@@ -453,7 +530,9 @@ def test_prioritize_picks_a_priority(tmp_path, monkeypatch):
             await act(app, pilot, "backlog", cid, ["P", "escape"])
             await act(app, pilot, "backlog", cid, ["P", "k", "k", "enter", "j", "enter"])  # cancel
             assert snapshot(cfg, cid) == before
-            await act(app, pilot, "backlog", cid, ["P", "k", "k", "enter", "enter"])
+            with spy_titles() as titles:
+                await act(app, pilot, "backlog", cid, ["P", "k", "k", "enter", "enter"])
+            assert titles[-1] == ("priority 3 → 1", ["yes", "cancel"])
 
     _run(drive())
     assert run_cli(cfg2, monkeypatch, ["queue", "prioritize", ids2["ready"], "1",
@@ -463,8 +542,10 @@ def test_prioritize_picks_a_priority(tmp_path, monkeypatch):
 
 
 def _give_worktree(cfg, cid, path):
-    path.mkdir(parents=True)
     st = state_of(cfg, cid)
+    path.parent.mkdir(parents=True, exist_ok=True)          # a real worktree, so removal is visible
+    subprocess.run(["git", "-C", st["repo"]["root"], "worktree", "add", "-q", "-b",
+                    f"wt/{cid}-tui", str(path)], check=True)
     st["repo"]["worktree"] = str(path)
     S.write_state(cfg, cid, st)
 
@@ -527,8 +608,7 @@ def test_abandon_with_a_worktree_offers_keep(tmp_path, keep):
               (S.campaign_dir(cfg, cid) / "ledger.jsonl").read_text().splitlines()]
     close = [e for e in events if e["type"] == "close"][-1]
     assert bool(close["worktree_removed"]) is (not keep)
-    if keep:
-        assert wt.is_dir()
+    assert wt.is_dir() is keep
 
 
 def test_abandon_cancel_writes_nothing(tmp_path):
