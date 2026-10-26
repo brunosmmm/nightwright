@@ -175,14 +175,17 @@ def test_split_verdict_gives_the_writer_the_narrowing_rule(tmp_path, monkeypatch
 
 # ---- unchanged revision ----------------------------------------------------------------------------
 
-def unchanged(tmp_path, monkeypatch, more=()):
-    """A revise review, then back in SPEC_REVIEW with the spec text unchanged."""
+def unchanged(tmp_path, monkeypatch, more=(), clear_brief=False):
+    """A revise review, then back in SPEC_REVIEW with the spec text unchanged. `clear_brief`
+    drops the writer's brief first, as a successful writer run would."""
     cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [
         reviewed("revise", findings=[finding(title="round one")]), *more])
     Q.tick(cfg)
     st = S.read_state(cfg, cid)
     assert st["state"] == "SPEC_WRITING"
     st["state"] = "SPEC_REVIEW"
+    if clear_brief:
+        st["pending_brief"] = None
     S.write_state(cfg, cid, st)
     Q.tick(cfg)
     return cfg, repo, iid, cid
@@ -204,6 +207,23 @@ def test_resume_with_a_note_revises_then_accepts(tmp_path, monkeypatch):
     Q.tick(cfg)
     p = prompt(cfg, cid, 3)
     assert "keep it to the CLI" in p and "round one" in p
+    in_review(cfg, cid)
+    Q.tick(cfg)
+    assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
+    assert len(reviews(cfg, cid)) == 1
+
+
+def test_a_plain_resume_of_the_unchanged_park_runs_the_writer_with_the_stored_findings(
+        tmp_path, monkeypatch):
+    cfg, repo, iid, cid = unchanged(tmp_path, monkeypatch, [writes], clear_brief=True)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_review_exhausted" and park["resume_to"] == "SPEC_WRITING"
+    brief = S.read_state(cfg, cid)["pending_brief"]
+    assert [m["title"] for m in brief["must_fix"]] == ["[must_fix] round one (Acceptance criteria)"]
+    resume(cfg, cid)                                # no note
+    assert S.read_state(cfg, cid)["state"] == "SPEC_WRITING"
+    Q.tick(cfg)
+    assert "round one" in prompt(cfg, cid, 3)
     in_review(cfg, cid)
     Q.tick(cfg)
     assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
@@ -440,6 +460,99 @@ def test_failure_after_the_accept_commit_resumes_without_a_review(tmp_path, monk
     (acc,) = ledger(cfg, cid, "spec_accepted")
     assert acc["round"] == 1
     assert len(reviews(cfg, cid)) == 1
+
+
+def revised(tmp_path, monkeypatch):
+    """A revise review and the writer's revision done: back in SPEC_REVIEW, one accept away."""
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [
+        reviewed("revise", findings=[finding(title="round one")]), writes])
+    Q.tick(cfg)
+    Q.tick(cfg)
+    in_review(cfg, cid)
+    return cfg, repo, iid, cid
+
+
+def test_after_revision_commit_failure_resumes_to_the_accept_not_a_second_review(
+        tmp_path, monkeypatch):
+    cfg, repo, iid, cid = revised(tmp_path, monkeypatch)
+    wt = wtree(cfg, cid)
+    head = _git(wt, "rev-parse", "HEAD")
+    real = gitops.git
+
+    def failing(repo_, *args, **kw):
+        if args and args[0] == "commit":
+            raise GitError(["git", "commit"], 1, "boom")
+        return real(repo_, *args, **kw)
+
+    monkeypatch.setattr(gitops, "git", failing)
+    Q.tick(cfg)
+    monkeypatch.setattr(gitops, "git", real)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_review_exhausted" and park["resume_to"] == "SPEC_REVIEW"
+    assert park["detail"].startswith("accept failed: ")
+    assert _git(wt, "rev-parse", "HEAD") == head
+    assert _git(wt, "status", "--porcelain", "--untracked-files=no") == ""
+    runs = S.read_state(cfg, cid)["counters"]["runs"]
+    resume(cfg, cid)
+    Q.tick(cfg)                                     # the script holds no more entries
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "IMPLEMENTING" and st["counters"]["runs"] == runs
+    assert len(reviews(cfg, cid)) == 1
+    assert _git(wt, "log", "-1", "--format=%s").endswith("(round 1) (after revision)")
+    assert "round one" in str(st["pending_brief"])
+
+
+def test_after_revision_failure_past_the_commit_finishes_with_the_revision_brief(
+        tmp_path, monkeypatch):
+    cfg, repo, iid, cid = revised(tmp_path, monkeypatch)
+    wt = wtree(cfg, cid)
+    real = Q.shutil.copyfile
+    monkeypatch.setattr(Q.shutil, "copyfile", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    Q.tick(cfg)
+    monkeypatch.setattr(Q.shutil, "copyfile", real)
+    park = parked(cfg, cid)
+    assert park["detail"] == "accept failed after commit: disk" and park["resume_to"] == "SPEC_REVIEW"
+    assert "accept SPEC-0002" in _git(wt, "log", "-1", "--format=%s")
+    runs = S.read_state(cfg, cid)["counters"]["runs"]
+    resume(cfg, cid)
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "IMPLEMENTING" and st["counters"]["runs"] == runs
+    assert len(reviews(cfg, cid)) == 1
+    stored = SR.load_review(cfg, "SPEC-0002", st["spec_review"]["sha"])
+    assert st["pending_brief"] == SR.revision_brief(stored)
+    (acc,) = ledger(cfg, cid, "spec_accepted")
+    assert acc["round"] == 1
+
+
+def test_a_failed_accept_removes_files_a_regenerate_command_created(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed()])
+    wt = wtree(cfg, cid)
+    real = Q.SW.regenerate
+
+    def failing(worktree, regen, snap):
+        (wt / "stray.txt").write_text("made by a command")
+        real(worktree, regen, snap)
+        return ["regenerate exploded"], []
+
+    monkeypatch.setattr(Q.SW, "regenerate", failing)
+    Q.tick(cfg)
+    assert parked(cfg, cid)["detail"].startswith("accept failed: ")
+    assert not (wt / "stray.txt").exists()
+    assert (wt / "setup-out.txt").exists()          # worktree setup output stays
+
+
+def test_a_dirty_worktree_wins_over_an_accepted_head(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed()])
+    wt = wtree(cfg, cid)
+    real = Q.shutil.copyfile
+    monkeypatch.setattr(Q.shutil, "copyfile", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    Q.tick(cfg)
+    monkeypatch.setattr(Q.shutil, "copyfile", real)
+    (wt / SPEC).write_text((wt / SPEC).read_text() + "\nhand edit\n")
+    resume(cfg, cid)
+    Q.tick(cfg)
+    assert parked(cfg, cid)["detail"] == "commit or discard the worktree changes, then resume"
 
 
 # ---- cost cap, slots, human change -----------------------------------------------------------------

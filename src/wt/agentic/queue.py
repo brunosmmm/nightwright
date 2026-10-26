@@ -1333,15 +1333,15 @@ def _spec_review_precheck(ctx: _Ctx, state: dict, step: Step) -> StepResult | No
     repo, spec = state.get("repo") or {}, state.get("spec") or {}
     worktree = repo.get("worktree")
     try:
+        if not git.is_clean(worktree, untracked=False):
+            res.spec_review = {"dirty": True}
+            return res
         head = git.git(worktree, "show", f"HEAD:{spec.get('rel_path')}", check=False)
         if head.returncode == 0:
             fm, _ = split_frontmatter(head.stdout)
             if str((fm or {}).get("status") or "") == "accepted":
                 res.spec_review = {"accepted": True}
                 return res
-        if not git.is_clean(worktree, untracked=False):
-            res.spec_review = {"dirty": True}
-            return res
     except (GitError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
         return res
@@ -2265,7 +2265,12 @@ def _apply_spec_review(ctx, state, profile, counters, res, row, events, finish):
     if sr.get("after_revision"):        # SPEC-0230: the revision is accepted, no second review
         return _accept_spec(ctx, state, counters, events, finish, committed=False,
                             rnd=sr["after_revision"].get("round"), revision=sr["after_revision"])
-    if sr.get("unchanged"):
+    if sr.get("unchanged"):             # the writer cleared the brief; a plain resume needs one
+        prior = sr["unchanged"]
+        review = SR.load_review(cfg, (state.get("spec") or {}).get("id"), prior["spec_sha256"]) \
+            or {"verdict": prior.get("verdict"), "findings": [],
+                "rationale": "the reviewer asked for a revision of the spec"}
+        state["pending_brief"] = _spec_review_brief(state, review)
         return finish("PARKED", "spec_review_exhausted", park={
             "reason": "spec_review_exhausted", "resume_to": "SPEC_WRITING",
             "detail": "the revision did not change the spec"})
@@ -2346,6 +2351,7 @@ def _commit_accept(ctx: _Ctx, state: dict, rnd, *, after_revision: bool = False)
     rel = state["spec"]["rel_path"]
     regen = (ctx.project(state).get("merge") or {}).get("regenerate") or []
     declared = [e["path"] for e in regen]
+    snap = None
     try:
         snap = {"head_before": git.rev_parse(worktree), "path": rel,
                 "untracked_before": SW.untracked(worktree)}
@@ -2362,6 +2368,11 @@ def _commit_accept(ctx: _Ctx, state: dict, rnd, *, after_revision: bool = False)
         if SW.commit_staged(worktree, [rel, *generated], msg) is None:
             raise ValueError("the accept changed nothing")
     except (GitError, ValueError, OSError) as e:
+        if snap is not None:            # undeclared changes and files a command created go too
+            try:
+                SW.rollback(worktree, snap)
+            except (GitError, OSError):
+                pass
         git.git(worktree, "restore", "--source=HEAD", "--staged", "--worktree", "--", rel,
                 check=False)
         for path in declared:

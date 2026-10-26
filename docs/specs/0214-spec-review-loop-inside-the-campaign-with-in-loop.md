@@ -268,6 +268,9 @@ phase.
 - After the rebase onto YAML profiles (SPEC-0237) and the SPEC-0230 single-round override:
   `uv run pytest tests/test_agentic_spec_review_loop.py tests/test_agentic_spec_writer.py`: 96
   passed; full `uv run pytest -q -x`: 2604 passed, 3 skipped; `python3 tools/spec_lint.py` exits 0.
+- Loop-2 fixes: `uv run pytest tests/test_agentic_spec_review_loop.py`: 36 passed (new: plain
+  resume of the unchanged park, after-revision accept failures before and after the commit,
+  stray-file cleanup, dirty-over-accepted precheck order).
 
 ### As shipped (2026-10-25)
 
@@ -300,6 +303,15 @@ phase.
   it). Tests: `test_revise_then_accept_after_revision_without_a_second_review`,
   `test_an_unchanged_revision_parks_and_runs_no_second_review`,
   `test_resume_with_a_note_revises_then_accepts`, `test_no_builtin_profile_has_spec_review_max`.
+
+- **Loop-2 review fixes.** The unchanged-revision park now sets `pending_brief` from the stored
+  review of the prior revise / split (falling back to a plain "revise the spec" brief), so a
+  resume with no note runs the writer instead of going around `spec_review_unavailable` →
+  SPEC_REVIEW → unchanged. The precheck runs the tracked-clean check before the `accepted`
+  short-circuit. A failed `_commit_accept` also rolls back through `SW.rollback` (undeclared
+  changed paths restored, untracked files created since the snapshot removed). An accept failure
+  after a revision resumes to the accept again, never to a second review (tests added for both
+  failure points).
 
 ## Rollout / migration
 
