@@ -4,15 +4,17 @@ schema: wt.project.v1
 project: Meta-Tools
 base: main
 gates:
-  - name: pytest
-    cmd: uv run pytest -q -x
-    timeout_s: 1200
-    required: true
+  # spec-lint first (SPEC-0214 park 2026-10-26): it regenerates the ledger, so pytest's ledger
+  # staleness test sees a fresh block after any rebase.
   - name: spec-lint
     # Regenerate the generated ledger block first: it is derived from frontmatter, so an
     # implementer that edited a spec but forgot --write-ledger must not fail the gate for it.
     cmd: python3 tools/spec_lint.py --write-ledger >/dev/null && python3 tools/spec_lint.py
     timeout_s: 120
+    required: true
+  - name: pytest
+    cmd: uv run pytest -q -x
+    timeout_s: 1200
     required: true
 merge:
   policy: merge
