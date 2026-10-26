@@ -1279,6 +1279,25 @@ def test_invalid_project_profile_parks_an_active_campaign_open_failed(opened):
     assert report.steps[-1]["to"] == "PARKED"
 
 
+def test_invalid_profile_on_a_reviewing_campaign_parks_and_resumes_in_place(opened):
+    cfg, cid, ctx = opened
+    S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="REVIEWING"))
+    root = S.read_state(cfg, cid)["repo"]["root"]
+    f = _project_profile(Path(root), "slots: 0\n")
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed"
+    assert st["park"]["resume_to"] == "REVIEWING"
+    f.unlink()
+    plan = Q.plan_resume(cfg, cid)
+    assert plan["to"] == "REVIEWING"
+    Q.apply_resume(cfg, plan)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "REVIEWING"
+    assert not [e for e in S.read_ledger(cfg, cid, types=["transition"])[-2:]
+                if e["to"] in ("QUEUED", "OPENING")]
+
+
 def test_invalid_project_profile_fails_the_open_before_the_worktree(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))

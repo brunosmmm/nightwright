@@ -1385,6 +1385,10 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             rr = res.run_result or replace(_synthetic_failure(str(res.error)), cost_usd=0.0)
             events += _record_run(state, res.step.persona, res.run_id, rr, res.budget,
                                   interrupted=res.interrupted)
+        if kind == "open" and res.from_state in ACTIVE_STATES and res.from_state != "OPENING":
+            # A profile-file error on an already-open campaign (the tick's planning loop):
+            # it has a worktree, so resume where it was instead of re-opening.
+            resume = _resume_target(res.from_state)
         return finish("PARKED", reason, park={"reason": reason, "detail": detail,
                                                "resume_to": resume})
 

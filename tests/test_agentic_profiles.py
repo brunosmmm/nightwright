@@ -416,6 +416,7 @@ def test_builtin_conflict_resolver_settings(name, model, effort, budget):       
 # ---- SPEC-0237: YAML layers ------------------------------------------------------------------
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -640,6 +641,28 @@ def test_bad_file_names_and_yml_files(tmp_path):
         P.resolve_profile(cfg, "Bad_Name")
     with pytest.raises(ValueError, match=re.escape(f"{f2}: <file>: rename to .yaml")):
         P.resolve_profile(cfg, "legacy")
+
+
+def test_yaml_and_yml_pair_is_a_conflict(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    _put(user, "dup", SCHEMA + "extends: balanced\nslots: 1\n")
+    f2 = _put(user, "dup", SCHEMA + "extends: balanced\nslots: 2\n", suffix=".yml")
+    with pytest.raises(ValueError, match=re.escape(f"{f2}: <file>: conflicts with dup.yaml")):
+        P.resolve_profile(cfg, "dup")
+
+
+def test_unreadable_profile_directory_raises_value_error(tmp_path):
+    cfg, user, proj = _layers(tmp_path)
+    d = _pdir(proj)
+    d.mkdir(parents=True, exist_ok=True)
+    d.chmod(0)
+    try:
+        if os.access(d, os.R_OK):
+            pytest.skip("directory permissions are not enforced (root)")
+        with pytest.raises(ValueError, match=re.escape(f"{d}: <dir>:")):
+            P.resolve_profile(cfg, "balanced", project_root=proj)
+    finally:
+        d.chmod(0o755)
 
 
 def test_a_broken_file_breaks_only_its_own_profile(tmp_path):

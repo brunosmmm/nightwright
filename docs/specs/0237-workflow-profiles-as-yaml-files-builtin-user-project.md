@@ -323,6 +323,11 @@ Built to Design, with these details the Design left open:
 - A `*.yml` file or a stem that is not a valid name is a broken definition under that stem
   (`<file>: <file>: …`), and shows in `known_profiles`.
 - `tests/test_packaging.py` is not marked slow (the build takes about a second).
+- Review round 3: a profile-file error on an already-open campaign (IMPLEMENTING, GATING,
+  REVIEWING, ...) parks `open_failed` with `resume_to` the state it was in (`_resume_target`), so
+  a plain `wt campaign resume` continues without re-opening the worktree. A `foo.yml` next to
+  `foo.yaml` is reported as a conflict instead of shadowing it, and an unreadable profile
+  directory raises ValueError (`<dir>: <file>: <reason>`) instead of crashing the tick.
 
 ## Clock Log
 

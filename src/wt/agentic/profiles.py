@@ -158,17 +158,24 @@ def validate_profile_doc(doc, *, origin, in_file) -> list:
 
 def _read_dir(directory, origin_of) -> dict:
     """`{name: Def}` for the `*.yaml` files of `directory` (missing directory: none). A `*.yml`
-    file or a file whose stem is not a valid name defines a broken profile; other files are
-    ignored."""
+    file (or a `.yml` next to a `.yaml` of the same stem) or a file whose stem is not a valid
+    name defines a broken profile; other files are ignored. An unreadable directory raises
+    ValueError."""
     defs = {}
-    if not directory.is_dir():
-        return defs
-    for path in sorted(directory.iterdir()):
+    try:
+        if not directory.is_dir():
+            return defs
+        paths = sorted(directory.iterdir())
+    except OSError as e:
+        raise ValueError(f"{origin_of(directory)}: <dir>: {e.strerror or e}") from e
+    for path in paths:
         if not path.is_file() or path.suffix not in (".yaml", ".yml"):
             continue
         name, origin = path.stem, origin_of(path)
         if path.suffix == ".yml":
-            defs[name] = Def(origin, {}, [f"{origin}: <file>: rename to .yaml"])
+            msg = "rename to .yaml" if name not in defs else \
+                f"conflicts with {name}.yaml; remove or rename one"
+            defs[name] = Def(origin, {}, [f"{origin}: <file>: {msg}"])
             continue
         if not NAME_RE.match(name):
             defs[name] = Def(origin, {}, [f"{origin}: <file>: profile name {name!r} must match "
