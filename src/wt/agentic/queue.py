@@ -959,6 +959,9 @@ def _do_open_merge(ctx: _Ctx, state: dict, res: StepResult) -> StepResult:
             if elsewhere is not None and elsewhere != worktree.resolve():
                 if elsewhere == root.resolve():
                     raise ValueError(f"the main checkout is on {branch}; switch it to {base}")
+                if not elsewhere.is_dir():      # fail before `merge`/`repo` change: stay retryable
+                    raise ValueError(f"worktree {elsewhere} of {branch} no longer exists "
+                                     "(git worktree prune, then resume)")
                 # the branch got a worktree since the request: adopt it, never fight it
                 merge["own_worktree"] = False
                 repo["worktree"] = str(elsewhere)

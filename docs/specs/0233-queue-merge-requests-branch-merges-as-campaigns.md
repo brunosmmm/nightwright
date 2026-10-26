@@ -340,6 +340,15 @@ For `state["kind"] == "merge"`:
   CLOSING`) when a merge request's worktree is no longer on the requested branch, before any
   rebase. The re-open never adopts the main checkout: it parks `open_failed` ("the main checkout
   is on <branch>; switch it to <base>").
+- Review round 3: close parks `human` ("merge requests need merge.policy: merge", `resume_to:
+  CLOSING`) when the live project policy is no longer `merge`, in both close phases, so a merge
+  request never pushes or hands off a PR. A red re-gate runs `git clean -fd` in the worktree
+  (untracked, non-ignored files only; the tree held none before the gate) so the gate's own
+  artifacts do not park the resume as `worktree_dirty`. Re-open checks that a branch's other
+  worktree still exists before adopting it; a stale one parks `open_failed` with the campaign
+  unchanged, so it stays retryable after `git worktree prune`. Tests cover setup in a created
+  worktree (and the planned-worktree-exists path), the stale adoption, the policy drift and the
+  gate artifacts.
 
 ## Clock Log
 

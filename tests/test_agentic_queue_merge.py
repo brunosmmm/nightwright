@@ -462,3 +462,87 @@ def test_visibility_label_everywhere(world, monkeypatch):
     con = Console(record=True, width=160)
     con.print(CQ._dash_backlog(dash["backlog"]))
     assert "merge:fix/typo" in con.export_text() and "None" not in con.export_text()
+
+
+# ---- review round: setup, stale worktrees, policy drift, gate artifacts -------------------------
+
+def test_open_runs_setup_in_a_created_worktree(world, monkeypatch):
+    repo, cfg, tmp = world
+    branch_wt(tmp, repo, adopt=False)
+    cid = queue_merge(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "tick", "--json"])      # admit + open only
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "CLOSING" and st["merge"]["own_worktree"] is True
+    assert (Path(st["repo"]["worktree"]) / ".setup-ran").exists()
+
+
+def test_open_reruns_setup_when_the_planned_worktree_exists(world, monkeypatch):
+    repo, cfg, tmp = world
+    branch_wt(tmp, repo, adopt=False)
+    cid = queue_merge(cfg, monkeypatch)
+    wt = Path(S.read_state(cfg, cid)["repo"]["worktree"])
+    _git(repo, "worktree", "add", "-q", str(wt), "fix/typo")       # a half-done earlier open
+    assert not (wt / ".setup-ran").exists()
+    r = run_cli(cfg, monkeypatch, ["queue", "tick", "--json"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "CLOSING" and st["merge"]["own_worktree"] is True
+    assert (wt / ".setup-ran").exists()
+
+
+def test_open_with_a_stale_branch_worktree_stays_retryable(world, monkeypatch):
+    import shutil
+    repo, cfg, tmp = world
+    branch_wt(tmp, repo, adopt=False)
+    cid = queue_merge(cfg, monkeypatch)
+    planned = S.read_state(cfg, cid)["repo"]["worktree"]
+    other = tmp / "elsewhere"
+    _git(repo, "worktree", "add", "-q", str(other), "fix/typo")
+    shutil.rmtree(other)                                           # registered, not pruned
+    run_until_idle(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed", st
+    assert "prune" in st["park"]["detail"]
+    assert st["merge"]["own_worktree"] is True and st["repo"]["worktree"] == planned
+    _git(repo, "worktree", "prune")
+    r = run_cli(cfg, monkeypatch, ["queue", "resume", cid, "--yes"])
+    assert r.exit_code == 0, r.output
+    run_until_idle(cfg, monkeypatch)
+    assert S.read_state(cfg, cid)["state"] == "MERGED"
+    assert (repo / "feature.txt").exists()
+
+
+def test_close_parks_when_the_policy_changed_to_pr(world, monkeypatch):
+    repo, cfg, tmp = world
+    wt = branch_wt(tmp, repo)
+    cid = queue_merge(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "tick", "--json"])
+    assert r.exit_code == 0, r.output
+    assert S.read_state(cfg, cid)["state"] == "CLOSING"
+    yml = repo / ".wt" / "project.yaml"
+    yml.write_text(yml.read_text().replace("policy: merge", "policy: pr"))
+    tip = _git(wt, "rev-parse", "HEAD")
+    run_until_idle(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "human", st
+    assert st["park"]["resume_to"] == "CLOSING" and "merge.policy" in st["park"]["detail"]
+    assert _git(wt, "rev-parse", "HEAD") == tip                    # nothing rebased or pushed
+
+
+def test_red_gate_cleans_the_untracked_gate_artifacts(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path, test_gate="echo report > report.out; test -f feature.txt")
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    wt = branch_wt(tmp_path, repo, files={"other.txt": "no feature.txt yet\n"})
+    cid = queue_merge(cfg, monkeypatch)
+    run_until_idle(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "gates_failed", st
+    assert not (wt / "report.out").exists() and _git(wt, "status", "--porcelain") == ""
+    _write(wt, "feature.txt", "fixed\n")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-q", "-m", "fix")
+    r = run_cli(cfg, monkeypatch, ["queue", "resume", cid, "--yes"])
+    assert r.exit_code == 0, r.output
+    run_until_idle(cfg, monkeypatch)
+    assert S.read_state(cfg, cid)["state"] == "MERGED"

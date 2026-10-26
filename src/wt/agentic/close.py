@@ -281,6 +281,13 @@ def _close_cfg(state: dict, project_cfg: dict) -> dict:
             "rel": (state.get("spec") or {}).get("rel_path") or ""}
 
 
+def _merge_policy_park(policy, events) -> CloseOutcome:
+    """SPEC-0233: a merge request only ever merges locally; the project's policy may have
+    changed to a pr policy since it was queued, and nothing is pushed on its behalf."""
+    return _park("human", f"merge requests need merge.policy: merge, but the project is "
+                 f"on {policy!r}; restore the policy or abandon the request", "CLOSING", events)
+
+
 def _rebase_in_progress(worktree) -> bool:
     for name in ("rebase-merge", "rebase-apply"):
         r = git.git(worktree, "rev-parse", "--git-path", name, check=False)
@@ -314,6 +321,8 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> Prep
         return PreparedClose(outcome=outcome, policy=policy, events=events, pre_head=pre_head)
 
     merge_request = _is_merge_request(state)
+    if merge_request and policy != "merge":
+        return decided(_merge_policy_park(policy, events))
     if merge_request and not (state.get("merge") or {}).get("own_worktree") \
             and _rebase_in_progress(worktree):
         # SPEC-0233 G3: a rebase in the requester's checkout is theirs, not a wt crash leftover;
@@ -402,7 +411,12 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None) -> Prep
     gate_run = G.run_all(project_cfg, state, cfg, seq=seq)
     events.append(("gate", G.as_payload(gate_run)))
     if not gate_run.ok:
-        detail = _gate_failure_detail(gate_run, target, target_sha) if merge_request else ""
+        detail = ""
+        if merge_request:
+            detail = _gate_failure_detail(gate_run, target, target_sha)
+            # the tree held no untracked files before the gate, so what is untracked now is the
+            # gate's own output (reports, coverage); leaving it would park the resume as dirty
+            git.git(worktree, "clean", "-fdq", check=False)
         return decided(CloseOutcome("TRIAGING", gate_run=gate_run, events=events,
                                     gate_detail=detail))
     return PreparedClose(target=target, target_sha=target_sha, head=head, gate_run=gate_run,
@@ -428,6 +442,8 @@ def finish_close(cfg, state: dict, project_cfg: dict, prepared: PreparedClose, *
             return _park("base_moving", detail, "CLOSING", events, **extra)
         return CloseOutcome("CLOSING", events=events, retry=True, **extra)
 
+    if _is_merge_request(state) and policy != "merge":
+        return _merge_policy_park(policy, events)
     if policy == "merge":
         # 6. merge preconditions on the main checkout
         cur = git.current_branch(root)
