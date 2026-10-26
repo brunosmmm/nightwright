@@ -630,10 +630,15 @@ def test_adopt_review_group_applied_once(tmp_path, monkeypatch, world):
     report = Q.tick(cfg, runner=world.runner)
     adopted = adopt_journal(world)[-1]["runs"]
     assert sorted(r["persona"] for r in adopted) == ["conformance_reviewer", "test_reviewer"]
-    ends = [e for e in run_ends(world) if e["persona"] in PS.REVIEWER_PERSONAS]
+    # each adopted run ends once. The tick may apply the group before its planning pass and then
+    # start a fresh step at once (here a test_reviewer retry: the shared fake verdict does not fit
+    # its schema), so only the adopted runs are counted, not every reviewer run.end.
+    ids = {e["run_id"] for e in starts}
+    ends = [e for e in run_ends(world) if e["run_id"] in ids]
     assert len(ends) == 2 and len({e["run_id"] for e in ends}) == 2
     # one group, one applied step (the reviewers' verdicts are routed together)
-    rows = [r for r in report.steps if r["campaign"] == world.cid and r["action"] == "review"]
+    rows = [r for r in report.steps if r["campaign"] == world.cid and r["action"] == "review"
+            and r.get("run_id") in ids]
     assert len(rows) == 1
 
 
