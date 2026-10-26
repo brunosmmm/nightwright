@@ -328,6 +328,12 @@ contract.
   counted as loops; off-type values (float review score, non-string `ac`/`title`) are coerced to
   the declared column types, including through Parquet; a foreign subdirectory in `--out` cannot
   make the failure cleanup raise.
+- Loop 4 (review fixes): `uv run pytest tests/test_agentic_campaign_export.py`: 63 passed, 2
+  skipped; with `--with pyarrow`: 65 passed. New cases: string numbers ("5") in cost/review no
+  longer raise and are coerced before the derivations and signals; `bool` coercion maps
+  `true`/`false` strings and returns null for anything else non-boolean; a naive `created_at`
+  under `--since` is read in `cfg["_tz"]` (and no longer breaks `wall_s`); `--out` on an existing
+  file is refused; `--stdout --json` prints only the table.
 - Manual: `wt campaign export --json` against the real data dir (46 campaigns, 196 runs, 393
   findings); sizing, profile and cost for the latest campaigns match `wt campaign show`.
 - Full `uv run pytest`: 2211 passed, 2 skipped. `python3 tools/spec_lint.py` (after
@@ -345,6 +351,12 @@ contract.
   with the export directory (the `manifest.json` file does not carry it); `--json` is ignored
   with `--stdout`. A campaign with a null/unparseable `created_at` is dropped when `--since` is
   given. `wall_s` is null for a terminal campaign with no terminal `transition` event.
+- Loop 4: the campaign row is coerced to the column types before `signals` is computed, and
+  `_frac` coerces its operands, so a string number cannot raise. `bool` columns accept only real
+  booleans/numbers and the strings `true`/`false`; anything else is null. A naive timestamp mixed
+  with an aware one in a duration is read in the aware one's zone. `--out` on an existing file is
+  rejected by click's `Path(file_okay=False)` check before the command runs; `_export_dir` keeps
+  its own check as a guard.
 - Files are written as UTF-8 (`export._atomic_write` got an optional `encoding`, default
   unchanged). Parquet tables are all built before any file is written, and a failed write removes
   what it wrote (and the directory, if it was new) and exits with `export failed, nothing

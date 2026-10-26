@@ -89,7 +89,11 @@ def _parse_ts(value):
 
 
 def _secs(a, b):
-    return max(0, int((b - a).total_seconds())) if a and b else None
+    if not (a and b):
+        return None
+    if (a.tzinfo is None) != (b.tzinfo is None):    # a naive stamp is read in the other's zone
+        a, b = (a.replace(tzinfo=b.tzinfo), b) if a.tzinfo is None else (a, b.replace(tzinfo=a.tzinfo))
+    return max(0, int((b - a).total_seconds()))
 
 
 def _coerce(value, typ):
@@ -103,7 +107,9 @@ def _coerce(value, typ):
                 json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list))
                 else str(value))
         if typ == "bool":
-            return bool(value)
+            if isinstance(value, str):
+                return {"true": True, "false": False}.get(value.strip().lower())
+            return bool(value) if isinstance(value, (bool, int, float)) else None
         if typ == "float":
             return float(value)
         return value if type(value) is int else int(round(float(value)))
@@ -116,6 +122,7 @@ def _project(row, columns):
 
 
 def _frac(num, den):
+    num, den = _coerce(num, "float"), _coerce(den, "float")
     if num is None or not den:
         return None
     return round(num / den, 3)
@@ -245,8 +252,9 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
                                and str(e.get("text") or "").startswith("waived "))),
         "close_mode": close.get("mode"), "merged_sha": close.get("merged_sha"),
     }
-    row["signals"] = signals(row)
-    return _project(row, CAMPAIGN_COLUMNS)
+    out = _project(row, CAMPAIGN_COLUMNS)       # signals read the coerced values
+    out["signals"] = signals(out)
+    return out
 
 
 def _active_states():

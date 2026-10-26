@@ -7,6 +7,7 @@ import sys
 import types
 from zoneinfo import ZoneInfo
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -14,6 +15,7 @@ from wt.agentic import campaign_export as CE
 from wt.agentic import runs as RN
 from wt.agentic import schemas as SC
 from wt.agentic import store as S
+from wt.agentic.cli_campaign import _export_dir
 from wt.cli import cli
 
 TZ = ZoneInfo("America/New_York")
@@ -392,6 +394,39 @@ def test_off_type_values_are_coerced_to_the_declared_types(cfg, invoke, tmp_path
     assert pq.read_table(d / "campaigns.parquet").to_pylist()[0]["review_score"] == 92
 
 
+def test_string_numbers_and_bools_do_not_break_the_export(cfg):
+    make(cfg, "C-STR", [(1, "finding", {"persona": "p", "severity": "major", "title": "t"})],
+         last_review={"score": "92"},
+         cost={"total_usd": "4", "cap_usd": "5", "by_persona": {}})
+    c = CE.export_tables(cfg, now=NOW)["campaigns"][0]
+    assert (c["cost_usd"], c["cap_usd"], c["cost_cap_frac"]) == (4.0, 5.0, 0.8)
+    assert c["review_score"] == 92 and "cost_near_cap" in c["signals"]
+    make(cfg, "C-BAD", [], cost={"total_usd": "lots", "cap_usd": [], "by_persona": {}})
+    bad = {r["campaign"]: r for r in CE.export_tables(cfg, now=NOW)["campaigns"]}["C-BAD"]
+    assert bad["cost_usd"] is None and bad["cost_cap_frac"] is None
+
+
+@pytest.mark.parametrize("value,want", [
+    (True, True), (False, False), (1, True), (0, False), ("true", True), ("False", False),
+    (" TRUE ", True), ("false", False), ("0", None), ("yes", None), ([], None), ({}, None),
+])
+def test_bool_coercion(value, want):
+    assert CE._coerce(value, "bool") is want
+
+
+def test_run_row_string_flags_and_budgets(cfg):
+    cid = "C-RUNSTR"
+    make(cfg, cid, [(1, "run.start", {**run_start("implementer", "001-implementer"),
+                                      "max_budget_usd": "2"})])
+    d = S.campaign_dir(cfg, cid) / "runs" / "001-implementer"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "run.json").write_text(json.dumps({
+        "run_id": "001-implementer", "persona": "implementer", "is_error": "false",
+        "timed_out": "false", "charged_usd": "1", "max_budget_usd": "2"}))
+    rows = CE.export_tables(cfg, now=NOW)["runs"]
+    assert rows and all(r["is_error"] is not True and r["timed_out"] is not True for r in rows)
+
+
 # ---- signals -----------------------------------------------------------------------------
 
 SIGNAL_CASES = {
@@ -508,6 +543,13 @@ def test_out_dir_rules(cfg, invoke, tmp_path):
     r = invoke("--out", str(new))
     assert r.exit_code != 0 and f"--out {new} is not empty" in r.output
     assert (new / "campaigns.jsonl").is_file()          # untouched
+    f = tmp_path / "a-file"
+    f.write_text("x")
+    assert invoke("--out", str(f)).exit_code != 0       # click refuses a file before the command
+    assert f.read_text() == "x"
+    with pytest.raises(click.ClickException, match=f"--out {f} is not empty"):
+        _export_dir(cfg, str(f), dt.datetime(2026, 10, 25))
+    assert f.read_text() == "x"
 
 
 def test_filters(cfg, invoke, tmp_path):
@@ -536,6 +578,27 @@ def test_filters(cfg, invoke, tmp_path):
         "project": "P", "since": "2026-10-21", "terminal_only": True}
 
 
+def test_since_naive_created_at_is_read_in_the_configured_tz():
+    # 23:00 on the 22nd with no offset is the 22nd in cfg["_tz"], whatever the system zone is
+    state = {"created_at": "2026-10-22T23:00:00"}
+    kiritimati = {"_tz": ZoneInfo("Pacific/Kiritimati")}
+    assert CE._created_date(kiritimati, state) == dt.date(2026, 10, 22)
+    assert CE._created_date({"_tz": ZoneInfo("Pacific/Pago_Pago")}, state) == dt.date(2026, 10, 22)
+    assert CE._created_date({}, state) == dt.date(2026, 10, 22)             # no tz: as written
+    aware = {"created_at": "2026-10-22T23:00:00+00:00"}
+    assert CE._created_date(kiritimati, aware) == dt.date(2026, 10, 23)     # aware: converted
+
+
+def test_since_naive_created_at_cli(cfg, invoke, tmp_path):
+    make(cfg, "C-NAIVE", [], created_at="2026-10-22T02:00:00")
+    d = tmp_path / "n"
+    assert invoke("--out", str(d), "--since", "2026-10-22").exit_code == 0
+    assert [c["campaign"] for c in read_jsonl(d / "campaigns.jsonl")] == ["C-NAIVE"]
+    d2 = tmp_path / "n2"
+    assert invoke("--out", str(d2), "--since", "2026-10-23").exit_code == 0
+    assert read_jsonl(d2 / "campaigns.jsonl") == []
+
+
 def test_since_drops_unparseable_created_at(cfg, invoke, tmp_path):
     make(cfg, "C-OK", [])
     make(cfg, "C-NULL", [], created_at=None)
@@ -559,6 +622,16 @@ def test_stdout(cfg, invoke, tmp_path):
     c = invoke("--table", "campaigns", "--stdout", "--format", "csv")
     got = list(csv.DictReader(io.StringIO(c.output)))
     assert got[0]["campaign"] == "C-FULL"
+    assert not (S.agentic_dir(cfg) / "exports").exists()
+
+
+def test_stdout_ignores_json(cfg, invoke):
+    full_campaign(cfg)
+    r = invoke("--table", "runs", "--stdout", "--json")
+    assert r.exit_code == 0, r.output
+    rows = [json.loads(line) for line in r.output.splitlines()]
+    assert len(rows) == 4 and all("schema" not in x and "tables" not in x for x in rows)
+    assert [n for n, _ in CE.RUN_COLUMNS] == list(rows[0])
     assert not (S.agentic_dir(cfg) / "exports").exists()
 
 
