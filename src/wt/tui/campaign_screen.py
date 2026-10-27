@@ -117,6 +117,7 @@ class CampaignScreen(QueueActions, Screen):
             self.detail = detail
             self.paint(previous)
         except Exception as e:      # any failure shows in the status line; the next poll retries
+            self._signature = None  # so a failed paint does not look up to date
             self._show_error(e)
         finally:
             self._loading = False

@@ -943,11 +943,11 @@ def mailbox_signature(cfg) -> tuple:
 def age_s(ts) -> float | None:
     try:
         t = dt.datetime.fromisoformat(ts)
-    except (TypeError, ValueError):
+        if t.tzinfo is None:
+            t = t.astimezone()
+        return max(0.0, (dt.datetime.now().astimezone() - t).total_seconds())
+    except (TypeError, ValueError, OverflowError):
         return None
-    if t.tzinfo is None:
-        t = t.astimezone()
-    return max(0.0, (dt.datetime.now().astimezone() - t).total_seconds())
 
 
 def reply_target(reply_to) -> tuple[str, str | None]:

@@ -226,6 +226,13 @@ duplicate id instead of crashing, and `event_time` tolerates `OverflowError`.
   `_last_id` is now assigned at the end of `_append` and `_signature`/`_file_size`/`_inode` after it
   returns. The duplicate count is cumulative since the last reset.
 - Campaign timeline: the seq and time cells are `Text` too, not only the text cell.
+- Review fix: `MailboxView.on_resize` repaints inside the same catch-all (`mailbox failed:`
+  notification), since a failed paint leaves its data in `self.threads`. `AM.age_s` now keeps
+  `astimezone()` inside its try and also catches `OverflowError`. `CampaignScreen._reload_async`
+  resets `_signature` to `None` on failure so the next poll retries. Tests:
+  `test_resize_after_paint_error_keeps_the_app_alive`,
+  `test_age_s_tolerates_out_of_range_naive_timestamps` (mailbox tab); the four TUI test files
+  pass (97 passed).
 
 ## Definition of done
 

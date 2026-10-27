@@ -166,10 +166,15 @@ class MailboxView(Horizontal):
         self._timer = self.set_interval(POLL_S, self._poll, pause=True)
 
     def on_resize(self, event) -> None:
-        if self.in_escalations:
-            self.paint_escalations()
-        elif self.threads:
-            self.paint_threads()
+        if not (self.in_escalations or self.threads):
+            return
+        try:
+            if self.in_escalations:
+                self.paint_escalations()
+            else:
+                self.paint_threads()
+        except Exception as e:  # bad data the reload already reported must not end the app
+            self.app.notify(f"mailbox failed: {escape(str(e) or repr(e))}", severity="error")
 
     # --- lifecycle -----------------------------------------------------------------------
 

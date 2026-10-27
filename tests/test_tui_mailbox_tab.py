@@ -610,3 +610,33 @@ def test_paint_error_notifies(tmp_path, monkeypatch):
             assert any("mailbox failed" in msg for msg, _ in app.notes)
 
     _run(drive())
+
+
+def test_resize_after_paint_error_keeps_the_app_alive(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    ask(cfg, frm="conductor", to="human", kind="info", text="hello")
+    app = _desk(cfg, tab="mailbox")
+
+    def boom(self):
+        raise TypeError("bad record")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            monkeypatch.setattr(MT.MailboxView, "paint_threads", boom)
+            mv(app).reload()
+            await settle(app, pilot)
+            assert mv(app).threads                  # the bad data stayed in place
+            app.notes.clear()
+            mv(app).on_resize(None)
+            await settle(app, pilot)
+            assert app.is_running
+            assert any("mailbox failed" in msg for msg, _ in app.notes)
+
+    _run(drive())
+
+
+def test_age_s_tolerates_out_of_range_naive_timestamps():
+    assert MT.AM.age_s("0001-01-01T00:00:00") is None or MT.AM.age_s("0001-01-01T00:00:00") >= 0
+    assert MT.AM.age_s("9999-12-31T23:59:59") is None or MT.AM.age_s("9999-12-31T23:59:59") >= 0
+    assert MT.AM.age_s(None) is None
