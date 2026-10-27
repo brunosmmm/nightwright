@@ -252,6 +252,50 @@ remove|delete|keep, why}`. `--yes` applies rows in order (worktrees before branc
   directory stays)`. Its files cannot be checked, so gc never removes the directory. The
   `--yes` prune still unregisters the entry, and the directory is then an orphan dir.
 
+### Test record (2026-10-27, review round 4)
+
+- `uv run pytest -q tests/test_agentic_queue_gc.py`: 32 passed. New:
+  `test_cwd_in_a_subdirectory_of_a_terminal_worktree_kept` (cwd two levels inside a clean MERGED
+  worktree → `keep: current directory`, its branch kept);
+  `test_project_filter_does_not_prune_other_entries` (`--project demo --yes` unregisters demo's
+  hand-deleted worktree only; another project's and an unowned prunable entry stay registered;
+  the unfiltered run then prunes both); `test_project_base_decides_when_campaign_records_none`
+  (no `repo.base`, `.wt/project.yaml` `base: trunk` and then `merge.base: trunk`: a branch
+  merged into trunk only is deleted, one merged into main only is `unmerged`);
+  `test_bad_project_config_is_a_repo_error` (invalid YAML, non-UTF-8, invalid value) and
+  `test_unreadable_project_config_is_a_repo_error` (PermissionError) are per-repo plan errors,
+  no traceback; `test_branch_and_path_shared_with_a_live_campaign_untouched`;
+  `test_orphan_dir_referenced_by_terminal_or_live_campaign`; `test_second_yes_run_is_a_no_op`;
+  `test_hidden_edits_kept` (skip-worktree and assume-unchanged edits kept; a flagged unmodified
+  file still removed); `test_bisect_in_progress_kept`. `test_prune_failure_marks_missing_rows`
+  became `test_prune_failure_is_a_repo_error`.
+- **Sabotage check:** comparing only `path == cwd`, dropping the hidden-edits guard, dropping the
+  bisect guard, pruning under `--project` (either the repo-wide prune or `worktree_remove`'s own),
+  dropping the branch or orphan `live()` skips, hard-coding the base to `main`, and not catching
+  `OSError` from the config read each fail the matching new test. All restored (files
+  byte-identical).
+- Full gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`,
+  `uv run pytest -q -x`.
+
+### As shipped (review round 4)
+
+- `apply_gc` order is now: worktree rows (each its own `git worktree remove` without --force and
+  without the follow-up repo-wide prune; git also unregisters a directory already gone), then
+  `git worktree prune` once per repo, then branch rows. A `missing on disk` row reads
+  `remove: missing on disk (unregister only)` and no longer depends on the prune, so a failed
+  prune is a repo error only.
+- With `--project`, the repo-wide `git worktree prune` is skipped, since it would unregister
+  other projects' and unowned entries. Rows are then planned without assuming it: `no campaign`
+  rows carry no prune note, a branch held by an unowned prunable entry stays `checked out in …`,
+  and a `.git`-less dir is `keep: no .git (directory stays)`.
+- New keep reasons: `bisect in progress`, and `dirty (skip-worktree/assume-unchanged edits)`
+  (`gitops.hidden_changes`: a flagged tracked file whose content on disk differs from the index).
+- A `.wt/project.yaml` that exists but is unreadable, not UTF-8 or invalid is a per-repo plan
+  error and the repo is skipped (its base is unknown). A missing one still means base `main`.
+- Rule 4 orphan rows also cover a directory git does not list that only a terminal campaign
+  references (`keep: orphan dir of <state> campaign: …`, naming the campaign). A directory that a
+  live campaign references produces no row.
+
 ## Rollout / migration
 
 None. Operators run `wt queue gc` then `--yes` when they want; the conductor may run it in

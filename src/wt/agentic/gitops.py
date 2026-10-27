@@ -194,6 +194,26 @@ def worktree_list(repo) -> list[dict]:
     return out
 
 
+def hidden_changes(worktree) -> list[str]:
+    """Tracked files flagged skip-worktree or assume-unchanged whose file on disk differs from
+    the index: local edits `git status` (and `git worktree remove`) do not see (SPEC-0275)."""
+    flagged = {ln[2:] for ln in git(worktree, "ls-files", "-v", "-z").stdout.split("\0")
+               if ln[:1] == "S" or ln[:1].islower()}
+    if not flagged:
+        return []
+    staged = {}
+    for ln in git(worktree, "ls-files", "-s", "-z").stdout.split("\0"):
+        meta, _, path = ln.partition("\t")
+        if path in flagged:
+            staged[path] = meta.split()[1]
+    present = sorted(p for p in staged if os.path.lexists(Path(worktree) / p))
+    if not present:
+        return []
+    shas = git(worktree, "hash-object", "--stdin-paths",
+               input="".join(f"{p}\n" for p in present)).stdout.split()
+    return [p for p, sha in zip(present, shas) if sha != staged[p]]
+
+
 def is_ancestor(repo, rev, base) -> bool:
     """`rev` is reachable from `base` (`merge-base --is-ancestor`); False when either is unknown."""
     return git(repo, "merge-base", "--is-ancestor", rev, base, check=False).returncode == 0
@@ -210,12 +230,15 @@ def worktree_add_existing(repo, path, branch) -> Path:
     return path
 
 
-def worktree_remove(repo, path, force=False) -> None:
+def worktree_remove(repo, path, force=False, prune=True) -> None:
+    """`git worktree remove`, then (unless `prune` is False) a repo-wide `git worktree prune`.
+    git removes the entry of an already-deleted directory too."""
     args = ["worktree", "remove"]
     if force:
         args.append("--force")
     git(repo, *args, str(path))
-    git(repo, "worktree", "prune")
+    if prune:
+        git(repo, "worktree", "prune")
 
 
 def branch_delete(repo, branch, force=False) -> None:
@@ -408,6 +431,10 @@ def sequencer_in_progress(worktree) -> bool:
     """A cherry-pick, merge, revert or multi-commit sequence is under way (SPEC-0252)."""
     return _git_path_exists(worktree, ("CHERRY_PICK_HEAD", "MERGE_HEAD", "REVERT_HEAD",
                                        "sequencer"))
+
+
+def bisect_in_progress(worktree) -> bool:
+    return _git_path_exists(worktree, ("BISECT_LOG", "BISECT_START"))
 
 
 def head_ref(worktree) -> str | None:

@@ -32,8 +32,8 @@ def _commit(repo, name, text, msg):
 
 
 def _campaign(cfg, cid, state, root, branch, worktree=None, *, kind="spec", own=True, base="main",
-              merged_sha=None):
-    st = {"id": cid, "kind": kind, "state": state, "project": "demo", "spec_id": None,
+              merged_sha=None, project="demo"):
+    st = {"id": cid, "kind": kind, "state": state, "project": project, "spec_id": None,
           "repo": {"root": str(root), "base": base, "branch": branch,
                    "worktree": str(worktree) if worktree else None}}
     if kind == "merge":
@@ -186,11 +186,11 @@ def test_worktree_row_error_does_not_stop_others(world, monkeypatch):
     bad, other = removes
     real = G.worktree_remove
 
-    def flaky(repo, path, force=False):
+    def flaky(repo, path, force=False, prune=True):
         assert force is False
         if Path(path).name == bad:
             raise GitError(["git", "worktree", "remove", str(path)], 1, "boom")
-        return real(repo, path, force=force)
+        return real(repo, path, force=force, prune=prune)
 
     monkeypatch.setattr(G, "worktree_remove", flaky)
     rows = _rows(Q.apply_gc(world["cfg"], plan))
@@ -205,26 +205,28 @@ def test_worktree_row_error_does_not_stop_others(world, monkeypatch):
         assert rows[("branch", b)]["done"] is True and not G.branch_exists(root, b), b
 
 
-def test_prune_failure_marks_missing_rows(world, monkeypatch):
+def test_prune_failure_is_a_repo_error(world, monkeypatch):
+    """A missing-on-disk row is unregistered by its own `git worktree remove`, so a failed
+    repo-wide prune is a repo error only: no row is reported failed for it."""
     root, cfg, wts = world["root"], world["cfg"], world["wts"]
     _merged_wt(root, "wt/gone", wts / "gone")
     shutil.rmtree(wts / "gone")
     _campaign(cfg, "g1", "MERGED", root, "wt/gone", wts / "gone")
-    real, calls = G.git, []
+    real = G.git
 
     def no_prune(repo, *args, **kw):
-        if args[:2] == ("worktree", "prune") and not calls:   # only apply_gc's up-front prune
-            calls.append(repo)
+        if args[:2] == ("worktree", "prune"):
             raise GitError(["git", *args], 1, "locked index")
         return real(repo, *args, **kw)
 
     plan = Q.plan_gc(cfg)
     monkeypatch.setattr(G, "git", no_prune)
     rows = _rows(Q.apply_gc(cfg, plan))
-    assert rows[("worktree", "gone")]["done"] is False
-    assert rows[("worktree", "gone")]["error"] == "git worktree prune failed"
+    assert rows[("worktree", "gone")]["done"] is True and "error" not in rows[("worktree", "gone")]
+    assert (wts / "gone").resolve() not in {e["path"] for e in G.worktree_list(root)}
     assert any("worktree prune: locked index" in e for e in plan["errors"])
     assert rows[("worktree", "m1")]["done"] is True
+    assert not any(r.get("done") is False for r in plan["rows"]), plan["rows"]
 
 
 def test_json_schema(world, monkeypatch):
@@ -346,7 +348,7 @@ def test_prunable_locked_and_detached(world):
     plan = Q.plan_gc(cfg)
     rows = _rows(plan)
     assert (rows[("worktree", "gone")]["action"], rows[("worktree", "gone")]["why"]) == (
-        "remove", "missing on disk (git worktree prune)")
+        "remove", "missing on disk (unregister only)")
     assert (rows[("worktree", "lk")]["action"], rows[("worktree", "lk")]["why"]) == ("keep", "locked")
     assert (rows[("worktree", "dt")]["action"], rows[("worktree", "dt")]["why"]) == (
         "keep", "detached, unreachable commits")
@@ -465,3 +467,178 @@ def test_git_error_listing_a_repo_is_a_plan_error(world, monkeypatch):
     assert plan["errors"] == [f"{world['root'].resolve()}: not a git repository"]
     assert plan["repos"] == [] and plan["rows"] == []
     _assert_repo_error_exit(world["cfg"], monkeypatch, "not a git repository")
+
+
+def test_cwd_in_a_subdirectory_of_a_terminal_worktree_kept(world, monkeypatch):
+    root, wts = world["root"], world["wts"]
+    (wts / "m1" / "sub" / "deeper").mkdir(parents=True)       # empty dirs: still clean
+    monkeypatch.chdir(wts / "m1" / "sub" / "deeper")
+    plan = Q.plan_gc(world["cfg"])
+    rows = _rows(plan)
+    assert (rows[("worktree", "m1")]["action"], rows[("worktree", "m1")]["why"]) == ("keep", "current directory")
+    assert rows[("branch", "wt/m1")]["action"] == "keep"
+    Q.apply_gc(world["cfg"], plan)
+    assert (wts / "m1" / "sub" / "deeper").is_dir() and G.branch_exists(root, "wt/m1")
+
+
+def test_project_filter_does_not_prune_other_entries(world, monkeypatch):
+    """`--project demo --yes` unregisters demo's hand-deleted worktree only: another project's
+    and an unowned prunable entry in the same repo stay registered (no repo-wide prune)."""
+    root, cfg, wts, tmp = world["root"], world["cfg"], world["wts"], world["tmp"]
+    for name, path in (("wt/gone", wts / "gone"), ("wt/b-gone", tmp / "other" / "gone"),
+                       ("loose", tmp / "loose")):
+        _merged_wt(root, name, path)
+        shutil.rmtree(path)
+    _campaign(cfg, "g1", "MERGED", root, "wt/gone", wts / "gone")
+    _campaign(cfg, "b1", "MERGED", root, "wt/b-gone", tmp / "other" / "gone", project="other")
+    plan = Q.plan_gc(cfg, project="demo")
+    rows = _rows(plan)
+    assert not any(r["project"] == "other" for r in plan["rows"])
+    assert rows[("worktree", "loose")]["why"] == "no campaign"         # no prune note under a filter
+    r = run_cli(cfg, monkeypatch, ["queue", "gc", "--project", "demo", "--yes"])
+    assert r.exit_code == 0, r.output
+    listed = {e["path"] for e in G.worktree_list(root)}
+    assert (wts / "gone").resolve() not in listed and not G.branch_exists(root, "wt/gone")
+    assert (tmp / "other" / "gone").resolve() in listed and (tmp / "loose").resolve() in listed
+    assert G.branch_exists(root, "wt/b-gone")
+    # unfiltered, the repo-wide prune drops them (and frees the other project's branch)
+    assert "prunable: git worktree prune drops it" in _rows(Q.plan_gc(cfg))[("worktree", "loose")]["why"]
+    r = run_cli(cfg, monkeypatch, ["queue", "gc", "--yes"])
+    assert r.exit_code == 0, r.output
+    listed = {e["path"] for e in G.worktree_list(root)}
+    assert (tmp / "other" / "gone").resolve() not in listed and (tmp / "loose").resolve() not in listed
+    assert not G.branch_exists(root, "wt/b-gone")
+
+
+def test_project_base_decides_when_campaign_records_none(world, monkeypatch):
+    """No `repo.base`: the base comes from `.wt/project.yaml` (here `trunk`, not main)."""
+    root, cfg = world["root"], world["cfg"]
+    (root / ".wt").mkdir()
+    (root / ".wt" / "project.yaml").write_text("schema: wt.project.v1\nbase: trunk\n")
+    _git(root, "branch", "trunk", "main~2")
+    _git(root, "branch", "wt/on-trunk", "trunk")
+    _git(root, "branch", "wt/on-main", "main")
+    _campaign(cfg, "p1", "ABANDONED", root, "wt/on-trunk", None, base=None)
+    _campaign(cfg, "p2", "ABANDONED", root, "wt/on-main", None, base=None)
+    rows = _rows(Q.plan_gc(cfg))
+    assert (rows[("branch", "wt/on-trunk")]["action"], rows[("branch", "wt/on-trunk")]["why"]) == (
+        "delete", "merged into trunk")
+    assert (rows[("branch", "wt/on-main")]["action"], rows[("branch", "wt/on-main")]["why"]) == (
+        "keep", "unmerged")
+    (root / ".wt" / "project.yaml").write_text("schema: wt.project.v1\nmerge: {base: trunk}\nbase: main\n")
+    assert _rows(Q.plan_gc(cfg))[("branch", "wt/on-trunk")]["why"] == "merged into trunk"
+
+
+@pytest.mark.parametrize("content", [b"schema: [unclosed\n", b"\xff\xfe base: main\n",
+                                     b"schema: wt.project.v1\nbase: 3\n"])
+def test_bad_project_config_is_a_repo_error(world, monkeypatch, content):
+    root = world["root"]
+    (root / ".wt").mkdir()
+    (root / ".wt" / "project.yaml").write_bytes(content)
+    plan = Q.plan_gc(world["cfg"])
+    assert plan["rows"] == [] and plan["repos"] == []
+    assert len(plan["errors"]) == 1 and plan["errors"][0].startswith(f"{root.resolve()}: "), plan["errors"]
+    _assert_repo_error_exit(world["cfg"], monkeypatch, "project.yaml")
+
+
+def test_unreadable_project_config_is_a_repo_error(world, monkeypatch):
+    path = (world["root"] / ".wt" / "project.yaml")
+    path.parent.mkdir()
+    path.write_text("schema: wt.project.v1\n")
+    real = Path.read_text
+
+    def read_text(self, *a, **kw):
+        if self == path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    plan = Q.plan_gc(world["cfg"])
+    assert plan["rows"] == [] and any("unreadable" in e and "Permission denied" in e for e in plan["errors"])
+    _assert_repo_error_exit(world["cfg"], monkeypatch, "Permission denied")
+
+
+def test_branch_and_path_shared_with_a_live_campaign_untouched(world):
+    """A re-queued spec: a terminal campaign and a later live one share the branch and the
+    worktree path, so neither produces a row."""
+    root, cfg, wts = world["root"], world["cfg"], world["wts"]
+    _merged_wt(root, "wt/re", wts / "re")
+    _campaign(cfg, "re-old", "MERGED", root, "wt/re", wts / "re")
+    _campaign(cfg, "re-new", "IMPLEMENTING", root, "wt/re", wts / "re")
+    _git(root, "branch", "wt/re2")
+    _campaign(cfg, "re2-old", "ABANDONED", root, "wt/re2", None)
+    _campaign(cfg, "re2-new", "QUEUED", root, "wt/re2", None)
+    plan = Q.plan_gc(cfg)
+    rows = _rows(plan)
+    for key in (("worktree", "re"), ("branch", "wt/re"), ("branch", "wt/re2")):
+        assert key not in rows, key
+    Q.apply_gc(cfg, plan)
+    assert (wts / "re").is_dir() and G.branch_exists(root, "wt/re") and G.branch_exists(root, "wt/re2")
+
+
+def test_orphan_dir_referenced_by_terminal_or_live_campaign(world):
+    root, cfg, wts = world["root"], world["cfg"], world["wts"]
+    (wts / "ghost").mkdir()
+    (wts / "ghost" / "left.txt").write_text("x\n")
+    _campaign(cfg, "gh1", "ABANDONED", root, "wt/gh1", wts / "ghost")
+    (wts / "alive").mkdir()
+    _campaign(cfg, "al1", "IMPLEMENTING", root, "wt/al1", wts / "alive")
+    plan = Q.plan_gc(cfg)
+    rows = _rows(plan)
+    row = rows[("orphan", "ghost")]
+    assert (row["action"], row["campaign"], row["campaign_state"]) == ("keep", "gh1", "ABANDONED")
+    assert row["why"] == "orphan dir of ABANDONED campaign: git does not list it; delete by hand"
+    assert rows[("orphan", "stale")]["campaign"] is None
+    assert rows[("orphan", "stale")]["why"] == "orphan dir: git does not list it; delete by hand"
+    assert ("orphan", "alive") not in rows
+    Q.apply_gc(cfg, plan)
+    assert (wts / "ghost" / "left.txt").exists() and (wts / "alive").is_dir()
+
+
+def test_second_yes_run_is_a_no_op(world, monkeypatch):
+    r = run_cli(world["cfg"], monkeypatch, ["queue", "gc", "--yes"])
+    assert r.exit_code == 0, r.output
+    before = _snapshot(world["root"])
+    r = run_cli(world["cfg"], monkeypatch, ["queue", "gc", "--yes", "--json"])
+    assert r.exit_code == 0, r.output
+    d = json.loads(r.output)
+    assert (d["worktrees_removable"], d["branches_removable"], d["errors"]) == (0, 0, [])
+    assert not any(row["action"] != "keep" for row in d["rows"])
+    assert _snapshot(world["root"]) == before
+
+
+def test_hidden_edits_kept(world):
+    """skip-worktree / assume-unchanged files edited on disk are invisible to `git status`:
+    such a worktree is kept dirty. A flagged but unmodified file does not block removal."""
+    root, cfg, wts = world["root"], world["cfg"], world["wts"]
+    for name, flag in (("sw", "--skip-worktree"), ("au", "--assume-unchanged"), ("ok", "--skip-worktree")):
+        _merged_wt(root, f"wt/{name}", wts / name)
+        _git(wts / name, "update-index", flag, "README.md")
+        if name != "ok":
+            (wts / name / "README.md").write_text("local tweak\n")
+            assert G.is_clean(wts / name, untracked=True)
+        _campaign(cfg, name, "MERGED", root, f"wt/{name}", wts / name)
+    plan = Q.plan_gc(cfg)
+    rows = _rows(plan)
+    for name in ("sw", "au"):
+        assert (rows[("worktree", name)]["action"], rows[("worktree", name)]["why"]) == (
+            "keep", "dirty (skip-worktree/assume-unchanged edits)"), name
+        assert rows[("branch", f"wt/{name}")]["action"] == "keep"
+    assert rows[("worktree", "ok")]["action"] == "remove"
+    Q.apply_gc(cfg, plan)
+    for name in ("sw", "au"):
+        assert (wts / name / "README.md").read_text() == "local tweak\n"
+    assert not (wts / "ok").exists()
+
+
+def test_bisect_in_progress_kept(world):
+    root, cfg, wts = world["root"], world["cfg"], world["wts"]
+    _merged_wt(root, "wt/bs", wts / "bs")
+    _campaign(cfg, "bs", "MERGED", root, "wt/bs", wts / "bs")
+    _git(wts / "bs", "bisect", "start")
+    assert G.is_clean(wts / "bs", untracked=True)
+    plan = Q.plan_gc(cfg)
+    rows = _rows(plan)
+    assert (rows[("worktree", "bs")]["action"], rows[("worktree", "bs")]["why"]) == ("keep", "bisect in progress")
+    Q.apply_gc(cfg, plan)
+    assert G.bisect_in_progress(wts / "bs")
