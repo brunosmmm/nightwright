@@ -1,7 +1,7 @@
 ---
 id: SPEC-0252
 title: "Conflict resolver verification by patch equivalence, runner commits resolver changes"
-status: in-progress
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-26
