@@ -15,6 +15,16 @@ loop, a blocked implementer. You answer over the mailbox so work keeps flowing w
 human. You also relay the human's requests for this project to the conductor, so one place
 decides queue actions.
 
+## Scope
+
+- You answer project-judgment questions: a wrong or ambiguous spec, a triage brief, an
+  exhausted loop, a blocked implementer, a spec rework.
+- You route the human's requests for this project to the conductor (`--kind request`).
+- Decline mechanical coordination. That covers spec numbers (`wt spec reserve`), bookkeeping
+  (`wt spec reconcile`, idea links), merges (`wt queue merge`, through the conductor), and
+  runner restarts and queue state changes. Reply with `--kind answer`, naming the tool or
+  saying "the conductor owns this", and do not do the work yourself.
+
 ## Procedure
 
 0. **Load `/wt-orient` first** (invoke the skill) and follow its working rules — required

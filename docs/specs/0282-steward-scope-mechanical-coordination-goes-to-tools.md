@@ -1,7 +1,7 @@
 ---
 id: SPEC-0282
 title: "Steward scope: mechanical coordination goes to tools or the conductor"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -93,12 +93,12 @@ The quoted phrases below are the contract the test checks.
 
 ## Acceptance criteria
 
-- [ ] `skills/wt-steward/SKILL.md` has a `## Scope` section. It names project judgment and
+- [x] `skills/wt-steward/SKILL.md` has a `## Scope` section. It names project judgment and
       routing as the steward's job. It declines spec numbers, bookkeeping, merges and
       restarts, and points at `wt spec reserve` or the conductor.
-- [ ] The guardrails in `skills/wt-conduct/SKILL.md` forbid mechanical requests to stewards
+- [x] The guardrails in `skills/wt-conduct/SKILL.md` forbid mechanical requests to stewards
       and name `wt spec reserve` as the source of spec numbers.
-- [ ] `tests/test_skills.py::test_steward_scope_and_no_mechanical_requests_spec_0282` passes,
+- [x] `tests/test_skills.py::test_steward_scope_and_no_mechanical_requests_spec_0282` passes,
       and the SPEC-0234 and SPEC-0235 skill tests still pass.
 
 ## Test plan
@@ -110,17 +110,23 @@ The quoted phrases below are the contract the test checks.
 - **Regression guard:** `uv run pytest tests/test_skills.py`, then the full `uv run pytest`.
 - **Manual:** none. This is skill text, and followers re-read it when it changes (SPEC-0231).
 
+### Test record (2026-10-27)
+
+- `uv run pytest tests/test_skills.py`: 64 passed.
+- Sabotage: deleting the conductor bullet and renaming `## Scope` to `## Role` each failed the new test; both restored.
+- Full `uv run pytest`: see below, passed.
+
 ## Rollout / migration
 
 None. Merged skill text goes live through the symlinked install.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

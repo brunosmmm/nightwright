@@ -121,6 +121,8 @@ Exact flags: `wt queue --help`, `wt campaign --help`, `wt mailbox --help`.
 
 ## Conventions / guardrails
 
+- **Never ask a steward for mechanical work.** Spec numbers come from `wt spec reserve` (or `wt spec new`, which reserves); merges, bookkeeping and restarts are yours or a tool's. Mail a steward only for project judgment.
+
 - **A re-exec drain stalls admitted campaigns too.** While the runner drains (lease `draining`), nothing new is submitted: campaigns sitting in GATING / REVIEWING / CLOSING with no child process of theirs (`ps --ppid <runner pid> -o comm=` shows only `claude`) are frozen, not just the backlog. If the drain waits only on long `implement` runs and other campaigns are frozen behind it, SIGTERM and restart; if a gate or close child (`uv`/`python`) is running, wait for it. (Until SPEC-0225/0229 land.)
 
 - **One spec review round, never more.** A spec gets exactly one `wt spec review`. `approve` ⇒ queue it. `revise` ⇒ queue the spec as is: `wt queue add` amends it headlessly (a `spec_writer` run applies the findings) and goes straight to implementing with no second review; the implementer's brief carries the findings. A steward may help when asked but is never required. `split` ⇒ split, and each part gets its own single review. A `spec_write_failed` park from an amend, or a `split` refusal, goes to the project's steward only when one is armed (`wt mailbox list --to steward:<P>`); otherwise escalate it to the human. Never run review → revise → re-review loops.

@@ -410,6 +410,18 @@ def test_conduct_and_steward_route_merges_through_the_queue_spec_0234():
     assert "Never merge into `main` by hand" in steward
 
 
+def test_steward_scope_and_no_mechanical_requests_spec_0282():
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    steward = (REPO_SKILLS_DIR / "wt-steward" / "SKILL.md").read_text(encoding="utf-8")
+    assert "## Scope" in steward
+    assert "Decline mechanical coordination" in steward
+    assert "wt spec reserve" in steward
+    assert "Never ask a steward for mechanical work" in conduct
+    assert "wt spec reserve" in conduct
+    assert "| `message` (`kind` request)" in conduct
+    assert "Never merge into `main` by hand" in steward
+
+
 def test_conduct_and_steward_handle_escalation_answers_spec_0235():
     conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
     (row,) = [r for r in conduct.splitlines() if r.startswith("| `escalation_answered`")]
