@@ -307,8 +307,12 @@ def test_partial_delete_failure_leaves_marker(tmp_path, monkeypatch):
     _seed(bdir, "ideas.org", 60)
     (bdir / MARKER).write_text(json.dumps({"at": "x", "basename": "ideas.org", "error": "old"}))
 
+    real_remove = os.remove
+
     def boom(path):
-        raise PermissionError("denied")
+        if str(path).endswith(".bak"):
+            raise PermissionError("denied")
+        real_remove(path)             # a wrongful marker clear stays visible
     monkeypatch.setattr(W.os, "remove", boom)
     W.set_property(cfg, _task(cfg), "FOO", "bar")
     assert ":FOO: bar" in ideas.read_text()
@@ -316,14 +320,6 @@ def test_partial_delete_failure_leaves_marker(tmp_path, monkeypatch):
     assert m["basename"] == "ideas.org"
     assert re.fullmatch(r"\d+ delete\(s\) failed", m["error"])
     assert m["error"] != "old"
-
-
-def test_partial_failure_does_not_clear_marker_even_when_matching(tmp_path, monkeypatch):
-    cfg, ideas, bdir = _ideas_setup(tmp_path)
-    _seed(bdir, "ideas.org", 60)
-    monkeypatch.setattr(W.os, "remove", lambda p: (_ for _ in ()).throw(OSError("x")))
-    W.set_property(cfg, _task(cfg), "FOO", "bar")
-    assert (bdir / MARKER).exists()
 
 
 def test_prune_cmd_reports_and_clears_marker(tmp_path, monkeypatch):

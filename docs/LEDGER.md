@@ -204,7 +204,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) | Spec phases and review rounds in queue watch and listing | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0214](./specs/0214-spec-review-loop-inside-the-campaign-with-in-loop.md) | Spec review loop inside the campaign, with in-loop acceptance | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0285](./specs/0285-persona-runs-cannot-prune-org-backups-prune.md) | Persona runs cannot prune org backups; prune failures leave a trace | feature | in-progress | — | 2026-10-27 |
 | [SPEC-0286](./specs/0286-escalation-overrides-are-idempotent-withdrawable.md) | Escalation overrides are idempotent, withdrawable and exact | feature | accepted | — | 2026-10-27 |
 | [SPEC-0287](./specs/0287-runner-safety-nets-train-watchdog-crash-sweep.md) | Runner safety nets: train watchdog, crash-sweep harvest, terminal tmp, regenerate renames | feature | accepted | — | 2026-10-27 |
 | [SPEC-0288](./specs/0288-implementer-prompt-run-targeted-tests-while.md) | Implementer prompt: targeted tests while iterating, full suite left to gating | feature | accepted | — | 2026-10-27 |
@@ -477,6 +476,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0282](./specs/0282-steward-scope-mechanical-coordination-goes-to-tools.md) | Steward scope: mechanical coordination goes to tools or the conductor | feature | done | — | 2026-10-27 |
 | [SPEC-0283](./specs/0283-handed-off-sweep-via-gh-pr-view.md) | HANDED_OFF sweep: a merged PR moves its campaign to MERGED | feature | done | — | 2026-10-27 |
 | [SPEC-0284](./specs/0284-gate-result-parsing-read-structured-results-not.md) | Gate result parsing: counts and failing test ids from pytest and JUnit XML | feature | done | — | 2026-10-27 |
+| [SPEC-0285](./specs/0285-persona-runs-cannot-prune-org-backups-prune.md) | Persona runs cannot prune org backups; prune failures leave a trace | feature | done | — | 2026-10-27 |
 
 ## Superseded / rejected
 

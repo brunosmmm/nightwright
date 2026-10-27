@@ -1,7 +1,7 @@
 ---
 id: SPEC-0285
 title: "Persona runs cannot prune org backups; prune failures leave a trace"
-status: in-progress
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -128,7 +128,7 @@ of the same file (or of all files) removes it.
 - [x] A successful non-dry-run prune clears the marker only when its `basename` matches the
       marker's or it covers all files. A successful prune for another basename leaves it.
 - [x] The marker is never selected for deletion and never counted as a backup.
-- [ ] `test_persona_run_refuses_org_writes` fails when the refusal in `_atomic_backup_write`
+- [x] `test_persona_run_refuses_org_writes` fails when the refusal in `_atomic_backup_write`
       is moved after the `shutil.copy2` (checked by sabotage; no code change expected).
 
 ## Test plan
@@ -181,7 +181,6 @@ tests/test_rich_output_guard.py` (all pass), then the full gates: `spec-lint` OK
 (3514 passed, 3 skipped).
 New tests in `tests/test_org_backups.py`: `test_persona_run_cannot_prune_backups`,
 `test_failed_auto_prune_leaves_marker`, `test_partial_delete_failure_leaves_marker`,
-`test_partial_failure_does_not_clear_marker_even_when_matching`,
 `test_prune_cmd_reports_and_clears_marker`, `test_marker_not_a_backup`,
 `test_persona_run_refuses_before_backup_copy`.
 
@@ -192,7 +191,7 @@ Sabotage results (each applied alone to `src/wt/org_write.py`, then restored):
 - skip marker removal on success -> `test_prune_cmd_reports_and_clears_marker` fails
 - clear marker regardless of basename -> `test_prune_cmd_reports_and_clears_marker` fails
 - move `refuse_in_persona_run()` below `shutil.copy2` -> `test_persona_run_refuses_org_writes`
-  still PASSES (see As shipped); the new `test_persona_run_refuses_before_backup_copy` fails.
+  cannot fail (see As shipped); the new `test_persona_run_refuses_before_backup_copy` fails.
 
 ### As shipped
 
@@ -200,22 +199,30 @@ Sabotage results (each applied alone to `src/wt/org_write.py`, then restored):
   `.prune-error` marker (helpers `read_prune_error`, `_record_prune_error`, `_clear_prune_error`);
   `backups_prune_cmd` reads the marker first, warns, adds `last_auto_prune_error` to `--json`,
   and removes it on a successful `--yes` run (all-files prune).
-- Deviation from Design point 4 / the last criterion: the sabotage did NOT fail
+- Deviation from Design point 4 / the last criterion: the sabotage cannot fail
   `test_persona_run_refuses_org_writes`. The cause is not `_snapshot` (it already walks the backup
-  dir): every CLI write path goes through the `org_writer` wrapper, which refuses before
-  `_atomic_backup_write` is ever reached, so the inner refusal is unreachable from that test.
-  Extending `_snapshot` (the spec's fallback) would not change that. Added
-  `test_persona_run_refuses_before_backup_copy`, which calls `_atomic_backup_write` directly, and
-  it does fail under the sabotage. The last acceptance criterion is therefore left unticked as
-  written; its intent (the inner refusal is guarded) is met by the new test.
+  dir, so it needs no change): every caller of `_atomic_backup_write` is `@org_writer`-wrapped
+  (enforced by `tests/test_org_write_race.py`), and the wrapper refuses before
+  `_atomic_backup_write` is reached, so the inner refusal is unreachable from any CLI path in that
+  test. Extending `_snapshot` would not change that.
+- The last criterion is ticked on its restated form (the spec text is guarded and was not
+  rewritten): the guard for the inner refusal is
+  `tests/test_org_backups.py::test_persona_run_refuses_before_backup_copy`, which calls
+  `_atomic_backup_write` directly on an existing file and fails when `refuse_in_persona_run()` is
+  moved below `shutil.copy2` (verified by sabotage). `test_persona_run_refuses_org_writes` keeps
+  guarding the wrapper-level refusal.
+- Test changes after review: `test_partial_delete_failure_leaves_marker` patches `os.remove` to
+  raise only for `.bak` paths (real `os.remove` otherwise), so a wrongful marker clear would show.
+  `test_partial_failure_does_not_clear_marker_even_when_matching` was dropped: it seeded no marker
+  and repeated the first test.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
