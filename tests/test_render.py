@@ -116,3 +116,9 @@ def test_print_code_syntax_on_terminal(monkeypatch):
     monkeypatch.setattr(c, "print", lambda obj, **kw: seen.append(obj))
     R.print_code("a: 1\n", "yaml", console=c)
     assert any(isinstance(o, Syntax) for o in seen)
+
+
+def test_campaign_event_idea_reconciled():
+    ev = {"seq": 7, "ts": "t", "type": "idea_reconciled", "by": "tick", "spec_id": "SPEC-0257",
+          "idea_id": "IDEA-067", "from": "INCUBATE", "to": "PROMOTED"}
+    assert R.campaign_event(ev).plain.endswith("idea IDEA-067: INCUBATE -> PROMOTED")

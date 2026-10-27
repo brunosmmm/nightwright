@@ -1772,8 +1772,13 @@ def _reconcile_merged(cfg, state: dict, events: list) -> None:
                                    "files": []}))
 
     try:
-        root = Path((state.get("repo") or {}).get("root") or "").resolve()
-        if not SP._specs_dir(cfg).resolve().is_relative_to(root):
+        root = (state.get("repo") or {}).get("root")
+        try:
+            specs_dir = SP._specs_dir(cfg).resolve()
+        except ValueError:                  # no specs dir configured or locatable
+            specs_dir = None
+        # an unknown repo root is not "the current directory": skip rather than guess
+        if not root or specs_dir is None or not specs_dir.is_relative_to(Path(root).resolve()):
             finding("info", "idea reconcile skipped: spec store is not this repo")
             return
         before = {(t.properties.get("ID") or t.id or "").strip(): t.state

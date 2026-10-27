@@ -639,3 +639,32 @@ def test_cli_reconcile_prints_link_row(tmp_path, monkeypatch):
     assert out.exit_code == 0, out.output
     assert idea_id in out.output and "set :SPEC: SPEC-0001" in out.output
     assert _spec_prop(cfg, idea_id) == ""               # dry run
+
+
+def test_superseded_spec_naming_a_successor_linked_idea_is_quiet(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _idea(cfg, "successor linked", state="SPECCED", spec_id="SPEC-0002")
+    _spec(cfg, "SPEC-0001", "superseded", source_idea=idea_id)
+    _spec(cfg, "SPEC-0002", "accepted", source_idea=idea_id)
+    plan = S.reconcile_ideas(cfg, apply=False)
+    assert not [r for r in plan if r[2] == "flag-conflict"]
+
+
+def test_link_skipped_on_drift_does_not_advance(tmp_path, monkeypatch):
+    """The idea gains a different `:SPEC:` between plan and write: no link, and no state change
+    derived from the spec that lost the race."""
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "raced")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id)
+    real = S.W.resolve_selector
+    raced = []
+
+    def resolve(c, sel):
+        if not raced:
+            raced.append(1)
+            W.set_property(c, real(c, sel), "SPEC", "SPEC-0002")
+        return real(c, sel)
+    monkeypatch.setattr(S.W, "resolve_selector", resolve)
+    S.reconcile_ideas(cfg, apply=True)
+    assert _spec_prop(cfg, idea_id) == "SPEC-0002"
+    assert _state_of(cfg, idea_id) == "IDEA"            # not PROMOTED/archived by SPEC-0001

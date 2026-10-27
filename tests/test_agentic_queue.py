@@ -419,6 +419,34 @@ def test_merge_reconcile_skipped_for_another_repo(opened, tmp_path):
     assert _idea_state(cfg, iid) == "IDEA" and not list(S.read_ledger(cfg, cid, types=["idea_reconciled"]))
 
 
+@pytest.mark.parametrize("root", [None, ""])
+def test_merge_reconcile_skipped_without_a_repo_root(opened, monkeypatch, root):
+    """An unknown repo root is not the cwd: even when the queue runs from above the specs dir."""
+    cfg, cid, ctx = opened
+    iid, oc = _merge_with_idea(opened)
+    st = S.read_state(cfg, cid)
+    S.write_state(cfg, cid, dict(st, repo=dict(st["repo"], root=root)))
+    monkeypatch.chdir("/")
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED"
+    (fnd,) = [f for f in S.read_ledger(cfg, cid, types=["finding"]) if f["gate"] == "bookkeeping"]
+    assert fnd["severity"] == "info" and "not this repo" in fnd["title"]
+    assert _idea_state(cfg, iid) == "IDEA"
+
+
+def test_merge_reconcile_skipped_when_specs_dir_unlocatable(opened, monkeypatch):
+    cfg, cid, ctx = opened
+    iid, oc = _merge_with_idea(opened)
+
+    def nowhere(c):
+        raise ValueError("cannot locate the internal specs directory")
+    monkeypatch.setattr(Q.SP, "_specs_dir", nowhere)
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED"
+    (fnd,) = [f for f in S.read_ledger(cfg, cid, types=["finding"]) if f["gate"] == "bookkeeping"]
+    assert fnd["severity"] == "info" and "not this repo" in fnd["title"]
+
+
 def test_merge_without_a_spec_skips_reconcile_silently(opened, monkeypatch):
     cfg, cid, ctx = opened
     iid, oc = _merge_with_idea(opened)
@@ -1573,3 +1601,5 @@ def test_merge_reconcile_never_edits_the_main_checkout(opened):
     assert st["state"] == "MERGED" and _idea_state(cfg, iid) == "PROMOTED"
     assert spec.read_bytes() == before and b"source_idea" not in before
     assert dirty() == status_before     # a new tracked edit here would park the next close
+    (fnd,) = [f for f in S.read_ledger(cfg, cid, types=["finding"]) if f["gate"] == "bookkeeping"]
+    assert fnd["severity"] == "info" and fnd["title"] == "idea reconcile: spec has no source_idea"

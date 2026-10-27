@@ -963,13 +963,19 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     # `:SPEC:` lands before any state write (SPEC-0257).
     from . import explore as EX
     from . import org as ORG
+    drifted = set()                 # ideas linked to another spec since the plan
     for idea_id, spec_id in links:
         ORG.invalidate_tasks_cache()
         task = W.resolve_selector(cfg, idea_id)
-        if (task.properties.get("SPEC") or "").strip():     # linked since the plan: leave it
+        now = (task.properties.get("SPEC") or "").strip()
+        if now:                     # linked since the plan: leave it
+            if now != spec_id:
+                drifted.add(idea_id)
             continue
         W.set_property(cfg, task, "SPEC", spec_id)
     for idea_id, target in advances:
+        if idea_id in drifted:      # the advance was derived from a spec it no longer points to
+            continue
         EX.set_idea_state(cfg, idea_id, target)
     if backlinks:
         for spec_id, idea_id in backlink_writes:

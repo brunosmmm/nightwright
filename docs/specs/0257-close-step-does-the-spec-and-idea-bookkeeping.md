@@ -191,6 +191,16 @@ Definition of done includes filing a follow-up idea for it (`wt idea capture`, k
   (sabotage: the hook passing `backlinks=True` fails it). `uv run pytest tests/test_reconcile.py
   tests/test_agentic_queue.py -q`: 195 passed.
 
+### Test record (2026-10-26, review round 2)
+
+- Added: `test_superseded_spec_naming_a_successor_linked_idea_is_quiet`,
+  `test_link_skipped_on_drift_does_not_advance`, `test_campaign_event_idea_reconciled`,
+  `test_merge_reconcile_skipped_without_a_repo_root` (None and "")
+  `test_merge_reconcile_skipped_when_specs_dir_unlocatable`, and the info `flag-no-backlink`
+  assertion in `test_merge_reconcile_never_edits_the_main_checkout`.
+- `uv run pytest tests/test_reconcile.py tests/test_agentic_queue.py tests/test_render.py -q`:
+  223 passed.
+
 ### As shipped
 
 - Queue tests live in `tests/test_agentic_queue.py` (the `opened` campaign fixture and `_apply`
@@ -208,7 +218,11 @@ Definition of done includes filing a follow-up idea for it (`wt idea capture`, k
   `source_idea` write never touches a tracked spec in the main checkout (it would park the next
   close as `main_dirty`). The `flag-no-backlink` row is kept and the hook records it as an info
   `bookkeeping` finding. The link write pass also skips an idea that gained a `:SPEC:` since the
-  plan was made.
+  plan was made, and then also skips the advance planned from that spec (the idea now points at
+  another spec).
+- The close hook's same-repo check treats a missing/empty `repo.root`, and a specs dir that
+  cannot be located (`_specs_dir` raises `ValueError`), as "spec store is not this repo" (info
+  finding), never as the current directory or a minor "reconcile failed" finding.
 
 ## Definition of done
 
