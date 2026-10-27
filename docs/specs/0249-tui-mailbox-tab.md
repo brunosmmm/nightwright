@@ -272,6 +272,11 @@ confirmation says so explicitly (see Reply), so the human makes that choice know
 - Highlight events read the row from the table cursor, not the event, so the transient row-0
   highlight posted while repainting cannot change the selection.
 - The thread-pane focus returns to the threads table on `esc` / `tab`.
+- A reload that finishes after the user changed the selected inbox (highlight, or the target inbox of a
+  new message) discards its snapshot and lets the queued `_again` reload load the inbox now selected;
+  `snap.inbox` is only taken when no inbox was asked for. `_reload_async` also reports a
+  `TypeError` / `KeyError` from a malformed record as an error notification. Pilot test:
+  `test_a_selection_made_during_a_running_load_wins_over_the_stale_snapshot`.
 
 ## Clock Log
 

@@ -158,11 +158,14 @@ class MailboxView(Horizontal):
         try:
             # Signature first: an append that lands during the load triggers another reload.
             self._signature = AM.mailbox_signature(self.cfg)
+            asked = self.inbox
             try:
-                snap = await asyncio.to_thread(AM.load_mailbox, self.cfg, self.inbox)
-            except (OSError, ValueError) as e:
+                snap = await asyncio.to_thread(AM.load_mailbox, self.cfg, asked)
+            except (OSError, ValueError, TypeError, KeyError) as e:
                 self.app.notify(f"mailbox failed: {escape(str(e))}", severity="error")
                 return
+            if asked is not None and self.inbox != asked:
+                return                          # the selection moved on: the _again reload
             self.msgs, self.inboxes, self.inbox, self.threads = (
                 snap.msgs, snap.inboxes, snap.inbox, snap.threads)
             self.paint_inboxes()

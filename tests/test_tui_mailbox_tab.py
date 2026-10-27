@@ -383,6 +383,47 @@ def test_an_outside_append_shows_within_a_poll_and_keeps_the_selection(tmp_path,
     _run(drive())
 
 
+def test_a_selection_made_during_a_running_load_wins_over_the_stale_snapshot(tmp_path, monkeypatch):
+    import threading
+    repo, cfg, ids = _fixture(tmp_path)
+    ask(cfg, frm="conductor", to="human", kind="info", text="for the human")
+    ask(cfg, frm="human", to=STEWARD, kind="info", text="for the steward")
+    app = _desk(cfg, tab="mailbox")
+    held, release, asked = threading.Event(), threading.Event(), []
+    real = AM.load_mailbox
+
+    def slow(cfg_, inbox, *a, **kw):
+        asked.append(inbox)
+        snap = real(cfg_, inbox, *a, **kw)
+        if not held.is_set():
+            held.set()
+            release.wait(5)
+        return snap
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            v = mv(app)
+            assert v.inbox == "human"
+            held.clear(), asked.clear()
+            monkeypatch.setattr(AM, "load_mailbox", slow)
+            v.reload()                                  # loads "human" and blocks
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if held.is_set():
+                    break
+            assert held.is_set() and v._loading
+            v.inbox, v.root = STEWARD, None             # the user moves on mid-load
+            v.reload()
+            release.set()
+            await settle(app, pilot)
+            assert v.inbox == STEWARD and asked[-1] == STEWARD
+            assert v.inboxes_table.cursor_row == [r.address for r in v.inboxes].index(STEWARD)
+            assert [r.subject for r in v.threads] == ["for the steward"]
+
+    _run(drive())
+
+
 def test_the_tab_never_touches_followers(tmp_path, monkeypatch):
     monkeypatch.setattr(MT, "POLL_S", 0.05)
     repo, cfg, ids = _fixture(tmp_path)
