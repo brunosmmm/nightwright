@@ -423,3 +423,78 @@ def test_reviews_running_total_and_header(tmp_path):
     _end(cfg, cid, "test_reviewer")
     p = Q.dashboard_payload(cfg)
     assert p["totals"]["reviews_running"] == 0 and "reviews 0" not in _render(p, 120)
+
+
+def test_review_chips_window_starts_at_last_reviewing_transition(tmp_path):
+    cfg, cid = _review_campaign(tmp_path, loops=2)
+    # loop 1's review: two ended runs and one left open
+    for p in _REVIEWERS[:2]:
+        _start(cfg, cid, p)
+        _end(cfg, cid, p)
+    _start(cfg, cid, "adversarial_reviewer")
+    # loop 2 enters REVIEWING again, no new runs yet
+    _ev(cfg, cid, "transition", {"from": "IMPLEMENTING", "to": "REVIEWING"})
+    chips = _row(cfg, cid)["reviews"]
+    assert [c["status"] for c in chips] == ["not_run"] * 3
+
+
+def test_review_chips_current_verdicts_show_outside_reviewing(tmp_path):
+    cfg, cid = _review_campaign(tmp_path, state="TRIAGING", verdicts={
+        "test_reviewer": _verdict("pass", 88)})
+    # run events of the finished review must not make chips failed/running outside REVIEWING
+    _start(cfg, cid, "adversarial_reviewer")
+    chips = {c["persona"]: c for c in _row(cfg, cid)["reviews"]}
+    assert list(chips) == list(_REVIEWERS)
+    assert chips["test_reviewer"]["status"] == "pass" and chips["test_reviewer"]["score"] == 88
+    assert chips["conformance_reviewer"]["status"] == "not_run"
+    assert chips["adversarial_reviewer"]["status"] == "not_run"
+
+
+def test_review_chips_non_conforming_verdict_is_failed(tmp_path):
+    cfg, cid = _review_campaign(tmp_path, verdicts={
+        "conformance_reviewer": {**_verdict("pass", 90), "verdict": "maybe"}})
+    _start(cfg, cid, "conformance_reviewer")
+    _end(cfg, cid, "conformance_reviewer")
+    chips = {c["persona"]: c["status"] for c in _row(cfg, cid)["reviews"]}
+    assert chips["conformance_reviewer"] == "failed"
+
+
+def test_review_chips_elapsed_and_render(tmp_path):
+    cfg, cid = _review_campaign(tmp_path)
+    ev_at(cfg, cid, "run.start", {"persona": "test_reviewer", "run_id": "t-1",
+                                  "model": "sonnet", "effort": "high"}, ago_s=180)
+    chip = next(c for c in _row(cfg, cid)["reviews"] if c["persona"] == "test_reviewer")
+    assert 175 <= chip["elapsed_s"] <= 240
+    panel = Console(width=120, record=True, force_terminal=False)
+    panel.print(CQ._reviews_text([chip]))
+    assert "test ▶ 3m" in panel.export_text()
+
+
+def test_review_chips_fallback_ordering_and_loop_filter(tmp_path, monkeypatch):
+    cfg, cid = _review_campaign(tmp_path, loops=2, verdicts={
+        "test_reviewer": _verdict("pass", 80, loop=2),
+        "conformance_reviewer": _verdict("fix", 30, "major", loop=1)})
+    _start(cfg, cid, "adversarial_reviewer")
+    real = Q.resolve_profile
+
+    def boom(cfg, name, **k):
+        if k.get("project_root"):
+            raise ValueError("bad profile")
+        return real(cfg, name, **k)
+    monkeypatch.setattr(Q, "resolve_profile", boom)
+    chips = _row(cfg, cid)["reviews"]
+    expected = [p for p in Q.PS.REVIEWER_PERSONAS if p in ("test_reviewer", "adversarial_reviewer")]
+    assert [c["persona"] for c in chips] == expected
+    assert {c["persona"]: c["status"] for c in chips} == {
+        "test_reviewer": "pass", "adversarial_reviewer": "running"}
+
+
+def test_reviews_running_total_sums_across_campaigns(tmp_path):
+    cfg, cid = _review_campaign(tmp_path)
+    _start(cfg, cid, "test_reviewer")
+    repo = tmp_path / "repo"
+    cid2 = _campaign(cfg, repo, "SPEC-0002-rev", "REVIEWING", spec_id="SPEC-0002")
+    _ev(cfg, cid2, "transition", {"from": "GATING", "to": "REVIEWING"})
+    _start(cfg, cid2, "conformance_reviewer")
+    _start(cfg, cid2, "adversarial_reviewer")
+    assert Q.dashboard_payload(cfg)["totals"]["reviews_running"] == 3

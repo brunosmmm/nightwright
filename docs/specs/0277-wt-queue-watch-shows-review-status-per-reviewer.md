@@ -161,6 +161,12 @@ New tests in `tests/test_agentic_dashboard.py` and `tests/test_tui_queue_model.p
 - Full gate: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`,
   `uv run pytest -q -x`.
 
+- Review round additions in `tests/test_agentic_dashboard.py`: window start after a loop-1
+  review (all chips `not_run`; whole-ledger scan sabotage fails it), current-loop verdicts
+  outside REVIEWING (TRIAGING), non-conforming verdict -> `failed`, `elapsed_s` and the
+  `▶ 3m` render, fallback ordering with loop filter, `reviews_running` summed over two
+  campaigns. Production code unchanged.
+
 ### As shipped (2026-10-27)
 
 - `queue._review_chips(state, ledger, reviewers, now)` takes `reviewers=None` for the
