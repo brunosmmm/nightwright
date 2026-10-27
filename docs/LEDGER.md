@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (64/71 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (65/71 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -147,7 +147,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0226](./specs/0226-runner-reloads-user-and-project-config-on-change.md) Queue runner reloads user and project config on change — done
   - [x] [SPEC-0227](./specs/0227-wt-spec-review-resolves-the-spec-from-the-current-checkout.md) wt spec review resolves the spec from the current checkout — done
   - [x] [SPEC-0228](./specs/0228-watchdog-waiting-not-admitted-and-silent-runner-journal.md) Watchdog: waiting_not_admitted and runner_journal_silent, with the drain in ready_not_admitted — done
-  - [ ] [SPEC-0229](./specs/0229-runner-exit-paths-and-draining-ticks-with-detached-runs.md) Runner exit paths and draining ticks with detached runs — accepted
+  - [x] [SPEC-0229](./specs/0229-runner-exit-paths-and-draining-ticks-with-detached-runs.md) Runner exit paths and draining ticks with detached runs — done
   - [x] [SPEC-0230](./specs/0230-single-spec-review-round.md) Single spec review round: admit a revised spec without re-review — done
   - [x] [SPEC-0231](./specs/0231-followers-exit-on-code-change-sessions-re-arm.md) Followers exit with code_changed on new wt code; conductor and steward re-arm and re-read skills — done
   - [x] [SPEC-0232](./specs/0232-escalation-records-wt-queue-escalate-and-notify.md) Escalation records: wt queue escalate parks human_decision, mails and notifies the human — done
@@ -182,7 +182,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) | Spec phases and review rounds in queue watch and listing | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0214](./specs/0214-spec-review-loop-inside-the-campaign-with-in-loop.md) | Spec review loop inside the campaign, with in-loop acceptance | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0229](./specs/0229-runner-exit-paths-and-draining-ticks-with-detached-runs.md) | Runner exit paths and draining ticks with detached runs | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0249](./specs/0249-tui-mailbox-tab.md) | TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0250](./specs/0250-tui-escalation-inbox.md) | TUI escalation inbox: open escalations first, answer by choice or text, withdraw | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0251](./specs/0251-tui-events-tab.md) | TUI events tab: live event stream with filters, current watchdog alerts, ping digest and followers | feature | accepted | M9: agentic workflow | 2026-10-25 |
@@ -404,6 +403,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0226](./specs/0226-runner-reloads-user-and-project-config-on-change.md) | Queue runner reloads user and project config on change | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0227](./specs/0227-wt-spec-review-resolves-the-spec-from-the-current-checkout.md) | wt spec review resolves the spec from the current checkout | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0228](./specs/0228-watchdog-waiting-not-admitted-and-silent-runner-journal.md) | Watchdog: waiting_not_admitted and runner_journal_silent, with the drain in ready_not_admitted | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0229](./specs/0229-runner-exit-paths-and-draining-ticks-with-detached-runs.md) | Runner exit paths and draining ticks with detached runs | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0230](./specs/0230-single-spec-review-round.md) | Single spec review round: admit a revised spec without re-review | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0231](./specs/0231-followers-exit-on-code-change-sessions-re-arm.md) | Followers exit with code_changed on new wt code; conductor and steward re-arm and re-read skills | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0232](./specs/0232-escalation-records-wt-queue-escalate-and-notify.md) | Escalation records: wt queue escalate parks human_decision, mails and notifies the human | feature | done | M9: agentic workflow | 2026-10-25 |
