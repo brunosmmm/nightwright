@@ -1,7 +1,7 @@
 ---
 id: SPEC-0288
 title: "Implementer prompt: targeted tests while iterating, full suite left to gating"
-status: accepted
+status: done
 owner: user
 created: 2026-10-27
 kind: feature
@@ -79,17 +79,17 @@ have run.
 
 ## Acceptance criteria
 
-- [ ] The assembled implementer prompt (`build_prompt("implementer", ctx)`) tells the
+- [x] The assembled implementer prompt (`build_prompt("implementer", ctx)`) tells the
       implementer to run targeted tests (touched files plus related modules) while iterating.
-- [ ] It tells the implementer to run the full suite at most once, at the end, or not at all.
-- [ ] It says gating runs the full suite and returns failures.
-- [ ] It says the gate's full-suite run satisfies the no-regressions check, so `status: done` may
+- [x] It tells the implementer to run the full suite at most once, at the end, or not at all.
+- [x] It says gating runs the full suite and returns failures.
+- [x] It says the gate's full-suite run satisfies the no-regressions check, so `status: done` may
       be set after targeted tests pass without a full run of the implementer's own.
-- [ ] The cheap-gates sentence is project-generic: spec-lint appears only as a "for wt itself"
+- [x] The cheap-gates sentence is project-generic: spec-lint appears only as a "for wt itself"
       example, not as the instruction.
-- [ ] The guard rules and placeholders of the template are unchanged (existing persona tests
+- [x] The guard rules and placeholders of the template are unchanged (existing persona tests
       pass).
-- [ ] The `### As shipped` note records the baseline implementer run durations (median, p90,
+- [x] The `### As shipped` note records the baseline implementer run durations (median, p90,
       timeout share) from the 20 campaigns before the change, taken with `wt campaign runs` /
       export.
 
@@ -109,6 +109,31 @@ have run.
   step 5.
 - **Regression guard:** `uv run pytest tests/test_agentic_personas.py`, then the full suite once.
 
+### Test record (2026-10-27)
+
+- `uv run pytest -q tests/test_agentic_personas.py`: 50 passed, including the new
+  `test_implementer_prompt_targeted_tests`.
+- Sabotage: restored the pre-change `implementer.md` from HEAD; the new test failed (1 failed,
+  49 passed); restored the new text; 50 passed.
+- Manual: `uv run wt campaign prompt $WT_CAMPAIGN implementer` shows the new step 5 (and step 7
+  sentence).
+- `uv run pytest -q` (full suite, once, at the end): 3604 passed, 3 skipped, 2 failed
+  (`test_internal_spec_lint_unaffected_by_outbox`, `test_all_specs_pass_lint`) only because the
+  ledger block was stale after the status change; after `python3 tools/spec_lint.py
+  --write-ledger`, `python3 tools/spec_lint.py` exits 0 and both tests were re-run and pass.
+
+### As shipped (2026-10-27)
+
+Shipped as designed: step 5 rewritten (targeted tests while iterating; full suite at most once,
+at the end, or skipped because gating runs it and the triager returns failures; cheap gates
+generic, spec-lint only as the "for wt itself" example) and one sentence added to step 7
+(gate's full-suite run counts as the no-regressions check; say so in the `### Test record`).
+
+Baseline (before the change), implementer runs from the 20 most recent other campaigns, via
+`wt campaign list --all --json` + `wt campaign runs --json` (`duration_s`, `timed_out`): 43
+implementer runs with a duration; median 17.1 min, p90 38.9 min, 3 timeouts (7.0% of runs). The
+after-numbers are left to a later follow-up once enough campaigns have run.
+
 ## Clock Log
 
 ## Rollout / migration
@@ -117,8 +142,8 @@ Takes effect on the next implementer run after merge. Revert is a one-file chang
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).

@@ -141,6 +141,24 @@ def test_personas_state_spec_change_guard_rules():
     assert "never \"the rules conflict\"" in tri
 
 
+def test_implementer_prompt_targeted_tests(tmp_path):
+    ctx = PS.build_context(_cfg(tmp_path), _state(tmp_path), _project_cfg())
+    p = " ".join(PS.build_prompt("implementer", ctx).split())   # unwrap the hard line breaks
+    assert ("run targeted tests only: the test files you touched plus the tests of directly "
+            "related modules") in p
+    assert "Run the full test suite at most once, at the end, or skip it" in p
+    assert ("gating runs the full suite after you return and the triager sends back any "
+            "failures") in p
+    assert ("The gate's full-suite run counts as the no-regressions check, so skipping your own "
+            "full run does not block `status: done`") in p
+    assert "say in the `### Test record` that the full suite was left to gating" in p
+    # cheap gates: generic instruction, spec-lint only as the "for wt itself" example
+    assert "The cheap gates among the project's gate commands" in p
+    assert "(listed in the repo's `.wt/project.yaml` and allowed for you; for wt itself: spec-lint)" in p
+    step5 = p.split("5. ")[1].split(" 6. ")[0]
+    assert step5.count("spec-lint") == 1 and "for wt itself: spec-lint" in step5
+
+
 def test_render_leaves_unknown_braces_alone():
     assert PS.render("a {{x}} {y} {{z}}", {"x": "1"}) == "a 1 {y} (none)"
 
