@@ -1125,6 +1125,33 @@ def test_answer_retry_after_record_write_failure_does_not_duplicate_overrides(tm
     assert waive[0]["id"] == f"{RV}#1" and attest[0]["ac"] == AC4
 
 
+def test_fresh_plan_retry_after_record_write_failure_accepts_the_same_override(tmp_path,
+                                                                               monkeypatch):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    _half_answered(cfg, monkeypatch)
+    # the stored half-written waiver hides RV#1 from the overridden view, but the CLI/TUI
+    # retry builds a new plan that must still accept it
+    assert f"{RV}#1" not in [f["id"] for f in ESC.answerable_findings(cfg, _state(cfg))]
+    plan = ESC.plan_answer(cfg, "ESC-0001", waive=[f"{RV}#1"], attest=[f"{RV}#ac0"], reason="r")
+    assert plan["answer"]["waive"] == [f"{RV}#1"] and plan["answer"]["attest"] == [AC4]
+    assert ESC.apply_answer(cfg, plan)["status"] == "answered"
+    waive, attest = _overrides(cfg, "ESC-0001")
+    assert len(waive) == len(attest) == 1
+    assert waive[0]["id"] == f"{RV}#1" and attest[0]["ac"] == AC4
+
+
+def test_text_answer_after_half_written_override_drops_its_overrides(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    _half_answered(cfg, monkeypatch)
+    assert _overrides(cfg, "ESC-0001") != ([], [])
+    plan = ESC.plan_answer(cfg, "ESC-0001", text="resume as is")
+    assert ESC.apply_answer(cfg, plan)["status"] == "answered"
+    assert _overrides(cfg, "ESC-0001") == ([], [])
+    assert f"{RV}#1" in [f["id"] for f in ESC.answerable_findings(cfg, _state(cfg))]
+
+
 def test_withdraw_strips_that_escalations_overrides(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     _reviewed(cfg)
@@ -1199,5 +1226,7 @@ def test_waiver_resolved_ac_keeps_only_the_exact_ac(tmp_path, monkeypatch):
     assert f"{RV}#ac1" in out["synthetic"]
     assert f"{RV}#ac1" in [f["id"] for f in ESC.answerable_findings(cfg, st)]
     monkeypatch.setattr(ESC, "_write", real)
-    again = ESC.plan_answer(cfg, "ESC-0001", attest=[f"{RV}#ac1"], reason="r")
+    assert ESC.apply_answer(cfg, plan)["status"] == "answered"
+    _esc(cfg, question="attest?")         # a later escalation sees ESC-0001's waiver applied
+    again = ESC.plan_answer(cfg, "ESC-0002", attest=[f"{RV}#ac1"], reason="r")
     assert again["override"]["attest"] == [long_]

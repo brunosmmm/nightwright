@@ -363,6 +363,29 @@ def _unmet_reach(text, unmet, what) -> list:
     return exact or hits
 
 
+def _strip_overrides_of(h: dict, esc_id) -> int:
+    """Drop the `human_overrides` waive/attest entries tagged `esc_id` from `h` in place; the
+    number removed."""
+    n = 0
+    for k in ("waive", "attest"):
+        if isinstance(h.get(k), list):
+            kept = [o for o in h[k]
+                    if not (isinstance(o, dict) and o.get("escalation") == esc_id)]
+            n += len(h[k]) - len(kept)
+            h[k] = kept
+    return n
+
+
+def _without_overrides_of(st: dict, esc_id) -> dict:
+    """A shallow copy of `st` whose `human_overrides` leave out the entries tagged `esc_id`."""
+    h = st.get("human_overrides")
+    if not isinstance(h, dict):
+        return st
+    h = dict(h)
+    _strip_overrides_of(h, esc_id)
+    return {**st, "human_overrides": h}
+
+
 def _plan_override(cfg, rec, waive, attest, reason) -> dict:
     from . import queue as Q
     cid = rec.get("campaign")
@@ -372,7 +395,9 @@ def _plan_override(cfg, rec, waive, attest, reason) -> dict:
         raise AnswerFormError("an override needs a non-empty --reason")
     if not waive and not attest:
         raise AnswerFormError("an override needs --waive and/or --attest")
-    st = store.read_state(cfg, cid)
+    # validate against the review without this escalation's own (half-written) overrides: a
+    # retry of the same answer replaces them in `apply_answer` (SPEC-0286)
+    st = _without_overrides_of(store.read_state(cfg, cid) or {}, rec["id"])
     findings, unmet, synthetic = _review_findings(cfg, st)
     by_id = {f["id"]: f for f in findings}
     waived, implicit = [], []
@@ -533,19 +558,24 @@ def apply_answer(cfg, plan: dict) -> dict:
                 store.append_event(cfg, cid, "note", {"text": f"{by}: {esc_id} {summary}",
                                                       "author": by}, by=by)
                 ov = plan.get("override")
+                st = store.read_state(cfg, cid)
+                h = st.get("human_overrides") if isinstance(st.get("human_overrides"),
+                                                            dict) else None
+                # any answer replaces this escalation's earlier (half-written) overrides: a
+                # retry stores one copy, a --choose/--text answer leaves none (SPEC-0286)
+                removed = _strip_overrides_of(h, esc_id) if h is not None else 0
                 if ov:
-                    st = store.read_state(cfg, cid)
                     h = st.setdefault("human_overrides", {"waive": [], "attest": []})
-                    # a retry replaces this escalation's earlier copies (SPEC-0286)
                     for k in ("waive", "attest"):
-                        h[k] = [o for o in h.get(k) or []
-                                if not (isinstance(o, dict) and o.get("escalation") == esc_id)]
+                        if not isinstance(h.get(k), list):
+                            h[k] = []
                     for w in ov["waive"]:
                         h["waive"].append({**w, "reason": ov["reason"], "escalation": esc_id,
                                            "at": now})
                     for a in ov["attest"]:
                         h["attest"].append({"ac": a, "reason": ov["reason"],
                                             "escalation": esc_id, "at": now})
+                if ov or removed:
                     store.write_state(cfg, cid, st)
             rec.update(status="answered", answer=answer, answered_by=by, answered_at=now)
             _write(cfg, rec)
@@ -686,12 +716,7 @@ def withdraw(cfg, esc_id, reason, by, *, clear_request=True) -> dict:
             # overrides a half-written answer stored no longer stand (SPEC-0286)
             h = (st or {}).get("human_overrides")
             if clear_request and isinstance(h, dict):
-                for k in ("waive", "attest"):
-                    if isinstance(h.get(k), list):
-                        kept = [o for o in h[k]
-                                if not (isinstance(o, dict) and o.get("escalation") == esc_id)]
-                        removed += len(h[k]) - len(kept)
-                        h[k] = kept
+                removed = _strip_overrides_of(h, esc_id)
                 dirty = dirty or bool(removed)
             if dirty:
                 store.write_state(cfg, cid, st)

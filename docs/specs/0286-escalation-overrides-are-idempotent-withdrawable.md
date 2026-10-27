@@ -160,6 +160,21 @@ keeps only the exact hit when one exists, the same rule the attest path uses.
   --write-ledger && python3 tools/spec_lint.py` exit 0; `uv run pytest -q -x` 3512 passed,
   3 skipped.
 
+### Test record (2026-10-27, review round 3)
+
+- New tests: `test_fresh_plan_retry_after_record_write_failure_accepts_the_same_override` (after a
+  half-written override, a fresh `plan_answer` with the same `--waive`/`--attest` is accepted and
+  `apply_answer` leaves one copy of each) and
+  `test_text_answer_after_half_written_override_drops_its_overrides` (a `--text` answer leaves no
+  ESC-0001 override and the waived finding is answerable again).
+  `test_waiver_resolved_ac_keeps_only_the_exact_ac` now finishes the half-written ESC-0001 and
+  attests `RV#ac1` from a later ESC-0002.
+- Sabotage checks, each reverted: stripping only for override answers fails the `--text` test;
+  planning against the full stored overrides fails the fresh-plan retry test.
+- Escalation, triage and TUI escalation tests: 215 passed. Gates: `python3 tools/spec_lint.py
+  --write-ledger && python3 tools/spec_lint.py` exit 0; `uv run pytest -q -x` 3514 passed,
+  3 skipped.
+
 ### As shipped (2026-10-27)
 
 - As designed. The strip in `withdraw` runs on every human withdraw (`clear_request=True`),
@@ -181,6 +196,17 @@ keeps only the exact hit when one exists, the same rule the attest path uses.
   - `withdraw` (hardening): the state (override strip and `park_requested`) is written before
     the record closes, after an `open` check under the same locks. A failed state write leaves
     the record `open`, so the withdraw can be retried.
+- Review round 3 (real retries go through the CLI/TUI, which build a fresh plan):
+  - `apply_answer` drops the record's own stored overrides on every answer of a known campaign,
+    not only on an override answer, and writes the state when it removed some or stores new ones.
+    A `--choose`/`--text` answer after a half-written override leaves none in effect.
+  - `_plan_override` validates `--waive` ids, unmet ACs and the `#ac<j>` lookup against the stored
+    review minus the overrides tagged with the record's own id. Re-running the same answer is
+    accepted. In exchange, a synthetic `#ac<j>` that only exists because of this same record's
+    half-written waiver is not offered on its retry. Its AC can still be attested by text in the
+    same answer, or by id from a later escalation.
+  - One helper, `_strip_overrides_of`, does the strip for `apply_answer`, `withdraw` and the
+    planning view.
 
 ## Rollout / migration
 
