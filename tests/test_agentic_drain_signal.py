@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import threading
+import time
 
 from test_agentic_e2e import (_git, _write, added, impl_done, make_cfg, make_repo, review,
                               script, write_review)
@@ -243,12 +244,16 @@ def test_ready_not_admitted_fires_during_drain(tmp_path, monkeypatch):
     seen = {}
     sig = _Signal(monkeypatch)
     sig.watch("drain started", lambda i: bool(i.get("draining")))
-    sig.backlog_ready(cfg, b)
 
     def observer():
         try:
             seen["draining_since"] = sig.wait("drain started")["draining"]["since"]
-            seen["since"] = sig.wait("B stored ready")["backlog"]["since"]
+            # SPEC-0229: admission continues while draining, so B starts during the drain
+            deadline = time.monotonic() + 60                 # hang guard only
+            while (S.read_state(cfg, b)["state"] == "QUEUED"
+                   and time.monotonic() < deadline):
+                time.sleep(0.02)
+            seen["b_state"] = S.read_state(cfg, b)["state"]
             later = dt.datetime.now().astimezone() + dt.timedelta(seconds=2)
             seen["items"] = E.ready_not_admitted_items(cfg, later, E.settings(cfg))
         finally:
@@ -263,9 +268,8 @@ def test_ready_not_admitted_fires_during_drain(tmp_path, monkeypatch):
     side.join(60)
     assert not side.is_alive()
     assert S.read_state(cfg, c)["state"] != "QUEUED" and len(calls) == 1
-    assert seen["since"] >= seen["draining_since"]            # stored during the drain
     # SPEC-0229: admission continues while draining, so B is admitted, not stuck ready
-    assert seen["items"] == [] and S.read_state(cfg, b)["state"] != "QUEUED"
+    assert seen["items"] == [] and seen["b_state"] != "QUEUED"
     os.environ[L.HANDOVER_ENV] = calls[0][L.HANDOVER_ENV]
     L.acquire(cfg, ["t"]).release()
 
