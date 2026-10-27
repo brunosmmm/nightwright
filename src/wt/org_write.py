@@ -358,10 +358,23 @@ def set_state(cfg, task, new_state, *, stamp_closed=True):
     # (DROPPED/RESEARCHED via wt idea close, PROMOTED via generate, SHIPPED via pull_status /
     # reconcile / wt idea state — SPEC-0135). EXPORTED does not archive; becoming SHIPPED does.
     if task.is_idea and new_state in _ARCHIVE_ON_STATES:
-        fresh = resolve_selector(cfg, task.properties.get("ID") or task.id)
-        archive_idea(cfg, fresh)
+        archive_idea(cfg, _fresh_idea(cfg, task))
 
     return task.file
+
+
+def _fresh_idea(cfg, task):
+    """`task` re-read after its own write. An `:ID:` several ideas carry (reused across rotated
+    org files, SPEC-0267) is not a unique selector, so fall back to the idea's file + heading."""
+    selector = task.properties.get("ID") or task.id
+    try:
+        return resolve_selector(cfg, selector)
+    except ValueError:
+        hits = [t for t in filter_tasks(load_tasks(cfg), is_idea=True)
+                if t.id == selector and (t.file, t.heading) == (task.file, task.heading)]
+        if len(hits) != 1:
+            raise
+        return hits[0]
 
 
 _PLANNING_RE = re.compile(r"^\s*(SCHEDULED|DEADLINE|CLOSED):")

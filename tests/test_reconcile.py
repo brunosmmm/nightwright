@@ -897,18 +897,43 @@ def _linked_headings(cfg):
     return [t.heading for t in load_tasks(cfg) if t.is_idea and t.properties.get("SPEC")]
 
 
+def _states(cfg):
+    return {t.heading: t.state for t in load_tasks(cfg) if t.is_idea}
+
+
+def _files(cfg):
+    return {t.heading: os.path.basename(t.file) for t in load_tasks(cfg) if t.is_idea}
+
+
 def test_duplicate_idea_ids_resolve_or_flag(tmp_path):
     # a new spec resolves to the new idea (both are date-valid, newest wins), never the old one
     cfg, shared = _dup_pair(tmp_path, "2026-10-26")
     plan = S.reconcile_ideas(cfg, apply=True)
     assert ("SPEC-0001", "link") in _rows(plan, shared)
     assert _linked_headings(cfg) == ["new idea"]
+    assert _states(cfg) == {"old idea": "IDEA", "new idea": "SPECCED"}
 
 
 def test_duplicate_idea_ids_old_spec_resolves_to_old_idea(tmp_path):
     cfg, shared = _dup_pair(tmp_path, "2026-09-15")
     S.reconcile_ideas(cfg, apply=True)
     assert _linked_headings(cfg) == ["old idea"]
+    assert _states(cfg) == {"old idea": "SPECCED", "new idea": "IDEA"}
+
+
+def test_duplicate_idea_ids_done_spec_advances_and_archives_the_right_one(tmp_path):
+    # PROMOTED auto-archives; the archive re-find must not trip on the id both ideas carry
+    for spec_created, promoted, other in (("2026-10-26", "new idea", "old idea"),
+                                          ("2026-09-15", "old idea", "new idea")):
+        base = tmp_path / spec_created
+        base.mkdir()
+        cfg, shared = _dup_pair(base, spec_created)
+        _spec(cfg, "SPEC-0001", "done", source_idea=shared, created=spec_created)
+        S.reconcile_ideas(cfg, apply=True)
+        assert _states(cfg) == {promoted: "PROMOTED", other: "IDEA"}
+        assert _files(cfg)[promoted] == "ideas-archive.org"
+        assert _files(cfg)[other] != "ideas-archive.org"
+        assert _linked_headings(cfg) == [promoted]
 
 
 def test_duplicate_idea_ids_none_date_valid_flags(tmp_path):

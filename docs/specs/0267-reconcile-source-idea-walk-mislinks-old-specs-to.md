@@ -1,7 +1,7 @@
 ---
 id: SPEC-0267
 title: "Reconcile source_idea walk verifies idea identity before linking"
-status: accepted
+status: done
 owner: user
 created: 2026-10-27
 source_idea: IDEA-357
@@ -45,14 +45,14 @@ The `source_idea` walk links an unlinked idea to a spec only if the idea passes 
 
 ## Acceptance criteria
 
-- [ ] An unlinked idea whose `:CREATED:` is after the claiming spec's `created` yields `flag-mismatch`; dry run and `--apply` write no `:SPEC:`, state change, archive, or spec edit for it.
-- [ ] An idea created on or before the spec's `created` date still yields `link` (+ `advance`) and `--apply` writes them.
-- [ ] An idea with no parseable `:CREATED:` yields `flag-mismatch`, not `link`.
-- [ ] A reused id claimed by one mismatching and one genuine live spec resolves to the genuine spec (no `flag-ambiguous`).
-- [ ] `flag-mismatch` rows are rendered by `wt spec reconcile` and documented; scoped (`spec_ids`) runs only report mismatches for in-scope specs.
-- [ ] A source_idea id carried by several ideas (across org files) resolves only to a date-valid, most-recently-created candidate, else flags with no write.
-- [ ] The close hook reports `flag-mismatch` as a minor finding.
-- [ ] Full `uv run pytest` and `python3 tools/spec_lint.py` pass.
+- [x] An unlinked idea whose `:CREATED:` is after the claiming spec's `created` yields `flag-mismatch`; dry run and `--apply` write no `:SPEC:`, state change, archive, or spec edit for it.
+- [x] An idea created on or before the spec's `created` date still yields `link` (+ `advance`) and `--apply` writes them.
+- [x] An idea with no parseable `:CREATED:` yields `flag-mismatch`, not `link`.
+- [x] A reused id claimed by one mismatching and one genuine live spec resolves to the genuine spec (no `flag-ambiguous`).
+- [x] `flag-mismatch` rows are rendered by `wt spec reconcile` and documented; scoped (`spec_ids`) runs only report mismatches for in-scope specs.
+- [x] A source_idea id carried by several ideas (across org files) resolves only to a date-valid, most-recently-created candidate, else flags with no write.
+- [x] The close hook reports `flag-mismatch` as a minor finding.
+- [x] Full `uv run pytest` and `python3 tools/spec_lint.py` pass.
 
 ## Test plan
 
@@ -64,17 +64,34 @@ The `source_idea` walk links an unlinked idea to a spec only if the idea passes 
 - **Manual:** `uv run wt spec reconcile` (dry run, in the worktree against real data) shows the ~95 SPEC-0138-style rows as `flag-mismatch` or `flag-conflict`, and no `link`/`advance` rows for specs < SPEC-0200.
 - **Regression guard:** existing `tests/test_reconcile.py` SPEC-0257 tests are updated only to give their fixture ideas/specs consistent dates; full `uv run pytest`.
 
+### Test record (2026-10-27)
+
+- `uv run pytest -q tests/test_reconcile.py`: 91 passed, including the new
+  `test_duplicate_idea_ids_done_spec_advances_and_archives_the_right_one` and the added
+  state assertions (chosen duplicate SPECCED, twin still IDEA, both directions).
+- Sabotage: reverting the `org_write._fresh_idea` fix makes the new done-spec test fail with
+  `ambiguous selector`; restored.
+- Full `uv run pytest -q -x` and `python3 tools/spec_lint.py` pass (see gate results).
+
+### As shipped (2026-10-27)
+
+`org_write.set_state` auto-archives a terminal idea by re-finding it; with an `:ID:` carried by
+several ideas that bare-id lookup raised "ambiguous selector" after the keyword was written.
+It now falls back (`_fresh_idea`) to the idea's file + heading, so the pinned advance to
+PROMOTED/SHIPPED archives the right idea and leaves its twin untouched. Non-duplicate behaviour
+is unchanged.
+
 ## Rollout / migration
 
 Code-only; no data migration. Until merged, do not run unscoped `wt spec reconcile --apply`.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
