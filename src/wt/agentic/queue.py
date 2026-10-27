@@ -1776,9 +1776,10 @@ def _reconcile_merged(cfg, state: dict, events: list) -> None:
         if not SP._specs_dir(cfg).resolve().is_relative_to(root):
             finding("info", "idea reconcile skipped: spec store is not this repo")
             return
-        before = {(t.properties.get("ID") or "").strip(): t.state
+        before = {(t.properties.get("ID") or t.id or "").strip(): t.state
                   for t in _ideas(cfg)}
-        plan = SP.reconcile_ideas(cfg, apply=True, spec_ids=[spec_id])
+        # backlinks=False: no spec-file write in the main checkout (it would park the next close)
+        plan = SP.reconcile_ideas(cfg, apply=True, spec_ids=[spec_id], backlinks=False)
         for idea_id in dict.fromkeys(i for i, _s, a, _d in plan if a in ("link", "advance")):
             task = _idea_task(cfg, idea_id)
             events.append(("idea_reconciled", {
@@ -1787,6 +1788,8 @@ def _reconcile_merged(cfg, state: dict, events: list) -> None:
         for idea_id, _s, action, detail in plan:
             if action == "flag-ambiguous":
                 finding("minor", "idea reconcile ambiguous", f"{idea_id}: {detail}")
+            elif action == "flag-no-backlink":
+                finding("info", "idea reconcile: spec has no source_idea", f"{idea_id}: {detail}")
     except Exception as e:                  # noqa: BLE001 — never block a finished merge
         finding("minor", "idea reconcile failed", str(e) or type(e).__name__)
 

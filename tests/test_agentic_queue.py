@@ -3,6 +3,7 @@ step results, admission by slots, lease refusal. Repos and runners come from the
 (`test_agentic_e2e`), personas never run for real."""
 import dataclasses
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -354,8 +355,9 @@ def test_apply_close_outcomes(opened):
     assert row["to"] == "MERGED" and st["close"]["merged_sha"] == "abc"
 
 
-def _merge_with_idea(opened, *, spec_status="done"):
-    """`opened` campaign set to CLOSING, its spec in the main checkout naming a bare idea."""
+def _merge_with_idea(opened, *, spec_status="done", backlink=True):
+    """`opened` campaign set to CLOSING, its spec in the main checkout naming a bare idea
+    (`backlink=False`: the spec has no `source_idea`; the caller links the idea)."""
     from wt import org_write as OW
     from wt.agentic.close import CloseOutcome
     from wt.org import load_tasks
@@ -364,7 +366,9 @@ def _merge_with_idea(opened, *, spec_status="done"):
     iid = [t for t in load_tasks(cfg) if t.is_idea][0].properties["ID"]
     spec = Path(cfg["specs_dir"]) / "0001-trivial.md"
     text = spec.read_text().replace("status: accepted", f"status: {spec_status}")
-    spec.write_text(text.replace("owner: t\n", f"owner: t\nsource_idea: {iid}\n", 1))
+    if backlink:
+        text = text.replace("owner: t\n", f"owner: t\nsource_idea: {iid}\n", 1)
+    spec.write_text(text)
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="CLOSING"))
     oc = CloseOutcome("MERGED", close={"mode": "merge", "merged_sha": "abc", "pr_url": None,
                                         "gates_seq": 3, "target_sha": "def"},
@@ -1535,3 +1539,37 @@ def test_accept_waivers_ignores_a_human_waived_id(opened):
     st["last_review"] = {"verdicts": {RV: dict(_minors(2), loop=0, run="002-x")}}
     got, ignored = Q._accept_waivers(st, ctx.profile(st), [{"id": f"{RV}#0", "reason": "r"}])
     assert got == [] and ignored == [(f"{RV}#0", "not a finding of this review")]
+
+
+def test_merge_reconcile_ambiguous_is_a_minor_finding(opened):
+    cfg, cid, ctx = opened
+    iid, oc = _merge_with_idea(opened)
+    specs = Path(cfg["specs_dir"])
+    other = (specs / "0001-trivial.md").read_text().replace("SPEC-0001", "SPEC-0002")
+    (specs / "0002-other.md").write_text(other)               # a second live spec, same idea
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED" and row["to"] == "MERGED"
+    (fnd,) = [f for f in S.read_ledger(cfg, cid, types=["finding"]) if f["gate"] == "bookkeeping"]
+    assert fnd["severity"] == "minor" and fnd["title"] == "idea reconcile ambiguous"
+    assert not list(S.read_ledger(cfg, cid, types=["idea_reconciled"]))
+    assert _idea_state(cfg, iid) == "IDEA"
+
+
+def test_merge_reconcile_never_edits_the_main_checkout(opened):
+    """An idea linked by hand to a spec without `source_idea`: the close advances the idea but
+    must not write the back-link into the (tracked) spec, or the next close parks main_dirty."""
+    from wt import org_write as OW
+    cfg, cid, ctx = opened
+    iid, oc = _merge_with_idea(opened, backlink=False)
+    OW.set_property(cfg, OW.resolve_selector(cfg, iid), "SPEC", "SPEC-0001")
+    repo = Path(S.read_state(cfg, cid)["repo"]["root"])
+    spec = Path(cfg["specs_dir"]) / "0001-trivial.md"
+    before = spec.read_bytes()
+    def dirty():
+        return subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo,
+                              capture_output=True, text=True, check=True).stdout
+    status_before = dirty()             # the fixture's own status edit; the close must add nothing
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED" and _idea_state(cfg, iid) == "PROMOTED"
+    assert spec.read_bytes() == before and b"source_idea" not in before
+    assert dirty() == status_before     # a new tracked edit here would park the next close

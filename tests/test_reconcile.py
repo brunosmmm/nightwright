@@ -553,6 +553,29 @@ def test_spec_ids_scope(tmp_path):
     assert _state_of(cfg, b) == "IDEA" and _spec_prop(cfg, b) == ""
 
 
+def test_spec_ids_scope_leaves_other_linked_ideas(tmp_path):
+    cfg = _cfg(tmp_path)
+    a = _bare_idea(cfg, "idea a")
+    linked = _idea(cfg, "stale linked", state="SPECCED", spec_id="SPEC-0002")
+    _spec(cfg, "SPEC-0001", "done", source_idea=a)
+    _spec(cfg, "SPEC-0002", "done", source_idea=linked)
+    plan = S.reconcile_ideas(cfg, apply=True, spec_ids=["SPEC-0001"])
+    assert not [r for r in plan if r[0] == linked]
+    assert _state_of(cfg, linked) == "SPECCED"
+    assert _state_of(cfg, a) == "PROMOTED"
+
+
+def test_backlinks_false_never_writes_a_spec_file(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _idea(cfg, "hand linked", state="SPECCED", spec_id="SPEC-0001")
+    path = _spec(cfg, "SPEC-0001", "done", source_idea=None)
+    before = open(path, "rb").read()
+    plan = S.reconcile_ideas(cfg, apply=True, spec_ids=["SPEC-0001"], backlinks=False)
+    assert (idea_id, "flag-no-backlink") in _actions(plan)
+    assert _state_of(cfg, idea_id) == "PROMOTED"
+    assert open(path, "rb").read() == before
+
+
 def test_two_live_specs_same_idea_ambiguous(tmp_path):
     cfg = _cfg(tmp_path)
     idea_id = _bare_idea(cfg, "claimed twice")

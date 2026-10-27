@@ -856,7 +856,7 @@ def _spec_claims(cfg):
     return claims
 
 
-def reconcile_ideas(cfg, *, apply=False, spec_ids=None):
+def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     """Compare every `:SPEC:`-linked idea's state to its spec's `status` (SPEC-0078).
 
     Returns `[(idea_id, spec_id, action, detail)]`, action in `advance` / `flag-ahead` /
@@ -868,6 +868,10 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None):
     names as `source_idea` gets that `:SPEC:` written, then is evaluated like a linked one.
     Several live claimants (or none) → `flag-ambiguous`, nothing written. The claimant rule runs
     over all specs; `spec_ids` (iterable) then restricts the rows to those specs.
+
+    `backlinks=False` keeps the `flag-no-backlink` rows but never writes `source_idea` into a spec
+    file (SPEC-0078 pass) — the agentic close hook runs in the project's main checkout, where an
+    uncommitted spec edit would park every later merge as `main_dirty`.
 
     Resolution goes through `workflow._load_spec_fm`, which already handles internal
     (`docs/specs/NNNN-*.md`) and outbound (`<outbox>/<project>/PROJ-NNNN-*.md`) ids alike, so
@@ -881,7 +885,7 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None):
     plan = []                       # uniform (idea_id, spec_id, action, detail) rows
     links = []                      # (idea_id, spec_id) for the write pass
     advances = []                   # (idea_id, target_state) for the write pass
-    backlinks = []                  # (spec_id, idea_id) for the write pass
+    backlink_writes = []            # (spec_id, idea_id) for the write pass
 
     # (task, spec_id, linking): linked ideas, then unlinked ideas a live spec claims
     work = [(t, (t.properties.get("SPEC") or "").strip(), False) for t in ideas
@@ -949,7 +953,7 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None):
                          "spec has no source_idea" if sole
                          else "spec has no source_idea (ambiguous: >1 idea claims it)"))
             if sole is not None:
-                backlinks.append((spec_id, idea_id))
+                backlink_writes.append((spec_id, idea_id))
 
     if not apply:
         return plan
@@ -961,11 +965,15 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None):
     from . import org as ORG
     for idea_id, spec_id in links:
         ORG.invalidate_tasks_cache()
-        W.set_property(cfg, W.resolve_selector(cfg, idea_id), "SPEC", spec_id)
+        task = W.resolve_selector(cfg, idea_id)
+        if (task.properties.get("SPEC") or "").strip():     # linked since the plan: leave it
+            continue
+        W.set_property(cfg, task, "SPEC", spec_id)
     for idea_id, target in advances:
         EX.set_idea_state(cfg, idea_id, target)
-    for spec_id, idea_id in backlinks:
-        _write_source_idea(cfg, spec_id, idea_id)
+    if backlinks:
+        for spec_id, idea_id in backlink_writes:
+            _write_source_idea(cfg, spec_id, idea_id)
     return plan
 
 

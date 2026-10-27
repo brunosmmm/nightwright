@@ -185,6 +185,11 @@ Definition of done includes filing a follow-up idea for it (`wt idea capture`, k
   successor). `--apply` was **not** run from the campaign worktree: it rewrites the shared ideas
   file and archives subtrees, so the one-time repair is left for the conductor after merge.
 - Follow-up filed: IDEA-351 (HANDED_OFF campaign marks its idea pending).
+- Review round 1 fixes: `test_spec_ids_scope_leaves_other_linked_ideas` (scoped run leaves a
+  stale idea linked to another spec alone), `test_merge_reconcile_ambiguous_is_a_minor_finding`,
+  `test_backlinks_false_never_writes_a_spec_file`, `test_merge_reconcile_never_edits_the_main_checkout`
+  (sabotage: the hook passing `backlinks=True` fails it). `uv run pytest tests/test_reconcile.py
+  tests/test_agentic_queue.py -q`: 195 passed.
 
 ### As shipped
 
@@ -199,6 +204,11 @@ Definition of done includes filing a follow-up idea for it (`wt idea capture`, k
 - `idea_reconciled` is emitted once per idea (a `link`+`advance` pair is one event). `to` is the
   idea's state re-read after the call; None if it is no longer resolvable.
 - The follow-up idea was captured with `--kind improvement` (no `feature` kind exists).
+- `reconcile_ideas` gained `backlinks=True`; the close hook passes `False`, so the SPEC-0078
+  `source_idea` write never touches a tracked spec in the main checkout (it would park the next
+  close as `main_dirty`). The `flag-no-backlink` row is kept and the hook records it as an info
+  `bookkeeping` finding. The link write pass also skips an idea that gained a `:SPEC:` since the
+  plan was made.
 
 ## Definition of done
 
