@@ -236,3 +236,55 @@ def test_cli_gates_errors(tmp_path, monkeypatch):
     r = _cli(cfg, monkeypatch, ["queue", "gates", CID])
     assert r.exit_code != 0 and "no worktree on disk" in r.output
     assert S.read_ledger(cfg, CID, types=["gate"]) == []
+
+
+# ---- SPEC-0284: result summaries ----------------------------------------------------------
+
+def _res_gate(name, cmd, results):
+    return {**_gate(name, cmd), "results": results}
+
+
+def test_run_gate_records_summary(world, tmp_path):
+    cfg, st, wt = world
+    g = _res_gate("pytest", "echo 'FAILED t.py::test_a - boom'; "
+                  "echo '=== 1 failed, 2 passed in 0.10s ==='; exit 1", {"format": "pytest"})
+    r = G.run_gate(g, wt, G.gate_env(cfg, st), tmp_path / "p.log", {})
+    assert r.ok is False and r.exit_code == 1
+    assert r.summary["failed"] == 1 and r.summary["failing"] == ["t.py::test_a"]
+    side = json.loads((tmp_path / "p.json").read_text())
+    assert side["summary"]["failed"] == 1 and side["ok"] is False
+    assert SC.record_problems(side, SC.GATE_KEYS, SC.GATE_SCHEMA) == []
+    run = G.GateRun(1, False, (r,), "t", 0.1)
+    payload = G.as_payload(run)
+    assert payload["results"][0]["summary"]["failed"] == 1
+    ev = {"schema": SC.LEDGER_SCHEMA, "ts": "t", "seq": 1, "campaign": CID, "type": "gate",
+          "by": "tick", **payload}
+    assert SC.ledger_problems(ev) == []
+
+
+def test_run_gate_parse_error_keeps_ok(world, tmp_path):
+    cfg, st, wt = world
+    g = _res_gate("pytest", "echo garbage", {"format": "pytest"})
+    r = G.run_gate(g, wt, G.gate_env(cfg, st), tmp_path / "p.log", {})
+    assert r.ok is True and r.exit_code == 0
+    assert r.summary["format"] == "pytest" and r.summary["error"]
+    side = json.loads((tmp_path / "p.json").read_text())
+    assert side["ok"] is True and side["summary"]["error"]
+
+
+def test_junit_gate_reads_path_relative_to_cwd(world, tmp_path):
+    cfg, st, wt = world
+    cmd = ("printf '<testsuite><testcase classname=\"c\" name=\"t\"><failure/></testcase>"
+           "</testsuite>' > r.xml")
+    g = {**_res_gate("j", cmd, {"format": "junit", "path": "r.xml"}), "cwd": "sub"}
+    r = G.run_gate(g, wt, G.gate_env(cfg, st), tmp_path / "j.log", {})
+    assert r.ok and r.summary["failed"] == 1 and r.summary["failing"] == ["c::t"]
+
+
+def test_no_results_no_summary_key(world, tmp_path):
+    cfg, st, wt = world
+    r = G.run_gate(_gate("ok", "echo hi"), wt, G.gate_env(cfg, st), tmp_path / "ok.log", {})
+    assert r.summary is None
+    assert "summary" not in json.loads((tmp_path / "ok.json").read_text())
+    payload = G.as_payload(G.GateRun(1, True, (r,), "t", 0.1))
+    assert "summary" not in payload["results"][0]

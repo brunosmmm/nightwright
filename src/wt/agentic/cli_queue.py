@@ -369,6 +369,9 @@ def _gate_text(g) -> Text:
         t.append("✓ " if ok else "✗ ", style="green" if ok else "red")
         t.append(str(r.get("name")), style="" if ok else "bold red")
         t.append(f" {_dur(r.get('duration_s'))}", style="dim")
+        n = (r.get("summary") or {}).get("failed")
+        if not ok and n:                    # SPEC-0284
+            t.append(f" ({n} failed)", style="red")
     return t
 
 

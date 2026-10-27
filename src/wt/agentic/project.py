@@ -11,7 +11,7 @@ one ValueError. Defaults are filled per section after validation."""
 import copy
 import os
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
 
@@ -107,6 +107,25 @@ def _check_mapping(problems, value, path, allowed):
     return True
 
 
+def _check_results(problems, value, path):
+    """SPEC-0284: a gate's `results:` is `{format: pytest}` or `{format: junit, path: <rel>}`."""
+    if not _check_mapping(problems, value, path, ("format", "path")):
+        return
+    fmt = value.get("format")
+    if fmt not in ("pytest", "junit"):
+        problems.append(f"{path}.format: must be one of pytest, junit (got {fmt!r})")
+        return
+    rel = value.get("path")
+    if fmt == "pytest":
+        if rel is not None:
+            problems.append(f"{path}.path: only valid with format: junit")
+    elif not _is_str(rel):
+        problems.append(f"{path}.path: required non-empty relative path for format: junit")
+    elif rel.startswith(("/", "\\")) or PureWindowsPath(rel).is_absolute() \
+            or ".." in PurePosixPath(rel.replace("\\", "/")).parts:
+        problems.append(f"{path}.path: must be relative and must not contain '..' (got {rel!r})")
+
+
 def _check_str_list(problems, value, path):
     if value is None:
         return
@@ -181,7 +200,8 @@ def validate(doc):
     seen = set()
     for i, gate in enumerate(gates):
         p = f"gates[{i}]"
-        if not _check_mapping(problems, gate, p, ("name", "cmd", "cwd", "timeout_s", "required")):
+        if not _check_mapping(problems, gate, p, ("name", "cmd", "cwd", "timeout_s", "required",
+                                                  "results")):
             continue
         name = gate.get("name")
         if not _is_str(name):
@@ -198,6 +218,8 @@ def validate(doc):
         if t is not None and (isinstance(t, bool) or not isinstance(t, int) or t <= 0):
             problems.append(f"{p}.timeout_s: must be a positive integer")
         _check_bool(problems, gate.get("required"), f"{p}.required")
+        if gate.get("results") is not None:
+            _check_results(problems, gate["results"], f"{p}.results")
 
     merge = doc.get("merge")
     if merge is not None and _check_mapping(problems, merge, "merge",

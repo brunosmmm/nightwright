@@ -1,7 +1,7 @@
 ---
 id: SPEC-0284
 title: "Gate result parsing: counts and failing test ids from pytest and JUnit XML"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -109,20 +109,20 @@ and in the ledger. Old campaigns and old readers are not affected.
 
 ## Acceptance criteria
 
-- [ ] `.wt/project.yaml` accepts `results: {format: pytest}` and `{format: junit, path: …}`.
+- [x] `.wt/project.yaml` accepts `results: {format: pytest}` and `{format: junit, path: …}`.
       These are reported as config problems:
       - unknown formats;
       - junit without a path;
       - absolute paths;
       - paths containing `..`.
-- [ ] A gate with `results` records `summary` (counts and at most 50 failing ids) in three
+- [x] A gate with `results` records `summary` (counts and at most 50 failing ids) in three
       places: its `GateResult`, its `wt.gate.v1` sidecar and the `gate` ledger event. Both
       the sidecar and the ledger pass `schemas` validation.
-- [ ] A parse failure records `summary.error` and leaves `ok` and `exit_code` unchanged. A
+- [x] A parse failure records `summary.error` and leaves `ok` and `exit_code` unchanged. A
       gate without `results` produces no `summary` key.
-- [ ] `render_gate_results` shows the counts and failing ids in the triage and implementer
+- [x] `render_gate_results` shows the counts and failing ids in the triage and implementer
       prompts. The gate cell in `wt queue watch` shows "(N failed)".
-- [ ] This repo's `pytest` gate opts in with `format: pytest`.
+- [x] This repo's `pytest` gate opts in with `format: pytest`.
 
 ## Test plan
 
@@ -152,6 +152,27 @@ and in the ledger. Old campaigns and old readers are not affected.
 - **Manual:** run `wt queue gates <campaign>` on a campaign worktree with a failing test,
   then open `gates/NNN-pytest.json` and confirm the counts and ids.
 
+### Test record (2026-10-27)
+
+- `uv run pytest -q -x`: 3520 passed, 3 skipped (full suite, no regressions;
+  `tests/test_agentic_logs.py` unchanged). New and extended: `tests/test_agentic_gate_results.py`
+  (new), `test_agentic_gates.py` (summary, parse-error-keeps-ok, junit cwd, no-summary-key,
+  ledger/sidecar schema), `test_agentic_project.py` (`results:` validation),
+  `test_agentic_personas.py` (`results:` line), `test_agentic_dashboard.py` (`(2 failed)`).
+- Sabotage: with `run_gate` setting `ok` from `summary.failed == 0`,
+  `test_run_gate_parse_error_keeps_ok` failed; with the 50-id cap removed, the pytest and JUnit
+  cap tests failed. Both reverted.
+- Manual `wt queue gates <campaign>` on a live campaign worktree was not run; the same path
+  (`run_gate` -> sidecar -> `as_payload`) is exercised end to end by the gate tests, which
+  read `gates/NNN-name.json` back and validate it against `schemas`.
+
+### As shipped (2026-10-27)
+
+- Matches the Design. `wt campaign show` has no gate rendering of its own; the "(N failed)"
+  suffix lives in `cli_queue._gate_text`, the shared gate cell of `wt queue watch`.
+- `results.path` is also refused on `format: pytest`; an error summary renders in the prompt as
+  `results: could not parse <format> results (<error>)`.
+
 ## Rollout / migration
 
 Additive. Old sidecars and ledger events have no `summary`, and every reader treats a missing
@@ -159,11 +180,11 @@ summary as "no data".
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

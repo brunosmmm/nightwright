@@ -18,6 +18,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from . import gate_results
 from . import schemas as SC
 from . import store
 from .project import expand_cmd
@@ -46,6 +47,7 @@ class GateResult:
     cmd: str = ""     # the expanded command (SPEC-0192; also in the gates/NNN-name.json sidecar)
     cwd: str = ""
     interrupted: bool = False   # SPEC-0229: killed by a stop, or not started because of one
+    summary: dict | None = None  # SPEC-0284: parsed counts/failing ids; None without `results:`
 
 
 @dataclass(frozen=True)
@@ -142,6 +144,8 @@ def _write_sidecar(log_path: Path, result: GateResult, *, timeout_s: int, starte
            "duration_s": result.duration_s, "log": log_path.name, "error": error}
     if result.interrupted:
         rec["interrupted"] = True
+    if result.summary is not None:
+        rec["summary"] = result.summary
     log_path.with_suffix(".json").write_text(json.dumps(rec, indent=2, ensure_ascii=False)
                                              + "\n", encoding="utf-8")
 
@@ -195,9 +199,12 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
                 error = "interrupted: the runner is stopping; process group killed"
     duration = round(time.monotonic() - started, 3)
     ok = proc is not None and exit_code == 0 and not timed_out
+    summary = None
+    if proc is not None and not interrupted:        # SPEC-0284: never decides `ok`
+        summary = gate_results.parse(gate.get("results"), log_path, cwd)
     result = GateResult(gate["name"], bool(gate.get("required", True)), ok, exit_code,
                         timed_out, duration, log_rel or str(log_path), tail(log_path),
-                        cmd=cmd, cwd=str(cwd), interrupted=interrupted)
+                        cmd=cmd, cwd=str(cwd), interrupted=interrupted, summary=summary)
     _write_sidecar(log_path, result, timeout_s=timeout_s, started_at=started_at, error=error)
     return result
 
@@ -262,6 +269,8 @@ def as_payload(run: GateRun) -> dict:
     `append_event` merges the payload over it."""
     results = [asdict(r) for r in run.results]
     for r in results:
+        if r["summary"] is None:          # SPEC-0284: only recorded with `results:`
+            del r["summary"]
         if not r.pop("interrupted"):      # SPEC-0229: only recorded when true
             continue
         r["interrupted"] = True

@@ -498,3 +498,12 @@ def test_reviews_running_total_sums_across_campaigns(tmp_path):
     _start(cfg, cid2, "conformance_reviewer")
     _start(cfg, cid2, "adversarial_reviewer")
     assert Q.dashboard_payload(cfg)["totals"]["reviews_running"] == 3
+
+
+def test_gate_text_shows_failed_count():
+    g = {"gate_seq": 1, "results": [
+        {"name": "pytest", "ok": False, "duration_s": 3, "summary": {"failed": 2}},
+        {"name": "lint", "ok": True, "duration_s": 1, "summary": {"failed": 0}},
+        {"name": "other", "ok": False, "duration_s": 1}]}
+    assert CQ._gate_text(g).plain.count("failed)") == 1
+    assert "pytest" in CQ._gate_text(g).plain and "(2 failed)" in CQ._gate_text(g).plain

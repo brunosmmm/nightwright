@@ -5,7 +5,9 @@ command output) is kept beside a wt-written JSON record, never mixed with wt's o
 - `wt.ledger.event.v1` — one line of `campaigns/<id>/ledger.jsonl`: the envelope
   `{schema, ts, seq, campaign, type, by}` plus the per-type keys below (values may be null).
 - `wt.run.v1` — `runs/<NNN-persona>/run.json`, normalized from the runner's result.
-- `wt.gate.v1` — `gates/<NNN-name>.json`, the sidecar of the raw `gates/<NNN-name>.log`.
+- `wt.gate.v1` — `gates/<NNN-name>.json`, the sidecar of the raw `gates/<NNN-name>.log`. Optional
+  `interrupted` (SPEC-0229) and `summary` (SPEC-0284: parsed `{format, passed, failed, errors,
+  skipped, failing}` or `{format, error}`; only for gates with `results:`).
 - `wt.runner.record.v1` — one line of `<agentic>/runner.jsonl`, written by `wt queue run`.
 """
 from __future__ import annotations

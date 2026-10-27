@@ -330,6 +330,20 @@ def render(text: str, values: dict) -> str:
     return _PLACEHOLDER_RE.sub(lambda m: _as_text(values.get(m.group(1))), text)
 
 
+def _summary_line(s) -> str:
+    """SPEC-0284: `results: 3 failed, 120 passed; failing: a::b, c::d`, or the parse error."""
+    if not isinstance(s, dict):
+        return ""
+    if s.get("error"):
+        return f"results: could not parse {s.get('format')} results ({s['error']})"
+    parts = [f"{s[k]} {k}" for k in
+             ("failed", "errors", "passed", "skipped") if s.get(k)]
+    line = "results: " + (", ".join(parts) or "no tests")
+    if s.get("failing"):
+        line += "; failing: " + ", ".join(s["failing"])
+    return line
+
+
 def render_gate_results(last_gate) -> str:
     """name / required / result / tail (≤ 60 lines each) per gate, or `(none)`."""
     results = (last_gate or {}).get("results") or []
@@ -342,6 +356,9 @@ def render_gate_results(last_gate) -> str:
         head = f"### gate `{r.get('name')}` — {status} ({req}, exit {r.get('exit_code')})"
         if r.get("cmd"):
             head += f"\ncommand: `{r['cmd']}`"
+        res = _summary_line(r.get("summary"))
+        if res:
+            head += f"\n{res}"
         tail_lines = (r.get("tail") or "").rstrip("\n").splitlines()[-_GATE_TAIL_LINES:]
         tail = "\n".join(tail_lines) if tail_lines else "(no output)"
         blocks.append(f"{head}\n```\n{tail}\n```")

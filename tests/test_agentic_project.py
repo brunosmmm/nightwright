@@ -271,3 +271,34 @@ def test_docs_only_paths_rejects_bad(bad, where):
 def test_this_repos_project_yaml_declares_the_docs_only_allowlist():
     doc = P.load_project_config(Path(__file__).resolve().parent.parent / ".wt" / "project.yaml")
     assert doc["merge"]["docs_only_paths"] == ["docs/design/", "docs/WORKFLOW.md"]
+
+
+# ---- SPEC-0284: gate `results:` ---------------------------------------------------------
+
+def _results_doc(results):
+    return ("schema: wt.project.v1\ngates:\n  - name: g\n    cmd: y\n    results: "
+            + results + "\n")
+
+
+@pytest.mark.parametrize("results", ["{format: pytest}", "{format: junit, path: out/r.xml}"])
+def test_gate_results_valid(tmp_path, results):
+    p = tmp_path / "project.yaml"
+    p.write_text(_results_doc(results))
+    assert P.load_project_config(p)["gates"][0]["results"]["format"] in ("pytest", "junit")
+
+
+@pytest.mark.parametrize("results,needle", [
+    ("{format: eslint}", "gates[0].results.format"),
+    ("{format: junit}", "gates[0].results.path"),
+    ("{format: junit, path: /tmp/r.xml}", "gates[0].results.path"),
+    ("{format: junit, path: ../r.xml}", "gates[0].results.path"),
+    ("{format: junit, path: a/../../r.xml}", "gates[0].results.path"),
+    ("{format: pytest, path: r.xml}", "gates[0].results.path"),
+    ("{format: pytest, bogus: 1}", "gates[0].results.bogus"),
+    ("pytest", "gates[0].results: must be a mapping"),
+])
+def test_gate_results_invalid(tmp_path, results, needle):
+    p = tmp_path / "project.yaml"
+    p.write_text(_results_doc(results))
+    with pytest.raises(ValueError, match=needle.replace("[", r"\[").replace("]", r"\]")):
+        P.load_project_config(p)

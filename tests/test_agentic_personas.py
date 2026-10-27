@@ -857,3 +857,17 @@ def test_reviewer_prompts_carry_the_human_overrides(tmp_path, persona):
                            run_dir=tmp_path / "r")
     assert "Wrong order" in req.prompt and "AC 4 output is sorted — checked by hand" in req.prompt
     assert "{{" not in req.prompt
+
+
+def test_render_gate_results_summary_line():
+    lg = {"results": [
+        {"name": "pytest", "required": True, "ok": False, "exit_code": 1, "tail": "x",
+         "summary": {"format": "pytest", "passed": 120, "failed": 3, "errors": 0, "skipped": 2,
+                     "failing": ["a::b", "c::d"]}},
+        {"name": "junit", "required": True, "ok": True, "exit_code": 0, "tail": "",
+         "summary": {"format": "junit", "error": "no such file"}},
+        {"name": "plain", "required": True, "ok": True, "exit_code": 0, "tail": ""}]}
+    out = PS.render_gate_results(lg)
+    assert "results: 3 failed, 120 passed, 2 skipped; failing: a::b, c::d" in out
+    assert "could not parse junit results (no such file)" in out
+    assert out.count("results:") == 2          # none for the gate without a summary
