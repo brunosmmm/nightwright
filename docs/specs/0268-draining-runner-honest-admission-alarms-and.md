@@ -194,6 +194,12 @@ ready item is waiting.
   `⏳ admission blocked: 1 ready, slots 2/2 (held: …)` line). No live code-change drain with full
   slots has been observed yet; the conductor can confirm it on the next one.
 
+- Review round (tests only): added `test_admission_blocked_journaled_again_when_the_condition_recurs`
+  (sabotage: replacing `last_blocked_key = None` with `pass` makes it fail),
+  `test_admission_blocked_non_draining_has_no_deferred_holders`, the `ready_not_admitted` row
+  wording test in `tests/test_skills.py`, and a tick-less `drain` record check in the runner-log
+  test. `tests/test_agentic_exit_paths.py`, `test_agentic_logs.py` and `test_skills.py`: 117 passed.
+
 ### As shipped
 
 - `admission_blocked` is journaled when the tick had ready QUEUED items and no free slot, and

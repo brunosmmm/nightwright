@@ -371,6 +371,11 @@ def test_rows_mention_new_fields():
     assert "waiting_not_admitted" in ping and "`runner`" in ping
 
 
+def test_ready_not_admitted_row_names_slot_age_and_admission_blocked_spec_0268():
+    row = _conduct_row("ready_not_admitted")
+    assert "slot_free_s" in row and "admission_blocked" in row
+
+
 def test_runner_draining_row_waits_on_in_process_work_spec_0229():
     row = _conduct_row("runner_draining")
     assert "gate, close or FakeRunner step" in row and "so wait" in row

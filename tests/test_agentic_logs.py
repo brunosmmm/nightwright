@@ -138,6 +138,9 @@ def test_runner_log_renders_drain_tick_and_admission_blocked(tmp_path, monkeypat
     r = run_cli(cfg, monkeypatch, ["queue", "runner-log", "--tail", "0"])
     assert r.exit_code == 0, r.output
     assert "tick 90 (drain)" in r.output and "tick 91" in r.output
+    Q.journal(cfg, "tick", drain=True)                  # _drain / crash sweep: no tick number
+    r2 = run_cli(cfg, monkeypatch, ["queue", "runner-log", "--tail", "1"])
+    assert r2.exit_code == 0 and "drain" in r2.output and "tick None" not in r2.output
     (line,) = [ln for ln in r.output.splitlines() if "admission blocked" in ln]
     assert "1 ready, slots 2/2" in line
     assert "SPEC-2-b CLOSING deferred" in line and "SPEC-3-c GATING" in line

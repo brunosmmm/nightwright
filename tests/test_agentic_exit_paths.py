@@ -727,6 +727,77 @@ def test_admission_blocked_journaled_once_per_change(tmp_path, monkeypatch):
     assert len(second) == 2 and {h["campaign"] for h in second[1]["holders"]} == {a, seen["d"]}
 
 
+def test_admission_blocked_journaled_again_when_the_condition_recurs(tmp_path, monkeypatch):
+    """SPEC-0268: a tick without the blocked condition resets the dedupe key, so the identical
+    (ready, holders, deferred) set coming back is journaled a second time."""
+    repo, cfg, a = gate_world(tmp_path, monkeypatch)
+    for i in (2, 3):
+        _second_spec(repo, f"SPEC-000{i}", f"docs/specs/000{i}-x.md")
+    cfg["agentic"]["profiles"]["balanced"]["slots"] = 2
+    runner = Det(cfg)
+    runner.release.set()
+    seen, calls = {"n": 0}, []
+    monkeypatch.setattr(Q, "code_changes", lambda r, since: (
+        ("newsha", ["src/wt/x.py"]) if "changed" in seen else (since, [])))
+    monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(1))
+
+    def set_state(cid, state):
+        st = S.read_state(cfg, cid)
+        st["state"] = state
+        S.write_state(cfg, cid, st)
+
+    def on_tick(report):
+        if "changed" not in seen and pid_file(tmp_path):         # A is in its held gate
+            seen["changed"] = True
+            seen["b"] = added(cfg, monkeypatch, "SPEC-0002")
+            set_state(seen["b"], "CLOSING")
+            seen["c"] = added(cfg, monkeypatch, "SPEC-0003")     # ready, no slot
+            return
+        if "changed" not in seen:
+            return
+        seen["n"] += 1
+        if seen["n"] == 8:
+            seen["first"] = journal(cfg, "admission_blocked")
+            set_state(seen["c"], "PARKED")                       # nothing is waiting any more
+        if seen["n"] == 14:
+            seen["mid"] = journal(cfg, "admission_blocked")
+            set_state(seen["c"], "QUEUED")                       # the same condition returns
+        if seen["n"] == 22:
+            (tmp_path / "g1.rel").write_text("")
+
+    Q.run(cfg, poll_interval_s=0.05, reexec=True, code_root=repo, on_tick=on_tick,
+          runner=runner, max_ticks=300)
+    assert len(seen["first"]) == 1 and len(seen["mid"]) == 1
+    first, second = journal(cfg, "admission_blocked")[0], journal(cfg, "admission_blocked")
+    assert len(second) == 2
+    for k in ("ready", "slots", "occupied", "holders"):
+        assert second[1][k] == first[k]
+    assert second[1]["tick"] > first["tick"]
+
+
+def test_admission_blocked_non_draining_has_no_deferred_holders(tmp_path, monkeypatch):
+    """SPEC-0268: outside a drain the record says `draining: False` and defers no holder."""
+    repo, cfg, a = gate_world(tmp_path, monkeypatch)
+    _second_spec(repo)
+    cfg["agentic"]["profiles"]["balanced"]["slots"] = 1
+    runner = Det(cfg)
+    runner.release.set()
+    seen = {"n": 0}
+
+    def on_tick(report):
+        if "b" not in seen and pid_file(tmp_path):               # A holds the only slot
+            seen["b"] = added(cfg, monkeypatch, "SPEC-0002")
+        if "b" in seen:
+            seen["n"] += 1
+            if seen["n"] == 6:
+                (tmp_path / "g1.rel").write_text("")
+
+    Q.run(cfg, poll_interval_s=0.05, on_tick=on_tick, runner=runner, max_ticks=100)
+    rec = journal(cfg, "admission_blocked")[0]
+    assert rec["draining"] is False and rec["ready"] == [seen["b"]]
+    assert rec["holders"] and all(h["deferred"] is False for h in rec["holders"])
+
+
 def test_signal_during_draining_clears_restart(tmp_path, monkeypatch):
     """Precedence: a human stop during draining ticks is a plain `signal` exit: no exec, no
     `restart_pending`."""
