@@ -424,6 +424,18 @@ def batch(cfg, monkeypatch, *args):
     return r, (json.loads(r.output) if r.output.startswith("{") else None)
 
 
+def write_log(monkeypatch):
+    """Ids in the order the batch applied them. `created_at` has 1 s resolution, so the creation
+    order is read from the appliers' calls, which are what `apply_add_batch` sequences."""
+    log = []
+    for name in ("apply_add", "apply_add_idea"):
+        def rec(cfg, plan, *a, _orig=getattr(Q, name), **kw):
+            log.append(plan.get("spec_id") or plan["idea_id"])
+            return _orig(cfg, plan, *a, **kw)
+        monkeypatch.setattr(Q, name, rec)
+    return log
+
+
 def campaign_order(cfg):
     return [c["spec_id"] for c in sorted(S.list_campaigns(cfg), key=lambda c: c["created_at"])]
 
@@ -437,10 +449,24 @@ def test_batch_topological_order(tmp_path, monkeypatch):
     assert [i["id"] for i in d["items"]] == ["SPEC-0003", "SPEC-0002", "SPEC-0001"]
     assert [i["position"] for i in d["items"]] == [1, 2, 3] and d["ok"] == 3
     assert not S.list_campaigns(cfg)
+    log = write_log(monkeypatch)
     r, d = batch(cfg, monkeypatch, b, "SPEC-0003", "SPEC-0001", "--yes")
     assert r.exit_code == 0 and all(i["written"] for i in d["items"]), r.output
-    order = [c["spec_id"] for c in sorted(S.list_campaigns(cfg), key=lambda c: c["created_at"])]
-    assert order == ["SPEC-0003", "SPEC-0002", "SPEC-0001"]
+    assert log == ["SPEC-0003", "SPEC-0002", "SPEC-0001"]
+    assert sorted(campaign_order(cfg)) == sorted(log)
+
+
+def test_batch_write_order_detects_a_wrong_sort(tmp_path, monkeypatch):
+    """Sabotage guard: a reversed topological sort writes the dependent first, and the write
+    log shows it."""
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2, deps=["SPEC-0003"])
+    add_spec(cfg, repo, 3)
+    monkeypatch.setattr(Q, "_order_specs", lambda ids, deps: (list(reversed(ids)), {}))
+    log = write_log(monkeypatch)
+    r, d = batch(cfg, monkeypatch, "SPEC-0003", "SPEC-0002", "--yes")
+    assert r.exit_code == 0, r.output
+    assert log == ["SPEC-0002", "SPEC-0003"]                     # the wrong order, visible
 
 
 def test_batch_cycle_refused(tmp_path, monkeypatch):
@@ -569,11 +595,13 @@ def test_batch_ideas_come_after_specs(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     assert [i["id"] for i in d["items"]] == ["SPEC-0002", "SPEC-0001", idea]
     assert [i["position"] for i in d["items"]] == [1, 2, 3] and d["items"][2]["kind"] == "idea"
+    log = write_log(monkeypatch)
     r, d = batch(cfg, monkeypatch, idea, "SPEC-0002", "SPEC-0001", "--yes")
     assert r.exit_code == 0 and all(i["written"] for i in d["items"]), r.output
-    created = [c for c in sorted(S.list_campaigns(cfg), key=lambda c: c["created_at"])]
-    assert [c["spec_id"] for c in created[:2]] == ["SPEC-0002", "SPEC-0001"]
-    assert len(created) == 3 and created[2]["kind"] == "idea" and created[2]["idea"]["id"] == idea
+    assert log == ["SPEC-0002", "SPEC-0001", idea]
+    created = S.list_campaigns(cfg)
+    assert len(created) == 3
+    assert sum(1 for c in created if c["kind"] == "idea" and c["idea"]["id"] == idea) == 1
 
 
 def test_batch_from_file_comments_and_dedup(tmp_path, monkeypatch):
@@ -622,11 +650,12 @@ def test_batch_ids_are_case_insensitive(tmp_path, monkeypatch):
     repo, cfg = _cfg(tmp_path)
     add_spec(cfg, repo, 2, deps=["spec-0003"])
     add_spec(cfg, repo, 3)
+    log = write_log(monkeypatch)
     r, d = batch(cfg, monkeypatch, "spec-0003", "SPEC-0003", "spec-0002", "--yes")
     assert r.exit_code == 0, r.output
     assert [i["id"] for i in d["items"]] == ["SPEC-0003", "SPEC-0002"]
     assert d["items"][1]["would_block"] == []
-    assert campaign_order(cfg) == ["SPEC-0003", "SPEC-0002"]
+    assert log == ["SPEC-0003", "SPEC-0002"]
     # a depends_on written in another case still orders the batch
     add_spec(cfg, repo, 4, deps=["spec-0005"])
     add_spec(cfg, repo, 5)
@@ -749,3 +778,72 @@ def test_batch_write_time_race_exits_1_through_the_cli(tmp_path, monkeypatch):
     byid = {i["id"]: i for i in d["items"]}
     assert byid["SPEC-0001"]["written"] is True and d["errors"] == 1
     assert "already has an active campaign" in byid["SPEC-0002"]["error"]
+
+
+def test_batch_cycle_under_skip_invalid_writes_only_the_valid_items(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2, deps=["SPEC-0003"])
+    add_spec(cfg, repo, 3, deps=["SPEC-0002"])
+    add_spec(cfg, repo, 4, deps=["SPEC-0002"])                   # downstream of the cycle
+    log = write_log(monkeypatch)
+    r, d = batch(cfg, monkeypatch, "SPEC-0002", "SPEC-0003", "SPEC-0004", "SPEC-0001", "--yes",
+                 "--skip-invalid")
+    assert r.exit_code == 1, r.output
+    assert log == ["SPEC-0001"] and campaign_order(cfg) == ["SPEC-0001"]
+    byid = {i["id"]: i for i in d["items"]}
+    assert byid["SPEC-0001"]["written"] is True and d["written"] is True
+    assert d["ok"] == 1 and d["errors"] == 3
+    assert all("error" in byid[k] and "written" not in byid[k]
+               for k in ("SPEC-0002", "SPEC-0003", "SPEC-0004"))
+
+
+def test_batch_empty_from_file_and_empty_epic(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 5)                                         # an epic without children
+    f = tmp_path / "empty.txt"
+    f.write_text("# nothing here\n\n   \n")
+    for args in (["--from-file", str(f)], ["--epic", "SPEC-0005"]):
+        r, d = batch(cfg, monkeypatch, *args)
+        assert r.exit_code == 0 and d["items"] == [], r.output
+        assert (d["ok"], d["errors"], d["uncapped"], d["cap_usd_total"]) == (0, 0, 0, 0)
+        r, d = batch(cfg, monkeypatch, *args, "--yes")
+        assert r.exit_code == 0 and d["items"] == [] and d["written"] is False, r.output
+        assert d["refused"] is None and not S.list_campaigns(cfg)
+        r = run_cli(cfg, monkeypatch, ["queue", "add", *args])
+        assert r.exit_code == 0 and "0 to queue · 0 refused · $0 cap total" in r.output, r.output
+
+
+def test_batch_epic_child_without_id_is_skipped(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 5)
+    add_spec(cfg, repo, 10, parent="SPEC-0005")
+    path = repo / "docs" / "specs" / "0011-s11.md"
+    path.write_text(SPEC_ACCEPTED.format(id="SPEC-0011", extra="parent: SPEC-0005\n").replace(
+        "id: SPEC-0011\n", ""))
+    assert "id:" not in path.read_text().split("---")[1]
+    r, d = batch(cfg, monkeypatch, "--epic", "SPEC-0005", "--yes")
+    assert r.exit_code == 0, r.output
+    assert [i["id"] for i in d["items"]] == ["SPEC-0010"]
+    assert {"id": "0011-s11", "reason": "no id"} in d["skipped"]
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "--epic", "SPEC-0005"])
+    assert "skipped 0011-s11: no id" in r.output, r.output
+
+
+def test_batch_unreadable_from_file_is_a_clean_error(tmp_path, monkeypatch):
+    """click checks the file is readable up front; a read that still fails (the file vanished,
+    an I/O error) must be a clean error, not a traceback."""
+    repo, cfg = _cfg(tmp_path)
+    f = tmp_path / "ids.txt"
+    f.write_text("SPEC-0001\n")
+    real_open = open
+
+    def flaky(path, *a, **kw):
+        if str(path) == str(f):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "--from-file", str(f), "--yes"])
+    monkeypatch.undo()
+    assert r.exit_code == 1 and "Traceback" not in r.output, r.output
+    assert "Permission denied" in r.output and not S.list_campaigns(cfg)

@@ -200,6 +200,15 @@ Review round 3 (2026-10-27): added tests for a lowercase `--epic`, epic ideas wi
 the target repo, and the exit status 1 of a write-time race through `wt queue add --yes`. Full
 `uv run pytest` and spec-lint pass.
 
+Review round 4 (2026-10-27): the order tests now read the write order from the appliers' calls
+(`created_at` has 1 s resolution, so sorting by it proved nothing); sabotage with a reversed
+topological sort fails `test_batch_topological_order`, `test_batch_ideas_come_after_specs` and
+`test_batch_ids_are_case_insensitive`, and `test_batch_write_order_detects_a_wrong_sort` pins the
+detection. Added: a cycle under `--skip-invalid` writes only the valid item, an empty `--from-file`
+and an empty epic exit 0 with zero totals, an epic child without `id` is listed in `skipped`
+(`no id`), and a failing `--from-file` read is a clean error (`OSError` is caught next to
+`ValueError`; dropping either fix fails its test). Full `uv run pytest` and spec-lint pass.
+
 ### As shipped
 
 - `apply_add_batch` takes the per-item parameters from `batch["params"]` (project, profile, base,
@@ -217,6 +226,8 @@ the target repo, and the exit status 1 of a write-time race through `wt queue ad
 - For an outbound spec, `depends_on` is read from the target repo's copy and each dependency is
   resolved next to it (as `backlog_readiness` does). Only same-namespace ids (outbound with
   outbound, `SPEC-` with `SPEC-`) count as in-batch edges or as queued dependencies.
+- An epic child spec without an `id` is listed in `skipped` as `no id` (its file stem is the
+  listed id) instead of being dropped.
 
 ## Definition of done
 

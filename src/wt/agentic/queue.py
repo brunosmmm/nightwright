@@ -4684,6 +4684,9 @@ def expand_epic(cfg, epic_id) -> tuple[list[str], list[dict]]:
         if not isinstance(fm, dict) or _canon_id(fm.get("parent") or "") != epic_id:
             continue
         sid, status = _canon_id(fm.get("id") or ""), str(fm.get("status") or "")
+        if not sid:
+            skipped.append({"id": path.stem, "reason": "no id"})
+            continue
         if status != "accepted":
             skipped.append({"id": sid, "reason": f"status {status or 'missing'}"})
             continue

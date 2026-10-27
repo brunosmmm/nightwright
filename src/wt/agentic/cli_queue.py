@@ -858,7 +858,7 @@ def attach(queue_group):
                     Q.apply_add_batch(cfg, batch, skip_invalid=skip_invalid)
                 except ValueError as e:
                     refused = str(e)
-        except ValueError as e:
+        except (ValueError, OSError) as e:
             raise click.ClickException(str(e))
         written = sum(1 for it in batch["items"] if it.get("written"))
         if as_json:
