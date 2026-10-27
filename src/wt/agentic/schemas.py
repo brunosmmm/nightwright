@@ -42,6 +42,7 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
                         "extra_commits", "absorbed_commits", "resolver_commit"),
     "spec_written": ("spec_id", "rel_path", "title", "mode"),
     "idea_link_failed": ("spec_id", "idea", "error"),            # SPEC-0256
+    "idea_reconciled": ("spec_id", "idea_id", "from", "to"),     # SPEC-0257
     "loop_divergence": ("loop", "signals", "rounds"),
     "followup": ("persona", "severity", "title", "key", "idea_id", "origin"),
     "human_decision": ("escalation", "kind"),                  # SPEC-0235

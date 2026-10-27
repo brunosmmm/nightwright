@@ -125,6 +125,9 @@ def campaign_event(ev: dict) -> Text:
     if etype == "rebase_resolved":                      # SPEC-0221
         t.append(rebase_resolved_text(ev))
         return t
+    if etype == "idea_reconciled":                      # SPEC-0257
+        t.append(f"idea {ev.get('idea_id')}: {ev.get('from')} -> {ev.get('to')}")
+        return t
     first = True
     for k, v in ev.items():
         if k in skip or (k == "spec_id" and v is None):   # a merge request has no spec id

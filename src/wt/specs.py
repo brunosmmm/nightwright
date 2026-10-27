@@ -835,12 +835,39 @@ def _sole_claimant(ideas, spec_id):
     return claims[0] if len(claims) == 1 else None
 
 
-def reconcile_ideas(cfg, *, apply=False):
+_NOT_LIVE = frozenset({"superseded", "rejected"})
+
+
+def _spec_claims(cfg):
+    """`{idea_id: [(spec_id, status)]}` over every internal spec with a `source_idea`
+    (SPEC-0257), in spec-id order. Read from the same files `_load_spec_fm` reads."""
+    claims = {}
+    for path in sorted(_specs_dir(cfg).glob("[0-9]*.md")):
+        m = _NUM_RE.match(path.name)
+        try:
+            fm, _body = split_frontmatter(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        fm = fm if isinstance(fm, dict) else {}
+        idea_id = str(fm.get("source_idea") or "").strip()
+        if idea_id and m:
+            spec_id = str(fm.get("id") or f"SPEC-{m.group(1)}")
+            claims.setdefault(idea_id, []).append((spec_id, str(fm.get("status") or "").lower()))
+    return claims
+
+
+def reconcile_ideas(cfg, *, apply=False, spec_ids=None):
     """Compare every `:SPEC:`-linked idea's state to its spec's `status` (SPEC-0078).
 
     Returns `[(idea_id, spec_id, action, detail)]`, action in `advance` / `flag-ahead` /
-    `flag-no-backlink` / `unchanged` / `missing`. Writes only when `apply` — the default is a
-    dry run, because applying `PROMOTED`/`DROPPED` archives the subtree (SPEC-0073).
+    `flag-no-backlink` / `unchanged` / `missing`, plus (SPEC-0257) `link` / `flag-conflict` /
+    `flag-ambiguous` for the specs' own `source_idea`. Writes only when `apply` — the default is
+    a dry run, because applying `PROMOTED`/`DROPPED` archives the subtree (SPEC-0073).
+
+    SPEC-0257: an idea with no `:SPEC:` that exactly one live (not superseded/rejected) spec
+    names as `source_idea` gets that `:SPEC:` written, then is evaluated like a linked one.
+    Several live claimants (or none) → `flag-ambiguous`, nothing written. The claimant rule runs
+    over all specs; `spec_ids` (iterable) then restricts the rows to those specs.
 
     Resolution goes through `workflow._load_spec_fm`, which already handles internal
     (`docs/specs/NNNN-*.md`) and outbound (`<outbox>/<project>/PROJ-NNNN-*.md`) ids alike, so
@@ -848,20 +875,51 @@ def reconcile_ideas(cfg, *, apply=False):
     from .org import filter_tasks, load_tasks
     from .workflow import _is_outbound_id, _load_spec_fm
 
-    ideas = [t for t in filter_tasks(load_tasks(cfg), is_idea=True)
-             if (t.properties.get("SPEC") or "").strip()]
+    scope = None if spec_ids is None else set(spec_ids)
+    all_ideas = filter_tasks(load_tasks(cfg), is_idea=True)
+    ideas = [t for t in all_ideas if (t.properties.get("SPEC") or "").strip()]
     plan = []                       # uniform (idea_id, spec_id, action, detail) rows
+    links = []                      # (idea_id, spec_id) for the write pass
     advances = []                   # (idea_id, target_state) for the write pass
     backlinks = []                  # (spec_id, idea_id) for the write pass
-    for task in sorted(ideas, key=lambda t: (t.properties.get("ID") or "", t.file, t.line)):
+
+    # (task, spec_id, linking): linked ideas, then unlinked ideas a live spec claims
+    work = [(t, (t.properties.get("SPEC") or "").strip(), False) for t in ideas
+            if scope is None or (t.properties.get("SPEC") or "").strip() in scope]
+    by_id = {(t.properties.get("ID") or "").strip(): t for t in all_ideas}
+    try:
+        claims = _spec_claims(cfg)
+    except ValueError:                  # no internal specs dir: nothing to walk
+        claims = {}
+    for idea_id, specs in sorted(claims.items()):
+        task = by_id.get(idea_id)
+        if task is None:                # dangling source_idea: spec_lint's business
+            continue
+        linked = (task.properties.get("SPEC") or "").strip()
+        live = [sid for sid, status in specs if status not in _NOT_LIVE]
+        in_scope = [sid for sid, _status in specs if scope is None or sid in scope]
+        if linked:
+            plan.extend((idea_id, sid, "flag-conflict", f"idea links {linked}")
+                        for sid in live if sid != linked and sid in in_scope)
+        elif len(live) == 1:
+            if live[0] in in_scope:
+                work.append((task, live[0], True))
+        elif in_scope:
+            plan.append((idea_id, in_scope[0], "flag-ambiguous",
+                         "specs naming this idea: " + ", ".join(sid for sid, _s in specs)))
+
+    for task, spec_id, linking in sorted(
+            work, key=lambda w: (w[0].properties.get("ID") or "", w[0].file, w[0].line)):
         idea_id = task.properties.get("ID") or task.id
-        spec_id = (task.properties.get("SPEC") or "").strip()
         state = (task.state or "").upper()
         fm = _load_spec_fm(cfg, spec_id)
         if fm is None:
             plan.append((idea_id, spec_id, "missing", "spec not found on disk"))
             continue
         status = str(fm.get("status") or "").lower()
+        if linking:
+            plan.append((idea_id, spec_id, "link", f"set :SPEC: {spec_id}"))
+            links.append((idea_id, spec_id))
 
         want = _implied_state(status, state, outbound=_is_outbound_id(spec_id))
         # EXPORTED→SHIPPED is allowed; other terminals ahead of a non-ready spec are flags.
@@ -897,8 +955,13 @@ def reconcile_ideas(cfg, *, apply=False):
         return plan
 
     # Write pass. Re-resolve per write (`set_state_by_selector` / `set_idea_state` does): each
-    # write can shift line numbers, and PROMOTED/DROPPED/SHIPPED archive the subtree.
+    # write can shift line numbers, and PROMOTED/DROPPED/SHIPPED archive the subtree — so every
+    # `:SPEC:` lands before any state write (SPEC-0257).
     from . import explore as EX
+    from . import org as ORG
+    for idea_id, spec_id in links:
+        ORG.invalidate_tasks_cache()
+        W.set_property(cfg, W.resolve_selector(cfg, idea_id), "SPEC", spec_id)
     for idea_id, target in advances:
         EX.set_idea_state(cfg, idea_id, target)
     for spec_id, idea_id in backlinks:
@@ -946,10 +1009,12 @@ def open_question_idea_count(cfg) -> int:
 
 
 def stale_idea_count(cfg) -> int:
-    """How many ideas a reconcile would advance (SPEC-0078) — the one definition of "out of
-    sync", shared by `wt next` and `wt hub`. Never writes."""
+    """How many ideas a reconcile would change (SPEC-0078) — the one definition of "out of
+    sync", shared by `wt next` and `wt hub`. One per idea with an `advance` row, plus one per
+    idea with a `link` row and no `advance` row (SPEC-0257), so a link+advance pair counts once.
+    Never writes."""
     try:
-        return sum(1 for _id, _spec, action, _detail in reconcile_ideas(cfg, apply=False)
-                   if action == "advance")
+        plan = reconcile_ideas(cfg, apply=False)
+        return len({i for i, _s, action, _d in plan if action in ("advance", "link")})
     except Exception:
         return 0

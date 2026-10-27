@@ -1993,7 +1993,9 @@ def spec_verify_cmd(cfg, spec_id, as_json, strict):
 def spec_reconcile_cmd(cfg, do_apply):
     """Sync idea states with their linked spec's status (SPEC-0078). Dry run by default.
 
-    Walks every idea carrying a :SPEC: — internal or outbound — and reports where its org state
+    Walks every idea carrying a :SPEC: — internal or outbound — plus every idea an internal
+    spec names as `source_idea` but that has no :SPEC: yet (`link`: --apply writes it), and
+    reports where its org state
     disagrees with the spec: a `done` spec whose idea is still SPECCED, a `superseded`/`rejected`
     spec whose idea is still open, an idea left behind at IDEA/INCUBATE while its spec is being
     built. An idea *ahead* of its spec is flagged, never rewound.
@@ -2011,6 +2013,9 @@ def spec_reconcile_cmd(cfg, do_apply):
     marks = {"advance": ("green", "✓" if do_apply else "→"),
              "flag-ahead": ("yellow", "!"),
              "flag-no-backlink": ("yellow", "!"),
+             "link": ("green", "+" if do_apply else "→"),      # SPEC-0257: writes :SPEC:
+             "flag-conflict": ("yellow", "!"),
+             "flag-ambiguous": ("yellow", "!"),
              "questions-open": ("yellow", "?"),      # SPEC-0080: report-only, never written
              "missing": ("red", "✗"),
              "unchanged": ("dim", "·")}
@@ -2025,10 +2030,12 @@ def spec_reconcile_cmd(cfg, do_apply):
         console.print("[dim]reconcile: every linked idea already matches its spec[/]")
         return
     n_adv = sum(1 for _i, _s, a, _d in plan if a == "advance")
+    n_link = sum(1 for _i, _s, a, _d in plan if a == "link")
     if do_apply:
-        console.print(f"[dim]{n_adv} idea(s) advanced[/]")
-    elif n_adv:
-        console.print(f"[dim]{n_adv} idea(s) would change — re-run with --apply[/]")
+        console.print(f"[dim]{n_adv} idea(s) advanced, {n_link} linked[/]")
+    elif n_adv or n_link:
+        console.print(f"[dim]{n_adv} idea(s) would advance, {n_link} would be linked "
+                      f"— re-run with --apply[/]")
 
 
 @spec_group.command("sweep")

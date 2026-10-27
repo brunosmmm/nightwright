@@ -467,3 +467,152 @@ def test_skill_documents_resolving_questions():
     text = pathlib.Path("skills/wt-new-work/SKILL.md").read_text(encoding="utf-8")
     assert "--resolve" in text
     assert "questions" in text.lower()
+
+
+# ---- SPEC-0257: specs' source_idea without a :SPEC: on the idea ---------------------
+
+def _bare_idea(cfg, text, *, state="IDEA"):
+    """An idea with no `:SPEC:` property."""
+    W.add_idea(cfg, text)
+    task = [t for t in load_tasks(cfg) if t.is_idea and t.heading == text][0]
+    idea_id = task.properties.get("ID")
+    if state != "IDEA":
+        W.set_state_by_selector(cfg, idea_id, state)
+    return idea_id
+
+
+def _spec_prop(cfg, idea_id):
+    return (W.resolve_selector(cfg, idea_id).properties.get("SPEC") or "").strip()
+
+
+def test_source_idea_without_spec_property_links_and_advances(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "shipped by hand", state="INCUBATE")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id)
+    before = _bytes(cfg)
+
+    plan = S.reconcile_ideas(cfg, apply=False)
+    assert {(i, a) for i, _s, a, _d in plan} >= {(idea_id, "link"), (idea_id, "advance")}
+    assert _bytes(cfg) == before                        # dry run writes nothing
+
+    S.reconcile_ideas(cfg, apply=True)
+    assert _spec_prop(cfg, idea_id) == "SPEC-0001"
+    assert _state_of(cfg, idea_id) == "PROMOTED"
+    assert "shipped by hand" in open(cfg["org_ideas_archive_file"]).read()
+
+
+def test_accepted_spec_links_to_specced(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "being built")
+    _spec(cfg, "SPEC-0001", "accepted", source_idea=idea_id)
+    S.reconcile_ideas(cfg, apply=True)
+    assert _spec_prop(cfg, idea_id) == "SPEC-0001"
+    assert _state_of(cfg, idea_id) == "SPECCED"
+
+
+def test_conflicting_spec_property_flagged_untouched(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _idea(cfg, "linked elsewhere", state="SPECCED", spec_id="SPEC-0002")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id)
+    _spec(cfg, "SPEC-0002", "accepted", source_idea=idea_id)
+    before = _bytes(cfg)
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert (idea_id, "SPEC-0001", "flag-conflict", "idea links SPEC-0002") in plan
+    assert not [r for r in plan if r[2] == "link"]
+    assert _bytes(cfg) == before
+
+
+def test_terminal_idea_not_rewound(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "already dropped", state="DROPPED")
+    _spec(cfg, "SPEC-0001", "accepted", source_idea=idea_id)
+    S.reconcile_ideas(cfg, apply=True)
+    assert _spec_prop(cfg, idea_id) == "SPEC-0001"      # linked, but the state is never rewound
+    assert _state_of(cfg, idea_id) == "DROPPED"
+
+
+def test_reconcile_apply_idempotent(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "once only")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id)
+    S.reconcile_ideas(cfg, apply=True)
+    first = _bytes(cfg)
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert not [r for r in plan if r[2] in ("link", "advance")]
+    assert _bytes(cfg) == first
+
+
+def test_spec_ids_scope(tmp_path):
+    cfg = _cfg(tmp_path)
+    a = _bare_idea(cfg, "idea a")
+    b = _bare_idea(cfg, "idea b")
+    _spec(cfg, "SPEC-0001", "done", source_idea=a)
+    _spec(cfg, "SPEC-0002", "done", source_idea=b)
+    S.reconcile_ideas(cfg, apply=True, spec_ids=["SPEC-0001"])
+    assert _state_of(cfg, a) == "PROMOTED" and _spec_prop(cfg, a) == "SPEC-0001"
+    assert _state_of(cfg, b) == "IDEA" and _spec_prop(cfg, b) == ""
+
+
+def test_two_live_specs_same_idea_ambiguous(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "claimed twice")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id)
+    _spec(cfg, "SPEC-0002", "accepted", source_idea=idea_id)
+    before = _bytes(cfg)
+    plan = S.reconcile_ideas(cfg, apply=True)
+    amb = [r for r in plan if r[2] == "flag-ambiguous"]
+    assert len(amb) == 1 and "SPEC-0001" in amb[0][3] and "SPEC-0002" in amb[0][3]
+    assert not [r for r in plan if r[2] in ("link", "advance")]
+    assert _bytes(cfg) == before
+
+
+def test_superseded_plus_live_links_live(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "supersede chain")
+    _spec(cfg, "SPEC-0001", "superseded", source_idea=idea_id)
+    _spec(cfg, "SPEC-0002", "accepted", source_idea=idea_id)
+    S.reconcile_ideas(cfg, apply=True)
+    assert _spec_prop(cfg, idea_id) == "SPEC-0002"
+    assert _state_of(cfg, idea_id) == "SPECCED"          # not DROPPED
+
+
+def test_scoped_run_respects_other_claimant(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "claimed twice")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id)
+    _spec(cfg, "SPEC-0002", "accepted", source_idea=idea_id)
+    before = _bytes(cfg)
+    plan = S.reconcile_ideas(cfg, apply=True, spec_ids=["SPEC-0001"])
+    assert [r[2] for r in plan] == ["flag-ambiguous"] and plan[0][1] == "SPEC-0001"
+    assert _bytes(cfg) == before
+    # the superseded spec's own scoped run neither claims nor flags: the live one owns the idea
+    _spec(cfg, "SPEC-0002", "superseded", source_idea=idea_id)
+    plan = S.reconcile_ideas(cfg, apply=False, spec_ids=["SPEC-0002"])
+    assert plan == []
+
+
+def test_stale_idea_count_exact(tmp_path):
+    cfg = _cfg(tmp_path)
+    linkadv = _bare_idea(cfg, "link and advance")
+    linkonly = _bare_idea(cfg, "link only", state="SPECCED")
+    plain = _idea(cfg, "plain advance", state="SPECCED", spec_id="SPEC-0003")
+    _spec(cfg, "SPEC-0001", "done", source_idea=linkadv)
+    _spec(cfg, "SPEC-0002", "accepted", source_idea=linkonly)
+    _spec(cfg, "SPEC-0003", "done", source_idea=plain)
+    assert S.stale_idea_count(cfg) == 3                  # one per idea, never twice
+    S.reconcile_ideas(cfg, apply=True)
+    assert S.stale_idea_count(cfg) == 0
+
+
+def test_cli_reconcile_prints_link_row(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from wt.cli import cli
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "cli visible")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id)
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    out = CliRunner().invoke(cli, ["spec", "reconcile"])
+    assert out.exit_code == 0, out.output
+    assert idea_id in out.output and "set :SPEC: SPEC-0001" in out.output
+    assert _spec_prop(cfg, idea_id) == ""               # dry run

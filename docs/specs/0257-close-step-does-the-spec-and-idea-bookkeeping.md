@@ -1,7 +1,7 @@
 ---
 id: SPEC-0257
 title: "Reconcile walks spec source_idea; close reconciles the merged spec's idea"
-status: accepted
+status: done
 owner: user
 created: 2026-10-26
 updated: 2026-10-26
@@ -126,23 +126,23 @@ Definition of done includes filing a follow-up idea for it (`wt idea capture`, k
 
 ## Acceptance criteria
 
-- [ ] `reconcile_ideas` returns a `link` row for a spec with `source_idea: IDEA-N` whose idea
+- [x] `reconcile_ideas` returns a `link` row for a spec with `source_idea: IDEA-N` whose idea
       has no `:SPEC:`, and with `apply=True` writes `:SPEC:` onto the idea and then advances
       it (`done` spec -> `PROMOTED`, archived; `accepted` spec -> `SPECCED`).
-- [ ] An idea with a different `:SPEC:` yields `flag-conflict` and is not modified; a terminal
+- [x] An idea with a different `:SPEC:` yields `flag-conflict` and is not modified; a terminal
       idea is never rewound; a second `apply` run is a no-op.
-- [ ] `spec_ids=[...]` restricts the pass to those specs.
-- [ ] After a merged campaign, `_apply` runs the scoped reconcile and records an
+- [x] `spec_ids=[...]` restricts the pass to those specs.
+- [x] After a merged campaign, `_apply` runs the scoped reconcile and records an
       `idea_reconciled` event; an exception in it becomes a `minor` `bookkeeping` finding and
       the campaign still ends `MERGED`.
-- [ ] Two live specs naming one unlinked idea yield `flag-ambiguous` and no write; a
+- [x] Two live specs naming one unlinked idea yield `flag-ambiguous` and no write; a
       superseded plus a live spec link to the live one; a `spec_ids`-scoped run applies the
       same rule over all specs.
-- [ ] The close hook is skipped (info finding) when the campaign repo is not the one holding the
+- [x] The close hook is skipped (info finding) when the campaign repo is not the one holding the
       configured specs dir, and silently for merge-kind campaigns without a spec.
-- [ ] `wt spec reconcile` prints `link` rows; `stale_idea_count` counts one per idea (an
+- [x] `wt spec reconcile` prints `link` rows; `stale_idea_count` counts one per idea (an
       `advance` idea, or a link-only idea), never twice.
-- [ ] The Test plan passes and `uv run pytest` is green.
+- [x] The Test plan passes and `uv run pytest` is green.
 
 ## Test plan
 
@@ -172,11 +172,39 @@ Definition of done includes filing a follow-up idea for it (`wt idea capture`, k
   `--apply` clears them; `wt idea list` no longer shows them open.
 - **Regression guard:** full `uv run pytest`; existing SPEC-0078/0080 reconcile tests unchanged.
 
+### Test record (2026-10-26)
+
+- `uv run pytest tests/test_reconcile.py tests/test_agentic_queue.py -q`: the new reconcile tests
+  (link/advance, accepted->SPECCED, conflict, terminal, idempotent, scope, ambiguity, superseded
+  plus live, scoped-respects-other-claimant, exact `stale_idea_count`, CLI `link` row) and the
+  four queue tests (merge reconciles, raising reconcile -> minor finding + `MERGED`, foreign repo
+  skipped with an info finding, merge-kind without a spec silent) pass.
+- Full `uv run pytest -q -x`: 3043 passed, 3 skipped. `python3 tools/spec_lint.py` exits 0.
+- Manual: `wt spec reconcile` (dry run) against the real data dir lists 76 `link` and 25
+  `advance` rows (plus `flag-conflict` rows for older specs naming ideas now linked to a
+  successor). `--apply` was **not** run from the campaign worktree: it rewrites the shared ideas
+  file and archives subtrees, so the one-time repair is left for the conductor after merge.
+- Follow-up filed: IDEA-351 (HANDED_OFF campaign marks its idea pending).
+
+### As shipped
+
+- Queue tests live in `tests/test_agentic_queue.py` (the `opened` campaign fixture and `_apply`
+  helper are there), not `tests/test_agentic_close.py`.
+- `flag-conflict` is reported once per *live* in-scope spec that names an idea linked to a
+  different spec; superseded/rejected specs are skipped so supersede chains stay quiet. On real
+  data this still yields many `!` rows (older specs vs. a successor-linked idea); report-only.
+- Ambiguity with zero live specs (e.g. a lone superseded claimant) is `flag-ambiguous`, as the
+  Decision says; one row per idea, `spec_id` is the first in-scope claimant, detail lists all.
+- `flag-conflict` is not recorded as a close finding; only `flag-ambiguous` is.
+- `idea_reconciled` is emitted once per idea (a `link`+`advance` pair is one event). `to` is the
+  idea's state re-read after the call; None if it is no longer resolvable.
+- The follow-up idea was captured with `--kind improvement` (no `feature` kind exists).
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; `uv run pytest` passes; manual repair run noted.
-- [ ] Spec body updated to match what shipped; ledger regenerated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; `uv run pytest` passes; manual repair run noted.
+- [x] Spec body updated to match what shipped; ledger regenerated.
 
 ## Open questions
 

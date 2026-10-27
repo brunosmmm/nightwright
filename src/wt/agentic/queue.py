@@ -1730,6 +1730,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             state["close"] = dict(oc.close)
             if res.followups is not None:           # after the assignment replaced the dict
                 state["close"]["followups"] = res.followups
+            if oc.next_state == "MERGED":
+                _reconcile_merged(cfg, state, events)
             state["park"] = None
             return finish(oc.next_state, "closed")
         if oc.next_state == "TRIAGING" and state.get("kind") == "merge":
@@ -1752,6 +1754,47 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         return finish("PARKED", park["reason"], park=park)
 
     return finish(res.from_state, "noop")
+
+
+def _reconcile_merged(cfg, state: dict, events: list) -> None:
+    """SPEC-0257: after a merge, advance the merged spec's idea by `specs.reconcile_ideas`
+    scoped to that spec. Best-effort: the merge is irreversible, so a failure is a minor
+    `bookkeeping` finding and never changes the campaign state. Skipped silently without a spec
+    (merge-kind campaigns) and with an info finding when the spec store is not this campaign's
+    repo (`_specs_dir` resolves to wt's own specs, not the project's)."""
+    spec_id = state.get("spec_id") or (state.get("spec") or {}).get("id")
+    if not spec_id:
+        return
+
+    def finding(severity, title, detail=""):
+        events.append(("finding", {"persona": "close", "severity": severity,
+                                   "gate": "bookkeeping", "title": title, "detail": detail,
+                                   "files": []}))
+
+    try:
+        root = Path((state.get("repo") or {}).get("root") or "").resolve()
+        if not SP._specs_dir(cfg).resolve().is_relative_to(root):
+            finding("info", "idea reconcile skipped: spec store is not this repo")
+            return
+        before = {(t.properties.get("ID") or "").strip(): t.state
+                  for t in _ideas(cfg)}
+        plan = SP.reconcile_ideas(cfg, apply=True, spec_ids=[spec_id])
+        for idea_id in dict.fromkeys(i for i, _s, a, _d in plan if a in ("link", "advance")):
+            task = _idea_task(cfg, idea_id)
+            events.append(("idea_reconciled", {
+                "spec_id": spec_id, "idea_id": idea_id, "from": before.get(idea_id),
+                "to": task.state if task is not None else None}))
+        for idea_id, _s, action, detail in plan:
+            if action == "flag-ambiguous":
+                finding("minor", "idea reconcile ambiguous", f"{idea_id}: {detail}")
+    except Exception as e:                  # noqa: BLE001 — never block a finished merge
+        finding("minor", "idea reconcile failed", str(e) or type(e).__name__)
+
+
+def _ideas(cfg):
+    from .. import org as ORG
+    ORG.invalidate_tasks_cache()
+    return ORG.filter_tasks(ORG.load_tasks(cfg), is_idea=True)
 
 
 def _dispatch_resolver(ctx: _Ctx, state: dict, res: StepResult, park: dict, events: list) -> bool:

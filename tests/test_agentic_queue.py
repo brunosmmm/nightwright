@@ -354,6 +354,81 @@ def test_apply_close_outcomes(opened):
     assert row["to"] == "MERGED" and st["close"]["merged_sha"] == "abc"
 
 
+def _merge_with_idea(opened, *, spec_status="done"):
+    """`opened` campaign set to CLOSING, its spec in the main checkout naming a bare idea."""
+    from wt import org_write as OW
+    from wt.agentic.close import CloseOutcome
+    from wt.org import load_tasks
+    cfg, cid, ctx = opened
+    OW.add_idea(cfg, "bookkeeping idea")
+    iid = [t for t in load_tasks(cfg) if t.is_idea][0].properties["ID"]
+    spec = Path(cfg["specs_dir"]) / "0001-trivial.md"
+    text = spec.read_text().replace("status: accepted", f"status: {spec_status}")
+    spec.write_text(text.replace("owner: t\n", f"owner: t\nsource_idea: {iid}\n", 1))
+    S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="CLOSING"))
+    oc = CloseOutcome("MERGED", close={"mode": "merge", "merged_sha": "abc", "pr_url": None,
+                                        "gates_seq": 3, "target_sha": "def"},
+                      events=[("close", {"mode": "merge"})])
+    return iid, oc
+
+
+def _idea_state(cfg, iid):
+    from wt import org_write as OW
+    return OW.resolve_selector(cfg, iid).state
+
+
+def test_merge_reconciles_the_spec_idea(opened):
+    cfg, cid, ctx = opened
+    iid, oc = _merge_with_idea(opened)
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED"
+    (ev,) = S.read_ledger(cfg, cid, types=["idea_reconciled"])
+    assert (ev["spec_id"], ev["idea_id"], ev["from"], ev["to"]) == ("SPEC-0001", iid, "IDEA", "PROMOTED")
+    assert _idea_state(cfg, iid) == "PROMOTED"
+
+
+def test_merge_reconcile_failure_is_a_minor_finding(opened, monkeypatch):
+    cfg, cid, ctx = opened
+    iid, oc = _merge_with_idea(opened)
+
+    def boom(*a, **k):
+        raise RuntimeError("org file drifted")
+    monkeypatch.setattr(Q.SP, "reconcile_ideas", boom)
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED" and row["to"] == "MERGED"
+    (fnd,) = [f for f in S.read_ledger(cfg, cid, types=["finding"]) if f["gate"] == "bookkeeping"]
+    assert fnd["severity"] == "minor" and "org file drifted" in fnd["detail"]
+    assert not list(S.read_ledger(cfg, cid, types=["idea_reconciled"]))
+
+
+def test_merge_reconcile_skipped_for_another_repo(opened, tmp_path):
+    cfg, cid, ctx = opened
+    iid, oc = _merge_with_idea(opened)
+    other = tmp_path / "other-project"
+    other.mkdir()
+    st = S.read_state(cfg, cid)
+    S.write_state(cfg, cid, dict(st, repo=dict(st["repo"], root=str(other))))
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED"
+    (fnd,) = [f for f in S.read_ledger(cfg, cid, types=["finding"]) if f["gate"] == "bookkeeping"]
+    assert fnd["severity"] == "info" and "not this repo" in fnd["title"]
+    assert _idea_state(cfg, iid) == "IDEA" and not list(S.read_ledger(cfg, cid, types=["idea_reconciled"]))
+
+
+def test_merge_without_a_spec_skips_reconcile_silently(opened, monkeypatch):
+    cfg, cid, ctx = opened
+    iid, oc = _merge_with_idea(opened)
+    st = S.read_state(cfg, cid)
+    st.pop("spec_id", None)
+    st["kind"], st["spec"] = "merge", None
+    S.write_state(cfg, cid, st)
+    monkeypatch.setattr(Q.SP, "reconcile_ideas", lambda *a, **k: pytest.fail("must not run"))
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED"
+    assert not [f for f in S.read_ledger(cfg, cid, types=["finding"]) if f["gate"] == "bookkeeping"]
+    assert not list(S.read_ledger(cfg, cid, types=["idea_reconciled"]))
+
+
 def test_apply_step_error_parks(opened):
     cfg, cid, ctx = opened
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
