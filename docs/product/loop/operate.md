@@ -83,9 +83,10 @@ wt queue resume C --to GATING --yes                                # pick the st
 wt queue resume C --raise-cap 15 --note "large but legitimate" --yes
 wt queue resume C --reset-loops --yes                              # after transient failures
 wt queue abandon C --yes                                           # give up; removes the worktree
+wt queue gc                                                        # list leftover worktrees/merged branches of finished campaigns; --yes removes them
 ```
 
-Every queue write (`add`, `resume`, `park`, `abandon`, `prioritize`) is a dry run until you
+Every queue write (`add`, `resume`, `park`, `abandon`, `gc`, `prioritize`) is a dry run until you
 add `--yes`. A resumed campaign goes straight back to work if a slot is free, or to **WAITING** (first in
 line) if not.
 

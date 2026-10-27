@@ -1,6 +1,6 @@
 """`wt queue gates` (SPEC-0173), `wt queue add|list|watch|tick|run|park|resume|abandon`
-(SPEC-0176) and `wt queue backlog|prioritize` (SPEC-0180). `attach` is called by
-`wt.agentic.cli.register` with the `queue` group.
+(SPEC-0176), `wt queue backlog|prioritize` (SPEC-0180) and `wt queue gc` (SPEC-0275). `attach`
+is called by `wt.agentic.cli.register` with the `queue` group.
 
 Conventions (as elsewhere in wt): destructive commands are dry-run by default and write only
 with `--yes`; `--json` emits `{"schema": "wt.queue.<x>.v1", …plan, "written": bool}`; library
@@ -664,6 +664,24 @@ def _journal_lines(rec: dict) -> Group:
     return Group(*rows)
 
 
+def _gc_table(rows: list) -> Table:
+    """SPEC-0275: one row per worktree / orphan dir / branch and what gc does with it."""
+    table = Table(title=f"gc ({len(rows)})", box=box.SIMPLE_HEAD, pad_edge=False)
+    table.add_column("kind", no_wrap=True)
+    table.add_column("target", overflow="fold")
+    table.add_column("campaign", no_wrap=True)
+    table.add_column("action", no_wrap=True)
+    table.add_column("why", overflow="fold")
+    styles = {"remove": "green", "delete": "green", "keep": "dim"}
+    for r in rows:
+        why = r["why"] + (f" — FAILED: {r['error']}" if r.get("error") else "")
+        table.add_row(r["kind"], r.get("path") or r.get("branch") or "",
+                      f"{r['campaign']} ({r['campaign_state']})" if r["campaign"] else "",
+                      Text(r["action"], style=styles.get(r["action"], "")),
+                      Text(why, style="red" if r.get("error") else ""))
+    return table
+
+
 def _print_plan(title: str, plan: dict) -> None:
     rev = plan.get("revision")
     if isinstance(rev, dict) and rev.get("pending"):                   # SPEC-0279
@@ -1106,5 +1124,34 @@ def attach(queue_group):
             return
         _print_plan(f"abandon {campaign}", plan)
         console.print(f"[green]✓[/] {campaign} ABANDONED" if do_write else _NOT_WRITTEN)
+
+    @queue_group.command("gc")
+    @click.option("--project", shell_complete=C.complete_project, help="filter by project")
+    @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.gc.v1 JSON")
+    @click.pass_obj
+    def queue_gc(cfg, project, do_write, as_json):
+        """Garbage-collect worktrees and merged branches of finished campaigns (SPEC-0275).
+        Never touches dirty worktrees, unmerged branches, live campaigns, the main checkout
+        or the cwd's worktree."""
+        try:
+            plan = Q.plan_gc(cfg, project=project)
+            if do_write:
+                Q.apply_gc(cfg, plan)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        if as_json:
+            _dump_json({"schema": "wt.queue.gc.v1", **plan, "written": bool(do_write)})
+            return
+        console.print(_gc_table(plan["rows"]), highlight=False)
+        for err in plan["errors"]:
+            console.print(f"[red]![/] {err}", highlight=False)
+        summary = (f"{plan['worktrees_removable']} worktrees, {plan['branches_removable']} "
+                   f"branches removable")
+        if not do_write:
+            console.print(f"{summary} (dry-run; --yes to apply)")
+            return
+        failed = sum(r.get("done") is False for r in plan["rows"])
+        console.print(f"[green]✓[/] {summary}; applied" + (f", [red]{failed} failed[/]" if failed else ""))
 
     return queue_group

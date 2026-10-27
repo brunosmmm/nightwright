@@ -4728,6 +4728,195 @@ def apply_abandon(cfg, plan: dict) -> dict:
                            withdraw_reason=f"campaign abandoned by {by}")
 
 
+# ---- gc (SPEC-0275) -----------------------------------------------------------------------
+
+def _gc_project_cfg(root) -> dict:
+    """The repo's `.wt/project.yaml`, or bare defaults when it is missing or invalid."""
+    try:
+        return P.load_project_config(P.config_path(root))
+    except ValueError:
+        return {"base": "main", "merge": {}, "worktrees": {}}
+
+
+def _gc_row(kind, target, st, action, why, root) -> dict:
+    return {"kind": kind, ("branch" if kind == "branch" else "path"): str(target),
+            "campaign": st.get("id") if st else None,
+            "campaign_state": st.get("state") if st else None,
+            "project": st.get("project") if st else None,
+            "action": action, "why": why, "repo": str(root)}
+
+
+def _cwd_worktree(entries) -> Path | None:
+    """The innermost listed worktree containing the process cwd, or None."""
+    try:
+        cwd = Path(os.getcwd()).resolve()
+    except OSError:
+        return None
+    hits = [e["path"] for e in entries if e["path"] == cwd or e["path"] in cwd.parents]
+    return max(hits, key=lambda p: len(p.parts)) if hits else None
+
+
+def _gc_worktree_keep(root, e, st, adopted, main, cwd_wt, base) -> str | None:
+    """Why a terminal campaign's worktree `e` must stay, or None when it may go."""
+    path = e["path"]
+    if path == main:
+        return "main checkout"
+    if path == cwd_wt:
+        return "current directory"
+    if e["locked"]:
+        return "locked"
+    if e["prunable"]:
+        return None
+    if adopted and st.get("state") != "MERGED":
+        return f"requester's worktree ({st.get('state')} merge request)"
+    try:
+        if git.rebase_in_progress(path) or git.sequencer_in_progress(path):
+            return "rebase/merge in progress"
+        if not git.is_clean(path, untracked=True):
+            return "dirty"
+    except GitError as e:
+        return f"unreadable ({e.tail or e})"
+    if adopted and not (e["head"] and git.is_ancestor(root, e["head"], base)):
+        return "unmerged"
+    return None
+
+
+def _gc_rows(cfg, root, campaigns, base, worktree_roots=()) -> list[dict]:
+    """gc rows for one repo: worktrees, orphan dirs, then branches. `campaigns` are all the
+    campaigns (any project, any state) whose repo root is `root`, newest first; `base` is the
+    project default when a campaign records none. Anything a non-terminal campaign references
+    produces no row at all."""
+    root = Path(root).resolve()
+    entries = git.worktree_list(root)
+    main = entries[0]["path"] if entries else root
+    cwd_wt = _cwd_worktree(entries)
+    by_path, by_branch = {}, {}
+    for st in campaigns:
+        repo = st.get("repo") or {}
+        if repo.get("worktree"):
+            by_path.setdefault(Path(repo["worktree"]).resolve(), []).append(st)
+        for b in {repo.get("branch"), (st.get("merge") or {}).get("branch")} - {None, ""}:
+            by_branch.setdefault(b, []).append(st)
+
+    def live(sts):
+        return any(s.get("state") not in TERMINAL_STATES for s in sts)
+
+    def base_of(st):
+        return (st.get("repo") or {}).get("base") or base
+
+    rows, gone = [], set()
+    for e in entries:
+        if e["bare"]:
+            continue
+        sts = by_path.get(e["path"]) or []
+        if not sts:
+            if e["path"] != main:
+                rows.append(_gc_row("worktree", e["path"], None, "keep", "no campaign", root))
+            continue
+        if live(sts):
+            continue
+        st = sts[0]
+        adopted = st.get("kind") == "merge" and not (st.get("merge") or {}).get("own_worktree")
+        why = _gc_worktree_keep(root, e, st, adopted, main, cwd_wt, base_of(st))
+        if why is None:
+            gone.add(e["path"])
+            why = ("missing on disk (git worktree prune)" if e["prunable"]
+                   else f"{st.get('state')} {'merge request, merged' if adopted else 'campaign'}, clean")
+            rows.append(_gc_row("worktree", e["path"], st, "remove", why, root))
+        else:
+            rows.append(_gc_row("worktree", e["path"], st, "keep", why, root))
+
+    listed = {e["path"] for e in entries}
+    for wroot in sorted({Path(w).resolve() for w in worktree_roots}):
+        if not wroot.is_dir():
+            continue
+        for d in sorted(p for p in wroot.iterdir() if p.is_dir()):
+            if d.resolve() in listed:
+                continue
+            sts = by_path.get(d.resolve()) or []
+            if live(sts):
+                continue
+            rows.append(_gc_row("orphan", d, sts[0] if sts else None, "keep",
+                                "orphan dir: git does not list it; delete by hand", root))
+
+    # `git worktree prune` (run first on --yes) drops every prunable, unlocked entry
+    held = {e["branch"]: e["path"] for e in entries
+            if e["branch"] and e["path"] not in gone and not (e["prunable"] and not e["locked"])}
+    for b, sts in by_branch.items():
+        if live(sts) or not git.branch_exists(root, b):
+            continue
+        st = sts[0]
+        bbase = base_of(st)
+        if b == bbase:
+            why = "base branch"
+        elif b in held:
+            why = f"checked out in {held[b]}"
+        elif not git.is_ancestor(root, f"refs/heads/{b}", bbase):
+            why = "unmerged"
+        else:
+            rows.append(_gc_row("branch", b, st, "delete", f"merged into {bbase}", root))
+            continue
+        rows.append(_gc_row("branch", b, st, "keep", why, root))
+    return rows
+
+
+def plan_gc(cfg, project=None) -> dict:
+    """SPEC-0275: what `wt queue gc` would remove, per repo root any campaign references.
+    `git worktree list` is the source of truth; nothing is written."""
+    by_root = {}
+    for st in store.list_campaigns(cfg, include_terminal=True):
+        r = (st.get("repo") or {}).get("root")
+        if r:
+            by_root.setdefault(str(Path(r).resolve()), []).append(st)
+    rows, repos, errors = [], [], []
+    for root, sts in sorted(by_root.items()):
+        if project and not any(s.get("project") == project for s in sts):
+            continue
+        if not Path(root).is_dir():
+            errors.append(f"{root}: repo root missing")
+            continue
+        pcfg = _gc_project_cfg(root)
+        base = (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
+        wroots = [P.worktree_root(pcfg, root, p) for p in sorted({s.get("project") for s in sts} - {None})]
+        try:
+            got = _gc_rows(cfg, root, sts, base, wroots)
+        except GitError as e:
+            errors.append(f"{root}: {e.tail or e}")
+            continue
+        if project:
+            got = [r for r in got if r["project"] in (project, None)]
+        rows += got
+        repos.append(root)
+    return {"project": project, "repos": repos, "rows": rows, "errors": errors,
+            "worktrees_removable": sum(r["kind"] == "worktree" and r["action"] == "remove" for r in rows),
+            "branches_removable": sum(r["kind"] == "branch" and r["action"] == "delete" for r in rows)}
+
+
+def apply_gc(cfg, plan: dict) -> dict:
+    """Apply a `plan_gc` plan: `git worktree prune` once per repo, then worktree removals, then
+    branch deletions (`-d`, never `-D`; `worktree remove` without --force, so git refuses a
+    dirty tree too). A `GitError` lands on its row (`error`) and the rest still apply. No
+    ledger events: the returned plan is the record."""
+    for root in plan["repos"]:
+        try:
+            git.git(root, "worktree", "prune")
+        except GitError as e:
+            plan["errors"].append(f"{root}: worktree prune: {e.tail or e}")
+    for kind in ("worktree", "branch"):
+        for row in plan["rows"]:
+            if row["kind"] != kind or row["action"] == "keep":
+                continue
+            try:
+                if kind == "branch":
+                    git.branch_delete(row["repo"], row["branch"])
+                elif Path(row["path"]).exists():
+                    git.worktree_remove(row["repo"], row["path"])
+                row["done"] = True
+            except GitError as e:
+                row["done"], row["error"] = False, e.tail or str(e)
+    return plan
+
+
 def tick_row_text(row: dict) -> str:
     extra = f" run {row['run_id']}" if row.get("run_id") else ""
     cost = ""

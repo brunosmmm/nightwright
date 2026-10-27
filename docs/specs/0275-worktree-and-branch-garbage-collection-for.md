@@ -1,7 +1,7 @@
 ---
 id: SPEC-0275
 title: "wt queue gc: garbage-collect worktrees and branches of finished campaigns"
-status: accepted
+status: in-progress
 kind: feature
 owner: user
 created: 2026-10-27

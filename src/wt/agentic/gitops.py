@@ -172,6 +172,33 @@ def worktree_for_branch(repo, branch) -> Path | None:
     return None
 
 
+def worktree_list(repo) -> list[dict]:
+    """`git worktree list --porcelain` as dicts: `path` (resolved), `head`, `branch` (short name,
+    None when detached) and the `bare` / `detached` / `locked` / `prunable` flags. The main
+    worktree comes first (SPEC-0275)."""
+    out, cur = [], None
+    for line in git(repo, "worktree", "list", "--porcelain").stdout.splitlines():
+        key, _, val = line.partition(" ")
+        if key == "worktree":
+            cur = {"path": Path(val).resolve(), "head": None, "branch": None, "bare": False,
+                   "detached": False, "locked": False, "prunable": False}
+            out.append(cur)
+        elif cur is None:
+            continue
+        elif key == "HEAD":
+            cur["head"] = val
+        elif key == "branch":
+            cur["branch"] = val.removeprefix("refs/heads/")
+        elif key in ("bare", "detached", "locked", "prunable"):
+            cur[key] = True
+    return out
+
+
+def is_ancestor(repo, rev, base) -> bool:
+    """`rev` is reachable from `base` (`merge-base --is-ancestor`); False when either is unknown."""
+    return git(repo, "merge-base", "--is-ancestor", rev, base, check=False).returncode == 0
+
+
 def worktree_add_existing(repo, path, branch) -> Path:
     """`git worktree add <path> <branch>` for a branch that already exists; errors if `path`
     exists."""
