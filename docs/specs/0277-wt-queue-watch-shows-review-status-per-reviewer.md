@@ -1,7 +1,7 @@
 ---
 id: SPEC-0277
 title: "Per-reviewer review chips in queue watch and the TUI queue tab"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -108,17 +108,17 @@ from `dashboard_payload` for active rows. The data comes from the ledger's `run.
 
 ## Acceptance criteria
 
-- [ ] With a three-reviewer profile in REVIEWING and two runs open, `active[*].reviews` lists
+- [x] With a three-reviewer profile in REVIEWING and two runs open, `active[*].reviews` lists
       all three personas: two `running` with `elapsed_s`, one `not_run`.
-- [ ] After the runs end, each chip carries `pass` or `fix` with `score` and severity
+- [x] After the runs end, each chip carries `pass` or `fix` with `score` and severity
       `counts` from `last_review.verdicts`. A run that ended without a stored verdict is
       `failed`. Verdicts of an earlier loop never show: after a fix route back to
       IMPLEMENTING, `reviews` is `[]`.
-- [ ] `wt queue watch` renders a `reviews` row with one chip per persona, and the TUI queue
+- [x] `wt queue watch` renders a `reviews` row with one chip per persona, and the TUI queue
       tab row meta includes the compact chips.
-- [ ] `totals.reviews_running` counts running chips, and the header shows it when it is
+- [x] `totals.reviews_running` counts running chips, and the header shows it when it is
       non-zero.
-- [ ] A broken profile does not break the dashboard: chips fall back to the observed
+- [x] A broken profile does not break the dashboard: chips fall back to the observed
       personas.
 
 ## Test plan
@@ -149,13 +149,37 @@ New tests in `tests/test_agentic_dashboard.py` and `tests/test_tui_queue_model.p
 - Regression guard: full `uv run pytest`, including the existing dashboard golden tests,
   updated only for the additive keys.
 
+### Test record (2026-10-27)
+
+- New tests in `tests/test_agentic_dashboard.py` (`test_review_chips_*`, incl. the
+  `ValueError`/`OSError` parametrization, and `test_reviews_running_total_and_header`) and
+  `tests/test_tui_queue_model.py` (`test_tui_active_meta_review_chips`) pass.
+- Sabotage: ignoring the `loop` filter fails `test_review_chips_ignore_previous_loop`;
+  dropping the REVIEWING-only window fails `test_review_chips_after_fix_route_empty`. The
+  `_activity` reuse variant was not run (it can only ever yield one running chip, which
+  `test_review_chips_running_and_not_run` asserts against).
+- Full gate: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`,
+  `uv run pytest -q -x`.
+
+### As shipped (2026-10-27)
+
+- `queue._review_chips(state, ledger, reviewers, now)` takes `reviewers=None` for the
+  broken-profile fallback (the caller passes `None` when `resolve_profile` raised
+  `ValueError`/`OSError`); it reads `last_review.verdicts` directly with the loop filter
+  instead of calling `_valid_verdicts`. The window is the ledger slice after the last
+  `transition` into REVIEWING (by position, not ts).
+- `queue.queue_payload`'s `loop_max` lookup now also tolerates `OSError`, so a broken
+  profile does not fail the dashboard there either.
+- `queue.review_short_name` is shared by the watch renderer and the TUI meta.
+- The header shows `· reviews N` appended to the totals chip line.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

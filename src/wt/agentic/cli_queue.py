@@ -289,6 +289,8 @@ def _dash_header(p: dict) -> Panel:
         _owner_chip("needs you", tot.get("needs_you", 0), "yellow"), _conductor_chip(tot),
         _chip("ready", tot["ready"], "green"), _chip("blocked", tot["blocked"], "magenta"),
         _chip("delivered", tot["delivered"], "green")])
+    if tot.get("reviews_running"):                         # SPEC-0277
+        chips.append(f" · reviews {tot['reviews_running']}", style="cyan")
     grid = Table.grid(expand=True, padding=(0, 2))
     grid.add_column(ratio=1)
     grid.add_column(justify="right", no_wrap=True)
@@ -382,6 +384,28 @@ def _verdict_text(v) -> Text:
     return t
 
 
+def _reviews_text(chips) -> Text:
+    """SPEC-0277: one chip per reviewer persona — short name, then `▶ 3m`, `✓ 92`,
+    `✗ 2mf/1mj` (must_fix/major counts), `! failed` or `·`."""
+    t = Text()
+    for i, c in enumerate(chips or []):
+        if i:
+            t.append("  ")
+        t.append(Q.review_short_name(c["persona"]) + " ", style="dim")
+        status, counts = c["status"], c.get("counts") or {}
+        if status == "running":
+            t.append(f"▶ {_dur(c.get('elapsed_s'))}", style="cyan")
+        elif status == "pass":
+            t.append("✓" + (f" {c['score']}" if c.get("score") is not None else ""), style="green")
+        elif status == "fix":
+            t.append(f"✗ {counts.get('must_fix', 0)}mf/{counts.get('major', 0)}mj", style="red")
+        elif status == "failed":
+            t.append("! failed", style="red")
+        else:
+            t.append("·", style="dim")
+    return t
+
+
 def _active_panel(it: dict) -> Panel:
     grid = Table.grid(padding=(0, 1))
     grid.add_column(style="dim", no_wrap=True, justify="right")
@@ -408,6 +432,8 @@ def _active_panel(it: dict) -> Panel:
     grid.add_row("cost", cost)
     grid.add_row("gates", _gate_text(it.get("last_gate")))
     grid.add_row("verdict", _verdict_text(it.get("last_verdict")))
+    if it.get("reviews"):
+        grid.add_row("reviews", _reviews_text(it["reviews"]))
     events = it.get("recent_events") or []
     if events:
         grid.add_row("events", Group(*[R.campaign_event(ev) for ev in events]))
@@ -850,7 +876,11 @@ def attach(queue_group):
     @click.pass_obj
     def queue_watch(cfg, interval, project, recent, recent_hours, once, as_json, iterations):
         """Live dashboard: the runner, active campaigns (what each is doing now, gates, verdict,
-        cost), what needs attention, the backlog and recently delivered work (Ctrl-C to stop)."""
+        per-reviewer review chips, cost), what needs attention, the backlog and recently
+        delivered work (Ctrl-C to stop).
+
+        Review chips: `▶ 3m` running, `✓ 92` pass with score, `✗ 2mf/1mj` fix with
+        must_fix/major counts, `! failed` no valid verdict, `·` not run."""
         def payload():
             return Q.dashboard_payload(cfg, project=project, recent=recent,
                                        recent_hours=recent_hours)

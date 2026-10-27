@@ -3890,7 +3890,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
         try:
             loop_max = resolve_profile(cfg, r.get("profile"), project_root=(
                 r.get("repo") or {}).get("root")).get("loop_max")
-        except ValueError:
+        except (ValueError, OSError):
             loop_max = None
         repo = r.get("repo") or {}
         sizing = r.get("sizing") or {}
@@ -3995,6 +3995,63 @@ def _verdict_summary(state: dict) -> dict | None:
             "summary": summary.splitlines()[0] if summary else ""}
 
 
+def review_short_name(persona: str) -> str:
+    """`conformance_reviewer` -> `conformance` (SPEC-0277)."""
+    return str(persona).removesuffix("_reviewer")
+
+
+def _review_chips(state: dict, ledger: list, reviewers, now=None) -> list:
+    """One chip per reviewer persona for the current loop (SPEC-0277): `{persona, run_id,
+    status, verdict, score, counts, elapsed_s}` with `status` running | pass | fix | failed |
+    not_run. `reviewers=None` is the broken-profile fallback: the registered reviewer personas
+    observed in the current-loop verdicts or the window, in `REVIEWER_PERSONAS` order.
+
+    The window (rules `running` and `failed`) opens at the last transition into REVIEWING and
+    exists only while the campaign is in REVIEWING; outside it only a valid current-loop
+    verdict can show, so after a fix route (loops incremented) every chip is `not_run`."""
+    loop = int((state.get("counters") or {}).get("loops", 0))
+    stored = (state.get("last_review") or {}).get("verdicts") or {}
+    window = []
+    if state.get("state") == "REVIEWING":
+        start = max((i for i, ev in enumerate(ledger) if ev.get("type") == "transition"
+                     and ev.get("to") == "REVIEWING"), default=-1)
+        window = ledger[start + 1:]
+    open_runs, ended = {}, set()
+    for ev in window:
+        if ev.get("type") == "run.start":
+            open_runs[ev.get("run_id")] = ev
+        elif ev.get("type") == "run.end":
+            open_runs.pop(ev.get("run_id"), None)
+            ended.add(ev.get("persona"))
+    running = {ev.get("persona"): ev for ev in open_runs.values()}
+    if reviewers is None:
+        seen = {p for p, v in stored.items() if isinstance(v, dict) and v.get("loop") == loop}
+        seen |= {ev.get("persona") for ev in window if ev.get("type") == "run.start"}
+        reviewers = [p for p in PS.REVIEWER_PERSONAS if p in seen]
+    chips = []
+    for persona in reviewers:
+        chip = {"persona": persona, "run_id": None, "status": "not_run", "verdict": None,
+                "score": None, "counts": None, "elapsed_s": None}
+        entry = stored.get(persona)
+        valid = isinstance(entry, dict) and entry.get("loop") == loop
+        if persona in running:
+            ev = running[persona]
+            chip.update(status="running", run_id=ev.get("run_id"),
+                        elapsed_s=_age(ev.get("ts"), now))
+        elif valid:
+            counts = dict.fromkeys(SEVERITIES, 0)
+            for f in entry.get("findings") or []:
+                if isinstance(f, dict) and f.get("severity") in counts:
+                    counts[f["severity"]] += 1
+            chip.update(status=entry.get("verdict") if entry.get("verdict") in ("pass", "fix")
+                        else "failed", run_id=entry.get("run"), verdict=entry.get("verdict"),
+                        score=entry.get("score"), counts=counts)
+        elif persona in ended:
+            chip["status"] = "failed"
+        chips.append(chip)
+    return chips
+
+
 def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None) -> dict:
     """`wt.queue.dashboard.v1`: everything `wt queue watch` shows — the runner, the active
     campaigns with what each is doing now, what needs attention, the backlog, and what was
@@ -4006,6 +4063,7 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
     base = queue_payload(cfg, include_terminal=True, project=project, now=now)
     active, needs_you, conductor, waiting, backlog, delivered = [], [], [], [], [], []
     spend_today = 0.0
+    reviewers_cache: dict = {}
     for it in base["items"]:
         st = states.get(it["campaign"]) or {}
         title = _spec_title(st)
@@ -4061,9 +4119,19 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
             (needs_you if park.get("owner") == "human" else conductor).append(row)
             if state == "PARKED":
                 continue
+        key = (st.get("profile"), (st.get("repo") or {}).get("root"))
+        if key not in reviewers_cache:
+            try:
+                reviewers_cache[key] = reviewers_of(resolve_profile(
+                    cfg, key[0], project_root=key[1]))
+            except (ValueError, OSError):       # SPEC-0265: a broken profile never fails the view
+                reviewers_cache[key] = None
+        reviews = _review_chips(st, ledger, reviewers_cache[key], now)
+        if state != "REVIEWING" and all(c["status"] == "not_run" for c in reviews):
+            reviews = []
         active.append({**it, "spec_title": title,
                        "phase_index": PHASES.index(state) if state in PHASES else None,
-                       "activity": _activity(st, ledger, now),
+                       "activity": _activity(st, ledger, now), "reviews": reviews,
                        "last_gate": _gate_summary(st), "last_verdict": _verdict_summary(st),
                        "recent_events": ledger[-3:]})
     conductor.sort(key=lambda c: (not (c["park"] or {}).get("overdue"),
@@ -4090,6 +4158,8 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                    "needs_you": len(needs_you), "conductor_handling": len(conductor),
                    "conductor_overdue": sum(1 for c in conductor if c["park"].get("overdue")),
                    "backlog": len(backlog),
+                   "reviews_running": sum(c["status"] == "running"
+                                          for it in active for c in it["reviews"]),
                    "ready": ready, "blocked": len(backlog) - ready, "delivered": len(delivered),
                    "spend_today_usd": round(spend_today, 4), "by_project": by_project},
         "active": active, "needs_you": needs_you, "conductor_handling": conductor,

@@ -297,3 +297,129 @@ def test_young_undecided_conductor_park_renders_pending(tmp_path):
     assert cells[ids["moving"]].startswith("overdue 7m")
     out = _render(p, 140)
     assert "pending 2m" in out and "conductor 4 (1 overdue)" in out
+
+
+# ---- SPEC-0277: per-reviewer review chips ---------------------------------------------------
+
+import pytest
+
+_REVIEWERS = ("conformance_reviewer", "test_reviewer", "adversarial_reviewer")
+
+
+def _verdict(verdict, score, *severities, loop=1):
+    return {"verdict": verdict, "score": score, "run": f"r-{verdict}", "loop": loop,
+            "findings": [{"severity": s, "title": s} for s in severities]}
+
+
+def _review_campaign(tmp_path, state="REVIEWING", *, verdicts=None, loops=1):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]),
+                   profile={"reviewers": list(_REVIEWERS)})
+    cid = _campaign(cfg, repo, "SPEC-0001-rev", state,
+                    last_review={"verdicts": verdicts or {}})
+    p = S.campaign_dir(cfg, cid) / "state.json"
+    st = json.loads(p.read_text())
+    st["counters"]["loops"] = loops
+    p.write_text(json.dumps(st))
+    _ev(cfg, cid, "transition", {"from": "GATING", "to": "REVIEWING"})
+    return cfg, cid
+
+
+def _start(cfg, cid, persona, run_id=None):
+    _ev(cfg, cid, "run.start", {"persona": persona, "run_id": run_id or f"{persona}-1",
+                                "model": "sonnet", "effort": "high"})
+
+
+def _end(cfg, cid, persona, run_id=None):
+    _ev(cfg, cid, "run.end", {"persona": persona, "run_id": run_id or f"{persona}-1"})
+
+
+def _row(cfg, cid):
+    return next(it for it in Q.dashboard_payload(cfg)["active"] if it["campaign"] == cid)
+
+
+def test_review_chips_running_and_not_run(tmp_path):
+    cfg, cid = _review_campaign(tmp_path)
+    _start(cfg, cid, "conformance_reviewer")
+    _start(cfg, cid, "test_reviewer")
+    chips = {c["persona"]: c for c in _row(cfg, cid)["reviews"]}
+    assert list(chips) == list(_REVIEWERS)
+    assert [chips[p]["status"] for p in _REVIEWERS] == ["running", "running", "not_run"]
+    assert chips["conformance_reviewer"]["elapsed_s"] is not None
+    assert chips["adversarial_reviewer"]["elapsed_s"] is None
+
+
+def test_review_chips_verdicts_and_counts(tmp_path):
+    cfg, cid = _review_campaign(tmp_path, verdicts={
+        "conformance_reviewer": _verdict("pass", 92),
+        "test_reviewer": _verdict("fix", 40, "must_fix", "major", "major")})
+    for p in _REVIEWERS[:2]:
+        _start(cfg, cid, p)
+        _end(cfg, cid, p)
+    chips = {c["persona"]: c for c in _row(cfg, cid)["reviews"]}
+    assert chips["conformance_reviewer"]["status"] == "pass"
+    assert chips["conformance_reviewer"]["score"] == 92
+    assert chips["test_reviewer"]["status"] == "fix"
+    assert chips["test_reviewer"]["counts"] == {"must_fix": 1, "major": 2, "minor": 0, "nit": 0}
+    assert chips["adversarial_reviewer"]["status"] == "not_run"
+
+
+def test_review_chips_ignore_previous_loop(tmp_path):
+    cfg, cid = _review_campaign(tmp_path, loops=2, verdicts={
+        "conformance_reviewer": _verdict("pass", 92, loop=1)})
+    chips = _row(cfg, cid)["reviews"]
+    assert [c["status"] for c in chips] == ["not_run"] * 3
+
+
+def test_review_chips_failed_run(tmp_path):
+    cfg, cid = _review_campaign(tmp_path)
+    _start(cfg, cid, "test_reviewer")
+    _end(cfg, cid, "test_reviewer")
+    chips = {c["persona"]: c["status"] for c in _row(cfg, cid)["reviews"]}
+    assert chips == {"conformance_reviewer": "not_run", "test_reviewer": "failed",
+                     "adversarial_reviewer": "not_run"}
+
+
+def test_review_chips_after_fix_route_empty(tmp_path):
+    cfg, cid = _review_campaign(tmp_path, state="IMPLEMENTING", loops=2, verdicts={
+        p: _verdict("fix", 30, "major", loop=1) for p in _REVIEWERS})
+    for p in _REVIEWERS:
+        _start(cfg, cid, p)
+        _end(cfg, cid, p)
+    assert _row(cfg, cid)["reviews"] == []
+
+
+@pytest.mark.parametrize("exc", [ValueError("bad profile"), OSError("unreadable")])
+def test_review_chips_broken_profile_fallback(tmp_path, monkeypatch, exc):
+    cfg, cid = _review_campaign(tmp_path)
+    _start(cfg, cid, "adversarial_reviewer")
+    _start(cfg, cid, "review_triager")
+
+    real = Q.resolve_profile
+
+    def boom(cfg, name, **k):
+        if k.get("project_root"):          # the per-campaign resolution, not the slot count
+            raise exc
+        return real(cfg, name, **k)
+    monkeypatch.setattr(Q, "resolve_profile", boom)
+    chips = _row(cfg, cid)["reviews"]
+    assert [(c["persona"], c["status"]) for c in chips] == [("adversarial_reviewer", "running")]
+
+
+def test_reviews_running_total_and_header(tmp_path):
+    cfg, cid = _review_campaign(tmp_path, verdicts={
+        "conformance_reviewer": _verdict("fix", 40, "must_fix", "major", "major")})
+    _start(cfg, cid, "test_reviewer")
+    p = Q.dashboard_payload(cfg)
+    assert p["totals"]["reviews_running"] == 1
+    out = _render(p, 120)
+    assert "reviews 1" in out
+    assert "✗ 1mf/2mj" in out and "▶" in out and "reviews " in out
+    panel = Console(width=120, record=True, force_terminal=False)
+    panel.print(CQ._active_panel(_row(cfg, cid)))
+    text = panel.export_text()
+    assert "✗ 1mf/2mj" in text and "▶" in text and "adversarial ·" in text
+    # nothing running: no header counter
+    _end(cfg, cid, "test_reviewer")
+    p = Q.dashboard_payload(cfg)
+    assert p["totals"]["reviews_running"] == 0 and "reviews 0" not in _render(p, 120)

@@ -85,6 +85,11 @@ def _active_meta(it) -> str:
         head = f"{it['state']} · gates"
     else:
         head = it["state"]
+    reviews = it.get("reviews") or []
+    if reviews:                                            # SPEC-0277: glyph + 4-char tag
+        glyph = {"running": "▶", "pass": "✓", "fix": "✗", "failed": "!", "not_run": "·"}
+        head += " · rev " + " ".join(
+            glyph.get(c["status"], "·") + Q.review_short_name(c["persona"])[:4] for c in reviews)
     return f"{head} · loops {it.get('loops')} · ${float(it.get('cost_usd') or 0):.2f}"
 
 

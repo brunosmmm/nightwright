@@ -216,3 +216,13 @@ def test_plans_carry_the_keys_the_summary_reads(tmp_path):
         from wt.tui.queue_tab import QueueView
         assert QueueView._summary(action, cid, plan).startswith(
             {"prioritize": "priority"}.get(action, action))
+
+
+def test_tui_active_meta_review_chips():                                   # SPEC-0277
+    it = {"state": "REVIEWING", "loops": 1, "cost_usd": 1.0, "activity": {"kind": "idle"},
+          "reviews": [{"persona": "conformance_reviewer", "status": "pass"},
+                      {"persona": "adversarial_reviewer", "status": "fix"},
+                      {"persona": "test_reviewer", "status": "running"},
+                      {"persona": "extra_reviewer", "status": "not_run"}]}
+    assert " · rev ✓conf ✗adve ▶test ·extr · loops 1" in AM._active_meta(it)
+    assert "rev" not in AM._active_meta({**it, "reviews": []})
