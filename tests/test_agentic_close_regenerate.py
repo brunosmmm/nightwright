@@ -101,6 +101,20 @@ def test_regenerate_command_dirtying_an_undeclared_file_parks(world):
     assert not (world["root"] / "gen.txt").exists()
 
 
+@pytest.mark.parametrize("adopted", [False, True])
+def test_regenerate_that_stages_undeclared_file_parks(world, adopted):
+    """SPEC-0266: undeclared paths a command staged itself never reach the regenerate commit,
+    and are unstaged again (own and adopted worktree)."""
+    st = _merge_world(world) if adopted else world["state"]
+    _stale(world)
+    out = CL.close_campaign(world["cfg"], st, _pc(world, CMD + " && touch x && git add x"))
+    assert out.next_state == "PARKED" and out.park["reason"] == "regenerate_failed"
+    assert "staged undeclared files: x" in out.park["detail"]
+    assert "regenerate generated files after rebase" not in "\n".join(_commits(world["wt"]))
+    assert _git(world["wt"], "diff", "--cached", "--name-only") == ""
+    assert not (world["root"] / "gen.txt").exists()
+
+
 def test_docs_only_close_regenerates_a_declared_path_without_parking(world):
     _commit(world["root"], "docs/LEDGER.md", "stale\n", "ledger")
     st, _ = _docs_only_world(world, {"docs/design/a.md": "x\n"})

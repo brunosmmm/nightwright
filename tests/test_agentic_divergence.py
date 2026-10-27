@@ -83,6 +83,16 @@ def test_rounds_before_the_resume_of_a_diverging_park_are_dropped():
     assert len(DV.rounds(escalated)) == 1
 
 
+def test_reset_loops_resume_cuts_rounds():
+    """SPEC-0266: `--reset-loops` gives divergence a fresh start, whatever park it ended."""
+    def ledger(reset):
+        return [finding("a"), fix(), finding("b"), fix(), finding("c"), fix(),
+                rec("park", reason="loop_exhausted"),
+                rec("resume", to="IMPLEMENTING", loops_reset=reset), finding("d"), fix()]
+    assert [[f.title for f in r.findings] for r in DV.rounds(ledger(True))] == [["d"]]
+    assert len(DV.rounds(ledger(False))) == 4
+
+
 def test_rounds_marks_environmental_gate_round():
     def env(*records):
         [r] = DV.rounds([*records, fix("triage_fix")])

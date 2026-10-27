@@ -328,6 +328,14 @@ def _regenerate_after_rebase(worktree, regen, events, campaign_id, own=True) -> 
         for path, cmd in regen.items():
             git.run_regenerate(worktree, cmd)
         git.git(worktree, "add", "--", *declared)
+        # SPEC-0266: a command that staged files itself must not get them into the commit
+        extra = {p for p in git.git(worktree, "diff", "--cached", "--name-only", "-z")
+                 .stdout.split("\0") if p} - set(declared)
+        if extra:
+            git.git(worktree, "reset", "-q", "--", *sorted(extra), check=False)
+            put_back()
+            return ("regenerate commands staged undeclared files: "
+                    + ", ".join(sorted(extra)[:10]))
         staged = git.git(worktree, "diff", "--cached", "--quiet", check=False).returncode != 0
         if staged:
             git.git(worktree, "commit", "-q", "-m",

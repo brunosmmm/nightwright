@@ -348,6 +348,7 @@ def test_triage_input_leaves_out_human_waived_findings_and_counts_the_score_with
 # ---- SPEC-0207: follow-up ideas for non-blocking findings ---------------------------------------
 
 import subprocess
+import threading
 from zoneinfo import ZoneInfo
 
 from wt import org as ORG
@@ -691,7 +692,9 @@ def test_a_ticked_line_still_counts_and_dedups(tmp_path):                       
     assert "(2 findings)" in t.heading
 
 
-def test_crash_adoption_finds_an_archived_own_group(tmp_path):                         # AC5
+def test_an_archived_own_group_is_not_adopted(tmp_path):                              # 0266 AC4
+    """SPEC-0266: a closed own group counts as absent even after it was archived; lines filed
+    there without a ledger event are filed again in a new open group."""
     cfg = fu_cfg(tmp_path)
     st = fu_state(tmp_path, [adv("minor", "one")])
     first = file_now(cfg, st, record=False)                  # the events never reached the ledger
@@ -699,15 +702,66 @@ def test_crash_adoption_finds_an_archived_own_group(tmp_path):                  
     EX.close_idea(cfg, t.properties["ID"], "drop", reason="done")
     t = next(x for x in ideas(cfg) if x.properties["ID"] == first["idea_id"])
     OW.archive_idea(cfg, t)
-    assert os.path.exists(OW.ideas_archive_path(cfg))        # it really moved away
+    archived = open(OW.ideas_archive_path(cfg)).read()
     assert f"wtfug:{CID}" not in open(cfg["org_ideas_file"]).read()
     second = file_now(cfg, st)
-    assert second["idea_id"] == first["idea_id"] and second["unfiled"] == []
-    assert [f["idea_id"] for f in second["filed"]] == [first["idea_id"]]
-    assert [e["idea_id"] for e in S.read_ledger(cfg, CID, types=["followup"])] == [
-        first["idea_id"]]                                    # recovered, no second group
-    assert not any(f"wtfug:{CID}" in x.heading and x.file == cfg["org_ideas_file"]
-                   for x in ideas(cfg))
+    assert second["idea_id"] and second["idea_id"] != first["idea_id"]
+    assert [f["idea_id"] for f in second["filed"]] == [second["idea_id"]]
+    assert open(OW.ideas_archive_path(cfg)).read() == archived
+    assert [x.properties["ID"] for x in ideas(cfg)
+            if f"wtfug:{CID}" in x.heading and x.file == cfg["org_ideas_file"]] == [
+        second["idea_id"]]
+
+
+def test_filer_ignores_closed_own_group(tmp_path):                                  # 0266 AC4
+    cfg = fu_cfg(tmp_path)
+    closed = seed_group(cfg, CID, [], close=True)
+    t = next(x for x in ideas(cfg) if x.properties["ID"] == closed)
+    before = body(cfg, t)
+    summary = file_now(cfg, fu_state(tmp_path, [adv("minor", "one")]))
+    assert summary["idea_id"] and summary["idea_id"] != closed
+    assert [f["idea_id"] for f in summary["filed"]] == [summary["idea_id"]]
+    t = next(x for x in ideas(cfg) if x.properties["ID"] == closed)
+    assert t.is_done and body(cfg, t) == before
+    new = next(x for x in ideas(cfg) if x.properties["ID"] == summary["idea_id"])
+    assert k12("one") in body(cfg, new) and not new.is_done
+
+
+def test_filer_rereads_group_under_lock(tmp_path, monkeypatch):                     # 0266 AC3
+    """A concurrent writer's Summary read-modify-write waits on `org_write_lock` while `_file`
+    holds the group, so neither its line nor the new follow-up lines are lost."""
+    cfg = fu_cfg(tmp_path)
+    st = fu_state(tmp_path, [adv("minor", "one")])
+    file_now(cfg, st, record=False)                          # an own group, no ledger events
+    group = group_of(cfg).properties["ID"]
+    st["last_review"]["advisory"].append(adv("minor", "two", files=["b.py"]))
+    real = EX.read_idea_enrichment
+    calls, done = [], threading.Event()
+
+    def human():
+        with OW.org_write_lock(cfg):
+            ORG.invalidate_tasks_cache()
+            t = OW.resolve_selector(cfg, group)
+            EX.set_summary(cfg, group, real(cfg, t)["summary"] + "\n- a human note")
+        done.set()
+
+    def read(cfg_, task):
+        out = real(cfg_, task)
+        if not calls:
+            calls.append(task)
+            th = threading.Thread(target=human)
+            th.start()
+            calls.append(th)
+            done.wait(1.0)                                   # the old code let it write here
+        return out
+
+    monkeypatch.setattr(EX, "read_idea_enrichment", read)
+    summary = file_now(cfg, st)
+    calls[1].join(10)
+    assert not calls[1].is_alive() and summary["unfiled"] == []
+    monkeypatch.undo()
+    text = body(cfg, group_of(cfg))
+    assert "a human note" in text and k12("one") in text and k12("two", ["b.py"]) in text
 
 
 def test_capture_error_is_unfiled_then_a_rerun_files_without_duplicates(tmp_path, monkeypatch):
@@ -737,7 +791,8 @@ def test_capture_error_is_unfiled_then_a_rerun_files_without_duplicates(tmp_path
 def test_non_oserror_from_the_org_layer_never_escapes(tmp_path, monkeypatch):
     cfg = fu_cfg(tmp_path)
     st = fu_state(tmp_path, [adv("minor", "one")])
-    monkeypatch.setattr(FU, "find_marker", lambda *a: (_ for _ in ()).throw(KeyError("boom")))
+    monkeypatch.setattr(FU, "find_marker",
+                        lambda *a, **k: (_ for _ in ()).throw(KeyError("boom")))
     summary = file_now(cfg, st)
     assert summary["filed"] == [] and summary["unfiled"][0]["error"] == "KeyError('boom')"
     monkeypatch.undo()

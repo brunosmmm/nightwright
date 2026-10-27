@@ -112,16 +112,22 @@ def idea_text(spec_id, entry: dict) -> str:
     return text
 
 
-def find_marker(cfg, marker: str) -> str | None:
+def find_marker(cfg, marker: str, *, open_only=False) -> str | None:
     """The `:ID:` of the idea whose headline contains `marker`, looked up in the ideas file
-    and its archive through the org reader; None when absent."""
+    and its archive through the org reader; None when absent. With `open_only` (SPEC-0266) a
+    closed idea counts as absent and only the ideas file is read."""
     todos, dones = ORG._split_keywords(cfg.get("org_idea_keywords") or [
         "IDEA", "INCUBATE", "SPECCED", "|", "PROMOTED", "EXPORTED", "SHIPPED", "DROPPED"])
-    for path in (os.path.expanduser(cfg["org_ideas_file"]), OW.ideas_archive_path(cfg)):
+    paths = [os.path.expanduser(cfg["org_ideas_file"])]
+    if not open_only:
+        paths.append(OW.ideas_archive_path(cfg))
+    for path in paths:
         if not os.path.exists(path):
             continue
         root = orgparse.load(path, env=OrgEnv(todos=todos, dones=dones, filename=path))
         for node in root[1:]:
+            if open_only and node.todo in dones:
+                continue
             if marker in (node.heading or ""):
                 idea_id = node.properties.get("ID")
                 if not idea_id:                             # cannot adopt it; never double-file
@@ -261,63 +267,67 @@ def _file(cfg, state, profile, events, summary, pending) -> None:
                                  "idea_id": prior.get("idea_id"),
                                  "origin": prior.get("origin") or e["origin"]})
 
-    own = find_marker(cfg, f"{GROUP_MARKER}{cid}")          # adopt (crash after add_idea)
-    own_task = _group_task(cfg, own) if own else None
-    own_text = EX.read_idea_enrichment(cfg, own_task)["summary"] if own else ""
-    own_keys = summary_keys(own_text)
-    summary["idea_id"] = own
+    # SPEC-0266: the group read-modify-write runs under the (re-entrant) org lock, so another
+    # writer's Summary edit waits for it instead of being overwritten with a stale copy
+    with OW.org_write_lock(cfg):
+        # adopt an open own group (crash after add_idea); a closed one counts as absent
+        own = find_marker(cfg, f"{GROUP_MARKER}{cid}", open_only=True)
+        own_task = _group_task(cfg, own) if own else None
+        own_text = EX.read_idea_enrichment(cfg, own_task)["summary"] if own else ""
+        own_keys = summary_keys(own_text)
+        summary["idea_id"] = own
 
-    recovered = [e for e in left if e["key"][:12] in own_keys]      # 2: line written, no event
-    for e in recovered:
-        report(e, own)
-    left = [e for e in left if e not in recovered]
-    recovered_keys = {e["key"][:12] for e in recovered}
+        recovered = [e for e in left if e["key"][:12] in own_keys]  # 2: line written, no event
+        for e in recovered:
+            report(e, own)
+        left = [e for e in left if e not in recovered]
+        recovered_keys = {e["key"][:12] for e in recovered}
 
-    if left:                                                # 3: listed in another open group
-        elsewhere = open_group_keys(cfg, spec_id, exclude=own)
-        for e in [e for e in left if e["key"][:12] in elsewhere]:
-            report(e, elsewhere[e["key"][:12]])
-        left = [e for e in left if e["key"][:12] not in elsewhere]
+        if left:                                            # 3: listed in another open group
+            elsewhere = open_group_keys(cfg, spec_id, exclude=own)
+            for e in [e for e in left if e["key"][:12] in elsewhere]:
+                report(e, elsewhere[e["key"][:12]])
+            left = [e for e in left if e["key"][:12] not in elsewhere]
 
-    cap = followup_cap(profile)                             # 4: sort and cap
-    kept, capped = left, []
-    if cap > 0:
-        lines_before = sum(1 for k in own_keys if k not in recovered_keys)
-        room = max(0, cap - lines_before - len(recovered))
-        kept, capped = left[:room], left[room:]
-    for e in capped:
-        pending.remove(e)
-        summary["capped"].append({"severity": e["severity"], "title": e["title"]})
-
-    if not kept and not own:
-        return
-    try:                                                    # 5: write the group
-        group = own
-        if group is None:
-            _, headline, group = OW.add_idea(
-                cfg, group_title(cid, spec_id, 0), project=state.get("project"),
-                epic=parent_epic(state), kind="improvement")
-            summary["idea_id"] = group
-            if f"{GROUP_MARKER}{cid}" not in (headline or ""):
-                events.append(_note(f"follow-up group {group}: headline lost its "
-                                    f"{GROUP_MARKER}{cid} marker"))
-        lines = [ln for ln in own_text.splitlines() if not _OVERFLOW_RE.match(ln)]
-        lines += [checklist_line(spec_id, e) for e in kept if e["key"][:12] not in own_keys]
-        if capped:
-            lines.append(overflow_line(len(capped), cid))
-        text = "\n".join(lines).strip()
-        if text != own_text.strip():
-            EX.set_summary(cfg, group, text)
-        title = group_title(cid, spec_id, len(summary_keys(text)))
-        if own_task is None or own_task.heading != title:
-            EX.retitle_idea(cfg, group, title)
-    except Exception as err:                                # 6: merge goes on
-        events.append(_note(f"follow-ups not filed: {err!r}"))
-        for e in kept:
+        cap = followup_cap(profile)                         # 4: sort and cap
+        kept, capped = left, []
+        if cap > 0:
+            lines_before = sum(1 for k in own_keys if k not in recovered_keys)
+            room = max(0, cap - lines_before - len(recovered))
+            kept, capped = left[:room], left[room:]
+        for e in capped:
             pending.remove(e)
-            summary["unfiled"].append({"severity": e["severity"], "title": e["title"],
-                                       "error": repr(err)})
-        return
+            summary["capped"].append({"severity": e["severity"], "title": e["title"]})
+
+        if not kept and not own:
+            return
+        try:                                                # 5: write the group
+            group = own
+            if group is None:
+                _, headline, group = OW.add_idea(
+                    cfg, group_title(cid, spec_id, 0), project=state.get("project"),
+                    epic=parent_epic(state), kind="improvement")
+                summary["idea_id"] = group
+                if f"{GROUP_MARKER}{cid}" not in (headline or ""):
+                    events.append(_note(f"follow-up group {group}: headline lost its "
+                                        f"{GROUP_MARKER}{cid} marker"))
+            lines = [ln for ln in own_text.splitlines() if not _OVERFLOW_RE.match(ln)]
+            lines += [checklist_line(spec_id, e) for e in kept if e["key"][:12] not in own_keys]
+            if capped:
+                lines.append(overflow_line(len(capped), cid))
+            text = "\n".join(lines).strip()
+            if text != own_text.strip():
+                EX.set_summary(cfg, group, text)
+            title = group_title(cid, spec_id, len(summary_keys(text)))
+            if own_task is None or own_task.heading != title:
+                EX.retitle_idea(cfg, group, title)
+        except Exception as err:                            # 6: merge goes on
+            events.append(_note(f"follow-ups not filed: {err!r}"))
+            for e in kept:
+                pending.remove(e)
+                summary["unfiled"].append({"severity": e["severity"], "title": e["title"],
+                                           "error": repr(err)})
+            return
     for e in kept:
         report(e, group)
 

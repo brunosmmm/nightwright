@@ -1,7 +1,7 @@
 ---
 id: SPEC-0266
 title: "Review pipeline integrity II: scoped regenerate, divergence reset, locked follow-up groups"
-status: accepted
+status: in-progress
 kind: feature
 owner: user
 created: 2026-10-27

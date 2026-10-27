@@ -120,14 +120,16 @@ def _run_environmental(rec: dict) -> bool:
 def rounds(records) -> list[Round]:
     """Fix rounds of a ledger (see SPEC-0247 Design): the findings and the last gate result
     between two fix transitions, closed by the second. Records up to the latest `resume` of a
-    `diverging` park are dropped, so a resumed campaign has to diverge again on fresh rounds."""
+    `diverging` park are dropped, so a resumed campaign has to diverge again on fresh rounds;
+    so are those up to a `resume` with `loops_reset` (`--reset-loops`, SPEC-0266), whatever
+    park it ended: the conductor's reset gives divergence a fresh start too."""
     records = list(records)
     cut, diverging = 0, False
     for i, rec in enumerate(records):
         if rec.get("type") == "park":
             diverging = _diverging_park(rec)
         elif rec.get("type") == "resume":
-            if diverging:
+            if diverging or rec.get("loops_reset"):
                 cut = i + 1
             diverging = False
     out: list[Round] = []
