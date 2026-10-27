@@ -46,15 +46,23 @@ The other findings in these source ideas were dropped. Most were already fixed:
 `item_lock`, the `prioritized` transition that marked adopted runs superseded, and the
 profile `.yml`/directory errors. The rest were test-only.
 
+Two IDEA-324 findings are real behaviour gaps that this spec does **not** cover: the
+`OSError` from the `_read_dir` directory listing (`d8df373ab668` / `f71efbf0bc15`), and
+`wt spec review` reading a worktree's `.wt/profiles` (`01437d38a38a` / `430abd441768`).
+IDEA-324 therefore stays open for them; this spec must not close it.
+
 ## Goals / Non-goals
 
 **Goals**
 - A campaign never reuses a `run_id`.
 - `slot_freed_at` marks when the runner went from full to having a free slot. It does not
   mark every drop in occupancy.
-- A profile that fails to resolve parks the campaign as `config_invalid`, with `resume_to`
-  set to the campaign's current state. The campaign recovers on its own once the profile
-  loads again, the same way a broken project config recovers.
+- A profile that fails to resolve for an *active* campaign in the `_tick` planning loop
+  parks it as `config_invalid`, with `resume_to` set to the campaign's current state. The
+  campaign recovers on its own once the profile loads again, the same way a broken project
+  config recovers. A broken profile at admission (`_do_open`) is out of scope: it keeps
+  parking `open_failed` (the campaign has no worktree yet, so a re-open is the right
+  resume).
 - A resolver's dropped-commit declaration is honored only when the close re-gates with at
   least one required gate.
 
@@ -81,13 +89,20 @@ Make four local fixes in `queue.py`, each covered by a regression test:
 1. **Unique run ids** (`_prepare_run`).
    - `run_no = max(counters["runs"], _ledger_run_max(cfg, cid)) + 1`.
    - `_ledger_run_max` reads `store.read_ledger(cfg, cid, types=["run.start"])` and returns
-     the largest integer prefix of `run_id` (`"012-implementer"` gives 12), or 0.
+     the largest integer prefix of `run_id` (`"012-implementer"` gives 12), or 0. A
+     `run_id` with no parsable numeric prefix (adopted or legacy rows) is skipped; it must
+     never raise.
    - This costs one ledger read per run start, which is negligible next to the run itself.
 
 2. **Full-to-free stamp** (`_SlotWatch.check`).
    - Stamp `info["slot_freed_at"]` only when `self.last >= cap > now`, where
      `cap = slots_for(self.cfg)`. The watchdog (`events.waiting_not_admitted_items`) uses
      the same `slots_for(cfg)`.
+   - `slots_for` catches `ValueError` but not `OSError`, so a half-written default profile
+     can still raise from `resolve_profile`. `check` runs in the main loop and must not
+     crash the runner: wrap the `slots_for` call in `try/except (ValueError, OSError)`; on
+     failure skip the stamp for that call (the old stamp stays) and still update
+     `self.last`. A test covers this.
    - `run()` still stamps `slot_freed_at` at start.
    - If `test_run_stamps_slot_freed_at_on_drop` relies on a drop that never started from
      full, change its fixture so the runner starts full, and note the change under
@@ -99,10 +114,12 @@ Make four local fixes in `queue.py`, each covered by a regression test:
      `StepResult` with `config_error=True` and `error=f"profile: {e}"`. `_apply`'s existing
      `config_invalid` branch (about line 1561) then parks with
      `resume_to = res.from_state`.
-   - Change that branch's detail text from the fixed `"project config: …"` to
-     `res.error`, already prefixed `"project config: "` or `"profile: "` by the producer.
-     The other `config_error` producers (`_do_open`, `_do_open_merge`, `_do_persona`,
-     review fan-out) prefix `"project config: "` themselves.
+   - Keep `_apply` adding the `"project config: "` prefix, because today no producer adds
+     it (`_do_open`, `_do_persona`, the planning loop and the review fan-out all set
+     `error=str(e)`; the fan-out park at about line 2148 adds its own). Change that branch
+     to `detail = res.error if res.error.startswith("profile: ") else
+     f"project config: {res.error}"`. No other producer changes, so existing
+     `config_reload` tests keep their detail text.
    - In step 0, a campaign parked `config_invalid` recovers only when both `ctx.project(st)`
      and `ctx.profile(st)` load. A `ValueError` from either keeps it parked.
 
@@ -126,10 +143,13 @@ Make four local fixes in `queue.py`, each covered by a regression test:
 
 ## Acceptance criteria
 
-- [ ] When `write_state` fails once after `run.start`, the next run of the campaign gets a
-      new `run_id`, one above the highest on the ledger, and its own run directory.
+- [ ] When the stored `counters.runs` is behind the ledger's highest `run.start` (for
+      example after a `write_state` failure following `run.start`), the next run of the
+      campaign gets a new `run_id`, one above the highest on the ledger, and its own run
+      directory.
 - [ ] With `slots_for(cfg) == 3`, occupancy moving 2 → 1 → 2 → 1 leaves `slot_freed_at`
-      unchanged. Moving 3 → 2 stamps it.
+      unchanged. Moving 3 → 2 stamps it. If `slots_for` raises, `check` does not raise and
+      does not stamp.
 - [ ] A tick that cannot resolve an active campaign's profile parks it with reason
       `config_invalid` and detail starting `profile:`, and sets `resume_to` to the
       campaign's state (IMPLEMENTING stays IMPLEMENTING).
@@ -143,14 +163,21 @@ Make four local fixes in `queue.py`, each covered by a regression test:
 
 - **Automated tests:**
   - `tests/test_agentic_queue.py::test_run_id_not_reused_after_state_write_failure`
-    - Monkeypatch `store.write_state` to raise `OSError` once, inside `_prepare_run`.
-    - Tick twice with FakeRunner.
-    - Assert that the two `run.start` events have different `run_id`s, the second numbered
-      one higher, and that the two run directories are distinct.
+    - Reproduce the lagging counter directly: seed a campaign whose `counters.runs` is
+      below the highest `run.start` already on its ledger (append `run.start` events
+      `001-...` and `002-...` while the state says `counters.runs == 1`). A single failed
+      `_prepare_run` write is not enough: `_apply`'s `finish` copies the in-memory
+      counters and saves the bump anyway, so the old code would pass.
+    - Tick once with FakeRunner (resume the campaign explicitly first if it is parked).
+    - Assert that the new `run.start` has `run_id` numbered 3, and that its run directory
+      differs from the earlier two.
   - `tests/test_agentic_loop_state.py::test_slot_freed_at_only_on_full_to_free`
     - Drive `_SlotWatch.check` with a stub `count()` sequence 3, 2, 1, 2, 1 and slots set
       to 3.
     - Assert that `update_info` gets `slot_freed_at` exactly once, on 3 → 2.
+  - `tests/test_agentic_loop_state.py::test_slot_watch_survives_slots_for_error`
+    - Make `slots_for` raise `OSError`; assert `check` returns, `update_info` is still
+      called, and `slot_freed_at` is not stamped.
   - `tests/test_agentic_queue.py::test_broken_profile_parks_config_invalid_and_recovers`
     - Write a user profile `p.yaml` and put a campaign on profile `p` into IMPLEMENTING.
     - Overwrite `p.yaml` with invalid YAML and tick.

@@ -1,13 +1,13 @@
 ---
 id: SPEC-0264
-title: "Review pipeline integrity: exact attestations, safe answers, scoped regenerate, locked follow-ups"
+title: "Review pipeline integrity: exact attestations and safe escalation answers"
 status: accepted
 kind: feature
 owner: user
 created: 2026-10-27
 source_idea: IDEA-337
 parent: SPEC-0169
-tags: [agentic, review, close, escalations, review-follow-up]
+tags: [agentic, review, escalations, review-follow-up]
 ---
 
 ## Context
@@ -32,41 +32,22 @@ Kept findings:
       overrides and blocks a retry.*
     - *A failed escalation_answered append is swallowed, so the CLI reports success but the
       conductor never wakes.*
-- **IDEA-352** `wtfu:71ee806477f9` (SPEC-0255): *Regenerate commit commits the whole index,
-  not exactly the declared paths.* A regenerate command that stages files itself gets
-  undeclared content into the commit. The stray-file check cannot see that content, because
-  it is already committed.
-- **IDEA-344** `wtfu:a9038f6f3bb1` (SPEC-0247): *Resuming a loop_exhausted park with
-  --reset-loops keeps the old fix rounds for divergence.* The conductor's reset is undone in
-  practice: the next fix round can trip `diverging` on rounds from before the reset.
-- **IDEA-325** (SPEC-0239)
-  - `wtfu:29b92671b469`: *Unlocked read-modify-write of the group Summary.* A human edit
-    made between the read and the write is lost.
-  - `wtfu:2031670b701b` and `wtfu:ba2432d61e35`: *The filer adopts its own group even when
-    that group is closed or archived.*
+The regenerate-scope, divergence-reset and follow-up-group findings (IDEA-352, IDEA-344,
+IDEA-325) moved to SPEC-0266, which splits them out so each spec stays one campaign.
 
-The other findings in these ideas were dropped. Most were already fixed:
-- `git add` moved inside the regenerate `try`
-- the docs-only allowlist check now runs before the regenerate commands
-- `_announce` and `remind_due` errors are contained
-- resume withdraws only after the transition
-- range-diff uses `-s`
-
-The rest were test-only, cosmetic, or a design limit we accept (for example, the revert
-guard detects only exact single-commit reverts).
+The other findings in IDEA-337 were dropped. Most were already fixed (`_announce` and
+`remind_due` errors are contained; resume withdraws only after the transition). The rest were
+test-only, cosmetic, or a design limit we accept.
 
 ## Goals / Non-goals
 
 **Goals**
-- A human attestation or waiver clears only the AC or finding it was resolved against at
-  answer time.
+- A human attestation, or a waiver of a real finding, clears only the AC or finding it was
+  resolved against at answer time, including the ACs the plan showed the human as
+  implicitly attested.
 - Answering an escalation either records everything (record, ledger, overrides) or leaves
   the record open so the answer can be retried. A failed wake-up event is reported, not
   hidden.
-- The regenerate commit holds only declared paths.
-- `--reset-loops` gives divergence detection a fresh start.
-- The follow-up filer never loses a concurrent edit to its group, and never writes into a
-  closed group.
 
 **Non-goals**
 - Changing how reviewer-authored finding ACs are matched (`_covers` stays for
@@ -74,19 +55,20 @@ guard detects only exact single-commit reverts).
 - Migrating legacy attestations already stored with partial text. They stop matching after
   this change. The conductor re-answers if an old campaign needs it; we record this under
   As shipped.
-- Strengthening the revert guard or the absorbed-commit heuristics (SPEC-0252 follow-ups).
+- Making exact matching tolerant of a later reviewer re-quoting the same AC with different
+  wording. This is an accepted cost: `ac_assessment[].ac` is LLM-quoted on every review, so
+  a re-worded AC can re-raise an attested one, and the conductor re-attests. Do not
+  reintroduce fuzzy matching to "fix" it. `norm_finding_title` only lower-cases and
+  collapses whitespace (it does not strip backticks or punctuation), and we keep it that
+  way.
 
 ## Decision
 
-Make five local fixes:
-- Store the resolved full AC text at answer time, and match attestations by exact
-  normalized equality.
+Make two local fixes:
+- Store the resolved full AC text at answer time, for attestations and for the ACs a
+  waived real finding implicitly clears, and match them by exact normalized equality.
 - Do the answer's writes before closing the record, all under one escalations lock, and
   surface a failed `escalation_answered` append.
-- Refuse a regenerate step that staged undeclared paths.
-- Cut divergence rounds at a `resume` that reset loops.
-- Do the follow-up group read-modify-write under `org_write_lock`, and match only open
-  groups.
 
 ## Design
 
@@ -97,9 +79,17 @@ Make five local fixes:
        match when there are several.
      - For a `#ac<j>` id, use the finding's `ac` (unchanged).
      - The `reach` map stays keyed by what the human typed, for display.
-   - In `triage_reviews`, `attest_all` is matched with `_exact(a, entry_ac)`, which is
-     `norm_finding_title(a) == norm_finding_title(entry_ac) != ""`, instead of `_covers`.
-     This covers both attested texts and waived findings' `ac`.
+   - A waived real finding's stored `ac` is the reviewer's raw, often partial, quote. The
+     plan already computes `implicit` (the unmet ACs the waiver reaches via
+     `_unmet_reach`, escalations.py ~379-382) and shows them to the human as attested.
+     Persist those full texts on the waive dict as `resolved_ac: [<full AC text>, ...]`,
+     and have `triage_reviews` clear an AC when it exactly equals a waive's `resolved_ac`
+     entry (or an `attest` entry). The raw `ac` is no longer used for clearing. Without
+     this, exact matching would silently stop a waiver from clearing the AC the human was
+     told it resolved.
+   - In `triage_reviews` (queue.py ~369, ~392), `attest_all` is matched with
+     `_exact(a, entry_ac)`, which is `norm_finding_title(a) == norm_finding_title(entry_ac)
+     != ""`, instead of `_covers`.
    - `by_key` (title+files) is built only from non-synthetic waivers. A waiver is synthetic
      when its `id` matches `r"#(fix|ac\d+)$"`. Synthetic waivers still match through
      `by_id`.
@@ -113,36 +103,17 @@ Make five local fixes:
      3. Write `human_overrides` to the state.
      4. `rec.update(status="answered", ...)`, then `_write(cfg, rec)`.
    - If step 2 or 3 raises, the record is still `open` and the error reaches the CLI.
+   - The ledger appends are not rolled back, so a retry after a step 3 or step 4 failure
+     appends a second `human_decision` and `note`, and a step 4 failure leaves overrides
+     stored on a still-open record that the retry writes again. This is accepted: the
+     decision events are an audit trail, overrides are rewritten idempotently, and no
+     consumer counts them.
    - After the locks, the `escalation_answered` append is no longer wrapped in `suppress`.
      On `ValueError`/`OSError`, `apply_answer` returns `rec` with
-     `event_error: "<error>"`. `cli_escalations.escalations_answer` then prints a warning
+     `event_error: "<error>"`, added to the returned dict only, after `_write`, so it never
+     lands in the persisted record. `cli_escalations.escalations_answer` then prints a warning
      to stderr ("escalation_answered event not written: …; the conductor was not woken")
      and exits 0. The `--json` payload carries `event_error`.
-
-3. **Regenerate commit scope** (`src/wt/agentic/close.py` `_regenerate_after_rebase`).
-   - After `git add -- <declared>`, read
-     `staged = git diff --cached --name-only -z`.
-   - If `set(staged) - set(declared)` is non-empty, call `put_back()` and return
-     `"regenerate commands staged undeclared files: " + ", ".join(sorted(extra)[:10])`.
-     That return value is the `regenerate_failed` park.
-   - Otherwise commit as today.
-
-4. **Divergence reset** (`src/wt/agentic/divergence.py` `rounds`).
-   - In the cut loop, a `resume` record with `loops_reset` truthy also sets `cut = i + 1`,
-     whatever park preceded it.
-   - Update the docstring and the SPEC-0247 note in the docstring.
-
-5. **Locked, open-only follow-up groups** (`src/wt/agentic/followups.py`).
-   - `find_marker(cfg, marker, *, open_only=False)`. With `open_only`, it skips nodes whose
-     TODO keyword is in `dones`, and it scans the ideas file only, not the archive.
-   - `_file` calls it with `open_only=True`. A closed own group then counts as absent: a new
-     group is created. Recovery of already-filed lines still works through the `followup`
-     ledger events (step 1).
-   - `_file` wraps the span from `find_marker` (step 2) through `set_summary` /
-     `retitle_idea` (step 5) in `with OW.org_write_lock(cfg):`. That lock is re-entrant,
-     so the inner `OW.add_idea` / `EX.set_summary` calls still work. `own_text` is read
-     inside the lock.
-   - `group_legacy` keeps the current `find_marker` default.
 
 ## Alternatives considered
 
@@ -152,28 +123,19 @@ Make five local fixes:
 - **Revalidate the whole override plan at apply time** (IDEA-337 `5f1d388e7510`). This is
   more work than the risk justifies, because `apply_answer` already re-checks `open` and
   the park under the locks.
-- **Commit with a pathspec (`git commit -- <declared>`).** This silently leaves the
-  undeclared files staged and needs the stray check to catch them. An explicit refusal is
-  clearer.
 
 ## Acceptance criteria
 
 - [ ] An attestation answered for AC "uv run pytest passes" does not mark met a later unmet
       AC "uv run pytest passes with the new regression tests". A synthetic `p#fix` waiver
       does not drop a real finding with the same title and no files.
+- [ ] Waiving a real finding whose `ac` is a substring of an unmet AC still clears that AC
+      on the next triage, through the persisted `resolved_ac` text.
 - [ ] If the state write in `apply_answer` raises, the record stays `open` and no override is
       stored. Retrying the answer after the fault clears succeeds.
-- [ ] If the `escalation_answered` append fails, `apply_answer` returns `event_error`, and
-      `wt escalations answer` prints the warning to stderr and exits 0.
-- [ ] A regenerate command that runs `git add` on an undeclared file parks
-      `regenerate_failed` with that path in the detail, and the branch gets no regenerate
-      commit.
-- [ ] After `wt queue resume <cid> --reset-loops`, `divergence.rounds` returns only rounds
-      recorded after that resume.
-- [ ] A Summary edit made by another writer while `_file` holds the group is not lost. The
-      edit waits on `org_write_lock`, and `_file` re-reads inside the lock. A campaign whose
-      `wtfug:<cid>` group is closed gets a new group instead of lines appended to the
-      closed one.
+- [ ] If the `escalation_answered` append fails, `apply_answer` returns `event_error`
+      (not persisted in the record), and `wt escalations answer` prints the warning to
+      stderr and exits 0.
 
 ## Test plan
 
@@ -185,47 +147,33 @@ Make five local fixes:
   - `tests/test_agentic_review_triage.py::test_synthetic_waiver_does_not_key_real_findings`:
     `human_waived=[{"id": "p#fix", "title": "Fix the thing", "files": []}]` plus a real
     finding titled "Fix the thing" with `files: []`. The real finding survives.
+  - `tests/test_agentic_review_triage.py::test_waiver_resolved_ac_clears_substring_ac`: a
+    waive of a real finding whose `ac` is a partial quote of an unmet AC, stored with
+    `resolved_ac` holding the full text, still clears that AC; without `resolved_ac` it
+    does not.
   - `tests/test_agentic_escalations.py::test_plan_override_stores_resolved_ac_text`: a
     partial `--attest` text resolves to one unmet AC, and `plan["attest"]` holds that AC's
-    full text.
+    full text. Also: a waive's plan holds `resolved_ac` with the implicitly attested full
+    texts.
   - `tests/test_agentic_escalations.py::test_answer_state_write_failure_keeps_record_open`:
     monkeypatch `store.write_state` to raise `OSError` once. `apply_answer` raises, and
     `read(...)["status"] == "open"` with no `human_overrides`. A second `apply_answer`
     succeeds.
   - `tests/test_agentic_escalations_cli.py::test_answer_reports_failed_wake_event`:
     monkeypatch `E.append` to raise for `escalation_answered`. The exit code is 0, stderr
-    contains `conductor was not woken`, and `--json` has `event_error`.
-  - `tests/test_agentic_close_regenerate.py::test_regenerate_that_stages_undeclared_file_parks`:
-    the regenerate cmd is `python3 tools/spec_lint.py --write-ledger && touch x && git add x`.
-    Close parks `regenerate_failed` with `x` in the detail, and `git log` shows no
-    regenerate commit.
-  - `tests/test_agentic_divergence.py::test_reset_loops_resume_cuts_rounds`: the ledger
-    holds 3 fix rounds, a `park` (`loop_exhausted`), a `resume` (`loops_reset: true`) and 1
-    new round. `rounds()` returns 1 round. The same ledger with `loops_reset: false` returns
-    4.
-  - `tests/test_agentic_review_triage.py::test_filer_rereads_group_under_lock`:
-    monkeypatch `EX.read_idea_enrichment` so that the first call (outside any lock, in the
-    old code) is followed by a concurrent `EX.set_summary` adding a line from another
-    thread. That thread must block on `org_write_lock`. Assert the final Summary holds both
-    the human line and the new follow-up lines.
-  - `tests/test_agentic_review_triage.py::test_filer_ignores_closed_own_group`: create the
-    `wtfug:<cid>` group, then close it (state DROPPED). `file_followups` creates a new group
-    id and leaves the closed group's Summary unchanged.
+    contains `conductor was not woken`, and `--json` has `event_error`. Also assert the
+    stored record has no `event_error` key.
 - **Sabotage checks.** Each one must fail its test; record the result in the spec:
   - restore `_covers` for `attest_all`
   - build `by_key` from all waivers
+  - drop `resolved_ac` from the waive dict
   - move the record write back before the ledger writes
   - re-add `suppress` around the append without `event_error`
-  - remove the staged-scope check
-  - remove the `loops_reset` cut
-  - drop the `org_write_lock` wrapper
-  - pass `open_only=False` in `_file`
 - **Regression guard:** run the full `uv run pytest`. In particular,
-  `test_agentic_escalations*.py`, `test_agentic_review_triage.py`,
-  `test_agentic_close_regenerate.py`, `test_agentic_divergence.py` and
-  `test_ideas_group_followups.py` must stay green. Existing SPEC-0235 tests that relied on
-  substring attestations are updated to pass the resolved text, and each such edit is noted
-  under As shipped.
+  `test_agentic_escalations*.py` and `test_agentic_review_triage.py` must stay green.
+  Existing SPEC-0235 tests that relied on substring attestations are updated to pass the
+  resolved text, and each such edit is noted under As shipped. The waiver case is not
+  papered over this way: `resolved_ac` covers it.
 - **Manual verification:** none. Every path is exercised in-process.
 
 ## Definition of done
