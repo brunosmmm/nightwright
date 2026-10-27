@@ -1,7 +1,7 @@
 ---
 id: SPEC-0258
 title: "Merge campaigns run worktrees.setup in an adopted worktree before gating"
-status: accepted
+status: done
 owner: user
 created: 2026-10-26
 updated: 2026-10-26
@@ -81,16 +81,16 @@ the output tail, whether or not the command printed anything.
 
 ## Acceptance criteria
 
-- [ ] `_do_open_merge` on an adopted worktree runs every `worktrees.setup` command with
+- [x] `_do_open_merge` on an adopted worktree runs every `worktrees.setup` command with
       `cwd=<worktree>` after validation and before the campaign proceeds to gating.
-- [ ] A created worktree still runs setup exactly once (no double run).
-- [ ] A failing command parks `open_failed`; `res.error` and the park detail contain the
+- [x] A created worktree still runs setup exactly once (no double run).
+- [x] A failing command parks `open_failed`; `res.error` and the park detail contain the
       command, its exit code and the output tail (also when the command printed output); no
       gate runs.
-- [ ] A dirty adopted worktree still parks before any setup command runs.
-- [ ] An `info` `setup` finding is recorded on the campaign ledger on success for an adopted
+- [x] A dirty adopted worktree still parks before any setup command runs.
+- [x] An `info` `setup` finding is recorded on the campaign ledger on success for an adopted
       worktree, and not for a created one.
-- [ ] The Test plan passes and `uv run pytest` is green.
+- [x] The Test plan passes and `uv run pytest` is green.
 
 ## Test plan
 
@@ -116,11 +116,21 @@ the output tail, whether or not the command printed anything.
   conductor --yes`; gates collect `tests/test_tui_*` without ImportError.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-26)
+
+Automated, in `tests/test_agentic_queue_merge.py`: `test_adopted_worktree_runs_setup` (marker in the
+adopted worktree, not the root; `info`/`setup` finding on the ledger), `test_created_worktree_runs_setup_once`
+(count marker, no finding), `test_adopted_setup_failure_parks` (`echo boom; exit 3` -> `open_failed`, park detail
+has the command, `exited 3` and `boom`, no gate event), `test_run_worktree_setup_error_names_the_command`,
+`test_adopted_dirty_worktree_parks_before_setup`; `test_e2e_merge_adopted_worktree` now asserts the marker exists.
+Sabotage: bare-output tail fails the failure tests; removing the adopted setup call/finding fails the adopted tests.
+Manual `wt queue merge --worktree` against a venv without textual was not run here; the unit/e2e path covers the call.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; `uv run pytest` passes.
-- [ ] Spec body updated to match what shipped; ledger regenerated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; `uv run pytest` passes.
+- [x] Spec body updated to match what shipped; ledger regenerated.
 
 ## Open questions
 

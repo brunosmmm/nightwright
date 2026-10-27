@@ -978,11 +978,7 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
         base_sha = git.rev_parse(root, base)
         worktree = Path(repo["worktree"])
         git.worktree_add(root, worktree, repo["branch"], base)
-        for cmd in (pcfg.get("worktrees") or {}).get("setup") or []:
-            r = subprocess.run(cmd, shell=True, cwd=str(worktree), capture_output=True, text=True)
-            if r.returncode != 0:
-                tail = "\n".join(((r.stdout or "") + (r.stderr or "")).splitlines()[-20:])
-                raise GitError([cmd], r.returncode, tail)
+        _run_worktree_setup(pcfg, worktree)
         repo["base_sha_at_open"] = base_sha
         repo["head"] = git.rev_parse(worktree)
         if not has_no_spec(state):
@@ -1000,9 +996,23 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
     return res
 
 
+def _run_worktree_setup(pcfg: dict, worktree: Path) -> bool:
+    """Run the project's `worktrees.setup` commands in `worktree`; True when any ran. A failure
+    raises GitError whose tail leads with the command and exit code (SPEC-0258), so the park
+    detail names the command even when it printed nothing."""
+    cmds = (pcfg.get("worktrees") or {}).get("setup") or []
+    for cmd in cmds:
+        r = subprocess.run(cmd, shell=True, cwd=str(worktree), capture_output=True, text=True)
+        if r.returncode != 0:
+            out = "\n".join(((r.stdout or "") + (r.stderr or "")).splitlines()[-20:])
+            raise GitError([cmd], r.returncode, f"{cmd} exited {r.returncode}:\n{out}")
+    return bool(cmds)
+
+
 def _do_open_merge(ctx: _Ctx, state: dict, res: StepResult) -> StepResult:
-    """SPEC-0233: a merge request opens its worktree and nothing else. A created worktree gets
-    the project's setup commands; an adopted one is the requester's and stays as it is."""
+    """SPEC-0233: a merge request opens its worktree and nothing else. Both a created and an
+    adopted worktree get the project's setup commands (SPEC-0258); an adopted one is otherwise
+    the requester's and stays as it is."""
     repo = state["repo"]
     merge = state.get("merge") or {}
     try:
@@ -1025,12 +1035,7 @@ def _do_open_merge(ctx: _Ctx, state: dict, res: StepResult) -> StepResult:
         if merge.get("own_worktree"):
             if git.worktree_for_branch(root, branch) is None:
                 git.worktree_add_existing(root, worktree, branch)
-            for cmd in (pcfg.get("worktrees") or {}).get("setup") or []:
-                r = subprocess.run(cmd, shell=True, cwd=str(worktree), capture_output=True,
-                                   text=True)
-                if r.returncode != 0:
-                    tail = "\n".join(((r.stdout or "") + (r.stderr or "")).splitlines()[-20:])
-                    raise GitError([cmd], r.returncode, tail)
+            _run_worktree_setup(pcfg, worktree)
         else:
             if worktree.resolve() == root.resolve():
                 raise ValueError(f"the main checkout is on {branch}; switch it to {base}")
@@ -1041,6 +1046,14 @@ def _do_open_merge(ctx: _Ctx, state: dict, res: StepResult) -> StepResult:
                 raise ValueError(f"worktree {worktree} is not on branch {branch}")
             if not git.is_clean(worktree, untracked=True):
                 raise ValueError(f"worktree {worktree} has uncommitted or untracked changes")
+            # SPEC-0258: after the clean check (setup writes untracked `.venv`, caches), and
+            # before `head` is read so a lockfile rewrite shows up in the close dirty check.
+            if _run_worktree_setup(pcfg, worktree):
+                res.events_before.append(("finding", {
+                    "persona": "queue", "severity": "info", "gate": "setup",
+                    "title": "worktree setup ran in adopted worktree",
+                    "detail": "\n".join((pcfg.get("worktrees") or {}).get("setup") or []),
+                    "files": []}))
         repo["base_sha_at_open"] = base_sha
         repo["head"] = git.rev_parse(worktree)
     except (GitError, ValueError, OSError) as e:

@@ -357,7 +357,7 @@ def test_e2e_merge_adopted_worktree(world, monkeypatch):
     close = next(e for e in ledger if e["type"] == "close")
     assert close["head_at_request"] == st["merge"]["head_at_request"]
     assert close["commits_since_request"] == 1
-    assert not (wt / ".setup-ran").exists()                    # no setup in an adopted worktree
+    assert (wt / ".setup-ran").exists()                        # SPEC-0258: setup runs in it too
 
 
 def test_e2e_merge_created_worktree_is_removed(world, monkeypatch):
@@ -482,6 +482,90 @@ def test_visibility_label_everywhere(world, monkeypatch):
     con = Console(record=True, width=160)
     con.print(CQ._dash_backlog(dash["backlog"]))
     assert "merge:fix/typo" in con.export_text() and "None" not in con.export_text()
+
+
+# ---- SPEC-0258: worktrees.setup in an adopted worktree ------------------------------------------
+
+def _setup_cmds(repo, *cmds):
+    """Replace the project's `worktrees.setup` and commit it, so a branch cut from main has it."""
+    import re
+    p = repo / ".wt" / "project.yaml"
+    text = re.sub(r"worktrees:\n  setup: \[.*\]\n",
+                  "worktrees:\n  setup: " + json.dumps(list(cmds)) + "\n", p.read_text())
+    p.write_text(text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "setup cmds")
+
+
+def _setup_findings(cfg, cid):
+    return [e for e in S.read_ledger(cfg, cid) if e["type"] == "finding" and e.get("gate") == "setup"]
+
+
+def test_adopted_worktree_runs_setup(world, monkeypatch):
+    repo, cfg, tmp = world
+    _setup_cmds(repo, "touch .setup-ran")
+    wt = branch_wt(tmp, repo)
+    cid = queue_merge(cfg, monkeypatch)
+    assert not (wt / ".setup-ran").exists()
+    r = run_cli(cfg, monkeypatch, ["queue", "tick", "--json"])      # admit + open only
+    assert r.exit_code == 0, r.output
+    assert S.read_state(cfg, cid)["state"] == "CLOSING"
+    assert (wt / ".setup-ran").exists() and not (repo / ".setup-ran").exists()
+    found = _setup_findings(cfg, cid)
+    assert [(f["severity"], f["title"]) for f in found] == [
+        ("info", "worktree setup ran in adopted worktree")]
+
+
+def test_created_worktree_runs_setup_once(world, monkeypatch):
+    repo, cfg, tmp = world
+    _setup_cmds(repo, "echo run >> .setup-count")
+    _write(repo, ".gitignore", ".setup-ran\n.setup-count\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "ignore count")
+    branch_wt(tmp, repo, adopt=False)
+    cid = queue_merge(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "tick", "--json"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "CLOSING" and st["merge"]["own_worktree"] is True
+    assert (Path(st["repo"]["worktree"]) / ".setup-count").read_text() == "run\n"
+    assert _setup_findings(cfg, cid) == []
+
+
+def test_adopted_setup_failure_parks(world, monkeypatch):
+    repo, cfg, tmp = world
+    _setup_cmds(repo, "echo boom; exit 3")
+    branch_wt(tmp, repo)
+    cid = queue_merge(cfg, monkeypatch)
+    ran = []
+    monkeypatch.setattr(Q.G, "run_gates", lambda *a, **k: ran.append(1), raising=False)
+    run_until_idle(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed", st
+    for needle in ("echo boom; exit 3", "exited 3", "boom"):
+        assert needle in st["park"]["detail"], st["park"]
+    assert ran == [] and [e for e in S.read_ledger(cfg, cid) if e["type"] == "gate"] == []
+    assert _setup_findings(cfg, cid) == []
+
+
+def test_run_worktree_setup_error_names_the_command(tmp_path):
+    with pytest.raises(Q.git.GitError) as ei:
+        Q._run_worktree_setup({"worktrees": {"setup": ["echo boom; exit 3"]}}, tmp_path)
+    assert ei.value.tail.startswith("echo boom; exit 3 exited 3:") and "boom" in ei.value.tail
+    assert Q._run_worktree_setup({}, tmp_path) is False
+
+
+def test_adopted_dirty_worktree_parks_before_setup(world, monkeypatch):
+    repo, cfg, tmp = world
+    _setup_cmds(repo, "touch .setup-ran")
+    wt = branch_wt(tmp, repo)
+    cid = queue_merge(cfg, monkeypatch)
+    _write(wt, "scratch.txt", "x\n")
+    run_until_idle(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed", st
+    assert not (wt / ".setup-ran").exists()
+    assert _setup_findings(cfg, cid) == []
 
 
 # ---- review round: setup, stale worktrees, policy drift, gate artifacts -------------------------
