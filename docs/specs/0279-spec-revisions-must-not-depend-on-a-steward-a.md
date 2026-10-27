@@ -1,7 +1,7 @@
 ---
 id: SPEC-0279
 title: "Headless spec revision: queue a spec with an unapplied revise review"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -118,19 +118,19 @@ IMPLEMENTING with `revision_brief(review)` as the implementer's brief.
 
 ## Acceptance criteria
 
-- [ ] `wt queue add SPEC-X --yes` with an unapplied `revise` (internal spec) creates a
+- [x] `wt queue add SPEC-X --yes` with an unapplied `revise` (internal spec) creates a
       campaign with `admission: revise_pending`; an outbound id or a `split` is still
       refused.
-- [ ] `wt queue add` (dry run) prints `revision: pending (N findings), spec_writer amends
+- [x] `wt queue add` (dry run) prints `revision: pending (N findings), spec_writer amends
       first`; opening the campaign goes to SPEC_WRITING, and the `spec_writer` runs in
       `amend` mode with the review findings in its brief.
-- [ ] An amend that changes any front-matter key other than `updated` is a write problem
+- [x] An amend that changes any front-matter key other than `updated` is a write problem
       (retried, then parked `spec_write_failed`).
-- [ ] A committed amend moves the campaign to IMPLEMENTING (transition reason
+- [x] A committed amend moves the campaign to IMPLEMENTING (transition reason
       `spec_amended`) with no further review, and sets `admission: after_revision`. It
       refreshes `spec.sha256_at_open` and `spec_at_open.md`, and the implementer's brief
       carries the findings.
-- [ ] `skills/wt-conduct/SKILL.md` and `skills/wt-steward/SKILL.md` no longer route `revise`
+- [x] `skills/wt-conduct/SKILL.md` and `skills/wt-steward/SKILL.md` no longer route `revise`
       to a steward or author session.
 
 ## Test plan
@@ -168,11 +168,41 @@ runner writing the spec file:
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
+
+### Test record (2026-10-27)
+
+- New tests: `tests/test_spec_review_store.py` (`test_check_admissible_revise_pending_internal`,
+  `test_check_admissible_revise_unapplied_outbound_still_refused`),
+  `tests/test_agentic_queue.py` (`test_queue_add_revise_pending_opens_into_spec_writing`),
+  `tests/test_agentic_spec_writer.py` (`test_amend_mode_rules_and_frontmatter_guard`,
+  `test_amend_body_and_updated_only_is_valid`, `test_amend_success_goes_to_implementing`,
+  `test_amend_number_and_spec_id_flow`, `test_amend_precedes_revise_branch`),
+  `tests/test_skills.py` (`test_skill_texts_no_steward_requirement`).
+- Sabotage checks run and caught: amend not returning to IMPLEMENTING (the amend tests fail),
+  the `SPEC_AT_OPEN` refresh skipped (`test_amend_success_goes_to_implementing` fails), and
+  `_amend_problems` emptied (`test_amend_mode_rules_and_frontmatter_guard` fails). All restored.
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: exit 0.
+- Full `uv run pytest -q` passes (see the final run in the campaign's gate record).
+
+### As shipped (2026-10-27)
+
+Built to Design, with these additions the Design did not spell out:
+
+- the apply step's `finish` helper copies `admission` from the in-memory state onto the on-disk state with the
+  other step-owned keys; without it the `after_revision` flip made by the amend was lost.
+- `spec_write.snapshot` stores `fm_before` normalised (dates as ISO strings) so it is JSON-safe,
+  and `_amend_problems` compares normalised values.
+- `queue._finish_amend` holds the post-commit amend bookkeeping (baseline refresh, admission
+  flip, revision brief, `spec_amended` transition).
+- Four earlier tests that asserted the old "revisions not applied yet" refusal for an internal
+  spec (`test_agentic_spec_review`, `test_spec_review_show`, `test_spec_review_store`, and
+  `test_check_admissible_cases`) now assert `revise_pending`; the outbound refusal is covered by
+  its own test. `tests/test_tui_campaign_model.py` lists the new event in its transitions group.
 
 ## Open questions
 

@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (82/91 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (83/91 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -184,7 +184,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0276](./specs/0276-load-many-ideas-into-the-queue-at-once-in.md) Batch queue add: many specs and ideas at once, in dependency order — accepted
   - [x] [SPEC-0277](./specs/0277-wt-queue-watch-shows-review-status-per-reviewer.md) Per-reviewer review chips in queue watch and the TUI queue tab — done
   - [x] [SPEC-0278](./specs/0278-wt-spec-review-profile-choose-the-reviewer.md) wt spec review --profile, a spec-review default profile, and the profile recorded — done
-  - [ ] [SPEC-0279](./specs/0279-spec-revisions-must-not-depend-on-a-steward-a.md) Headless spec revision: queue a spec with an unapplied revise review — accepted
+  - [x] [SPEC-0279](./specs/0279-spec-revisions-must-not-depend-on-a-steward-a.md) Headless spec revision: queue a spec with an unapplied revise review — done
   - [ ] [SPEC-0280](./specs/0280-handed-off-campaign-marks-its-idea-pending-follow.md) A HANDED_OFF campaign marks its idea pending its PR — accepted
   - [ ] [SPEC-0282](./specs/0282-steward-scope-mechanical-coordination-goes-to-tools.md) Steward scope: mechanical coordination goes to tools or the conductor — accepted
   - [ ] [SPEC-0283](./specs/0283-handed-off-sweep-via-gh-pr-view.md) HANDED_OFF sweep: a merged PR moves its campaign to MERGED — accepted
@@ -204,7 +204,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0275](./specs/0275-worktree-and-branch-garbage-collection-for.md) | wt queue gc: garbage-collect worktrees and branches of finished campaigns | feature | accepted | — | 2026-10-27 |
 | [SPEC-0276](./specs/0276-load-many-ideas-into-the-queue-at-once-in.md) | Batch queue add: many specs and ideas at once, in dependency order | feature | accepted | — | 2026-10-27 |
-| [SPEC-0279](./specs/0279-spec-revisions-must-not-depend-on-a-steward-a.md) | Headless spec revision: queue a spec with an unapplied revise review | feature | accepted | — | 2026-10-27 |
 | [SPEC-0280](./specs/0280-handed-off-campaign-marks-its-idea-pending-follow.md) | A HANDED_OFF campaign marks its idea pending its PR | feature | accepted | — | 2026-10-27 |
 | [SPEC-0281](./specs/0281-wt-idea-spec-link.md) | wt idea spec-link: set or replace an idea's :SPEC:, identity-checked | feature | accepted | — | 2026-10-27 |
 | [SPEC-0282](./specs/0282-steward-scope-mechanical-coordination-goes-to-tools.md) | Steward scope: mechanical coordination goes to tools or the conductor | feature | accepted | — | 2026-10-27 |
@@ -471,6 +470,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0274](./specs/0274-spec-lint-passes-with-two-specs-sharing-one-id.md) | spec_lint fails on duplicate spec ids and duplicate number prefixes | feature | done | — | 2026-10-27 |
 | [SPEC-0277](./specs/0277-wt-queue-watch-shows-review-status-per-reviewer.md) | Per-reviewer review chips in queue watch and the TUI queue tab | feature | done | — | 2026-10-27 |
 | [SPEC-0278](./specs/0278-wt-spec-review-profile-choose-the-reviewer.md) | wt spec review --profile, a spec-review default profile, and the profile recorded | feature | done | — | 2026-10-27 |
+| [SPEC-0279](./specs/0279-spec-revisions-must-not-depend-on-a-steward-a.md) | Headless spec revision: queue a spec with an unapplied revise review | feature | done | — | 2026-10-27 |
 
 ## Superseded / rejected
 

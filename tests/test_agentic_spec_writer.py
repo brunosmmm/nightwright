@@ -937,3 +937,117 @@ def test_specmeta_normalize_matches_the_linter():
     import datetime as dt
     doc = {"created": dt.date(2026, 10, 25), "x": [dt.datetime(2026, 1, 2, 3, 4, 5), "s", 1]}
     assert SW._normalize(doc) == L._normalize(doc)
+
+
+# ---- SPEC-0279: amend mode ---------------------------------------------------------------------
+
+AMEND_FINDINGS = [{"severity": "major", "section": "Design", "title": "gap in step two",
+                   "detail": "state the timeout behaviour"},
+                  {"severity": "nit", "title": "loose wording"}]
+AMEND_PATH = "docs/specs/0005-add-a-thing.md"
+
+
+def amend_fx(tmp_path, monkeypatch, entries):
+    """A project whose accepted SPEC-0005 has a `revise` review for its current text, queued and
+    opened into SPEC_WRITING (the spec writer amends it)."""
+    from test_agentic_e2e import added, write_review
+    repo = make_project(tmp_path)
+    _write(repo, AMEND_PATH, _spec_md(5, None, status="accepted"))
+    subprocess.run([sys.executable, "tools/spec_lint.py", "--write-ledger"], cwd=repo, check=True,
+                   capture_output=True)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "an accepted spec")
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    write_review(cfg, repo / AMEND_PATH, "SPEC-0005", "revise", findings=AMEND_FINDINGS)
+    cid = added(cfg, monkeypatch, "SPEC-0005")
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_WRITING" and st["admission"] == "revise_pending"
+    script(tmp_path, entries)
+    return cfg, repo, cid
+
+
+def amended(extra_body="Amended: timeout is 30s.", **kw):
+    kw.setdefault("fm", {"updated": "2026-10-27"})
+    return spec_written(5, None, mode="amend", status="accepted", extra_body=extra_body, **kw)
+
+
+def test_amend_mode_rules_and_frontmatter_guard(tmp_path, monkeypatch):
+    bad = [amended(fm={"status": "proposed"})] * 2
+    cfg, repo, cid = amend_fx(tmp_path, monkeypatch, bad)
+    Q.tick(cfg)                                                  # rejected, rolled back, retried
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_WRITING" and st["counters"]["spec_write_retries"] == 1
+    assert "front matter: status was changed from 'accepted' to 'proposed'" \
+        in st["pending_brief"]["write_problems"][0]
+    assert "Amended" not in (wtree(cfg, cid) / AMEND_PATH).read_text()
+    Q.tick(cfg)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_write_failed" and "an amend may change only `updated`" \
+        in park["detail"]
+    p = prompt(cfg, cid, 1)
+    assert "Amend mode: edit only `docs/specs/0005-add-a-thing.md`" in p
+    assert "gap in step two" in p and "state the timeout behaviour" in p
+    assert "Revise mode" not in p
+    # a removed and an added key are problems too
+    fm = {"id": "SPEC-0005", "status": "accepted", "owner": "user", "kind": "feature",
+          "title": "x", "created": "2026-10-25", "source_idea": "IDEA-1"}
+    before = {k: v for k, v in fm.items() if k != "source_idea"}
+    probs = SW._amend_problems(before, {**fm, "updated": "2026-10-27"})
+    assert probs == ["front matter: source_idea was added (an amend may change only `updated`)"]
+    probs = SW._amend_problems(fm, {k: v for k, v in fm.items() if k != "owner"})
+    assert probs == ["front matter: owner was removed (an amend may change only `updated`)"]
+
+
+def test_amend_body_and_updated_only_is_valid(tmp_path, monkeypatch):
+    cfg, repo, cid = amend_fx(tmp_path, monkeypatch, [amended()])
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "IMPLEMENTING", st.get("park")
+    assert "updated: 2026-10-27" in (wtree(cfg, cid) / AMEND_PATH).read_text()
+
+
+def test_amend_success_goes_to_implementing(tmp_path, monkeypatch):
+    from wt.agentic import spec_review as SR
+    cfg, repo, cid = amend_fx(tmp_path, monkeypatch, [amended()])
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    wt = wtree(cfg, cid)
+    assert st["state"] == "IMPLEMENTING" and st["park"] is None
+    assert st["admission"] == "after_revision" and st["spec_write"]["mode"] == "amend"
+    spec_file = wt / AMEND_PATH
+    assert "Amended: timeout is 30s." in spec_file.read_text()
+    assert st["spec"]["sha256_at_open"] == SR.spec_sha256(spec_file)
+    baseline = S.campaign_dir(cfg, cid) / "spec_at_open.md"
+    assert baseline.read_text() == spec_file.read_text()
+    brief = st["pending_brief"]
+    assert brief["source"] == "spec_review"
+    assert [m["title"] for m in brief["must_fix"]] == ["[major] gap in step two (Design)",
+                                                       "[nit] loose wording"]
+    (tr,) = [e for e in ledger(cfg, cid, "transition") if e["to"] == "IMPLEMENTING"]
+    assert tr["from"] == "SPEC_WRITING" and tr["reason"] == "spec_amended"
+    (ev,) = ledger(cfg, cid, "spec_written")
+    assert ev["mode"] == "amend" and ev["spec_id"] == "SPEC-0005" and SC.ledger_problems(ev) == []
+    assert not [e for e in ledger(cfg, cid, "run.start") if e["persona"] == "spec_reviewer"]
+    assert "spec amend" in _git(wt, "show", "-s", "--format=%s", "HEAD")
+    assert st["counters"].get("spec_write_retries", 0) == 0
+
+
+def test_amend_number_and_spec_id_flow(tmp_path, monkeypatch):
+    cfg, repo, cid = amend_fx(tmp_path, monkeypatch, [amended(no_edit=True)] * 2)
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    sw = st["spec_write"]
+    assert sw["number"] == 5 and sw["path"] == AMEND_PATH and sw["mode"] == "amend"
+    assert sw["fm_before"]["status"] == "accepted" and "updated" not in sw["fm_before"]
+    assert SW.validate_spec_change(wtree(cfg, cid), sw, None) == [f"no change made to {AMEND_PATH}"]
+    Q.tick(cfg)
+    assert f"no change made to {AMEND_PATH}" in parked(cfg, cid)["detail"]
+
+
+def test_amend_precedes_revise_branch(tmp_path, monkeypatch):
+    cfg, repo, cid = amend_fx(tmp_path, monkeypatch, [amended()])
+    st = S.read_state(cfg, cid)
+    assert st["spec"]["id"] == "SPEC-0005"             # the revise branch would match on this
+    Q.tick(cfg)
+    assert S.read_state(cfg, cid)["spec_write"]["mode"] == "amend"

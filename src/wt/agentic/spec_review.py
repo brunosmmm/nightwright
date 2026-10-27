@@ -144,7 +144,9 @@ def check_admissible(cfg, spec_path, spec_id) -> dict:
     for the current text admits it (`admission: "approved"`; a stored review wins, a legacy
     sidecar with a matching sha still counts). Otherwise the latest stored review governs: a
     `revise` for an earlier sha admits it (`admission: "after_revision"`, the revision
-    happened); a `split`, an unapplied `revise` or an edit after an `approve` is refused."""
+    happened); an unapplied `revise` of an internal spec admits it as `"revise_pending"`
+    (SPEC-0279: the spec writer amends it first); a `split`, an unapplied `revise` of an
+    outbound spec or an edit after an `approve` is refused."""
     sha = spec_sha256(spec_path)
     review = load_review(cfg, spec_id, sha)
     if not (review and review.get("verdict") == "approve"):
@@ -162,6 +164,8 @@ def check_admissible(cfg, spec_path, spec_id) -> dict:
                          f"split the spec and queue the parts")
     if verdict == "revise":
         if rsha == sha:
+            if not SP._is_outbound_spec_id(spec_id):                   # SPEC-0279
+                return {**latest, "admission": "revise_pending", "current_sha": sha}
             raise ValueError(f"{spec_id}: the review asks for revisions that are not applied "
                              f"yet (the text is unchanged since {rsha[:12]}); edit the spec, "
                              f"then queue it (no second review needed)")

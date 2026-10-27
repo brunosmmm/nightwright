@@ -417,3 +417,13 @@ def test_conduct_and_steward_handle_escalation_answers_spec_0235():
         assert word in row, word
     steward = (REPO_SKILLS_DIR / "wt-steward" / "SKILL.md").read_text(encoding="utf-8")
     assert "wt escalations answer" in steward and "--by steward:" in steward
+
+
+def test_skill_texts_no_steward_requirement():           # SPEC-0279
+    steward = (REPO_SKILLS_DIR / "wt-steward" / "SKILL.md").read_text(encoding="utf-8")
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    assert "Spec work belongs to you" not in steward
+    assert "never required" in steward
+    assert "the author applies the findings" not in conduct
+    assert "single-round admission rule ships" not in conduct
+    assert "amends it headlessly" in conduct

@@ -218,7 +218,7 @@ def queue_action(cfg, action, campaign, **kw) -> dict:
 GROUPS = ("transitions", "runs", "gates", "findings", "notes")
 _GROUP_OF = {
     **dict.fromkeys(("open", "transition", "park", "resume", "priority", "close",
-                     "admitted_after_revision"), "transitions"),
+                     "admitted_after_revision", "admitted_revise_pending"), "transitions"),
     **dict.fromkeys(("run.start", "run.end", "cost"), "runs"),
     "gate": "gates",
     **dict.fromkeys(("finding", "followup"), "findings"),

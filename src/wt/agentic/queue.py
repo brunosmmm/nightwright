@@ -1177,7 +1177,9 @@ def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
         if SW.tracked_dirty(worktree):
             raise ValueError("the worktree has uncommitted changes to tracked files; clean the "
                              "worktree, then resume")
-        if spec.get("id"):
+        if state.get("admission") == "revise_pending":          # SPEC-0279, before `revise`
+            mode, number, path = "amend", int(str(spec["id"])[5:]), spec["rel_path"]
+        elif spec.get("id"):
             mode, number, path = "revise", int(str(spec["id"])[5:]), spec["rel_path"]
         else:
             from .. import spec_numbers as SN
@@ -1525,7 +1527,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 return row
             for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
                       "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
-                      "merge"):
+                      "merge", "admission"):                          # SPEC-0279: amend flips it
                 if k in state:
                     current[k] = state[k]
             requested = current.get("park_requested")
@@ -1613,7 +1615,9 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     if kind == "open":
         if state.get("kind") == "merge":
             return finish("CLOSING", "opened")
-        return finish("SPEC_WRITING" if has_no_spec(state) else "IMPLEMENTING", "opened")
+        pending = state.get("admission") == "revise_pending"           # SPEC-0279
+        return finish("SPEC_WRITING" if has_no_spec(state) or pending else "IMPLEMENTING",
+                      "opened")
 
     if kind == "review":
         return _apply_reviews(ctx, state, profile, counters, res, row, events, finish)
@@ -2016,6 +2020,8 @@ def _apply_spec_write(ctx, state, counters, res, row, events, finish):
     state["pending_brief"] = None
     events.append(("spec_written", {"spec_id": spec_id, "rel_path": sw["path"],
                                     "title": w["title"], "mode": sw["mode"]}))
+    if sw["mode"] == "amend":                                          # SPEC-0279
+        return _finish_amend(cfg, state, sw, finish)
     if link_error:
         # best-effort (SPEC-0256): the spec is committed; the link can be redone with `wt idea`
         events.append(("note", {"text": f"could not link idea to {spec_id}: {link_error}",
@@ -2025,6 +2031,24 @@ def _apply_spec_write(ctx, state, counters, res, row, events, finish):
     return finish("PARKED", "spec_written", park={
         "reason": "spec_review_unavailable", "resume_to": "SPEC_WRITING",
         "detail": f"{spec_id} {sw['mode']}; no spec review yet (SPEC-0214)"})
+
+
+def _finish_amend(cfg, state: dict, sw: dict, finish):
+    """A committed amend (SPEC-0279): the amended text becomes the accepted text (close's drift
+    check, SPEC-0186), the campaign is admitted after its one revision and goes straight to
+    IMPLEMENTING with the review findings as the implementer's brief."""
+    worktree = Path(state["repo"]["worktree"])
+    spec = state["spec"]
+    spec_file = worktree / sw["path"]
+    spec["sha256_at_open"] = _spec_sha(spec_file)
+    cdir = store.campaign_dir(cfg, state["id"])
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / CL.SPEC_AT_OPEN).write_text(spec_file.read_text(encoding="utf-8"), encoding="utf-8")
+    state["admission"] = "after_revision"       # a resume to SPEC_WRITING never amends twice
+    rev = state.get("revision") or {}
+    state["pending_brief"] = SR.revision_brief({"spec_sha256": rev.get("review_sha"),
+                                                "findings": rev.get("findings") or []})
+    return finish("IMPLEMENTING", "spec_amended")
 
 
 def _link_idea(cfg, state: dict, spec_id: str) -> str | None:
@@ -4214,10 +4238,12 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
     else:
         review_doc = SR.check_admissible(cfg, path, spec_id)
         review = review_doc["admission"]
-        if review == "after_revision":                                 # SPEC-0230
+        if review in ("after_revision", "revise_pending"):             # SPEC-0230 / SPEC-0279
             revision = {"review_sha": review_doc.get("spec_sha256"),
                         "current_sha": review_doc["current_sha"],
                         "findings": review_doc.get("findings") or []}
+            if review == "revise_pending":
+                revision["pending"] = True
     pick = select_profile(cfg, flag=profile, review=review_doc,         # SPEC-0219
                           project_root=root)
     prof = resolve_profile(cfg, pick["profile"], project_root=root)
@@ -4265,15 +4291,25 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
                    "review_sha256": plan.get("review_sha256")},
     }
     revision = plan.get("revision")
+    pending = bool(revision and revision.get("pending"))
     if revision:                                                       # SPEC-0230
         state["pending_brief"] = SR.revision_brief(
             {"spec_sha256": revision["review_sha"], "findings": revision["findings"]})
+    if pending:                                                        # SPEC-0279
+        # the spec writer amends the spec first; the apply path reads the findings from here
+        state["spec"]["id"] = plan["spec_id"]
+        state["revision"] = {"review_sha": revision["review_sha"],
+                             "findings": revision["findings"]}
+        state["pending_brief"]["source"] = "spec_review_revise"
     with store.add_lock(cfg):                                          # SPEC-0209
         active = store.active_campaign_for_spec(cfg, plan["spec_id"])
         if active:
             raise ValueError(f"{plan['spec_id']} already has an active campaign {active['id']}")
         store.create_campaign(cfg, state, by=by)
-    if revision:
+    if pending:
+        store.append_event(cfg, plan["campaign"], "admitted_revise_pending",
+                           {k: v for k, v in revision.items() if k != "pending"}, by=by)
+    elif revision:
         store.append_event(cfg, plan["campaign"], "admitted_after_revision", revision, by=by)
     return state
 

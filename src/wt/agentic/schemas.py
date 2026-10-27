@@ -38,6 +38,7 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "finding": ("persona", "severity", "gate", "title", "detail", "files"),
     "priority": ("from", "to"),
     "admitted_after_revision": ("review_sha", "current_sha", "findings"),
+    "admitted_revise_pending": ("review_sha", "current_sha", "findings"),     # SPEC-0279
     "rebase_resolved": ("run_id", "target_sha", "conflicts", "resolutions", "summary", "head",
                         "extra_commits", "absorbed_commits", "resolver_commit"),
     "spec_written": ("spec_id", "rel_path", "title", "mode"),

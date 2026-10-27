@@ -88,7 +88,7 @@ def test_followups_line_distinct_ids_and_counts_only(env):
 
 def test_group_membership_covers_every_event_type():
     expect = {"transitions": {"open", "transition", "park", "resume", "priority", "close",
-                              "admitted_after_revision"},
+                              "admitted_after_revision", "admitted_revise_pending"},
               "runs": {"run.start", "run.end", "cost"}, "gates": {"gate"},
               "findings": {"finding", "followup"}}
     for group, types in expect.items():

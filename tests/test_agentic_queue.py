@@ -1209,6 +1209,38 @@ def test_plan_and_apply_add_after_revision(tmp_path, monkeypatch):
     assert S.read_state(cfg, plan["campaign"])["pending_brief"] == state["pending_brief"]
 
 
+def test_queue_add_revise_pending_opens_into_spec_writing(tmp_path, monkeypatch):   # SPEC-0279
+    from wt.agentic import schemas as SC
+    from wt.agentic import spec_review as SR
+    repo = make_repo(tmp_path, review=False)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    spec = repo / "docs" / "specs" / "0001-trivial.md"
+    sha = SR.spec_sha256(spec)
+    write_review(cfg, spec, "SPEC-0001", "revise", findings=REV_FINDINGS)
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001"])           # dry run
+    assert r.exit_code == 0, r.output
+    assert "revision: pending (2 findings), spec_writer amends first" in r.output
+    plan = Q.plan_add(cfg, "SPEC-0001")
+    assert plan["review"] == "revise_pending"
+    assert plan["revision"] == {"review_sha": sha, "current_sha": sha,
+                                "findings": REV_FINDINGS, "pending": True}
+    cid = added(cfg, monkeypatch)
+    st = S.read_state(cfg, cid)
+    assert st["admission"] == "revise_pending" and st["spec"]["id"] == "SPEC-0001"
+    assert st["revision"] == {"review_sha": sha, "findings": REV_FINDINGS}
+    assert st["pending_brief"]["source"] == "spec_review_revise"
+    assert [m["title"] for m in st["pending_brief"]["must_fix"]][0] \
+        == "[major] gap in step two (Design)"
+    events = S.read_ledger(cfg, cid)
+    assert [e["type"] for e in events] == ["open", "admitted_revise_pending"]
+    assert all(SC.ledger_problems(e) == [] for e in events)
+    Q.tick(cfg)                                          # one tick: open
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "SPEC_WRITING" and st["pending_brief"]["source"] == "spec_review_revise"
+    from wt.agentic.profiles import resolve_profile
+    assert Q.plan_step(st, resolve_profile({}, "balanced")).kind == "write_spec"
+
+
 def test_plan_add_approved_and_forced_have_no_revision(tmp_path):
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))

@@ -67,9 +67,15 @@ def changed_paths(worktree, head_before, untracked_before) -> dict:
 
 def snapshot(worktree, *, mode, number, path) -> dict:
     """The `state.spec_write` record taken before the writer runs. `untracked_before` is
-    filled by the caller (first attempt only)."""
-    return {"mode": mode, "number": int(number), "path": path,
-            "head_before": git.rev_parse(worktree), "untracked_before": untracked(worktree)}
+    filled by the caller (first attempt only). `amend` (SPEC-0279) also keeps `fm_before`, the
+    spec's front matter at `HEAD`, which the amend may only touch in `updated`."""
+    sw = {"mode": mode, "number": int(number), "path": path,
+          "head_before": git.rev_parse(worktree), "untracked_before": untracked(worktree)}
+    if mode == "amend":
+        text = git.git(worktree, "show", f"HEAD:{path}").stdout
+        fm, _ = split_frontmatter(text)
+        sw["fm_before"] = _normalize(fm or {})
+    return sw
 
 
 # ---- validation ----------------------------------------------------------------------------
@@ -125,14 +131,34 @@ def _front_matter_problems(fm, spec_id, idea) -> list:
     return out
 
 
-def _content_problems(worktree, text, spec_id, idea) -> list:
+def _amend_problems(fm_before, fm) -> list:
+    """SPEC-0279: an amend leaves every front-matter key as it was, except `updated`."""
+    before, after = _normalize(fm_before or {}), _normalize(fm)
+    out = []
+    for k in sorted(set(before) | set(after) - {"updated"}):
+        if k == "updated":
+            continue
+        if k not in after:
+            out.append(f"front matter: {k} was removed (an amend may change only `updated`)")
+        elif k not in before:
+            out.append(f"front matter: {k} was added (an amend may change only `updated`)")
+        elif before[k] != after[k]:
+            out.append(f"front matter: {k} was changed from {before[k]!r} to {after[k]!r} "
+                       "(an amend may change only `updated`)")
+    return out
+
+
+def _content_problems(worktree, text, spec_id, idea, spec_write=None) -> list:
     try:
         fm, body = split_frontmatter(text)
     except Exception as e:                      # yaml.YAMLError and friends
         return [f"front matter: not valid YAML ({e})"]
     if not isinstance(fm, dict):
         return ["front matter: missing (a spec starts with a --- block)"]
-    out = _schema_problems(worktree, fm) + _front_matter_problems(fm, spec_id, idea)
+    if (spec_write or {}).get("mode") == "amend":
+        out = _schema_problems(worktree, fm) + _amend_problems(spec_write.get("fm_before"), fm)
+    else:
+        out = _schema_problems(worktree, fm) + _front_matter_problems(fm, spec_id, idea)
     secs = sections(body)
     for h in REQUIRED_HEADINGS:
         if h not in secs:
@@ -167,11 +193,12 @@ def validate_spec_change(worktree, spec_write, idea) -> list:
         else:
             out.append(f"{p} was changed (only {path} may change)")
     if path not in changed:
-        out.append(f"no change made to {path}" if mode == "revise"
+        out.append(f"no change made to {path}" if mode in ("revise", "amend")
                    else f"{path} was not created")
     f = worktree / path
     if changed.get(path) != "D" and path in changed and f.is_file():
-        out += _content_problems(worktree, f.read_text(encoding="utf-8"), spec_id, idea)
+        out += _content_problems(worktree, f.read_text(encoding="utf-8"), spec_id, idea,
+                                 spec_write)
     return out
 
 
@@ -284,6 +311,9 @@ def write_rules(mode, spec_write, idea, brief) -> str:
         return (f"Write mode: create exactly `{path}`, following the template. Its front matter "
                 f"carries {', '.join(fm)} and no keys the schema does not know. Required "
                 f"sections: {', '.join(REQUIRED_HEADINGS)} (and Definition of done).")
+    if mode == "amend":
+        return (f"Amend mode: edit only `{path}`; leave every front-matter key unchanged except "
+                "`updated`; address every finding in the brief.")
     rules = (f"Revise mode: edit only `{path}`; keep its id, `source_idea` and "
              "`status: proposed`; address every must_fix and major finding in the brief.")
     if (brief or {}).get("suggested_splits"):

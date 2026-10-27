@@ -146,9 +146,9 @@ def test_queue_add_refuses_without_approving_review(tmp_path, monkeypatch):
     want = "SPEC-0001 has no spec review; run wt spec review SPEC-0001"
     r = _add(cfg, monkeypatch)                                        # no review at all
     assert r.exit_code != 0 and want in r.output
-    write_review(cfg, _spec(repo), "SPEC-0001", verdict="revise")     # revision not applied yet
+    write_review(cfg, _spec(repo), "SPEC-0001", verdict="revise")     # SPEC-0279: amended first
     r = _add(cfg, monkeypatch)
-    assert r.exit_code != 0 and "not applied yet" in r.output
+    assert r.exit_code == 0 and json.loads(r.stdout)["review"] == "revise_pending"
     write_review(cfg, _spec(repo), "SPEC-0001", verdict="split")
     assert _add(cfg, monkeypatch).exit_code != 0
 

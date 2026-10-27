@@ -54,8 +54,10 @@ decides queue actions.
    `--text`, or `--waive` / `--attest` with `--reason`; dry-run first for an override), and
    never decide on their behalf. The conductor applies the answer. Point the human at
    `wt escalations list` for the open ones.
-7. **Spec work belongs to you:** when your answer is "the spec is wrong", fix it the normal
-   way (`/wt-rework` or a superseding spec), then tell the conductor what to queue.
+7. **Spec work is headless:** a `revise` review needs no one: `wt queue add` amends the spec
+   with the spec writer. When your answer is "the spec is wrong", you may rework it (`/wt-rework`
+   or a superseding spec) if asked, but you are never required to; tell the conductor what to
+   queue.
 
 ## Conventions / guardrails
 

@@ -31,12 +31,10 @@ def test_show_revise_runs_nothing_and_needs_no_force(tmp_path, monkeypatch):
     assert "revise" in r.output and "gap" in r.output and "vague" in r.output
     assert "reviewing " not in r.output
     sha12 = SR.spec_sha256(spec)[:12]
-    assert f"reviewed {sha12} · current · admissible: no — " in r.output
-    assert "not applied yet" in r.output
+    assert f"reviewed {sha12} · current · admissible: revise_pending" in r.output   # SPEC-0279
     assert ran == [] and SR.read_journal(cfg) == []
     adm = json.loads(_show(cfg, monkeypatch, "--json").stdout)["admission"]
-    assert adm["ok"] is False and adm["kind"] is None
-    assert isinstance(adm["message"], str) and adm["message"]
+    assert adm == {"ok": True, "kind": "revise_pending", "message": None}
 
 
 def test_show_after_edit_and_approve_profile(tmp_path, monkeypatch):

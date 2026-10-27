@@ -74,9 +74,9 @@ def test_review_writes_store_with_repo_root_and_nothing_in_repo(tmp_path, monkey
 def test_queue_add_gate_store_legacy_stale_and_revise(tmp_path, monkeypatch):
     repo, cfg = _setup(tmp_path, [])
     spec = _spec(repo)
-    write_review(cfg, spec, "SPEC-0001", verdict="revise")
+    write_review(cfg, spec, "SPEC-0001", verdict="revise")           # SPEC-0279: amended first
     r = _add(cfg, monkeypatch)
-    assert r.exit_code != 0 and "not applied yet" in r.output
+    assert r.exit_code == 0 and json.loads(r.stdout)["review"] == "revise_pending"
     write_review(cfg, spec, "SPEC-0001")                              # stored approve
     assert _add(cfg, monkeypatch).exit_code == 0
     # a stored review for an older text does not count for the new text
@@ -291,8 +291,9 @@ def test_check_admissible_cases(tmp_path):
     got = SR.check_admissible(cfg, spec, "SPEC-0001")
     assert got["admission"] == "after_revision" and got["spec_sha256"] == OLDER
     _store(cfg, spec, "revise", 3, sha=sha)                      # revise for the current text
-    with pytest.raises(ValueError, match=r"not applied yet \(the text is unchanged since "):
-        SR.check_admissible(cfg, spec, "SPEC-0001")
+    got = SR.check_admissible(cfg, spec, "SPEC-0001")                # SPEC-0279
+    assert got["admission"] == "revise_pending" and got["spec_sha256"] == sha
+    assert got["current_sha"] == sha
     _store(cfg, spec, "split", 4, sha=sha)                       # split, current sha
     with pytest.raises(ValueError, match="recommends a split"):
         SR.check_admissible(cfg, spec, "SPEC-0001")
@@ -404,3 +405,21 @@ def test_reviews_sort_by_parsed_time_not_string(tmp_path):
                  reviewed_at="2026-10-25T09:30:00-03:00")           # = 12:30Z, later
     write_review(cfg, spec, "SPEC-0001", "approve", sha="c" * 64, reviewed_at="garbage")
     assert [r["verdict"] for r in SR.list_reviews(cfg, "SPEC-0001")] == ["approve", "split", "revise"]
+
+
+def test_check_admissible_revise_pending_internal(tmp_path):         # SPEC-0279
+    repo, cfg = _setup(tmp_path, [])
+    spec = _spec(repo)
+    sha = SR.spec_sha256(spec)
+    _store(cfg, spec, "revise", 1, sha=sha)
+    got = SR.check_admissible(cfg, spec, "SPEC-0001")
+    assert got["admission"] == "revise_pending" and got["current_sha"] == sha
+    assert got["spec_sha256"] == sha and got["verdict"] == "revise"
+
+
+def test_check_admissible_revise_unapplied_outbound_still_refused(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    spec = _spec(repo)
+    write_review(cfg, spec, "PROJ-0001", "revise")
+    with pytest.raises(ValueError, match=r"PROJ-0001: .*not applied yet \(the text is unchanged"):
+        SR.check_admissible(cfg, spec, "PROJ-0001")
