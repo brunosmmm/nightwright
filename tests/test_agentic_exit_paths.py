@@ -335,6 +335,51 @@ def test_draining_does_not_exec_while_the_user_config_is_invalid(tmp_path, monke
     assert stop["reason"] == "code_changed" and stop["to_sha"] == "newsha"
 
 
+def test_wait_any_sleeps_when_nothing_is_pending():
+    pool = Q.StepPool()
+    t0 = time.monotonic()
+    pool.wait_any(timeout=0.3)
+    assert 0.25 <= time.monotonic() - t0 < 2
+
+
+def test_draining_wait_does_not_busy_spin_with_empty_pool_and_blocked_exec(tmp_path, monkeypatch):
+    """The drain's inter-tick wait must pause even when the user config blocks the exec and no
+    flight is pending: one 1 s tick makes a handful of polls, not thousands."""
+    repo, cfg, a = gate_world(tmp_path, monkeypatch)
+    user = Path(cfg["config_dir"]) / "config.yaml"
+    user.write_text("agentic: {}\n")
+    monkeypatch.setattr(Q, "code_changes", lambda r, since: (
+        ("newsha", ["src/wt/x.py"]) if pid_file(tmp_path) else (since, [])))
+    monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: None)
+    polls = {"n": 0}
+    real_any_done = Q.StepPool.any_done
+
+    def any_done(self):
+        polls["n"] += 1
+        return real_any_done(self)
+
+    monkeypatch.setattr(Q.StepPool, "any_done", any_done)
+    seen = {}
+
+    def on_tick(report):
+        if "broken" not in seen and journal(cfg, "draining"):
+            user.write_text("")
+            seen["broken"] = True
+        elif "released" not in seen and journal(cfg, "reexec_deferred"):
+            (tmp_path / "g1.rel").write_text("")
+            seen["released"] = True
+        elif "released" in seen and not Q._LAST_POOL.flights:
+            if "start" not in seen:
+                seen["start"] = polls["n"]
+            else:
+                seen["delta"] = polls["n"] - seen["start"]
+                user.write_text("agentic: {}\n")      # let the exec happen and end the run
+
+    Q.run(cfg, poll_interval_s=1, reexec=True, code_root=repo, on_tick=on_tick,
+          config_loader=lambda: dict(cfg), max_ticks=40)
+    assert seen.get("delta") is not None and seen["delta"] < 30
+
+
 def test_crash_sweeps_and_journals_after(tmp_path, monkeypatch):
     repo, cfg, a = gate_world(tmp_path, monkeypatch)
     real_tick = Q.tick

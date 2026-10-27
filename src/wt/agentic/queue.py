@@ -2321,8 +2321,12 @@ class StepPool:
 
     def wait_any(self, timeout=None) -> None:
         pending = [f for fl in self.flights.values() for _, f, _h in fl.tasks if not f.done()]
-        if pending and not self.any_done():
+        if self.any_done():
+            return
+        if pending:
             wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
+        elif timeout:                         # SPEC-0229: nothing to wait on is still a pause
+            time.sleep(timeout)
 
     def wait_all(self) -> None:
         wait([f for fl in self.flights.values() for _, f, _h in fl.tasks])

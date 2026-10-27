@@ -461,6 +461,17 @@ The conductor skill rows change accordingly:
   A new check restores the real coverage: no GATING transition before a second implementer `run.start`.
 - Not done (optional): listing unfinished in-process tasks in `abandoned` at bound expiry.
 
+### Test record (2026-10-26, loop 3)
+
+- Code fix: `StepPool.wait_any` now sleeps `timeout` when no future is pending (and no flight is
+  done), so the draining wait loop no longer busy-spins when the exec is blocked (invalid user
+  config) and the pool is empty. `_drain` benefits the same way.
+- Tests: `test_wait_any_sleeps_when_nothing_is_pending` and
+  `test_draining_wait_does_not_busy_spin_with_empty_pool_and_blocked_exec` (one 1 s tick, counts
+  `any_done` polls, asserts < 30). Removing the sleep fails the first.
+- Conductor skill: the `ready_not_admitted` row no longer tells the conductor to SIGTERM a
+  draining runner or says "until SPEC-0224/0225 land".
+
 ## Rollout / migration
 
 Lands after SPEC-0225. No data migration. Journal addition: `detached` on every `stop`
