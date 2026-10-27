@@ -120,6 +120,30 @@ def test_different_roots_close_concurrently(mk, tmp_path, monkeypatch):
     assert calls == [b]
 
 
+def test_config_recovered_close_joins_train(mk):
+    """A campaign step 0 brings back to CLOSING (it was PARKED `config_invalid` when the tick
+    read `items`) is a train member too: it waits behind the running close, never beside it."""
+    env = mk(slots=2, specs=2)
+    a = _held_closing(env, "SPEC-0001")
+    b = env.add("SPEC-0002")
+    env.spin(lambda: env.state(b) == "CLOSING"
+             and (env.st(b).get("closing") or {}).get("queued_behind") == a)
+    with S.item_lock(env.cfg, b):                 # parked on a config that loads again now
+        st = env.st(b)
+        st.pop("closing", None)
+        st["state"] = "PARKED"
+        st["park"] = {"reason": "config_invalid", "resume_to": "CLOSING"}
+        S.write_state(env.cfg, b, st)
+    env.tick()
+    assert env.state(b) == "CLOSING" and env.running("SPEC-0001")
+    assert env.started(b, "close") == [] and b not in env.pool.flights
+    assert env.st(b)["closing"]["queued_behind"] == a
+    env.release("SPEC-0001")
+    env.spin(lambda: env.state(a) == "MERGED" and env.state(b) == "MERGED")
+    assert [r for c in (a, b) for r in env.rows(c) if r["reason"] == "base_moved"] == []
+    assert len(env.started(b, "close")) == 1
+
+
 def test_entered_at_set_and_reset(mk):
     env = mk()
     a = _held_closing(env)

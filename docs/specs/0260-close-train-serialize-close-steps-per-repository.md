@@ -184,6 +184,12 @@ Built as designed in `queue.py` (`_transition`, `_train_key`, `close_train`, `_t
 - An extra test, `test_different_roots_close_concurrently`, covers the cross-root criterion
   in the pooled runner (B's `repo.root` is rewritten while it waits, and its close step is
   stubbed).
+- Review fix (loop 3): `_tick` step 2 builds the train over the non-PARKED `items` merged
+  with `busy` (by id, newest dict wins), so a campaign that step 0 brings back from a
+  `config_invalid` park straight into CLOSING is a member and joins at the back (its
+  `entered_at` is fresh). As a second safeguard, a CLOSING campaign missing from the train
+  waits behind any running close flight of its root instead of defaulting to head. Covered by
+  `test_config_recovered_close_joins_train`.
 
 ## Alternatives considered
 
@@ -302,6 +308,22 @@ Restore both and record the two failures in the Test record.
   disjoint from `tmp_path`. `uv run pytest -q tests/test_agentic_profiles.py`: 134 passed.
   Full `uv run pytest -q -x --basetemp=$HOME/.cache/...` (tmp under `$HOME`, as in the gate):
   3116 passed, 3 skipped.
+
+### Test record (2026-10-27, review fix)
+
+- New `test_config_recovered_close_joins_train`: A's re-gate held, B (same root) moved
+  straight to PARKED `config_invalid` with `resume_to: CLOSING`; after one tick B is CLOSING
+  with no close flight and `queued_behind == A`; both then merge with no `base_moved` row.
+  `uv run pytest -q tests/test_agentic_close_train.py`: 9 passed.
+- Sabotage: with both the `busy` merge and the not-a-member safeguard removed, the new test
+  fails (B had a `close` started row while A was held). Either one alone keeps it passing.
+  Restored.
+- Full `uv run pytest -q -x`: 2911 passed, 3 skipped, then stopped on
+  `tests/test_tui_events_tab.py::test_the_table_keeps_the_newest_events_only` (a Textual
+  `NoMatches('#events-conditions')` worker race under load; this change does not touch the
+  TUI). That file passed 27/27 three times in isolation. The files after it
+  (`test_tui_highlight.py` … `test_wt_checkout.py`) passed 184/184.
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`: exit 0.
 
 ## Rollout / migration
 

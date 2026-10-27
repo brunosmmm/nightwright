@@ -2562,6 +2562,10 @@ def _train_key(state: dict) -> tuple:
     return t, state["id"]
 
 
+def _repo_root(state: dict) -> str | None:
+    return (state.get("repo") or {}).get("root")
+
+
 def close_train(states, close_flights) -> dict[str, list[str]]:
     """Pure: `{repo root: [campaign ids in close order]}`. Members are the CLOSING campaigns of
     `states` that are not resolving, in flight or not; a campaign with no root is its own train
@@ -2571,7 +2575,7 @@ def close_train(states, close_flights) -> dict[str, list[str]]:
     for st in states:
         if st.get("state") != "CLOSING" or (st.get("closing") or {}).get("resolve"):
             continue
-        root = (st.get("repo") or {}).get("root") or st["id"]
+        root = _repo_root(st) or st["id"]
         groups.setdefault(root, []).append(st)
     return {root: [s["id"] for s in sorted(members, key=lambda s: (s["id"] not in close_flights,
                                                                     *_train_key(s)))]
@@ -2690,9 +2694,14 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     pending_agent = []       # (state, step, run_id, req, budget, review group) to submit
     groups = []              # reviewer fan-outs, applied once each when harvested (SPEC-0201)
     pending_close = []
-    # SPEC-0260: one close worktree phase per repository root; the others wait in FIFO order
-    trains = close_train(items, {cid for cid, fl in pool.flights.items()
-                                 if fl.tasks and fl.tasks[0][0].kind == "close"})
+    # SPEC-0260: one close worktree phase per repository root; the others wait in FIFO order.
+    # The train covers `items` and every state step 0 brought back (those were PARKED when
+    # `items` was read); `busy` holds the newest dict of each id.
+    close_roots = {cid: _repo_root(fl.state) for cid, fl in pool.flights.items()
+                   if fl.tasks and fl.tasks[0][0].kind == "close"}
+    members = {s["id"]: s for s in items}
+    members.update((s["id"], s) for s in busy)
+    trains = close_train(members.values(), set(close_roots))
     train_pos = {cid: (ids[0], i) for ids in trains.values() for i, cid in enumerate(ids)}
     for st in busy:
         if st.get("state") not in ACTIVE_STATES or st["id"] in admitted_ids \
@@ -2719,7 +2728,12 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
                          or not getattr(ctx.runner, "detachable", False)):
             continue                 # SPEC-0229: a draining tick starts no in-process work
         if step.kind == "close":
-            head_id, position = train_pos.get(st["id"], (st["id"], 0))
+            head_id, position = train_pos.get(st["id"], (None, 0))
+            if head_id is None:      # not a train member: never close beside a running close
+                root = _repo_root(st)
+                head_id = next((cid for cid, r in close_roots.items()
+                                if root and r == root and cid != st["id"]), st["id"])
+                position = int(head_id != st["id"])
             if position:
                 _train_wait(cfg, st, head_id, position)
                 continue
