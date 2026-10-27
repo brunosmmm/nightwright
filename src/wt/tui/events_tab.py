@@ -7,7 +7,6 @@ poll catches appended events; the heavier panels (`watchdog_checks` reads every 
 tail) refresh on a slower timer.
 """
 import asyncio
-import os
 
 from rich.markup import escape
 from rich.text import Text
@@ -147,9 +146,10 @@ class EventsView(Horizontal):
     async def _load_async(self) -> None:
         try:
             # Signature first: a write that lands during the load triggers another load.
-            sig = AM.events_signature(self.cfg)
-            size = sig[0] if sig else 0
-            inode = self._events_inode()
+            st = AM.events_stat(self.cfg)           # one stat: size, mtime and inode agree
+            sig = st[:2] if st else None
+            size = st[0] if st else 0
+            inode = st[2] if st else None
             # Shrunk, gone, or swapped for another file (an atomic replace keeps ids monotonic
             # per file, so a bigger replacement would otherwise look like an append).
             reset = (size < self._file_size or (sig is None and self._last_id > 0)
@@ -174,12 +174,6 @@ class EventsView(Horizontal):
             self._append(rows)
         finally:
             self._loading = False
-
-    def _events_inode(self):
-        try:
-            return os.stat(AM.EV.events_path(self.cfg)).st_ino
-        except OSError:
-            return None
 
     def _append(self, rows) -> None:
         table = self.table
@@ -350,5 +344,8 @@ class EventsView(Horizontal):
             panel.update(out)
 
     def _render_ping(self) -> None:
-        self.query_one("#events-ping", Static).update(
-            AM.ping_text(self.loaded, self.cfg))
+        try:
+            body = AM.ping_text(self.loaded, self.cfg)
+        except Exception as e:  # a malformed ping must not take the desk down
+            body = Text(f"ping unreadable: {e}", style="red")
+        self.query_one("#events-ping", Static).update(body)

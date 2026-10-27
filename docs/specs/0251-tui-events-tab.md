@@ -246,6 +246,18 @@ Matches the Design, with these details:
 - `load_events` skips a malformed record and the stream worker catches any exception, so one
   bad line in `events.jsonl` cannot exit the desk. Pilot tests cover both.
 
+### As shipped, review round 2 (2026-10-26)
+
+- `load_events` skips any record that raises (a record without `type` no longer loses the
+  whole read), `ping_text` ignores non-dict entries and a non-dict `counts`, and
+  `_render_ping` shows `ping unreadable: …` instead of letting an error leave the desk.
+- `_load_async` takes size, mtime and inode from one `AM.events_stat` call (`events_signature`
+  is unchanged), so an atomic replace cannot land between the signature and the inode.
+- New tests: `wt tui --tab events` through the CLI (`test_tui_entry.py`); the forbidden-call
+  test now also requires the followers and conditions panels to be free of `failed` and the
+  status line to carry the stream health; the fallback reload (in-place rewrite with older
+  ids), a record without `type`, a malformed ping, and the `lagging` flag in the panel.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.

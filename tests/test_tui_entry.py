@@ -121,7 +121,8 @@ def _capture_run(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("args,expect", [([], "ideas"), (["--tab", "queue"], "queue"),
-                                         (["--tab", "HUB"], "hub"), (["--tab", "ideas"], "ideas")])
+                                         (["--tab", "HUB"], "hub"), (["--tab", "ideas"], "ideas"),
+                                         (["--tab", "events"], "events")])
 def test_tui_tab_option_is_passed_through(tmp_path, monkeypatch, args, expect):
     seen = _capture_run(monkeypatch, tmp_path)
     r = CliRunner().invoke(cli, ["tui", *args])

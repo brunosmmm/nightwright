@@ -610,8 +610,8 @@ def load_events(cfg, after_id=0, limit=EVENT_LIMIT) -> list[EventRow]:
                 campaign=str(ev.get("campaign") or ""), text=_event_text(ev),
                 style=event_style(ev.get("type"), ev.get("data")),
                 data=ev.get("data") if isinstance(ev.get("data"), dict) else {}))
-        except (AttributeError, TypeError, ValueError):
-            continue                        # a malformed record must not take the desk down
+        except Exception:                   # a malformed record (even a missing key) is skipped
+            continue
     return rows
 
 
@@ -653,15 +653,21 @@ def load_conditions(cfg) -> list[ConditionRow]:
     return sorted(rows, key=lambda r: (bool(r.campaign), r.type, r.campaign))
 
 
+def _entries(data, key) -> list[dict]:
+    """The dict entries of a ping list; anything else in a hand-edited record is ignored."""
+    items = data.get(key)
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
 def _ping_lines(data) -> list[tuple]:
     out = []
-    for item in data.get("blocked") or []:
+    for item in _entries(data, "blocked"):
         out.append(("blocked", item.get("campaign"), item.get("blocked_for_s")))
-    for item in data.get("stuck") or []:
+    for item in _entries(data, "stuck"):
         out.append(("stuck", item.get("campaign"), item.get("stuck_s")))
-    for item in data.get("ready_not_admitted") or []:
+    for item in _entries(data, "ready_not_admitted"):
         out.append(("ready_not_admitted", item.get("campaign"), item.get("ready_for_s")))
-    for item in data.get("parked") or []:
+    for item in _entries(data, "parked"):
         if item.get("owner") == "conductor" and not item.get("decided"):
             out.append(("parked", item.get("campaign"), item.get("parked_for_s")))
     return out
@@ -673,7 +679,8 @@ def ping_text(rows, cfg=None, now=None) -> Text:
     if ping is None:
         interval = (EV.settings(cfg) if cfg is not None else EV.DEFAULTS)["ping_interval_s"]
         return Text(f"no conductor_ping yet (interval {interval}s)", style="dim")
-    c = ping.data.get("counts") or {}
+    c = ping.data.get("counts")
+    c = c if isinstance(c, dict) else {}
     out = Text(f"active {c.get('active', 0)} · queued {c.get('queued', 0)} · "
                f"ready {c.get('ready', 0)} · blocked {c.get('blocked', 0)} · "
                f"parked {c.get('parked', 0)} (undecided {c.get('undecided_parks', 0)}) · "
@@ -726,3 +733,12 @@ def stream_health(cfg, followers) -> str:
 
 def events_signature(cfg):
     return _stat(EV.events_path(cfg))
+
+
+def events_stat(cfg):
+    """`(size, mtime_ns, inode)` from one `stat()`, so the inode matches the size."""
+    try:
+        st = EV.events_path(cfg).stat()
+    except OSError:
+        return None
+    return (st.st_size, st.st_mtime_ns, st.st_ino)

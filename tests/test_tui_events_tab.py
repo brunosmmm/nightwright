@@ -1,6 +1,8 @@
 """SPEC-0251: the TUI events tab (Textual pilot tests)."""
 import asyncio
+import datetime as dt
 import json
+import os
 import time
 
 import pytest
@@ -300,6 +302,77 @@ def test_a_truncated_or_replaced_file_reloads_in_full(tmp_path):
     _run(drive())
 
 
+
+def test_an_in_place_rewrite_with_older_ids_reloads_in_full(tmp_path):
+    """Same inode, bigger file, but every id is below the last loaded one: the incremental
+    read finds nothing, and the fallback re-reads the file from 0."""
+    cfg = _cfg(tmp_path)
+    _seed(cfg, 4)
+    app = _desk(cfg, tab="events")
+    path = EV.events_path(cfg)
+
+    def record(i):
+        return json.dumps({"schema": EV.SCHEMA, "id": i, "ts": "2026-10-25T10:00:00+00:00",
+                           "type": "admitted", "campaign": "SPEC-0002-rewritten-" + "z" * 400,
+                           "data": {}}) + "\n"
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            assert ids(app) == [1, 2, 3, 4]
+            before = os.stat(path)
+            with open(path, "w", encoding="utf-8") as f:                  # in place: same inode
+                f.write(record(1) + record(2))
+            after = os.stat(path)
+            assert after.st_ino == before.st_ino and after.st_size > before.st_size
+            await until(app, pilot, lambda: ids(app) == [1, 2], "fallback reload")
+            assert view(app).table.get_row_at(0)[3].startswith("SPEC-0002-rewritten")
+            assert "events failed" not in status(app)
+
+    _run(drive())
+
+
+def test_a_record_without_a_type_is_skipped_not_fatal(tmp_path):
+    cfg = _cfg(tmp_path)
+    _seed(cfg, 2)
+    with open(EV.events_path(cfg), "a", encoding="utf-8") as f:
+        f.write(json.dumps({"id": 7, "campaign": "X"}) + "\n")
+        f.write(json.dumps({"campaign": "Y"}) + "\n")
+    app = _desk(cfg, tab="events")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            assert ids(app) == [1, 2]
+            assert "events failed" not in status(app)
+            EV.append(cfg, "admitted", campaign="SPEC-0010-x", by="test", data={})
+            await until(app, pilot, lambda: len(ids(app)) == 3, "event after the bad lines")
+
+    _run(drive())
+
+
+def test_a_malformed_ping_does_not_end_the_desk(tmp_path):
+    cfg = _cfg(tmp_path)
+    EV.events_path(cfg).parent.mkdir(parents=True, exist_ok=True)
+    with open(EV.events_path(cfg), "a", encoding="utf-8") as f:     # hand-edited records
+        for i, data in enumerate(({"blocked": ["SPEC-1"], "stuck": [3, None], "parked": ["p"],
+                                   "ready_not_admitted": [["a"]], "counts": {}},
+                                  {"blocked": {"campaign": "A"}, "counts": [1, 2]}), 1):
+            f.write(json.dumps({"schema": EV.SCHEMA, "id": i, "type": "conductor_ping",
+                                "ts": "2026-10-25T10:00:00+00:00", "data": data}) + "\n")
+    app = _desk(cfg, tab="events")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            assert panel(app, "ping").startswith("active 0")
+            assert app.is_running
+            assert not [n for n, k in app.notes if k.get("severity") == "error"]
+            assert ids(app) == [1]              # the record summary_line cannot read is skipped
+
+    _run(drive())
+
+
 # --- filters (AC2) -----------------------------------------------------------------------
 
 def _filter_fixture(cfg):
@@ -446,6 +519,32 @@ def test_no_alerts_and_a_ping_digest_and_a_live_follower(tmp_path):
     _run(drive())
 
 
+def test_a_held_follower_with_a_stale_cursor_is_flagged_lagging(tmp_path):
+    cfg = _cfg(tmp_path)
+    _seed(cfg, 3)
+    EV.sync(cfg)                       # the test plays the follower
+    EV.cursor_set(cfg, "conductor", 1)
+    EV.cursor_set(cfg, "steward", 3)
+    stale = (dt.datetime.now().astimezone() - dt.timedelta(seconds=300)).isoformat(
+        timespec="seconds")
+    path = EV.cursors_dir(cfg) / "conductor.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "ts": stale}))
+    app = _desk(cfg, tab="events")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            with EV.reader_lock(cfg, "conductor"):
+                await settle(app, pilot)
+                await until(app, pilot, lambda: "conductor" in panel(app, "followers"))
+                lines = {ln.split()[0]: ln for ln in panel(app, "followers").splitlines()}
+                assert "lag 2" in lines["conductor"] and lines["conductor"].endswith("lagging")
+                assert "dead" not in lines["conductor"]
+                assert lines["steward"].endswith("dead")        # not held
+                assert "no live follower" not in status(app)
+
+    _run(drive())
+
+
 def test_a_new_ping_updates_the_panel(tmp_path):
     cfg = _cfg(tmp_path)
     _seed(cfg, 1)
@@ -508,6 +607,11 @@ def test_the_tab_never_syncs_or_takes_a_cursor_or_reader(tmp_path, monkeypatch):
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
             await until(app, pilot, lambda: "runner_dead" in panel(app, "conditions"), "alerts")
+            # the followers path swallows exceptions into "followers failed": it must not have
+            await until(app, pilot, lambda: "conductor" in panel(app, "followers"), "followers")
+            assert "failed" not in panel(app, "followers")
+            assert "failed" not in panel(app, "conditions")
+            assert "stream never synced" in status(app)
             _add(cfg, "admitted", "SPEC-0300-x")
             await until(app, pilot, lambda: ids(app)[-1] == 6, "event 6")
             await press(app, pilot, ["x", "x", "c", "c", "G", "f", *"type=parked", "enter",
@@ -517,6 +621,8 @@ def test_the_tab_never_syncs_or_takes_a_cursor_or_reader(tmp_path, monkeypatch):
             await settle(app, pilot)
             assert not [n for n, k in app.notes if k.get("severity") == "error"]
             assert "events failed" not in status(app)
+            assert "failed" not in panel(app, "followers")
+            assert "stream never synced" in status(app)
 
     _run(drive())
 
