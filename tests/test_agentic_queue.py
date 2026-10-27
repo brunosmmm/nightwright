@@ -2,7 +2,9 @@
 step results, admission by slots, lease refusal. Repos and runners come from the e2e harness
 (`test_agentic_e2e`), personas never run for real."""
 import dataclasses
+import datetime as dt
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -366,6 +368,10 @@ def _merge_with_idea(opened, *, spec_status="done", backlink=True):
     iid = [t for t in load_tasks(cfg) if t.is_idea][0].properties["ID"]
     spec = Path(cfg["specs_dir"]) / "0001-trivial.md"
     text = spec.read_text().replace("status: accepted", f"status: {spec_status}")
+    # SPEC-0267: the spec may not predate the idea it names; tomorrow clears any timezone skew
+    tomorrow = dt.date.today() + dt.timedelta(days=1)
+    text = re.sub(r"(?m)^created:.*\n", "", text).replace(
+        "owner: t\n", f"owner: t\ncreated: {tomorrow:%Y-%m-%d}\n", 1)
     if backlink:
         text = text.replace("owner: t\n", f"owner: t\nsource_idea: {iid}\n", 1)
     spec.write_text(text)
@@ -1699,3 +1705,19 @@ def test_broken_profile_parks_config_invalid_and_recovers(tmp_path, monkeypatch)
     assert S.read_state(cfg, cid)["state"] in ("IMPLEMENTING", "WAITING", "GATING")
     assert reasons().count("config_recovered") == 1
     assert S.read_state(cfg, cid)["park"] is None
+
+
+
+def test_merge_reconcile_mismatch_is_a_minor_finding(opened):
+    """SPEC-0267: a reused source_idea id is reported at close, never linked."""
+    from wt import org_write as OW
+    cfg, cid, ctx = opened
+    iid, oc = _merge_with_idea(opened)
+    OW.set_property(cfg, OW.resolve_selector(cfg, iid), "CREATED", "[2999-01-01 Fri 09:00]")
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED"
+    (fnd,) = [f for f in S.read_ledger(cfg, cid, types=["finding"])
+              if f["title"] == "idea reconcile mismatch"]
+    assert fnd["severity"] == "minor" and iid in fnd["detail"]
+    assert _idea_state(cfg, iid) == "IDEA"
+    assert not list(S.read_ledger(cfg, cid, types=["idea_reconciled"]))

@@ -839,8 +839,9 @@ _NOT_LIVE = frozenset({"superseded", "rejected"})
 
 
 def _spec_claims(cfg):
-    """`{idea_id: [(spec_id, status)]}` over every internal spec with a `source_idea`
-    (SPEC-0257), in spec-id order. Read from the same files `_load_spec_fm` reads, and keyed by
+    """`{idea_id: [(spec_id, status, created)]}` over every internal spec with a `source_idea`
+    (SPEC-0257), in spec-id order; `created` is the spec's `created` as a `date` or None when
+    missing/unparseable (SPEC-0267). Read from the same files `_load_spec_fm` reads, and keyed by
     the *filename* number as it does, so a copied file with a stale `id:` cannot borrow another
     spec's status."""
     claims = {}
@@ -854,8 +855,81 @@ def _spec_claims(cfg):
         idea_id = str(fm.get("source_idea") or "").strip()
         if idea_id and m:
             claims.setdefault(idea_id, []).append(
-                (f"SPEC-{m.group(1)}", str(fm.get("status") or "").lower()))
+                (f"SPEC-{m.group(1)}", str(fm.get("status") or "").lower(),
+                 _as_date(fm.get("created"))))
     return claims
+
+
+def _as_date(value):
+    """A frontmatter `created` (YAML `date`, `datetime`, or a `YYYY-MM-DD` string) as a `date`,
+    or None when it is none of those."""
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    try:
+        return dt.datetime.strptime(str(value or "").strip()[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _idea_created(task):
+    """The idea's `:CREATED:` stamp as a naive datetime, or None when absent/unparseable."""
+    return W.parse_inactive_stamp(task.properties.get("CREATED"))
+
+
+def _idea_predates_spec(task, spec_created):
+    """`(ok, reason)`: SPEC-0267 identity check for a `source_idea` pair. An idea cannot be
+    promoted into a spec that predates it, so an id whose idea was created after the spec's
+    `created` day was reused since (rotated ideas files); an idea or spec with no parseable date
+    is unverifiable. Compared as dates (`stamp.date() <= spec_created`)."""
+    if spec_created is None:
+        return False, "spec has no parseable created date; cannot verify the idea"
+    stamp = _idea_created(task)
+    if stamp is None:
+        return False, "idea has no :CREATED:; cannot verify it is the one the spec names"
+    if stamp.date() > spec_created:
+        return False, (f"idea created {stamp.date()} is after spec created {spec_created}; "
+                       "id likely reused")
+    return True, ""
+
+
+def _pick_idea(cands, spec_created):
+    """Resolve one `source_idea` id, carried by `cands` (several across rotated/archive org
+    files after an id reuse), for a spec created `spec_created`. Returns `(task, None)` or
+    `(None, (action, detail))` with action `flag-mismatch` (nothing date-valid) or
+    `flag-ambiguous` (several date-valid, same `:CREATED:`)."""
+    checked = [(t, _idea_predates_spec(t, spec_created)) for t in cands]
+    valid = [t for t, (ok, _r) in checked if ok]
+    if not valid:
+        if len(cands) == 1:
+            return None, ("flag-mismatch", checked[0][1][1])
+        return None, ("flag-mismatch",
+                      f"none of the {len(cands)} ideas with this id was created on or before "
+                      f"spec created {spec_created}; id likely reused")
+    newest = max(_idea_created(t) for t in valid)
+    best = [t for t in valid if _idea_created(t) == newest]
+    if len(best) > 1:
+        return None, ("flag-ambiguous",
+                      f"{len(best)} ideas with this id were created {newest:%Y-%m-%d %H:%M}")
+    return best[0], None
+
+
+def _resolve_idea(cfg, idea_id, pin):
+    """The idea to write to: `W.resolve_selector`, except that an id several ideas carry
+    (`pin` = the planned idea's `(file, heading)`, SPEC-0267) is found by that pin."""
+    if pin is not None:
+        from .org import filter_tasks, load_tasks
+        hits = [t for t in filter_tasks(load_tasks(cfg), is_idea=True)
+                if (t.properties.get("ID") or "").strip() == idea_id and (t.file, t.heading) == pin]
+        if len(hits) == 1:
+            return hits[0]
+    return W.resolve_selector(cfg, idea_id)
+
+
+def _naming(specs):
+    """The `flag-ambiguous` detail: every spec naming the idea."""
+    return "specs naming this idea: " + ", ".join(sid for sid, _s, _c in specs)
 
 
 def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
@@ -863,13 +937,19 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
 
     Returns `[(idea_id, spec_id, action, detail)]`, action in `advance` / `flag-ahead` /
     `flag-no-backlink` / `unchanged` / `missing`, plus (SPEC-0257) `link` / `flag-conflict` /
-    `flag-ambiguous` for the specs' own `source_idea`. Writes only when `apply` — the default is
+    `flag-ambiguous` (and SPEC-0267 `flag-mismatch`) for the specs' own `source_idea`. Writes only when `apply` — the default is
     a dry run, because applying `PROMOTED`/`DROPPED` archives the subtree (SPEC-0073).
 
     SPEC-0257: an idea with no `:SPEC:` that exactly one live (not superseded/rejected) spec
     names as `source_idea` gets that `:SPEC:` written, then is evaluated like a linked one.
     Several live claimants (or none) → `flag-ambiguous`, nothing written. The claimant rule runs
     over all specs; `spec_ids` (iterable) then restricts the rows to those specs.
+
+    SPEC-0267: ids were reused after the ideas-file rotation, so the walk verifies identity before
+    linking: the idea's `:CREATED:` day must be on or before the spec's `created`, else
+    `flag-mismatch` (report-only, nothing written; also for an unparseable date on either side).
+    An id carried by several ideas resolves to the most recently created date-valid one; a claimant
+    that fails the check is dropped (own `flag-mismatch` row) before the live-claimant count.
 
     `backlinks=False` keeps the `flag-no-backlink` rows but never writes `source_idea` into a spec
     file (SPEC-0078 pass) — the agentic close hook runs in the project's main checkout, where an
@@ -885,34 +965,60 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     all_ideas = filter_tasks(load_tasks(cfg), is_idea=True)
     ideas = [t for t in all_ideas if (t.properties.get("SPEC") or "").strip()]
     plan = []                       # uniform (idea_id, spec_id, action, detail) rows
-    links = []                      # (idea_id, spec_id) for the write pass
-    advances = []                   # (idea_id, target_state) for the write pass
+    links = []                      # (idea_id, spec_id, pin) for the write pass
+    advances = []                   # (idea_id, target_state, pin) for the write pass
     backlink_writes = []            # (spec_id, idea_id) for the write pass
 
     # (task, spec_id, linking): linked ideas, then unlinked ideas a live spec claims
     work = [(t, (t.properties.get("SPEC") or "").strip(), False) for t in ideas
             if scope is None or (t.properties.get("SPEC") or "").strip() in scope]
-    by_id = {(t.properties.get("ID") or "").strip(): t for t in all_ideas}
+    by_id = {}                      # SPEC-0267: id -> [ideas]; rotated files can repeat an id
+    for t in all_ideas:
+        by_id.setdefault((t.properties.get("ID") or "").strip(), []).append(t)
+    dup_ids = {i for i, c in by_id.items() if len(c) > 1}
     try:
         claims = _spec_claims(cfg)
     except ValueError:                  # no internal specs dir: nothing to walk
         claims = {}
     for idea_id, specs in sorted(claims.items()):
-        task = by_id.get(idea_id)
-        if task is None:                # dangling source_idea: spec_lint's business
+        cands = by_id.get(idea_id)
+        if not cands:                   # dangling source_idea: spec_lint's business
             continue
-        linked = (task.properties.get("SPEC") or "").strip()
-        live = [sid for sid, status in specs if status not in _NOT_LIVE]
-        in_scope = [sid for sid, _status in specs if scope is None or sid in scope]
-        if linked:
-            plan.extend((idea_id, sid, "flag-conflict", f"idea links {linked}")
-                        for sid in live if sid != linked and sid in in_scope)
-        elif len(live) == 1:
-            if live[0] in in_scope:
-                work.append((task, live[0], True))
-        elif in_scope:
-            plan.append((idea_id, in_scope[0], "flag-ambiguous",
-                         "specs naming this idea: " + ", ".join(sid for sid, _s in specs)))
+        live = [(sid, created) for sid, status, created in specs if status not in _NOT_LIVE]
+        in_scope = [sid for sid, _status, _c in specs if scope is None or sid in scope]
+        newest = max(cands, key=lambda t: _idea_created(t) or dt.datetime.min)
+        if not live:                    # only superseded/rejected claimants
+            if in_scope and not (newest.properties.get("SPEC") or "").strip():
+                plan.append((idea_id, in_scope[0], "flag-ambiguous", _naming(specs)))
+            continue
+        groups = {}                     # idea task -> claimant spec ids that resolved to it
+        for sid, created in live:
+            task, bad = _pick_idea(cands, created)
+            if task is not None:
+                groups.setdefault(id(task), (task, []))[1].append(sid)
+                continue
+            if sid not in in_scope:
+                continue
+            action, detail = bad
+            linked = (newest.properties.get("SPEC") or "").strip()
+            if action == "flag-mismatch" and linked:
+                # an old spec naming a reused id whose new idea is already linked elsewhere:
+                # the pre-SPEC-0267 conflict path, unchanged
+                if linked != sid:
+                    plan.append((idea_id, sid, "flag-conflict", f"idea links {linked}"))
+            else:
+                plan.append((idea_id, sid, action, detail))
+        for task, sids in groups.values():
+            linked = (task.properties.get("SPEC") or "").strip()
+            if linked:
+                plan.extend((idea_id, sid, "flag-conflict", f"idea links {linked}")
+                            for sid in sids if sid != linked and sid in in_scope)
+            elif len(sids) == 1:
+                if sids[0] in in_scope:
+                    work.append((task, sids[0], True))
+            elif any(sid in in_scope for sid in sids):
+                plan.append((idea_id, next(sid for sid in sids if sid in in_scope),
+                             "flag-ambiguous", _naming(specs)))
 
     for task, spec_id, linking in sorted(
             work, key=lambda w: (w[0].properties.get("ID") or "", w[0].file, w[0].line)):
@@ -923,9 +1029,11 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
             plan.append((idea_id, spec_id, "missing", "spec not found on disk"))
             continue
         status = str(fm.get("status") or "").lower()
+        # an id several ideas carry cannot be re-found by selector: pin the write to this idea
+        pin = (task.file, task.heading) if idea_id in dup_ids else None
         if linking:
             plan.append((idea_id, spec_id, "link", f"set :SPEC: {spec_id}"))
-            links.append((idea_id, spec_id))
+            links.append((idea_id, spec_id, pin))
 
         want = _implied_state(status, state, outbound=_is_outbound_id(spec_id))
         # EXPORTED→SHIPPED is allowed; other terminals ahead of a non-ready spec are flags.
@@ -936,7 +1044,7 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
                          f"idea is {state} but spec is {status}"))
         elif want and want != state:
             plan.append((idea_id, spec_id, "advance", f"{state} → {want} (spec {status})"))
-            advances.append((idea_id, want))
+            advances.append((idea_id, want, pin))
         else:
             plan.append((idea_id, spec_id, "unchanged", f"{state} / spec {status or '?'}"))
 
@@ -966,9 +1074,9 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     from . import explore as EX
     from . import org as ORG
     drifted = {}                    # idea_id -> the other spec it was linked to since the plan
-    for idea_id, spec_id in links:
+    for idea_id, spec_id, pin in links:
         ORG.invalidate_tasks_cache()
-        task = W.resolve_selector(cfg, idea_id)
+        task = _resolve_idea(cfg, idea_id, pin)
         now = (task.properties.get("SPEC") or "").strip()
         if now:                     # linked since the plan: leave it
             if now != spec_id:
@@ -980,10 +1088,17 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
         (i, s, "flag-conflict", f"idea links {drifted[i]}") if a == "link" and i in drifted
         else (i, s, a, d)
         for i, s, a, d in plan if not (a == "advance" and i in drifted)]
-    for idea_id, target in advances:
+    for idea_id, target, pin in advances:
         if idea_id in drifted:      # the advance was derived from a spec it no longer points to
             continue
-        EX.set_idea_state(cfg, idea_id, target)
+        if pin is None:
+            EX.set_idea_state(cfg, idea_id, target)
+            continue
+        ORG.invalidate_tasks_cache()
+        task = _resolve_idea(cfg, idea_id, pin)
+        if EX.ensure_idea_keyword(cfg, task.file, target):
+            task = _resolve_idea(cfg, idea_id, pin)
+        EX.set_state(cfg, task, target)
     if backlinks:
         for spec_id, idea_id in backlink_writes:
             _write_source_idea(cfg, spec_id, idea_id)

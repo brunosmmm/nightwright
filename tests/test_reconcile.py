@@ -3,6 +3,7 @@
 The core contract is the status→state table, so it is enumerated rather than sampled. Writes are
 opt-in (`--apply`) because advancing to PROMOTED/DROPPED archives the subtree (SPEC-0073).
 """
+import datetime as dt
 import os
 import pathlib
 from zoneinfo import ZoneInfo
@@ -36,14 +37,16 @@ def _cfg(tmp_path):
             "specs_dir": str(repo / "docs" / "specs")}
 
 
-def _spec(cfg, spec_id, status, *, source_idea="__auto__", extra=""):
-    """Write a minimal internal spec with the given status."""
+def _spec(cfg, spec_id, status, *, source_idea="__auto__", extra="", created=None):
+    """Write a minimal internal spec with the given status. `created` defaults to today, the day
+    `add_idea` stamps the fixture ideas with (SPEC-0267: an idea may not postdate its spec)."""
+    created = created or dt.datetime.now(TZ).strftime("%Y-%m-%d")
     num = spec_id.split("-")[1]
     path = os.path.join(cfg["specs_dir"], f"{num}-fixture.md")
     si = "" if source_idea is None else f"source_idea: {source_idea}\n"
     with open(path, "w") as f:
         f.write(f"---\nid: {spec_id}\ntitle: \"fixture\"\nstatus: {status}\n"
-                f"owner: t\ncreated: 2026-01-01\n{si}{extra}---\n\n## Context\n\nfixture.\n")
+                f"owner: t\ncreated: {created}\n{si}{extra}---\n\n## Context\n\nfixture.\n")
     return path
 
 
@@ -762,3 +765,192 @@ def test_cli_reconcile_marks_flag_rows_and_summary(tmp_path, monkeypatch):
     assert "+ " + good in out
     assert "1 idea(s) advanced, 1 linked" in out
     assert _spec_prop(cfg, good) == "SPEC-0005" and _state_of(cfg, good) == "PROMOTED"
+
+
+# ---- SPEC-0267: the source_idea walk verifies idea identity before linking -----------
+
+def _stamp_idea(cfg, idea_id, stamp):
+    """Set an idea's `:CREATED:` (`None` removes it)."""
+    task = W.resolve_selector(cfg, idea_id)
+    if stamp is None:
+        W.set_property(cfg, task, "CREATED", "")
+    else:
+        W.set_property(cfg, task, "CREATED", stamp)
+
+
+def _rows(plan, idea_id):
+    return [(s, a) for i, s, a, _d in plan if i == idea_id]
+
+
+def test_reused_id_is_flagged_not_linked(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "unrelated, reused id", state="INCUBATE")
+    _stamp_idea(cfg, idea_id, "[2026-10-25 Sun 09:00]")
+    path = _spec(cfg, "SPEC-0001", "done", source_idea=idea_id, created="2026-10-10")
+    before, spec_before = _bytes(cfg), open(path, "rb").read()
+
+    for apply in (False, True):
+        plan = S.reconcile_ideas(cfg, apply=apply)
+        assert _rows(plan, idea_id) == [("SPEC-0001", "flag-mismatch")]
+        detail = plan[0][3]
+        assert "2026-10-25" in detail and "2026-10-10" in detail
+        assert _bytes(cfg) == before and open(path, "rb").read() == spec_before
+    assert _state_of(cfg, idea_id) == "INCUBATE" and _spec_prop(cfg, idea_id) == ""
+
+
+def test_recent_legit_link_still_links(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "legit", state="INCUBATE")
+    _stamp_idea(cfg, idea_id, "[2026-10-25 Sun 09:00]")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id, created="2026-10-26")
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert _actions(plan) >= {(idea_id, "link"), (idea_id, "advance")}
+    assert _spec_prop(cfg, idea_id) == "SPEC-0001" and _state_of(cfg, idea_id) == "PROMOTED"
+
+
+def test_same_day_created_counts_as_legit(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "same day")
+    _stamp_idea(cfg, idea_id, "[2026-10-25 Sun 23:59]")
+    _spec(cfg, "SPEC-0001", "accepted", source_idea=idea_id, created="2026-10-25")
+    assert (idea_id, "link") in _actions(S.reconcile_ideas(cfg))
+
+
+def test_missing_created_is_flagged(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "no stamp")
+    _stamp_idea(cfg, idea_id, None)
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id)
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert _rows(plan, idea_id) == [("SPEC-0001", "flag-mismatch")]
+    assert ":CREATED:" in plan[0][3]
+    assert _spec_prop(cfg, idea_id) == ""
+
+
+def test_unparseable_spec_created_is_flagged(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "odd spec date")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id, created="someday")
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert _rows(plan, idea_id) == [("SPEC-0001", "flag-mismatch")]
+    assert _spec_prop(cfg, idea_id) == ""
+
+
+def test_reused_id_two_claimants_picks_genuine(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "reused once")
+    _stamp_idea(cfg, idea_id, "[2026-10-25 Sun 09:00]")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id, created="2026-10-01")     # old: dropped
+    _spec(cfg, "SPEC-0002", "accepted", source_idea=idea_id, created="2026-10-26")  # genuine
+    plan = S.reconcile_ideas(cfg)
+    assert (idea_id, "flag-ambiguous") not in _actions(plan)
+    assert ("SPEC-0002", "link") in _rows(plan, idea_id)
+    assert ("SPEC-0001", "flag-mismatch") in _rows(plan, idea_id)
+    assert ("SPEC-0001", "link") not in _rows(plan, idea_id)
+    S.reconcile_ideas(cfg, apply=True)
+    assert _spec_prop(cfg, idea_id) == "SPEC-0002" and _state_of(cfg, idea_id) == "SPECCED"
+
+
+def test_all_claimants_failing_is_mismatch_not_ambiguous(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "reused twice")
+    _stamp_idea(cfg, idea_id, "[2026-10-25 Sun 09:00]")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id, created="2026-10-01")
+    _spec(cfg, "SPEC-0002", "accepted", source_idea=idea_id, created="2026-10-02")
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert sorted(_rows(plan, idea_id)) == [("SPEC-0001", "flag-mismatch"),
+                                            ("SPEC-0002", "flag-mismatch")]
+    assert _spec_prop(cfg, idea_id) == ""
+
+
+def test_reused_id_on_an_already_linked_idea_stays_conflict(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _idea(cfg, "new idea, same id", state="SPECCED", spec_id="SPEC-0009")
+    _stamp_idea(cfg, idea_id, "[2026-10-25 Sun 09:00]")
+    _spec(cfg, "SPEC-0009", "accepted", source_idea=None)
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id, created="2026-10-01")
+    rows = _rows(S.reconcile_ideas(cfg), idea_id)
+    assert ("SPEC-0001", "flag-conflict") in rows
+    assert not [r for r in rows if r[0] == "SPEC-0001" and r[1] != "flag-conflict"]
+
+
+def _second_file_idea(cfg, text, idea_id, stamp):
+    """An idea with a chosen `:ID:` in a second org file, as after an ideas-file rotation."""
+    path = pathlib.Path(cfg["org_ideas_file"]).with_name("ideas-20261025.org")
+    path.write_text("#+TODO: IDEA INCUBATE SPECCED | PROMOTED EXPORTED SHIPPED DROPPED RESEARCHED\n"
+                    f"* IDEA {text}\n:PROPERTIES:\n:ID: {idea_id}\n:CREATED: {stamp}\n"
+                    ":END:\n")
+
+
+def _dup_pair(tmp_path, spec_created):
+    """Old idea (2026-09-01) and a reused-id new idea (2026-10-25) in a second org file, plus one
+    spec naming the shared id."""
+    cfg = _cfg(tmp_path)
+    shared = _bare_idea(cfg, "old idea")
+    _stamp_idea(cfg, shared, "[2026-09-01 Tue 09:00]")
+    _second_file_idea(cfg, "new idea", shared, "[2026-10-25 Sun 09:00]")
+    _spec(cfg, "SPEC-0001", "accepted", source_idea=shared, created=spec_created)
+    return cfg, shared
+
+
+def _linked_headings(cfg):
+    return [t.heading for t in load_tasks(cfg) if t.is_idea and t.properties.get("SPEC")]
+
+
+def test_duplicate_idea_ids_resolve_or_flag(tmp_path):
+    # a new spec resolves to the new idea (both are date-valid, newest wins), never the old one
+    cfg, shared = _dup_pair(tmp_path, "2026-10-26")
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert ("SPEC-0001", "link") in _rows(plan, shared)
+    assert _linked_headings(cfg) == ["new idea"]
+
+
+def test_duplicate_idea_ids_old_spec_resolves_to_old_idea(tmp_path):
+    cfg, shared = _dup_pair(tmp_path, "2026-09-15")
+    S.reconcile_ideas(cfg, apply=True)
+    assert _linked_headings(cfg) == ["old idea"]
+
+
+def test_duplicate_idea_ids_none_date_valid_flags(tmp_path):
+    cfg, shared = _dup_pair(tmp_path, "2026-08-01")
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert _rows(plan, shared) == [("SPEC-0001", "flag-mismatch")]
+    assert not _linked_headings(cfg)
+
+
+def test_duplicate_ids_with_same_created_are_ambiguous(tmp_path):
+    cfg = _cfg(tmp_path)
+    a = _bare_idea(cfg, "twin a")
+    _stamp_idea(cfg, a, "[2026-10-01 Thu 09:00]")
+    _second_file_idea(cfg, "twin b", a, "[2026-10-01 Thu 09:00]")
+    _spec(cfg, "SPEC-0001", "accepted", source_idea=a, created="2026-10-26")
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert _rows(plan, a) == [("SPEC-0001", "flag-ambiguous")]
+    assert not [t for t in load_tasks(cfg) if t.is_idea and t.properties.get("SPEC")]
+
+
+def test_scoped_run_only_reports_in_scope_mismatch(tmp_path):
+    cfg = _cfg(tmp_path)
+    a = _bare_idea(cfg, "reused a")
+    b = _bare_idea(cfg, "reused b")
+    for iid in (a, b):
+        _stamp_idea(cfg, iid, "[2026-10-25 Sun 09:00]")
+    _spec(cfg, "SPEC-0001", "done", source_idea=a, created="2026-10-01")
+    _spec(cfg, "SPEC-0002", "done", source_idea=b, created="2026-10-01")
+    plan = S.reconcile_ideas(cfg, spec_ids=["SPEC-0002"])
+    assert [(i, s, x) for i, s, x, _d in plan] == [(b, "SPEC-0002", "flag-mismatch")]
+
+
+def test_cli_reconcile_renders_flag_mismatch(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from wt.cli import cli
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "reused cli")
+    _stamp_idea(cfg, idea_id, "[2026-10-25 Sun 09:00]")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id, created="2026-10-01")
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    out = CliRunner().invoke(cli, ["spec", "reconcile"])
+    assert out.exit_code == 0, out.output
+    (row,) = [ln for ln in out.output.splitlines() if idea_id in ln]
+    assert row.startswith("≠") and "id likely reused" in row

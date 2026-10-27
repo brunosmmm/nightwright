@@ -2008,6 +2008,9 @@ def spec_reconcile_cmd(cfg, do_apply):
     spec whose idea is still open, an idea left behind at IDEA/INCUBATE while its spec is being
     built. An idea *ahead* of its spec is flagged, never rewound.
 
+    A `source_idea` whose idea was created after the spec (the id was reused since the ideas-file
+    rotation) is reported as `≠ flag-mismatch` and never linked, advanced or archived (SPEC-0267).
+
     --apply also writes a missing `source_idea` back onto a spec, and advancing to
     PROMOTED/DROPPED archives the idea's subtree (SPEC-0073) — hence the dry-run default.
 
@@ -2024,6 +2027,7 @@ def spec_reconcile_cmd(cfg, do_apply):
              "link": ("green", "+" if do_apply else "→"),      # SPEC-0257: writes :SPEC:
              "flag-conflict": ("yellow", "!"),
              "flag-ambiguous": ("yellow", "!"),
+             "flag-mismatch": ("yellow", "≠"),       # SPEC-0267: reused id, report-only
              "questions-open": ("yellow", "?"),      # SPEC-0080: report-only, never written
              "missing": ("red", "✗"),
              "unchanged": ("dim", "·")}

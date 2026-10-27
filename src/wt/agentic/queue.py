@@ -1825,6 +1825,8 @@ def _reconcile_merged(cfg, state: dict, events: list) -> None:
         for idea_id, _s, action, detail in plan:
             if action == "flag-ambiguous":
                 finding("minor", "idea reconcile ambiguous", f"{idea_id}: {detail}")
+            elif action == "flag-mismatch":
+                finding("minor", "idea reconcile mismatch", f"{idea_id}: {detail}")
             elif action == "flag-no-backlink":
                 finding("info", "idea reconcile: spec has no source_idea", f"{idea_id}: {detail}")
     except Exception as e:                  # noqa: BLE001 — never block a finished merge
