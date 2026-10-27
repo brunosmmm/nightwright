@@ -194,6 +194,22 @@ keeps only the exact hit when one exists, the same rule the attest path uses.
   tests/test_tui_escalations_*.py`): 219 passed. `python3 tools/spec_lint.py --write-ledger &&
   python3 tools/spec_lint.py` exit 0; `uv run pytest -q -x` 3518 passed, 3 skipped.
 
+### Test record (2026-10-27, review round 5)
+
+- New tests: `test_answer_after_a_failed_withdraw_drops_its_stale_count` (the reviewer's trigger:
+  a failed human withdraw counted 2, a `--text` answer stripped them and failed its record write,
+  and the next withdraw's note has no count),
+  `test_refused_withdraw_of_an_answered_record_leaves_the_state_alone` (an answered record with
+  stored overrides and a pending `human_decision` request: the withdraw is refused with no
+  `write_state` and the state unchanged), `test_malformed_overrides_survive_withdraw_and_answer`
+  (`waive: None`/`"bad"` and non-dict `attest` entries go through withdraw and `apply_answer`).
+- Sabotage check, reverted: without dropping the stored count before the answer's state write,
+  the stale-count test fails.
+- Escalation, triage and TUI escalation tests (`tests/test_agentic_escalations*.py
+  tests/test_agentic_review_triage.py tests/test_tui_escalations_*.py`): 222 passed. Full suite
+  left to gating. `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`
+  exit 0.
+
 ### As shipped (2026-10-27)
 
 - As designed. The strip in `withdraw` runs on every human withdraw (`clear_request=True`),
@@ -236,6 +252,13 @@ keeps only the exact hit when one exists, the same rule the attest path uses.
 - `answerable_findings(cfg, state, esc_id=None)`: with an id, that escalation's own stored
   overrides do not count as waived. The TUI override block passes the record's id, so it lists
   the same ids the CLI retry accepts.
+
+### As shipped (2026-10-27, review round 5)
+
+- `apply_answer` drops a failed withdraw's `overrides_removed` from the record on disk before it
+  writes the changed state, so a later withdraw never reports removals that the answer did. If a
+  failed withdraw had already stripped the state, its count is lost once an answer changes the
+  overrides; the note then under-reports rather than over-reports.
 
 ## Rollout / migration
 

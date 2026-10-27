@@ -1264,6 +1264,79 @@ def test_withdraw_before_the_park_drops_the_request_and_the_overrides_in_one_wri
     assert note == f"escalation {rec['id']} withdrawn: gave up; 2 override(s) removed"
 
 
+def test_answer_after_a_failed_withdraw_drops_its_stale_count(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    _half_answered(cfg, monkeypatch)
+    real_state, real_write = S.write_state, ESC._write
+    monkeypatch.setattr(S, "write_state", lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
+    plan = ESC.plan_withdraw(cfg, "ESC-0001", reason="gave up", by="human")
+    with pytest.raises(OSError):                   # counted 2 on the record, state not stripped
+        ESC.apply_withdraw(cfg, plan)
+    assert ESC.read(cfg, "ESC-0001")["overrides_removed"] == 2
+    monkeypatch.setattr(S, "write_state", real_state)
+    # a --text answer strips the 2 overrides, then its record write fails
+    monkeypatch.setattr(ESC, "_write", lambda c, r: (_ for _ in ()).throw(OSError("full"))
+                        if r.get("status") == "answered" else real_write(c, r))
+    with pytest.raises(OSError):
+        ESC.apply_answer(cfg, ESC.plan_answer(cfg, "ESC-0001", text="resume as is"))
+    rec = ESC.read(cfg, "ESC-0001")
+    assert rec["status"] == "open" and "overrides_removed" not in rec
+    assert _overrides(cfg, "ESC-0001") == ([], [])
+    monkeypatch.setattr(ESC, "_write", real_write)
+    ESC.apply_withdraw(cfg, plan)                  # strips nothing: the answer did it
+    note = S.read_ledger(cfg, CID, types=["note"])[-1]["text"]
+    assert note == "escalation ESC-0001 withdrawn: gave up"
+
+
+def test_refused_withdraw_of_an_answered_record_leaves_the_state_alone(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _camp(cfg, "IMPLEMENTING")
+    lease = L.acquire(cfg, [CID])
+    try:
+        rec = _esc(cfg)                   # deferred: a human_decision park request, not parked
+    finally:
+        lease.release()
+    st = _state(cfg)
+    st["human_overrides"] = {
+        "waive": [{"id": "x#0", "reason": "r", "escalation": rec["id"], "at": S.now_iso()}],
+        "attest": [{"ac": "AC 1", "reason": "r", "escalation": rec["id"], "at": S.now_iso()}]}
+    S.write_state(cfg, CID, st)
+    ESC._write(cfg, {**rec, "status": "answered", "answered_at": S.now_iso()})
+    before = _state(cfg)
+    assert before["park_requested"]["reason"] == "human_decision"
+    writes = []
+    monkeypatch.setattr(S, "write_state", lambda *a, **k: writes.append(a))
+    with pytest.raises(ValueError, match="answered, not open"):
+        ESC.withdraw(cfg, rec["id"], "gave up", "human")
+    assert writes == [] and _state(cfg) == before
+    assert ESC.read(cfg, rec["id"])["status"] == "answered"
+
+
+def test_malformed_overrides_survive_withdraw_and_answer(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    st = _state(cfg)
+    st["human_overrides"] = {"waive": None, "attest": [
+        "junk", 7, {"ac": "AC 1", "reason": "r", "escalation": "ESC-0001", "at": S.now_iso()}]}
+    S.write_state(cfg, CID, st)
+    ESC.apply_withdraw(cfg, ESC.plan_withdraw(cfg, "ESC-0001", reason="gave up", by="human"))
+    assert _state(cfg)["human_overrides"] == {"waive": None, "attest": ["junk", 7]}
+    note = S.read_ledger(cfg, CID, types=["note"])[-1]["text"]
+    assert note == "escalation ESC-0001 withdrawn: gave up; 1 override(s) removed"
+    # a later answer resets the non-list key and keeps the junk it cannot read
+    st = _state(cfg)
+    st["human_overrides"]["waive"] = "bad"
+    S.write_state(cfg, CID, st)
+    esc = _esc(cfg, question="waive?", options=["yes", "no"])["id"]
+    _answer(cfg, esc, waive=[f"{RV}#1"], attest=[f"{RV}#ac0"], reason="r")
+    h = _state(cfg)["human_overrides"]
+    assert [w["id"] for w in h["waive"]] == [f"{RV}#1"]
+    assert h["attest"][:2] == ["junk", 7] and h["attest"][2]["ac"] == AC4
+    hw, at = Q.human_overrides_of(_state(cfg))
+    assert [w["id"] for w in hw] == [f"{RV}#1"] and at == [AC4]
+
+
 def test_withdraw_without_overrides_keeps_the_plain_note(tmp_path):
     cfg = _cfg(tmp_path)
     _reviewed(cfg)

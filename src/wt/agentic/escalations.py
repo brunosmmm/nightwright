@@ -579,6 +579,10 @@ def apply_answer(cfg, plan: dict) -> dict:
                         h["attest"].append({"ac": a, "reason": ov["reason"],
                                             "escalation": esc_id, "at": now})
                 if ov or removed:
+                    # a failed withdraw's count goes from disk before this answer changes the
+                    # overrides, so a later withdraw never reports removals it did not do
+                    if rec.pop("overrides_removed", None) is not None:
+                        _write(cfg, rec)
                     store.write_state(cfg, cid, st)
             rec.pop("overrides_removed", None)   # a failed withdraw's count no longer holds
             rec.update(status="answered", answer=answer, answered_by=by, answered_at=now)
