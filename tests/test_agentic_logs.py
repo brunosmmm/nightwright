@@ -124,6 +124,25 @@ def test_runner_log_cli(tmp_path, monkeypatch):
     assert len(json.loads(r.output)["records"]) == 1
 
 
+def test_runner_log_renders_drain_tick_and_admission_blocked(tmp_path, monkeypatch):
+    """SPEC-0268: a draining harvest with a tick reads `tick N (drain)`; `admission_blocked` is
+    one line naming the holders."""
+    cfg = make_cfg(tmp_path, make_repo(tmp_path), script(tmp_path, []))
+    Q.journal(cfg, "tick", tick=90, steps=[], admitted=0, errors=[], started=[], in_flight=[],
+              drain=True)
+    Q.journal(cfg, "tick", tick=91, steps=[], admitted=0, errors=[], started=[], in_flight=[],
+              drain=False)
+    Q.journal(cfg, "admission_blocked", tick=92, draining=True, ready=["SPEC-1-a"], slots=2,
+              occupied=2, holders=[{"campaign": "SPEC-2-b", "state": "CLOSING", "deferred": True},
+                                   {"campaign": "SPEC-3-c", "state": "GATING", "deferred": False}])
+    r = run_cli(cfg, monkeypatch, ["queue", "runner-log", "--tail", "0"])
+    assert r.exit_code == 0, r.output
+    assert "tick 90 (drain)" in r.output and "tick 91" in r.output
+    (line,) = [ln for ln in r.output.splitlines() if "admission blocked" in ln]
+    assert "1 ready, slots 2/2" in line
+    assert "SPEC-2-b CLOSING deferred" in line and "SPEC-3-c GATING" in line
+
+
 def test_test_reviewer_records_are_valid_and_routed(tmp_path, monkeypatch):
     """SPEC-0205 AC4: the test reviewer's findings are `finding` events with persona and `ac`;
     `pass` + a `must_fix` finding routes as `fix`; the ledger validates."""

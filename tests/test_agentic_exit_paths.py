@@ -643,6 +643,90 @@ def test_draining_starts_no_gate_for_a_harvested_campaign(tmp_path, monkeypatch)
     assert not S.read_ledger(cfg, b, types=["gate"]) and not S.gates_dir(cfg, b).exists()
 
 
+def test_draining_tick_admits_while_a_gate_blocks_exec(tmp_path, monkeypatch):
+    """SPEC-0268 / SPEC-0229: A's gate blocks the exec; a ready QUEUED B is still admitted and
+    opened by the draining ticks, and no re-exec is journaled before the gate ends."""
+    repo, cfg, a = gate_world(tmp_path, monkeypatch)
+    _second_spec(repo)
+    cfg["agentic"]["profiles"]["balanced"]["slots"] = 2
+    runner = Det(cfg)
+    runner.release.set()
+    seen, calls = {}, []
+    monkeypatch.setattr(Q, "code_changes", lambda r, since: (
+        ("newsha", ["src/wt/x.py"]) if "changed" in seen else (since, [])))
+    monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(1))
+
+    def on_tick(report):
+        if "changed" not in seen and pid_file(tmp_path):         # A is in its held gate
+            seen["changed"] = True
+            seen["b"] = added(cfg, monkeypatch, "SPEC-0002")
+        b = seen.get("b")
+        if b and "b_state" not in seen and journal(cfg, "draining") \
+                and S.read_state(cfg, b)["state"] != "QUEUED":
+            seen["b_state"] = S.read_state(cfg, b)["state"]
+            seen["stops"] = journal(cfg, "stop")
+            seen["gate_blocked"] = not (tmp_path / "g1.rel").exists()
+            (tmp_path / "g1.rel").write_text("")
+
+    Q.run(cfg, poll_interval_s=0.1, reexec=True, code_root=repo, on_tick=on_tick,
+          runner=runner, max_ticks=200)
+    assert seen["b_state"] != "QUEUED"
+    assert seen["gate_blocked"] and seen["stops"] == [] and calls
+    stop, = journal(cfg, "stop")
+    assert stop["reason"] == "code_changed"
+
+
+def test_admission_blocked_journaled_once_per_change(tmp_path, monkeypatch):
+    """SPEC-0268: full slots with a ready item waiting give one `admission_blocked` record per
+    distinct (ready, holders, deferred) set; a draining tick's skipped close is `deferred`."""
+    repo, cfg, a = gate_world(tmp_path, monkeypatch)
+    for i in (2, 3, 4):
+        _second_spec(repo, f"SPEC-000{i}", f"docs/specs/000{i}-x.md")
+    cfg["agentic"]["profiles"]["balanced"]["slots"] = 2
+    runner = Det(cfg)
+    runner.release.set()
+    seen, calls = {"n": 0}, []
+    monkeypatch.setattr(Q, "code_changes", lambda r, since: (
+        ("newsha", ["src/wt/x.py"]) if "changed" in seen else (since, [])))
+    monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(1))
+
+    def hold(spec):                        # a CLOSING holder, made before the next tick
+        cid = added(cfg, monkeypatch, spec)
+        st = S.read_state(cfg, cid)
+        st["state"] = "CLOSING"
+        S.write_state(cfg, cid, st)
+        return cid
+
+    def on_tick(report):
+        if "changed" not in seen and pid_file(tmp_path):         # A is in its held gate
+            seen["changed"] = True
+            seen["b"] = hold("SPEC-0002")
+            seen["c"] = added(cfg, monkeypatch, "SPEC-0003")     # ready, no slot
+            return
+        if "changed" not in seen:
+            return
+        seen["n"] += 1
+        if seen["n"] == 8:
+            seen["first"] = journal(cfg, "admission_blocked")
+            st = S.read_state(cfg, seen["b"])
+            st["state"] = "PARKED"                               # frees B's slot ...
+            S.write_state(cfg, seen["b"], st)
+            seen["d"] = hold("SPEC-0004")                        # ... which D takes at once
+        if seen["n"] == 16:
+            (tmp_path / "g1.rel").write_text("")
+
+    Q.run(cfg, poll_interval_s=0.05, reexec=True, code_root=repo, on_tick=on_tick,
+          runner=runner, max_ticks=300)
+    first, second = seen["first"], journal(cfg, "admission_blocked")
+    (rec,) = first
+    assert rec["ready"] == [seen["c"]] and rec["slots"] == 2 and rec["occupied"] == 2
+    assert rec["draining"] is True
+    held = {h["campaign"]: h for h in rec["holders"]}
+    assert set(held) == {a, seen["b"]} and held[seen["b"]]["state"] == "CLOSING"
+    assert held[seen["b"]]["deferred"] is True and held[a]["deferred"] is False
+    assert len(second) == 2 and {h["campaign"] for h in second[1]["holders"]} == {a, seen["d"]}
+
+
 def test_signal_during_draining_clears_restart(tmp_path, monkeypatch):
     """Precedence: a human stop during draining ticks is a plain `signal` exit: no exec, no
     `restart_pending`."""

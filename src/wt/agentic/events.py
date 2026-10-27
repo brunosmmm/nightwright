@@ -508,8 +508,9 @@ def _drain_info(lease, now=None) -> dict | None:
 
 def ready_not_admitted_items(cfg, now, sett) -> list[dict]:
     """Ready backlog items that are not starting although a slot is free, for longer than
-    `ready_grace_s`. Carries the runner pid, whether its tick has work in flight and the
-    drain info."""
+    `ready_grace_s`: the age is the younger of the ready age and the free slot (the held lease's
+    `slot_freed_at`, SPEC-0268; without one, the ready age alone, so a dead runner still
+    alarms). Carries the runner pid, whether its tick has work in flight and the drain info."""
     from .queue import ACTIVE_STATES, slots_for
     rows = store.list_campaigns(cfg)
     active = [r for r in rows if r.get("state") in ACTIVE_STATES]
@@ -519,6 +520,7 @@ def ready_not_admitted_items(cfg, now, sett) -> list[dict]:
     if occupied >= slots:
         return []
     drain = _drain_info(lease, now)
+    freed = _age_s(lease.get("slot_freed_at"), now) if lease.get("held") else None
     busy = any(_open_run(cfg, r["id"]) or r.get("state") in ("GATING", "CLOSING")
                for r in active)
     out = []
@@ -527,9 +529,11 @@ def ready_not_admitted_items(cfg, now, sett) -> list[dict]:
         if st.get("state") != "QUEUED" or b.get("ready") is not True or st.get("park_requested"):
             continue
         age = _age_s(b.get("since"), now) or 0
-        if age > sett["ready_grace_s"]:
+        age_eff = age if freed is None else min(age, freed)
+        if age_eff > sett["ready_grace_s"]:
             out.append({"campaign": st["id"], "spec_id": st.get("spec_id"), **_label_kw(st),
                         "ready_for_s": round(age), "active": occupied, "slots": slots,
+                        "slot_free_s": round(freed) if freed is not None else None,
                         "runner_pid": lease.get("pid") if lease.get("held") else None,
                         "runner_draining": bool(lease.get("held") and lease.get("draining")),
                         "runner_busy": bool(lease.get("held") and busy),

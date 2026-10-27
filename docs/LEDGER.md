@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (79/83 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (80/83 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -179,7 +179,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0264](./specs/0264-review-pipeline-integrity-exact-attestations-safe.md) Review pipeline integrity: exact attestations and safe escalation answers — done
   - [x] [SPEC-0265](./specs/0265-operator-surfaces-survive-bad-data-and-never.md) Operator surfaces survive bad data and never render untrusted text as markup — done
   - [x] [SPEC-0266](./specs/0266-review-pipeline-integrity-ii-scoped-regenerate.md) Review pipeline integrity II: scoped regenerate, divergence reset, locked follow-up groups — done
-  - [ ] [SPEC-0268](./specs/0268-draining-runner-honest-admission-alarms-and.md) Draining runner: honest admission alarms and observable draining ticks — accepted
+  - [x] [SPEC-0268](./specs/0268-draining-runner-honest-admission-alarms-and.md) Draining runner: honest admission alarms and observable draining ticks — done
   - [x] [SPEC-0270](./specs/0270-watchdog-state-stuck-measures-idle-time-not-time.md) Watchdog state_stuck measures idle time, not time in state — done
 
 ## Active & planned
@@ -195,7 +195,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0214](./specs/0214-spec-review-loop-inside-the-campaign-with-in-loop.md) | Spec review loop inside the campaign, with in-loop acceptance | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0267](./specs/0267-reconcile-source-idea-walk-mislinks-old-specs-to.md) | Reconcile source_idea walk verifies idea identity before linking | feature | accepted | — | 2026-10-27 |
-| [SPEC-0268](./specs/0268-draining-runner-honest-admission-alarms-and.md) | Draining runner: honest admission alarms and observable draining ticks | feature | accepted | — | 2026-10-27 |
 | [SPEC-0269](./specs/0269-load-tolerant-test-waits-fix-known-flakes-and-add.md) | Load-tolerant test waits: fix known flakes and add a shared wait helper | feature | accepted | — | 2026-10-27 |
 
 ## Done
@@ -448,6 +447,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0264](./specs/0264-review-pipeline-integrity-exact-attestations-safe.md) | Review pipeline integrity: exact attestations and safe escalation answers | feature | done | — | 2026-10-27 |
 | [SPEC-0265](./specs/0265-operator-surfaces-survive-bad-data-and-never.md) | Operator surfaces survive bad data and never render untrusted text as markup | feature | done | — | 2026-10-27 |
 | [SPEC-0266](./specs/0266-review-pipeline-integrity-ii-scoped-regenerate.md) | Review pipeline integrity II: scoped regenerate, divergence reset, locked follow-up groups | feature | done | — | 2026-10-27 |
+| [SPEC-0268](./specs/0268-draining-runner-honest-admission-alarms-and.md) | Draining runner: honest admission alarms and observable draining ticks | feature | done | — | 2026-10-27 |
 | [SPEC-0270](./specs/0270-watchdog-state-stuck-measures-idle-time-not-time.md) | Watchdog state_stuck measures idle time, not time in state | feature | done | — | 2026-10-27 |
 | [SPEC-0271](./specs/0271-org-backup-retention-and-a-prune-command.md) | Org backup retention and a prune command | feature | done | — | 2026-10-27 |
 

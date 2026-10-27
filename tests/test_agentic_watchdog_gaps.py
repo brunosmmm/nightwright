@@ -111,6 +111,26 @@ def test_ready_not_admitted_counts_in_flight(tmp_path, held):
     assert row["active"] == 1 and row["campaign"] == B
 
 
+def test_ready_not_admitted_waits_for_slot_age(tmp_path, held):
+    """SPEC-0268: a long-ready item alarms only once a slot has also been free past the grace."""
+    cfg = _cfg(tmp_path)
+    lease = held(cfg, slot_freed_at=iso(295))
+    _campaign(cfg, B, state="QUEUED")
+    _set_state(cfg, B, backlog={"ready": True, "blocked_by": [], "since": iso(-700)})
+    assert E.ready_not_admitted_items(cfg, at(300), E.settings(cfg)) == []     # free for 5 s
+    lease.update_info(slot_freed_at=iso(180))
+    (row,) = E.ready_not_admitted_items(cfg, at(300), E.settings(cfg))
+    assert row["slot_free_s"] == 120 and row["ready_for_s"] == 1000
+
+
+def test_ready_not_admitted_without_lease_uses_ready_age(tmp_path):
+    cfg = _cfg(tmp_path)
+    _campaign(cfg, B, state="QUEUED")
+    _set_state(cfg, B, backlog={"ready": True, "blocked_by": [], "since": iso(0)})
+    (row,) = E.ready_not_admitted_items(cfg, at(300), E.settings(cfg))
+    assert row["campaign"] == B and row["slot_free_s"] is None and row["runner_pid"] is None
+
+
 def test_waiting_not_admitted_quiet_when_full_or_park_requested(tmp_path, held):
     cfg = _cfg(tmp_path)
     held(cfg, slot_freed_at=iso(0))

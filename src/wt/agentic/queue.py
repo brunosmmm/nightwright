@@ -2323,6 +2323,7 @@ class TickReport:
     detached: list = field(default_factory=list)    # SPEC-0225: runs left running at the exec
     abandoned: list = field(default_factory=list)   # SPEC-0229: spawning / collect tasks left
     admission_paused: str | None = None             # SPEC-0253: why this tick admitted nothing
+    blocked: dict | None = None                     # SPEC-0268: ready items waiting on full slots
 
     def payload(self) -> dict:
         out = {"schema": "wt.queue.tick.v1", "steps": self.steps, "admitted": self.admitted,
@@ -2731,6 +2732,16 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             report.steps.append(_apply(ctx, st, _do_open(ctx, st)))
             if st.get("state") in ACTIVE_STATES:
                 busy.append(st)
+    waiting_ready = sorted(s["id"] for s in queued if s["id"] not in admitted_ids
+                           and s["id"] not in flying and ready[s["id"]][0]
+                           and not s.get("park_requested"))
+    holder_rows: dict[str, dict] = {}
+    if admit and waiting_ready and n_busy() >= slots:       # SPEC-0268: say why they wait
+        state_of = {s["id"]: s.get("state") for s in busy}
+        holder_rows = {cid: {"campaign": cid, "state": state_of.get(cid), "deferred": False}
+                       for cid in sorted({s["id"] for s in busy} | flying)}
+        report.blocked = {"ready": waiting_ready, "slots": slots, "occupied": n_busy(),
+                          "holders": list(holder_rows.values())}
 
     # 2. plan every active item without a step in flight (never a second step: SPEC-0213)
     pending_agent = []       # (state, step, run_id, req, budget, review group) to submit
@@ -2773,6 +2784,8 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             continue
         if draining and (step.kind in ("gate", "close", "resolve", "write_spec")
                          or not getattr(ctx.runner, "detachable", False)):
+            if st["id"] in holder_rows:
+                holder_rows[st["id"]]["deferred"] = True        # SPEC-0268
             continue                 # SPEC-0229: a draining tick starts no in-process work
         if step.kind == "close":
             head_id, position = train_pos.get(st["id"], (None, 0))
@@ -3606,6 +3619,8 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
         slots = _SlotWatch(cfg, pool)
         drain_since = None
 
+        last_blocked_key = None                           # SPEC-0268: dedupe admission_blocked
+
         def emit(report):
             if report.steps or report.admitted or report.errors or report.started:
                 journal(cfg, "tick", tick=ticks, steps=report.steps, admitted=report.admitted,
@@ -3653,6 +3668,17 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                 # SPEC-0228: stamp before `emit`, so a slow `on_tick` never delays it
                 slots.check(lease, tick_at=store.now_iso())
                 emit(report)
+                if report.blocked and not report.admitted:
+                    holders = report.blocked["holders"]
+                    key = (frozenset(report.blocked["ready"]),
+                           frozenset(h["campaign"] for h in holders),
+                           frozenset(h["campaign"] for h in holders if h["deferred"]))
+                    if key != last_blocked_key:
+                        last_blocked_key = key
+                        journal(cfg, "admission_blocked", tick=ticks, draining=draining,
+                                **report.blocked)
+                else:
+                    last_blocked_key = None
                 if once or (max_ticks and ticks >= max_ticks) or (until_idle and report.idle):
                     reason = "once" if once else ("max_ticks" if max_ticks and ticks >= max_ticks
                                                   else "idle")

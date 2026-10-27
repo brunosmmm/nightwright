@@ -1,10 +1,11 @@
 ---
 id: SPEC-0268
 title: "Draining runner: honest admission alarms and observable draining ticks"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
+updated: 2026-10-27
 source_idea: IDEA-361
 parent: SPEC-0169
 tags: [agentic, queue, watchdog, drain]
@@ -132,18 +133,18 @@ ready item is waiting.
 
 ## Acceptance criteria
 
-- [ ] `ready_not_admitted_items` returns no row while the held lease's `slot_freed_at` is
+- [x] `ready_not_admitted_items` returns no row while the held lease's `slot_freed_at` is
       younger than `ready_grace_s`, even when the item has been ready for longer. Once both
       ages exceed the grace it returns the row, with `slot_free_s`. Without a held lease it
       falls back to the ready age.
-- [ ] A draining `run()` loop with an in-flight gate (a step that blocks the exec) and a free
+- [x] A draining `run()` loop with an in-flight gate (a step that blocks the exec) and a free
       slot admits and opens a ready QUEUED item. No re-exec happens before the gate finishes.
-- [ ] While ready items wait on full slots, the journal holds exactly one `admission_blocked`
+- [x] While ready items wait on full slots, the journal holds exactly one `admission_blocked`
       record per distinct (ready, holders, deferred) set. Holders whose close or gate the
       draining tick skipped have `deferred: true`.
-- [ ] `wt queue runner-log` renders a draining harvest record as `tick N (drain)` and an
+- [x] `wt queue runner-log` renders a draining harvest record as `tick N (drain)` and an
       `admission_blocked` record as a single line naming the holders.
-- [ ] The `wt-conduct` skill's `ready_not_admitted` row names `slot_free_s` and
+- [x] The `wt-conduct` skill's `ready_not_admitted` row names `slot_free_s` and
       `admission_blocked`; `tests/test_skills.py` still passes.
 
 ## Test plan
@@ -177,6 +178,30 @@ ready item is waiting.
   fixture to set an old `slot_freed_at`; the behaviour it pins is unchanged) and
   `test_agentic_exit_paths.py::test_draining_ticks_admit_exec_promptly_and_new_process_adopts`.
 
+### Test record (2026-10-27)
+
+- New tests pass: `test_ready_not_admitted_waits_for_slot_age`,
+  `test_ready_not_admitted_without_lease_uses_ready_age`,
+  `test_draining_tick_admits_while_a_gate_blocks_exec`,
+  `test_admission_blocked_journaled_once_per_change`,
+  `test_runner_log_renders_drain_tick_and_admission_blocked`.
+- Sabotage: with `age_eff = age` (no `min(age, freed)`), `test_ready_not_admitted_waits_for_slot_age`
+  fails; with the dedupe comparison replaced by `if True:`,
+  `test_admission_blocked_journaled_once_per_change` fails on the record count. Both reverted.
+- Full `uv run pytest`: 3308 passed, 3 skipped; the only 2 failures were the stale-ledger checks (`test_all_specs_pass_lint`, `test_internal_spec_lint_unaffected_by_outbox`), fixed by `--write-ledger` and re-run green.
+- Manual verification: rendered a draining `tick 90` record and an `admission_blocked` record
+  through the runner-log row renderer by hand (`tick 90 (drain)` and one
+  `⏳ admission blocked: 1 ready, slots 2/2 (held: …)` line). No live code-change drain with full
+  slots has been observed yet; the conductor can confirm it on the next one.
+
+### As shipped
+
+- `admission_blocked` is journaled when the tick had ready QUEUED items and no free slot, and
+  admitted none (`run()` resets the dedupe key on `report.admitted`). The `deferred` flag is
+  set in step 2 on the holder rows built in step 1, instead of at the end of `_tick`; the
+  result is the same. The blocked report requires `admit` to be true, so a tick paused for
+  temp pressure does not claim full slots as the reason.
+
 ## Rollout / migration
 
 None. The new journal kind is additive. Older runner-log readers render unknown kinds through
@@ -184,11 +209,11 @@ the generic path.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

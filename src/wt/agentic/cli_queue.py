@@ -610,7 +610,19 @@ def _journal_lines(rec: dict) -> Group:
         head.append("⏸ re-exec deferred", style="bold yellow")
         head.append(f"  {rec.get('reason')} (code at {str(rec.get('to_sha'))[:8]})")
         return Group(head)
-    head.append("drain" if rec.get("drain") else f"tick {rec.get('tick')}", style="cyan")
+    if kind == "admission_blocked":                        # SPEC-0268
+        held = ", ".join(f"{h.get('campaign')} {h.get('state')}"
+                         + (" deferred" if h.get("deferred") else "")
+                         for h in rec.get("holders") or [])
+        head.append(f"⏳ admission blocked: {len(rec.get('ready') or [])} ready, slots "
+                    f"{rec.get('occupied')}/{rec.get('slots')} (held: {held})",
+                    style="yellow")
+        return Group(head)
+    if rec.get("drain") and rec.get("tick") is not None:
+        label = f"tick {rec['tick']} (drain)"
+    else:
+        label = "drain" if rec.get("drain") else f"tick {rec.get('tick')}"
+    head.append(label, style="cyan")
     if rec.get("admitted"):
         head.append(f"  admitted {rec['admitted']}", style="green")
     rows = [head] + [Text("  ") + R.tick_row(row) for row in rec.get("steps") or []]
