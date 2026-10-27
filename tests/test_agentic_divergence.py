@@ -34,9 +34,17 @@ def fix(reason="review_fix"):
     return rec("transition", **{"from": "REVIEWING", "to": "IMPLEMENTING", "reason": reason})
 
 
-def rnd(kind="review", blocking=(), gates=(), *, minor=()):
+def rnd(kind="review", blocking=(), gates=(), *, minor=(), environmental=False):
     return DV.Round(kind, [F(REV, "must_fix", t, None) for t in blocking]
-                    + [F(REV, "minor", t, None) for t in minor], frozenset(gates))
+                    + [F(REV, "minor", t, None) for t in minor], frozenset(gates), environmental)
+
+
+def run_end(persona="implementer", **kw):
+    return rec("run.end", persona=persona, **kw)
+
+
+def failing_gate(tail):
+    return rec("gate", ok=False, results=[{"name": "test", "ok": False, "tail": tail}])
 
 
 # ---- rounds ----------------------------------------------------------------------------------
@@ -73,6 +81,27 @@ def test_rounds_before_the_resume_of_a_diverging_park_are_dropped():
                  rec("park", reason="human_decision", escalated_from="diverging"),
                  rec("resume"), finding("b"), fix()]
     assert len(DV.rounds(escalated)) == 1
+
+
+def test_rounds_marks_environmental_gate_round():
+    def env(*records):
+        [r] = DV.rounds([*records, fix("triage_fix")])
+        return r.environmental
+    blocked = {"status": "blocked", "blockers": ["Disk full (ENOSPC) on /tmp"]}
+    assert env(run_end(verdict=blocked))                                            # (a)
+    assert env(run_end(is_error=True, result_tail="rate limit reached"))            # (b)
+    assert env(failing_gate("OSError: [Errno 28] No space left on device"))         # (c)
+    assert not env(run_end(verdict={"status": "blocked", "blockers": ["spec is ambiguous"]}))
+    assert not env(rec("gate", ok=False, results=[
+        {"name": "lint", "ok": False, "required": False, "tail": "ENOSPC"}]))
+    assert not env(run_end("gate_triager", is_error=True, result_tail="rate limit reached"))
+    assert not env(run_end(is_error=True, result_tail="boom"))
+    assert not env(failing_gate("tests/x.py:429: AssertionError"))
+    assert not env(failing_gate("529 passed, 1 failed"))
+    # the flag is per round
+    first, second = DV.rounds([run_end(verdict=blocked), fix("triage_fix"), fix("triage_fix")])
+    assert (first.environmental, second.environmental) == (True, False)
+    assert DV.Round("review").environmental is False
 
 
 # ---- matching --------------------------------------------------------------------------------
@@ -156,7 +185,7 @@ def names(div):
 
 
 def sigs(rs, **cfg):
-    out = {"trend": DV._trend(rs, DV.DEFAULTS["window"]),
+    out = {"trend": DV._trend(rs, DV.DEFAULTS["window"], DV.DEFAULTS["similarity"]),
            "churn": DV._churn(rs, DV.DEFAULTS["churn_ratio"], DV.DEFAULTS["similarity"]),
            "recurrence": DV._recurrence(rs, DV.DEFAULTS["similarity"]),
            "gate_repeat": DV._gate_repeat(rs, DV.DEFAULTS["window"])}
@@ -165,10 +194,36 @@ def sigs(rs, **cfg):
 
 def test_trend():
     assert sigs([rnd(blocking="a"), rnd(blocking="b"), rnd(blocking="cd")]) >= {"trend"}
-    assert "trend" in sigs([rnd(blocking=["a"]), rnd(blocking=["b"]), rnd(blocking=["c"])])
+    assert "trend" not in sigs([rnd(blocking=["a"]), rnd(blocking=["b"]), rnd(blocking=["c"])])
     assert "trend" not in sigs([rnd(blocking=list("abcd")), rnd(blocking=list("ab")), rnd()])
     assert "trend" not in sigs([rnd(blocking=["a"]), rnd(blocking=["b"])])     # needs `window` rounds
-    assert "trend" not in sigs([rnd(blocking=list("ab")), rnd(blocking=["a"]), rnd(blocking=list("ab"))])
+    # a count that dipped and came back with the same blockers is a persisting blocker
+    assert "trend" in sigs([rnd(blocking=list("ab")), rnd(blocking=["a"]), rnd(blocking=list("ab"))])
+
+
+def test_trend_weighs_repeated_over_new():
+    def trend(*rounds):
+        return DV._trend(list(rounds), 3, DV.DEFAULTS["similarity"])
+    assert trend(rnd(blocking=["a"]), rnd(blocking=["b"]), rnd(blocking=["c"])) is None
+    div = trend(*[rnd(blocking=["parser drops newline"])] * 3)
+    assert div["evidence"] == {"counts": [1, 1, 1], "scores": [0.5, 1.0, 1.0]}
+    two = trend(rnd(blocking=["a", "b"]), rnd(blocking=["c", "d"]), rnd(blocking=["e", "f"]))
+    assert two["evidence"] == {"counts": [2, 2, 2], "scores": [1.0, 1.0, 1.0]}
+    assert DV.summary({"signals": [div], "rounds": 3}) == "trend 0.5→1→1"
+
+
+def test_assess_drops_environmental_gate_rounds_only():
+    def gr(**kw):
+        return rnd("gate", blocking=["gate broke"], gates=["test"], **kw)
+    assert DV.assess([gr(), gr(environmental=True), gr()]) is None      # 2 kept: no window
+    div = DV.assess([gr(), gr(), gr(environmental=True), gr()])
+    assert names(div) == ["trend", "gate_repeat"]
+    assert div["rounds"] == 3 and div["excluded_rounds"] == 1
+    assert "1 environmental round(s) excluded" in DV.summary(div)
+    # a review round that hit the environment is kept
+    x, y = "parser drops newline", "cache never expires"
+    kept = DV.assess([rnd(blocking=[x]), rnd(blocking=[y], environmental=True), rnd(blocking=[x])])
+    assert kept is not None and kept["rounds"] == 3 and kept["excluded_rounds"] == 0
 
 
 def test_churn():
@@ -183,7 +238,22 @@ def test_churn():
     assert "churn" not in sigs(one)                                            # < 2 findings in a round
     minors = [rnd(minor=["alpha one", "beta two"]), rnd(minor=["gamma three", "delta four"]),
               rnd(minor=["epsilon five", "zeta six"])]
-    assert "churn" in sigs(minors)                                             # churn counts minors
+    assert "churn" not in sigs(minors)                                         # blocking only
+
+
+def test_churn_counts_blocking_only():
+    sim = DV.DEFAULTS["similarity"]
+    fresh_minors = [rnd(minor=["alpha one", "beta two"]), rnd(minor=["gamma three", "delta four"]),
+                    rnd(minor=["epsilon five", "zeta six"])]
+    assert DV._churn(fresh_minors, 0.75, sim) is None
+    pairs = [rnd(blocking=["alpha one", "beta two"]), rnd(blocking=["gamma three", "delta four"]),
+             rnd(blocking=["epsilon five", "zeta six"])]
+    assert DV._churn(pairs, 0.75, sim)["evidence"] == {"ratios": [1.0, 1.0]}
+    # a blocker raised earlier as a minor is not new
+    seen = [rnd(blocking=["alpha one", "beta two"]),
+            rnd(blocking=["gamma three", "delta four"], minor=["epsilon five", "zeta six"]),
+            rnd(blocking=["epsilon five", "zeta six"])]
+    assert DV._churn(seen, 0.75, sim) is None
 
 
 def test_recurrence():
@@ -238,8 +308,9 @@ def test_trip_rule():
     assert names(DV.assess(trend_churn)) == ["trend", "churn"]
     only_trend = [rnd(blocking=["a"]), rnd(blocking=["a"]), rnd(blocking=["a"])]
     assert sigs(only_trend) == {"trend"} and DV.assess(only_trend) is None
-    only_churn = [rnd(minor=["alpha one", "beta two"]), rnd(minor=["gamma three", "delta four"]),
-                  rnd(minor=["epsilon five", "zeta six"])]
+    only_churn = [rnd(blocking=["alpha one", "beta two", "gamma three", "delta four"]),
+                  rnd(blocking=["epsilon five", "zeta six", "eta seven"]),
+                  rnd(blocking=["theta eight", "iota nine"])]
     assert sigs(only_churn) == {"churn"} and DV.assess(only_churn) is None
     only_gate = [rnd("gate", gates=["test"])] * 3
     assert sigs(only_gate) == {"gate_repeat"} and DV.assess(only_gate) is None
@@ -247,6 +318,39 @@ def test_trip_rule():
     assert DV.assess([rnd(blocking=["a"])]) is None
     assert DV.assess(trend_churn, {"enabled": False}) is None
     assert DV.assess(trend_churn, {"min_rounds": 4}) is None
+
+
+def _spec0251_ledger(*, enospc=True):
+    """Seq 5-150 of campaign SPEC-0251-20261025-92e4, titles paraphrased."""
+    def minors(*titles):
+        return [finding(t, severity="minor") for t in titles]
+    pytest_fail = lambda: gate(("pytest", False), ("lint", True))      # noqa: E731
+    r3 = [pytest_fail(), finding("gate failed: /tmp is full", persona="gate_triager",
+                                 severity="major")]
+    if enospc:
+        r3.insert(0, run_end(status="blocked", verdict={
+            "status": "blocked", "blockers": ["Disk full (ENOSPC) on the volume holding /tmp"]}))
+    return (
+        [rec("open"), finding("tui events tab filter ignores the kind", severity="major"),
+         *minors("help text typo", "missing docstring", "unused import"), fix("review_fix"),
+         pytest_fail(), finding("gate failed: tests error", persona="gate_triager",
+                                severity="minor"), fix("triage_fix"),
+         *r3, fix("triage_fix"),
+         finding("wt tui --tab events CLI choice is not tested", persona="test_reviewer",
+                 severity="major"),
+         *minors("log line wording", "extra blank line", "stale comment"), fix("review_fix"),
+         finding("Event text is put into the DataTable as a raw str", severity="major",
+                 persona="adversarial_reviewer"),
+         *minors("column width is hardcoded", "no empty state", "rename helper")])
+
+
+def test_spec0251_replay_does_not_trip():
+    for enospc in (True, False):
+        ledger = _spec0251_ledger(enospc=enospc)
+        rs = DV.rounds(ledger + [fix("review_fix")])         # r5 is the pending fix
+        assert [r.kind for r in rs] == ["review", "gate", "gate", "review", "review"]
+        assert [r.environmental for r in rs] == [False, False, enospc, False, False]
+        assert DV.assess(rs) is None
 
 
 # ---- settings --------------------------------------------------------------------------------

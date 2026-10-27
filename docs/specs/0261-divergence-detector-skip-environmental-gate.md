@@ -1,10 +1,10 @@
 ---
 id: SPEC-0261
 title: "Divergence detector: skip environmental gate rounds and weigh repeated findings over new ones"
-status: accepted
+status: done
 owner: user
 created: 2026-10-26
-updated: 2026-10-26
+updated: 2026-10-27
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0169
@@ -192,22 +192,22 @@ unchanged.
 
 ## Acceptance criteria
 
-- [ ] `Round.environmental` exists, defaults to False, and is set by `rounds()` under rules
+- [x] `Round.environmental` exists, defaults to False, and is set by `rounds()` under rules
       (a), (b) and (c); (c) does not fire on a gate tail containing "429" or "529 passed",
       and (b) does not fire for a non-implementer run. Implementer blocker findings are still not counted as findings.
-- [ ] `assess` drops environmental gate rounds before every check, keeps environmental
+- [x] `assess` drops environmental gate rounds before every check, keeps environmental
       review rounds, and reports `excluded_rounds`.
-- [ ] `trend` trips on weighted scores: one new blocker per round over 3 rounds does not
+- [x] `trend` trips on weighted scores: one new blocker per round over 3 rounds does not
       trip; one repeated blocker (scores 0.5→1→1) does; two new blockers per round
       (1→1→1) do.
-- [ ] `churn` counts blocking findings only, and three rounds of fresh minors alone do not
+- [x] `churn` counts blocking findings only, and three rounds of fresh minors alone do not
       produce churn.
-- [ ] The SPEC-0251 replay ledger (below) gives `assess(...) is None`. The same ledger
+- [x] The SPEC-0251 replay ledger (below) gives `assess(...) is None`. The same ledger
       without the ENOSPC blocker in round 3 also gives None, because Decisions 2 and 3 alone
       clear it (the exclusion is covered by its own test, not by the replay).
-- [ ] `test_e2e_recurrence_parks_diverging_then_resume_continues` and
+- [x] `test_e2e_recurrence_parks_diverging_then_resume_continues` and
       `test_e2e_gate_repeat_trips_on_the_third_failed_fix` pass unchanged.
-- [ ] `uv run pytest` passes, and `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes, and `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -271,6 +271,34 @@ In `tests/test_agentic_divergence.py`:
 
 Restore both and record the failures in the Test record.
 
+### Test record (2026-10-27)
+
+- `uv run pytest tests/test_agentic_divergence.py -q`: 25 passed (new:
+  `test_rounds_marks_environmental_gate_round`, `test_trend_weighs_repeated_over_new`,
+  `test_assess_drops_environmental_gate_rounds_only`, `test_churn_counts_blocking_only`,
+  `test_spec0251_replay_does_not_trip`).
+- Existing tests changed as planned: `test_trend` (both flips), `test_churn` (minors assertion),
+  `test_trip_rule` (`only_churn` is blocking 4→3→2, all new). `sigs()` passes `similarity` to
+  `_trend`. The two e2e tests named in the acceptance criteria pass unchanged.
+- Sabotage, each restored afterwards: (1) `kept = list(rs)`: only
+  `test_assess_drops_environmental_gate_rounds_only` fails, the replay still passes;
+  (2) `NEW_WEIGHT = 1.0`: `test_trend_weighs_repeated_over_new` and `test_trend` fail;
+  (3) `_churn` on `cur.findings`: `test_churn_counts_blocking_only` and `test_churn` fail;
+  (4) (c) also using `_is_transient`: `test_rounds_marks_environmental_gate_round` fails (the
+  "429" gate tail).
+- Full gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` and
+  `uv run pytest -q -x`: lint OK; full suite 3165 passed, 3 skipped with
+  `tests/test_agentic_profiles.py::test_short_origin_forms` deselected. That test fails only
+  because this campaign's per-child `$TMPDIR` is under `$HOME` (it assumes `tmp_path` is not);
+  it passes in a normal environment and is unrelated to this change.
+
+### As shipped
+
+As designed. Notes: `_trend`'s `similarity` parameter defaults to `DEFAULTS["similarity"]`.
+`summary` appends "N environmental round(s) excluded; r-numbers count kept rounds" when
+`excluded_rounds` is non-zero. `_scores` compares each blocker against all counted findings of
+earlier kept rounds. `_run_environmental` holds rules (a) and (b).
+
 ## Rollout / migration
 
 None. The detector reads existing ledger events. A campaign parked `diverging` before this
@@ -278,11 +306,11 @@ change keeps its park, and its resume uses the existing reset point.
 
 ## Definition of done
 
-- [ ] Every acceptance criterion is checked and true.
-- [ ] The Test plan has been executed, including the sabotage check, and the results are in
+- [x] Every acceptance criterion is checked and true.
+- [x] The Test plan has been executed, including the sabotage check, and the results are in
       a `### Test record`.
-- [ ] `uv run pytest` passes with no regressions.
-- [ ] The spec body reflects what shipped (`### As shipped`), the ledger is regenerated and
+- [x] `uv run pytest` passes with no regressions.
+- [x] The spec body reflects what shipped (`### As shipped`), the ledger is regenerated and
       spec lint exits 0.
 
 ## Open questions
