@@ -1452,57 +1452,60 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     counters = _counters(state)
 
     def finish(to, reason, *, park=None):
-        current = _fresh(cfg, state)
-        if current is None:
-            # A human changed the state while the step ran: keep the facts, not the move.
-            with store.item_lock(cfg, cid):
-                for etype, payload in events:
-                    store.append_event(cfg, cid, etype, payload)
-                store.append_event(cfg, cid, "note", {
-                    "text": f"step {res.step.kind} finished after a human changed the state; "
-                            f"transition to {to} skipped", "author": "queue"})
-            row["to"], row["reason"] = store.read_state(cfg, cid).get("state"), "superseded_by_human"
-            return row
-        for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
-                  "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
-                  "merge"):
-            if k in state:
-                current[k] = state[k]
-        requested = current.get("park_requested") or state.get("park_requested")
-        escalating = bool(requested) and requested.get("reason") == "human_decision"
-        if requested and park is None and to not in TERMINAL_STATES:
-            req = requested
-            detail = req.get("detail") or req.get("reason") or "parked"
-            if escalating:                               # SPEC-0232
-                _park(cfg, current, "human_decision", detail, _resume_target(to),
-                      by=req.get("by") or "human", extra={"escalated_from": None},
+        # SPEC-0254: read, decision and write-back are one critical section; `_park` and
+        # `_transition` re-take the (reentrant) lock for their own write.
+        with store.item_lock(cfg, cid):
+            current = _fresh(cfg, state)
+            if current is None:
+                # A human changed the state while the step ran: keep the facts, not the move.
+                with store.item_lock(cfg, cid):
+                    for etype, payload in events:
+                        store.append_event(cfg, cid, etype, payload)
+                    store.append_event(cfg, cid, "note", {
+                        "text": f"step {res.step.kind} finished after a human changed the state; "
+                                f"transition to {to} skipped", "author": "queue"})
+                row["to"], row["reason"] = store.read_state(cfg, cid).get("state"), "superseded_by_human"
+                return row
+            for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
+                      "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
+                      "merge"):
+                if k in state:
+                    current[k] = state[k]
+            requested = current.get("park_requested")
+            escalating = bool(requested) and requested.get("reason") == "human_decision"
+            if requested and park is None and to not in TERMINAL_STATES:
+                req = requested
+                detail = req.get("detail") or req.get("reason") or "parked"
+                if escalating:                               # SPEC-0232
+                    _park(cfg, current, "human_decision", detail, _resume_target(to),
+                          by=req.get("by") or "human", extra={"escalated_from": None},
+                          extra_events=events)
+                    row["to"], row["reason"] = "PARKED", "human_decision"
+                    return row
+                _park(cfg, current, "human", detail, _resume_target(to), by="human",
                       extra_events=events)
+                row["to"], row["reason"] = "PARKED", "human"
+                return row
+            if park and escalating:
+                # the step parked by itself while an escalation was pending: park as the human's,
+                # keeping the step's reason as `escalated_from`, so the record matches the park
+                req = requested
+                _park(cfg, current, "human_decision",
+                      f"{req.get('detail')} (step parked: {park['detail']})", park["resume_to"],
+                      by=req.get("by") or "human", extra={"escalated_from": park["reason"]},
+                      extra_events=events)
+                from . import escalations as ESC
+                ESC.note_park(cfg, cid, escalated_from=park["reason"], resume_to=park["resume_to"])
                 row["to"], row["reason"] = "PARKED", "human_decision"
                 return row
-            _park(cfg, current, "human", detail, _resume_target(to), by="human",
-                  extra_events=events)
-            row["to"], row["reason"] = "PARKED", "human"
+            if park:
+                _park(cfg, current, park["reason"], park["detail"], park["resume_to"],
+                      extra_events=events)
+                row["to"], row["reason"] = "PARKED", park["reason"]
+                return row
+            _transition(cfg, current, to, reason, extra_events=events)
+            row["to"], row["reason"] = to, reason
             return row
-        if park and escalating:
-            # the step parked by itself while an escalation was pending: park as the human's,
-            # keeping the step's reason as `escalated_from`, so the record matches the park
-            req = requested
-            _park(cfg, current, "human_decision",
-                  f"{req.get('detail')} (step parked: {park['detail']})", park["resume_to"],
-                  by=req.get("by") or "human", extra={"escalated_from": park["reason"]},
-                  extra_events=events)
-            from . import escalations as ESC
-            ESC.note_park(cfg, cid, escalated_from=park["reason"], resume_to=park["resume_to"])
-            row["to"], row["reason"] = "PARKED", "human_decision"
-            return row
-        if park:
-            _park(cfg, current, park["reason"], park["detail"], park["resume_to"],
-                  extra_events=events)
-            row["to"], row["reason"] = "PARKED", park["reason"]
-            return row
-        _transition(cfg, current, to, reason, extra_events=events)
-        row["to"], row["reason"] = to, reason
-        return row
 
     kind = res.step.kind
     if kind == "unknown":              # SPEC-0225: an adopted run of an unregistered persona

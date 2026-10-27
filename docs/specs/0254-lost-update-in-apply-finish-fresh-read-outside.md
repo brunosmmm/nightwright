@@ -1,7 +1,7 @@
 ---
 id: SPEC-0254
 title: "Take item_lock around the fresh read and write in _apply.finish"
-status: accepted
+status: done
 owner: user
 created: 2026-10-26
 updated: 2026-10-26
@@ -70,14 +70,14 @@ or event changes.
 
 ## Acceptance criteria
 
-- [ ] `finish` holds `item_lock` for the `_fresh` read through the state write.
-- [ ] A `park_requested` (human_decision or human) written before `finish` takes the lock is
+- [x] `finish` holds `item_lock` for the `_fresh` read through the state write.
+- [x] A `park_requested` (human_decision or human) written before `finish` takes the lock is
       acted on by this tick; one written while the lock is held survives `finish`'s write and is
       acted on by the next tick; it is never overwritten.
-- [ ] `finish` decides only from the fresh disk copy (the `or state.get("park_requested")`
+- [x] `finish` decides only from the fresh disk copy (the `or state.get("park_requested")`
       fallback is gone): a `park_requested` cleared on disk by a withdraw before `finish` reads is
       not acted on even though the in-memory `state` still carries it.
-- [ ] No deadlock with `ESC.note_park` or other callers; existing queue tests pass.
+- [x] No deadlock with `ESC.note_park` or other callers; existing queue tests pass.
 
 ## Test plan
 
@@ -100,10 +100,27 @@ step-applying state):
   the `or state.get("park_requested")` fallback and confirm the clearing test fails.
 Regression: `tests/test_agentic_queue.py`, escalation tests, then the full `uv run pytest`.
 
+### Test record (2026-10-26)
+
+`tests/test_agentic_queue_finish_race.py` (3 tests): the real `Q.apply_park` and
+`ESC.apply_escalate` run in a thread started right after `finish`'s `_fresh` read; the thread is
+still blocked on `item_lock` after the join timeout, and after `_apply` the request is on disk
+with `finish`'s own write intact and the next `plan_step` parks. `ESC.withdraw` clears the request
+before the read while the tick-start `state` still carries it: the tick does not park. Sabotage:
+without the `with item_lock` wrapper both race tests fail; with the `or state.get("park_requested")`
+fallback restored the clearing test fails. Ran `uv run pytest -q -x` (full suite) and
+`python3 tools/spec_lint.py`.
+
+### As shipped
+
+As designed. The tests use a malformed review in REVIEWING (the campaign stays in REVIEWING) so
+an escalation plan made before `finish`'s write stays valid; with a state-changing step
+`ESC.apply_escalate` correctly refuses the then-stale plan ("changed since the plan").
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`).
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated.
