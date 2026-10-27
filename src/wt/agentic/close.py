@@ -305,31 +305,37 @@ def _abort_leftover_rebase(worktree) -> None:
         git.git(worktree, "rebase", "--abort", check=False)
 
 
-def _regenerate_after_rebase(worktree, regen, events, campaign_id) -> str | None:
+def _regenerate_after_rebase(worktree, regen, events, campaign_id, own=True) -> str | None:
     """SPEC-0255: run every declared `merge.regenerate` command in the rebased worktree and commit
     exactly the declared paths that changed, so the gated head is the merged head. Returns None,
-    or the `regenerate_failed` park detail (a failing command, or undeclared files it dirtied;
-    the worktree is then put back to HEAD)."""
+    or the `regenerate_failed` park detail (a failing command or git step, or undeclared files it
+    dirtied). A wt-owned worktree is then put back to HEAD; an adopted one (`own` false) is the
+    requester's, so nothing is reset or deleted there (only our staging is undone) and the
+    resume parks `worktree_dirty`, as after a red re-gate."""
     if not regen:
         return None
+    declared = list(regen)
     before = {ln[3:] for ln in git.status_porcelain(worktree, untracked=True)}
 
     def put_back():
-        if not before:
+        if not own:
+            git.git(worktree, "reset", "-q", "--", *declared, check=False)
+        elif not before:
             git.git(worktree, "reset", "-q", "--hard", "HEAD", check=False)
             git.git(worktree, "clean", "-fdq", check=False)
 
     try:
         for path, cmd in regen.items():
             git.run_regenerate(worktree, cmd)
+        git.git(worktree, "add", "--", *declared)
+        staged = git.git(worktree, "diff", "--cached", "--quiet", check=False).returncode != 0
+        if staged:
+            git.git(worktree, "commit", "-q", "-m",
+                    f"wt({campaign_id}): regenerate generated files after rebase")
     except GitError as e:
         put_back()
-        return f"regenerate command failed: {e.tail}"
-    declared = list(regen)
-    git.git(worktree, "add", "--", *declared)
-    if git.git(worktree, "diff", "--cached", "--quiet", check=False).returncode != 0:
-        message = f"wt({campaign_id}): regenerate generated files after rebase"
-        git.git(worktree, "commit", "-q", "-m", message)
+        return f"regenerate failed: {e.tail}"
+    if staged:
         events.append(("commit", {"sha": git.rev_parse(worktree),
                                   "message": "regenerate generated files after rebase"}))
         changed = git.git(worktree, "diff", "--name-only", "HEAD~1", "HEAD").stdout.split()
@@ -442,17 +448,11 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
             "title": "generated files regenerated during rebase",
             "detail": "regenerated: " + ", ".join(rb.regenerated),
             "files": list(rb.regenerated)}))
-    problem = _regenerate_after_rebase(worktree, regen, events, state.get("id"))
-    if problem:
-        return decided(_park("regenerate_failed", problem, "CLOSING", events))
-    head = git.rev_parse(worktree)
-    moved_since = None
-    if merge_request:
-        moved_since = _commits_since_request(root, state, pre_rebase)
-
-    if merge_request and (state.get("merge") or {}).get("docs_only"):
+    docs_only = merge_request and (state.get("merge") or {}).get("docs_only")
+    if docs_only:
         # SPEC-0234: no gate runs; the rebased diff must still be inside the (current) allowlist.
         # Diffing against the target keeps commits that landed on base meanwhile out of it.
+        # Checked before regenerating so a refused merge never runs branch-modified commands.
         bad = git.docs_only_violations(
             git.changed_files(worktree, target_sha, renames=False),
             list(mcfg.get("docs_only_paths") or []) + list(regen))      # SPEC-0255
@@ -465,6 +465,16 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
                 f"{', '.join(bad[:10])}{more}. Recovery: abandon this campaign "
                 f"(wt queue abandon {cid} --yes), then wt queue merge {c['branch']} --yes "
                 f"without --docs-only", "QUEUED", events))
+    own = not merge_request or bool((state.get("merge") or {}).get("own_worktree"))
+    problem = _regenerate_after_rebase(worktree, regen, events, state.get("id"), own)
+    if problem:
+        return decided(_park("regenerate_failed", problem, "CLOSING", events))
+    head = git.rev_parse(worktree)
+    moved_since = None
+    if merge_request:
+        moved_since = _commits_since_request(root, state, pre_rebase)
+
+    if docs_only:
         return PreparedClose(target=target, target_sha=target_sha, head=head, policy=policy,
                              events=events, commits_since_request=moved_since,
                              pre_head=pre_head)

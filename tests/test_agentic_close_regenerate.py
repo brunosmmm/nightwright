@@ -149,6 +149,52 @@ def test_resolver_style_rebase_ends_with_the_regenerated_file_in_main(world):
     assert (world["root"] / "gen.txt").read_text() == "merged\n"
 
 
+def test_adopted_worktree_keeps_files_written_while_a_failing_command_runs(world):
+    st = _merge_world(world)
+    _stale(world)
+    out = CL.close_campaign(world["cfg"], st, _pc(world, "echo mine > mine.txt; exit 1"))
+    assert out.next_state == "PARKED" and out.park["reason"] == "regenerate_failed"
+    assert (world["wt"] / "mine.txt").read_text() == "mine\n"        # the requester's, not cleaned
+
+
+def test_adopted_worktree_keeps_stray_files_and_edits_and_parks(world):
+    st = _merge_world(world)
+    _stale(world)
+    cmd = CMD + "; echo mine > mine.txt; echo edited > feature.txt"
+    pcfg = _pc(world, cmd)
+    out = CL.close_campaign(world["cfg"], st, pcfg)
+    assert out.next_state == "PARKED" and out.park["reason"] == "regenerate_failed"
+    assert "mine.txt" in out.park["detail"]
+    assert (world["wt"] / "mine.txt").exists()
+    assert (world["wt"] / "feature.txt").read_text() == "edited\n"   # not reset
+    again = CL.close_campaign(world["cfg"], st, pcfg)
+    assert again.park["reason"] == "worktree_dirty"                    # the established resume
+
+
+def test_declared_path_that_does_not_exist_parks_and_resume_snapshots_nothing(world):
+    _stale(world)
+    pcfg = _pc(world, "echo x > stray.txt", path="missing.txt")
+    out = CL.close_campaign(world["cfg"], world["state"], pcfg)
+    assert out.next_state == "PARKED" and out.park["reason"] == "regenerate_failed"
+    assert out.park["resume_to"] == "CLOSING"
+    head = G.rev_parse(world["wt"])
+    assert _git(world["wt"], "status", "--porcelain") == ""           # put back
+    again = CL.close_campaign(world["cfg"], world["state"], pcfg)     # the resume
+    assert again.park["reason"] == "regenerate_failed"
+    assert G.rev_parse(world["wt"]) == head
+    assert "close-time snapshot" not in _git(world["wt"], "log", "--format=%s", "main..HEAD")
+    assert not (world["root"] / "stray.txt").exists()
+
+
+def test_refused_docs_only_merge_never_runs_the_regenerate_commands(world):
+    st, _ = _docs_only_world(world, {"src/code.py": "x\n"})
+    pcfg = _pcfg(world, gates=("false",), docs_only_paths=json.dumps(["docs/design/"]),
+                 regenerate=_regen([("gen.txt", "touch ran.txt; echo f > gen.txt")]))
+    out = CL.close_campaign(world["cfg"], st, pcfg)
+    assert out.next_state == "QUEUED" or out.park["reason"] == "not_docs_only"
+    assert not (world["wt"] / "ran.txt").exists()
+
+
 def test_run_regenerate_raises_with_the_output_tail(world):
     G.run_regenerate(world["wt"], "true")
     with pytest.raises(G.GitError, match="nope"):

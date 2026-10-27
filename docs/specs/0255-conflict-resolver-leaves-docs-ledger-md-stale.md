@@ -108,11 +108,24 @@ merge-request branch, resolver-style rebase, `run_regenerate`); `tests/test_agen
 neutralising the helper call failed 7 of the 10 new tests. Full `uv run pytest -q -x` and
 `python3 tools/spec_lint.py` passed.
 
+Review-loop hardening: four more tests (adopted worktree keeps a requester's file/edit on a failing
+or stray-writing command; a missing declared path parks and the resume snapshots nothing; a refused
+docs-only merge never runs the commands); `tests/test_agentic_close*.py`, `test_agentic_queue_merge.py`
+and the full `uv run pytest -q -x` pass.
+
 ### As shipped
 
 - `gitops.run_regenerate(worktree, cmd)` is the shared public helper (`gitops.rebase` uses it too).
 - On a `regenerate_failed` park the worktree is put back to HEAD (`reset --hard` + `clean -fd`) when
   it was clean before the commands ran, so a resume does not snapshot or park on the leftovers.
+  Only for a wt-owned worktree: an adopted (merge-request) worktree is the requester's, so nothing
+  is reset or deleted there (our staging is undone; the resume parks `worktree_dirty`).
+- The `git add` / `git commit` steps are inside the same error handling as the commands, so a
+  declared path that is missing or ignored, or a rejecting hook, parks `regenerate_failed` (tree put
+  back) instead of erroring every tick and letting the close-time snapshot commit the leftovers.
+- The `--docs-only` allowlist check now runs before the regenerate commands, so a refused merge
+  never runs branch-modified scripts. Not done: excluding wt's own regenerate commit from
+  `commits_since_request` on retries.
 - `docs/product/loop/operate.md` gained the `regenerate_failed` row (a docs test requires every
   park reason there).
 
