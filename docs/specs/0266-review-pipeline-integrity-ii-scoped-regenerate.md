@@ -1,7 +1,7 @@
 ---
 id: SPEC-0266
 title: "Review pipeline integrity II: scoped regenerate, divergence reset, locked follow-up groups"
-status: in-progress
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -102,15 +102,15 @@ Make three local fixes:
 
 ## Acceptance criteria
 
-- [ ] A regenerate command that runs `git add` on an undeclared file parks
+- [x] A regenerate command that runs `git add` on an undeclared file parks
       `regenerate_failed` with that path in the detail, the branch gets no regenerate
       commit, and the index holds none of the undeclared paths afterwards (for an own and
       for an adopted worktree).
-- [ ] After `wt queue resume <cid> --reset-loops`, `divergence.rounds` returns only rounds
+- [x] After `wt queue resume <cid> --reset-loops`, `divergence.rounds` returns only rounds
       recorded after that resume.
-- [ ] A Summary edit made by another writer while `_file` holds the group is not lost. The
+- [x] A Summary edit made by another writer while `_file` holds the group is not lost. The
       edit waits on `org_write_lock`, and `_file` re-reads inside the lock.
-- [ ] A campaign whose `wtfug:<cid>` group is closed gets a new group instead of lines
+- [x] A campaign whose `wtfug:<cid>` group is closed gets a new group instead of lines
       appended to the closed one.
 
 ## Test plan
@@ -143,13 +143,61 @@ Make three local fixes:
   `test_agentic_review_triage.py` and `test_ideas_group_followups.py` must stay green.
 - **Manual verification:** none. Every path is exercised in-process.
 
+### Test record (2026-10-27)
+
+- New tests, all green:
+  - `test_agentic_close_regenerate.py::test_regenerate_that_stages_undeclared_file_parks[False|True]`
+    (own and adopted worktree)
+  - `test_agentic_divergence.py::test_reset_loops_resume_cuts_rounds`
+  - `test_agentic_review_triage.py::test_filer_rereads_group_under_lock`
+  - `test_agentic_review_triage.py::test_filer_ignores_closed_own_group`
+  - `test_agentic_review_triage.py::test_an_archived_own_group_is_not_adopted`
+- `uv run pytest -q` on the four named files (`test_agentic_close_regenerate.py`,
+  `test_agentic_divergence.py`, `test_agentic_review_triage.py`,
+  `test_ideas_group_followups.py`): 138 passed.
+- Full `uv run pytest -q -x`: 3253 passed, 3 skipped. This was the pytest gate on the run 001
+  code, and run 005 got the same result again on the same code (671 s).
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`: exit 0.
+- Sabotage checks. Each was applied by hand, its test run, and then reverted with
+  `git checkout`:
+  - The staged-scope check replaced with `if False:` →
+    `test_regenerate_that_stages_undeclared_file_parks[False]` and `[True]` both **fail**.
+  - Only the `git reset -q -- <extra>` removed →
+    `test_regenerate_that_stages_undeclared_file_parks[True]` (adopted) **fails**; the
+    index still holds `x`. `[False]` passes: in the clean own-worktree fixture,
+    `put_back()` alone already clears the index, so only the adopted case needs the
+    explicit reset.
+  - The `loops_reset` cut removed (`if diverging:` only) →
+    `test_reset_loops_resume_cuts_rounds` **fails**.
+  - The `org_write_lock` wrapper dropped (`if True:`) →
+    `test_filer_rereads_group_under_lock` **fails**; the human note is lost.
+  - `open_only=False` passed in `_file` → `test_filer_ignores_closed_own_group` and
+    `test_an_archived_own_group_is_not_adopted` **fail**.
+
+### As shipped (2026-10-27)
+
+- The regenerate test's base command is `CMD = "cp src.txt gen.txt"`, the existing
+  fixture's regenerate command in `test_agentic_close_regenerate.py`. It is not
+  `python3 tools/spec_lint.py --write-ledger`, which the fixture repo does not have. The
+  test appends `&& touch x && git add x`. The asserts are unchanged: the park is
+  `regenerate_failed` with `x` in the detail, there is no regenerate commit, and the index
+  is empty.
+- SPEC-0239 AC5 (crash adoption finds an archived own group) is superseded by AC4 here. An
+  archived group is closed, so it now counts as absent.
+  `test_crash_adoption_finds_an_archived_own_group` became
+  `test_an_archived_own_group_is_not_adopted`. It asserts that a new open group is created
+  and the archive is left untouched.
+- `find_marker`'s `open_only` skips done nodes and the archive as designed. `_file`'s whole
+  steps 2–5 sit under `with OW.org_write_lock(cfg):`. A monkeypatched `find_marker` in
+  `test_non_oserror_from_the_org_layer_never_escapes` now accepts keyword arguments.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
