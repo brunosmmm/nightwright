@@ -43,8 +43,8 @@ def _vfs(free_mb=10_000, files=1_000_000, ffree=900_000):
 
 @pytest.fixture
 def shared_dev(tmp_path, monkeypatch):
-    """gettempdir() on the same filesystem as the data dir, so one statvfs covers both."""
-    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    """$TMPDIR on the same filesystem as the data dir, so one statvfs covers both."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
     return tmp_path
 
 
@@ -239,6 +239,26 @@ def test_clear_child_tmp_refuses_symlink_escape(tmp_path):
     assert (outside / "keep").is_file() and not (root / "run-evil").exists()
 
 
+def test_clear_campaign_tmp_refuses_empty_campaign_id(tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg)
+    with pytest.raises(ValueError):
+        S.clear_campaign_tmp(cfg, "")
+    assert (S.campaign_dir(cfg, cid) / "state.json").is_file()
+
+
+def test_clear_campaign_tmp_unlinks_symlink_and_keeps_target(tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("x")
+    link = S.campaign_dir(cfg, cid) / "tmp"
+    link.symlink_to(outside)
+    S.clear_campaign_tmp(cfg, cid)
+    assert (outside / "keep").is_file() and not link.exists() and not link.is_symlink()
+
+
 # ---- temp_pressure -------------------------------------------------------------------------
 
 def test_temp_pressure_free_space_then_inodes_then_none(tmp_path, monkeypatch, shared_dev):
@@ -261,6 +281,23 @@ def test_temp_pressure_statvfs_error_is_no_pressure(tmp_path, monkeypatch, share
         raise OSError("nope")
     monkeypatch.setattr(os, "statvfs", bad)
     assert E.temp_pressure(_cfg(tmp_path)) is None
+
+
+def test_temp_pressure_does_not_probe_gettempdir_when_tmp_is_full(tmp_path, monkeypatch):
+    """gettempdir() falls back to /var/tmp (or raises) on ENOSPC; /tmp must still be checked."""
+    def broken():
+        raise FileNotFoundError("No usable temporary directory found")
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    monkeypatch.setattr(tempfile, "gettempdir", broken)
+    monkeypatch.delenv("TMPDIR", raising=False)
+    seen = []
+
+    def vfs(p):
+        seen.append(str(p))
+        return _vfs(free_mb=1)(p) if str(p) == "/tmp" else _vfs()(p)
+    monkeypatch.setattr(os, "statvfs", vfs)
+    p = E.temp_pressure(_cfg(tmp_path))
+    assert p is not None and p["path"] == "/tmp" and seen[0] == "/tmp"
 
 
 def test_temp_pressure_checks_a_shared_filesystem_once(tmp_path, monkeypatch, shared_dev):

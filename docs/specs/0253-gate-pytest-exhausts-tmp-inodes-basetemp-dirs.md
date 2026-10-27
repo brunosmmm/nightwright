@@ -141,6 +141,8 @@ Regression: full `uv run pytest`.
 - `uv run pytest -q tests/test_agentic_tmp_isolation.py`: 32 passed (new file, covers every Test plan item).
 - Sabotage: removing the `TMPDIR` export from `gate_env` failed 3 tests; disabling the `_tick`
   admission guard failed `test_pressure_pauses_admission_but_not_in_flight_campaigns`; both restored.
+- Review loop 1: added `clear_campaign_tmp` refusal tests (empty id, symlinked `tmp`) and a
+  `temp_pressure` test with `gettempdir()` broken; `tests/test_agentic_tmp_isolation.py`: 35 passed.
 - Full `uv run pytest -q`: 3021 passed, 3 skipped. `python3 tools/spec_lint.py` exits 0 after
   `--write-ledger`.
 
@@ -159,6 +161,9 @@ Regression: full `uv run pytest`.
   left alone because `build_request` creates the dir before `run.start` is appended.
 - `TickReport.admission_paused` is `"temp_pressure"` when admission was skipped and appears in the
   tick payload only then. WAITING campaigns still resume (they are started work, not admissions).
+- `events.temp_pressure` checks `os.environ["TMPDIR"]` (default `/tmp`) instead of
+  `tempfile.gettempdir()`: that call writes a probe file and silently falls back to `/var/tmp`
+  (or raises) when `/tmp` is out of inodes/space, which is the condition being detected.
 - Free inodes use `f_ffree`, free space `f_bavail * f_frsize`.
 
 ## Definition of done

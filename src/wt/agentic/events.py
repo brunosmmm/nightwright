@@ -16,7 +16,6 @@ import json
 import math
 import os
 import sys
-import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -124,14 +123,16 @@ def settings(cfg) -> dict:
 
 
 def temp_pressure(cfg) -> dict | None:
-    """SPEC-0253: the first checked directory (`tempfile.gettempdir()`, then the agentic dir)
+    """SPEC-0253: the first checked directory (`$TMPDIR` or `/tmp`, then the agentic dir)
     whose filesystem is short of free space or free inodes, else None. Filesystems are
     de-duplicated by `st_dev`; `path` is the checked directory (`statvfs` gives no mount
     point). A directory that cannot be stat'ed counts as no pressure; so does a filesystem
     without a fixed inode count (`f_files == 0`)."""
     sett = settings(cfg)
     seen = set()
-    for path in (tempfile.gettempdir(), str(store.agentic_dir(cfg))):
+    # Not `tempfile.gettempdir()`: it writes a probe file and, when /tmp is out of inodes or
+    # space (the very condition checked here), silently falls back to /var/tmp or raises.
+    for path in (os.environ.get("TMPDIR") or "/tmp", str(store.agentic_dir(cfg))):
         try:
             probe = Path(path)
             while not probe.exists() and probe != probe.parent:
