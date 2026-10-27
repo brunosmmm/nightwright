@@ -937,6 +937,38 @@ def test_duplicate_idea_ids_done_spec_advances_and_archives_the_right_one(tmp_pa
         assert _linked_headings(cfg) == [promoted]
 
 
+def test_duplicate_id_existing_link_settles_the_spec_and_newer_twin_stays_unlinked(tmp_path):
+    # the old twin already carries :SPEC: SPEC-0001; the newer unlinked twin (date-valid for the
+    # spec) must not be linked, advanced or archived because of the shared id
+    cfg, shared = _dup_pair(tmp_path, "2026-10-26")
+    _spec(cfg, "SPEC-0001", "done", source_idea=shared, created="2026-10-26")
+    old = next(t for t in load_tasks(cfg) if t.is_idea and t.heading == "old idea")
+    W.set_property(cfg, old, "SPEC", "SPEC-0001")
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert "link" not in {a for _s, a in _rows(plan, shared)}
+    assert not [r for r in _rows(plan, shared) if r[1].startswith("flag-")]
+    assert _states(cfg) == {"old idea": "PROMOTED", "new idea": "IDEA"}
+    assert _linked_headings(cfg) == ["old idea"]
+    assert _files(cfg)["new idea"] != "ideas-archive.org"
+
+
+def test_duplicate_id_twin_linked_elsewhere_does_not_hide_a_valid_unlinked_one(tmp_path):
+    # the newer twin belongs to another spec: SPEC-0001 (new enough for both) takes the old one
+    cfg, shared = _dup_pair(tmp_path, "2026-10-26")
+    _spec(cfg, "SPEC-0002", "accepted", source_idea=None)
+    new = next(t for t in load_tasks(cfg) if t.is_idea and t.heading == "new idea")
+    W.set_property(cfg, new, "SPEC", "SPEC-0002")
+    S.reconcile_ideas(cfg, apply=True)
+    assert sorted(_linked_headings(cfg)) == ["new idea", "old idea"]
+    old = next(t for t in load_tasks(cfg) if t.is_idea and t.heading == "old idea")
+    assert old.properties["SPEC"] == "SPEC-0001"
+
+
+def test_unresolvable_pin_is_not_guessed(tmp_path):
+    cfg, shared = _dup_pair(tmp_path, "2026-10-26")
+    assert S._resolve_idea(cfg, shared, ("/nowhere.org", "gone")) is None
+
+
 def test_duplicate_idea_ids_none_date_valid_flags(tmp_path):
     cfg, shared = _dup_pair(tmp_path, "2026-08-01")
     plan = S.reconcile_ideas(cfg, apply=True)

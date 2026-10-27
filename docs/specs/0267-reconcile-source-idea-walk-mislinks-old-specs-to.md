@@ -90,6 +90,18 @@ The `source_idea` walk links an unlinked idea to a spec only if the idea passes 
   Added coverage: quoted-string/datetime spec `created`, `_as_date`, duplicate id with only
   superseded/rejected claimants, `_fresh_idea` re-raise (zero and several hits).
 
+### Test record (2026-10-27, second review follow-up)
+
+- Duplicate-id resolution respects existing links: a live claimant `sid` whose id has a twin
+  already carrying `:SPEC: sid` is skipped by the `source_idea` walk (the linked path handles it),
+  and `_pick_idea` only considers twins not linked to another spec (all linked: unchanged
+  conflict path). A pin that no longer resolves (`_resolve_idea` -> None) becomes a
+  `flag-conflict` "idea no longer found" row instead of an exception or a bare-id guess.
+- `uv run pytest -q tests/test_reconcile.py`: 104 passed. New tests
+  `test_duplicate_id_existing_link_settles_the_spec_and_newer_twin_stays_unlinked`,
+  `test_duplicate_id_twin_linked_elsewhere_does_not_hide_a_valid_unlinked_one`,
+  `test_unresolvable_pin_is_not_guessed`; the first two fail when the new guard/pool is removed.
+
 ### As shipped (2026-10-27)
 
 `org_write.set_state` auto-archives a terminal idea by re-finding it; with an `:ID:` carried by

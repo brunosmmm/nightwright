@@ -917,13 +917,13 @@ def _pick_idea(cands, spec_created):
 
 def _resolve_idea(cfg, idea_id, pin):
     """The idea to write to: `W.resolve_selector`, except that an id several ideas carry
-    (`pin` = the planned idea's `(file, heading)`, SPEC-0267) is found by that pin."""
+    (`pin` = the planned idea's `(file, heading)`, SPEC-0267) is found by that pin, or is None
+    when the pinned idea is gone."""
     if pin is not None:
         from .org import filter_tasks, load_tasks
         hits = [t for t in filter_tasks(load_tasks(cfg), is_idea=True)
                 if (t.properties.get("ID") or "").strip() == idea_id and (t.file, t.heading) == pin]
-        if len(hits) == 1:
-            return hits[0]
+        return hits[0] if len(hits) == 1 else None      # never guess among duplicate ids
     return W.resolve_selector(cfg, idea_id)
 
 
@@ -993,7 +993,11 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
             continue
         groups = {}                     # idea task -> claimant spec ids that resolved to it
         for sid, created in live:
-            task, bad = _pick_idea(cands, created)
+            if any((t.properties.get("SPEC") or "").strip() == sid for t in cands):
+                continue                # the existing link settles this spec; the linked path runs it
+            # a twin linked to another spec is not this spec's idea unless nothing else is left
+            pool = [t for t in cands if not (t.properties.get("SPEC") or "").strip()] or cands
+            task, bad = _pick_idea(pool, created)
             if task is not None:
                 groups.setdefault(id(task), (task, []))[1].append(sid)
                 continue
@@ -1079,6 +1083,9 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     for idea_id, spec_id, pin in links:
         ORG.invalidate_tasks_cache()
         task = _resolve_idea(cfg, idea_id, pin)
+        if task is None:            # the pinned duplicate-id idea is gone: report, don't guess
+            drifted[(idea_id, spec_id)] = None
+            continue
         now = (task.properties.get("SPEC") or "").strip()
         if now:                     # linked since the plan: leave it
             if now != spec_id:
@@ -1087,8 +1094,9 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
         W.set_property(cfg, task, "SPEC", spec_id)
     # report what really happened: a skipped link is a conflict, and its advance never ran
     plan[:] = [
-        (i, s, "flag-conflict", f"idea links {drifted[i, s]}") if a == "link" and (i, s) in drifted
-        else (i, s, a, d)
+        (i, s, "flag-conflict",
+         f"idea links {drifted[i, s]}" if drifted[i, s] else "idea no longer found; not written")
+        if a == "link" and (i, s) in drifted else (i, s, a, d)
         for i, s, a, d in plan if not (a == "advance" and (i, s) in drifted)]
     for idea_id, spec_id, target, pin in advances:
         if (idea_id, spec_id) in drifted:      # the advance was derived from a spec it no longer points to
@@ -1098,8 +1106,13 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
             continue
         ORG.invalidate_tasks_cache()
         task = _resolve_idea(cfg, idea_id, pin)
-        if EX.ensure_idea_keyword(cfg, task.file, target):
+        if task is not None and EX.ensure_idea_keyword(cfg, task.file, target):
             task = _resolve_idea(cfg, idea_id, pin)
+        if task is None:
+            plan[:] = [(i, s, "flag-conflict", "idea no longer found; not advanced")
+                       if (i, s, a) == (idea_id, spec_id, "advance") else (i, s, a, d)
+                       for i, s, a, d in plan]
+            continue
         EX.set_state(cfg, task, target)
     if backlinks:
         for spec_id, idea_id in backlink_writes:
