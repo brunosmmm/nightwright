@@ -663,3 +663,19 @@ def test_gc_removes_terminal_tmp_residue(world):
     assert not S.campaign_tmp(cfg, "h1").exists()
     assert (S.campaign_tmp(cfg, "l1") / "run-001-x" / "f").is_file()
     assert not [r for r in Q.plan_gc(cfg)["rows"] if r["kind"] == "tmp"]
+
+
+def test_gc_tmp_residue_honours_project(world):
+    """SPEC-0287: `--project` limits the `tmp` rows too: another project's terminal residue is
+    neither listed nor removed."""
+    cfg, root = world["cfg"], world["root"]
+    _campaign(cfg, "h1", "HANDED_OFF", root, "wt/h1")
+    _campaign(cfg, "h2", "HANDED_OFF", root, "wt/h2", project="other")
+    for cid in ("h1", "h2"):
+        (S.child_tmp(cfg, cid, "run-001-x", create=True) / "f").write_text("x")
+    plan = Q.plan_gc(cfg, project="other")
+    tmp_rows = [r for r in plan["rows"] if r["kind"] == "tmp"]
+    assert [r["campaign"] for r in tmp_rows] == ["h2"] and plan["tmp_removable"] == 1
+    Q.apply_gc(cfg, plan)
+    assert not S.campaign_tmp(cfg, "h2").exists()
+    assert (S.campaign_tmp(cfg, "h1") / "run-001-x" / "f").is_file()

@@ -179,6 +179,19 @@ runs with `--no-renames`.
   `tmp_removable: 0`, no errors. No HANDED_OFF residue exists today. The conductor still runs the
   post-merge `wt queue gc` once, as the Rollout section says.
 
+### Test record (2026-10-27, review fixes)
+
+- `test_crash_sweep_leaves_force_detached_review_to_adoption`: a single-reviewer review flight
+  in `wait`, plus a second campaign's gate that ends 0.5 s into the wait. After `_crash_sweep`
+  the reviewing campaign's state and ledger are unchanged and its run is in `detached`; the gate
+  still parks. Sabotage (the force-detached flights are not dropped before the second harvest):
+  the test fails, because the state changed.
+- `test_gc_tmp_residue_honours_project`: `plan_gc(cfg, project="other")` lists and removes only
+  the other project's terminal residue. Sabotage (project clause dropped from the tmp rows):
+  the test fails.
+- Gates rerun: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exits 0;
+  full `uv run pytest -q -x`: 3529 passed, 3 skipped.
+
 ### As shipped (2026-10-27)
 
 - `test_stuck_items_ignores_train_waiter_and_uses_head_since` used to put its waiter behind a
@@ -190,6 +203,10 @@ runs with `--no-renames`.
 - `plan_gc` also returns `tmp_removable`, which is additive like the row kind. The text
   summary mentions tmp dirs only when there are some, so the existing output stays the same.
   A `tmp` row with no repo root has `repo: null`. Other rows always have a root.
+- Before the second harvest, `_crash_sweep` drops every flight whose campaign is in
+  `pool.forced`. Those flights hold a force-detached run whose task returns DETACHED. A review
+  group's `_finish_reviews` would otherwise apply it as a missing verdict (a bogus note and a
+  `review_retry`). The run is left to the next runner's adoption, as `_drain` does.
 - After `store.clear_campaign_tmp`, `apply_gc` checks that the dir is gone, because the removal
   ignores errors. A dir that is still there marks the row `done: false` with an error.
 

@@ -3707,7 +3707,12 @@ def _crash_sweep(cfg, pool: StepPool, bound_s: float) -> tuple:
         if not (abandoned or in_process) or time.monotonic() >= deadline:
             break
         time.sleep(0.2)
-    # SPEC-0287: apply the tasks that finished during the wait; abandon only the unfinished
+    # SPEC-0287: apply the tasks that finished during the wait; abandon only the unfinished.
+    # A flight holding a force-detached run is not a result: leave it to the next runner's
+    # adoption, as `_drain` does (its tasks return DETACHED, a review group would misapply).
+    with pool.lock:
+        for cid in [c for c in pool.flights if c in pool.forced]:
+            pool.flights.pop(cid)
     harvest()
     in_process = pool.unfinished_in_process()
     return pool.detached_view(), abandoned + in_process
