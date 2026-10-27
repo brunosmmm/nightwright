@@ -20,6 +20,7 @@ from textual.widgets import (DataTable, Footer, Header, Input, Label, Static, Ta
 
 from .. import report as R
 from . import model as M
+from .campaign_screen import CampaignScreen
 from .queue_tab import QueueView
 
 # Half the terminal, with a floor: proportional so a wide terminal spends the extra columns on
@@ -428,10 +429,12 @@ class IdeaDesk(App):
         Binding("escape", "clear_bars", "clear", show=False),
     ]
 
-    def __init__(self, cfg, *, all_done=False, query=None, filters=None, tab="ideas"):
+    def __init__(self, cfg, *, all_done=False, query=None, filters=None, tab="ideas",
+                 campaign=None):
         super().__init__()
         self.cfg = cfg
-        self.tab = tab or "ideas"
+        self.campaign = campaign           # SPEC-0246: open this campaign's screen on mount
+        self.tab = "queue" if campaign else (tab or "ideas")
         self._active_tab = "tab-ideas"
         self.all_done = all_done
         self.query = query or ""
@@ -488,6 +491,8 @@ class IdeaDesk(App):
         # heading column is clipped to a measured budget.
         self.call_after_refresh(self.reload)
         self.set_interval(1.5, self._check_external_changes)   # SPEC-0128
+        if self.campaign:
+            self.push_screen(CampaignScreen(self.cfg, self.campaign))
 
     def on_resize(self, event) -> None:
         """Re-clip to the new width without re-reading org."""
@@ -1026,7 +1031,9 @@ class IdeaDesk(App):
         "explored", "metadata", "clock_toggle", "close_idea"})
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        if action in self._IDEA_ACTIONS and self._active_tab != "tab-ideas":
+        if action in self._IDEA_ACTIONS and (
+                self._active_tab != "tab-ideas"
+                or any(isinstance(s, CampaignScreen) for s in self.screen_stack)):
             return False
         return True
 
@@ -1050,9 +1057,8 @@ class IdeaDesk(App):
 
     @on(QueueView.CampaignSelected)
     def _campaign_selected(self, event: QueueView.CampaignSelected) -> None:
-        """`enter` on a queue row. The detail view (IDEA-084) will consume this; until then,
-        a CLI hint, as the hub does for spec rows."""
-        self.notify(f"wt campaign show {event.campaign_id}", title="run this in a shell")
+        """`enter` on a queue row: the campaign detail screen (SPEC-0246)."""
+        self.push_screen(CampaignScreen(self.cfg, event.campaign_id))
 
     def load_hub(self) -> None:
         """Fill the hub tab from `hub_payload`. Read-only: no writer is reachable from here."""

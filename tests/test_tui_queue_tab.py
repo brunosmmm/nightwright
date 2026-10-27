@@ -691,7 +691,7 @@ def test_an_action_not_allowed_notifies_and_opens_no_prompt(tmp_path):
     _run(drive())
 
 
-def test_enter_posts_campaign_selected_and_shows_the_cli_hint(tmp_path):
+def test_enter_posts_campaign_selected_and_opens_the_campaign_screen(tmp_path):
     repo, cfg, ids = _fixture(tmp_path)
     app = _desk(cfg, tab="queue")
     seen = []
@@ -709,8 +709,9 @@ def test_enter_posts_campaign_selected_and_shows_the_cli_hint(tmp_path):
             select(app, "backlog", ids["ready"])
             await press(app, pilot, ["enter"])
             await settle(app, pilot)
-            assert (f"wt campaign show {ids['ready']}", {"title": "run this in a shell"}) in \
-                app.notes
+            # SPEC-0246 replaced the CLI hint with the campaign screen
+            assert app.screen.__class__.__name__ == "CampaignScreen"
+            assert app.screen.campaign_id == ids["ready"]
 
     try:
         _run(drive())

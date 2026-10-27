@@ -1384,9 +1384,11 @@ def hub_cmd(cfg, as_json, tasks_slice, state, kind, tag, project, workstream, pr
 @click.option("--query", default=None, help="open on a related-idea search (SPEC-0086)")
 @click.option("--tab", type=click.Choice(["ideas", "hub", "queue"], case_sensitive=False),
               default="ideas", show_default=True, help="tab to open on (SPEC-0241)")
+@click.option("--campaign", "campaign", default=None, shell_complete=C.complete_campaign_id,
+              help="open this campaign's detail screen (id or unique prefix, SPEC-0246)")
 @click.pass_obj
 def tui_cmd(cfg, state, kind, tag, project, workstream, priority, sort, desc, all_done, query,
-            tab):
+            tab, campaign):
     """Interactive ideas desk (SPEC-0098/0099/0100). Needs the optional `tui` extra.
 
     Read-only in v1: browse, search, expand Summary / questions / Log. Human-only surface —
@@ -1399,11 +1401,22 @@ def tui_cmd(cfg, state, kind, tag, project, workstream, priority, sort, desc, al
     wt tui --project Example    open pre-filtered
     wt tui --query textual    open on a search (`/` searches in-app)
     wt tui --tab queue        open on the live agentic queue (`1`/`2`/`3` switch tabs)
+    wt tui --campaign ID      open one campaign's timeline, runs, gates and reviews
     """
     from . import tui as T
 
+    if campaign:
+        from .agentic import store as agentic_store
+        known = [c["id"] for c in agentic_store.list_campaigns(cfg, include_terminal=True)]
+        hits = [c for c in known if c == campaign] or [c for c in known if c.startswith(campaign)]
+        if not hits:
+            raise click.ClickException(f"unknown campaign {campaign!r}")
+        if len(hits) > 1:
+            raise click.ClickException(
+                f"campaign prefix {campaign!r} is ambiguous: {', '.join(sorted(hits))}")
+        campaign = hits[0]
     try:
-        T.run(cfg, all_done=all_done, query=query, tab=tab.lower(),
+        T.run(cfg, all_done=all_done, query=query, tab=tab.lower(), campaign=campaign,
               filters={"state": state, "kind": kind, "tag": tag, "project": project,
                        "workstream": workstream, "priority": priority,
                        "sort": sort, "desc": desc})

@@ -1,14 +1,24 @@
-"""View model for the TUI queue tab (SPEC-0241). No Textual import.
+"""View model for the TUI queue tab (SPEC-0241) and campaign screen (SPEC-0246). No Textual
+import.
 
 Turns `queue.dashboard_payload` and `events.followers` into rows and a header line, computes a
-`stat()`-only change signature, and wraps the four human queue actions. Read-only except
-`queue_action`, which goes through the same `plan_*` / `apply_*` functions as the CLI.
+`stat()`-only change signature, and wraps the four human queue actions. `load_campaign` builds
+one campaign's header, ledger timeline and review panel. Read-only except `queue_action`, which
+goes through the same `plan_*` / `apply_*` functions as the CLI.
 """
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
 
+from rich.text import Text
+
+from .. import render as RD
 from ..agentic import events as EV
 from ..agentic import lease as L
+from ..agentic import profiles as PR
 from ..agentic import queue as Q
+from ..agentic import runs as RN
+from ..agentic import spec_review as SR
 from ..agentic import store
 from ..agentic.cli_queue import _ago, _dur
 
@@ -186,3 +196,311 @@ def queue_action(cfg, action, campaign, **kw) -> dict:
     apply = {"park": Q.apply_park, "resume": Q.apply_resume,
              "prioritize": Q.apply_prioritize, "abandon": Q.apply_abandon}[action]
     return apply(cfg, plan)
+
+
+# --- campaign detail (SPEC-0246) ----------------------------------------------------------
+
+GROUPS = ("transitions", "runs", "gates", "findings", "notes")
+_GROUP_OF = {
+    **dict.fromkeys(("open", "transition", "park", "resume", "priority", "close",
+                     "admitted_after_revision"), "transitions"),
+    **dict.fromkeys(("run.start", "run.end", "cost"), "runs"),
+    "gate": "gates",
+    **dict.fromkeys(("finding", "followup"), "findings"),
+}
+GATE_LOG_LINES = 40
+SEVERITIES = ("must_fix", "major", "minor", "nit")
+
+
+def event_group(etype) -> str:
+    return _GROUP_OF.get(etype, "notes")
+
+
+@dataclass(frozen=True)
+class TimelineEntry:
+    seq: int
+    ts: str
+    type: str
+    group: str
+    text: str
+    ref: object = None          # run id (run events) or gate_seq (gate events)
+    event: dict = field(default_factory=dict, compare=False, hash=False)
+
+
+@dataclass
+class CampaignDetail:
+    campaign: str
+    state: dict
+    header: list
+    entries: list
+    review: Text
+    actions: tuple
+    signature: tuple
+
+
+def _entry(ev: dict) -> TimelineEntry:
+    etype = str(ev.get("type", "?"))
+    line = RD.campaign_event(ev)
+    # `campaign_event` is `seq  ts  type  by  payload`; the screen has its own seq/ts/type columns
+    parts = line.plain.split(None, 3)
+    rest = parts[3] if len(parts) > 3 else ""
+    ref = None
+    if etype in ("run.start", "run.end"):
+        ref = ev.get("run_id")
+    elif etype == "gate":
+        ref = ev.get("gate_seq")
+    return TimelineEntry(seq=ev.get("seq") or 0, ts=str(ev.get("ts") or ""), type=etype,
+                         group=event_group(etype), text=rest, ref=ref, event=ev)
+
+
+def _followups_line(state) -> Text | None:
+    fu = (state.get("close") or {}).get("followups") or {}
+    ids = []
+    for f in fu.get("filed") or []:
+        i = f.get("idea_id") if isinstance(f, dict) else None
+        if i and i not in ids:
+            ids.append(i)
+    counts = [(k, len(fu.get(k) or [])) for k in ("unfiled", "waived", "capped")]
+    counts = [f"{n} {k}" for k, n in counts if n]
+    if not ids and not counts:
+        return None
+    bits = ([f"follow-ups {' '.join(ids)}"] if ids else []) + counts
+    return Text(" · ".join(bits))
+
+
+def header_lines(cfg, state) -> list:
+    cost = state.get("cost") or {}
+    counters = state.get("counters") or {}
+    repo = state.get("repo") or {}
+    ident = state.get("spec_id") or (state.get("idea") or {}).get("id") or Q.campaign_label(state)
+    title = Q._spec_title(state) or ""
+    l1 = Text()
+    l1.append(str(state.get("id")), style="bold")
+    l1.append(f"  {state.get('state')}  spec {ident} {title}  project {state.get('project') or '-'}")
+    try:
+        loop_max = PR.resolve_profile(cfg, state.get("profile"),
+                                      project_root=repo.get("root")).get("loop_max")
+    except ValueError:
+        loop_max = None
+    total, est, cap = (float(cost.get("total_usd") or 0.0),
+                       float(cost.get("estimated_usd") or 0.0), cost.get("cap_usd"))
+    l2 = (f"loops {counters.get('loops', 0)}/{loop_max if loop_max is not None else '?'}  "
+          f"runs {counters.get('runs', 0)}  cost ${total:.2f}"
+          + (f" (~${est:.2f} est.)" if est > 0 else "")
+          + (f" / ${float(cap):.2f}" if cap else ""))
+    sizing = state.get("sizing") or {}
+    if sizing:
+        src = f" ({sizing['source']})" if sizing.get("source") else ""
+        l2 += (f"  profile {state.get('profile') or '-'}{src}  size {sizing.get('size') or '-'}"
+               f"  tone {sizing.get('tone') or '-'}")
+    lines = [l1, Text(l2)]
+    if repo:
+        wt_path = repo.get("worktree")
+        missing = "" if wt_path and os.path.isdir(wt_path) else " (missing)"
+        lines.append(Text(f"branch {repo.get('branch') or '-'}  worktree {wt_path or '-'}{missing}"))
+    park = state.get("park")
+    if park:
+        lines.append(Text(f"parked {park.get('reason')}: {park.get('detail', '')} "
+                          f"→ resume to {park.get('resume_to')}", style="yellow"))
+    elif state.get("park_requested"):
+        lines.append(Text(f"park requested: {state['park_requested'].get('detail', '')}",
+                          style="yellow"))
+    fu = _followups_line(state)
+    if fu:
+        lines.append(fu)
+    return lines
+
+
+def load_campaign(cfg, cid) -> CampaignDetail:
+    """Raises ValueError for an unknown campaign (from `store.read_state`)."""
+    signature = campaign_signature(cfg, cid)        # first: a write during the load re-triggers
+    state = store.read_state(cfg, cid)
+    entries = [_entry(ev) for ev in store.read_ledger(cfg, cid)]
+    entries.sort(key=lambda e: e.seq)
+    return CampaignDetail(
+        campaign=cid, state=state, header=header_lines(cfg, state), entries=entries,
+        review=review_text(cfg, state),
+        actions=allowed_actions(state.get("state"), bool(state.get("park_requested"))),
+        signature=signature)
+
+
+def campaign_signature(cfg, cid) -> tuple:
+    def stat(path):
+        try:
+            return path.stat()
+        except OSError:
+            return None
+    st = stat(store.campaign_dir(cfg, cid) / "state.json")
+    ledger = stat(store.campaign_dir(cfg, cid) / "ledger.jsonl")
+    return (st.st_mtime_ns if st else None, ledger.st_size if ledger else None)
+
+
+def _field(t: Text, key, value) -> None:
+    text = value if isinstance(value, str) else str(value)
+    t.append(f"{key}: ", style="dim")
+    t.append(text)
+    t.append("\n")
+
+
+def _payload(t: Text, ev: dict) -> None:
+    for k, v in ev.items():
+        if k in ("schema", "campaign"):
+            continue
+        _field(t, k, v)
+
+
+def _file_tail(path: Path, n=GATE_LOG_LINES) -> list:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]
+    except OSError:
+        return None
+
+
+def _run_detail(t: Text, cfg, cid, ev) -> None:
+    try:
+        rec = RN.campaign_run(cfg, cid, ev.get("run_id"))
+    except ValueError as e:
+        t.append(f"(run unavailable: {e})\n", style="yellow")
+        _payload(t, ev)
+        return
+    for k in ("run_id", "persona", "model", "effort", "status", "verdict_status", "duration_s",
+              "cost_usd", "charged_usd"):
+        _field(t, k, rec.get(k))
+    verdict = rec.get("verdict") if isinstance(rec.get("verdict"), dict) else {}
+    if verdict.get("summary"):
+        t.append("summary\n", style="bold")
+        t.append(f"{verdict['summary']}\n")
+    for k in ("must_fix", "blockers"):
+        if rec.get(k):
+            t.append(f"{k}\n", style="bold")
+            for item in rec[k]:
+                t.append(f"  - {item}\n")
+    _field(t, "permission_denials", len(rec.get("permission_denials") or []))
+    paths = rec.get("paths") or {}
+    if rec.get("stderr_tail"):
+        t.append("stderr_tail\n", style="bold")
+        t.append("\n".join(rec["stderr_tail"]) + "\n", style="dim")
+    t.append("paths\n", style="bold")
+    run_dir = store.runs_dir(cfg, cid) / str(rec.get("run_id"))
+    if not paths:
+        t.append(f"  (missing: {run_dir})\n", style="yellow")
+    for k, v in paths.items():
+        t.append(f"  {k}: {v}\n")
+
+
+def _gate_detail(t: Text, cfg, cid, ev) -> None:
+    results = [r for r in ev.get("results") or [] if isinstance(r, dict)]
+    for key in ("gate_seq", "ok", "started_at", "duration_s"):
+        _field(t, key, ev.get(key))
+    for r in results:
+        t.append(f"{r.get('name')}: ", style="bold")
+        t.append(f"{'ok' if r.get('ok') else 'FAIL'}", style="green" if r.get("ok") else "red")
+        t.append(f"  required={r.get('required')}  exit={r.get('exit_code')}  "
+                 f"duration={r.get('duration_s')}\n")
+    for r in results:
+        if r.get("ok"):
+            continue
+        log = r.get("log")
+        t.append(f"\n{r.get('name')} log tail\n", style="bold")
+        if not log:
+            t.append("(missing: no log recorded)\n", style="yellow")
+            continue
+        path = store.campaign_dir(cfg, cid) / log
+        lines = _file_tail(path)
+        if lines is None:
+            t.append(f"(missing: {path})\n", style="yellow")
+        else:
+            t.append("\n".join(lines) + "\n", style="dim")
+
+
+def entry_detail(cfg, cid, entry) -> Text:
+    """The detail pane for one timeline entry. Never raises."""
+    t = Text()
+    ev = entry.event
+    try:
+        if entry.type in ("run.start", "run.end"):
+            _run_detail(t, cfg, cid, ev)
+        elif entry.type == "gate":
+            _gate_detail(t, cfg, cid, ev)
+        else:
+            _payload(t, ev)
+    except Exception as e:      # the pane must never take the screen down
+        t.append(f"(detail unavailable: {e})\n", style="red")
+    t.rstrip()
+    return t
+
+
+def _finding_lines(t: Text, findings, *, reason=False) -> None:
+    for sev in SEVERITIES:
+        for f in findings:
+            if (f.get("severity") or "minor") != sev:
+                continue
+            personas = ",".join(f.get("personas") or [])
+            files = ",".join(f.get("files") or [])
+            t.append(f"  {f.get('id', '-')} {sev} {personas} {f.get('title', '')}"
+                     + (f" ({files})" if files else "") + "\n")
+            if reason and f.get("reason"):
+                t.append(f"      reason: {f['reason']}\n", style="dim")
+
+
+def _code_review(t: Text, cfg, state) -> None:
+    lr = state.get("last_review") or {}
+    if lr.get("verdict") is None:
+        t.append("no code review yet\n")
+        return
+    waived = [w for w in lr.get("waived") or [] if isinstance(w, dict)]
+    pass_score, blocking, err = "?", None, None
+    try:
+        profile = PR.resolve_profile(cfg, state.get("profile"),
+                                     project_root=(state.get("repo") or {}).get("root"))
+        pass_score = PR.review_params(profile)[0]
+        stored = lr.get("verdicts") or {}
+        verdicts = {p: stored[p] for p in PR.reviewers_of(profile) if isinstance(stored.get(p), dict)}
+        blocking = Q.triage_reviews(verdicts, profile, waived=[w["id"] for w in waived
+                                                               if "id" in w])["blocking"]
+    except ValueError as e:
+        err = e
+    t.append(f"score {lr.get('score')} / pass {pass_score}  verdict {lr.get('verdict')}  "
+             f"loop {lr.get('loop')}\n", style="bold")
+    t.append("blocking:" + ("" if blocking is None else f" {len(blocking)}") + "\n")
+    if blocking is None:
+        t.append(f"  unavailable ({err})\n", style="yellow")
+    else:
+        _finding_lines(t, blocking)
+    advisory = [f for f in lr.get("advisory") or [] if isinstance(f, dict)]
+    t.append(f"advisory: {len(advisory)}\n")
+    _finding_lines(t, advisory)
+    t.append(f"waived: {len(waived)}\n")
+    _finding_lines(t, waived, reason=True)
+
+
+def _spec_review(t: Text, cfg, state) -> None:
+    repo = (state.get("repo") or {}).get("root")
+    rel = (state.get("spec") or {}).get("rel_path")
+    spec_id = state.get("spec_id")
+    review = None
+    if spec_id and not Q.has_no_spec(state) and repo and rel:
+        review = SR.latest_review(cfg, spec_id, Path(repo) / rel)
+    if not review:
+        t.append("no spec review\n")
+        return
+    t.append(f"verdict {review.get('verdict')}  size {review.get('size') or '-'}  "
+             f"tone {review.get('tone') or '-'}  cost ${float(review.get('cost_usd') or 0):.2f}"
+             f"  reviewed {review.get('reviewed_at')}\n", style="bold")
+    if review.get("rationale"):
+        t.append(f"rationale: {review['rationale']}\n")
+    for f in review.get("findings") or []:
+        if isinstance(f, dict):
+            t.append(f"  {f.get('severity', '-')} {f.get('title', '')}\n")
+
+
+def review_text(cfg, state) -> Text:
+    """The review panel: the last code review, then the latest spec review. Never raises for
+    an absent or unresolvable part."""
+    t = Text()
+    t.append("Code review\n", style="bold underline")
+    _code_review(t, cfg, state)
+    t.append("\nSpec review\n", style="bold underline")
+    _spec_review(t, cfg, state)
+    t.rstrip()
+    return t

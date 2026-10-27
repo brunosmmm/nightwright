@@ -1,7 +1,7 @@
 ---
 id: SPEC-0246
 title: "TUI campaign detail screen: header, filterable ledger timeline, runs, gates and reviews"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-25
@@ -195,34 +195,34 @@ payload. The pane never raises.
 
 ## Acceptance criteria
 
-- [ ] AC1. `enter` on a queue row pushes the campaign screen, and Esc returns to the queue tab
+- [x] AC1. `enter` on a queue row pushes the campaign screen, and Esc returns to the queue tab
       with the cursor unchanged. `wt tui --campaign <id or unique prefix>` opens the screen
       directly. An unknown or ambiguous id exits with an error before the TUI starts.
-- [ ] AC2. The header shows the five documented lines when their facts exist. A seeded campaign
+- [x] AC2. The header shows the five documented lines when their facts exist. A seeded campaign
       with sizing, a park and a missing worktree shows every line, and a fresh campaign shows
       lines 1–3.
-- [ ] AC3. The timeline lists every ledger event in `seq` order. `f` cycles the groups with the
+- [x] AC3. The timeline lists every ledger event in `seq` order. `f` cycles the groups with the
       documented membership. The status line shows the filter and `<shown>/<total>`. The cursor
       starts on the last event.
-- [ ] AC4. The detail pane shows, for a run, the `campaign_run` fields, verdict lists, stderr tail
+- [x] AC4. The detail pane shows, for a run, the `campaign_run` fields, verdict lists, stderr tail
       and paths. For a gate it shows the per-gate results and the log tail of each failed gate.
       For findings, parks, transitions, notes and cost events it shows their payloads unclipped.
       A missing run directory or gate log shows `(missing: …)`, and a `campaign_run`
       `ValueError` shows `(run unavailable: …)`, without an exception.
-- [ ] AC5. `v` shows the review panel: the stored score and verdict, the pass score from
+- [x] AC5. `v` shows the review panel: the stored score and verdict, the pass score from
       `review_params`, the blocking findings derived with `triage_reviews` from the stored
       verdicts, and the stored advisory and waived findings grouped by severity, with waived
       reasons (and the `unavailable` fallback for a profile that no longer resolves), and the latest spec review (verdict,
       size/tone/rationale, findings). When either review is absent, it shows the documented
       placeholder.
-- [ ] AC6. A ledger append while the screen is open adds the row within one poll interval with
+- [x] AC6. A ledger append while the screen is open adds the row within one poll interval with
       no key press. The filter is kept, and the cursor stays on its `seq` or follows the end.
       The screen never calls `events.sync`, `cursor_set` or `reader_lock` (monkeypatched to
       raise in the test).
-- [ ] AC7. `p`/`u`/`P`/`A` on the screen run the same flow as on the queue tab, through the shared
+- [x] AC7. `p`/`u`/`P`/`A` on the screen run the same flow as on the queue tab, through the shared
       `QueueActions`. The SPEC-0241 queue tab tests still pass unchanged, and the header
       reflects the new state after an apply.
-- [ ] AC8. Full `uv run pytest` is green and `python3 tools/spec_lint.py` exits 0.
+- [x] AC8. Full `uv run pytest` is green and `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -254,6 +254,46 @@ payload. The pane never raises.
   Filter to `gates`, open a failed gate, toggle `v`, and record what was seen here.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-26)
+
+- `uv run pytest -q tests/test_tui_campaign_model.py` — 14 passed.
+- `uv run pytest -q tests/test_tui_campaign_screen.py` — 8 passed (open/Esc with cursor kept,
+  `--campaign` full id / prefix / unknown / ambiguous, `f` cycling and status counts, `v`,
+  live append with `events.sync` / `cursor_set` / `reader_lock` patched to raise, park and
+  abandon end to end through the screen, idea keys inert).
+- `uv run pytest -q -x tests/test_tui_queue_tab.py tests/test_tui_queue_model.py
+  tests/test_tui_entry.py` — passed after the mixin refactor, except the one test that asserted
+  the SPEC-0241 CLI hint (see As shipped).
+- Manual: `load_campaign` / `entry_detail` / `review_text` run against the live data dir on a
+  merged merge-request campaign (header lines 1–3, 7 events, a passing gate with per-gate
+  results) and on a parked implement campaign with a failed gate (pytest log tail shown, the
+  `gate_triager` run with verdict lists and paths, review panel `score 92 / pass 80`, 2
+  advisory and 6 waived findings with reasons). The interactive `wt tui --campaign` was not
+  driven by hand; the pilot tests cover the screen.
+- Full `uv run pytest -q -x` — 2840 passed, 3 skipped on the re-run after the ledger fix; the first run stopped at
+  `test_internal_spec_lint_unaffected_by_outbox` (`docs/LEDGER.md` stale until
+  `--write-ledger` was run).
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py` — exit 0.
+
+### As shipped (2026-10-26)
+
+- `tests/test_tui_queue_tab.py::test_enter_posts_campaign_selected_and_shows_the_cli_hint`
+  asserted the SPEC-0241 CLI hint, which this spec replaces; it is renamed
+  `…_opens_the_campaign_screen` and now asserts the pushed `CampaignScreen`. No other queue tab
+  test changed.
+- `QueueActions` lives in `queue_tab.py`; `run_queue_action(action, campaign_id, state,
+  actions)` starts the worker, and the priority picker's current value is read from
+  `store.read_state` instead of the queue row.
+- `CampaignScreen` stores the visible rows as `shown` (`Widget.visible` is taken).
+- `TimelineEntry` also carries the raw `event` dict (excluded from equality) so `entry_detail`
+  needs no second ledger read.
+- `IdeaDesk(campaign=ID)` forces the queue tab and pushes the screen in `on_mount`; the id /
+  prefix resolution is done in `wt tui` (`cli.py`) against `store.list_campaigns(include_terminal=True)`.
+- `IdeaDesk.check_action` disables the idea-scoped actions whenever a `CampaignScreen` is in the
+  screen stack (modals from other screens keep the old behaviour).
+- The `must_fix` / `blockers` items of a run verdict print as the stored values (a dict prints
+  as its repr).
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -264,11 +304,11 @@ Nothing to migrate. The screen is available on the next `wt tui` launch with the
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
