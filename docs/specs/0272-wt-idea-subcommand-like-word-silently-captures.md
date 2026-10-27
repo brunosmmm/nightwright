@@ -51,11 +51,15 @@ separate defects, both still present on main:
 ## Decision
 
 - **Verb guard:** in `idea_capture_cmd`, when the joined text is a single token whose
-  casefold is in the capture-verb set — the top-level `cli.commands` names, the `idea_group`
-  subcommand names, plus `{list, ls, help, rm, delete, del, new, edit, status, get}` —
+  casefold is in the capture-verb set — the top-level `cli.commands` names plus
+  `{list, ls, help, rm, delete, del, new, edit, status, get}` —
   raise `ClickException("refusing to capture the single word 'list' as an idea — did you
   mean `wt ideas`? (pass --force to capture it anyway)")`. A `--force` flag bypasses it. The
-  hint maps `list`/`ls` → `wt ideas`, anything else → `wt idea --help`.
+  hint maps `list`/`ls` → `wt ideas`, anything else → `wt idea --help`. `idea_group`
+  subcommand names (`show`, `log`, `state`, …) are not in the set: `IdeaGroup.resolve_command`
+  dispatches them to their subcommand before `capture` runs, so the guard never sees them.
+  `--force` is independent of the existing `--force-idea` (SPEC-0091, which only silences the
+  `--kind bug` routing note): neither implies the other, and the help text of each says so.
 - **Persona guard:** `personas.build_request` adds `WT_PERSONA_RUN=1` to the persona env.
   `org_write` gains `PersonaOrgWriteRefused(ValueError)` and `refuse_in_persona_run()`,
   called at the top of the `org_writer` wrapper and of `_atomic_backup_write` (defense in
@@ -84,7 +88,14 @@ separate defects, both still present on main:
   when `os.environ.get(PERSONA_ENV) == "1"`; called first in `org_writer.wrapper` (before
   taking the lock) and in `_atomic_backup_write`.
 - `src/wt/agentic/personas.py:build_request`: `env["WT_PERSONA_RUN"] = "1"`. The spec-review
-  `RunRequest` built in `src/wt/agentic/spec_review.py` sets the same.
+  `RunRequest` built in `src/wt/agentic/spec_review.py` sets the same. Gate subprocesses
+  (`agentic/gates.py`) do **not** get the flag: the runner runs them, not an agent, and gate
+  tests rely on the autouse fixture anyway.
+- Read paths stay write-free: `wt ideas` (list) and `wt idea show` do no org writes — ideas-file
+  rotation (`org_write.maybe_rotate_ideas_file`) runs only from the capture path, and
+  `reconcile_ideas` writes only under `wt spec reconcile --apply`. If an
+  implementer finds a best-effort write on a read path, it must skip quietly when
+  `WT_PERSONA_RUN=1` rather than fail the read.
 - `tests/conftest.py`: autouse `_no_persona_run` fixture.
 
 ## Alternatives considered
@@ -99,8 +110,9 @@ separate defects, both still present on main:
 
 ## Acceptance criteria
 
-- [ ] `wt idea list` (and `ls`, `show`, `help`, any `wt` top-level command name) exits 1 with
-      the refusal + hint, and the ideas file is byte-identical afterwards.
+- [ ] `wt idea list` (and `ls`, `help`, `delete`, `status`, any `wt` top-level command name such
+      as `campaign`) exits 1 with the refusal + hint, and the ideas file is byte-identical
+      afterwards.
 - [ ] `wt idea list --force` and `wt idea refactor` capture normally.
 - [ ] With `WT_PERSONA_RUN=1`, `wt idea some text`, `wt idea log IDEA-x --note n`,
       `wt idea clock-in IDEA-x` and `wt add t` each exit 1 with the "campaign agent" message
@@ -113,7 +125,7 @@ separate defects, both still present on main:
 ## Test plan
 
 - **Automated tests** (`tests/test_idea_capture_guard.py`, new):
-  - `test_verb_capture_refused` — parametrized over `list`, `LS`, `show`, `help`, `report`:
+  - `test_verb_capture_refused` — parametrized over `list`, `LS`, `help`, `delete`, `status`, `campaign`:
     CliRunner `["idea", w]` exits 1, output contains `--force`, ideas file unchanged.
   - `test_list_hint_points_to_wt_ideas` — output for `list` contains `wt ideas`.
   - `test_force_and_real_word_capture` — `["idea", "list", "--force"]` and
