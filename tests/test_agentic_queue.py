@@ -1721,3 +1721,19 @@ def test_merge_reconcile_mismatch_is_a_minor_finding(opened):
     assert fnd["severity"] == "minor" and iid in fnd["detail"]
     assert _idea_state(cfg, iid) == "IDEA"
     assert not list(S.read_ledger(cfg, cid, types=["idea_reconciled"]))
+
+
+@pytest.mark.parametrize("twin_file", ["ideas-0000.org", "ideas-zzzz.org"])
+def test_merge_reconcile_event_describes_the_moved_idea_not_its_duplicate_id_twin(opened, twin_file):
+    """SPEC-0267: a rotated org file repeats the id; the event is the pinned idea's own move."""
+    cfg, cid, ctx = opened
+    iid, oc = _merge_with_idea(opened)
+    twin = Path(cfg["org_ideas_file"]).with_name(twin_file)
+    twin.write_text("#+TODO: IDEA INCUBATE SPECCED | PROMOTED EXPORTED SHIPPED DROPPED RESEARCHED\n"
+                    f"* SPECCED older twin\n:PROPERTIES:\n:ID: {iid}\n"
+                    ":CREATED: [2000-01-01 Sat 09:00]\n:END:\n")
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED"
+    (ev,) = S.read_ledger(cfg, cid, types=["idea_reconciled"])
+    assert (ev["idea_id"], ev["from"], ev["to"]) == (iid, "IDEA", "PROMOTED")
+    assert "SPECCED older twin" in twin.read_text()         # the twin is untouched

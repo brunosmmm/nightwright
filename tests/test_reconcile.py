@@ -3,6 +3,7 @@
 The core contract is the status→state table, so it is enumerated rather than sampled. Writes are
 opt-in (`--apply`) because advancing to PROMOTED/DROPPED archives the subtree (SPEC-0073).
 """
+import dataclasses
 import datetime as dt
 import os
 import pathlib
@@ -979,3 +980,119 @@ def test_cli_reconcile_renders_flag_mismatch(tmp_path, monkeypatch):
     assert out.exit_code == 0, out.output
     (row,) = [ln for ln in out.output.splitlines() if idea_id in ln]
     assert row.startswith("≠") and "id likely reused" in row
+
+
+# ---- SPEC-0267 review follow-ups: date forms, duplicate-id edge cases, drift ---------
+
+@pytest.mark.parametrize("created", ['"2026-10-10"', "'2026-10-10'", "2026-10-10 08:30:00"])
+def test_spec_created_string_and_datetime_forms_compare_like_a_date(tmp_path, created):
+    """A quoted `YYYY-MM-DD` parses as a str and an unquoted timestamp as a datetime; both must
+    gate exactly like the plain YAML date the other fixtures write."""
+    cfg = _cfg(tmp_path)
+    reused = _bare_idea(cfg, "reused, odd date form")
+    _stamp_idea(cfg, reused, "[2026-10-25 Sun 09:00]")
+    _spec(cfg, "SPEC-0001", "done", source_idea=reused, created=created)
+    legit = _bare_idea(cfg, "legit, odd date form")
+    _stamp_idea(cfg, legit, "[2026-10-10 Sat 23:59]")       # same day, later hour: still legit
+    _spec(cfg, "SPEC-0002", "accepted", source_idea=legit, created=created)
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert _rows(plan, reused) == [("SPEC-0001", "flag-mismatch")]
+    assert ("SPEC-0002", "link") in _rows(plan, legit)
+    assert _spec_prop(cfg, reused) == "" and _spec_prop(cfg, legit) == "SPEC-0002"
+
+
+def test_as_date_forms():
+    assert S._as_date(dt.date(2026, 10, 10)) == dt.date(2026, 10, 10)
+    assert S._as_date(dt.datetime(2026, 10, 10, 23, 59)) == dt.date(2026, 10, 10)
+    assert S._as_date("2026-10-10") == dt.date(2026, 10, 10)
+    assert S._as_date(None) is None and S._as_date("someday") is None
+
+
+def test_duplicate_ids_only_dead_claimants_judge_the_newest_idea(tmp_path):
+    """No live spec names the shared id: `flag-ambiguous` only while the newest idea is unlinked."""
+    cfg, shared = _dup_pair(tmp_path, "2026-10-26")
+    _spec(cfg, "SPEC-0001", "superseded", source_idea=shared, created="2026-10-26")
+    before = _bytes(cfg)
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert _rows(plan, shared) == [("SPEC-0001", "flag-ambiguous")]
+    assert _bytes(cfg) == before
+
+    # the newest idea (the 2026-10-25 one) is linked elsewhere: nothing to flag
+    new = [t for t in load_tasks(cfg) if t.is_idea and t.heading == "new idea"][0]
+    W.set_property(cfg, new, "SPEC", "SPEC-0009")
+    assert "flag-ambiguous" not in [a for _s, a in _rows(S.reconcile_ideas(cfg), shared)]
+
+
+def test_duplicate_ids_dead_claimant_ignores_an_older_twins_link(tmp_path):
+    """The link state that matters is the newest idea's, not whichever twin is found first."""
+    cfg, shared = _dup_pair(tmp_path, "2026-10-26")
+    _spec(cfg, "SPEC-0001", "rejected", source_idea=shared, created="2026-10-26")
+    old = [t for t in load_tasks(cfg) if t.is_idea and t.heading == "old idea"][0]
+    W.set_property(cfg, old, "SPEC", "SPEC-0009")
+    assert ("SPEC-0001", "flag-ambiguous") in _rows(S.reconcile_ideas(cfg), shared)
+
+
+def _twin_specs(cfg, shared):
+    """Both twins planned in one run: the old spec -> old idea, the new spec -> new idea."""
+    _spec(cfg, "SPEC-0001", "done", source_idea=shared, created="2026-09-15")
+    _spec(cfg, "SPEC-0002", "accepted", source_idea=shared, created="2026-10-26")
+
+
+def test_duplicate_id_twins_each_link_and_advance_in_one_run(tmp_path):
+    cfg, shared = _dup_pair(tmp_path, "2026-10-26")
+    _twin_specs(cfg, shared)
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert {("SPEC-0001", "link"), ("SPEC-0001", "advance"), ("SPEC-0002", "link")} \
+        <= set(_rows(plan, shared))
+    assert _states(cfg) == {"old idea": "PROMOTED", "new idea": "SPECCED"}
+    assert sorted(_linked_headings(cfg)) == ["new idea", "old idea"]
+
+
+@pytest.mark.parametrize("raced_heading,survivor", [("old idea", "new idea"),
+                                                    ("new idea", "old idea")])
+def test_drift_on_one_duplicate_id_twin_leaves_the_other_alone(tmp_path, monkeypatch,
+                                                              raced_heading, survivor):
+    """Drift is scoped to the planned (idea, spec), not the bare id both twins carry."""
+    cfg, shared = _dup_pair(tmp_path, "2026-10-26")
+    _twin_specs(cfg, shared)
+    real, raced = S._resolve_idea, []
+    spec_of = {"old idea": "SPEC-0001", "new idea": "SPEC-0002"}
+
+    def resolve(c, idea_id, pin):
+        task = real(c, idea_id, pin)
+        if task.heading == raced_heading and not raced:
+            raced.append(1)
+            W.set_property(c, task, "SPEC", "SPEC-0009")        # linked elsewhere since the plan
+            return real(c, idea_id, pin)
+        return task
+    monkeypatch.setattr(S, "_resolve_idea", resolve)
+    plan = S.reconcile_ideas(cfg, apply=True)
+
+    rows = _rows(plan, shared)
+    lost = spec_of[raced_heading]
+    assert (lost, "flag-conflict") in rows
+    assert (lost, "link") not in rows and (lost, "advance") not in rows
+    kept = spec_of[survivor]
+    assert (kept, "link") in rows
+    spec = {t.heading: t.properties.get("SPEC") for t in load_tasks(cfg) if t.is_idea}
+    assert spec[raced_heading] == "SPEC-0009" and spec[survivor] == kept
+    if survivor == "old idea":      # SPEC-0001 is done: the surviving twin still advances
+        assert (kept, "advance") in rows and _states(cfg)["old idea"] == "PROMOTED"
+    assert _states(cfg)[raced_heading] == "IDEA"
+
+
+def test_fresh_idea_reraises_without_exactly_one_file_heading_match(tmp_path):
+    cfg, shared = _dup_pair(tmp_path, "2026-10-26")
+    task = [t for t in load_tasks(cfg) if t.is_idea and t.heading == "new idea"][0]
+    assert W._fresh_idea(cfg, task).heading == "new idea"           # one hit: resolved by pin
+    ghost = dataclasses.replace(task, heading="vanished")           # zero hits
+    with pytest.raises(ValueError):
+        W._fresh_idea(cfg, ghost)
+    # several hits: the same file repeats both the id and the heading
+    path = pathlib.Path(task.file)
+    path.write_text(path.read_text() + f"* IDEA new idea\n:PROPERTIES:\n:ID: {shared}\n:END:\n")
+    twins = [t for t in load_tasks(cfg) if t.is_idea and t.heading == "new idea"
+             and t.file == task.file]
+    assert len(twins) == 2
+    with pytest.raises(ValueError):
+        W._fresh_idea(cfg, twins[0])

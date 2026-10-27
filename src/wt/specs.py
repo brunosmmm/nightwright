@@ -966,7 +966,7 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     ideas = [t for t in all_ideas if (t.properties.get("SPEC") or "").strip()]
     plan = []                       # uniform (idea_id, spec_id, action, detail) rows
     links = []                      # (idea_id, spec_id, pin) for the write pass
-    advances = []                   # (idea_id, target_state, pin) for the write pass
+    advances = []                   # (idea_id, spec_id, target_state, pin) for the write pass
     backlink_writes = []            # (spec_id, idea_id) for the write pass
 
     # (task, spec_id, linking): linked ideas, then unlinked ideas a live spec claims
@@ -1044,7 +1044,7 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
                          f"idea is {state} but spec is {status}"))
         elif want and want != state:
             plan.append((idea_id, spec_id, "advance", f"{state} → {want} (spec {status})"))
-            advances.append((idea_id, want, pin))
+            advances.append((idea_id, spec_id, want, pin))
         else:
             plan.append((idea_id, spec_id, "unchanged", f"{state} / spec {status or '?'}"))
 
@@ -1073,23 +1073,25 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     # `:SPEC:` lands before any state write (SPEC-0257).
     from . import explore as EX
     from . import org as ORG
-    drifted = {}                    # idea_id -> the other spec it was linked to since the plan
+    # (idea_id, spec_id) -> the other spec the idea was linked to since the plan; keyed by the
+    # planned spec too so a duplicate-id twin planned for another spec is not collateral
+    drifted = {}
     for idea_id, spec_id, pin in links:
         ORG.invalidate_tasks_cache()
         task = _resolve_idea(cfg, idea_id, pin)
         now = (task.properties.get("SPEC") or "").strip()
         if now:                     # linked since the plan: leave it
             if now != spec_id:
-                drifted[idea_id] = now
+                drifted[(idea_id, spec_id)] = now
             continue
         W.set_property(cfg, task, "SPEC", spec_id)
     # report what really happened: a skipped link is a conflict, and its advance never ran
     plan[:] = [
-        (i, s, "flag-conflict", f"idea links {drifted[i]}") if a == "link" and i in drifted
+        (i, s, "flag-conflict", f"idea links {drifted[i, s]}") if a == "link" and (i, s) in drifted
         else (i, s, a, d)
-        for i, s, a, d in plan if not (a == "advance" and i in drifted)]
-    for idea_id, target, pin in advances:
-        if idea_id in drifted:      # the advance was derived from a spec it no longer points to
+        for i, s, a, d in plan if not (a == "advance" and (i, s) in drifted)]
+    for idea_id, spec_id, target, pin in advances:
+        if (idea_id, spec_id) in drifted:      # the advance was derived from a spec it no longer points to
             continue
         if pin is None:
             EX.set_idea_state(cfg, idea_id, target)

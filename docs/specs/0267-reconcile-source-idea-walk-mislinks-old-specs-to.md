@@ -73,6 +73,23 @@ The `source_idea` walk links an unlinked idea to a spec only if the idea passes 
   `ambiguous selector`; restored.
 - Full `uv run pytest -q -x` and `python3 tools/spec_lint.py` pass (see gate results).
 
+### Test record (2026-10-27, review follow-up)
+
+- Manual dry run, `uv run wt spec reconcile` in the worktree against real data: exit 0, 189 rows;
+  97 `flag-mismatch` (`≠`) and 28 `flag-conflict` (`!`) rows, e.g. `≠ IDEA-312 SPEC-0138 idea
+  created 2026-10-25 is after spec created 2026-08-30; id likely reused`. The only `link`/`advance`
+  rows for specs < SPEC-0200 are SPEC-0195..0199 (IDEA-049/050/053/055/058): genuine same-day
+  links (spec created 2026-10-25, their topics match the idea titles), not reused ids.
+- Sabotage, as named in the plan: `_idea_predates_spec` always `(True, "")` makes 16 tests in
+  `tests/test_reconcile.py` fail (including `test_reused_id_is_flagged_not_linked`); restored.
+- Review follow-ups, each with a test that fails against the previous code (checked by
+  reverting): `drifted` is keyed by `(idea_id, spec_id)` so drift on one duplicate-id twin leaves
+  the other's link/advance alone (`test_drift_on_one_duplicate_id_twin_leaves_the_other_alone`);
+  the close hook's `idea_reconciled` snapshot keeps every `(state, SPEC)` per id and reports the
+  one that moved (`test_merge_reconcile_event_describes_the_moved_idea_not_its_duplicate_id_twin`).
+  Added coverage: quoted-string/datetime spec `created`, `_as_date`, duplicate id with only
+  superseded/rejected claimants, `_fresh_idea` re-raise (zero and several hits).
+
 ### As shipped (2026-10-27)
 
 `org_write.set_state` auto-archives a terminal idea by re-finding it; with an `:ID:` carried by

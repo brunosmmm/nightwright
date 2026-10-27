@@ -1797,15 +1797,24 @@ def _reconcile_merged(cfg, state: dict, events: list) -> None:
                                    "files": []}))
 
     def snapshot():
-        return {(t.properties.get("ID") or t.id or "").strip():
-                (t.state, (t.properties.get("SPEC") or "").strip()) for t in _ideas(cfg)}
+        # id -> every (state, SPEC) carrying it: rotated org files can give two ideas one `:ID:`
+        snap: dict = {}
+        for t in _ideas(cfg):
+            snap.setdefault((t.properties.get("ID") or t.id or "").strip(), []).append(
+                (t.state, (t.properties.get("SPEC") or "").strip()))
+        return {k: sorted(v, key=str) for k, v in snap.items()}
 
     def reported(idea_ids, before):
         after = snapshot()
         for idea_id in idea_ids:
+            was, now = list(before.get(idea_id) or []), list(after.get(idea_id) or [])
+            # the idea that moved is the one in only one of the two lists, not a twin's state
+            gone = [v for v in was if v not in now] or was
+            came = [v for v in now if v not in was] or now
             events.append(("idea_reconciled", {
-                "spec_id": spec_id, "idea_id": idea_id, "from": (before.get(idea_id) or (None,))[0],
-                "to": (after.get(idea_id) or (None,))[0]}))
+                "spec_id": spec_id, "idea_id": idea_id,
+                "from": (gone[0] if gone else (None,))[0],
+                "to": (came[0] if came else (None,))[0]}))
 
     before = None
     try:
