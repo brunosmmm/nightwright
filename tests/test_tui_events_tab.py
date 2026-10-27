@@ -796,7 +796,7 @@ def test_duplicate_ids_and_bad_ts_do_not_crash(tmp_path):
             v.table.move_cursor(row=2)                 # the row after the duplicate
             assert v.current_row().id == 6 and v.table.get_row_at(2)[3].plain == "SPEC-0006-x"
             _raw(cfg, {"id": 8, "campaign": "SPEC-0008-x"}, {"id": 8, "campaign": "SPEC-0008-y"})
-            await until(app, pilot, lambda: ids(app) == [4, 5, 6, 7, 8], "event 8")
+            await ui_until(app, pilot, lambda: ids(app) == [4, 5, 6, 7, 8], "event 8")
             assert v.table.row_count == len(v.shown) == 5
             assert "2 duplicate ids skipped" in status(app)
 
@@ -824,7 +824,7 @@ def test_append_failure_is_retried(tmp_path, monkeypatch):
         async with app.run_test(size=SIZE) as pilot:
             await pilot.pause(0.1)
             v = view(app)
-            await until(app, pilot, lambda: ids(app) == [1, 2, 3], "retried rows")
+            await ui_until(app, pilot, lambda: ids(app) == [1, 2, 3], "retried rows")
             assert app.is_running and len(calls) >= 2
             assert at_retry[1] == (0, None)             # the failed append consumed nothing
             assert v._last_id == 3 and v._signature is not None
@@ -864,10 +864,10 @@ def test_append_failure_after_a_reset_restores_the_old_rows_and_retries(tmp_path
             path.write_text(json.dumps({"schema": EV.SCHEMA, "id": 1, "type": "admitted",
                                         "ts": "2026-10-25T10:00:00+00:00",
                                         "campaign": "SPEC-0001-new", "data": {}}) + "\n")
-            await until(app, pilot, lambda: len(seen) >= 2, "retry load")
+            await ui_until(app, pilot, lambda: len(seen) >= 2, "retry load")
             assert seen[0][0] == 0                              # the reset load
             assert seen[1][1:] == (3, True, 3)                  # old rows back, rebuild pending
-            await until(app, pilot, lambda: ids(app) == [1], "rebuilt rows")
+            await ui_until(app, pilot, lambda: ids(app) == [1], "rebuilt rows")
             v = view(app)
             assert v.table.row_count == 1 and v.table.get_row_at(0)[3].plain == "SPEC-0001-new"
             assert "events failed" not in status(app)
@@ -888,7 +888,7 @@ def test_a_trailing_lower_duplicate_id_does_not_inflate_the_count(tmp_path):
             assert ids(app) == [1, 2, 3, 4, 5] and v._last_id == 5
             assert "1 duplicate ids skipped" in status(app)
             _raw(cfg, {"id": 6, "campaign": "SPEC-0006-x"})
-            await until(app, pilot, lambda: ids(app) == [1, 2, 3, 4, 5, 6], "event 6")
+            await ui_until(app, pilot, lambda: ids(app) == [1, 2, 3, 4, 5, 6], "event 6")
             assert "1 duplicate ids skipped" in status(app)
 
     _run(drive())
