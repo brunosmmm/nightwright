@@ -1,5 +1,5 @@
-"""View model for the TUI queue tab (SPEC-0241), campaign screen (SPEC-0246) and events tab
-(SPEC-0251). No Textual import.
+"""View model for the TUI queue tab (SPEC-0241), campaign screen (SPEC-0246), events tab
+(SPEC-0251) and mailbox tab (SPEC-0249). No Textual import.
 
 Turns `queue.dashboard_payload` and `events.followers` into rows and a header line, computes a
 `stat()`-only change signature, and wraps the four human queue actions. `load_campaign` builds
@@ -19,6 +19,7 @@ from rich.text import Text
 from .. import render as RD
 from ..agentic import events as EV
 from ..agentic import lease as L
+from ..agentic import mailbox as MB
 from ..agentic import profiles as PR
 from ..agentic import queue as Q
 from ..agentic import runs as RN
@@ -742,3 +743,226 @@ def events_stat(cfg):
     except OSError:
         return None
     return (st.st_size, st.st_mtime_ns, st.st_ino)
+
+
+# --- mailbox (SPEC-0249) ------------------------------------------------------------------
+# Every function reads one `mailbox._all_messages` snapshot (`snapshot`, or the `msgs` a caller
+# passes in), so the rows of one reload cannot disagree and the cost is one read of the inbox
+# files, not one per thread. The rules mirror `mailbox.unanswered` and `mailbox.thread`.
+
+HUMAN = "human"
+SUBJECT_W = 80
+
+
+@dataclass(frozen=True)
+class InboxRow:
+    address: str
+    unanswered: int
+    total: int
+    last_ts: str | None
+
+
+@dataclass(frozen=True)
+class ThreadRow:
+    root_id: str
+    subject: str
+    peer: str
+    campaign: str | None
+    count: int
+    last_ts: str | None
+    unanswered: bool
+    reply_to: dict
+
+
+@dataclass
+class MailboxSnapshot:
+    msgs: list
+    inboxes: list
+    inbox: str
+    threads: list
+
+
+def snapshot(cfg) -> list[dict]:
+    return MB._all_messages(cfg)
+
+
+def replied_ids(msgs) -> set:
+    return {m["re"] for m in msgs if m.get("re")}
+
+
+def thread_of(msgs, root_id) -> list[dict]:
+    """`mailbox.thread` over a snapshot: the root, then replies in reply order."""
+    by_id = {m["id"]: m for m in msgs}
+    if root_id not in by_id:
+        return []
+    want, out = {root_id}, [by_id[root_id]]
+    changed = True
+    while changed:
+        changed = False
+        for m in msgs:
+            if m.get("re") in want and m["id"] not in want:
+                want.add(m["id"])
+                out.append(m)
+                changed = True
+    return out
+
+
+def thread_root(msgs_by_id, msg) -> str:
+    """Follow `re` up to a message without `re` or with an unknown one. On a cycle the root is
+    the smallest id of the cycle, so every member (and what hangs off it) groups together."""
+    seen: list = []
+    cur = msg
+    while True:
+        if cur["id"] in seen:
+            return min(seen[seen.index(cur["id"]):])
+        seen.append(cur["id"])
+        parent = msgs_by_id.get(cur.get("re"))
+        if parent is None:
+            return cur["id"]
+        cur = parent
+
+
+def _needs_reply(m, replied) -> bool:
+    return bool(m.get("needs_reply")) and m["id"] not in replied
+
+
+def load_inboxes(cfg, msgs=None) -> list[InboxRow]:
+    msgs = snapshot(cfg) if msgs is None else msgs
+    replied = replied_ids(msgs)
+    out = []
+    for addr in MB.known_addresses(cfg):
+        mine = [m for m in msgs if m.get("to") == addr]
+        out.append(InboxRow(addr, sum(1 for m in mine if _needs_reply(m, replied)), len(mine),
+                            max((m.get("ts") or "" for m in mine), default=None) or None))
+    return out
+
+
+def _latest(thread):
+    """Newest message of a thread: by `ts`, ties by reply order."""
+    return max(enumerate(thread), key=lambda p: (p[1].get("ts") or "", p[0]))[1]
+
+
+def _peer(thread, addr) -> str:
+    mine = [m for m in thread if addr in (m.get("from"), m.get("to"))]
+    if not mine:
+        return _latest(thread).get("from") or ""
+    m = _latest(mine)
+    return m["to"] if m.get("from") == addr else m["from"]
+
+
+def load_threads(cfg, addr, msgs=None) -> list[ThreadRow]:
+    msgs = snapshot(cfg) if msgs is None else msgs
+    by_id = {m["id"]: m for m in msgs}
+    replied = replied_ids(msgs)
+    roots: dict = {}
+    for m in msgs:
+        if m.get("to") == addr:
+            roots.setdefault(thread_root(by_id, m), None)
+    rows = []
+    for root_id in roots:
+        thread = thread_of(msgs, root_id)
+        mine = [m for m in thread if m.get("to") == addr]
+        root = by_id[root_id]
+        rows.append(ThreadRow(
+            root_id=root_id, subject=_first_line(root.get("text"))[:SUBJECT_W],
+            peer=_peer(thread, addr),
+            campaign=next((m["campaign"] for m in thread if m.get("campaign")), None),
+            count=len(thread), last_ts=_latest(thread).get("ts"),
+            unanswered=any(_needs_reply(m, replied) for m in mine),
+            reply_to=_latest(mine) if mine else root))
+    rows.sort(key=lambda r: r.last_ts or "", reverse=True)
+    rows.sort(key=lambda r: not r.unanswered)           # stable: unanswered first, then newest
+    return rows
+
+
+def initial_inbox(inboxes) -> str:
+    return next((r.address for r in inboxes if r.unanswered), HUMAN)
+
+
+def load_mailbox(cfg, inbox=None) -> MailboxSnapshot:
+    """One snapshot for a whole reload: inbox counts and the threads of `inbox` (the first inbox
+    with unanswered mail, else `human`, when None)."""
+    msgs = snapshot(cfg)
+    inboxes = load_inboxes(cfg, msgs)
+    inbox = inbox or initial_inbox(inboxes)
+    return MailboxSnapshot(msgs, inboxes, inbox, load_threads(cfg, inbox, msgs))
+
+
+def thread_text(cfg, root_id, msgs=None) -> Text:
+    msgs = snapshot(cfg) if msgs is None else msgs
+    replied = replied_ids(msgs)
+    t = Text()
+    for m in thread_of(msgs, root_id):
+        t.append(f"{m['id']}  {m.get('ts') or '-'}  {m.get('from')} → {m.get('to')}  "
+                 f"{m.get('kind')}", style="bold")
+        if m.get("campaign"):
+            t.append(f"  [{m['campaign']}]", style="dim")
+        if _needs_reply(m, replied):
+            t.append("  needs reply", style="yellow")
+        t.append("\n")
+        for line in str(m.get("text") or "").splitlines() or [""]:
+            t.append(f"    {line}\n")
+        t.append("\n")
+    return t
+
+
+def mailbox_signature(cfg) -> tuple:
+    """Sorted (name, size, mtime_ns) of the inbox files; `stat()` calls only."""
+    d = MB.mailbox_dir(cfg)
+    out = []
+    if d.is_dir():
+        for p in d.glob("*.jsonl"):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            out.append((p.name, st.st_size, st.st_mtime_ns))
+    return tuple(sorted(out))
+
+
+def age_s(ts) -> float | None:
+    try:
+        t = dt.datetime.fromisoformat(ts)
+    except (TypeError, ValueError):
+        return None
+    if t.tzinfo is None:
+        t = t.astimezone()
+    return max(0.0, (dt.datetime.now().astimezone() - t).total_seconds())
+
+
+def reply_target(reply_to) -> tuple[str, str | None]:
+    """(address, re) of a human reply to `reply_to`. A follow-up to the human's own message goes
+    to its addressee with the parent's `re`, so it never marks the human's message answered."""
+    if reply_to.get("from") == HUMAN:
+        return reply_to["to"], reply_to.get("re")
+    return reply_to["from"], reply_to["id"]
+
+
+def default_reply_kind(reply_to) -> str:
+    return "answer" if reply_to.get("kind") in ("question", "request") else "info"
+
+
+def answers_notice(msgs, re) -> str:
+    """`; this answers it for <inbox>` when `re` names a message that still needs a reply and
+    sits in an inbox other than the human's (the human stepping in), else ''."""
+    by_id = {m["id"]: m for m in msgs}
+    m = by_id.get(re)
+    if m and m.get("to") != HUMAN and _needs_reply(m, replied_ids(msgs)):
+        return f"; this answers it for {m['to']}"
+    return ""
+
+
+def send_plan(cfg, *, to, kind, text, campaign=None, re=None) -> dict:
+    """Validate a human message without writing it."""
+    to = MB.validate_address(cfg, to)
+    if kind not in MB.KINDS:
+        raise ValueError(f"unknown kind {kind!r} ({' | '.join(MB.KINDS)})")
+    if not (text or "").strip():
+        raise ValueError("empty message text")
+    return {"to": to, "frm": HUMAN, "kind": kind, "campaign": campaign, "re": re, "text": text,
+            "needs_reply": kind in ("question", "request")}
+
+
+def send_apply(cfg, plan) -> dict:
+    return MB.send(cfg, to=plan["to"], frm=HUMAN, text=plan["text"], kind=plan["kind"],
+                   campaign=plan["campaign"], re=plan["re"])

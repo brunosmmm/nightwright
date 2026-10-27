@@ -122,7 +122,8 @@ def _capture_run(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("args,expect", [([], "ideas"), (["--tab", "queue"], "queue"),
                                          (["--tab", "HUB"], "hub"), (["--tab", "ideas"], "ideas"),
-                                         (["--tab", "events"], "events")])
+                                         (["--tab", "events"], "events"),
+                                         (["--tab", "mailbox"], "mailbox")])
 def test_tui_tab_option_is_passed_through(tmp_path, monkeypatch, args, expect):
     seen = _capture_run(monkeypatch, tmp_path)
     r = CliRunner().invoke(cli, ["tui", *args])
@@ -132,5 +133,5 @@ def test_tui_tab_option_is_passed_through(tmp_path, monkeypatch, args, expect):
 
 def test_tui_tab_option_rejects_unknown_tab(tmp_path, monkeypatch):
     seen = _capture_run(monkeypatch, tmp_path)
-    r = CliRunner().invoke(cli, ["tui", "--tab", "mailbox"])
+    r = CliRunner().invoke(cli, ["tui", "--tab", "bogus"])
     assert r.exit_code != 0 and "tab" in r.output and not seen

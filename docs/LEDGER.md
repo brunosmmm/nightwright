@@ -165,7 +165,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0246](./specs/0246-tui-campaign-detail-screen.md) TUI campaign detail screen: header, filterable ledger timeline, runs, gates and reviews — done
   - [x] [SPEC-0247](./specs/0247-divergence-detection-in-the-implementation-loop.md) Divergence detection in the implementation loop: park diverging, conductor triages, rework as an outcome — done
   - [x] [SPEC-0248](./specs/0248-reliability-follow-ups-flaky-timing-tests-and-error-handling.md) Reliability follow-ups from review: flaky timing tests and error-handling gaps — done
-  - [ ] [SPEC-0249](./specs/0249-tui-mailbox-tab.md) TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human — accepted
+  - [x] [SPEC-0249](./specs/0249-tui-mailbox-tab.md) TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human — done
   - [ ] [SPEC-0250](./specs/0250-tui-escalation-inbox.md) TUI escalation inbox: open escalations first, answer by choice or text, withdraw — accepted
   - [x] [SPEC-0251](./specs/0251-tui-events-tab.md) TUI events tab: live event stream with filters, current watchdog alerts, ping digest and followers — done
   - [x] [SPEC-0252](./specs/0252-resolver-verification-patch-equivalence.md) Conflict resolver verification by patch equivalence, runner commits resolver changes — done
@@ -187,7 +187,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) | Spec phases and review rounds in queue watch and listing | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0214](./specs/0214-spec-review-loop-inside-the-campaign-with-in-loop.md) | Spec review loop inside the campaign, with in-loop acceptance | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0249](./specs/0249-tui-mailbox-tab.md) | TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0250](./specs/0250-tui-escalation-inbox.md) | TUI escalation inbox: open escalations first, answer by choice or text, withdraw | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0257](./specs/0257-close-step-does-the-spec-and-idea-bookkeeping.md) | Reconcile walks spec source_idea; close reconciles the merged spec's idea | feature | accepted | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0260](./specs/0260-close-train-serialize-close-steps-per-repository.md) | Close train: serialize close steps per repository so the queue's own merges never invalidate a re-gate | feature | accepted | M9: agentic workflow | 2026-10-26 |
@@ -425,6 +424,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0246](./specs/0246-tui-campaign-detail-screen.md) | TUI campaign detail screen: header, filterable ledger timeline, runs, gates and reviews | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0247](./specs/0247-divergence-detection-in-the-implementation-loop.md) | Divergence detection in the implementation loop: park diverging, conductor triages, rework as an outcome | feature | done | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0248](./specs/0248-reliability-follow-ups-flaky-timing-tests-and-error-handling.md) | Reliability follow-ups from review: flaky timing tests and error-handling gaps | feature | done | M9: agentic workflow | 2026-10-26 |
+| [SPEC-0249](./specs/0249-tui-mailbox-tab.md) | TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human | feature | done | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0251](./specs/0251-tui-events-tab.md) | TUI events tab: live event stream with filters, current watchdog alerts, ping digest and followers | feature | done | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0252](./specs/0252-resolver-verification-patch-equivalence.md) | Conflict resolver verification by patch equivalence, runner commits resolver changes | feature | done | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0253](./specs/0253-gate-pytest-exhausts-tmp-inodes-basetemp-dirs.md) | Per-campaign TMPDIR for gates and personas, plus a temp-filesystem admission guard | feature | done | — | 2026-10-26 |

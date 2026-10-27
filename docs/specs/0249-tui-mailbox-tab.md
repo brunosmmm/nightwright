@@ -1,10 +1,10 @@
 ---
 id: SPEC-0249
 title: "TUI mailbox tab: inboxes, threads unanswered-first, reply and send as human"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
-updated: 2026-10-25
+updated: 2026-10-26
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0169
@@ -180,34 +180,34 @@ confirmation says so explicitly (see Reply), so the human makes that choice know
 
 ## Acceptance criteria
 
-- [ ] AC1. `4`, a click, and `wt tui --tab mailbox` open the `mailbox` tab. The inbox table lists
+- [x] AC1. `4`, a click, and `wt tui --tab mailbox` open the `mailbox` tab. The inbox table lists
       every known address with `unanswered/total`, and the tab opens on the first inbox with
       unanswered mail, else `human`.
-- [ ] AC2. `load_threads` groups an inbox's messages into threads by their `re` chain across
+- [x] AC2. `load_threads` groups an inbox's messages into threads by their `re` chain across
       inboxes (a reply stored in another inbox joins its root). It sets `subject`, `peer`,
       `count`, `unanswered` and `reply_to` as documented and orders unanswered first, then
       newest. A cyclic or dangling `re` does not hang or raise.
-- [ ] AC3. The thread pane shows every message of the highlighted thread in reply order with
+- [x] AC3. The thread pane shows every message of the highlighted thread in reply order with
       the documented header line and full text, and marks unanswered `needs_reply` messages.
-- [ ] AC4. Reply sends one `mailbox.send` with `frm="human"`, the documented target and default
+- [x] AC4. Reply sends one `mailbox.send` with `frm="human"`, the documented target and default
       kind, `re` = `reply_to.id` and the thread's campaign. Afterwards that message is no longer
       in `mailbox.unanswered` for its inbox, the thread loses its `!` marker after the reload,
       and the cursor stays on the thread. A follow-up to the human's own `request` goes to its
       addressee with `re = reply_to.re`, and the request stays unanswered. A reply from the
       conductor inbox to a steward's question shows the "answers it for conductor" notice in
       the confirmation and removes the question from `unanswered("conductor")`.
-- [ ] AC5. New message picks the address (never `human`), the kind, an optional campaign and the
+- [x] AC5. New message picks the address (never `human`), the kind, an optional campaign and the
       text, then sends. Cancel or Esc at any step writes nothing. An empty text or an invalid
       address is refused with an error notification and nothing written. After a send the tab
       shows the target inbox with the cursor on the new thread, and the chosen campaign label
       maps to its id (`(none)` → no campaign).
-- [ ] AC6. A message appended to any inbox by another process shows within one poll interval
+- [x] AC6. A message appended to any inbox by another process shows within one poll interval
       with no key press, and the selected inbox and thread are kept. The tab never calls
       `mailbox.follow`, `events.reader_lock`, `events.cursor_set` or `events.sync`
       (monkeypatched to raise in the test).
-- [ ] AC7. `enter` on a thread with a campaign posts `CampaignSelected`. On a thread without one
+- [x] AC7. `enter` on a thread with a campaign posts `CampaignSelected`. On a thread without one
       it focuses the thread pane and posts nothing.
-- [ ] AC8. Full `uv run pytest` is green, the existing assertions in `tests/test_tui_*` are
+- [x] AC8. Full `uv run pytest` is green, the existing assertions in `tests/test_tui_*` are
       unchanged and green (new tests may be added), and `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
@@ -242,6 +242,37 @@ confirmation says so explicitly (see Reply), so the human makes that choice know
 - **Regression guard:** full `uv run pytest`, in particular `tests/test_agentic_mailbox*.py`,
   unchanged.
 
+### Test record (2026-10-26)
+
+- `uv run pytest tests/test_tui_mailbox_model.py tests/test_tui_mailbox_tab.py
+  tests/test_tui_entry.py`: 15 model tests, 18 pilot tests (tab keys/click/`--tab`, initial
+  inbox, pane, reply, follow-up to own request, conductor-inbox notice, new message with campaign
+  mapping, cancel/Esc at every step, error notifications, live append, forbidden follower calls,
+  `enter`, `tab` focus) and the `--tab` option tests: all pass.
+- Gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exit 0; full
+  `uv run pytest -q -x`: 2941 passed, 3 skipped.
+- Manual verification (headless, scripted): a `mailbox.follow` reader held `steward:Meta-Tools`
+  while the tab replied to that steward's question in the conductor inbox. The follower printed
+  `steward:Meta-Tools:1 answer from=human re=conductor:1: main` and `events.followers` still
+  showed `mailbox:steward:Meta-Tools` held, cursor advanced to 1 (not displaced).
+
+### As shipped (2026-10-26)
+
+- `tests/test_tui_entry.py::test_tui_tab_option_rejects_unknown_tab` used `mailbox` as its
+  example of an unknown tab, which AC1 makes valid; only that example became `bogus` (and
+  `mailbox` was added to the passed-through cases). No other assertion in `tests/test_tui_*`
+  changed.
+- The view-model functions take an optional `msgs` snapshot (`load_inboxes`, `load_threads`,
+  `thread_text`); `load_mailbox(cfg, inbox)` reads one snapshot per reload for the whole tab.
+  `thread_of` re-implements `mailbox.thread` over a snapshot (tests assert the same order).
+- The `; this answers it for <inbox>` notice names the `to` of the message `re` points at, shown
+  when that message is unanswered, needs a reply and is not in the `human` inbox. This equals the
+  selected inbox in every case of the Design and stays truthful for a follow-up whose `re` is the
+  parent of the human's own message.
+- Highlight events read the row from the table cursor, not the event, so the transient row-0
+  highlight posted while repainting cannot change the selection.
+- The thread-pane focus returns to the threads table on `esc` / `tab`.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -252,11 +283,11 @@ Nothing to migrate. The tab appears on the next `wt tui` launch with the `tui` e
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

@@ -1382,9 +1382,9 @@ def hub_cmd(cfg, as_json, tasks_slice, state, kind, tag, project, workstream, pr
 @click.option("--desc", is_flag=True, help="reverse --sort order")
 @click.option("--all", "all_done", is_flag=True, help="start with non-active ideas shown")
 @click.option("--query", default=None, help="open on a related-idea search (SPEC-0086)")
-@click.option("--tab", type=click.Choice(["ideas", "hub", "queue", "events"],
+@click.option("--tab", type=click.Choice(["ideas", "hub", "queue", "events", "mailbox"],
                                 case_sensitive=False),
-              default="ideas", show_default=True, help="tab to open on (SPEC-0241/0251)")
+              default="ideas", show_default=True, help="tab to open on (SPEC-0241/0249/0251)")
 @click.option("--campaign", "campaign", default=None, shell_complete=C.complete_campaign_id,
               help="open this campaign's detail screen (id or unique prefix, SPEC-0246)")
 @click.pass_obj
@@ -1401,8 +1401,9 @@ def tui_cmd(cfg, state, kind, tag, project, workstream, priority, sort, desc, al
     wt tui --all              start with non-active shown (`a` toggles in-app)
     wt tui --project Example    open pre-filtered
     wt tui --query textual    open on a search (`/` searches in-app)
-    wt tui --tab queue        open on the live agentic queue (`1`/`2`/`3`/`5` switch tabs)
+    wt tui --tab queue        open on the live agentic queue (`1`..`5` switch tabs)
     wt tui --tab events       open on the queue event stream and watchdog conditions
+    wt tui --tab mailbox      open on the mailbox: inboxes, threads, reply as human
     wt tui --campaign ID      open one campaign's timeline, runs, gates and reviews
     """
     from . import tui as T

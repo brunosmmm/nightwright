@@ -22,6 +22,7 @@ from .. import report as R
 from . import model as M
 from .campaign_screen import CampaignScreen
 from .events_tab import EventsView
+from .mailbox_tab import MailboxView
 from .queue_tab import QueueView
 
 # Half the terminal, with a floor: proportional so a wide terminal spends the extra columns on
@@ -425,6 +426,7 @@ class IdeaDesk(App):
         Binding("2", "tab('tab-hub')", "hub", show=False),
         Binding("3", "tab('tab-queue')", "queue", show=False),
         Binding("5", "tab('tab-events')", "events", show=False),      # SPEC-0251
+        Binding("4", "tab('tab-mailbox')", "mailbox", show=False),
         Binding("i", "clock_toggle", "clock"),
         Binding("X", "close_idea", "close", show=False),
         Binding("q", "quit", "quit"),
@@ -482,6 +484,9 @@ class IdeaDesk(App):
             # SPEC-0251: event stream, watchdog conditions, ping digest, followers.
             with TabPane("events", id="tab-events"):
                 yield EventsView(self.cfg, id="events-view")
+            # SPEC-0249: inboxes, threads and the human's replies.
+            with TabPane("mailbox", id="tab-mailbox"):
+                yield MailboxView(self.cfg, id="mailbox-view")
         yield Input(placeholder="search ideas…", id="search")
         yield Input(placeholder="filter: project=X kind=bug priority=A …", id="filter")
         yield Static("", id="hint")
@@ -1025,7 +1030,7 @@ class IdeaDesk(App):
         tabs.active = "tab-ideas" if tabs.active == "tab-hub" else "tab-hub"
 
     def action_tab(self, name: str) -> None:
-        """Select a tab by id (`1`/`2`/`3`/`5`); loading and focus hang off `TabActivated`."""
+        """Select a tab by id (`1`..`5`); loading and focus hang off `TabActivated`."""
         self.query_one("#tabs", TabbedContent).active = name
 
     # Idea-scoped actions act on the selected idea of the ideas list, which is hidden on any
@@ -1049,15 +1054,23 @@ class IdeaDesk(App):
         self._active_tab = active
         queue = self.query_one("#queue-view", QueueView)
         events = self.query_one("#events-view", EventsView)
+        mailbox = self.query_one("#mailbox-view", MailboxView)
         if active == "tab-queue":
             events.deactivate()
+            mailbox.deactivate()
             queue.activate()
             return
         queue.deactivate()
         if active == "tab-events":
+            mailbox.deactivate()
             events.activate()
             return
+        if active == "tab-mailbox":
+            events.deactivate()
+            mailbox.activate()
+            return
         events.deactivate()
+        mailbox.deactivate()
         if active == "tab-hub":
             # Reload every activation: the hub is triage over ideas/specs/outbox that this very
             # desk mutates, so a stale hub is worse than a cheap re-read. load_hub never writes.
