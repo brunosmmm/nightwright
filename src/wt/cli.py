@@ -2316,7 +2316,9 @@ def backups_prune_cmd(cfg, keep_last, keep_days, yes, as_json):
     from . import render
     import contextlib
     from .org_write import (BACKUP_RE, clear_prune_error, org_write_lock, prune_backups,
-                            read_prune_error)
+                            read_prune_error, refuse_in_persona_run)
+    if yes:
+        refuse_in_persona_run()                     # before the lock, as `org_writer` does
     # --yes holds the org write lock so it can't interleave with an automatic prune (a lost
     # marker, or both deleting the same backup); a dry run only reads
     with org_write_lock(cfg) if yes else contextlib.nullcontext():

@@ -228,6 +228,12 @@ Sabotage results (each applied alone to `src/wt/org_write.py`, then restored):
   `test_failed_marker_write_does_not_fail_org_write` (also shows the old marker survives a failed
   rewrite), `test_yes_prune_holds_org_write_lock`. Sabotage: `if yes:` instead of
   `if yes and not res["failed"]:` fails the keeps-marker test; dropping the lock fails the lock test.
+- Review follow-ups (loop 3): `backups_prune_cmd` calls `refuse_in_persona_run()` before taking
+  `org_write_lock` when `--yes` is set (same order as `org_writer`), so a persona run neither waits on
+  nor touches the human's lock file; `test_persona_run_cannot_prune_backups` now asserts the lock is
+  never taken. `test_prune_cmd_reports_and_clears_marker` asserts the warning is on stderr and not
+  on stdout (`r.stderr` / `r.stdout`). The last criterion's wording stays unamendable here (guarded
+  spec); see the restated form above.
 
 ## Definition of done
 

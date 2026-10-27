@@ -279,8 +279,16 @@ def test_persona_run_cannot_prune_backups(tmp_path, monkeypatch):
     run = _cli(monkeypatch, data_dir, config_dir)
     before = sorted(os.listdir(bdir))
     monkeypatch.setenv("WT_PERSONA_RUN", "1")
+    locked = []
+    real_lock = W.org_write_lock
+
+    def spy_lock(cfg):
+        locked.append(1)
+        return real_lock(cfg)
+    monkeypatch.setattr(W, "org_write_lock", spy_lock)
     r = run(["backups", "prune", "--keep-last", "0", "--keep-days", "0", "--yes"])
     assert r.exit_code == 1, r.output
+    assert not locked                                # refused before taking the org write lock
     assert "refusing to write the org from a campaign agent" in r.output
     assert "Traceback" not in r.output
     assert sorted(os.listdir(bdir)) == before
@@ -330,8 +338,9 @@ def test_prune_cmd_reports_and_clears_marker(tmp_path, monkeypatch):
     r = run(["backups", "prune", "--json"])
     assert r.exit_code == 0, r.output
     assert json.loads(r.output)["last_auto_prune_error"] == marker
-    r = run(["backups", "prune"])                    # click 8.1's runner mixes stderr in
-    assert "last automatic prune failed at 2026-10-27T10:00:00 (tasks.org): boom" in r.output
+    r = run(["backups", "prune"])
+    warning = "last automatic prune failed at 2026-10-27T10:00:00 (tasks.org): boom"
+    assert warning in r.stderr and warning not in r.stdout
     # a successful automatic prune for another file leaves the marker
     (tmp_path / "other").mkdir()
     cfg, ideas, ibdir = _ideas_setup(tmp_path / "other")
