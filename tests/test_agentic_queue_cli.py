@@ -543,6 +543,8 @@ def test_batch_epic_expansion(tmp_path, monkeypatch):
     free = OW.add_idea(cfg, "free idea", epic="SPEC-0005")[2]
     covered = OW.add_idea(cfg, "covered idea", epic="SPEC-0005")[2]
     OW.set_property(cfg, Q._idea_task(cfg, covered), "SPEC", "SPEC-0013")
+    closed = OW.add_idea(cfg, "closed idea", epic="SPEC-0005")[2]
+    OW.set_state(cfg, Q._idea_task(cfg, closed), "DROPPED")
     added(cfg, monkeypatch, "SPEC-0011")
     r, d = batch(cfg, monkeypatch, "--epic", "SPEC-0005", "--yes")
     assert r.exit_code == 0, r.output
@@ -550,11 +552,28 @@ def test_batch_epic_expansion(tmp_path, monkeypatch):
     skipped = {s["id"]: s["reason"] for s in d["skipped"]}
     assert skipped["SPEC-0012"] == "status draft" and skipped["SPEC-0013"] == "status done"
     assert skipped[covered] == "has SPEC-0013; covered by the spec"
+    assert skipped[closed] == "idea is DROPPED"                   # never queued
+    assert closed not in [i["id"] for i in d["items"]]
     assert skipped["SPEC-0011"].startswith("already queued (SPEC-0011-")
     assert len(S.list_campaigns(cfg)) == 3
     r, d = batch(cfg, monkeypatch, "--epic", "SPEC-0005", "--yes")      # top-up: nothing new
     assert r.exit_code == 0 and d["items"] == [] and len(S.list_campaigns(cfg)) == 3
-    assert {s["id"] for s in d["skipped"]} >= {"SPEC-0010", free, "SPEC-0011"}
+    assert {s["id"] for s in d["skipped"]} >= {"SPEC-0010", free, "SPEC-0011", closed}
+
+
+def test_batch_ideas_come_after_specs(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2)
+    idea = OW.add_idea(cfg, "an idea")[2]
+    r, d = batch(cfg, monkeypatch, idea, "SPEC-0002", "SPEC-0001")
+    assert r.exit_code == 0, r.output
+    assert [i["id"] for i in d["items"]] == ["SPEC-0002", "SPEC-0001", idea]
+    assert [i["position"] for i in d["items"]] == [1, 2, 3] and d["items"][2]["kind"] == "idea"
+    r, d = batch(cfg, monkeypatch, idea, "SPEC-0002", "SPEC-0001", "--yes")
+    assert r.exit_code == 0 and all(i["written"] for i in d["items"]), r.output
+    created = [c for c in sorted(S.list_campaigns(cfg), key=lambda c: c["created_at"])]
+    assert [c["spec_id"] for c in created[:2]] == ["SPEC-0002", "SPEC-0001"]
+    assert len(created) == 3 and created[2]["kind"] == "idea" and created[2]["idea"]["id"] == idea
 
 
 def test_batch_from_file_comments_and_dedup(tmp_path, monkeypatch):
