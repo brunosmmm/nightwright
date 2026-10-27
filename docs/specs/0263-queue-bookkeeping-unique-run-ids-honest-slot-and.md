@@ -215,6 +215,13 @@ Make four local fixes in `queue.py`, each covered by a regression test:
 - Sabotage checks, each run against its test, each failed as required: `run_no` back to
   `counters["runs"] + 1`; stamping on every drop; `config_error=False` on the profile failure
   (the park was `open_failed`); `_close_regates` without the required-gate condition.
+- Review round (loop 1): `test_broken_profile_parks_config_invalid_and_recovers` now asserts that,
+  while the profile stays broken, the ledger has no `config_recovered` and exactly one
+  `config_invalid` transition, and that exactly one `config_recovered` follows the fix. Fifth
+  sabotage check: deleting `ctx.profile(st)` from step 0 of `_tick` fails it (ledger showed
+  `config_invalid, config_recovered, config_invalid`). Also added
+  `test_agentic_loop_state.py::test_slot_freed_at_over_capacity` (cap 3: 4 → 3 does not stamp,
+  4 → 2 stamps).
 - Regression suites `test_agentic_resolver.py`, `test_agentic_loop_state.py`,
   `test_agentic_config_reload.py`, `test_agentic_watchdog_gaps.py`, `test_agentic_profiles.py` and
   `test_agentic_queue.py` pass; the full `uv run pytest` result is in the closing gate run.

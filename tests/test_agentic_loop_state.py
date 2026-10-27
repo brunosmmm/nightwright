@@ -94,6 +94,13 @@ def test_slot_freed_at_only_on_full_to_free(monkeypatch):
     assert ["slot_freed_at" in kw for kw in lease.calls] == [True, False, False, False]
 
 
+@pytest.mark.parametrize("counts, stamped", [([4, 3], False), ([4, 2], True)])
+def test_slot_freed_at_over_capacity(monkeypatch, counts, stamped):
+    watch, lease = _slot_watch(monkeypatch, counts, slots=3), _Lease()     # cap 3: 4 -> 3 is still full
+    watch.check(lease)
+    assert ("slot_freed_at" in lease.calls[0]) is stamped
+
+
 def test_slot_watch_survives_slots_for_error(monkeypatch):
     watch, lease = _slot_watch(monkeypatch, [3, 2]), _Lease()
 

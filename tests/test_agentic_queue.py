@@ -1685,10 +1685,17 @@ def test_broken_profile_parks_config_invalid_and_recovers(tmp_path, monkeypatch)
     assert st["state"] == "PARKED" and st["park"]["reason"] == "config_invalid"
     assert st["park"]["resume_to"] == "IMPLEMENTING"
     assert st["park"]["detail"].startswith("profile:")
-    Q.tick(cfg)                                       # still broken: stays parked
-    assert S.read_state(cfg, cid)["state"] == "PARKED"
+    def reasons():
+        return [e["reason"] for e in S.read_ledger(cfg, cid, types=["transition"])]
+
+    assert reasons().count("config_invalid") == 1
+    for _ in range(2):                                # still broken: stays parked, no false recovery
+        Q.tick(cfg)
+        assert S.read_state(cfg, cid)["state"] == "PARKED"
+        assert "config_recovered" not in reasons()
+        assert reasons().count("config_invalid") == 1
     pfile.write_text(good)
     Q.tick(cfg)
     assert S.read_state(cfg, cid)["state"] in ("IMPLEMENTING", "WAITING", "GATING")
-    assert "config_recovered" in [e["reason"] for e in S.read_ledger(cfg, cid, types=["transition"])]
+    assert reasons().count("config_recovered") == 1
     assert S.read_state(cfg, cid)["park"] is None
