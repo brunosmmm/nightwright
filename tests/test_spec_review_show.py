@@ -113,6 +113,7 @@ def test_reviews_list_filter_json_and_unresolvable(tmp_path, monkeypatch):
     assert rows["SPEC-0001"]["counts"] == {"must_fix": 1, "major": 1}
     assert rows["SPEC-0001"]["size"] == "m" and rows["SPEC-0001"]["tone"] == "high-end"
     assert rows["SPEC-0999"]["matches_current"] is None and rows["SPEC-0999"]["verdict"] == "approve"
+    monkeypatch.setattr("wt.cli.console.width", 120)        # the reviewer column needs the room
     r = run_cli(cfg, monkeypatch, ["spec", "reviews"])
     assert r.exit_code == 0 and "must_fix" in r.output and "2026-10-26 00:00" in r.output
     assert "yes" in r.output and "?" in r.output and "edited" not in r.output
@@ -219,3 +220,37 @@ def test_show_renders_markup_like_text_verbatim(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     for text in ("[/oops] keep [x]", "[red]m", "[red]Design", "why [/x]", "a [/b]", "c [/d]"):
         assert text in r.output, r.output
+
+
+def test_show_displays_profile_and_legacy_dash(tmp_path, monkeypatch):            # SPEC-0278
+    repo, cfg, spec = _setup(tmp_path)
+    write_review(cfg, spec, "SPEC-0001", "revise", findings=FINDINGS, **SIZED)
+    r = _show(cfg, monkeypatch)
+    assert r.exit_code == 0 and "profile -" in r.output
+    assert json.loads(_show(cfg, monkeypatch, "--json").stdout)["review"].get(
+        "reviewer_profile") is None
+    write_review(cfg, spec, "SPEC-0001", "approve", reviewer_profile="thorough",
+                 reviewed_at="2026-10-26T00:00:00+00:00", **SIZED)
+    r = _show(cfg, monkeypatch)
+    assert "profile thorough" in r.output
+    shown = json.loads(_show(cfg, monkeypatch, "--json").stdout)
+    assert shown["review"]["reviewer_profile"] == "thorough"
+    assert "profile" in shown                         # the would-pick dict keeps its key
+
+
+def test_spec_reviews_reviewer_column(tmp_path, monkeypatch):                     # SPEC-0278
+    repo, cfg, spec = _setup(tmp_path)
+    write_review(cfg, spec, "SPEC-0001", "approve", reviewer_profile="thorough",
+                 **{**SIZED, "model": "opus"})
+    write_review(cfg, spec, "SPEC-0002", "approve", sha="b" * 64, **SIZED)    # legacy: no profile
+    r = run_cli(cfg, monkeypatch, ["spec", "reviews"])
+    assert r.exit_code == 0, r.output
+    header = next(ln for ln in r.output.splitlines() if "verdict" in ln)
+    assert header.split()[:3] == ["spec", "verdict", "reviewer"]
+    lines = {ln.split()[0]: ln.split() for ln in r.output.splitlines() if "SPEC-000" in ln}
+    assert lines["SPEC-0001"][2] == "thorough/opus"
+    assert lines["SPEC-0002"][2] == "sonnet"
+    rows = {x["spec_id"]: x for x in json.loads(
+        run_cli(cfg, monkeypatch, ["spec", "reviews", "--json"]).stdout)["reviews"]}
+    assert rows["SPEC-0001"]["reviewer_profile"] == "thorough"
+    assert rows["SPEC-0002"]["reviewer_profile"] is None

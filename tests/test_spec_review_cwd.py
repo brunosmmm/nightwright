@@ -103,6 +103,7 @@ def test_reviewed_line_stdout_and_json_stderr(tmp_path, monkeypatch):
     line = f"reviewing {SPEC_REL} @ {sha12} (worktree rev)  {wt2.resolve()}"
     r = _review(cfg, monkeypatch, "SPEC-0001")
     assert r.exit_code == 0, r.output
+    line += "  · profile balanced (sonnet)"                         # SPEC-0278
     assert r.stdout.splitlines()[0] == line
     r = _review(cfg, monkeypatch, "SPEC-0001", "--json", "--force")    # SPEC-0230: 2nd round
     assert r.exit_code == 0, r.output
@@ -115,7 +116,8 @@ def test_path_option_prints_origin_path(tmp_path, monkeypatch):
     r = _review(cfg, monkeypatch, "--path", str(spec))
     assert r.exit_code == 0, r.output
     assert r.stdout.splitlines()[0] == (
-        f"reviewing {SPEC_REL} @ {SR.spec_sha256(spec)[:12]} (path)  {repo.resolve()}")
+        f"reviewing {SPEC_REL} @ {SR.spec_sha256(spec)[:12]} (path)  {repo.resolve()}"
+        "  · profile balanced (sonnet)")                            # SPEC-0278
     r = _review(cfg, monkeypatch, "--path", str(spec), "--json", "--force")   # SPEC-0230
     assert json.loads(r.stdout)["origin"] == "path" and "(path)" in r.stderr
 

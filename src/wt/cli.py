@@ -1819,7 +1819,8 @@ def _print_review(review, pick):
         return escape(str(v))
 
     console.print(f"[bold]{esc(spec_id)}[/]  [{color}]{esc(verdict)}[/]  "
-                  f"{esc(review.get('model'))}{cost_txt}")
+                  f"{esc(review.get('model'))}{cost_txt}  "
+                  f"[dim]profile {esc(review.get('reviewer_profile') or '-')}[/]")
     if review.get("size"):
         console.print(f"  size {esc(review['size'])}  tone {esc(review.get('tone'))}",
                       highlight=False)
@@ -1858,8 +1859,11 @@ def _print_review(review, pick):
               help="review a spec that already has a stored review (an extra round)")
 @click.option("--show", is_flag=True,
               help="print the stored review without running a reviewer (SPEC-0242)")
+@click.option("--profile", default=None, shell_complete=C.complete_profile,
+              help="reviewer profile (default: agentic.spec_review_profile, else "
+                   "agentic.default_profile)")
 @click.pass_obj
-def spec_review_cmd(cfg, spec_id, path, as_json, force, show):
+def spec_review_cmd(cfg, spec_id, path, as_json, force, show, profile):
     """Review a spec with the read-only spec_reviewer persona (SPEC-0188).
 
     Stores the review in the data dir, keyed by the spec id and the file's hash
@@ -1876,8 +1880,14 @@ def spec_review_cmd(cfg, spec_id, path, as_json, force, show):
     verdict and findings, whether the file changed since, the profile `wt queue add` would
     pick and whether it would admit the spec now. `wt spec reviews` lists them all.
 
+    --profile NAME runs the reviewer with that profile's spec_reviewer model, effort and
+    budget (SPEC-0278); without it `agentic.spec_review_profile` is used, else
+    `agentic.default_profile`. The profile is recorded in the review. It does not allow a
+    second round: that still needs --force.
+
     \b
     wt spec review SPEC-0188
+    wt spec review SPEC-0188 --profile thorough
     wt spec review SPEC-0188 --json
     wt spec review SPEC-0188 --show
     wt spec review --path ~/code/other/docs/specs/0007-thing.md
@@ -1886,14 +1896,16 @@ def spec_review_cmd(cfg, spec_id, path, as_json, force, show):
     import sys
     from pathlib import Path
 
-    from .agentic.spec_review import (latest_review, reviewing_line, run_spec_review,
-                                      show_payload, spec_root, would_pick)
+    from .agentic.spec_review import (latest_review, reviewer_run_settings, reviewing_line,
+                                      run_spec_review, show_payload, spec_root, would_pick)
     from .specmeta import split_frontmatter
     from .specs import resolve_spec_path_for_cwd
     if bool(spec_id) == bool(path):
         raise click.UsageError("give exactly one of SPEC-ID and --path")
     if show and force:
         raise click.UsageError("--show and --force cannot be combined")
+    if show and profile:
+        raise click.UsageError("--show and --profile cannot be combined")
     try:
         if path:
             fm, _ = split_frontmatter(Path(path).read_text(encoding="utf-8"))
@@ -1919,12 +1931,15 @@ def spec_review_cmd(cfg, spec_id, path, as_json, force, show):
                     f"without a second review. Pass --force for an extra round")
             click.echo(f"warning: extra review round for {spec_id} (previous: {what})",
                        err=True)
-        line = reviewing_line(cfg, spec_path, origin)
+        prof, settings = reviewer_run_settings(cfg, spec_path, profile)   # SPEC-0278
+        line = (f"{reviewing_line(cfg, spec_path, origin)}  "
+                f"· profile {prof['name']} ({settings.get('model') or 'sonnet'})")
         if as_json:
             click.echo(line, err=True)
         else:
             console.print(line, highlight=False, markup=False, soft_wrap=True)
-        review = run_spec_review(cfg, spec_path, spec_id, origin=origin)
+        review = run_spec_review(cfg, spec_path, spec_id, origin=origin,
+                                 resolved=(prof, settings))
         pick = would_pick(cfg, review, project_root=spec_root(cfg, spec_path))
     except ValueError as e:
         raise click.ClickException(str(e))
@@ -1944,9 +1959,10 @@ def spec_review_cmd(cfg, spec_id, path, as_json, force, show):
 def spec_reviews_cmd(cfg, verdict, as_json):
     """List the latest stored review of every spec (SPEC-0242).
 
-    One row per spec in the review store: verdict, size, tone, finding counts, when it was
-    reviewed and whether it still matches the spec file (`edited` = the spec changed since;
-    `?` = the spec id no longer resolves here). Read one with `wt spec review SPEC-ID --show`.
+    One row per spec in the review store: verdict, the reviewer (`<profile>/<model>`,
+    SPEC-0278), size, tone, finding counts, when it was reviewed and whether it still matches
+    the spec file (`edited` = the spec changed since; `?` = the spec id no longer resolves
+    here). Read one with `wt spec review SPEC-ID --show`.
 
     \b
     wt spec reviews
@@ -1967,7 +1983,7 @@ def spec_reviews_cmd(cfg, verdict, as_json):
     from rich.table import Table
     table = Table(show_header=True, header_style="bold", box=None,
                   pad_edge=False, collapse_padding=True)
-    for col in ("spec", "verdict", "size", "tone", "findings", "reviewed", "current"):
+    for col in ("spec", "verdict", "reviewer", "size", "tone", "findings", "reviewed", "current"):
         table.add_column(col, overflow="fold", no_wrap=col not in ("tone", "findings"),
                          min_width=20 if col == "findings" else None)
     order = ("must_fix", "major", "minor", "nit")
@@ -1977,7 +1993,8 @@ def spec_reviews_cmd(cfg, verdict, as_json):
         found = " · ".join(f"{counts[s]} {s}" for s in sevs) or "-"
         at = str(r.get("reviewed_at") or "")[:16].replace("T", " ")
         cur = {True: "yes", False: "edited", None: "?"}[r["matches_current"]]
-        table.add_row(r["spec_id"], str(r["verdict"] or ""), str(r.get("size") or "-"),
+        who = "/".join(str(r[k]) for k in ("reviewer_profile", "model") if r.get(k)) or "-"
+        table.add_row(r["spec_id"], str(r["verdict"] or ""), who, str(r.get("size") or "-"),
                       str(r.get("tone") or "-"), found, at or "-", cur)
     console.print(table)
     if not rows:

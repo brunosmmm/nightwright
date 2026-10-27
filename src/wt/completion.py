@@ -160,6 +160,13 @@ def complete_project(ctx, param, incomplete):
 
 
 @_soft
+def complete_profile(ctx, param, incomplete):
+    """Workflow profile names from the builtin, user, config and cwd-project layers (SPEC-0278)."""
+    from .agentic.profiles import known_profiles
+    return _items(known_profiles(_cfg_from_ctx(ctx), project_root=Path.cwd()), incomplete)
+
+
+@_soft
 def complete_workstream(ctx, param, incomplete):
     from .org_write import configured_workstreams
     return _items(configured_workstreams(_cfg_from_ctx(ctx)), incomplete)

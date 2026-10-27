@@ -242,7 +242,8 @@ def all_latest_reviews(cfg) -> list:
             "reviewed_at": review.get("reviewed_at"), "spec_sha256": review.get("spec_sha256"),
             "matches_current": (None if path is None
                                 else review.get("spec_sha256") == spec_sha256(path)),
-            "model": review.get("model"), "cost_usd": review.get("cost_usd")})
+            "model": review.get("model"), "reviewer_profile": review.get("reviewer_profile"),
+            "cost_usd": review.get("cost_usd")})
     return rows
 
 
@@ -323,9 +324,11 @@ def _check_verdict(spec_id, verdict) -> None:
 
 
 def review_payload(spec_id, sha, *, model, cost_usd, verdict, root, spec_path=None,
-                   origin=None) -> dict:
+                   origin=None, reviewer_profile=None) -> dict:
     """The `wt.spec.review.v1` dict; raises ValueError on an approve carrying a must_fix.
-    `spec_path` (absolute) and `origin` (SPEC-0227) are recorded when given."""
+    `spec_path` (absolute) and `origin` (SPEC-0227) are recorded when given. `reviewer_profile`
+    (SPEC-0278) names the profile whose `spec_reviewer` settings ran; not `profile`, which
+    `wt spec review --json` uses for the campaign profile `would_pick` returns."""
     _check_verdict(spec_id, verdict)
     extra = {}
     if spec_path is not None:
@@ -335,7 +338,7 @@ def review_payload(spec_id, sha, *, model, cost_usd, verdict, root, spec_path=No
     return {
         "schema": SCHEMA, "spec_id": spec_id, "verdict": verdict["verdict"],
         "spec_sha256": sha, "reviewed_at": store.now_iso(), "model": model,
-        "cost_usd": cost_usd, "size": verdict.get("size"), "tone": verdict.get("tone"),
+        "reviewer_profile": reviewer_profile, "cost_usd": cost_usd, "size": verdict.get("size"), "tone": verdict.get("tone"),
         "rationale": verdict.get("rationale"), "findings": verdict.get("findings") or [],
         "suggested_splits": verdict.get("suggested_splits") or [],
         "repo_root": str(root), **extra,
@@ -343,6 +346,22 @@ def review_payload(spec_id, sha, *, model, cost_usd, verdict, root, spec_path=No
 
 
 # ---- the run journal ---------------------------------------------------------------------------------
+
+def review_profile_name(cfg, flag=None) -> str:
+    """The spec reviewer's profile name (SPEC-0278): `flag` > `agentic.spec_review_profile` >
+    `agentic.default_profile` > `balanced`."""
+    ag = (cfg or {}).get("agentic") or {}
+    return flag or ag.get("spec_review_profile") or ag.get("default_profile") or "balanced"
+
+
+def reviewer_run_settings(cfg, spec_path, name=None):
+    """`(profile, spec_reviewer settings)` for a review of `spec_path`, from `name` or the
+    spec-review default. The one resolution the CLI's reviewing line and the run share; an
+    unknown profile raises ValueError listing the known ones."""
+    prof = resolve_profile(cfg, review_profile_name(cfg, name),
+                           project_root=spec_root(cfg, spec_path))
+    return prof, PS.persona_settings(prof, PERSONA)
+
 
 def reviewing_line(cfg, spec_path, origin) -> str:
     """`reviewing <rel path> @ <sha12> (<origin>)  <toplevel>`: which file a review reads
@@ -371,10 +390,12 @@ def _journal_append(cfg, rec) -> None:
         os.close(fd)
 
 
-def journal_start(cfg, run_id, spec_id, timeout_s, run_dir) -> None:
+def journal_start(cfg, run_id, spec_id, timeout_s, run_dir, *, reviewer_profile=None,
+                  model=None) -> None:
     _journal_append(cfg, {"schema": RUN_SCHEMA, "kind": "start", "run_id": run_id,
                           "spec_id": spec_id, "ts": store.now_iso(), "timeout_s": timeout_s,
-                          "run_dir": str(run_dir)})
+                          "run_dir": str(run_dir), "reviewer_profile": reviewer_profile,
+                          "model": model})
 
 
 def journal_end(cfg, run_id, spec_id, *, verdict=None, counts=None, cost_usd=None,
@@ -445,10 +466,11 @@ def _counts(findings) -> dict:
 
 
 def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
-                    origin=None) -> dict:
+                    origin=None, resolved=None) -> dict:
     """Run the spec reviewer on the spec file, store the review and journal the run. A run
     error or a verdict that does not conform appends an `end` with `error`, raises ValueError
-    and stores nothing."""
+    and stores nothing. `resolved` is a `reviewer_run_settings` pair, else `profile` (default
+    `review_profile_name(cfg)`) is resolved here."""
     path = Path(spec_path)
     sha = spec_sha256(path)
     root = spec_root(cfg, path)
@@ -461,8 +483,7 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
             else _meta_tools_root(cfg, path)
     ctx = review_context(path, spec_id, idea_text=idea_text, root=root, schema_root=schema_root)
     persona = PS.get_persona(PERSONA)
-    prof = resolve_profile(cfg, profile, project_root=root)
-    settings = PS.persona_settings(prof, PERSONA)
+    prof, settings = resolved or reviewer_run_settings(cfg, path, profile)
     run_id = _RUN_ID_RE.sub("-", f"{spec_id}-{store.now_iso()}-{os.getpid()}-{secrets.token_hex(2)}")
     req = PS.RunRequest(
         persona=PERSONA,
@@ -485,7 +506,8 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
         profile=prof.get("name"),
         profile_sources=tuple(prof.get("sources") or ()),
     )
-    journal_start(cfg, run_id, spec_id, req.timeout_s, req.run_dir)
+    journal_start(cfg, run_id, spec_id, req.timeout_s, req.run_dir,
+                  reviewer_profile=prof.get("name"), model=req.model)
     t0 = time.monotonic()
     cost = None
     try:
@@ -497,7 +519,7 @@ def run_spec_review(cfg, spec_path, spec_id, *, profile=None, idea_text=None,
             raise ValueError(f"spec review of {spec_id} {why} (see {req.run_dir})")
         payload = review_payload(spec_id, sha, model=req.model, cost_usd=result.cost_usd,
                                  verdict=result.verdict, root=root, spec_path=path,
-                                 origin=origin)
+                                 origin=origin, reviewer_profile=prof.get("name"))
         save_review(cfg, payload)
     except Exception as e:
         journal_end(cfg, run_id, spec_id, cost_usd=cost, error=str(e),

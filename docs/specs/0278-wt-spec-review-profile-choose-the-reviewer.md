@@ -1,7 +1,7 @@
 ---
 id: SPEC-0278
 title: "wt spec review --profile, a spec-review default profile, and the profile recorded"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -95,16 +95,16 @@ any run starts, with `resolve_profile`'s ValueError, which lists the known profi
 
 ## Acceptance criteria
 
-- [ ] `wt spec review SPEC-X --profile thorough` runs the reviewer with `thorough`'s
+- [x] `wt spec review SPEC-X --profile thorough` runs the reviewer with `thorough`'s
       `spec_reviewer` model, effort and budget.
-- [ ] With no flag, `agentic.spec_review_profile` is used when set, else
+- [x] With no flag, `agentic.spec_review_profile` is used when set, else
       `agentic.default_profile`.
-- [ ] An unknown `--profile` exits non-zero before any run starts or any journal record is
+- [x] An unknown `--profile` exits non-zero before any run starts or any journal record is
       written, naming the known profiles.
-- [ ] The stored review JSON and the journal `start` record carry `reviewer_profile` and
+- [x] The stored review JSON and the journal `start` record carry `reviewer_profile` and
       `model`; `--show`, `wt spec reviews` (table and JSON) display it (`-` for older
       reviews); the `--json` top-level `profile` keeps meaning the queue pick.
-- [ ] `--profile` combined with `--show` is a usage error.
+- [x] `--profile` combined with `--show` is a usage error.
 
 ## Test plan
 
@@ -132,13 +132,30 @@ the existing fake runner (`select_runner` stub that captures the `RunRequest`):
   `review_profile_name`; `test_review_profile_name_precedence` must fail.
 - Regression guard: full `uv run pytest`.
 
+### Test record (2026-10-27)
+
+New tests in `tests/test_agentic_spec_review.py` and `tests/test_spec_review_show.py` (all
+named in the plan) pass. Sabotage checks run: the CLI calling without the flag fails
+`test_cli_review_profile_flag_sets_model`; a swapped precedence in `review_profile_name` fails
+`test_review_profile_name_precedence`. Full `uv run pytest -q -x` and `python3
+tools/spec_lint.py` pass.
+
+### As shipped (2026-10-27)
+
+- As designed. `complete_profile` (`src/wt/completion.py`) lists `known_profiles(cfg,
+  project_root=cwd)`.
+- `test_reviews_list_filter_json_and_unresolvable` now sets the console width to 120: the new
+  `reviewer` column pushes the table past 80 columns, where the `current` column was cut.
+- `tests/test_spec_review_cwd.py` expects the reviewing line with the appended
+  `· profile balanced (sonnet)`.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

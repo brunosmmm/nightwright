@@ -84,6 +84,7 @@ DEFAULT_CONFIG = {
         "runner": "claude",            # claude | fake (tests; SPEC-0174)
         "fake_script": None,           # FakeRunner script path (SPEC-0174)
         "default_profile": "balanced",
+        "spec_review_profile": None,   # `wt spec review` default profile; None = default_profile (SPEC-0278)
         "poll_interval_s": 20,
         "lease_ttl_s": 120,
         "run_launcher": "nohup",       # nohup | tmux | foreground (used by /wt-conduct)

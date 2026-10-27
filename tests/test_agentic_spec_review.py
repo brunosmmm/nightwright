@@ -396,3 +396,83 @@ def test_spec_review_run_json_records_profile(tmp_path, monkeypatch):           
     assert rec["profile_sources"] == ["builtin:balanced.yaml",
                                       "config.yaml:agentic.profiles.balanced",
                                       str(prof / "balanced.yaml")]
+
+
+# ---- SPEC-0278: --profile, agentic.spec_review_profile, the profile recorded ---------------
+
+def _reviewer(name):
+    return PR.persona_settings(PR.resolve_profile({}, name), "spec_reviewer")
+
+
+def test_review_profile_name_precedence():
+    ag = {"default_profile": "frugal", "spec_review_profile": "careful"}
+    assert SR.review_profile_name({"agentic": ag}, "thorough") == "thorough"
+    assert SR.review_profile_name({"agentic": ag}) == "careful"
+    assert SR.review_profile_name({"agentic": {**ag, "spec_review_profile": None}}) == "frugal"
+    assert SR.review_profile_name({"agentic": {"default_profile": None}}) == "balanced"
+    assert SR.review_profile_name({}) == "balanced"
+
+
+def test_cli_review_profile_flag_sets_model(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [_review_entry()])
+    ran = _spy(monkeypatch, tmp_path)
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--profile", "thorough"])
+    assert r.exit_code == 0, r.output
+    (req,) = ran
+    want = _reviewer("thorough")
+    assert want["model"] != _reviewer("balanced")["model"]
+    assert (req.model, req.effort, req.max_budget_usd) == (
+        want["model"], want["effort"], float(want["max_budget_usd"]))
+    assert req.profile == "thorough"
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "--path", str(_spec(repo)), "--force",
+                                   "--profile", "frugal"])
+    assert r.exit_code == 0, r.output
+    assert ran[1].profile == "frugal" and ran[1].model == _reviewer("frugal")["model"]
+
+
+def test_cli_review_config_default_profile(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [_review_entry()])
+    cfg["agentic"]["spec_review_profile"] = "thorough"
+    ran = _spy(monkeypatch, tmp_path)
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001"])
+    assert r.exit_code == 0, r.output
+    assert ran[0].profile == "thorough" and ran[0].model == _reviewer("thorough")["model"]
+    assert SR.latest_review(cfg, "SPEC-0001")["reviewer_profile"] == "thorough"
+
+
+def test_cli_review_unknown_profile_no_journal(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [_review_entry()])
+    ran = _spy(monkeypatch, tmp_path)
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--profile", "nope"])
+    assert r.exit_code != 0 and not ran
+    assert "unknown profile 'nope'" in r.output and "thorough" in r.output
+    assert not SR.journal_path(cfg).exists() and SR.latest_review(cfg, "SPEC-0001") is None
+    assert "reviewing " not in r.output
+
+
+def test_review_payload_and_journal_record_profile(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [_review_entry()])
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json",
+                                   "--profile", "thorough"])
+    assert r.exit_code == 0, r.output
+    out = json.loads(r.stdout)
+    assert out["reviewer_profile"] == "thorough" and out["profile"] == "balanced"   # the queue pick
+    side = SR.load_review(cfg, "SPEC-0001", SR.spec_sha256(_spec(repo)))
+    assert side["reviewer_profile"] == "thorough" and "profile" not in side
+    start = next(j for j in SR.read_journal(cfg) if j["kind"] == "start")
+    assert start["reviewer_profile"] == "thorough" and start["model"] == _reviewer("thorough")["model"]
+
+
+def test_reviewing_line_names_profile_and_model(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [_review_entry()])
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--profile", "thorough"])
+    assert r.exit_code == 0, r.output
+    line = next(ln for ln in r.output.splitlines() if ln.startswith("reviewing "))
+    assert line.endswith(f"· profile thorough ({_reviewer('thorough')['model']})")
+
+
+def test_cli_review_profile_with_show_usage_error(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [])
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--show",
+                                   "--profile", "thorough"])
+    assert r.exit_code == 2 and "--show and --profile cannot be combined" in r.output
