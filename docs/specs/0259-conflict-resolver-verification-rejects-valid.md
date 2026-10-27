@@ -45,35 +45,56 @@ The `conflict_resolver` verdict gains an optional `dropped_commits: [{sha, reaso
 `verify_resolution` takes the declared set; a commit that falls through all accounting branches
 (paired, cherry `-`, empty, reverse-applies) and is declared is accepted as `superseded`
 instead of failing. An undeclared one still fails as today. A declaration naming a commit that
-is in fact paired or otherwise present is ignored. Because `prepare_close` always re-gates the
-rebased tree after resolution (close.py step 5), a wrongful drop surfaces as a gate failure,
-which routes to triage or the existing park path; the dropped commits are recorded as a
-`finding` so the conductor can audit them.
+is in fact paired or otherwise present is ignored. The safety net is the re-gate of the rebased tree
+(close.py step 5, `G.run_all`), so a wrongful drop surfaces as a gate failure that routes to
+triage or the existing park path; the dropped commits are recorded as a `finding` so the
+conductor can audit them.
+
+**That net does not exist for every close.** A `merge_request` with `merge.docs_only`
+(`wt queue merge --docs-only`, SPEC-0234) returns its `PreparedClose` at close.py:409-426,
+before step 5, so no gate ever runs; and `_dispatch_resolver` fires on any `rebase_conflict`
+park, which happens at step 4 before that branch. Decision: **a declaration is honored only
+when the close will re-gate.** For a docs-only merge request `verify_resolution` is called with
+no declarations (`declared_dropped=()`), so a drop there fails verification as `is missing
+after the resolution` exactly as today (`pre_head` restored, the existing park path). Docs-only
+is the only gate-skipping close path today; the gating condition is a single helper
+`_close_regates(state)` (False for a docs-only merge request) so a future gate-skipping path
+has one place to be excluded. The docs-only allowlist alone is not accepted as the guard,
+because a silently lost docs commit would merge with no check at all.
 
 ## Design
 
 - **personas.py**: `CONFLICT_RESOLVER_SCHEMA` gains optional `dropped_commits` (array of
-  objects, required `sha` and `reason`, strings). `RESOLVER_INVARIANT` and
-  `personas/conflict_resolver.md` say: if a campaign commit's intent was already delivered a
+  objects, required `sha` and `reason`, strings with `minLength: 1` so an empty reason cannot
+  satisfy the audit trail). `RESOLVER_INVARIANT` (personas.py:48-50) allows only `rebase
+  --continue` today, yet taking the upstream side leaves nothing to commit and
+  `--continue` refuses; so add `rebase --skip` to its allowed-git list and to step 5 of
+  `personas/conflict_resolver.md`, stated as "only for a commit you then list in
+  `dropped_commits`". The invariant and prompt also say: if a campaign commit's intent was already delivered a
   different way upstream and keeping it would be wrong, do not port it; list it (full or
   abbreviated sha from `git log <fork>..<pre-head>`) with a one-sentence reason; never use it
   to skip a conflict you could resolve.
 - **gitops.verify_resolution(..., declared_dropped=())**: new keyword. Declared shas are
   normalized with `git rev-parse --verify <s>^{commit}` (failures are ignored) and intersected
   with `old_commits`. In the loop over `old_commits`, before the final `fail(... is missing
-  ...)` return: if `c in declared and c not in paired`, append `_commit_entry(worktree, c)`
+  ...)` return (paired commits already `continue` earlier, gitops.py:514-519, so a declared
+  commit reaching here is necessarily unpaired): if `c in declared`, append `_commit_entry(worktree, c)`
   plus `reason` to a new `ResolutionCheck.superseded` list and `continue`. A superseded commit
   is not added to `guarded` (nothing of it is expected in the branch).
   `ResolutionCheck` gains `superseded: list[dict]` (default empty).
-- **queue._do_resolve** passes `verdict.get("dropped_commits")` shas; `res.resolution` gains
+- **queue._do_resolve** passes `verdict.get("dropped_commits")` shas, or none when
+  `not _close_regates(state)`; `res.resolution` gains
   `superseded`. **`_apply_resolve`** adds `superseded_commits` to the `rebase_resolved` event
   (schemas.py lists it; `render.rebase_resolved_text` appends `; K superseded`, old events
   unchanged) and, when non-empty, a `finding` (`persona: conflict_resolver`, `severity:
   major`, `gate: rebase`, title `resolver dropped campaign commits`, detail listing sha,
-  subject, reason) so the drop is visible in the review and report.
-- Gate dependence is by construction: `closing.resolve` is cleared and the close redoes
-  `prepare_close`, whose step 5 runs `G.run_all`. Nothing here may add a path from a verified
-  resolution to a merge without that re-gate; the test below pins it.
+  subject, reason; `files` = the files the dropped commits touched) so the drop is visible in
+  the review and report. The `events.py` projection of `rebase_resolved` (events.py:284) is
+  left unchanged: the count is carried by the event itself and the finding, not the projection.
+- Gate dependence: `closing.resolve` is cleared and the close redoes `prepare_close`, whose
+  step 5 runs `G.run_all`, for every non-docs-only close. Nothing here may add a path from a
+  declared drop to a merge without that re-gate (docs-only closes ignore declarations, above);
+  the tests below pin both.
 
 ## Alternatives considered
 
@@ -96,6 +117,10 @@ which routes to triage or the existing park path; the dropped commits are record
       commit with its reason; old events render unchanged.
 - [ ] After a resolution with superseded commits the close runs the gates before merging; a
       failing gate does not merge.
+- [ ] For a `--docs-only` merge request, declarations are ignored: a declared drop fails
+      verification as `is missing after the resolution` and nothing is superseded.
+- [ ] `rebase --skip` is in the resolver's allowed git and in the persona prompt (only for a
+      declared drop); an empty `sha` or `reason` is rejected by the schema.
 - [ ] The Test plan passes and `uv run pytest` is green.
 
 ## Test plan
@@ -110,11 +135,14 @@ which routes to triage or the existing park path; the dropped commits are record
   - `test_declared_but_present_commit_ignored`; `test_declared_unknown_sha_ignored`.
   - Close integration: with a superseded drop and a gate command that exits 1, the campaign is
     not `MERGED` and the gate ran; with a passing gate it merges.
-  - Persona/schema tests for the new field and prompt text; render test for `; K superseded`.
+  - `test_docs_only_merge_request_ignores_declaration`: a docs-only merge-request campaign
+    with a declared, otherwise-missing commit fails with `is missing`, `pre_head` restored.
+  - Persona/schema tests for the new field (including empty `sha`/`reason` rejected) and prompt
+    text (`rebase --skip` in the invariant and step 5); render test for `; K superseded`.
 - **Sabotage checks:** accepting every `<` commit fails `superseded_undeclared`; ignoring the
   declaration fails `test_superseded_commit_declared_verified`; treating declared as
   skipping the re-gate fails the close integration test; omitting the finding fails the event
-  test.
+  test; dropping the `_close_regates` guard fails the docs-only test.
 - **Manual verification:** next real close that supersedes a commit shows `+K superseded` and
   the finding, then a green re-gate.
 - **Regression guard:** full `uv run pytest`; the SPEC-0221/0252 resolver cases unchanged.
