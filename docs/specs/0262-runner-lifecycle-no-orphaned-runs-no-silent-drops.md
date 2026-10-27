@@ -1,7 +1,7 @@
 ---
 id: SPEC-0262
 title: "Runner lifecycle: no orphaned runs, no silent drops, no stale code"
-status: in-progress
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -129,19 +129,19 @@ code that keeps running unnoticed.
 
 ## Acceptance criteria
 
-- [ ] When `runproc.main` raises after `Popen` (for example, the `child.json` write
+- [x] When `runproc.main` raises after `Popen` (for example, the `child.json` write
       fails), the child's process group is gone before `exit.json` is written, and
       `exit.json.error` ends with `child process group killed`.
-- [ ] When the stop bound expires with an unfinished hookless flight (gate, close, resolve,
+- [x] When the stop bound expires with an unfinished hookless flight (gate, close, resolve,
       write_spec or FakeRunner), the `stop` record's `abandoned` lists it with
       `phase: "in_process"` and its `step`. The crash path does the same.
-- [ ] When anything between `L.acquire` and the main loop raises, the lease is released and
+- [x] When anything between `L.acquire` and the main loop raises, the lease is released and
       a fresh `L.acquire` succeeds at once.
-- [ ] A failed `git diff` in `code_changes` makes the runner enter draining with
+- [x] A failed `git diff` in `code_changes` makes the runner enter draining with
       `diff_failed: true`, and `code_sha` never moves to the new head without a re-exec.
-- [ ] A failed `git diff` in `Watcher.poll` yields exactly one `code_changed` report with
+- [x] A failed `git diff` in `Watcher.poll` yields exactly one `code_changed` report with
       `diff_failed: True`, and the baseline moves to the new head.
-- [ ] `uv run pytest` is green and each sabotage check below fails its test.
+- [x] `uv run pytest` is green and each sabotage check below fails its test.
 
 ## Test plan
 
@@ -181,13 +181,46 @@ code that keeps running unnoticed.
   `test_agentic_codewatch.py` must pass unchanged.
 - **Manual verification:** none. Every path is driven in-process.
 
+### Test record (2026-10-27)
+
+- The five named tests plus the `_crash_sweep` twin
+  (`test_crash_sweep_lists_in_process_flights`) pass. The full `uv run pytest -q -x` gate
+  passes: 3237 passed, 3 skipped. It was re-run in run 005 after the sabotage checks, with
+  the spec at `done`, and gave the same result.
+- Sabotage checks: each was applied alone, its test run, and the code restored from a copy.
+  All four tests failed for the expected reason:
+  1. No `_killpg` calls in the `runproc.main` outer `except`:
+     `test_wrapper_failure_after_popen_kills_child` FAILED. `exit.json` still has the
+     suffix, but `assert until(gone, timeout=10.0)` is False because `sleep 30` outlives the
+     wrapper.
+  2. `report.abandoned += pool.unfinished_in_process()` dropped from `_drain`:
+     `test_bound_expiry_lists_in_process_flights` FAILED (`report.abandoned == []`).
+  3. `_SlotWatch(cfg, pool)` moved above the outer `try` in `queue.run`:
+     `test_lease_released_when_startup_raises` FAILED (`held` is True; the lease leaked).
+  4. `or []` restored in `codewatch.code_changes`:
+     `test_diff_failure_counts_as_code_change` FAILED. There is no `draining` record
+     (`ValueError: not enough values to unpack`) because the change took the docs-only branch.
+
+### As shipped (2026-10-27)
+
+- `_crash_sweep` does more than append the in-process list once. Its re-sweep loop also
+  waits, up to the same bound, for unfinished in-process tasks to end (a gate whose
+  subprocess was just terminated usually finishes at once), and lists only the ones still
+  running at the bound. It returns `abandoned + in_process`.
+- `diff_failed` is declared as an optional `code_changed` field through `EVENT_OPTIONAL`
+  in `events.py` (`{"code_changed": {"diff_failed": bool}}`), which `validate` checks. The
+  required field set in `EVENT_TYPES` is unchanged. The `draining` and `stop` records carry
+  `diff_failed: true` through the existing `restart` dict.
+- `StepPool.unfinished_in_process` looks up `run_id` by task index in `fl.runs`. Like
+  `force_detach_waiting`, this assumes one task per flight.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

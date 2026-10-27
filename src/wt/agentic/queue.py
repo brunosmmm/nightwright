@@ -2427,7 +2427,7 @@ class StepPool:
         left = []
         with self.lock:
             for cid, fl in self.flights.items():
-                run_ids = [r for r, _ in fl.runs]
+                run_ids = [r for r, _ in fl.runs]   # one task per flight, as in force_detach_waiting
                 for i, (step, fut, hk) in enumerate(fl.tasks):
                     if hk is None and not fut.done():
                         left.append({"campaign": cid,
