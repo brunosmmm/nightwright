@@ -31,8 +31,9 @@ ledger (`wt campaign log`) shows two defects in the detector:
    (ENOSPC). In round 3 (closed by `triage_fix` at seq 70), implementer run 008 reported
    `status: blocked` with the blocker "Disk full (ENOSPC) on the volume holding /tmp…". The
    round says nothing about whether the code converges. It still fills a slot in the
-   3-round window and pins that slot's blocking count at 0, which is the start of the
-   `0→1→1` trend.
+   3-round window. (On this ledger r2 is also a gate round with no counted findings, so
+   dropping r3 alone does not change the trend window; Decisions 2 and 3 are what clear this
+   replay. Decision 1 is justified by the round's content, and is covered by its own test.)
 2. **New blockers weigh the same as repeated ones.** Rounds 4 and 5 each had exactly one
    blocking finding, and each was a *different, new* one: test_reviewer "`wt tui --tab
    events` CLI choice is not tested", then adversarial_reviewer "Event text is put into the
@@ -58,8 +59,9 @@ Code today (verified in `src/wt/agentic/divergence.py`):
 ## Goals / Non-goals
 
 **Goals**
-- A gate round whose failure is explained by an environmental or transient cause is left out
-  of the divergence assessment.
+- A gate round whose failure is explained by an environmental cause (disk full, quota,
+  read-only filesystem), or whose implementer run crashed or was rate-limited so the gated
+  tree is incomplete, is left out of the divergence assessment.
 - `trend` and `churn` treat a loop that fixes each blocker while reviewers keep finding
   *different* ones as converging. A blocker that persists, or a pile of new blockers, still
   counts.
@@ -81,16 +83,23 @@ Code today (verified in `src/wt/agentic/divergence.py`):
 1. **Environmental gate rounds are dropped.** `Round` gains `environmental: bool`.
    `rounds()` sets it when, inside that round, any of these holds:
    - (a) an `implementer` `run.end` has `verdict.status == "blocked"`, and one of its
-     `blockers` (or its `summary`) matches an environmental or transient marker;
-   - (b) any persona's `run.end` has `is_error` or `timed_out` set, and
-     `events._is_transient(result_tail)` is true;
+     `blockers` (or its `summary`) matches an `ENV_MARKERS` entry;
+   - (b) an `implementer` `run.end` (the run that produced the gated code) has `is_error` or
+     `timed_out` set, and `events._is_transient(result_tail)` is true. Other personas'
+     failed runs (for example a rate-limited `gate_triager` that is retried) say nothing
+     about why the gate failed and do not count;
    - (c) a failing required gate in the round's last `gate` has a `tail` that matches an
-     environmental marker.
+     `ENV_MARKERS` entry. (c) never uses `_is_transient`: its bare "429", "529" and
+     "overloaded" substrings would match `tests/x.py:429: AssertionError` or `529 passed, 1
+     failed` and silently suppress `gate_repeat` and `trend`.
 
    `assess` drops rounds that are both `kind == "gate"` and `environmental` before any
    signal or `min_rounds` check. Review rounds are never dropped: their gate was green, so
    the reviewers' findings are real even if an implementer run in that round hit the
-   environment.
+   environment. `assess` then works on the kept rounds only: `rounds` in the result is
+   `len(kept)`, and every round number in recurrence evidence and in the park summary
+   (`r1`, `r3`) is a 1-based index into the kept rounds, not the ledger round. The summary
+   notes `excluded_rounds` when it is non-zero.
 2. **Repeated blockers weigh more than new ones in `trend`.** Each kept round gets a score:
    - each blocking finding that matches (`matches`, any counted severity) a finding of an
      *earlier kept* round adds `REPEAT_WEIGHT = 1.0`;
@@ -116,9 +125,10 @@ identity, recurrence, gate_repeat, trip rule, settings and queue integration.
 ### Markers (`divergence.py`)
 
 `ENV_MARKERS = ("enospc", "no space left", "disk full", "errno 28", "edquot", "disk quota",
-"inodes", "erofs", "read-only file system")`. Matching lower-cases the text and does a
-substring test. The helper is `_environmental(text) -> bool`, true when any `ENV_MARKERS`
-entry matches or `events._is_transient(text)` is true. The import is at module level as
+"out of inodes", "erofs", "read-only file system")` (disk and filesystem only). Matching
+lower-cases the text and does a substring test. The helper `_environmental(text) -> bool` is
+true when any `ENV_MARKERS` entry matches; it is used by (a) and (c). Rule (b) calls
+`events._is_transient(text)` directly. The import is at module level as
 `from .events import _is_transient`. `events` imports `queue` only lazily, so this creates
 no import cycle.
 
@@ -126,7 +136,7 @@ no import cycle.
 
 - `Round` gains a trailing field `environmental: bool = False`, so the existing positional
   `Round(kind, findings, gates)` calls keep working.
-- In the loop, a `run.end` record sets a local `env` flag when (a) or (b) holds. The checks
+- In the loop, an implementer `run.end` record sets a local `env` flag when (a) or (b) holds. The checks
   are defensive: `verdict` must be a dict, blockers that are not strings are `str()`-ed, and
   a missing `result_tail` falls back to `"timed out"`/`"error"` the way
   `events._project_ledger_event` does.
@@ -138,7 +148,8 @@ no import cycle.
 
 `kept = [r for r in rs if not (r.kind == "gate" and r.environmental)]`, then the existing
 `min_rounds`, recurrence, trend, churn and gate_repeat logic runs on `kept`. The result
-adds `"excluded_rounds": len(rs) - len(kept)`.
+adds `"excluded_rounds": len(rs) - len(kept)`, and `"rounds"` is `len(kept)` (the e2e test's
+`div["rounds"] == 3` is unaffected when nothing is excluded).
 
 ### `_scores(rs, similarity) -> list[float]` (new)
 
@@ -182,7 +193,8 @@ unchanged.
 ## Acceptance criteria
 
 - [ ] `Round.environmental` exists, defaults to False, and is set by `rounds()` under rules
-      (a), (b) and (c). Implementer blocker findings are still not counted as findings.
+      (a), (b) and (c); (c) does not fire on a gate tail containing "429" or "529 passed",
+      and (b) does not fire for a non-implementer run. Implementer blocker findings are still not counted as findings.
 - [ ] `assess` drops environmental gate rounds before every check, keeps environmental
       review rounds, and reports `excluded_rounds`.
 - [ ] `trend` trips on weighted scores: one new blocker per round over 3 rounds does not
@@ -191,8 +203,8 @@ unchanged.
 - [ ] `churn` counts blocking findings only, and three rounds of fresh minors alone do not
       produce churn.
 - [ ] The SPEC-0251 replay ledger (below) gives `assess(...) is None`. The same ledger
-      without the ENOSPC blocker in round 3 still does not trip, because the weighting alone
-      clears the trend.
+      without the ENOSPC blocker in round 3 also gives None, because Decisions 2 and 3 alone
+      clear it (the exclusion is covered by its own test, not by the replay).
 - [ ] `test_e2e_recurrence_parks_diverging_then_resume_continues` and
       `test_e2e_gate_repeat_trips_on_the_third_failed_fix` pass unchanged.
 - [ ] `uv run pytest` passes, and `python3 tools/spec_lint.py` exits 0.
@@ -204,12 +216,15 @@ In `tests/test_agentic_divergence.py`:
 - `test_rounds_marks_environmental_gate_round`. Three ledgers, one per rule:
   - (a) an implementer `run.end` with `verdict={"status": "blocked", "blockers": ["Disk
     full (ENOSPC) on /tmp"]}`;
-  - (b) a `gate_triager` `run.end` with `is_error=True, result_tail="rate limit reached"`;
+  - (b) an `implementer` `run.end` with `is_error=True, result_tail="rate limit reached"`;
   - (c) a failing required gate whose tail is `OSError: [Errno 28] No space left on device`.
 
-  Each sets `environmental` on its round. A blocked verdict without markers ("spec is
-  ambiguous") does not. An optional failing gate with an ENOSPC tail does not.
+  Each sets `environmental` on its round. These do not: a blocked verdict without markers
+  ("spec is ambiguous"); an optional failing gate with an ENOSPC tail; a `gate_triager`
+  `run.end` with `is_error=True, result_tail="rate limit reached"`; a failing required gate
+  whose tail contains `tests/x.py:429: AssertionError` or `529 passed, 1 failed`.
 - `test_assess_drops_environmental_gate_rounds_only`:
+  - (the `gr()`/`rnd()` helpers gain an `environmental=False` keyword passed to `DV.Round`)
   - three gate rounds `gr()` (same failing gate, same triager title), the middle one
     environmental: no trip, `excluded_rounds == 1` in the non-None case (checked with a
     4-round variant that does trip);
@@ -233,7 +248,10 @@ In `tests/test_agentic_divergence.py`:
   also gives None.
 - Existing tests are updated where this spec changes the expectations, and the changes are
   noted in the Test record:
-  - `test_trend`: the `[a],[b],[c]` assertion flips;
+  - `test_trend`: the `[a],[b],[c]` assertion flips, and so does
+    `"trend" not in sigs([rnd(blocking=list("ab")), rnd(blocking=["a"]), rnd(blocking=list("ab"))])`
+    (scores 1.0, 1.0, 2.0 are non-decreasing with last >= 1). This is intended: a count that
+    dipped and came back with the same blockers is a persisting blocker and should trend;
   - `test_churn`: the minors assertion flips;
   - `test_trip_rule`: `only_churn` uses blocking findings that decrease 4→3→2, all new.
 
@@ -245,8 +263,11 @@ In `tests/test_agentic_divergence.py`:
 1. Make `assess` keep environmental rounds (`kept = rs`). `test_spec0251_replay_does_not_trip`
    must still pass on the weighting alone, as stated in the acceptance criteria, and
    `test_assess_drops_environmental_gate_rounds_only` must fail.
-2. Set `NEW_WEIGHT = 1.0`. `test_trend_weighs_repeated_over_new` must fail, and so must the
-   no-ENOSPC replay variant.
+2. Set `NEW_WEIGHT = 1.0`. `test_trend_weighs_repeated_over_new` must fail. (The replay
+   cannot detect this: churn and gate_repeat do not fire there, so a lone trend signal gives
+   None.)
+3. Revert `_churn` to `cur.findings`. `test_churn_counts_blocking_only` must fail.
+4. Let (c) use `_is_transient`. The "429" gate-tail negative case must fail.
 
 Restore both and record the failures in the Test record.
 
