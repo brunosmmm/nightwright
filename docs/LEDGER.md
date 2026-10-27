@@ -198,6 +198,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0264](./specs/0264-review-pipeline-integrity-exact-attestations-safe.md) | Review pipeline integrity: exact attestations and safe escalation answers | feature | accepted | — | 2026-10-27 |
 | [SPEC-0265](./specs/0265-operator-surfaces-survive-bad-data-and-never.md) | Operator surfaces survive bad data and never render untrusted text as markup | feature | accepted | — | 2026-10-27 |
 | [SPEC-0266](./specs/0266-review-pipeline-integrity-ii-scoped-regenerate.md) | Review pipeline integrity II: scoped regenerate, divergence reset, locked follow-up groups | feature | accepted | — | 2026-10-27 |
+| [SPEC-0267](./specs/0267-reconcile-source-idea-walk-mislinks-old-specs-to.md) | Reconcile source_idea walk verifies idea identity before linking | feature | accepted | — | 2026-10-27 |
 
 ## Done
 
