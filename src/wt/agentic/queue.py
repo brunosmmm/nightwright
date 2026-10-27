@@ -4541,6 +4541,7 @@ def apply_merge(cfg, plan: dict, *, by="human") -> dict:
 
 
 _IDEA_ID_RE = re.compile(r"^IDEA-\d+$")
+_ANY_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 
 
 def _open_idea_campaign(cfg, idea_id) -> dict | None:
@@ -4640,7 +4641,13 @@ def _depends_on(cfg, spec_id) -> list[str]:
         deps = _spec_fm(cfg, spec_id).get("depends_on") or []
     except (OSError, ValueError):
         return []
-    return [str(d).strip() for d in ([deps] if isinstance(deps, str) else deps)]
+    return [_canon_id(d) for d in ([deps] if isinstance(deps, str) else deps)]
+
+
+def _canon_id(raw) -> str:
+    """`SPEC-0003` for `spec-0003` (specs resolve by number, so case must not make two ids)."""
+    s = str(raw).strip()
+    return s.upper() if _ANY_ID_RE.match(s) else s
 
 
 def expand_epic(cfg, epic_id) -> tuple[list[str], list[dict]]:
@@ -4775,7 +4782,7 @@ def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=Fal
     `plan_add` / `plan_add_idea`; on top, specs are ordered by their in-batch `depends_on`
     (ideas follow), cycles and dependents of refused items are refused, and dependencies that
     would block a spec forever are listed in its `would_block`."""
-    ids = list(dict.fromkeys(i.strip() for i in ids if i and i.strip()))
+    ids = list(dict.fromkeys(_canon_id(i) for i in ids if i and i.strip()))
     params = {"project": project, "profile": profile, "base": base, "force": bool(force),
               "priority": priority}
     items = {}
@@ -4794,7 +4801,8 @@ def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=Fal
     deps_of = {i: _depends_on(cfg, i) for i in spec_ids}
     order, cycles = _order_specs(spec_ids, deps_of)
     for sid, msg in cycles.items():
-        items[sid].setdefault("error", msg)
+        prior = items[sid].get("error")
+        items[sid]["error"] = f"{prior}; {msg}" if prior else msg
         items[sid].pop("plan", None)
     ordered = [items[i] for i in order] + [items[i] for i in ids if items[i]["kind"] == "idea"]
     _cascade(ordered, deps_of)

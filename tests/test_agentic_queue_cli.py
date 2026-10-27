@@ -605,3 +605,83 @@ def test_single_id_output_unchanged(tmp_path, monkeypatch):
     assert d["schema"] == "wt.queue.add.v1" and "items" not in d
     assert {"campaign", "spec_id", "project", "profile", "priority", "base", "worktree",
             "branch", "cap_usd", "written"} <= set(d)
+
+
+def test_batch_cycle_message_on_member_with_planner_error(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2, deps=["SPEC-0003"], review=False)
+    add_spec(cfg, repo, 3, deps=["SPEC-0002"])
+    r, d = batch(cfg, monkeypatch, "SPEC-0002", "SPEC-0003")
+    errs = {i["id"]: i["error"] for i in d["items"]}
+    assert "no spec review" in errs["SPEC-0002"]
+    assert "dependency cycle: SPEC-0002 -> SPEC-0003 -> SPEC-0002" in errs["SPEC-0002"]
+    assert errs["SPEC-0003"].startswith("dependency cycle")
+
+
+def test_batch_ids_are_case_insensitive(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2, deps=["spec-0003"])
+    add_spec(cfg, repo, 3)
+    r, d = batch(cfg, monkeypatch, "spec-0003", "SPEC-0003", "spec-0002", "--yes")
+    assert r.exit_code == 0, r.output
+    assert [i["id"] for i in d["items"]] == ["SPEC-0003", "SPEC-0002"]
+    assert d["items"][1]["would_block"] == []
+    assert campaign_order(cfg) == ["SPEC-0003", "SPEC-0002"]
+    # a depends_on written in another case still orders the batch
+    add_spec(cfg, repo, 4, deps=["spec-0005"])
+    add_spec(cfg, repo, 5)
+    r, d = batch(cfg, monkeypatch, "SPEC-0004", "SPEC-0005")
+    assert [i["id"] for i in d["items"]] == ["SPEC-0005", "SPEC-0004"]
+
+
+def test_batch_markup_in_ids_does_not_crash(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    f = tmp_path / "ids.txt"
+    f.write_text("SPEC-0001[/]\n[/x]\nSPEC-0001\n")
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "--from-file", str(f)])
+    assert r.exit_code == 0 and r.exception is None, r.output
+    assert "SPEC-0001[/]" in r.output and "[/x]" in r.output and "2 refused" in r.output
+
+
+def test_batch_epic_source_order_and_explicit_ids(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 5)                                         # the epic
+    add_spec(cfg, repo, 10, parent="SPEC-0005")
+    add_spec(cfg, repo, 11, parent="SPEC-0005")                   # queued first
+    add_spec(cfg, repo, 12, parent="SPEC-0005")
+    add_spec(cfg, repo, 20)
+    f = tmp_path / "ids.txt"
+    f.write_text("SPEC-0001\nSPEC-0010\n")                        # SPEC-0010 is also an epic child
+    added(cfg, monkeypatch, "SPEC-0011")
+    r, d = batch(cfg, monkeypatch, "SPEC-0020", "--from-file", str(f), "--epic", "SPEC-0005",
+                 "SPEC-0011")
+    assert r.exit_code == 0, r.output
+    ids = [i["id"] for i in d["items"]]
+    assert ids == ["SPEC-0020", "SPEC-0011", "SPEC-0001", "SPEC-0010", "SPEC-0012"], ids
+    byid = {i["id"]: i for i in d["items"]}
+    assert "already has an active campaign" in byid["SPEC-0011"]["error"]
+    assert "SPEC-0011" not in [s["id"] for s in d["skipped"]]       # explicit: refused, not skipped
+    assert "SPEC-0010" not in [s["id"] for s in d["skipped"]]       # explicit and de-duplicated
+
+
+def test_batch_unknown_epic_writes_nothing(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--epic", "SPEC-0999", "--yes"])
+    assert r.exit_code != 0 and not S.list_campaigns(cfg), r.output
+
+
+def test_batch_uncapped_in_cli_output(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2)
+    orig = Q.plan_add
+
+    def uncapped(*a, **kw):
+        plan = orig(*a, **kw)
+        plan["cap_usd"] = None
+        return plan
+
+    monkeypatch.setattr(Q, "plan_add", uncapped)
+    r, d = batch(cfg, monkeypatch, "SPEC-0001", "SPEC-0002")
+    assert d["uncapped"] == 2 and d["cap_usd_total"] == 0, d
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "SPEC-0002"])
+    assert "$0 cap total + 2 uncapped" in r.output, r.output

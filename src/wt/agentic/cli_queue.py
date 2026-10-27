@@ -734,12 +734,13 @@ def _print_batch(batch: dict, do_write: bool, refused) -> None:
                         style="yellow")
             if it.get("written"):
                 note = Text(f"✓ {plan['campaign']}  ", style="green") + note
-        table.add_row(str(it["position"]), it["id"], it["kind"], str(plan.get("profile") or "-"),
-                      f"${cap:g}" if cap is not None else "-", note)
+        table.add_row(str(it["position"]), Text(it["id"]), it["kind"],
+                      str(plan.get("profile") or "-"), f"${cap:g}" if cap is not None else "-",
+                      note)
     if batch["items"]:
         console.print(table)
     for sk in batch.get("skipped") or ():
-        console.print(f"[dim]skipped {sk['id']}: {sk['reason']}[/]", highlight=False)
+        console.print(Text(f"skipped {sk['id']}: {sk['reason']}", style="dim"), highlight=False)
     totals = f"{batch['ok']} to queue · {batch['errors']} refused · ${batch['cap_usd_total']:g} cap total"
     if batch["uncapped"]:
         totals += f" + {batch['uncapped']} uncapped"
@@ -844,12 +845,13 @@ def attach(queue_group):
                 with open(from_file, encoding="utf-8") as fh:
                     batch_ids += [ln.split("#", 1)[0].strip() for ln in fh]
             skipped = []
+            explicit = {Q._canon_id(i) for i in batch_ids}      # never reported as skipped
             if epic:
                 epic_ids, skipped = Q.expand_epic(cfg, epic)
                 batch_ids += epic_ids
             batch = Q.plan_add_batch(cfg, batch_ids, project=project, profile=profile,
                                      base=base, force=force, priority=priority)
-            batch["skipped"] = skipped
+            batch["skipped"] = [s for s in skipped if s["id"] not in explicit]
             refused = None
             if do_write:
                 try:

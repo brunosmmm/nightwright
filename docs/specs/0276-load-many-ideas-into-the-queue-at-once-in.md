@@ -189,12 +189,21 @@ order instead of the sort fails `test_batch_topological_order`; dropping the `sk
 fails `test_batch_all_or_nothing_and_skip_invalid`; dropping the plan-time cascade fails
 `test_batch_skip_invalid_refused_dependency`. Full `uv run pytest` and spec-lint pass.
 
+Review round 2 (2026-10-27): added tests for a cycle member that already has a planner error
+(both messages kept), case-insensitive ids and `depends_on`, ids with Rich markup in the table,
+`--epic` mixed with positional and file ids (source order, explicit ids never in `skipped`),
+unknown `--epic` (non-zero, nothing written) and the `+ N uncapped` totals line and JSON through
+the CLI. Full `uv run pytest` and spec-lint pass.
+
 ### As shipped
 
 - `apply_add_batch` takes the per-item parameters from `batch["params"]` (project, profile, base,
   force, priority), which `plan_add_batch` records and the JSON payload carries.
 - The payload adds `refused` (the all-or-nothing message, else null); `written` is true when at
   least one item was written. `expand_epic` is a separate planner helper in `queue.py`.
+- Ids are canonicalised (`spec-0003` becomes `SPEC-0003`, also in `depends_on`) before
+  de-duplication and ordering. A cycle message is appended to a member's earlier planner error.
+  An explicit id is never listed in `skipped`, even when it is also an epic child.
 - The write-time race cascade reuses the plan-time one, so a dependent is refused as
   `depends on refused SPEC-X` at both points.
 
