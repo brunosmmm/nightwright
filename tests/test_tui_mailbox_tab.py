@@ -688,6 +688,38 @@ def test_a_failed_paint_is_retried_by_the_next_poll(tmp_path, monkeypatch):
     ask(cfg, frm="conductor", to="human", kind="info", text="hello")
     app = _desk(cfg, tab="mailbox")
     real = MT.MailboxView.paint_threads
+    calls = []
+
+    def boom(self):
+        self.threads_table.clear()              # like the real paint: it clears, then fails
+        raise TypeError("bad record")
+
+    def counting(self):
+        calls.append(1)
+        real(self)
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            assert mv(app).threads_table.row_count
+            monkeypatch.setattr(MT.MailboxView, "paint_threads", boom)
+            mv(app).reload()
+            await settle(app, pilot)
+            assert any("mailbox failed" in msg for msg, _ in app.notes)
+            assert not mv(app).threads_table.row_count
+            monkeypatch.setattr(MT.MailboxView, "paint_threads", counting)  # disk unchanged
+            mv(app)._poll()
+            await settle(app, pilot)
+            assert len(calls) >= 1              # without the `_signature = None` reset: 0
+            assert mv(app).threads_table.row_count
+
+    _run(drive())
+
+
+def test_the_same_paint_error_is_notified_once(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    ask(cfg, frm="conductor", to="human", kind="info", text="hello")
+    app = _desk(cfg, tab="mailbox")
 
     def boom(self):
         raise TypeError("bad record")
@@ -696,12 +728,9 @@ def test_a_failed_paint_is_retried_by_the_next_poll(tmp_path, monkeypatch):
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
             monkeypatch.setattr(MT.MailboxView, "paint_threads", boom)
-            mv(app).reload()
-            await settle(app, pilot)
-            assert any("mailbox failed" in msg for msg, _ in app.notes)
-            monkeypatch.setattr(MT.MailboxView, "paint_threads", real)   # nothing changes on disk
-            mv(app)._poll()
-            await settle(app, pilot)
-            assert mv(app).threads_table.row_count
+            for _ in range(3):
+                mv(app).reload()
+                await settle(app, pilot)
+            assert sum("mailbox failed" in msg for msg, _ in app.notes) == 1
 
     _run(drive())

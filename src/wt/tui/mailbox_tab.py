@@ -124,6 +124,7 @@ class MailboxView(Horizontal):
         self._signature = None
         self._loading = False
         self._again = False
+        self._reported = ""                     # last paint error notified: one toast per error
         self._busy = False                      # a reply / new-message flow is open
         self._timer = None
 
@@ -223,9 +224,13 @@ class MailboxView(Horizontal):
                 snap.msgs, snap.inboxes, snap.inbox, snap.threads, snap.escalations)
             self.paint_inboxes()
             self.paint_right()
+            self._reported = ""
         except Exception as e:      # a malformed record must not end the app
             self._signature = None              # retried by the next poll, not only on new mail
-            self.app.notify(f"mailbox failed: {escape(str(e) or repr(e))}", severity="error")
+            msg = f"mailbox failed: {escape(str(e) or repr(e))}"
+            if msg != self._reported:           # idempotent: the retry poll must not re-toast
+                self._reported = msg
+                self.app.notify(msg, severity="error")
         finally:
             self._loading = False
             if self._again:

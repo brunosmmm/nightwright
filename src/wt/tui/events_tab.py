@@ -163,7 +163,7 @@ class EventsView(Horizontal):
                 if not rows and self._last_id and not reset:
                     # Changed without growing the id range: replaced by a file with older ids?
                     full = await asyncio.to_thread(AM.load_events, self.cfg, 0, AM.EVENT_LIMIT)
-                    if not full or full[-1].id < self._last_id:
+                    if not full or max(r.id for r in full) < self._last_id:
                         reset, rows = True, full
             except Exception as e:  # a bad line must not take the desk down
                 self.query_one("#events-status", Static).update(

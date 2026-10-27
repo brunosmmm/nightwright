@@ -256,6 +256,14 @@ duplicate id instead of crashing, and `event_time` tolerates `OverflowError`.
   `test_a_failed_paint_is_retried_by_the_next_poll` (mailbox). Sabotage: `rows[-1].id` for `_last_id`
   made the trailing-duplicate test fail, then reverted. The four TUI test files: 109 passed.
 
+- Review round 4: the mailbox `test_a_failed_paint_is_retried_by_the_next_poll` now has its failing
+  stub clear the table first and counts calls to the real `paint_threads` after the patch is undone
+  (>= 1); sabotage: removing the `_signature = None` reset in `MailboxView._reload_async` made it
+  fail, then reverted. The mailbox tab has no status line, so its paint failure stays a
+  notification (as the AC requires) but is now idempotent: the same error is toasted once until a
+  paint succeeds (`test_the_same_paint_error_is_notified_once`). The events tab's replace check
+  uses `max(r.id for r in full) < self._last_id` instead of `full[-1].id`.
+
 ## Definition of done
 
 - [x] Acceptance criteria all met.
