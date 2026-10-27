@@ -10,6 +10,7 @@ from wt import tui as T
 from wt.agentic import events as EV
 from wt.agentic import store as S
 from wt.tui import campaign_screen as CS
+from waits import pilot_until
 
 needs_textual = pytest.mark.skipif(not T.textual_available(),
                                    reason="optional tui extra not installed")
@@ -157,7 +158,7 @@ def test_a_ledger_append_shows_within_a_poll_and_never_syncs(tmp_path, monkeypat
             await press(app, pilot, ["f", "f", "f"])            # gates, 1 row
             gate_total = len(s.shown)
             _ev(cfg, cid, "gate", {"gate_seq": 2, "ok": True, "results": []})
-            await pilot.pause(0.5)
+            assert await pilot_until(pilot, lambda: len(s.shown) == gate_total + 1)
             await settle(app, pilot)
             assert s.filter == "gates" and len(s.shown) == gate_total + 1
             assert s.table.cursor_row == len(s.shown) - 1           # followed the end
@@ -165,7 +166,7 @@ def test_a_ledger_append_shows_within_a_poll_and_never_syncs(tmp_path, monkeypat
             await press(app, pilot, ["g"])
             first_seq = s.shown[0].seq
             _ev(cfg, cid, "gate", {"gate_seq": 3, "ok": True, "results": []})
-            await pilot.pause(0.5)
+            assert await pilot_until(pilot, lambda: len(s.shown) == gate_total + 2)
             await settle(app, pilot)
             assert len(s.shown) == gate_total + 2
             assert s.shown[s.table.cursor_row].seq == first_seq

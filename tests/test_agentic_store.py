@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from waits import join
 from wt.agentic import store as S
 from wt.agentic import schemas as SC
 
@@ -193,7 +194,7 @@ def test_item_lock_reentrant_and_append_inside(tmp_path):
         t.start()
         time.sleep(0.2)
         order.append("main")
-    t.join(5)
+    join(t)
     assert order == ["main", "thread"]
 
     # another process blocks on the flock while we hold it

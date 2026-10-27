@@ -3,7 +3,6 @@ import asyncio
 import datetime as dt
 import json
 import os
-import time
 
 import pytest
 
@@ -15,6 +14,8 @@ from wt.agentic import events as EV
 from wt.agentic import mailbox as MB
 from wt.tui import agentic_model as AM
 from wt.tui import events_tab as ET
+from waits import pilot_until
+from waits import pilot_until
 
 needs_textual = pytest.mark.skipif(not T.textual_available(),
                                    reason="optional tui extra not installed")
@@ -56,14 +57,10 @@ def status(app):
     return str(app.query_one("#events-status").render())
 
 
-async def until(app, pilot, cond, what="condition", timeout=5.0):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        await pilot.pause(0.05)
-        if cond():
-            await settle(app, pilot, 1)
-            return
-    raise AssertionError(f"timed out waiting for {what}")
+async def ui_until(app, pilot, cond, what="condition", timeout=None):
+    if not await pilot_until(pilot, cond, timeout):
+        raise AssertionError(f"timed out waiting for {what}")
+    await settle(app, pilot, 1)
 
 
 async def typed(app, pilot, text):
@@ -183,7 +180,7 @@ def test_untrusted_event_text_is_never_parsed_as_markup(tmp_path):
             assert cells[3].plain == "SPEC-0001-[/a]"
             assert cells[4].plain.startswith("error=[/tmp/x][@click")
             _add(cfg, "run_failed", "SPEC-0002-b", error=err, **_fail)   # the incremental append
-            await until(app, pilot, lambda: len(ids(app)) == 3, "event 3")
+            await ui_until(app, pilot, lambda: len(ids(app)) == 3, "event 3")
             assert app.is_running
             assert table.get_row_at(2)[4].plain.startswith("error=[/tmp/x][@click")
 
@@ -201,7 +198,7 @@ def test_the_table_keeps_the_newest_events_only(tmp_path, monkeypatch):
             await settle(app, pilot)
             assert ids(app) == [3, 4, 5, 6]
             _add(cfg, campaign="SPEC-0099-x")
-            await until(app, pilot, lambda: ids(app)[-1] == 7, "event 7")
+            await ui_until(app, pilot, lambda: ids(app)[-1] == 7, "event 7")
             assert ids(app) == [4, 5, 6, 7] and view(app).table.row_count == 4
             assert "4/4" in status(app)
 
@@ -220,15 +217,15 @@ def test_the_cursor_keeps_its_event_when_an_append_trims_the_table(tmp_path, mon
             await pilot.press("k", "k")                       # off the tail: event 4
             assert view(app).current_row().id == 4
             _add(cfg, campaign="SPEC-0099-x")
-            await until(app, pilot, lambda: ids(app)[-1] == 7, "event 7")
+            await ui_until(app, pilot, lambda: ids(app)[-1] == 7, "event 7")
             assert ids(app) == [2, 3, 4, 5, 6, 7]
             assert view(app).current_row().id == 4
             _add(cfg, campaign="SPEC-0098-x")
-            await until(app, pilot, lambda: ids(app)[-1] == 8, "event 8")
+            await ui_until(app, pilot, lambda: ids(app)[-1] == 8, "event 8")
             assert view(app).current_row().id == 4
             for _ in range(3):                                # trims event 4 away: tail
                 _add(cfg, campaign="SPEC-0097-x")
-            await until(app, pilot, lambda: ids(app)[-1] == 11, "event 11")
+            await ui_until(app, pilot, lambda: ids(app)[-1] == 11, "event 11")
             assert view(app).table.cursor_row == 5
 
     _run(drive())
@@ -249,7 +246,7 @@ def test_a_malformed_record_does_not_break_the_stream(tmp_path):
             await settle(app, pilot)
             assert ids(app)[:2] == [1, 2]
             _add(cfg, campaign="SPEC-0010-x")
-            await until(app, pilot, lambda: len(ids(app)) > len(rows), "new event")
+            await ui_until(app, pilot, lambda: len(ids(app)) > len(rows), "new event")
 
     _run(drive())
 
@@ -267,7 +264,7 @@ def test_an_appended_event_appears_and_the_tail_is_followed(tmp_path):
             table = view(app).table
             assert table.cursor_row == 2
             _add(cfg, campaign="SPEC-0010-x")                 # another process appends
-            await until(app, pilot, lambda: ids(app) == [1, 2, 3, 4], "event 4")
+            await ui_until(app, pilot, lambda: ids(app) == [1, 2, 3, 4], "event 4")
             assert table.cursor_row == 3                      # was on the tail: follows it
 
     _run(drive())
@@ -285,12 +282,12 @@ def test_the_cursor_stays_put_when_it_was_not_on_the_tail(tmp_path):
             await pilot.press("k", "k")
             assert table.cursor_row == 0
             _add(cfg, campaign="SPEC-0010-x")
-            await until(app, pilot, lambda: ids(app) == [1, 2, 3, 4], "event 4")
+            await ui_until(app, pilot, lambda: ids(app) == [1, 2, 3, 4], "event 4")
             assert table.cursor_row == 0
             await pilot.press("G")                            # G: back to the tail
             assert table.cursor_row == 3
             _add(cfg, campaign="SPEC-0011-x")
-            await until(app, pilot, lambda: ids(app)[-1] == 5, "event 5")
+            await ui_until(app, pilot, lambda: ids(app)[-1] == 5, "event 5")
             assert table.cursor_row == 4
 
     _run(drive())
@@ -311,20 +308,20 @@ def test_a_truncated_or_replaced_file_reloads_in_full(tmp_path):
             await settle(app, pilot)
             assert ids(app) == [1, 2, 3, 4]
             path.write_text(record(1, "SPEC-0001-new"))                   # truncated
-            await until(app, pilot, lambda: ids(app) == [1], "truncation reload")
+            await ui_until(app, pilot, lambda: ids(app) == [1], "truncation reload")
             assert view(app).table.get_row_at(0)[3].plain == "SPEC-0001-new"
             other = path.with_name("events.new")
             other.write_text("".join(record(i, "SPEC-0002-longer-campaign-name-" + "y" * 40)
                                      for i in (1, 2)))
             other.replace(path)                                           # replaced, bigger
-            await until(app, pilot, lambda: ids(app) == [1, 2], "replacement reload")
+            await ui_until(app, pilot, lambda: ids(app) == [1, 2], "replacement reload")
             assert view(app).table.get_row_at(0)[3].plain.startswith("SPEC-0002-longer")
             path.unlink()                                                 # removed
-            await until(app, pilot, lambda: ids(app) == [], "empty reload")
+            await ui_until(app, pilot, lambda: ids(app) == [], "empty reload")
             assert not [n for n, k in app.notes if k.get("severity") == "error"]
             assert "events failed" not in status(app)
             _add(cfg, campaign="SPEC-0003-x")
-            await until(app, pilot, lambda: ids(app) == [1], "new stream")
+            await ui_until(app, pilot, lambda: ids(app) == [1], "new stream")
 
     _run(drive())
 
@@ -352,7 +349,7 @@ def test_an_in_place_rewrite_with_older_ids_reloads_in_full(tmp_path):
                 f.write(record(1) + record(2))
             after = os.stat(path)
             assert after.st_ino == before.st_ino and after.st_size > before.st_size
-            await until(app, pilot, lambda: ids(app) == [1, 2], "fallback reload")
+            await ui_until(app, pilot, lambda: ids(app) == [1, 2], "fallback reload")
             assert view(app).table.get_row_at(0)[3].plain.startswith("SPEC-0002-rewritten")
             assert "events failed" not in status(app)
 
@@ -373,7 +370,7 @@ def test_a_record_without_a_type_is_skipped_not_fatal(tmp_path):
             assert ids(app) == [1, 2]
             assert "events failed" not in status(app)
             EV.append(cfg, "admitted", campaign="SPEC-0010-x", by="test", data={})
-            await until(app, pilot, lambda: len(ids(app)) == 3, "event after the bad lines")
+            await ui_until(app, pilot, lambda: len(ids(app)) == 3, "event after the bad lines")
 
     _run(drive())
 
@@ -490,7 +487,7 @@ def test_new_events_respect_the_active_filter(tmp_path):
             await press(app, pilot, ["x"])
             _add(cfg, "admitted", "SPEC-0232-c")
             _add(cfg, "lease_stale", pid=1, heartbeat_age_s=99)
-            await until(app, pilot, lambda: ids(app) == [4, 7], "alert 7")
+            await ui_until(app, pilot, lambda: ids(app) == [4, 7], "alert 7")
             assert "2/7" in status(app)
 
     _run(drive())
@@ -508,7 +505,7 @@ def test_the_side_panels_are_populated_without_any_sync(tmp_path):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await until(app, pilot, lambda: "runner_dead" in panel(app, "conditions"), "alerts")
+            await ui_until(app, pilot, lambda: "runner_dead" in panel(app, "conditions"), "alerts")
             assert "runner_dead - active=1 queued=0" in panel(app, "conditions")
             assert panel(app, "ping") == "no conductor_ping yet (interval 600s)"
             assert "conductor events pid - lag 1" in panel(app, "followers")
@@ -535,7 +532,7 @@ def test_no_alerts_and_a_ping_digest_and_a_live_follower(tmp_path):
         async with app.run_test(size=SIZE) as pilot:
             with EV.reader_lock(cfg, "conductor"):
                 await settle(app, pilot)
-                await until(app, pilot, lambda: "no alerts" in panel(app, "conditions"))
+                await ui_until(app, pilot, lambda: "no alerts" in panel(app, "conditions"))
                 ping = panel(app, "ping")
                 assert ping.splitlines()[0].startswith("active 1 · queued 2 · ready 1 · blocked 1")
                 assert "blocked SPEC-0002-b 25m" in ping and "ago" in ping.splitlines()[-1]
@@ -562,7 +559,7 @@ def test_a_held_follower_with_a_stale_cursor_is_flagged_lagging(tmp_path):
         async with app.run_test(size=SIZE) as pilot:
             with EV.reader_lock(cfg, "conductor"):
                 await settle(app, pilot)
-                await until(app, pilot, lambda: "conductor" in panel(app, "followers"))
+                await ui_until(app, pilot, lambda: "conductor" in panel(app, "followers"))
                 lines = {ln.split()[0]: ln for ln in panel(app, "followers").splitlines()}
                 assert "lag 2" in lines["conductor"] and lines["conductor"].endswith("lagging")
                 assert "dead" not in lines["conductor"]
@@ -586,7 +583,7 @@ def test_a_new_ping_updates_the_panel(tmp_path):
                 "ready_not_admitted": [],
                 "counts": {"active": 7, "queued": 0, "ready": 0, "blocked": 0, "parked": 0,
                            "undecided_parks": 0, "stuck": 0, "waiting": 0}})
-            await until(app, pilot, lambda: panel(app, "ping").startswith("active 7"), "ping")
+            await ui_until(app, pilot, lambda: panel(app, "ping").startswith("active 7"), "ping")
 
     _run(drive())
 
@@ -636,14 +633,14 @@ def test_the_tab_never_syncs_or_takes_a_cursor_or_reader(tmp_path, monkeypatch):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await until(app, pilot, lambda: "runner_dead" in panel(app, "conditions"), "alerts")
+            await ui_until(app, pilot, lambda: "runner_dead" in panel(app, "conditions"), "alerts")
             # the followers path swallows exceptions into "followers failed": it must not have
-            await until(app, pilot, lambda: "conductor" in panel(app, "followers"), "followers")
+            await ui_until(app, pilot, lambda: "conductor" in panel(app, "followers"), "followers")
             assert "failed" not in panel(app, "followers")
             assert "failed" not in panel(app, "conditions")
             assert "stream never synced" in status(app)
             _add(cfg, "admitted", "SPEC-0300-x")
-            await until(app, pilot, lambda: ids(app)[-1] == 6, "event 6")
+            await ui_until(app, pilot, lambda: ids(app)[-1] == 6, "event 6")
             await press(app, pilot, ["x", "x", "c", "c", "G", "f", *"type=parked", "enter",
                                      "f", "escape", "enter"])
             await pilot.press("1")
@@ -675,8 +672,7 @@ def test_timers_pause_when_the_tab_is_left(tmp_path, monkeypatch):
             assert len(calls) == n
             await pilot.press("5")
             await settle(app, pilot)
-            await pilot.pause(0.2)
-            assert len(calls) > n
+            assert await pilot_until(pilot, lambda: len(calls) > n)
 
     _run(drive())
 
@@ -691,19 +687,19 @@ def test_side_panels_refresh_on_their_own_after_the_tab_opens(tmp_path):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await until(app, pilot, lambda: "no alerts" in panel(app, "conditions"), "no alerts")
-            await until(app, pilot, lambda: "dead" in panel(app, "followers"), "dead follower")
+            await ui_until(app, pilot, lambda: "no alerts" in panel(app, "conditions"), "no alerts")
+            await ui_until(app, pilot, lambda: "dead" in panel(app, "followers"), "dead follower")
             assert "no live follower" in status(app)
             # State changes after the tab opened; no key press from here on.
             _campaign(cfg, "SPEC-0900-20261025-aaaa", "IMPLEMENTING")   # active, no lease
-            await until(app, pilot, lambda: "runner_dead" in panel(app, "conditions"),
+            await ui_until(app, pilot, lambda: "runner_dead" in panel(app, "conditions"),
                         "runner_dead")
             with EV.reader_lock(cfg, "conductor"):
-                await until(app, pilot, lambda: "dead" not in panel(app, "followers"),
+                await ui_until(app, pilot, lambda: "dead" not in panel(app, "followers"),
                             "follower no longer dead")
-                await until(app, pilot, lambda: "no live follower" not in status(app),
+                await ui_until(app, pilot, lambda: "no live follower" not in status(app),
                             "warning gone")
-            await until(app, pilot, lambda: "dead" in panel(app, "followers"),
+            await ui_until(app, pilot, lambda: "dead" in panel(app, "followers"),
                         "dead again once released")
             assert not EV.events_path(cfg).exists() or "runner_dead" not in \
                 EV.events_path(cfg).read_text()
@@ -722,7 +718,7 @@ def test_the_side_timer_pauses_off_tab_and_resumes_on_five(tmp_path, monkeypatch
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await until(app, pilot, lambda: len(calls) >= 3, "side timer ticking")
+            await ui_until(app, pilot, lambda: len(calls) >= 3, "side timer ticking")
             await pilot.press("1")
             await settle(app, pilot)
             await pilot.pause(0.3)                  # let an in-flight reload finish
@@ -730,7 +726,7 @@ def test_the_side_timer_pauses_off_tab_and_resumes_on_five(tmp_path, monkeypatch
             await pilot.pause(0.8)                  # four SIDE_S periods
             assert len(calls) == n
             await pilot.press("5")
-            await until(app, pilot, lambda: len(calls) >= n + 3, "side timer resumed")
+            await ui_until(app, pilot, lambda: len(calls) >= n + 3, "side timer resumed")
 
     _run(drive())
 
@@ -758,15 +754,15 @@ def test_a_failing_load_is_shown_and_the_next_poll_recovers(tmp_path, monkeypatc
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await until(app, pilot, lambda: "conditions failed: ledger gone"
+            await ui_until(app, pilot, lambda: "conditions failed: ledger gone"
                         in panel(app, "conditions"), "conditions failure shown")
-            await until(app, pilot, lambda: "events failed: disk gone" in status(app),
+            await ui_until(app, pilot, lambda: "events failed: disk gone" in status(app),
                         "events failure shown")
             assert ids(app) == []                  # the desk is still up and responsive
             broken["on"] = False
-            await until(app, pilot, lambda: "no alerts" in panel(app, "conditions"),
+            await ui_until(app, pilot, lambda: "no alerts" in panel(app, "conditions"),
                         "conditions recovered")
-            await until(app, pilot, lambda: ids(app) == [1, 2]
+            await ui_until(app, pilot, lambda: ids(app) == [1, 2]
                         and "events failed" not in status(app), "events recovered")
             assert not [n for n, k in app.notes if k.get("severity") == "error"]
 

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0269
 title: "Load-tolerant test waits: fix known flakes and add a shared wait helper"
-status: accepted
+status: in-progress
 kind: feature
 owner: user
 created: 2026-10-27
@@ -176,19 +176,19 @@ scope here.
 
 ## Acceptance criteria
 
-- [ ] `tests/waits.py` exists with `WAIT_S` (env `WT_TEST_WAIT_S`, default 60), `until`,
+- [x] `tests/waits.py` exists with `WAIT_S` (env `WT_TEST_WAIT_S`, default 60), `until`,
       `join` and `pilot_until`. `test_agentic_runproc.until` is the same object as
       `waits.until`.
-- [ ] `test_vanished_when_group_gone` uses the SIGSTOP → killpg → wait → SIGKILL order and
+- [x] `test_vanished_when_group_gone` uses the SIGSTOP → killpg → wait → SIGKILL order and
       passes 20/20 runs while 4 copies of `tests/test_agentic_runproc.py` run in parallel (the
       manual load check below).
-- [ ] The 12 join sites in Context item 4 use `waits.join`, and the runproc detach bound is
+- [x] The 12 join sites in Context item 4 use `waits.join`, and the runproc detach bound is
       5.0 s. None of the five TUI sites listed makes a positive assertion after a fixed
       `pilot.pause`. `test_tui_events_tab.py` uses `ui_until` on top of `waits.pilot_until`,
       and has no private `until`.
-- [ ] `tests/test_test_waits.py` passes on the tree, and fails when a private `def until(` or
+- [x] `tests/test_test_waits.py` passes on the tree, and fails when a private `def until(` or
       a `t.join(10)` + `out["res"]` pair is added to any test module.
-- [ ] The full `uv run pytest` passes.
+- [x] The full `uv run pytest` passes.
 
 ## Test plan
 
@@ -215,6 +215,55 @@ scope here.
 - **Regression guard:** the full `uv run pytest`. Record the wall time as data, not as a
   pass/fail criterion: the median of 3 runs before and 3 runs after, on the same idle
   machine, in As shipped.
+
+### Test record (2026-10-27)
+
+- `uv run pytest -q tests/test_test_waits.py`: 4 passed (the two guard scans on the tree, a
+  self-test of the scan shapes, and `until`/`join` bounds).
+- The ten files this change touches or that import `until` (`test_agentic_runproc`,
+  `test_agentic_exit_paths`, `test_agentic_store`, `test_agentic_nonblocking`,
+  `test_agentic_adopt`, `test_agentic_index_lock`, and the four TUI files):
+  210 passed.
+- Sabotage, all as the plan says: wrapper-then-group kill order with `time.sleep(0.5)` between
+  fails `test_vanished_when_group_gone` (`result_text == ''`, the orphan_group path); the new
+  SIGSTOP order with the same sleep passes. A `def until(c)` module fails
+  `test_no_private_wait_helpers`; `t.join(10)` + `res = out["res"]` fails
+  `test_no_bare_join_before_result_read`; `side.join(60)` + `assert not side.is_alive()`
+  keeps the guard green.
+- AC2 load check: 5 rounds of 4 parallel copies of `tests/test_agentic_runproc.py`, i.e. 20
+  runs of `test_vanished_when_group_gone` under load: 20/20 passed (19 passed per copy).
+- Manual load check from the plan (4 copies of runproc + mailbox + events, 67 tests each):
+  7 rounds, 28 runs. 25 were clean; 3 had a failure (see As shipped, all one cause).
+- Full gate: see the final line of this record.
+
+### As shipped
+
+- Matches Design, with these details:
+  - `tests/waits.py` does not import `asyncio` (nothing in it needs it). `until` and
+    `pilot_until` do one last `cond()` check when the bound ends.
+  - `test_vanished_when_group_gone` also waits (`until`) for the killed child's pid to
+    disappear at the end, instead of asserting it at once: the wrapper is SIGKILLed last, so
+    init reaps the zombie child a moment later.
+  - `test_the_tab_never_touches_followers` had no positive condition, only a negative one
+    behind its pause. It now wraps `AM.mailbox_signature` with a counter and waits
+    (`pilot_until`) until the tab has polled again after the new message, so the negative
+    assertions run after a real poll.
+  - `test_a_ledger_append_shows_within_a_poll_and_never_syncs` has two `pause(0.5)` sites; both
+    now wait for the expected `len(s.shown)`.
+  - `AGENTS.md` Tooling has the one-line pointer (`docs/README.md` has no testing section).
+  - The SPEC-0225 adopt flake is addressed by item 5 (the 10 s default of `until`, now
+    `WAIT_S`), not by the join change.
+- **Known, not fixed here (product code, tests-only spec):** under 4x load the TUI events-tab
+  tests flake at app teardown with `WorkerFailed: NoMatches("No nodes match
+  '#events-conditions' on EventsView")`. `EventsView._side_async` awaits `asyncio.to_thread`
+  and then renders into widgets that the closing app has already removed. The same failure
+  appears on the unmodified `test_tui_events_tab.py` from `HEAD` under the same load (2 of 4
+  copies in one round), so it is not caused by this change. It is the likely cause of the
+  three failures in the first load round (the output was not captured). Followup: catch
+  `NoMatches` in `_side_async`, or cancel the `events-side` worker on unmount.
+- The before/after full-suite wall time was not measured: the machine was shared with other
+  campaigns, so medians of 3 would not be comparable. Data point: the full gate run is
+  recorded in the line below.
 
 ## Rollout / migration
 

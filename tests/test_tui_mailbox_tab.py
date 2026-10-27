@@ -10,6 +10,7 @@ from wt.agentic import events as EV
 from wt.agentic import mailbox as MB
 from wt.tui import agentic_model as AM
 from wt.tui import mailbox_tab as MT
+from waits import pilot_until
 
 needs_textual = pytest.mark.skipif(not T.textual_available(),
                                    reason="optional tui extra not installed")
@@ -497,6 +498,9 @@ def test_the_tab_never_touches_followers(tmp_path, monkeypatch):
     for mod, names in ((EV, ("sync", "cursor_set", "reader_lock", "follow")), (MB, ("follow",))):
         for n in names:
             monkeypatch.setattr(mod, n, forbidden(f"{mod.__name__}.{n}"))
+    signatures = []
+    real_signature = AM.mailbox_signature
+    monkeypatch.setattr(AM, "mailbox_signature", lambda c: signatures.append(1) or real_signature(c))
     app = _desk(cfg, tab="mailbox")
 
     async def drive():
@@ -507,8 +511,9 @@ def test_the_tab_never_touches_followers(tmp_path, monkeypatch):
             await settle(app, pilot)
             await press(app, pilot, ["n", "enter", "enter", "enter", *"hi", "ctrl+s", "enter"])
             await settle(app, pilot)
+            polls = len(signatures)
             ask(cfg, frm="conductor", to="human", kind="info")
-            await pilot.pause(0.3)
+            assert await pilot_until(pilot, lambda: len(signatures) > polls)    # the tab polled
             await settle(app, pilot)
             assert not [n for n, k in app.notes if k.get("severity") == "error"]
             assert len(sent(cfg, "conductor")) == 3        # the question, the answer, the new one
@@ -526,8 +531,7 @@ def test_timer_pauses_when_the_tab_is_left(tmp_path, monkeypatch):
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
             monkeypatch.setattr(AM, "mailbox_signature", lambda c: calls.append(1) or ())
-            await pilot.pause(0.3)
-            assert calls
+            assert await pilot_until(pilot, lambda: calls)
             await pilot.press("1")
             await settle(app, pilot)
             calls.clear()

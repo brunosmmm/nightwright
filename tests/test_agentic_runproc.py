@@ -14,6 +14,7 @@ import pytest
 from wt.agentic import runner as R
 from wt.agentic import runproc as RP
 from wt.agentic.personas import IMPLEMENTER_SCHEMA
+from waits import join, until  # noqa: F401  (until is re-exported to the other agentic tests)
 
 FAKE = Path(__file__).parent / "fixtures" / "fake_claude.py"
 
@@ -35,15 +36,6 @@ def mkreq(tmp_path, name="001-implementer", timeout_s=60, **env):
         model="m", effort=None, max_budget_usd=1.0, timeout_s=timeout_s,
         permission_mode="acceptEdits", read_only=False, allowed_tools=(), add_dirs=(),
         json_schema=IMPLEMENTER_SCHEMA, env=env, run_dir=tmp_path / "c" / "runs" / name)
-
-
-def until(cond, timeout=10.0):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if cond():
-            return True
-        time.sleep(0.05)
-    return False
 
 
 def start_thread(runner, req, hooks=None, out=None):
@@ -95,7 +87,7 @@ def test_wrapper_timeout_without_runner(tmp_path):
     assert until(lambda: (req.cwd / "child.pid").exists())
     pid = child_pid(req)
     hooks.detach.set()                          # the runner thread is abandoned
-    t.join(5)
+    join(t)
     assert out["res"] is R.DETACHED and not stop.is_set()
     assert until((req.run_dir / "exit.json").exists, 15)
     ex = json.loads((req.run_dir / "exit.json").read_text())
@@ -133,8 +125,8 @@ def test_detached_waiter_returns_fast(tmp_path):
     assert os.getpgid(child["pid"]) == child["pgid"] != os.getpgid(proc["wrapper_pid"])
     t0 = time.monotonic()
     hooks.detach.set()
-    t.join(2)
-    assert out["res"] is R.DETACHED and time.monotonic() - t0 < 0.5
+    join(t)
+    assert out["res"] is R.DETACHED and time.monotonic() - t0 < 5.0
     release(req)
     assert until((req.run_dir / "exit.json").exists)
     time.sleep(0.5)
@@ -151,7 +143,7 @@ def test_orphan_group_waited_and_killed_at_timeout(tmp_path):
     assert until(lambda: RP.run_status(req.run_dir) == "orphan_group")
     assert RP.group_alive(RP.read_json(req.run_dir / "child.json"))
     pid = child_pid(req)
-    t.join(30)
+    join(t)
     res = out["res"]
     ex = json.loads((req.run_dir / "exit.json").read_text())
     assert ex["synthesized"] and ex["killed_by"] == "timeout" and res.timed_out
@@ -169,7 +161,7 @@ def test_orphan_group_finishing_on_its_own_is_synthesized(tmp_path):
     assert until(lambda: RP.run_status(req.run_dir) == "orphan_group")
     time.sleep(0.5)                                  # the wait loop has seen the orphan group
     release(req)
-    t.join(15)
+    join(t)
     res = out["res"]
     ex = json.loads((req.run_dir / "exit.json").read_text())
     assert ex["synthesized"] and ex["exit_code"] == 0 and ex["killed_by"] is None
@@ -184,7 +176,7 @@ def test_term_handled_by_child_is_still_signal(tmp_path):
     t, out = start_thread(R.ClaudeRunner(), req, hooks)
     assert until(lambda: (req.run_dir / "child.json").exists() and (req.cwd / "child.pid").exists())
     os.kill(json.loads((req.run_dir / "proc.json").read_text())["wrapper_pid"], signal.SIGTERM)
-    t.join(10)
+    join(t)
     ex = json.loads((req.run_dir / "exit.json").read_text())
     assert ex["killed_by"] == "signal" and ex["signal"] == 15 and ex["exit_code"] == 143
     assert out["res"].interrupted
@@ -200,7 +192,7 @@ def test_orphan_group_stopped_is_interrupted(tmp_path):
     os.kill(json.loads((req.run_dir / "proc.json").read_text())["wrapper_pid"], signal.SIGKILL)
     assert until(lambda: RP.run_status(req.run_dir) == "orphan_group")
     assert RP.terminate_run(req.run_dir)
-    t.join(15)
+    join(t)
     assert not pid_alive(pid)
     assert out["res"].interrupted
 
@@ -212,13 +204,18 @@ def test_vanished_when_group_gone(tmp_path):
     assert until(lambda: (req.run_dir / "child.json").exists() and (req.cwd / "child.pid").exists())
     proc = json.loads((req.run_dir / "proc.json").read_text())
     child = json.loads((req.run_dir / "child.json").read_text())
-    os.kill(proc["wrapper_pid"], signal.SIGKILL)
+    # SIGSTOP keeps the wrapper "alive" (state T) while the group dies, so the runner's poll
+    # sees running -> vanished and never orphan_group, whatever the timing. A stopped wrapper
+    # cannot reap the child; group_alive already treats an all-zombie group as gone.
+    os.kill(proc["wrapper_pid"], signal.SIGSTOP)
     os.killpg(child["pgid"], signal.SIGKILL)
-    t.join(10)
+    assert until(lambda: not RP.group_alive(child))
+    os.kill(proc["wrapper_pid"], signal.SIGKILL)
+    join(t)
     res = out["res"]
     assert res.exit_code == -1 and res.is_error and not res.interrupted
     assert res.cost_usd is None and "vanished" in res.result_text
-    assert not pid_alive(child["pid"])
+    assert until(lambda: not pid_alive(child["pid"]))
 
 
 def test_pid_reuse_ignored(tmp_path):
@@ -236,7 +233,7 @@ def test_killed_by_signal_is_interrupted(tmp_path):
     t, out = start_thread(R.ClaudeRunner(), req, hooks)
     assert until(lambda: (req.run_dir / "child.json").exists())
     os.kill(json.loads((req.run_dir / "proc.json").read_text())["wrapper_pid"], signal.SIGTERM)
-    t.join(10)
+    join(t)
     ex = json.loads((req.run_dir / "exit.json").read_text())
     assert ex["killed_by"] == "signal" and out["res"].interrupted
 
@@ -245,7 +242,7 @@ def test_killed_by_signal_is_interrupted(tmp_path):
     t, out = start_thread(R.ClaudeRunner(), req, hooks)
     assert until(lambda: (req.run_dir / "child.json").exists())
     os.kill(json.loads((req.run_dir / "child.json").read_text())["pid"], signal.SIGKILL)
-    t.join(10)
+    join(t)
     ex = json.loads((req.run_dir / "exit.json").read_text())
     res = out["res"]
     assert ex["killed_by"] == "external" and res.is_error and not res.interrupted

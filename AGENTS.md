@@ -92,6 +92,8 @@ must stay a faithful timeline.
 - Build / run / dev: **uv** — `uv run wt …`, `uv run pytest`.
 - Specs: `python3 tools/spec_lint.py` (lint) · `--write-ledger` (regenerate the index).
   `uv run pytest` fails if any spec or the ledger drifts.
+- Tests: wait with `tests/waits.py` (`WT_TEST_WAIT_S`), never with a fixed sleep before a
+  positive assertion (SPEC-0269; `tests/test_test_waits.py` guards it).
 - Authxxing guidance: `docs/specs/SCHEMA.md`, the meta-spec
   [SPEC-0000](./docs/specs/0000-how-we-write-specs.md), and the epic model
   [SPEC-0003](./docs/specs/0003-epic-and-subspec-model.md).

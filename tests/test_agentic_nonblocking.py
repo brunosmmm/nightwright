@@ -15,6 +15,7 @@ import pytest
 from test_agentic_e2e import (_git, _write, added, impl_done, make_cfg, make_repo, review,
                               script, write_review)
 from test_agentic_reexec import _code_repo, _commit
+from waits import join
 from wt.agentic import lease as L
 from wt.agentic import queue as Q
 from wt.agentic import store as S
@@ -258,7 +259,7 @@ def test_heartbeat_spans_many_ticks(tmp_path, monkeypatch):
         ticks = Q.run(cfg, until_idle=True, poll_interval_s=0.05)
     finally:
         done.set()
-        side.join(5)
+        join(side)
     assert _state(cfg, a) == "MERGED"
     assert ticks > 10                                         # the run spanned many ticks
     assert len(samples) > 10

@@ -16,6 +16,7 @@ from wt.agentic import queue as Q
 from wt.agentic import store as S
 from wt.tui import agentic_model as AM
 from wt.tui import queue_tab as QT
+from waits import pilot_until
 
 needs_textual = pytest.mark.skipif(not T.textual_available(),
                                    reason="optional tui extra not installed")
@@ -244,8 +245,7 @@ def test_periodic_reload_runs_without_a_write(tmp_path, monkeypatch):
     async def drive():
         async with app.run_test(size=SIZE) as pilot:
             await settle(app, pilot)
-            await pilot.pause(0.5)
-            assert len(calls) >= 3
+            assert await pilot_until(pilot, lambda: len(calls) >= 3)
 
     _run(drive())
 

@@ -17,6 +17,7 @@ from test_agentic_adopt import _code_world, start_impl, run_ends
 from test_agentic_e2e import added, impl_done, make_cfg, make_repo, review, script
 from test_agentic_nonblocking import _second_spec
 from test_agentic_runproc import pid_alive, until
+from waits import join
 from wt.agentic import cli_queue
 from wt.agentic import gates as G
 from wt.agentic import lease as L
@@ -66,7 +67,7 @@ def run_with_stop(cfg, when, **kw):
         mp.setattr(Q, "tick", tick)
         t0 = time.monotonic()
         n = Q.run(cfg, poll_interval_s=0.05, **kw)
-    t.join(5)
+    join(t)
     return n, time.monotonic() - t0
 
 
