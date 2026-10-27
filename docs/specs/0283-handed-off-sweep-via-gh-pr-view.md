@@ -1,7 +1,7 @@
 ---
 id: SPEC-0283
 title: "HANDED_OFF sweep: a merged PR moves its campaign to MERGED"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -137,23 +137,23 @@ written under `store.item_lock`.
 
 ## Acceptance criteria
 
-- [ ] `wt queue sweep-prs` (dry run) lists each `HANDED_OFF` campaign with its PR state and
+- [x] `wt queue sweep-prs` (dry run) lists each `HANDED_OFF` campaign with its PR state and
       planned action, and writes nothing.
-- [ ] With `--yes`, the campaign of a merged PR becomes `MERGED` and `close.merged_sha` is
+- [x] With `--yes`, the campaign of a merged PR becomes `MERGED` and `close.merged_sha` is
       set. The ledger gets a `transition` event with reason `pr_merged` that passes
       `schemas.ledger_problems`, and the conductor event stream gets `merged`.
-- [ ] When the spec store is this repo, the merged campaign's spec idea is reconciled
+- [x] When the spec store is this repo, the merged campaign's spec idea is reconciled
       through `_reconcile_merged` and an `idea_reconciled` event is written. A campaign
       that is no longer `HANDED_OFF` when the lock is taken (for example, `ABANDONED`) is
       reported `skipped` and left unchanged.
-- [ ] A PR closed without merging yields exactly one `major` finding, "PR closed without
+- [x] A PR closed without merging yields exactly one `major` finding, "PR closed without
       merging", even across repeated or concurrent sweeps. The campaign stays
       `HANDED_OFF`.
-- [ ] If `gh` fails or times out (30 s) on one PR, that PR gets an `error` row. The other
+- [x] If `gh` fails or times out (30 s) on one PR, that PR gets an `error` row. The other
       PRs are still checked. Each sweep stops once its `budget_s` is spent. Campaigns are
       checked least recently checked first, so with more campaigns than `limit`, every
       campaign is checked over successive sweeps.
-- [ ] The follower's ping path runs the sweep at most once per
+- [x] The follower's ping path runs the sweep at most once per
       `agentic.pr_sweep.interval_s` across all followers, and never raises.
       `interval_s: 0` turns the sweep off.
 
@@ -205,17 +205,35 @@ The `gh` wrapper tests go in `tests/test_agentic_close.py`. The sweep tests go i
 - **Manual:** none required, because no project uses a `pr` policy today. The wrapper tests
   cover the `gh` call.
 
+### Test record (2026-10-27)
+
+- `uv run pytest -q tests/test_agentic_pr_sweep.py tests/test_agentic_close.py`: all pass (the
+  `gh_pr_view` wrapper tests live in `test_agentic_close.py`; the sweep, CLI and follower tests in
+  `test_agentic_pr_sweep.py`).
+- Sabotage checks run by hand, each failing the named test: dropping the `HANDED_OFF` re-check
+  (`test_sweep_skips_state_changed_under_lock`), dropping the CLOSED re-check under the lock
+  (`test_sweep_closed_finding_once_interleaved`), and removing the `pr_checked_at` sort
+  (`test_sweep_fair_selection`).
+- Full gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`, `uv run pytest -q -x`.
+
+### As shipped
+
+- `test_sweep_closed_finding_once` is split in two: the sequential case, and
+  `test_sweep_closed_finding_once_interleaved` for the nested-sweep case.
+- `sweep_handed_off` maps a PR state outside OPEN/MERGED/CLOSED to an `error` row.
+- `wt queue sweep-prs` also takes `--limit N`. `_maybe_sweep_prs` is inside the `if ping:` block, after the reminder.
+
 ## Rollout / migration
 
 None. The first sweep picks up existing `HANDED_OFF` campaigns.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

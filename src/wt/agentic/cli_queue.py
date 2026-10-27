@@ -1102,6 +1102,29 @@ def attach(queue_group):
         _print_plan(f"resume {campaign}", plan)
         console.print(f"[green]✓[/] {campaign} → {plan['to']}" if do_write else _NOT_WRITTEN)
 
+    @queue_group.command("sweep-prs")
+    @click.option("--limit", default=20, show_default=True, type=click.IntRange(min=1),
+                  help="check at most N HANDED_OFF campaigns")
+    @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
+    @click.option("--json", "as_json", is_flag=True, help="emit the rows as a JSON list")
+    @click.pass_obj
+    def queue_sweep_prs(cfg, limit, do_write, as_json):
+        """Check each HANDED_OFF campaign's PR with `gh pr view`: a merged PR moves its campaign
+        to MERGED, a PR closed unmerged records one finding (SPEC-0283)."""
+        rows = Q.sweep_handed_off(cfg, apply=do_write, limit=limit)
+        if as_json:
+            _dump_json(rows)
+            return
+        table = Table(box=box.SIMPLE_HEAD)
+        for col in ("campaign", "PR URL", "PR state", "action", "detail"):
+            table.add_column(col, overflow="fold")
+        for r in rows:
+            table.add_row(r["campaign"], r["pr_url"], r["pr_state"] or "-", r["action"],
+                          r["detail"])
+        console.print(table if rows else "no HANDED_OFF campaigns with a PR to check")
+        if rows and not do_write:
+            console.print(_NOT_WRITTEN)
+
     @queue_group.command("abandon")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)
     @click.option("--keep-worktree", is_flag=True, help="leave the worktree on disk")

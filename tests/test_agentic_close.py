@@ -533,3 +533,41 @@ def test_docs_only_close_rereads_the_current_allowlist(world):
     out = CL.close_campaign(world["cfg"], st, pcfg)
     assert out.next_state == "PARKED" and out.park["reason"] == "not_docs_only"
     assert "docs/design/a.md" in out.park["detail"]
+
+
+# ---- SPEC-0283: gh pr view ---------------------------------------------------------------
+
+def _fake_run(monkeypatch, stdout, seen=None):
+    def run(cmd, **kw):
+        if seen is not None:
+            seen.update(cmd=cmd, **kw)
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+    monkeypatch.setattr(G, "_run", run)
+    monkeypatch.setattr(G.shutil, "which", lambda n: "/bin/gh")
+
+
+def test_gh_pr_view_parses_json(monkeypatch):
+    out = json.dumps({"state": "MERGED", "mergedAt": "2026-10-27T10:00:00Z",
+                      "mergeCommit": {"oid": "abc123"}})
+    _fake_run(monkeypatch, out)
+    assert G.gh_pr_view("https://github.com/x/y/pull/7") == {
+        "state": "MERGED", "merged_at": "2026-10-27T10:00:00Z", "merge_sha": "abc123"}
+    _fake_run(monkeypatch, json.dumps({"state": "OPEN", "mergedAt": None, "mergeCommit": None}))
+    assert G.gh_pr_view("u") == {"state": "OPEN", "merged_at": None, "merge_sha": None}
+    _fake_run(monkeypatch, "not json")
+    with pytest.raises(G.GitError):
+        G.gh_pr_view("u")
+
+
+def test_gh_pr_view_missing_gh(monkeypatch):
+    monkeypatch.setattr(G.shutil, "which", lambda n: None)
+    with pytest.raises(G.GitError, match="gh not found"):
+        G.gh_pr_view("u")
+
+
+def test_gh_pr_view_uses_short_timeout(monkeypatch):
+    seen = {}
+    _fake_run(monkeypatch, json.dumps({"state": "OPEN"}), seen)
+    G.gh_pr_view("https://github.com/x/y/pull/7")
+    assert seen["timeout"] == 30 and seen["timeout"] != G._NETWORK_TIMEOUT
+    assert seen["cmd"][1:4] == ["pr", "view", "https://github.com/x/y/pull/7"]

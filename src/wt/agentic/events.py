@@ -817,7 +817,34 @@ def sync(cfg, now=None, ping=False) -> list[dict]:
             ESC.remind_due(cfg, now)
         except Exception:                         # a reminder never breaks the follower
             pass
+        _maybe_sweep_prs(cfg, now)
     return out
+
+
+def _maybe_sweep_prs(cfg, now=None) -> None:
+    """SPEC-0283: sweep HANDED_OFF campaigns' PRs at most once per `agentic.pr_sweep.interval_s`
+    across all followers (0 disables). The slot is claimed under `pr_sweep.lock` (`last` is
+    written there); the sweep itself runs outside it. Never raises."""
+    try:
+        interval = float(((cfg.get("agentic") or {}).get("pr_sweep") or {}).get("interval_s", 900))
+        if interval <= 0:
+            return
+        now = now or dt.datetime.now().astimezone()
+        path = store.agentic_dir(cfg) / "pr_sweep.json"
+        with _locked(store.agentic_dir(cfg) / "pr_sweep.lock"):
+            try:
+                last = dt.datetime.fromisoformat(json.loads(path.read_text(encoding="utf-8"))["last"])
+                if last.tzinfo is None and now.tzinfo is not None:
+                    last = last.astimezone()
+                if (now - last).total_seconds() < interval:
+                    return
+            except (OSError, ValueError, KeyError, TypeError):
+                pass                                  # no / unreadable stamp: due
+            _atomic_write(path, json.dumps({"last": store.now_iso(now)}) + "\n")
+        from . import queue as Q
+        Q.sweep_handed_off(cfg, apply=True)
+    except Exception:                                 # a sweep never breaks the follower
+        pass
 
 
 # ---- cursors and following -----------------------------------------------------------------

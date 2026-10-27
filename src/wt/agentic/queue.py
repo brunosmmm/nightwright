@@ -1784,6 +1784,72 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     return finish(res.from_state, "noop")
 
 
+def sweep_handed_off(cfg, *, apply=False, limit=20, budget_s=60, view=None,
+                     clock=time.monotonic) -> list[dict]:
+    """SPEC-0283: check the PR of each HANDED_OFF campaign with `view` (default
+    `gitops.gh_pr_view`) and return one `{campaign, pr_url, pr_state, action, detail}` row per
+    campaign checked. Least recently checked first (`close.pr_checked_at`, missing first, ties
+    oldest `created_at` first), at most `limit`, stopping once `budget_s` is spent. Nothing is
+    written without `apply`. Every write re-reads the state and re-checks its precondition under
+    the campaign lock; a campaign that no longer qualifies is reported `skipped`. The one terminal
+    edge that may change is HANDED_OFF -> MERGED."""
+    view = view or git.gh_pr_view
+    cands = [st for st in store.list_campaigns(cfg, include_terminal=True, state="HANDED_OFF")
+             if (st.get("close") or {}).get("pr_url")
+             and (st["close"].get("pr_state") != "CLOSED")]
+    cands.sort(key=lambda st: st.get("created_at") or "")
+    cands.sort(key=lambda st: st["close"].get("pr_checked_at") or "")
+    start, rows = clock(), []
+    for st in cands[:max(0, int(limit))]:
+        if clock() - start >= budget_s:
+            break
+        cid, url = st["id"], st["close"]["pr_url"]
+        row = {"campaign": cid, "pr_url": url, "pr_state": None, "action": "error", "detail": ""}
+        rows.append(row)
+        try:
+            pr = view(url)
+        except GitError as e:
+            row["detail"] = (e.tail or str(e)).strip()
+            pr = None
+        else:
+            action = {"MERGED": "merge", "CLOSED": "closed", "OPEN": "open"}.get(pr["state"])
+            if action:
+                row["pr_state"], row["action"] = pr["state"], action
+            else:
+                row["detail"] = f"unexpected PR state {pr['state']!r}"
+        if apply:
+            _sweep_write(cfg, cid, row, pr)
+    return rows
+
+
+def _sweep_write(cfg, cid: str, row: dict, pr: dict | None) -> None:
+    """Apply one sweep row under the campaign lock (see `sweep_handed_off`)."""
+    with store.item_lock(cfg, cid):
+        st = store.read_state(cfg, cid)
+        if st.get("state") != "HANDED_OFF":
+            row["action"], row["detail"] = "skipped", f"state is {st.get('state')}"
+            return
+        close = st["close"] = dict(st.get("close") or {})
+        action = row["action"]
+        if action == "closed" and close.get("pr_state") == "CLOSED":
+            row["action"], row["detail"] = "skipped", "closed PR already recorded"
+            return
+        close["pr_checked_at"] = store.now_iso()
+        if action == "merge":
+            close.update(merged_sha=pr["merge_sha"], merged_at=pr["merged_at"], pr_state="MERGED")
+            events: list = []
+            _reconcile_closed(cfg, st, events, "MERGED")
+            _transition(cfg, st, "MERGED", "pr_merged", by="sweep", extra_events=events)
+            return
+        if action == "closed":
+            close["pr_state"] = "CLOSED"
+            store.append_event(cfg, cid, "finding", {
+                "persona": "close", "severity": "major", "gate": "pr",
+                "title": "PR closed without merging", "detail": row["pr_url"], "files": []},
+                by="sweep")
+        store.write_state(cfg, cid, st)
+
+
 def _reconcile_closed(cfg, state: dict, events: list, outcome: str) -> None:
     """SPEC-0257: after a merge, advance the merged spec's idea by `specs.reconcile_ideas`
     scoped to that spec. Best-effort: the merge is irreversible, so a failure is a minor

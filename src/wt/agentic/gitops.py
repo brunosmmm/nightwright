@@ -7,6 +7,7 @@ conflict and leaves the worktree exactly as it was. Commit identity comes from t
 caller passes (tests set GIT_AUTHOR_* / GIT_COMMITTER_*), never from a global config edit."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -655,3 +656,23 @@ def gh_pr_create(worktree, *, base, head, title, body_file, draft=False, labels=
     if not lines:
         raise GitError(cmd, 0, "gh printed no URL")
     return lines[-1]
+
+
+def gh_pr_view(url, *, timeout_s=30) -> dict:
+    """`gh pr view <url> --json state,mergedAt,mergeCommit` (SPEC-0283); returns
+    `{"state": "OPEN"|"MERGED"|"CLOSED", "merged_at", "merge_sha"}`. A short timeout, not
+    `_NETWORK_TIMEOUT`: this is a status lookup run from the follower. Raises `GitError` when
+    `gh` is missing, fails, times out or prints invalid JSON."""
+    exe = shutil.which("gh")
+    if not exe:
+        raise GitError(["gh", "pr", "view"], -1, "gh not found on PATH")
+    cmd = [exe, "pr", "view", str(url), "--json", "state,mergedAt,mergeCommit"]
+    r = _run(cmd, timeout=timeout_s)
+    try:
+        data = json.loads(r.stdout)
+        state = str(data["state"]).upper()
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        raise GitError(cmd, 0, f"gh printed invalid JSON: {_tail(r.stdout, 3)}") from e
+    commit = data.get("mergeCommit")
+    return {"state": state, "merged_at": data.get("mergedAt") or None,
+            "merge_sha": (commit.get("oid") if isinstance(commit, dict) else None) or None}
