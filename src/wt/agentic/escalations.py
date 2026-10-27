@@ -351,15 +351,16 @@ def _ids_hint(ids) -> str:
 
 
 def _unmet_reach(text, unmet, what) -> list:
-    """The distinct unmet ACs `text` covers (`queue._covers`); ValueError when it covers more than
-    one and is not exactly one of them, because the substring rule would quietly widen it."""
+    """The distinct unmet ACs `text` covers (`queue._covers`): only the exact one when `text` is
+    one of them (SPEC-0286); ValueError when it covers more than one and is not exactly one of
+    them, because the substring rule would quietly widen it."""
     from . import queue as Q
     hits = [u for u in unmet if Q._covers(text, u)]
     exact = [u for u in hits if Q.norm_finding_title(u) == Q.norm_finding_title(text)]
     if len(hits) > 1 and not exact:
         raise ValueError(f"{what} covers {len(hits)} ACs ({_ids_hint(hits)}); "
                          f"use a longer text or a <persona>#ac<j> id")
-    return hits
+    return exact or hits
 
 
 def _plan_override(cfg, rec, waive, attest, reason) -> dict:
@@ -533,8 +534,10 @@ def apply_answer(cfg, plan: dict) -> dict:
                 if ov:
                     st = store.read_state(cfg, cid)
                     h = st.setdefault("human_overrides", {"waive": [], "attest": []})
-                    h.setdefault("waive", [])
-                    h.setdefault("attest", [])
+                    # a retry replaces this escalation's earlier copies (SPEC-0286)
+                    for k in ("waive", "attest"):
+                        h[k] = [o for o in h.get(k) or []
+                                if not (isinstance(o, dict) and o.get("escalation") == esc_id)]
                     for w in ov["waive"]:
                         h["waive"].append({**w, "reason": ov["reason"], "escalation": esc_id,
                                            "at": now})
@@ -664,8 +667,10 @@ def withdraw(cfg, esc_id, reason, by, *, clear_request=True) -> dict:
             r["status"] = "withdrawn"
             r["withdrawn"] = {"reason": reason, "by": by, "at": store.now_iso()}
         rec = _mutate(cfg, esc_id, close)
+        removed = 0
         if known:
             st = _campaign_state(cfg, cid)
+            dirty = False
             if clear_request and st and st.get("state") != "PARKED" \
                     and (st.get("park_requested") or {}).get("reason") == "human_decision":
                 back = st["park_requested"].get("replaces")
@@ -673,10 +678,24 @@ def withdraw(cfg, esc_id, reason, by, *, clear_request=True) -> dict:
                     st["park_requested"] = back
                 else:
                     st.pop("park_requested")
+                dirty = True
+            # overrides a half-written answer stored no longer stand (SPEC-0286)
+            h = (st or {}).get("human_overrides")
+            if clear_request and isinstance(h, dict):
+                for k in ("waive", "attest"):
+                    if isinstance(h.get(k), list):
+                        kept = [o for o in h[k]
+                                if not (isinstance(o, dict) and o.get("escalation") == esc_id)]
+                        removed += len(h[k]) - len(kept)
+                        h[k] = kept
+                dirty = dirty or bool(removed)
+            if dirty:
                 store.write_state(cfg, cid, st)
+            more = f"; {removed} override(s) removed" if removed else ""
             with contextlib.suppress(ValueError, OSError):
                 store.append_event(cfg, cid, "note", {
-                    "text": f"escalation {esc_id} withdrawn: {reason}", "author": by}, by=by)
+                    "text": f"escalation {esc_id} withdrawn: {reason}{more}", "author": by},
+                    by=by)
     try:
         frm = M.validate_address(cfg, by)
     except ValueError:                    # `tick`, `wt`: not a mailbox address

@@ -771,7 +771,7 @@ def test_attest_text_covering_two_acs_is_refused_listing_both(tmp_path):
                            reason="r")                     # an exact text is precise enough
     assert plan["answer"]["attest"] == ["AC 4 output is sorted and stable"]
     assert plan["override"]["reach"]["AC 4 output is sorted and stable"] == [
-        AC4, "AC 4 output is sorted and stable"]
+        "AC 4 output is sorted and stable"]                # only the exact AC (SPEC-0286)
 
 
 def test_choose_needs_options_and_overrides_need_a_campaign(tmp_path):
@@ -1082,3 +1082,94 @@ def test_waived_partial_ac_finding_clears_full_ac_on_next_triage(tmp_path):
     hw, at = Q.human_overrides_of(st)
     out = Q.triage_reviews(st["last_review"]["verdicts"], {"name": "balanced"}, (), hw, at)
     assert out["attested"] == [AC4] and f"{RV}#ac0" not in out["synthetic"]
+
+
+# ---- SPEC-0286: overrides are idempotent, withdrawable and exact ------------------------------
+
+def _half_answered(cfg, monkeypatch):
+    """ESC-0001 answered with one waive and one attest whose record write fails once: the
+    overrides are stored and the record stays open."""
+    plan = ESC.plan_answer(cfg, "ESC-0001", waive=[f"{RV}#1"], attest=[f"{RV}#ac0"], reason="r")
+    real = ESC._write
+    boom = {"n": 0}
+
+    def flaky(cfg_, rec):
+        if rec.get("status") == "answered" and not boom["n"]:
+            boom["n"] += 1
+            raise OSError("disk full")
+        return real(cfg_, rec)
+    monkeypatch.setattr(ESC, "_write", flaky)
+    with pytest.raises(OSError, match="disk full"):
+        ESC.apply_answer(cfg, plan)
+    assert ESC.read(cfg, "ESC-0001")["status"] == "open"
+    return plan
+
+
+def _overrides(cfg, esc_id):
+    h = _state(cfg).get("human_overrides") or {}
+    return ([w for w in h.get("waive") or [] if w.get("escalation") == esc_id],
+            [a for a in h.get("attest") or [] if a.get("escalation") == esc_id])
+
+
+def test_answer_retry_after_record_write_failure_does_not_duplicate_overrides(tmp_path,
+                                                                                monkeypatch):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    plan = _half_answered(cfg, monkeypatch)
+    waive, attest = _overrides(cfg, "ESC-0001")
+    assert len(waive) == len(attest) == 1                 # stored before the record closed
+    rec = ESC.apply_answer(cfg, plan)                      # the retry
+    assert rec["status"] == "answered"
+    waive, attest = _overrides(cfg, "ESC-0001")
+    assert len(waive) == len(attest) == 1
+    assert waive[0]["id"] == f"{RV}#1" and attest[0]["ac"] == AC4
+
+
+def test_withdraw_strips_that_escalations_overrides(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    st = _state(cfg)                                       # an earlier, answered ESC-0000
+    st["human_overrides"] = {
+        "waive": [{"id": "x#0", "title": "t", "files": [], "severity": "minor", "ac": None,
+                   "resolved_ac": [], "synthetic": False, "reason": "old",
+                   "escalation": "ESC-0000", "at": S.now_iso()}],
+        "attest": [{"ac": "AC 1 old", "reason": "old", "escalation": "ESC-0000",
+                    "at": S.now_iso()}]}
+    S.write_state(cfg, CID, st)
+    _half_answered(cfg, monkeypatch)
+    assert _overrides(cfg, "ESC-0001") != ([], [])
+    ESC.apply_withdraw(cfg, ESC.plan_withdraw(cfg, "ESC-0001", reason="gave up", by="human"))
+    assert ESC.read(cfg, "ESC-0001")["status"] == "withdrawn"
+    assert _overrides(cfg, "ESC-0001") == ([], [])
+    old_w, old_a = _overrides(cfg, "ESC-0000")
+    assert [w["id"] for w in old_w] == ["x#0"] and [a["ac"] for a in old_a] == ["AC 1 old"]
+    h = _state(cfg)["human_overrides"]
+    assert len(h["waive"]) == len(h["attest"]) == 1
+    assert _state(cfg)["state"] == "PARKED"                # never resumes the campaign
+    note = S.read_ledger(cfg, CID, types=["note"])[-1]["text"]
+    assert note == "escalation ESC-0001 withdrawn: gave up; 2 override(s) removed"
+
+
+def test_withdraw_without_overrides_keeps_the_plain_note(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    ESC.apply_withdraw(cfg, ESC.plan_withdraw(cfg, "ESC-0001", reason="gave up", by="human"))
+    note = S.read_ledger(cfg, CID, types=["note"])[-1]["text"]
+    assert note == "escalation ESC-0001 withdrawn: gave up"
+
+
+def test_waiver_resolved_ac_keeps_only_the_exact_ac(tmp_path):
+    cfg = _cfg(tmp_path)
+    short, long_ = "pytest passes", "pytest passes with the new regression tests"
+    _reviewed(cfg)
+    st = _state(cfg)
+    v = st["last_review"]["verdicts"][RV]
+    v["ac_assessment"] = [{"ac": short, "met": False}, {"ac": long_, "met": False}]
+    v["findings"][0]["ac"] = short
+    S.write_state(cfg, CID, st)
+    plan, _ = _answer(cfg, waive=[f"{RV}#0"], reason="r")
+    assert plan["override"]["waive"][0]["resolved_ac"] == [short]
+    st = _state(cfg)
+    hw, at = Q.human_overrides_of(st)
+    out = Q.triage_reviews(st["last_review"]["verdicts"], {"name": "balanced"}, (), hw, at)
+    assert out["attested"] == [short] and out["outcome"] == "fix"   # the longer AC stays unmet

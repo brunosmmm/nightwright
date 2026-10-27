@@ -1,7 +1,8 @@
 ---
 id: SPEC-0286
 title: "Escalation overrides are idempotent, withdrawable and exact"
-status: accepted
+status: done
+updated: 2026-10-27
 kind: feature
 owner: user
 created: 2026-10-27
@@ -86,15 +87,15 @@ keeps only the exact hit when one exists, the same rule the attest path uses.
 
 ## Acceptance criteria
 
-- [ ] `apply_answer` whose record write fails once, then is retried, leaves exactly one
+- [x] `apply_answer` whose record write fails once, then is retried, leaves exactly one
       waive entry and one attest entry per override of that escalation in `state.json`.
-- [ ] `wt escalations withdraw ESC-x` on an open record whose overrides were already stored
+- [x] `wt escalations withdraw ESC-x` on an open record whose overrides were already stored
       removes every `human_overrides` entry tagged `ESC-x`, and leaves entries of other
       escalations in place. The ledger note says how many were removed.
-- [ ] Waiving a finding whose `ac` is exactly one unmet AC, and a substring of another unmet
+- [x] Waiving a finding whose `ac` is exactly one unmet AC, and a substring of another unmet
       AC, stores `resolved_ac` with only the exact AC. The longer AC stays unmet on the next
       `triage_reviews`.
-- [ ] A waiver whose `ac` is a strict partial quote of exactly one unmet AC still resolves to
+- [x] A waiver whose `ac` is a strict partial quote of exactly one unmet AC still resolves to
       that AC (SPEC-0264 behaviour kept).
 
 ## Test plan
@@ -122,6 +123,39 @@ keeps only the exact hit when one exists, the same rule the attest path uses.
   `test_agentic_review_triage.py` and `test_tui_escalations_*.py` must stay green.
 - **Manual verification:** none. Every path is exercised in-process.
 
+### Test record (2026-10-27)
+
+- `uv run pytest -q tests/test_agentic_escalations.py`: 84 passed. New tests:
+  `test_answer_retry_after_record_write_failure_does_not_duplicate_overrides`,
+  `test_withdraw_strips_that_escalations_overrides` (the half-written ESC-0001 stored one waive
+  and one attest, so its note reads `; 2 override(s) removed`),
+  `test_withdraw_without_overrides_keeps_the_plain_note`,
+  `test_waiver_resolved_ac_keeps_only_the_exact_ac` (the longer AC is not attested and the
+  triage outcome stays `fix`).
+- The SPEC-0264 partial-quote case has no test named `test_waiver_partial_ac_still_resolves_single_hit`;
+  the existing cases that cover it, `test_plan_override_stores_resolved_ac_text` and
+  `test_waived_partial_ac_finding_clears_full_ac_on_next_triage`, re-ran green unedited.
+- Sabotage checks, each run against `tests/test_agentic_escalations.py` and then reverted:
+  - pre-append filter removed in `apply_answer`: the retry test fails (2 copies).
+  - strip removed in `withdraw`: the withdraw test fails (ESC-0001's entries remain).
+  - `_unmet_reach` returns `hits` unconditionally: the exact-AC waiver test and
+    `test_attest_text_covering_two_acs_is_refused_listing_both` fail.
+- Gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exit 0;
+  `uv run pytest -q -x` first full run stopped on the stale ledger
+  (`test_export.py::test_internal_spec_lint_unaffected_by_outbox`). After the regeneration
+  the full re-run gave 3511 passed, 3 skipped.
+
+### As shipped (2026-10-27)
+
+- As designed. The strip in `withdraw` runs on every human withdraw (`clear_request=True`),
+  including when the campaign is `PARKED` (the usual case after a half-written answer). The
+  `park_requested` change still applies only before the park. One `write_state` covers both.
+  The count in the ledger note is the total of removed waive plus attest entries.
+- An existing assertion changed as a consequence of Design §3:
+  `test_attest_text_covering_two_acs_is_refused_listing_both` now expects the `reach` of an
+  exact `--attest` to be only that AC. `reach` is display only (the `covers:` row of the CLI
+  preview), and triage matches attests exactly, so the old two-AC reach overstated it.
+
 ## Rollout / migration
 
 None. Duplicate entries already stored stay as they are. They are harmless for triage,
@@ -129,11 +163,11 @@ because matching is set-like.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
