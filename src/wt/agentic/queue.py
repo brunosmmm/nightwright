@@ -4766,7 +4766,9 @@ def _gc_worktree_keep(root, e, st, adopted, main, cwd_wt, base) -> str | None:
     if e["locked"]:
         return "locked"
     if e["prunable"]:
-        return None
+        # git also marks a directory whose `.git` file is gone or broken: prune unregisters
+        # it, but its files cannot be checked, so the directory itself stays
+        return "no .git (git worktree prune unregisters it; directory stays)" if path.exists() else None
     if adopted and st.get("state") != "MERGED":
         return f"requester's worktree ({st.get('state')} merge request)"
     try:

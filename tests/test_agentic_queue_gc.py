@@ -365,3 +365,103 @@ def test_yes_exits_nonzero_on_row_failure(world, monkeypatch):
     monkeypatch.setattr(G, "branch_delete", boom)
     r = run_cli(world["cfg"], monkeypatch, ["queue", "gc", "--yes"])
     assert r.exit_code == 1 and "failed" in r.output
+
+
+def test_handed_off_worktree_removed_branch_kept(world, monkeypatch):
+    """A HANDED_OFF campaign (PR hand-off, cleanup `on_merge`) is terminal: its clean worktree
+    goes, its unmerged branch stays."""
+    root, cfg, wts = world["root"], world["cfg"], world["wts"]
+    G.worktree_add(root, wts / "h1", "wt/h1", "main")
+    _commit(wts / "h1", "h1.txt", "x\n", "pr work")
+    _campaign(cfg, "h1", "HANDED_OFF", root, "wt/h1", wts / "h1")
+    rows = _rows(Q.plan_gc(cfg))
+    assert (rows[("worktree", "h1")]["action"], rows[("worktree", "h1")]["why"]) == (
+        "remove", "HANDED_OFF campaign, clean")
+    assert (rows[("branch", "wt/h1")]["action"], rows[("branch", "wt/h1")]["why"]) == ("keep", "unmerged")
+    r = run_cli(cfg, monkeypatch, ["queue", "gc", "--yes"])
+    assert r.exit_code == 0, r.output
+    assert not (wts / "h1").exists() and G.branch_exists(root, "wt/h1")
+
+
+def test_own_worktree_merge_request_follows_campaign_path(world):
+    """A merge request whose worktree wt created (own_worktree) is removed when clean like any
+    campaign worktree: no requester guard (ABANDONED) and no merged_sha guard (MERGED)."""
+    root, cfg, wts = world["root"], world["cfg"], world["wts"]
+    older = _git(root, "rev-parse", "main~1")
+    _merged_wt(root, "own-1", wts / "own1")
+    _campaign(cfg, "o1", "MERGED", root, "own-1", wts / "own1", kind="merge", own=True, merged_sha=older)
+    _merged_wt(root, "own-2", wts / "own2")
+    _campaign(cfg, "o2", "ABANDONED", root, "own-2", wts / "own2", kind="merge", own=True)
+    plan = Q.plan_gc(cfg)
+    rows = _rows(plan)
+    for name, state in (("own1", "MERGED"), ("own2", "ABANDONED")):
+        assert (rows[("worktree", name)]["action"], rows[("worktree", name)]["why"]) == (
+            "remove", f"{state} campaign, clean"), name
+    Q.apply_gc(cfg, plan)
+    assert not (wts / "own1").exists() and not (wts / "own2").exists()
+    assert rows[("worktree", "own1")]["done"] is True and rows[("worktree", "own2")]["done"] is True
+
+
+def test_prunable_dir_still_on_disk_kept(world, monkeypatch):
+    """Git marks a worktree whose `.git` file was deleted by hand prunable even though the
+    directory is still there: it is kept (its files cannot be checked) and survives --yes."""
+    root, cfg, wts = world["root"], world["cfg"], world["wts"]
+    _merged_wt(root, "wt/nogit", wts / "nogit")
+    (wts / "nogit" / "notes.txt").write_text("keep me\n")
+    (wts / "nogit" / ".git").unlink()
+    _campaign(cfg, "n1", "MERGED", root, "wt/nogit", wts / "nogit")
+    row = _rows(Q.plan_gc(cfg))[("worktree", "nogit")]
+    assert (row["action"], row["why"]) == ("keep", "no .git (git worktree prune unregisters it; directory stays)")
+    r = run_cli(cfg, monkeypatch, ["queue", "gc", "--yes"])
+    assert r.exit_code == 0, r.output
+    assert (wts / "nogit" / "notes.txt").read_text() == "keep me\n"
+
+
+def _assert_repo_error_exit(cfg, monkeypatch, needle):
+    r = run_cli(cfg, monkeypatch, ["queue", "gc"])
+    assert r.exit_code == 0 and needle in r.output, r.output
+    r = run_cli(cfg, monkeypatch, ["queue", "gc", "--json"])
+    assert r.exit_code == 0 and any(needle in e for e in json.loads(r.output)["errors"]), r.output
+    r = run_cli(cfg, monkeypatch, ["queue", "gc", "--yes"])
+    assert r.exit_code == 1 and needle in r.output, r.output
+    r = run_cli(cfg, monkeypatch, ["queue", "gc", "--yes", "--json"])
+    d = json.loads(r.output)
+    assert r.exit_code == 1 and d["written"] is True and any(needle in e for e in d["errors"]), r.output
+    assert not any(row.get("done") is False for row in d["rows"]), d["rows"]
+
+
+def test_missing_repo_root_is_a_plan_error(world, monkeypatch):
+    cfg, tmp = world["cfg"], world["tmp"]
+    _campaign(cfg, "x1", "ABANDONED", tmp / "gone-repo", "wt/x1", None)
+    plan = Q.plan_gc(cfg)
+    assert plan["errors"] == [f"{(tmp / 'gone-repo').resolve()}: repo root missing"]
+    assert str(world["root"].resolve()) in plan["repos"]
+    _assert_repo_error_exit(cfg, monkeypatch, "repo root missing")
+
+
+def test_unreadable_worktree_root_is_a_plan_error(world, monkeypatch):
+    wts = world["wts"].resolve()
+    real = Path.iterdir
+
+    def iterdir(self):
+        if self == wts:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    plan = Q.plan_gc(world["cfg"])
+    assert any(e.startswith(f"{wts}: ") and "Permission denied" in e for e in plan["errors"]), plan["errors"]
+    assert not any(r["kind"] == "orphan" for r in plan["rows"])
+    assert _rows(plan)[("worktree", "m1")]["action"] == "remove"   # the repo's other rows still plan
+    _assert_repo_error_exit(world["cfg"], monkeypatch, "Permission denied")
+
+
+def test_git_error_listing_a_repo_is_a_plan_error(world, monkeypatch):
+    def boom(repo):
+        raise GitError(["git", "worktree", "list", "--porcelain"], 128, "not a git repository")
+
+    monkeypatch.setattr(G, "worktree_list", boom)
+    plan = Q.plan_gc(world["cfg"])
+    assert plan["errors"] == [f"{world['root'].resolve()}: not a git repository"]
+    assert plan["repos"] == [] and plan["rows"] == []
+    _assert_repo_error_exit(world["cfg"], monkeypatch, "not a git repository")

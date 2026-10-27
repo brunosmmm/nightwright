@@ -226,6 +226,32 @@ remove|delete|keep, why}`. `--yes` applies rows in order (worktrees before branc
   `error: git worktree prune failed`. The docs line notes that a removed worktree takes its
   ignored files with it.
 
+### Test record (2026-10-27, review round 3)
+
+- `uv run pytest -q tests/test_agentic_queue_gc.py`: 20 passed. New:
+  `test_handed_off_worktree_removed_branch_kept` (HANDED_OFF clean worktree `remove`, its
+  unmerged branch `keep: unmerged`, both true after `--yes`, exit 0);
+  `test_own_worktree_merge_request_follows_campaign_path` (merge requests with
+  `own_worktree: true`: a MERGED one whose HEAD is past the recorded `merged_sha` and an
+  ABANDONED one are both `remove: <state> campaign, clean` and are removed);
+  `test_prunable_dir_still_on_disk_kept` (a worktree with its `.git` deleted by hand is kept,
+  and its files survive `--yes`, exit 0); `test_missing_repo_root_is_a_plan_error`,
+  `test_unreadable_worktree_root_is_a_plan_error` and `test_git_error_listing_a_repo_is_a_plan_error`
+  (each error is in `errors`; dry-run exits 0 in text and JSON mode; `--yes` exits 1 in text and
+  JSON mode on the repo error alone, with no failed row).
+- **Sabotage check:** dropping the new `path.exists()` branch fails
+  `test_prunable_dir_still_on_disk_kept`. Treating every merge request as adopted fails
+  `test_own_worktree_merge_request_follows_campaign_path`. Both restored (file byte-identical).
+- Full gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`,
+  `uv run pytest -q -x`.
+
+### As shipped (review round 3)
+
+- A prunable entry whose directory still exists (git also marks a worktree prunable when its
+  `.git` file is gone or broken) is `keep: no .git (git worktree prune unregisters it;
+  directory stays)`. Its files cannot be checked, so gc never removes the directory. The
+  `--yes` prune still unregisters the entry, and the directory is then an orphan dir.
+
 ## Rollout / migration
 
 None. Operators run `wt queue gc` then `--yes` when they want; the conductor may run it in
