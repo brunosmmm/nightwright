@@ -1,7 +1,7 @@
 ---
 id: SPEC-0256
 title: "Treat idea-link failure in spec_writer as best-effort, not a tick abort"
-status: accepted
+status: done
 owner: user
 created: 2026-10-26
 updated: 2026-10-26
@@ -55,18 +55,18 @@ committed and linking can be redone with `wt idea` tooling.
 
 ## Acceptance criteria
 
-- [ ] `OW.set_property` or `set_state` raising `ValueError` does not abort the tick.
-- [ ] After such a failure the campaign has `spec`/`spec_id`, the `spec_written`, `commit`,
+- [x] `OW.set_property` or `set_state` raising `ValueError` does not abort the tick.
+- [x] After such a failure the campaign has `spec`/`spec_id`, the `spec_written`, `commit`,
       `run.end` and cost events exist, `spec_write_retries == 0`, `pending_brief is None`, and the
       campaign is PARKED `spec_review_unavailable`.
-- [ ] A note (`author: queue`, text starting `could not link idea to SPEC-NNNN:`) and an
+- [x] A note (`author: queue`, text starting `could not link idea to SPEC-NNNN:`) and an
       `idea_link_failed` event record the error, and the recorded ledger passes
       `schemas.ledger_problems`.
-- [ ] A test pins that an exception from `_do_write_spec` leaves `state["step"]` unchanged
+- [x] A test pins that an exception from `_do_write_spec` leaves `state["step"]` unchanged
       (same step kind and run_id still recorded) and parks `spec_write_failed` with resume_to
       SPEC_WRITING.
-- [ ] A test covers revise mode with deletion of `rel_path` plus a second changed file.
-- [ ] The committed-then-deleted and amended-base tests assert the problem text.
+- [x] A test covers revise mode with deletion of `rel_path` plus a second changed file.
+- [x] The committed-then-deleted and amended-base tests assert the problem text.
 
 ## Test plan
 
@@ -82,10 +82,26 @@ Automated (extend `tests/test_agentic_spec_writer.py`):
 - **Sabotage check:** remove the try/except in `_link_idea`; the drift tests must fail.
 Regression: full `uv run pytest`.
 
+### Test record (2026-10-26)
+
+- `uv run pytest -q tests/test_agentic_spec_writer.py`: 72 passed (new: set_property / set_state
+  drift, no-SPECCED `#+TODO`, `OSError` from `_idea_task`, `_link_idea` success/idempotent,
+  `_do_write_spec` raising, revise-mode deletion plus a second file; two strengthened
+  problem-text assertions).
+- Sabotage check: replacing the `(ValueError, OSError)` handler in `_link_idea` made the four
+  link-failure tests fail; restored.
+- Full `uv run pytest -q -x` and spec-lint run as the gates (see the run record).
+
+### As shipped
+
+As designed. The step-unchanged AC is asserted through the ledger `run.start` event (step kind
+`write_spec`, persona `spec_writer`), `counters.runs == 1`, the `spec_write` request kept and no
+`spec_id` recorded, because campaign state has no `step` field.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`).
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated.

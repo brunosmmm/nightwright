@@ -284,6 +284,23 @@ def test_revise_unchanged_file_is_a_problem(tmp_path, monkeypatch):
     assert park["reason"] == "spec_write_failed" and "no change made" in park["detail"]
 
 
+def test_revise_deleting_the_spec_and_changing_another_file_is_a_problem(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = wrote(tmp_path, monkeypatch, [
+        lambda i: spec_written(2, i, mode="revise", no_edit=True, deletes=[
+            "docs/specs/0002-add-a-thing.md"], extra_files={"other.txt": "x\n"})] * 2)
+    wt = wtree(cfg, cid)
+    head = _git(wt, "rev-parse", "HEAD")
+    _revise(cfg, cid, BRIEF)
+    assert _git(wt, "rev-parse", "HEAD") == head and (wt / "docs/specs/0002-add-a-thing.md").exists()
+    assert not (wt / "other.txt").exists()
+    st = S.read_state(cfg, cid)
+    problems = st["pending_brief"]["write_problems"]
+    spec = "docs/specs/0002-add-a-thing.md"
+    assert f"{spec} was deleted" in problems
+    assert f"other.txt was changed (only {spec} may change)" in problems
+    assert st["counters"]["spec_write_retries"] == 1
+
+
 def test_revise_with_suggested_splits_carries_the_narrowing_rule(tmp_path, monkeypatch):
     cfg, repo, iid, cid = wrote(tmp_path, monkeypatch, [
         lambda i: spec_written(2, i, mode="revise", extra_body="narrowed")])
@@ -486,7 +503,10 @@ def test_file_committed_then_deleted_by_the_writer_is_a_problem(tmp_path, monkey
     head = _git(wt, "rev-parse", "HEAD")
     Q.tick(cfg, runner=Hooked(tmp_path, after=commit_and_delete))
     assert _git(wt, "rev-parse", "HEAD") == head            # rolled back, not kept on the branch
-    assert S.read_state(cfg, cid)["counters"]["spec_write_retries"] == 1
+    st = S.read_state(cfg, cid)
+    assert st["counters"]["spec_write_retries"] == 1
+    assert st["pending_brief"]["write_problems"] == [
+        "stray.txt was deleted (only docs/specs/0002-add-a-thing.md may change)"]
 
 
 def test_amended_base_commit_is_a_problem(tmp_path, monkeypatch):
@@ -496,7 +516,99 @@ def test_amended_base_commit_is_a_problem(tmp_path, monkeypatch):
     Q.tick(cfg, runner=Hooked(tmp_path, after=lambda req: _git(
         wt, "commit", "-q", "--amend", "--allow-empty", "-m", "rewritten")))
     assert _git(wt, "rev-parse", "HEAD") == head
-    assert S.read_state(cfg, cid)["counters"]["spec_write_retries"] == 1
+    st = S.read_state(cfg, cid)
+    assert st["counters"]["spec_write_retries"] == 1
+    assert any("rewrote history" in p for p in st["pending_brief"]["write_problems"])
+
+
+# ---- SPEC-0256: the idea link is best-effort ---------------------------------------------------
+
+def _no_specced_keyword(cfg):
+    path = Path(cfg["org_ideas_file"])
+    path.write_text(path.read_text().replace(" SPECCED", "", 1))
+
+
+def _link_failure_checks(cfg, iid, cid):
+    st = S.read_state(cfg, cid)
+    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    assert st["spec_id"] == "SPEC-0002" and st["spec"]["id"] == "SPEC-0002"
+    assert st["counters"].get("spec_write_retries", 0) == 0 and st["pending_brief"] is None
+    (ev,) = ledger(cfg, cid, "spec_written")
+    assert ev["spec_id"] == "SPEC-0002"
+    assert ledger(cfg, cid, "commit") and ledger(cfg, cid, "run.end") and ledger(cfg, cid, "cost")
+    (fail,) = ledger(cfg, cid, "idea_link_failed")
+    assert fail["spec_id"] == "SPEC-0002" and fail["idea"] == iid and fail["error"]
+    notes = [n for n in ledger(cfg, cid, "note")
+             if n["text"].startswith("could not link idea to SPEC-0002:")]
+    assert len(notes) == 1 and notes[0]["author"] == "queue" and fail["error"] in notes[0]["text"]
+    assert all(SC.ledger_problems(r) == [] for r in S.read_ledger(cfg, cid))
+    return fail
+
+
+@pytest.mark.parametrize("which", ["set_property", "set_state"])
+def test_idea_link_drift_is_best_effort_not_a_tick_abort(tmp_path, monkeypatch, which):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [spec_written(2, i)])
+    real = getattr(OW, which)
+    calls = []
+
+    def drift(*a, **k):
+        calls.append(which)
+        raise ValueError("drift")
+    monkeypatch.setattr(OW, which, drift)
+    report = Q.tick(cfg)
+    assert calls and not report.errors
+    assert _link_failure_checks(cfg, iid, cid)["error"] == "drift"
+    monkeypatch.setattr(OW, which, real)
+
+
+def test_idea_link_without_a_specced_keyword_is_best_effort(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [spec_written(2, i)])
+    _no_specced_keyword(cfg)
+    Q.tick(cfg)
+    _link_failure_checks(cfg, iid, cid)
+
+
+def test_idea_link_oserror_reading_the_ideas_file_is_swallowed(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [spec_written(2, i)])
+    real = Q._idea_task
+    state = {"armed": False}
+
+    def moved(cfg_, idea_id):
+        if state["armed"]:
+            raise FileNotFoundError("ideas.org moved")
+        return real(cfg_, idea_id)
+    monkeypatch.setattr(Q, "_idea_task", moved)
+    # the writer run is the last thing before the link: arm once the worker has finished
+    monkeypatch.setattr(SW, "commit_staged", (lambda orig: lambda *a, **k: (
+        state.__setitem__("armed", True), orig(*a, **k))[1])(SW.commit_staged))
+    Q.tick(cfg)
+    assert "ideas.org moved" in _link_failure_checks(cfg, iid, cid)["error"]
+
+
+def test_link_idea_returns_none_on_success(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [])
+    st = S.read_state(cfg, cid)
+    assert Q._link_idea(cfg, st, "SPEC-0002") is None
+    t = idea(cfg, iid)
+    assert t.properties["SPEC"] == "SPEC-0002" and t.state == "SPECCED"
+    assert Q._link_idea(cfg, st, "SPEC-0002") is None                # idempotent
+
+
+def test_exception_escaping_do_write_spec_is_a_step_error(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [spec_written(2, i)])
+
+    def boom(*a, **k):
+        raise RuntimeError("worker died")
+    monkeypatch.setattr(Q, "_do_write_spec", boom)
+    report = Q.tick(cfg)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_write_failed" and park["resume_to"] == "SPEC_WRITING"
+    assert "worker died" in park["detail"] and any("worker died" in e for e in report.errors)
+    st = S.read_state(cfg, cid)
+    assert st["spec_write"]["mode"] == "write" and not st.get("spec_id")
+    (start_ev,) = ledger(cfg, cid, "run.start")                     # the submitted step is on record
+    assert start_ev["step"]["kind"] == "write_spec" and start_ev["persona"] == "spec_writer"
+    assert st["counters"]["runs"] == 1
 
 
 def test_missing_parent_for_epic_idea_is_rejected(tmp_path, monkeypatch):

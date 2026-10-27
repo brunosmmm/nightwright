@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (63/71 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (64/71 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -189,7 +189,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0253](./specs/0253-gate-pytest-exhausts-tmp-inodes-basetemp-dirs.md) | Per-campaign TMPDIR for gates and personas, plus a temp-filesystem admission guard | feature | accepted | — | 2026-10-26 |
 | [SPEC-0254](./specs/0254-lost-update-in-apply-finish-fresh-read-outside.md) | Take item_lock around the fresh read and write in _apply.finish | feature | accepted | — | 2026-10-26 |
 | [SPEC-0255](./specs/0255-conflict-resolver-leaves-docs-ledger-md-stale.md) | Close regenerates declared generated files after a rebase and commits them before re-gating | feature | accepted | — | 2026-10-26 |
-| [SPEC-0256](./specs/0256-spec-writer-org-write-failure-while-linking-the.md) | Treat idea-link failure in spec_writer as best-effort, not a tick abort | feature | accepted | — | 2026-10-26 |
 
 ## Done
 
@@ -423,6 +422,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0247](./specs/0247-divergence-detection-in-the-implementation-loop.md) | Divergence detection in the implementation loop: park diverging, conductor triages, rework as an outcome | feature | done | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0248](./specs/0248-reliability-follow-ups-flaky-timing-tests-and-error-handling.md) | Reliability follow-ups from review: flaky timing tests and error-handling gaps | feature | done | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0252](./specs/0252-resolver-verification-patch-equivalence.md) | Conflict resolver verification by patch equivalence, runner commits resolver changes | feature | done | M9: agentic workflow | 2026-10-26 |
+| [SPEC-0256](./specs/0256-spec-writer-org-write-failure-while-linking-the.md) | Treat idea-link failure in spec_writer as best-effort, not a tick abort | feature | done | — | 2026-10-26 |
 
 ## Superseded / rejected
 

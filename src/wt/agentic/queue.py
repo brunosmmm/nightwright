@@ -1850,35 +1850,48 @@ def _apply_spec_write(ctx, state, counters, res, row, events, finish):
     if w["sha"]:
         events.append(("commit", {"sha": w["sha"], "message": f"spec {sw['mode']} — {spec_id}"}))
     state.setdefault("repo", {})["head"] = w.get("head") or w["sha"]
+    link_error = None
     with store.item_lock(cfg, cid):
         on_disk = store.read_state(cfg, cid)
         on_disk["spec"] = {**(on_disk.get("spec") or {}), **record}
         on_disk["spec_id"] = spec_id
         store.write_state(cfg, cid, on_disk)
         if sw["mode"] == "write" and on_disk.get("state") not in TERMINAL_STATES:
-            _link_idea(cfg, state, spec_id)
+            link_error = _link_idea(cfg, state, spec_id)
     state["spec"] = {**(state.get("spec") or {}), **record}
     state["spec_id"] = spec_id
     counters["spec_write_retries"] = 0
     state["pending_brief"] = None
     events.append(("spec_written", {"spec_id": spec_id, "rel_path": sw["path"],
                                     "title": w["title"], "mode": sw["mode"]}))
+    if link_error:
+        # best-effort (SPEC-0256): the spec is committed; the link can be redone with `wt idea`
+        events.append(("note", {"text": f"could not link idea to {spec_id}: {link_error}",
+                                "author": "queue"}))
+        events.append(("idea_link_failed", {"spec_id": spec_id, "idea": _idea_id_of(state),
+                                            "error": link_error}))
     return finish("PARKED", "spec_written", park={
         "reason": "spec_review_unavailable", "resume_to": "SPEC_WRITING",
         "detail": f"{spec_id} {sw['mode']}; no spec review yet (SPEC-0214)"})
 
 
-def _link_idea(cfg, state: dict, spec_id: str) -> None:
-    """Give the campaign's idea `:SPEC:` and SPECCED; both are idempotent."""
+def _link_idea(cfg, state: dict, spec_id: str) -> str | None:
+    """Give the campaign's idea `:SPEC:` and SPECCED; both are idempotent. Best-effort
+    (SPEC-0256): returns the error text when the ideas file drifted, lacks SPECCED or cannot be
+    read, else None; never raises."""
     from .. import org_write as OW
-    task = _idea_task(cfg, _idea_id_of(state))
-    if task is None:
-        return
-    if (task.properties.get("SPEC") or "").strip() != spec_id:
-        OW.set_property(cfg, task, "SPEC", spec_id)
+    try:
         task = _idea_task(cfg, _idea_id_of(state))
-    if task is not None and task.state != "SPECCED":
-        OW.set_state(cfg, task, "SPECCED")
+        if task is None:
+            return None
+        if (task.properties.get("SPEC") or "").strip() != spec_id:
+            OW.set_property(cfg, task, "SPEC", spec_id)
+            task = _idea_task(cfg, _idea_id_of(state))
+        if task is not None and task.state != "SPECCED":
+            OW.set_state(cfg, task, "SPECCED")
+    except (ValueError, OSError) as e:
+        return str(e) or type(e).__name__
+    return None
 
 
 def _absorb_close_events(state: dict, counters: dict, events: list, close_events) -> None:
