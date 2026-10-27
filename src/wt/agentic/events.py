@@ -506,6 +506,17 @@ def _drain_info(lease, now=None) -> dict | None:
             "waiting_on": list(d.get("waiting_on") or [])}
 
 
+def _slot_free_age(lease, now) -> float | None:
+    """Seconds a slot has been free: the age of the runner's `slot_freed_at`, capped at the age
+    of `slots_full_at` (its last look with full slots, SPEC-0268), since a slot freed after
+    that look, between ticks, cannot be older than it. None without a `slot_freed_at`."""
+    freed = _age_s(lease.get("slot_freed_at"), now)
+    seen_full = _age_s(lease.get("slots_full_at"), now)
+    if freed is None or seen_full is None:
+        return freed
+    return min(freed, seen_full)
+
+
 def ready_not_admitted_items(cfg, now, sett) -> list[dict]:
     """Ready backlog items that are not starting although a slot is free, for longer than
     `ready_grace_s`: the age is the younger of the ready age and the free slot (the held lease's
@@ -520,7 +531,7 @@ def ready_not_admitted_items(cfg, now, sett) -> list[dict]:
     if occupied >= slots:
         return []
     drain = _drain_info(lease, now)
-    freed = _age_s(lease.get("slot_freed_at"), now) if lease.get("held") else None
+    freed = _slot_free_age(lease, now) if lease.get("held") else None
     busy = any(_open_run(cfg, r["id"]) or r.get("state") in ("GATING", "CLOSING")
                for r in active)
     out = []
@@ -547,7 +558,7 @@ def waiting_not_admitted_items(cfg, now, sett) -> list[dict]:
     (the runner's `slot_freed_at`). Skipped without a held lease or a `slot_freed_at`."""
     from .queue import slots_for
     lease = L.lease_status(cfg, now=now)
-    freed = _age_s(lease.get("slot_freed_at"), now)
+    freed = _slot_free_age(lease, now)
     if not lease.get("held") or freed is None:
         return []
     rows = store.list_campaigns(cfg)

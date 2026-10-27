@@ -123,6 +123,31 @@ def test_ready_not_admitted_waits_for_slot_age(tmp_path, held):
     assert row["slot_free_s"] == 120 and row["ready_for_s"] == 1000
 
 
+def test_ready_not_admitted_caps_slot_age_at_the_runners_last_full_look(tmp_path, held):
+    """SPEC-0268: `slot_freed_at` stays old while the slots are full; a slot freed since the
+    runner's last full look (a conductor park between ticks) is no older than that look."""
+    cfg = _cfg(tmp_path)
+    lease = held(cfg, slot_freed_at=iso(-3000), slots_full_at=iso(295))     # last full 5 s ago
+    _campaign(cfg, B, state="QUEUED")
+    _set_state(cfg, B, backlog={"ready": True, "blocked_by": [], "since": iso(-700)})
+    assert E.ready_not_admitted_items(cfg, at(300), E.settings(cfg)) == []
+    lease.update_info(slots_full_at=iso(100))                                # last full 200 s ago
+    (row,) = E.ready_not_admitted_items(cfg, at(300), E.settings(cfg))
+    assert row["slot_free_s"] == 200
+    lease.update_info(slots_full_at=None)                                    # the runner saw a free slot
+    (row,) = E.ready_not_admitted_items(cfg, at(300), E.settings(cfg))
+    assert row["slot_free_s"] == 3300
+
+
+def test_waiting_not_admitted_caps_slot_age_at_the_runners_last_full_look(tmp_path, held):
+    cfg = _cfg(tmp_path)
+    lease = held(cfg, slot_freed_at=iso(-3000), slots_full_at=iso(295))
+    _waiting(cfg, B, since=0)
+    assert E.waiting_not_admitted_items(cfg, at(300), E.settings(cfg)) == []
+    lease.update_info(slots_full_at=iso(100))
+    assert len(E.waiting_not_admitted_items(cfg, at(300), E.settings(cfg))) == 1
+
+
 def test_ready_not_admitted_without_lease_uses_ready_age(tmp_path):
     cfg = _cfg(tmp_path)
     _campaign(cfg, B, state="QUEUED")

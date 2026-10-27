@@ -613,7 +613,7 @@ def _journal_lines(rec: dict) -> Group:
     if kind == "admission_blocked":                        # SPEC-0268
         held = ", ".join(f"{h.get('campaign')} {h.get('state')}"
                          + (" deferred" if h.get("deferred") else "")
-                         for h in rec.get("holders") or [])
+                         for h in rec.get("holders") or [] if isinstance(h, dict))
         head.append(f"⏳ admission blocked: {len(rec.get('ready') or [])} ready, slots "
                     f"{rec.get('occupied')}/{rec.get('slots')} (held: {held})",
                     style="yellow")

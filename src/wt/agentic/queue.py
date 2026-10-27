@@ -2737,7 +2737,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
                            and not s.get("park_requested"))
     holder_rows: dict[str, dict] = {}
     if admit and waiting_ready and n_busy() >= slots:       # SPEC-0268: say why they wait
-        state_of = {s["id"]: s.get("state") for s in busy}
+        state_of = {s["id"]: s.get("state") for s in store.list_campaigns(cfg)}   # flights may be parked
         holder_rows = {cid: {"campaign": cid, "state": state_of.get(cid), "deferred": False}
                        for cid in sorted({s["id"] for s in busy} | flying)}
         report.blocked = {"ready": waiting_ready, "slots": slots, "occupied": n_busy(),
@@ -3441,14 +3441,19 @@ class _SlotWatch:
 
     def check(self, lease, **info) -> None:
         """One `update_info` call: `info` plus `in_flight` and, when the runner went from full to
-        having a free slot, `slot_freed_at` (SPEC-0263: not on every drop in occupancy)."""
+        having a free slot, `slot_freed_at` (SPEC-0263: not on every drop in occupancy), and
+        `slots_full_at` (SPEC-0268) while the slots are full."""
         now = self.count()
-        if now < self.last:
-            try:
-                if self.last >= slots_for(self.cfg) > now:
-                    info["slot_freed_at"] = store.now_iso()
-            except (ValueError, OSError):   # a half-written default profile: keep the old stamp
-                pass
+        try:
+            slots = slots_for(self.cfg)
+        except (ValueError, OSError):       # a half-written default profile: keep the old stamps
+            slots = None
+        if slots is not None:
+            if now < self.last and self.last >= slots > now:
+                info["slot_freed_at"] = store.now_iso()
+            # SPEC-0268: when the runner last saw the slots full (None once it sees a free one),
+            # so the watchdog never reads a slot freed since as older than this look
+            info["slots_full_at"] = store.now_iso() if now >= slots else None
         self.last = now
         lease.update_info(in_flight=sorted(self.pool.ids()), **info)
 

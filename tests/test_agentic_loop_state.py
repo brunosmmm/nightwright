@@ -101,6 +101,14 @@ def test_slot_freed_at_over_capacity(monkeypatch, counts, stamped):
     assert ("slot_freed_at" in lease.calls[0]) is stamped
 
 
+def test_slots_full_at_published_while_full_and_cleared_on_a_free_slot(monkeypatch):
+    watch, lease = _slot_watch(monkeypatch, [3, 3, 2, 3], slots=3), _Lease()
+    for _ in range(3):
+        watch.check(lease)
+    full = [kw["slots_full_at"] is not None for kw in lease.calls]
+    assert full == [True, False, True]
+
+
 def test_slot_watch_survives_slots_for_error(monkeypatch):
     watch, lease = _slot_watch(monkeypatch, [3, 2]), _Lease()
 

@@ -62,6 +62,7 @@ RUNNER_KINDS = {"start": ("pid", "argv", "interval_s"),
                 "config_reloaded": ("scope", "path", "changed"),
                 "config_load_failed": ("scope", "path", "error"),
                 "reexec_deferred": ("reason", "to_sha"),
+                "admission_blocked": ("tick", "ready", "slots", "occupied", "holders", "draining"),
                 "adopt": ("runs",)}
 
 

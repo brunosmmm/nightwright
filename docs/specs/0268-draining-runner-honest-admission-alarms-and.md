@@ -200,12 +200,25 @@ ready item is waiting.
   wording test in `tests/test_skills.py`, and a tick-less `drain` record check in the runner-log
   test. `tests/test_agentic_exit_paths.py`, `test_agentic_logs.py` and `test_skills.py`: 117 passed.
 
+- Review round 2 (stale `slot_freed_at`): `_SlotWatch.check` also publishes `slots_full_at` in
+  the lease (the time of the runner's last look with full slots, None once it sees a free one;
+  in `lease.LOOP_KEYS`). `events._slot_free_age` caps the free-slot age at it, for
+  `ready_not_admitted_items` and `waiting_not_admitted_items`. New tests:
+  `test_ready_not_admitted_caps_slot_age_at_the_runners_last_full_look`,
+  `test_waiting_not_admitted_caps_slot_age_at_the_runners_last_full_look`,
+  `test_slots_full_at_published_while_full_and_cleared_on_a_free_slot`; the watchdog-gaps,
+  loop-state, lease, ping and drain-signal tests: 70 passed.
+
 ### As shipped
 
 - `admission_blocked` is journaled when the tick had ready QUEUED items and no free slot, and
   admitted none (`run()` resets the dedupe key on `report.admitted`). The `deferred` flag is
   set in step 2 on the holder rows built in step 1, instead of at the end of `_tick`; the
-  result is the same. The blocked report requires `admit` to be true, so a tick paused for
+  result is the same. The free-slot age is `min(slot_freed_at age, slots_full_at age)`, because
+  `slot_freed_at` only moves on the runner's own full-to-free transition and is stale for a
+  slot freed externally between ticks. `admission_blocked` is in `schemas.RUNNER_KINDS`, its
+  holder states come from the store (so a parked campaign with a flight has one), and the
+  runner-log row skips non-dict holders. The blocked report requires `admit` to be true, so a tick paused for
   temp pressure does not claim full slots as the reason.
 
 ## Rollout / migration
