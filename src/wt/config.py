@@ -71,6 +71,10 @@ DEFAULT_CONFIG = {
     # Pretty wt idea show (SPEC-0035/0036): Pygments style name for Rich Syntax.
     # Default `nord` (dark-terminal friendly); light themes like `manni` wash out.
     "idea_show_theme": "nord",
+    # Org backup retention (SPEC-0271): per backed-up file, keep the newest `keep_last`
+    # backups plus the newest of each day within `keep_days`; the rest is pruned on every
+    # write and by `wt backups prune`. Invalid (non-integer/negative) values use these.
+    "org_backups": {"keep_last": 50, "keep_days": 14},
     # Agentic workflow (SPEC-0169/0171): the loop's runner, service and profiles. `profiles`
     # holds deltas over the profiles in agentic/profile_defs/*.yaml (and over
     # <config_dir>/profiles/*.yaml); a project's .wt/profiles/*.yaml sits above them all

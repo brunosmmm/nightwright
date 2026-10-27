@@ -549,12 +549,103 @@ def ensure_idea_keyword(cfg, path, keyword, *, marker="INCUBATE"):
     raise ValueError(f"no idea #+TODO line (containing {marker!r}) in {path}")
 
 
+# ---- backup retention (SPEC-0271) -----------------------------------------------------------
+# Every write copies the whole original to <data_dir>/org-backups/<basename>.<ts>.bak. Per
+# basename we keep the newest `keep_last` plus the newest of each day in the last `keep_days`;
+# the rest is pruned after each backup (that file only) or by `wt backups prune` (all files).
+
+BACKUP_RE = re.compile(r"^(?P<base>.+)\.(?P<ts>\d{8}T\d{6})\.bak$")
+_BACKUP_TS_FMT = "%Y%m%dT%H%M%S"
+_RETENTION_DEFAULTS = {"keep_last": 50, "keep_days": 14}
+
+
+def _backup_dir(cfg):
+    return os.path.join(cfg["data_dir"], "org-backups")
+
+
+def _retention(cfg):
+    """(keep_last, keep_days) from cfg['org_backups']; a non-integer or negative value falls
+    back to its default."""
+    raw = cfg.get("org_backups")
+    raw = raw if isinstance(raw, dict) else {}
+    out = []
+    for key, default in _RETENTION_DEFAULTS.items():
+        v = raw.get(key, default)
+        ok = isinstance(v, int) and not isinstance(v, bool) and v >= 0
+        out.append(v if ok else default)
+    return tuple(out)
+
+
+def select_backup_prunes(names, *, keep_last, keep_days, today):
+    """Pure: the backup names to delete. Grouped by basename; within a group keep the newest
+    `keep_last` plus the newest of each date in [today - keep_days + 1, today]. A name that
+    doesn't match BACKUP_RE (or has an unparseable timestamp) is never selected."""
+    groups = {}
+    for name in names:
+        m = BACKUP_RE.match(name)
+        if not m:
+            continue
+        try:
+            ts = dt.datetime.strptime(m.group("ts"), _BACKUP_TS_FMT)
+        except ValueError:
+            continue
+        groups.setdefault(m.group("base"), []).append((ts, name))
+    first_day = today - dt.timedelta(days=keep_days - 1)
+    prunes = []
+    for entries in groups.values():
+        entries.sort(reverse=True)                   # newest first
+        keep = {name for _, name in entries[:keep_last]}
+        seen_days = set()
+        for ts, name in entries:
+            day = ts.date()
+            if keep_days > 0 and first_day <= day <= today and day not in seen_days:
+                seen_days.add(day)
+                keep.add(name)
+        prunes.extend(name for _, name in entries if name not in keep)
+    return sorted(prunes)
+
+
+def prune_backups(cfg, *, basename=None, keep_last=None, keep_days=None, dry_run=False):
+    """Apply retention to the backup dir (only `basename`'s backups when given). Explicit
+    keep_last/keep_days override the config. Deletes are best-effort: a delete that raises
+    OSError is skipped and listed under `failed`."""
+    d = _backup_dir(cfg)
+    cfg_last, cfg_days = _retention(cfg)
+    keep_last = cfg_last if keep_last is None else keep_last
+    keep_days = cfg_days if keep_days is None else keep_days
+    names = [n for n in (sorted(os.listdir(d)) if os.path.isdir(d) else []) if BACKUP_RE.match(n)]
+    delete = select_backup_prunes(names, keep_last=keep_last, keep_days=keep_days,
+                                  today=dt.date.today())
+    if basename is not None:                         # selection is per basename; keep only ours
+        mine = lambda n: BACKUP_RE.match(n).group("base") == basename  # noqa: E731
+        names, delete = [n for n in names if mine(n)], [n for n in delete if mine(n)]
+    size = 0
+    for name in delete:
+        try:
+            size += os.stat(os.path.join(d, name)).st_size
+        except OSError:
+            pass
+    failed = []
+    if not dry_run:
+        for name in delete:
+            try:
+                os.remove(os.path.join(d, name))
+            except OSError:
+                failed.append(name)
+    return {"dir": d, "scanned": len(names), "delete": delete,
+            "kept": len(names) - len(delete), "bytes": size, "failed": failed}
+
+
 def _atomic_backup_write(cfg, path, content):
     if os.path.exists(path):                         # back up the original (new files: nothing to)
-        ts = dt.datetime.now().strftime("%Y%m%dT%H%M%S")
-        backups = os.path.join(cfg["data_dir"], "org-backups")
+        ts = dt.datetime.now().strftime(_BACKUP_TS_FMT)
+        backups = _backup_dir(cfg)
         os.makedirs(backups, exist_ok=True)
         shutil.copy2(path, os.path.join(backups, f"{os.path.basename(path)}.{ts}.bak"))
+        try:                                         # best-effort: never fails the write
+            prune_backups(cfg, basename=os.path.basename(path))
+        except OSError:
+            pass
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".wt-org-", suffix=".tmp")

@@ -2174,6 +2174,49 @@ def sheet_record_cmd(cfg, project, payload):
     print(json.dumps(result, indent=2))
 
 
+@cli.group("backups")
+def backups_group():
+    """Org-file backups under <data_dir>/org-backups (SPEC-0271): retention and pruning."""
+
+
+@backups_group.command("prune")
+@click.option("--keep-last", type=click.IntRange(min=0), default=None,
+              help="keep the newest N backups per file (default: org_backups.keep_last)")
+@click.option("--keep-days", type=click.IntRange(min=0), default=None,
+              help="also keep the newest backup of each of the last D days "
+                   "(default: org_backups.keep_days)")
+@click.option("--yes", is_flag=True, help="actually delete (default: dry-run preview)")
+@click.option("--json", "as_json", is_flag=True, help="print the result as JSON")
+@click.pass_obj
+def backups_prune_cmd(cfg, keep_last, keep_days, yes, as_json):
+    """Apply backup retention to every backed-up file at once. Dry run unless --yes.
+
+    \b
+    wt backups prune                              preview what would be deleted
+    wt backups prune --yes                        delete it
+    wt backups prune --keep-last 5 --keep-days 0  override the config for this run
+    """
+    from .org_write import BACKUP_RE, prune_backups
+    res = prune_backups(cfg, keep_last=keep_last, keep_days=keep_days, dry_run=not yes)
+    if as_json:
+        print(json.dumps({**res, "dry_run": not yes}, indent=2))
+        return
+    n, mb = len(res["delete"]), res["bytes"] / 1e6
+    verb = "deleted" if yes else "would delete"
+    if yes and res["failed"]:
+        n -= len(res["failed"])
+    console.print(f"{verb} {n} of {res['scanned']} backups ({mb:.1f} MB); kept {res['kept']}"
+                  f"  [dim]{escape(res['dir'])}[/]")
+    if yes and res["failed"]:
+        console.print(f"[yellow]{len(res['failed'])} delete(s) failed[/]")
+    per = {}
+    for name in res["delete"]:
+        base = BACKUP_RE.match(name).group("base")
+        per[base] = per.get(base, 0) + 1
+    for base in sorted(per):
+        console.print(f"  {per[base]:>6}  {escape(base)}")
+
+
 @cli.group("skills")
 def skills_group():
     """Install/list the repo's agent-workflow skills (SPEC-0017) into ~/.claude/skills/ (or

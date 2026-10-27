@@ -1,7 +1,7 @@
 ---
 id: SPEC-0271
 title: "Org backup retention and a prune command"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -99,18 +99,18 @@ Retention caps the disk use whatever the write pattern.
 
 ## Acceptance criteria
 
-- [ ] `select_backup_prunes` keeps the newest `keep_last` per basename plus the newest per day
+- [x] `select_backup_prunes` keeps the newest `keep_last` per basename plus the newest per day
       within `keep_days`. It never selects a name that does not match `BACKUP_RE`. Different
       basenames are independent.
-- [ ] After any `org_write` write, the backup directory holds at most `keep_last + keep_days`
+- [x] After any `org_write` write, the backup directory holds at most `keep_last + keep_days`
       backups of that file. With 60 existing same-day backups and the defaults, a write leaves
       50.
-- [ ] A prune failure (a delete that raises `OSError`) does not fail the write, and the write
+- [x] A prune failure (a delete that raises `OSError`) does not fail the write, and the write
       still lands atomically.
-- [ ] `wt backups prune` without `--yes` deletes nothing and reports the would-delete count and
+- [x] `wt backups prune` without `--yes` deletes nothing and reports the would-delete count and
       bytes. With `--yes` it deletes exactly that set. `--keep-last` / `--keep-days` override
       the config.
-- [ ] The `org_backups` config is honoured, and invalid values fall back to the defaults.
+- [x] The `org_backups` config is honoured, and invalid values fall back to the defaults.
       `wt backups` is listed in `docs/product/reference/index.md`.
 
 ## Test plan
@@ -141,6 +141,42 @@ Retention caps the disk use whatever the write pattern.
 - **Regression guard:** the full `uv run pytest`, in particular the `org_write` tests and
     `tests/test_docs_product_reference.py`.
 
+### Test record (2026-10-27)
+
+- `uv run pytest -q tests/test_org_backups.py`: 8 passed. These are the six planned tests,
+  plus `test_prune_listdir_failure_does_not_fail_write` (an `OSError` from `os.listdir` does
+  not fail the write either) and `test_cli_prune_honours_config` (`org_backups.keep_last: 5`
+  in `config.yaml` drives the dry-run count).
+- Sabotage 1 (one global group in `select_backup_prunes`) fails
+  `test_select_keeps_last_n_and_one_per_day`, `test_write_prunes_that_files_backups` (the
+  `ideas.org`/`other.org` counts) and `test_cli_prune_dry_run_then_yes`. Sabotage 2 (the
+  `prune_backups` call removed from `_atomic_backup_write`) fails
+  `test_write_prunes_that_files_backups`. Both were reverted, and the tests pass again.
+- Manual: `uv run wt backups prune` on the real data dir printed `would delete 1735 of 1937
+  backups (158.3 MB); kept 202`. Per basename: 749 `ideas.org`, 760 `ideas-archive.org`, 210
+  `ideas-20261025-2.org`, 16 `ideas-20261025.org`. `ls | wc -l` was 1937 before and after, so
+  nothing was deleted. The `--yes` run is left to the human.
+- Gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exits 0.
+  `uv run pytest -q -x` passes in full: 3318 passed, 3 skipped (13m29s).
+
+### As shipped
+
+- `prune_backups(cfg, basename=…)` runs `select_backup_prunes` over every backup in the
+  directory and then keeps only `basename`'s prunes. Filtering first would select the same
+  names, because selection is per basename. Selecting first means the per-basename grouping is
+  what protects other files, which is what sabotage 1 checks. The returned dict also carries
+  `failed`, the deletes that raised `OSError`, which are skipped (best-effort). `wt backups
+  prune --yes` reports them. A failing `os.listdir` still raises; `_atomic_backup_write`
+  catches it.
+- `wt backups prune` prints the per-basename table as the would-delete (or deleted) count per
+  file. `--json` prints the `prune_backups` dict plus `dry_run`. Because `--json` uses a raw
+  `print`, it is allowlisted in `tests/test_rich_output_guard.py` like the other JSON
+  emitters.
+- The CLI tests patch `wt.cli.load_config` with a real `load_config()` of tmp dirs.
+  `tests/test_agentic_queue_cli.py::test_queue_help_lists_every_command` leaks an unrestored
+  `MonkeyPatch` of `wt.cli.load_config` (`data_dir: /nonexistent`), and that leak would
+  otherwise redirect env-only CLI tests that run after it.
+
 ## Rollout / migration
 
 The first write after the upgrade prunes only the file it writes. The rest waits for `wt
@@ -148,11 +184,11 @@ backups prune --yes`, which the human runs once.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

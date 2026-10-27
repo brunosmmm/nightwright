@@ -197,7 +197,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0267](./specs/0267-reconcile-source-idea-walk-mislinks-old-specs-to.md) | Reconcile source_idea walk verifies idea identity before linking | feature | accepted | — | 2026-10-27 |
 | [SPEC-0268](./specs/0268-draining-runner-honest-admission-alarms-and.md) | Draining runner: honest admission alarms and observable draining ticks | feature | accepted | — | 2026-10-27 |
 | [SPEC-0269](./specs/0269-load-tolerant-test-waits-fix-known-flakes-and-add.md) | Load-tolerant test waits: fix known flakes and add a shared wait helper | feature | accepted | — | 2026-10-27 |
-| [SPEC-0271](./specs/0271-org-backup-retention-and-a-prune-command.md) | Org backup retention and a prune command | feature | accepted | — | 2026-10-27 |
 
 ## Done
 
@@ -450,6 +449,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0265](./specs/0265-operator-surfaces-survive-bad-data-and-never.md) | Operator surfaces survive bad data and never render untrusted text as markup | feature | done | — | 2026-10-27 |
 | [SPEC-0266](./specs/0266-review-pipeline-integrity-ii-scoped-regenerate.md) | Review pipeline integrity II: scoped regenerate, divergence reset, locked follow-up groups | feature | done | — | 2026-10-27 |
 | [SPEC-0270](./specs/0270-watchdog-state-stuck-measures-idle-time-not-time.md) | Watchdog state_stuck measures idle time, not time in state | feature | done | — | 2026-10-27 |
+| [SPEC-0271](./specs/0271-org-backup-retention-and-a-prune-command.md) | Org backup retention and a prune command | feature | done | — | 2026-10-27 |
 
 ## Superseded / rejected
 

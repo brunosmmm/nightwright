@@ -14,6 +14,7 @@ Claude-generating vs your-turn diagnostic.
 | *(bare)* `wt` | Dashboard: today + this week | [Report](../capabilities/report.md) |
 | `add` | Capture a new org task | [Tasks](../capabilities/tasks-agenda.md) |
 | `agenda` | Tasks by SCHEDULED/DEADLINE (+ overdue) | [Tasks](../capabilities/tasks-agenda.md) |
+| `backups` | Org-file backup retention: `prune` (dry run unless `--yes`) | [Ideas](../capabilities/ideas.md) |
 | `campaign` | Campaign state, ledger and notes (agentic loop) | [Agentic loop](../capabilities/agentic.md) |
 | `completion` | Generate / install shell completion | [Completion](../capabilities/completion.md) |
 | `digest` | Hours joined to org tasks by JIRA key | [Report](../capabilities/report.md) |
