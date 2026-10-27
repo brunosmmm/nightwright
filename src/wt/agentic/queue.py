@@ -2645,6 +2645,8 @@ def _harvest(pool: StepPool, report: TickReport, *, guard: bool = False) -> None
     for cid in [c for c, fl in pool.flights.items() if fl.done()]:
         fl = pool.flights.pop(cid)
         st, ctx = fl.state, fl.ctx
+        if _left_detached(pool, cid, fl):
+            continue
         if fl.group is not None:
             for step, fut, _h in fl.tasks:
                 try:
@@ -2657,14 +2659,30 @@ def _harvest(pool: StepPool, report: TickReport, *, guard: bool = False) -> None
         (_step, fut, _h), = fl.tasks
         try:
             res = fut.result()
-            if res.detached:                        # defensive: detached flights are not here
-                continue
         except Exception as e:
             res = StepResult(st["id"], _step, st["state"], error=repr(e))
             report.errors.append(f"{st['id']}: {e!r}")
         if res.crashed:
             report.errors.append(f"{st['id']}: {res.crashed}")
         _guarded(guard, ctx, st, lambda: report.steps.append(_apply(ctx, st, res)))
+
+
+def _left_detached(pool: StepPool, cid: str, fl: _Flight) -> bool:
+    """A finished flight with a task that returned DETACHED holds a live run, not a result: a
+    review group would apply it as a missing verdict. Record its runs in `pool.forced` (the
+    `detached_view` the next runner adopts) and say so (SPEC-0287: a run spawned after the
+    crash sweep's detach). Only done futures are read, so the answer cannot change."""
+    run_ids = [r for r, _ in fl.runs]
+    hit = []
+    for i, (_step, fut, hk) in enumerate(fl.tasks):
+        if fut.exception() is None and getattr(fut.result(), "detached", False):
+            hit.append(hk.run_dir.name if hk is not None and hk.run_dir else
+                       (run_ids[i] if i < len(run_ids) else None))
+    if hit:
+        with pool.lock:
+            ids = pool.forced.setdefault(cid, [])
+            ids.extend(r for r in hit if r not in ids)
+    return bool(hit)
 
 
 def _guarded(guard: bool, ctx: _Ctx, st: dict, fn) -> None:
@@ -3710,10 +3728,15 @@ def _crash_sweep(cfg, pool: StepPool, bound_s: float) -> tuple:
     # SPEC-0287: apply the tasks that finished during the wait; abandon only the unfinished.
     # A flight holding a force-detached run is not a result: leave it to the next runner's
     # adoption, as `_drain` does (its tasks return DETACHED, a review group would misapply).
+    # One whose run spawned during the wait (so detached on `spawned`) is caught by `_harvest`.
     with pool.lock:
         for cid in [c for c in pool.flights if c in pool.forced]:
             pool.flights.pop(cid)
+    before = set(pool.flights)
     harvest()
+    gone = before - set(pool.flights)
+    abandoned = [a for a in abandoned if a["campaign"] not in gone
+                 and a["run_id"] not in pool.forced.get(a["campaign"], ())]
     in_process = pool.unfinished_in_process()
     return pool.detached_view(), abandoned + in_process
 

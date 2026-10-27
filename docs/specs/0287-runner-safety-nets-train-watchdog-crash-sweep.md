@@ -192,6 +192,17 @@ runs with `--no-renames`.
 - Gates rerun: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exits 0;
   full `uv run pytest -q -x`: 3529 passed, 3 skipped.
 
+### Test record (2026-10-27, review fixes round 2)
+
+- `test_crash_sweep_leaves_review_spawned_during_wait_to_adoption`: a single-reviewer review
+  flight whose hook starts in `spawning`; its worker calls `hk.spawned()` 0.3 s into the wait
+  (so the sweep's `detach_all` detaches it) and returns DETACHED, plus a second campaign's gate
+  that ends 0.6 s in. After `_crash_sweep` the reviewing campaign's state and ledger are
+  unchanged, its run is in `detached`, `abandoned` is empty, and the gate still parks.
+  Sabotage (`_harvest` does not skip flights with a DETACHED result): the test fails.
+- Gates rerun: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exits 0;
+  full `uv run pytest -q -x`: 3530 passed, 3 skipped.
+
 ### As shipped (2026-10-27)
 
 - `test_stuck_items_ignores_train_waiter_and_uses_head_since` used to put its waiter behind a
@@ -207,6 +218,13 @@ runs with `--no-renames`.
   `pool.forced`. Those flights hold a force-detached run whose task returns DETACHED. A review
   group's `_finish_reviews` would otherwise apply it as a missing verdict (a bogus note and a
   `review_retry`). The run is left to the next runner's adoption, as `_drain` does.
+- `forced` alone misses a run that was `spawning` when the sweep began and claimed during the
+  wait: `spawned` detaches it, its task returns DETACHED at once, and `force_detach_waiting`
+  skips done futures. So `_harvest` itself now checks each finished flight: a task result with
+  `detached` set makes it record the flight's runs in `pool.forced` (reported in `detached` for
+  adoption) and skip the flight. This replaces the old silent `continue` for a non-group
+  flight. Only done futures are read, so the check cannot race a late spawn. After the second
+  harvest, `abandoned` drops the entries of flights it harvested and of runs now in `forced`.
 - After `store.clear_campaign_tmp`, `apply_gc` checks that the dir is gone, because the removal
   ignores errors. A dir that is still there marks the row `done: false` with an error.
 

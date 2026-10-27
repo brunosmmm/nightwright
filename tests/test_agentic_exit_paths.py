@@ -580,6 +580,58 @@ def test_crash_sweep_leaves_force_detached_review_to_adoption(tmp_path):
         pool.end(timeout=2)
 
 
+def test_crash_sweep_leaves_review_spawned_during_wait_to_adoption(tmp_path):
+    """SPEC-0287: a reviewer still `spawning` when the sweep starts claims during the wait, so
+    `spawned` detaches it and it returns DETACHED without ever entering `forced` through
+    `force_detach_waiting`. The post-wait harvest records it for adoption, never applies it."""
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {}}
+    rid, gid = "SPEC-0900-20261027-aaaa", "SPEC-0901-20261027-bbbb"
+    S.create_campaign(cfg, {"id": rid, "spec_id": "SPEC-0900", "project": "p",
+                            "state": "REVIEWING"})
+    S.create_campaign(cfg, {"id": gid, "spec_id": "SPEC-0901", "project": "p", "state": "GATING"})
+    st, before = S.read_state(cfg, rid), S.read_ledger(cfg, rid)
+    pool = Q.StepPool()
+    step = Q.Step("review", persona="reviewer", personas=("reviewer",))
+    hk = pool.hooks(Path("/x/002-reviewer"), "spawning")
+    claimed = threading.Event()
+    claim = threading.Timer(0.3, claimed.set)
+
+    def reviewer():                             # `_do_persona`: the wrapper claims, then `_wait`
+        claimed.wait(30)
+        hk.spawned()
+        assert hk.detached()                    # the sweep's `detach_all` caught the spawn
+        return Q.StepResult(rid, step, "REVIEWING", run_id="002-reviewer", detached=True)
+
+    fl = Q._Flight(st, Q._Ctx(cfg), group=Q._ReviewGroup(st, step))
+    fl.tasks.append((Q.Step("review", persona="reviewer"), pool.submit(reviewer), hk))
+    fl.runs.append(("002-reviewer", 60))
+    pool.flights[rid] = fl
+    release = threading.Event()
+    timer = threading.Timer(0.6, release.set)   # keeps the wait loop going past the spawn
+
+    def gate():
+        release.wait(30)
+        return Q.StepResult(gid, Q.Step("gate"), "GATING", error="boom")
+
+    gl = Q._Flight(S.read_state(cfg, gid), Q._Ctx(cfg))
+    gl.tasks.append((Q.Step("gate"), pool.submit(gate), None))
+    pool.flights[gid] = gl
+    claim.start()
+    timer.start()
+    try:
+        detached, abandoned = Q._crash_sweep(cfg, pool, 5.0)
+        assert detached == [{"campaign": rid, "run_ids": ["002-reviewer"]}] and abandoned == []
+        assert S.read_state(cfg, rid) == st and S.read_ledger(cfg, rid) == before
+        assert S.read_state(cfg, gid)["state"] == "PARKED"     # the gate still lands
+        assert not pool.flights
+    finally:
+        claimed.set()
+        release.set()
+        claim.cancel()
+        timer.cancel()
+        pool.end(timeout=2)
+
+
 def test_waiting_on_lists_only_blockers(tmp_path):
     pool = Q.StepPool()
     f_wait, f_gate = pool.submit(time.sleep, 0.3), pool.submit(time.sleep, 0.3)
