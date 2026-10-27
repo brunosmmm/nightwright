@@ -1,7 +1,7 @@
 ---
 id: SPEC-0255
 title: "Close regenerates declared generated files after a rebase and commits them before re-gating"
-status: accepted
+status: done
 owner: user
 created: 2026-10-26
 updated: 2026-10-26
@@ -68,16 +68,16 @@ is read after it so the gated and merged heads stay equal. No project.yaml chang
 
 ## Acceptance criteria
 
-- [ ] After a successful rebase with a stale declared generated file, close commits the
+- [x] After a successful rebase with a stale declared generated file, close commits the
       regenerated file before capturing `head` and gating.
-- [ ] The merged tree equals the gated tree and contains the regenerated file.
-- [ ] No commit when nothing changed; undeclared dirty paths are never committed.
-- [ ] A failing regenerate command parks `regenerate_failed` without merging; the reason is in
+- [x] The merged tree equals the gated tree and contains the regenerated file.
+- [x] No commit when nothing changed; undeclared dirty paths are never committed.
+- [x] A failing regenerate command parks `regenerate_failed` without merging; the reason is in
       `PARK_REASONS` (conductor-owned) and resume goes to CLOSING.
-- [ ] A regenerate command that dirties an undeclared file parks `regenerate_failed`.
-- [ ] A `--docs-only` merge whose only extra change is a regenerated declared path does not park
+- [x] A regenerate command that dirties an undeclared file parks `regenerate_failed`.
+- [x] A `--docs-only` merge whose only extra change is a regenerated declared path does not park
       `not_docs_only`.
-- [ ] The commit emits a `commit` event and an info `finding` in `PreparedClose.events`.
+- [x] The commit emits a `commit` event and an info `finding` in `PreparedClose.events`.
 
 ## Test plan
 
@@ -98,10 +98,28 @@ Automated (`tests/test_agentic_close_regenerate.py`, git fixtures from `test_age
 - **Sabotage check:** remove the helper call; the stale-file test must fail.
 Regression: `tests/test_agentic_close.py`, merge tests, full `uv run pytest`.
 
+### Test record (2026-10-26)
+
+`uv run pytest -q tests/test_agentic_close_regenerate.py` (10 passed: stale-file commit + `commit`
+event + info `finding` + message, merged==gated tree, fresh file no commit, undeclared dirt not
+committed, failing command and undeclared-file park `regenerate_failed`, docs-only close, adopted
+merge-request branch, resolver-style rebase, `run_regenerate`); `tests/test_agentic_queue_merge.py`
+(park resume to CLOSING; `plan_merge --docs-only` ignores declared regenerate paths). Sabotage check:
+neutralising the helper call failed 7 of the 10 new tests. Full `uv run pytest -q -x` and
+`python3 tools/spec_lint.py` passed.
+
+### As shipped
+
+- `gitops.run_regenerate(worktree, cmd)` is the shared public helper (`gitops.rebase` uses it too).
+- On a `regenerate_failed` park the worktree is put back to HEAD (`reset --hard` + `clean -fd`) when
+  it was clean before the commands ran, so a resume does not snapshot or park on the leftovers.
+- `docs/product/loop/operate.md` gained the `regenerate_failed` row (a docs test requires every
+  park reason there).
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`).
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated.

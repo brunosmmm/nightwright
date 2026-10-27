@@ -201,6 +201,26 @@ def test_plan_resume_only_closing_or_queued(world):
     assert Q.plan_resume(cfg, st["id"], to="QUEUED")["to"] == "QUEUED"
 
 
+def test_regenerate_failed_park_resumes_to_closing(world):               # SPEC-0255
+    repo, cfg, tmp = world
+    branch_wt(tmp, repo)
+    st = Q.apply_merge(cfg, plan(cfg))
+    st["state"], st["park"] = "PARKED", {"reason": "regenerate_failed", "resume_to": "CLOSING"}
+    S.write_state(cfg, st["id"], st)
+    assert Q.plan_resume(cfg, st["id"], to="CLOSING")["to"] == "CLOSING"
+
+
+def test_docs_only_plan_does_not_count_a_declared_regenerate_path(world):    # SPEC-0255
+    repo, cfg, tmp = world
+    allow_docs(repo)
+    f = repo / ".wt" / "project.yaml"
+    f.write_text(f.read_text().replace("merge:\n", "merge:\n  regenerate:\n"
+                                       "    - {path: docs/LEDGER.md, cmd: 'true'}\n", 1))
+    _git(repo, "commit", "-q", "-am", "declare regenerate")
+    branch_wt(tmp, repo, files={"docs/WORKFLOW.md": "x\n", "docs/LEDGER.md": "y\n"})
+    assert plan(cfg, docs_only=True)
+
+
 @pytest.mark.parametrize("state", ["IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING"])
 def test_plan_step_parks_a_merge_campaign_in_a_persona_state(world, state):
     repo, cfg, tmp = world

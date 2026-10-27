@@ -304,6 +304,15 @@ def _conflicted(worktree) -> tuple[str, ...]:
         if ln.strip()))
 
 
+def run_regenerate(worktree, cmd) -> None:
+    """Run one `merge.regenerate` command (`sh -c`) in `worktree` (SPEC-0191); `GitError` with
+    the output tail when it exits non-zero or cannot run (SPEC-0255 shares it with close)."""
+    res = _run(["sh", "-c", cmd], cwd=str(worktree), check=False, timeout=_DEFAULT_TIMEOUT)
+    if res.returncode != 0:
+        raise GitError(["sh", "-c", cmd], res.returncode,
+                       _tail((res.stdout or "") + (res.stderr or "")))
+
+
 def rebase(worktree, onto, *, regenerate=None) -> RebaseResult:
     """`git rebase <onto>`; on conflict collect the unmerged paths, abort, and verify the
     worktree is back at its pre-rebase HEAD.
@@ -326,11 +335,7 @@ def rebase(worktree, onto, *, regenerate=None) -> RebaseResult:
             try:
                 for path in conflicts:
                     git(worktree, "checkout", "--theirs", "--", path)
-                    res = _run(["sh", "-c", regenerate[path]], cwd=str(worktree), check=False,
-                               timeout=_DEFAULT_TIMEOUT)
-                    if res.returncode != 0:
-                        raise GitError(["sh", "-c", regenerate[path]], res.returncode,
-                                       _tail((res.stdout or "") + (res.stderr or "")))
+                    run_regenerate(worktree, regenerate[path])
                     git(worktree, "add", "--", path)
             except GitError:
                 ok = False

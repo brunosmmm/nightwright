@@ -68,6 +68,7 @@ PARK_REASONS = frozenset({
     "gates_failed", "worktree_dirty",                  # SPEC-0233: merge campaigns
     "not_docs_only",                                   # SPEC-0234: --docs-only diff left the allowlist
     "diverging",                                       # SPEC-0247: the fix loop is not converging
+    "regenerate_failed",                               # SPEC-0255: close-time regenerate failed/dirtied
 })
 # SPEC-0222: who a park waits for. The human only for their own checkout and explicit
 # escalations (`human_decision`, SPEC-0232); everything else is the conductor's.
@@ -3939,7 +3940,9 @@ def plan_merge(cfg, branch, *, project=None, worktree=None, profile=None,
             raise ValueError(f"--docs-only is disabled for {project}: set "
                              f"merge.docs_only_paths in .wt/project.yaml")
         changed = git.changed_files(root, base, head=branch, renames=False)
-        bad = docs_only_violations(changed, allow)
+        # SPEC-0255: close regenerates declared generated files, so they never count
+        regen = [r["path"] for r in (pcfg.get("merge") or {}).get("regenerate") or []]
+        bad = docs_only_violations(changed, allow + regen)
         if bad:
             raise ValueError(f"--docs-only refused: {len(bad)} paths outside "
                              f"merge.docs_only_paths ({', '.join(bad[:5])})")

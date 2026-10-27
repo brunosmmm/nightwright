@@ -305,6 +305,46 @@ def _abort_leftover_rebase(worktree) -> None:
         git.git(worktree, "rebase", "--abort", check=False)
 
 
+def _regenerate_after_rebase(worktree, regen, events, campaign_id) -> str | None:
+    """SPEC-0255: run every declared `merge.regenerate` command in the rebased worktree and commit
+    exactly the declared paths that changed, so the gated head is the merged head. Returns None,
+    or the `regenerate_failed` park detail (a failing command, or undeclared files it dirtied;
+    the worktree is then put back to HEAD)."""
+    if not regen:
+        return None
+    before = {ln[3:] for ln in git.status_porcelain(worktree, untracked=True)}
+
+    def put_back():
+        if not before:
+            git.git(worktree, "reset", "-q", "--hard", "HEAD", check=False)
+            git.git(worktree, "clean", "-fdq", check=False)
+
+    try:
+        for path, cmd in regen.items():
+            git.run_regenerate(worktree, cmd)
+    except GitError as e:
+        put_back()
+        return f"regenerate command failed: {e.tail}"
+    declared = list(regen)
+    git.git(worktree, "add", "--", *declared)
+    if git.git(worktree, "diff", "--cached", "--quiet", check=False).returncode != 0:
+        message = f"wt({campaign_id}): regenerate generated files after rebase"
+        git.git(worktree, "commit", "-q", "-m", message)
+        events.append(("commit", {"sha": git.rev_parse(worktree),
+                                  "message": "regenerate generated files after rebase"}))
+        changed = git.git(worktree, "diff", "--name-only", "HEAD~1", "HEAD").stdout.split()
+        events.append(("finding", {
+            "persona": "close", "severity": "info", "gate": "regenerate",
+            "title": "generated files regenerated after rebase and committed",
+            "detail": "committed: " + ", ".join(changed), "files": changed}))
+    stray = [ln[3:] for ln in git.status_porcelain(worktree, untracked=True)
+             if ln[3:] not in before]
+    if stray:
+        put_back()
+        return ("regenerate commands left undeclared files changed: " + ", ".join(stray[:10]))
+    return None
+
+
 def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
                   stop=None) -> PreparedClose:
     """The worktree phase (SPEC-0220): spec guard, spec DoD, snapshot commit, target capture,
@@ -402,6 +442,9 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
             "title": "generated files regenerated during rebase",
             "detail": "regenerated: " + ", ".join(rb.regenerated),
             "files": list(rb.regenerated)}))
+    problem = _regenerate_after_rebase(worktree, regen, events, state.get("id"))
+    if problem:
+        return decided(_park("regenerate_failed", problem, "CLOSING", events))
     head = git.rev_parse(worktree)
     moved_since = None
     if merge_request:
@@ -412,7 +455,7 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
         # Diffing against the target keeps commits that landed on base meanwhile out of it.
         bad = git.docs_only_violations(
             git.changed_files(worktree, target_sha, renames=False),
-            list(mcfg.get("docs_only_paths") or []))
+            list(mcfg.get("docs_only_paths") or []) + list(regen))      # SPEC-0255
         if bad:
             more = f" (+{len(bad) - 10} more)" if len(bad) > 10 else ""
             cid = state.get("id")
