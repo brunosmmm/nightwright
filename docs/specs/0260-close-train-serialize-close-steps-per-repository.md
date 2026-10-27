@@ -1,10 +1,10 @@
 ---
 id: SPEC-0260
 title: "Close train: serialize close steps per repository so the queue's own merges never invalidate a re-gate"
-status: accepted
+status: done
 owner: user
 created: 2026-10-26
-updated: 2026-10-26
+updated: 2026-10-27
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0169
@@ -166,6 +166,25 @@ and the head keeps its own stuck check.
 `wt campaign show` already prints `closing`. The note appears in `wt campaign log` and in
 the events stream. The CLI does not change.
 
+### As shipped (2026-10-27)
+
+Built as designed in `queue.py` (`_transition`, `_train_key`, `close_train`, `_train_wait`,
+`_train_head`, `_tick` steps 2 and 4) and `events.stuck_items`. Details the Design left open:
+- `close_train` takes every non-PARKED item and filters itself (non-CLOSING and resolving
+  campaigns are dropped there), so a REVIEWING or PARKED state passed in is harmless.
+- Single shot: the train check in step 2 lets only the head of each root into
+  `pending_close`, so a single-shot `wt queue tick` closes one campaign per repository per
+  tick; the next member closes on the next tick. Step 4 still sorts by `(entered_at, id)`.
+- `_train_head` writes nothing unless the campaign was a waiter (`queued_behind` set), so a
+  campaign that was head from the start has no `head_since` and the watchdog keeps counting
+  from its CLOSING transition. It re-checks the on-disk state is still CLOSING before writing.
+- Existing tests that asserted `closing == {"attempts": 0}` (`test_agentic_close_inflight.py`,
+  `test_agentic_resolver.py`) now go through a `_no_entry` helper that requires
+  `entered_at` and compares the rest.
+- An extra test, `test_different_roots_close_concurrently`, covers the cross-root criterion
+  in the pooled runner (B's `repo.root` is rewritten while it waits, and its close step is
+  stubbed).
+
 ## Alternatives considered
 
 - **Unbounded base-move retries while first in a FIFO close order.** The closes would still
@@ -183,24 +202,24 @@ the events stream. The CLI does not change.
 
 ## Acceptance criteria
 
-- [ ] Entering CLOSING sets `closing.entered_at`. A `base_moved` redo keeps it, and
+- [x] Entering CLOSING sets `closing.entered_at`. A `base_moved` redo keeps it, and
       re-entering after TRIAGING or PARKED sets a new one.
-- [ ] `queue.close_train` exists and is pure. Per `repo.root` it orders members by
+- [x] `queue.close_train` exists and is pure. Per `repo.root` it orders members by
       `(entered_at, id)`, leaves out resolving campaigns, and puts an in-flight close at the
       front.
-- [ ] In the pooled runner there is never more than one `_do_prepare_close` flight per
+- [x] In the pooled runner there is never more than one `_do_prepare_close` flight per
       repository root. While the first campaign's re-gate is held, a second CLOSING campaign
       of the same root gets no close flight.
-- [ ] When two campaigns reach CLOSING together, both merge with zero `base_moved` rows and
+- [x] When two campaigns reach CLOSING together, both merge with zero `base_moved` rows and
       exactly one close started each.
-- [ ] A waiting member has `closing.queued_behind` set to the head's id. It gets exactly one
+- [x] A waiting member has `closing.queued_behind` set to the head's id. It gets exactly one
       `close queued behind` note per change of head, however many ticks it waits.
-- [ ] `events.stuck_items` does not report a campaign waiting in the train, and the head's
+- [x] `events.stuck_items` does not report a campaign waiting in the train, and the head's
       CLOSING budget counts from `head_since`.
-- [ ] Campaigns in different repository roots close concurrently.
-- [ ] A base move from outside the queue during the head's re-gate still redoes the close
+- [x] Campaigns in different repository roots close concurrently.
+- [x] A base move from outside the queue during the head's re-gate still redoes the close
       (existing SPEC-0220 behaviour).
-- [ ] `uv run pytest` passes, and `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes, and `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -264,6 +283,21 @@ helpers from `tests/test_agentic_close_inflight.py`, where each spec's re-gate b
 
 Restore both and record the two failures in the Test record.
 
+### Test record (2026-10-27)
+
+- `uv run pytest -q tests/test_agentic_close_train.py`: 8 passed (the 7 planned tests plus
+  `test_different_roots_close_concurrently`).
+- `uv run pytest -q -x tests/test_agentic_close_inflight.py tests/test_agentic_resolver.py
+  tests/test_agentic_queue_merge.py`: 166 passed, including the renamed
+  `test_two_closes_go_through_the_train` (`moved == []`, started `[1, 1]`).
+- Sabotage 1: train check in `_tick` step 2 disabled (`if False and position:`);
+  `test_second_close_waits_while_first_regates` failed (B had a `close` started row while A
+  was held). Restored.
+- Sabotage 2: `close_train` sorted by id only; `test_close_train_orders_by_entry_then_id`
+  failed (`legacy` sorted last instead of second). Restored.
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`: exit 0.
+- Full `uv run pytest -q -x`: 3116 passed, 3 skipped.
+
 ## Rollout / migration
 
 Campaigns already in CLOSING when this ships have no `entered_at`. They sort first, in id
@@ -271,11 +305,11 @@ order, and an in-flight close stays head. No data migration is needed.
 
 ## Definition of done
 
-- [ ] Every acceptance criterion is checked and true.
-- [ ] The Test plan has been executed, including the sabotage check, and the results are in a
+- [x] Every acceptance criterion is checked and true.
+- [x] The Test plan has been executed, including the sabotage check, and the results are in a
       `### Test record`.
-- [ ] `uv run pytest` passes with no regressions.
-- [ ] The spec body reflects what shipped (`### As shipped`), the ledger is regenerated and
+- [x] `uv run pytest` passes with no regressions.
+- [x] The spec body reflects what shipped (`### As shipped`), the ledger is regenerated and
       spec lint exits 0.
 
 ## Open questions

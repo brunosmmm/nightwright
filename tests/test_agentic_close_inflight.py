@@ -28,6 +28,12 @@ SPECS = {"SPEC-0001": ("docs/specs/0001-trivial.md", "feature-a.txt"),
          "SPEC-0002": ("docs/specs/0002-second.md", "feature-b.txt")}
 
 
+def _no_entry(closing: dict) -> dict:
+    """`closing` without its SPEC-0260 `entered_at` stamp, which must be present."""
+    assert closing.get("entered_at"), closing
+    return {k: v for k, v in closing.items() if k != "entered_at"}
+
+
 def _gate_cmd(d):
     return f'''ls feature*.txt >/dev/null || exit 1
 D={d}
@@ -211,19 +217,22 @@ def test_admission_while_close_regate_runs(mk, tmp_path):
     env.spin(lambda: env.state(a) == "MERGED" and env.state(b) == "MERGED")
 
 
-def test_two_worktree_phases_concurrent_merges_serial(mk):
+def test_two_closes_go_through_the_train(mk):
+    """SPEC-0260 narrows SPEC-0220: two closes of one repository no longer re-gate at once, so
+    the first merge invalidates nothing."""
     env = mk(slots=2, specs=2)
     a, b = env.add("SPEC-0001"), env.add("SPEC-0002")
     env.hold("SPEC-0001")
     env.hold("SPEC-0002")
-    env.spin(lambda: env.running("SPEC-0001") and env.running("SPEC-0002"))
-    assert env.state(a) == env.state(b) == "CLOSING"
+    env.spin(lambda: (env.running("SPEC-0001") or env.running("SPEC-0002"))
+             and env.state(a) == env.state(b) == "CLOSING")
+    assert not (env.running("SPEC-0001") and env.running("SPEC-0002"))
     env.release("SPEC-0001")
     env.release("SPEC-0002")
     env.spin(lambda: env.state(a) == "MERGED" and env.state(b) == "MERGED")
     moved = [r for c in (a, b) for r in env.rows(c) if r["reason"] == "base_moved"]
-    assert len(moved) == 1
-    assert sorted(len(env.started(c)) for c in (a, b)) == [1, 2]
+    assert moved == []
+    assert sorted(len(env.started(c)) for c in (a, b)) == [1, 1]
     assert _git(env.repo, "rev-list", "--merges", "main") == ""
     assert (env.repo / "feature-a.txt").exists() and (env.repo / "feature-b.txt").exists()
     assert env.main_sha() == env.st(a)["close"]["merged_sha"] \
@@ -268,7 +277,7 @@ def test_base_moving_every_attempt_parks(mk):
     assert len(env.started(a)) == 2
     r = run_cli(env.cfg, env.monkeypatch, ["queue", "resume", a, "--yes", "--json"])
     assert r.exit_code == 0, r.output
-    assert env.st(a)["closing"] == {"attempts": 0}
+    assert _no_entry(env.st(a)["closing"]) == {"attempts": 0}
     env.spin(lambda: env.state(a) == "MERGED")
     assert "closing" not in env.st(a)
 
@@ -393,7 +402,7 @@ def test_closing_reset_on_resume_and_waiting(mk):
     env = mk(slots=1)
     a = env.add()
     env.to_closing(a)
-    assert env.st(a)["closing"] == {"attempts": 0}
+    assert _no_entry(env.st(a)["closing"]) == {"attempts": 0}
     with S.item_lock(env.cfg, a):                 # legacy state, then a WAITING detour
         st = env.st(a)
         st.pop("closing")
@@ -402,7 +411,7 @@ def test_closing_reset_on_resume_and_waiting(mk):
         S.write_state(env.cfg, a, st)
     env.hold()
     env.spin(lambda: env.running())
-    assert env.st(a)["closing"] == {"attempts": 0} and env.state(a) == "CLOSING"
+    assert _no_entry(env.st(a)["closing"]) == {"attempts": 0} and env.state(a) == "CLOSING"
     env.release()
     env.spin(lambda: env.state(a) == "MERGED")
     st = env.st(a)

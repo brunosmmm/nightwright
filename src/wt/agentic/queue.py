@@ -762,7 +762,8 @@ def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_even
             if to == "REVIEWING":
                 _begin_review(state)
             if to == "CLOSING":                  # SPEC-0220: the close retry budget restarts
-                state["closing"] = {"attempts": 0}
+                # SPEC-0260: a fresh entry joins the back of its repository's close train
+                state["closing"] = {"attempts": 0, "entered_at": store.now_iso()}
             elif frm == "CLOSING":
                 state.pop("closing", None)
             state["prev_state"] = frm
@@ -2546,6 +2547,72 @@ def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
     return report
 
 
+# ---- the close train (SPEC-0260) -----------------------------------------------------------
+
+def _train_key(state: dict) -> tuple:
+    """(entered CLOSING, id). A missing or unparseable `closing.entered_at` (a campaign that
+    entered CLOSING before SPEC-0260) sorts as the earliest possible time."""
+    import datetime as dt
+    ts = (state.get("closing") or {}).get("entered_at")
+    try:
+        t = dt.datetime.fromisoformat(ts)
+        t = t.astimezone() if t.tzinfo is None else t
+    except (TypeError, ValueError):
+        t = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    return t, state["id"]
+
+
+def close_train(states, close_flights) -> dict[str, list[str]]:
+    """Pure: `{repo root: [campaign ids in close order]}`. Members are the CLOSING campaigns of
+    `states` that are not resolving, in flight or not; a campaign with no root is its own train
+    (keyed by its id). Order is `(entered_at, id)`; a member in `close_flights` goes first, so a
+    running close is always the head."""
+    groups: dict[str, list[dict]] = {}
+    for st in states:
+        if st.get("state") != "CLOSING" or (st.get("closing") or {}).get("resolve"):
+            continue
+        root = (st.get("repo") or {}).get("root") or st["id"]
+        groups.setdefault(root, []).append(st)
+    return {root: [s["id"] for s in sorted(members, key=lambda s: (s["id"] not in close_flights,
+                                                                    *_train_key(s)))]
+            for root, members in groups.items()}
+
+
+def _train_wait(cfg, st: dict, head_id: str, position: int) -> None:
+    """A train member behind `head_id`: record `closing.queued_behind` and one ledger note,
+    only when the head it waits behind changed."""
+    if (st.get("closing") or {}).get("queued_behind") == head_id:
+        return
+    cid = st["id"]
+    with store.item_lock(cfg, cid):
+        cur = store.read_state(cfg, cid)
+        if cur.get("state") != "CLOSING" or (cur.get("closing") or {}).get("queued_behind") == head_id:
+            return
+        cur["closing"] = {**(cur.get("closing") or {}), "queued_behind": head_id}
+        store.append_event(cfg, cid, "note", {
+            "text": f"close queued behind {head_id} (position {position})", "author": "queue"})
+        store.write_state(cfg, cid, cur)
+    st["closing"] = dict(cur["closing"])
+
+
+def _train_head(cfg, st: dict) -> None:
+    """The train's head is about to close: a former waiter drops `queued_behind` and records
+    `head_since` (on disk and in `st`, which the close carries forward)."""
+    if not (st.get("closing") or {}).get("queued_behind"):
+        return
+    cid = st["id"]
+    with store.item_lock(cfg, cid):
+        cur = store.read_state(cfg, cid)
+        if cur.get("state") != "CLOSING":
+            return
+        closing = dict(cur.get("closing") or {})
+        closing.pop("queued_behind", None)
+        closing["head_since"] = store.now_iso()
+        cur["closing"] = closing
+        store.write_state(cfg, cid, cur)
+    st["closing"] = dict(closing)
+
+
 def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, own: bool,
           draining: bool = False):
     if not pool.adopted:
@@ -2623,6 +2690,10 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     pending_agent = []       # (state, step, run_id, req, budget, review group) to submit
     groups = []              # reviewer fan-outs, applied once each when harvested (SPEC-0201)
     pending_close = []
+    # SPEC-0260: one close worktree phase per repository root; the others wait in FIFO order
+    trains = close_train(items, {cid for cid, fl in pool.flights.items()
+                                 if fl.tasks and fl.tasks[0][0].kind == "close"})
+    train_pos = {cid: (ids[0], i) for ids in trains.values() for i, cid in enumerate(ids)}
     for st in busy:
         if st.get("state") not in ACTIVE_STATES or st["id"] in admitted_ids \
                 or st["id"] in flying:
@@ -2648,6 +2719,11 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
                          or not getattr(ctx.runner, "detachable", False)):
             continue                 # SPEC-0229: a draining tick starts no in-process work
         if step.kind == "close":
+            head_id, position = train_pos.get(st["id"], (st["id"], 0))
+            if position:
+                _train_wait(cfg, st, head_id, position)
+                continue
+            _train_head(cfg, st)
             if ctx.stop.is_set():
                 continue
             if own:
@@ -2683,8 +2759,9 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
         _harvest(pool, report)
 
     # 4. single shot: closes one at a time, worktree phase then finish phase (SPEC-0220); a
-    #    moved base redoes the close within the tick until the budget is spent
-    for st in pending_close:
+    #    moved base redoes the close within the tick until the budget is spent; in train order
+    #    (SPEC-0260)
+    for st in sorted(pending_close, key=_train_key):
         while not ctx.stop.is_set():
             pool.flights[st["id"]] = fl = _Flight(st, ctx)
             fl.tasks.append((Step("close"), pool.submit(_do_prepare_close, ctx, st), None))

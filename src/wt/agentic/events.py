@@ -437,8 +437,13 @@ def stuck_items(cfg, now, sett) -> list[dict]:
             if (_age_s(run.get("ts"), now) or 0) <= float(run.get("timeout_s") or 1800) \
                     + sett["overdue_grace_s"]:
                 continue
-        elif st["state"] in ("GATING", "CLOSING") and age <= sett["gate_budget_s"]:
-            continue
+        elif st["state"] in ("GATING", "CLOSING"):
+            closing = (st.get("closing") or {}) if st["state"] == "CLOSING" else {}
+            if closing.get("queued_behind"):     # SPEC-0260: waiting in the close train
+                continue
+            budget_age = _age_s(closing.get("head_since"), now)    # the head: since its turn
+            if (age if budget_age is None else budget_age) <= sett["gate_budget_s"]:
+                continue
         out.append({"campaign": st["id"], "spec_id": st.get("spec_id"), **_label_kw(st), "state": st["state"],
                     "stuck_s": round(age)})
     return out

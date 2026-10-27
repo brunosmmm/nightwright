@@ -18,6 +18,13 @@ from wt.agentic import queue as Q
 from wt.agentic import store as S
 from wt.agentic.runner import FakeRunner
 
+
+def _no_entry(closing: dict) -> dict:
+    """`closing` without its SPEC-0260 `entered_at` stamp, which must be present."""
+    assert closing.get("entered_at"), closing
+    return {k: v for k, v in closing.items() if k != "entered_at"}
+
+
 APP_BASE = "a\nb\nc\nd\ne\n"
 APP_BRANCH = "a\nb\nc-branch\nd\ne\n"
 APP_MAIN = "a\nb\nc-main\nd\ne\n"
@@ -288,7 +295,7 @@ def test_gave_up_twice_parks_rebase_conflict(tmp_path, monkeypatch):
     # a resume resets the budget; the third entry resolves
     r = run_cli(w.cfg, monkeypatch, ["queue", "resume", w.cid, "--yes"])
     assert r.exit_code == 0, r.output
-    assert w.st()["closing"] == {"attempts": 0}
+    assert _no_entry(w.st()["closing"]) == {"attempts": 0}
     w.drive(lambda s: s["state"] in ("MERGED", "PARKED"))
     assert w.st()["state"] == "MERGED"
     assert len(w.ledger("rebase_resolved")) == 1
@@ -515,7 +522,7 @@ def test_resolver_cost_cap_parks(tmp_path, monkeypatch):
     # the resume resets `closing`; the next close re-detects the conflict and parks again
     r = run_cli(w.cfg, monkeypatch, ["queue", "resume", w.cid, "--yes"])
     assert r.exit_code == 0, r.output
-    assert w.st()["closing"] == {"attempts": 0}
+    assert _no_entry(w.st()["closing"]) == {"attempts": 0}
     w.dispatched()
     st = w.drive(lambda s: s["state"] == "PARKED")
     assert st["park"]["reason"] == "cost_cap" and "conflict_resolver" in st["park"]["detail"]
