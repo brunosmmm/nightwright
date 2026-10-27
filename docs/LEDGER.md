@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (70/76 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (70/80 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -174,6 +174,10 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0259](./specs/0259-conflict-resolver-verification-rejects-valid.md) Resolver may declare dropped_commits superseded by upstream; gates decide — done
   - [ ] [SPEC-0260](./specs/0260-close-train-serialize-close-steps-per-repository.md) Close train: serialize close steps per repository so the queue's own merges never invalidate a re-gate — accepted
   - [ ] [SPEC-0261](./specs/0261-divergence-detector-skip-environmental-gate.md) Divergence detector: skip environmental gate rounds and weigh repeated findings over new ones — accepted
+  - [ ] [SPEC-0262](./specs/0262-runner-lifecycle-no-orphaned-runs-no-silent-drops.md) Runner lifecycle: no orphaned runs, no silent drops, no stale code — accepted
+  - [ ] [SPEC-0263](./specs/0263-queue-bookkeeping-unique-run-ids-honest-slot-and.md) Queue bookkeeping: unique run ids, honest slot and profile parks, gated declared drops — accepted
+  - [ ] [SPEC-0264](./specs/0264-review-pipeline-integrity-exact-attestations-safe.md) Review pipeline integrity: exact attestations, safe answers, scoped regenerate, locked follow-ups — accepted
+  - [ ] [SPEC-0265](./specs/0265-operator-surfaces-survive-bad-data-and-never.md) Operator surfaces survive bad data and never render untrusted text as markup — accepted
 
 ## Active & planned
 
@@ -190,6 +194,10 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0250](./specs/0250-tui-escalation-inbox.md) | TUI escalation inbox: open escalations first, answer by choice or text, withdraw | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0260](./specs/0260-close-train-serialize-close-steps-per-repository.md) | Close train: serialize close steps per repository so the queue's own merges never invalidate a re-gate | feature | accepted | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0261](./specs/0261-divergence-detector-skip-environmental-gate.md) | Divergence detector: skip environmental gate rounds and weigh repeated findings over new ones | feature | accepted | M9: agentic workflow | 2026-10-26 |
+| [SPEC-0262](./specs/0262-runner-lifecycle-no-orphaned-runs-no-silent-drops.md) | Runner lifecycle: no orphaned runs, no silent drops, no stale code | feature | accepted | — | 2026-10-27 |
+| [SPEC-0263](./specs/0263-queue-bookkeeping-unique-run-ids-honest-slot-and.md) | Queue bookkeeping: unique run ids, honest slot and profile parks, gated declared drops | feature | accepted | — | 2026-10-27 |
+| [SPEC-0264](./specs/0264-review-pipeline-integrity-exact-attestations-safe.md) | Review pipeline integrity: exact attestations, safe answers, scoped regenerate, locked follow-ups | feature | accepted | — | 2026-10-27 |
+| [SPEC-0265](./specs/0265-operator-surfaces-survive-bad-data-and-never.md) | Operator surfaces survive bad data and never render untrusted text as markup | feature | accepted | — | 2026-10-27 |
 
 ## Done
 
