@@ -1,7 +1,7 @@
 ---
 id: SPEC-0272
 title: "wt idea refuses verb-like one-word captures; persona runs cannot write the org"
-status: in-progress
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -110,17 +110,17 @@ separate defects, both still present on main:
 
 ## Acceptance criteria
 
-- [ ] `wt idea list` (and `ls`, `help`, `delete`, `status`, any `wt` top-level command name such
+- [x] `wt idea list` (and `ls`, `help`, `delete`, `status`, any `wt` top-level command name such
       as `campaign`) exits 1 with the refusal + hint, and the ideas file is byte-identical
       afterwards.
-- [ ] `wt idea list --force` and `wt idea refactor` capture normally.
-- [ ] With `WT_PERSONA_RUN=1`, `wt idea some text`, `wt idea log IDEA-x --note n`,
+- [x] `wt idea list --force` and `wt idea refactor` capture normally.
+- [x] With `WT_PERSONA_RUN=1`, `wt idea some text`, `wt idea log IDEA-x --note n`,
       `wt idea clock-in IDEA-x` and `wt add t` each exit 1 with the "campaign agent" message
       (no traceback) and leave the org files and backup dir unchanged.
-- [ ] With `WT_PERSONA_RUN=1`, read-only `wt ideas` and `wt idea show IDEA-x` still succeed.
-- [ ] `personas.build_request` and the spec-review request put `WT_PERSONA_RUN=1` in
+- [x] With `WT_PERSONA_RUN=1`, read-only `wt ideas` and `wt idea show IDEA-x` still succeed.
+- [x] `personas.build_request` and the spec-review request put `WT_PERSONA_RUN=1` in
       `req.env`; the runner process's own follow-up filing is unaffected.
-- [ ] `uv run pytest` passes both normally and with `WT_PERSONA_RUN=1` exported.
+- [x] `uv run pytest` passes both normally and with `WT_PERSONA_RUN=1` exported.
 
 ## Test plan
 
@@ -147,6 +147,19 @@ separate defects, both still present on main:
 - **Regression guard:** full `uv run pytest`; `tests/test_org_write_race.py` (every writer
   decorated) still passes.
 
+### Test record (2026-10-27)
+
+- `uv run pytest -q tests/test_idea_capture_guard.py tests/test_agentic_spec_review.py
+  tests/test_agentic_personas.py tests/test_org_write_race.py` — 124 passed. Loop-2 additions:
+  spec-review request asserts `WT_PERSONA_RUN == "1"`; `test_root_group_converts_refusal_without_command_catching_it`
+  (throwaway command raising `PersonaOrgWriteRefused` with no handler → exit 1, "campaign agent",
+  `SystemExit`; verified it **fails** with `cls=WtRootGroup` removed, then restored);
+  `_snapshot` now also lists/compares the data dir (`org-backups/`); autouse fixture leaves
+  `WT_PERSONA_RUN` unset.
+- Full `uv run pytest -q`: 3410 passed, 3 skipped (gate). `WT_PERSONA_RUN=1 uv run pytest -q`: 3412 passed, 3 skipped.
+- Manual: scratch `WT_CONFIG_DIR`/`WT_DATA_DIR`: `wt idea list` → exit 1 with refusal + `wt ideas` hint;
+  `WT_PERSONA_RUN=1 wt add t` → exit 1 with the "campaign agent" message, no traceback, nothing written.
+
 ## Rollout / migration
 
 Ships with the code; no data migration. Persona prompts need no change (they already say
@@ -154,11 +167,11 @@ to use `followup_ideas`).
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

@@ -2,6 +2,7 @@
 import os
 from zoneinfo import ZoneInfo
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -48,10 +49,12 @@ def _ideas_bytes(cfg):
 
 def _snapshot(cfg):
     files = {}
-    for root, _dirs, names in os.walk(os.path.dirname(cfg["org_ideas_file"])):
-        for n in names:
-            fp = os.path.join(root, n)
-            files[fp] = open(fp, "rb").read()
+    for top in (os.path.dirname(cfg["org_ideas_file"]), cfg["data_dir"]):
+        for root, dirs, names in os.walk(top):
+            files[root] = sorted(dirs + names)      # listings catch a new (backup) file or dir
+            for n in names:
+                fp = os.path.join(root, n)
+                files[fp] = open(fp, "rb").read()
     return files
 
 
@@ -115,3 +118,21 @@ def test_atomic_write_primitive_refuses(env, tmp_path, monkeypatch):
     with pytest.raises(OW.PersonaOrgWriteRefused):
         OW._atomic_backup_write(env, str(target), "* x\n")
     assert not target.exists()
+
+
+def test_root_group_converts_refusal_without_command_catching_it(env, monkeypatch):
+    @click.command("zz-throwaway")
+    def throwaway():
+        raise OW.PersonaOrgWriteRefused("wt: refusing to write the org from a campaign agent")
+
+    monkeypatch.setitem(cli.commands, "zz-throwaway", throwaway)
+    monkeypatch.setenv("WT_PERSONA_RUN", "1")
+    r = _run("zz-throwaway")
+    assert r.exit_code == 1
+    assert "campaign agent" in r.output
+    assert isinstance(r.exception, SystemExit)
+    assert not isinstance(r.exception, OW.PersonaOrgWriteRefused)
+
+
+def test_autouse_fixture_leaves_persona_flag_unset():
+    assert "WT_PERSONA_RUN" not in os.environ

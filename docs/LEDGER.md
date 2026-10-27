@@ -199,7 +199,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) | Spec phases and review rounds in queue watch and listing | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0214](./specs/0214-spec-review-loop-inside-the-campaign-with-in-loop.md) | Spec review loop inside the campaign, with in-loop acceptance | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0272](./specs/0272-wt-idea-subcommand-like-word-silently-captures.md) | wt idea refuses verb-like one-word captures; persona runs cannot write the org | feature | in-progress | — | 2026-10-27 |
 | [SPEC-0275](./specs/0275-worktree-and-branch-garbage-collection-for.md) | wt queue gc: garbage-collect worktrees and branches of finished campaigns | feature | accepted | — | 2026-10-27 |
 | [SPEC-0276](./specs/0276-load-many-ideas-into-the-queue-at-once-in.md) | Batch queue add: many specs and ideas at once, in dependency order | feature | accepted | — | 2026-10-27 |
 | [SPEC-0277](./specs/0277-wt-queue-watch-shows-review-status-per-reviewer.md) | Per-reviewer review chips in queue watch and the TUI queue tab | feature | accepted | — | 2026-10-27 |
@@ -462,6 +461,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0269](./specs/0269-load-tolerant-test-waits-fix-known-flakes-and-add.md) | Load-tolerant test waits: fix known flakes and add a shared wait helper | feature | done | — | 2026-10-27 |
 | [SPEC-0270](./specs/0270-watchdog-state-stuck-measures-idle-time-not-time.md) | Watchdog state_stuck measures idle time, not time in state | feature | done | — | 2026-10-27 |
 | [SPEC-0271](./specs/0271-org-backup-retention-and-a-prune-command.md) | Org backup retention and a prune command | feature | done | — | 2026-10-27 |
+| [SPEC-0272](./specs/0272-wt-idea-subcommand-like-word-silently-captures.md) | wt idea refuses verb-like one-word captures; persona runs cannot write the org | feature | done | — | 2026-10-27 |
 | [SPEC-0273](./specs/0273-queue-write-commands-hardcode-by-human-conductor.md) | Queue write commands record the real actor (--by), not always human | feature | done | — | 2026-10-27 |
 | [SPEC-0274](./specs/0274-spec-lint-passes-with-two-specs-sharing-one-id.md) | spec_lint fails on duplicate spec ids and duplicate number prefixes | feature | done | — | 2026-10-27 |
 

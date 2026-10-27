@@ -129,6 +129,7 @@ def test_review_run_is_restricted_and_prompt_carries_inputs(tmp_path, monkeypatc
     assert req.read_only and req.allowed_tools == () and req.cwd == repo
     assert "--restricted" in build_argv(req)
     assert "WT_CAMPAIGN" not in req.env and req.env["WT_SPEC_ID"] == "SPEC-0001"
+    assert req.env["WT_PERSONA_RUN"] == "1"                           # SPEC-0272
     assert "Ship `feature.txt`." in req.prompt and "{{" not in req.prompt
     assert "queue" not in req.system_append
     assert req.run_dir.parent.name == "spec-reviews"
