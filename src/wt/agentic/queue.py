@@ -3328,6 +3328,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
     detached: list = []
     abandoned: list = []
     deferred = None                                   # head a re-exec was deferred for
+    exec_blocked = False                              # SPEC-0226: user config invalid this tick
     pool = StepPool()                                 # SPEC-0213: flights outlive ticks
     _LAST_POOL = pool
     watch = ConfigWatch(cfg, config_loader) if config_loader else None
@@ -3376,9 +3377,11 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                     reason = "once" if once else ("max_ticks" if max_ticks and ticks >= max_ticks
                                                   else "idle")
                     break
+                exec_blocked = False
                 if code_sha:
                     head, changed = code_changes(watch_root, code_sha)
                     if changed and watch and watch.user_invalid():
+                        exec_blocked = True       # draining may go on, but never exec into it
                         # SPEC-0226: the new image would load the broken user config (crash
                         # or pure defaults); keep running on the last good one and keep
                         # `code_sha`, so the re-exec happens once the file is fixed
@@ -3414,7 +3417,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                             if set(pool.flights) != before:
                                 slots.check(lease)
                                 drain_info()
-                        got = pool.try_detach_all()
+                        got = None if exec_blocked else pool.try_detach_all()
                         if got is not None:
                             detached, reason, exec_now = got, "code_changed", True
                             break

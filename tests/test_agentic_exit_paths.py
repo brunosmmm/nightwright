@@ -275,6 +275,66 @@ def test_max_ticks_during_draining_has_restart_pending(tmp_path, monkeypatch):
     assert stop["reason"] == "max_ticks" and stop["restart_pending"] == {"to_sha": "newsha"}
 
 
+def test_until_idle_during_draining_has_restart_pending(tmp_path, monkeypatch):
+    """Precedence: `--until-idle` firing on a draining tick is a plain `idle` exit, no exec. The
+    campaign cannot go idle by itself while draining (no gate or FakeRunner step is planned), so
+    the tick after the detection reports idle by fiat; the exit path is what is under test."""
+    repo, cfg, a = gate_world(tmp_path, monkeypatch)
+    monkeypatch.setattr(Q, "code_changes", lambda r, since: (
+        ("newsha", ["src/wt/x.py"]) if pid_file(tmp_path) else (since, [])))
+    monkeypatch.setattr(Q, "_EXEC", lambda *a: pytest.fail("exec despite until_idle"))
+    real_tick = Q.tick
+
+    def tick(cfg_, **kw):
+        report = real_tick(cfg_, **kw)
+        if journal(cfg, "draining"):
+            report.idle = True
+            (tmp_path / "g1.rel").write_text("")      # the gate ends; the exit drain harvests it
+        return report
+
+    monkeypatch.setattr(Q, "tick", tick)
+    Q.run(cfg, until_idle=True, poll_interval_s=0.01, reexec=True, code_root=repo)
+    stop, = journal(cfg, "stop")
+    assert stop["reason"] == "idle" and stop["restart_pending"] == {"to_sha": "newsha"}
+    assert journal(cfg, "draining") and len(S.read_ledger(cfg, a, types=["gate"])) == 1
+
+
+def test_draining_does_not_exec_while_the_user_config_is_invalid(tmp_path, monkeypatch):
+    """SPEC-0226 inside the drain: once `reexec_deferred` is journaled, the 0.2 s poll must not
+    exec even though nothing blocks it; the exec follows the config fix."""
+    repo, cfg, a = gate_world(tmp_path, monkeypatch)
+    user = Path(cfg["config_dir"]) / "config.yaml"
+    user.write_text("agentic: {}\n")
+    monkeypatch.setattr(Q, "code_changes", lambda r, since: (
+        ("newsha", ["src/wt/x.py"]) if pid_file(tmp_path) else (since, [])))
+    calls, seen = [], {"idle_ticks": 0}
+    monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(1))
+
+    def on_tick(report):
+        if "broken" not in seen and journal(cfg, "draining"):
+            user.write_text("")                        # broken: seen by the next tick's check
+            seen["broken"] = True
+        elif "released" not in seen and journal(cfg, "reexec_deferred"):
+            (tmp_path / "g1.rel").write_text("")       # the drain's only blocker ends
+            seen["released"] = True
+        elif "released" in seen and "fixed" not in seen:
+            if not Q._LAST_POOL.flights:
+                seen["idle_ticks"] += 1                # nothing blocks the exec any more
+            if seen["idle_ticks"] >= 4:
+                seen["calls_before_fix"] = len(calls)
+                user.write_text("agentic: {}\n")
+                seen["fixed"] = True
+
+    Q.run(cfg, poll_interval_s=0.05, reexec=True, code_root=repo, on_tick=on_tick,
+          config_loader=lambda: dict(cfg), max_ticks=300)
+    assert seen.get("fixed") and seen["calls_before_fix"] == 0
+    assert len(calls) == 1
+    deferred, = journal(cfg, "reexec_deferred")
+    assert deferred["reason"] == "user_config_invalid" and deferred["to_sha"] == "newsha"
+    stop, = journal(cfg, "stop")
+    assert stop["reason"] == "code_changed" and stop["to_sha"] == "newsha"
+
+
 def test_crash_sweeps_and_journals_after(tmp_path, monkeypatch):
     repo, cfg, a = gate_world(tmp_path, monkeypatch)
     real_tick = Q.tick

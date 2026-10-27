@@ -446,6 +446,21 @@ The conductor skill rows change accordingly:
   test; treating `spawning` tasks as detachable in `StepPool.try_detach_all` fails the FakeRunner
   in-flight test.
 
+### Test record (2026-10-26, final round)
+
+- Code fix: the draining exec poll in `run()` is skipped on a tick where `reexec_deferred`
+  applies (`exec_blocked`: a code change is pending and the user config is invalid). Draining
+  (harvest, admission) goes on; the exec waits until the config is valid again.
+- Tests added: `test_until_idle_during_draining_has_restart_pending` (plain `idle` exit, `restart_pending`,
+  no exec; dropping `"idle"` from the `restart_pending` reason check fails it) and
+  `test_draining_does_not_exec_while_the_user_config_is_invalid` (`reexec_deferred` journaled, nothing blocking
+  for several ticks, no exec until the config is fixed; removing the `exec_blocked` guard fails it).
+- `tests/test_agentic_adopt.py::test_legacy_survivor_not_killed`: the final state assertion stays
+  `in ("IMPLEMENTING", "GATING")` because the tick that collects the orphan can also plan run 002
+  for the still-IMPLEMENTING campaign (same-tick race, as in `test_adopt_after_park_resume_while_no_runner`).
+  A new check restores the real coverage: no GATING transition before a second implementer `run.start`.
+- Not done (optional): listing unfinished in-process tasks in `abandoned` at bound expiry.
+
 ## Rollout / migration
 
 Lands after SPEC-0225. No data migration. Journal addition: `detached` on every `stop`
