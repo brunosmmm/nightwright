@@ -668,3 +668,97 @@ def test_link_skipped_on_drift_does_not_advance(tmp_path, monkeypatch):
     S.reconcile_ideas(cfg, apply=True)
     assert _spec_prop(cfg, idea_id) == "SPEC-0002"
     assert _state_of(cfg, idea_id) == "IDEA"            # not PROMOTED/archived by SPEC-0001
+
+
+def test_link_property_is_written_before_the_state_advance(tmp_path, monkeypatch):
+    """PROMOTED archives the subtree, so `:SPEC:` must land first. The archive file is loaded
+    too, so the end state alone cannot tell the orders apart: record the writes."""
+    from wt import explore as EX
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "ordered", state="INCUBATE")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id)
+    calls = []
+    real_prop, real_state = S.W.set_property, EX.set_idea_state
+
+    def prop(c, task, key, value, *a, **k):
+        calls.append(("property", key))
+        return real_prop(c, task, key, value, *a, **k)
+
+    def state(c, iid, target, *a, **k):
+        calls.append(("state", target))
+        return real_state(c, iid, target, *a, **k)
+    monkeypatch.setattr(S.W, "set_property", prop)
+    monkeypatch.setattr(EX, "set_idea_state", state)
+    S.reconcile_ideas(cfg, apply=True)
+    assert calls == [("property", "SPEC"), ("state", "PROMOTED")]
+
+
+def test_lone_superseded_claimant_is_ambiguous_and_writes_nothing(tmp_path):
+    """No live spec names the idea: not a claimant by default, or it would be DROPPED."""
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "only a dead claimant")
+    _spec(cfg, "SPEC-0001", "superseded", source_idea=idea_id)
+    before = _bytes(cfg)
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert [(r[0], r[1], r[2]) for r in plan] == [(idea_id, "SPEC-0001", "flag-ambiguous")]
+    assert _bytes(cfg) == before
+    assert _state_of(cfg, idea_id) == "IDEA" and _spec_prop(cfg, idea_id) == ""
+
+
+def test_claim_is_attributed_by_filename_not_frontmatter_id(tmp_path):
+    """`_load_spec_fm` finds specs by file number, so a copied file with a stale `id:` must not
+    link the idea to (and take the status of) the spec it was copied from."""
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "copied spec")
+    _spec(cfg, "SPEC-0001", "done", source_idea=None)
+    path = _spec(cfg, "SPEC-0002", "accepted", source_idea=idea_id)
+    text = open(path).read().replace("id: SPEC-0002", "id: SPEC-0001")
+    open(path, "w").write(text)
+    S.reconcile_ideas(cfg, apply=True)
+    assert _spec_prop(cfg, idea_id) == "SPEC-0002"
+    assert _state_of(cfg, idea_id) == "SPECCED"          # SPEC-0002's status, not SPEC-0001's
+
+
+def test_link_skipped_on_drift_is_reported_as_a_conflict(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    idea_id = _bare_idea(cfg, "raced again")
+    _spec(cfg, "SPEC-0001", "done", source_idea=idea_id)
+    real = S.W.resolve_selector
+    raced = []
+
+    def resolve(c, sel):
+        if not raced:
+            raced.append(1)
+            W.set_property(c, real(c, sel), "SPEC", "SPEC-0002")
+        return real(c, sel)
+    monkeypatch.setattr(S.W, "resolve_selector", resolve)
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert [r[2] for r in plan if r[0] == idea_id] == ["flag-conflict"]    # no link, no advance
+    assert plan[0][3] == "idea links SPEC-0002"
+
+
+def test_cli_reconcile_marks_flag_rows_and_summary(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from wt.cli import cli
+    cfg = _cfg(tmp_path)
+    amb = _bare_idea(cfg, "claimed twice")
+    conflict = _idea(cfg, "linked elsewhere", state="SPECCED", spec_id="SPEC-0004")
+    good = _bare_idea(cfg, "will link")
+    _spec(cfg, "SPEC-0001", "done", source_idea=amb)
+    _spec(cfg, "SPEC-0002", "accepted", source_idea=amb)
+    _spec(cfg, "SPEC-0003", "accepted", source_idea=conflict)
+    _spec(cfg, "SPEC-0004", "accepted", source_idea=conflict)
+    _spec(cfg, "SPEC-0005", "done", source_idea=good)
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    out = CliRunner().invoke(cli, ["spec", "reconcile"]).output
+    rows = {line.split()[1]: line for line in out.splitlines() if line.startswith("!") or
+            line.startswith("→")}
+    assert rows[amb].startswith("!") and "specs naming this idea: SPEC-0001, SPEC-0002" in rows[amb]
+    assert rows[conflict].startswith("!") and "idea links SPEC-0004" in rows[conflict]
+    assert "1 idea(s) would advance, 1 would be linked" in out and "--apply" in out
+
+    out = CliRunner().invoke(cli, ["spec", "reconcile", "--apply"]).output
+    assert "+ " + good in out
+    assert "1 idea(s) advanced, 1 linked" in out
+    assert _spec_prop(cfg, good) == "SPEC-0005" and _state_of(cfg, good) == "PROMOTED"

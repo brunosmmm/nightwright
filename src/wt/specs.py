@@ -840,7 +840,9 @@ _NOT_LIVE = frozenset({"superseded", "rejected"})
 
 def _spec_claims(cfg):
     """`{idea_id: [(spec_id, status)]}` over every internal spec with a `source_idea`
-    (SPEC-0257), in spec-id order. Read from the same files `_load_spec_fm` reads."""
+    (SPEC-0257), in spec-id order. Read from the same files `_load_spec_fm` reads, and keyed by
+    the *filename* number as it does, so a copied file with a stale `id:` cannot borrow another
+    spec's status."""
     claims = {}
     for path in sorted(_specs_dir(cfg).glob("[0-9]*.md")):
         m = _NUM_RE.match(path.name)
@@ -851,8 +853,8 @@ def _spec_claims(cfg):
         fm = fm if isinstance(fm, dict) else {}
         idea_id = str(fm.get("source_idea") or "").strip()
         if idea_id and m:
-            spec_id = str(fm.get("id") or f"SPEC-{m.group(1)}")
-            claims.setdefault(idea_id, []).append((spec_id, str(fm.get("status") or "").lower()))
+            claims.setdefault(idea_id, []).append(
+                (f"SPEC-{m.group(1)}", str(fm.get("status") or "").lower()))
     return claims
 
 
@@ -963,16 +965,21 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     # `:SPEC:` lands before any state write (SPEC-0257).
     from . import explore as EX
     from . import org as ORG
-    drifted = set()                 # ideas linked to another spec since the plan
+    drifted = {}                    # idea_id -> the other spec it was linked to since the plan
     for idea_id, spec_id in links:
         ORG.invalidate_tasks_cache()
         task = W.resolve_selector(cfg, idea_id)
         now = (task.properties.get("SPEC") or "").strip()
         if now:                     # linked since the plan: leave it
             if now != spec_id:
-                drifted.add(idea_id)
+                drifted[idea_id] = now
             continue
         W.set_property(cfg, task, "SPEC", spec_id)
+    # report what really happened: a skipped link is a conflict, and its advance never ran
+    plan[:] = [
+        (i, s, "flag-conflict", f"idea links {drifted[i]}") if a == "link" and i in drifted
+        else (i, s, a, d)
+        for i, s, a, d in plan if not (a == "advance" and i in drifted)]
     for idea_id, target in advances:
         if idea_id in drifted:      # the advance was derived from a spec it no longer points to
             continue

@@ -201,6 +201,18 @@ Definition of done includes filing a follow-up idea for it (`wt idea capture`, k
 - `uv run pytest tests/test_reconcile.py tests/test_agentic_queue.py tests/test_render.py -q`:
   223 passed.
 
+### Test record (2026-10-27, review round 3)
+
+- Added: `test_link_property_is_written_before_the_state_advance` (records the write order; the
+  end state alone cannot tell, as the archive file is loaded too),
+  `test_lone_superseded_claimant_is_ambiguous_and_writes_nothing`,
+  `test_claim_is_attributed_by_filename_not_frontmatter_id`,
+  `test_link_skipped_on_drift_is_reported_as_a_conflict`,
+  `test_cli_reconcile_marks_flag_rows_and_summary` (flag marks, dry-run and `--apply` summaries),
+  `test_merge_reconcile_link_only_idea_emits_an_unchanged_state_event`,
+  `test_merge_reconcile_partial_write_is_ledgered`.
+- `uv run pytest tests/test_reconcile.py tests/test_agentic_queue.py -q`: 207 passed.
+
 ### As shipped
 
 - Queue tests live in `tests/test_agentic_queue.py` (the `opened` campaign fixture and `_apply`
@@ -223,6 +235,16 @@ Definition of done includes filing a follow-up idea for it (`wt idea capture`, k
 - The close hook's same-repo check treats a missing/empty `repo.root`, and a specs dir that
   cannot be located (`_specs_dir` raises `ValueError`), as "spec store is not this repo" (info
   finding), never as the current directory or a minor "reconcile failed" finding.
+- Review round 3: a spec's claim is attributed to its *filename* number (what `_load_spec_fm`
+  resolves), not its frontmatter `id`. A link skipped on drift is rewritten in the returned plan
+  as a `flag-conflict` row (and its advance row dropped), so the `--apply` summary counts only
+  what was written. When the write pass raises partway, the close hook still ledgers an
+  `idea_reconciled` event for every idea whose state or `:SPEC:` changed, next to the minor
+  "idea reconcile failed" finding.
+- Known and accepted: the hook runs inside `_apply`, before `finish()` re-reads the campaign
+  state, so a human abandoning/parking a CLOSING campaign during the close can still see the idea
+  bookkeeping land. The merge is already irreversible and the writes are idempotent, and the Design
+  places the hook right after `state["close"]` is set.
 
 ## Definition of done
 

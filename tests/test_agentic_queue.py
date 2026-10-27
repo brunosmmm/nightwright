@@ -1603,3 +1603,35 @@ def test_merge_reconcile_never_edits_the_main_checkout(opened):
     assert dirty() == status_before     # a new tracked edit here would park the next close
     (fnd,) = [f for f in S.read_ledger(cfg, cid, types=["finding"]) if f["gate"] == "bookkeeping"]
     assert fnd["severity"] == "info" and fnd["title"] == "idea reconcile: spec has no source_idea"
+
+
+def test_merge_reconcile_link_only_idea_emits_an_unchanged_state_event(opened):
+    """An `accepted` spec naming an idea already SPECCED: only the `:SPEC:` is written."""
+    from wt import org_write as OW
+    cfg, cid, ctx = opened
+    iid, oc = _merge_with_idea(opened, spec_status="accepted")
+    OW.set_state_by_selector(cfg, iid, "SPECCED")
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED"
+    (ev,) = S.read_ledger(cfg, cid, types=["idea_reconciled"])
+    assert (ev["idea_id"], ev["from"], ev["to"]) == (iid, "SPECCED", "SPECCED")
+    assert (OW.resolve_selector(cfg, iid).properties.get("SPEC") or "").strip() == "SPEC-0001"
+
+
+def test_merge_reconcile_partial_write_is_ledgered(opened, monkeypatch):
+    """The link lands, the state write raises: a minor finding and an event for the link."""
+    from wt import explore as EX
+    from wt import org_write as OW
+    cfg, cid, ctx = opened
+    iid, oc = _merge_with_idea(opened)
+
+    def boom(*a, **k):
+        raise RuntimeError("org file drifted")
+    monkeypatch.setattr(EX, "set_idea_state", boom)
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED"
+    (fnd,) = [f for f in S.read_ledger(cfg, cid, types=["finding"]) if f["gate"] == "bookkeeping"]
+    assert fnd["severity"] == "minor" and "org file drifted" in fnd["detail"]
+    (ev,) = S.read_ledger(cfg, cid, types=["idea_reconciled"])
+    assert (ev["idea_id"], ev["from"], ev["to"]) == (iid, "IDEA", "IDEA")
+    assert (OW.resolve_selector(cfg, iid).properties.get("SPEC") or "").strip() == "SPEC-0001"

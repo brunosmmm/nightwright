@@ -631,9 +631,7 @@ def idea_is_open(task) -> bool:
 
 def _idea_task(cfg, idea_id):
     """The idea task for `idea_id` (exact `:ID:` or task id), or None."""
-    from .. import org as ORG
-    ORG.invalidate_tasks_cache()          # org writes can land within one mtime tick
-    for t in ORG.filter_tasks(ORG.load_tasks(cfg), is_idea=True):
+    for t in _ideas(cfg):
         if idea_id in ((t.properties.get("ID") or "").strip(), t.id):
             return t
     return None
@@ -1771,6 +1769,18 @@ def _reconcile_merged(cfg, state: dict, events: list) -> None:
                                    "gate": "bookkeeping", "title": title, "detail": detail,
                                    "files": []}))
 
+    def snapshot():
+        return {(t.properties.get("ID") or t.id or "").strip():
+                (t.state, (t.properties.get("SPEC") or "").strip()) for t in _ideas(cfg)}
+
+    def reported(idea_ids, before):
+        after = snapshot()
+        for idea_id in idea_ids:
+            events.append(("idea_reconciled", {
+                "spec_id": spec_id, "idea_id": idea_id, "from": (before.get(idea_id) or (None,))[0],
+                "to": (after.get(idea_id) or (None,))[0]}))
+
+    before = None
     try:
         root = (state.get("repo") or {}).get("root")
         try:
@@ -1781,15 +1791,10 @@ def _reconcile_merged(cfg, state: dict, events: list) -> None:
         if not root or specs_dir is None or not specs_dir.is_relative_to(Path(root).resolve()):
             finding("info", "idea reconcile skipped: spec store is not this repo")
             return
-        before = {(t.properties.get("ID") or t.id or "").strip(): t.state
-                  for t in _ideas(cfg)}
+        before = snapshot()
         # backlinks=False: no spec-file write in the main checkout (it would park the next close)
         plan = SP.reconcile_ideas(cfg, apply=True, spec_ids=[spec_id], backlinks=False)
-        for idea_id in dict.fromkeys(i for i, _s, a, _d in plan if a in ("link", "advance")):
-            task = _idea_task(cfg, idea_id)
-            events.append(("idea_reconciled", {
-                "spec_id": spec_id, "idea_id": idea_id, "from": before.get(idea_id),
-                "to": task.state if task is not None else None}))
+        reported(dict.fromkeys(i for i, _s, a, _d in plan if a in ("link", "advance")), before)
         for idea_id, _s, action, detail in plan:
             if action == "flag-ambiguous":
                 finding("minor", "idea reconcile ambiguous", f"{idea_id}: {detail}")
@@ -1797,9 +1802,16 @@ def _reconcile_merged(cfg, state: dict, events: list) -> None:
                 finding("info", "idea reconcile: spec has no source_idea", f"{idea_id}: {detail}")
     except Exception as e:                  # noqa: BLE001 — never block a finished merge
         finding("minor", "idea reconcile failed", str(e) or type(e).__name__)
+        if before is not None:              # a half-done write pass: ledger what did land
+            try:
+                now = snapshot()
+                reported([i for i, v in before.items() if now.get(i) != v], before)
+            except Exception:               # noqa: BLE001 — the finding above already says it failed
+                pass
 
 
 def _ideas(cfg):
+    """Every idea task, freshly loaded (org writes can land within one mtime tick)."""
     from .. import org as ORG
     ORG.invalidate_tasks_cache()
     return ORG.filter_tasks(ORG.load_tasks(cfg), is_idea=True)
