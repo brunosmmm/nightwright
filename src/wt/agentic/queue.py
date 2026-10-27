@@ -1336,15 +1336,20 @@ def _spec_review_precheck(ctx: _Ctx, state: dict, step: Step) -> StepResult | No
         if not git.is_clean(worktree, untracked=False):
             res.spec_review = {"dirty": True}
             return res
+        # campaign history, not the spec's status, says whether a review phase may still accept:
+        # a plain spec campaign, or one that already has `spec_accepted`, was accepted before
+        # this phase and its close-guard baseline must not be reset (whatever the status now)
+        if state.get("kind") != "idea" or \
+                store.read_ledger(ctx.cfg, state["id"], types=["spec_accepted"]):
+            res.spec_review = {"already_accepted": True}
+            return res
         head = git.git(worktree, "show", f"HEAD:{spec.get('rel_path')}", check=False)
         if head.returncode == 0:
             fm, _ = split_frontmatter(head.stdout)
             if str((fm or {}).get("status") or "") == "accepted":
-                # only an accept that committed and then failed (a review of this campaign, no
-                # `spec_accepted` yet) is finished here; anything else was accepted before this
-                # review phase and its close-guard baseline must not be reset
-                resumable = _last_review_event(ctx.cfg, state) is not None and not \
-                    store.read_ledger(ctx.cfg, state["id"], types=["spec_accepted"])
+                # an accept that committed and then failed (a review of this campaign, no
+                # `spec_accepted` yet) is finished here
+                resumable = _last_review_event(ctx.cfg, state) is not None
                 res.spec_review = {"accepted": True} if resumable else {"already_accepted": True}
                 return res
     except (GitError, OSError) as e:
@@ -1404,7 +1409,7 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
         res.interrupted = ctx.stop.is_set()
         if git.rev_parse(worktree) != head or _spec_sha(spec_file) != sr["sha"] \
                 or not git.is_clean(worktree, untracked=False):
-            sr["saved"] = _save_worktree_changes(worktree, run_id, head)
+            sr["saved"] = _save_worktree_changes(worktree, state["id"], run_id, head)
             if branch and git.current_branch(worktree) != branch:
                 git.git(worktree, "checkout", "-f", branch)
             git.git(worktree, "reset", "--hard", head)
@@ -1414,9 +1419,10 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     return res
 
 
-def _save_worktree_changes(worktree, run_id: str, head: str) -> list[str]:
+def _save_worktree_changes(worktree, cid: str, run_id: str, head: str) -> list[str]:
     """Before `_do_spec_review` resets the worktree: keep what the reset would drop under
-    `refs/wt/spec-review-saved/<run>/…`, because the change may be a human's, made while the
+    `refs/wt/spec-review-saved/<campaign>/<run>/…` (refs are shared by every worktree of the
+    repo and a run id repeats across campaigns), because the change may be a human's, made while the
     review ran. `head` holds a HEAD that moved, `wip` the tracked uncommitted changes (a
     `git stash create` commit; the shared stash stack is untouched). Returns the refs made."""
     saved = []
@@ -1425,7 +1431,7 @@ def _save_worktree_changes(worktree, run_id: str, head: str) -> list[str]:
         wip = git.git(worktree, "stash", "create", check=False).stdout.strip()
         for name, sha in (("head", moved if moved != head else ""), ("wip", wip)):
             if sha:
-                ref = f"refs/wt/spec-review-saved/{run_id}/{name}"
+                ref = f"refs/wt/spec-review-saved/{cid}/{run_id}/{name}"
                 git.git(worktree, "update-ref", ref, sha)
                 saved.append(ref)
     except (GitError, ValueError, OSError):

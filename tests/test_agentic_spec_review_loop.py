@@ -1,6 +1,7 @@
 """SPEC-0214: the spec review loop inside the campaign (SPEC_REVIEW, in-loop acceptance). Built on
 SPEC-0215's FakeRunner helpers and ledger fixture repo (`test_agentic_spec_writer`)."""
 import itertools
+import re
 import subprocess
 import sys
 import threading
@@ -325,6 +326,7 @@ def test_a_reset_after_the_review_keeps_a_human_edit_and_commit_in_refs(tmp_path
     (note,) = [e for e in ledger(cfg, cid, "note") if "spec review reset" in e["text"]]
     refs = _git(wt, "for-each-ref", "--format=%(refname)", "refs/wt/spec-review-saved/").splitlines()
     assert len(refs) == 2 and all(r in note["text"] for r in refs)
+    assert all(r.startswith(f"refs/wt/spec-review-saved/{cid}/002-spec_reviewer/") for r in refs)
     moved = next(r for r in refs if r.endswith("/head"))
     wip = next(r for r in refs if r.endswith("/wip"))
     assert _git(wt, "log", "-1", "--format=%s", moved) == "human commit"
@@ -612,11 +614,15 @@ def _baseline(cfg, cid):
             S.read_state(cfg, cid)["spec"]["sha256_at_open"])
 
 
-def _resume_accepted_to_review(cfg, cid, wt):
-    """The implementer has edited the accepted spec body (committed); the campaign parks and the
-    operator resumes it `--to SPEC_REVIEW`. No review may run and the baseline stays."""
+def _resume_accepted_to_review(cfg, cid, wt, status=None):
+    """The implementer has edited the accepted spec body (committed; `status` replaces its
+    `status:` line, as when it sets the spec `done`); the campaign parks and the operator resumes
+    it `--to SPEC_REVIEW`. No review may run and the baseline, status and ledger stay."""
     spec = wt / S.read_state(cfg, cid)["spec"]["rel_path"]
-    spec.write_text(spec.read_text() + "\nimplementer note\n")
+    text = spec.read_text() + "\nimplementer note\n"
+    if status:
+        text = re.sub(r"(?m)^status: .*$", f"status: {status}", text, count=1)
+    spec.write_text(text)
     _git(wt, "commit", "-qam", "implementer edits the spec body")
     before, accepted = _baseline(cfg, cid), len(ledger(cfg, cid, "spec_accepted"))
     st = S.read_state(cfg, cid)
@@ -632,6 +638,8 @@ def _resume_accepted_to_review(cfg, cid, wt):
     assert st["park"]["reason"] == "spec_review_exhausted" and st["park"]["resume_to"] == "IMPLEMENTING"
     assert "already accepted" in st["park"]["detail"]
     assert _baseline(cfg, cid) == before
+    if status:
+        assert f"status: {status}" in spec.read_text() and "status: accepted" not in spec.read_text()
     assert st["pending_brief"]["fix_brief"] == "keep me"
     assert len(ledger(cfg, cid, "spec_accepted")) == accepted
 
@@ -653,6 +661,36 @@ def test_resume_to_spec_review_on_a_plain_spec_campaign_runs_nothing(tmp_path, m
     assert st["state"] not in ("QUEUED", "PARKED", "MERGED")
     _resume_accepted_to_review(cfg, cid, Path(st["repo"]["worktree"]))
     assert not ledger(cfg, cid, "spec_accepted")
+
+
+def test_resume_to_spec_review_after_done_with_a_revise_history_accepts_nothing(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed("revise", findings=[finding()]), writes])
+    Q.tick(cfg)
+    Q.tick(cfg)
+    in_review(cfg, cid)
+    Q.tick(cfg)                                     # accepted after the revision
+    assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
+    assert reviews(cfg, cid)[-1]["verdict"] == "revise"
+    _resume_accepted_to_review(cfg, cid, wtree(cfg, cid), status="done")
+    assert len(ledger(cfg, cid, "spec_accepted")) == 1 and len(reviews(cfg, cid)) == 1
+
+
+def test_resume_to_spec_review_after_done_with_an_approve_history_accepts_nothing(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed(), reviewed()])
+    Q.tick(cfg)
+    assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
+    _resume_accepted_to_review(cfg, cid, wtree(cfg, cid), status="done")
+    assert len(ledger(cfg, cid, "spec_accepted")) == 1 and len(reviews(cfg, cid)) == 1
+
+
+def test_resume_to_spec_review_on_a_plain_spec_campaign_that_is_not_accepted(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    cid = added(cfg, monkeypatch)
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    _resume_accepted_to_review(cfg, cid, Path(st["repo"]["worktree"]), status="in-progress")
+    assert not ledger(cfg, cid, "spec_accepted") and not reviews(cfg, cid)
 
 
 # ---- cost cap, slots, human change -----------------------------------------------------------------

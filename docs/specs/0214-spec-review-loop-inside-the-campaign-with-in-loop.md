@@ -276,6 +276,9 @@ phase.
   resume of the unchanged park, after-revision accept failures before and after the commit,
   stray-file cleanup, dirty-over-accepted precheck order).
 
+- Loop-2 (second round) fixes: `uv run pytest tests/test_agentic_spec_review_loop.py
+  tests/test_agentic_spec_writer.py`: 110 passed (the new tests fail against the previous code).
+
 ### As shipped (2026-10-25)
 
 - The worker steps 0 and 1 (already-accepted HEAD, tracked changes) run in a main-thread
@@ -346,6 +349,18 @@ phase.
   (3) Tests added: an explicit `--to` beats the legacy-park redirect; a `park_requested` during the
   review is honored after the accept (parks accepted, resume_to IMPLEMENTING). The optional
   `--note` carry-over on SPEC_REVIEW-bound resumes was not done.
+
+- **Loop-2 (second round) review fixes.** (1) Saved-worktree refs now carry the campaign id:
+  `refs/wt/spec-review-saved/<cid>/<run>/{head,wip}`, because refs are shared by every worktree of
+  the repo and a run id (`002-spec_reviewer`) repeats across campaigns. (2) The precheck's
+  re-accept guard uses campaign history, not the HEAD `status:`: after the tracked-clean check, a
+  campaign that is not an idea campaign or already has a `spec_accepted` event returns
+  `already_accepted` (park, resume_to IMPLEMENTING) whatever the spec's status, before the
+  `after_revision` / `approved` / new-review branches. The `accepted` short-circuit remains only for
+  status `accepted` in HEAD, a `spec_review` event and no `spec_accepted`. Tests:
+  `test_resume_to_spec_review_after_done_with_a_revise_history_accepts_nothing`, `…_an_approve_history_…`,
+  `test_resume_to_spec_review_on_a_plain_spec_campaign_that_is_not_accepted` (baseline, status and
+  `spec_accepted` count unchanged); the ref test asserts the campaign id in the ref names.
 
 ## Rollout / migration
 
