@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (67/74 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (67/76 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -172,6 +172,8 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0257](./specs/0257-close-step-does-the-spec-and-idea-bookkeeping.md) Reconcile walks spec source_idea; close reconciles the merged spec's idea — accepted
   - [x] [SPEC-0258](./specs/0258-merge-campaigns-on-an-adopted-worktree-skip.md) Merge campaigns run worktrees.setup in an adopted worktree before gating — done
   - [ ] [SPEC-0259](./specs/0259-conflict-resolver-verification-rejects-valid.md) Resolver may declare dropped_commits superseded by upstream; gates decide — accepted
+  - [ ] [SPEC-0260](./specs/0260-close-train-serialize-close-steps-per-repository.md) Close train: serialize close steps per repository so the queue's own merges never invalidate a re-gate — accepted
+  - [ ] [SPEC-0261](./specs/0261-divergence-detector-skip-environmental-gate.md) Divergence detector: skip environmental gate rounds and weigh repeated findings over new ones — accepted
 
 ## Active & planned
 
@@ -190,6 +192,8 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0253](./specs/0253-gate-pytest-exhausts-tmp-inodes-basetemp-dirs.md) | Per-campaign TMPDIR for gates and personas, plus a temp-filesystem admission guard | feature | accepted | — | 2026-10-26 |
 | [SPEC-0257](./specs/0257-close-step-does-the-spec-and-idea-bookkeeping.md) | Reconcile walks spec source_idea; close reconciles the merged spec's idea | feature | accepted | M9: agentic workflow | 2026-10-26 |
 | [SPEC-0259](./specs/0259-conflict-resolver-verification-rejects-valid.md) | Resolver may declare dropped_commits superseded by upstream; gates decide | feature | accepted | M9: agentic workflow | 2026-10-26 |
+| [SPEC-0260](./specs/0260-close-train-serialize-close-steps-per-repository.md) | Close train: serialize close steps per repository so the queue's own merges never invalidate a re-gate | feature | accepted | M9: agentic workflow | 2026-10-26 |
+| [SPEC-0261](./specs/0261-divergence-detector-skip-environmental-gate.md) | Divergence detector: skip environmental gate rounds and weigh repeated findings over new ones | feature | accepted | M9: agentic workflow | 2026-10-26 |
 
 ## Done
 
