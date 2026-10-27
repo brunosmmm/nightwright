@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (85/91 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (85/93 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -189,6 +189,8 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0282](./specs/0282-steward-scope-mechanical-coordination-goes-to-tools.md) Steward scope: mechanical coordination goes to tools or the conductor — done
   - [ ] [SPEC-0283](./specs/0283-handed-off-sweep-via-gh-pr-view.md) HANDED_OFF sweep: a merged PR moves its campaign to MERGED — accepted
   - [ ] [SPEC-0284](./specs/0284-gate-result-parsing-read-structured-results-not.md) Gate result parsing: counts and failing test ids from pytest and JUnit XML — accepted
+  - [ ] [SPEC-0286](./specs/0286-escalation-overrides-are-idempotent-withdrawable.md) Escalation overrides are idempotent, withdrawable and exact — accepted
+  - [ ] [SPEC-0287](./specs/0287-runner-safety-nets-train-watchdog-crash-sweep.md) Runner safety nets: train watchdog, crash-sweep harvest, terminal tmp, regenerate renames — accepted
 
 ## Active & planned
 
@@ -206,6 +208,9 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0281](./specs/0281-wt-idea-spec-link.md) | wt idea spec-link: set or replace an idea's :SPEC:, identity-checked | feature | accepted | — | 2026-10-27 |
 | [SPEC-0283](./specs/0283-handed-off-sweep-via-gh-pr-view.md) | HANDED_OFF sweep: a merged PR moves its campaign to MERGED | feature | accepted | — | 2026-10-27 |
 | [SPEC-0284](./specs/0284-gate-result-parsing-read-structured-results-not.md) | Gate result parsing: counts and failing test ids from pytest and JUnit XML | feature | accepted | — | 2026-10-27 |
+| [SPEC-0285](./specs/0285-persona-runs-cannot-prune-org-backups-prune.md) | Persona runs cannot prune org backups; prune failures leave a trace | feature | accepted | — | 2026-10-27 |
+| [SPEC-0286](./specs/0286-escalation-overrides-are-idempotent-withdrawable.md) | Escalation overrides are idempotent, withdrawable and exact | feature | accepted | — | 2026-10-27 |
+| [SPEC-0287](./specs/0287-runner-safety-nets-train-watchdog-crash-sweep.md) | Runner safety nets: train watchdog, crash-sweep harvest, terminal tmp, regenerate renames | feature | accepted | — | 2026-10-27 |
 
 ## Done
 
