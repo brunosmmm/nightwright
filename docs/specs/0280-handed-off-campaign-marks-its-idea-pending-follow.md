@@ -1,7 +1,7 @@
 ---
 id: SPEC-0280
 title: "A HANDED_OFF campaign marks its idea pending its PR"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -93,17 +93,17 @@ whenever it applies an `advance` to PROMOTED, SHIPPED or DROPPED.
 
 ## Acceptance criteria
 
-- [ ] A campaign that closes `HANDED_OFF` leaves its spec's idea SPECCED (from IDEA or
+- [x] A campaign that closes `HANDED_OFF` leaves its spec's idea SPECCED (from IDEA or
       INCUBATE, when the spec is accepted) with `:HANDED_OFF: <pr_url>`, and an
       `idea_handed_off` ledger event.
-- [ ] A bookkeeping failure on hand-off is a `minor` finding, and the campaign still ends
+- [x] A bookkeeping failure on hand-off is a `minor` finding, and the campaign still ends
       `HANDED_OFF`.
-- [ ] `wt ideas --json`, `wt idea show --json` and the `wt ideas` table show the hand-off,
+- [x] `wt ideas --json`, `wt idea show --json` and the `wt ideas` table show the hand-off,
       and `wt next` gives the "PR open" hint instead of a start step.
-- [ ] `wt spec reconcile --apply`, after the spec becomes `done`, advances the idea and
+- [x] `wt spec reconcile --apply`, after the spec becomes `done`, advances the idea and
       clears `:HANDED_OFF:`; re-queueing the spec also clears it. With no claimant idea,
       nothing is marked (an `info` finding).
-- [ ] `MERGED` behaviour is unchanged: no `:HANDED_OFF:` is written.
+- [x] `MERGED` behaviour is unchanged: no `:HANDED_OFF:` is written.
 
 ## Test plan
 
@@ -134,13 +134,35 @@ close fakes (`CloseOutcome("HANDED_OFF", close={"pr_url": ...})`) and a tmp idea
 - Regression guard: full `uv run pytest`, including the existing SPEC-0257 reconcile tests,
   which are unchanged.
 
+### Test record (2026-10-27)
+
+- New tests: `tests/test_agentic_queue.py` (`test_handed_off_marks_idea_pending`,
+  `test_handed_off_bookkeeping_failure_is_minor`, `test_handed_off_no_claimant_info_finding`,
+  `test_merged_does_not_write_handed_off`, `test_requeue_clears_handed_off`,
+  `test_render_idea_handed_off_event`), `tests/test_reconcile.py`
+  (`test_reconcile_done_clears_handed_off`, `..._on_a_duplicate_id`), `tests/test_ideas.py`
+  (`test_idea_row_and_next_show_handed_off`, including the rendered `wt ideas` state cell).
+- Sabotage: with the `== "MERGED"` guard back in `_apply` and the `clear_property` call dropped,
+  six of these tests failed; restored, they pass.
+- `uv run pytest -q -x`: all pass; `python3 tools/spec_lint.py --write-ledger` then
+  `python3 tools/spec_lint.py` exit 0.
+
+### As shipped (2026-10-27)
+
+- `queue._clear_handed_off_on_requeue` and `queue._mark_handed_off` are small helpers next to
+  `_reconcile_closed`; `specs._clear_handed_off` does the pre-state-write clear for both the
+  pinned and plain advance paths.
+- `wt idea show` (table) is the raw org text, which already shows the `:HANDED_OFF:` property;
+  the JSON payload gains `handed_off`.
+
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

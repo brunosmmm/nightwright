@@ -825,6 +825,9 @@ def idea_show_payload(cfg, task) -> dict:
     ws = (task.properties.get("WORKSTREAM") or "").strip()
     if ws:
         out["workstream"] = ws
+    handed = (task.properties.get("HANDED_OFF") or "").strip()      # SPEC-0280
+    if handed:
+        out["handed_off"] = handed
     if task.priority:
         out["priority"] = task.priority
     for prop_key, out_key in (("CLOSE_REASON", "close_reason"),

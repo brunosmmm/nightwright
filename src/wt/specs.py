@@ -927,6 +927,20 @@ def _resolve_idea(cfg, idea_id, pin):
     return W.resolve_selector(cfg, idea_id)
 
 
+# SPEC-0280: advancing past SPECCED ends "pending its PR"; these states also archive the subtree,
+# so the mark is cleared before the state write.
+_CLEARS_HANDED_OFF = frozenset({"PROMOTED", "SHIPPED", "DROPPED"})
+
+
+def _clear_handed_off(cfg, idea_id, pin):
+    """Remove `:HANDED_OFF:` from the idea (resolved fresh, by `pin` for a duplicate id) when set."""
+    from . import org as ORG
+    ORG.invalidate_tasks_cache()
+    task = _resolve_idea(cfg, idea_id, pin)
+    if task is not None and (task.properties.get("HANDED_OFF") or "").strip():
+        W.clear_property(cfg, task, "HANDED_OFF")
+
+
 def _naming(specs):
     """The `flag-ambiguous` detail: every spec naming the idea."""
     return "specs naming this idea: " + ", ".join(sid for sid, _s, _c in specs)
@@ -1047,7 +1061,9 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
             plan.append((idea_id, spec_id, "flag-ahead",
                          f"idea is {state} but spec is {status}"))
         elif want and want != state:
-            plan.append((idea_id, spec_id, "advance", f"{state} → {want} (spec {status})"))
+            clears = (" (clears handed-off)"          # SPEC-0280
+                      if want in _CLEARS_HANDED_OFF and task.properties.get("HANDED_OFF") else "")
+            plan.append((idea_id, spec_id, "advance", f"{state} → {want} (spec {status}){clears}"))
             advances.append((idea_id, spec_id, want, pin))
         else:
             plan.append((idea_id, spec_id, "unchanged", f"{state} / spec {status or '?'}"))
@@ -1101,6 +1117,8 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     for idea_id, spec_id, target, pin in advances:
         if (idea_id, spec_id) in drifted:      # the advance was derived from a spec it no longer points to
             continue
+        if target in _CLEARS_HANDED_OFF:
+            _clear_handed_off(cfg, idea_id, pin)
         if pin is None:
             EX.set_idea_state(cfg, idea_id, target)
             continue

@@ -1769,3 +1769,111 @@ def test_merge_reconcile_event_describes_the_moved_idea_not_its_duplicate_id_twi
     (ev,) = S.read_ledger(cfg, cid, types=["idea_reconciled"])
     assert (ev["idea_id"], ev["from"], ev["to"]) == (iid, "IDEA", "PROMOTED")
     assert "SPECCED older twin" in twin.read_text()         # the twin is untouched
+
+
+# ---- SPEC-0280: a HANDED_OFF close marks the idea pending its PR ------------------------------
+
+PR_URL = "https://example.test/pull/7"
+
+
+def _hand_off_with_idea(opened, *, backlink=True):
+    """`_merge_with_idea` for an accepted spec, closing HANDED_OFF with a PR. The fixture idea is
+    created today and the spec `created` tomorrow, so the SPEC-0267 identity check passes."""
+    from wt.agentic.close import CloseOutcome
+    iid, _merged = _merge_with_idea(opened, spec_status="accepted", backlink=backlink)
+    oc = CloseOutcome("HANDED_OFF", close={"mode": "pr", "merged_sha": None, "pr_url": PR_URL,
+                                            "gates_seq": 3, "target_sha": "def"},
+                      events=[("close", {"mode": "pr"})])
+    return iid, oc
+
+
+def _idea_prop(cfg, iid, name):
+    from wt import org_write as OW
+    return (OW.resolve_selector(cfg, iid).properties.get(name) or "").strip()
+
+
+def _bookkeeping(cfg, cid):
+    return [f for f in S.read_ledger(cfg, cid, types=["finding"]) if f["gate"] == "bookkeeping"]
+
+
+def test_handed_off_marks_idea_pending(opened):
+    from wt.agentic import schemas as SC
+    cfg, cid, ctx = opened
+    iid, oc = _hand_off_with_idea(opened)
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "HANDED_OFF"
+    assert _idea_state(cfg, iid) == "SPECCED" and _idea_prop(cfg, iid, "HANDED_OFF") == PR_URL
+    (ev,) = S.read_ledger(cfg, cid, types=["idea_handed_off"])
+    assert (ev["spec_id"], ev["idea_id"], ev["pr_url"]) == ("SPEC-0001", iid, PR_URL)
+    assert SC.ledger_problems(ev) == []
+    assert not _bookkeeping(cfg, cid)
+
+
+def test_handed_off_bookkeeping_failure_is_minor(opened, monkeypatch):
+    from wt import org_write as OW
+    cfg, cid, ctx = opened
+    iid, oc = _hand_off_with_idea(opened)
+    real = OW.set_property
+
+    def flaky(c, task, name, value, **kw):
+        if name == "HANDED_OFF":
+            raise OSError("disk full")
+        return real(c, task, name, value, **kw)
+    monkeypatch.setattr(OW, "set_property", flaky)
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "HANDED_OFF" and row["to"] == "HANDED_OFF"
+    (fnd,) = _bookkeeping(cfg, cid)
+    assert fnd["severity"] == "minor" and "disk full" in fnd["detail"]
+    assert not list(S.read_ledger(cfg, cid, types=["idea_handed_off"]))
+
+
+def test_handed_off_no_claimant_info_finding(opened):
+    """The campaign's own idea is not a fallback: without `:SPEC:` pointing at the spec reconcile
+    would never advance it, so its mark could never be cleared."""
+    cfg, cid, ctx = opened
+    iid, oc = _hand_off_with_idea(opened, backlink=False)
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "HANDED_OFF"
+    assert _idea_prop(cfg, iid, "HANDED_OFF") == ""
+    titles = {(f["severity"], f["title"]) for f in _bookkeeping(cfg, cid)}
+    assert ("info", "no idea to mark handed off") in titles
+    assert not list(S.read_ledger(cfg, cid, types=["idea_handed_off"]))
+
+
+def test_merged_does_not_write_handed_off(opened):
+    cfg, cid, ctx = opened
+    iid, oc = _merge_with_idea(opened)
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED" and _idea_state(cfg, iid) == "PROMOTED"
+    assert not list(S.read_ledger(cfg, cid, types=["idea_handed_off"]))
+    assert not [t for t in ORG.filter_tasks(ORG.load_tasks(cfg), is_idea=True)
+                if t.properties.get("HANDED_OFF")]
+
+
+def test_requeue_clears_handed_off(opened):
+    from wt import org_write as OW
+    cfg, cid, ctx = opened
+    iid, oc = _hand_off_with_idea(opened)
+    _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert _idea_prop(cfg, iid, "HANDED_OFF") == PR_URL
+    S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="ABANDONED"))
+    state = Q.apply_add(cfg, _requeue_plan(cfg, cid))
+    assert _idea_prop(cfg, iid, "HANDED_OFF") == ""
+    assert state["id"] != cid and OW.resolve_selector(cfg, iid).state == "SPECCED"
+
+
+def _requeue_plan(cfg, cid):
+    """A plan for a second campaign on the first one's spec (the first is terminal)."""
+    st = S.read_state(cfg, cid)
+    return {"campaign": cid + "-b", "spec_id": st["spec_id"], "project": st["project"],
+            "profile": st["profile"], "repo_root": st["repo"]["root"], "base": st["repo"]["base"],
+            "branch": st["repo"]["branch"] + "-b", "worktree": st["repo"]["worktree"] + "-b",
+            "spec_rel_path": st["spec"]["rel_path"], "internal": st["spec"]["internal"]}
+
+
+def test_render_idea_handed_off_event():
+    from wt import render as R
+    ev = {"seq": 4, "ts": "2026-10-27T10:00:00Z", "type": "idea_handed_off", "by": "queue",
+          "spec_id": "SPEC-0001", "idea_id": "IDEA-9", "pr_url": PR_URL}
+    out = R.campaign_event(ev).plain
+    assert f"idea IDEA-9 handed off → {PR_URL}" in out

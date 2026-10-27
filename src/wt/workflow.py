@@ -144,6 +144,11 @@ def next_step_for_idea(cfg, idea) -> str:
     idea_id = idea.properties.get("ID") or idea.id
     spec_id = (idea.properties.get("SPEC") or "").strip()
 
+    handed = (idea.properties.get("HANDED_OFF") or "").strip()        # SPEC-0280
+    if handed and state == "SPECCED":
+        return (f"PR open ({handed}); after it merges: wt spec reconcile --apply; "
+                f"if it was closed: wt queue add {spec_id or '<SPEC>'}")
+
     if not spec_id:
         if state == "PROMOTED":
             return "wt tasks"

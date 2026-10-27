@@ -1759,8 +1759,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             state["close"] = dict(oc.close)
             if res.followups is not None:           # after the assignment replaced the dict
                 state["close"]["followups"] = res.followups
-            if oc.next_state == "MERGED":
-                _reconcile_merged(cfg, state, events)
+            _reconcile_closed(cfg, state, events, oc.next_state)
             state["park"] = None
             return finish(oc.next_state, "closed")
         if oc.next_state == "TRIAGING" and state.get("kind") == "merge":
@@ -1785,12 +1784,14 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     return finish(res.from_state, "noop")
 
 
-def _reconcile_merged(cfg, state: dict, events: list) -> None:
+def _reconcile_closed(cfg, state: dict, events: list, outcome: str) -> None:
     """SPEC-0257: after a merge, advance the merged spec's idea by `specs.reconcile_ideas`
     scoped to that spec. Best-effort: the merge is irreversible, so a failure is a minor
     `bookkeeping` finding and never changes the campaign state. Skipped silently without a spec
     (merge-kind campaigns) and with an info finding when the spec store is not this campaign's
-    repo (`_specs_dir` resolves to wt's own specs, not the project's)."""
+    repo (`_specs_dir` resolves to wt's own specs, not the project's).
+    SPEC-0280: for `HANDED_OFF` the same reconcile runs (an accepted spec gives SPECCED), then
+    `:HANDED_OFF: <pr_url>` is set on the spec's sole claimant idea."""
     spec_id = state.get("spec_id") or (state.get("spec") or {}).get("id")
     if not spec_id:
         return
@@ -1842,6 +1843,8 @@ def _reconcile_merged(cfg, state: dict, events: list) -> None:
                 finding("minor", "idea reconcile mismatch", f"{idea_id}: {detail}")
             elif action == "flag-no-backlink":
                 finding("info", "idea reconcile: spec has no source_idea", f"{idea_id}: {detail}")
+        if outcome == "HANDED_OFF":
+            _mark_handed_off(cfg, state, events, spec_id, finding)
     except Exception as e:                  # noqa: BLE001 — never block a finished merge
         finding("minor", "idea reconcile failed", str(e) or type(e).__name__)
         if before is not None:              # a half-done write pass: ledger what did land
@@ -1850,6 +1853,40 @@ def _reconcile_merged(cfg, state: dict, events: list) -> None:
                 reported([i for i, v in before.items() if now.get(i) != v], before)
             except Exception:               # noqa: BLE001 — the finding above already says it failed
                 pass
+
+
+def _mark_handed_off(cfg, state: dict, events: list, spec_id: str, finding) -> None:
+    """SPEC-0280: write `:HANDED_OFF: <pr_url>` on the idea whose `:SPEC:` is `spec_id`. No
+    fallback to the campaign's own idea: reconcile only advances (and so clears) ideas that
+    point at the spec. A fresh `_ideas` read, because reconcile may just have written `:SPEC:`."""
+    from .. import org_write
+    pr_url = (state.get("close") or {}).get("pr_url") or ""
+    try:
+        task = SP._sole_claimant(_ideas(cfg), spec_id)
+        if task is None:
+            finding("info", "no idea to mark handed off", f"no single idea claims {spec_id}")
+            return
+        org_write.set_property(cfg, task, "HANDED_OFF",
+                               pr_url or f"branch {(state.get('repo') or {}).get('branch')}")
+        events.append(("idea_handed_off", {
+            "spec_id": spec_id, "idea_id": task.properties.get("ID") or task.id,
+            "pr_url": pr_url}))
+    except (ValueError, OSError) as e:
+        finding("minor", "idea hand-off mark failed", str(e) or type(e).__name__)
+
+
+def _clear_handed_off_on_requeue(cfg, spec_id: str, campaign: str, by: str) -> None:
+    """SPEC-0280: a new campaign for the spec ends the old "PR open" mark (the PR may have been
+    closed unmerged). Best-effort: a failure is a ledger `note`, never a refusal."""
+    from .. import org_write
+    try:
+        task = SP._sole_claimant(_ideas(cfg), spec_id)
+        if task is not None and (task.properties.get("HANDED_OFF") or "").strip():
+            org_write.clear_property(cfg, task, "HANDED_OFF")
+    except Exception as e:                  # noqa: BLE001 — queueing must not depend on the idea
+        store.append_event(cfg, campaign, "note", {
+            "text": f"could not clear :HANDED_OFF: for {spec_id}: {e or type(e).__name__}",
+            "author": "queue"}, by=by)
 
 
 def _ideas(cfg):
@@ -4311,6 +4348,7 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
                            {k: v for k, v in revision.items() if k != "pending"}, by=by)
     elif revision:
         store.append_event(cfg, plan["campaign"], "admitted_after_revision", revision, by=by)
+    _clear_handed_off_on_requeue(cfg, plan["spec_id"], plan["campaign"], by)
     return state
 
 

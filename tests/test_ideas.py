@@ -596,3 +596,29 @@ def test_cli_ideas_reindex_backfills_and_lists(tmp_path, monkeypatch):
         console._width, console._height = prev_w, prev_h
     assert r2.exit_code == 0, r2.output
     assert "no id-less ideas to reindex" in r2.output
+
+
+def test_idea_row_and_next_show_handed_off(tmp_path):
+    """SPEC-0280: a SPECCED idea with `:HANDED_OFF:` shows in the row, the show payload, the
+    `wt ideas` state cell, and `next_step_for_idea` says the PR is open."""
+    from wt import explore as EX
+    from wt import workflow as WF
+    cfg = _cfg(tmp_path)
+    (tmp_path / "specs").mkdir()
+    (tmp_path / "specs" / "0001-x.md").write_text(
+        "---\nid: SPEC-0001\ntitle: x\nstatus: accepted\nowner: t\ncreated: 2026-10-27\n---\n\nx\n")
+    W.add_idea(cfg, "pending a pr")
+    W.set_property(cfg, _find(cfg, "pending a pr"), "SPEC", "SPEC-0001")
+    W.set_state_by_selector(cfg, "IDEA-001", "SPECCED")
+    plain = R.idea_row(cfg, _find(cfg, "pending a pr"))
+    assert "handed_off" not in plain and not plain["next"].startswith("PR open")
+    W.set_property(cfg, _find(cfg, "pending a pr"), "HANDED_OFF", "https://x/pull/3")
+    task = _find(cfg, "pending a pr")
+    row = R.idea_row(cfg, task)
+    assert row["handed_off"] == "https://x/pull/3"
+    assert row["next"] == ("PR open (https://x/pull/3); after it merges: wt spec reconcile "
+                           "--apply; if it was closed: wt queue add SPEC-0001")
+    assert WF.next_step_for_idea(cfg, task) == row["next"]
+    assert EX.idea_show_payload(cfg, task)["handed_off"] == "https://x/pull/3"
+    out = _render(R.ideas, cfg)
+    assert "SPECCED ⇢ PR" in out

@@ -61,6 +61,9 @@ def idea_row(cfg, task) -> dict:
     ws = (task.properties.get("WORKSTREAM") or "").strip()
     if ws:
         row["workstream"] = ws
+    handed = (task.properties.get("HANDED_OFF") or "").strip()     # SPEC-0280
+    if handed:
+        row["handed_off"] = handed
     if task.priority:
         row["priority"] = task.priority
     from .explore import clock_fields, explored_count, open_question_count
@@ -1258,6 +1261,8 @@ def ideas(cfg, *, state=None, all_done=False, as_json=False, kind=None, plain=Fa
         n_open = prow.get("open_questions") or 0                 # SPEC-0110
         prow["q"] = str(n_open) if n_open else ""
         prow["epic"] = prow.get("epic") or ""                # SPEC-0116
+        if prow.get("handed_off"):                           # SPEC-0280: pending its PR
+            prow["state"] = f"{prow['state']} ⇢ PR"
         if searching:
             prow["score"] = str(scores[id(tk)])
     # Omit empty `pri` column when no row has a cookie (keeps narrow terminals viable).

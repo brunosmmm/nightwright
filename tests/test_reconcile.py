@@ -1128,3 +1128,37 @@ def test_fresh_idea_reraises_without_exactly_one_file_heading_match(tmp_path):
     assert len(twins) == 2
     with pytest.raises(ValueError):
         W._fresh_idea(cfg, twins[0])
+
+
+# ---- SPEC-0280: :HANDED_OFF: is cleared when reconcile advances past SPECCED ------------------
+
+def _handed_off(cfg, heading):
+    task = next(t for t in load_tasks(cfg) if t.is_idea and t.heading == heading)
+    return (task.properties.get("HANDED_OFF") or "").strip()
+
+
+def test_reconcile_done_clears_handed_off(tmp_path):
+    cfg = _cfg(tmp_path)
+    idea_id = _idea(cfg, "pending its PR", state="SPECCED", spec_id="SPEC-0001")
+    W.set_property(cfg, W.resolve_selector(cfg, idea_id), "HANDED_OFF", "https://x/pull/1")
+    path = _spec(cfg, "SPEC-0001", "accepted")
+    plan = S.reconcile_ideas(cfg, apply=True)
+    assert ("SPEC-0001", "unchanged") in _rows(plan, idea_id)       # accepted: the mark stays
+    assert _handed_off(cfg, "pending its PR") == "https://x/pull/1"
+    _spec(cfg, "SPEC-0001", "done")
+    dry = [d for i, _s, a, d in S.reconcile_ideas(cfg) if i == idea_id and a == "advance"]
+    assert dry and dry[0].endswith("(clears handed-off)")
+    S.reconcile_ideas(cfg, apply=True)
+    assert _state_of(cfg, idea_id) == "PROMOTED"
+    assert _handed_off(cfg, "pending its PR") == ""
+
+
+def test_reconcile_done_clears_handed_off_on_a_duplicate_id(tmp_path):
+    cfg, shared = _dup_pair(tmp_path, "2026-10-26")
+    S.reconcile_ideas(cfg, apply=True)                              # links + SPECCEDs "new idea"
+    new = next(t for t in load_tasks(cfg) if t.heading == "new idea")
+    W.set_property(cfg, new, "HANDED_OFF", "https://x/pull/2")
+    _spec(cfg, "SPEC-0001", "done", source_idea=shared, created="2026-10-26")
+    S.reconcile_ideas(cfg, apply=True)
+    assert _states(cfg) == {"old idea": "IDEA", "new idea": "PROMOTED"}
+    assert _handed_off(cfg, "new idea") == ""
