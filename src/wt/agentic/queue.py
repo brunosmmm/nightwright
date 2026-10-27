@@ -4117,7 +4117,9 @@ def _gate_summary(state: dict) -> dict | None:
         return None
     return {"gate_seq": g.get("gate_seq"), "ok": g.get("ok"),
             "results": [{"name": r.get("name"), "ok": r.get("ok"), "required": r.get("required"),
-                         "duration_s": r.get("duration_s")} for r in g.get("results") or []]}
+                         "duration_s": r.get("duration_s"),
+                         **({"summary": r["summary"]} if r.get("summary") else {})}
+                        for r in g.get("results") or []]}
 
 
 def _verdict_summary(state: dict) -> dict | None:

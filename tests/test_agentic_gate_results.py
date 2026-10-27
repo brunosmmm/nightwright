@@ -92,3 +92,19 @@ def test_parse_dispatch_and_error_form(tmp_path):
     assert err["error"]
     (tmp_path / "ok.xml").write_text(JUNIT_SUITE)
     assert GR.parse({"format": "junit", "path": "ok.xml"}, log, tmp_path)["failed"] == 1
+
+
+def test_pytest_xfail_xpass_warnings_are_not_counted():
+    s = GR.parse_pytest("=== 1 failed, 2 passed, 3 xfailed, 1 xpassed, 4 warnings in 0.1s ===")
+    assert (s["failed"], s["passed"], s["errors"], s["skipped"]) == (1, 2, 0, 0)
+
+
+def test_junit_stale_file_is_refused(tmp_path):
+    f = tmp_path / "r.xml"
+    f.write_text("<testsuite><testcase classname='c' name='t'/></testsuite>")
+    mtime = f.stat().st_mtime_ns
+    assert GR.parse_junit(f, mtime)["passed"] == 1
+    with pytest.raises(ValueError, match="stale"):
+        GR.parse_junit(f, mtime + 1)
+    assert "stale" in GR.parse({"format": "junit", "path": "r.xml"}, tmp_path / "x.log",
+                               tmp_path, mtime + 1)["error"]

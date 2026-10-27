@@ -163,6 +163,7 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
     child_env = {**os.environ, **env}
     started_at = store.now_iso()
     started = time.monotonic()
+    started_ns = time.time_ns()     # SPEC-0284: a junit file older than this is a leftover
     timed_out = False
     error = None
     exit_code = None
@@ -201,7 +202,7 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
     ok = proc is not None and exit_code == 0 and not timed_out
     summary = None
     if proc is not None and not interrupted:        # SPEC-0284: never decides `ok`
-        summary = gate_results.parse(gate.get("results"), log_path, cwd)
+        summary = gate_results.parse(gate.get("results"), log_path, cwd, started_ns)
     result = GateResult(gate["name"], bool(gate.get("required", True)), ok, exit_code,
                         timed_out, duration, log_rel or str(log_path), tail(log_path),
                         cmd=cmd, cwd=str(cwd), interrupted=interrupted, summary=summary)

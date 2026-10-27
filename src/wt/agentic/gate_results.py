@@ -43,10 +43,13 @@ def parse_pytest(text: str) -> dict:
                     counts["skipped"], failing)
 
 
-def parse_junit(path) -> dict:
+def parse_junit(path, not_before_ns: int | None = None) -> dict:
     """Counts from the `<testcase>` elements of a JUnit XML file (`testsuite` or
-    `testsuites` root); failing ids are `classname::name`."""
+    `testsuites` root); failing ids are `classname::name`. A file last modified before
+    `not_before_ns` is a leftover of an earlier run and is refused."""
     p = Path(path)
+    if not_before_ns is not None and p.stat().st_mtime_ns < not_before_ns:
+        raise ValueError("junit file was not written by this run (stale)")
     if p.stat().st_size > MAX_JUNIT_BYTES:
         raise ValueError(f"junit file larger than {MAX_JUNIT_BYTES // (1024 * 1024)} MB")
     root = ET.parse(p).getroot()
@@ -70,7 +73,7 @@ def parse_junit(path) -> dict:
                     list(dict.fromkeys(failing)))
 
 
-def parse(results_cfg, log_path, cwd) -> dict | None:
+def parse(results_cfg, log_path, cwd, not_before_ns: int | None = None) -> dict | None:
     """Summary for one gate, `{format, error}` when it cannot be read, None without `results`."""
     if not results_cfg:
         return None
@@ -79,7 +82,7 @@ def parse(results_cfg, log_path, cwd) -> dict | None:
         if fmt == "pytest":
             return parse_pytest(Path(log_path).read_text(encoding="utf-8", errors="replace"))
         if fmt == "junit":
-            return parse_junit(Path(cwd) / results_cfg["path"])
+            return parse_junit(Path(cwd) / results_cfg["path"], not_before_ns)
         raise ValueError(f"unknown results format {fmt!r}")
     except Exception as e:      # a parser must never change whether the gate passed
         return {"format": fmt, "error": str(e) or type(e).__name__}

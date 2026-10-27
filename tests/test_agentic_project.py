@@ -273,6 +273,12 @@ def test_this_repos_project_yaml_declares_the_docs_only_allowlist():
     assert doc["merge"]["docs_only_paths"] == ["docs/design/", "docs/WORKFLOW.md"]
 
 
+def test_this_repos_pytest_gate_opts_into_result_parsing():
+    doc = P.load_project_config(Path(__file__).resolve().parent.parent / ".wt" / "project.yaml")
+    gate = next(g for g in doc["gates"] if g["name"] == "pytest")
+    assert gate["results"] == {"format": "pytest"}
+
+
 # ---- SPEC-0284: gate `results:` ---------------------------------------------------------
 
 def _results_doc(results):

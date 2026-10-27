@@ -159,6 +159,8 @@ and in the ledger. Old campaigns and old readers are not affected.
   (new), `test_agentic_gates.py` (summary, parse-error-keeps-ok, junit cwd, no-summary-key,
   ledger/sidecar schema), `test_agentic_project.py` (`results:` validation),
   `test_agentic_personas.py` (`results:` line), `test_agentic_dashboard.py` (`(2 failed)`).
+- Review round 1 (2026-10-27): focused suites (gates, gate_results, dashboard, project,
+  personas) pass; full `uv run pytest -q -x`: 3527 passed, 3 skipped.
 - Sabotage: with `run_gate` setting `ok` from `summary.failed == 0`,
   `test_run_gate_parse_error_keeps_ok` failed; with the 50-id cap removed, the pytest and JUnit
   cap tests failed. Both reverted.
@@ -172,6 +174,13 @@ and in the ledger. Old campaigns and old readers are not affected.
   suffix lives in `cli_queue._gate_text`, the shared gate cell of `wt queue watch`.
 - `results.path` is also refused on `format: pytest`; an error summary renders in the prompt as
   `results: could not parse <format> results (<error>)`.
+- Review round 1 fixes (deviations/additions beyond Design): `queue._gate_summary` passes a
+  gate's `summary` through to `dashboard_payload`, so the "(N failed)" suffix reaches
+  `wt queue watch` (before, it was dropped there). A JUnit file whose mtime is older than the
+  gate's start is refused as `summary.error` ("stale"), so a timed-out or early-failing gate
+  never reports the previous round's failing ids. Extra tests pin the repo's own `pytest` gate
+  opt-in, the stopped-gate (no summary) rule, the dashboard path, stale JUnit, and
+  xfailed/xpassed/warnings tokens.
 
 ## Rollout / migration
 

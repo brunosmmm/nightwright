@@ -281,6 +281,39 @@ def test_junit_gate_reads_path_relative_to_cwd(world, tmp_path):
     assert r.ok and r.summary["failed"] == 1 and r.summary["failing"] == ["c::t"]
 
 
+def test_run_gate_nonzero_exit_with_all_passed_summary_stays_failed(world, tmp_path):
+    cfg, st, wt = world
+    g = _res_gate("pytest", "echo '=== 3 passed in 0.1s ==='; exit 1", {"format": "pytest"})
+    r = G.run_gate(g, wt, G.gate_env(cfg, st), tmp_path / "p.log", {})
+    assert r.ok is False and r.exit_code == 1 and r.summary["failed"] == 0
+
+
+def test_junit_gate_ignores_file_left_by_an_earlier_round(world, tmp_path):
+    cfg, st, wt = world
+    stale = wt / "r.xml"
+    stale.write_text("<testsuite><testcase classname='c' name='old'><failure/></testcase>"
+                     "</testsuite>")
+    old = time.time() - 3600
+    os.utime(stale, (old, old))
+    g = _res_gate("j", "exit 3", {"format": "junit", "path": "r.xml"})
+    r = G.run_gate(g, wt, G.gate_env(cfg, st), tmp_path / "j.log", {})
+    assert r.ok is False and r.exit_code == 3
+    assert "stale" in r.summary["error"] and "failing" not in r.summary
+
+
+def test_stopped_gate_gets_no_summary(world, tmp_path):
+    """SPEC-0229 x SPEC-0284: a gate that never started because of a stop is not parsed."""
+    cfg, st, wt = world
+    G.terminate_all()
+    try:
+        g = _res_gate("pytest", "echo '=== 1 passed in 0.1s ==='", {"format": "pytest"})
+        r = G.run_gate(g, wt, G.gate_env(cfg, st), tmp_path / "p.log", {})
+    finally:
+        G.reset()
+    assert r.interrupted and r.summary is None
+    assert "summary" not in json.loads((tmp_path / "p.json").read_text())
+
+
 def test_no_results_no_summary_key(world, tmp_path):
     cfg, st, wt = world
     r = G.run_gate(_gate("ok", "echo hi"), wt, G.gate_env(cfg, st), tmp_path / "ok.log", {})

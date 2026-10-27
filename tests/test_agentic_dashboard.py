@@ -507,3 +507,19 @@ def test_gate_text_shows_failed_count():
         {"name": "other", "ok": False, "duration_s": 1}]}
     assert CQ._gate_text(g).plain.count("failed)") == 1
     assert "pytest" in CQ._gate_text(g).plain and "(2 failed)" in CQ._gate_text(g).plain
+
+
+def test_dashboard_payload_carries_gate_summary_to_the_gate_cell(tmp_path):
+    """SPEC-0284: the real path (state -> dashboard_payload -> _gate_text) keeps `summary`."""
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    summary = {"format": "pytest", "passed": 5, "failed": 2, "errors": 0, "skipped": 0,
+               "failing": ["t.py::a", "t.py::b"]}
+    cid = _campaign(cfg, repo, "SPEC-0001-gs", "REVIEWING", last_gate={
+        "gate_seq": 1, "ok": False, "results": [
+            {"name": "pytest", "ok": False, "required": True, "duration_s": 3, "summary": summary},
+            {"name": "lint", "ok": True, "required": True, "duration_s": 1}]})
+    item = _row(cfg, cid)
+    assert item["last_gate"]["results"][0]["summary"] == summary
+    assert "summary" not in item["last_gate"]["results"][1]
+    assert "(2 failed)" in CQ._gate_text(item["last_gate"]).plain
