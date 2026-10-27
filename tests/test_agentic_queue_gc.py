@@ -1,6 +1,7 @@
 """SPEC-0275: `wt queue gc` — worktrees and merged branches of finished campaigns. Real git repos
 in tmp_path; campaigns are written with hand-set states (no queue run)."""
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -30,9 +31,9 @@ def _commit(repo, name, text, msg):
     _git(repo, "commit", "-q", "-m", msg)
 
 
-def _campaign(cfg, cid, state, root, branch, worktree=None, *, kind="spec", own=True):
+def _campaign(cfg, cid, state, root, branch, worktree=None, *, kind="spec", own=True, base="main"):
     st = {"id": cid, "kind": kind, "state": state, "project": "demo", "spec_id": None,
-          "repo": {"root": str(root), "base": "main", "branch": branch,
+          "repo": {"root": str(root), "base": base, "branch": branch,
                    "worktree": str(worktree) if worktree else None}}
     if kind == "merge":
         st["merge"] = {"branch": branch, "own_worktree": own}
@@ -178,3 +179,102 @@ def test_json_schema(world, monkeypatch):
     assert d["written"] is True and d["branches_removable"] == 3
     r = run_cli(world["cfg"], monkeypatch, ["queue", "gc", "--json", "--project", "other"])
     assert json.loads(r.output)["rows"] == []
+
+
+def _merged_wt(root, name, path):
+    G.worktree_add(root, path, name, "main")
+    _commit(path, f"{name.replace('/', '-')}.txt", "x\n", name)
+    _git(root, "merge", "-q", "--ff-only", name)
+
+
+def test_main_checkout_of_terminal_merge_request_kept(world):
+    root, cfg = world["root"], world["cfg"]
+    _git(root, "branch", "feat0")
+    _campaign(cfg, "r0", "MERGED", root, "feat0", root, kind="merge", own=False)
+    plan = Q.plan_gc(cfg)
+    row = _rows(plan)[("worktree", "root")]
+    assert (row["action"], row["why"], row["campaign"]) == ("keep", "main checkout", "r0")
+    Q.apply_gc(cfg, plan)
+    assert (root / "README.md").exists() and G.current_branch(root) == "main"
+
+
+def test_adopted_requester_worktrees_kept(world):
+    """MERGED request whose worktree gained a commit; ABANDONED request; MERGED request whose
+    requester checked out a new branch in the same directory."""
+    root, cfg, tmp = world["root"], world["cfg"], world["tmp"]
+    _merged_wt(root, "specs-2", tmp / "req" / "wt-specs-2")
+    _commit(tmp / "req" / "wt-specs-2", "later.txt", "x\n", "after the merge")
+    _campaign(cfg, "r2", "MERGED", root, "specs-2", tmp / "req" / "wt-specs-2", kind="merge", own=False)
+    _merged_wt(root, "specs-3", tmp / "req" / "wt-specs-3")
+    _campaign(cfg, "r3", "ABANDONED", root, "specs-3", tmp / "req" / "wt-specs-3", kind="merge", own=False)
+    _merged_wt(root, "specs-4", tmp / "req" / "wt-specs-4")
+    _git(tmp / "req" / "wt-specs-4", "checkout", "-q", "-b", "specs-5", "main")
+    _campaign(cfg, "r4", "MERGED", root, "specs-4", tmp / "req" / "wt-specs-4", kind="merge", own=False)
+    plan = Q.plan_gc(cfg)
+    rows = _rows(plan)
+    assert (rows[("worktree", "wt-specs-2")]["action"], rows[("worktree", "wt-specs-2")]["why"]) == ("keep", "unmerged")
+    assert rows[("branch", "specs-2")]["action"] == "keep"
+    assert rows[("worktree", "wt-specs-3")]["why"] == "requester's worktree (ABANDONED merge request)"
+    assert rows[("worktree", "wt-specs-4")]["why"] == "requester moved on (on specs-5)"
+    assert all(rows[("worktree", f"wt-specs-{i}")]["action"] == "keep" for i in (2, 3, 4))
+    Q.apply_gc(cfg, plan)
+    for i in (2, 3, 4):
+        assert (tmp / "req" / f"wt-specs-{i}").is_dir(), i
+    assert G.branch_exists(root, "specs-2") and G.branch_exists(root, "specs-5")
+    assert G.current_branch(tmp / "req" / "wt-specs-4") == "specs-5"
+
+
+def test_rebase_in_progress_kept_with_its_branch(world, monkeypatch):
+    root, cfg, wts = world["root"], world["cfg"], world["wts"]
+    _merged_wt(root, "wt/rb", wts / "rb")
+    _campaign(cfg, "rb", "MERGED", root, "wt/rb", wts / "rb")
+    monkeypatch.setenv("GIT_SEQUENCE_EDITOR", "sed -i -e s/^pick/edit/")
+    _git(wts / "rb", "rebase", "-q", "-i", "HEAD~1")
+    assert G.rebase_in_progress(wts / "rb") and G.is_clean(wts / "rb", untracked=True)
+    plan = Q.plan_gc(cfg)
+    rows = _rows(plan)
+    assert (rows[("worktree", "rb")]["action"], rows[("worktree", "rb")]["why"]) == ("keep", "rebase/merge in progress")
+    assert rows[("branch", "wt/rb")]["action"] == "keep"
+    Q.apply_gc(cfg, plan)
+    assert G.rebase_in_progress(wts / "rb") and G.branch_exists(root, "wt/rb")
+
+
+def test_prunable_locked_and_detached(world):
+    """A worktree deleted by hand is pruned; a locked one and a detached one holding commits no
+    branch reaches are kept; a live campaign's base branch is never deleted."""
+    root, cfg, wts = world["root"], world["cfg"], world["wts"]
+    _merged_wt(root, "wt/gone", wts / "gone")
+    shutil.rmtree(wts / "gone")
+    _campaign(cfg, "g1", "MERGED", root, "wt/gone", wts / "gone")
+    _merged_wt(root, "wt/lk", wts / "lk")
+    _git(root, "worktree", "lock", str(wts / "lk"))
+    _campaign(cfg, "k1", "MERGED", root, "wt/lk", wts / "lk")
+    _merged_wt(root, "wt/dt", wts / "dt")
+    _git(wts / "dt", "checkout", "-q", "--detach")
+    _commit(wts / "dt", "dt2.txt", "x\n", "detached work")
+    _campaign(cfg, "t1", "MERGED", root, "wt/dt", wts / "dt")
+    _git(root, "branch", "release")
+    _campaign(cfg, "b1", "ABANDONED", root, "release", None)
+    _campaign(cfg, "b2", "IMPLEMENTING", root, "wt/b2", None, base="release")
+    plan = Q.plan_gc(cfg)
+    rows = _rows(plan)
+    assert (rows[("worktree", "gone")]["action"], rows[("worktree", "gone")]["why"]) == (
+        "remove", "missing on disk (git worktree prune)")
+    assert (rows[("worktree", "lk")]["action"], rows[("worktree", "lk")]["why"]) == ("keep", "locked")
+    assert (rows[("worktree", "dt")]["action"], rows[("worktree", "dt")]["why"]) == (
+        "keep", "detached, unreachable commits")
+    assert (rows[("branch", "release")]["action"], rows[("branch", "release")]["why"]) == ("keep", "base branch")
+    Q.apply_gc(cfg, plan)
+    listed = {e["path"] for e in G.worktree_list(root)}
+    assert (wts / "gone").resolve() not in listed and not G.branch_exists(root, "wt/gone")
+    assert (wts / "lk").is_dir() and (wts / "dt" / "dt2.txt").exists()
+    assert G.branch_exists(root, "release")
+
+
+def test_yes_exits_nonzero_on_row_failure(world, monkeypatch):
+    def boom(repo, branch, force=False):
+        raise GitError(["git", "branch", "-d", branch], 1, "boom")
+
+    monkeypatch.setattr(G, "branch_delete", boom)
+    r = run_cli(world["cfg"], monkeypatch, ["queue", "gc", "--yes"])
+    assert r.exit_code == 1 and "failed" in r.output

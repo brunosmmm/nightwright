@@ -1,7 +1,7 @@
 ---
 id: SPEC-0275
 title: "wt queue gc: garbage-collect worktrees and branches of finished campaigns"
-status: in-progress
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -106,17 +106,17 @@ remove|delete|keep, why}`. `--yes` applies rows in order (worktrees before branc
 
 ## Acceptance criteria
 
-- [ ] `wt queue gc` (no `--yes`) prints the plan and changes nothing (worktree list and
+- [x] `wt queue gc` (no `--yes`) prints the plan and changes nothing (worktree list and
       branch list identical before/after).
-- [ ] `--yes` removes the clean worktree and deletes the merged branch of a MERGED campaign
+- [x] `--yes` removes the clean worktree and deletes the merged branch of a MERGED campaign
       left behind by a failed cleanup, the merged branch of an ABANDONED campaign, and the
       clean adopted worktree + merged branch of a MERGED merge request.
-- [ ] A dirty worktree of a terminal campaign is `keep: dirty`; an unmerged ABANDONED branch
+- [x] A dirty worktree of a terminal campaign is `keep: dirty`; an unmerged ABANDONED branch
       is `keep: unmerged`; both survive `--yes`.
-- [ ] Worktrees and branches of non-terminal campaigns, the main checkout and the cwd
+- [x] Worktrees and branches of non-terminal campaigns, the main checkout and the cwd
       worktree never appear as remove/delete rows.
-- [ ] A `GitError` on one row is reported on that row and the remaining rows still apply.
-- [ ] `--json` emits `wt.queue.gc.v1` with the rows and `written`.
+- [x] A `GitError` on one row is reported on that row and the remaining rows still apply.
+- [x] `--json` emits `wt.queue.gc.v1` with the rows and `written`.
 
 ## Test plan
 
@@ -145,6 +145,60 @@ remove|delete|keep, why}`. `--yes` applies rows in order (worktrees before branc
   `git branch --merged main`. Do not `--yes` on the live repo during verification.
 - **Regression guard:** full `uv run pytest`; close/abandon tests unchanged.
 
+### Test record (2026-10-27)
+
+- `uv run pytest -q tests/test_agentic_queue_gc.py` — 11 passed: the six planned tests plus
+  `test_main_checkout_of_terminal_merge_request_kept`, `test_adopted_requester_worktrees_kept`
+  (MERGED request with a post-merge commit → `unmerged`; ABANDONED request →
+  `requester's worktree (ABANDONED merge request)`; MERGED request whose requester ran
+  `git checkout -b specs-5 main` → `requester moved on (on specs-5)`),
+  `test_rebase_in_progress_kept_with_its_branch` (stopped `edit` rebase, clean tree),
+  `test_prunable_locked_and_detached` (hand-deleted dir → pruned; locked → kept; detached HEAD
+  with unreachable commits → kept; a live campaign's `repo.base` → `base branch`) and
+  `test_yes_exits_nonzero_on_row_failure`.
+- **Sabotage check:** dropping the `is_clean` guard in `_gc_worktree_keep` fails
+  `test_dirty_and_unmerged_kept` (plus dry-run/yes/json: git's refusal surfaces as a row
+  error); replacing the branch `is_ancestor` check in `_gc_rows` with `True` fails
+  `test_dirty_and_unmerged_kept` on the unmerged assertion. Disabling the main-checkout,
+  requester-moved-on and rebase-in-progress guards each fails its dedicated test. All
+  restored (file byte-identical to before).
+- **Manual verification** (dry-run only, no `--yes`): `uv run wt queue gc --json` on the live
+  wt repo (`/home/bruno/work/wt`, 37 worktrees, 38 branches, 33 merged into main) planned
+  11 worktree removals (the merged requester worktrees `wt-bugspecs-b2`, `wt-specs-c3..f6`,
+  `wt-spec-357`, `wt-fu-specs`, `wt-fix-tmphome`, `wt-gate-order`, `wt-resolver-fix-spec`,
+  `wt-conduct-drain`) and 11 branch deletions; every delete row is in
+  `git branch --merged main`. `wt-bugspecs-0341` was `keep: dirty` and its branch
+  `keep: checked out in …`; 17 worktrees no campaign references were `keep: no campaign`.
+  Nothing was written, and there were no errors.
+- Full gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`,
+  `uv run pytest -q -x`.
+
+### As shipped
+
+- Code: `gitops.worktree_list` / `gitops.is_ancestor`; `queue._gc_rows`,
+  `_gc_worktree_keep`, `plan_gc`, `apply_gc`; `wt queue gc` in `cli_queue.py`; one line in
+  `docs/product/loop/operate.md`.
+- Keep reasons beyond the Decision: `main checkout`, `current directory`, `locked`,
+  `unreadable (<git error>)`, `requester's worktree (<state> merge request)` (an adopted
+  worktree of a request that is not MERGED), `requester moved on (on <branch>)` (an adopted
+  worktree whose checked-out branch is no longer the request's `merge.branch`; it is never
+  removed), `detached, unreachable commits` (a detached terminal worktree whose HEAD neither
+  base nor the campaign branch reaches), `no campaign` (info row for unowned worktrees,
+  noting when `git worktree prune` will drop a prunable one), and for branches
+  `base branch` (the campaign's base or any live campaign's `repo.base`) and
+  `checked out in <path>`. A kept detached worktree (e.g. mid-rebase) holds its campaign's
+  branch, so that branch is kept too.
+- Prunable entries (directory deleted by hand) of terminal campaigns are `remove: missing on
+  disk (git worktree prune)`. They are removed by the single `git worktree prune` that `--yes`
+  runs per repo before the row-by-row removals. That prune drops every prunable, unlocked
+  entry in the repo.
+- Rows also carry `repo` and `project`. After `--yes` they carry `done` (bool) and, on
+  failure, `error`. The plan (and `wt.queue.gc.v1` JSON) also has `project`, `repos`,
+  `errors` (missing repo roots, unreadable worktree roots, prune failures),
+  `worktrees_removable` and `branches_removable`.
+- `--yes` exits 1 when any row failed or a repo error was recorded. The output still lists
+  every row.
+
 ## Rollout / migration
 
 None. Operators run `wt queue gc` then `--yes` when they want; the conductor may run it in
@@ -152,11 +206,11 @@ quiet periods (its skill can add that later).
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

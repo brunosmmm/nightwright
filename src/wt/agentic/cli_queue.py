@@ -1129,19 +1129,23 @@ def attach(queue_group):
     @click.option("--project", shell_complete=C.complete_project, help="filter by project")
     @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.gc.v1 JSON")
-    @click.pass_obj
-    def queue_gc(cfg, project, do_write, as_json):
+    @click.pass_context
+    def queue_gc(ctx, project, do_write, as_json):
         """Garbage-collect worktrees and merged branches of finished campaigns (SPEC-0275).
         Never touches dirty worktrees, unmerged branches, live campaigns, the main checkout
-        or the cwd's worktree."""
+        or the cwd's worktree. Exits 1 when a --yes row or repo failed."""
+        cfg = ctx.obj
         try:
             plan = Q.plan_gc(cfg, project=project)
             if do_write:
                 Q.apply_gc(cfg, plan)
         except ValueError as e:
             raise click.ClickException(str(e))
+        failed = sum(r.get("done") is False for r in plan["rows"]) if do_write else 0
         if as_json:
             _dump_json({"schema": "wt.queue.gc.v1", **plan, "written": bool(do_write)})
+            if failed or (do_write and plan["errors"]):
+                ctx.exit(1)
             return
         console.print(_gc_table(plan["rows"]), highlight=False)
         for err in plan["errors"]:
@@ -1151,7 +1155,8 @@ def attach(queue_group):
         if not do_write:
             console.print(f"{summary} (dry-run; --yes to apply)")
             return
-        failed = sum(r.get("done") is False for r in plan["rows"])
         console.print(f"[green]✓[/] {summary}; applied" + (f", [red]{failed} failed[/]" if failed else ""))
+        if failed or plan["errors"]:
+            ctx.exit(1)
 
     return queue_group

@@ -4776,16 +4776,22 @@ def _gc_worktree_keep(root, e, st, adopted, main, cwd_wt, base) -> str | None:
             return "dirty"
     except GitError as e:
         return f"unreadable ({e.tail or e})"
+    if adopted and e["branch"] != (st.get("merge") or {}).get("branch"):
+        return f"requester moved on (on {e['branch'] or 'detached HEAD'})"
     if adopted and not (e["head"] and git.is_ancestor(root, e["head"], base)):
         return "unmerged"
+    if e["detached"] and e["head"] and not git.is_ancestor(root, e["head"], base):
+        b = (st.get("repo") or {}).get("branch")
+        if not (b and git.branch_exists(root, b) and git.is_ancestor(root, e["head"], f"refs/heads/{b}")):
+            return "detached, unreachable commits"
     return None
 
 
-def _gc_rows(cfg, root, campaigns, base, worktree_roots=()) -> list[dict]:
+def _gc_rows(cfg, root, campaigns, base, worktree_roots=(), errors=None) -> list[dict]:
     """gc rows for one repo: worktrees, orphan dirs, then branches. `campaigns` are all the
     campaigns (any project, any state) whose repo root is `root`, newest first; `base` is the
     project default when a campaign records none. Anything a non-terminal campaign references
-    produces no row at all."""
+    produces no row at all. Unreadable worktree roots are appended to `errors`."""
     root = Path(root).resolve()
     entries = git.worktree_list(root)
     main = entries[0]["path"] if entries else root
@@ -4804,14 +4810,17 @@ def _gc_rows(cfg, root, campaigns, base, worktree_roots=()) -> list[dict]:
     def base_of(st):
         return (st.get("repo") or {}).get("base") or base
 
-    rows, gone = [], set()
+    live_bases = {base_of(s) for s in campaigns if s.get("state") not in TERMINAL_STATES}
+    rows, gone, kept_detached = [], set(), {}
     for e in entries:
         if e["bare"]:
             continue
         sts = by_path.get(e["path"]) or []
         if not sts:
             if e["path"] != main:
-                rows.append(_gc_row("worktree", e["path"], None, "keep", "no campaign", root))
+                why = "no campaign" + (" (prunable: git worktree prune drops it)"
+                                       if e["prunable"] and not e["locked"] else "")
+                rows.append(_gc_row("worktree", e["path"], None, "keep", why, root))
             continue
         if live(sts):
             continue
@@ -4825,12 +4834,22 @@ def _gc_rows(cfg, root, campaigns, base, worktree_roots=()) -> list[dict]:
             rows.append(_gc_row("worktree", e["path"], st, "remove", why, root))
         else:
             rows.append(_gc_row("worktree", e["path"], st, "keep", why, root))
+            # a kept detached worktree (e.g. mid-rebase) still holds its campaign's branch
+            b = (st.get("repo") or {}).get("branch")
+            if not e["branch"] and b:
+                kept_detached.setdefault(b, e["path"])
 
     listed = {e["path"] for e in entries}
     for wroot in sorted({Path(w).resolve() for w in worktree_roots}):
-        if not wroot.is_dir():
+        try:
+            if not wroot.is_dir():
+                continue
+            dirs = sorted(p for p in wroot.iterdir() if p.is_dir())
+        except OSError as e:
+            if errors is not None:
+                errors.append(f"{wroot}: {e}")
             continue
-        for d in sorted(p for p in wroot.iterdir() if p.is_dir()):
+        for d in dirs:
             if d.resolve() in listed:
                 continue
             sts = by_path.get(d.resolve()) or []
@@ -4842,12 +4861,13 @@ def _gc_rows(cfg, root, campaigns, base, worktree_roots=()) -> list[dict]:
     # `git worktree prune` (run first on --yes) drops every prunable, unlocked entry
     held = {e["branch"]: e["path"] for e in entries
             if e["branch"] and e["path"] not in gone and not (e["prunable"] and not e["locked"])}
+    held = {**kept_detached, **held}
     for b, sts in by_branch.items():
         if live(sts) or not git.branch_exists(root, b):
             continue
         st = sts[0]
         bbase = base_of(st)
-        if b == bbase:
+        if b == bbase or b in live_bases:
             why = "base branch"
         elif b in held:
             why = f"checked out in {held[b]}"
@@ -4879,7 +4899,7 @@ def plan_gc(cfg, project=None) -> dict:
         base = (pcfg.get("merge") or {}).get("base") or pcfg.get("base") or "main"
         wroots = [P.worktree_root(pcfg, root, p) for p in sorted({s.get("project") for s in sts} - {None})]
         try:
-            got = _gc_rows(cfg, root, sts, base, wroots)
+            got = _gc_rows(cfg, root, sts, base, wroots, errors)
         except GitError as e:
             errors.append(f"{root}: {e.tail or e}")
             continue
