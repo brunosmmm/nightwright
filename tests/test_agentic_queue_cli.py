@@ -847,3 +847,59 @@ def test_batch_unreadable_from_file_is_a_clean_error(tmp_path, monkeypatch):
     monkeypatch.undo()
     assert r.exit_code == 1 and "Traceback" not in r.output, r.output
     assert "Permission denied" in r.output and not S.list_campaigns(cfg)
+
+
+def test_batch_wide_flags_reach_every_written_campaign(tmp_path, monkeypatch):
+    """--priority/--profile/--base/--project/--force apply to every item; `apply_add_batch`
+    re-plans each item from `params`, so the written campaigns must carry them."""
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2)
+    idea = OW.add_idea(cfg, "an idea")[2]
+    args = ("SPEC-0001", "SPEC-0002", idea, "--priority", "2", "--profile", "thorough",
+            "--base", "main", "--project", "Meta-Tools")
+    r, d = batch(cfg, monkeypatch, *args)
+    assert r.exit_code == 0 and d["params"] == {"project": "Meta-Tools", "profile": "thorough",
+                                                "base": "main", "force": False, "priority": 2}
+    assert [i["plan"]["profile"] for i in d["items"]] == ["thorough"] * 3
+    assert not S.list_campaigns(cfg)
+    r, d = batch(cfg, monkeypatch, *args, "--yes")
+    assert r.exit_code == 0 and all(i["written"] for i in d["items"]), r.output
+    created = S.list_campaigns(cfg)
+    assert len(created) == 3
+    for c in created:
+        st = S.read_state(cfg, c["id"])
+        assert (st["priority"], st["profile"], st["project"]) == (2, "thorough", "Meta-Tools")
+    assert sorted(i["plan"]["campaign"] for i in d["items"]) == sorted(c["id"] for c in created)
+    assert {i["plan"]["base"] for i in d["items"]} == {"main"}
+
+
+def test_batch_force_applies_to_every_item(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2, review=False)
+    r, d = batch(cfg, monkeypatch, "SPEC-0001", "SPEC-0002", "--yes")
+    assert r.exit_code == 1 and not S.list_campaigns(cfg), r.output           # unreviewed: refused
+    r, d = batch(cfg, monkeypatch, "SPEC-0001", "SPEC-0002", "--yes", "--force")
+    assert r.exit_code == 0 and d["params"]["force"] is True, r.output
+    created = S.list_campaigns(cfg)
+    assert sorted(c["spec_id"] for c in created) == ["SPEC-0001", "SPEC-0002"]
+    assert all(S.read_state(cfg, c["id"]).get("force") for c in created)
+
+
+def test_batch_superseded_dependency_is_not_would_block(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 3, status="superseded")
+    add_spec(cfg, repo, 2, deps=["SPEC-0003"])
+    r, d = batch(cfg, monkeypatch, "SPEC-0002", "SPEC-0001")
+    assert r.exit_code == 0 and d["items"][0]["would_block"] == [], r.output
+
+
+def test_batch_refused_idea_blocks_yes_without_skip_invalid(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    idea = OW.add_idea(cfg, "has a spec")[2]
+    OW.set_property(cfg, Q._idea_task(cfg, idea), "SPEC", "SPEC-0001")
+    r, d = batch(cfg, monkeypatch, "SPEC-0001", idea, "--yes")
+    byid = {i["id"]: i for i in d["items"]}
+    assert "already has SPEC-0001" in byid[idea]["error"]
+    assert r.exit_code == 1 and not S.list_campaigns(cfg) and d["written"] is False
+    r, d = batch(cfg, monkeypatch, "SPEC-0001", idea, "--yes", "--skip-invalid")
+    assert r.exit_code == 1 and [c["spec_id"] for c in S.list_campaigns(cfg)] == ["SPEC-0001"]

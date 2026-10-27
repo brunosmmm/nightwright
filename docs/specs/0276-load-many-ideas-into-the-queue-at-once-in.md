@@ -209,6 +209,13 @@ and an empty epic exit 0 with zero totals, an epic child without `id` is listed 
 (`no id`), and a failing `--from-file` read is a clean error (`OSError` is caught next to
 `ValueError`; dropping either fix fails its test). Full `uv run pytest` and spec-lint pass.
 
+Review round 5 (2026-10-27): added tests that the batch-wide `--priority`, `--profile`, `--base`,
+`--project` and `--force` reach every written campaign (specs and an idea; the JSON `params` and
+each plan carry them), that a `superseded` dependency is left out of `would_block`, and that an
+explicit idea refused by its planner blocks `--yes` without `--skip-invalid`. Sabotage: calling
+`plan_add` / `plan_add_idea` in `apply_add_batch` without the params fails the first two tests.
+Full `uv run pytest` and spec-lint pass.
+
 ### As shipped
 
 - `apply_add_batch` takes the per-item parameters from `batch["params"]` (project, profile, base,
