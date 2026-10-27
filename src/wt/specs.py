@@ -941,6 +941,66 @@ def _clear_handed_off(cfg, idea_id, pin):
         W.clear_property(cfg, task, "HANDED_OFF")
 
 
+def plan_spec_link(cfg, idea_id, spec_id):
+    """Read-only plan for `wt idea spec-link` (SPEC-0281): which idea would get `:SPEC: spec_id`.
+
+    Finds the idea across every org file (rotated ones included) and, when several carry the id,
+    picks it with the SPEC-0267 rule (`_pick_idea`), so the manual link and the `reconcile_ideas`
+    walk share one identity check. Raises `ValueError` when the spec or idea is missing, the pick
+    is a mismatch/ambiguous, or the spec's `source_idea` names another idea. Returns
+    `{idea_id, spec_id, file, line, heading, created, current_spec, action}` with action `link`
+    / `replace` / `unchanged`, plus `pin = (file, heading)` when the id is carried by several
+    ideas."""
+    from .org import filter_tasks, load_tasks
+    from .workflow import _load_spec_fm
+
+    idea_id = W._normalize_selector(idea_id)
+    fm = _load_spec_fm(cfg, spec_id)
+    if fm is None:
+        raise ValueError("spec not found")
+    cands = [t for t in filter_tasks(load_tasks(cfg), is_idea=True)
+             if (t.properties.get("ID") or "").strip() == idea_id]
+    if not cands:
+        raise ValueError(f"no idea with id {idea_id}")
+    task, bad = _pick_idea(cands, _as_date(fm.get("created")))
+    if bad is not None:
+        raise ValueError(f"{bad[0]}: {bad[1]}")
+    named = str(fm.get("source_idea") or "").strip()
+    if named and named != idea_id:
+        raise ValueError(f"{spec_id} names {named} as its source_idea")
+    current = (task.properties.get("SPEC") or "").strip()
+    plan = {"idea_id": idea_id, "spec_id": spec_id, "file": task.file, "line": task.line,
+            "heading": task.heading, "created": (task.properties.get("CREATED") or "").strip(),
+            "current_spec": current,
+            "action": "unchanged" if current == spec_id else ("replace" if current else "link")}
+    if len(cands) > 1:
+        plan["pin"] = (task.file, task.heading)
+    return plan
+
+
+def apply_spec_link(cfg, plan):
+    """Write the `:SPEC:` a `plan_spec_link` plan describes, then run the reconcile scoped to that
+    spec so the idea's state follows its status (SPEC-0281). Returns the reconcile rows for this
+    idea (`[]` for an `unchanged` plan, which writes nothing). Raises `ValueError` when the idea
+    moved or its `:SPEC:` changed since the plan. Never edits a spec file (`backlinks=False`)."""
+    from . import org as ORG
+
+    if plan["action"] == "unchanged":
+        return []
+    idea_id, spec_id = plan["idea_id"], plan["spec_id"]
+    ORG.invalidate_tasks_cache()
+    task = _resolve_idea(cfg, idea_id, plan.get("pin"))
+    if task is None:
+        raise ValueError(f"{idea_id} moved or vanished since the plan; nothing written")
+    now = (task.properties.get("SPEC") or "").strip()
+    if now != plan["current_spec"]:
+        raise ValueError(f"{idea_id} :SPEC: changed since the plan "
+                         f"({plan['current_spec'] or 'none'} → {now or 'none'}); nothing written")
+    W.set_property(cfg, task, "SPEC", spec_id)
+    rows = reconcile_ideas(cfg, apply=True, spec_ids=[spec_id], backlinks=False)
+    return [r for r in rows if r[0] == idea_id]
+
+
 def _naming(specs):
     """The `flag-ambiguous` detail: every spec naming the idea."""
     return "specs naming this idea: " + ", ".join(sid for sid, _s, _c in specs)

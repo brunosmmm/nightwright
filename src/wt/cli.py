@@ -759,6 +759,64 @@ def idea_state_cmd(cfg, selector, new_state):
         f"[green]✓[/] {selector} → [bold]{(new_state or '').strip().upper()}[/]  [dim]{path}[/]")
 
 
+@idea_group.command("spec-link")
+@click.argument("idea", shell_complete=C.complete_idea_id)
+@click.argument("spec", shell_complete=C.complete_spec_id)
+@click.option("--heading", default=None,
+              help="case-insensitive substring of the idea's headline (required with --yes)")
+@click.option("--yes", "do_yes", is_flag=True, help="write the link (default: dry run)")
+@click.option("--json", "as_json", is_flag=True, help="machine-readable output")
+@click.pass_obj
+def idea_spec_link_cmd(cfg, idea, spec, heading, do_yes, as_json):
+    """Set or replace an idea's :SPEC:, identity-checked (SPEC-0281). Dry run by default.
+
+    Finds the idea in every org file (rotated ones included); an id several ideas carry
+    resolves by the SPEC-0267 rule, and an idea created after the spec, an ambiguous pick, or
+    a spec whose source_idea names another idea is refused. --yes needs --heading, a substring
+    of the picked idea's headline (copy it from the dry run). The reconcile scoped to the spec
+    then advances the idea's state. Spec files are never edited.
+
+    \b
+    wt idea spec-link IDEA-056 SPEC-0281
+    wt idea spec-link IDEA-056 SPEC-0281 --yes --heading "spec-link"
+    """
+    from .specs import apply_spec_link, plan_spec_link
+
+    try:
+        plan = plan_spec_link(cfg, idea, spec)
+        if do_yes:
+            if heading is None:
+                raise click.UsageError("--yes requires --heading (copy it from the dry run)")
+            if heading.lower() not in plan["heading"].lower():
+                raise click.ClickException(
+                    f"--heading {heading!r} does not match the idea's headline: {plan['heading']!r}")
+        rows = apply_spec_link(cfg, plan) if do_yes else []
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        out = {k: (list(v) if k == "pin" else v) for k, v in plan.items()}
+        click.echo(json.dumps({"plan": out, "applied": do_yes and plan["action"] != "unchanged",
+                               "reconcile": [list(r) for r in rows]}, indent=2))
+        return
+    console.print(f"{plan['idea_id']}  [dim]{plan['file']}:{plan['line']}[/]  {plan['heading']}")
+    console.print(f"  :CREATED: {plan['created'] or '?'}   "
+                  f":SPEC: {plan['current_spec'] or '(none)'} → {plan['spec_id']}   "
+                  f"[bold]{plan['action']}[/]")
+    if not do_yes:
+        if plan["action"] != "unchanged":
+            console.print("[dim]dry run — re-run with --yes --heading TEXT to write[/]")
+        return
+    for _i, spec_id, action, detail in rows:
+        if action == "unchanged":
+            continue
+        style = "green" if action == "advance" else "yellow"
+        hint = "  [dim](hint: add source_idea to the spec)[/]" if action == "flag-no-backlink" else ""
+        console.print(f"[{style}]{'✓' if action == 'advance' else '!'}[/] {action}  "
+                      f"[dim]{spec_id}[/]  {detail}{hint}")
+    console.print(f"[green]✓[/] {plan['idea_id']} :SPEC: {plan['spec_id']}"
+                  if plan["action"] != "unchanged" else "[dim]already linked; nothing written[/]")
+
+
 @idea_group.command("clock-in")
 @click.argument("selector", shell_complete=C.complete_idea_id)
 @click.pass_obj

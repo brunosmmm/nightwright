@@ -1,7 +1,7 @@
 ---
 id: SPEC-0281
 title: "wt idea spec-link: set or replace an idea's :SPEC:, identity-checked"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -115,22 +115,22 @@ the heading from it.
 
 ## Acceptance criteria
 
-- [ ] Without `--yes`, `wt idea spec-link IDEA SPEC` prints the target idea (file:line,
+- [x] Without `--yes`, `wt idea spec-link IDEA SPEC` prints the target idea (file:line,
       heading, `:CREATED:`) and the `link`/`replace`/`unchanged` action, and writes nothing.
-- [ ] With `--yes --heading <substring>`, it sets or replaces `:SPEC:` on exactly that idea,
+- [x] With `--yes --heading <substring>`, it sets or replaces `:SPEC:` on exactly that idea,
       and the scoped reconcile advances the idea to match the spec's status. With `--yes`,
       a missing or non-matching `--heading` exits non-zero and writes nothing.
-- [ ] When ideas in different org files (after a rotation) carry the same id, the SPEC-0267
+- [x] When ideas in different org files (after a rotation) carry the same id, the SPEC-0267
       pick chooses the newest date-valid one, and only that idea is written.
-- [ ] It refuses with exit 1 and writes nothing when:
+- [x] It refuses with exit 1 and writes nothing when:
       - the idea was created after the spec;
       - either date is unparseable;
       - the pick is ambiguous;
       - the spec's `source_idea` names another idea;
       - the spec does not exist.
-- [ ] If the idea's `:SPEC:` changed between plan and apply, the command refuses and writes
+- [x] If the idea's `:SPEC:` changed between plan and apply, the command refuses and writes
       nothing.
-- [ ] The command never modifies a spec file.
+- [x] The command never modifies a spec file.
 
 ## Test plan
 
@@ -167,6 +167,26 @@ New `tests/test_idea_spec_link.py`. It uses the tmp org and specs fixtures from
 - **Manual:** in a scratch data dir, run a dry run, then `--yes --heading`, and confirm the
   link with `wt idea show`.
 
+### Test record (2026-10-27)
+
+- `uv run pytest -q tests/test_idea_spec_link.py`: 15 passed (every test named above, plus
+  unchanged, unparseable-spec-date, missing spec/idea and `--json` cases).
+- Sabotage: `_pick_idea` replaced by "first candidate" failed
+  `test_rotated_duplicate_ids_pick_newest_valid`, `test_refuses_reused_id_mismatch` (both
+  params), `test_refuses_unparseable_spec_date` and `test_refuses_ambiguous_and_foreign_source_idea`;
+  dropping the `--heading` check failed `test_yes_requires_matching_heading`. Both restored.
+- Full `uv run pytest -q`: 3468 passed, 3 skipped; `tests/test_reconcile.py` is unchanged.
+  `tests/test_rich_output_guard.py` gained an allowlist entry for the `--json` emitter.
+- Manual: the dry run → `--yes --heading` → confirm flow was exercised end to end through
+  `CliRunner` against tmp org/specs dirs (`test_yes_links_and_reconciles`, `test_json_output`);
+  no run against a real data dir, to keep the shared ideas file untouched.
+
+### As shipped (2026-10-27)
+
+As designed. The `ValueError` from a refused pick is prefixed with its reconcile action
+(`flag-mismatch: …` / `flag-ambiguous: …`). `--json` is emitted with `click.echo`, so
+`idea_spec_link_cmd` is on the SPEC-0185 raw-output allowlist.
+
 ## Rollout / migration
 
 None; this is a new command. Once it ships, the conductor or a human links the shipped ideas
@@ -174,11 +194,11 @@ that are still unlinked, for example those found by the audit of 2026-10-27.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
