@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from test_agentic_escalations import (AC4, CID, RV, _answer, _camp, _cfg, _esc, _parked,
-                                      _reviewed)
+from test_agentic_escalations import (AC4, CID, RV, _answer, _camp, _cfg, _esc,
+                                      _half_answered, _parked, _reviewed)
 from wt.agentic import escalations as ESC
 from wt.agentic import mailbox as MB
 from wt.agentic import store as S
@@ -113,6 +113,15 @@ def test_override_block_lists_the_answerable_findings_and_skips_overridden_ones(
     assert f"{RV}#0 " not in t and f"{RV}#ac0 " in t
     with pytest.raises(ValueError, match="not a finding"):          # plan_answer agrees
         ESC.plan_answer(cfg, "ESC-0002", waive=[f"{RV}#0"], reason="r")
+
+
+def test_override_block_lists_the_records_own_half_written_waivers(tmp_path, monkeypatch):
+    cfg = cfg_(tmp_path)
+    _reviewed(cfg)
+    _half_answered(cfg, monkeypatch)      # RV#1 waived in the state, ESC-0001 still open
+    t = AM.escalation_text(cfg, ESC.read(cfg, "ESC-0001")).plain
+    assert f"  {RV}#1 minor Typo" in t    # the id its retry accepts (SPEC-0286)
+    ESC.plan_answer(cfg, "ESC-0001", waive=[f"{RV}#1"], reason="r")
 
 
 def test_override_block_caps_the_finding_ids_at_15(tmp_path):

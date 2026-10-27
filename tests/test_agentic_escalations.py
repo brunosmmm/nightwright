@@ -1193,6 +1193,77 @@ def test_withdraw_state_write_failure_leaves_the_record_open_to_retry(tmp_path, 
     assert _overrides(cfg, "ESC-0001") == ([], [])
 
 
+def test_withdraw_retry_after_record_write_failure_keeps_the_override_count(tmp_path,
+                                                                            monkeypatch):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    _half_answered(cfg, monkeypatch)
+    real = ESC._write
+    boom = {"n": 0}
+
+    def flaky(cfg_, rec):                 # the state is stripped, then the close fails once
+        if rec.get("status") == "withdrawn" and not boom["n"]:
+            boom["n"] += 1
+            raise OSError("disk full")
+        return real(cfg_, rec)
+    monkeypatch.setattr(ESC, "_write", flaky)
+    plan = ESC.plan_withdraw(cfg, "ESC-0001", reason="gave up", by="human")
+    with pytest.raises(OSError, match="disk full"):
+        ESC.apply_withdraw(cfg, plan)
+    assert ESC.read(cfg, "ESC-0001")["status"] == "open"
+    assert _overrides(cfg, "ESC-0001") == ([], [])         # already gone from the state
+    ESC.apply_withdraw(cfg, plan)                           # the retry strips nothing more
+    assert ESC.read(cfg, "ESC-0001")["status"] == "withdrawn"
+    note = S.read_ledger(cfg, CID, types=["note"])[-1]["text"]
+    assert note == "escalation ESC-0001 withdrawn: gave up; 2 override(s) removed"
+
+
+def test_system_withdraw_keeps_the_half_written_overrides(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    _half_answered(cfg, monkeypatch)
+    real = S.write_state                  # a human withdraw counted them, then failed to strip
+    monkeypatch.setattr(S, "write_state", lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
+    with pytest.raises(OSError):
+        ESC.apply_withdraw(cfg, ESC.plan_withdraw(cfg, "ESC-0001", reason="x", by="human"))
+    monkeypatch.setattr(S, "write_state", real)
+    before = _overrides(cfg, "ESC-0001")
+    assert len(before[0]) == len(before[1]) == 1
+    rec = ESC.withdraw_for_campaign(cfg, CID, "resumed", "wt")   # clear_request=False
+    assert rec["status"] == "withdrawn" and "overrides_removed" not in rec
+    assert _overrides(cfg, "ESC-0001") == before            # the resume keeps them (Non-goal)
+    note = S.read_ledger(cfg, CID, types=["note"])[-1]["text"]
+    assert note == "escalation ESC-0001 withdrawn: resumed"
+
+
+def test_withdraw_before_the_park_drops_the_request_and_the_overrides_in_one_write(
+        tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _camp(cfg, "IMPLEMENTING")
+    lease = L.acquire(cfg, [CID])
+    try:
+        rec = _esc(cfg)                   # deferred: a human_decision park request, not parked
+    finally:
+        lease.release()
+    st = _state(cfg)
+    assert st["park_requested"]["reason"] == "human_decision"
+    st["human_overrides"] = {
+        "waive": [{"id": "x#0", "reason": "r", "escalation": rec["id"], "at": S.now_iso()},
+                  {"id": "x#1", "reason": "old", "escalation": "ESC-0000", "at": S.now_iso()}],
+        "attest": [{"ac": "AC 1", "reason": "r", "escalation": rec["id"], "at": S.now_iso()}]}
+    S.write_state(cfg, CID, st)
+    real, writes = S.write_state, []
+    monkeypatch.setattr(S, "write_state", lambda *a, **k: (writes.append(a), real(*a, **k)))
+    ESC.apply_withdraw(cfg, ESC.plan_withdraw(cfg, rec["id"], reason="gave up", by="human"))
+    assert len(writes) == 1
+    st = _state(cfg)
+    assert "park_requested" not in st
+    assert [w["id"] for w in st["human_overrides"]["waive"]] == ["x#1"]
+    assert st["human_overrides"]["attest"] == []
+    note = S.read_ledger(cfg, CID, types=["note"])[-1]["text"]
+    assert note == f"escalation {rec['id']} withdrawn: gave up; 2 override(s) removed"
+
+
 def test_withdraw_without_overrides_keeps_the_plain_note(tmp_path):
     cfg = _cfg(tmp_path)
     _reviewed(cfg)

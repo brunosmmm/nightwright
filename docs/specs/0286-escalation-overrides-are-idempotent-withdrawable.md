@@ -175,6 +175,25 @@ keeps only the exact hit when one exists, the same rule the attest path uses.
   --write-ledger && python3 tools/spec_lint.py` exit 0; `uv run pytest -q -x` 3514 passed,
   3 skipped.
 
+### Test record (2026-10-27, review round 4)
+
+- New tests: `test_withdraw_retry_after_record_write_failure_keeps_the_override_count` (the state
+  is stripped, the close fails once, and the retry's note still reads `; 2 override(s) removed`),
+  `test_system_withdraw_keeps_the_half_written_overrides` (`withdraw_for_campaign` keeps the
+  ESC-0001 waive and attest, even after a failed human withdraw counted them, and its note has no
+  count), `test_withdraw_before_the_park_drops_the_request_and_the_overrides_in_one_write` (a
+  deferred `human_decision` request plus stored overrides: one `write_state` drops both), and
+  `tests/test_tui_escalations_model.py::test_override_block_lists_the_records_own_half_written_waivers`.
+- Sabotage checks, each reverted: without the `clear_request` guard on the strip, the system
+  withdraw test fails; re-reading the state before the strip (so it overwrites the
+  `park_requested` change) fails the one-write test; the TUI listing without the record's id fails
+  the TUI test; without the count stored on the record, the retry-count test fails.
+- `uv run pytest -q tests/test_agentic_escalations.py tests/test_tui_escalations_model.py`:
+  101 passed. Escalation, triage and TUI escalation tests
+  (`tests/test_agentic_escalations*.py tests/test_agentic_review_triage.py
+  tests/test_tui_escalations_*.py`): 219 passed. `python3 tools/spec_lint.py --write-ledger &&
+  python3 tools/spec_lint.py` exit 0; `uv run pytest -q -x` 3518 passed, 3 skipped.
+
 ### As shipped (2026-10-27)
 
 - As designed. The strip in `withdraw` runs on every human withdraw (`clear_request=True`),
@@ -207,6 +226,16 @@ keeps only the exact hit when one exists, the same rule the attest path uses.
     same answer, or by id from a later escalation.
   - One helper, `_strip_overrides_of`, does the strip for `apply_answer`, `withdraw` and the
     planning view.
+
+### As shipped (2026-10-27, review round 4)
+
+- `withdraw` stores the removed count on the still-open record (`overrides_removed`) before it
+  writes the stripped state. A retry after a failed close strips nothing more, yet its note
+  still gives the count. A system withdraw (`clear_request=False`) drops the field and never
+  reports a count. An answer drops it too.
+- `answerable_findings(cfg, state, esc_id=None)`: with an id, that escalation's own stored
+  overrides do not count as waived. The TUI override block passes the record's id, so it lists
+  the same ids the CLI retry accepts.
 
 ## Rollout / migration
 

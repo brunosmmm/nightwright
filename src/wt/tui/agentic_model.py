@@ -1052,7 +1052,8 @@ def _override_block(cfg, t: Text, rec) -> None:
     t.append(f"  wt escalations answer {rec['id']} --waive <finding-id> --attest <ac> "
              f"--reason \"<why>\" --yes\n")
     try:
-        findings = ESC.answerable_findings(cfg, store.read_state(cfg, rec["campaign"]))
+        findings = ESC.answerable_findings(cfg, store.read_state(cfg, rec["campaign"]),
+                                           rec["id"])
     except (ValueError, OSError, TypeError, KeyError):
         findings = []
     for f in findings[:FINDINGS_SHOWN]:

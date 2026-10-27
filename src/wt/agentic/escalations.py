@@ -337,10 +337,13 @@ def _review_findings(cfg, st: dict, overridden: bool = True) -> tuple[list, list
     return tri["blocking"] + tri["advisory"], unmet, set(tri["synthetic"])
 
 
-def answerable_findings(cfg, state: dict) -> list[dict]:
+def answerable_findings(cfg, state: dict, esc_id=None) -> list[dict]:
     """The findings `plan_answer` validates `--waive` ids against (SPEC-0250 lists them too):
     `blocking` + `advisory` of the stored review, synthetic ones included, already-waived ones
-    left out."""
+    left out. With `esc_id`, that escalation's own (half-written) overrides do not count as
+    waived, the same view its retry is planned against (SPEC-0286)."""
+    if esc_id is not None:
+        state = _without_overrides_of(state, esc_id)
     return _review_findings(cfg, state)[0]
 
 
@@ -577,6 +580,7 @@ def apply_answer(cfg, plan: dict) -> dict:
                                             "escalation": esc_id, "at": now})
                 if ov or removed:
                     store.write_state(cfg, cid, st)
+            rec.pop("overrides_removed", None)   # a failed withdraw's count no longer holds
             rec.update(status="answered", answer=answer, answered_by=by, answered_at=now)
             _write(cfg, rec)
     try:
@@ -698,6 +702,8 @@ def withdraw(cfg, esc_id, reason, by, *, clear_request=True) -> dict:
                 raise ValueError(f"{esc_id} is {r.get('status')}, not open")
             r["status"] = "withdrawn"
             r["withdrawn"] = {"reason": reason, "by": by, "at": store.now_iso()}
+            if not clear_request:          # this withdraw keeps the overrides
+                r.pop("overrides_removed", None)
         removed = 0
         if known:
             close(dict(read(cfg, esc_id)))     # refuse before touching the state
@@ -718,10 +724,18 @@ def withdraw(cfg, esc_id, reason, by, *, clear_request=True) -> dict:
             if clear_request and isinstance(h, dict):
                 removed = _strip_overrides_of(h, esc_id)
                 dirty = dirty or bool(removed)
+            if removed:
+                # the count goes on the open record first: a retry after the state write finds
+                # nothing left to strip, but its note still says how many went (SPEC-0286)
+                def count(r):
+                    close(dict(r))
+                    r["overrides_removed"] = removed
+                _mutate(cfg, esc_id, count)
             if dirty:
                 store.write_state(cfg, cid, st)
         rec = _mutate(cfg, esc_id, close)
         if known:
+            removed = (rec.get("overrides_removed") or 0) if clear_request else 0
             more = f"; {removed} override(s) removed" if removed else ""
             with contextlib.suppress(ValueError, OSError):
                 store.append_event(cfg, cid, "note", {
