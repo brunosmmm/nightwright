@@ -181,6 +181,8 @@ and in the ledger. Old campaigns and old readers are not affected.
   never reports the previous round's failing ids. Extra tests pin the repo's own `pytest` gate
   opt-in, the stopped-gate (no summary) rule, the dashboard path, stale JUnit, and
   xfailed/xpassed/warnings tokens.
+- wt's own project (`.wt/project.yaml`, `pytest` gate) enables it with `results: {format: pytest}`
+  (the default `-q` run already prints the summary and `FAILED` lines the parser reads).
 
 ## Rollout / migration
 
