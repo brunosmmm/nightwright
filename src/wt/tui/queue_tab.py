@@ -46,6 +46,8 @@ class QueueActions:
             await self._flow(action, cid)
         except (ValueError, OSError) as e:
             self.app.notify(str(e), severity="error")
+        except Exception as e:      # an unexpected error must not end the app
+            self.app.notify(f"queue action failed: {escape(repr(e))}", severity="error")
         finally:
             self._busy = False
 
@@ -166,7 +168,13 @@ class QueueView(QueueActions, Vertical):
 
     def on_resize(self, event) -> None:
         if self.rows:
+            self._safe_paint()
+
+    def _safe_paint(self) -> None:
+        try:
             self.paint()
+        except Exception as e:
+            self._show_error(e)
 
     # --- lifecycle -----------------------------------------------------------------------
 
@@ -184,7 +192,11 @@ class QueueView(QueueActions, Vertical):
     # --- loading -------------------------------------------------------------------------
 
     def _poll(self) -> None:
-        if AM.queue_signature(self.cfg) != self._signature:
+        try:
+            changed = AM.queue_signature(self.cfg) != self._signature
+        except Exception:
+            changed = True                  # reload() reports the error in the status line
+        if changed:
             self.reload()
 
     def reload(self) -> None:
@@ -197,17 +209,18 @@ class QueueView(QueueActions, Vertical):
         try:
             # Signature first: a write that lands during the load triggers another reload.
             self._signature = AM.queue_signature(self.cfg)
-            try:
-                rows, header = await asyncio.to_thread(AM.load_queue, self.cfg)
-            except (OSError, ValueError) as e:
-                self.query_one("#queue-status", Static).update(
-                    f"[red]queue failed: {escape(str(e))}[/]")
-                return
+            rows, header = await asyncio.to_thread(AM.load_queue, self.cfg)
             previous = self._cursor_target()        # against the rows the cursor is on now
             self.rows, self.header = rows, header
             self.paint(previous)
+        except Exception as e:      # any failure shows in the status line; the next poll retries
+            self._show_error(e)
         finally:
             self._loading = False
+
+    def _show_error(self, e: Exception) -> None:
+        self.query_one("#queue-status", Static).update(
+            f"[red]queue failed: {escape(str(e) or repr(e))}[/]")
 
     def paint(self, previous=None) -> None:
         table = self.table
@@ -220,7 +233,8 @@ class QueueView(QueueActions, Vertical):
             if r.spec and campaign.startswith(r.spec + "-"):
                 campaign = campaign[len(r.spec) + 1:]
             table.add_row(Text(r.section if r.section != last else "", style="dim"),
-                          R._clip(campaign, 24), r.spec, R._clip(r.title, what_w),
+                          Text(R._clip(campaign, 24)), Text(r.spec or ""),
+                          Text(R._clip(r.title, what_w)),
                           Text(R._clip(r.meta, _META_W), style="dim"),
                           key=f"{r.section}|{r.campaign}")
             last = r.section

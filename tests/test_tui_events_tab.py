@@ -771,3 +771,68 @@ def test_a_failing_load_is_shown_and_the_next_poll_recovers(tmp_path, monkeypatc
             assert not [n for n, k in app.notes if k.get("severity") == "error"]
 
     _run(drive())
+
+
+# --- bad data (SPEC-0265) ----------------------------------------------------------------
+
+def _raw(cfg, *records):
+    with open(EV.events_path(cfg), "a", encoding="utf-8") as f:
+        for rec in records:
+            f.write(json.dumps({"type": "admitted", "ts": "2026-10-27T10:00:00+00:00",
+                                "campaign": None, "by": "t", "data": {}, **rec}) + "\n")
+
+
+def test_duplicate_ids_and_bad_ts_do_not_crash(tmp_path):
+    cfg = _cfg(tmp_path)
+    _raw(cfg, {"id": 4, "campaign": "SPEC-0004-x"}, {"id": 5, "campaign": "SPEC-0005-a"},
+         {"id": 5, "campaign": "SPEC-0005-b"},
+         {"id": 6, "campaign": "SPEC-0006-x", "ts": "9999-12-31T23:59:59-14:00"},
+         {"id": 7, "campaign": "SPEC-0007-x"})
+    app = _desk(cfg, tab="events")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            v = view(app)
+            assert app.is_running
+            assert ids(app) == [4, 5, 6, 7]
+            assert v.table.row_count == len(v.shown) == 4
+            assert "1 duplicate ids skipped" in status(app)
+            v.table.move_cursor(row=2)                 # the row after the duplicate
+            assert v.current_row().id == 6 and v.table.get_row_at(2)[3].plain == "SPEC-0006-x"
+            _raw(cfg, {"id": 8, "campaign": "SPEC-0008-x"}, {"id": 8, "campaign": "SPEC-0008-y"})
+            await until(app, pilot, lambda: ids(app) == [4, 5, 6, 7, 8], "event 8")
+            assert v.table.row_count == len(v.shown) == 5
+            assert "2 duplicate ids skipped" in status(app)
+
+    _run(drive())
+
+
+def test_append_failure_is_retried(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _seed(cfg, 3)
+    real = ET.EventsView._repaint
+    calls, at_retry = [], []
+
+    def flaky(self, **kw):
+        calls.append(1)
+        at_retry.append((self._last_id, self._signature))   # what the failed load left behind
+        if len(calls) == 1:
+            self.table.add_row("x", "x", "x", "x", "x", key="partial")    # a half-painted table
+            raise TypeError("paint failed")
+        return real(self, **kw)
+
+    monkeypatch.setattr(ET.EventsView, "_repaint", flaky)
+    app = _desk(cfg, tab="events")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause(0.1)
+            v = view(app)
+            await until(app, pilot, lambda: ids(app) == [1, 2, 3], "retried rows")
+            assert app.is_running and len(calls) >= 2
+            assert at_retry[1] == (0, None)             # the failed append consumed nothing
+            assert v._last_id == 3 and v._signature is not None
+            assert v.table.row_count == 3 and "events failed" not in status(app)
+
+    _run(drive())

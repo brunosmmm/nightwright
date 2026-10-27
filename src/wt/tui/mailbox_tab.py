@@ -218,6 +218,8 @@ class MailboxView(Horizontal):
                 snap.msgs, snap.inboxes, snap.inbox, snap.threads, snap.escalations)
             self.paint_inboxes()
             self.paint_right()
+        except Exception as e:      # a malformed record must not end the app
+            self.app.notify(f"mailbox failed: {escape(str(e) or repr(e))}", severity="error")
         finally:
             self._loading = False
             if self._again:
@@ -441,6 +443,8 @@ class MailboxView(Horizontal):
             await flow
         except (ValueError, OSError) as e:
             self.app.notify(escape(str(e)), severity="error")
+        except Exception as e:      # an unexpected error must not end the app
+            self.app.notify(f"mailbox action failed: {escape(repr(e))}", severity="error")
         finally:
             self._busy = False
 

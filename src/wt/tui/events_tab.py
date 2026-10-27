@@ -91,6 +91,8 @@ class EventsView(Horizontal):
         self._file_size = 0
         self._inode = None
         self._last_id = 0
+        self._dupes = 0                     # duplicate ids skipped since the last reset
+        self._dirty = False                 # a failed paint left the table unreliable
         self._loading = False
         self._side_loading = False
         self._refresh_timers: list = []
@@ -167,21 +169,42 @@ class EventsView(Horizontal):
                 self.query_one("#events-status", Static).update(
                     f"[red]events failed: {escape(str(e))}[/]")
                 return
+            before = (list(self.loaded), list(self.shown), self._dupes, self._last_id)
+            try:
+                if reset:
+                    self.loaded, self.shown, self._dupes, self._last_id = [], [], 0, 0
+                    self.table.clear()
+                self._append(rows)
+            except Exception as e:  # a paint failure must not consume the rows: retry next poll
+                self.loaded, self.shown, self._dupes, self._last_id = before
+                self._dirty = True              # the table may be partial: rebuild it next time
+                self.query_one("#events-status", Static).update(
+                    f"[red]events failed: {escape(str(e) or repr(e))}[/]")
+                return
             self._signature, self._file_size, self._inode = sig, size, inode
-            if reset:
-                self.loaded, self.shown, self._last_id = [], [], 0
-                self.table.clear()
-            self._append(rows)
+        except Exception as e:      # nothing here may end the app
+            self.query_one("#events-status", Static).update(
+                f"[red]events failed: {escape(str(e) or repr(e))}[/]")
         finally:
             self._loading = False
 
     def _append(self, rows) -> None:
         table = self.table
-        first = not self.loaded
+        first = not self.loaded or self._dirty
         selected = self.current_row()       # before `shown` changes: the cursor indexes the old list
         at_tail = first or table.row_count == 0 or table.cursor_row >= table.row_count - 1
-        if rows:
-            self._last_id = rows[-1].id
+        last_id = rows[-1].id if rows else self._last_id
+        # Dedupe in the data, so table, `shown` and `loaded` stay one-to-one (a repeated id would
+        # raise DuplicateKey, and a row left out of the table only would shift `current_row`).
+        seen = {r.id for r in self.loaded}
+        fresh = []
+        for r in rows:
+            if r.id in seen:
+                self._dupes += 1
+            else:
+                seen.add(r.id)
+                fresh.append(r)
+        rows = fresh
         self.loaded.extend(rows)
         trimmed = len(self.loaded) > AM.EVENT_LIMIT
         if trimmed:
@@ -197,6 +220,8 @@ class EventsView(Horizontal):
             self.shown.extend(new)
             if new and at_tail:
                 table.move_cursor(row=len(self.shown) - 1)
+        self._last_id = last_id             # only once painted: a failed paint is retried
+        self._dirty = False
         self._render_status()
         self._render_ping()
 
@@ -230,6 +255,8 @@ class EventsView(Horizontal):
 
     def _render_status(self) -> None:
         shown = f"{len(self.shown)}/{len(self.loaded)}"
+        if self._dupes:
+            shown += f" · {self._dupes} duplicate ids skipped"
         active = AM.format_event_filter(self.event_filter) or "none"
         self.query_one("#events-status", Static).update(
             f"[dim]{escape(self.health or 'stream health loading…')} · filter: "

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0265
 title: "Operator surfaces survive bad data and never render untrusted text as markup"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -142,19 +142,19 @@ duplicate id instead of crashing, and `event_time` tolerates `OverflowError`.
 
 ## Acceptance criteria
 
-- [ ] A `state.json` that makes `paint()` raise (for example a non-str `title`) or a
+- [x] A `state.json` that makes `paint()` raise (for example a non-str `title`) or a
       `KeyError` from `load_queue` leaves `wt tui` running, with `queue failed:` in the
       queue tab status line. The campaign screen behaves the same way (`campaign failed:`).
-- [ ] An `OSError` from iterating the campaigns dir during `_poll` does not end the app.
-- [ ] `events.jsonl` holding two records with the same id, or a record with ts
+- [x] An `OSError` from iterating the campaigns dir during `_poll` does not end the app.
+- [x] `events.jsonl` holding two records with the same id, or a record with ts
       `9999-12-31T23:59:59-14:00` (overflows in any timezone), renders without crashing. The duplicate is skipped and
       counted.
-- [ ] A malformed mailbox record that makes `paint_threads` raise shows a `mailbox failed:`
+- [x] A malformed mailbox record that makes `paint_threads` raise shows a `mailbox failed:`
       notification, and the app keeps running.
-- [ ] A queue row whose title is `Fix [x] and [/bold] stray`, and a campaign-screen timeline
+- [x] A queue row whose title is `Fix [x] and [/bold] stray`, and a campaign-screen timeline
       row whose event text is `see [/oops] and [x]`, show exactly that text in the
       DataTable cell.
-- [ ] `wt spec review SPEC-X --show` on a stored review whose finding title is
+- [x] `wt spec review SPEC-X --show` on a stored review whose finding title is
       `[/oops] keep [x]` and whose model is `[red]m` exits 0 and prints both strings
       verbatim.
 
@@ -201,13 +201,39 @@ duplicate id instead of crashing, and `event_time` tolerates `OverflowError`.
   read-only, and confirm that rows render and that switching tabs works. Note the result
   in the spec.
 
+### Test record (2026-10-27)
+
+- New tests, all passing: `test_tui_queue_tab.py::{test_paint_error_keeps_the_app_alive,
+  test_signature_oserror_is_contained, test_queue_signature_survives_an_unlistable_campaigns_dir,
+  test_titles_render_verbatim}`, `test_tui_campaign_screen.py::{test_reload_error_keeps_the_app_alive,
+  test_timeline_text_renders_verbatim}`, `test_tui_events_tab.py::{test_duplicate_ids_and_bad_ts_do_not_crash,
+  test_append_failure_is_retried}`, `test_tui_mailbox_tab.py::test_paint_error_notifies`,
+  `test_spec_review_show.py::test_show_renders_markup_like_text_verbatim`.
+- Sabotage checks, each made its test fail and was then reverted: outer `except Exception` in
+  `queue_tab._reload_async`; queue title cell back to `str`; duplicate skip; `OverflowError` in
+  `event_time`; campaign timeline cell back to `str`; `escape` on the model in `_print_review`.
+- Manual: a headless pilot of `IdeaDesk(tab="queue")` on the live data dir (read-only) rendered
+  16 queue rows with the header in the status line, and switching tabs 1 → 3 kept the app running.
+- Full gate: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` OK; `uv run pytest -q -x`: 3249 passed, 3 skipped.
+
+### As shipped
+
+- Deviations/additions beyond Design: `_poll` of the campaign screen got the same signature guard
+  as the queue tab; `on_resize` paints on both screens go through a guarded `_safe_paint`; the
+  mailbox `_guarded` catch-all reports `mailbox action failed: …`.
+- Events tab: a failed `_append` restores `loaded`/`shown`/`_dupes`/`_last_id` and sets `_dirty`, so
+  the retry rebuilds the table in full (the half-painted table would otherwise raise DuplicateKey).
+  `_last_id` is now assigned at the end of `_append` and `_signature`/`_file_size`/`_inode` after it
+  returns. The duplicate count is cumulative since the last reset.
+- Campaign timeline: the seq and time cells are `Text` too, not only the text cell.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

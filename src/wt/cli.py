@@ -1776,30 +1776,38 @@ def _print_review(review, pick):
     color = {"approve": "green", "revise": "yellow", "split": "yellow"}.get(verdict, "default")
     cost = review.get("cost_usd")
     cost_txt = f"  ${cost:.2f}" if isinstance(cost, (int, float)) else ""
-    console.print(f"[bold]{spec_id}[/]  [{color}]{verdict}[/]  "
-                  f"{review.get('model')}{cost_txt}")
+    # Stored fields are untrusted persona text: escape before they enter markup (SPEC-0265).
+    def esc(v):
+        return escape(str(v))
+
+    console.print(f"[bold]{esc(spec_id)}[/]  [{color}]{esc(verdict)}[/]  "
+                  f"{esc(review.get('model'))}{cost_txt}")
     if review.get("size"):
-        console.print(f"  size {review['size']}  tone {review.get('tone')}", highlight=False)
-        console.print(f"  rationale: {review.get('rationale') or '-'}", highlight=False)
+        console.print(f"  size {esc(review['size'])}  tone {esc(review.get('tone'))}",
+                      highlight=False)
+        console.print(f"  rationale: {esc(review.get('rationale') or '-')}", highlight=False)
         if review["size"] == "xl":
             console.print("  xl: split recommended, no profile", highlight=False)
         elif pick:
-            console.print(f"  → profile [bold]{pick['profile']}[/]  [dim]{pick['reason']}[/]")
+            console.print(f"  → profile [bold]{esc(pick['profile'])}[/]  "
+                          f"[dim]{esc(pick['reason'])}[/]")
     findings = [f for f in review.get("findings") or [] if isinstance(f, dict)] \
         if isinstance(review.get("findings"), list) else []
     if findings:
         from rich.table import Table
+        from rich.text import Text
         table = Table(show_header=True, header_style="bold")
         for col in ("severity", "section", "title", "detail"):
             table.add_column(col, overflow="fold")
         for f in findings:
-            table.add_row(*(str(f.get(k) or "") for k in ("severity", "section", "title", "detail")))
+            table.add_row(*(Text(str(f.get(k) or ""))
+                            for k in ("severity", "section", "title", "detail")))
         console.print(table)
     splits = review.get("suggested_splits")
     for sp in splits if isinstance(splits, list) else []:
         if not isinstance(sp, dict):
             continue
-        console.print(f"  split: [bold]{sp.get('title')}[/] — {sp.get('scope', '')}",
+        console.print(f"  split: [bold]{esc(sp.get('title'))}[/] — {esc(sp.get('scope', ''))}",
                       highlight=False)
 
 

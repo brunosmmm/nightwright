@@ -176,12 +176,15 @@ def queue_signature(cfg) -> tuple:
     changes no mtime, so conductor/steward changes in the header wait for the periodic reload."""
     root = store.campaigns_dir(cfg)
     states = []
-    if root.is_dir():
-        for d in root.iterdir():
-            try:
-                states.append((d.name, (d / "state.json").stat().st_mtime_ns))
-            except OSError:
-                continue
+    try:
+        dirs = list(root.iterdir()) if root.is_dir() else []
+    except OSError:
+        dirs = []
+    for d in dirs:
+        try:
+            states.append((d.name, (d / "state.json").stat().st_mtime_ns))
+        except OSError:
+            continue
     return (_stat(EV.events_path(cfg)), _stat(L.lease_path(cfg)), tuple(sorted(states)))
 
 
@@ -630,7 +633,7 @@ def event_time(ts, now=None) -> str:
     """HH:MM:SS local, with the date when it is not today."""
     try:
         when = dt.datetime.fromisoformat(ts).astimezone()
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return str(ts or "")[:19]
     today = (now or dt.datetime.now().astimezone()).date()
     return when.strftime("%H:%M:%S" if when.date() == today else "%m-%d %H:%M:%S")

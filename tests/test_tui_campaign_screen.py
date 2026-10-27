@@ -252,3 +252,53 @@ def test_cli_campaign_resolves_ids_and_rejects_bad_ones(tmp_path, monkeypatch):
     assert len(calls) == n                                  # the TUI never started
     plain = run_cli(cfg, monkeypatch, ["tui"])
     assert plain.exit_code == 0 and calls[-1]["campaign"] is None
+
+
+# --- bad data and untrusted text (SPEC-0265) ---------------------------------------------
+
+def _section_of(app, cid):
+    return next(r.section for r in view(app).rows if r.campaign == cid)
+
+
+def test_reload_error_keeps_the_app_alive(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed(cfg, cid)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await open_screen(app, pilot, cid, _section_of(app, cid))
+            monkeypatch.setattr(CS.CampaignScreen, "paint",
+                                lambda self, previous=None: (_ for _ in ()).throw(TypeError("x")))
+            screen(app).reload()
+            await settle(app, pilot)
+            assert app.is_running and "campaign failed" in status(app)
+            monkeypatch.undo()
+            screen(app).reload()
+            await settle(app, pilot)
+            assert "campaign failed" not in status(app)
+
+    _run(drive())
+
+
+def test_timeline_text_renders_verbatim(tmp_path):
+    from rich.text import Text
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed(cfg, cid)
+    _ev(cfg, cid, "note", {"text": "see [/oops] and [x]"})
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await open_screen(app, pilot, cid, _section_of(app, cid))
+            s = screen(app)
+            assert app.is_running
+            cells = s.table.get_row_at(len(s.shown) - 1)
+            assert all(isinstance(c, Text) for c in cells)
+            assert cells[3].plain.endswith("see [/oops] and [x]")      # after the "text=" label
+
+    _run(drive())

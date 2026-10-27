@@ -590,3 +590,23 @@ def test_tab_moves_between_the_two_tables(tmp_path):
             assert app.focused is v.threads_table
 
     _run(drive())
+
+
+def test_paint_error_notifies(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    ask(cfg, frm="conductor", to="human", kind="info", text="hello")
+    app = _desk(cfg, tab="mailbox")
+
+    def boom(self):
+        raise TypeError("bad record")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            monkeypatch.setattr(MT.MailboxView, "paint_threads", boom)
+            mv(app).reload()
+            await settle(app, pilot)
+            assert app.is_running
+            assert any("mailbox failed" in msg for msg, _ in app.notes)
+
+    _run(drive())

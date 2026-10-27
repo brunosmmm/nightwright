@@ -81,12 +81,26 @@ class CampaignScreen(QueueActions, Screen):
 
     def on_resize(self, event) -> None:
         if self.detail:
+            self._safe_paint()
+
+    def _safe_paint(self) -> None:
+        try:
             self.paint()
+        except Exception as e:
+            self._show_error(e)
+
+    def _show_error(self, e: Exception) -> None:
+        self.query_one("#campaign-status", Static).update(
+            f"[red]campaign failed: {escape(str(e) or repr(e))}[/]")
 
     # --- loading -------------------------------------------------------------------------
 
     def _poll(self) -> None:
-        if AM.campaign_signature(self.cfg, self.campaign_id) != self._signature:
+        try:
+            changed = AM.campaign_signature(self.cfg, self.campaign_id) != self._signature
+        except Exception:
+            changed = True                  # reload() reports the error in the status line
+        if changed:
             self.reload()
 
     def reload(self) -> None:
@@ -97,16 +111,13 @@ class CampaignScreen(QueueActions, Screen):
 
     async def _reload_async(self) -> None:
         try:
-            try:
-                detail = await asyncio.to_thread(AM.load_campaign, self.cfg, self.campaign_id)
-            except (OSError, ValueError) as e:
-                self.query_one("#campaign-status", Static).update(
-                    f"[red]campaign failed: {escape(str(e))}[/]")
-                return
+            detail = await asyncio.to_thread(AM.load_campaign, self.cfg, self.campaign_id)
             self._signature = detail.signature
             previous = self._cursor_target()
             self.detail = detail
             self.paint(previous)
+        except Exception as e:      # any failure shows in the status line; the next poll retries
+            self._show_error(e)
         finally:
             self._loading = False
 
@@ -131,9 +142,10 @@ class CampaignScreen(QueueActions, Screen):
         text_w = max(20, (table.size.width or 100) - _FIXED_COST)
         table.clear()
         for e in self.shown:
-            table.add_row(str(e.seq), e.ts[11:19] if len(e.ts) >= 19 else e.ts,
+            table.add_row(Text(str(e.seq)),
+                          Text(e.ts[11:19] if len(e.ts) >= 19 else e.ts),
                           Text(e.type, style=GROUP_STYLE.get(e.group, "")),
-                          R._clip(e.text.replace("\n", " "), text_w), key=str(e.seq))
+                          Text(R._clip(e.text.replace("\n", " "), text_w)), key=str(e.seq))
         self.query_one("#campaign-status", Static).update(
             Text(f"filter {self.filter} · {len(self.shown)}/{len(detail.entries)} events",
                  style="dim"))
@@ -161,9 +173,12 @@ class CampaignScreen(QueueActions, Screen):
         if self.review_mode:
             pane.update(self.detail.review)
             return
-        entry = self.current_entry()
-        pane.update(AM.entry_detail(self.cfg, self.campaign_id, entry)
-                    if entry else Text("no events", style="dim"))
+        try:
+            entry = self.current_entry()
+            pane.update(AM.entry_detail(self.cfg, self.campaign_id, entry)
+                        if entry else Text("no events", style="dim"))
+        except Exception as e:
+            pane.update(Text(f"(detail unavailable: {e})", style="red"))
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.data_table.id == "campaign-timeline":
@@ -173,7 +188,7 @@ class CampaignScreen(QueueActions, Screen):
 
     def action_cycle_filter(self) -> None:
         self.filter = FILTERS[(FILTERS.index(self.filter) + 1) % len(FILTERS)]
-        self.paint()
+        self._safe_paint()
 
     def action_toggle_review(self) -> None:
         self.review_mode = not self.review_mode

@@ -206,3 +206,16 @@ def test_reviews_empty_store_prints_empty_table_and_filter_message(tmp_path, mon
     r = run_cli(cfg, monkeypatch, ["spec", "reviews", "--verdict", "split"])
     assert r.exit_code == 0 and "no split spec reviews" in r.output
     assert "no stored spec reviews" not in r.output
+
+
+def test_show_renders_markup_like_text_verbatim(tmp_path, monkeypatch):
+    repo, cfg, spec = _setup(tmp_path)
+    findings = [{"severity": "major", "section": "[red]Design", "title": "[/oops] keep [x]",
+                 "detail": "d [/]"}]
+    write_review(cfg, spec, "SPEC-0001", "revise", findings=findings, size="m", tone="[bold]t",
+                 rationale="why [/x]", model="[red]m",
+                 suggested_splits=[{"title": "a [/b]", "scope": "c [/d]"}])
+    r = _show(cfg, monkeypatch)
+    assert r.exit_code == 0, r.output
+    for text in ("[/oops] keep [x]", "[red]m", "[red]Design", "why [/x]", "a [/b]", "c [/d]"):
+        assert text in r.output, r.output

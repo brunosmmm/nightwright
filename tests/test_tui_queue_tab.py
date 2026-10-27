@@ -4,6 +4,7 @@ import json
 import subprocess
 
 import pytest
+from rich.text import Text
 
 from test_agentic_dashboard import _campaign, _fixture, _iso, _park_fixture
 from test_agentic_e2e import run_cli
@@ -733,5 +734,93 @@ def test_an_empty_queue_shows_the_placeholder(tmp_path):
             await press(app, pilot, ["p", "enter"])     # nothing selectable: no prompt, no crash
             await settle(app, pilot)
             assert len(app.screen_stack) == 1
+
+    _run(drive())
+
+
+# --- bad data and untrusted text (SPEC-0265) ---------------------------------------------
+
+def _status(app):
+    return str(view(app).query_one("#queue-status").content)
+
+
+def _retitled(title):
+    """A `load_queue` that returns the real rows with every title replaced."""
+    import dataclasses
+    real = AM.load_queue
+
+    def load(cfg):
+        rows, header = real(cfg)
+        return [dataclasses.replace(r, title=title) for r in rows], header
+    return load
+
+
+def test_paint_error_keeps_the_app_alive(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    app = _desk(cfg, tab="queue")
+    real = AM.load_queue
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            assert view(app).rows
+            monkeypatch.setattr(AM, "load_queue", lambda cfg: {}["missing"])   # KeyError
+            view(app).reload()
+            await settle(app, pilot)
+            assert app.is_running and "queue failed" in _status(app)
+            monkeypatch.setattr(AM, "load_queue", _retitled(5))    # paint raises in the worker
+            view(app).reload()
+            await settle(app, pilot)
+            assert app.is_running and "queue failed" in _status(app)
+            monkeypatch.setattr(AM, "load_queue", real)           # the next reload recovers
+            view(app).reload()
+            await settle(app, pilot)
+            assert "queue failed" not in _status(app) and view(app).table.row_count
+
+    _run(drive())
+
+
+def test_signature_oserror_is_contained(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    app = _desk(cfg, tab="queue")
+
+    def boom(cfg):
+        raise OSError("dir vanished")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            monkeypatch.setattr(AM, "queue_signature", boom)
+            view(app)._poll()
+            await settle(app, pilot)
+            assert app.is_running and "queue failed: dir vanished" in _status(app)
+
+    _run(drive())
+
+
+def test_queue_signature_survives_an_unlistable_campaigns_dir(tmp_path, monkeypatch):
+    import pathlib
+    repo, cfg, ids = _fixture(tmp_path)
+
+    def boom(self):
+        raise OSError("denied")
+    monkeypatch.setattr(pathlib.Path, "iterdir", boom)
+    assert AM.queue_signature(cfg)[2] == ()
+
+
+def test_titles_render_verbatim(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    title = "Fix [x] and [/bold] stray"
+    monkeypatch.setattr(AM, "load_queue", _retitled(title))
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            table = view(app).table
+            assert app.is_running and table.row_count
+            cells = table.get_row_at(0)
+            assert all(isinstance(c, Text) for c in cells[:5])
+            assert cells[3].plain == title
 
     _run(drive())
