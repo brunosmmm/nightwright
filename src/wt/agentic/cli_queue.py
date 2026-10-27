@@ -26,11 +26,18 @@ from ..console import console
 from ..report import _dump_json
 from . import gates as G
 from . import lease as L
+from . import mailbox as M
 from . import project as P
 from . import queue as Q
 from . import store
 
 _NOT_WRITTEN = "[yellow]not written — re-run with --yes to commit[/]"
+
+
+def _actor(cfg, by) -> str:
+    """SPEC-0273: who a human-command acts as — `--by`, else $WT_MAILBOX_ADDR, else human.
+    ValueError on a bad address (callers run it inside their ValueError → ClickException)."""
+    return M.validate_address(cfg, by or os.environ.get("WT_MAILBOX_ADDR") or "human")
 
 
 def _age_txt(age) -> str:
@@ -808,13 +815,15 @@ def attach(queue_group):
     @queue_group.command("prioritize")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)
     @click.argument("priority", type=int)
+    @click.option("--by", default=None,
+                  help="who acts (default: $WT_MAILBOX_ADDR, then human)")
     @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.prioritize.v1 JSON")
     @click.pass_obj
-    def queue_prioritize(cfg, campaign, priority, do_write, as_json):
+    def queue_prioritize(cfg, campaign, priority, by, do_write, as_json):
         """Set a QUEUED or PARKED campaign's backlog priority (1..5, 1 = admitted first)."""
         try:
-            plan = Q.plan_prioritize(cfg, campaign, priority)
+            plan = Q.plan_prioritize(cfg, campaign, priority, by=_actor(cfg, by))
             if do_write:
                 Q.apply_prioritize(cfg, plan)
         except ValueError as e:
@@ -964,13 +973,15 @@ def attach(queue_group):
     @queue_group.command("park")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)
     @click.option("--reason", required=True, help="why (recorded on the campaign)")
+    @click.option("--by", default=None,
+                  help="who acts (default: $WT_MAILBOX_ADDR, then human)")
     @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.park.v1 JSON")
     @click.pass_obj
-    def queue_park(cfg, campaign, reason, do_write, as_json):
+    def queue_park(cfg, campaign, reason, by, do_write, as_json):
         """Park a campaign. With a loop running, the current step finishes first."""
         try:
-            plan = Q.plan_park(cfg, campaign, reason)
+            plan = Q.plan_park(cfg, campaign, reason, by=_actor(cfg, by))
             if do_write:
                 Q.apply_park(cfg, plan)
         except ValueError as e:
@@ -1020,14 +1031,16 @@ def attach(queue_group):
     @click.option("--note", default=None, help="a note for the next implementer run")
     @click.option("--raise-cap", type=float, default=None, help="new campaign cost cap in USD")
     @click.option("--reset-loops", is_flag=True, help="reset the loop counters")
+    @click.option("--by", default=None,
+                  help="who acts (default: $WT_MAILBOX_ADDR, then human)")
     @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.resume.v1 JSON")
     @click.pass_obj
-    def queue_resume(cfg, campaign, to, note, raise_cap, reset_loops, do_write, as_json):
+    def queue_resume(cfg, campaign, to, note, raise_cap, reset_loops, by, do_write, as_json):
         """Resume a PARKED campaign (optionally with a note, a higher cap, fresh loops)."""
         try:
             plan = Q.plan_resume(cfg, campaign, to=to, note=note, raise_cap=raise_cap,
-                                 reset_loops=reset_loops)
+                                 reset_loops=reset_loops, by=_actor(cfg, by))
             if do_write:
                 Q.apply_resume(cfg, plan)
         except ValueError as e:
@@ -1041,13 +1054,16 @@ def attach(queue_group):
     @queue_group.command("abandon")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)
     @click.option("--keep-worktree", is_flag=True, help="leave the worktree on disk")
+    @click.option("--by", default=None,
+                  help="who acts (default: $WT_MAILBOX_ADDR, then human)")
     @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.abandon.v1 JSON")
     @click.pass_obj
-    def queue_abandon(cfg, campaign, keep_worktree, do_write, as_json):
+    def queue_abandon(cfg, campaign, keep_worktree, by, do_write, as_json):
         """Abandon a PARKED or QUEUED campaign (removes its worktree; keeps the branch)."""
         try:
-            plan = Q.plan_abandon(cfg, campaign, keep_worktree=keep_worktree)
+            plan = Q.plan_abandon(cfg, campaign, keep_worktree=keep_worktree,
+                                  by=_actor(cfg, by))
             if do_write:
                 Q.apply_abandon(cfg, plan)
         except ValueError as e:

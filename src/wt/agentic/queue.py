@@ -1539,8 +1539,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                           extra_events=events)
                     row["to"], row["reason"] = "PARKED", "human_decision"
                     return row
-                _park(cfg, current, "human", detail, _resume_target(to), by="human",
-                      extra_events=events)
+                _park(cfg, current, "human", detail, _resume_target(to),
+                      by=req.get("by") or "human", extra_events=events)
                 row["to"], row["reason"] = "PARKED", "human"
                 return row
             if park and escalating:
@@ -4414,14 +4414,14 @@ def apply_add_idea(cfg, plan: dict, *, by="human") -> dict:
 
 # ---- human commands ------------------------------------------------------------------------------
 
-def plan_prioritize(cfg, campaign, priority) -> dict:
+def plan_prioritize(cfg, campaign, priority, *, by="human") -> dict:
     priority = check_priority(priority)
     st = store.read_state(cfg, campaign)
     if st.get("state") not in ("QUEUED", "WAITING", "PARKED"):
         raise ValueError(f"{campaign} is {st.get('state')}; only QUEUED, WAITING or PARKED "
                          f"campaigns can be re-prioritized")
     return {"campaign": campaign, "state": st.get("state"), "from": _priority(st),
-            "to": priority}
+            "to": priority, "by": by}
 
 
 def apply_prioritize(cfg, plan: dict) -> dict:
@@ -4433,7 +4433,8 @@ def apply_prioritize(cfg, plan: dict) -> dict:
                              f"campaigns can be re-prioritized")
         ev = ("priority", {"from": _priority(st), "to": plan["to"]})
         st["priority"] = plan["to"]
-        return _transition(cfg, st, st["state"], "prioritized", by="human", extra_events=[ev])
+        return _transition(cfg, st, st["state"], "prioritized", by=plan.get("by") or "human",
+                           extra_events=[ev])
 
 
 def _refuse_pending_escalation(cfg, st: dict) -> None:
@@ -4447,14 +4448,14 @@ def _refuse_pending_escalation(cfg, st: dict) -> None:
                          f"Withdraw it first (wt escalations withdraw) to park differently")
 
 
-def plan_park(cfg, campaign, reason) -> dict:
+def plan_park(cfg, campaign, reason, *, by="human") -> dict:
     st = store.read_state(cfg, campaign)
     s = st.get("state")
     if s in TERMINAL_STATES or s == "PARKED":
         raise ValueError(f"{campaign} is {s}; nothing to park")
     _refuse_pending_escalation(cfg, st)
     running = L.is_held(cfg) and s in ACTIVE_STATES
-    return {"campaign": campaign, "state": s, "reason": reason,
+    return {"campaign": campaign, "state": s, "reason": reason, "by": by,
             "mode": "deferred" if running else "immediate",
             "note": ("a loop holds the lease: the running step finishes and is recorded, then "
                      "the park applies" if running else "no loop is running: parks now"),
@@ -4463,7 +4464,7 @@ def plan_park(cfg, campaign, reason) -> dict:
 
 
 def apply_park(cfg, plan: dict) -> dict:
-    cid = plan["campaign"]
+    cid, by = plan["campaign"], plan.get("by") or "human"
     with store.item_lock(cfg, cid):
         st = store.read_state(cfg, cid)
         if st.get("state") in TERMINAL_STATES or st.get("state") == "PARKED":
@@ -4471,15 +4472,16 @@ def apply_park(cfg, plan: dict) -> dict:
         _refuse_pending_escalation(cfg, st)
         if plan["mode"] == "deferred":
             st["park_requested"] = {"reason": "human", "detail": plan["reason"],
-                                    "at": store.now_iso()}
+                                    "at": store.now_iso(), "by": by}
             store.append_event(cfg, cid, "note", {"text": f"park requested: {plan['reason']}",
-                                                  "author": "human"}, by="human")
+                                                  "author": by}, by=by)
             store.write_state(cfg, cid, st)
             return st
-        return _park(cfg, st, "human", plan["reason"], plan["resume_to"], by="human")
+        return _park(cfg, st, "human", plan["reason"], plan["resume_to"], by=by)
 
 
-def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loops=False) -> dict:
+def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loops=False,
+                by="human") -> dict:
     st = store.read_state(cfg, campaign)
     if st.get("state") != "PARKED":
         raise ValueError(f"{campaign} is {st.get('state')}, not PARKED")
@@ -4493,11 +4495,11 @@ def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loop
     return {"campaign": campaign, "from": "PARKED", "to": target, "note": note,
             "raise_cap": raise_cap, "reset_loops": bool(reset_loops),
             "park": park, "cap_usd": (st.get("cost") or {}).get("cap_usd"),
-            "waits_for_slot": waits}
+            "waits_for_slot": waits, "by": by}
 
 
 def apply_resume(cfg, plan: dict) -> dict:
-    cid = plan["campaign"]
+    cid, by = plan["campaign"], plan.get("by") or "human"
     with store.item_lock(cfg, cid):
         st = store.read_state(cfg, cid)
         if st.get("state") != "PARKED":
@@ -4521,9 +4523,9 @@ def apply_resume(cfg, plan: dict) -> dict:
         st.pop("park_requested", None)
         ev = ("resume", {"to": plan["to"], "note": plan.get("note"),
                          "cap_usd": plan.get("raise_cap"), "loops_reset": bool(plan.get("reset_loops"))})
-        st = _enter_slot_or_wait(cfg, st, plan["to"], "resumed", by="human", extra_events=[ev])
+        st = _enter_slot_or_wait(cfg, st, plan["to"], "resumed", by=by, extra_events=[ev])
         from . import escalations as ESC            # SPEC-0232: after the transition succeeded
-        ESC.withdraw_for_campaign(cfg, cid, "campaign resumed by human", "human")
+        ESC.withdraw_for_campaign(cfg, cid, f"campaign resumed by {by}", by)
         return st
 
 
@@ -4541,7 +4543,7 @@ def _reset_spec_write(cfg, st: dict) -> None:
         st["idea"] = fresh
 
 
-def plan_abandon(cfg, campaign, *, keep_worktree=False) -> dict:
+def plan_abandon(cfg, campaign, *, keep_worktree=False, by="human") -> dict:
     st = store.read_state(cfg, campaign)
     if st.get("state") not in ("PARKED", "QUEUED", "WAITING"):
         raise ValueError(f"{campaign} is {st.get('state')}; only PARKED, QUEUED or WAITING "
@@ -4554,7 +4556,7 @@ def plan_abandon(cfg, campaign, *, keep_worktree=False) -> dict:
     return {"campaign": campaign, "from": st.get("state"), "worktree": wt_path,
             "worktree_present": present,
             "remove_worktree": present and not keep_worktree and not adopted,
-            "branch": repo.get("branch")}
+            "branch": repo.get("branch"), "by": by}
 
 
 def _unlink_idea(cfg, st: dict) -> list:
@@ -4591,7 +4593,7 @@ def _unlink_idea(cfg, st: dict) -> list:
 
 
 def apply_abandon(cfg, plan: dict) -> dict:
-    cid = plan["campaign"]
+    cid, by = plan["campaign"], plan.get("by") or "human"
     with store.item_lock(cfg, cid):
         st = store.read_state(cfg, cid)
         if st.get("state") not in ("PARKED", "QUEUED", "WAITING"):
@@ -4616,8 +4618,8 @@ def apply_abandon(cfg, plan: dict) -> dict:
             events += _unlink_idea(cfg, st)
         events.append(("close", {"mode": "abandoned", "merged_sha": None, "pr_url": None,
                                  "gates_seq": None, "worktree_removed": remove}))
-        return _transition(cfg, st, "ABANDONED", "abandoned", by="human", extra_events=events,
-                           withdraw_reason="campaign abandoned by human")
+        return _transition(cfg, st, "ABANDONED", "abandoned", by=by, extra_events=events,
+                           withdraw_reason=f"campaign abandoned by {by}")
 
 
 def tick_row_text(row: dict) -> str:

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0273
 title: "Queue write commands record the real actor (--by), not always human"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -92,15 +92,15 @@ deferred note's `author` is the same actor.
 
 ## Acceptance criteria
 
-- [ ] `wt queue park|resume|abandon|prioritize ... --by conductor --yes` writes ledger events
+- [x] `wt queue park|resume|abandon|prioritize ... --by conductor --yes` writes ledger events
       whose `by` is `conductor` (transition, park/resume/abandon events alike).
-- [ ] With no `--by` and `WT_MAILBOX_ADDR=steward:<Project>`, events carry that address; with
+- [x] With no `--by` and `WT_MAILBOX_ADDR=steward:<Project>`, events carry that address; with
       neither set, `by: human` (unchanged behaviour).
-- [ ] An invalid `--by nobody` exits 1 with the `validate_address` message and writes nothing.
-- [ ] A deferred park requested `--by conductor` is applied by the tick with `by: conductor`
+- [x] An invalid `--by nobody` exits 1 with the `validate_address` message and writes nothing.
+- [x] A deferred park requested `--by conductor` is applied by the tick with `by: conductor`
       and its note has `author: conductor`; resuming a campaign with an open escalation
       `--by conductor` writes the withdrawal note with `by: conductor`.
-- [ ] `--json` output of the four commands includes `by`.
+- [x] `--json` output of the four commands includes `by`.
 
 ## Test plan
 
@@ -131,6 +131,17 @@ deferred note's `author` is the same actor.
 - **Regression guard:** full `uv run pytest`, notably `tests/test_agentic_queue_cli.py` and the
   supersession tests that rely on `by != "tick"`.
 
+### Test record (2026-10-27)
+
+- `uv run pytest -q tests/test_agentic_queue_by.py` — 10 passed (park/resume/abandon `--by`, env
+  default, human default, invalid `--by`/env refused for all four commands with the ledger
+  unchanged, resume and abandon withdrawal notes, deferred park requester).
+- Sabotage: literal `by="human"` back in `apply_park`, `park_requested["by"]` dropped, literal back
+  in `apply_abandon`, `"human"` back in `apply_resume`'s `withdraw_for_campaign` — each made the
+  named test(s) fail; all restored.
+- Full gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` and
+  `uv run pytest -q -x`.
+
 ## Rollout / migration
 
 None; old ledger records keep `by: human`. Behaviour change: a stale or misspelled
@@ -141,11 +152,11 @@ falling back would mislabel the ledger; fix the env or pass `--by`. The conducto
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

@@ -1,0 +1,157 @@
+"""SPEC-0273: `wt queue park|resume|abandon|prioritize` record the real actor (`--by`, else
+$WT_MAILBOX_ADDR, else human) on every ledger event they write."""
+import json
+
+import pytest
+
+from test_agentic_e2e import added, impl_done, make_cfg, make_repo, run_cli, script
+from test_agentic_nonblocking import HeldRunner, _settle
+from wt.agentic import events as E
+from wt.agentic import lease as L
+from wt.agentic import queue as Q
+from wt.agentic import store as S
+
+
+@pytest.fixture(autouse=True)
+def _no_addr(monkeypatch):
+    monkeypatch.delenv("WT_MAILBOX_ADDR", raising=False)
+
+
+def _world(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    return cfg, added(cfg, monkeypatch)
+
+
+def _since(cfg, cid, n):
+    return S.read_ledger(cfg, cid)[n:]
+
+
+def test_park_resume_abandon_record_by(tmp_path, monkeypatch):
+    cfg, cid = _world(tmp_path, monkeypatch)
+    n = len(S.read_ledger(cfg, cid))
+    r = run_cli(cfg, monkeypatch, ["queue", "park", cid, "--reason", "x", "--by", "conductor",
+                                   "--yes", "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["by"] == "conductor"
+    new = _since(cfg, cid, n)
+    assert new and {e["by"] for e in new} == {"conductor"}, new
+    assert S.read_state(cfg, cid)["state"] == "PARKED"
+
+    n = len(S.read_ledger(cfg, cid))
+    r = run_cli(cfg, monkeypatch, ["queue", "resume", cid, "--by", "conductor", "--yes"])
+    assert r.exit_code == 0, r.output
+    new = _since(cfg, cid, n)
+    assert {"resume", "transition"} <= {e["type"] for e in new}
+    assert {e["by"] for e in new} == {"conductor"}, new
+
+    run_cli(cfg, monkeypatch, ["queue", "park", cid, "--reason", "y", "--yes"])
+    n = len(S.read_ledger(cfg, cid))
+    r = run_cli(cfg, monkeypatch, ["queue", "abandon", cid, "--by", "steward:Meta-Tools",
+                                   "--yes", "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["by"] == "steward:Meta-Tools"
+    new = _since(cfg, cid, n)
+    assert new and {e["by"] for e in new} == {"steward:Meta-Tools"}, new
+    assert S.read_state(cfg, cid)["state"] == "ABANDONED"
+
+
+def test_prioritize_records_by_from_env(tmp_path, monkeypatch):
+    cfg, cid = _world(tmp_path, monkeypatch)
+    monkeypatch.setenv("WT_MAILBOX_ADDR", "conductor")
+    n = len(S.read_ledger(cfg, cid))
+    r = run_cli(cfg, monkeypatch, ["queue", "prioritize", cid, "2", "--yes", "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["by"] == "conductor"
+    new = _since(cfg, cid, n)
+    assert new and {e["by"] for e in new} == {"conductor"}, new
+    monkeypatch.setenv("WT_MAILBOX_ADDR", "steward:Meta-Tools")
+    n = len(S.read_ledger(cfg, cid))
+    run_cli(cfg, monkeypatch, ["queue", "prioritize", cid, "3", "--yes"])
+    assert {e["by"] for e in _since(cfg, cid, n)} == {"steward:Meta-Tools"}
+
+
+def test_default_by_is_human(tmp_path, monkeypatch):
+    cfg, cid = _world(tmp_path, monkeypatch)
+    n = len(S.read_ledger(cfg, cid))
+    r = run_cli(cfg, monkeypatch, ["queue", "prioritize", cid, "2", "--yes", "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["by"] == "human"
+    new = _since(cfg, cid, n)
+    assert new and {e["by"] for e in new} == {"human"}, new
+
+
+@pytest.mark.parametrize("cmd", [["park", "--reason", "x"], ["prioritize", "2"], ["resume"],
+                                 ["abandon"]])
+def test_invalid_by_refused(tmp_path, monkeypatch, cmd):
+    cfg, cid = _world(tmp_path, monkeypatch)
+    run_cli(cfg, monkeypatch, ["queue", "park", cid, "--reason", "setup", "--yes"])
+    before = S.read_ledger(cfg, cid)
+    argv = ["queue", cmd[0], cid, *cmd[1:], "--yes"]
+    r = run_cli(cfg, monkeypatch, argv + ["--by", "nobody"])
+    assert r.exit_code == 1 and "unknown address" in r.output, r.output
+    assert S.read_ledger(cfg, cid) == before
+    monkeypatch.setenv("WT_MAILBOX_ADDR", "steward:NoSuchProject")
+    r = run_cli(cfg, monkeypatch, argv)
+    assert r.exit_code == 1 and "unknown steward project" in r.output, r.output
+    assert S.read_ledger(cfg, cid) == before
+    assert S.read_state(cfg, cid)["state"] == "PARKED"
+
+
+def test_resume_withdrawal_records_by(tmp_path, monkeypatch):
+    cfg, cid = _world(tmp_path, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "escalate", cid, "--question", "ship?",
+                                   "--option", "yes", "--from", "conductor", "--yes"])
+    assert r.exit_code == 0, r.output
+    assert S.read_state(cfg, cid)["park"]["reason"] == "human_decision"
+    n = len(S.read_ledger(cfg, cid))
+    r = run_cli(cfg, monkeypatch, ["queue", "resume", cid, "--by", "conductor", "--yes"])
+    assert r.exit_code == 0, r.output
+    notes = [e for e in _since(cfg, cid, n) if e["type"] == "note"]
+    [w] = [e for e in notes if "withdrawn" in e["text"]]
+    assert w["by"] == "conductor" and w["author"] == "conductor"
+    assert "campaign resumed by conductor" in w["text"]
+    [ev] = E.read_since(cfg, 0, types=["escalation_withdrawn"])
+    assert ev["by"] == "conductor"
+
+
+def test_abandon_withdrawal_records_by(tmp_path, monkeypatch):
+    cfg, cid = _world(tmp_path, monkeypatch)
+    run_cli(cfg, monkeypatch, ["queue", "escalate", cid, "--question", "ship?",
+                               "--from", "conductor", "--yes"])
+    n = len(S.read_ledger(cfg, cid))
+    r = run_cli(cfg, monkeypatch, ["queue", "abandon", cid, "--by", "conductor", "--yes"])
+    assert r.exit_code == 0, r.output
+    [w] = [e for e in _since(cfg, cid, n) if e["type"] == "note" and "withdrawn" in e["text"]]
+    assert w["by"] == "conductor" and "campaign abandoned by conductor" in w["text"]
+
+
+def test_deferred_park_keeps_requester(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    runner = HeldRunner(cfg, "SPEC-0001")
+    pool = Q.StepPool()
+    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    try:
+        cid = added(cfg, monkeypatch)
+        Q.tick(cfg, runner=runner, pool=pool)
+        Q.tick(cfg, runner=runner, pool=pool)                 # implementer in flight
+        r = run_cli(cfg, monkeypatch, ["queue", "park", cid, "--reason", "later", "--by",
+                                       "conductor", "--yes", "--json"])
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output)["mode"] == "deferred"
+        st = S.read_state(cfg, cid)
+        assert st["park_requested"]["by"] == "conductor"
+        [note] = [e for e in S.read_ledger(cfg, cid, types=["note"])
+                  if "park requested" in e["text"]]
+        assert note["author"] == "conductor" and note["by"] == "conductor"
+        runner.release.set()
+        _settle(pool, cid)
+        Q.tick(cfg, runner=runner, pool=pool)
+        assert S.read_state(cfg, cid)["state"] == "PARKED"
+        [park] = S.read_ledger(cfg, cid, types=["park"])
+        assert park["by"] == "conductor", park
+    finally:
+        runner.release.set()
+        pool.shutdown()
+        lease.release()
