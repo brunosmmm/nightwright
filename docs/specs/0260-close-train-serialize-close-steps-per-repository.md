@@ -297,6 +297,11 @@ Restore both and record the two failures in the Test record.
   failed (`legacy` sorted last instead of second). Restored.
 - `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`: exit 0.
 - Full `uv run pytest -q -x`: 3116 passed, 3 skipped.
+- Gate follow-up (loop 2): `test_short_origin_forms` in `tests/test_agentic_profiles.py`
+  assumed pytest's tmp dir is outside `$HOME`. It now monkeypatches `Path.home` to a path
+  disjoint from `tmp_path`. `uv run pytest -q tests/test_agentic_profiles.py`: 134 passed.
+  Full `uv run pytest -q -x --basetemp=$HOME/.cache/...` (tmp under `$HOME`, as in the gate):
+  3116 passed, 3 skipped.
 
 ## Rollout / migration
 
