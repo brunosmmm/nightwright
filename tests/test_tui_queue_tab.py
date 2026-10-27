@@ -824,3 +824,46 @@ def test_titles_render_verbatim(tmp_path, monkeypatch):
             assert cells[3].plain == title
 
     _run(drive())
+
+
+def test_an_unexpected_action_error_is_an_error_notification(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+
+    def boom(cfg, plan):
+        raise RuntimeError("unexpected")
+    monkeypatch.setattr(Q, "apply_prioritize", boom)
+    before = snapshot(cfg, cid)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await act(app, pilot, "backlog", cid, ["P", "k", "enter", "enter"])
+            assert app.is_running
+            errs = [m for m, k in app.notes if k.get("severity") == "error"]
+            assert len(errs) == 1 and errs[0].startswith("queue action failed")
+            assert "RuntimeError" in errs[0] and not view(app)._busy
+
+    _run(drive())
+    assert snapshot(cfg, cid) == before
+
+
+def test_a_failed_reload_is_retried_by_the_next_poll(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    app = _desk(cfg, tab="queue")
+    real = AM.load_queue
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            monkeypatch.setattr(AM, "load_queue", lambda cfg: {}["missing"])
+            view(app).reload()
+            await settle(app, pilot)
+            assert "queue failed" in _status(app)
+            monkeypatch.setattr(AM, "load_queue", real)    # nothing changes on disk
+            view(app)._poll()
+            await settle(app, pilot)
+            assert "queue failed" not in _status(app) and view(app).table.row_count
+
+    _run(drive())

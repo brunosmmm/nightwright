@@ -636,7 +636,48 @@ def test_resize_after_paint_error_keeps_the_app_alive(tmp_path, monkeypatch):
     _run(drive())
 
 
-def test_age_s_tolerates_out_of_range_naive_timestamps():
-    assert MT.AM.age_s("0001-01-01T00:00:00") is None or MT.AM.age_s("0001-01-01T00:00:00") >= 0
-    assert MT.AM.age_s("9999-12-31T23:59:59") is None or MT.AM.age_s("9999-12-31T23:59:59") >= 0
-    assert MT.AM.age_s(None) is None
+def test_age_s_tolerates_out_of_range_naive_timestamps(monkeypatch):
+    import datetime as dt
+    import time
+    monkeypatch.setenv("TZ", "Etc/GMT+12")
+    time.tzset()
+    try:
+        # naive year 1 / year 9999 cannot be converted to local time: no age, no exception
+        assert MT.AM.age_s("0001-01-01T00:00:00") is None
+        assert MT.AM.age_s("9999-12-31T23:59:59") is None
+        assert MT.AM.age_s(None) is None
+        assert MT.AM.age_s("2026-01-01T00:00:00") >= 0
+
+        class Overflowing(dt.datetime):
+            def astimezone(self, tz=None):
+                raise OverflowError("date value out of range")
+
+        class Shim:
+            timezone, timedelta = dt.timezone, dt.timedelta
+            datetime = Overflowing
+        monkeypatch.setattr(MT.AM, "dt", Shim)
+        assert MT.AM.age_s("2026-01-01T00:00:00") is None
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+def test_send_flow_catch_all_notifies(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    ask(cfg, frm="conductor", to="human", kind="info", text="hello")
+    app = _desk(cfg, tab="mailbox")
+
+    def boom(*a, **kw):
+        raise RuntimeError("unexpected")
+    monkeypatch.setattr(AM, "send_plan", boom)
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await press(app, pilot, ["r", "enter", *"yes", "ctrl+s"])
+            await settle(app, pilot)
+            assert app.is_running and not mv(app)._busy
+            assert any(m.startswith("mailbox action failed") and "RuntimeError" in m
+                       for m, k in app.notes if k.get("severity") == "error")
+
+    _run(drive())

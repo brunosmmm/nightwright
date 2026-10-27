@@ -213,7 +213,8 @@ class QueueView(QueueActions, Vertical):
             previous = self._cursor_target()        # against the rows the cursor is on now
             self.rows, self.header = rows, header
             self.paint(previous)
-        except Exception as e:      # any failure shows in the status line; the next poll retries
+        except Exception as e:      # any failure shows in the status line
+            self._signature = None          # forget the on-disk state so the next poll retries
             self._show_error(e)
         finally:
             self._loading = False

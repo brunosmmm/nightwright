@@ -283,6 +283,55 @@ def test_reload_error_keeps_the_app_alive(tmp_path, monkeypatch):
     _run(drive())
 
 
+def test_a_failed_paint_is_retried_by_the_next_poll(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed(cfg, cid)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await open_screen(app, pilot, cid, _section_of(app, cid))
+            monkeypatch.setattr(CS.CampaignScreen, "paint",
+                                lambda self, previous=None: (_ for _ in ()).throw(TypeError("x")))
+            screen(app).reload()
+            await settle(app, pilot)
+            assert "campaign failed" in status(app)
+            monkeypatch.undo()                  # nothing changes on disk
+            screen(app)._poll()
+            await settle(app, pilot)
+            assert app.is_running and "campaign failed" not in status(app)
+
+    _run(drive())
+
+
+def test_a_signature_error_in_poll_is_contained(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed(cfg, cid)
+    app = _desk(cfg, tab="queue")
+
+    def boom(cfg, campaign_id):
+        raise RuntimeError("no signature")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await open_screen(app, pilot, cid, _section_of(app, cid))
+            screen(app)._signature = "stale"
+            monkeypatch.setattr(CS.AM, "campaign_signature", boom)
+            screen(app)._poll()                 # falls back to a reload, which succeeds
+            await settle(app, pilot)
+            assert app.is_running and screen(app)._signature != "stale"
+            monkeypatch.setattr(CS.AM, "load_campaign", lambda cfg, cid: {}["missing"])
+            screen(app)._poll()
+            await settle(app, pilot)
+            assert app.is_running and "campaign failed" in status(app)
+
+    _run(drive())
+
+
 def test_timeline_text_renders_verbatim(tmp_path):
     from rich.text import Text
     repo, cfg, ids = _fixture(tmp_path)

@@ -234,6 +234,17 @@ duplicate id instead of crashing, and `event_time` tolerates `OverflowError`.
   `test_age_s_tolerates_out_of_range_naive_timestamps` (mailbox tab); the four TUI test files
   pass (97 passed).
 
+- Review round 2: `QueueView._reload_async` now resets `_signature` to `None` on failure (as the
+  campaign screen does), so the next poll retries instead of the 15s periodic reload. New tests:
+  `test_an_unexpected_action_error_is_an_error_notification` (queue `_action_flow` catch-all),
+  `test_send_flow_catch_all_notifies` (mailbox `_guarded` catch-all),
+  `test_a_failed_reload_is_retried_by_the_next_poll` (queue), `test_a_failed_paint_is_retried_by_the_next_poll`
+  and `test_a_signature_error_in_poll_is_contained` (campaign screen). `test_age_s_...` now fixes `TZ`
+  and asserts `None` for the out-of-range naive inputs, plus a stub whose `astimezone` raises
+  `OverflowError`. Sabotage (each made its test fail, then reverted): the queue `_signature = None`
+  reset, both `except Exception` catch-alls, the campaign `_signature = None` reset, and `age_s`
+  with `astimezone()` outside the `try`.
+
 ## Definition of done
 
 - [x] Acceptance criteria all met.
