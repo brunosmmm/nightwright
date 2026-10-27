@@ -430,31 +430,58 @@ def blocked_items(cfg, now, sett, *, after=None) -> list[dict]:
     return sorted(out, key=lambda r: -r["blocked_for_s"])
 
 
+_PERSONA_STATES = ("SPEC_WRITING", "IMPLEMENTING", "REVIEWING", "TRIAGING")
+
+
+def _latest_age(cfg, cid, types, now) -> float | None:
+    """Age of the newest ledger event of one of `types`, else None."""
+    last = store.read_ledger(cfg, cid, types=types)[-1:]
+    return _age_s(last[0].get("ts"), now) if last else None
+
+
 def stuck_items(cfg, now, sett) -> list[dict]:
-    """Active campaigns in one state longer than `stuck_after_s`, unless a persona run is in
-    flight within its budget, or (GATING/CLOSING) the in-process gate is within `gate_budget_s`."""
+    """Active campaigns with no progress for longer than `stuck_after_s` (SPEC-0270). Persona
+    states measure idle time (since the latest `run.end`, never while a run is in flight);
+    GATING/CLOSING measure time since the latest attempt (entry, `head_since`, `gate` event)
+    against `max(stuck_after_s, gate_budget_s)`. `stuck_s` is the clock compared."""
     from .queue import ACTIVE_STATES
     out = []
     for st in store.list_campaigns(cfg):
         if st.get("state") not in ACTIVE_STATES:
             continue
-        age = _since_state(cfg, st, now)
-        if age is None or age <= sett["stuck_after_s"]:
+        since_state = _since_state(cfg, st, now)
+        if since_state is None:
             continue
-        run = _open_run(cfg, st["id"])
-        if run:
-            if (_age_s(run.get("ts"), now) or 0) <= float(run.get("timeout_s") or 1800) \
+        cid, state = st["id"], st["state"]
+        run = _open_run(cfg, cid)
+        limit = sett["stuck_after_s"]
+        if state in _PERSONA_STATES:
+            if run:                                  # in flight: `run_overdue` owns it
+                continue
+            clock = since_state
+            ended = _latest_age(cfg, cid, ["run.end"], now)
+            if ended is not None:
+                clock = min(clock, ended)
+        elif state in ("GATING", "CLOSING"):
+            if run and (_age_s(run.get("ts"), now) or 0) <= float(run.get("timeout_s") or 1800) \
                     + sett["overdue_grace_s"]:
                 continue
-        elif st["state"] in ("GATING", "CLOSING"):
-            closing = (st.get("closing") or {}) if st["state"] == "CLOSING" else {}
-            if closing.get("queued_behind"):     # SPEC-0260: waiting in the close train
+            closing = (st.get("closing") or {}) if state == "CLOSING" else {}
+            if closing.get("queued_behind"):         # SPEC-0260: waiting in the close train
                 continue
-            budget_age = _age_s(closing.get("head_since"), now)    # the head: since its turn
-            if (age if budget_age is None else budget_age) <= sett["gate_budget_s"]:
+            ages = [since_state, _age_s(closing.get("head_since"), now),
+                    _latest_age(cfg, cid, ["gate"], now)]
+            clock = min(a for a in ages if a is not None)
+            limit = max(limit, sett["gate_budget_s"])
+        else:
+            if run and (_age_s(run.get("ts"), now) or 0) <= float(run.get("timeout_s") or 1800) \
+                    + sett["overdue_grace_s"]:
                 continue
-        out.append({"campaign": st["id"], "spec_id": st.get("spec_id"), **_label_kw(st), "state": st["state"],
-                    "stuck_s": round(age)})
+            clock = since_state
+        if clock <= limit:
+            continue
+        out.append({"campaign": cid, "spec_id": st.get("spec_id"), **_label_kw(st), "state": state,
+                    "stuck_s": round(clock), "in_state_s": round(since_state)})
     return out
 
 
@@ -706,7 +733,8 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
                     b["campaign"], {k: b[k] for k in ("blocked_for_s", "blocked_by")}))
     for s_ in stuck_items(cfg, now, sett):
         out.append((f"state_stuck:{s_['campaign']}:{s_['state']}", "state_stuck", s_["campaign"],
-                    {"state": s_["state"], "stuck_s": s_["stuck_s"]}))
+                    {"state": s_["state"], "stuck_s": s_["stuck_s"],
+                     "in_state_s": s_["in_state_s"]}))
     for r_ in ready_not_admitted_items(cfg, now, sett):
         out.append((f"ready_not_admitted:{r_['campaign']}", "ready_not_admitted",
                     r_["campaign"], {k: v for k, v in r_.items()

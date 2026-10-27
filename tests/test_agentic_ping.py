@@ -123,7 +123,8 @@ def test_stuck_threshold_and_in_budget_exclusion(tmp_path):
     r = json.loads(lines[-1]); r["ts"] = iso(100); lines[-1] = json.dumps(r)
     rpath.write_text("\n".join(lines) + "\n")
     assert E.stuck_items(cfg, at(2000), sett) == []
-    assert E.stuck_items(cfg, at(100 + 3000 + 61), sett)    # past budget + grace: stuck
+    # SPEC-0270: an open run never makes the state stuck, even overdue (`run_overdue` owns it)
+    assert E.stuck_items(cfg, at(100 + 3000 + 61), sett) == []
 
 
 def test_gating_in_process_gate_within_budget_is_not_stuck(tmp_path):
@@ -228,3 +229,64 @@ def test_old_ping_event_validates(tmp_path):
            "counts": {}}
     E.validate("conductor_ping", old)               # no waiting_not_admitted / runner keys
     assert E.append(cfg, "conductor_ping", data=old)["type"] == "conductor_ping"
+
+
+def _ev_at(cfg, cid, etype, ts_s, payload=None):
+    """Append a ledger event and stamp it at T0+ts_s."""
+    import json
+    _ev(cfg, cid, etype, payload or {})
+    path = store._ledger_path(cfg, cid)
+    lines = path.read_text().splitlines()
+    r = json.loads(lines[-1]); r["ts"] = iso(ts_s); lines[-1] = json.dumps(r)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _run(cfg, cid, start_s, end_s=None, timeout_s=1800):
+    _ev_at(cfg, cid, "run.start", start_s,
+           {"persona": "implementer", "run_id": "001", "timeout_s": timeout_s})
+    if end_s is not None:
+        _ev_at(cfg, cid, "run.end", end_s, {"persona": "implementer", "run_id": "001"})
+
+
+def test_stuck_ignores_persona_state_right_after_run_end(tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0905-20261025-aaaa", state="IMPLEMENTING")
+    _enter(cfg, cid, "IMPLEMENTING", 0)
+    _run(cfg, cid, 10, end_s=1995)
+    sett = E.settings(cfg)
+    assert E.stuck_items(cfg, at(2000), sett) == []
+    rows = E.stuck_items(cfg, at(2995), sett)
+    assert [r["campaign"] for r in rows] == [cid]
+    assert rows[0]["stuck_s"] == 1000 and rows[0]["in_state_s"] == 2995
+
+
+def test_stuck_skips_open_run_even_when_overdue(tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0906-20261025-aaaa", state="IMPLEMENTING")
+    _enter(cfg, cid, "IMPLEMENTING", 0)
+    _run(cfg, cid, 0, timeout_s=1800)
+    sett = E.settings(cfg)
+    assert E.stuck_items(cfg, at(3000), sett) == []
+    keys = [k for k, *_ in E.watchdog_checks(cfg, now=at(3000))]
+    assert any(k.startswith("run_overdue") for k in keys)
+    assert not any(k.startswith("state_stuck") for k in keys)
+
+
+def test_stuck_closing_measured_from_latest_gate_event(tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0907-20261025-aaaa", state="CLOSING")
+    _enter(cfg, cid, "CLOSING", 0)
+    _ev_at(cfg, cid, "gate", 2200)
+    sett = E.settings(cfg)
+    assert E.stuck_items(cfg, at(2500), sett) == []          # entered 2500s ago, gate 300s ago
+    assert E.stuck_items(cfg, at(4200), sett)                # gate 2000s old
+    _set_state(cfg, cid, closing={"queued_behind": "SPEC-0001"})
+    assert E.stuck_items(cfg, at(4200), sett) == []          # train waiter
+
+
+def test_stuck_persona_state_without_runs_uses_state_age(tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0908-20261025-aaaa", state="REVIEWING")
+    _enter(cfg, cid, "REVIEWING", 0)
+    rows = E.stuck_items(cfg, at(1000), E.settings(cfg))
+    assert rows[0]["stuck_s"] == 1000 and rows[0]["in_state_s"] == 1000

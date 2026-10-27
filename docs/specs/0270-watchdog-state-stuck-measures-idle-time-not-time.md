@@ -1,7 +1,7 @@
 ---
 id: SPEC-0270
 title: "Watchdog state_stuck measures idle time, not time in state"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -107,17 +107,17 @@ within seconds of the implementer's `run.end`. It also fired on CLOSING campaign
 
 ## Acceptance criteria
 
-- [ ] An IMPLEMENTING campaign that has been in state for 2000 s, whose last run ended 5 s ago
+- [x] An IMPLEMENTING campaign that has been in state for 2000 s, whose last run ended 5 s ago
       and which has no open run, is **not** in `stuck_items`. The same campaign with its last
       `run.end` 1000 s ago is in `stuck_items`, with `stuck_s ≈ 1000` and `in_state_s ≈ 2000`.
-- [ ] An IMPLEMENTING campaign with an open run aged 3000 s (past its timeout) is not in
+- [x] An IMPLEMENTING campaign with an open run aged 3000 s (past its timeout) is not in
       `stuck_items`, and `run_overdue` still fires for it.
-- [ ] A CLOSING campaign that entered 2500 s ago and whose latest `gate` event is 300 s old is
+- [x] A CLOSING campaign that entered 2500 s ago and whose latest `gate` event is 300 s old is
       not stuck. With its latest `gate` event 2000 s old it is stuck. A `queued_behind` waiter
       is never stuck.
-- [ ] A persona-state campaign with no runs at all, in state for 1000 s, is stuck (the idle
+- [x] A persona-state campaign with no runs at all, in state for 1000 s, is stuck (the idle
       clock falls back to `since_state`).
-- [ ] The existing `test_agentic_ping.py` stuck tests and `test_agentic_close_train.py`
+- [x] The existing `test_agentic_ping.py` stuck tests and `test_agentic_close_train.py`
       stuck test pass, updated only where they asserted the old `stuck_s` meaning.
 
 ## Test plan
@@ -140,17 +140,28 @@ within seconds of the implementer's `run.end`. It also fired on CLOSING campaign
 - **Regression guard:** the full `uv run pytest`, in particular `tests/test_agentic_ping.py`,
   `tests/test_agentic_close_train.py` and `tests/test_agentic_watchdog_gaps.py`.
 
+### Test record (2026-10-27)
+
+- `uv run pytest tests/test_agentic_ping.py tests/test_agentic_close_train.py tests/test_agentic_watchdog_gaps.py`: 43 passed.
+- Sabotage: `idle = since_state` fails `test_stuck_ignores_persona_state_right_after_run_end`; dropping the `gate` event fails `test_stuck_closing_measured_from_latest_gate_event`. Both restored.
+- Full `uv run pytest`: 3309 passed, 3 skipped.
+- Manual `wt queue events --follow` check is post-merge; not performed here.
+
+### As shipped
+
+`test_stuck_threshold_and_in_budget_exclusion` last assertion changed: an overdue open run in a persona state is no longer `state_stuck` (it asserted the old meaning; `run_overdue` owns it).
+
 ## Rollout / migration
 
 None. Already-emitted `state_stuck` keys stay deduped.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed (manual follow deferred post-merge).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
