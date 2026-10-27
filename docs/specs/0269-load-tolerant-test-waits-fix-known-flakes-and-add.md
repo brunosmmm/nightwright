@@ -266,6 +266,13 @@ scope here.
   copies in one round), so it is not caused by this change. It is the likely cause of the
   three failures in the first load round (the output was not captured). Followup: catch
   `NoMatches` in `_side_async`, or cancel the `events-side` worker on unmount.
+- **Teardown guard added (loop 3), a departure from "tests only":** the full gate failed on
+  this race (`test_a_malformed_record_does_not_break_the_stream`, `WorkerFailed: NoMatches
+  ('#events-conditions')`). `src/wt/tui/events_tab.py` now imports `NoMatches` and
+  `_side_async` wraps its four `_render_*` calls (after the `asyncio.to_thread` awaits) in
+  `try/except NoMatches: return`; the `finally` still clears `_side_loading`. The normal path
+  is unchanged. This is a small product change in a tests-only spec, made because the race
+  failed the required gate.
 - The before/after full-suite wall time was not measured: the machine was shared with other
   campaigns, so medians of 3 would not be comparable. Data point: the full gate run is
   recorded in the line below.

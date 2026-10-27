@@ -14,6 +14,7 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.widgets import DataTable, Input, Static
 
 from .. import report as R
@@ -336,10 +337,13 @@ class EventsView(Horizontal):
                 self.health = AM.stream_health(self.cfg, followers)
             except Exception as e:  # a bad line must not take the desk down
                 followers = f"followers failed: {e}"
-            self._render_conditions(conditions)
-            self._render_followers(followers)
-            self._render_status()
-            self._render_ping()
+            try:
+                self._render_conditions(conditions)
+                self._render_followers(followers)
+                self._render_status()
+                self._render_ping()
+            except NoMatches:   # the app closed during the thread await: the panels are gone
+                return
         finally:
             self._side_loading = False
 
