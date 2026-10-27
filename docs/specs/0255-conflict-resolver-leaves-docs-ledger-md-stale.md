@@ -21,22 +21,42 @@ first, which hides the staleness from the gate, but it rewrites the working tree
 requires the merged tree to equal that gated head, and nothing commits the regenerated file. So
 a stale `docs/LEDGER.md` can still land on main and the next campaign's pytest sees drift.
 
+## Goals / Non-goals
+
+**Goals:** a rebased close never gates or merges a stale declared generated file; the regenerated
+file is committed so gated head == merged head.
+**Non-goals:** new `project.yaml` keys; changing how `gitops.rebase` resolves conflicts; changing
+the resolver persona or prompt; dropping the `--write-ledger` step from the spec-lint gate;
+repairing stale ledgers already on main outside a close.
+
 ## Decision
 
 In `close.prepare_close` (src/wt/agentic/close.py), right after a successful rebase (step 4, after
 the `rb.regenerated` finding) and before `head = git.rev_parse(worktree)`, run every
 `merge.regenerate` command in the worktree and, if any declared path changed, commit exactly those
-paths with the message `regenerate generated files after rebase` (record a `commit` event and an
+paths with the message `wt(<campaign id>): regenerate generated files after rebase` (the existing
+`wt(<id>): ...` convention of the close-time snapshot; record a `commit` event and an
 info `finding`). This is unconditional on whether a resolver ran (cheap, idempotent, and the only
 sound place); a command failure is a close park `regenerate_failed` with the output tail, resume
-to CLOSING. Scope is only paths declared in `merge.regenerate`; nothing else is added.
+to CLOSING. `regenerate_failed` is added to `queue.PARK_REASONS` (queue.py:62) with the default
+conductor owner (`PARK_OWNERS` unchanged; it is a tooling failure, not a human decision); resume
+goes to CLOSING. After the commit the helper checks the worktree is clean (ignoring the gate's own
+output); if the regenerate commands left undeclared files modified or untracked that were not
+already dirty before they ran, close parks `regenerate_failed` naming them rather than gating a
+dirty tree. For merge-request campaigns (`own_worktree` false) the new commit is wt-generated, not
+the requester's work, so SPEC-0233's "close never commits the requester's work" is not violated.
+Docs-only merges: option (a) - paths declared in `merge.regenerate` are excluded from
+`docs_only_violations` (in both `close.py:412` and `queue.py:3692` callers), because
+`docs/LEDGER.md` is not in `merge.docs_only_paths` and a stale-ledger repair is exactly the case
+that would otherwise park `not_docs_only` for a requester who touched only allowlisted docs. Scope is only paths declared in `merge.regenerate`; nothing else is added.
 
 ## Design
 
 `close.py`: new helper `_regenerate_after_rebase(worktree, regen, events) -> str | None` using
-`git._run(["sh","-c",cmd])` like `gitops.rebase`, then `git.git(worktree,"add","--",*paths)` and a
+a new small public `gitops.run_regenerate(worktree, cmd)` (extracted from the code `gitops.rebase`
+already uses, shared by both; close.py does not call private `git._run`), then `git.git(worktree,"add","--",*paths)` and a
 commit only when `diff --cached --quiet` is non-zero (not `commit_all`, which would add the whole
-tree). The docs-only merge path is covered too since the helper runs before the branch. `head`
+tree). The helper runs before the docs-only branch, with the exclusion above. `head`
 is read after it so the gated and merged heads stay equal. No project.yaml change.
 
 ## Alternatives considered
@@ -52,7 +72,12 @@ is read after it so the gated and merged heads stay equal. No project.yaml chang
       regenerated file before capturing `head` and gating.
 - [ ] The merged tree equals the gated tree and contains the regenerated file.
 - [ ] No commit when nothing changed; undeclared dirty paths are never committed.
-- [ ] A failing regenerate command parks `regenerate_failed` without merging.
+- [ ] A failing regenerate command parks `regenerate_failed` without merging; the reason is in
+      `PARK_REASONS` (conductor-owned) and resume goes to CLOSING.
+- [ ] A regenerate command that dirties an undeclared file parks `regenerate_failed`.
+- [ ] A `--docs-only` merge whose only extra change is a regenerated declared path does not park
+      `not_docs_only`.
+- [ ] The commit emits a `commit` event and an info `finding` in `PreparedClose.events`.
 
 ## Test plan
 
@@ -61,7 +86,13 @@ Automated (`tests/test_agentic_close_regenerate.py`, git fixtures from `test_age
   source file): `prepare_close` returns a head one commit past the rebase, `git show HEAD` touches
   only the declared path, and an unrelated untracked file is not committed.
 - Already-fresh file: head unchanged, no extra commit.
-- Regenerate cmd exiting 1: outcome parks `regenerate_failed`.
+- Stale-file test also asserts the `commit` event and info `finding` in `PreparedClose.events` and
+  the `wt(<id>): ...` message.
+- Regenerate cmd exiting 1: outcome parks `regenerate_failed`; `park`/`resume` accept the reason.
+- Regenerate cmd that also writes an undeclared file: parks `regenerate_failed`.
+- Docs-only close with a stale `docs/LEDGER.md`: regenerated, committed, no `not_docs_only` park.
+- Merge-request (adopted branch, `own_worktree` false) close: the regenerate commit is added and
+  the requester's own commits are untouched.
 - A resolver-style rebase (conflict resolved by the fake resolver, then re-close) ends with the
   regenerated file in the merged tree.
 - **Sabotage check:** remove the helper call; the stale-file test must fail.
