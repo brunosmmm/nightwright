@@ -270,6 +270,8 @@ phase.
   passed; full `uv run pytest -q -x`: 2604 passed, 3 skipped; `python3 tools/spec_lint.py` exits 0.
 - Loop-3 fix: `uv run pytest tests/test_agentic_spec_review_loop.py tests/test_agentic_spec_writer.py`:
   102 passed (accept-failure resumes assert one review; new human-edit re-review test).
+- Loop-4 fixes: `uv run pytest tests/test_agentic_spec_review_loop.py tests/test_agentic_spec_writer.py`:
+  107 passed; full `uv run pytest -q -x`: 2860 passed, 3 skipped; `python3 tools/spec_lint.py` exits 0.
 - Loop-2 fixes: `uv run pytest tests/test_agentic_spec_review_loop.py`: 36 passed (new: plain
   resume of the unchanged park, after-revision accept failures before and after the commit,
   stray-file cleanup, dirty-over-accepted precheck order).
@@ -328,6 +330,22 @@ phase.
   `test_commit_failure_restores_the_worktree_then_a_resume_accepts_without_a_second_review`; the
   regeneration-failure test asserts one review too; the human-edit case is
   `test_a_human_edit_of_the_approved_spec_re_reviews_after_an_accept_failure`).
+
+- **Loop-4 review fixes.** (1) The precheck's `accepted` short-circuit finishes a committed accept
+  only when this campaign has a `spec_review` event and no `spec_accepted` event. Otherwise
+  (resume `--to SPEC_REVIEW` after acceptance, or on a plain spec campaign) the precheck returns
+  `already_accepted`: no run, no re-baseline of `spec_at_open.md` / `sha256_at_open`, no second
+  `spec_accepted`, `pending_brief` untouched; the campaign parks `spec_review_exhausted`
+  ("the spec is already accepted; there is nothing to review"), resume_to IMPLEMENTING. Tests:
+  `test_resume_to_spec_review_after_acceptance_keeps_the_close_guard_baseline`,
+  `test_resume_to_spec_review_on_a_plain_spec_campaign_runs_nothing`. (2) Before the post-review
+  `reset --hard H`, `_save_worktree_changes` keeps a moved HEAD and the tracked uncommitted diff
+  (`git stash create`, not the shared stash stack) under `refs/wt/spec-review-saved/<run>/{head,wip}`;
+  a `note` ledger event names them and the park detail ends "(worktree changes saved as …)" after
+  "reviewer modified the worktree". Test: `test_a_reset_after_the_review_keeps_a_human_edit_and_commit_in_refs`.
+  (3) Tests added: an explicit `--to` beats the legacy-park redirect; a `park_requested` during the
+  review is honored after the accept (parks accepted, resume_to IMPLEMENTING). The optional
+  `--note` carry-over on SPEC_REVIEW-bound resumes was not done.
 
 ## Rollout / migration
 

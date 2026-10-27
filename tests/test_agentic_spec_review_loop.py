@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from test_agentic_e2e import _git, impl_done, review as conformance_pass, script
+from test_agentic_e2e import (_git, added, impl_done, make_cfg, make_repo,
+                              review as conformance_pass, script)
 from test_agentic_idea_campaign import add_idea_campaign, capture
 from test_agentic_spec_writer import (Hooked, in_review, ledger, parked, prompt, resume,
                                       spec_written, start, wtree)
@@ -282,7 +283,7 @@ def test_reviewer_modifying_the_worktree_is_reset_retried_and_parked(tmp_path, m
     assert _git(wt, "status", "--porcelain", "--untracked-files=no") == ""
     Q.tick(cfg)
     park = parked(cfg, cid)
-    assert park["detail"] == "reviewer failed: reviewer modified the worktree"
+    assert park["detail"].startswith("reviewer failed: reviewer modified the worktree")
     assert park["resume_to"] == "SPEC_REVIEW"
     assert _git(wt, "rev-parse", "HEAD") == head
     assert _git(wt, "status", "--porcelain", "--untracked-files=no") == ""
@@ -296,7 +297,7 @@ def test_resuming_the_worktree_modifying_reviewer_park_costs_no_round(tmp_path, 
         reviewed("approve", **bad), reviewed("approve", **bad), reviewed("approve")])
     Q.tick(cfg)
     Q.tick(cfg)
-    assert parked(cfg, cid)["detail"] == "reviewer failed: reviewer modified the worktree"
+    assert parked(cfg, cid)["detail"].startswith("reviewer failed: reviewer modified the worktree")
     assert not reviews(cfg, cid)
     resume(cfg, cid)
     assert S.read_state(cfg, cid)["state"] == "SPEC_REVIEW"
@@ -305,6 +306,31 @@ def test_resuming_the_worktree_modifying_reviewer_park_costs_no_round(tmp_path, 
     assert st["state"] == "IMPLEMENTING"
     assert [e["round"] for e in reviews(cfg, cid)] == [1]
     assert "sneaky" not in (wtree(cfg, cid) / SPEC).read_text()
+
+
+def test_a_reset_after_the_review_keeps_a_human_edit_and_commit_in_refs(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed(), reviewed()])
+    wt = wtree(cfg, cid)
+    head = _git(wt, "rev-parse", "HEAD")
+
+    def human(req):                                 # work done in the worktree during the run
+        (wt / "human.txt").write_text(f"mine {next(_REVISIONS)}\n")
+        _git(wt, "add", "human.txt")
+        _git(wt, "commit", "-q", "-m", "human commit")
+        (wt / SPEC).write_text((wt / SPEC).read_text() + "\nhuman edit\n")
+
+    Q.tick(cfg, runner=Hooked(tmp_path, after=human))
+    assert S.read_state(cfg, cid)["state"] == "SPEC_REVIEW"
+    assert _git(wt, "rev-parse", "HEAD") == head and "human edit" not in (wt / SPEC).read_text()
+    (note,) = [e for e in ledger(cfg, cid, "note") if "spec review reset" in e["text"]]
+    refs = _git(wt, "for-each-ref", "--format=%(refname)", "refs/wt/spec-review-saved/").splitlines()
+    assert len(refs) == 2 and all(r in note["text"] for r in refs)
+    moved = next(r for r in refs if r.endswith("/head"))
+    wip = next(r for r in refs if r.endswith("/wip"))
+    assert _git(wt, "log", "-1", "--format=%s", moved) == "human commit"
+    assert "human edit" in _git(wt, "show", f"{wip}:{SPEC}")
+    Q.tick(cfg, runner=Hooked(tmp_path, after=human))
+    assert "worktree changes saved as refs/wt/spec-review-saved/" in parked(cfg, cid)["detail"]
 
 
 def test_a_timed_out_review_is_a_failed_run(tmp_path, monkeypatch):
@@ -581,6 +607,54 @@ def test_a_dirty_worktree_wins_over_an_accepted_head(tmp_path, monkeypatch):
     assert parked(cfg, cid)["detail"] == "commit or discard the worktree changes, then resume"
 
 
+def _baseline(cfg, cid):
+    return ((S.campaign_dir(cfg, cid) / "spec_at_open.md").read_text(),
+            S.read_state(cfg, cid)["spec"]["sha256_at_open"])
+
+
+def _resume_accepted_to_review(cfg, cid, wt):
+    """The implementer has edited the accepted spec body (committed); the campaign parks and the
+    operator resumes it `--to SPEC_REVIEW`. No review may run and the baseline stays."""
+    spec = wt / S.read_state(cfg, cid)["spec"]["rel_path"]
+    spec.write_text(spec.read_text() + "\nimplementer note\n")
+    _git(wt, "commit", "-qam", "implementer edits the spec body")
+    before, accepted = _baseline(cfg, cid), len(ledger(cfg, cid, "spec_accepted"))
+    st = S.read_state(cfg, cid)
+    st["pending_brief"] = {"source": "triager", "fix_brief": "keep me", "must_fix": [],
+                           "human_notes": []}
+    S.write_state(cfg, cid, st)
+    Q._park(cfg, S.read_state(cfg, cid), "loop_exhausted", "test", "IMPLEMENTING")
+    resume(cfg, cid, to="SPEC_REVIEW")
+    runs = S.read_state(cfg, cid)["counters"]["runs"]
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["counters"]["runs"] == runs
+    assert st["park"]["reason"] == "spec_review_exhausted" and st["park"]["resume_to"] == "IMPLEMENTING"
+    assert "already accepted" in st["park"]["detail"]
+    assert _baseline(cfg, cid) == before
+    assert st["pending_brief"]["fix_brief"] == "keep me"
+    assert len(ledger(cfg, cid, "spec_accepted")) == accepted
+
+
+def test_resume_to_spec_review_after_acceptance_keeps_the_close_guard_baseline(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed()])
+    Q.tick(cfg)
+    assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
+    _resume_accepted_to_review(cfg, cid, wtree(cfg, cid))
+    assert len(ledger(cfg, cid, "spec_accepted")) == 1 and len(reviews(cfg, cid)) == 1
+
+
+def test_resume_to_spec_review_on_a_plain_spec_campaign_runs_nothing(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    cid = added(cfg, monkeypatch)
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] not in ("QUEUED", "PARKED", "MERGED")
+    _resume_accepted_to_review(cfg, cid, Path(st["repo"]["worktree"]))
+    assert not ledger(cfg, cid, "spec_accepted")
+
+
 # ---- cost cap, slots, human change -----------------------------------------------------------------
 
 def test_cost_cap_parks_before_the_review_and_raise_cap_runs_it(tmp_path, monkeypatch):
@@ -624,6 +698,25 @@ def test_a_human_change_during_the_review_skips_the_accept(tmp_path, monkeypatch
     assert report.steps[-1]["reason"] == "superseded_by_human"
 
 
+def test_a_park_requested_during_the_review_is_honored_after_the_accept(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [reviewed()])
+
+    def human(req):
+        with S.item_lock(cfg, cid):
+            st = S.read_state(cfg, cid)
+            st["park_requested"] = {"reason": "human", "detail": "pause", "at": S.now_iso()}
+            S.write_state(cfg, cid, st)
+
+    wt = wtree(cfg, cid)
+    Q.tick(cfg, runner=Hooked(tmp_path, after=human))
+    park = parked(cfg, cid)
+    assert park["resume_to"] == "IMPLEMENTING" and park["detail"] == "pause"
+    assert "accept SPEC-0002" in _git(wt, "log", "-1", "--format=%s")
+    assert "status: accepted" in (wt / SPEC).read_text()
+    assert len(ledger(cfg, cid, "spec_accepted")) == 1
+    assert "park_requested" not in S.read_state(cfg, cid)
+
+
 # ---- generic errors, legacy park, recording --------------------------------------------------------
 
 def boom(exc):
@@ -662,6 +755,17 @@ def test_legacy_review_unavailable_park_resumes_to_the_review_or_the_writer(tmp_
     Q.tick(cfg)
     assert "mention the exit code" in prompt(cfg, cid, 2)
     in_review(cfg, cid)
+
+
+def test_an_explicit_to_beats_the_legacy_park_redirect(tmp_path, monkeypatch):
+    cfg, repo, iid, cid = begin(tmp_path, monkeypatch, [])
+    Q._park(cfg, S.read_state(cfg, cid), "spec_review_unavailable", "old", "SPEC_WRITING")
+    plan = Q.plan_resume(cfg, cid, to="SPEC_WRITING")           # no note would redirect to the review
+    assert plan["to"] == "SPEC_WRITING"
+    plan = Q.plan_resume(cfg, cid, to="SPEC_REVIEW", note="a note")   # a note would redirect to the writer
+    assert plan["to"] == "SPEC_REVIEW"
+    resume(cfg, cid, to="SPEC_REVIEW", note="a note")
+    assert S.read_state(cfg, cid)["state"] == "SPEC_REVIEW"
 
 
 def test_the_request_carries_the_campaign_invariant_and_is_read_only(tmp_path, monkeypatch):

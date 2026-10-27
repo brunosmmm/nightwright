@@ -1340,7 +1340,12 @@ def _spec_review_precheck(ctx: _Ctx, state: dict, step: Step) -> StepResult | No
         if head.returncode == 0:
             fm, _ = split_frontmatter(head.stdout)
             if str((fm or {}).get("status") or "") == "accepted":
-                res.spec_review = {"accepted": True}
+                # only an accept that committed and then failed (a review of this campaign, no
+                # `spec_accepted` yet) is finished here; anything else was accepted before this
+                # review phase and its close-guard baseline must not be reset
+                resumable = _last_review_event(ctx.cfg, state) is not None and not \
+                    store.read_ledger(ctx.cfg, state["id"], types=["spec_accepted"])
+                res.spec_review = {"accepted": True} if resumable else {"already_accepted": True}
                 return res
     except (GitError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
@@ -1399,6 +1404,7 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
         res.interrupted = ctx.stop.is_set()
         if git.rev_parse(worktree) != head or _spec_sha(spec_file) != sr["sha"] \
                 or not git.is_clean(worktree, untracked=False):
+            sr["saved"] = _save_worktree_changes(worktree, run_id, head)
             if branch and git.current_branch(worktree) != branch:
                 git.git(worktree, "checkout", "-f", branch)
             git.git(worktree, "reset", "--hard", head)
@@ -1406,6 +1412,25 @@ def _do_spec_review(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
     except (GitError, ValueError, OSError) as e:
         res.error = getattr(e, "tail", None) or str(e)
     return res
+
+
+def _save_worktree_changes(worktree, run_id: str, head: str) -> list[str]:
+    """Before `_do_spec_review` resets the worktree: keep what the reset would drop under
+    `refs/wt/spec-review-saved/<run>/…`, because the change may be a human's, made while the
+    review ran. `head` holds a HEAD that moved, `wip` the tracked uncommitted changes (a
+    `git stash create` commit; the shared stash stack is untouched). Returns the refs made."""
+    saved = []
+    try:
+        moved = git.rev_parse(worktree)
+        wip = git.git(worktree, "stash", "create", check=False).stdout.strip()
+        for name, sha in (("head", moved if moved != head else ""), ("wip", wip)):
+            if sha:
+                ref = f"refs/wt/spec-review-saved/{run_id}/{name}"
+                git.git(worktree, "update-ref", ref, sha)
+                saved.append(ref)
+    except (GitError, ValueError, OSError):
+        pass                                    # the reset is still the only way to a clean retry
+    return saved
 
 
 def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float,
@@ -2269,6 +2294,10 @@ def _apply_spec_review(ctx, state, profile, counters, res, row, events, finish):
 
     if sr.get("dirty"):
         return exhausted("commit or discard the worktree changes, then resume")
+    if sr.get("already_accepted"):      # accepted before this phase: never re-baseline
+        return finish("PARKED", "spec_review_exhausted", park={
+            "reason": "spec_review_exhausted", "resume_to": "IMPLEMENTING",
+            "detail": "the spec is already accepted; there is nothing to review"})
     if sr.get("accepted"):              # an earlier accept committed, then failed after it
         return _accept_spec(ctx, state, counters, events, finish, committed=True,
                             rnd=(state.get("spec_review") or {}).get("round"),
@@ -2321,6 +2350,11 @@ def _apply_spec_review(ctx, state, profile, counters, res, row, events, finish):
         except ValueError as e:
             failure = str(e)
     if failure:
+        if sr.get("saved"):             # the reset dropped changes that may be a human's
+            saved = ", ".join(sr["saved"])
+            failure += f" (worktree changes saved as {saved})"
+            events.append(("note", {"text": f"spec review reset the worktree; kept {saved}",
+                                    "author": "queue"}))
         counters["spec_review_retries"] = counters.get("spec_review_retries", 0) + 1
         if counters["spec_review_retries"] <= SPEC_REVIEW_RETRY_MAX:
             return finish("SPEC_REVIEW", "spec_review_retry")
