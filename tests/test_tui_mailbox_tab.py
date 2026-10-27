@@ -424,6 +424,65 @@ def test_a_selection_made_during_a_running_load_wins_over_the_stale_snapshot(tmp
     _run(drive())
 
 
+def test_a_new_thread_in_the_selected_inbox_made_during_a_load_keeps_the_cursor(tmp_path, monkeypatch):
+    import threading
+    repo, cfg, ids = _fixture(tmp_path)
+    ask(cfg, frm="conductor", to="human", kind="info", text="old thread")
+    app = _desk(cfg, tab="mailbox")
+    held, release = threading.Event(), threading.Event()
+    real = AM.load_mailbox
+
+    def slow(cfg_, inbox, *a, **kw):
+        snap = real(cfg_, inbox, *a, **kw)             # taken before the new message exists
+        if not held.is_set():
+            held.set()
+            release.wait(5)
+        return snap
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            v = mv(app)
+            assert v.inbox == "human"
+            held.clear()
+            monkeypatch.setattr(AM, "load_mailbox", slow)
+            v.reload()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if held.is_set():
+                    break
+            assert held.is_set() and v._loading
+            rec = ask(cfg, frm="conductor", to="human", kind="info", text="brand new")
+            v.root = rec["id"]                          # as _new_flow does, same inbox
+            v.reload()
+            release.set()
+            await settle(app, pilot)
+            assert v.root == rec["id"]
+            assert v.current_thread().root_id == rec["id"]
+
+    _run(drive())
+
+
+def test_agent_written_markup_in_a_subject_or_peer_renders_literally(tmp_path):
+    repo, cfg, ids = _fixture(tmp_path)
+    ask(cfg, frm="conductor", to="human", kind="info", text="fix [/x] and [pytest]\nbody")
+    ask(cfg, frm=STEWARD, to="human", kind="info", text="[x] done: [/tmp] [link](url)")
+    app = _desk(cfg, tab="mailbox")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            v = mv(app)
+            assert v.inbox == "human"
+            await pilot.pause(0.2)
+            cells = [str(c.plain if hasattr(c, "plain") else c)
+                     for i in range(len(v.threads)) for c in v.threads_table.get_row_at(i)]
+            assert "fix [/x] and [pytest]" in cells
+            assert "[x] done: [/tmp] [link](url)" in cells
+
+    _run(drive())
+
+
 def test_the_tab_never_touches_followers(tmp_path, monkeypatch):
     monkeypatch.setattr(MT, "POLL_S", 0.05)
     repo, cfg, ids = _fixture(tmp_path)

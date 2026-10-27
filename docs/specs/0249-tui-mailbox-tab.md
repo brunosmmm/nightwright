@@ -277,6 +277,13 @@ confirmation says so explicitly (see Reply), so the human makes that choice know
   `snap.inbox` is only taken when no inbox was asked for. `_reload_async` also reports a
   `TypeError` / `KeyError` from a malformed record as an error notification. Pilot test:
   `test_a_selection_made_during_a_running_load_wins_over_the_stale_snapshot`.
+- Thread-table `peer` and `subject` cells are `rich.text.Text` (coerced with `str()` first), so
+  agent-written text such as `[x] done` or `[/tmp]` renders literally instead of being parsed as
+  markup. `_reload_async` also discards a snapshot when the selected thread changed during the
+  load and a reload is queued, so a new message to the already-selected inbox keeps the cursor on
+  the new thread; the `_guarded` error notification escapes its text. Pilot tests:
+  `test_agent_written_markup_in_a_subject_or_peer_renders_literally`,
+  `test_a_new_thread_in_the_selected_inbox_made_during_a_load_keeps_the_cursor`.
 
 ## Clock Log
 

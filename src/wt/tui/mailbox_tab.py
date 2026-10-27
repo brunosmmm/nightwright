@@ -158,7 +158,7 @@ class MailboxView(Horizontal):
         try:
             # Signature first: an append that lands during the load triggers another reload.
             self._signature = AM.mailbox_signature(self.cfg)
-            asked = self.inbox
+            asked, asked_root = self.inbox, self.root
             try:
                 snap = await asyncio.to_thread(AM.load_mailbox, self.cfg, asked)
             except (OSError, ValueError, TypeError, KeyError) as e:
@@ -166,6 +166,8 @@ class MailboxView(Horizontal):
                 return
             if asked is not None and self.inbox != asked:
                 return                          # the selection moved on: the _again reload
+            if self._again and self.root != asked_root:
+                return                          # a new thread was selected: reload keeps it
             self.msgs, self.inboxes, self.inbox, self.threads = (
                 snap.msgs, snap.inboxes, snap.inbox, snap.threads)
             self.paint_inboxes()
@@ -192,8 +194,9 @@ class MailboxView(Horizontal):
         for r in self.threads:
             age = AM.age_s(r.last_ts)
             table.add_row(Text("!", style="bold yellow") if r.unanswered else "",
-                          R._clip(r.peer, 22), R._clip(r.subject, subject_w),
-                          Text(R._clip(r.campaign or "", 24), style="dim"), str(r.count),
+                          Text(R._clip(str(r.peer), 22)),     # Text: no markup parsing of
+                          Text(R._clip(str(r.subject), subject_w)),   # agent-written cells
+                          Text(R._clip(str(r.campaign or ""), 24), style="dim"), str(r.count),
                           Text(_ago(age), style="dim"), key=r.root_id)
         roots = [r.root_id for r in self.threads]
         if self.root not in roots:
@@ -261,7 +264,7 @@ class MailboxView(Horizontal):
         try:
             await flow
         except (ValueError, OSError) as e:
-            self.app.notify(str(e), severity="error")
+            self.app.notify(escape(str(e)), severity="error")
         finally:
             self._busy = False
 
