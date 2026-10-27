@@ -315,18 +315,18 @@ def _check_parked(esc_id, st) -> None:
                      f"(state {st.get('state')}); nothing to answer")
 
 
-def _review_findings(cfg, st: dict) -> tuple[list, list, set]:
+def _review_findings(cfg, st: dict, overridden: bool = True) -> tuple[list, list, set]:
     """`(findings, unmet, synthetic ids)` of the review that led to the park: every `blocking` / `advisory`
     finding of `triage_reviews` over all stored verdicts (any loop), minus what the campaign's
-    `human_overrides` already waived, and the distinct `ac` texts of the `met: false`
-    `ac_assessment` entries."""
+    `human_overrides` already settled (unless `overridden=False`), and the distinct `ac` texts of
+    the `met: false` `ac_assessment` entries."""
     from . import profiles as PR
     from . import queue as Q
     stored = (st.get("last_review") or {}).get("verdicts") or {}
     profile = PR.resolve_profile(cfg, st.get("profile"))
     valid = {p: stored[p] for p in Q.reviewers_of(profile)
              if isinstance(stored.get(p), dict)}
-    human_waived, attested = Q.human_overrides_of(st)
+    human_waived, attested = Q.human_overrides_of(st) if overridden else ((), ())
     tri = Q.triage_reviews(valid, profile, human_waived=human_waived, attested=attested)
     unmet = []
     for v in valid.values():
@@ -389,16 +389,18 @@ def _plan_override(cfg, rec, waive, attest, reason) -> dict:
             for u in _unmet_reach(f["ac"], unmet, f"--waive {fid!r} (its ac {f['ac']!r})"):
                 if u not in implicit:
                     implicit.append(u)
-    attested, reach = [], {}
+    attested, reach, ac_by_id = [], {}, None
     for a in attest:
         a = (a or "").strip()
         if not a:
             raise ValueError("empty --attest")
         m = re.match(r"^(\w+)#ac\d+$", a)
         if m:
-            f = by_id.get(a)
+            if ac_by_id is None:      # an AC already attested still has its `#ac<j>` id
+                ac_by_id = {f["id"]: f for f in _review_findings(cfg, st, overridden=False)[0]}
+            f = ac_by_id.get(a)
             if f is None or not f.get("ac"):
-                ids = [i for i in by_id if re.search(r"#ac\d+$", i)]
+                ids = [i for i in ac_by_id if re.search(r"#ac\d+$", i)]
                 raise ValueError(f"--attest {a!r} is not an AC finding of the stored review; "
                                  f"valid ids: {_ids_hint(ids)}")
             text, hits = f["ac"], [f["ac"]]

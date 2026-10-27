@@ -727,6 +727,17 @@ def test_waiving_a_real_finding_lists_its_ac_as_implicitly_attested(tmp_path):
     assert plan["override"]["implicitly_attested"] == [AC4]
 
 
+def test_attest_by_ac_id_still_works_for_an_already_attested_ac(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    st = _state(cfg)
+    st["human_overrides"] = {"attest": [{"ac": AC4, "reason": "earlier"}]}
+    S.write_state(cfg, CID, st)
+    plan = ESC.plan_answer(cfg, "ESC-0001", attest=[f"{RV}#ac0"], reason="r")
+    assert plan["answer"]["attest"] == [AC4]
+    assert plan["override"]["reach"] == {AC4: [AC4]}
+
+
 @pytest.mark.parametrize("kw,msg", [
     (dict(choose="3"), "not an option"),
     (dict(choose="maybe"), "not an option"),

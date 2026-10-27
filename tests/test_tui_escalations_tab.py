@@ -217,6 +217,24 @@ def test_withdraw_of_a_campaigns_escalation_shows_the_still_parked_hint(tmp_path
     drive_with(cfg, body)
 
 
+@pytest.mark.parametrize("how", ["other park reason", "campaign no longer parked"])
+def test_withdraw_hint_is_absent_unless_the_park_is_still_human_decision(tmp_path, how):
+    cfg, ids = world(tmp_path, n=1)
+    st = S.read_state(cfg, "SPEC-0001-hd")
+    if how == "other park reason":
+        st["park"] = {**st["park"], "reason": "loop_exhausted"}
+    else:
+        st.update(state="IMPLEMENTING", park=None)
+    S.write_state(cfg, "SPEC-0001-hd", st)
+
+    async def body(app, pilot):
+        await press(app, pilot, ["w", *"moot", "enter", "enter"])
+        await settle(app, pilot)
+        assert errors(app) == [] and notes(app) == ["ESC-0001 withdrawn"]
+        assert ESC.read(cfg, "ESC-0001")["status"] == "withdrawn"
+    drive_with(cfg, body)
+
+
 # --- cancel, errors, refusals (AC5) ---------------------------------------------------------
 
 def test_cancel_and_esc_at_each_step_write_nothing(tmp_path):
@@ -274,9 +292,44 @@ def test_answered_meanwhile_is_an_error_and_writes_nothing(tmp_path, monkeypatch
     drive_with(cfg, body)
 
 
-def test_keys_on_a_record_that_is_not_open_notify_and_open_nothing(tmp_path):
+@pytest.mark.parametrize("keys, plan_fn, other", [
+    (["c", "enter"], "plan_answer", "answer"),
+    (["t", *"mine", "ctrl+s"], "plan_answer", "answer"),
+    (["w", *"mine", "enter"], "plan_withdraw", "withdraw"),
+])
+def test_answered_before_the_plan_is_an_error_and_writes_nothing(tmp_path, monkeypatch, keys,
+                                                                 plan_fn, other):
+    """The record moves on between the table load and the plan step: the plan itself raises."""
+    cfg, ids = world(tmp_path, n=1)
+    real, plan_real = getattr(ESC, plan_fn), ESC.plan_answer
+
+    def moved_on_then_planned(*a, **k):
+        if other == "answer":
+            ESC.apply_answer(cfg, plan_real(cfg, "ESC-0001", text="cli", by="human"))
+        else:
+            ESC.withdraw(cfg, "ESC-0001", "cli", "conductor")
+        return real(*a, **k)
+    monkeypatch.setattr(ESC, plan_fn, moved_on_then_planned)
+
+    async def body(app, pilot):
+        await press(app, pilot, keys)
+        await settle(app, pilot)
+        (err,) = errors(app)
+        assert "ESC-0001 is" in err and not mv(app)._busy and len(app.screen_stack) == 1
+        r = ESC.read(cfg, "ESC-0001")
+        assert r["status"] == ("answered" if other == "answer" else "withdrawn")
+        assert (r.get("answer") or {}).get("text") in (None, "cli")
+        assert notes(app) == errors(app)         # no success notice
+    drive_with(cfg, body)
+
+
+@pytest.mark.parametrize("status", ["withdrawn", "answered"])
+def test_keys_on_a_record_that_is_not_open_notify_and_open_nothing(tmp_path, status):
     cfg, ids = world(tmp_path, n=1, campaign=False)
-    ESC.withdraw(cfg, "ESC-0001", "r", "human")
+    if status == "withdrawn":
+        ESC.withdraw(cfg, "ESC-0001", "r", "human")
+    else:
+        ESC.apply_answer(cfg, ESC.plan_answer(cfg, "ESC-0001", choose=1, by="human"))
 
     async def body(app, pilot):
         v = mv(app)
@@ -285,8 +338,23 @@ def test_keys_on_a_record_that_is_not_open_notify_and_open_nothing(tmp_path):
         for key in "ctw":
             await press(app, pilot, [key])
             assert len(app.screen_stack) == 1
-        assert notes(app) == ["ESC-0001 is withdrawn"] * 3
+        assert notes(app) == [f"ESC-0001 is {status}"] * 3
         assert AM.escalations_signature(cfg) == before and not v._busy
+    drive_with(cfg, body)
+
+
+def test_escape_and_tab_in_the_detail_pane_focus_the_visible_escalations_table(tmp_path):
+    cfg, ids = world(tmp_path, n=1, campaign=False)
+
+    async def body(app, pilot):
+        v = mv(app)
+        assert v.in_escalations and not v.threads_table.display
+        for key in ("escape", "tab", "shift+tab"):
+            v.query_one("#mb-pane", MT.ThreadPane).focus()
+            await settle(app, pilot)
+            await pilot.press(key)
+            await settle(app, pilot)
+            assert v.esc_table.has_focus and not v.threads_table.has_focus, key
     drive_with(cfg, body)
 
 

@@ -54,6 +54,20 @@ def test_escalation_text_for_an_open_record_shows_every_field(tmp_path):
     assert "  1. yes (recommended)" not in text
 
 
+def test_escalation_text_shows_a_failed_notification_and_a_set_reminder(tmp_path):
+    cfg = cfg_(tmp_path)
+    _parked(cfg)
+    _esc(cfg)
+    rec = ESC.read(cfg, "ESC-0001")
+    rec["notified"] = {"via": "ntfy", "ok": False, "error": "connection refused"}
+    rec["reminded_at"] = "2026-10-26T09:00:00+00:00"
+    ESC._write(cfg, rec)
+    text = AM.escalation_text(cfg, ESC.read(cfg, "ESC-0001")).plain
+    assert "notified via ntfy failed connection refused\n" in text
+    assert "reminded 2026-10-26T09:00:00+00:00\n" in text
+    assert "reminded never" not in text
+
+
 def test_answered_and_withdrawn_records_show_the_outcome(tmp_path):
     cfg = cfg_(tmp_path)
     _parked(cfg)

@@ -97,7 +97,7 @@ class ThreadPane(VerticalScroll):
         self.view = view
 
     def action_back(self) -> None:
-        self.view.threads_table.focus()
+        self.view.right_table.focus()
 
 
 class MailboxView(Horizontal):
@@ -405,7 +405,8 @@ class MailboxView(Horizontal):
         if action == "withdraw":
             rec = await asyncio.to_thread(ESC.apply_withdraw, cfg, plan)
             msg = f"{eid} withdrawn"
-            if rec.get("campaign") and rec.get("campaign_state") == "PARKED":
+            if rec.get("campaign") and rec.get("campaign_state") == "PARKED" \
+                    and await asyncio.to_thread(self._parked_for_decision, rec["campaign"]):
                 msg += (f"; {rec['campaign']} is still PARKED (human_decision); "
                         f"resume it from the queue tab (u)")
         else:
@@ -413,6 +414,14 @@ class MailboxView(Horizontal):
             msg = f"{eid} answered"
         self.app.notify(escape(msg))
         self.reload()
+
+    def _parked_for_decision(self, cid) -> bool:
+        """The CLI's hint condition: the campaign's park reason is still `human_decision`."""
+        try:
+            st = store.read_state(self.cfg, cid)
+        except (ValueError, OSError):
+            return False
+        return (st.get("park") or {}).get("reason") == "human_decision"
 
     # --- reply / new message -------------------------------------------------------------
 

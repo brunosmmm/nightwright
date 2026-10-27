@@ -242,6 +242,13 @@ unchanged CLI behaviour is in scope here:
 
 ### As shipped
 
+- Review round 2: the withdraw still-PARKED notification is added only when the campaign's park
+  reason is still `human_decision` (read in the worker, as the CLI hint does); `ThreadPane`
+  escape/tab focuses the visible right-hand table; tests added for a failed notification and a set
+  reminder time, the hint's absence (other park reason, campaign no longer PARKED), a `ValueError`
+  from the plan step, an answered (not just withdrawn) non-open record, the pane focus, and
+  attest by id for an already-attested AC.
+
 - The Design's library functions did not exist under those names, so they were added to
   `escalations.py` (the factoring the spec allows): `plan_withdraw` / `apply_withdraw` (the
   logic of `wt escalations withdraw`, which now calls them; `apply_withdraw` re-checks `open`
@@ -251,7 +258,8 @@ unchanged CLI behaviour is in scope here:
 - `_review_findings` (behind both) now passes `queue.human_overrides_of(state)` to
   `triage_reviews`, as the spec requires: a finding already waived is no longer offered, and
   `plan_answer --waive` of one is refused as "not a finding of the stored review" (before, it was
-  accepted and recorded twice). Attesting an already-attested AC still works.
+  accepted and recorded twice). Attesting an already-attested AC still works, by text and by `<persona>#ac<j>` id (the id is looked
+  up in an unfiltered triage, so overrides only hide findings from the `--waive` list).
 - `MailboxSnapshot` gained `escalations`; `initial_inbox` / `load_mailbox` pick the
   `escalations` pseudo-inbox when a record is open. The pseudo-inbox is not in `snapshot.inboxes`
   (which stays one row per `known_addresses` entry); the widget paints its row first.
