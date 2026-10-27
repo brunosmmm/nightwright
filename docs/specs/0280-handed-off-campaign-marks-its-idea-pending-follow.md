@@ -154,6 +154,12 @@ close fakes (`CloseOutcome("HANDED_OFF", close={"pr_url": ...})`) and a tmp idea
   pinned and plain advance paths.
 - `wt idea show` (table) is the raw org text, which already shows the `:HANDED_OFF:` property;
   the JSON payload gains `handed_off`.
+- Review fixes: an idea-kind campaign (`kind: idea`, whose PR only adds the spec and so never
+  reaches `done`) is not marked, since reconcile would never clear the mark; only a claimant in
+  IDEA, INCUBATE or SPECCED is marked; the fallback `note` in `_clear_handed_off_on_requeue` is
+  itself guarded so `apply_add` cannot raise after the campaign exists. Tests:
+  `test_idea_campaign_handed_off_is_not_marked`, `test_handed_off_skips_a_terminal_claimant`,
+  `test_requeue_clear_failure_is_a_ledger_note`.
 
 
 ## Definition of done

@@ -1843,7 +1843,8 @@ def _reconcile_closed(cfg, state: dict, events: list, outcome: str) -> None:
                 finding("minor", "idea reconcile mismatch", f"{idea_id}: {detail}")
             elif action == "flag-no-backlink":
                 finding("info", "idea reconcile: spec has no source_idea", f"{idea_id}: {detail}")
-        if outcome == "HANDED_OFF":
+        # an idea campaign's PR only adds the spec (never `done`), so reconcile would never clear it
+        if outcome == "HANDED_OFF" and state.get("kind") != "idea":
             _mark_handed_off(cfg, state, events, spec_id, finding)
     except Exception as e:                  # noqa: BLE001 — never block a finished merge
         finding("minor", "idea reconcile failed", str(e) or type(e).__name__)
@@ -1863,8 +1864,8 @@ def _mark_handed_off(cfg, state: dict, events: list, spec_id: str, finding) -> N
     pr_url = (state.get("close") or {}).get("pr_url") or ""
     try:
         task = SP._sole_claimant(_ideas(cfg), spec_id)
-        if task is None:
-            finding("info", "no idea to mark handed off", f"no single idea claims {spec_id}")
+        if task is None or task.state not in ("IDEA", "INCUBATE", "SPECCED"):
+            finding("info", "no idea to mark handed off", f"no single open idea claims {spec_id}")
             return
         org_write.set_property(cfg, task, "HANDED_OFF",
                                pr_url or f"branch {(state.get('repo') or {}).get('branch')}")
@@ -1884,9 +1885,12 @@ def _clear_handed_off_on_requeue(cfg, spec_id: str, campaign: str, by: str) -> N
         if task is not None and (task.properties.get("HANDED_OFF") or "").strip():
             org_write.clear_property(cfg, task, "HANDED_OFF")
     except Exception as e:                  # noqa: BLE001 — queueing must not depend on the idea
-        store.append_event(cfg, campaign, "note", {
-            "text": f"could not clear :HANDED_OFF: for {spec_id}: {e or type(e).__name__}",
-            "author": "queue"}, by=by)
+        try:
+            store.append_event(cfg, campaign, "note", {
+                "text": f"could not clear :HANDED_OFF: for {spec_id}: {e or type(e).__name__}",
+                "author": "queue"}, by=by)
+        except Exception:                   # noqa: BLE001 — the campaign exists; never refuse the add
+            pass
 
 
 def _ideas(cfg):

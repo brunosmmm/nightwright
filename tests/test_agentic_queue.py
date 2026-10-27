@@ -1862,6 +1862,54 @@ def test_requeue_clears_handed_off(opened):
     assert state["id"] != cid and OW.resolve_selector(cfg, iid).state == "SPECCED"
 
 
+def test_idea_campaign_handed_off_is_not_marked(opened):
+    """An idea campaign's PR only adds the spec, so reconcile would never clear the mark."""
+    cfg, cid, ctx = opened
+    iid, oc = _hand_off_with_idea(opened)
+    S.write_state(cfg, cid, dict(S.read_state(cfg, cid), kind="idea"))
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "HANDED_OFF"
+    assert _idea_state(cfg, iid) == "SPECCED" and _idea_prop(cfg, iid, "HANDED_OFF") == ""
+    assert not list(S.read_ledger(cfg, cid, types=["idea_handed_off"]))
+
+
+def test_handed_off_skips_a_terminal_claimant(opened, monkeypatch):
+    import wt.specs as SPM
+    from wt import explore as EX
+    cfg, cid, ctx = opened
+    iid, oc = _hand_off_with_idea(opened)
+    orig = SPM.reconcile_ideas
+
+    def then_promote(*a, **kw):             # the claimant is terminal by the time it is marked
+        out = orig(*a, **kw)
+        EX.set_idea_state(cfg, iid, "PROMOTED")
+        return out
+    monkeypatch.setattr(SPM, "reconcile_ideas", then_promote)
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "HANDED_OFF"
+    assert not list(S.read_ledger(cfg, cid, types=["idea_handed_off"]))
+    assert ("info", "no idea to mark handed off") in {
+        (f["severity"], f["title"]) for f in _bookkeeping(cfg, cid)}
+
+
+def test_requeue_clear_failure_is_a_ledger_note(opened, monkeypatch):
+    from wt import org_write as OW
+    cfg, cid, ctx = opened
+    iid, oc = _hand_off_with_idea(opened)
+    _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="ABANDONED"))
+
+    def boom(*a, **kw):
+        raise OSError("read-only org file")
+    monkeypatch.setattr(OW, "clear_property", boom)
+    state = Q.apply_add(cfg, _requeue_plan(cfg, cid))
+    assert state["id"] != cid
+    assert _idea_prop(cfg, iid, "HANDED_OFF") == PR_URL
+    notes = [e for e in S.read_ledger(cfg, state["id"], types=["note"])
+             if "could not clear :HANDED_OFF:" in e["text"]]
+    assert len(notes) == 1 and "read-only org file" in notes[0]["text"]
+
+
 def _requeue_plan(cfg, cid):
     """A plan for a second campaign on the first one's spec (the first is terminal)."""
     st = S.read_state(cfg, cid)
