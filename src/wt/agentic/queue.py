@@ -641,6 +641,10 @@ def _idea_task(cfg, idea_id):
     for t in _ideas(cfg):
         if idea_id in ((t.properties.get("ID") or "").strip(), t.id):
             return t
+    want = _canon_id(idea_id)                       # a hand-typed `:ID: idea-071` (SPEC-0276)
+    for t in _ideas(cfg):
+        if _canon_id(t.properties.get("ID") or "") == want:
+            return t
     return None
 
 
@@ -4547,7 +4551,7 @@ _ANY_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 def _open_idea_campaign(cfg, idea_id) -> dict | None:
     """The non-terminal `kind: idea` campaign for `idea_id`, or None."""
     for st in store.list_campaigns(cfg):
-        if st.get("kind") == "idea" and _idea_id_of(st) == idea_id:
+        if st.get("kind") == "idea" and _canon_id(_idea_id_of(st) or "") == _canon_id(idea_id):
             return st
     return None
 
@@ -4629,19 +4633,32 @@ def apply_add_idea(cfg, plan: dict, *, by="human") -> dict:
 
 # ---- batch add (SPEC-0276) -----------------------------------------------------------------------
 
-def _spec_fm(cfg, spec_id) -> dict:
-    """The frontmatter of `spec_id` (internal or outbound); ValueError when it has no file."""
-    fm, _ = split_frontmatter(SP.resolve_spec_path(cfg, spec_id).read_text(encoding="utf-8"))
-    return fm if isinstance(fm, dict) else {}
+def _spec_source(cfg, spec_id) -> Path:
+    """The file `backlog_readiness` reads for the spec: the target repo's copy for an exported
+    outbound spec (else its outbox copy), the registered file for an internal one."""
+    path = SP.resolve_spec_path(cfg, spec_id)
+    if SP._is_outbound_spec_id(spec_id):
+        fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
+        target = (fm or {}).get("target_spec_path") if isinstance(fm, dict) else None
+        if target and Path(target).is_file():
+            return Path(target)
+    return path
 
 
 def _depends_on(cfg, spec_id) -> list[str]:
     """`depends_on` of the spec as a list of ids; [] when the spec is unreadable."""
     try:
-        deps = _spec_fm(cfg, spec_id).get("depends_on") or []
+        fm, _ = split_frontmatter(_spec_source(cfg, spec_id).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
+    deps = (fm.get("depends_on") if isinstance(fm, dict) else None) or []
     return [_canon_id(d) for d in ([deps] if isinstance(deps, str) else deps)]
+
+
+def _same_namespace(spec_id, dep) -> bool:
+    """An outbound spec's `depends_on` names ids of its target repo, so only another outbound id
+    can be a spec of the batch (and `SPEC-NNNN` there is not wt's own spec of that number)."""
+    return SP._is_outbound_spec_id(spec_id) == SP._is_outbound_spec_id(dep)
 
 
 def _canon_id(raw) -> str:
@@ -4654,7 +4671,7 @@ def expand_epic(cfg, epic_id) -> tuple[list[str], list[dict]]:
     """SPEC-0276: `(ids, skipped)` for `wt queue add --epic`. `ids` are the accepted child specs
     and the open, spec-less `:EPIC:` ideas without an active campaign; everything else under the
     epic goes to `skipped` as `{"id", "reason"}`. Raises ValueError for an unknown epic."""
-    epic_id = (epic_id or "").strip()
+    epic_id = _canon_id(epic_id or "")
     SP.resolve_spec_path(cfg, epic_id)
     ids: list[str] = []
     skipped: list[dict] = []
@@ -4664,9 +4681,9 @@ def expand_epic(cfg, epic_id) -> tuple[list[str], list[dict]]:
             fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if not isinstance(fm, dict) or str(fm.get("parent") or "").strip() != epic_id:
+        if not isinstance(fm, dict) or _canon_id(fm.get("parent") or "") != epic_id:
             continue
-        sid, status = str(fm.get("id") or ""), str(fm.get("status") or "")
+        sid, status = _canon_id(fm.get("id") or ""), str(fm.get("status") or "")
         if status != "accepted":
             skipped.append({"id": sid, "reason": f"status {status or 'missing'}"})
             continue
@@ -4676,14 +4693,16 @@ def expand_epic(cfg, epic_id) -> tuple[list[str], list[dict]]:
         else:
             ids.append(sid)
     for task in _ideas(cfg):
-        if (task.properties.get("EPIC") or "").strip() != epic_id:
+        if _canon_id(task.properties.get("EPIC") or "") != epic_id:
             continue
-        iid = (task.properties.get("ID") or "").strip() or task.id
+        iid = _canon_id(task.properties.get("ID") or "") or task.id
         spec = (task.properties.get("SPEC") or "").strip()
         if spec:
             skipped.append({"id": iid, "reason": f"has {spec}; covered by the spec"})
         elif not idea_is_open(task):
             skipped.append({"id": iid, "reason": f"idea is {task.state}"})
+        elif not _IDEA_ID_RE.match(iid):
+            skipped.append({"id": iid, "reason": "no IDEA-NNN :ID:; give it one to queue it"})
         else:
             active = _open_idea_campaign(cfg, iid)
             if active:
@@ -4732,22 +4751,36 @@ def _order_specs(spec_ids, deps_of) -> tuple[list[str], dict]:
     return order + [s for s in spec_ids if s in pending], cycles
 
 
-def _dangling(cfg, deps, in_batch) -> list[str]:
-    """The `depends_on` ids that would block a queued spec forever: not satisfied, not in the
-    batch and without an active campaign."""
+def _dangling(cfg, spec_id, deps, in_batch) -> list[str]:
+    """The `depends_on` ids of `spec_id` that would block it forever: not satisfied, not in the
+    batch and without an active campaign. Dependencies resolve next to the spec file the
+    scheduler reads (`backlog_readiness`), so an outbound spec looks in its target repo."""
+    try:
+        spec_dir = _spec_source(cfg, spec_id).parent
+    except (OSError, ValueError):
+        return []
     out = []
     for dep in deps:
-        if dep in in_batch:
+        same = _same_namespace(spec_id, dep)
+        if same and dep in in_batch:
             continue
         try:
-            status = str(_spec_fm(cfg, dep).get("status") or "")
+            fm, _ = split_frontmatter(SP._find_spec(spec_dir, dep).read_text(encoding="utf-8"))
+            status = str((fm or {}).get("status") or "")
         except (OSError, ValueError):
             status = None
-        if status in DEPENDENCY_SATISFIED or store.active_campaign_for_spec(cfg, dep):
+        if status in DEPENDENCY_SATISFIED or (same and store.active_campaign_for_spec(cfg, dep)):
             continue
         out.append(f"{dep} not found" if status is None
                    else f"{dep} is {status or 'without status'} and not queued")
     return out
+
+
+def _batch_deps(cfg, spec_ids) -> tuple[dict, dict]:
+    """`(all, edges)`: each spec's `depends_on`, and the part of it that can be a spec of the
+    batch (same id namespace)."""
+    allv = {i: _depends_on(cfg, i) for i in spec_ids}
+    return allv, {i: [d for d in ds if _same_namespace(i, d)] for i, ds in allv.items()}
 
 
 def _batch_totals(items) -> dict:
@@ -4798,7 +4831,7 @@ def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=Fal
             item["error"] = str(e)
         items[i] = item
     spec_ids = [i for i in ids if items[i]["kind"] == "spec"]
-    deps_of = {i: _depends_on(cfg, i) for i in spec_ids}
+    all_deps, deps_of = _batch_deps(cfg, spec_ids)
     order, cycles = _order_specs(spec_ids, deps_of)
     for sid, msg in cycles.items():
         prior = items[sid].get("error")
@@ -4809,7 +4842,7 @@ def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=Fal
     for n, it in enumerate(ordered, 1):
         it["position"] = n
         if "plan" in it and it["kind"] == "spec":
-            it["would_block"] = _dangling(cfg, deps_of[it["id"]], set(ids))
+            it["would_block"] = _dangling(cfg, it["id"], all_deps[it["id"]], set(ids))
     return {"schema": "wt.queue.add.batch.v1", "params": params, "items": ordered,
             "skipped": [], **_batch_totals(ordered)}
 
@@ -4825,7 +4858,7 @@ def apply_add_batch(cfg, batch: dict, *, skip_invalid=False, by="human") -> dict
         raise ValueError(f"{bad} of {len(items)} items cannot be queued; fix them or pass "
                          f"--skip-invalid")
     prm = batch.get("params") or {}
-    deps_of = {it["id"]: _depends_on(cfg, it["id"]) for it in items if it["kind"] == "spec"}
+    _, deps_of = _batch_deps(cfg, [it["id"] for it in items if it["kind"] == "spec"])
     for it in items:
         if "error" in it:
             continue

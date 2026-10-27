@@ -195,6 +195,11 @@ Review round 2 (2026-10-27): added tests for a cycle member that already has a p
 unknown `--epic` (non-zero, nothing written) and the `+ N uncapped` totals line and JSON through
 the CLI. Full `uv run pytest` and spec-lint pass.
 
+Review round 3 (2026-10-27): added tests for a lowercase `--epic`, epic ideas without a usable
+`:ID:` (skipped; a lowercase `:ID:` is queued), outbound `depends_on` / `would_block` resolved in
+the target repo, and the exit status 1 of a write-time race through `wt queue add --yes`. Full
+`uv run pytest` and spec-lint pass.
+
 ### As shipped
 
 - `apply_add_batch` takes the per-item parameters from `batch["params"]` (project, profile, base,
@@ -206,6 +211,12 @@ the CLI. Full `uv run pytest` and spec-lint pass.
   An explicit id is never listed in `skipped`, even when it is also an epic child.
 - The write-time race cascade reuses the plan-time one, so a dependent is refused as
   `depends on refused SPEC-X` at both points.
+- `--epic` is canonicalised too (`spec-0005` finds the children). An open, spec-less `:EPIC:`
+  idea whose `:ID:` is not `IDEA-NNN` goes to `skipped` (`no IDEA-NNN :ID:; give it one to queue
+  it`) so re-running `--epic` still never trips; a lowercase `:ID:` is matched case-insensitively.
+- For an outbound spec, `depends_on` is read from the target repo's copy and each dependency is
+  resolved next to it (as `backlog_readiness` does). Only same-namespace ids (outbound with
+  outbound, `SPEC-` with `SPEC-`) count as in-batch edges or as queued dependencies.
 
 ## Definition of done
 

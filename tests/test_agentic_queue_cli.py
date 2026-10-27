@@ -685,3 +685,67 @@ def test_batch_uncapped_in_cli_output(tmp_path, monkeypatch):
     assert d["uncapped"] == 2 and d["cap_usd_total"] == 0, d
     r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "SPEC-0002"])
     assert "$0 cap total + 2 uncapped" in r.output, r.output
+
+
+def test_batch_epic_id_is_canonicalised(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 5)                                         # the epic
+    add_spec(cfg, repo, 10, parent="SPEC-0005")
+    free = OW.add_idea(cfg, "free idea", epic="SPEC-0005")[2]
+    r, d = batch(cfg, monkeypatch, "--epic", "spec-0005", "--yes")
+    assert r.exit_code == 0, r.output
+    assert [i["id"] for i in d["items"]] == ["SPEC-0010", free] and d["ok"] == 2
+
+
+def test_batch_epic_idea_without_usable_id_is_skipped(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 5)                                         # the epic
+    add_spec(cfg, repo, 10, parent="SPEC-0005")
+    noid = OW.add_idea(cfg, "no id idea", epic="SPEC-0005")[2]
+    OW.set_property(cfg, Q._idea_task(cfg, noid), "ID", "weird")
+    lower = OW.add_idea(cfg, "lowercase id idea", epic="SPEC-0005")[2]
+    OW.set_property(cfg, Q._idea_task(cfg, lower), "ID", lower.lower())
+    r, d = batch(cfg, monkeypatch, "--epic", "SPEC-0005", "--yes")
+    assert r.exit_code == 0, r.output                              # nothing trips all-or-nothing
+    assert [i["id"] for i in d["items"]] == ["SPEC-0010", lower]
+    assert "weird" in {s["id"] for s in d["skipped"]}
+    r, d = batch(cfg, monkeypatch, "--epic", "SPEC-0005", "--yes")      # top-up: nothing new
+    assert r.exit_code == 0 and d["items"] == [], r.output
+
+
+def test_batch_outbound_dependencies_resolve_in_the_target_repo(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 3, status="done")                          # wt's own SPEC-0003
+    target = tmp_path / "target" / "docs" / "specs"
+    target.mkdir(parents=True)
+    (target / "0002-x.md").write_text(
+        "---\nid: ACME-0002\nstatus: accepted\ndepends_on: [SPEC-0003]\n---\n")
+    (target / "0003-y.md").write_text("---\nid: SPEC-0003\nstatus: draft\n---\n")
+    outbox = tmp_path / "data" / "outbox" / "Acme"
+    outbox.mkdir(parents=True)
+    (outbox / "ACME-0002-x.md").write_text(
+        f"---\nid: ACME-0002\nstatus: accepted\ntarget_spec_path: {target / '0002-x.md'}\n---\n")
+    cfg["outbox_dir"] = str(tmp_path / "data" / "outbox")
+    assert Q._depends_on(cfg, "ACME-0002") == ["SPEC-0003"]       # the target copy's, not the outbox's
+    allv, edges = Q._batch_deps(cfg, ["ACME-0002", "SPEC-0003"])
+    assert allv["ACME-0002"] == ["SPEC-0003"] and edges["ACME-0002"] == []   # no false edge
+    assert Q._dangling(cfg, "ACME-0002", ["SPEC-0003"], {"ACME-0002", "SPEC-0003"}) == [
+        "SPEC-0003 is draft and not queued"]                      # the target's status, not wt's
+
+
+def test_batch_write_time_race_exits_1_through_the_cli(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2)
+    orig = Q.plan_add_batch
+
+    def racy(*a, **kw):
+        plan = orig(*a, **kw)
+        added(cfg, monkeypatch, "SPEC-0002")                      # someone queues it meanwhile
+        return plan
+
+    monkeypatch.setattr(Q, "plan_add_batch", racy)
+    r, d = batch(cfg, monkeypatch, "SPEC-0001", "SPEC-0002", "--yes")
+    assert r.exit_code == 1, r.output
+    byid = {i["id"]: i for i in d["items"]}
+    assert byid["SPEC-0001"]["written"] is True and d["errors"] == 1
+    assert "already has an active campaign" in byid["SPEC-0002"]["error"]
