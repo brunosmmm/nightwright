@@ -41,6 +41,9 @@ commands, and nothing checks the set as a whole:
   `backlog_readiness` and `admission_key` already order admission correctly.
 - Dependencies between ideas (ideas carry no `depends_on`).
 - Estimating real cost. The batch reports only the sum of the profile caps.
+- A `--state` filter for `--epic` and per-item priorities taken from an epic's breakdown
+  (both asked in IDEA-071). One `--priority` applies to the whole batch; queue items in
+  several batches, or use `wt queue prioritize`, for finer control.
 
 ## Decision
 
@@ -61,8 +64,16 @@ in batch order. The CLI only gathers ids. No new campaign state is stored.
   - (a) every internal spec whose frontmatter has `parent: SPEC-NNNN` and `status: accepted`;
   - (b) every open idea (`queue.idea_is_open`) whose `:EPIC:` property is `SPEC-NNNN` and
     that has no `:SPEC:`.
-  Children with any other status are listed under `skipped` with their status and are never
-  queued.
+  Everything else under the epic goes to `skipped` with a reason and is never queued:
+  - a child spec with another status: `status <status>`;
+  - an `:EPIC:` idea with a `:SPEC:`: `has SPEC-NNNN; covered by the spec`;
+  - a closed `:EPIC:` idea: `idea is <state>`;
+  - a child spec or idea that already has an active campaign
+    (`store.active_campaign_for_spec` / `queue._open_idea_campaign`): `already queued
+    (<campaign>)`. Re-running `--epic` is therefore the normal way to top up the queue and
+    never trips the all-or-nothing rule.
+  Ids given explicitly (positional or file) are never moved to `skipped`; an already-queued
+  explicit id is refused by its planner as today.
 - Sources are concatenated in the order positional, file, epic, then de-duplicated; the first
   occurrence wins.
 - `--skip-invalid` is a flag. `--priority`, `--profile`, `--base`, `--project` and `--force`
@@ -71,21 +82,29 @@ in batch order. The CLI only gathers ids. No new campaign state is stored.
 ### Planning (`queue.plan_add_batch`)
 
 1. For each id, call `plan_add_idea` when `_IDEA_ID_RE` matches, else `plan_add`. A
-   `ValueError` is caught into `{"id", "error"}`. Planning does not reserve campaign ids
-   from `store.new_campaign_id`: `apply_add_batch` re-plans each item at write time, the
-   same way the single-item path re-checks live state in `apply_add`.
+   `ValueError` is caught into `{"id", "error"}`. `store.new_campaign_id` reserves nothing
+   at plan time, so `apply_add_batch` re-plans each item at write time and the campaign ids
+   are minted then; `apply_add` / `apply_add_idea` still re-check the active-campaign guard
+   under the add lock.
 2. **Order.** Specs are sorted topologically over the `depends_on` edges that have both ends
    in the batch (Kahn's algorithm; ties go by input position). Ideas follow the specs, in
    input order. Every spec in a cycle gets `error: "dependency cycle: A -> B -> A"`.
+   **Error cascade:** a spec whose in-batch dependency has an `error` (refused, in a cycle, or
+   itself cascaded) gets `error: "depends on refused SPEC-X"`, transitively. So
+   `--skip-invalid` never writes a dependent whose dependency it did not write, and specs
+   downstream of a cycle are refused too.
 3. **Dangling dependencies.** For each planned spec, a `depends_on` id goes into the item's
-   `would_block` list as `"SPEC-X is accepted and not queued"` when all of these hold:
+   `would_block` list as `"SPEC-X is <status> and not queued"` (the dependency's actual
+   status; `"SPEC-X not found"` for an unknown id, matching `backlog_readiness`) when all of
+   these hold:
    - it is not `done` or `superseded` (`DEPENDENCY_SATISFIED`);
    - it is not in the batch;
    - it has no active campaign (`store.active_campaign_for_spec`).
    This is a warning, not an error, because the human may queue the dependency later.
 4. Result: `{"schema": "wt.queue.add.batch.v1", "items": [{position, id, kind, plan|error,
    would_block}], "skipped": [{id, reason}], "ok": n, "errors": n, "cap_usd_total": <sum of
-   the plans' cap_usd>}`.
+   the valid plans' cap_usd>, "uncapped": n}`. A plan whose `cap_usd` is None counts 0 in
+   the total and 1 in `uncapped`; the totals line then says `+ N uncapped`.
 
 ### Writing (`queue.apply_add_batch`)
 
@@ -94,7 +113,8 @@ in batch order. The CLI only gathers ids. No new campaign state is stored.
 - Otherwise, in batch order, re-plan and apply each valid item (`apply_add` or
   `apply_add_idea`). A failure at write time is a race (someone queued the item
   meanwhile): it is recorded on that item as `error` and the loop continues, and earlier
-  items stay written. Each written item gets `"written": true` in the payload.
+  items stay written. Items that depend on it in the batch are not written either (the same
+  cascade, applied at write time). Each written item gets `"written": true` in the payload.
 
 ### Output
 
@@ -102,19 +122,29 @@ Human output is one table with position, id, kind, profile, cap, and the `error`
 `would_block` text. A totals line follows (`N to queue · M refused · $X cap total`), then the
 `_NOT_WRITTEN` hint on a dry run. `--json` emits `wt.queue.add.batch.v1`.
 
+**Exit status** (the payload is printed in every case):
+- dry run: 0, even with refused items (the report is the result);
+- `--yes` refused as all-or-nothing: 1, nothing written;
+- `--yes` with any item not written (refused under `--skip-invalid`, cascaded, or a
+  write-time race): 1;
+- `--yes` with every item written: 0.
+
 ## Acceptance criteria
 
-- [ ] `wt queue add A B C`, `--from-file` and `--epic` plan the same de-duplicated batch. A
-      single positional id still emits `wt.queue.add.v1` unchanged.
+- [ ] Positional ids, `--from-file` and `--epic`, alone or mixed, are concatenated in that
+      order and de-duplicated (first occurrence wins). A single positional id still emits
+      `wt.queue.add.v1` unchanged.
 - [ ] Specs are created in topological `depends_on` order, in input order among independent
       specs. Ideas come after specs. A cycle is reported on each spec in it and is never
       written.
 - [ ] A `depends_on` that is not satisfied, not in the batch and not queued is listed in the
       item's `would_block`.
 - [ ] `--yes` with any refused item writes nothing unless `--skip-invalid` is given; with it,
-      only the valid items are written.
+      only the valid items are written, never a dependent of a refused or unwritten item.
+      Exit status follows **Exit status**.
 - [ ] `--epic` takes the accepted children and the open `:EPIC:` ideas without `:SPEC:`, and
-      lists the other children under `skipped`.
+      lists everything else (other statuses, ideas with `:SPEC:` or closed, already queued)
+      under `skipped`; re-running it after a partial queue succeeds.
 - [ ] `--json` emits `wt.queue.add.batch.v1` with each item's plan or error and
       `cap_usd_total`.
 
@@ -129,15 +159,24 @@ New tests go in `tests/test_agentic_queue_cli.py` (CLI) and `tests/test_agentic_
 - `test_batch_would_block_dangling_dep`: B depends on C, which is accepted and not queued, so
   `would_block` names C. When C is queued separately first, `would_block` is empty.
 - `test_batch_all_or_nothing` and `test_batch_skip_invalid`: a batch of three with one
-  unreviewed spec creates no campaigns; with `--skip-invalid` it creates two.
+  unreviewed spec creates no campaigns (exit 1); with `--skip-invalid` it creates two
+  (exit 1, the refused item reported).
+- `test_batch_skip_invalid_refused_dependency`: B depends on A, A unreviewed; with
+  `--skip-invalid` neither is written and B's error names A.
+- `test_batch_would_block_status_text`: a draft dependency gives `SPEC-X is draft and not
+  queued`; an unknown id gives `SPEC-X not found`.
+- `test_batch_cap_total_uncapped`: one plan with `cap_usd: None` gives `uncapped: 1`.
 - `test_batch_epic_expansion`: an epic with accepted, draft and done children plus an open
-  `:EPIC:` idea. The accepted child and the idea are queued; the draft and done children are
-  in `skipped`.
+  `:EPIC:` idea, an `:EPIC:` idea with a `:SPEC:` and an accepted child already queued. The
+  accepted child and the idea are queued; the draft and done children, the idea with
+  `:SPEC:` and the already-queued child are in `skipped` with their reasons, and a second
+  `--epic --yes` run exits 0 with nothing new written.
 - `test_batch_from_file_comments_and_dedup`, and `test_single_id_output_unchanged` (golden
   `wt.queue.add.v1` keys).
 - **Sabotage check:**
   - Replace the topological sort with input order: `test_batch_topological_order` must fail.
   - Drop the `skip_invalid` guard: `test_batch_all_or_nothing` must fail.
+  - Drop the error cascade: `test_batch_skip_invalid_refused_dependency` must fail.
 - Regression guard: full `uv run pytest`.
 
 ## Definition of done

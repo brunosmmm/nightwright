@@ -41,6 +41,9 @@ open work. Nothing records the PR URL on the idea either.
 - A new org keyword: "pending" is a property, not a TODO state, so `org_idea_keywords` stays
   unchanged.
 - Merge-kind campaigns (SPEC-0233); they have no spec.
+- Detecting a PR closed without merging. The mark stays until the spec is re-queued (a new
+  campaign clears it, see Design) or reconcile advances the idea; the `wt next` hint names
+  the re-queue command.
 
 ## Decision
 
@@ -54,29 +57,39 @@ whenever it applies an `advance` to PROMOTED, SHIPPED or DROPPED.
 
 - **`queue._apply`** (close branch): `if oc.next_state in ("MERGED", "HANDED_OFF"):
   _reconcile_closed(cfg, state, events, oc.next_state)`.
-- **`queue._reconcile_closed`** (renamed from `_reconcile_merged`; the old name is kept as
-  a thin alias for tests):
+- **`queue._reconcile_closed`** (renamed from `_reconcile_merged`; no test references the
+  old name, so there is no alias):
   - It keeps the existing steps: skip with no spec, skip with an info finding when the spec
     store is not this repo, and run `specs.reconcile_ideas(cfg, apply=True,
     spec_ids={spec_id}, backlinks=False)` with the `idea_reconciled` events.
   - For `HANDED_OFF`, it also resolves the idea with `specs._sole_claimant(ideas, spec_id)`
-    over `_ideas(cfg)`, falling back to the campaign's own idea (`_idea_id_of`) when no idea
-    claims the spec. It calls `org_write.set_property(cfg, task, "HANDED_OFF", pr_url or
+    over a fresh `_ideas(cfg)` taken **after** `reconcile_ideas` (which may just have written
+    `:SPEC:`; `_ideas` invalidates the task cache). There is no fallback to the campaign's
+    own idea: an idea without `:SPEC: <spec_id>` would never be advanced by reconcile, so
+    its mark could never be cleared. It calls `org_write.set_property(cfg, task, "HANDED_OFF", pr_url or
     f"branch {repo.branch}")` and appends the ledger event `idea_handed_off {spec_id,
     idea_id, pr_url}`.
   - No claimant, or an ambiguous one, gives an `info` finding "no idea to mark handed off".
     A `ValueError` or `OSError` gives a `minor` finding. The campaign state is never
     changed.
-- **`specs.reconcile_ideas`**: when `apply` writes an `advance` whose target is `PROMOTED`,
-  `SHIPPED` or `DROPPED`, it calls `org_write.clear_property(cfg, task, "HANDED_OFF")` first,
-  before archiving. The dry-run detail text gets the suffix `(clears handed-off)`.
+- **`schemas.EVENT_KEYS`** gains `"idea_handed_off": ("spec_id", "idea_id", "pr_url")`, and
+  `render.campaign_event` renders it next to `idea_reconciled` (`idea IDEA-N handed off →
+  <pr_url>`).
+- **`specs.reconcile_ideas`**: in the write pass, for an `advance` whose target is
+  `PROMOTED`, `SHIPPED` or `DROPPED`, both the pinned (duplicate-id) path and the plain
+  `EX.set_idea_state` path first do `ORG.invalidate_tasks_cache()` and `task =
+  _resolve_idea(cfg, idea_id, pin)`, then `org_write.clear_property(cfg, task,
+  "HANDED_OFF")` when the property is set. This runs **before** the state write, because
+  those states archive the subtree. The dry-run detail text gets the suffix `(clears handed-off)`.
 - **Display**:
   - `report.idea_row` and `explore.idea_show_payload` add `"handed_off": <value>` when the
     property is set.
   - The `wt ideas` table adds `⇢ PR` to the state cell.
   - `workflow.next_step_for_idea` returns `PR open (<value>); after it merges: wt spec
-    reconcile --apply` for a SPECCED idea with `:HANDED_OFF:`, so `wt next` stops offering
-    it as work to start.
+    reconcile --apply; if it was closed: wt queue add <SPEC>` for a SPECCED idea with
+    `:HANDED_OFF:`, so `wt next` stops offering it as work to start.
+- **Re-queue clears the mark**: `queue.apply_add` clears `:HANDED_OFF:` on the spec's sole
+  claimant idea (best-effort; a failure is a ledger `note`, never a refusal).
 
 ## Acceptance criteria
 
@@ -88,7 +101,8 @@ whenever it applies an `advance` to PROMOTED, SHIPPED or DROPPED.
 - [ ] `wt ideas --json`, `wt idea show --json` and the `wt ideas` table show the hand-off,
       and `wt next` gives the "PR open" hint instead of a start step.
 - [ ] `wt spec reconcile --apply`, after the spec becomes `done`, advances the idea and
-      clears `:HANDED_OFF:`.
+      clears `:HANDED_OFF:`; re-queueing the spec also clears it. With no claimant idea,
+      nothing is marked (an `info` finding).
 - [ ] `MERGED` behaviour is unchanged: no `:HANDED_OFF:` is written.
 
 ## Test plan
@@ -98,15 +112,22 @@ close fakes (`CloseOutcome("HANDED_OFF", close={"pr_url": ...})`) and a tmp idea
 
 - `test_handed_off_marks_idea_pending`: an idea in INCUBATE with `source_idea` linkage, and
   an accepted spec, gives state SPECCED, the property equal to the PR URL, and the ledger
-  event.
+  event (which passes `schemas.ledger_problems`). The fixture idea's `:CREATED:` is on or
+  before the spec's `created`, as the SPEC-0267 link check requires (otherwise reconcile
+  reports `flag-mismatch` and writes nothing).
 - `test_handed_off_bookkeeping_failure_is_minor`: `set_property` raises `OSError`, which gives
   a minor finding, and the state is `HANDED_OFF`.
-- `test_handed_off_no_claimant_info_finding`.
+- `test_handed_off_no_claimant_info_finding`: an idea campaign whose idea does not carry the
+  spec's `:SPEC:` and is not claimed gets no mark and an `info` finding (no fallback).
+- `test_requeue_clears_handed_off`: `apply_add` for the spec removes the property.
+- `test_render_idea_handed_off_event`: `render.campaign_event` output.
 - `test_merged_does_not_write_handed_off` (regression for the MERGED path).
 - `test_reconcile_done_clears_handed_off`: the spec flips to `done`, `reconcile_ideas(apply=True)`
-  is run, and the property is gone and the idea is PROMOTED.
+  is run, and the property is gone and the idea is PROMOTED (plain path and a duplicate-id
+  pinned path).
 - `test_idea_row_and_next_show_handed_off`: `idea_row`, `idea_show_payload` and
-  `next_step_for_idea` output.
+  `next_step_for_idea` output, plus the rendered `wt ideas` table (CliRunner) showing `⇢ PR`
+  in the state cell.
 - **Sabotage check:** keep the old `== "MERGED"` guard in `_apply`;
   `test_handed_off_marks_idea_pending` must fail. Drop the `clear_property` call;
   `test_reconcile_done_clears_handed_off` must fail.
