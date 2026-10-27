@@ -325,6 +325,12 @@ def _covers(finding_ac, entry_ac) -> bool:
     return a == b or (a in b and len(a) >= 8) or (b in a and len(b) >= 8)
 
 
+def _exact(a, b) -> bool:
+    """Equal after `norm_finding_title`; empty text matches nothing (SPEC-0264)."""
+    na = norm_finding_title(a)
+    return bool(na) and na == norm_finding_title(b)
+
+
 def human_overrides_of(state: dict) -> tuple:
     """`(human_waived, attested)` from `state["human_overrides"]` (SPEC-0235): the waive dicts
     and the attested AC texts; both empty when the campaign has none."""
@@ -349,8 +355,9 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
 
     SPEC-0235: `human_waived` (stored waive dicts) removes a finding of any severity, synthetic
     included, by id + normalized title, or (real findings) by normalized title + sorted files;
-    `attested` ACs (plus the `ac` of every human-waived finding that has one) make a matching unmet
-    `ac_assessment` entry met. The result also lists `human_waived` ids and `attested` texts
+    `attested` ACs (plus every human-waived finding's `resolved_ac` texts) make an unmet
+    `ac_assessment` entry met when equal after normalizing (SPEC-0264); synthetic waivers do not
+    key real findings. The result also lists `human_waived` ids and `attested` texts
     that applied."""
     pass_score, weights = review_params(profile)
     personas = list(verdicts)
@@ -359,7 +366,7 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
     human_waived = [w for w in human_waived or () if isinstance(w, dict)]
     by_id = {(w.get("id"), norm_finding_title(w.get("title"))) for w in human_waived}
     by_key = {(norm_finding_title(w.get("title")), tuple(sorted(w.get("files") or [])))
-              for w in human_waived}
+              for w in human_waived if not re.search(r"#(fix|ac\d+)$", str(w.get("id") or ""))}
 
     def human_gone(r):
         return (r["id"], norm_finding_title(r["title"])) in by_id or (
@@ -367,7 +374,7 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
                                     tuple(sorted(r["files"]))) in by_key)
 
     attest_all = [a for a in attested or () if a] + [
-        w["ac"] for w in human_waived if w.get("ac")]
+        u for w in human_waived for u in w.get("resolved_ac") or () if u]
     attest_hit = []
     for p in personas:
         v = verdicts[p]
@@ -389,7 +396,7 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
         for j, entry in enumerate(v.get("ac_assessment") or []):
             if not isinstance(entry, dict) or entry.get("met") is not False:
                 continue
-            hit = next((a for a in attest_all if _covers(a, entry.get("ac"))), None)
+            hit = next((a for a in attest_all if _exact(a, entry.get("ac"))), None)
             if hit is not None:
                 if hit not in attest_hit:
                     attest_hit.append(hit)

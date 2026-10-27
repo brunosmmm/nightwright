@@ -877,9 +877,40 @@ def test_waiving_a_real_major_that_covers_an_unmet_ac_clears_the_ac():
     vs = {A: v("fix", f("major", "unsorted", ac="AC 4 output is sorted"),
                ac=[("AC 4 output is sorted", False)])}
     assert tri(vs)["outcome"] == "fix"
-    out = htri(vs, [hw(f"{A}#0", "unsorted", ac="AC 4 output is sorted")])
+    out = htri(vs, [hw(f"{A}#0", "unsorted", ac="AC 4 output is sorted",
+                       resolved_ac=["AC 4 output is sorted"])])
     assert out["outcome"] == "pass" and out["blocking"] == []
     assert out["attested"] == ["AC 4 output is sorted"]
+
+
+def test_attestation_matches_exact_ac_only():
+    longer = "uv run pytest passes with the new regression tests"
+    vs = {A: v("pass", ac=[(longer, False)])}
+    out = htri(vs, attested=["uv run pytest passes"])
+    assert out["outcome"] == "fix" and out["attested"] == [] and out["synthetic"] == [f"{A}#ac0"]
+    vs = {A: v("pass", ac=[("UV run pytest passes ", False)])}
+    out = htri(vs, attested=["uv run pytest passes"])
+    assert out["outcome"] == "pass" and out["attested"] == ["uv run pytest passes"]
+
+
+def test_synthetic_waiver_does_not_key_real_findings():
+    vs = {A: v("fix", f("major", "Fix the thing"))}
+    assert htri(vs)["outcome"] == "fix"
+    out = htri(vs, [hw("p#fix", "Fix the thing", synthetic=True)])
+    assert out["outcome"] == "fix" and out["human_waived"] == []
+    out = htri(vs, [hw("p#ac3", "Fix the thing", synthetic=True)])
+    assert out["outcome"] == "fix"
+    out = htri(vs, [hw("p#7", "Fix the thing")])          # a real waiver still keys by title+files
+    assert out["outcome"] == "pass"
+
+
+def test_waiver_resolved_ac_clears_substring_ac():
+    full = "AC 4 output is sorted by name"
+    vs = {A: v("pass", f("major", "unsorted", ac="output is sorted"), ac=[(full, False)])}
+    w = hw(f"{A}#0", "unsorted", ac="output is sorted")
+    assert htri(vs, [w])["outcome"] == "fix"               # the partial quote alone clears nothing
+    out = htri(vs, [{**w, "resolved_ac": [full]}])
+    assert out["outcome"] == "pass" and out["attested"] == [full]
 
 
 def test_a_merged_finding_is_waived_by_its_merged_id():

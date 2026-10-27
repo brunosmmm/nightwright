@@ -382,13 +382,16 @@ def _plan_override(cfg, rec, waive, attest, reason) -> dict:
                              f"valid ids: {_ids_hint(by_id)}")
         if fid in [w["id"] for w in waived]:
             continue
+        # `resolved_ac`: the full unmet AC texts this waiver clears (the reviewer's own `ac` is
+        # often a partial quote; triage matches these exactly, SPEC-0264)
+        resolved = (_unmet_reach(f["ac"], unmet, f"--waive {fid!r} (its ac {f['ac']!r})")
+                    if f.get("ac") else [])
         waived.append({"id": fid, "title": f["title"], "files": f["files"],
                        "severity": f["severity"], "ac": f.get("ac"),
-                       "synthetic": fid in synthetic})
-        if f.get("ac"):
-            for u in _unmet_reach(f["ac"], unmet, f"--waive {fid!r} (its ac {f['ac']!r})"):
-                if u not in implicit:
-                    implicit.append(u)
+                       "resolved_ac": list(resolved), "synthetic": fid in synthetic})
+        for u in resolved:
+            if u not in implicit:
+                implicit.append(u)
     attested, reach, ac_by_id = [], {}, None
     for a in attest:
         a = (a or "").strip()
@@ -405,11 +408,13 @@ def _plan_override(cfg, rec, waive, attest, reason) -> dict:
                                  f"valid ids: {_ids_hint(ids)}")
             text, hits = f["ac"], [f["ac"]]
         else:
-            text = a
             hits = _unmet_reach(a, unmet, f"--attest {a!r}")
             if not hits:
                 raise ValueError(f"--attest {a!r} matches no unmet AC of the stored review; "
                                  f"unmet ACs: {_ids_hint(unmet)}")
+            # store the resolved full AC, not the typed text: triage matches it exactly
+            text = hits[0] if len(hits) == 1 else next(
+                u for u in hits if Q.norm_finding_title(u) == Q.norm_finding_title(a))
         if text not in attested:
             attested.append(text)
             reach[text] = hits
@@ -499,9 +504,11 @@ def answer_summary(rec: dict) -> str:
 
 
 def apply_answer(cfg, plan: dict) -> dict:
-    """Record the answer, ledger it, store the overrides, then append `escalation_answered`.
-    Lock order: the campaign's `item_lock`, then the escalations lock, which is held across the
-    record's read-check-write; `open` is re-checked inside it. Never moves the campaign."""
+    """Ledger the answer, store the overrides, close the record, then append
+    `escalation_answered`. Lock order: the campaign's `item_lock`, then the escalations lock,
+    held across the whole read-check-write; `open` is re-checked inside it. A failure before the
+    record closes leaves it open to retry (ledger events may repeat). A failed wake-up append is
+    returned as `event_error` (not persisted). Never moves the campaign."""
     esc_id, cid, by, answer = plan["id"], plan["campaign"], plan["by"], plan["answer"]
     known = bool(cid)
     if known:
@@ -510,36 +517,40 @@ def apply_answer(cfg, plan: dict) -> dict:
     with store.item_lock(cfg, cid) if known else contextlib.nullcontext():
         if known:
             _check_parked(esc_id, _campaign_state(cfg, cid))
-        def close(r):
-            if r.get("status") != "open":
-                when = r.get("answered_at") or (r.get("withdrawn") or {}).get("at")
-                raise ValueError(f"{esc_id} is {r.get('status')} since {when}")
-            r.update(status="answered", answer=answer, answered_by=by, answered_at=now)
-        rec = _mutate(cfg, esc_id, close)
-        if known:
-            summary = plan["summary"]
-            store.append_event(cfg, cid, "human_decision",
-                               {"escalation": esc_id, **answer}, by=by)
-            store.append_event(cfg, cid, "note", {"text": f"{by}: {esc_id} {summary}",
-                                                  "author": by}, by=by)
-            ov = plan.get("override")
-            if ov:
-                st = store.read_state(cfg, cid)
-                h = st.setdefault("human_overrides", {"waive": [], "attest": []})
-                h.setdefault("waive", [])
-                h.setdefault("attest", [])
-                for w in ov["waive"]:
-                    h["waive"].append({**w, "reason": ov["reason"], "escalation": esc_id,
-                                       "at": now})
-                for a in ov["attest"]:
-                    h["attest"].append({"ac": a, "reason": ov["reason"], "escalation": esc_id,
-                                        "at": now})
-                store.write_state(cfg, cid, st)
-    with contextlib.suppress(ValueError, OSError):
+        with E._locked(_lock_path(cfg)):
+            rec = read(cfg, esc_id)
+            if rec.get("status") != "open":
+                when = rec.get("answered_at") or (rec.get("withdrawn") or {}).get("at")
+                raise ValueError(f"{esc_id} is {rec.get('status')} since {when}")
+            # the record closes last: a failure before it leaves the escalation open to retry
+            if known:
+                summary = plan["summary"]
+                store.append_event(cfg, cid, "human_decision",
+                                   {"escalation": esc_id, **answer}, by=by)
+                store.append_event(cfg, cid, "note", {"text": f"{by}: {esc_id} {summary}",
+                                                      "author": by}, by=by)
+                ov = plan.get("override")
+                if ov:
+                    st = store.read_state(cfg, cid)
+                    h = st.setdefault("human_overrides", {"waive": [], "attest": []})
+                    h.setdefault("waive", [])
+                    h.setdefault("attest", [])
+                    for w in ov["waive"]:
+                        h["waive"].append({**w, "reason": ov["reason"], "escalation": esc_id,
+                                           "at": now})
+                    for a in ov["attest"]:
+                        h["attest"].append({"ac": a, "reason": ov["reason"],
+                                            "escalation": esc_id, "at": now})
+                    store.write_state(cfg, cid, st)
+            rec.update(status="answered", answer=answer, answered_by=by, answered_at=now)
+            _write(cfg, rec)
+    try:
         E.append(cfg, "escalation_answered", campaign=cid, spec_id=rec.get("spec_id"),
                  project=rec.get("project"), by=by,
                  data={"escalation_id": esc_id, "kind": answer["kind"],
                        "summary": plan["summary"], "answer": answer})
+    except (ValueError, OSError) as e:
+        return {**rec, "event_error": str(e)}     # returned only, never persisted
     return rec
 
 

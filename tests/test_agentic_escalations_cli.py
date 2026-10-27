@@ -181,3 +181,21 @@ def test_answer_override_plan_output_json_and_show(tmp_path, monkeypatch):
     r = run(cfg, monkeypatch, "escalations", "show", "ESC-0001")
     assert f"answered by human at" in r.output and f"waived {RV}#0" in r.output
     assert "reason: checked by hand" in r.output
+
+
+def test_answer_reports_failed_wake_event(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    run(cfg, monkeypatch, *ESCALATE, "--yes")
+
+    def boom(*a, **kw):
+        raise OSError("events log unwritable")
+    monkeypatch.setattr("wt.agentic.escalations.E.append", boom)
+    r = run(cfg, monkeypatch, "escalations", "answer", "ESC-0001", "--choose", "1", "--yes",
+            "--json")
+    assert r.exit_code == 0, r.output
+    assert "conductor was not woken" in r.output           # stderr is mixed into the output
+    d = json.loads(r.output[r.output.index("{"):])
+    assert d["written"] is True and d["event_error"] == "events log unwritable"
+    rec = ESC.read(cfg, "ESC-0001")
+    assert rec["status"] == "answered" and "event_error" not in rec

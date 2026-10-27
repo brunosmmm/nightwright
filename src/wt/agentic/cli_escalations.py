@@ -127,17 +127,20 @@ def escalations_answer(cfg, esc_id, choose, text, waive, attest, reason, note, b
     try:
         plan = ESC.plan_answer(cfg, esc_id, choose=choose, text=text, waive=waive,
                                attest=attest, reason=reason, note=note, by=by)
-        if do_write:
-            ESC.apply_answer(cfg, plan)
+        done = ESC.apply_answer(cfg, plan) if do_write else {}
     except ESC.AnswerFormError as e:
         raise click.UsageError(str(e))
     except (ValueError, OSError) as e:
         raise click.ClickException(str(e))
+    ev_err = done.get("event_error")
+    if ev_err:
+        R.warn(f"escalation_answered event not written: {ev_err}; the conductor was not woken")
     if as_json:
         _dump_json({"schema": "wt.escalation.answer.v1", "id": esc_id,
                     "campaign": plan["campaign"], "by": plan["by"],
                     "answer": plan["answer"], "summary": plan["summary"],
-                    "override": plan["override"], "written": bool(do_write)})
+                    "override": plan["override"], "written": bool(do_write),
+                    **({"event_error": ev_err} if ev_err else {})})
         return
     console.print(f"{esc_id}: {plan['question']}", highlight=False)
     for o in plan["options"]:

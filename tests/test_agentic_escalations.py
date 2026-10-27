@@ -848,13 +848,14 @@ def test_apply_takes_item_lock_then_the_escalations_lock_nested(tmp_path, monkey
     events.clear()
     ESC.apply_answer(cfg, plan)
     # the escalations lock is entered and left while the item lock is held
-    assert events.index("item+") < events.index("esc+") < events.index("esc-") \
-        < events.index("item-")
+    # (the ledger/state writes nest further, reentrant item locks inside the escalations lock)
+    last_item_out = len(events) - 1 - events[::-1].index("item-")
+    assert events.index("item+") < events.index("esc+") < events.index("esc-") < last_item_out
     held = 0
     for ev in events:
         held += (ev == "item+") - (ev == "item-")
         if ev == "esc+":
-            assert held == 1
+            assert held >= 1
 
 
 def test_escalate_again_after_an_answered_text(tmp_path):
@@ -1019,3 +1020,65 @@ def test_waiving_a_finding_whose_ac_covers_two_unmet_acs_is_refused(tmp_path):
         ESC.plan_answer(cfg, "ESC-0001", waive=[f"{RV}#0"], reason="r")
     assert "covers 2 ACs" in str(e.value) and AC4 in str(e.value)
     assert ESC.read(cfg, "ESC-0001")["status"] == "open"
+
+
+def test_plan_override_stores_resolved_ac_text(tmp_path):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    plan = ESC.plan_answer(cfg, "ESC-0001", attest=["output is sorted"], reason="r")
+    assert plan["override"]["attest"] == [AC4]             # the full AC, not the typed text
+    assert plan["override"]["reach"][AC4] == [AC4]
+    st = _state(cfg)
+    st["last_review"]["verdicts"][RV]["findings"][0]["ac"] = "output is sorted"
+    S.write_state(cfg, CID, st)
+    plan = ESC.plan_answer(cfg, "ESC-0001", waive=[f"{RV}#0"], reason="r")
+    [w] = plan["override"]["waive"]
+    assert w["ac"] == "output is sorted" and w["resolved_ac"] == [AC4]
+    assert plan["override"]["implicitly_attested"] == [AC4]
+
+
+def test_answer_state_write_failure_keeps_record_open(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    plan = ESC.plan_answer(cfg, "ESC-0001", attest=[f"{RV}#ac0"], reason="r")
+    real = S.write_state
+    boom = {"n": 0}
+
+    def flaky(*a, **kw):
+        boom["n"] += 1
+        if boom["n"] == 1:
+            raise OSError("disk full")
+        return real(*a, **kw)
+    monkeypatch.setattr(S, "write_state", flaky)
+    with pytest.raises(OSError, match="disk full"):
+        ESC.apply_answer(cfg, plan)
+    assert ESC.read(cfg, "ESC-0001")["status"] == "open"
+    assert "human_overrides" not in _state(cfg)
+    rec = ESC.apply_answer(cfg, plan)                       # the retry goes through
+    assert rec["status"] == "answered" and _state(cfg)["human_overrides"]["attest"][0]["ac"] == AC4
+    assert [e for e in E.read_since(cfg, 0) if e["type"] == "escalation_answered"]
+
+
+def test_apply_answer_returns_event_error_without_persisting_it(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _parked(cfg)
+    _esc(cfg)
+    plan = ESC.plan_answer(cfg, "ESC-0001", choose="1")
+    monkeypatch.setattr(E, "append", lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")))
+    rec = ESC.apply_answer(cfg, plan)
+    assert rec["status"] == "answered" and rec["event_error"] == "nope"
+    assert "event_error" not in ESC.read(cfg, "ESC-0001")
+
+
+def test_waived_partial_ac_finding_clears_full_ac_on_next_triage(tmp_path):
+    from wt.agentic import queue as Q
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    st = _state(cfg)
+    st["last_review"]["verdicts"][RV]["findings"][0]["ac"] = "output is sorted"
+    S.write_state(cfg, CID, st)
+    _answer(cfg, waive=[f"{RV}#0"], reason="r")
+    st = _state(cfg)
+    hw, at = Q.human_overrides_of(st)
+    out = Q.triage_reviews(st["last_review"]["verdicts"], {"name": "balanced"}, (), hw, at)
+    assert out["attested"] == [AC4] and f"{RV}#ac0" not in out["synthetic"]

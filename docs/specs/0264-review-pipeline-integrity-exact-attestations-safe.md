@@ -1,7 +1,7 @@
 ---
 id: SPEC-0264
 title: "Review pipeline integrity: exact attestations and safe escalation answers"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -126,14 +126,14 @@ Make two local fixes:
 
 ## Acceptance criteria
 
-- [ ] An attestation answered for AC "uv run pytest passes" does not mark met a later unmet
+- [x] An attestation answered for AC "uv run pytest passes" does not mark met a later unmet
       AC "uv run pytest passes with the new regression tests". A synthetic `p#fix` waiver
       does not drop a real finding with the same title and no files.
-- [ ] Waiving a real finding whose `ac` is a substring of an unmet AC still clears that AC
+- [x] Waiving a real finding whose `ac` is a substring of an unmet AC still clears that AC
       on the next triage, through the persisted `resolved_ac` text.
-- [ ] If the state write in `apply_answer` raises, the record stays `open` and no override is
+- [x] If the state write in `apply_answer` raises, the record stays `open` and no override is
       stored. Retrying the answer after the fault clears succeeds.
-- [ ] If the `escalation_answered` append fails, `apply_answer` returns `event_error`
+- [x] If the `escalation_answered` append fails, `apply_answer` returns `event_error`
       (not persisted in the record), and `wt escalations answer` prints the warning to
       stderr and exits 0.
 
@@ -178,11 +178,47 @@ Make two local fixes:
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
+
+### Test record (2026-10-27)
+
+- `uv run pytest -q` (full suite): 3246 passed, 3 skipped, 1 failed on the first run
+  (`test_rich_output_guard::test_no_unlisted_raw_writes`: my first stderr warning used
+  `click.echo`; switched to `R.warn`). After the fix, `tests/test_rich_output_guard.py`,
+  `test_agentic_escalations*.py` and `test_agentic_review_triage.py` pass (170+ tests).
+- New tests: `test_attestation_matches_exact_ac_only`, `test_synthetic_waiver_does_not_key_real_findings`,
+  `test_waiver_resolved_ac_clears_substring_ac` (triage); `test_plan_override_stores_resolved_ac_text`,
+  `test_answer_state_write_failure_keeps_record_open`,
+  `test_apply_answer_returns_event_error_without_persisting_it`,
+  `test_waived_partial_ac_finding_clears_full_ac_on_next_triage` (escalations);
+  `test_answer_reports_failed_wake_event` (CLI).
+- Sabotage checks, each failed its test as expected: `_covers` for `attest_all` (1 failed);
+  `by_key` from all waivers (1 failed); `resolved_ac` dropped (2 failed); record written before
+  the ledger writes (`test_answer_state_write_failure_keeps_record_open` failed); `suppress`
+  back without `event_error` (2 failed).
+
+### As shipped (2026-10-27)
+
+- Implemented as designed. `triage_reviews` clears an unmet AC only by `_exact` equality with an
+  `attest` text or a waive's `resolved_ac` entry; a waive's raw `ac` no longer clears anything.
+  Waivers stored before this change have no `resolved_ac`, so they stop clearing ACs (legacy
+  attestations are likewise not migrated, per Non-goals).
+- `plan["override"]["reach"]` is keyed by the stored (resolved) AC text, not by what the human
+  typed, because `cli_escalations` looks it up by each `attest` entry.
+- `apply_answer` holds the escalations lock once and inlines read, ledger, state and record
+  write; ledger events may repeat on a retry (accepted, see Design §2).
+- The CLI warning goes through `render.warn` (stderr), because the output-guard test forbids raw
+  writes.
+- Existing test edits: `test_waiving_a_real_major_that_covers_an_unmet_ac_clears_the_ac` now
+  passes `resolved_ac`; `test_apply_takes_item_lock_then_the_escalations_lock_nested` now checks
+  the outermost `item-` (ledger/state writes nest reentrant item locks inside the escalations
+  lock).
+- Brief items on `put_back()` and `_open_group` (Design §3/§5 of the original review) concern
+  SPEC-0266's scope, not this spec; nothing changed there.
 
 ## Open questions
 
