@@ -93,6 +93,22 @@ def test_docs_only_commits_do_not_restart(tmp_path, monkeypatch):
     assert not L.is_held(cfg)
 
 
+
+def test_diff_failure_counts_as_code_change(tmp_path, monkeypatch):
+    """SPEC-0262: HEAD moved and `git diff` failed: the runner drains and re-execs (paths
+    unknown) instead of moving `code_sha` past the merge and running stale code."""
+    from wt.agentic import codewatch as CW
+    monkeypatch.setattr(CW, "_changed_paths", lambda *a: None)
+    cfg, root, calls = _loop_with_commits(tmp_path, monkeypatch, [("src/wt/x.py", "A = 4\n")])
+    head = _git(root, "rev-parse", "HEAD")
+    draining, = [r for r in Q.read_journal(cfg) if r["kind"] == "draining"]
+    assert draining["diff_failed"] is True and draining["to_sha"] == head
+    assert draining["paths"] == []
+    assert len(calls) == 1
+    stop = Q.read_journal(cfg)[-1]
+    assert stop["reason"] == "code_changed" and stop["to_sha"] == head
+    assert stop["diff_failed"] is True
+
 def test_reexec_off_by_default(tmp_path, monkeypatch):
     root = _code_repo(tmp_path)
     repo = make_repo(tmp_path)

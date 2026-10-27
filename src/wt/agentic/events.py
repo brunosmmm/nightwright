@@ -55,7 +55,7 @@ EVENT_TYPES = {
     # SPEC-0226
     "runner_config_invalid": ("scope", "path", "error"),
     # SPEC-0231: synthetic follower line (never appended to events.jsonl)
-    "code_changed": ("from_sha", "to_sha", "paths", "skills_changed"),
+    "code_changed": ("from_sha", "to_sha", "paths", "skills_changed"),   # + EVENT_OPTIONAL
     # SPEC-0222
     "park_undecided": ("reason", "parked_for_s", "owner"),
     # SPEC-0228
@@ -68,6 +68,11 @@ EVENT_TYPES = {
     "escalation_answered": ("escalation_id", "kind", "summary"),
     # SPEC-0253
     "temp_pressure": ("path", "free_mb", "free_inodes", "free_inodes_pct", "thresholds"),
+}
+
+# type -> {optional data key: accepted type(s)}
+EVENT_OPTIONAL = {
+    "code_changed": {"diff_failed": bool},       # SPEC-0262: HEAD moved, `git diff` failed
 }
 
 # transient run failures: account limits, overload, network-ish API errors
@@ -212,6 +217,10 @@ def validate(type_: str, data: dict) -> None:
     missing = [k for k in EVENT_TYPES[type_] if k not in (data or {})]
     if missing:
         raise ValueError(f"event {type_!r} missing data keys: {', '.join(missing)}")
+    bad = [k for k in EVENT_OPTIONAL.get(type_, {})
+           if k in (data or {}) and not isinstance(data[k], EVENT_OPTIONAL[type_][k])]
+    if bad:
+        raise ValueError(f"event {type_!r} bad optional data keys: {', '.join(bad)}")
 
 
 def _label(st: dict) -> str:
@@ -872,7 +881,8 @@ def summary_line(ev: dict) -> str:
     if ev.get("type") == "code_changed":
         d = ev.get("data") or {}
         return (f"code_changed {str(d.get('from_sha'))[:7]}..{str(d.get('to_sha'))[:7]} "
-                f"skills={','.join(d.get('skills_changed') or []) or '-'} (re-arm)")
+                f"skills={','.join(d.get('skills_changed') or []) or '-'}"
+                f"{' diff_failed' if d.get('diff_failed') else ''} (re-arm)")
     if ev.get("type") == "conductor_ping":
         d, c = ev.get("data") or {}, (ev.get("data") or {}).get("counts") or {}
         return (f"#{evid} conductor_ping blocked={len(d.get('blocked') or [])} "

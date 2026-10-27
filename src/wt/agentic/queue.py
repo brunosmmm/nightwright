@@ -2420,6 +2420,21 @@ class StepPool:
                         left.append({"campaign": cid, "run_id": rid, "phase": hk.phase})
         return left
 
+    def unfinished_in_process(self) -> list:
+        """The unfinished hookless tasks (gate / close / resolve / write_spec) as `{campaign,
+        run_id, phase: "in_process", step}`: what a stop or crash at the bound leaves behind
+        unrecorded otherwise (SPEC-0262)."""
+        left = []
+        with self.lock:
+            for cid, fl in self.flights.items():
+                run_ids = [r for r, _ in fl.runs]
+                for i, (step, fut, hk) in enumerate(fl.tasks):
+                    if hk is None and not fut.done():
+                        left.append({"campaign": cid,
+                                     "run_id": run_ids[i] if i < len(run_ids) else None,
+                                     "phase": "in_process", "step": step.kind})
+        return left
+
     def detached_view(self) -> list:
         """`[{campaign, run_ids}]` of the runs `force_detach_waiting` released."""
         return [{"campaign": c, "run_ids": list(r)} for c, r in self.forced.items()]
@@ -3447,7 +3462,8 @@ def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
 
     With `stop` set (a signal or `ctx.stop`): the gates are ended once (`_terminate_children`),
     and after `_STOP_BOUND_S` every `wait` task is force-detached and the remaining `spawning` /
-    `collect` tasks are reported as `abandoned` and left to adoption."""
+    `collect` tasks are reported as `abandoned` and left to adoption, as are the unfinished
+    in-process tasks (SPEC-0262: recorded, not killed)."""
     report = TickReport(drain=True)
     since = store.now_iso()
     waiting_on = _waiting_on(cfg, pool)
@@ -3477,6 +3493,7 @@ def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
                         break
                 if bound_at is not None and pool.flights and time.monotonic() >= bound_at:
                     report.abandoned = pool.force_detach_waiting()
+                    report.abandoned += pool.unfinished_in_process()   # SPEC-0262: recorded
                     time.sleep(0.3)                       # the wait threads return in 0.2 s
                     report.detached = pool.detached_view()
                     pool.flights.clear()
@@ -3498,7 +3515,8 @@ def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
 def _crash_sweep(cfg, pool: StepPool, bound_s: float) -> tuple:
     """The crash path's `finally` (SPEC-0229), inside one bound: apply what already finished,
     end the gates, detach every `wait` task, re-sweep until no task is in `spawning` / `collect`
-    (the ones still there at the bound are abandoned). Returns `(detached, abandoned)`."""
+    (the ones still there at the bound are abandoned, with the unfinished in-process tasks).
+    Returns `(detached, abandoned)`."""
     deadline = time.monotonic() + bound_s
     abandoned: list = []
     try:
@@ -3515,10 +3533,12 @@ def _crash_sweep(cfg, pool: StepPool, bound_s: float) -> tuple:
         pass
     while True:
         abandoned = pool.force_detach_waiting()
-        if not abandoned or time.monotonic() >= deadline:
+        # SPEC-0262: in-process tasks (a gate just terminated) get the same bound to end
+        in_process = pool.unfinished_in_process()
+        if not (abandoned or in_process) or time.monotonic() >= deadline:
             break
         time.sleep(0.2)
-    return pool.detached_view(), abandoned
+    return pool.detached_view(), abandoned + in_process
 
 
 _LAST_POOL: "StepPool | None" = None
@@ -3556,48 +3576,59 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                      else agentic.get("poll_interval_s") or 20)
     stop = threading.Event()
     lease = L.acquire(cfg, argv or ["wt", "queue", "run"])
-    G.reset()                                          # SPEC-0229: no stale stop flag
-    lease.update_info(poll_interval_s=interval, slot_freed_at=store.now_iso())   # SPEC-0228
     previous = {}
+    entered = False                     # SPEC-0262: the main `try` owns the lease from there on
+    try:
+        G.reset()                                          # SPEC-0229: no stale stop flag
+        lease.update_info(poll_interval_s=interval, slot_freed_at=store.now_iso())   # SPEC-0228
 
-    def _handler(signum, _frame):
-        stop.set()                      # the main loop does the rest (SPEC-0229)
+        def _handler(signum, _frame):
+            stop.set()                      # the main loop does the rest (SPEC-0229)
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            previous[sig] = signal.signal(sig, _handler)
-        except ValueError:                                  # not the main thread (tests)
-            pass
-    ticks = 0
-    reason = "signal"
-    watch_root = (code_root or code_checkout()) if reexec else None
-    code_sha = _git_out(watch_root, "rev-parse", "HEAD") if watch_root else None
-    restart = {}
-    draining = False                                  # a code change was detected (SPEC-0229)
-    detached: list = []
-    abandoned: list = []
-    deferred = None                                   # head a re-exec was deferred for
-    exec_blocked = False                              # SPEC-0226: user config invalid this tick
-    pool = StepPool()                                 # SPEC-0213: flights outlive ticks
-    _LAST_POOL = pool
-    watch = ConfigWatch(cfg, config_loader) if config_loader else None
-    slots = _SlotWatch(cfg, pool)
-    drain_since = None
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                previous[sig] = signal.signal(sig, _handler)
+            except ValueError:                                  # not the main thread (tests)
+                pass
+        ticks = 0
+        reason = "signal"
+        watch_root = (code_root or code_checkout()) if reexec else None
+        code_sha = _git_out(watch_root, "rev-parse", "HEAD") if watch_root else None
+        restart = {}
+        draining = False                                  # a code change was detected (SPEC-0229)
+        detached: list = []
+        abandoned: list = []
+        deferred = None                                   # head a re-exec was deferred for
+        exec_blocked = False                              # SPEC-0226: user config invalid this tick
+        pool = StepPool()                                 # SPEC-0213: flights outlive ticks
+        _LAST_POOL = pool
+        watch = ConfigWatch(cfg, config_loader) if config_loader else None
+        slots = _SlotWatch(cfg, pool)
+        drain_since = None
 
-    def emit(report):
-        if report.steps or report.admitted or report.errors or report.started:
-            journal(cfg, "tick", tick=ticks, steps=report.steps, admitted=report.admitted,
-                    errors=report.errors, started=report.started,
-                    in_flight=report.in_flight, drain=report.drain)
-        if on_tick:
-            on_tick(report)
+        def emit(report):
+            if report.steps or report.admitted or report.errors or report.started:
+                journal(cfg, "tick", tick=ticks, steps=report.steps, admitted=report.admitted,
+                        errors=report.errors, started=report.started,
+                        in_flight=report.in_flight, drain=report.drain)
+            if on_tick:
+                on_tick(report)
 
-    def drain_info():
-        lease.update_info(draining={"reason": "code_changed", "since": drain_since,
-                                    "waiting_on": _waiting_on(cfg, pool)})
+        def drain_info():
+            lease.update_info(draining={"reason": "code_changed", "since": drain_since,
+                                        "waiting_on": _waiting_on(cfg, pool)})
 
-    journal(cfg, "start", argv=list(argv or ["wt", "queue", "run"]), interval_s=interval,
-            code_sha=code_sha)
+        journal(cfg, "start", argv=list(argv or ["wt", "queue", "run"]), interval_s=interval,
+                code_sha=code_sha)
+        entered = True
+    finally:
+        if not entered:
+            lease.release()
+            for sig, prev in previous.items():
+                try:
+                    signal.signal(sig, prev)
+                except (ValueError, TypeError):
+                    pass
     crashed = False
     crash = None
     try:
@@ -3629,7 +3660,8 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                 exec_blocked = False
                 if code_sha:
                     head, changed = code_changes(watch_root, code_sha)
-                    if changed and watch and watch.user_invalid():
+                    moved = changed is None or bool(changed)   # SPEC-0262: failed diff = change
+                    if moved and watch and watch.user_invalid():
                         exec_blocked = True       # draining may go on, but never exec into it
                         # SPEC-0226: the new image would load the broken user config (crash
                         # or pure defaults); keep running on the last good one and keep
@@ -3638,10 +3670,12 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                             deferred = head
                             journal(cfg, "reexec_deferred", reason="user_config_invalid",
                                     to_sha=head)
-                    elif changed or draining:
-                        if changed:               # a later merge moves the target (SPEC-0229)
+                    elif moved or draining:
+                        if moved:                 # a later merge moves the target (SPEC-0229)
                             restart = {"from_sha": code_sha, "to_sha": head,
-                                       "paths": changed[:50]}
+                                       "paths": (changed or [])[:50]}
+                            if changed is None:
+                                restart["diff_failed"] = True
                         if not draining:
                             # SPEC-0194 + SPEC-0229: keep admitting; no new in-process work;
                             # exec once nothing blocks it

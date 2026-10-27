@@ -1,7 +1,7 @@
 ---
 id: SPEC-0262
 title: "Runner lifecycle: no orphaned runs, no silent drops, no stale code"
-status: accepted
+status: in-progress
 kind: feature
 owner: user
 created: 2026-10-27

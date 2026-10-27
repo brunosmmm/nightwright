@@ -374,3 +374,43 @@ def test_claim_never_exposes_partial_proc_json(tmp_path):
     assert not RP.claim(run_dir, {"orphaned": True})
     assert RP.read_json(run_dir / "proc.json")["wrapper_pid"] == 1
     assert [p.name for p in run_dir.iterdir()] == ["proc.json"]
+
+
+def test_wrapper_failure_after_popen_kills_child(tmp_path, monkeypatch):
+    """SPEC-0262: a wrapper that fails after `Popen` ends the child's group before it writes
+    `exit.json`, and says so in `exit.json.error`."""
+    import errno
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "launch.json").write_text(json.dumps({"argv": ["sleep", "30"],
+                                                     "cwd": str(tmp_path)}))
+    (run_dir / "request.json").write_text(json.dumps({"timeout_s": 60}))
+    (run_dir / "prompt.md").write_text("")
+    monkeypatch.setenv("WT_RUNPROC_GRACE_S", "0.5")
+    monkeypatch.setattr(RP, "GRACE_S", 0.5)
+    real_write, seen = RP.write_json_atomic, {}
+
+    def failing_write(path, data):
+        if Path(path).name == "child.json":
+            seen.update(data)
+            raise OSError(errno.ENOSPC, "No space left on device")
+        real_write(path, data)
+
+    monkeypatch.setattr(RP, "write_json_atomic", failing_write)
+    prev = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        assert RP.main([str(run_dir)]) == 1
+    finally:
+        for s, h in prev.items():
+            signal.signal(s, h)
+    ex = json.loads((run_dir / "exit.json").read_text())
+    assert ex["exit_code"] == -1 and ex["error"].endswith("child process group killed")
+
+    def gone():
+        try:
+            os.killpg(seen["pgid"], 0)
+        except ProcessLookupError:
+            return True
+        return False
+
+    assert until(gone, timeout=10.0)

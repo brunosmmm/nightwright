@@ -421,3 +421,19 @@ def test_config_reload_republishes_poll_interval(tmp_path, monkeypatch, spy):
     Q.run(cfg, max_ticks=3, poll_interval_s=None, config_loader=lambda: new_cfg)
     seen = [kw["poll_interval_s"] for kw, _ in spy if isinstance(kw, dict) and "poll_interval_s" in kw]
     assert seen[:1] == [20.0] and 120.0 in seen
+
+
+def test_lease_released_when_startup_raises(tmp_path, monkeypatch):
+    """SPEC-0262: anything between `L.acquire` and the main loop that raises releases the
+    lease, so the next runner takes it at once."""
+    _repo, cfg, _cid = _env(tmp_path, monkeypatch)
+
+    def boom(self, *a, **k):
+        raise OSError("startup failed")
+
+    monkeypatch.setattr(Q._SlotWatch, "__init__", boom)
+    with pytest.raises(OSError, match="startup failed"):
+        Q.run(cfg, once=True, poll_interval_s=0.05)
+    assert L.lease_status(cfg)["held"] is False
+    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    lease.release()

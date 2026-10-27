@@ -73,16 +73,38 @@ def test_watcher_disabled(code_repo, tmp_path):
         assert w.poll(1000.0) is None
 
 
-def test_watcher_failed_diff_keeps_baseline(code_repo, monkeypatch):
+def test_watcher_reports_diff_failure_once(code_repo, monkeypatch):
+    """SPEC-0262: a failed `git diff` is a change with unknown paths, reported once; the
+    baseline moves, so the same failing diff is never retried forever."""
     w = CW.Watcher(code_repo.root, 10, now=0.0)
     base = w.sha
     code_repo.commit({"src/wt/x.py": "x = 2\n"})
-    real = CW._git_out
-    monkeypatch.setattr(CW, "_git_out",
-                        lambda root, *a: None if "diff" in a else real(root, *a))
-    assert w.poll(11.0) is None and w.sha == base        # not mistaken for a docs-only commit
-    monkeypatch.setattr(CW, "_git_out", real)
-    assert w.poll(22.0)["paths"] == ["src/wt/x.py"]
+    monkeypatch.setattr(CW, "_changed_paths", lambda *a: None)
+    got = w.poll(11.0)
+    assert got == {"from_sha": base, "to_sha": code_repo.head(), "paths": [],
+                   "skills_changed": [], "diff_failed": True}
+    assert w.sha == code_repo.head()
+    assert w.poll(22.0) is None                          # same head: nothing more
+
+
+def test_code_changes_failed_diff_is_unknown_paths(code_repo, monkeypatch):
+    base = code_repo.head()
+    code_repo.commit({"docs/a.md": "b\n"})
+    monkeypatch.setattr(CW, "_changed_paths", lambda *a: None)
+    assert CW.code_changes(code_repo.root, base) == (code_repo.head(), None)
+    assert CW.code_changes(code_repo.root, code_repo.head()) == (code_repo.head(), [])
+
+
+def test_code_changed_line_carries_diff_failed():
+    from wt.agentic import events as E
+    import json
+    change = {"from_sha": "a" * 40, "to_sha": "b" * 40, "paths": [], "skills_changed": [],
+              "diff_failed": True}
+    assert json.loads(E.code_changed_line("r", change))["data"]["diff_failed"] is True
+    assert E.code_changed_line("r", change, as_json=False).rstrip().endswith(
+        "skills=- diff_failed (re-arm)")
+    plain = {k: v for k, v in change.items() if k != "diff_failed"}
+    assert "diff_failed" not in E.code_changed_line("r", plain, as_json=False)
 
 
 def test_watcher_non_ascii_skill_path(code_repo):

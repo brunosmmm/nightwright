@@ -38,12 +38,13 @@ def _changed_paths(root, since: str, head: str, paths) -> list[str] | None:
     return None if diff is None else [p for p in diff.splitlines() if p]
 
 
-def code_changes(root, since: str, paths=_CODE_PATHS) -> tuple[str | None, list[str]]:
-    """(current HEAD, `paths` changed since `since`) for the checkout at `root`."""
+def code_changes(root, since: str, paths=_CODE_PATHS) -> tuple[str | None, list[str] | None]:
+    """(current HEAD, `paths` changed since `since`) for the checkout at `root`. The paths are
+    None when HEAD moved but `git diff` failed: a change with unknown paths (SPEC-0262)."""
     head = _git_out(root, "rev-parse", "HEAD")
     if not head or head == since:
         return head, []
-    return head, _changed_paths(root, since, head, paths) or []
+    return head, _changed_paths(root, since, head, paths)
 
 
 class Watcher:
@@ -69,9 +70,10 @@ class Watcher:
         if not head or head == self.sha:
             return None
         changed = _changed_paths(self.root, self.sha, head, FOLLOWER_PATHS)
-        if changed is None:                  # git diff failed: keep the baseline, retry next check
-            return None
         old, self.sha = self.sha, head
+        if changed is None:                  # git diff failed: a change, reported once (SPEC-0262)
+            return {"from_sha": old, "to_sha": head, "paths": [], "skills_changed": [],
+                    "diff_failed": True}
         if not changed:                      # docs/specs/tests only: not our code
             return None
         skills = sorted({p.split("/")[1] for p in changed

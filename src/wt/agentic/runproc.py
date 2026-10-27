@@ -288,7 +288,17 @@ def main(argv=None) -> int:
         import traceback
         traceback.print_exc()
         if not exit_path.exists():
-            finish(-1, error=f"wrapper failed: {e!r}")
+            error = f"wrapper failed: {e!r}"
+            child = state.get("child")
+            if child is not None and child.poll() is None:
+                # SPEC-0262: never leave `claude` running behind a written `exit.json`
+                _killpg(child.pid, signal.SIGTERM)
+                end = time.monotonic() + GRACE_S
+                while child.poll() is None and time.monotonic() < end:
+                    time.sleep(0.05)
+                _killpg(child.pid, signal.SIGKILL)
+                error += "; child process group killed"
+            finish(-1, error=error)
         return 1
     return 0
 

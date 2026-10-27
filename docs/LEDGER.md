@@ -174,7 +174,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0259](./specs/0259-conflict-resolver-verification-rejects-valid.md) Resolver may declare dropped_commits superseded by upstream; gates decide — done
   - [x] [SPEC-0260](./specs/0260-close-train-serialize-close-steps-per-repository.md) Close train: serialize close steps per repository so the queue's own merges never invalidate a re-gate — done
   - [x] [SPEC-0261](./specs/0261-divergence-detector-skip-environmental-gate.md) Divergence detector: skip environmental gate rounds and weigh repeated findings over new ones — done
-  - [ ] [SPEC-0262](./specs/0262-runner-lifecycle-no-orphaned-runs-no-silent-drops.md) Runner lifecycle: no orphaned runs, no silent drops, no stale code — accepted
+  - [ ] [SPEC-0262](./specs/0262-runner-lifecycle-no-orphaned-runs-no-silent-drops.md) Runner lifecycle: no orphaned runs, no silent drops, no stale code — in-progress
   - [x] [SPEC-0263](./specs/0263-queue-bookkeeping-unique-run-ids-honest-slot-and.md) Queue bookkeeping: unique run ids, honest slot and profile parks, gated declared drops — done
   - [x] [SPEC-0264](./specs/0264-review-pipeline-integrity-exact-attestations-safe.md) Review pipeline integrity: exact attestations and safe escalation answers — done
   - [ ] [SPEC-0265](./specs/0265-operator-surfaces-survive-bad-data-and-never.md) Operator surfaces survive bad data and never render untrusted text as markup — accepted
@@ -192,7 +192,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) | Spec phases and review rounds in queue watch and listing | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0214](./specs/0214-spec-review-loop-inside-the-campaign-with-in-loop.md) | Spec review loop inside the campaign, with in-loop acceptance | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0262](./specs/0262-runner-lifecycle-no-orphaned-runs-no-silent-drops.md) | Runner lifecycle: no orphaned runs, no silent drops, no stale code | feature | accepted | — | 2026-10-27 |
+| [SPEC-0262](./specs/0262-runner-lifecycle-no-orphaned-runs-no-silent-drops.md) | Runner lifecycle: no orphaned runs, no silent drops, no stale code | feature | in-progress | — | 2026-10-27 |
 | [SPEC-0265](./specs/0265-operator-surfaces-survive-bad-data-and-never.md) | Operator surfaces survive bad data and never render untrusted text as markup | feature | accepted | — | 2026-10-27 |
 | [SPEC-0266](./specs/0266-review-pipeline-integrity-ii-scoped-regenerate.md) | Review pipeline integrity II: scoped regenerate, divergence reset, locked follow-up groups | feature | accepted | — | 2026-10-27 |
 | [SPEC-0267](./specs/0267-reconcile-source-idea-walk-mislinks-old-specs-to.md) | Reconcile source_idea walk verifies idea identity before linking | feature | accepted | — | 2026-10-27 |

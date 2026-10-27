@@ -450,6 +450,50 @@ def test_bound_expiry_abandons_stuck_tasks(tmp_path, monkeypatch):
     time.sleep(0.2)
 
 
+
+def _in_process_pool(cid="g"):
+    """A pool with one flight whose hookless gate task blocks on an `Event` (SPEC-0262)."""
+    pool, release = Q.StepPool(), threading.Event()
+    fl = Q._Flight({"id": cid}, None)
+    fl.tasks.append((Q.Step("gate"), pool.submit(release.wait, 30), None))
+    pool.flights[cid] = fl
+    return pool, release
+
+
+def test_bound_expiry_lists_in_process_flights(tmp_path, monkeypatch):
+    """SPEC-0262: at the stop bound an unfinished in-process flight is recorded as abandoned
+    (`phase: in_process` with its step), never silently dropped by `flights.clear()`."""
+    monkeypatch.setattr(Q, "_STOP_BOUND_S", 0.3)
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {}}
+    pool, release = _in_process_pool()
+    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    stop = threading.Event()
+    stop.set()
+    try:
+        report = Q._drain(cfg, pool, lease, stop=stop)
+        assert {"campaign": "g", "run_id": None, "phase": "in_process",
+                "step": "gate"} in report.abandoned
+        assert not pool.flights
+    finally:
+        release.set()
+        lease.release()
+        pool.end(timeout=2)
+
+
+def test_crash_sweep_lists_in_process_flights(tmp_path):
+    """SPEC-0262: the crash path records the unfinished in-process flights the same way."""
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {}}
+    pool, release = _in_process_pool()
+    try:
+        detached, abandoned = Q._crash_sweep(cfg, pool, 0.3)
+        assert detached == []
+        assert abandoned == [{"campaign": "g", "run_id": None, "phase": "in_process",
+                              "step": "gate"}]
+    finally:
+        release.set()
+        pool.end(timeout=2)
+
+
 def test_waiting_on_lists_only_blockers(tmp_path):
     pool = Q.StepPool()
     f_wait, f_gate = pool.submit(time.sleep, 0.3), pool.submit(time.sleep, 0.3)
