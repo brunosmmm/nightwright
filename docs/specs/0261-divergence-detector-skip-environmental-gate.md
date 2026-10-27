@@ -292,6 +292,21 @@ Restore both and record the failures in the Test record.
   because it assumed `tmp_path` is not under `$HOME`; the test now monkeypatches `HOME` to a
   directory outside `tmp_path` (test-only fix, `short_origin` unchanged), so nothing is deselected.
 
+- Loop 2 (review fix, tests only, `src` unchanged): added to `tests/test_agentic_divergence.py`
+  `test_check_reads_run_end_and_reports_excluded_rounds` (goes through `DV.check` with a
+  `DV.store` fake whose `read_ledger` filters by the `types` it receives; three ledger gate
+  rounds plus a pending fourth, the same failing gate and triager title, the second made
+  environmental only by an implementer `run.end` with a blocked ENOSPC verdict; asserts
+  `rounds == 3`, `excluded_rounds == 1`, `loop` set). Sabotage: removing `"run.end"` from
+  `check`'s type list fails it (restored). Also `test_recurrence_evidence_uses_kept_round_numbers`
+  ([review X, ENOSPC-tail gate, review Y, review X] gives rounds `[1, 3]`, summary `(r1, r3)`),
+  `test_min_rounds_counts_kept_rounds_only` (recurring X/Y/X trips with 3 rounds, gives None once
+  the middle gate round is environmental) and `test_environmental_rule_edges` (rule (a) matches on
+  `verdict.summary` alone; rule (b) with `timed_out=True` or `is_error=True` and no `result_tail`
+  is NOT environmental, since the "timed out"/"error" fallback contains no `_is_transient`
+  marker; with `result_tail="API Error: 529 overloaded"` it is). `tests/test_agentic_divergence.py`:
+  29 passed.
+
 ### As shipped
 
 As designed. Notes: `_trend`'s `similarity` parameter defaults to `DEFAULTS["similarity"]`.

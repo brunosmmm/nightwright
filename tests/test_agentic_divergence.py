@@ -476,3 +476,62 @@ def test_e2e_ledger_read_error_still_transitions_to_implementing(tmp_path, monke
     assert "divergence check skipped: disk gone" in notes
     trans = [(e["from"], e["to"], e["reason"]) for e in S.read_ledger(cfg, cid, types=["transition"])]
     assert ("REVIEWING", "IMPLEMENTING", "review_fix") in trans
+
+
+# ---- environmental rounds through `check` and the edge rules --------------------------------
+
+def test_check_reads_run_end_and_reports_excluded_rounds(monkeypatch):
+    title = "pytest fails on the parser"
+    enospc = run_end(status="blocked", verdict={"status": "blocked",
+                                                 "blockers": ["Disk full (ENOSPC) on /tmp"]})
+
+    def gate_round(*extra):
+        return [*extra, gate(("test", False)), finding(title, persona="gate_triager"),
+                fix("triage_fix")]
+    ledger = [rec("open"), *gate_round(), *gate_round(enospc), *gate_round()]
+
+    def read_ledger(cfg, cid, types=None):
+        return [r for r in ledger if types is None or r["type"] in types]
+    monkeypatch.setattr(DV, "store", types.SimpleNamespace(read_ledger=read_ledger))
+    pending = [("gate", {"ok": False, "results": [{"name": "test", "ok": False}]}),
+               ("finding", {"persona": "gate_triager", "severity": "must_fix", "title": title})]
+    div = DV.check({}, {"id": "C-1", "state": "TRIAGING", "counters": {"loops": 4}}, pending)
+    assert div is not None and div["loop"] == 4
+    assert div["rounds"] == 3 and div["excluded_rounds"] == 1
+    assert names(div) == ["trend", "gate_repeat"]
+    assert pending[0][0] == "gate" and len(pending) == 2                 # no note: the read worked
+
+
+def test_recurrence_evidence_uses_kept_round_numbers():
+    ledger = [finding(X), fix(),
+              failing_gate("OSError: [Errno 28] No space left on device"), fix("triage_fix"),
+              finding(Y), fix(),
+              finding(X), fix()]
+    rs = DV.rounds(ledger)
+    assert [r.kind for r in rs] == ["review", "gate", "review", "review"]
+    assert rs[1].environmental
+    div = DV.assess(rs)
+    [rcr] = [s for s in div["signals"] if s["name"] == "recurrence"]
+    assert [h["rounds"] for h in rcr["evidence"]] == [[1, 3]]
+    assert div["rounds"] == 3 and div["excluded_rounds"] == 1
+    assert "(r1, r3)" in DV.summary(div)
+
+
+def test_min_rounds_counts_kept_rounds_only():
+    same = [rnd(blocking=[X]), rnd("gate", blocking=[Y], gates=["test"]), rnd(blocking=[X])]
+    assert "recurrence" in names(DV.assess(same))                          # 3 rounds recur
+    env = [same[0], rnd("gate", blocking=[Y], gates=["test"], environmental=True), same[2]]
+    assert DV.assess(env) is None                                        # only 2 kept
+
+
+def test_environmental_rule_edges():
+    def env(*records):
+        [r] = DV.rounds([*records, fix("triage_fix")])
+        return r.environmental
+    # (a) matches on the verdict summary alone
+    assert env(run_end(status="blocked", verdict={"status": "blocked", "summary": "ENOSPC on /tmp"}))
+    assert not env(run_end(status="blocked", verdict={"status": "blocked", "summary": "unclear"}))
+    # (b) a timeout with no result_tail falls back to "timed out", which is not transient
+    assert not env(run_end(timed_out=True))
+    assert not env(run_end(is_error=True))
+    assert env(run_end(timed_out=True, result_tail="API Error: 529 overloaded"))
