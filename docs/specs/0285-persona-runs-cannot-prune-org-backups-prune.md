@@ -215,6 +215,19 @@ Sabotage results (each applied alone to `src/wt/org_write.py`, then restored):
   raise only for `.bak` paths (real `os.remove` otherwise), so a wrongful marker clear would show.
   `test_partial_failure_does_not_clear_marker_even_when_matching` was dropped: it seeded no marker
   and repeated the first test.
+- Review follow-ups (loop 2): `wt backups prune --yes` now holds `org_write_lock` around the marker
+  read, the prune and the marker removal, so it cannot interleave with an automatic prune (no lost
+  fresh marker, no double delete of the same backup). A dry run stays lock-free. The CLI uses the
+  public `clear_prune_error` (renamed from `_clear_prune_error`). An all-files `--yes` prune that
+  selects nothing still clears the marker: Design point 2 says an all-files prune clears it, so this
+  stays as designed. The last criterion's text still names `test_persona_run_refuses_org_writes`; the
+  guarded text could not be amended, so the criterion stands on the restated form above.
+- New tests: `test_yes_prune_with_failed_deletes_keeps_marker`,
+  `test_yes_prune_json_carries_marker_it_removes`,
+  `test_corrupt_marker_is_ignored_then_removed_by_all_files_prune`,
+  `test_failed_marker_write_does_not_fail_org_write` (also shows the old marker survives a failed
+  rewrite), `test_yes_prune_holds_org_write_lock`. Sabotage: `if yes:` instead of
+  `if yes and not res["failed"]:` fails the keeps-marker test; dropping the lock fails the lock test.
 
 ## Definition of done
 

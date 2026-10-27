@@ -706,7 +706,7 @@ def _record_prune_error(cfg, basename, error):
         pass
 
 
-def _clear_prune_error(cfg, basename):
+def clear_prune_error(cfg, basename):
     """Remove the marker after a successful prune of `basename` (None = every file). A marker
     for another file stays; a corrupt one goes only with an all-files prune. Best-effort."""
     try:
@@ -735,7 +735,7 @@ def _atomic_backup_write(cfg, path, content):
             if res["failed"]:                        # deletes raised OSError inside prune_backups
                 _record_prune_error(cfg, base, f"{len(res['failed'])} delete(s) failed")
             else:
-                _clear_prune_error(cfg, base)
+                clear_prune_error(cfg, base)
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".wt-org-", suffix=".tmp")

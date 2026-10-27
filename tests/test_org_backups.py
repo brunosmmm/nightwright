@@ -370,3 +370,84 @@ def test_persona_run_refuses_before_backup_copy(tmp_path, monkeypatch):
         W._atomic_backup_write(cfg, str(ideas), "changed\n")
     assert os.listdir(bdir) == []
     assert ideas.read_text() == "#+TODO: TODO | DONE\n* TODO a thing\n"
+
+
+def _failing_bak_remove(monkeypatch):
+    real_remove = os.remove
+
+    def boom(path):
+        if str(path).endswith(".bak"):
+            raise PermissionError("denied")
+        real_remove(path)
+    monkeypatch.setattr(W.os, "remove", boom)
+
+
+def test_yes_prune_with_failed_deletes_keeps_marker(tmp_path, monkeypatch):
+    data_dir, config_dir, bdir = _cli_dirs(tmp_path)
+    _seed(bdir, "ideas.org", 3, day=dt.date.today() - dt.timedelta(days=100))
+    marker = {"at": "2026-10-27T10:00:00", "basename": "ideas.org", "error": "boom"}
+    (bdir / MARKER).write_text(json.dumps(marker))
+    _failing_bak_remove(monkeypatch)
+    r = _cli(monkeypatch, data_dir, config_dir)(
+        ["backups", "prune", "--keep-last", "0", "--keep-days", "0", "--yes"])
+    assert r.exit_code == 0, r.output
+    assert "delete(s) failed" in r.output
+    assert _marker(bdir) == marker
+
+
+def test_yes_prune_json_carries_marker_it_removes(tmp_path, monkeypatch):
+    data_dir, config_dir, bdir = _cli_dirs(tmp_path)
+    marker = {"at": "2026-10-27T10:00:00", "basename": "tasks.org", "error": "boom"}
+    (bdir / MARKER).write_text(json.dumps(marker))
+    r = _cli(monkeypatch, data_dir, config_dir)(["backups", "prune", "--yes", "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["last_auto_prune_error"] == marker
+    assert not (bdir / MARKER).exists()
+
+
+def test_corrupt_marker_is_ignored_then_removed_by_all_files_prune(tmp_path, monkeypatch):
+    cfg, ideas, bdir = _ideas_setup(tmp_path)
+    (bdir / MARKER).write_text("{not json")
+    W.set_property(cfg, _task(cfg), "FOO", "bar")    # per-basename clear leaves a corrupt marker
+    assert (bdir / MARKER).read_text() == "{not json"
+    data_dir, config_dir = tmp_path / "data", tmp_path / "config"
+    run = _cli(monkeypatch, data_dir, config_dir)
+    r = run(["backups", "prune"])
+    assert r.exit_code == 0, r.output
+    assert "last automatic prune failed" not in r.output
+    assert json.loads(run(["backups", "prune", "--json"]).output)["last_auto_prune_error"] is None
+    r = run(["backups", "prune", "--yes"])
+    assert r.exit_code == 0, r.output
+    assert not (bdir / MARKER).exists()
+
+
+def test_failed_marker_write_does_not_fail_org_write(tmp_path, monkeypatch):
+    cfg, ideas, bdir = _ideas_setup(tmp_path)
+    old = {"at": "x", "basename": "ideas.org", "error": "old"}
+    (bdir / MARKER).write_text(json.dumps(old))
+    monkeypatch.setattr(W, "prune_backups", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    real_mkstemp = W.tempfile.mkstemp
+
+    def mkstemp(*a, **k):
+        if k.get("prefix") == ".prune-error-":
+            raise OSError("no space")
+        return real_mkstemp(*a, **k)
+    monkeypatch.setattr(W.tempfile, "mkstemp", mkstemp)
+    W.set_property(cfg, _task(cfg), "FOO", "bar")
+    assert ":FOO: bar" in ideas.read_text()
+    assert _marker(bdir) == old                      # the failed write left the old marker intact
+
+
+def test_yes_prune_holds_org_write_lock(tmp_path, monkeypatch):
+    data_dir, config_dir, bdir = _cli_dirs(tmp_path)
+    depths = []
+    real = W.prune_backups
+
+    def spy(*a, **k):
+        depths.append((k["dry_run"], getattr(W._ORG_LOCK_STATE, "depth", 0)))
+        return real(*a, **k)
+    monkeypatch.setattr(W, "prune_backups", spy)
+    run = _cli(monkeypatch, data_dir, config_dir)
+    assert run(["backups", "prune", "--yes"]).exit_code == 0
+    assert run(["backups", "prune"]).exit_code == 0
+    assert depths == [(False, 1), (True, 0)]
