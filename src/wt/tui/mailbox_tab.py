@@ -224,6 +224,7 @@ class MailboxView(Horizontal):
             self.paint_inboxes()
             self.paint_right()
         except Exception as e:      # a malformed record must not end the app
+            self._signature = None              # retried by the next poll, not only on new mail
             self.app.notify(f"mailbox failed: {escape(str(e) or repr(e))}", severity="error")
         finally:
             self._loading = False

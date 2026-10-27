@@ -45,7 +45,7 @@ class QueueActions:
         try:
             await self._flow(action, cid)
         except (ValueError, OSError) as e:
-            self.app.notify(str(e), severity="error")
+            self.app.notify(escape(str(e)), severity="error")
         except Exception as e:      # an unexpected error must not end the app
             self.app.notify(f"queue action failed: {escape(repr(e))}", severity="error")
         finally:

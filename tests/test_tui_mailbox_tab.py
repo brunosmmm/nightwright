@@ -681,3 +681,27 @@ def test_send_flow_catch_all_notifies(tmp_path, monkeypatch):
                        for m, k in app.notes if k.get("severity") == "error")
 
     _run(drive())
+
+
+def test_a_failed_paint_is_retried_by_the_next_poll(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    ask(cfg, frm="conductor", to="human", kind="info", text="hello")
+    app = _desk(cfg, tab="mailbox")
+    real = MT.MailboxView.paint_threads
+
+    def boom(self):
+        raise TypeError("bad record")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            monkeypatch.setattr(MT.MailboxView, "paint_threads", boom)
+            mv(app).reload()
+            await settle(app, pilot)
+            assert any("mailbox failed" in msg for msg, _ in app.notes)
+            monkeypatch.setattr(MT.MailboxView, "paint_threads", real)   # nothing changes on disk
+            mv(app)._poll()
+            await settle(app, pilot)
+            assert mv(app).threads_table.row_count
+
+    _run(drive())

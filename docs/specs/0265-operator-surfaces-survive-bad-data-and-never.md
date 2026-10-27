@@ -245,6 +245,17 @@ duplicate id instead of crashing, and `event_time` tolerates `OverflowError`.
   reset, both `except Exception` catch-alls, the campaign `_signature = None` reset, and `age_s`
   with `astimezone()` outside the `try`.
 
+- Review round 3: events `_append` takes `_last_id` from the highest id in the batch, not the last
+  raw row, so a trailing lower-id duplicate no longer inflates the duplicate count; mailbox
+  `_reload_async` resets `_signature` to `None` on failure (next poll retries); the queue
+  `_action_flow` `(ValueError, OSError)` toast is escaped. New tests:
+  `test_show_detail_error_is_shown_in_the_pane`, `test_filter_key_and_resize_paint_errors_are_contained`
+  (campaign screen), `test_resize_and_paint_errors_are_contained`, `test_a_value_error_notification_is_escaped`
+  (queue), `test_append_failure_after_a_reset_restores_the_old_rows_and_retries`,
+  `test_a_trailing_lower_duplicate_id_does_not_inflate_the_count` (events),
+  `test_a_failed_paint_is_retried_by_the_next_poll` (mailbox). Sabotage: `rows[-1].id` for `_last_id`
+  made the trailing-duplicate test fail, then reverted. The four TUI test files: 109 passed.
+
 ## Definition of done
 
 - [x] Acceptance criteria all met.

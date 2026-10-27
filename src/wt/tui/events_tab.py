@@ -193,7 +193,7 @@ class EventsView(Horizontal):
         first = not self.loaded or self._dirty
         selected = self.current_row()       # before `shown` changes: the cursor indexes the old list
         at_tail = first or table.row_count == 0 or table.cursor_row >= table.row_count - 1
-        last_id = rows[-1].id if rows else self._last_id
+        last_id = max([r.id for r in rows], default=self._last_id)
         # Dedupe in the data, so table, `shown` and `loaded` stay one-to-one (a repeated id would
         # raise DuplicateKey, and a row left out of the table only would shift `current_row`).
         seen = {r.id for r in self.loaded}

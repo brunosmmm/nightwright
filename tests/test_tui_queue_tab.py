@@ -867,3 +867,39 @@ def test_a_failed_reload_is_retried_by_the_next_poll(tmp_path, monkeypatch):
             assert "queue failed" not in _status(app) and view(app).table.row_count
 
     _run(drive())
+
+
+def test_a_value_error_notification_is_escaped(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+
+    def boom(cfg, plan):
+        raise ValueError("bad [/oops] path")
+    monkeypatch.setattr(Q, "apply_prioritize", boom)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await act(app, pilot, "backlog", cid, ["P", "k", "enter", "enter"])
+            assert app.is_running
+            errs = [m for m, k in app.notes if k.get("severity") == "error"]
+            assert errs == [r"bad \[/oops] path"]
+
+    _run(drive())
+
+
+def test_resize_and_paint_errors_are_contained(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            assert view(app).rows
+            monkeypatch.setattr(QT.QueueView, "paint", lambda self: (_ for _ in ()).throw(TypeError("x")))
+            view(app).on_resize(None)
+            await settle(app, pilot)
+            assert app.is_running and "queue failed" in _status(app)
+
+    _run(drive())

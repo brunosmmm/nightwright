@@ -836,3 +836,64 @@ def test_append_failure_is_retried(tmp_path, monkeypatch):
             assert v.table.row_count == 3 and "events failed" not in status(app)
 
     _run(drive())
+
+
+def test_append_failure_after_a_reset_restores_the_old_rows_and_retries(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _seed(cfg, 3)
+    app = _desk(cfg, tab="events")
+    path = EV.events_path(cfg)
+    real_repaint, real_load = ET.EventsView._repaint, AM.load_events
+    armed, seen = [], []
+
+    def flaky(self, **kw):
+        if armed:
+            armed.clear()
+            self.table.add_row("x", "x", "x", "x", "x", key="partial")
+            raise TypeError("paint failed")
+        return real_repaint(self, **kw)
+
+    def spy(cfg, since, limit):
+        v = view(app)
+        seen.append((since, len(v.loaded), v._dirty, v._last_id))
+        return real_load(cfg, since, limit)
+
+    monkeypatch.setattr(ET.EventsView, "_repaint", flaky)
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            assert ids(app) == [1, 2, 3]
+            monkeypatch.setattr(AM, "load_events", spy)
+            armed.append(1)
+            path.write_text(json.dumps({"schema": EV.SCHEMA, "id": 1, "type": "admitted",
+                                        "ts": "2026-10-25T10:00:00+00:00",
+                                        "campaign": "SPEC-0001-new", "data": {}}) + "\n")
+            await until(app, pilot, lambda: len(seen) >= 2, "retry load")
+            assert seen[0][0] == 0                              # the reset load
+            assert seen[1][1:] == (3, True, 3)                  # old rows back, rebuild pending
+            await until(app, pilot, lambda: ids(app) == [1], "rebuilt rows")
+            v = view(app)
+            assert v.table.row_count == 1 and v.table.get_row_at(0)[3].plain == "SPEC-0001-new"
+            assert "events failed" not in status(app)
+
+    _run(drive())
+
+
+def test_a_trailing_lower_duplicate_id_does_not_inflate_the_count(tmp_path):
+    cfg = _cfg(tmp_path)
+    _raw(cfg, *({"id": i, "campaign": f"SPEC-{i:04d}-x"} for i in range(1, 6)),
+         {"id": 1, "campaign": "SPEC-0001-dup"})
+    app = _desk(cfg, tab="events")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            v = view(app)
+            assert ids(app) == [1, 2, 3, 4, 5] and v._last_id == 5
+            assert "1 duplicate ids skipped" in status(app)
+            _raw(cfg, {"id": 6, "campaign": "SPEC-0006-x"})
+            await until(app, pilot, lambda: ids(app) == [1, 2, 3, 4, 5, 6], "event 6")
+            assert "1 duplicate ids skipped" in status(app)
+
+    _run(drive())

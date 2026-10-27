@@ -351,3 +351,51 @@ def test_timeline_text_renders_verbatim(tmp_path):
             assert cells[3].plain.endswith("see [/oops] and [x]")      # after the "text=" label
 
     _run(drive())
+
+
+def test_show_detail_error_is_shown_in_the_pane(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed(cfg, cid)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await open_screen(app, pilot, cid, _section_of(app, cid))
+            monkeypatch.setattr(CS.AM, "entry_detail",
+                                lambda *a: (_ for _ in ()).throw(RuntimeError("no detail [/x]")))
+            screen(app).show_detail()
+            await settle(app, pilot)
+            assert app.is_running
+            assert "(detail unavailable: no detail [/x])" in detail(app)
+
+    _run(drive())
+
+
+def test_filter_key_and_resize_paint_errors_are_contained(tmp_path, monkeypatch):
+    repo, cfg, ids = _fixture(tmp_path)
+    cid = ids["ready"]
+    seed(cfg, cid)
+    app = _desk(cfg, tab="queue")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await open_screen(app, pilot, cid, _section_of(app, cid))
+            monkeypatch.setattr(CS.CampaignScreen, "paint",
+                                lambda self, previous=None: (_ for _ in ()).throw(TypeError("x")))
+            await press(app, pilot, "f")
+            await settle(app, pilot)
+            assert app.is_running and "campaign failed" in status(app)
+            monkeypatch.undo()
+            screen(app).reload()
+            await settle(app, pilot)
+            assert "campaign failed" not in status(app)
+            monkeypatch.setattr(CS.CampaignScreen, "paint",
+                                lambda self, previous=None: (_ for _ in ()).throw(TypeError("y")))
+            screen(app).on_resize(None)
+            await settle(app, pilot)
+            assert app.is_running and "campaign failed" in status(app)
+
+    _run(drive())
