@@ -676,3 +676,95 @@ def test_timers_pause_when_the_tab_is_left(tmp_path, monkeypatch):
             assert len(calls) > n
 
     _run(drive())
+
+
+# --- the 5 s side-panel refresh (no key press after the tab opens) --------------------------
+
+def test_side_panels_refresh_on_their_own_after_the_tab_opens(tmp_path):
+    cfg = _cfg(tmp_path)
+    EV.cursor_set(cfg, "conductor", 0)             # a follower row that starts out not held
+    app = _desk(cfg, tab="events")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await until(app, pilot, lambda: "no alerts" in panel(app, "conditions"), "no alerts")
+            await until(app, pilot, lambda: "dead" in panel(app, "followers"), "dead follower")
+            assert "no live follower" in status(app)
+            # State changes after the tab opened; no key press from here on.
+            _campaign(cfg, "SPEC-0900-20261025-aaaa", "IMPLEMENTING")   # active, no lease
+            await until(app, pilot, lambda: "runner_dead" in panel(app, "conditions"),
+                        "runner_dead")
+            with EV.reader_lock(cfg, "conductor"):
+                await until(app, pilot, lambda: "dead" not in panel(app, "followers"),
+                            "follower no longer dead")
+                await until(app, pilot, lambda: "no live follower" not in status(app),
+                            "warning gone")
+            await until(app, pilot, lambda: "dead" in panel(app, "followers"),
+                        "dead again once released")
+            assert not EV.events_path(cfg).exists() or "runner_dead" not in \
+                EV.events_path(cfg).read_text()
+
+    _run(drive())
+
+
+def test_the_side_timer_pauses_off_tab_and_resumes_on_five(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _seed(cfg, 1)
+    calls = []
+    real = AM.load_conditions
+    monkeypatch.setattr(AM, "load_conditions", lambda c: calls.append(1) or real(c))
+    app = _desk(cfg, tab="events")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await until(app, pilot, lambda: len(calls) >= 3, "side timer ticking")
+            await pilot.press("1")
+            await settle(app, pilot)
+            await pilot.pause(0.3)                  # let an in-flight reload finish
+            n = len(calls)
+            await pilot.pause(0.8)                  # four SIDE_S periods
+            assert len(calls) == n
+            await pilot.press("5")
+            await until(app, pilot, lambda: len(calls) >= n + 3, "side timer resumed")
+
+    _run(drive())
+
+
+def test_a_failing_load_is_shown_and_the_next_poll_recovers(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _seed(cfg, 2)
+    broken = {"on": True}
+    real_events, real_conditions = AM.load_events, AM.load_conditions
+
+    def flaky_events(*a, **k):
+        if broken["on"]:
+            raise OSError("disk gone")
+        return real_events(*a, **k)
+
+    def flaky_conditions(*a, **k):
+        if broken["on"]:
+            raise OSError("ledger gone")
+        return real_conditions(*a, **k)
+
+    monkeypatch.setattr(AM, "load_events", flaky_events)
+    monkeypatch.setattr(AM, "load_conditions", flaky_conditions)
+    app = _desk(cfg, tab="events")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            await until(app, pilot, lambda: "conditions failed: ledger gone"
+                        in panel(app, "conditions"), "conditions failure shown")
+            await until(app, pilot, lambda: "events failed: disk gone" in status(app),
+                        "events failure shown")
+            assert ids(app) == []                  # the desk is still up and responsive
+            broken["on"] = False
+            await until(app, pilot, lambda: "no alerts" in panel(app, "conditions"),
+                        "conditions recovered")
+            await until(app, pilot, lambda: ids(app) == [1, 2]
+                        and "events failed" not in status(app), "events recovered")
+            assert not [n for n, k in app.notes if k.get("severity") == "error"]
+
+    _run(drive())

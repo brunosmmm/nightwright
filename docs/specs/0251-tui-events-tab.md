@@ -272,6 +272,18 @@ Matches the Design, with these details:
   replaced by pilot tests that hold and drop a real reader lock (see the Test record); the line
   itself is guarded text and is left as accepted.
 
+### As shipped, review round 4 (2026-10-26)
+
+- Tests only, no production change. `test_side_panels_refresh_on_their_own_after_the_tab_opens`
+  opens the tab, then (no key press) seeds an active campaign with no lease and takes and drops
+  a real `events.reader_lock`, waiting for `runner_dead`, the `dead` flag and the
+  no-live-follower warning to appear and clear on the 5 s timer.
+  `test_the_side_timer_pauses_off_tab_and_resumes_on_five` counts `AM.load_conditions` calls.
+  `test_a_failing_load_is_shown_and_the_next_poll_recovers` makes `load_events` and
+  `load_conditions` raise, checks `events failed:` / `conditions failed:` show with the desk
+  still up, then recovers. With the side `set_interval` disabled the first two tests fail.
+  `tests/test_tui_events_tab.py`: 27 passed (three runs); full suite below.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
