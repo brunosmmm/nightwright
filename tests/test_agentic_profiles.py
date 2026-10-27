@@ -786,7 +786,10 @@ def test_provenance_follows_extends_chain(tmp_path):
         P.profile_provenance(cfg, "nope")
 
 
-def test_short_origin_forms(tmp_path):
+def test_short_origin_forms(tmp_path, monkeypatch):
+    fake_home = tmp_path.parent / (tmp_path.name + "-home")   # sibling: never contains tmp_path
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
     cfg, user, proj = _layers(tmp_path)
     assert P.short_origin(cfg, "builtin:balanced.yaml") == "builtin"
     assert P.short_origin(cfg, "config.yaml:agentic.profiles.x") == "config.yaml"

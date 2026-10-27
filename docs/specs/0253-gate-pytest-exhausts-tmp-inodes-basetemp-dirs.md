@@ -175,6 +175,7 @@ Regression: full `uv run pytest`.
   exclusive `mkdir`, so a concurrent run (or stale unswept dir) holding the same seq makes it
   move to the next free one; the logs and the `gate` event carry the seq actually used.
 - Free inodes use `f_ffree`, free space `f_bavail * f_frsize`.
+- Follow-up (test-only): `test_short_origin_forms` now pins HOME to a sibling dir of `tmp_path`, so it no longer fails when the per-run TMPDIR lives under `$HOME`.
 
 ## Definition of done
 
