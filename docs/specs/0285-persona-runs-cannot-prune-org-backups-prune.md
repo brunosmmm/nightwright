@@ -1,7 +1,7 @@
 ---
 id: SPEC-0285
 title: "Persona runs cannot prune org backups; prune failures leave a trace"
-status: accepted
+status: in-progress
 kind: feature
 owner: user
 created: 2026-10-27
@@ -113,21 +113,21 @@ of the same file (or of all files) removes it.
 
 ## Acceptance criteria
 
-- [ ] With `WT_PERSONA_RUN=1`, `wt backups prune --keep-last 0 --keep-days 0 --yes` exits 1
+- [x] With `WT_PERSONA_RUN=1`, `wt backups prune --keep-last 0 --keep-days 0 --yes` exits 1
       with the persona-refusal message, and the `org-backups/` listing is unchanged. The
       same command without `--yes` exits 0.
-- [ ] When `prune_backups` raises inside `_atomic_backup_write`, the org write still
+- [x] When `prune_backups` raises inside `_atomic_backup_write`, the org write still
       succeeds, and `<backup_dir>/.prune-error` holds `at`, `basename` and `error`.
-- [ ] When `prune_backups` returns a non-empty `failed` (a delete raised `OSError`), the org
+- [x] When `prune_backups` returns a non-empty `failed` (a delete raised `OSError`), the org
       write still succeeds, `.prune-error` is present with `error` `"<N> delete(s) failed"`,
       and an existing marker is not removed.
-- [ ] `wt backups prune` prints the `last automatic prune failed` warning, and `--json` carries
+- [x] `wt backups prune` prints the `last automatic prune failed` warning, and `--json` carries
       `last_auto_prune_error`, in every run while the marker exists, including the `--yes`
       run that removes it. A successful `--yes` prune removes it, and the next run shows
       nothing.
-- [ ] A successful non-dry-run prune clears the marker only when its `basename` matches the
+- [x] A successful non-dry-run prune clears the marker only when its `basename` matches the
       marker's or it covers all files. A successful prune for another basename leaves it.
-- [ ] The marker is never selected for deletion and never counted as a backup.
+- [x] The marker is never selected for deletion and never counted as a backup.
 - [ ] `test_persona_run_refuses_org_writes` fails when the refusal in `_atomic_backup_write`
       is moved after the `shutil.copy2` (checked by sabotage; no code change expected).
 
@@ -173,6 +173,41 @@ of the same file (or of all files) removes it.
 ## Rollout / migration
 
 None. The marker appears only after a future failure.
+
+### Test record (2026-10-27)
+
+Ran `uv run pytest -q tests/test_org_backups.py tests/test_idea_capture_guard.py
+tests/test_rich_output_guard.py` (all pass), then the full gates: `spec-lint` OK and `uv run pytest -q -x`
+(3514 passed, 3 skipped).
+New tests in `tests/test_org_backups.py`: `test_persona_run_cannot_prune_backups`,
+`test_failed_auto_prune_leaves_marker`, `test_partial_delete_failure_leaves_marker`,
+`test_partial_failure_does_not_clear_marker_even_when_matching`,
+`test_prune_cmd_reports_and_clears_marker`, `test_marker_not_a_backup`,
+`test_persona_run_refuses_before_backup_copy`.
+
+Sabotage results (each applied alone to `src/wt/org_write.py`, then restored):
+- no `refuse_in_persona_run()` in `prune_backups` -> `test_persona_run_cannot_prune_backups` fails
+- bare `except Exception: pass` -> `test_failed_auto_prune_leaves_marker` fails
+- ignore `res["failed"]` -> `test_partial_delete_failure_leaves_marker` fails
+- skip marker removal on success -> `test_prune_cmd_reports_and_clears_marker` fails
+- clear marker regardless of basename -> `test_prune_cmd_reports_and_clears_marker` fails
+- move `refuse_in_persona_run()` below `shutil.copy2` -> `test_persona_run_refuses_org_writes`
+  still PASSES (see As shipped); the new `test_persona_run_refuses_before_backup_copy` fails.
+
+### As shipped
+
+- Code: `prune_backups` refuses when not a dry run; `_atomic_backup_write` records/clears the
+  `.prune-error` marker (helpers `read_prune_error`, `_record_prune_error`, `_clear_prune_error`);
+  `backups_prune_cmd` reads the marker first, warns, adds `last_auto_prune_error` to `--json`,
+  and removes it on a successful `--yes` run (all-files prune).
+- Deviation from Design point 4 / the last criterion: the sabotage did NOT fail
+  `test_persona_run_refuses_org_writes`. The cause is not `_snapshot` (it already walks the backup
+  dir): every CLI write path goes through the `org_writer` wrapper, which refuses before
+  `_atomic_backup_write` is ever reached, so the inner refusal is unreachable from that test.
+  Extending `_snapshot` (the spec's fallback) would not change that. Added
+  `test_persona_run_refuses_before_backup_copy`, which calls `_atomic_backup_write` directly, and
+  it does fail under the sabotage. The last acceptance criterion is therefore left unticked as
+  written; its intent (the inner refusal is guarded) is met by the new test.
 
 ## Definition of done
 

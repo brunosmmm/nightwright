@@ -6,6 +6,7 @@ priority, body, or any other headline."""
 import datetime as dt
 import fcntl
 import functools
+import json
 import os
 import re
 import shutil
@@ -640,7 +641,10 @@ def prune_backups(cfg, *, basename=None, keep_last=None, keep_days=None, dry_run
     """Apply retention to the backup dir (only `basename`'s backups when given). Explicit
     keep_last/keep_days override the config. Deletes are best-effort: a delete that raises
     OSError is skipped and listed under `failed`; it still counts as kept, and its bytes don't
-    count (`bytes` is what was, or in a dry run would be, freed)."""
+    count (`bytes` is what was, or in a dry run would be, freed). A real (non-dry) run is
+    refused in a persona run: agents never delete the human's backups (SPEC-0285)."""
+    if not dry_run:
+        refuse_in_persona_run()
     d = _backup_dir(cfg)
     cfg_last, cfg_days = _retention(cfg)
     keep_last = cfg_last if keep_last is None else keep_last
@@ -668,6 +672,53 @@ def prune_backups(cfg, *, basename=None, keep_last=None, keep_days=None, dry_run
             "kept": len(names) - len(delete) + len(failed), "bytes": size, "failed": failed}
 
 
+_PRUNE_ERROR_FILE = ".prune-error"      # not a BACKUP_RE name: retention never counts or deletes it
+
+
+def _prune_error_path(cfg):
+    return os.path.join(_backup_dir(cfg), _PRUNE_ERROR_FILE)
+
+
+def read_prune_error(cfg):
+    """The marker left by a failed automatic prune (dict), or None (absent or unreadable)."""
+    try:
+        with open(_prune_error_path(cfg)) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _record_prune_error(cfg, basename, error):
+    """Best-effort atomic write of the failure marker (overwrites an older one); never raises."""
+    try:
+        d = _backup_dir(cfg)
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".prune-error-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({"at": dt.datetime.now().isoformat(timespec="seconds"),
+                           "basename": basename, "error": error}, f)
+            os.replace(tmp, _prune_error_path(cfg))
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+    except Exception:
+        pass
+
+
+def _clear_prune_error(cfg, basename):
+    """Remove the marker after a successful prune of `basename` (None = every file). A marker
+    for another file stays; a corrupt one goes only with an all-files prune. Best-effort."""
+    try:
+        if basename is not None:
+            marker = read_prune_error(cfg)
+            if marker is None or marker.get("basename") != basename:
+                return
+        os.remove(_prune_error_path(cfg))
+    except OSError:
+        pass
+
+
 def _atomic_backup_write(cfg, path, content):
     refuse_in_persona_run()
     if os.path.exists(path):                         # back up the original (new files: nothing to)
@@ -675,10 +726,16 @@ def _atomic_backup_write(cfg, path, content):
         backups = _backup_dir(cfg)
         os.makedirs(backups, exist_ok=True)
         shutil.copy2(path, os.path.join(backups, f"{os.path.basename(path)}.{ts}.bak"))
+        base = os.path.basename(path)
         try:                                         # best-effort: never fails the write
-            prune_backups(cfg, basename=os.path.basename(path))
-        except Exception:                            # any error, not just OSError (SPEC-0271)
-            pass
+            res = prune_backups(cfg, basename=base)
+        except Exception as e:                       # any error, not just OSError (SPEC-0271)
+            _record_prune_error(cfg, base, f"{type(e).__name__}: {e}")
+        else:
+            if res["failed"]:                        # deletes raised OSError inside prune_backups
+                _record_prune_error(cfg, base, f"{len(res['failed'])} delete(s) failed")
+            else:
+                _clear_prune_error(cfg, base)
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".wt-org-", suffix=".tmp")

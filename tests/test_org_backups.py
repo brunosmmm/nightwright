@@ -2,9 +2,12 @@
 every backup write (that file only, best-effort), `wt backups prune` dry run / --yes, and the
 `org_backups` config fallback."""
 import datetime as dt
+import json
 import os
+import re
 from zoneinfo import ZoneInfo
 
+import pytest
 from click.testing import CliRunner
 
 from wt import org_write as W
@@ -259,3 +262,115 @@ def test_cli_prune_huge_keep_days(tmp_path, monkeypatch):
         ["backups", "prune", "--keep-last", "0", "--keep-days", "1000000"])
     assert r.exit_code == 0, r.output
     assert "would delete 2 of 3 backups" in r.output
+
+
+# --- SPEC-0285: persona refusal + prune-failure marker ---------------------------------------
+
+MARKER = ".prune-error"
+
+
+def _marker(bdir):
+    return json.loads((bdir / MARKER).read_text())
+
+
+def test_persona_run_cannot_prune_backups(tmp_path, monkeypatch):
+    data_dir, config_dir, bdir = _cli_dirs(tmp_path)
+    _seed(bdir, "ideas.org", 3, day=dt.date.today() - dt.timedelta(days=100))
+    run = _cli(monkeypatch, data_dir, config_dir)
+    before = sorted(os.listdir(bdir))
+    monkeypatch.setenv("WT_PERSONA_RUN", "1")
+    r = run(["backups", "prune", "--keep-last", "0", "--keep-days", "0", "--yes"])
+    assert r.exit_code == 1, r.output
+    assert "refusing to write the org from a campaign agent" in r.output
+    assert "Traceback" not in r.output
+    assert sorted(os.listdir(bdir)) == before
+    r = run(["backups", "prune", "--keep-last", "0", "--keep-days", "0"])
+    assert r.exit_code == 0, r.output
+    assert sorted(os.listdir(bdir)) == before
+
+
+def test_failed_auto_prune_leaves_marker(tmp_path, monkeypatch):
+    cfg, ideas, bdir = _ideas_setup(tmp_path)
+
+    def boom(*a, **k):
+        raise PermissionError("denied")
+    monkeypatch.setattr(W, "prune_backups", boom)
+    W.set_property(cfg, _task(cfg), "FOO", "bar")
+    assert ":FOO: bar" in ideas.read_text()
+    m = _marker(bdir)
+    assert m["basename"] == "ideas.org"
+    assert "PermissionError" in m["error"] and m["at"]
+
+
+def test_partial_delete_failure_leaves_marker(tmp_path, monkeypatch):
+    cfg, ideas, bdir = _ideas_setup(tmp_path)
+    _seed(bdir, "ideas.org", 60)
+    (bdir / MARKER).write_text(json.dumps({"at": "x", "basename": "ideas.org", "error": "old"}))
+
+    def boom(path):
+        raise PermissionError("denied")
+    monkeypatch.setattr(W.os, "remove", boom)
+    W.set_property(cfg, _task(cfg), "FOO", "bar")
+    assert ":FOO: bar" in ideas.read_text()
+    m = _marker(bdir)
+    assert m["basename"] == "ideas.org"
+    assert re.fullmatch(r"\d+ delete\(s\) failed", m["error"])
+    assert m["error"] != "old"
+
+
+def test_partial_failure_does_not_clear_marker_even_when_matching(tmp_path, monkeypatch):
+    cfg, ideas, bdir = _ideas_setup(tmp_path)
+    _seed(bdir, "ideas.org", 60)
+    monkeypatch.setattr(W.os, "remove", lambda p: (_ for _ in ()).throw(OSError("x")))
+    W.set_property(cfg, _task(cfg), "FOO", "bar")
+    assert (bdir / MARKER).exists()
+
+
+def test_prune_cmd_reports_and_clears_marker(tmp_path, monkeypatch):
+    data_dir, config_dir, bdir = _cli_dirs(tmp_path)
+    run = _cli(monkeypatch, data_dir, config_dir)
+    marker = {"at": "2026-10-27T10:00:00", "basename": "tasks.org", "error": "boom"}
+    (bdir / MARKER).write_text(json.dumps(marker))
+    r = run(["backups", "prune", "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["last_auto_prune_error"] == marker
+    r = run(["backups", "prune"])                    # click 8.1's runner mixes stderr in
+    assert "last automatic prune failed at 2026-10-27T10:00:00 (tasks.org): boom" in r.output
+    # a successful automatic prune for another file leaves the marker
+    (tmp_path / "other").mkdir()
+    cfg, ideas, ibdir = _ideas_setup(tmp_path / "other")
+    (ibdir / MARKER).write_text(json.dumps(marker))
+    W.set_property(cfg, _task(cfg), "FOO", "bar")
+    assert _marker(ibdir) == marker
+    # a successful prune of the same file clears it
+    (ibdir / MARKER).write_text(json.dumps({**marker, "basename": "ideas.org"}))
+    W.set_property(cfg, _task(cfg), "FOO", "qux")
+    assert not (ibdir / MARKER).exists()
+    # --yes shows the warning in that run, removes the marker, the next run shows nothing
+    r = run(["backups", "prune", "--yes"])
+    assert "last automatic prune failed" in r.output
+    assert not (bdir / MARKER).exists()
+    r = run(["backups", "prune", "--json"])
+    assert json.loads(r.output)["last_auto_prune_error"] is None
+    assert "last automatic prune failed" not in run(["backups", "prune"]).output
+
+
+def test_marker_not_a_backup(tmp_path, monkeypatch):
+    data_dir, config_dir, bdir = _cli_dirs(tmp_path)
+    _seed(bdir, "ideas.org", 3, day=dt.date.today() - dt.timedelta(days=100))
+    (bdir / MARKER).write_text(json.dumps({"at": "x", "basename": "ideas.org", "error": "e"}))
+    r = _cli(monkeypatch, data_dir, config_dir)(
+        ["backups", "prune", "--keep-last", "0", "--keep-days", "0", "--json"])
+    res = json.loads(r.output)
+    assert MARKER not in res["delete"] and res["scanned"] == 3 and len(res["delete"]) == 3
+
+
+def test_persona_run_refuses_before_backup_copy(tmp_path, monkeypatch):
+    """`_atomic_backup_write` itself refuses before it copies (the `org_writer` wrapper would
+    otherwise mask a misplaced refusal)."""
+    cfg, ideas, bdir = _ideas_setup(tmp_path)
+    monkeypatch.setenv("WT_PERSONA_RUN", "1")
+    with pytest.raises(W.PersonaOrgWriteRefused):
+        W._atomic_backup_write(cfg, str(ideas), "changed\n")
+    assert os.listdir(bdir) == []
+    assert ideas.read_text() == "#+TODO: TODO | DONE\n* TODO a thing\n"

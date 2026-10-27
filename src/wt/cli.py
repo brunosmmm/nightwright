@@ -2313,11 +2313,18 @@ def backups_prune_cmd(cfg, keep_last, keep_days, yes, as_json):
     wt backups prune --yes                        delete it
     wt backups prune --keep-last 5 --keep-days 0  override the config for this run
     """
-    from .org_write import BACKUP_RE, prune_backups
+    from . import render
+    from .org_write import BACKUP_RE, _clear_prune_error, prune_backups, read_prune_error
+    marker = read_prune_error(cfg)                  # read first: the --yes run that clears it shows it
     res = prune_backups(cfg, keep_last=keep_last, keep_days=keep_days, dry_run=not yes)
+    if yes and not res["failed"]:
+        _clear_prune_error(cfg, None)
     if as_json:
-        print(json.dumps({**res, "dry_run": not yes}, indent=2))
+        print(json.dumps({**res, "dry_run": not yes, "last_auto_prune_error": marker}, indent=2))
         return
+    if marker:
+        render.warn(f"last automatic prune failed at {marker.get('at')} "
+                    f"({marker.get('basename')}): {marker.get('error')}")
     failed = set(res["failed"])
     done = [name for name in res["delete"] if name not in failed]
     n, mb = len(done), res["bytes"] / 1e6
