@@ -446,7 +446,9 @@ def stuck_items(cfg, now, sett) -> list[dict]:
     against `max(stuck_after_s, gate_budget_s)`. `stuck_s` is the clock compared."""
     from .queue import ACTIVE_STATES
     out = []
-    for st in store.list_campaigns(cfg):
+    rows = store.list_campaigns(cfg)
+    closing_ids = {s["id"] for s in rows if s.get("state") == "CLOSING"}
+    for st in rows:
         if st.get("state") not in ACTIVE_STATES:
             continue
         since_state = _since_state(cfg, st, now)
@@ -467,7 +469,9 @@ def stuck_items(cfg, now, sett) -> list[dict]:
                     + sett["overdue_grace_s"]:
                 continue
             closing = (st.get("closing") or {}) if state == "CLOSING" else {}
-            if closing.get("queued_behind"):         # SPEC-0260: waiting in the close train
+            head = closing.get("queued_behind")
+            # SPEC-0260: waiting in the close train; SPEC-0287: only behind a live CLOSING head
+            if head and head != cid and head in closing_ids:
                 continue
             ages = [since_state, _age_s(closing.get("head_since"), now),
                     _latest_age(cfg, cid, ["gate"], now)]

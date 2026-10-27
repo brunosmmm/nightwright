@@ -329,7 +329,8 @@ def _regenerate_after_rebase(worktree, regen, events, campaign_id, own=True) -> 
             git.run_regenerate(worktree, cmd)
         git.git(worktree, "add", "--", *declared)
         # SPEC-0266: a command that staged files itself must not get them into the commit
-        extra = {p for p in git.git(worktree, "diff", "--cached", "--name-only", "-z")
+        extra = {p for p in git.git(worktree, "diff", "--cached", "--name-only",
+                                          "--no-renames", "-z")
                  .stdout.split("\0") if p} - set(declared)
         if extra:
             git.git(worktree, "reset", "-q", "--", *sorted(extra), check=False)

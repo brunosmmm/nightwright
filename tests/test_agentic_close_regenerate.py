@@ -115,6 +115,18 @@ def test_regenerate_that_stages_undeclared_file_parks(world, adopted):
     assert not (world["root"] / "gen.txt").exists()
 
 
+def test_regenerate_rename_of_undeclared_path_refuses(world):
+    """SPEC-0287: a staged rename lists its source too, so `git mv undeclared declared` cannot
+    smuggle the undeclared deletion into the regenerate commit."""
+    _commit(world["wt"], "undeclared.txt", "keep me\n", "undeclared")
+    head = G.rev_parse(world["wt"])
+    detail = CL._regenerate_after_rebase(world["wt"], {"gen.txt": "git mv undeclared.txt gen.txt"},
+                                         [], "C1")
+    assert detail and "staged undeclared files" in detail and "undeclared.txt" in detail
+    assert G.rev_parse(world["wt"]) == head
+    assert _git(world["wt"], "ls-tree", "--name-only", "HEAD", "undeclared.txt") == "undeclared.txt"
+
+
 def test_docs_only_close_regenerates_a_declared_path_without_parking(world):
     _commit(world["root"], "docs/LEDGER.md", "stale\n", "ledger")
     st, _ = _docs_only_world(world, {"docs/design/a.md": "x\n"})

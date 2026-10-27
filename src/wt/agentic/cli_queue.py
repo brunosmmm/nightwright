@@ -668,7 +668,8 @@ def _journal_lines(rec: dict) -> Group:
 
 
 def _gc_table(rows: list) -> Table:
-    """SPEC-0275: one row per worktree / orphan dir / branch and what gc does with it."""
+    """SPEC-0275: one row per worktree / orphan dir / branch / tmp residue (SPEC-0287) and
+    what gc does with it."""
     table = Table(title=f"gc ({len(rows)})", box=box.SIMPLE_HEAD, pad_edge=False)
     table.add_column("kind", no_wrap=True)
     table.add_column("target", overflow="fold")
@@ -1258,8 +1259,9 @@ def attach(queue_group):
         console.print(_gc_table(plan["rows"]), highlight=False)
         for err in plan["errors"]:
             console.print(f"[red]![/] {err}", highlight=False)
+        tmp = plan.get("tmp_removable") or 0
         summary = (f"{plan['worktrees_removable']} worktrees, {plan['branches_removable']} "
-                   f"branches removable")
+                   f"branches" + (f", {tmp} tmp dirs" if tmp else "") + " removable")
         if not do_write:
             console.print(f"{summary} (dry-run; --yes to apply)")
             return

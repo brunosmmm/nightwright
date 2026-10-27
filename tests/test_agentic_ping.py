@@ -280,8 +280,11 @@ def test_stuck_closing_measured_from_latest_gate_event(tmp_path):
     sett = E.settings(cfg)
     assert E.stuck_items(cfg, at(2500), sett) == []          # entered 2500s ago, gate 300s ago
     assert E.stuck_items(cfg, at(4200), sett)                # gate 2000s old
-    _set_state(cfg, cid, closing={"queued_behind": "SPEC-0001"})
-    assert E.stuck_items(cfg, at(4200), sett) == []          # train waiter
+    head = _campaign(cfg, "SPEC-0907-20261025-bbbb", state="CLOSING")
+    _set_state(cfg, cid, closing={"queued_behind": head})
+    assert cid not in {i["campaign"] for i in E.stuck_items(cfg, at(4200), sett)}  # train waiter
+    _set_state(cfg, cid, closing={"queued_behind": "SPEC-0001"})       # SPEC-0287: head gone
+    assert cid in {i["campaign"] for i in E.stuck_items(cfg, at(4200), sett)}
 
 
 def test_stuck_persona_state_without_runs_uses_state_age(tmp_path):

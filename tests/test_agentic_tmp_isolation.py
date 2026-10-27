@@ -195,6 +195,16 @@ def test_terminal_transition_removes_campaign_tmp(tmp_path, to):
     assert (S.campaign_dir(cfg, cid) / "state.json").is_file()
 
 
+def test_handed_off_transition_clears_tmp(tmp_path):
+    """SPEC-0287: HANDED_OFF is terminal too, so its `tmp/` goes with the transition."""
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, state="CLOSING")
+    child = S.child_tmp(cfg, cid, "run-001-x", create=True)
+    (child / "f").write_text("x")
+    Q._transition(cfg, S.read_state(cfg, cid), "HANDED_OFF", "test")
+    assert not S.campaign_tmp(cfg, cid).exists()
+
+
 def test_non_terminal_transition_keeps_tmp(tmp_path):
     cfg = _cfg(tmp_path)
     cid = _campaign(cfg)

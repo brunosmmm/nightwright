@@ -1,7 +1,7 @@
 ---
 id: SPEC-0287
 title: "Runner safety nets: train watchdog, crash-sweep harvest, terminal tmp, regenerate renames"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -115,16 +115,16 @@ runs with `--no-renames`.
 
 ## Acceptance criteria
 
-- [ ] A CLOSING campaign whose `closing.queued_behind` names a campaign that is not CLOSING
+- [x] A CLOSING campaign whose `closing.queued_behind` names a campaign that is not CLOSING
       (MERGED, missing, or itself) is reported by `stuck_items` once its clock passes the
       limit. A waiter behind a live CLOSING head is still not reported.
-- [ ] In `_crash_sweep`, an in-process task that finishes during the bounded wait is applied
+- [x] In `_crash_sweep`, an in-process task that finishes during the bounded wait is applied
       (its state transition and ledger events land) and is not listed in `abandoned`. A
       task still running at the bound is listed, as before.
-- [ ] A transition to HANDED_OFF removes the campaign's `tmp/`.
-- [ ] `wt queue gc` lists a `tmp` row for a terminal campaign that still has `tmp/`, and
+- [x] A transition to HANDED_OFF removes the campaign's `tmp/`.
+- [x] `wt queue gc` lists a `tmp` row for a terminal campaign that still has `tmp/`, and
       `--yes` removes the dir. A live campaign's `tmp/` never gets a row.
-- [ ] A regenerate command that stages a rename from an undeclared path onto a declared one
+- [x] A regenerate command that stages a rename from an undeclared path onto a declared one
       makes `_regenerate_after_rebase` return the "staged undeclared files" detail naming
       the source path. No commit is made.
 
@@ -163,6 +163,36 @@ runs with `--no-renames`.
 - **Manual verification:** after merge, `wt queue gc` (dry run) on the live data dir lists
   the `tmp` rows of existing HANDED_OFF campaigns, if any. Record the count.
 
+### Test record (2026-10-27)
+
+- New tests, all passing: `test_stale_queued_behind_is_reported_stuck`,
+  `test_crash_sweep_applies_task_finished_during_wait`, `test_handed_off_transition_clears_tmp`,
+  `test_gc_removes_terminal_tmp_residue`, `test_regenerate_rename_of_undeclared_path_refuses`.
+- Sabotage checks. Each one was applied on its own and each made its test fail (`1 failed`):
+  unconditional `queued_behind` skip; no second harvest; MERGED/ABANDONED-only clear;
+  `tmp` rows skipped in `apply_gc`; `--no-renames` removed. The files were restored afterwards.
+- Targeted suites (close-train, exit-paths, tmp-isolation, gc, regenerate,
+  watchdog-gaps, events): 184 passed.
+- Gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exits 0;
+  full `uv run pytest -q -x`: 3527 passed, 3 skipped (after one missing-head waiter test in `test_agentic_ping.py` was updated, see As shipped).
+- Manual: `uv run wt queue gc --json` (dry run, branch code, live data dir) gave `written: false`,
+  `tmp_removable: 0`, no errors. No HANDED_OFF residue exists today. The conductor still runs the
+  post-merge `wt queue gc` once, as the Rollout section says.
+
+### As shipped (2026-10-27)
+
+- `test_stuck_items_ignores_train_waiter_and_uses_head_since` used to put its waiter behind a
+  missing head (`"x"`). Under this spec that waiter is now reported stuck. The test now puts it
+  behind the live CLOSING campaign `…-0002`, so it still checks the train-waiter skip.
+  `test_agentic_ping.py::test_stuck_closing_measured_from_latest_gate_event` had the same
+  missing-head waiter. It now checks both cases: hidden behind a live CLOSING head, reported
+  once the head is gone.
+- `plan_gc` also returns `tmp_removable`, which is additive like the row kind. The text
+  summary mentions tmp dirs only when there are some, so the existing output stays the same.
+  A `tmp` row with no repo root has `repo: null`. Other rows always have a root.
+- After `store.clear_campaign_tmp`, `apply_gc` checks that the dir is gone, because the removal
+  ignores errors. A dir that is still there marks the row `done: false` with an error.
+
 ## Rollout / migration
 
 `wt queue gc --yes` clears tmp residue left by earlier HANDED_OFF campaigns. The conductor
@@ -170,11 +200,11 @@ runs it once after the merge.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

@@ -500,6 +500,41 @@ def test_crash_sweep_lists_in_process_flights(tmp_path):
         pool.end(timeout=2)
 
 
+def test_crash_sweep_applies_task_finished_during_wait(tmp_path):
+    """SPEC-0287: a hookless task that ends inside the bounded wait is harvested after it
+    (its park lands on the state and ledger), not dropped and not listed as abandoned."""
+    cfg = {"data_dir": str(tmp_path / "d"), "agentic": {}}
+    cid = "SPEC-0900-20261027-aaaa"
+    S.create_campaign(cfg, {"id": cid, "spec_id": "SPEC-0900", "project": "p", "state": "GATING"})
+    st = S.read_state(cfg, cid)
+    release = threading.Event()
+    timer = threading.Timer(0.3, release.set)
+
+    def gate():
+        release.wait(30)
+        return Q.StepResult(cid, Q.Step("gate"), "GATING", error="boom")
+
+    pool = Q.StepPool()
+    fl = Q._Flight(st, Q._Ctx(cfg))
+    fl.tasks.append((Q.Step("gate"), pool.submit(gate), None))
+    pool.flights[cid] = fl
+    timer.start()
+    try:
+        detached, abandoned = Q._crash_sweep(cfg, pool, 5.0)
+        assert (detached, abandoned) == ([], [])
+        assert not pool.flights
+        after = S.read_state(cfg, cid)
+        assert after["state"] == "PARKED" and after["park"]["resume_to"] == "GATING"
+        assert "boom" in after["park"]["detail"]
+        assert any(e.get("to") == "PARKED"
+                   for e in S.read_ledger(cfg, cid, types=["transition"]))
+        assert any(r["kind"] == "tick" and r.get("drain") for r in Q.read_journal(cfg))
+    finally:
+        release.set()
+        timer.cancel()
+        pool.end(timeout=2)
+
+
 def test_waiting_on_lists_only_blockers(tmp_path):
     pool = Q.StepPool()
     f_wait, f_gate = pool.submit(time.sleep, 0.3), pool.submit(time.sleep, 0.3)

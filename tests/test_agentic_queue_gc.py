@@ -642,3 +642,24 @@ def test_bisect_in_progress_kept(world):
     assert (rows[("worktree", "bs")]["action"], rows[("worktree", "bs")]["why"]) == ("keep", "bisect in progress")
     Q.apply_gc(cfg, plan)
     assert G.bisect_in_progress(wts / "bs")
+
+
+def test_gc_removes_terminal_tmp_residue(world):
+    """SPEC-0287: a terminal campaign's leftover `tmp/` gets one `tmp` row that `--yes`
+    removes; a live campaign's `tmp/` gets none."""
+    cfg, root = world["cfg"], world["root"]
+    _campaign(cfg, "h1", "HANDED_OFF", root, "wt/h1")
+    for cid in ("h1", "l1"):
+        (S.child_tmp(cfg, cid, "run-001-x", create=True) / "f").write_text("x")
+    plan = Q.plan_gc(cfg)
+    tmp_rows = [r for r in plan["rows"] if r["kind"] == "tmp"]
+    assert [(r["campaign"], r["action"]) for r in tmp_rows] == [("h1", "remove")]
+    assert tmp_rows[0]["why"] == "HANDED_OFF campaign temp residue"
+    assert tmp_rows[0]["path"] == str(S.campaign_tmp(cfg, "h1"))
+    assert plan["tmp_removable"] == 1
+    assert S.campaign_tmp(cfg, "h1").is_dir()                    # dry run wrote nothing
+    Q.apply_gc(cfg, plan)
+    assert tmp_rows[0]["done"] is True and "error" not in tmp_rows[0]
+    assert not S.campaign_tmp(cfg, "h1").exists()
+    assert (S.campaign_tmp(cfg, "l1") / "run-001-x" / "f").is_file()
+    assert not [r for r in Q.plan_gc(cfg)["rows"] if r["kind"] == "tmp"]

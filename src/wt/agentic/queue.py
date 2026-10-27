@@ -782,9 +782,10 @@ def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_even
             store.append_event(cfg, cid, "transition", {"from": frm, "to": to, "reason": reason},
                                by=by)
         store.write_state(cfg, cid, state)
-        if to in ("MERGED", "ABANDONED"):       # SPEC-0253: no child of a dead campaign needs it
+        if to in TERMINAL_STATES:
+            # SPEC-0253/0287: no child of a dead campaign needs it (HANDED_OFF too)
             store.clear_campaign_tmp(cfg, cid)
-        if to in TERMINAL_STATES:               # SPEC-0232: nobody will answer a dead campaign
+            # SPEC-0232: nobody will answer a dead campaign
             from . import escalations as ESC
             ESC.withdraw_for_campaign(cfg, cid, withdraw_reason or f"campaign {to}", by)
     return state
@@ -3679,18 +3680,22 @@ def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
 def _crash_sweep(cfg, pool: StepPool, bound_s: float) -> tuple:
     """The crash path's `finally` (SPEC-0229), inside one bound: apply what already finished,
     end the gates, detach every `wait` task, re-sweep until no task is in `spawning` / `collect`
-    (the ones still there at the bound are abandoned, with the unfinished in-process tasks).
-    Returns `(detached, abandoned)`."""
+    (the ones still there at the bound are abandoned, with the unfinished in-process tasks),
+    then apply what finished during the wait (SPEC-0287). Returns `(detached, abandoned)`."""
     deadline = time.monotonic() + bound_s
     abandoned: list = []
-    try:
-        rep = TickReport(drain=True)
-        _harvest(pool, rep, guard=True)
-        if rep.steps or rep.errors:
-            journal(cfg, "tick", tick=None, steps=rep.steps, admitted=0, errors=rep.errors,
-                    started=[], in_flight=[], drain=True)
-    except Exception as e:
-        journal(cfg, "harvest_error", campaign=None, error=f"{type(e).__name__}: {e}")
+
+    def harvest():
+        try:
+            rep = TickReport(drain=True)
+            _harvest(pool, rep, guard=True)
+            if rep.steps or rep.errors:
+                journal(cfg, "tick", tick=None, steps=rep.steps, admitted=0, errors=rep.errors,
+                        started=[], in_flight=[], drain=True)
+        except Exception as e:
+            journal(cfg, "harvest_error", campaign=None, error=f"{type(e).__name__}: {e}")
+
+    harvest()
     try:
         _terminate_children()
     except Exception:
@@ -3702,6 +3707,9 @@ def _crash_sweep(cfg, pool: StepPool, bound_s: float) -> tuple:
         if not (abandoned or in_process) or time.monotonic() >= deadline:
             break
         time.sleep(0.2)
+    # SPEC-0287: apply the tasks that finished during the wait; abandon only the unfinished
+    harvest()
+    in_process = pool.unfinished_in_process()
     return pool.detached_view(), abandoned + in_process
 
 
@@ -5123,7 +5131,7 @@ def _gc_row(kind, target, st, action, why, root) -> dict:
             "campaign": st.get("id") if st else None,
             "campaign_state": st.get("state") if st else None,
             "project": st.get("project") if st else None,
-            "action": action, "why": why, "repo": str(root)}
+            "action": action, "why": why, "repo": str(root) if root else None}
 
 
 def _cwd_worktree(entries) -> Path | None:
@@ -5294,13 +5302,19 @@ def _gc_rows(cfg, root, campaigns, base, worktree_roots=(), errors=None, prune_a
 
 def plan_gc(cfg, project=None) -> dict:
     """SPEC-0275: what `wt queue gc` would remove, per repo root any campaign references.
-    `git worktree list` is the source of truth; nothing is written."""
-    by_root = {}
+    `git worktree list` is the source of truth; nothing is written. SPEC-0287: a terminal
+    campaign whose `tmp/` survived (pre-SPEC-0287 HANDED_OFF, a killed runner) gets a `tmp` row."""
+    by_root, tmp_rows = {}, []
     for st in store.list_campaigns(cfg, include_terminal=True):
         r = (st.get("repo") or {}).get("root")
         if r:
             by_root.setdefault(str(Path(r).resolve()), []).append(st)
-    rows, repos, errors = [], [], []
+        tmp = store.campaign_tmp(cfg, st["id"])
+        if (st.get("state") in TERMINAL_STATES and (not project or st.get("project") == project)
+                and tmp.exists() and not tmp.is_symlink()):
+            tmp_rows.append(_gc_row("tmp", tmp, st, "remove", f"{st.get('state')} campaign temp residue",
+                                    Path(r).resolve() if r else None))
+    rows, repos, errors = list(tmp_rows), [], []
     for root, sts in sorted(by_root.items()):
         if project and not any(s.get("project") == project for s in sts):
             continue
@@ -5325,15 +5339,28 @@ def plan_gc(cfg, project=None) -> dict:
         repos.append(root)
     return {"project": project, "repos": repos, "rows": rows, "errors": errors,
             "worktrees_removable": sum(r["kind"] == "worktree" and r["action"] == "remove" for r in rows),
-            "branches_removable": sum(r["kind"] == "branch" and r["action"] == "delete" for r in rows)}
+            "branches_removable": sum(r["kind"] == "branch" and r["action"] == "delete" for r in rows),
+            "tmp_removable": len(tmp_rows)}
 
 
 def apply_gc(cfg, plan: dict) -> dict:
-    """Apply a `plan_gc` plan: worktree removals (one `git worktree remove` per row, without
+    """Apply a `plan_gc` plan: terminal campaigns' `tmp/` residue (SPEC-0287,
+    `store.clear_campaign_tmp`), then worktree removals (one `git worktree remove` per row, without
     --force, so git refuses a dirty tree too; it also drops the entry of a directory already
     gone), then `git worktree prune` once per repo unless the plan is filtered by project (the
     prune is repo-wide), then branch deletions (`-d`, never `-D`). A `GitError` lands on its
     row (`error`) and the rest still apply. No ledger events: the returned plan is the record."""
+    for row in plan["rows"]:
+        if row["kind"] != "tmp" or row["action"] == "keep":
+            continue
+        try:
+            store.clear_campaign_tmp(cfg, row["campaign"])
+            if Path(row["path"]).exists():
+                raise OSError("still present after removal")
+            row["done"] = True
+        except (OSError, ValueError) as e:
+            row["done"], row["error"] = False, str(e)
+
     def apply(kind):
         for row in plan["rows"]:
             if row["kind"] != kind or row["action"] == "keep":

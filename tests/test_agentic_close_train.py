@@ -187,12 +187,41 @@ def test_stuck_items_ignores_train_waiter_and_uses_head_since(mk):
         S.append_event(env.cfg, cid, "transition", {"from": "GATING", "to": "CLOSING",
                                                     "reason": "gates_passed"})
 
-    closing_campaign("SPEC-0001-20261026-0001", {"attempts": 0, "queued_behind": "x"})
+    closing_campaign("SPEC-0001-20261026-0001", {"attempts": 0,
+                                                 "queued_behind": "SPEC-0001-20261026-0002"})
     closing_campaign("SPEC-0001-20261026-0002", {"attempts": 0, "head_since": recent})
     closing_campaign("SPEC-0001-20261026-0003", {"attempts": 0, "head_since": old})
     closing_campaign("SPEC-0001-20261026-0004", {"attempts": 0})
     stuck = sorted(i["campaign"] for i in E.stuck_items(env.cfg, now, sett))
     assert stuck == ["SPEC-0001-20261026-0003", "SPEC-0001-20261026-0004"]
+
+
+def test_stale_queued_behind_is_reported_stuck(mk):
+    """SPEC-0287: `queued_behind` hides a waiter only while its head is CLOSING. A head that
+    is MERGED, missing or the waiter itself leaves the normal CLOSING clock in charge."""
+    env = mk()
+    sett = dict(E.settings(env.cfg), stuck_after_s=0)
+    budget = sett["gate_budget_s"]
+    now = dt.datetime.now().astimezone() + dt.timedelta(seconds=2 * budget)
+    old = S.now_iso(now - dt.timedelta(seconds=2 * budget))
+
+    def campaign(cid, state, closing=None):
+        S.create_campaign(env.cfg, {"id": cid, "spec_id": "SPEC-0001", "project": "p",
+                                    "state": state, "closing": closing})
+        S.append_event(env.cfg, cid, "transition", {"from": "GATING", "to": state,
+                                                    "reason": "gates_passed"})
+
+    head, merged = "SPEC-0001-20261026-0001", "SPEC-0001-20261026-0002"
+    campaign(head, "CLOSING", {"attempts": 0, "entered_at": old, "head_since": S.now_iso(now)})
+    campaign(merged, "MERGED")
+    stale = {"SPEC-0001-20261026-0003": merged, "SPEC-0001-20261026-0004": "SPEC-0001-gone",
+             "SPEC-0001-20261026-0005": "SPEC-0001-20261026-0005"}
+    for cid, behind in stale.items():
+        campaign(cid, "CLOSING", {"attempts": 0, "entered_at": old, "queued_behind": behind})
+    campaign("SPEC-0001-20261026-0006", "CLOSING",
+             {"attempts": 0, "entered_at": old, "queued_behind": head})
+    stuck = sorted(i["campaign"] for i in E.stuck_items(env.cfg, now, sett))
+    assert stuck == sorted(stale)
 
 
 def test_single_shot_closes_in_train_order(mk):
