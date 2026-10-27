@@ -161,9 +161,16 @@ def test_build_request_implementer(tmp_path):
     assert req.env == {"WT_CAMPAIGN": st["id"], "WT_DATA_DIR": cfg["data_dir"],
                        "WT_CONFIG_DIR": cfg["config_dir"], "WT_SPEC_ID": "SPEC-0001",
                        "WT_WORKTREE": st["repo"]["worktree"], "WT_BASE": "main",
-                       "TMPDIR": tmp, "TEMP": tmp, "TMP": tmp}
+                       "WT_PERSONA_RUN": "1", "TMPDIR": tmp, "TEMP": tmp, "TMP": tmp}
     assert req.system_append.startswith("## wt queue invariants")
     assert req.prompt.endswith(req.system_append + "\n")
+
+
+def test_build_request_sets_persona_flag(tmp_path):
+    cfg, st = _cfg(tmp_path), _state(tmp_path)
+    req = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, "implementer",
+                           run_dir=tmp_path / "runs" / "001-implementer")
+    assert req.env["WT_PERSONA_RUN"] == "1"
 
 
 def test_build_request_project_allowlist_override(tmp_path):

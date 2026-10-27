@@ -66,11 +66,28 @@ class org_write_lock:
         return False
 
 
+PERSONA_ENV = "WT_PERSONA_RUN"
+
+
+class PersonaOrgWriteRefused(ValueError):
+    """An org write was attempted from inside a campaign agent run (SPEC-0272)."""
+
+
+def refuse_in_persona_run():
+    """Raise when this process is a campaign persona run: agents report through
+    `wt campaign note` / the verdict's followup_ideas; the runner files those itself."""
+    if os.environ.get(PERSONA_ENV) == "1":
+        raise PersonaOrgWriteRefused(
+            "wt: refusing to write the org from a campaign agent (WT_PERSONA_RUN=1); "
+            "report it with 'wt campaign note' or the verdict's followup_ideas instead")
+
+
 def org_writer(fn):
     """Decorator for an org-file writer whose first argument is `cfg`: runs it under
     `org_write_lock`. `tests/test_org_write_race.py` checks every writer carries it."""
     @functools.wraps(fn)
     def wrapper(cfg, *args, **kwargs):
+        refuse_in_persona_run()
         with org_write_lock(cfg):
             return fn(cfg, *args, **kwargs)
     wrapper.__org_writer__ = True
@@ -652,6 +669,7 @@ def prune_backups(cfg, *, basename=None, keep_last=None, keep_days=None, dry_run
 
 
 def _atomic_backup_write(cfg, path, content):
+    refuse_in_persona_run()
     if os.path.exists(path):                         # back up the original (new files: nothing to)
         ts = dt.datetime.now().strftime(_BACKUP_TS_FMT)
         backups = _backup_dir(cfg)

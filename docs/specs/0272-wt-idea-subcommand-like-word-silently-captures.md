@@ -1,7 +1,7 @@
 ---
 id: SPEC-0272
 title: "wt idea refuses verb-like one-word captures; persona runs cannot write the org"
-status: accepted
+status: in-progress
 kind: feature
 owner: user
 created: 2026-10-27

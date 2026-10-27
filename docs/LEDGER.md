@@ -199,7 +199,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) | Spec phases and review rounds in queue watch and listing | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0214](./specs/0214-spec-review-loop-inside-the-campaign-with-in-loop.md) | Spec review loop inside the campaign, with in-loop acceptance | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0272](./specs/0272-wt-idea-subcommand-like-word-silently-captures.md) | wt idea refuses verb-like one-word captures; persona runs cannot write the org | feature | accepted | — | 2026-10-27 |
+| [SPEC-0272](./specs/0272-wt-idea-subcommand-like-word-silently-captures.md) | wt idea refuses verb-like one-word captures; persona runs cannot write the org | feature | in-progress | — | 2026-10-27 |
 | [SPEC-0275](./specs/0275-worktree-and-branch-garbage-collection-for.md) | wt queue gc: garbage-collect worktrees and branches of finished campaigns | feature | accepted | — | 2026-10-27 |
 | [SPEC-0276](./specs/0276-load-many-ideas-into-the-queue-at-once-in.md) | Batch queue add: many specs and ideas at once, in dependency order | feature | accepted | — | 2026-10-27 |
 | [SPEC-0277](./specs/0277-wt-queue-watch-shows-review-status-per-reviewer.md) | Per-reviewer review chips in queue watch and the TUI queue tab | feature | accepted | — | 2026-10-27 |

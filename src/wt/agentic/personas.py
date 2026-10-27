@@ -766,6 +766,7 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         "WT_SPEC_ID": str(state.get("spec_id") or ""),
         "WT_WORKTREE": str(worktree),
         "WT_BASE": str(repo.get("base") or ""),
+        "WT_PERSONA_RUN": "1",     # SPEC-0272: org writes refuse inside an agent run
     }
     cid = str(state.get("id") or "")
     if cid:           # SPEC-0253: a private TMPDIR per run, removed when its result is recorded

@@ -37,3 +37,10 @@ def code_repo(tmp_path):
     root = tmp_path / "wtcode"
     root.mkdir()
     return CodeRepo(root)
+
+
+@pytest.fixture(autouse=True)
+def _no_persona_run(monkeypatch):
+    """SPEC-0272: pytest run by a campaign agent inherits WT_PERSONA_RUN=1; behave as on a
+    human shell. Tests that exercise the guard opt in with monkeypatch.setenv."""
+    monkeypatch.delenv("WT_PERSONA_RUN", raising=False)

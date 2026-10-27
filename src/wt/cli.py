@@ -37,6 +37,7 @@ from .org_write import (IDEA_KINDS, add_idea, add_task, clock_in, clock_out, mar
                         reindex_ideas, resolve_selector, set_idea_kind, set_idea_priority,
                         set_idea_project, set_idea_tags, set_idea_workstream,
                         set_state_by_selector)
+from . import org_write as OW
 from . import explore as EX
 from . import idea_ext as IX
 from .extension_schema import enum_values_for
@@ -48,7 +49,18 @@ from . import skills as SK
 from . import sheet_sync as SHS
 
 
-@click.group(invoke_without_command=True, context_settings={"help_option_names": ["-h", "--help"]})
+class WtRootGroup(click.Group):
+    """Root group: a campaign-agent org-write refusal is a clean CLI error (SPEC-0272)."""
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except OW.PersonaOrgWriteRefused as e:
+            raise click.ClickException(str(e))
+
+
+@click.group(cls=WtRootGroup, invoke_without_command=True,
+             context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("--split", is_flag=True, help="diagnostic: Claude-generating vs your-turn time")
 @click.pass_context
 def cli(ctx, split):
@@ -356,12 +368,18 @@ def idea_group():
 @click.option("--workstream", help="curated :WORKSTREAM: lane (SPEC-0090)",
               shell_complete=C.complete_workstream)
 @click.option("--force-idea", "force_idea", is_flag=True,
-              help="keep as idea even with --kind bug; suppress routing warn (SPEC-0091)")
+              help="keep as idea even with --kind bug; suppress routing warn (SPEC-0091); "
+                   "independent of --force")
+@click.option("--force", is_flag=True,
+              help="capture a lone command-like word (e.g. `list`) anyway (SPEC-0272); "
+                   "independent of --force-idea")
 @click.pass_obj
 def idea_capture_cmd(cfg, text, state, tags, priority, project, epic, key, kind, workstream,
-                     force_idea):
+                     force_idea, force):
     """Capture an idea (default when you pass bare text after `wt idea`)."""
     joined = " ".join(text)
+    if not force:
+        _refuse_verb_capture(joined)
     if kind is not None and str(kind).strip().lower() == "bug" and not force_idea:
         _warn_bug_as_idea(joined, tags=tags, priority=priority, project=project,
                           epic=epic, key=key, workstream=workstream)
@@ -372,6 +390,26 @@ def idea_capture_cmd(cfg, text, state, tags, priority, project, epic, key, kind,
     except ValueError as e:
         raise click.ClickException(str(e))
     console.print(f"[green]✓[/] {idea_id}  [white]{headline}[/]  [dim]{path}[/]")
+
+
+_EXTRA_CAPTURE_VERBS = frozenset({"list", "ls", "help", "rm", "delete", "del", "new", "edit",
+                                  "status", "get"})
+
+
+def _capture_verbs():
+    """Single words that are more likely a mistyped command than an idea (SPEC-0272).
+    Lazy: `cli.commands` is complete only once every subcommand module has registered."""
+    return _EXTRA_CAPTURE_VERBS | {c.casefold() for c in cli.commands}
+
+
+def _refuse_verb_capture(joined):
+    word = joined.strip()
+    if len(word.split()) != 1 or word.casefold() not in _capture_verbs():
+        return
+    hint = "wt ideas" if word.casefold() in ("list", "ls") else "wt idea --help"
+    raise click.ClickException(
+        f"refusing to capture the single word '{word}' as an idea — did you mean "
+        f"`{hint}`? (pass --force to capture it anyway)")
 
 
 def _warn_bug_as_idea(text, *, tags=(), priority=None, project=None, epic=None, key=None,
