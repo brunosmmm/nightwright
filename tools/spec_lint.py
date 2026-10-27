@@ -17,8 +17,10 @@ Checks:
   8. an epic marked done has every child done or superseded
   9. LEDGER's generated block is up to date (regenerate with --write-ledger)
  10. accepted / in-progress / done specs have no leftover template placeholders (SPEC-0188)
+ 11. no two spec files share an id or a 4-digit filename prefix (SPEC-0274)
 """
 import argparse
+import collections
 import datetime as dt
 import json
 import re
@@ -191,6 +193,18 @@ def validate(specs):
                          if c["status"] not in ("done", "superseded")]
             if open_kids:
                 err(s, f"epic 'done' but children not finished: {', '.join(open_kids)}")
+
+    # 11 duplicate ids / number prefixes
+    for key, label in (("id", "id"), ("num", "number prefix")):
+        groups = collections.defaultdict(list)
+        for s in specs:
+            if s[key]:
+                groups[s[key]].append(s["file"])
+        for value, files in sorted(groups.items()):
+            if len(files) > 1:
+                for f in sorted(files):
+                    others = ", ".join(o for o in sorted(files) if o != f)
+                    problems.append(f"{f}: duplicate {label} {value} (also in {others})")
 
     # 9 ledger freshness
     if not LEDGER.exists():
