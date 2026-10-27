@@ -106,15 +106,21 @@ def rounds(records) -> list[Round]:
     for rec in records[cut:]:
         t = rec.get("type")
         if t == "finding":
-            if rec.get("persona") in COUNTED_PERSONAS and rec.get("severity") in COUNTED_SEVERITIES:
-                findings.append(Finding(rec["persona"], rec["severity"], rec.get("title") or "",
-                                        rec.get("ac") or None))
+            persona, severity = rec.get("persona"), rec.get("severity")
+            # `_record_run` writes a reviewer's JSON as-is: only strings can be looked up
+            if isinstance(persona, str) and isinstance(severity, str) \
+                    and persona in COUNTED_PERSONAS and severity in COUNTED_SEVERITIES:
+                findings.append(Finding(persona, severity, str(rec.get("title") or ""),
+                                        str(rec["ac"]) if rec.get("ac") else None))
         elif t == "gate":
             gate = rec
         elif t == "transition" and rec.get("to") == "IMPLEMENTING" \
                 and rec.get("reason") in FIX_REASONS:
-            failing = frozenset(r.get("name") for r in (gate or {}).get("results") or []
-                                if isinstance(r, dict) and r.get("ok") is False)
+            # blocking gates only: an optional gate that always fails says nothing about the loop
+            failing = frozenset(r["name"] for r in (gate or {}).get("results") or []
+                                if isinstance(r, dict) and r.get("ok") is False
+                                and r.get("required") is not False
+                                and isinstance(r.get("name"), str))
             out.append(Round("review" if rec["reason"] == "review_fix" else "gate",
                              findings, failing))
             findings, gate = [], None
@@ -188,6 +194,12 @@ def assess(rs, cfg_settings: dict | None = None) -> dict | None:
     return {"signals": ([recurrence] if recurrence else []) + others, "rounds": len(rs)}
 
 
+def _line(title, width: int = 80) -> str:
+    """A finding title on one line, cut at `width` characters."""
+    text = " ".join(str(title).split())
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
 def summary(div: dict) -> str:
     """One line for the park detail, e.g. `recurrence: "x" (r1, r3) · trend 3→3→4`."""
     parts = []
@@ -195,13 +207,13 @@ def summary(div: dict) -> str:
         ev = sig["evidence"]
         if sig["name"] == "recurrence":
             parts.append("recurrence: " + ", ".join(
-                f'"{h["title"]}" ({", ".join(f"r{n}" for n in h["rounds"])})' for h in ev))
+                f'"{_line(h["title"])}" ({", ".join(f"r{n}" for n in h["rounds"])})' for h in ev))
         elif sig["name"] == "trend":
             parts.append("trend " + "→".join(str(c) for c in ev["counts"]))
         elif sig["name"] == "churn":
             parts.append("churn " + "/".join(f"{r:.0%}" for r in ev["ratios"]))
         else:
-            parts.append("gate_repeat " + ", ".join(ev["gates"]))
+            parts.append("gate_repeat " + ", ".join(_line(g) for g in ev["gates"]))
     return " · ".join(parts)
 
 

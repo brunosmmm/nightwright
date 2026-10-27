@@ -93,6 +93,62 @@ def test_matching():
     assert not m(F(REV, "major", "UI", None), F(REV, "major", "UI bug on save", None))
 
 
+def test_matching_threshold_is_at_or_above_similarity():
+    def pair(a, b, **kw):
+        return DV.matches(F(REV, "major", a, None), F(REV, "major", b, None), **kw)
+    base = "alpha beta gamma delta"
+    at = "alpha beta gamma sigma"                  # 3 shared of 5 words: Jaccard 0.6
+    below = "alpha beta sigma omega"               # 2 shared of 6 words: Jaccard 1/3
+    half = "alpha beta gamma sigma omega"          # 3 shared of 6 words: Jaccard 0.5
+    assert pair(base, at)                          # exactly the default 0.6: a match
+    assert not pair(base, below)
+    assert not pair(base, half)                    # just under the cutoff
+    assert not pair(base, "alpha cache omega zeta")    # one word in common is not enough
+    assert not pair(base, at, similarity=0.7)      # `similarity` is honoured
+    assert pair(base, half, similarity=0.5)
+    assert pair(base, below, similarity=0.3)
+    assert DV.assess([rnd(blocking=[base]), rnd(blocking=["cache never expires"]), rnd(blocking=[at])],
+                     {"similarity": 0.6}) is not None        # recurrence at the cutoff
+    assert DV.assess([rnd(blocking=[base]), rnd(blocking=["cache never expires"]), rnd(blocking=[at])],
+                     {"similarity": 0.7}) is None
+
+
+def test_malformed_ledger_findings_and_gates_never_raise():
+    ledger = [finding("x", severity=["major"]), finding({"a": 1}, persona=["p"]),
+              finding("ok", severity="major", ac=["AC1"]),
+              gate(("test", False)), fix(),
+              rec("gate", ok=False, results=[{"ok": False}, {"name": "lint", "ok": False}]),
+              finding("ok", severity="major"), fix("triage_fix")]
+    rs = DV.rounds(ledger)
+    assert [[f.title for f in r.findings] for r in rs] == [["ok"], ["ok"]]
+    assert rs[1].failing_gates == frozenset({"lint"})
+    assert DV.assess(rs) is None
+
+
+def test_optional_failing_gates_do_not_feed_gate_repeat():
+    def optional(*results):
+        return rec("gate", ok=False, results=[
+            {"name": n, "ok": ok, "required": req} for n, ok, req in results])
+    ledger = []
+    for failing in ("test", "typecheck", "test"):
+        ledger += [optional(("lint", False, False), (failing, False, True)),
+                   finding("gate broke", persona="gate_triager"), fix("triage_fix")]
+    rs = DV.rounds(ledger)
+    assert [r.failing_gates for r in rs] == [frozenset({"test"}), frozenset({"typecheck"}),
+                                              frozenset({"test"})]
+    assert DV._gate_repeat(rs, 3) is None
+    assert DV.assess(rs) is None                   # trend alone does not trip
+
+
+def test_summary_is_one_line():
+    div = {"signals": [{"name": "recurrence", "evidence": [
+        {"title": "bad\nline\r\n  here " + "x" * 200, "rounds": [1, 3]}]},
+        {"name": "gate_repeat", "evidence": {"gates": ["te\nst"]}}], "rounds": 3}
+    out = DV.summary(div)
+    assert "\n" not in out and "\r" not in out and len(out) < 200
+    assert 'recurrence: "bad line here ' in out and "gate_repeat te st" in out
+
+
 # ---- signals ---------------------------------------------------------------------------------
 
 def names(div):
@@ -289,6 +345,9 @@ def test_e2e_gate_repeat_trips_on_the_third_failed_fix(tmp_path, monkeypatch):
     assert st["park"]["reason"] == "diverging" and st["counters"]["loops"] == 3, st
     [div] = S.read_ledger(cfg, cid, types=["loop_divergence"])
     assert names(div) == ["trend", "gate_repeat"]
+    assert st["park"]["resume_to"] == "IMPLEMENTING"
+    assert st["pending_brief"] and st["pending_brief"]["source"] == "gate_triager"
+    assert Q.park_owner("diverging") == "conductor"
 
 
 def test_check_read_error_notes_and_returns_none(monkeypatch):

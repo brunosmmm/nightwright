@@ -282,6 +282,12 @@ record.
 - `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exit 0 with the spec
   at `done`.
 - Manual verification (next real campaign that parks `diverging`) is pending by design.
+- Review round fixes (loop 3): `tests/test_agentic_divergence.py` gained a Jaccard threshold
+  test (0.6 matches, 0.5 and 1/3 do not, a non-default `similarity` changes the outcome and the
+  `assess` result), malformed-ledger cases (list or dict severity/persona/title/ac, a gate
+  result with no name), optional failing gates, a one-line `summary`, and the gate-triage park
+  asserts `resume_to` and `pending_brief`. `uv run pytest tests/test_agentic_divergence.py
+  tests/test_skills.py`: 81 passed; full `uv run pytest -q -x`: 2839 passed, 3 skipped; spec_lint exit 0.
 
 ### As shipped (2026-10-26)
 
@@ -291,6 +297,14 @@ record.
   round.
 - Both fix branches share one helper, `queue._finish_fix`, instead of two inline calls.
 - `assess` returns `{signals, rounds}`; `check` adds `loop`.
+- `rounds` skips findings whose `persona` or `severity` is not a string (`_record_run` writes
+  a reviewer's JSON as-is), so a malformed verdict cannot make `check` raise. `failing_gates`
+  holds only required gates with a string name: an optional gate that always fails does not
+  feed `gate_repeat`. `summary` collapses whitespace in finding titles and gate names and cuts
+  a title at 80 characters, so the park detail stays one line.
+- The Definition-of-done box "manual steps performed" is ticked for the automated plan only:
+  the manual check on a real `diverging` park has not happened yet and stays open as a
+  post-ship observation.
 - Records up to the resume of a `diverging` park (also one escalated to `human_decision`
   with `escalated_from: diverging`) are dropped before rounds are cut, because the tripped
   round never gets a closing fix transition.
