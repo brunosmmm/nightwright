@@ -4780,11 +4780,27 @@ def _gc_worktree_keep(root, e, st, adopted, main, cwd_wt, base) -> str | None:
         return f"requester moved on (on {e['branch'] or 'detached HEAD'})"
     if adopted and not (e["head"] and git.is_ancestor(root, e["head"], base)):
         return "unmerged"
+    # the requester may have synced the same branch past the merge (ff to base, reset, pull):
+    # only a HEAD the recorded merge already contains is where the merge left it
+    merged_sha = (st.get("close") or {}).get("merged_sha")
+    if adopted and not (merged_sha and git.is_ancestor(root, e["head"], merged_sha)):
+        return "requester moved on (HEAD past the merge)"
     if e["detached"] and e["head"] and not git.is_ancestor(root, e["head"], base):
         b = (st.get("repo") or {}).get("branch")
         if not (b and git.branch_exists(root, b) and git.is_ancestor(root, e["head"], f"refs/heads/{b}")):
             return "detached, unreachable commits"
     return None
+
+
+def _gc_request_moved_on(root, b, sts) -> bool:
+    """`b` is the branch of a MERGED merge request (the newest one naming it) whose tip the
+    recorded merge does not contain: the requester kept using it after the merge."""
+    req = next((s for s in sts if s.get("kind") == "merge"
+                and (s.get("merge") or {}).get("branch") == b), None)
+    if not req or req.get("state") != "MERGED":
+        return False
+    merged_sha = (req.get("close") or {}).get("merged_sha")
+    return not (merged_sha and git.is_ancestor(root, f"refs/heads/{b}", merged_sha))
 
 
 def _gc_rows(cfg, root, campaigns, base, worktree_roots=(), errors=None) -> list[dict]:
@@ -4873,6 +4889,8 @@ def _gc_rows(cfg, root, campaigns, base, worktree_roots=(), errors=None) -> list
             why = f"checked out in {held[b]}"
         elif not git.is_ancestor(root, f"refs/heads/{b}", bbase):
             why = "unmerged"
+        elif _gc_request_moved_on(root, b, sts):
+            why = "requester moved on (tip past the merge)"
         else:
             rows.append(_gc_row("branch", b, st, "delete", f"merged into {bbase}", root))
             continue
@@ -4917,10 +4935,12 @@ def apply_gc(cfg, plan: dict) -> dict:
     branch deletions (`-d`, never `-D`; `worktree remove` without --force, so git refuses a
     dirty tree too). A `GitError` lands on its row (`error`) and the rest still apply. No
     ledger events: the returned plan is the record."""
+    unpruned = set()
     for root in plan["repos"]:
         try:
             git.git(root, "worktree", "prune")
         except GitError as e:
+            unpruned.add(str(root))
             plan["errors"].append(f"{root}: worktree prune: {e.tail or e}")
     for kind in ("worktree", "branch"):
         for row in plan["rows"]:
@@ -4931,6 +4951,9 @@ def apply_gc(cfg, plan: dict) -> dict:
                     git.branch_delete(row["repo"], row["branch"])
                 elif Path(row["path"]).exists():
                     git.worktree_remove(row["repo"], row["path"])
+                elif row["repo"] in unpruned:       # missing on disk: only the prune drops it
+                    row["done"], row["error"] = False, "git worktree prune failed"
+                    continue
                 row["done"] = True
             except GitError as e:
                 row["done"], row["error"] = False, e.tail or str(e)

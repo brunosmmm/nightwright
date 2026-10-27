@@ -31,12 +31,16 @@ def _commit(repo, name, text, msg):
     _git(repo, "commit", "-q", "-m", msg)
 
 
-def _campaign(cfg, cid, state, root, branch, worktree=None, *, kind="spec", own=True, base="main"):
+def _campaign(cfg, cid, state, root, branch, worktree=None, *, kind="spec", own=True, base="main",
+              merged_sha=None):
     st = {"id": cid, "kind": kind, "state": state, "project": "demo", "spec_id": None,
           "repo": {"root": str(root), "base": base, "branch": branch,
                    "worktree": str(worktree) if worktree else None}}
     if kind == "merge":
         st["merge"] = {"branch": branch, "own_worktree": own}
+    if state == "MERGED":
+        st["close"] = {"mode": "merge",
+                       "merged_sha": merged_sha or _git(root, "rev-parse", f"refs/heads/{branch}")}
     S.create_campaign(cfg, st)
 
 
@@ -149,22 +153,78 @@ def test_live_campaign_and_main_never_touched(world, monkeypatch):
 
 
 def test_row_error_does_not_stop_others(world, monkeypatch):
+    """The first branch row fails (so rows after it prove apply_gc keeps going)."""
     root = world["root"]
+    plan = Q.plan_gc(world["cfg"])
+    deletes = [r["branch"] for r in plan["rows"] if r["kind"] == "branch" and r["action"] == "delete"]
+    assert len(deletes) == 3
+    bad, rest = deletes[0], deletes[1:]
     real = G.branch_delete
 
     def flaky(repo, branch, force=False):
         assert force is False
-        if branch == "wt/a1":
+        if branch == bad:
             raise GitError(["git", "branch", "-d", branch], 1, "boom")
         return real(repo, branch, force=force)
 
     monkeypatch.setattr(G, "branch_delete", flaky)
-    plan = Q.apply_gc(world["cfg"], Q.plan_gc(world["cfg"]))
-    rows = _rows(plan)
-    assert rows[("branch", "wt/a1")]["error"] == "boom" and rows[("branch", "wt/a1")]["done"] is False
-    assert G.branch_exists(root, "wt/a1")
-    assert not G.branch_exists(root, "wt/m1") and not G.branch_exists(root, "specs-1")
-    assert rows[("branch", "wt/m1")]["done"] is True
+    rows = _rows(Q.apply_gc(world["cfg"], plan))
+    assert rows[("branch", bad)]["error"] == "boom" and rows[("branch", bad)]["done"] is False
+    assert G.branch_exists(root, bad)
+    for b in rest:
+        assert rows[("branch", b)]["done"] is True and not G.branch_exists(root, b), b
+    assert rows[("worktree", "m1")]["done"] is True and rows[("worktree", "wt-specs-1")]["done"] is True
+
+
+def test_worktree_row_error_does_not_stop_others(world, monkeypatch):
+    """The first worktree row fails; the other worktree and the branch rows still apply."""
+    root = world["root"]
+    plan = Q.plan_gc(world["cfg"])
+    removes = [Path(r["path"]).name for r in plan["rows"]
+               if r["kind"] == "worktree" and r["action"] == "remove"]
+    assert sorted(removes) == ["m1", "wt-specs-1"]
+    bad, other = removes
+    real = G.worktree_remove
+
+    def flaky(repo, path, force=False):
+        assert force is False
+        if Path(path).name == bad:
+            raise GitError(["git", "worktree", "remove", str(path)], 1, "boom")
+        return real(repo, path, force=force)
+
+    monkeypatch.setattr(G, "worktree_remove", flaky)
+    rows = _rows(Q.apply_gc(world["cfg"], plan))
+    assert rows[("worktree", bad)]["error"] == "boom" and rows[("worktree", bad)]["done"] is False
+    assert rows[("worktree", other)]["done"] is True
+    listed = {e["path"].name for e in G.worktree_list(root)}
+    assert bad in listed and other not in listed
+    # the failed worktree still holds its branch, so git refuses that one row; the rest go
+    held = {"m1": "wt/m1", "wt-specs-1": "specs-1"}[bad]
+    assert rows[("branch", held)]["done"] is False and G.branch_exists(root, held)
+    for b in {"wt/m1", "specs-1", "wt/a1"} - {held}:
+        assert rows[("branch", b)]["done"] is True and not G.branch_exists(root, b), b
+
+
+def test_prune_failure_marks_missing_rows(world, monkeypatch):
+    root, cfg, wts = world["root"], world["cfg"], world["wts"]
+    _merged_wt(root, "wt/gone", wts / "gone")
+    shutil.rmtree(wts / "gone")
+    _campaign(cfg, "g1", "MERGED", root, "wt/gone", wts / "gone")
+    real, calls = G.git, []
+
+    def no_prune(repo, *args, **kw):
+        if args[:2] == ("worktree", "prune") and not calls:   # only apply_gc's up-front prune
+            calls.append(repo)
+            raise GitError(["git", *args], 1, "locked index")
+        return real(repo, *args, **kw)
+
+    plan = Q.plan_gc(cfg)
+    monkeypatch.setattr(G, "git", no_prune)
+    rows = _rows(Q.apply_gc(cfg, plan))
+    assert rows[("worktree", "gone")]["done"] is False
+    assert rows[("worktree", "gone")]["error"] == "git worktree prune failed"
+    assert any("worktree prune: locked index" in e for e in plan["errors"])
+    assert rows[("worktree", "m1")]["done"] is True
 
 
 def test_json_schema(world, monkeypatch):
@@ -222,6 +282,33 @@ def test_adopted_requester_worktrees_kept(world):
         assert (tmp / "req" / f"wt-specs-{i}").is_dir(), i
     assert G.branch_exists(root, "specs-2") and G.branch_exists(root, "specs-5")
     assert G.current_branch(tmp / "req" / "wt-specs-4") == "specs-5"
+
+
+def test_requester_synced_past_the_merge_kept(world):
+    """A MERGED adopted request whose requester fast-forwarded the same branch to a newer main
+    (clean, on the request branch, HEAD an ancestor of base) keeps its worktree and branch; so
+    does a request branch moved past the merge with no worktree left."""
+    root, cfg, tmp = world["root"], world["cfg"], world["tmp"]
+    _merged_wt(root, "specs-6", tmp / "req" / "wt-specs-6")
+    _campaign(cfg, "r6", "MERGED", root, "specs-6", tmp / "req" / "wt-specs-6", kind="merge", own=False)
+    _merged_wt(root, "specs-7", tmp / "req" / "wt-specs-7")
+    _campaign(cfg, "r7", "MERGED", root, "specs-7", tmp / "req" / "wt-specs-7", kind="merge", own=False)
+    G.worktree_remove(root, tmp / "req" / "wt-specs-7")
+    _commit(root, "newer.txt", "x\n", "main moves on")
+    _git(tmp / "req" / "wt-specs-6", "merge", "-q", "--ff-only", "main")
+    _git(root, "branch", "-f", "specs-7", "main")
+    assert G.is_clean(tmp / "req" / "wt-specs-6", untracked=True)
+    plan = Q.plan_gc(cfg)
+    rows = _rows(plan)
+    assert (rows[("worktree", "wt-specs-6")]["action"], rows[("worktree", "wt-specs-6")]["why"]) == (
+        "keep", "requester moved on (HEAD past the merge)")
+    assert rows[("branch", "specs-6")]["action"] == "keep"
+    assert (rows[("branch", "specs-7")]["action"], rows[("branch", "specs-7")]["why"]) == (
+        "keep", "requester moved on (tip past the merge)")
+    assert rows[("worktree", "wt-specs-1")]["action"] == "remove"
+    Q.apply_gc(cfg, plan)
+    assert (tmp / "req" / "wt-specs-6" / "newer.txt").exists()
+    assert G.branch_exists(root, "specs-6") and G.branch_exists(root, "specs-7")
 
 
 def test_rebase_in_progress_kept_with_its_branch(world, monkeypatch):

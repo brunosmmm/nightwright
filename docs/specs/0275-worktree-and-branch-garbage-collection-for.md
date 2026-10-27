@@ -173,6 +173,24 @@ remove|delete|keep, why}`. `--yes` applies rows in order (worktrees before branc
 - Full gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`,
   `uv run pytest -q -x`.
 
+### Test record (2026-10-27, review round 2)
+
+- `uv run pytest -q tests/test_agentic_queue_gc.py`: 14 passed. `test_row_error_does_not_stop_others`
+  now fails the *first* delete row of the plan, so two branch rows provably come after it, and it
+  checks that both worktree rows were applied. `test_worktree_row_error_does_not_stop_others` makes
+  `worktree_remove` raise on the first remove row; that row has `done is False` and `error`, the
+  other worktree is removed, and the branch rows still apply (the branch the failed worktree still
+  holds is refused by git on its own row). `test_requester_synced_past_the_merge_kept` covers a
+  MERGED adopted request whose requester ran `git merge --ff-only main` after main moved (worktree
+  and branch both `keep`), and a request branch force-moved to main with no worktree
+  (`requester moved on (tip past the merge)`). `test_prune_failure_marks_missing_rows` covers a
+  failed `git worktree prune` marking `missing on disk` rows `done: false`.
+- **Sabotage check:** disabling the new worktree `merged_sha` guard, or the new branch guard,
+  fails `test_requester_synced_past_the_merge_kept`. Adding a `break` after the first row error in
+  `apply_gc` fails both row-error tests. All restored (file byte-identical).
+- Full gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py`,
+  `uv run pytest -q -x`.
+
 ### As shipped
 
 - Code: `gitops.worktree_list` / `gitops.is_ancestor`; `queue._gc_rows`,
@@ -198,6 +216,15 @@ remove|delete|keep, why}`. `--yes` applies rows in order (worktrees before branc
   `worktrees_removable` and `branches_removable`.
 - `--yes` exits 1 when any row failed or a repo error was recorded. The output still lists
   every row.
+- A MERGED merge request's adopted worktree is removed only when its HEAD is an ancestor of the
+  recorded `close.merged_sha` (where the merge left it). Otherwise it is
+  `keep: requester moved on (HEAD past the merge)`, for example after the requester
+  fast-forwarded the same branch to a newer base. The request's branch gets the same test
+  (`keep: requester moved on (tip past the merge)`). A MERGED request with no recorded
+  `merged_sha` is kept the same way.
+- When a repo's `git worktree prune` fails, its `missing on disk` rows get `done: false` and
+  `error: git worktree prune failed`. The docs line notes that a removed worktree takes its
+  ignored files with it.
 
 ## Rollout / migration
 
