@@ -2201,16 +2201,16 @@ def backups_prune_cmd(cfg, keep_last, keep_days, yes, as_json):
     if as_json:
         print(json.dumps({**res, "dry_run": not yes}, indent=2))
         return
-    n, mb = len(res["delete"]), res["bytes"] / 1e6
+    failed = set(res["failed"])
+    done = [name for name in res["delete"] if name not in failed]
+    n, mb = len(done), res["bytes"] / 1e6
     verb = "deleted" if yes else "would delete"
-    if yes and res["failed"]:
-        n -= len(res["failed"])
     console.print(f"{verb} {n} of {res['scanned']} backups ({mb:.1f} MB); kept {res['kept']}"
                   f"  [dim]{escape(res['dir'])}[/]")
-    if yes and res["failed"]:
-        console.print(f"[yellow]{len(res['failed'])} delete(s) failed[/]")
+    if failed:
+        console.print(f"[yellow]{len(failed)} delete(s) failed[/]")
     per = {}
-    for name in res["delete"]:
+    for name in done:
         base = BACKUP_RE.match(name).group("base")
         per[base] = per.get(base, 0) + 1
     for base in sorted(per):

@@ -44,6 +44,21 @@ def test_select_ignores_foreign_files():
     assert sorted(prunes) == sorted(names[3:])
 
 
+def test_select_skips_unparseable_timestamp():
+    # matches BACKUP_RE but strptime rejects it: skipped, never selected, never raises
+    names = ["ideas.org.20261399T999999.bak", _name("ideas.org", dt.datetime(2026, 1, 1))]
+    assert W.select_backup_prunes(names, keep_last=0, keep_days=0,
+                                  today=dt.date(2026, 10, 27)) == names[1:]
+
+
+def test_select_huge_keep_days_keeps_one_per_day():
+    today = dt.date(2026, 10, 27)
+    names = [_name("ideas.org", dt.datetime(2000, 1, 1, h)) for h in (1, 2)]
+    names.append(_name("ideas.org", dt.datetime(2026, 10, 27, 3)))
+    prunes = W.select_backup_prunes(names, keep_last=0, keep_days=10**9, today=today)
+    assert prunes == [names[0]]                      # no OverflowError; older same-day copy goes
+
+
 def _ideas_setup(tmp_path):
     org = tmp_path / "org"
     org.mkdir()
@@ -57,10 +72,10 @@ def _ideas_setup(tmp_path):
     return cfg, ideas, data_dir / "org-backups"
 
 
-def _seed(bdir, base, n, day=None):
+def _seed(bdir, base, n, day=None, body="old\n"):
     start = dt.datetime.combine(day or dt.date.today(), dt.time(0))
     for i in range(n):
-        (bdir / _name(base, start + dt.timedelta(seconds=i))).write_text("old\n")
+        (bdir / _name(base, start + dt.timedelta(seconds=i))).write_text(body)
 
 
 def _task(cfg):
@@ -96,6 +111,26 @@ def test_prune_listdir_failure_does_not_fail_write(tmp_path, monkeypatch):
     def boom(path):
         raise OSError("nope")
     monkeypatch.setattr(W.os, "listdir", boom)
+    W.set_property(cfg, _task(cfg), "FOO", "bar")
+    assert ":FOO: bar" in ideas.read_text()
+
+
+def test_huge_keep_days_does_not_fail_write(tmp_path):
+    cfg, ideas, bdir = _ideas_setup(tmp_path)
+    cfg["org_backups"] = {"keep_last": 2, "keep_days": 1000000}
+    _seed(bdir, "ideas.org", 5, day=dt.date.today() - dt.timedelta(days=100))
+    W.set_property(cfg, _task(cfg), "FOO", "bar")
+    assert ":FOO: bar" in ideas.read_text()
+    # the prune still ran: newest 2 (today's backup + newest seed); older seeds share a day
+    assert len(list(bdir.glob("ideas.org.*.bak"))) == 2
+
+
+def test_non_oserror_prune_does_not_fail_write(tmp_path, monkeypatch):
+    cfg, ideas, _ = _ideas_setup(tmp_path)
+
+    def boom(*a, **k):
+        raise RuntimeError("bug in retention")
+    monkeypatch.setattr(W, "select_backup_prunes", boom)
     W.set_property(cfg, _task(cfg), "FOO", "bar")
     assert ":FOO: bar" in ideas.read_text()
 
@@ -157,3 +192,70 @@ def test_retention_config_fallback():
     assert W._retention({"org_backups": "junk"}) == (50, 14)
     assert W._retention({"org_backups": {"keep_last": 0, "keep_days": 0}}) == (0, 0)
     assert W._retention({"org_backups": {"keep_last": 7}}) == (7, 14)
+
+
+def _cli_dirs(tmp_path, make_backups=True):
+    data_dir, config_dir = tmp_path / "data", tmp_path / "config"
+    bdir = data_dir / "org-backups"
+    (bdir if make_backups else data_dir).mkdir(parents=True)
+    config_dir.mkdir()
+    return data_dir, config_dir, bdir
+
+
+def test_cli_keep_days_override_takes_effect(tmp_path, monkeypatch):
+    data_dir, config_dir, bdir = _cli_dirs(tmp_path)
+    today = dt.date.today()
+    for back in range(5):                            # 3 a day for the last 5 days
+        _seed(bdir, "ideas.org", 3, day=today - dt.timedelta(days=back))
+    run = _cli(monkeypatch, data_dir, config_dir)
+    r = run(["backups", "prune"])                    # defaults (50, 14): everything is kept
+    assert r.exit_code == 0, r.output
+    assert "would delete 0 of 15 backups" in r.output
+    r = run(["backups", "prune", "--yes", "--keep-last", "1", "--keep-days", "2"])
+    assert r.exit_code == 0, r.output
+    assert "deleted 13 of 15 backups" in r.output
+    newest = lambda day: _name("ideas.org", dt.datetime.combine(day, dt.time(0, 0, 2)))  # noqa: E731
+    assert sorted(os.listdir(bdir)) == sorted([newest(today),
+                                               newest(today - dt.timedelta(days=1))])
+
+
+def test_cli_yes_reports_failed_deletes(tmp_path, monkeypatch):
+    data_dir, config_dir, bdir = _cli_dirs(tmp_path)
+    old = dt.date.today() - dt.timedelta(days=100)
+    _seed(bdir, "ideas.org", 5, day=old, body="x" * 250_000)
+    run = _cli(monkeypatch, data_dir, config_dir)
+    r = run(["backups", "prune", "--keep-last", "1", "--keep-days", "0"])
+    assert r.exit_code == 0, r.output
+    assert "would delete 4 of 5 backups (1.0 MB); kept 1" in r.output
+    start = dt.datetime.combine(old, dt.time(0))
+    stuck = {_name("ideas.org", start + dt.timedelta(seconds=i)) for i in (0, 1)}
+    real_remove = os.remove
+
+    def flaky(path):
+        if os.path.basename(path) in stuck:
+            raise OSError("read-only")
+        real_remove(path)
+    monkeypatch.setattr(W.os, "remove", flaky)
+    r = run(["backups", "prune", "--yes", "--keep-last", "1", "--keep-days", "0"])
+    assert r.exit_code == 0, r.output
+    assert "deleted 2 of 5 backups (0.5 MB); kept 3" in r.output
+    assert "2 delete(s) failed" in r.output
+    assert "     2  ideas.org" in r.output             # per-basename table: actual deletes only
+    assert len(os.listdir(bdir)) == 3
+
+
+def test_cli_prune_without_backup_dir(tmp_path, monkeypatch):
+    data_dir, config_dir, bdir = _cli_dirs(tmp_path, make_backups=False)
+    r = _cli(monkeypatch, data_dir, config_dir)(["backups", "prune"])
+    assert r.exit_code == 0, r.output
+    assert "would delete 0 of 0 backups (0.0 MB); kept 0" in r.output
+    assert not bdir.exists()
+
+
+def test_cli_prune_huge_keep_days(tmp_path, monkeypatch):
+    data_dir, config_dir, bdir = _cli_dirs(tmp_path)
+    _seed(bdir, "ideas.org", 3, day=dt.date.today() - dt.timedelta(days=100))
+    r = _cli(monkeypatch, data_dir, config_dir)(
+        ["backups", "prune", "--keep-last", "0", "--keep-days", "1000000"])
+    assert r.exit_code == 0, r.output
+    assert "would delete 2 of 3 backups" in r.output

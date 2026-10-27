@@ -590,7 +590,8 @@ def select_backup_prunes(names, *, keep_last, keep_days, today):
         except ValueError:
             continue
         groups.setdefault(m.group("base"), []).append((ts, name))
-    first_day = today - dt.timedelta(days=keep_days - 1)
+    # clamp so a huge keep_days ("keep dailies forever") means "since date.min", not OverflowError
+    first_day = today - dt.timedelta(days=max(0, min(keep_days - 1, (today - dt.date.min).days)))
     prunes = []
     for entries in groups.values():
         entries.sort(reverse=True)                   # newest first
@@ -608,7 +609,8 @@ def select_backup_prunes(names, *, keep_last, keep_days, today):
 def prune_backups(cfg, *, basename=None, keep_last=None, keep_days=None, dry_run=False):
     """Apply retention to the backup dir (only `basename`'s backups when given). Explicit
     keep_last/keep_days override the config. Deletes are best-effort: a delete that raises
-    OSError is skipped and listed under `failed`."""
+    OSError is skipped and listed under `failed`; it still counts as kept, and its bytes don't
+    count (`bytes` is what was, or in a dry run would be, freed)."""
     d = _backup_dir(cfg)
     cfg_last, cfg_days = _retention(cfg)
     keep_last = cfg_last if keep_last is None else keep_last
@@ -619,21 +621,21 @@ def prune_backups(cfg, *, basename=None, keep_last=None, keep_days=None, dry_run
     if basename is not None:                         # selection is per basename; keep only ours
         mine = lambda n: BACKUP_RE.match(n).group("base") == basename  # noqa: E731
         names, delete = [n for n in names if mine(n)], [n for n in delete if mine(n)]
-    size = 0
+    size, failed = 0, []
     for name in delete:
         try:
-            size += os.stat(os.path.join(d, name)).st_size
+            st_size = os.stat(os.path.join(d, name)).st_size
         except OSError:
-            pass
-    failed = []
-    if not dry_run:
-        for name in delete:
+            st_size = 0
+        if not dry_run:
             try:
                 os.remove(os.path.join(d, name))
             except OSError:
                 failed.append(name)
+                continue
+        size += st_size
     return {"dir": d, "scanned": len(names), "delete": delete,
-            "kept": len(names) - len(delete), "bytes": size, "failed": failed}
+            "kept": len(names) - len(delete) + len(failed), "bytes": size, "failed": failed}
 
 
 def _atomic_backup_write(cfg, path, content):
@@ -644,7 +646,7 @@ def _atomic_backup_write(cfg, path, content):
         shutil.copy2(path, os.path.join(backups, f"{os.path.basename(path)}.{ts}.bak"))
         try:                                         # best-effort: never fails the write
             prune_backups(cfg, basename=os.path.basename(path))
-        except OSError:
+        except Exception:                            # any error, not just OSError (SPEC-0271)
             pass
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)

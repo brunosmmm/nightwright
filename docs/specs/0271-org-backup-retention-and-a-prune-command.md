@@ -159,6 +159,34 @@ Retention caps the disk use whatever the write pattern.
 - Gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exits 0.
   `uv run pytest -q -x` passes in full: 3318 passed, 3 skipped (13m29s).
 
+### Test record (2026-10-27, review fixes)
+
+- `uv run pytest -q tests/test_org_backups.py`: 16 passed. Eight tests were added for the review
+  findings:
+  - `test_cli_keep_days_override_takes_effect`: 3 backups a day for 5 days. The default config
+    keeps all 15. `--keep-last 1 --keep-days 2` keeps exactly today's newest and yesterday's
+    newest.
+  - `test_cli_yes_reports_failed_deletes`: `os.remove` fails for 2 of the 4 selected files. The
+    dry run prints `would delete 4 of 5 backups (1.0 MB); kept 1`. `--yes` prints `deleted 2 of 5
+    backups (0.5 MB); kept 3`, `2 delete(s) failed`, and a table row of 2.
+  - `test_cli_prune_without_backup_dir`: with no `org-backups` dir, the command exits 0 and
+    prints `would delete 0 of 0 backups (0.0 MB); kept 0`.
+  - `test_cli_prune_huge_keep_days`: `--keep-days 1000000` exits 0.
+  - `test_select_skips_unparseable_timestamp`: `ideas.org.20261399T999999.bak` is never selected.
+  - `test_select_huge_keep_days_keeps_one_per_day`: no `OverflowError`.
+  - `test_huge_keep_days_does_not_fail_write`: `org_backups.keep_days: 1000000`, and the write
+    and its prune both succeed.
+  - `test_non_oserror_prune_does_not_fail_write`: a `RuntimeError` from the selection does not
+    fail the write.
+- New sabotage checks, all reverted afterwards with the tests passing again:
+  - The CLI drops `keep_days`. The override test and the huge-keep-days test fail.
+  - The clamp is removed and the catch narrowed back to `OSError`. Four huge-keep-days and
+    non-`OSError` tests fail.
+  - The `strptime` guard is removed. The unparseable-timestamp test fails.
+  - The table iterates over `delete` again. The failed-delete test fails.
+- Gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exits 0.
+  `uv run pytest -q -x` passes in full: 3326 passed, 3 skipped (12m52s).
+
 ### As shipped
 
 - `prune_backups(cfg, basename=…)` runs `select_backup_prunes` over every backup in the
@@ -176,6 +204,21 @@ Retention caps the disk use whatever the write pattern.
   `tests/test_agentic_queue_cli.py::test_queue_help_lists_every_command` leaks an unrestored
   `MonkeyPatch` of `wt.cli.load_config` (`data_dir: /nonexistent`), and that leak would
   otherwise redirect env-only CLI tests that run after it.
+- Review fixes:
+  - `select_backup_prunes` clamps the start of the `keep_days` window at `date.min`, so a huge
+    `keep_days` (in the config or from `--keep-days`) means "every day" and does not raise
+    `OverflowError`.
+  - `_atomic_backup_write` catches any `Exception` from the prune, not only the `OSError` that
+    Design names. That is what the Decision requires: a failed prune never fails the write.
+  - In `prune_backups`, a failed delete still counts in `kept` and adds nothing to `bytes`. So
+    `bytes` is what was freed, or in a dry run what would be. `wt backups prune --yes` counts
+    and tabulates only the deletes that succeeded.
+  - The `backups` reference row now links Tasks and Ideas, because backups cover every org
+    write.
+- Known limitation, kept as decided: backups are keyed by basename. Two org files with the same
+  basename in different directories share one retention bucket, as they already shared one
+  backup name before this spec. Fixing that means changing the backup naming scheme, which is
+  outside this spec, so it is filed as a follow-up.
 
 ## Rollout / migration
 
