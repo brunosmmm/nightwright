@@ -9,7 +9,7 @@ WAIT_S = float(os.environ.get("WT_TEST_WAIT_S", "60"))
 
 def until(cond, timeout=None, interval=0.05):
     """Poll `cond` until it is true (return True) or the bound passes (return False)."""
-    end = time.monotonic() + (timeout or WAIT_S)
+    end = time.monotonic() + (WAIT_S if timeout is None else timeout)
     while time.monotonic() < end:
         if cond():
             return True
@@ -19,7 +19,7 @@ def until(cond, timeout=None, interval=0.05):
 
 def join(thread, timeout=None):
     """Join `thread`; raise AssertionError if it is still running after the bound."""
-    bound = timeout or WAIT_S
+    bound = WAIT_S if timeout is None else timeout
     thread.join(bound)
     if thread.is_alive():
         raise AssertionError(f"thread still running after {bound:g}s")
@@ -27,7 +27,7 @@ def join(thread, timeout=None):
 
 async def pilot_until(pilot, cond, timeout=None, step=0.05):
     """`until` for Textual tests: poll with `await pilot.pause(step)`."""
-    end = time.monotonic() + (timeout or WAIT_S)
+    end = time.monotonic() + (WAIT_S if timeout is None else timeout)
     while time.monotonic() < end:
         if cond():
             return True

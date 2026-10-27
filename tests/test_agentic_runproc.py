@@ -208,9 +208,11 @@ def test_vanished_when_group_gone(tmp_path):
     # sees running -> vanished and never orphan_group, whatever the timing. A stopped wrapper
     # cannot reap the child; group_alive already treats an all-zombie group as gone.
     os.kill(proc["wrapper_pid"], signal.SIGSTOP)
-    os.killpg(child["pgid"], signal.SIGKILL)
-    assert until(lambda: not RP.group_alive(child))
-    os.kill(proc["wrapper_pid"], signal.SIGKILL)
+    try:
+        os.killpg(child["pgid"], signal.SIGKILL)
+        assert until(lambda: not RP.group_alive(child))
+    finally:
+        os.kill(proc["wrapper_pid"], signal.SIGKILL)
     join(t)
     res = out["res"]
     assert res.exit_code == -1 and res.is_error and not res.interrupted

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0269
 title: "Load-tolerant test waits: fix known flakes and add a shared wait helper"
-status: in-progress
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -234,7 +234,12 @@ scope here.
   runs of `test_vanished_when_group_gone` under load: 20/20 passed (19 passed per copy).
 - Manual load check from the plan (4 copies of runproc + mailbox + events, 67 tests each):
   7 rounds, 28 runs. 25 were clean; 3 had a failure (see As shipped, all one cause).
-- Full gate: see the final line of this record.
+- Review fixes (loop 1): `run_with_stop` now sets a `finished` event after `Q.run` returns so its
+  side thread exits at once (no 30 s wait before `join`); `test_vanished_when_group_gone` kills the
+  SIGSTOPped wrapper in a `finally`; `waits` uses `WAIT_S if timeout is None else timeout`.
+  Re-run with `WT_TEST_WAIT_S=10`: exit_paths, test_test_waits, runproc, events tab: 86 passed.
+- Full gate: `uv run pytest -q -x`: 3309 passed, 3 skipped (809 s) before the review fixes; the four
+  files touched by the fixes re-ran green as above.
 
 ### As shipped
 
@@ -271,11 +276,11 @@ None. Tests only.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

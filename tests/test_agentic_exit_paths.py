@@ -53,9 +53,11 @@ def run_with_stop(cfg, when, **kw):
         holder["stop"] = stop
         return real_tick(cfg_, stop=stop, **k)
 
+    finished = threading.Event()
+
     def side():
         deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
+        while not finished.is_set() and time.monotonic() < deadline:
             if "stop" in holder and when():
                 holder["stop"].set()
                 return
@@ -66,7 +68,10 @@ def run_with_stop(cfg, when, **kw):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(Q, "tick", tick)
         t0 = time.monotonic()
-        n = Q.run(cfg, poll_interval_s=0.05, **kw)
+        try:
+            n = Q.run(cfg, poll_interval_s=0.05, **kw)
+        finally:
+            finished.set()
     join(t)
     return n, time.monotonic() - t0
 

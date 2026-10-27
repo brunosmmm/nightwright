@@ -15,7 +15,6 @@ from wt.agentic import mailbox as MB
 from wt.tui import agentic_model as AM
 from wt.tui import events_tab as ET
 from waits import pilot_until
-from waits import pilot_until
 
 needs_textual = pytest.mark.skipif(not T.textual_available(),
                                    reason="optional tui extra not installed")
