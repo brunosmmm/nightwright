@@ -1371,13 +1371,14 @@ def test_ctx_profile_ignores_a_worktree_copy_and_sees_edits_on_the_next_ctx(tmp_
     assert _model(Q._Ctx(cfg), st) == "haiku"                        # next tick: re-read
 
 
-def test_invalid_project_profile_parks_an_active_campaign_open_failed(opened):
+def test_invalid_project_profile_parks_an_active_campaign_config_invalid(opened):
     cfg, cid, ctx = opened
     root = S.read_state(cfg, cid)["repo"]["root"]
     f = _project_profile(Path(root), "personas: {implementer: {modle: opus}}\n")
     report = Q.tick(cfg)
     st = S.read_state(cfg, cid)
-    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed"
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "config_invalid"   # SPEC-0263
+    assert st["park"]["detail"].startswith("profile:")
     assert str(f) in st["park"]["detail"] and "personas.implementer.modle" in st["park"]["detail"]
     assert report.steps[-1]["to"] == "PARKED"
 
@@ -1389,7 +1390,7 @@ def test_invalid_profile_on_a_reviewing_campaign_parks_and_resumes_in_place(open
     f = _project_profile(Path(root), "slots: 0\n")
     Q.tick(cfg)
     st = S.read_state(cfg, cid)
-    assert st["state"] == "PARKED" and st["park"]["reason"] == "open_failed"
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "config_invalid"   # SPEC-0263
     assert st["park"]["resume_to"] == "REVIEWING"
     f.unlink()
     plan = Q.plan_resume(cfg, cid)
@@ -1635,3 +1636,59 @@ def test_merge_reconcile_partial_write_is_ledgered(opened, monkeypatch):
     (ev,) = S.read_ledger(cfg, cid, types=["idea_reconciled"])
     assert (ev["idea_id"], ev["from"], ev["to"]) == (iid, "IDEA", "IDEA")
     assert (OW.resolve_selector(cfg, iid).properties.get("SPEC") or "").strip() == "SPEC-0001"
+
+
+# ---- SPEC-0263: unique run ids, honest profile parks ----------------------------------------
+
+_START = {"persona": "implementer", "model": "m", "effort": "low", "max_budget_usd": 1.0,
+          "timeout_s": 60, "permission_mode": "default", "prompt_sha256": "0" * 64}
+
+
+def test_run_id_not_reused_after_state_write_failure(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    cid = added(cfg, monkeypatch)
+    Q.tick(cfg)                                       # admit + open: IMPLEMENTING
+    # the stored counter lags the ledger, as after a `write_state` failure following `run.start`
+    for n in (1, 2):
+        S.append_event(cfg, cid, "run.start", _START | {"run_id": f"{n:03d}-implementer"})
+    S.append_event(cfg, cid, "run.start", _START | {"run_id": "legacy"})    # no number: skipped
+    st = S.read_state(cfg, cid)
+    st["counters"]["runs"] = 1
+    S.write_state(cfg, cid, st)
+    assert st["state"] == "IMPLEMENTING"
+    Q.tick(cfg)
+    ids = [e["run_id"] for e in S.read_ledger(cfg, cid, types=["run.start"])]
+    assert ids == ["001-implementer", "002-implementer", "legacy", "003-implementer"]
+    assert S.read_state(cfg, cid)["counters"]["runs"] == 3
+    assert (S.runs_dir(cfg, cid) / "003-implementer").is_dir()
+    assert not (S.runs_dir(cfg, cid) / "002-implementer").exists()
+
+
+def test_broken_profile_parks_config_invalid_and_recovers(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    cid = added(cfg, monkeypatch)
+    Q.tick(cfg)                                       # admit + open
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "IMPLEMENTING"
+    st["profile"] = "p"
+    S.write_state(cfg, cid, st)
+    pfile = Path(cfg["config_dir"]) / "profiles" / "p.yaml"
+    pfile.parent.mkdir(parents=True, exist_ok=True)
+    good = "schema: wt.profile.v1\nextends: balanced\nslots: 2\n"
+    pfile.write_text(good)
+    assert Q.resolve_profile(cfg, "p")["slots"] == 2                 # the good file loads
+    pfile.write_text("slots: [unclosed\n")
+    Q.tick(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "config_invalid"
+    assert st["park"]["resume_to"] == "IMPLEMENTING"
+    assert st["park"]["detail"].startswith("profile:")
+    Q.tick(cfg)                                       # still broken: stays parked
+    assert S.read_state(cfg, cid)["state"] == "PARKED"
+    pfile.write_text(good)
+    Q.tick(cfg)
+    assert S.read_state(cfg, cid)["state"] in ("IMPLEMENTING", "WAITING", "GATING")
+    assert "config_recovered" in [e["reason"] for e in S.read_ledger(cfg, cid, types=["transition"])]
+    assert S.read_state(cfg, cid)["park"] is None

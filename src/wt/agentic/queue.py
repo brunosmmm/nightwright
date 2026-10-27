@@ -1103,6 +1103,17 @@ def _triage_input(state: dict, profile: dict) -> str:
 _KIND_OF_PERSONA = {"implementer": "implement", "gate_triager": "triage"}
 
 
+def _ledger_run_max(cfg, cid: str) -> int:
+    """SPEC-0263: the highest run number on the ledger's `run.start` rows (`"012-implementer"` is
+    12). A `run_id` without a numeric prefix (adopted or legacy rows) is skipped."""
+    top = 0
+    for ev in store.read_ledger(cfg, cid, types=["run.start"]):
+        head = str(ev.get("run_id") or "").split("-", 1)[0]
+        if head.isdigit():
+            top = max(top, int(head))
+    return top
+
+
 def _prepare_run(ctx: _Ctx, state: dict, persona: str, step: Step | None = None):
     """Main thread: mint the run id, build the request, append `run.start`, bump `runs` and
     write the state. Returns (run_id, request, budget). Everything that can raise happens
@@ -1112,7 +1123,9 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str, step: Step | None = None)
     profile = ctx.profile(state)
     pcfg = ctx.project(state)
     counters = _counters(state)
-    run_no = counters["runs"] + 1
+    # the stored counter can lag the ledger (a failed state write after `run.start`): a run id
+    # is never reused, or two runs would share a run directory and a TMPDIR (SPEC-0263)
+    run_no = max(counters["runs"], _ledger_run_max(cfg, cid)) + 1
     run_id = f"{run_no:03d}-{persona}"
     run_dir = store.runs_dir(cfg, cid) / run_id
     if persona == "review_triager":     # its input carries the verdicts already (SPEC-0206)
@@ -1343,15 +1356,18 @@ def _commit_resolver_changes(ctx: _Ctx, state: dict, worktree, branch, run_id: s
     return git.commit_tracked(worktree, msg)
 
 
-def _close_regates(state: dict) -> bool:
+def _close_regates(state: dict, pcfg: dict) -> bool:
     """SPEC-0259: whether the close will run the gates on the rebased tree. A `--docs-only` merge
     request (SPEC-0234) returns its `PreparedClose` before `G.run_all`, so a resolver's dropped-
-    commit declaration is not honored there; a future gate-skipping close path is excluded here."""
-    return not (CL._is_merge_request(state) and (state.get("merge") or {}).get("docs_only"))
+    commit declaration is not honored there; a future gate-skipping close path is excluded here.
+    SPEC-0263: nor is it honored when no gate is required — `all()` over nothing passes."""
+    if CL._is_merge_request(state) and (state.get("merge") or {}).get("docs_only"):
+        return False
+    return any(g.get("required", True) for g in pcfg.get("gates") or [])
 
 
-def _declared_drops(state: dict, verdict: dict) -> list:
-    if not _close_regates(state):
+def _declared_drops(state: dict, verdict: dict, pcfg: dict) -> list:
+    if not _close_regates(state, pcfg):
         return []
     return [(str(d["sha"]), str(d.get("reason") or "")) for d in verdict.get("dropped_commits") or []
             if isinstance(d, dict) and d.get("sha")]
@@ -1377,6 +1393,7 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
             res.run_result = rr = _synthetic_failure(crash)
         res.interrupted = ctx.stop.is_set()
         verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
+        pcfg = ctx.project(state)
         failed = check = commit_sha = None
         if res.interrupted or rr.interrupted:
             failed = "interrupted"
@@ -1392,7 +1409,7 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
                 pass                    # e.g. a hook rejected it: check 6 fails the dirty tree
             try:
                 check = git.verify_resolution(worktree, branch, rs["target_sha"], rs["fork"],
-                                              pre_head, _declared_drops(state, verdict))
+                                              pre_head, _declared_drops(state, verdict, pcfg))
                 failed = check.failed
             except (GitError, KeyError) as e:
                 failed = f"verification error: {getattr(e, 'tail', None) or e}"
@@ -1560,7 +1577,9 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     if res.error and res.config_error:
         resume = "QUEUED" if kind == "open" and res.from_state == "OPENING" else res.from_state
         return finish("PARKED", "config_invalid", park={
-            "reason": "config_invalid", "detail": f"project config: {res.error}",
+            "reason": "config_invalid",
+            "detail": res.error if res.error.startswith("profile: ")
+            else f"project config: {res.error}",
             "resume_to": resume if resume in RESUMABLE_STATES else "IMPLEMENTING"})
     if res.error and kind != "close":
         reason = {"open": "open_failed", "write_spec": "spec_write_failed"}.get(kind, "open_failed")
@@ -2641,7 +2660,8 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             continue
         try:
             ctx.project(st)
-        except ProjectConfigError:
+            ctx.profile(st)
+        except ValueError:      # ProjectConfigError is one; a broken profile keeps it parked too
             continue
         to = park.get("resume_to") or "QUEUED"
         frm = st.get("state")
@@ -2709,6 +2729,11 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             continue
         try:
             profile = ctx.profile(st)
+        except ValueError as e:     # SPEC-0263: parks `config_invalid` and recovers, like the project config
+            report.steps.append(_apply(ctx, st, StepResult(
+                st["id"], Step("open"), st["state"], error=f"profile: {e}", config_error=True)))
+            continue
+        try:
             pcfg = ctx.project(st)
         except ValueError as e:
             report.steps.append(_apply(ctx, st, StepResult(
@@ -3380,10 +3405,15 @@ class _SlotWatch:
         return len(active | self.pool.ids())
 
     def check(self, lease, **info) -> None:
-        """One `update_info` call: `info` plus `in_flight` and, on a drop, `slot_freed_at`."""
+        """One `update_info` call: `info` plus `in_flight` and, when the runner went from full to
+        having a free slot, `slot_freed_at` (SPEC-0263: not on every drop in occupancy)."""
         now = self.count()
         if now < self.last:
-            info["slot_freed_at"] = store.now_iso()
+            try:
+                if self.last >= slots_for(self.cfg) > now:
+                    info["slot_freed_at"] = store.now_iso()
+            except (ValueError, OSError):   # a half-written default profile: keep the old stamp
+                pass
         self.last = now
         lease.update_info(in_flight=sorted(self.pool.ids()), **info)
 

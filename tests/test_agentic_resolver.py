@@ -1391,13 +1391,37 @@ def test_superseded_undeclared_through_the_queue_parks(tmp_path, monkeypatch):
     assert "is missing after the resolution" in f["detail"]
 
 
+GATED = {"gates": [{"name": "t", "cmd": "true"}]}      # `required` defaults to true
+
+
 def test_close_regates_only_without_docs_only_merge_request():
-    assert Q._close_regates({"kind": "spec"})
-    assert Q._close_regates({"kind": "merge", "merge": {}})
-    assert not Q._close_regates({"kind": "merge", "merge": {"docs_only": True}})
+    assert Q._close_regates({"kind": "spec"}, GATED)
+    assert Q._close_regates({"kind": "merge", "merge": {}}, GATED)
+    assert not Q._close_regates({"kind": "merge", "merge": {"docs_only": True}}, GATED)
     verdict = {"dropped_commits": [{"sha": "abc", "reason": "r"}, {"reason": "no sha"}, "junk"]}
-    assert Q._declared_drops({"kind": "spec"}, verdict) == [("abc", "r")]
-    assert Q._declared_drops({"kind": "merge", "merge": {"docs_only": True}}, verdict) == []
+    assert Q._declared_drops({"kind": "spec"}, verdict, GATED) == [("abc", "r")]
+    assert Q._declared_drops({"kind": "merge", "merge": {"docs_only": True}}, verdict, GATED) == []
+
+
+def test_declared_drop_ignored_without_required_gates(tmp_path, monkeypatch):
+    verdict = {"dropped_commits": [{"sha": "abc", "reason": "r"}]}
+    optional = {"gates": [{"name": "a", "cmd": "true", "required": False},
+                          {"name": "b", "cmd": "true", "required": False}]}
+    for pcfg in ({"gates": []}, {}, optional):
+        assert not Q._close_regates({"kind": "spec"}, pcfg)
+        assert Q._declared_drops({"kind": "spec"}, verdict, pcfg) == []
+    mixed = {"gates": [*optional["gates"], {"name": "c", "cmd": "true", "required": True}]}
+    assert Q._declared_drops({"kind": "spec"}, verdict, mixed) == [("abc", "r")]
+    # through the queue: a resolver that drops a campaign commit and declares it is not believed
+    w, _ = _supersede_world(tmp_path, monkeypatch)
+    real = P.project_config
+    monkeypatch.setattr(P, "project_config", lambda cfg, name: {**real(cfg, name), "gates": []})
+    w.runner.script.append(gave_up())
+    w.dispatched()
+    w.attempted(1)
+    assert not w.ledger("rebase_resolved")
+    f, = w.findings("conflict resolver did not resolve")
+    assert "is missing after the resolution" in f["detail"]
 
 
 def test_docs_only_merge_request_ignores_declaration(tmp_path, monkeypatch):

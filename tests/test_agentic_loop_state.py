@@ -59,7 +59,7 @@ def test_run_stamps_loop_state_before_emit(tmp_path, monkeypatch):
 
 
 def test_run_stamps_slot_freed_at_on_drop(tmp_path, monkeypatch, spy):
-    _repo, cfg, cid = _env(tmp_path, monkeypatch)
+    _repo, cfg, cid = _env(tmp_path, monkeypatch, profile={"slots": 1})   # full -> free (SPEC-0263)
     Q.run(cfg, until_idle=True, poll_interval_s=0.01)
     assert S.read_state(cfg, cid)["state"] == "MERGED"
     assert "slot_freed_at" in spy[0][0] and spy[0][0]["poll_interval_s"] == 0.01   # at start
@@ -67,6 +67,42 @@ def test_run_stamps_slot_freed_at_on_drop(tmp_path, monkeypatch, spy):
     assert ticks and "slot_freed_at" not in ticks[0]            # admission raises the count
     assert "slot_freed_at" in ticks[-1]                          # the merge tick lowered it
     assert sum("slot_freed_at" in kw for kw in ticks) == 1
+
+
+class _Lease:
+    def __init__(self):
+        self.calls = []
+
+    def update_info(self, **kv):
+        self.calls.append(kv)
+
+
+def _slot_watch(monkeypatch, counts, slots=3):
+    watch = Q._SlotWatch.__new__(Q._SlotWatch)
+    seq = iter(counts)
+    watch.cfg, watch.pool = {}, type("P", (), {"ids": lambda self: set()})()
+    watch.count = lambda: next(seq)
+    watch.last = next(seq)
+    monkeypatch.setattr(Q, "slots_for", lambda cfg, name=None: slots)
+    return watch
+
+
+def test_slot_freed_at_only_on_full_to_free(monkeypatch):
+    watch, lease = _slot_watch(monkeypatch, [3, 2, 1, 2, 1], slots=3), _Lease()
+    for _ in range(4):
+        watch.check(lease)
+    assert ["slot_freed_at" in kw for kw in lease.calls] == [True, False, False, False]
+
+
+def test_slot_watch_survives_slots_for_error(monkeypatch):
+    watch, lease = _slot_watch(monkeypatch, [3, 2]), _Lease()
+
+    def boom(cfg, name=None):
+        raise OSError("half-written profile")
+    monkeypatch.setattr(Q, "slots_for", boom)
+    watch.check(lease, tick_at="t")
+    (kw,) = lease.calls
+    assert kw["tick_at"] == "t" and "slot_freed_at" not in kw and watch.last == 2
 
 
 def test_run_publishes_real_pool_ids_in_flight(tmp_path, monkeypatch, spy):
@@ -179,7 +215,8 @@ def test_busy_without_lease_does_nothing():
 
 def test_drain_stamps_busy_in_flight_and_slot_freed_at(tmp_path, monkeypatch, spy):
     repo = make_repo(tmp_path)
-    cfg = make_cfg(tmp_path, repo, script(tmp_path, [dict(impl_done(), sleep_s=1.0), review()]))
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [dict(impl_done(), sleep_s=1.0), review()]),
+                   profile={"slots": 1})            # one slot, so the drain's drop is full -> free
     a = added(cfg, monkeypatch)
     real_tick = Q.tick
 

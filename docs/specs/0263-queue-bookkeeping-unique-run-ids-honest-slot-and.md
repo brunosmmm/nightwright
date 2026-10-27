@@ -1,7 +1,7 @@
 ---
 id: SPEC-0263
 title: "Queue bookkeeping: unique run ids, honest slot and profile parks, gated declared drops"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -143,21 +143,21 @@ Make four local fixes in `queue.py`, each covered by a regression test:
 
 ## Acceptance criteria
 
-- [ ] When the stored `counters.runs` is behind the ledger's highest `run.start` (for
+- [x] When the stored `counters.runs` is behind the ledger's highest `run.start` (for
       example after a `write_state` failure following `run.start`), the next run of the
       campaign gets a new `run_id`, one above the highest on the ledger, and its own run
       directory.
-- [ ] With `slots_for(cfg) == 3`, occupancy moving 2 → 1 → 2 → 1 leaves `slot_freed_at`
+- [x] With `slots_for(cfg) == 3`, occupancy moving 2 → 1 → 2 → 1 leaves `slot_freed_at`
       unchanged. Moving 3 → 2 stamps it. If `slots_for` raises, `check` does not raise and
       does not stamp.
-- [ ] A tick that cannot resolve an active campaign's profile parks it with reason
+- [x] A tick that cannot resolve an active campaign's profile parks it with reason
       `config_invalid` and detail starting `profile:`, and sets `resume_to` to the
       campaign's state (IMPLEMENTING stays IMPLEMENTING).
-- [ ] After the profile file is fixed, the next tick recovers that campaign (reason
+- [x] After the profile file is fixed, the next tick recovers that campaign (reason
       `config_recovered`) without a human resume.
-- [ ] For a project with no required gate, `_declared_drops` returns `[]`, and a resolver
+- [x] For a project with no required gate, `_declared_drops` returns `[]`, and a resolver
       that drops a campaign commit fails verification even if it declares the drop.
-- [ ] `uv run pytest` is green and each sabotage check below fails its test.
+- [x] `uv run pytest` is green and each sabotage check below fails its test.
 
 ## Test plan
 
@@ -204,13 +204,42 @@ Make four local fixes in `queue.py`, each covered by a regression test:
   - `test_agentic_profiles.py`
 - **Manual verification:** none. All paths are driven through `tick` in tests.
 
+### Test record (2026-10-27)
+
+- New tests, all passing:
+  `test_agentic_queue.py::test_run_id_not_reused_after_state_write_failure`,
+  `test_agentic_queue.py::test_broken_profile_parks_config_invalid_and_recovers`,
+  `test_agentic_loop_state.py::test_slot_freed_at_only_on_full_to_free`,
+  `test_agentic_loop_state.py::test_slot_watch_survives_slots_for_error`,
+  `test_agentic_resolver.py::test_declared_drop_ignored_without_required_gates`.
+- Sabotage checks, each run against its test, each failed as required: `run_no` back to
+  `counters["runs"] + 1`; stamping on every drop; `config_error=False` on the profile failure
+  (the park was `open_failed`); `_close_regates` without the required-gate condition.
+- Regression suites `test_agentic_resolver.py`, `test_agentic_loop_state.py`,
+  `test_agentic_config_reload.py`, `test_agentic_watchdog_gaps.py`, `test_agentic_profiles.py` and
+  `test_agentic_queue.py` pass; the full `uv run pytest` result is in the closing gate run.
+
+### As shipped (2026-10-27)
+
+- As designed. Fixture changes: `test_run_stamps_slot_freed_at_on_drop` and
+  `test_drain_stamps_busy_in_flight_and_slot_freed_at` now set `profile={"slots": 1}`, so the
+  runner starts full (the default profile has 2 slots, and a 1 → 0 drop is not a full-to-free
+  transition there). `test_close_regates_only_without_docs_only_merge_request` passes a project
+  config with a required gate.
+- The `_do_resolve` project-config read sits inside the existing outer
+  `except (GitError, ValueError, OSError)`, as designed.
+- Step 0 catches `ValueError` from `ctx.project` / `ctx.profile` (`ProjectConfigError` is a
+  `ValueError`), so a broken profile keeps the campaign parked.
+
+
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
