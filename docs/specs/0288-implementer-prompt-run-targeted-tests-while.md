@@ -6,6 +6,7 @@ owner: user
 created: 2026-10-27
 kind: feature
 source_idea: IDEA-382
+updated: 2026-10-27
 ---
 
 ## Context
@@ -32,13 +33,16 @@ commands yourself ... until they pass", which invites repeated full runs.
 **Non-goals**
 - Enforcing it (no test-command filtering, no timeout changes).
 - Changing gates, other personas, or the gate-triager flow.
-- Dropping the cheap gates (spec-lint) from the implementer's own checks.
+- Dropping the cheap gates (for wt itself: spec-lint) from the implementer's own checks.
 
 ## Decision
 
 Rewrite step 5 of the implementer persona template: while iterating, run targeted tests only; the
-full suite at most once at the end (optional); gating is the authority for the full run. Cheap
-gates (spec-lint) may still be run freely. Prompt-only change, no code.
+full suite at most once at the end (optional); gating is the authority for the full run, so the
+gate's full-suite run satisfies the "no regressions" / "tests passing" part of the AGENTS.md
+Definition of done. An implementer may therefore set `status: done` after targeted tests pass and
+leave the full-suite confirmation to gating (a gate failure comes back through the triager). Cheap
+gates (for wt itself: spec-lint) may still be run freely. Prompt-only change, no code.
 
 ## Design
 
@@ -46,16 +50,26 @@ gates (spec-lint) may still be run freely. Prompt-only change, no code.
   (a) says to run the test files touched plus tests of related modules while iterating,
   (b) says to run the full test suite at most once, at the end, or skip it because gating runs
   it after the implementer returns and the triager reports failures, and
-  (c) keeps "run the cheap gates (spec lint) yourself".
+  (c) keeps "run the cheap gates yourself" in generic wording (the persona serves every project
+  that uses wt campaigns), naming spec-lint only in the "for wt itself:" style step 7 already
+  uses.
+  Step 7 gets one added sentence: the gate's full-suite run counts as the no-regressions check,
+  so skipping your own full run does not block `status: done`; the `### Test record` should say
+  the full suite was left to gating. This settles the AGENTS.md DoD conflict: the persona
+  tells implementers to read AGENTS.md as the contract, and that contract requires passing tests
+  and no regressions before `done`; the prompt now says gating supplies that evidence.
   Placeholder-free text, so `personas.py:render` (`render(p.template, ctx)`, called from
   `build_prompt`) passes it through unchanged. `Persona.template` reads the file from
   `_TEMPLATES_DIR`, and `PERSONAS["implementer"]` points at `implementer.md`.
 - `tests/test_agentic_personas.py`: new test next to `test_personas_state_spec_change_guard_rules`.
 
-**Measuring the effect.** Compare implementer run durations before and after merge with
-`wt campaign runs` (per-run duration) or the campaign export: take the implementer-persona runs
-from the 20 campaigns before and after, compare median and p90 duration and the share of runs
-that ended by timeout. Expect fewer timeouts and a lower p90.
+**Measuring the effect (post-merge follow-up, not a gate for `done`).** Compare implementer run
+durations before and after merge with `wt campaign runs` (per-run duration) or the campaign
+export: take the implementer-persona runs from the 20 campaigns before and after, compare median
+and p90 duration and the share of runs that ended by timeout. Expect fewer timeouts and a lower
+p90. The implementer records the baseline numbers (20 campaigns before the change) in an
+`### As shipped` note; the after-numbers are filled in by a later follow-up once enough campaigns
+have run.
 
 ## Alternatives considered
 
@@ -69,25 +83,33 @@ that ended by timeout. Expect fewer timeouts and a lower p90.
       implementer to run targeted tests (touched files plus related modules) while iterating.
 - [ ] It tells the implementer to run the full suite at most once, at the end, or not at all.
 - [ ] It says gating runs the full suite and returns failures.
+- [ ] It says the gate's full-suite run satisfies the no-regressions check, so `status: done` may
+      be set after targeted tests pass without a full run of the implementer's own.
+- [ ] The cheap-gates sentence is project-generic: spec-lint appears only as a "for wt itself"
+      example, not as the instruction.
 - [ ] The guard rules and placeholders of the template are unchanged (existing persona tests
       pass).
-- [ ] The measurement method (`wt campaign runs` / export, median and p90) is recorded in this
-      spec.
+- [ ] The `### As shipped` note records the baseline implementer run durations (median, p90,
+      timeout share) from the 20 campaigns before the change, taken with `wt campaign runs` /
+      export.
 
 ## Test plan
 
 - **Automated tests:** `tests/test_agentic_personas.py::test_implementer_prompt_targeted_tests`
-  builds the implementer prompt with `PS.build_prompt` using the existing `_cfg`/`_state` fixtures
-  and asserts the three phrases from the ACs are present ("targeted tests", "at most once",
-  "gating"). Sabotage: remove the new step-5 text, confirm the test fails, restore it.
+  builds the context with `PS.build_context(_cfg(tmp_path), _state(tmp_path), _project_cfg())`
+  (as `test_build_prompt_is_deterministic_and_complete` does), then `PS.build_prompt("implementer",
+  ctx)`, and asserts longer phrases pinned from the new text, not single words: one for AC1
+  naming targeted tests on the touched files plus related modules; one for AC2 ("at most once"
+  with "at the end"); one clause for AC3 naming gating plus the full suite and returned
+  failures; one for the DoD AC saying the gate's full-suite run satisfies the no-regressions
+  check. It also asserts the cheap-gates line does not instruct on `spec_lint` outside a "for wt
+  itself" clause. The exact phrases are fixed when the step-5 text is written and quoted in the
+  test. Sabotage: remove the new step-5 text, confirm the test fails, restore it.
 - **Manual verification:** `uv run wt campaign prompt` for an implementer run shows the new
   step 5.
 - **Regression guard:** `uv run pytest tests/test_agentic_personas.py`, then the full suite once.
 
 ## Clock Log
-
-CLOCK-IN: [timestamp]
-CLOCK-OUT: [timestamp]
 
 ## Rollout / migration
 
