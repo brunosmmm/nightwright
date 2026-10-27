@@ -1,10 +1,10 @@
 ---
 id: SPEC-0248
 title: "Reliability follow-ups from review: flaky timing tests and error-handling gaps"
-status: in-progress
+status: done
 owner: user
 created: 2026-10-25
-updated: 2026-10-25
+updated: 2026-10-26
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0169
@@ -124,28 +124,28 @@ to its default.
 
 ## Acceptance criteria
 
-- [ ] The two drain tests synchronise only on events set from wrapped lease and backlog
+- [x] The two drain tests synchronise only on events set from wrapped lease and backlog
       calls. They contain no `time.sleep`, and no assertion on `time.monotonic()`.
-- [ ] `test_heartbeat_races_info_updates` runs a fixed 500 iterations behind a
+- [x] `test_heartbeat_races_info_updates` runs a fixed 500 iterations behind a
       `Barrier(3)`, and asserts that each thread iterated at least once. No wall-clock
       deadline remains.
-- [ ] `Env.tick` asserts non-blocking through `guard_fired` and the surviving holds, with no
+- [x] `Env.tick` asserts non-blocking through `guard_fired` and the surviving holds, with no
       elapsed-time assertion. Mutation check: making `prepare_close` re-gate on the main
       thread fails `test_agentic_close_inflight.py` through `guard_fired`.
-- [ ] `Env.settle` waits on futures and `Env.spin` is tick-bounded. Neither calls
+- [x] `Env.settle` waits on futures and `Env.spin` is tick-bounded. Neither calls
       `time.sleep`.
-- [ ] `test_poll_interval_reload_respects_cli_override` uses `FakeTime` and asserts the gaps
+- [x] `test_poll_interval_reload_respects_cli_override` uses `FakeTime` and asserts the gaps
       with `pytest.approx` against the configured intervals. It finishes without real
       sleeping (the test's own duration is under the old 0.6 s interval).
-- [ ] `test_apply_add_idea_holds_add_lock` fails when the `with store.add_lock(cfg):` in
+- [x] `test_apply_add_idea_holds_add_lock` fails when the `with store.add_lock(cfg):` in
       `apply_add_idea` is removed (mutation check), and passes with it.
-- [ ] With `agentic.events.park_decide_s: "soon"` (and separately `true`, `-5`),
+- [x] With `agentic.events.park_decide_s: "soon"` (and separately `true`, `-5`),
       `wt queue list`, `wt queue list --json`, `wt queue watch --once` and
       `events.watchdog_checks` run without error, using the default threshold. `settings`
       keeps valid numbers, including numeric strings such as `"30"` → `30`.
-- [ ] No test in the five touched test files asserts an upper bound on elapsed wall-clock
+- [x] No test in the five touched test files asserts an upper bound on elapsed wall-clock
       time. Check with `grep -nE 'monotonic\(\) *- *[a-z0-9_]+ *<'`, which matches nothing.
-- [ ] `uv run pytest` passes three times in a row, the last with `pytest -n 4` when
+- [x] `uv run pytest` passes three times in a row, the last with `pytest -n 4` when
       `pytest-xdist` is available (otherwise noted). `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
@@ -160,17 +160,32 @@ to its default.
   run). Note the results here.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-26)
+
+- Mutation checks (run, then reverted): running `prepare_close` inline on the main thread in
+  `tick` fails `tests/test_agentic_close_inflight.py` through `guard_fired` ("a tick blocked:
+  the safety timer had to free the holds"). Removing `with store.add_lock(cfg):` from
+  `apply_add_idea` fails `test_apply_add_idea_holds_add_lock` (and the threaded smoke test).
+- `grep -nE 'monotonic\(\) *- *[a-z0-9_]+ *<'` over the five touched test files: no match.
+- Load: the five touched files plus `tests/test_agentic_events_settings.py`, run with 8 busy
+  loops on 8 cores: 121 passed. `stress` and `pytest-xdist` are not installed, so there was no `-n 4` run.
+- Full suite: run 001's three runs failed only on the stale ledger (and once on a flaky adopt
+  test that also fails on unmodified code). After the ledger was regenerated, three
+  consecutive `uv run pytest` runs all passed: 2800 passed, 3 skipped each (8m53s, 7m47s,
+  8m51s). `pytest-xdist` is not installed, so the last run was not `-n 4`.
+  `python3 tools/spec_lint.py` exits 0.
+
 ## Rollout / migration
 
 Tests only, plus one defensive change to settings parsing. Nothing to migrate.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
