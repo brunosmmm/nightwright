@@ -54,13 +54,19 @@ def campaign_tmp(cfg, campaign_id) -> Path:
     return campaign_dir(cfg, campaign_id) / "tmp"
 
 
-def child_tmp(cfg, campaign_id, owner: str, *, create: bool = False) -> Path:
+def child_tmp(cfg, campaign_id, owner: str, *, create: bool = False,
+              exclusive: bool = False) -> Path:
     """`TMPDIR` of one gate run (`gate-<seq:03d>`) or persona run (`run-<run_id>`). Several
     children of a campaign are alive at once (reviewers, adopted runs, a human's `wt gate
-    run`), so each gets its own directory and only its owner removes it."""
+    run`), so each gets its own directory and only its owner removes it. `exclusive` makes
+    the creation an atomic claim: `FileExistsError` when the directory already exists."""
     path = campaign_tmp(cfg, campaign_id) / _tmp_owner(owner)
-    if create:
-        path.mkdir(parents=True, exist_ok=True)
+    if create or exclusive:
+        if campaign_tmp(cfg, campaign_id).is_symlink():
+            raise ValueError(f"refusing to create {path}: {campaign_tmp(cfg, campaign_id)} "
+                             "is a symlink")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.mkdir(exist_ok=not exclusive)
     return path
 
 
@@ -74,7 +80,9 @@ def _tmp_owner(owner) -> str:
 def clear_child_tmp(cfg, campaign_id, owner: str) -> bool:
     """Remove one child's tmp dir; refuses (ValueError) any target that is not strictly under
     `<campaign_dir>/tmp` — the campaign dir also holds `state.json` and `ledger.jsonl`."""
-    root = campaign_tmp(cfg, campaign_id).resolve()
+    root = campaign_dir(cfg, campaign_id).resolve() / "tmp"
+    if root.is_symlink():                   # a link here would move the guard's root outside
+        raise ValueError(f"refusing to remove under {root}: it is a symlink")
     target = root / _tmp_owner(owner)
     if target.is_symlink():
         target.unlink()
@@ -110,6 +118,8 @@ def sweep_campaign_tmp(cfg, campaign_id) -> list[str]:
     unfinished or unknown owner is left for the terminal-state removal. Returns the owners
     removed."""
     root = campaign_tmp(cfg, campaign_id)
+    if root.is_symlink():
+        return []
     try:
         names = [p.name for p in root.iterdir() if p.is_dir() and not p.is_symlink()]
     except OSError:

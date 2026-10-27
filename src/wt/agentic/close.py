@@ -482,6 +482,7 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
     # 5. re-gate on the rebased tree
     seq = gate_seq if gate_seq is not None else G.next_gate_seq(cfg, state["id"])
     gate_run = G.run_all(project_cfg, state, cfg, seq=seq, stop=stop)
+    seq = gate_run.seq                          # run_all moves on when the seq's tmp dir is taken
     events.append(("gate", G.as_payload(gate_run)))
     if not gate_run.ok:
         detail = ""

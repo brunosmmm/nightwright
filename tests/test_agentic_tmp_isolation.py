@@ -93,6 +93,23 @@ def test_run_all_removes_tmpdir_when_a_gate_raises(tmp_path, monkeypatch):
     assert not seen["dir"].exists()
 
 
+def test_concurrent_gate_runs_with_the_same_seq_get_distinct_tmpdirs(tmp_path):
+    """`next_gate_seq` can hand the same seq to a runner gate and a human `wt gate run`; the
+    second `run_all` must move on instead of sharing (and wiping) the first one's TMPDIR."""
+    cfg = _cfg(tmp_path)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    cid = _campaign(cfg, worktree=wt)
+    sibling = S.child_tmp(cfg, cid, "gate-001", create=True)       # a live run holding seq 1
+    (sibling / "live").write_text("x")
+    pcfg = {"gates": [{"name": "t", "cmd": 'echo $TMPDIR; touch "$TMPDIR/x"', "timeout_s": 30}]}
+    run = G.run_all(pcfg, S.read_state(cfg, cid), cfg, seq=1)
+    assert run.seq == 2
+    log = S.campaign_dir(cfg, cid) / run.results[0].log
+    assert log.name == "002-t.log" and str(S.child_tmp(cfg, cid, "gate-002")) in log.read_text()
+    assert (sibling / "live").is_file() and not S.child_tmp(cfg, cid, "gate-002").exists()
+
+
 # ---- TMPDIR for persona runs ----------------------------------------------------------------
 
 def _request(cfg, cid, persona, run_id):
@@ -239,6 +256,24 @@ def test_clear_child_tmp_refuses_symlink_escape(tmp_path):
     assert (outside / "keep").is_file() and not (root / "run-evil").exists()
 
 
+def test_clear_child_tmp_refuses_a_symlinked_campaign_tmp(tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg)
+    outside = tmp_path / "outside"
+    (outside / "run-001-implementer").mkdir(parents=True)
+    (outside / "run-001-implementer" / "keep").write_text("x")
+    S.campaign_tmp(cfg, cid).symlink_to(outside)
+    with pytest.raises(ValueError):
+        S.clear_child_tmp(cfg, cid, "run-001-implementer")
+    with pytest.raises(ValueError):
+        S.child_tmp(cfg, cid, "run-002-implementer", create=True)
+    assert S.sweep_campaign_tmp(cfg, cid) == []
+    assert (outside / "run-001-implementer" / "keep").is_file()
+    assert not (outside / "run-002-implementer").exists()
+    _end(cfg, cid, "001-implementer")                                # run.end hook: same guard
+    assert (outside / "run-001-implementer" / "keep").is_file()
+
+
 def test_clear_campaign_tmp_refuses_empty_campaign_id(tmp_path):
     cfg = _cfg(tmp_path)
     cid = _campaign(cfg)
@@ -336,6 +371,20 @@ def test_inode_percent_above_100_falls_back(tmp_path):
     assert s["tmp_min_free_inodes_pct"] == 10 and s["tmp_min_free_mb"] == 150
     s = E.settings(_cfg(tmp_path, tmp_min_free_inodes_pct=100, tmp_min_free_mb=2048))
     assert s["tmp_min_free_inodes_pct"] == 100 and s["tmp_min_free_mb"] == 2048
+
+
+def test_temp_pressure_compares_against_the_configured_thresholds(tmp_path, monkeypatch,
+                                                                  shared_dev):
+    monkeypatch.setattr(os, "statvfs", _vfs(free_mb=100))
+    assert E.temp_pressure(_cfg(tmp_path, tmp_min_free_mb=50)) is None       # below default 512
+    p = E.temp_pressure(_cfg(tmp_path, tmp_min_free_mb=200))
+    assert p["path"] == str(tmp_path) and p["thresholds"]["tmp_min_free_mb"] == 200
+    monkeypatch.setattr(os, "statvfs", _vfs(ffree=50_000))                   # 5% free inodes
+    assert E.temp_pressure(_cfg(tmp_path, tmp_min_free_inodes_pct=3)) is None
+    p = E.temp_pressure(_cfg(tmp_path, tmp_min_free_inodes_pct=20))
+    assert p["thresholds"]["tmp_min_free_inodes_pct"] == 20
+    # a bad value falls back to the default inside the decision, not just in settings()
+    assert E.temp_pressure(_cfg(tmp_path, tmp_min_free_inodes_pct=150))["free_inodes_pct"] == 5.0
 
 
 def test_watchdog_emits_temp_pressure_only_under_pressure(tmp_path, monkeypatch, shared_dev):

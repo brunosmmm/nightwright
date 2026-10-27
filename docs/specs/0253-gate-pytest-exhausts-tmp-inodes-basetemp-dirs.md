@@ -146,6 +146,13 @@ Regression: full `uv run pytest`.
 - Full `uv run pytest -q`: 3021 passed, 3 skipped. `python3 tools/spec_lint.py` exits 0 after
   `--write-ledger`.
 
+- Review loop 2: `run_all` claims `gate-<seq>` atomically (`child_tmp(..., exclusive=True)`) and
+  takes the next free seq on a collision, returning the seq used in `GateRun.seq` (`close.py`
+  records that one); `clear_child_tmp`, `child_tmp(create=True)` and the sweep refuse/skip a
+  symlinked `<campaign_dir>/tmp`. New tests: same-seq gate runs, symlinked campaign tmp,
+  configured thresholds in `temp_pressure`, and a detach/adopt test in `test_agentic_adopt.py`
+  (dir survives the detach, gone after the adopted `run.end`). Targeted files: 117 passed.
+
 ### As shipped (2026-10-26)
 
 - The persona-run removal hook is in `store.append_event`: appending a `run.end` event removes
@@ -164,6 +171,9 @@ Regression: full `uv run pytest`.
 - `events.temp_pressure` checks `os.environ["TMPDIR"]` (default `/tmp`) instead of
   `tempfile.gettempdir()`: that call writes a probe file and silently falls back to `/var/tmp`
   (or raises) when `/tmp` is out of inodes/space, which is the condition being detected.
+- `gates.run_all` may use a seq higher than the one passed in: `gate-<seq>` is claimed with an
+  exclusive `mkdir`, so a concurrent run (or stale unswept dir) holding the same seq makes it
+  move to the next free one; the logs and the `gate` event carry the seq actually used.
 - Free inodes use `f_ffree`, free space `f_bavail * f_frsize`.
 
 ## Definition of done

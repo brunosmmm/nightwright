@@ -215,19 +215,28 @@ def next_gate_seq(cfg, campaign_id) -> int:
 def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
             stop: threading.Event | None = None) -> GateRun:
     """Run every gate of `project_cfg` in the campaign's worktree; logs land at
-    `gates/<seq:03>-<name>.log` under the campaign dir. `ok` = every *required* gate ok."""
+    `gates/<seq:03>-<name>.log` under the campaign dir. `ok` = every *required* gate ok.
+    The returned `GateRun.seq` is the seq actually used (higher than `seq` if it was taken)."""
     cid = campaign_state["id"]
     worktree = (campaign_state.get("repo") or {}).get("worktree")
     if not worktree:
         raise ValueError(f"campaign {cid} has no worktree recorded")
+    # SPEC-0253: `next_gate_seq` only sees logs, which appear once the first gate starts, so a
+    # concurrent `wt gate run` can pick the same seq. Claim `gate-<seq>` atomically and take
+    # the next free seq on a collision, so two runs never share (and wipe) one TMPDIR.
+    while True:
+        owner = f"gate-{seq:03d}"
+        try:
+            store.child_tmp(cfg, cid, owner, exclusive=True)
+            break
+        except FileExistsError:
+            seq += 1
     env = gate_env(cfg, campaign_state, seq)
     ph = placeholders(campaign_state)
     cdir = store.campaign_dir(cfg, cid)
     started_at = store.now_iso()
     t0 = time.monotonic()
     results = []
-    owner = f"gate-{seq:03d}"
-    store.child_tmp(cfg, cid, owner, create=True)
     cut = False
     try:
         for gate in project_cfg.get("gates") or []:

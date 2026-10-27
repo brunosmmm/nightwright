@@ -142,6 +142,24 @@ def test_adopt_running_then_finished_once(world):
     assert len(S.read_ledger(world.cfg, world.cid, types=["run.start"])) == 1
 
 
+def test_detached_run_keeps_its_tmp_dir_until_the_adopted_run_ends(world):
+    """SPEC-0253: the runner dying (or detaching) does not remove `run-<id>`; the adopted run's
+    `run.end` does."""
+    pool, run_dir = start_impl(world)
+    tmp = S.child_tmp(world.cfg, world.cid, f"run-{run_dir.name}")
+    assert tmp.is_dir()
+    (tmp / "scratch").write_text("x")
+    die(pool)
+    assert (tmp / "scratch").is_file() and not run_ends(world)
+    new = Q.StepPool()
+    world.pools.append(new)
+    Q.tick(world.cfg, runner=world.runner, pool=new)             # adopts the still-running run
+    assert (tmp / "scratch").is_file() and not run_ends(world)
+    world.release()
+    assert tick_until(world, new, lambda: run_ends(world))
+    assert not tmp.exists()
+
+
 def test_queue_tick_adopts_finished(world):
     pool, run_dir = start_impl(world)
     die(pool)
