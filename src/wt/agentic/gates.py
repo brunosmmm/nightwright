@@ -86,10 +86,19 @@ def tail(path, n: int = TAIL_LINES) -> str:
     return "\n".join(text.rstrip("\n").splitlines()[-n:])
 
 
-def gate_env(cfg, state: dict) -> dict[str, str]:
-    """Environment every gate (and anything it calls) sees: the same wt store the loop uses."""
+def tmp_env(path) -> dict[str, str]:
+    """`TMPDIR` & co. pointing at a child's private directory (SPEC-0253): pytest's default
+    basetemp follows `tempfile.gettempdir()`, so no gate command needs `--basetemp`."""
+    return {"TMPDIR": str(path), "TEMP": str(path), "TMP": str(path)}
+
+
+def gate_env(cfg, state: dict, seq: int | None = None) -> dict[str, str]:
+    """Environment every gate (and anything it calls) sees: the same wt store the loop uses.
+    With `seq` the gate run also gets its own `TMPDIR` under the campaign dir (SPEC-0253)."""
     repo = state.get("repo") or {}
-    return {
+    tmp = tmp_env(store.child_tmp(cfg, state["id"], f"gate-{seq:03d}")) \
+        if seq is not None and state.get("id") else {}
+    return {**tmp,
         "WT_CAMPAIGN": str(state.get("id") or ""),
         "WT_DATA_DIR": str(cfg["data_dir"]),
         "WT_CONFIG_DIR": str(cfg.get("config_dir") or ""),
@@ -211,19 +220,24 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
     worktree = (campaign_state.get("repo") or {}).get("worktree")
     if not worktree:
         raise ValueError(f"campaign {cid} has no worktree recorded")
-    env = gate_env(cfg, campaign_state)
+    env = gate_env(cfg, campaign_state, seq)
     ph = placeholders(campaign_state)
     cdir = store.campaign_dir(cfg, cid)
     started_at = store.now_iso()
     t0 = time.monotonic()
     results = []
+    owner = f"gate-{seq:03d}"
+    store.child_tmp(cfg, cid, owner, create=True)
     cut = False
-    for gate in project_cfg.get("gates") or []:
-        if stop is not None and stop.is_set():      # SPEC-0229: no next gate after a stop
-            cut = True
-            break
-        rel = f"gates/{seq:03d}-{gate['name']}.log"
-        results.append(run_gate(gate, worktree, env, cdir / rel, ph, log_rel=rel))
+    try:
+        for gate in project_cfg.get("gates") or []:
+            if stop is not None and stop.is_set():      # SPEC-0229: no next gate after a stop
+                cut = True
+                break
+            rel = f"gates/{seq:03d}-{gate['name']}.log"
+            results.append(run_gate(gate, worktree, env, cdir / rel, ph, log_rel=rel))
+    finally:                                    # SPEC-0253: only the owner removes its dir
+        store.clear_child_tmp(cfg, cid, owner)
     ok = all(r.ok for r in results if r.required)
     return GateRun(seq, ok, tuple(results), started_at, round(time.monotonic() - t0, 3),
                    interrupted=cut or any(r.interrupted for r in results))

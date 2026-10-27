@@ -16,6 +16,7 @@ import fcntl
 import json
 import os
 import secrets
+import shutil
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -46,6 +47,83 @@ def runs_dir(cfg, campaign_id) -> Path:
 
 def gates_dir(cfg, campaign_id) -> Path:
     return campaign_dir(cfg, campaign_id) / "gates"
+
+
+def campaign_tmp(cfg, campaign_id) -> Path:
+    """Parent of every child's private `TMPDIR` (SPEC-0253)."""
+    return campaign_dir(cfg, campaign_id) / "tmp"
+
+
+def child_tmp(cfg, campaign_id, owner: str, *, create: bool = False) -> Path:
+    """`TMPDIR` of one gate run (`gate-<seq:03d>`) or persona run (`run-<run_id>`). Several
+    children of a campaign are alive at once (reviewers, adopted runs, a human's `wt gate
+    run`), so each gets its own directory and only its owner removes it."""
+    path = campaign_tmp(cfg, campaign_id) / _tmp_owner(owner)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _tmp_owner(owner) -> str:
+    if not isinstance(owner, str) or not owner or owner in (".", "..") \
+            or "/" in owner or "\\" in owner or "\0" in owner:
+        raise ValueError(f"invalid tmp owner {owner!r}")
+    return owner
+
+
+def clear_child_tmp(cfg, campaign_id, owner: str) -> bool:
+    """Remove one child's tmp dir; refuses (ValueError) any target that is not strictly under
+    `<campaign_dir>/tmp` — the campaign dir also holds `state.json` and `ledger.jsonl`."""
+    root = campaign_tmp(cfg, campaign_id).resolve()
+    target = root / _tmp_owner(owner)
+    if target.is_symlink():
+        target.unlink()
+        return True
+    resolved = target.resolve()
+    if resolved == root or root not in resolved.parents:
+        raise ValueError(f"refusing to remove {resolved}: not under {root}")
+    if not resolved.exists():
+        return False
+    shutil.rmtree(resolved, ignore_errors=True)
+    return True
+
+
+def clear_campaign_tmp(cfg, campaign_id) -> bool:
+    """Remove the whole `<campaign_dir>/tmp` tree (terminal states); refuses any other target."""
+    cdir = campaign_dir(cfg, campaign_id).resolve()
+    target = cdir / "tmp"
+    if target.is_symlink():
+        target.unlink()
+        return True
+    resolved = target.resolve()
+    if resolved != cdir / "tmp" or not campaign_id:
+        raise ValueError(f"refusing to remove {resolved}: not {cdir / 'tmp'}")
+    if not resolved.exists():
+        return False
+    shutil.rmtree(resolved, ignore_errors=True)
+    return True
+
+
+def sweep_campaign_tmp(cfg, campaign_id) -> list[str]:
+    """Residue of a killed runner: remove a child dir only when its owner is recorded finished
+    (`gate-<seq>` with a `gate` event of that `gate_seq`, `run-<id>` with a `run.end`). An
+    unfinished or unknown owner is left for the terminal-state removal. Returns the owners
+    removed."""
+    root = campaign_tmp(cfg, campaign_id)
+    try:
+        names = [p.name for p in root.iterdir() if p.is_dir() and not p.is_symlink()]
+    except OSError:
+        return []
+    if not names:
+        return []
+    gates, runs = set(), set()
+    for ev in read_ledger(cfg, campaign_id, types=["gate", "run.end"]):
+        if ev["type"] == "gate" and isinstance(ev.get("gate_seq"), int):
+            gates.add(f"gate-{ev['gate_seq']:03d}")
+        elif ev["type"] == "run.end" and ev.get("run_id"):
+            runs.add(f"run-{ev['run_id']}")
+    done = [n for n in sorted(names) if n in gates or n in runs]
+    return [n for n in done if clear_child_tmp(cfg, campaign_id, n)]
 
 
 def _state_path(cfg, campaign_id) -> Path:
@@ -217,6 +295,11 @@ def append_event(cfg, campaign_id, type, payload=None, *, by="tick") -> dict:
             os.write(fd, line)
         finally:
             os.close(fd)
+    if type == "run.end" and rec.get("run_id"):     # SPEC-0253: the run's result is recorded
+        try:
+            clear_child_tmp(cfg, campaign_id, f"run-{rec['run_id']}")
+        except ValueError:
+            pass
     return rec
 
 

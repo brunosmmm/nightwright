@@ -1,7 +1,7 @@
 ---
 id: SPEC-0253
 title: "Per-campaign TMPDIR for gates and personas, plus a temp-filesystem admission guard"
-status: accepted
+status: done
 owner: user
 created: 2026-10-26
 updated: 2026-10-26
@@ -93,20 +93,20 @@ reads the real filesystem; tests monkeypatch `os.statvfs`.
 
 ## Acceptance criteria
 
-- [ ] `gate_env` and persona RunRequest env set `TMPDIR`/`TEMP`/`TMP` to `<campaign_dir>/tmp`.
-- [ ] Each gate run and persona run gets its own unique `TMPDIR` subdirectory
+- [x] `gate_env` and persona RunRequest env set `TMPDIR`/`TEMP`/`TMP` to `<campaign_dir>/tmp`.
+- [x] Each gate run and persona run gets its own unique `TMPDIR` subdirectory
       (`gate-<seq>` / `run-<run_id>`) under `<campaign_dir>/tmp`, removed only by its owner when
       it ends, including failures; a concurrent sibling's directory and files are untouched.
-- [ ] On transition to MERGED or ABANDONED the campaign's `tmp/` directory no longer exists.
-- [ ] The residue sweep removes only child dirs whose owner is recorded finished, never a live one.
-- [ ] The clear helpers refuse any target not strictly under `<campaign_dir>/tmp`.
-- [ ] A running campaign still plans and executes its next step in a tick with admission paused,
+- [x] On transition to MERGED or ABANDONED the campaign's `tmp/` directory no longer exists.
+- [x] The residue sweep removes only child dirs whose owner is recorded finished, never a live one.
+- [x] The clear helpers refuse any target not strictly under `<campaign_dir>/tmp`.
+- [x] A running campaign still plans and executes its next step in a tick with admission paused,
       and the tick report carries `admission_paused: temp_pressure`.
-- [ ] While `/tmp` or the agentic dir's filesystem is under either threshold, `_tick` admits no
+- [x] While `/tmp` or the agentic dir's filesystem is under either threshold, `_tick` admits no
       QUEUED item; in-flight campaigns are unaffected; admission resumes when pressure clears.
-- [ ] `watchdog_checks` emits `temp_pressure` while pressure holds and not otherwise.
-- [ ] `wt-conduct` SKILL.md has a `temp_pressure` row.
-- [ ] Thresholds are configurable and bad values fall back to defaults.
+- [x] `watchdog_checks` emits `temp_pressure` while pressure holds and not otherwise.
+- [x] `wt-conduct` SKILL.md has a `temp_pressure` row.
+- [x] Thresholds are configurable and bad values fall back to defaults.
 
 ## Test plan
 
@@ -136,10 +136,35 @@ Automated (`tests/test_agentic_tmp_isolation.py`, fake runner as in `test_agenti
   and confirm the matching tests fail; restore.
 Regression: full `uv run pytest`.
 
+### Test record (2026-10-26)
+
+- `uv run pytest -q tests/test_agentic_tmp_isolation.py`: 32 passed (new file, covers every Test plan item).
+- Sabotage: removing the `TMPDIR` export from `gate_env` failed 3 tests; disabling the `_tick`
+  admission guard failed `test_pressure_pauses_admission_but_not_in_flight_campaigns`; both restored.
+- Full `uv run pytest -q`: 3021 passed, 3 skipped. `python3 tools/spec_lint.py` exits 0 after
+  `--write-ledger`.
+
+### As shipped (2026-10-26)
+
+- The persona-run removal hook is in `store.append_event`: appending a `run.end` event removes
+  `tmp/run-<run_id>` (every `_record_run` caller reaches it, adopted runs included), instead of
+  a separate hook in `queue.py`.
+- `gate_env(cfg, state, seq=None)` sets `TMPDIR`/`TEMP`/`TMP` only when `seq` is given; `run_all`
+  passes it. `gates.tmp_env(path)` builds the three variables for both gates and personas.
+- `store.child_tmp(..., create=False)` is a pure path unless `create=True`; owners must be a single
+  path component (empty, `.`, `..`, separators raise `ValueError`).
+- The residue sweep (`store.sweep_campaign_tmp`) runs at the start of every `_tick` over all
+  non-terminal campaigns and removes only `gate-<seq>` with a recorded `gate` event of that
+  `gate_seq` and `run-<id>` with a recorded `run.end`; a `run-<id>` with no `run.start` yet is
+  left alone because `build_request` creates the dir before `run.start` is appended.
+- `TickReport.admission_paused` is `"temp_pressure"` when admission was skipped and appears in the
+  tick payload only then. WAITING campaigns still resume (they are started work, not admissions).
+- Free inodes use `f_ffree`, free space `f_bavail * f_frsize`.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`).
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated.

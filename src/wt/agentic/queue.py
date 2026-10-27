@@ -47,6 +47,7 @@ from .gitops import GitError
 from .profiles import (SEVERITIES, persona_settings, resolve_profile, review_params,
                        reviewers_of, select_profile, triager_enabled)
 from .events import settings as events_settings
+from .events import temp_pressure as events_temp_pressure
 from . import runproc as RP
 from .runner import DETACHED, RunHooks, RunResult, rebuild_request, select_runner
 
@@ -771,6 +772,8 @@ def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_even
             store.append_event(cfg, cid, "transition", {"from": frm, "to": to, "reason": reason},
                                by=by)
         store.write_state(cfg, cid, state)
+        if to in ("MERGED", "ABANDONED"):       # SPEC-0253: no child of a dead campaign needs it
+            store.clear_campaign_tmp(cfg, cid)
         if to in TERMINAL_STATES:               # SPEC-0232: nobody will answer a dead campaign
             from . import escalations as ESC
             ESC.withdraw_for_campaign(cfg, cid, withdraw_reason or f"campaign {to}", by)
@@ -2229,11 +2232,15 @@ class TickReport:
     drain: bool = False                             # the shutdown / re-exec drain report
     detached: list = field(default_factory=list)    # SPEC-0225: runs left running at the exec
     abandoned: list = field(default_factory=list)   # SPEC-0229: spawning / collect tasks left
+    admission_paused: str | None = None             # SPEC-0253: why this tick admitted nothing
 
     def payload(self) -> dict:
-        return {"schema": "wt.queue.tick.v1", "steps": self.steps, "admitted": self.admitted,
-                "idle": self.idle, "errors": self.errors, "started": self.started,
-                "in_flight": self.in_flight, "drain": self.drain}
+        out = {"schema": "wt.queue.tick.v1", "steps": self.steps, "admitted": self.admitted,
+               "idle": self.idle, "errors": self.errors, "started": self.started,
+               "in_flight": self.in_flight, "drain": self.drain}
+        if self.admission_paused:
+            out["admission_paused"] = self.admission_paused
+        return out
 
 
 def slots_for(cfg, profile_name=None) -> int:
@@ -2482,6 +2489,8 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
         _adopt(cfg, ctx, pool, report)
     _harvest(pool, report)            # finished steps first: their slots are free this tick
     flying = pool.ids()
+    for st in store.list_campaigns(cfg):          # SPEC-0253: residue of a killed runner
+        store.sweep_campaign_tmp(cfg, st["id"])
     items = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
     slots = slots_for(cfg)
     busy = [s for s in items if s.get("state") in ACTIVE_STATES]
@@ -2534,6 +2543,9 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
         ready[st["id"]] = backlog_readiness(cfg, st)
         _record_backlog(cfg, st, *ready[st["id"]])
     admitted_ids = set()
+    if admit and not ctx.stop.is_set() and events_temp_pressure(cfg):
+        report.admission_paused = "temp_pressure"     # in-flight campaigns carry on (SPEC-0253)
+        admit = False
     if admit and not ctx.stop.is_set():
         for st in pick_admissions([s for s in queued if s["id"] not in flying], n_busy(),
                                   slots, lambda s: ready[s["id"]]):

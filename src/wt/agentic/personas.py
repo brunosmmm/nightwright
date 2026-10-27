@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import gitops as git
+from . import store
+from .gates import tmp_env
 from .profiles import persona_settings
 from .runner import RunRequest
 
@@ -765,6 +767,9 @@ def build_request(cfg, profile, project_cfg, state, persona, *, run_dir,
         "WT_WORKTREE": str(worktree),
         "WT_BASE": str(repo.get("base") or ""),
     }
+    cid = str(state.get("id") or "")
+    if cid:           # SPEC-0253: a private TMPDIR per run, removed when its result is recorded
+        env.update(tmp_env(store.child_tmp(cfg, cid, f"run-{Path(run_dir).name}", create=True)))
     if persona == "conflict_resolver":
         env["WT_REBASE_TARGET"] = str(ctx.get("rebase_target") or "")
     return RunRequest(

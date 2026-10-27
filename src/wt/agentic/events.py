@@ -16,6 +16,7 @@ import json
 import math
 import os
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -66,6 +67,8 @@ EVENT_TYPES = {
     "escalation_withdrawn": ("escalation_id", "reason"),
     # SPEC-0235
     "escalation_answered": ("escalation_id", "kind", "summary"),
+    # SPEC-0253
+    "temp_pressure": ("path", "free_mb", "free_inodes", "free_inodes_pct", "thresholds"),
 }
 
 # transient run failures: account limits, overload, network-ish API errors
@@ -90,7 +93,10 @@ DEFAULTS = {"poll_s": 2.0, "silent_after_s": 900, "overdue_grace_s": 60,
             # SPEC-0228: a WAITING item not resumed although a slot has been free this long;
             # the loop is "silent" after this many poll intervals without a tick or a journal
             # record; an `open` (worktree setup) is a declared long step of this budget
-            "waiting_grace_s": 60, "journal_silent_factor": 3, "open_budget_s": 600}
+            "waiting_grace_s": 60, "journal_silent_factor": 3, "open_budget_s": 600,
+            # SPEC-0253: admission pauses (and `temp_pressure` fires) when the temp or agentic
+            # filesystem has less free space / a smaller share of free inodes than this
+            "tmp_min_free_mb": 512, "tmp_min_free_inodes_pct": 10}
 
 
 def settings(cfg) -> dict:
@@ -112,7 +118,40 @@ def settings(cfg) -> dict:
             out[k] = int(f)
         else:
             out[k] = f
+    if out["tmp_min_free_inodes_pct"] > 100:      # clamping would pause admission forever
+        out["tmp_min_free_inodes_pct"] = DEFAULTS["tmp_min_free_inodes_pct"]
     return out
+
+
+def temp_pressure(cfg) -> dict | None:
+    """SPEC-0253: the first checked directory (`tempfile.gettempdir()`, then the agentic dir)
+    whose filesystem is short of free space or free inodes, else None. Filesystems are
+    de-duplicated by `st_dev`; `path` is the checked directory (`statvfs` gives no mount
+    point). A directory that cannot be stat'ed counts as no pressure; so does a filesystem
+    without a fixed inode count (`f_files == 0`)."""
+    sett = settings(cfg)
+    seen = set()
+    for path in (tempfile.gettempdir(), str(store.agentic_dir(cfg))):
+        try:
+            probe = Path(path)
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            dev = os.stat(probe).st_dev
+            if dev in seen:
+                continue
+            seen.add(dev)
+            vfs = os.statvfs(probe)
+        except OSError:
+            continue
+        free_mb = vfs.f_bavail * vfs.f_frsize / (1024 * 1024)
+        pct = round(100.0 * vfs.f_ffree / vfs.f_files, 2) if vfs.f_files else None
+        if free_mb < sett["tmp_min_free_mb"] or (
+                pct is not None and pct < sett["tmp_min_free_inodes_pct"]):
+            return {"path": path, "free_mb": round(free_mb), "free_inodes": vfs.f_ffree,
+                    "free_inodes_pct": pct,
+                    "thresholds": {"tmp_min_free_mb": sett["tmp_min_free_mb"],
+                                   "tmp_min_free_inodes_pct": sett["tmp_min_free_inodes_pct"]}}
+    return None
 
 
 # ---- paths ------------------------------------------------------------------------------
@@ -678,6 +717,9 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
                    key=lambda t: _age_s(t, now) or 0)
         out.append((f"runner_journal_silent:{silent_['pid']}:{last}", "runner_journal_silent",
                     None, silent_))
+    pressure = temp_pressure(cfg)                                            # SPEC-0253
+    if pressure:
+        out.append((f"temp_pressure:{pressure['path']}", "temp_pressure", None, pressure))
     return out
 
 

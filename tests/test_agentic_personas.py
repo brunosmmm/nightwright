@@ -157,9 +157,11 @@ def test_build_request_implementer(tmp_path):
                                  "Bash(python3 tools/spec_lint.py*)")
     assert req.cwd == Path(st["repo"]["worktree"]) and req.add_dirs == (req.cwd,)
     assert req.timeout_s == 1800 and req.json_schema is PS.IMPLEMENTER_SCHEMA
+    tmp = str(S.campaign_dir(cfg, st["id"]) / "tmp" / "run-001-implementer")    # SPEC-0253
     assert req.env == {"WT_CAMPAIGN": st["id"], "WT_DATA_DIR": cfg["data_dir"],
                        "WT_CONFIG_DIR": cfg["config_dir"], "WT_SPEC_ID": "SPEC-0001",
-                       "WT_WORKTREE": st["repo"]["worktree"], "WT_BASE": "main"}
+                       "WT_WORKTREE": st["repo"]["worktree"], "WT_BASE": "main",
+                       "TMPDIR": tmp, "TEMP": tmp, "TMP": tmp}
     assert req.system_append.startswith("## wt queue invariants")
     assert req.prompt.endswith(req.system_append + "\n")
 
@@ -295,7 +297,8 @@ def test_reviewer_personas_get_the_review_context(tmp_path, monkeypatch):
     cfg = {"agentic": {}}
     monkeypatch.setattr(PS, "REVIEWER_PERSONAS",
                         ("conformance_reviewer", "test_reviewer", "gate_triager"))
-    cfg = {"agentic": {"profiles": {"balanced": {"reviewers": ["conformance_reviewer"]}}}}
+    cfg = {"data_dir": str(tmp_path / "data"),
+           "agentic": {"profiles": {"balanced": {"reviewers": ["conformance_reviewer"]}}}}
     for persona, want in (("conformance_reviewer", True), ("gate_triager", True),
                           ("implementer", False)):
         PS.build_request(cfg, resolve_profile(cfg), {}, {"id": "c", "repo": {}}, persona,
