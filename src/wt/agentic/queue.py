@@ -4626,6 +4626,226 @@ def apply_add_idea(cfg, plan: dict, *, by="human") -> dict:
     return state
 
 
+# ---- batch add (SPEC-0276) -----------------------------------------------------------------------
+
+def _spec_fm(cfg, spec_id) -> dict:
+    """The frontmatter of `spec_id` (internal or outbound); ValueError when it has no file."""
+    fm, _ = split_frontmatter(SP.resolve_spec_path(cfg, spec_id).read_text(encoding="utf-8"))
+    return fm if isinstance(fm, dict) else {}
+
+
+def _depends_on(cfg, spec_id) -> list[str]:
+    """`depends_on` of the spec as a list of ids; [] when the spec is unreadable."""
+    try:
+        deps = _spec_fm(cfg, spec_id).get("depends_on") or []
+    except (OSError, ValueError):
+        return []
+    return [str(d).strip() for d in ([deps] if isinstance(deps, str) else deps)]
+
+
+def expand_epic(cfg, epic_id) -> tuple[list[str], list[dict]]:
+    """SPEC-0276: `(ids, skipped)` for `wt queue add --epic`. `ids` are the accepted child specs
+    and the open, spec-less `:EPIC:` ideas without an active campaign; everything else under the
+    epic goes to `skipped` as `{"id", "reason"}`. Raises ValueError for an unknown epic."""
+    epic_id = (epic_id or "").strip()
+    SP.resolve_spec_path(cfg, epic_id)
+    ids: list[str] = []
+    skipped: list[dict] = []
+    specs_dir = SP._specs_dir(cfg)
+    for path in sorted(Path(specs_dir).glob("*.md")):
+        try:
+            fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(fm, dict) or str(fm.get("parent") or "").strip() != epic_id:
+            continue
+        sid, status = str(fm.get("id") or ""), str(fm.get("status") or "")
+        if status != "accepted":
+            skipped.append({"id": sid, "reason": f"status {status or 'missing'}"})
+            continue
+        active = store.active_campaign_for_spec(cfg, sid)
+        if active:
+            skipped.append({"id": sid, "reason": f"already queued ({active['id']})"})
+        else:
+            ids.append(sid)
+    for task in _ideas(cfg):
+        if (task.properties.get("EPIC") or "").strip() != epic_id:
+            continue
+        iid = (task.properties.get("ID") or "").strip() or task.id
+        spec = (task.properties.get("SPEC") or "").strip()
+        if spec:
+            skipped.append({"id": iid, "reason": f"has {spec}; covered by the spec"})
+        elif not idea_is_open(task):
+            skipped.append({"id": iid, "reason": f"idea is {task.state}"})
+        else:
+            active = _open_idea_campaign(cfg, iid)
+            if active:
+                skipped.append({"id": iid, "reason": f"already queued ({active['id']})"})
+            else:
+                ids.append(iid)
+    return ids, skipped
+
+
+def _cycle_path(start, deps_of, nodes) -> list[str] | None:
+    """A dependency path `start -> … -> start` through `nodes`, or None when `start` is on no
+    cycle."""
+    stack, seen = [(start, [start])], set()
+    while stack:
+        node, path = stack.pop()
+        for dep in deps_of.get(node, ()):
+            if dep == start:
+                return path + [start]
+            if dep in nodes and dep not in seen:
+                seen.add(dep)
+                stack.append((dep, path + [dep]))
+    return None
+
+
+def _order_specs(spec_ids, deps_of) -> tuple[list[str], dict]:
+    """Kahn's algorithm over the in-batch `depends_on` edges, ties by input position. Returns
+    `(order, cycles)`: `cycles` maps every spec on a cycle to its error text; the specs that are
+    stuck behind a cycle follow in input order."""
+    ins = set(spec_ids)
+    pending = {s: {d for d in deps_of.get(s, ()) if d in ins} for s in spec_ids}
+    order: list[str] = []
+    while True:
+        ready = [s for s in spec_ids if s in pending and not pending[s]]
+        if not ready:
+            break
+        nxt = ready[0]
+        order.append(nxt)
+        del pending[nxt]
+        for deps in pending.values():
+            deps.discard(nxt)
+    cycles = {}
+    for s in [s for s in spec_ids if s in pending]:
+        path = _cycle_path(s, deps_of, set(pending))
+        if path:
+            cycles[s] = "dependency cycle: " + " -> ".join(path)
+    return order + [s for s in spec_ids if s in pending], cycles
+
+
+def _dangling(cfg, deps, in_batch) -> list[str]:
+    """The `depends_on` ids that would block a queued spec forever: not satisfied, not in the
+    batch and without an active campaign."""
+    out = []
+    for dep in deps:
+        if dep in in_batch:
+            continue
+        try:
+            status = str(_spec_fm(cfg, dep).get("status") or "")
+        except (OSError, ValueError):
+            status = None
+        if status in DEPENDENCY_SATISFIED or store.active_campaign_for_spec(cfg, dep):
+            continue
+        out.append(f"{dep} not found" if status is None
+                   else f"{dep} is {status or 'without status'} and not queued")
+    return out
+
+
+def _batch_totals(items) -> dict:
+    plans = [it["plan"] for it in items if "plan" in it]
+    return {"ok": len(plans), "errors": sum(1 for it in items if "error" in it),
+            "cap_usd_total": sum(p.get("cap_usd") or 0 for p in plans),
+            "uncapped": sum(1 for p in plans if p.get("cap_usd") is None)}
+
+
+def _cascade(items, deps_of) -> None:
+    """Give every spec item with an in-batch dependency that has an error `depends on refused
+    SPEC-X`, transitively (the error and its plan removal are applied in place)."""
+    by_id = {it["id"]: it for it in items}
+    changed = True
+    while changed:
+        changed = False
+        for it in items:
+            if "error" in it or it["kind"] != "spec":
+                continue
+            bad = next((d for d in deps_of.get(it["id"], ())
+                        if d in by_id and "error" in by_id[d]), None)
+            if bad:
+                it["error"] = f"depends on refused {bad}"
+                it.pop("plan", None)
+                it.pop("would_block", None)
+                changed = True
+
+
+def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=False,
+                   priority=PRIORITY_DEFAULT) -> dict:
+    """SPEC-0276: plan several specs and ideas as one batch (no writes). Each id goes through
+    `plan_add` / `plan_add_idea`; on top, specs are ordered by their in-batch `depends_on`
+    (ideas follow), cycles and dependents of refused items are refused, and dependencies that
+    would block a spec forever are listed in its `would_block`."""
+    ids = list(dict.fromkeys(i.strip() for i in ids if i and i.strip()))
+    params = {"project": project, "profile": profile, "base": base, "force": bool(force),
+              "priority": priority}
+    items = {}
+    for i in ids:
+        kind = "idea" if _IDEA_ID_RE.match(i) else "spec"
+        item = {"id": i, "kind": kind}
+        try:
+            item["plan"] = (plan_add_idea(cfg, i, project=project, profile=profile, base=base,
+                                          priority=priority) if kind == "idea" else
+                            plan_add(cfg, i, project=project, profile=profile, base=base,
+                                     force=force, priority=priority))
+        except ValueError as e:
+            item["error"] = str(e)
+        items[i] = item
+    spec_ids = [i for i in ids if items[i]["kind"] == "spec"]
+    deps_of = {i: _depends_on(cfg, i) for i in spec_ids}
+    order, cycles = _order_specs(spec_ids, deps_of)
+    for sid, msg in cycles.items():
+        items[sid].setdefault("error", msg)
+        items[sid].pop("plan", None)
+    ordered = [items[i] for i in order] + [items[i] for i in ids if items[i]["kind"] == "idea"]
+    _cascade(ordered, deps_of)
+    for n, it in enumerate(ordered, 1):
+        it["position"] = n
+        if "plan" in it and it["kind"] == "spec":
+            it["would_block"] = _dangling(cfg, deps_of[it["id"]], set(ids))
+    return {"schema": "wt.queue.add.batch.v1", "params": params, "items": ordered,
+            "skipped": [], **_batch_totals(ordered)}
+
+
+def apply_add_batch(cfg, batch: dict, *, skip_invalid=False, by="human") -> dict:
+    """SPEC-0276: create the campaigns of a `plan_add_batch` result, in batch order. Raises
+    ValueError and writes nothing when an item has an error and `skip_invalid` is false.
+    Otherwise each valid item is re-planned (`new_campaign_id` reserves nothing) and applied; a
+    failure at write time is a race and lands on that item as `error`, with its dependents."""
+    items = batch["items"]
+    bad = sum(1 for it in items if "error" in it)
+    if bad and not skip_invalid:
+        raise ValueError(f"{bad} of {len(items)} items cannot be queued; fix them or pass "
+                         f"--skip-invalid")
+    prm = batch.get("params") or {}
+    deps_of = {it["id"]: _depends_on(cfg, it["id"]) for it in items if it["kind"] == "spec"}
+    for it in items:
+        if "error" in it:
+            continue
+        _cascade(items, deps_of)
+        if "error" in it:
+            continue
+        try:
+            if it["kind"] == "idea":
+                plan = plan_add_idea(cfg, it["id"], project=prm.get("project"),
+                                     profile=prm.get("profile"), base=prm.get("base"),
+                                     priority=prm.get("priority", PRIORITY_DEFAULT))
+                apply_add_idea(cfg, plan, by=by)
+            else:
+                plan = plan_add(cfg, it["id"], project=prm.get("project"),
+                                profile=prm.get("profile"), base=prm.get("base"),
+                                force=bool(prm.get("force")),
+                                priority=prm.get("priority", PRIORITY_DEFAULT))
+                apply_add(cfg, plan, by=by)
+        except ValueError as e:
+            it["error"] = str(e)
+            it.pop("plan", None)
+            it.pop("would_block", None)
+            continue
+        it["plan"], it["written"] = plan, True
+    batch.update(_batch_totals(items))
+    return batch
+
+
 # ---- human commands ------------------------------------------------------------------------------
 
 def plan_prioritize(cfg, campaign, priority, *, by="human") -> dict:

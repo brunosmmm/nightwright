@@ -1,7 +1,7 @@
 ---
 id: SPEC-0276
 title: "Batch queue add: many specs and ideas at once, in dependency order"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-27
@@ -131,21 +131,21 @@ Human output is one table with position, id, kind, profile, cap, and the `error`
 
 ## Acceptance criteria
 
-- [ ] Positional ids, `--from-file` and `--epic`, alone or mixed, are concatenated in that
+- [x] Positional ids, `--from-file` and `--epic`, alone or mixed, are concatenated in that
       order and de-duplicated (first occurrence wins). A single positional id still emits
       `wt.queue.add.v1` unchanged.
-- [ ] Specs are created in topological `depends_on` order, in input order among independent
+- [x] Specs are created in topological `depends_on` order, in input order among independent
       specs. Ideas come after specs. A cycle is reported on each spec in it and is never
       written.
-- [ ] A `depends_on` that is not satisfied, not in the batch and not queued is listed in the
+- [x] A `depends_on` that is not satisfied, not in the batch and not queued is listed in the
       item's `would_block`.
-- [ ] `--yes` with any refused item writes nothing unless `--skip-invalid` is given; with it,
+- [x] `--yes` with any refused item writes nothing unless `--skip-invalid` is given; with it,
       only the valid items are written, never a dependent of a refused or unwritten item.
       Exit status follows **Exit status**.
-- [ ] `--epic` takes the accepted children and the open `:EPIC:` ideas without `:SPEC:`, and
+- [x] `--epic` takes the accepted children and the open `:EPIC:` ideas without `:SPEC:`, and
       lists everything else (other statuses, ideas with `:SPEC:` or closed, already queued)
       under `skipped`; re-running it after a partial queue succeeds.
-- [ ] `--json` emits `wt.queue.add.batch.v1` with each item's plan or error and
+- [x] `--json` emits `wt.queue.add.batch.v1` with each item's plan or error and
       `cap_usd_total`.
 
 ## Test plan
@@ -179,13 +179,32 @@ New tests go in `tests/test_agentic_queue_cli.py` (CLI) and `tests/test_agentic_
   - Drop the error cascade: `test_batch_skip_invalid_refused_dependency` must fail.
 - Regression guard: full `uv run pytest`.
 
+### Test record (2026-10-27)
+
+New tests in `tests/test_agentic_queue_cli.py` (topological order, cycle, would_block, status text,
+all-or-nothing and `--skip-invalid`, refused dependency, write-time race, uncapped total, epic
+expansion with re-run, `--from-file`, human output, single-id golden keys) and
+`tests/test_agentic_queue.py` (`plan_add_batch` ordering and dedup). Sabotage checks run: input
+order instead of the sort fails `test_batch_topological_order`; dropping the `skip_invalid` guard
+fails `test_batch_all_or_nothing_and_skip_invalid`; dropping the plan-time cascade fails
+`test_batch_skip_invalid_refused_dependency`. Full `uv run pytest` and spec-lint pass.
+
+### As shipped
+
+- `apply_add_batch` takes the per-item parameters from `batch["params"]` (project, profile, base,
+  force, priority), which `plan_add_batch` records and the JSON payload carries.
+- The payload adds `refused` (the all-or-nothing message, else null); `written` is true when at
+  least one item was written. `expand_epic` is a separate planner helper in `queue.py`.
+- The write-time race cascade reuses the plan-time one, so a dependent is refused as
+  `depends on refused SPEC-X` at both points.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

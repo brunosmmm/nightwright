@@ -5,6 +5,8 @@ import subprocess
 
 from test_agentic_e2e import (SPEC_ACCEPTED, added, impl_done, make_cfg, make_repo, run_cli, script,
                               write_review)
+from wt import org_write as OW
+from wt.agentic import queue as Q
 from wt.agentic import store as S
 
 
@@ -397,3 +399,190 @@ def test_list_marks_overdue_and_colours_parks_by_owner(tmp_path, monkeypatch):
     assert "\x1b[2mPARKED:rebase_conflict" in rows["old"]               # dim: conductor's
     assert "\x1b[2mPARKED:base_moving" in rows["young"]
     assert "\x1b[33mPARKED:main_dirty" in rows["dirty"]                 # yellow: the human's
+
+
+# ---- SPEC-0276: batch add ---------------------------------------------------------------------
+
+def add_spec(cfg, repo, n, *, deps=(), status="accepted", parent=None, review=True):
+    """SPEC-000n in the fixture repo, reviewed unless `review` is false."""
+    extra = ""
+    if deps:
+        extra += f"depends_on: [{', '.join(deps)}]\n"
+    if parent:
+        extra += f"parent: {parent}\n"
+    sid = f"SPEC-{n:04d}"
+    path = repo / "docs" / "specs" / f"{n:04d}-s{n}.md"
+    path.write_text(SPEC_ACCEPTED.format(id=sid, extra=extra).replace(
+        "status: accepted", f"status: {status}"))
+    if review:
+        write_review(cfg, path, sid)
+    return sid
+
+
+def batch(cfg, monkeypatch, *args):
+    r = run_cli(cfg, monkeypatch, ["queue", "add", *args, "--json"])
+    return r, (json.loads(r.output) if r.output.startswith("{") else None)
+
+
+def campaign_order(cfg):
+    return [c["spec_id"] for c in sorted(S.list_campaigns(cfg), key=lambda c: c["created_at"])]
+
+
+def test_batch_topological_order(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    b = add_spec(cfg, repo, 2, deps=["SPEC-0003"])
+    add_spec(cfg, repo, 3)
+    r, d = batch(cfg, monkeypatch, b, "SPEC-0003", "SPEC-0001")
+    assert r.exit_code == 0 and d["schema"] == "wt.queue.add.batch.v1", r.output
+    assert [i["id"] for i in d["items"]] == ["SPEC-0003", "SPEC-0002", "SPEC-0001"]
+    assert [i["position"] for i in d["items"]] == [1, 2, 3] and d["ok"] == 3
+    assert not S.list_campaigns(cfg)
+    r, d = batch(cfg, monkeypatch, b, "SPEC-0003", "SPEC-0001", "--yes")
+    assert r.exit_code == 0 and all(i["written"] for i in d["items"]), r.output
+    order = [c["spec_id"] for c in sorted(S.list_campaigns(cfg), key=lambda c: c["created_at"])]
+    assert order == ["SPEC-0003", "SPEC-0002", "SPEC-0001"]
+
+
+def test_batch_cycle_refused(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2, deps=["SPEC-0003"])
+    add_spec(cfg, repo, 3, deps=["SPEC-0002"])
+    add_spec(cfg, repo, 4, deps=["SPEC-0002"])
+    r, d = batch(cfg, monkeypatch, "SPEC-0002", "SPEC-0003", "SPEC-0004", "--yes")
+    assert r.exit_code == 1, r.output
+    errs = {i["id"]: i["error"] for i in d["items"]}
+    assert "dependency cycle: SPEC-0002 -> SPEC-0003 -> SPEC-0002" == errs["SPEC-0002"]
+    assert errs["SPEC-0003"].startswith("dependency cycle")
+    assert errs["SPEC-0004"] == "depends on refused SPEC-0002"      # downstream of the cycle
+    assert not S.list_campaigns(cfg) and d["written"] is False and "cannot be queued" in d["refused"]
+
+
+def test_batch_would_block_dangling_dep(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2, deps=["SPEC-0003"])
+    add_spec(cfg, repo, 3)
+    r, d = batch(cfg, monkeypatch, "SPEC-0002", "SPEC-0001")
+    item = next(i for i in d["items"] if i["id"] == "SPEC-0002")
+    assert item["would_block"] == ["SPEC-0003 is accepted and not queued"]
+    assert r.exit_code == 0                                      # dry run: the report is the result
+    added(cfg, monkeypatch, "SPEC-0003")
+    r, d = batch(cfg, monkeypatch, "SPEC-0002", "SPEC-0001")
+    assert [i["would_block"] for i in d["items"]] == [[], []]
+
+
+def test_batch_would_block_status_text(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 3, status="draft")
+    add_spec(cfg, repo, 4, status="done")
+    add_spec(cfg, repo, 2, deps=["SPEC-0003", "SPEC-0004", "SPEC-0077"])
+    r, d = batch(cfg, monkeypatch, "SPEC-0002", "SPEC-0001")
+    item = next(i for i in d["items"] if i["id"] == "SPEC-0002")
+    assert item["would_block"] == ["SPEC-0003 is draft and not queued", "SPEC-0077 not found"]
+
+
+def test_batch_all_or_nothing_and_skip_invalid(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2)
+    add_spec(cfg, repo, 3, review=False)
+    r, d = batch(cfg, monkeypatch, "SPEC-0001", "SPEC-0002", "SPEC-0003", "--yes")
+    assert r.exit_code == 1 and not S.list_campaigns(cfg), r.output
+    assert d["errors"] == 1 and d["written"] is False and "1 of 3 items" in d["refused"]
+    r, d = batch(cfg, monkeypatch, "SPEC-0001", "SPEC-0002", "SPEC-0003", "--yes",
+                 "--skip-invalid")
+    assert r.exit_code == 1, r.output                  # one item reported, not written
+    assert sorted(campaign_order(cfg)) == ["SPEC-0001", "SPEC-0002"]
+    assert d["written"] is True and "no spec review" in d["items"][2]["error"]
+
+
+def test_batch_skip_invalid_refused_dependency(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2, review=False)
+    add_spec(cfg, repo, 3, deps=["SPEC-0002"])
+    add_spec(cfg, repo, 4, deps=["SPEC-0003"])
+    r, d = batch(cfg, monkeypatch, "SPEC-0003", "SPEC-0002", "SPEC-0004")      # the plan says so
+    assert r.exit_code == 0 and d["errors"] == 3 and d["ok"] == 0
+    r, d = batch(cfg, monkeypatch, "SPEC-0003", "SPEC-0002", "SPEC-0004", "--yes",
+                 "--skip-invalid")
+    assert r.exit_code == 1, r.output
+    assert not S.list_campaigns(cfg)
+    errs = {i["id"]: i["error"] for i in d["items"]}
+    assert errs["SPEC-0003"] == "depends on refused SPEC-0002"
+    assert errs["SPEC-0004"] == "depends on refused SPEC-0003"
+
+
+def test_batch_race_cascades_at_write_time(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2)
+    add_spec(cfg, repo, 3, deps=["SPEC-0002"])
+    plan = Q.plan_add_batch(cfg, ["SPEC-0003", "SPEC-0002", "SPEC-0001"])
+    added(cfg, monkeypatch, "SPEC-0002")                          # someone queues it meanwhile
+    out = Q.apply_add_batch(cfg, plan)
+    byid = {i["id"]: i for i in out["items"]}
+    assert "already has an active campaign" in byid["SPEC-0002"]["error"]
+    assert byid["SPEC-0003"]["error"] == "depends on refused SPEC-0002"
+    assert byid["SPEC-0001"]["written"] is True and out["errors"] == 2
+
+
+def test_batch_cap_total_uncapped(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2)
+    plan = Q.plan_add_batch(cfg, ["SPEC-0001", "SPEC-0002"])
+    assert plan["cap_usd_total"] == 20.0 and plan["uncapped"] == 0
+    plan["items"][0]["plan"]["cap_usd"] = None
+    assert Q._batch_totals(plan["items"]) == {"ok": 2, "errors": 0, "cap_usd_total": 10.0,
+                                              "uncapped": 1}
+
+
+def test_batch_epic_expansion(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 5)                                         # the epic
+    add_spec(cfg, repo, 10, parent="SPEC-0005")
+    add_spec(cfg, repo, 11, parent="SPEC-0005")                   # queued first
+    add_spec(cfg, repo, 12, parent="SPEC-0005", status="draft")
+    add_spec(cfg, repo, 13, parent="SPEC-0005", status="done")
+    free = OW.add_idea(cfg, "free idea", epic="SPEC-0005")[2]
+    covered = OW.add_idea(cfg, "covered idea", epic="SPEC-0005")[2]
+    OW.set_property(cfg, Q._idea_task(cfg, covered), "SPEC", "SPEC-0013")
+    added(cfg, monkeypatch, "SPEC-0011")
+    r, d = batch(cfg, monkeypatch, "--epic", "SPEC-0005", "--yes")
+    assert r.exit_code == 0, r.output
+    assert [i["id"] for i in d["items"]] == ["SPEC-0010", free]
+    skipped = {s["id"]: s["reason"] for s in d["skipped"]}
+    assert skipped["SPEC-0012"] == "status draft" and skipped["SPEC-0013"] == "status done"
+    assert skipped[covered] == "has SPEC-0013; covered by the spec"
+    assert skipped["SPEC-0011"].startswith("already queued (SPEC-0011-")
+    assert len(S.list_campaigns(cfg)) == 3
+    r, d = batch(cfg, monkeypatch, "--epic", "SPEC-0005", "--yes")      # top-up: nothing new
+    assert r.exit_code == 0 and d["items"] == [] and len(S.list_campaigns(cfg)) == 3
+    assert {s["id"] for s in d["skipped"]} >= {"SPEC-0010", free, "SPEC-0011"}
+
+
+def test_batch_from_file_comments_and_dedup(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 2)
+    f = tmp_path / "ids.txt"
+    f.write_text("# header\nSPEC-0002  # trailing\n\n  SPEC-0001\nSPEC-0002\n")
+    r, d = batch(cfg, monkeypatch, "SPEC-0001", "--from-file", str(f))
+    assert r.exit_code == 0, r.output
+    assert [i["id"] for i in d["items"]] == ["SPEC-0001", "SPEC-0002"]
+    r = run_cli(cfg, monkeypatch, ["queue", "add"])
+    assert r.exit_code == 2 and "at least one" in r.output
+
+
+def test_batch_human_output(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    add_spec(cfg, repo, 3, review=False)
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "SPEC-0003"])
+    assert r.exit_code == 0 and "1 to queue · 1 refused · $10 cap total" in r.output, r.output
+    assert "not written" in r.output
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "SPEC-0003", "--yes"])
+    assert r.exit_code == 1 and "cannot be queued" in r.output and not S.list_campaigns(cfg)
+
+
+def test_single_id_output_unchanged(tmp_path, monkeypatch):
+    repo, cfg = _cfg(tmp_path)
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--json"])
+    d = json.loads(r.output)
+    assert d["schema"] == "wt.queue.add.v1" and "items" not in d
+    assert {"campaign", "spec_id", "project", "profile", "priority", "base", "worktree",
+            "branch", "cap_usd", "written"} <= set(d)

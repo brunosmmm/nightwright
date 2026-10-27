@@ -1925,3 +1925,16 @@ def test_render_idea_handed_off_event():
           "spec_id": "SPEC-0001", "idea_id": "IDEA-9", "pr_url": PR_URL}
     out = R.campaign_event(ev).plain
     assert f"idea IDEA-9 handed off → {PR_URL}" in out
+
+
+def test_plan_add_batch_orders_and_dedupes(tmp_path):                   # SPEC-0276
+    from test_agentic_queue_cli import add_spec
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    add_spec(cfg, repo, 2, deps=["SPEC-0001"])
+    plan = Q.plan_add_batch(cfg, ["SPEC-0002", "SPEC-0001", " SPEC-0002 "])
+    assert [i["id"] for i in plan["items"]] == ["SPEC-0001", "SPEC-0002"]
+    assert plan["schema"] == "wt.queue.add.batch.v1" and plan["ok"] == 2
+    assert plan["items"][1]["would_block"] == []        # SPEC-0001 is in the batch
+    with pytest.raises(ValueError, match="1 of 1 items cannot be queued"):
+        Q.apply_add_batch(cfg, {"items": [{"id": "X", "kind": "spec", "error": "e"}]})

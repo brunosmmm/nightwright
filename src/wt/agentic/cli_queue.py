@@ -694,6 +694,62 @@ def _print_plan(title: str, plan: dict) -> None:
     console.print(R.plan(title, plan), highlight=False)
 
 
+def _queue_add_one(cfg, spec_id, project, profile, base, force, priority, do_write, as_json):
+    """The single-id `wt queue add` (wt.queue.add.v1)."""
+    try:
+        if Q._IDEA_ID_RE.match((spec_id or "").strip()):
+            plan = Q.plan_add_idea(cfg, spec_id, project=project, profile=profile,
+                                   base=base, priority=priority)
+            if do_write:
+                Q.apply_add_idea(cfg, plan)
+        else:
+            plan = Q.plan_add(cfg, spec_id, project=project, profile=profile, base=base,
+                              force=force, priority=priority)
+            if do_write:
+                Q.apply_add(cfg, plan)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        _dump_json({"schema": "wt.queue.add.v1", **plan, "written": bool(do_write)})
+        return
+    _print_plan(f"queue {spec_id}", plan)
+    if do_write:
+        console.print(f"[green]✓[/] {plan['campaign']}  QUEUED  [dim]{plan['worktree']}[/]")
+    else:
+        console.print(_NOT_WRITTEN)
+
+
+def _print_batch(batch: dict, do_write: bool, refused) -> None:
+    """SPEC-0276: the batch table, the skipped epic items, the totals line and the hint."""
+    table = Table(box=box.SIMPLE_HEAD, pad_edge=False)
+    for col in ("#", "id", "kind", "profile", "cap", ""):
+        table.add_column(col)
+    for it in batch["items"]:
+        plan = it.get("plan") or {}
+        cap = plan.get("cap_usd")
+        if "error" in it:
+            note = Text(it["error"], style="red")
+        else:
+            note = Text("; ".join(f"would block: {w}" for w in it.get("would_block") or ()),
+                        style="yellow")
+            if it.get("written"):
+                note = Text(f"✓ {plan['campaign']}  ", style="green") + note
+        table.add_row(str(it["position"]), it["id"], it["kind"], str(plan.get("profile") or "-"),
+                      f"${cap:g}" if cap is not None else "-", note)
+    if batch["items"]:
+        console.print(table)
+    for sk in batch.get("skipped") or ():
+        console.print(f"[dim]skipped {sk['id']}: {sk['reason']}[/]", highlight=False)
+    totals = f"{batch['ok']} to queue · {batch['errors']} refused · ${batch['cap_usd_total']:g} cap total"
+    if batch["uncapped"]:
+        totals += f" + {batch['uncapped']} uncapped"
+    console.print(totals, highlight=False)
+    if refused:
+        console.print(f"[red]✗ {refused}[/]", highlight=False)
+    elif not do_write:
+        console.print(_NOT_WRITTEN)
+
+
 def attach(queue_group):
     """Register the queue subcommands on `queue_group` (SPEC-0173 / SPEC-0176)."""
 
@@ -744,7 +800,14 @@ def attach(queue_group):
     # ---- SPEC-0176 -------------------------------------------------------------------------
 
     @queue_group.command("add")
-    @click.argument("spec_id", shell_complete=C.complete_any_spec_id)
+    @click.argument("ids", nargs=-1, shell_complete=C.complete_any_spec_id)
+    @click.option("--from-file", "from_file", type=click.Path(exists=True, dir_okay=False),
+                  help="also queue the ids in this file (one per line; blanks and # comments "
+                       "ignored)")
+    @click.option("--epic", "epic", default=None, shell_complete=C.complete_any_spec_id,
+                  help="also queue the epic's accepted child specs and open, spec-less ideas")
+    @click.option("--skip-invalid", is_flag=True,
+                  help="batch: with --yes, write the valid items instead of nothing")
     @click.option("--project", shell_complete=C.complete_project,
                   help="project (default: Meta-Tools for SPEC-NNNN, the outbox project otherwise; "
                        "the idea's :PROJECT: for IDEA-NNN)")
@@ -754,37 +817,54 @@ def attach(queue_group):
     @click.option("--priority", type=int, default=Q.PRIORITY_DEFAULT, show_default=True,
                   help="backlog priority 1..5 (1 = admitted first)")
     @click.option("--yes", "do_write", is_flag=True, help="create the campaign (default is dry-run)")
-    @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.add.v1 JSON")
+    @click.option("--json", "as_json", is_flag=True,
+                  help="emit wt.queue.add.v1 JSON (wt.queue.add.batch.v1 for a batch)")
     @click.pass_obj
-    def queue_add(cfg, spec_id, project, profile, base, force, priority, do_write, as_json):
-        """Queue an accepted spec, or an idea, as a new campaign (dry-run unless --yes).
+    def queue_add(cfg, ids, from_file, epic, skip_invalid, project, profile, base, force,
+                  priority, do_write, as_json):
+        """Queue accepted specs and ideas as new campaigns (dry-run unless --yes).
 
         \b
         wt queue add SPEC-0170            show the plan
         wt queue add SPEC-0170 --yes      create the campaign in QUEUED
         wt queue add IDEA-063 --yes       queue an idea: its campaign opens into SPEC_WRITING
+        wt queue add SPEC-0171 SPEC-0170 --yes   a batch, created in depends_on order
+        wt queue add --epic SPEC-0169 --yes      the epic's accepted children and open ideas
+        wt queue add --from-file ids.txt --skip-invalid --yes
         """
+        if not ids and not from_file and not epic:
+            raise click.UsageError("give at least one SPEC-NNNN / IDEA-NNN id, --from-file or "
+                                   "--epic")
+        if len(ids) == 1 and not from_file and not epic:
+            return _queue_add_one(cfg, ids[0], project, profile, base, force, priority,
+                                  do_write, as_json)
         try:
-            if Q._IDEA_ID_RE.match((spec_id or "").strip()):
-                plan = Q.plan_add_idea(cfg, spec_id, project=project, profile=profile,
-                                       base=base, priority=priority)
-                if do_write:
-                    Q.apply_add_idea(cfg, plan)
-            else:
-                plan = Q.plan_add(cfg, spec_id, project=project, profile=profile, base=base,
-                                  force=force, priority=priority)
-                if do_write:
-                    Q.apply_add(cfg, plan)
+            batch_ids = list(ids)
+            if from_file:
+                with open(from_file, encoding="utf-8") as fh:
+                    batch_ids += [ln.split("#", 1)[0].strip() for ln in fh]
+            skipped = []
+            if epic:
+                epic_ids, skipped = Q.expand_epic(cfg, epic)
+                batch_ids += epic_ids
+            batch = Q.plan_add_batch(cfg, batch_ids, project=project, profile=profile,
+                                     base=base, force=force, priority=priority)
+            batch["skipped"] = skipped
+            refused = None
+            if do_write:
+                try:
+                    Q.apply_add_batch(cfg, batch, skip_invalid=skip_invalid)
+                except ValueError as e:
+                    refused = str(e)
         except ValueError as e:
             raise click.ClickException(str(e))
+        written = sum(1 for it in batch["items"] if it.get("written"))
         if as_json:
-            _dump_json({"schema": "wt.queue.add.v1", **plan, "written": bool(do_write)})
-            return
-        _print_plan(f"queue {spec_id}", plan)
-        if do_write:
-            console.print(f"[green]✓[/] {plan['campaign']}  QUEUED  [dim]{plan['worktree']}[/]")
+            _dump_json({**batch, "written": bool(written), "refused": refused})
         else:
-            console.print(_NOT_WRITTEN)
+            _print_batch(batch, do_write, refused)
+        if do_write and (refused or batch["errors"]):
+            raise click.exceptions.Exit(1)
 
     @queue_group.command("merge")
     @click.argument("branch")
