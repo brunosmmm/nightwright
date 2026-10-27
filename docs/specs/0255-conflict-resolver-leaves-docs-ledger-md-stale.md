@@ -113,6 +113,10 @@ or stray-writing command; a missing declared path parks and the resume snapshots
 docs-only merge never runs the commands); `tests/test_agentic_close*.py`, `test_agentic_queue_merge.py`
 and the full `uv run pytest -q -x` pass.
 
+Loop-2 review fix: `test_docs_only_close_accepts_a_branch_that_itself_carries_a_stale_declared_path`
+covers the close-side docs-only exclusion with a branch that carries a stale `docs/LEDGER.md`;
+removing `+ list(regen)` from close.py fails it. `tests/test_agentic_close_regenerate.py` 15 passed.
+
 ### As shipped
 
 - `gitops.run_regenerate(worktree, cmd)` is the shared public helper (`gitops.rebase` uses it too).

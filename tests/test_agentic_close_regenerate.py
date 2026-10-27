@@ -112,6 +112,16 @@ def test_docs_only_close_regenerates_a_declared_path_without_parking(world):
     assert (world["root"] / "docs/design/a.md").exists() and _events(out, "gate") == []
 
 
+def test_docs_only_close_accepts_a_branch_that_itself_carries_a_stale_declared_path(world):
+    st, _ = _docs_only_world(world, {"docs/design/a.md": "x\n", "docs/LEDGER.md": "stale\n"})
+    pcfg = _pcfg(world, gates=("false",), docs_only_paths=json.dumps(["docs/design/"]),
+                 regenerate=_regen([("docs/LEDGER.md", "echo fresh > docs/LEDGER.md")]))
+    out = CL.close_campaign(world["cfg"], st, pcfg)
+    assert out.next_state == "MERGED", out                       # not PARKED / not_docs_only
+    assert (world["root"] / "docs/LEDGER.md").read_text() == "fresh\n"
+    assert (world["root"] / "docs/design/a.md").exists() and _events(out, "gate") == []
+
+
 def test_merge_request_keeps_the_requesters_commits_and_adds_ours(world):
     st = _merge_world(world)
     _stale(world)
