@@ -203,6 +203,22 @@ runs with `--no-renames`.
 - Gates rerun: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exits 0;
   full `uv run pytest -q -x`: 3530 passed, 3 skipped.
 
+### Test record (2026-10-27, review fixes round 3)
+
+- `test_gc_skips_symlinked_terminal_tmp`: a HANDED_OFF campaign whose `tmp/` is a symlink gets
+  no `tmp` row, and the link target survives `apply_gc`. Sabotage (`not tmp.is_symlink()`
+  dropped): the test fails.
+- `test_gc_tmp_removal_failure_lands_on_row`: `store.clear_campaign_tmp` is replaced with a
+  silent no-op for one campaign and a raise for another. Both `tmp` rows end `done: false` with
+  their error, and the merged worktree and branch rows are still removed. Sabotage (the
+  still-present check dropped): the test fails.
+- `test_harvest_applies_cancelled_future_as_error`: `_harvest` gets a cancelled future and a
+  finished one. It does not raise, it applies the cancelled one with a `CancelledError` error,
+  and it applies the other one too. Sabotage (no `fut.cancelled()` guard in `_left_detached`):
+  the test fails.
+- Gates rerun: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exits 0;
+  full `uv run pytest -q -x`: 3533 passed, 3 skipped.
+
 ### As shipped (2026-10-27)
 
 - `test_stuck_items_ignores_train_waiter_and_uses_head_since` used to put its waiter behind a
@@ -227,6 +243,8 @@ runs with `--no-renames`.
   harvest, `abandoned` drops the entries of flights it harvested and of runs now in `forced`.
 - After `store.clear_campaign_tmp`, `apply_gc` checks that the dir is gone, because the removal
   ignores errors. A dir that is still there marks the row `done: false` with an error.
+- `_left_detached` skips a cancelled future, so `fut.exception()` cannot raise `CancelledError`
+  out of `_harvest`. The caller then applies the cancellation as the step's error, as before.
 
 ## Rollout / migration
 

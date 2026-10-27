@@ -976,6 +976,32 @@ def test_crash_sweep_journals_harvest_error_and_applies_the_rest(tmp_path, monke
     assert [r for r in journal(cfg, "tick") if r["drain"]][0]["steps"] == [{"campaign": "good"}]
 
 
+def test_harvest_applies_cancelled_future_as_error(tmp_path, monkeypatch):
+    """SPEC-0287: `_left_detached` must not raise on a cancelled future. `_harvest` applies it as
+    the step's error (as before the detach check) and the other finished flights still apply."""
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+    cfg = {"data_dir": str(tmp_path / "d")}
+    pool = Q.StepPool()
+    applied = {}
+    monkeypatch.setattr(Q, "_apply", lambda ctx, st, res: applied.setdefault(st["id"], res))
+    for cid in ("cancelled", "good"):
+        fut = Future()
+        if cid == "cancelled":
+            assert fut.cancel()
+        else:
+            fut.set_result(Q.StepResult(cid, Q.Step("implement"), "IMPLEMENTING"))
+        fl = Q._Flight({"id": cid, "state": "IMPLEMENTING"}, SimpleNamespace(cfg=cfg))
+        fl.tasks.append((Q.Step("implement"), fut, pool.hooks(None, "wait")))
+        pool.flights[cid] = fl
+    report = Q.TickReport()
+    Q._harvest(pool, report)
+    assert not pool.flights and not pool.forced
+    assert set(applied) == {"cancelled", "good"}
+    assert "CancelledError" in applied["cancelled"].error and applied["good"].error is None
+    assert any(e.startswith("cancelled: ") for e in report.errors)
+
+
 # ---- real detached runs: ClaudeRunner + fake claude, several campaigns ---------------------------
 
 @pytest.fixture

@@ -2671,11 +2671,13 @@ def _left_detached(pool: StepPool, cid: str, fl: _Flight) -> bool:
     """A finished flight with a task that returned DETACHED holds a live run, not a result: a
     review group would apply it as a missing verdict. Record its runs in `pool.forced` (the
     `detached_view` the next runner adopts) and say so (SPEC-0287: a run spawned after the
-    crash sweep's detach). Only done futures are read, so the answer cannot change."""
+    crash sweep's detach). Only done futures are read, so the answer cannot change. A cancelled
+    future is not detached: its `CancelledError` is applied as the step's error by the caller."""
     run_ids = [r for r, _ in fl.runs]
     hit = []
     for i, (_step, fut, hk) in enumerate(fl.tasks):
-        if fut.exception() is None and getattr(fut.result(), "detached", False):
+        if (not fut.cancelled() and fut.exception() is None
+                and getattr(fut.result(), "detached", False)):
             hit.append(hk.run_dir.name if hk is not None and hk.run_dir else
                        (run_ids[i] if i < len(run_ids) else None))
     if hit:

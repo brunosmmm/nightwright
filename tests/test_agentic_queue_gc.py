@@ -679,3 +679,47 @@ def test_gc_tmp_residue_honours_project(world):
     Q.apply_gc(cfg, plan)
     assert not S.campaign_tmp(cfg, "h2").exists()
     assert (S.campaign_tmp(cfg, "h1") / "run-001-x" / "f").is_file()
+
+
+def test_gc_skips_symlinked_terminal_tmp(world, tmp_path):
+    """SPEC-0287: a terminal campaign whose `tmp/` is a symlink gets no `tmp` row, and the
+    link's target survives `apply_gc`."""
+    cfg, root = world["cfg"], world["root"]
+    _campaign(cfg, "h1", "HANDED_OFF", root, "wt/h1")
+    target = tmp_path / "elsewhere"
+    (target / "run-001-x").mkdir(parents=True)
+    (target / "run-001-x" / "f").write_text("x")
+    S.campaign_tmp(cfg, "h1").parent.mkdir(parents=True, exist_ok=True)
+    S.campaign_tmp(cfg, "h1").symlink_to(target, target_is_directory=True)
+    plan = Q.plan_gc(cfg)
+    assert not [r for r in plan["rows"] if r["kind"] == "tmp"] and plan["tmp_removable"] == 0
+    Q.apply_gc(cfg, plan)
+    assert S.campaign_tmp(cfg, "h1").is_symlink()
+    assert (target / "run-001-x" / "f").is_file()
+
+
+def test_gc_tmp_removal_failure_lands_on_row(world, monkeypatch):
+    """SPEC-0287: a `tmp` dir still present after `clear_campaign_tmp` (or a removal that
+    raises) marks its row `done: false` with an error; the worktree and branch rows still apply."""
+    root, cfg, wts = world["root"], world["cfg"], world["wts"]
+    _campaign(cfg, "h1", "HANDED_OFF", root, "wt/h1")
+    _campaign(cfg, "h2", "ABANDONED", root, "wt/h2")
+    for cid in ("h1", "h2"):
+        (S.child_tmp(cfg, cid, "run-001-x", create=True) / "f").write_text("x")
+    _merged_wt(root, "wt/ok", wts / "ok")
+    _campaign(cfg, "ok", "MERGED", root, "wt/ok", wts / "ok")
+
+    def clear(cfg, cid):
+        if cid == "h2":
+            raise OSError("permission denied")       # h1: a silent no-op
+
+    monkeypatch.setattr(S, "clear_campaign_tmp", clear)
+    plan = Q.plan_gc(cfg)
+    Q.apply_gc(cfg, plan)
+    rows = _rows(plan)
+    tmp = {r["campaign"]: r for r in plan["rows"] if r["kind"] == "tmp"}
+    assert (tmp["h1"]["done"], tmp["h1"]["error"]) == (False, "still present after removal")
+    assert (tmp["h2"]["done"], tmp["h2"]["error"]) == (False, "permission denied")
+    assert S.campaign_tmp(cfg, "h1").is_dir() and S.campaign_tmp(cfg, "h2").is_dir()
+    assert rows[("worktree", "ok")]["done"] is True and not (wts / "ok").exists()
+    assert rows[("branch", "wt/ok")]["done"] is True
