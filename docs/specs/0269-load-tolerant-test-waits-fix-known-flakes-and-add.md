@@ -46,16 +46,35 @@ These are the known flakes, each checked against the code on 2026-10-27:
 
    A fixed pause followed by a *negative* assertion (`assert not calls`, `len(calls) == n`)
    is load-safe, because load only makes the absence more likely. Those stay.
-4. **`t.join(10)` followed by `out["res"]`** in the thread-driven runner tests
-   (`test_agentic_runproc.py`, `test_agentic_exit_paths.py`, `test_agentic_drain_signal.py`,
-   `test_agentic_nonblocking.py`, `test_agentic_lease.py`, `test_agentic_store.py`; 20
-   sites). When the thread overruns 10 s under load, the test fails with a `KeyError` or a
-   misleading assertion instead of a timeout message. The SPEC-0225 adopt-test flake
-   (2026-10-25 23:50) fits this pattern.
+4. **A numeric `.join(<n>)` followed by a read of what the thread produced.** The tree has 15
+   numeric joins. These 12 are followed by a read of thread-produced results or state, and
+   they change:
+   - `test_agentic_runproc.py`: 9 sites (lines 98, 136, 154, 172, 187, 203, 217, 239, 248),
+     each followed by `out["res"]`;
+   - `test_agentic_exit_paths.py:69`, where `t.join(5)` is followed by `return n, …`;
+   - `test_agentic_store.py:196`, where `t.join(5)` is followed by `assert order == [...]`;
+   - `test_agentic_nonblocking.py:261`, where `side.join(5)` is followed by assertions on
+     `samples`, which the side thread collected.
+
+   When the thread overruns the bound under load, the test fails with a `KeyError` or a
+   misleading assertion instead of a timeout message. Three sites stay unchanged:
+   `test_agentic_drain_signal.py:137` and `:268`, and `test_agentic_lease.py:128`. Each is a
+   60 s join that is already followed by `assert not <t>.is_alive()`, which is the explicit
+   form of the same check.
+
+   `runproc.py:136-137` also asserts the wall time, `time.monotonic() - t0 < 0.5`: a detach
+   must be prompt. That bound is a load flake of the same class. It is loosened to `< 5.0`,
+   which is still far below the 60 s fake run, so a non-prompt detach still fails.
 5. **`until(cond, timeout=10.0)`** in `test_agentic_runproc.py` is imported by
    `test_agentic_adopt.py`, `test_agentic_index_lock.py` and `test_agentic_exit_paths.py`.
    Its 10 s default is the bound for subprocess spawns, which are the slowest thing under
-   load.
+   load. The SPEC-0225 adopt-test flake (2026-10-25 23:50) fits this pattern:
+   `test_agentic_adopt.py` uses no joins, only this `until` and the iteration-bounded
+   `tick_until`.
+6. **A private `async def until(app, pilot, cond, what=…, timeout=5.0)`** in
+   `tests/test_tui_events_tab.py:59`, with 35 call sites. It polls `pilot.pause(0.05)`, calls
+   `settle(app, pilot, 1)` on success, and raises a message that names `what`. Its fixed 5 s
+   bound is the same kind of load flake.
 
 SPEC-0248 already covered the agentic drain and config-reload timing tests. They are out of
 scope here.
@@ -63,7 +82,7 @@ scope here.
 ## Goals / Non-goals
 
 **Goals**
-- Make the five known flake classes above deterministic or load-tolerant.
+- Make the six known flake classes above deterministic or load-tolerant.
 - Add one shared, load-tolerant wait module for tests, with a default bound that is generous
   and can be set from the environment.
 - Add a cheap guard that stops new fixed-short waits of the same shape from coming back.
@@ -86,20 +105,32 @@ scope here.
      after Ns")` if the thread is still alive.
    - `async pilot_until(pilot, cond, timeout=None, step=0.05) -> bool`, the same loop using
      `await pilot.pause(step)`.
+   - Thin wrappers with another name are allowed. `test_tui_events_tab.py`'s `until` is
+     renamed `ui_until(app, pilot, cond, what=…, timeout=None)`, with its 35 call sites. It
+     keeps its signature and its `what` message, delegates the wait to
+     `waits.pilot_until`, calls `settle(app, pilot, 1)` on success, and otherwise raises
+     `AssertionError(f"timed out waiting for {what}")`. Its 5 s default goes away; the bound
+     is `WAIT_S`.
 2. `test_agentic_runproc.until` becomes a re-export of `waits.until`, so the three importers
    keep working unchanged, and its default changes from 10 s to `WAIT_S`.
 3. `test_vanished_when_group_gone` is made deterministic. It SIGSTOPs the wrapper, SIGKILLs
    the child group, waits with `waits.until(lambda: not RP.group_alive(child))`, and only
-   then SIGKILLs the wrapper. A stopped wrapper is alive, so the runner sees `running` the
-   whole time and then `vanished`, never `orphan_group`. The test keeps asserting "vanished".
-4. Every `t.join(<n>)` that is followed by a read of the thread's result becomes
-   `waits.join(t)`. Every fixed pause listed in Context item 3 that is followed by a
+   then SIGKILLs the wrapper. A stopped wrapper is alive (`wrapper_alive` treats state `T`
+   as alive), so the runner sees `running` the whole time and then `vanished`, never
+   `orphan_group`. The test keeps asserting "vanished". The stopped wrapper cannot reap the
+   killed child, so the group stays a zombie. `RP.group_alive` already returns False for an
+   all-zombie group (`_group_all_zombies`), so the wait ends. Do not "fix" it by reaping.
+4. The 12 join sites listed in Context item 4 become `waits.join(t)`. The three joins that
+   are already followed by an `is_alive()` assertion stay. Every fixed pause listed in Context item 3 that is followed by a
    positive assertion becomes `assert await pilot_until(pilot, <the asserted condition>)`.
 5. The guard is a test, `tests/test_test_waits.py`, with two checks:
    - No test module other than `tests/waits.py` defines a top-level `until`, `_until`,
      `wait_for` or `_wait_for` function. All of them use the shared helper.
-   - No test module contains `\.join\(\s*\d+(\.\d+)?\s*\)` on a line followed (within 3
-     lines) by `out["res"]` or `out[`. The check is a regex scan.
+   - Every numeric join (`\.join\(\s*\d+(\.\d+)?\s*\)`, found by a regex scan of
+     `tests/test_*.py`) must be followed on its next non-blank line by an assertion that
+     contains `is_alive()`. So `side.join(60)` followed by `assert not side.is_alive()` is
+     allowed, and any other numeric join, including `t.join(10)` followed by
+     `out["res"]`, fails. String joins (`"".join(...)`) do not match the pattern.
 
    This is the cheap guard. A marker or a conftest fixture was considered and rejected; see
    Alternatives.
@@ -111,12 +142,13 @@ scope here.
 - **`tests/test_agentic_runproc.py`**: delete the local `until` and add `from waits import
   until, join` (re-exported). In `test_vanished_when_group_gone`, replace the two kills with
   `os.kill(wrapper, SIGSTOP)`, `os.killpg(pgid, SIGKILL)`, `assert until(lambda: not
-  RP.group_alive(child))` and `os.kill(wrapper, SIGKILL)`. Replace `t.join(10)` with
-  `join(t)`.
-- **Thread-driven runner tests** (`test_agentic_exit_paths.py`, `test_agentic_drain_signal.py`,
-  `test_agentic_nonblocking.py`, `test_agentic_lease.py`, `test_agentic_store.py`): replace
-  `t.join(N)` + result read with `join(t)`. A `join` whose only purpose is cleanup (the next
-  line is not a result read) is left alone.
+  RP.group_alive(child))` and `os.kill(wrapper, SIGKILL)`. Replace its 9 numeric joins with
+  `join(t)`, and loosen the detach wall-time bound at line 137 from 0.5 s to 5.0 s.
+- **Other thread-driven tests**: replace the joins at `test_agentic_exit_paths.py:69`,
+  `test_agentic_store.py:196` and `test_agentic_nonblocking.py:261` with `join(t)`. The
+  joins at `test_agentic_drain_signal.py:137/268` and `test_agentic_lease.py:128` stay.
+- **`tests/test_tui_events_tab.py`**: the `until` → `ui_until` wrapper and its 35 call sites
+  (Decision 1).
 - **TUI tests** (the five named in Context item 3): `from waits import pilot_until`, and
   replace `await pilot.pause(x); assert P` with `assert await pilot_until(pilot, lambda: P)`.
   The `settle` helpers stay as they are; they already wait for workers with a bound of 10 s
@@ -150,12 +182,13 @@ scope here.
 - [ ] `test_vanished_when_group_gone` uses the SIGSTOP → killpg → wait → SIGKILL order and
       passes 20/20 runs while 4 copies of `tests/test_agentic_runproc.py` run in parallel (the
       manual load check below).
-- [ ] No `t.join(<n>)` is followed by a result read, and none of the five TUI sites listed
-      makes a positive assertion after a fixed `pilot.pause`. Each uses the shared helpers.
+- [ ] The 12 join sites in Context item 4 use `waits.join`, and the runproc detach bound is
+      5.0 s. None of the five TUI sites listed makes a positive assertion after a fixed
+      `pilot.pause`. `test_tui_events_tab.py` uses `ui_until` on top of `waits.pilot_until`,
+      and has no private `until`.
 - [ ] `tests/test_test_waits.py` passes on the tree, and fails when a private `def until(` or
       a `t.join(10)` + `out["res"]` pair is added to any test module.
-- [ ] The full `uv run pytest` passes, and its wall time does not grow by more than 5 % on an
-      idle machine.
+- [ ] The full `uv run pytest` passes.
 
 ## Test plan
 
@@ -173,10 +206,15 @@ scope here.
     `time.sleep(0.5)` between the two kills. The test must fail, showing the race was real.
     Restore the new order with the same sleep: the test must pass.
   - Add `def until(c): ...` to any test module. `test_no_private_wait_helpers` must fail.
+  - Add `t.join(10)` followed by `res = out["res"]` to any test module.
+    `test_no_bare_join_before_result_read` must fail. Add `side.join(60)` followed by
+    `assert not side.is_alive()`: the guard must still pass.
 - **Manual verification (load):** `for i in 1 2 3 4; do uv run pytest -q -p no:randomly
   tests/test_agentic_runproc.py tests/test_tui_mailbox_tab.py tests/test_tui_events_tab.py &
   done; wait`, repeated 5 times. Zero failures. Record the counts in As shipped.
-- **Regression guard:** the full `uv run pytest`, and record the wall time before and after.
+- **Regression guard:** the full `uv run pytest`. Record the wall time as data, not as a
+  pass/fail criterion: the median of 3 runs before and 3 runs after, on the same idle
+  machine, in As shipped.
 
 ## Rollout / migration
 
