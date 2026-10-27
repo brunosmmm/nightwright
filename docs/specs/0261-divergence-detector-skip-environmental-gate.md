@@ -287,10 +287,10 @@ Restore both and record the failures in the Test record.
   (4) (c) also using `_is_transient`: `test_rounds_marks_environmental_gate_round` fails (the
   "429" gate tail).
 - Full gates: `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` and
-  `uv run pytest -q -x`: lint OK; full suite 3165 passed, 3 skipped with
-  `tests/test_agentic_profiles.py::test_short_origin_forms` deselected. That test fails only
-  because this campaign's per-child `$TMPDIR` is under `$HOME` (it assumes `tmp_path` is not);
-  it passes in a normal environment and is unrelated to this change.
+  `uv run pytest -q`: lint OK; full suite 3166 passed, 3 skipped, run under a per-child `$TMPDIR`
+  inside `$HOME`. `tests/test_agentic_profiles.py::test_short_origin_forms` first failed there
+  because it assumed `tmp_path` is not under `$HOME`; the test now monkeypatches `HOME` to a
+  directory outside `tmp_path` (test-only fix, `short_origin` unchanged), so nothing is deselected.
 
 ### As shipped
 
