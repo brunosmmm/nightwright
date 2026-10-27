@@ -56,6 +56,7 @@ it would do.
 |---|---|---|
 | `cost_cap` | The next run would pass the campaign's dollar cap | Resume once with `--raise-cap` (up to 2× the profile cap) and a note. A second cost park → look at why it's expensive |
 | `loop_exhausted` | The fix loop hit `loop_max` without passing | Read the last triage brief and review. Transient failures → `--reset-loops`; a wrong spec → rework the spec |
+| `diverging` | The fix loop is not converging (a finding came back, or blocking counts and gate failures are not dropping) | A conductor sub-agent reads the `loop_divergence` evidence and picks: continue (`wt queue resume`), rework (`wt queue abandon`, then `/wt-rework` the spec) or escalate to the human |
 | `triage_escalated` | The gate triager couldn't decide twice, or chose escalate | Read the gate log tail. Resume to GATING if it was flaky, with a note if it's a real decision |
 | `implementer_blocked` | The implementer reported the spec can't be built as written | Read its blockers. Usually the spec needs a fix: rework it |
 | `review_escalated` | The conformance reviewer produced no usable verdict twice | Re-run the review (resume to REVIEWING), or read the diff yourself |

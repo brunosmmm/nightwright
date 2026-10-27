@@ -1,7 +1,7 @@
 ---
 id: SPEC-0247
 title: "Divergence detection in the implementation loop: park diverging, conductor triages, rework as an outcome"
-status: in-progress
+status: done
 owner: user
 created: 2026-10-25
 updated: 2026-10-26
@@ -233,7 +233,7 @@ A new decision-table row for `parked diverging`:
 - [x] `skills/wt-conduct/SKILL.md` has the `diverging` row (continue / rework / escalate with
       the commands above). A new check in `tests/test_skills.py` asserts the row, including
       `--yes` on the escalate command; the existing skill tests pass.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -273,6 +273,14 @@ record.
   on a volume with free inodes, so the full suite is **unconfirmed**.
 - `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exited 0 while the
   spec said `done`; the spec is back at `in-progress`, so the ledger needs regenerating.
+- Re-run on a healthy /tmp (7.7G free, 1M inodes): `test_adopt_after_park_resume_while_no_runner`
+  passed 5/5 alone, so the earlier failure was the full /tmp volume, not a double `run.end`.
+  The first full `uv run pytest -q -x` then found one real failure from this change:
+  `tests/test_docs_two_pillars.py::test_operate_page_names_every_park_reason` (the `diverging`
+  park reason was missing from `docs/product/loop/operate.md`). Added the row. Final full
+  `uv run pytest -q -x`: 2835 passed, 3 skipped.
+- `python3 tools/spec_lint.py --write-ledger && python3 tools/spec_lint.py` exit 0 with the spec
+  at `done`.
 - Manual verification (next real campaign that parks `diverging`) is pending by design.
 
 ### As shipped (2026-10-26)
@@ -290,10 +298,10 @@ record.
 ## Definition of done
 
 - [x] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
 - [x] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
