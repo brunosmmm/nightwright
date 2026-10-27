@@ -1,10 +1,10 @@
 ---
 id: SPEC-0250
 title: "TUI escalation inbox: open escalations first, answer by choice or text, withdraw"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
-updated: 2026-10-25
+updated: 2026-10-27
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0169
@@ -165,32 +165,32 @@ unchanged CLI behaviour is in scope here:
 
 ## Acceptance criteria
 
-- [ ] AC1. The mailbox tab's inbox list starts with `escalations` showing `open/total`. The tab
+- [x] AC1. The mailbox tab's inbox list starts with `escalations` showing `open/total`. The tab
       opens on it when any escalation is open. Selecting it shows the escalations table, with
       open records first and then newest.
-- [ ] AC2. The pane shows every documented field of the highlighted record, including the
+- [x] AC2. The pane shows every documented field of the highlighted record, including the
       recommended marker, facts, park, notification, and the answer or withdrawal. For an open
       record with a campaign it shows the override CLI template and up to 15 finding ids from
       `answerable_findings`, the same function `plan_answer` validates against (a finding
       already in `human_overrides` is not listed). An answered record shows `answer_summary`.
       In the `human` inbox, the escalation's mail shows the `answer in escalations: <ESC id>`
       line (G5).
-- [ ] AC3. `c` on an open record answers it through `plan_answer` / `apply_answer` with the chosen
+- [x] AC3. `c` on an open record answers it through `plan_answer` / `apply_answer` with the chosen
       option and `by="human"`. Afterwards the record is `answered` with that choice, which
       `wt escalations show` confirms.
-- [ ] AC4. `t` answers with free text, and `w` withdraws with a reason, through `plan_answer` /
+- [x] AC4. `t` answers with free text, and `w` withdraws with a reason, through `plan_answer` /
       `apply_answer` and `plan_withdraw` / `apply_withdraw` (applies run in a worker). The
       record's status and fields afterwards equal what the CLI produces, ignoring timestamps. A
       withdraw of a campaign's escalation shows the still-PARKED resume hint.
-- [ ] AC5. Cancel or Esc at any step writes nothing. A `ValueError` (the record was answered
+- [x] AC5. Cancel or Esc at any step writes nothing. A `ValueError` (the record was answered
       meanwhile by the CLI) is an error notification and nothing is written. `c`, `t` and `w`
       on a record that is not open notify and open no prompt. `c` on a record without options
       notifies. An empty or whitespace-only text answer is refused with `empty answer` and
       nothing is written.
-- [ ] AC6. An escalation created or answered by another process shows within one poll interval
+- [x] AC6. An escalation created or answered by another process shows within one poll interval
       with no key press. The tab never calls `events.sync`, `events.reader_lock`,
       `events.cursor_set` or `mailbox.follow` (monkeypatched to raise).
-- [ ] AC7. Full `uv run pytest` is green. The SPEC-0249 mailbox tests are green; the only
+- [x] AC7. Full `uv run pytest` is green. The SPEC-0249 mailbox tests are green; the only
       changes allowed in `tests/test_tui_mailbox_tab.py` are switching inbox-row selection from
       index to key. `python3 tools/spec_lint.py` exits 0.
 
@@ -224,6 +224,46 @@ unchanged CLI behaviour is in scope here:
   with `c`, and check `uv run wt escalations show ESC-…`. Record the result here.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-27)
+
+- `uv run pytest tests/test_tui_escalations_model.py tests/test_tui_escalations_tab.py
+  tests/test_tui_mailbox_tab.py tests/test_tui_mailbox_model.py tests/test_agentic_escalations.py
+  tests/test_agentic_escalations_cli.py` green: 9 model tests, 17 tab tests (opening with and
+  without an open record, ordering, choose / text / withdraw end to end against the CLI's result,
+  the still-PARKED hint, cancel and Esc at each step, answered-meanwhile for answer and withdraw,
+  non-open record, no options, empty text and reason, live creation and answer from outside, the
+  forbidden-call monkeypatches), and the SPEC-0249 / SPEC-0232 / SPEC-0235 suites unchanged.
+- Full `uv run pytest -q -x` and `python3 tools/spec_lint.py` green (see the gate run).
+- Manual: in throwaway `WT_DATA_DIR` / `WT_CONFIG_DIR` dirs (notifier `none`),
+  `wt queue escalate --question "ship it?" --option a --option b --recommend 2 --yes` created
+  ESC-0001; a headless `IdeaDesk(tab="mailbox")` pilot opened on the escalations row and
+  `c`, `enter` (the recommended option 2), `enter` (yes) answered it; `wt escalations show
+  ESC-0001` then printed `answered by human at …: chose 2 (b)`.
+
+### As shipped
+
+- The Design's library functions did not exist under those names, so they were added to
+  `escalations.py` (the factoring the spec allows): `plan_withdraw` / `apply_withdraw` (the
+  logic of `wt escalations withdraw`, which now calls them; `apply_withdraw` re-checks `open`
+  under the escalations lock through `withdraw` and returns the record plus `campaign_state`),
+  `answer_summary(rec)` (`summarize` of the stored answer, `''` without one) and
+  `answerable_findings(cfg, state)` (what `plan_answer` validates `--waive` ids against).
+- `_review_findings` (behind both) now passes `queue.human_overrides_of(state)` to
+  `triage_reviews`, as the spec requires: a finding already waived is no longer offered, and
+  `plan_answer --waive` of one is refused as "not a finding of the stored review" (before, it was
+  accepted and recorded twice). Attesting an already-attested AC still works.
+- `MailboxSnapshot` gained `escalations`; `initial_inbox` / `load_mailbox` pick the
+  `escalations` pseudo-inbox when a record is open. The pseudo-inbox is not in `snapshot.inboxes`
+  (which stays one row per `known_addresses` entry); the widget paints its row first.
+- The tab signature is the pair `(mailbox_signature, escalations_signature)`.
+- A whitespace-only withdraw reason is refused with the notification `empty reason`, as the text
+  answer is with `empty answer`.
+- The pane for a record is built on the UI thread (one small file read); plans and applies run in
+  thread workers.
+- `tests/test_tui_mailbox_tab.py`: inbox rows are now selected by key (`select_inbox`, the
+  stewards-row cursor assertion), and the one assertion listing the table's keys expects
+  `escalations` first. No other change.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.
@@ -235,11 +275,11 @@ SPEC-0232/0235 have shipped.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

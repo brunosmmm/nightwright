@@ -1,5 +1,5 @@
 """View model for the TUI queue tab (SPEC-0241), campaign screen (SPEC-0246), events tab
-(SPEC-0251) and mailbox tab (SPEC-0249). No Textual import.
+(SPEC-0251), mailbox tab (SPEC-0249) and its escalations inbox (SPEC-0250). No Textual import.
 
 Turns `queue.dashboard_payload` and `events.followers` into rows and a header line, computes a
 `stat()`-only change signature, and wraps the four human queue actions. `load_campaign` builds
@@ -10,6 +10,7 @@ a reader.
 """
 import datetime as dt
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,7 @@ from pathlib import Path
 from rich.text import Text
 
 from .. import render as RD
+from ..agentic import escalations as ESC
 from ..agentic import events as EV
 from ..agentic import lease as L
 from ..agentic import mailbox as MB
@@ -751,7 +753,9 @@ def events_stat(cfg):
 # files, not one per thread. The rules mirror `mailbox.unanswered` and `mailbox.thread`.
 
 HUMAN = "human"
+ESCALATIONS = "escalations"                 # the pseudo-inbox row (SPEC-0250)
 SUBJECT_W = 80
+FINDINGS_SHOWN = 15
 
 
 @dataclass(frozen=True)
@@ -780,6 +784,7 @@ class MailboxSnapshot:
     inboxes: list
     inbox: str
     threads: list
+    escalations: list = field(default_factory=list)     # [EscRow], the escalations inbox
 
 
 def snapshot(cfg) -> list[dict]:
@@ -875,17 +880,26 @@ def load_threads(cfg, addr, msgs=None) -> list[ThreadRow]:
     return rows
 
 
-def initial_inbox(inboxes) -> str:
+def initial_inbox(inboxes, escalations=()) -> str:
+    """An open escalation parks a campaign until a human acts, so it outranks mail."""
+    if any(r.status == "open" for r in escalations):
+        return ESCALATIONS
     return next((r.address for r in inboxes if r.unanswered), HUMAN)
 
 
 def load_mailbox(cfg, inbox=None) -> MailboxSnapshot:
-    """One snapshot for a whole reload: inbox counts and the threads of `inbox` (the first inbox
-    with unanswered mail, else `human`, when None)."""
+    """One snapshot for a whole reload: inbox counts, the escalation rows and the threads of
+    `inbox` (`escalations` when one is open, else the first inbox with unanswered mail, else
+    `human`, when None). The escalations inbox has no threads."""
     msgs = snapshot(cfg)
     inboxes = load_inboxes(cfg, msgs)
-    inbox = inbox or initial_inbox(inboxes)
-    return MailboxSnapshot(msgs, inboxes, inbox, load_threads(cfg, inbox, msgs))
+    escs = load_escalations(cfg)
+    inbox = inbox or initial_inbox(inboxes, escs)
+    threads = [] if inbox == ESCALATIONS else load_threads(cfg, inbox, msgs)
+    return MailboxSnapshot(msgs, inboxes, inbox, threads, escs)
+
+
+_ESC_MAIL_RE = re.compile(r"wt escalations show (ESC-\d{4,})")
 
 
 def thread_text(cfg, root_id, msgs=None) -> Text:
@@ -902,6 +916,9 @@ def thread_text(cfg, root_id, msgs=None) -> Text:
         t.append("\n")
         for line in str(m.get("text") or "").splitlines() or [""]:
             t.append(f"    {line}\n")
+        hit = _ESC_MAIL_RE.search(str(m.get("text") or ""))
+        if hit:                                 # a plain reply is mail, not the record's answer
+            t.append(f"    answer in escalations: {hit.group(1)}\n", style="yellow")
         t.append("\n")
     return t
 
@@ -966,3 +983,106 @@ def send_plan(cfg, *, to, kind, text, campaign=None, re=None) -> dict:
 def send_apply(cfg, plan) -> dict:
     return MB.send(cfg, to=plan["to"], frm=HUMAN, text=plan["text"], kind=plan["kind"],
                    campaign=plan["campaign"], re=plan["re"])
+
+
+# --- escalations inbox (SPEC-0250) --------------------------------------------------------
+# Answers and withdrawals go through `escalations.plan_answer` / `apply_answer` and
+# `plan_withdraw` / `apply_withdraw`, always as `human`.
+
+@dataclass(frozen=True)
+class EscRow:
+    id: str
+    status: str
+    campaign: str | None
+    spec_id: str | None
+    question: str
+    recommendation: int | None
+    age_s: float | None
+    options_n: int
+
+
+def load_escalations(cfg) -> list[EscRow]:
+    """Every record, `open` first, then newest `created` first."""
+    recs = ESC.list_all(cfg)
+    recs.sort(key=lambda r: r.get("created") or "", reverse=True)
+    recs.sort(key=lambda r: r.get("status") != "open")          # stable
+    return [EscRow(id=r["id"], status=str(r.get("status") or "?"), campaign=r.get("campaign"),
+                   spec_id=r.get("spec_id"), question=_first_line(r.get("question"))[:SUBJECT_W],
+                   recommendation=r.get("recommendation"), age_s=age_s(r.get("created")),
+                   options_n=len(r.get("options") or []))
+            for r in recs if r.get("id")]
+
+
+def escalations_signature(cfg) -> tuple:
+    """Sorted (name, size, mtime_ns) of the record files; `stat()` calls only."""
+    d = ESC.escalations_dir(cfg)
+    out = []
+    if d.is_dir():
+        for p in d.glob("ESC-*.json"):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            out.append((p.name, st.st_size, st.st_mtime_ns))
+    return tuple(sorted(out))
+
+
+def _esc_campaign_line(cfg, t: Text, rec) -> None:
+    cid = rec.get("campaign")
+    if not cid:
+        t.append("no campaign\n", style="dim")
+        return
+    try:
+        state = store.read_state(cfg, cid).get("state") or "?"
+    except (ValueError, OSError):
+        state = "(campaign gone)"
+    t.append(f"campaign {cid}  {rec.get('spec_id') or '-'}  {state}\n")
+
+
+def _override_block(cfg, t: Text, rec) -> None:
+    t.append("\noverride (CLI):\n", style="bold")
+    t.append(f"  wt escalations answer {rec['id']} --waive <finding-id> --attest <ac> "
+             f"--reason \"<why>\" --yes\n")
+    try:
+        findings = ESC.answerable_findings(cfg, store.read_state(cfg, rec["campaign"]))
+    except (ValueError, OSError, TypeError, KeyError):
+        findings = []
+    for f in findings[:FINDINGS_SHOWN]:
+        t.append(f"  {f['id']} {f['severity']} {f['title']}\n", style="dim")
+    if len(findings) > FINDINGS_SHOWN:
+        t.append(f"  +{len(findings) - FINDINGS_SHOWN} more\n", style="dim")
+
+
+def escalation_text(cfg, rec) -> Text:
+    t = Text()
+    t.append(f"{rec.get('id')}  {rec.get('status')}  {rec.get('created') or '-'}  "
+             f"{rec.get('by') or '-'}\n", style="bold")
+    _esc_campaign_line(cfg, t, rec)
+    t.append(f"\n{rec.get('question') or ''}\n\n")
+    for o in rec.get("options") or []:
+        mark = " (recommended)" if o.get("n") == rec.get("recommendation") else ""
+        t.append(f"  {o.get('n')}. {o.get('label')}{mark}\n")
+    if rec.get("facts"):
+        t.append("\nfacts:\n", style="bold")
+        for f in rec["facts"]:
+            t.append(f"  - {f}\n")
+    park = rec.get("park")
+    if park:
+        t.append(f"\npark: {park.get('escalated_from') or '(none)'} → "
+                 f"{park.get('resume_to')} ({park.get('mode')})\n")
+    n = rec.get("notified")
+    if n:
+        t.append("\nnotified via " + str(n.get("via")) + (" ok" if n.get("ok") else " failed")
+                 + (f" {n['error']}" if n.get("error") else "") + "\n", style="dim")
+    t.append(f"reminded {rec.get('reminded_at') or 'never'}\n", style="dim")
+    status = rec.get("status")
+    if status == "answered":
+        t.append(f"\nanswered by {rec.get('answered_by')} at {rec.get('answered_at')}\n",
+                 style="bold green")
+        t.append(f"{ESC.answer_summary(rec)}\n")
+    elif status == "withdrawn":
+        w = rec.get("withdrawn") or {}
+        t.append(f"\nwithdrawn by {w.get('by')}: {w.get('reason')}\n", style="bold")
+    elif status == "open" and rec.get("campaign"):
+        _override_block(cfg, t, rec)
+    return t

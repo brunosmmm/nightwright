@@ -1,4 +1,6 @@
 """Mailbox tab widgets (SPEC-0249): inboxes, threads unanswered-first, reply and send as human.
+The first inbox row, `escalations` (SPEC-0250), lists the escalation records: choose, text-answer
+or withdraw one through `escalations.plan_*` / `apply_*` as `human`.
 
 Read-only until a confirmed send, and a send goes through `mailbox.send` with `frm="human"`.
 Nothing here follows a stream, takes a reader lock or syncs a cursor: a steward's own follower
@@ -16,6 +18,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import DataTable, Static
 
 from .. import report as R
+from ..agentic import escalations as ESC
 from ..agentic import mailbox as MB
 from ..agentic import store
 from ..agentic.cli_queue import _ago
@@ -65,6 +68,27 @@ class ThreadTable(_MailboxTable):
         self.view.open_selected()
 
 
+class EscalationTable(_MailboxTable):
+    BINDINGS = [
+        Binding("c", "choose", "choose"),
+        Binding("t", "text", "text answer"),
+        Binding("w", "withdraw", "withdraw"),
+        Binding("enter", "open", "campaign", show=False),
+    ]
+
+    def action_choose(self) -> None:
+        self.view.start_escalation("choose")
+
+    def action_text(self) -> None:
+        self.view.start_escalation("text")
+
+    def action_withdraw(self) -> None:
+        self.view.start_escalation("withdraw")
+
+    def action_open(self) -> None:
+        self.view.open_escalation()
+
+
 class ThreadPane(VerticalScroll):
     BINDINGS = [Binding("escape,tab,shift+tab", "back", "threads", show=False)]
 
@@ -82,6 +106,7 @@ class MailboxView(Horizontal):
     MailboxView #mb-inboxes { width: 28; }
     MailboxView #mb-right { width: 1fr; }
     MailboxView #mb-threads { height: 1fr; }
+    MailboxView #mb-escalations { height: 1fr; display: none; }
     MailboxView #mb-pane { height: 1fr; border-top: solid $panel; padding: 0 1; }
     """
 
@@ -93,6 +118,8 @@ class MailboxView(Horizontal):
         self.msgs: list = []
         self.inboxes: list[AM.InboxRow] = []
         self.threads: list[AM.ThreadRow] = []
+        self.escalations: list[AM.EscRow] = []
+        self.esc_id: str | None = None          # selected escalation record
         self.pane_text = Text()
         self._signature = None
         self._loading = False
@@ -104,6 +131,7 @@ class MailboxView(Horizontal):
         yield InboxTable(self, id="mb-inboxes")
         with Vertical(id="mb-right"):
             yield ThreadTable(self, id="mb-threads")
+            yield EscalationTable(self, id="mb-escalations")
             with ThreadPane(self, id="mb-pane"):
                 yield Static("", id="mb-thread")
 
@@ -116,36 +144,54 @@ class MailboxView(Horizontal):
         return self.query_one("#mb-threads", ThreadTable)
 
     @property
+    def esc_table(self) -> EscalationTable:
+        return self.query_one("#mb-escalations", EscalationTable)
+
+    @property
+    def in_escalations(self) -> bool:
+        return self.inbox == AM.ESCALATIONS
+
+    @property
+    def right_table(self) -> _MailboxTable:
+        return self.esc_table if self.in_escalations else self.threads_table
+
+    @property
     def pane(self) -> ThreadPane:
         return self.query_one("#mb-pane", ThreadPane)
 
     def on_mount(self) -> None:
         self.inboxes_table.add_columns("address", "open/total")
         self.threads_table.add_columns("!", "peer", "subject", "campaign", "n", "last")
+        self.esc_table.add_columns("status", "id", "campaign", "question", "age")
         self._timer = self.set_interval(POLL_S, self._poll, pause=True)
 
     def on_resize(self, event) -> None:
-        if self.threads:
+        if self.in_escalations:
+            self.paint_escalations()
+        elif self.threads:
             self.paint_threads()
 
     # --- lifecycle -----------------------------------------------------------------------
 
     def activate(self) -> None:
         self._timer.resume()
-        self.threads_table.focus()
+        self.right_table.focus()
         self.reload()
 
     def deactivate(self) -> None:
         self._timer.pause()
 
     def focus_other(self, table) -> None:
-        (self.threads_table if table is self.inboxes_table else self.inboxes_table).focus()
+        (self.right_table if table is self.inboxes_table else self.inboxes_table).focus()
 
     # --- loading -------------------------------------------------------------------------
 
     def _poll(self) -> None:
-        if AM.mailbox_signature(self.cfg) != self._signature:
+        if self._current_signature() != self._signature:
             self.reload()
+
+    def _current_signature(self) -> tuple:
+        return AM.mailbox_signature(self.cfg), AM.escalations_signature(self.cfg)
 
     def reload(self) -> None:
         if self._loading:
@@ -157,7 +203,7 @@ class MailboxView(Horizontal):
     async def _reload_async(self) -> None:
         try:
             # Signature first: an append that lands during the load triggers another reload.
-            self._signature = AM.mailbox_signature(self.cfg)
+            self._signature = self._current_signature()
             asked, asked_root = self.inbox, self.root
             try:
                 snap = await asyncio.to_thread(AM.load_mailbox, self.cfg, asked)
@@ -168,10 +214,10 @@ class MailboxView(Horizontal):
                 return                          # the selection moved on: the _again reload
             if self._again and self.root != asked_root:
                 return                          # a new thread was selected: reload keeps it
-            self.msgs, self.inboxes, self.inbox, self.threads = (
-                snap.msgs, snap.inboxes, snap.inbox, snap.threads)
+            self.msgs, self.inboxes, self.inbox, self.threads, self.escalations = (
+                snap.msgs, snap.inboxes, snap.inbox, snap.threads, snap.escalations)
             self.paint_inboxes()
-            self.paint_threads()
+            self.paint_right()
         finally:
             self._loading = False
             if self._again:
@@ -181,11 +227,43 @@ class MailboxView(Horizontal):
     def paint_inboxes(self) -> None:
         table = self.inboxes_table
         table.clear()
+        n_open = sum(1 for r in self.escalations if r.status == "open")
+        table.add_row(Text(AM.ESCALATIONS, style="bold" if n_open else ""),
+                      f"{n_open}/{len(self.escalations)}", key=AM.ESCALATIONS)
         for r in self.inboxes:
             table.add_row(Text(r.address, style="bold" if r.unanswered else ""),
                           f"{r.unanswered}/{r.total}", key=r.address)
-        if self.inbox in [r.address for r in self.inboxes]:
-            table.move_cursor(row=[r.address for r in self.inboxes].index(self.inbox))
+        keys = [AM.ESCALATIONS] + [r.address for r in self.inboxes]
+        if self.inbox in keys:
+            table.move_cursor(row=keys.index(self.inbox))
+
+    def paint_right(self) -> None:
+        """Show the threads or the escalations table for the selected inbox, and paint it."""
+        had_focus = self.threads_table.has_focus or self.esc_table.has_focus
+        self.esc_table.display = self.in_escalations
+        self.threads_table.display = not self.in_escalations
+        if had_focus:
+            self.right_table.focus()
+        if self.in_escalations:
+            self.paint_escalations()
+        else:
+            self.paint_threads()
+
+    def paint_escalations(self) -> None:
+        table = self.esc_table
+        table.clear()
+        question_w = max(20, (table.size.width or 100) - 50)
+        for r in self.escalations:
+            table.add_row(Text(r.status, style="bold yellow" if r.status == "open" else "dim"),
+                          Text(r.id), Text(R._clip(str(r.campaign or "-"), 24), style="dim"),
+                          Text(R._clip(str(r.question), question_w)),
+                          Text(_ago(r.age_s), style="dim"), key=r.id)
+        ids = [r.id for r in self.escalations]
+        if self.esc_id not in ids:
+            self.esc_id = ids[0] if ids else None
+        if self.esc_id is not None:
+            table.move_cursor(row=ids.index(self.esc_id))
+        self.paint_pane()
 
     def paint_threads(self) -> None:
         table = self.threads_table
@@ -206,9 +284,21 @@ class MailboxView(Horizontal):
         self.paint_pane()
 
     def paint_pane(self) -> None:
+        if self.in_escalations:
+            self.pane_text = self._escalation_pane()
+            self.query_one("#mb-thread", Static).update(self.pane_text)
+            return
         self.pane_text = (AM.thread_text(self.cfg, self.root, self.msgs)
                           if self.root else Text("(no conversations in this inbox)", style="dim"))
         self.query_one("#mb-thread", Static).update(self.pane_text)
+
+    def _escalation_pane(self) -> Text:
+        if self.esc_id is None:
+            return Text("(no escalations)", style="dim")
+        try:
+            return AM.escalation_text(self.cfg, ESC.read(self.cfg, self.esc_id))
+        except ValueError as e:
+            return Text(f"{self.esc_id}: {e}", style="red")
 
     # --- cursor events -------------------------------------------------------------------
     # The row is read from the table's cursor, not from the event: painting posts a highlight
@@ -226,6 +316,11 @@ class MailboxView(Horizontal):
             if key is not None and key != self.inbox:
                 self.inbox, self.root = key, None
                 self.reload()
+        elif event.control is self.esc_table:
+            key = self._cursor_key(self.esc_table)
+            if key is not None and key != self.esc_id:
+                self.esc_id = key
+                self.paint_pane()
         elif event.control is self.threads_table:
             key = self._cursor_key(self.threads_table)
             if key is not None and key != self.root:
@@ -246,6 +341,78 @@ class MailboxView(Horizontal):
             self.post_message(QueueView.CampaignSelected(row.campaign))
         else:
             self.pane.focus()
+
+    # --- escalations: choose, text answer, withdraw --------------------------------------
+
+    def current_escalation(self) -> AM.EscRow | None:
+        key = self._cursor_key(self.esc_table)
+        return next((r for r in self.escalations if r.id == key), None)
+
+    def open_escalation(self) -> None:
+        row = self.current_escalation()
+        if row is not None and row.campaign:
+            self.post_message(QueueView.CampaignSelected(row.campaign))
+
+    def start_escalation(self, action) -> None:
+        row = self.current_escalation()
+        if row is None or self._busy:
+            return
+        if row.status != "open":
+            self.app.notify(f"{row.id} is {escape(row.status)}", severity="warning")
+        elif action == "choose" and not row.options_n:
+            self.app.notify(f"{row.id} has no options", severity="warning")
+        else:
+            self._busy = True
+            self.run_worker(self._guarded(self._escalation_flow(row, action)),
+                            name="escalation-act")
+
+    async def _escalation_flow(self, row: AM.EscRow, action) -> None:
+        from .app import BodyPrompt, ChoiceScreen, TextPrompt
+        cfg, eid = self.cfg, row.id
+        if action == "choose":
+            rec = await asyncio.to_thread(ESC.read, cfg, eid)
+            picks = {f"{o['n']}. {o['label']}": o["n"] for o in rec.get("options") or []}
+            rec_pick = next((k for k, n in picks.items() if n == rec.get("recommendation")), "")
+            pick = await self.app.push_screen_wait(
+                ChoiceScreen(f"answer {eid}", list(picks), rec_pick))
+            if pick is None:
+                return
+            plan = await asyncio.to_thread(ESC.plan_answer, cfg, eid, choose=picks[pick],
+                                           by=AM.HUMAN)
+            ans = plan["answer"]
+            title = f"answer {eid}: {ans['choice']}. {ans['label']}"
+        elif action == "text":
+            text = await self.app.push_screen_wait(BodyPrompt(f"answer {eid}"))
+            if text is None:
+                return
+            if not text.strip():
+                self.app.notify("empty answer", severity="warning")
+                return
+            plan = await asyncio.to_thread(ESC.plan_answer, cfg, eid, text=text, by=AM.HUMAN)
+            title = f'answer {eid}: "{AM._first_line(plan["answer"]["text"])}"'
+        else:
+            reason = await self.app.push_screen_wait(TextPrompt("withdraw reason"))
+            if reason is None:
+                return
+            if not reason.strip():
+                self.app.notify("empty reason", severity="warning")
+                return
+            plan = await asyncio.to_thread(ESC.plan_withdraw, cfg, eid, reason=reason.strip(),
+                                           by=AM.HUMAN)
+            title = f"withdraw {eid}: {plan['reason']}"
+        if await self.app.push_screen_wait(ChoiceScreen(escape(title), ["yes", "cancel"])) != "yes":
+            return
+        if action == "withdraw":
+            rec = await asyncio.to_thread(ESC.apply_withdraw, cfg, plan)
+            msg = f"{eid} withdrawn"
+            if rec.get("campaign") and rec.get("campaign_state") == "PARKED":
+                msg += (f"; {rec['campaign']} is still PARKED (human_decision); "
+                        f"resume it from the queue tab (u)")
+        else:
+            await asyncio.to_thread(ESC.apply_answer, cfg, plan)
+            msg = f"{eid} answered"
+        self.app.notify(escape(msg))
+        self.reload()
 
     # --- reply / new message -------------------------------------------------------------
 

@@ -169,14 +169,13 @@ def escalations_answer(cfg, esc_id, choose, text, waive, attest, reason, note, b
 def escalations_withdraw(cfg, esc_id, reason, frm, do_write, as_json):
     """Withdraw an open escalation. The campaign stays PARKED (human_decision): resume it
     with `wt queue resume`."""
-    from . import mailbox as M
     try:
-        rec = ESC.read(cfg, esc_id)
-        by = M.validate_address(cfg, frm or os.environ.get("WT_MAILBOX_ADDR") or "conductor")
-        if rec.get("status") != "open":
-            raise ValueError(f"{esc_id} is {rec.get('status')}, not open")
+        plan = ESC.plan_withdraw(cfg, esc_id, reason=reason,
+                                 by=frm or os.environ.get("WT_MAILBOX_ADDR") or "conductor")
+        by, rec = plan["by"], ESC.read(cfg, esc_id)
         if do_write:
-            rec = ESC.withdraw(cfg, esc_id, reason, by)
+            rec = ESC.apply_withdraw(cfg, plan)
+            rec.pop("campaign_state", None)
     except ValueError as e:
         raise click.ClickException(str(e))
     cid = rec.get("campaign")

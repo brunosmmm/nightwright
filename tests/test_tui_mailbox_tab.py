@@ -28,7 +28,7 @@ async def open_tab(app, pilot):
 
 async def select_inbox(app, pilot, addr):
     v = mv(app)
-    keys = [r.address for r in v.inboxes]
+    keys = [k.key.value for k in v.inboxes_table.ordered_rows]      # by key (SPEC-0250)
     v.inboxes_table.move_cursor(row=keys.index(addr))
     await settle(app, pilot)
     assert v.inbox == addr
@@ -67,7 +67,8 @@ def test_number_key_click_and_tab_option_open_the_mailbox_tab(tmp_path):
             assert tabs.active == "tab-mailbox" and app.focused is mv(app).threads_table
             rows = {r.address: f"{r.unanswered}/{r.total}" for r in mv(app).inboxes}
             assert list(rows) == MB.known_addresses(cfg)
-            assert [k.key.value for k in mv(app).inboxes_table.ordered_rows] == list(rows)
+            assert [k.key.value for k in mv(app).inboxes_table.ordered_rows] == [
+                "escalations", *rows]
 
     _run(drive())
     app2 = _desk(cfg, tab="mailbox")
@@ -418,7 +419,7 @@ def test_a_selection_made_during_a_running_load_wins_over_the_stale_snapshot(tmp
             release.set()
             await settle(app, pilot)
             assert v.inbox == STEWARD and asked[-1] == STEWARD
-            assert v.inboxes_table.cursor_row == [r.address for r in v.inboxes].index(STEWARD)
+            assert v.inboxes_table.ordered_rows[v.inboxes_table.cursor_row].key.value == STEWARD
             assert [r.subject for r in v.threads] == ["for the steward"]
 
     _run(drive())

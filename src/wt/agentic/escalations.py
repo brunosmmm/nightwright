@@ -317,15 +317,17 @@ def _check_parked(esc_id, st) -> None:
 
 def _review_findings(cfg, st: dict) -> tuple[list, list, set]:
     """`(findings, unmet, synthetic ids)` of the review that led to the park: every `blocking` / `advisory`
-    finding of `triage_reviews` over all stored verdicts (any loop), and the distinct `ac` texts
-    of their `met: false` `ac_assessment` entries."""
+    finding of `triage_reviews` over all stored verdicts (any loop), minus what the campaign's
+    `human_overrides` already waived, and the distinct `ac` texts of the `met: false`
+    `ac_assessment` entries."""
     from . import profiles as PR
     from . import queue as Q
     stored = (st.get("last_review") or {}).get("verdicts") or {}
     profile = PR.resolve_profile(cfg, st.get("profile"))
     valid = {p: stored[p] for p in Q.reviewers_of(profile)
              if isinstance(stored.get(p), dict)}
-    tri = Q.triage_reviews(valid, profile)
+    human_waived, attested = Q.human_overrides_of(st)
+    tri = Q.triage_reviews(valid, profile, human_waived=human_waived, attested=attested)
     unmet = []
     for v in valid.values():
         for e in v.get("ac_assessment") or []:
@@ -333,6 +335,13 @@ def _review_findings(cfg, st: dict) -> tuple[list, list, set]:
                     and e["ac"] not in unmet:
                 unmet.append(e["ac"])
     return tri["blocking"] + tri["advisory"], unmet, set(tri["synthetic"])
+
+
+def answerable_findings(cfg, state: dict) -> list[dict]:
+    """The findings `plan_answer` validates `--waive` ids against (SPEC-0250 lists them too):
+    `blocking` + `advisory` of the stored review, synthetic ones included, already-waived ones
+    left out."""
+    return _review_findings(cfg, state)[0]
 
 
 def _ids_hint(ids) -> str:
@@ -480,6 +489,11 @@ def summarize(answer: dict) -> str:
     if answer.get("note"):
         out += f" — note: {_cut(answer['note'], _NOTE_NOTE_CHARS)}"
     return out
+
+
+def answer_summary(rec: dict) -> str:
+    """`summarize` of a stored record's answer, '' when it has none (SPEC-0250's tab uses it)."""
+    return summarize(rec["answer"]) if rec.get("answer") else ""
 
 
 def apply_answer(cfg, plan: dict) -> dict:
@@ -662,6 +676,26 @@ def withdraw(cfg, esc_id, reason, by, *, clear_request=True) -> dict:
         M.send(cfg, to="human", frm=frm, kind="info", campaign=cid,
                text=f"{esc_id} withdrawn by {by}: {reason}")
     return rec
+
+
+def plan_withdraw(cfg, esc_id, *, reason, by) -> dict:
+    """Validate a withdrawal (pure: writes nothing): the record must be `open` and `by` a
+    mailbox address. The logic behind `wt escalations withdraw ID --reason … --from ADDR`."""
+    by = M.validate_address(cfg, by)
+    rec = read(cfg, esc_id)
+    if rec.get("status") != "open":
+        raise ValueError(f"{esc_id} is {rec.get('status')}, not open")
+    return {"id": esc_id, "campaign": rec.get("campaign"), "reason": reason, "by": by}
+
+
+def apply_withdraw(cfg, plan: dict) -> dict:
+    """Withdraw per `plan_withdraw`; `open` is re-checked under the escalations lock (ValueError
+    otherwise). Returns the record plus `campaign_state` (the campaign's state afterwards, or
+    None)."""
+    rec = withdraw(cfg, plan["id"], plan["reason"], plan["by"])
+    cid = rec.get("campaign")
+    st = _campaign_state(cfg, cid) if cid else None
+    return {**rec, "campaign_state": (st or {}).get("state") if st else None}
 
 
 def withdraw_for_campaign(cfg, cid, reason, by) -> dict | None:
