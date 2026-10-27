@@ -1341,6 +1341,20 @@ def _commit_resolver_changes(ctx: _Ctx, state: dict, worktree, branch, run_id: s
     return git.commit_tracked(worktree, msg)
 
 
+def _close_regates(state: dict) -> bool:
+    """SPEC-0259: whether the close will run the gates on the rebased tree. A `--docs-only` merge
+    request (SPEC-0234) returns its `PreparedClose` before `G.run_all`, so a resolver's dropped-
+    commit declaration is not honored there; a future gate-skipping close path is excluded here."""
+    return not (CL._is_merge_request(state) and (state.get("merge") or {}).get("docs_only"))
+
+
+def _declared_drops(state: dict, verdict: dict) -> list:
+    if not _close_regates(state):
+        return []
+    return [(str(d["sha"]), str(d.get("reason") or "")) for d in verdict.get("dropped_commits") or []
+            if isinstance(d, dict) and d.get("sha")]
+
+
 def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float) -> StepResult:
     """Worker thread (SPEC-0221): restore the campaign branch to the recorded `pre_head`, run
     the resolver persona, then verify its work with runner-side git reads (the verdict is not
@@ -1376,15 +1390,18 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
                 pass                    # e.g. a hook rejected it: check 6 fails the dirty tree
             try:
                 check = git.verify_resolution(worktree, branch, rs["target_sha"], rs["fork"],
-                                              pre_head)
+                                              pre_head, _declared_drops(state, verdict))
                 failed = check.failed
             except (GitError, KeyError) as e:
                 failed = f"verification error: {getattr(e, 'tail', None) or e}"
         res.resolution = {"verified": failed is None, "failed": failed, "head": None,
                           "extra": check.extra if check else [],
-                          "absorbed": check.absorbed if check else [], "commit": commit_sha}
+                          "absorbed": check.absorbed if check else [],
+                          "superseded": check.superseded if check else [], "commit": commit_sha}
         if failed is None:
             git.clean_untracked(worktree)   # residue must not reach the close-time snapshot
+            res.resolution["superseded_files"] = git.commit_files(
+                worktree, [c["sha"] for c in check.superseded])
             res.resolution["head"] = git.rev_parse(worktree)
         else:
             git.restore_branch(worktree, branch, pre_head)
@@ -1805,7 +1822,15 @@ def _apply_resolve(state: dict, counters: dict, res: StepResult, rr, row: dict, 
             "summary": verdict.get("summary"), "head": head,
             "extra_commits": list(info.get("extra") or []),
             "absorbed_commits": list(info.get("absorbed") or []),
+            "superseded_commits": list(info.get("superseded") or []),
             "resolver_commit": info.get("commit")}))
+        if info.get("superseded"):              # SPEC-0259: the drop is the resolver's call; audit it
+            events.append(("finding", {
+                "persona": "conflict_resolver", "severity": "major", "gate": "rebase",
+                "title": "resolver dropped campaign commits",
+                "detail": "\n".join(f"- {c['sha'][:10]} ({c['subject']}): {c['reason']}"
+                                    for c in info["superseded"]),
+                "files": info.get("superseded_files") or []}))
         state.setdefault("repo", {})["head"] = head
         return finish("CLOSING", "rebase_resolved")
     why = str(verdict.get("summary") or "").strip() or str(info.get("failed") or "not resolved")

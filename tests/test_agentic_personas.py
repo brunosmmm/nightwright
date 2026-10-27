@@ -737,6 +737,9 @@ def test_conflict_resolver_registered_write_capable_with_own_invariant():
     for allowed in ("rebase {{rebase_target}}", "rebase --continue", "rebase --abort", "add",
                     "checkout --ours/--theirs -- <path>", "status", "diff", "log", "show"):
         assert allowed in inv, allowed
+    assert "`rebase --skip` (only for a commit you then list in `dropped_commits`)" \
+        in allowed_part                                           # SPEC-0259
+    assert "dropped_commits" in inv and "Never use this to skip a conflict" in inv
     for forbidden in ("push", "merge", "reset", "commit --amend", "switch", "checkout <branch>",
                       "branch -f", "worktree", "stash"):
         assert forbidden in inv.split("Forbidden git:")[1], forbidden
@@ -747,6 +750,23 @@ def test_conflict_resolver_registered_write_capable_with_own_invariant():
     for word in ("**ours**", "**theirs**", "gave_up", "Never hand-edit", "refuses the merge",
                  "Clock Log"):
         assert word in text or word.replace("**", "") in text, word
+
+
+def test_conflict_resolver_dropped_commits_schema_and_prompt():          # SPEC-0259
+    import jsonschema
+    s = PS.CONFLICT_RESOLVER_SCHEMA
+    assert "dropped_commits" not in s["required"]
+    base = {"status": "resolved", "summary": "s", "resolutions": []}
+
+    def ok(dropped):
+        return jsonschema.Draft202012Validator(s).is_valid({**base, "dropped_commits": dropped})
+    assert jsonschema.Draft202012Validator(s).is_valid(base)
+    assert ok([{"sha": "abc1234", "reason": "fixed upstream another way"}])
+    assert not ok([{"sha": "abc1234"}]) and not ok([{"reason": "r"}])
+    assert not ok([{"sha": "", "reason": "r"}]) and not ok([{"sha": "abc", "reason": ""}])
+    text = PS.PERSONAS["conflict_resolver"].template
+    assert "git rebase --skip" in text and "only for such a commit" in text
+    assert '"dropped_commits"' not in text and "`dropped_commits`" in text
 
 
 def test_conflict_resolver_build_request_follows_implementer_rules(tmp_path):

@@ -45,9 +45,14 @@ RESOLVER_INVARIANT = """\
 You are one run of wt's agentic queue for campaign `{{campaign}}` (spec `{{spec_id}}`),
 resolving a rebase conflict on the campaign branch.
 - Work only in `{{worktree}}`, on its current branch. Do not touch the main checkout.
-- Allowed git: `rebase {{rebase_target}}`, `rebase --continue`, `rebase --abort`, `add`,
+- Allowed git: `rebase {{rebase_target}}`, `rebase --continue`, `rebase --abort`,
+  `rebase --skip` (only for a commit you then list in `dropped_commits`), `add`,
   `checkout --ours/--theirs -- <path>`, `commit` (never `--amend`), `status`, `diff`, `log`,
   `show`.
+- Every campaign commit must survive. The one exception: a commit whose intent was already
+  delivered a different way upstream, so that keeping it would be wrong. Do not port it; list
+  it in `dropped_commits` (full or abbreviated sha, from `git log <fork>..<pre-head>`) with a
+  one-sentence reason. Never use this to skip a conflict you could resolve.
 - Forbidden git: `push`, `merge`, `reset` (any form), `commit --amend`, `switch`,
   `checkout <branch>`, `branch -f`, `worktree`, `stash`, and anything in the main checkout.
 - Finish with the rebase complete (`git status` shows no rebase in progress) or aborted.
@@ -72,6 +77,10 @@ CONFLICT_RESOLVER_SCHEMA = {
                            "strategy": {"type": "string", "enum": RESOLUTION_STRATEGIES},
                            "how": {"type": "string"}}}},
         "questions": {"type": "array", "items": {"type": "string"}},
+        "dropped_commits": {"type": "array", "items": {         # SPEC-0259
+            "type": "object", "required": ["sha", "reason"],
+            "properties": {"sha": {"type": "string", "minLength": 1},
+                           "reason": {"type": "string", "minLength": 1}}}},
     },
 }
 

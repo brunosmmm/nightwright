@@ -1,7 +1,7 @@
 ---
 id: SPEC-0259
 title: "Resolver may declare dropped_commits superseded by upstream; gates decide"
-status: accepted
+status: done
 owner: user
 created: 2026-10-26
 updated: 2026-10-26
@@ -107,21 +107,21 @@ because a silently lost docs commit would merge with no check at all.
 
 ## Acceptance criteria
 
-- [ ] The verdict schema accepts `dropped_commits` and rejects entries without `sha` or
+- [x] The verdict schema accepts `dropped_commits` and rejects entries without `sha` or
       `reason`; the invariant and persona prompt describe the field.
-- [ ] A non-empty campaign commit that is unpaired, not in `git cherry`, not reverse-applicable
+- [x] A non-empty campaign commit that is unpaired, not in `git cherry`, not reverse-applicable
       and declared passes verification and appears in `ResolutionCheck.superseded`.
-- [ ] The same commit undeclared still fails `is missing after the resolution`; a declared sha
+- [x] The same commit undeclared still fails `is missing after the resolution`; a declared sha
       that is not an old campaign commit has no effect; all other checks are unchanged.
-- [ ] `rebase_resolved` carries `superseded_commits` and a `major` finding names each dropped
+- [x] `rebase_resolved` carries `superseded_commits` and a `major` finding names each dropped
       commit with its reason; old events render unchanged.
-- [ ] After a resolution with superseded commits the close runs the gates before merging; a
+- [x] After a resolution with superseded commits the close runs the gates before merging; a
       failing gate does not merge.
-- [ ] For a `--docs-only` merge request, declarations are ignored: a declared drop fails
+- [x] For a `--docs-only` merge request, declarations are ignored: a declared drop fails
       verification as `is missing after the resolution` and nothing is superseded.
-- [ ] `rebase --skip` is in the resolver's allowed git and in the persona prompt (only for a
+- [x] `rebase --skip` is in the resolver's allowed git and in the persona prompt (only for a
       declared drop); an empty `sha` or `reason` is rejected by the schema.
-- [ ] The Test plan passes and `uv run pytest` is green.
+- [x] The Test plan passes and `uv run pytest` is green.
 
 ## Test plan
 
@@ -147,11 +147,34 @@ because a silently lost docs commit would merge with no check at all.
   the finding, then a green re-gate.
 - **Regression guard:** full `uv run pytest`; the SPEC-0221/0252 resolver cases unchanged.
 
+### Test record (2026-10-26)
+
+- `uv run pytest tests/test_agentic_resolver.py tests/test_agentic_personas.py`: new tests
+  `test_superseded_commit_declared_verified`, `FAILS[superseded_undeclared]` and
+  `[superseded_unknown_sha_declared]`, `test_declared_but_present_commit_ignored`,
+  `test_declared_unknown_sha_ignored`, the verify_resolution unit cases, the failing-gate
+  close integration test, `test_docs_only_merge_request_ignores_declaration`,
+  `test_close_regates_only_without_docs_only_merge_request`, the persona/schema test and the
+  render test all pass.
+- Full `uv run pytest`: 3045 passed, 3 skipped. `python3 tools/spec_lint.py --write-ledger` then
+  `python3 tools/spec_lint.py`: exit 0.
+- Manual verification (next real close that supersedes a commit) is left to that close.
+
+### As shipped
+
+- `superseded_commits` is **not** added to `EVENT_KEYS["rebase_resolved"]` (schemas.py): that
+  list is the *required* keys, so listing it would flag every older `rebase_resolved` record as
+  invalid. It is an additive payload key like `profile_sources`; old events render unchanged.
+- `ResolutionCheck.superseded` entries are `{sha, subject, reason}`; the finding's `files` are
+  computed by the new `gitops.commit_files` (paths the dropped commits touched).
+- `_close_regates` and `_declared_drops` live in queue.py; a docs-only merge request passes no
+  declarations to `verify_resolution`.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; `uv run pytest` passes.
-- [ ] Spec body updated to match what shipped; ledger regenerated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; `uv run pytest` passes.
+- [x] Spec body updated to match what shipped; ledger regenerated.
 
 ## Open questions
 

@@ -423,10 +423,12 @@ _RANGE_DIFF_RE = re.compile(
 class ResolutionCheck:
     """Outcome of `verify_resolution`: `failed` names the first failed check (None = verified);
     `extra` are new commits that pair with no old one, `absorbed` old campaign commits whose
-    change `HEAD` already holds; each is `{"sha": <full sha>, "subject": ...}`."""
+    change `HEAD` already holds; each is `{"sha": <full sha>, "subject": ...}`. `superseded`
+    (SPEC-0259) are old campaign commits the resolver declared dropped, each with its `reason`."""
     failed: str | None = None
     extra: list = field(default_factory=list)
     absorbed: list = field(default_factory=list)
+    superseded: list = field(default_factory=list)
 
 
 def _commit_patch(worktree, commit) -> bytes:
@@ -474,13 +476,26 @@ def _commit_entry(worktree, sha) -> dict:
     return {"sha": sha, "subject": raw.decode("utf-8", "replace").strip()}
 
 
-def verify_resolution(worktree, branch, target_sha, fork, pre_head) -> ResolutionCheck:
+def commit_files(worktree, shas) -> list:
+    """Sorted paths the commits `shas` touch (SPEC-0259: the files of a dropped commit)."""
+    paths: set = set()
+    for sha in shas:
+        out = git(worktree, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z",
+                  "--root", sha, binary=True).stdout
+        paths.update(p.decode("utf-8", "replace") for p in out.split(b"\0") if p)
+    return sorted(paths)
+
+
+def verify_resolution(worktree, branch, target_sha, fork, pre_head,
+                      declared_dropped=()) -> ResolutionCheck:
     """Runner-side check of a resolver's work (SPEC-0221, SPEC-0252): `failed` names the first
     failed check, None when the branch is attached, rebased onto `target_sha`, still accounts
     for every campaign commit and is tracked-clean. A campaign commit is accounted for when
     range-diff pairs it, `git cherry` finds it in the target, it was empty, or its change
     reverse-applies to `HEAD` (absorbed). New unpaired commits are allowed (`extra`) unless one
-    reverts a campaign commit."""
+    reverts a campaign commit. SPEC-0259: `declared_dropped` is `(sha, reason)` pairs the resolver
+    declared superseded; a commit nothing else accounts for is accepted on that declaration
+    (`superseded`), an undeclared one still fails."""
     def fail(why):
         return ResolutionCheck(failed=why)
 
@@ -513,7 +528,14 @@ def verify_resolution(worktree, branch, target_sha, fork, pre_head) -> Resolutio
     cherry_gone = {ln.split()[1] for ln in
                    git(worktree, "cherry", target_sha, pre_head).stdout.splitlines()
                    if ln.startswith("-") and len(ln.split()) > 1}
-    absorbed, guarded = [], []          # guarded: (old campaign sha, commit whose patch to guard)
+    declared: dict = {}                 # full sha of an old campaign commit -> declared reason
+    for sha, reason in declared_dropped:
+        r = git(worktree, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}", check=False)
+        full = r.stdout.strip() if r.returncode == 0 else None
+        if full in old_commits:
+            declared.setdefault(full, reason)
+    absorbed, superseded = [], []
+    guarded = []                        # (old campaign sha, commit whose patch to guard)
     for c in old_commits:
         empty = _is_empty(worktree, c)
         if c in paired:
@@ -527,6 +549,10 @@ def verify_resolution(worktree, branch, target_sha, fork, pre_head) -> Resolutio
         if c in cherry_gone or empty or _patch_applies(worktree, c, "HEAD", reverse=True):
             absorbed.append(_commit_entry(worktree, c))
             continue
+        if c in declared:
+            guarded.pop()               # non-empty, so just guarded; a dropped commit is not expected
+            superseded.append({**_commit_entry(worktree, c), "reason": declared[c]})
+            continue
         subject = _commit_entry(worktree, c)["subject"]
         return fail(f"campaign commit {c[:10]} ({subject}) is missing after the resolution")
     extra = []
@@ -539,7 +565,7 @@ def verify_resolution(worktree, branch, target_sha, fork, pre_head) -> Resolutio
         extra.append(_commit_entry(worktree, e))
     if status_porcelain(worktree, untracked=False):
         return fail("the worktree is dirty")
-    return ResolutionCheck(None, extra, absorbed)
+    return ResolutionCheck(None, extra, absorbed, superseded)
 
 
 def ff_merge(repo, branch) -> str:

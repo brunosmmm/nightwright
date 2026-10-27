@@ -101,6 +101,8 @@ def rebase_resolved_text(ev: dict) -> str:
     extra, absorbed = len(ev.get("extra_commits") or []), len(ev.get("absorbed_commits") or [])
     if extra or absorbed:                               # SPEC-0252
         text += f"; +{extra} extra, {absorbed} absorbed"
+    if ev.get("superseded_commits"):                    # SPEC-0259
+        text += f"; {len(ev['superseded_commits'])} superseded"
     return text
 
 

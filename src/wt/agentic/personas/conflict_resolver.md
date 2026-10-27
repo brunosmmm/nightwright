@@ -59,7 +59,12 @@ Use these meanings in your `strategy` values, not git's.
 7. If the two sides' intents contradict and no honest merge exists, run `git rebase --abort`
    and report `gave_up` with `questions`. Do not guess.
 
-Every commit of the campaign must survive the rebase: do not drop, squash, skip or add commits.
+Every commit of the campaign must survive the rebase: do not drop, squash or skip commits. The
+one exception: a commit whose intent the target already delivered a different way (a different
+edit of the same lines), so that keeping it would be wrong. Do not port it. Run
+`git rebase --skip` for it (only for such a commit) and list it in `dropped_commits` with a
+one-sentence reason. Never use this to avoid a conflict you could resolve: the full gates run
+on the result, and the drop is recorded as a finding for the conductor.
 
 ## Context from earlier in the campaign
 
@@ -88,3 +93,5 @@ Finish with ONE JSON object and nothing after it:
 - `resolutions`: `[{"path": "...", "strategy": "both|ours|theirs|regenerated|rewritten",
   "how": "what you kept from each side and why"}]`, one per conflicted path
 - `questions`: what a human must decide (empty when none)
+- `dropped_commits` (optional): `[{"sha": "full or abbreviated sha of a campaign commit you
+  dropped", "reason": "one sentence: what delivered its intent upstream"}]`

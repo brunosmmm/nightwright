@@ -316,6 +316,12 @@ FAILS = {
     "other_branch": (dict(shell=(CONTINUE + " && git checkout -q -b other",)), "not attached"),
     "dropped_commit": (dict(shell=("git rebase --skip",), edits=False),
                        "is missing after the resolution"),
+    "superseded_undeclared": (dict(shell=("git rebase --skip",), edits=False),
+                              "is missing after the resolution"),
+    "superseded_unknown_sha_declared": (
+        dict(shell=("git rebase --skip",), edits=False,
+             verdict={**_verdict(), "dropped_commits": [{"sha": "deadbeef", "reason": "r"}]}),
+        "is missing after the resolution"),
     "swapped_commit": (dict(shell=("git rebase --skip && git commit -q --allow-empty -m swapped",),
                             edits=False), "is missing after the resolution"),
     "reverting_extra_commit": (dict(shell=(CONTINUE + " && git revert --no-edit HEAD",)),
@@ -1273,3 +1279,138 @@ def test_resolve_context_skips_the_campaign_spec_named_in_a_subject(tmp_path):
     _git(r, "checkout", "-q", "wt/x")
     landed = PS.resolve_context(state, resolve, {})["landed"]
     assert "SPEC-0500: touches" in landed and "### Governing spec" not in landed
+
+
+# ---- SPEC-0259: a resolver may declare a campaign commit superseded ---------------------------
+
+def _sr(r, sha, reason="superseded upstream"):
+    return {"sha": sha, "reason": reason}
+
+
+def _supersede_vrepo(tmp_path):
+    return vrepo(tmp_path, _commit_file("f.txt", "mine", msg="mine"),
+                 _commit_file("f.txt", "theirs", msg="theirs"), "git reset -q --hard main")
+
+
+def test_verify_resolution_declared_missing_commit_is_superseded(tmp_path):
+    r, fork, pre, tgt = _supersede_vrepo(tmp_path)
+    assert _git(r, "cherry", tgt, pre).startswith("+")
+    c = G.verify_resolution(r, "wt/x", tgt, fork, pre, [(pre[:8], "fixed another way")])
+    assert c.failed is None and c.absorbed == [] and c.extra == []
+    assert [(e["sha"], e["subject"], e["reason"]) for e in c.superseded] \
+        == [(pre, "mine", "fixed another way")]
+    assert G.commit_files(r, [pre]) == ["f.txt"]
+
+
+def test_verify_resolution_undeclared_missing_commit_still_fails(tmp_path):
+    r, fork, pre, tgt = _supersede_vrepo(tmp_path)
+    assert _check(r, fork, pre, tgt).failed.endswith("(mine) is missing after the resolution")
+    assert G.verify_resolution(r, "wt/x", tgt, fork, pre, ()).failed
+
+
+def test_declared_but_present_commit_ignored(tmp_path):
+    r, fork, pre, tgt = vrepo(tmp_path, _commit_file("a.txt"), _commit_file("m.txt"),
+                              "git rebase main -q")
+    c = G.verify_resolution(r, "wt/x", tgt, fork, pre, [(pre, "wrongly declared")])
+    assert c.failed is None and c.superseded == [] and c.extra == []
+
+
+def test_declared_unknown_sha_ignored(tmp_path):
+    r, fork, pre, tgt = _supersede_vrepo(tmp_path)
+    for sha in ("deadbeef", tgt, fork, "not a sha"):    # unknown, target commit, pre-fork commit
+        c = G.verify_resolution(r, "wt/x", tgt, fork, pre, [(sha, "r")])
+        assert c.failed and "is missing after the resolution" in c.failed, sha
+        assert c.superseded == []
+
+
+def test_declared_drop_does_not_relax_other_checks(tmp_path):
+    r, fork, pre, tgt = _supersede_vrepo(tmp_path)
+    _sh(r, "git checkout -q --detach")
+    c = G.verify_resolution(r, "wt/x", tgt, fork, pre, [(pre, "r")])
+    assert c.failed == "HEAD is not attached to the campaign branch"
+
+
+SUPERSEDE_PRE = (f"printf '{APP_BRANCH}'".replace("\n", "\\n")
+                 + " > src/app.py && git add src/app.py && git commit -q -m 'edit line c'")
+
+
+def _supersede_world(tmp_path, monkeypatch, *, dropped=True, **kw):
+    """Commit 1 (made in the worktree) edits app.py line 3 one way, main edits it another way;
+    the resolver `git rebase --skip`s commit 1 and, if `dropped`, declares it."""
+    w = World(tmp_path, monkeypatch,
+              [impl_done(), review(), resolver(shell=("git rebase --skip",), edits=False)], **kw)
+    w.tick()
+    wt = w.st()["repo"]["worktree"]
+    subprocess.run(["sh", "-ce", SUPERSEDE_PRE], cwd=wt, check=True, capture_output=True)
+    sha = _git(wt, "rev-parse", "HEAD")
+    if dropped:
+        w.runner.script[2]["verdict"]["dropped_commits"] = [
+            {"sha": sha[:12], "reason": "main fixed line 3 another way"}]
+    w.main_conflict()
+    return w, sha
+
+
+def test_superseded_commit_declared_verified(tmp_path, monkeypatch):
+    w, sha = _supersede_world(tmp_path, monkeypatch)
+    ev, = _merged(w)
+    assert [(c["sha"], c["subject"], c["reason"]) for c in ev["superseded_commits"]] \
+        == [(sha, "edit line c", "main fixed line 3 another way")]
+    f, = w.findings("resolver dropped campaign commits")
+    assert f["severity"] == "major" and f["gate"] == "rebase" and f["persona"] == "conflict_resolver"
+    assert sha[:10] in f["detail"] and "edit line c" in f["detail"] \
+        and "main fixed line 3 another way" in f["detail"]
+    assert f["files"] == ["src/app.py"]
+    assert "1 superseded" in _render_resolved(ev)
+    assert (w.repo / "src" / "app.py").read_text() == APP_MAIN
+
+
+def test_superseded_commit_regates_a_failing_gate_does_not_merge(tmp_path, monkeypatch):
+    w, _ = _supersede_world(tmp_path, monkeypatch, test_gate="grep -q c-branch src/app.py")
+    w.drive(lambda s: s["state"] == "TRIAGING" or s["state"] in ("MERGED", "PARKED"))
+    assert w.ledger("rebase_resolved")[0]["superseded_commits"]
+    st = w.st()
+    assert st["state"] != "MERGED"
+    assert [g for g in w.ledger("gate") if not g.get("ok")], "the re-gate did not run"
+    assert _git(w.repo, "log", "-1", "--format=%s") == "SPEC-9001: change app line 3"
+
+
+def test_superseded_undeclared_through_the_queue_parks(tmp_path, monkeypatch):
+    w, _ = _supersede_world(tmp_path, monkeypatch, dropped=False)
+    w.runner.script.append(gave_up())
+    w.dispatched()
+    w.attempted(1)
+    assert not w.ledger("rebase_resolved")
+    f, = w.findings("conflict resolver did not resolve")
+    assert "is missing after the resolution" in f["detail"]
+
+
+def test_close_regates_only_without_docs_only_merge_request():
+    assert Q._close_regates({"kind": "spec"})
+    assert Q._close_regates({"kind": "merge", "merge": {}})
+    assert not Q._close_regates({"kind": "merge", "merge": {"docs_only": True}})
+    verdict = {"dropped_commits": [{"sha": "abc", "reason": "r"}, {"reason": "no sha"}, "junk"]}
+    assert Q._declared_drops({"kind": "spec"}, verdict) == [("abc", "r")]
+    assert Q._declared_drops({"kind": "merge", "merge": {"docs_only": True}}, verdict) == []
+
+
+def test_docs_only_merge_request_ignores_declaration(tmp_path, monkeypatch):
+    w, sha = _supersede_world(tmp_path, monkeypatch)
+    w.runner.script.append(gave_up())
+    st = w.dispatched()
+    pre = st["closing"]["resolve"]["pre_head"]
+    on_disk = w.st()
+    on_disk["kind"], on_disk["merge"] = "merge", {"docs_only": True}
+    S.write_state(w.cfg, w.cid, on_disk)
+    st = w.attempted(1)
+    wt = st["repo"]["worktree"]
+    assert not w.ledger("rebase_resolved") and not w.findings("resolver dropped campaign commits")
+    f, = w.findings("conflict resolver did not resolve")
+    assert "is missing after the resolution" in f["detail"]
+    assert _git(wt, "rev-parse", "HEAD") == pre
+
+
+def test_rebase_resolved_text_superseded():
+    base = {"conflicts": ["a"], "resolutions": []}
+    assert _render_resolved({**base, "superseded_commits": []}) == "rebase resolved: 1 paths"
+    assert _render_resolved({**base, "superseded_commits": [{}, {}]}) \
+        == "rebase resolved: 1 paths; 2 superseded"
