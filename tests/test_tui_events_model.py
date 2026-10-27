@@ -132,13 +132,6 @@ def test_load_conditions_runner_dead_without_a_sync(tmp_path):
     assert not E.events_path(cfg).exists()       # nothing was synced or appended
 
 
-def test_load_conditions_sorts_runner_level_first():
-    rows = [AM.ConditionRow("state_stuck", "SPEC-0001-a", "", "red"),
-            AM.ConditionRow("runner_dead", "", "", "red")]
-    assert sorted(rows, key=lambda r: (bool(r.campaign), r.type, r.campaign))[0].type == \
-        "runner_dead"
-
-
 def test_load_conditions_orders_campaign_conditions_after_runner(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(E, "watchdog_checks", lambda cfg: [

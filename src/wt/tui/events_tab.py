@@ -204,8 +204,9 @@ class EventsView(Horizontal):
         return max(20, (self.table.size.width or 100) - _FIXED_COST)
 
     def _cells(self, r, width):
-        return (str(r.id), AM.event_time(r.ts), Text(r.type, style=r.style),
-                R._clip(r.campaign, _CAMPAIGN_W), R._clip(r.text, width))
+        # Text, never str: DataTable parses a str cell as markup, and event text is untrusted.
+        return (Text(str(r.id)), Text(AM.event_time(r.ts)), Text(r.type, style=r.style),
+                Text(R._clip(r.campaign, _CAMPAIGN_W)), Text(R._clip(r.text, width)))
 
     def _repaint(self, *, tail=False, keep=None) -> None:
         """Rebuild the table from `self.shown`; `keep` (an EventRow, or True for the one under

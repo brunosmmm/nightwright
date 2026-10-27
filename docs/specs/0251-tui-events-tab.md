@@ -258,6 +258,20 @@ Matches the Design, with these details:
   status line to carry the stream health; the fallback reload (in-place rewrite with older
   ids), a record without `type`, a malformed ping, and the `lagging` flag in the panel.
 
+### As shipped, review round 3 (2026-10-26)
+
+- Every cell of the stream table is a `rich.text.Text` (`EventsView._cells`), so untrusted event
+  text (a `run_failed` `error` such as `[/home/u/log]`, a `parked` `detail`) is never parsed as
+  Rich markup: no `MarkupError` and no `[@click=…]` action in a cell. A pilot test appends
+  `run_failed` events whose `error` and campaign contain `[/tmp/x]` and `[@click=app.quit]`
+  (load and incremental append) and checks the desk keeps running and the cell text is literal.
+- Removed the tautological `test_load_conditions_sorts_runner_level_first`; ordering stays
+  covered by `test_load_conditions_orders_campaign_conditions_after_runner`.
+- Also run: `tests/test_tui_entry.py` (the `wt tui --tab events` case) passes.
+- The Definition-of-done line "manual steps performed" means the manual verification was
+  replaced by pilot tests that hold and drop a real reader lock (see the Test record); the line
+  itself is guarded text and is left as accepted.
+
 ## Clock Log
 
 Built by the agentic loop or the human lane; idea bookkeeping via `wt spec reconcile --apply`.

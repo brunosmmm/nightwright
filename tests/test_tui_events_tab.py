@@ -152,13 +152,40 @@ def test_rows_have_the_documented_columns_and_styles(tmp_path):
             table = view(app).table
             assert [str(c.label) for c in table.columns.values()] == \
                 ["#id", "time", "type", "campaign", "text"]
-            rows = [table.get_row_at(i) for i in range(table.row_count)]
+            rows = [[c.plain for c in table.get_row_at(i)] for i in range(table.row_count)]
+            styles = [str(table.get_row_at(i)[2].style) for i in range(table.row_count)]
             assert [r[0] for r in rows] == ["1", "2", "3", "4", "5", "6"]
             assert len(rows[0][1]) == 8 and rows[0][1][2] == ":"        # HH:MM:SS
-            assert [r[2].style for r in rows] == ["", "red", "yellow", "red", "yellow", "green"]
+            assert styles == ["", "red", "yellow", "red", "yellow", "green"]
             assert rows[0][3] == "SPEC-0001-a" and rows[1][3] == ""
             assert rows[1][4] == "active=1 queued=0"
             assert table.cursor_row == 5                             # opens on the tail
+
+    _run(drive())
+
+
+def test_untrusted_event_text_is_never_parsed_as_markup(tmp_path):
+    cfg = _cfg(tmp_path)
+    _seed(cfg, 1)
+    err = "[/tmp/x][@click=app.quit]q[/]"
+    _fail = dict(persona="p", run_id="1", transient=False)
+    _add(cfg, "run_failed", "SPEC-0001-[/a]", error=err, **_fail)    # error first: survives the clip
+    app = _desk(cfg, tab="events")
+
+    async def drive():
+        async with app.run_test(size=SIZE) as pilot:
+            await settle(app, pilot)
+            table = view(app).table
+            row = view(app).shown[-1]
+            assert row.text.startswith(f"error={err}")
+            cells = table.get_row_at(table.row_count - 1)
+            assert all(hasattr(c, "plain") for c in cells)
+            assert cells[3].plain == "SPEC-0001-[/a]"
+            assert cells[4].plain.startswith("error=[/tmp/x][@click")
+            _add(cfg, "run_failed", "SPEC-0002-b", error=err, **_fail)   # the incremental append
+            await until(app, pilot, lambda: len(ids(app)) == 3, "event 3")
+            assert app.is_running
+            assert table.get_row_at(2)[4].plain.startswith("error=[/tmp/x][@click")
 
     _run(drive())
 
@@ -285,13 +312,13 @@ def test_a_truncated_or_replaced_file_reloads_in_full(tmp_path):
             assert ids(app) == [1, 2, 3, 4]
             path.write_text(record(1, "SPEC-0001-new"))                   # truncated
             await until(app, pilot, lambda: ids(app) == [1], "truncation reload")
-            assert view(app).table.get_row_at(0)[3] == "SPEC-0001-new"
+            assert view(app).table.get_row_at(0)[3].plain == "SPEC-0001-new"
             other = path.with_name("events.new")
             other.write_text("".join(record(i, "SPEC-0002-longer-campaign-name-" + "y" * 40)
                                      for i in (1, 2)))
             other.replace(path)                                           # replaced, bigger
             await until(app, pilot, lambda: ids(app) == [1, 2], "replacement reload")
-            assert view(app).table.get_row_at(0)[3].startswith("SPEC-0002-longer")
+            assert view(app).table.get_row_at(0)[3].plain.startswith("SPEC-0002-longer")
             path.unlink()                                                 # removed
             await until(app, pilot, lambda: ids(app) == [], "empty reload")
             assert not [n for n, k in app.notes if k.get("severity") == "error"]
@@ -326,7 +353,7 @@ def test_an_in_place_rewrite_with_older_ids_reloads_in_full(tmp_path):
             after = os.stat(path)
             assert after.st_ino == before.st_ino and after.st_size > before.st_size
             await until(app, pilot, lambda: ids(app) == [1, 2], "fallback reload")
-            assert view(app).table.get_row_at(0)[3].startswith("SPEC-0002-rewritten")
+            assert view(app).table.get_row_at(0)[3].plain.startswith("SPEC-0002-rewritten")
             assert "events failed" not in status(app)
 
     _run(drive())
