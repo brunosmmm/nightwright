@@ -400,8 +400,10 @@ def _plan_override(cfg, rec, waive, attest, reason) -> dict:
             raise ValueError("empty --attest")
         m = re.match(r"^(\w+)#ac\d+$", a)
         if m:
-            if ac_by_id is None:      # an AC already attested still has its `#ac<j>` id
-                ac_by_id = {f["id"]: f for f in _review_findings(cfg, st, overridden=False)[0]}
+            if ac_by_id is None:      # an AC already attested still has its `#ac<j>` id, and
+                # one a waived finding covered gets its own once the waiver applies (SPEC-0286)
+                ac_by_id = {f["id"]: f for f in _review_findings(cfg, st, overridden=False)[0]
+                            + findings}
             f = ac_by_id.get(a)
             if f is None or not f.get("ac"):
                 ids = [i for i in ac_by_id if re.search(r"#ac\d+$", i)]
@@ -666,9 +668,11 @@ def withdraw(cfg, esc_id, reason, by, *, clear_request=True) -> dict:
                 raise ValueError(f"{esc_id} is {r.get('status')}, not open")
             r["status"] = "withdrawn"
             r["withdrawn"] = {"reason": reason, "by": by, "at": store.now_iso()}
-        rec = _mutate(cfg, esc_id, close)
         removed = 0
         if known:
+            close(dict(read(cfg, esc_id)))     # refuse before touching the state
+            # the state is written before the record closes: a failed write leaves it open,
+            # so the withdraw can be retried (answers hold this lock too)
             st = _campaign_state(cfg, cid)
             dirty = False
             if clear_request and st and st.get("state") != "PARKED" \
@@ -691,6 +695,8 @@ def withdraw(cfg, esc_id, reason, by, *, clear_request=True) -> dict:
                 dirty = dirty or bool(removed)
             if dirty:
                 store.write_state(cfg, cid, st)
+        rec = _mutate(cfg, esc_id, close)
+        if known:
             more = f"; {removed} override(s) removed" if removed else ""
             with contextlib.suppress(ValueError, OSError):
                 store.append_event(cfg, cid, "note", {

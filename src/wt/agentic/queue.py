@@ -402,8 +402,9 @@ def triage_reviews(verdicts: dict, profile: dict, waived=(), human_waived=(),
                     attest_hit.append(hit)
                 continue
             unmet = True
+            # a human-waived finding no longer stands for the AC (SPEC-0286): it gets its own
             if any(not r["synthetic"] and r["severity"] in ("major", "must_fix")
-                   and _covers(r["ac"], entry.get("ac")) for r in recs):
+                   and not human_gone(r) and _covers(r["ac"], entry.get("ac")) for r in recs):
                 continue
             recs.append({"id": f"{p}#ac{j}", "personas": [p], "severity": "major",
                          "title": str(entry.get("ac") or ""), "detail": entry.get("evidence"),

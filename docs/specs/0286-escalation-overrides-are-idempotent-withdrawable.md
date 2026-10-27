@@ -145,6 +145,21 @@ keeps only the exact hit when one exists, the same rule the attest path uses.
   (`test_export.py::test_internal_spec_lint_unaffected_by_outbox`). After the regeneration
   the full re-run gave 3511 passed, 3 skipped.
 
+### Test record (2026-10-27, review round 2)
+
+- Review fix: a human-waived finding no longer keeps a longer unmet AC from getting its own
+  synthetic `#ac<j>` major. `test_waiver_resolved_ac_keeps_only_the_exact_ac` now also asserts
+  that `blocking == [RV#ac1]` (the longer AC), that it is in `synthetic` and
+  `answerable_findings`, and that `--attest RV#ac1` resolves to it.
+  `test_withdraw_state_write_failure_leaves_the_record_open_to_retry` is new.
+- Sabotage checks, each reverted: without the `human_gone` exclusion in the covering check, and
+  without the overridden findings in the `#ac<j>` attest lookup, the exact-AC test fails.
+  Closing the record before the state write fails the new withdraw test.
+- `uv run pytest -q tests/test_agentic_escalations.py tests/test_agentic_review_triage.py
+  tests/test_tui_escalations_*.py`: 204 passed. Gates: `python3 tools/spec_lint.py
+  --write-ledger && python3 tools/spec_lint.py` exit 0; `uv run pytest -q -x` 3512 passed,
+  3 skipped.
+
 ### As shipped (2026-10-27)
 
 - As designed. The strip in `withdraw` runs on every human withdraw (`clear_request=True`),
@@ -155,6 +170,17 @@ keeps only the exact hit when one exists, the same rule the attest path uses.
   `test_attest_text_covering_two_acs_is_refused_listing_both` now expects the `reach` of an
   exact `--attest` to be only that AC. `reach` is display only (the `covers:` row of the CLI
   preview), and triage matches attests exactly, so the old two-AC reach overstated it.
+- Review round 2 (two changes outside the three Design steps, both needed for the AC "the
+  longer AC stays unmet" to be visible and not just counted):
+  - `queue.triage_reviews`: a real major that the human waived no longer counts as covering an
+    unmet AC. Otherwise the longer AC (no longer in the narrowed `resolved_ac`) blocked the
+    merge as `fix` with an empty `blocking` list, and no `#ac<j>` id named it. It now gets its
+    own synthetic `<persona>#ac<j>` major.
+  - `escalations._plan_override`: the `--attest <persona>#ac<j>` lookup also includes the
+    findings the stored overrides produce, so that synthetic id can be attested.
+  - `withdraw` (hardening): the state (override strip and `park_requested`) is written before
+    the record closes, after an `open` check under the same locks. A failed state write leaves
+    the record `open`, so the withdraw can be retried.
 
 ## Rollout / migration
 

@@ -1150,6 +1150,22 @@ def test_withdraw_strips_that_escalations_overrides(tmp_path, monkeypatch):
     assert note == "escalation ESC-0001 withdrawn: gave up; 2 override(s) removed"
 
 
+def test_withdraw_state_write_failure_leaves_the_record_open_to_retry(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _reviewed(cfg)
+    _half_answered(cfg, monkeypatch)
+    real = S.write_state
+    monkeypatch.setattr(S, "write_state", lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
+    plan = ESC.plan_withdraw(cfg, "ESC-0001", reason="gave up", by="human")
+    with pytest.raises(OSError):
+        ESC.apply_withdraw(cfg, plan)
+    assert ESC.read(cfg, "ESC-0001")["status"] == "open"   # not closed over live overrides
+    monkeypatch.setattr(S, "write_state", real)
+    ESC.apply_withdraw(cfg, plan)
+    assert ESC.read(cfg, "ESC-0001")["status"] == "withdrawn"
+    assert _overrides(cfg, "ESC-0001") == ([], [])
+
+
 def test_withdraw_without_overrides_keeps_the_plain_note(tmp_path):
     cfg = _cfg(tmp_path)
     _reviewed(cfg)
@@ -1158,7 +1174,7 @@ def test_withdraw_without_overrides_keeps_the_plain_note(tmp_path):
     assert note == "escalation ESC-0001 withdrawn: gave up"
 
 
-def test_waiver_resolved_ac_keeps_only_the_exact_ac(tmp_path):
+def test_waiver_resolved_ac_keeps_only_the_exact_ac(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     short, long_ = "pytest passes", "pytest passes with the new regression tests"
     _reviewed(cfg)
@@ -1167,9 +1183,21 @@ def test_waiver_resolved_ac_keeps_only_the_exact_ac(tmp_path):
     v["ac_assessment"] = [{"ac": short, "met": False}, {"ac": long_, "met": False}]
     v["findings"][0]["ac"] = short
     S.write_state(cfg, CID, st)
-    plan, _ = _answer(cfg, waive=[f"{RV}#0"], reason="r")
+    plan = ESC.plan_answer(cfg, "ESC-0001", waive=[f"{RV}#0"], reason="r")
     assert plan["override"]["waive"][0]["resolved_ac"] == [short]
+    real = ESC._write                     # the record write fails: overrides stored, record open
+    monkeypatch.setattr(ESC, "_write", lambda c, r: (_ for _ in ()).throw(OSError("full"))
+                        if r.get("status") == "answered" else real(c, r))
+    with pytest.raises(OSError):
+        ESC.apply_answer(cfg, plan)
     st = _state(cfg)
     hw, at = Q.human_overrides_of(st)
     out = Q.triage_reviews(st["last_review"]["verdicts"], {"name": "balanced"}, (), hw, at)
     assert out["attested"] == [short] and out["outcome"] == "fix"   # the longer AC stays unmet
+    # ... and visible: the waived finding no longer covers it, so it has its own synthetic major
+    assert [(b["id"], b["title"]) for b in out["blocking"]] == [(f"{RV}#ac1", long_)]
+    assert f"{RV}#ac1" in out["synthetic"]
+    assert f"{RV}#ac1" in [f["id"] for f in ESC.answerable_findings(cfg, st)]
+    monkeypatch.setattr(ESC, "_write", real)
+    again = ESC.plan_answer(cfg, "ESC-0001", attest=[f"{RV}#ac1"], reason="r")
+    assert again["override"]["attest"] == [long_]
