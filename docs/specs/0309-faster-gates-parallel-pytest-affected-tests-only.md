@@ -1,9 +1,10 @@
 ---
 id: SPEC-0309
-title: "Faster gates: parallel pytest under a host-wide gate-slot pool, affected-tests scope in fix loops, reuse of an already-green tree at close"
+title: "Faster gates: parallel pytest under a host-wide gate-slot pool"
 status: proposed
 owner: user
 created: 2026-10-30
+updated: 2026-10-30
 milestone: "M10: agentic MVP"
 kind: feature
 parent: SPEC-0298
@@ -19,66 +20,82 @@ CLOSING (rebase and re-gate). The one expensive gate is `pytest` in `.wt/project
 (`uv run pytest -q -x`): the whole suite, serial. 4074 tests pass in 800-1160 s, and slower
 when four or five campaigns gate at once on 8 cores (load average about 7).
 
-Campaigns run three or four full gates even with zero failures: SPEC-0301 ran 4 x 800 s, SPEC-0304
-ran 3 x about 1000 s. That is about an hour of tests per campaign and 1.5-2.5 h of wall time per
-merge. The [SPEC-0298](./0298-agentic-mvp-cheap-durable-quiet-conductor.md) exit window needs
-at least 20 consecutive merges, so gate time sets how fast it fills.
+Campaigns run three or four full gates even with zero failures: SPEC-0301 ran 4 x 800 s,
+SPEC-0304 ran 3 x about 1000 s. That is about an hour of tests per campaign and 1.5-2.5 h of wall
+time per merge. The [SPEC-0298](./0298-agentic-mvp-cheap-durable-quiet-conductor.md) exit window
+needs at least 20 consecutive merges, so gate time sets how fast it fills.
 
-Where the full runs come from today:
+IDEA-430 names four levers: parallel pytest, affected-tests-only fix loops, reuse of an
+already-green tree at close, and a smaller gate-slot pool. The spec review found that they are
+four independent subsystems with different risk, and asked for three specs. **This spec is the
+first and lands first: lever 1 (parallel pytest) and lever 4 (the gate-slot pool).** They belong
+together because parallel pytest is unsafe without a host-wide cap: one pytest process uses one
+core, so `-n 4` is the free speed-up only while the number of concurrent gates is bounded.
+The other levers are listed under Non-goals.
 
-1. `queue._do_gate` (`src/wt/agentic/queue.py:1723`) calls `gates.run_all` for every GATING step.
-   That includes every re-gate after a fix loop, which re-runs the whole suite to check a
-   one-test fix.
-2. `close.prepare_close` step 5 (`src/wt/agentic/close.py:564`) re-gates after every rebase, even
-   when the rebase was a no-op and the tree is the one that just went green.
-3. Nothing bounds how many gates run at once on the host. Profile `slots` (`balanced.yaml`: 2)
-   bounds campaigns per runner, not CPU. One pytest process uses one core, so parallelism
-   inside a gate is the free lever, and it is unsafe without a host-wide cap.
+What exists today:
 
-The test suite is parallel-safe by design: SPEC-0269 forbids fixed sleeps in favour of
-`tests/waits.py`, and SPEC-0253 gives each gate run a private `TMPDIR`. The flake rate under
-xdist still has to be measured, not assumed.
+1. `gates.run_all` (`src/wt/agentic/gates.py:383`) runs every gate of a project, with no bound on
+   how many `run_all` calls run at once on the host. Profile `slots` (`balanced.yaml`: 2) bounds
+   campaigns per runner, and an implementing or reviewing campaign does not use the CPU, so it is
+   the wrong unit. `wt gate run` and `close.prepare_close` (`close.py:545`) also call it.
+2. Gate runs write no `run.start` ledger entry. `events._open_run` (`events.py:410`) reads only
+   `run.start`/`run.end`, so the `run_overdue` check (`events.py:755`) never covers a gate. The
+   two detectors that do see a GATING campaign are `campaign_silent` (`events.py:762`, silence is
+   the age of the newest ledger entry against `silent_after_s`, default 900) and `state_stuck`
+   (`stuck_items`, `events.py:488`, limit `max(stuck_after_s, gate_budget_s)`, default 3600 s).
+   A campaign blocked for a slot writes nothing while it waits, so both can fire falsely.
+3. The test suite is parallel-safe by design: SPEC-0269 forbids fixed sleeps in favour of
+   `tests/waits.py`, and SPEC-0253 gives each gate run a private `TMPDIR`. The flake rate under
+   xdist still has to be measured, not assumed.
 
 ## Goals / Non-goals
 
 **Goals**
-- A zero-failure campaign runs at most two full-suite gates (the first gate and the close gate),
-  and a campaign whose rebase was a no-op after a green gate runs one.
 - A full pytest gate takes at most half its serial wall time on an idle host.
-- Concurrent gates never oversubscribe the CPU: a host-wide pool bounds how many gate runs
-  execute at once.
-- Correctness is unchanged. Nothing merges that was not proven green on the exact tree that
-  merges, as far as the gates can say. The close gate stays the safety net for every shortcut.
-- Per-campaign gate time falls from about 60 min to about 15 min (the idea's estimate; the
-  verification below reports what was measured).
+- Concurrent gate runs never oversubscribe the CPU: a host-wide pool bounds how many `run_all`
+  calls execute at once, and a campaign waiting for a slot is neither reported silent or stuck
+  nor counted against its gate budget.
+- Correctness is unchanged: the same gates run on the same tree with the same pass rule. Only
+  the wall time and the number of concurrent runs change.
 
-**Non-goals**
-- Test impact analysis from coverage data (testmon-style source-to-test maps). The affected set
-  is the campaign's own changed tests plus the previous failing ids, which needs no map.
+**Non-goals** (each is a separate child spec of SPEC-0298, to be filed as its own idea; none
+is started here)
+- **Affected-tests scope in fix loops** (IDEA-430 lever 2): `affected_cmd`/`affected_tests` gate
+  keys and their validation in `project.py`, `gates.affected_set`, `run_all(scope=auto|full)`,
+  `scope` in results, payload and sidecar, and how the retry ladder treats an affected gate.
+- **Reuse of an already-green tree at close** (IDEA-430 lever 3): `tree` and `gates_hash` on the
+  run payload, `state.last_green_gate`, `merge.regate: auto|always`, the `prepare_close` reuse
+  path, the `gate_reused` event, and the end-to-end "two full gate runs when the base moved, one
+  when it did not" check. This skips the merge safety gate, so its design is tone-critical. The
+  review's requirements are carried over to it, not dropped: `gates_hash` covers the whole
+  `project_cfg['gates']` mapping (sha256 of its sorted-key JSON after `GATE_DEFAULTS`), the
+  post-gate check compares `git rev-parse HEAD^{tree}` with the starting tree and requires
+  `git diff --quiet HEAD`, and untracked non-ignored gate output is removed after a run in a
+  wt-created worktree so the close-time snapshot cannot change the proven tree. Both of these
+  specs may declare `depends_on` on each other for the shared `scope` field; neither depends on
+  this one beyond ordering of edits in `gates.py`.
+- Test impact analysis from coverage data (testmon-style source-to-test maps).
 - Changing the retry ladder (SPEC-0289), the triager, or the flaky-test record (SPEC-0293 is a
   frozen area).
-- Splitting the suite into shards across machines.
-- Skipping gates when the tree changed, or any `--docs-only` change (SPEC-0234 is untouched).
+- Splitting the suite into shards across machines, or a bare `-n auto`.
+- A WAITING-like campaign state for slot waits, or changes to SPEC-0200's campaign slot
+  accounting.
 
 ## Decision
 
-Four changes, all in the gate path, each switchable:
+Two changes in the gate path:
 
 1. **Parallel pytest.** Add `pytest-xdist` to the dev extras and run wt's own pytest gate as
    `uv run pytest -q -x -n 4`, with a serial `retry_cmd` for the targeted rerun.
-2. **Gate-slot pool.** A host-wide pool of `agentic.gates.slots` (default 2) slots, taken with
+2. **Gate-slot pool.** A host-wide pool of `agentic.gates.slots` slots (default 2), taken with
    `flock` for the duration of a whole `run_all`. Two concurrent `-n 4` gates fill 8 cores; a
-   third waits.
-3. **Affected scope in fix loops.** A gate may declare `affected_cmd` and `affected_tests`. A
-   GATING step that has a previous gate in the same campaign runs `affected_cmd` instead of
-   `cmd`. The close gate and the first gate of a campaign always run the full `cmd`.
-4. **Reuse a green tree at close.** A full-scope gate run that passed on a clean tree records the
-   tree hash. When the close step's rebased and regenerated tree has the same hash and the gate
-   definitions are unchanged, the close does not re-run the gates. It records the reuse.
+   third waits. A waiting campaign publishes a marker file that the stuck and silent detectors
+   read, so a wait never raises an alarm.
 
-Tree equality, not "base unchanged since the last gate", is the reuse test. It covers the
-no-op rebase as a special case and stays right when the base moved but the rebased tree is
-identical. Anything else re-gates in full.
+The worker count (4) lives in the project's gate `cmd`, since only the project knows its suite.
+It is 8 cores divided by 2 pool slots. The pool is the guarantee, the worker count is a tuning
+value.
 
 ## Design
 
@@ -86,15 +103,16 @@ identical. Anything else re-gates in full.
 
 - `pyproject.toml`: add `pytest-xdist>=3` to the `dev` extra (next to `pytest>=8`, line 30).
 - `.wt/project.yaml`, gate `pytest`: `cmd: uv run pytest -q -x -n 4`, and
-  `retry_cmd: uv run pytest -q -n 0 {failing}` so a targeted rerun of one to ten ids does not
+  `retry_cmd: uv run pytest -q -n 0 {failing}`, so a targeted rerun of one to ten ids does not
   pay worker start-up. `results: {format: pytest}` stays: `gate_results.parse_pytest` reads the
-  last summary line, which xdist keeps in the same format.
+  last summary line, which xdist keeps in the same format. If it does not (a verified failure of
+  the parse on the three-run check), the implementation fixes `parse_pytest`; that is in scope.
 - Tests that are not parallel-safe (a fixed port, a fixed path outside `tmp_path`, a shared
-  module-level file) are fixed in place. Where a fix is not cheap, mark the test with
-  `@pytest.mark.xdist_group("name")` and run with `--dist loadgroup` in the gate command. The
-  implementation records which tests needed that in *As shipped*.
-- The worker count lives in the project's gate `cmd`, since only the project knows its suite.
-  wt's default of 4 comes from 8 cores divided by 2 pool slots.
+  module-level file, a process-global like `os.environ` or the cwd) are fixed in place. Where a
+  fix is not cheap, mark the test `@pytest.mark.xdist_group("name")` and add `--dist loadgroup`
+  to the gate command. *As shipped* records which tests needed that.
+- The project config change (`-n 4` and the `retry_cmd`) is the last commit of the campaign,
+  after the suite passes three consecutive parallel runs (see Rollout).
 
 ### 2. Gate-slot pool
 
@@ -104,108 +122,59 @@ New module `src/wt/agentic/gate_slots.py`:
 @contextmanager
 def acquire(cfg, campaign_id, *, stop=None, poll_s=1.0) -> Iterator[SlotHold]: ...
 def settings(cfg) -> dict          # {"slots": 2}
-def occupancy(cfg) -> dict         # {"slots": 2, "held": [{"slot": 0, "campaign": ..., "since": ...}]}
+def occupancy(cfg) -> dict         # {"slots": 2, "held": [{slot, campaign, pid, since}],
+                                   #  "waiting": [{campaign, pid, since}]}
+def waiting(cfg, campaign_id, now=None) -> dict | None   # live waiter marker, else None
 ```
 
-- Slot files are `<agentic_dir>/gate-slots/slot-<n>.lock`, `n` in `0..slots-1`. A holder takes
+- **Slot files.** `<agentic_dir>/gate-slots/slot-<n>.lock`, `n` in `0..slots-1`. A holder takes
   `flock(LOCK_EX | LOCK_NB)` on a free file and writes `{campaign, pid, since}` into it. The
   flock dies with the process, so a crashed runner never leaks a slot (the approach of
   `lease.py`). The pool is host-wide because the files sit under the shared data directory.
-- Acquire polls every `poll_s` and checks `stop` and `gates._stopping` on each poll, like
-  `_stop_requested`. A stop during the wait returns an interrupted run that starts no gate
-  (SPEC-0229 semantics).
-- `gates.run_all` wraps its whole body in `acquire`: one slot per run, held across every gate
-  of the run and its retries. The `deadline` (`gate_budget_s`) and each gate's `timeout_s`
-  count from the moment the slot is held, not from the wait.
-- Settings sit under `agentic.gates.*` in the user config, with code-held defaults. A value that
-  is not an integer from 1 to 16 falls back to its default, as `events.settings` does.
-- `run_all` records `slot_wait_s` (rounded, 0.0 when no wait) in the gate payload
-  (`gates.as_payload`). When the wait passes 30 s it first appends a `gate_waiting` ledger event
-  `{slots, held, waited_s}`. `gate_waiting` is `hold` in `quiet.RULES` (informational), and the
-  `/wt-conduct` skill's *Quiet stream* paragraph lists it with the other held types. A
-  campaign waiting for a gate slot is working, not silent: the stuck and silent detectors in
-  `events.py` do not raise `campaign_silent` or `state_stuck` for a GATING campaign while a
-  gate-slot wait is in progress.
-- `wt gate slots` (or `wt queue gates` if that is where `gates` is attached) prints
-  `occupancy()` as text and as `--json`.
-
-### 3. Affected scope in fix loops
-
-Two new optional keys on a gate in `.wt/project.yaml`, validated in `project.py`
-(`_check_mapping` allowed keys, `_check_gate_retry` neighbour):
-
-```yaml
-- name: pytest
-  cmd: uv run pytest -q -x -n 4
-  affected_cmd: uv run pytest -q -x -n 0 {affected}
-  affected_tests: ["tests/test_*.py", "tests/**/test_*.py"]
-```
-
-- `affected_cmd` is a string containing `{affected}`; `affected_tests` is a non-empty list of
-  repo-relative globs. Each requires the other. `affected_cmd` requires
-  `results: {format: pytest}`, since the failing ids come from the parsed summary.
-- `gates.affected_set(state, worktree, gate) -> list[str] | None` returns the ordered,
-  de-duplicated union of:
-  1. the failing ids of the campaign's `last_gate` result for this gate (pytest summary
-     `failing`), only when that list is complete (the `_targeted_ids` rule: 1 to `MAX_FAILING` ids,
-     accounting for every failure and error);
-  2. the files changed since the merge base with the base branch
-     (`git diff --name-only <merge-base>...HEAD` plus uncommitted changes) that match
-     `affected_tests`.
-  It returns `None`, meaning "run the full `cmd`", when the union is empty, when the previous
-  failing list was incomplete, or when git fails.
-- Scope is chosen in `run_all(..., scope="auto")`:
-  - `auto` picks `affected` for a gate that declares `affected_cmd` only when the campaign
-    already has a recorded gate (`state["last_gate"]` set) and the caller is the GATING step.
-    Otherwise it picks `full`.
-  - `queue._do_gate` passes `scope="auto"`. `close.prepare_close` and `wt gate run` pass
-    `scope="full"`. A gate without `affected_cmd` always runs in full.
-- Every gate result and the run payload carry `scope: "full" | "affected"`; for an affected
-  gate the sidecar also records the `affected` list. A run with any affected gate has run
-  `scope: "affected"`.
-- The retry ladder is unchanged: a failing affected gate with complete failing ids still
-  re-runs them via `retry_cmd`, and its full rerun is the gate's `affected_cmd`, not `cmd`.
-- The last gate of a fix loop may be green on an affected scope only. That is safe because
-  reviewers read the diff, and the close gate in step 4 runs in full whenever the tree is not one
-  already proven by a full gate.
-
-### 4. Reuse of a green tree at close
-
-- `run_all` computes `tree` before its first gate: `git rev-parse HEAD^{tree}` in the worktree,
-  but only when the worktree is clean including untracked files. It re-checks that tracked files
-  are unchanged after the last gate (`git diff --quiet HEAD`). If a gate rewrote tracked files
-  (the `spec-lint --write-ledger` gate does when the ledger is stale), `tree` is `None` for the
-  run: the gates did not prove the tree they started from. The run payload carries `tree` and
-  `gates_hash`, the sha256 of the canonical JSON of the project's `gates` list (name, cmd,
-  cwd, required, results, retries, on_fail, retry_cmd, affected_cmd, affected_tests).
-- When a run has `scope: "full"`, `ok` true, no interrupted gate and a `tree`, the queue stores
-  `state["last_green_gate"] = {gate_seq, tree, gates_hash, finished_at}` in the same apply that
-  sets `last_gate` (`queue.py` GATING branch and `_absorb_close_events`).
-- `close.prepare_close` step 5, after the rebase and `_regenerate_after_rebase`, runs
-  `gates.reusable_green(state, project_cfg, worktree, head_tree)`. It returns the recorded run
-  when all of these hold, else `None` with a reason:
-  - the project's `merge.regate` is `auto` (the default; `always` disables reuse);
-  - `last_green_gate` exists and its `tree` equals `git rev-parse HEAD^{tree}` of the rebased
-    worktree, and the worktree is clean;
-  - its `gates_hash` equals the hash of the current `project_cfg["gates"]`;
-  - the request is not a `--docs-only` merge (that path never gates).
-- On reuse, `prepare_close` does not call `run_all`. It appends a `gate_reused` ledger event
-  `{gate_seq, tree, target_sha, saved_s}` (`saved_s` is the source run's `duration_s`) and builds
-  the `PreparedClose.gate_run` from the recorded payload, so `finish_close`, the merged
-  `close` record (`gates_seq` is the source seq, plus `gates_reused: true`) and `pr_body`
-  all see a green run. The PR table notes `reused from gate run <n>`. `gate_reused` is `hold` in
-  `quiet.RULES`. When reuse is refused for a campaign that had a `last_green_gate`,
-  `prepare_close` adds an `info` finding `regate: full (<reason>)` where the reason is one of
-  `tree_changed`, `gates_changed`, `worktree_dirty`, `policy_always`, so the full re-gate is
-  explained.
-- `finish_close` is unchanged. It already requires the merged tree to equal the prepared head,
-  so reuse cannot merge a tree other than the proven one.
+  If `slots` is lowered while holders exist, files above the new count are not taken again and
+  drain naturally; if it is raised, new files appear on the next acquire.
+- **Waiting.** While no slot is free, `acquire` polls every `poll_s`. On entry to the wait it
+  writes `<agentic_dir>/gate-slots/waiting-<campaign>.json` with `{campaign, pid, since}`
+  (atomic write, `export._atomic_write`) and removes it on acquire, on stop, and on any
+  exception (`finally`). A waiter marker whose `pid` is not alive is stale and ignored, so a
+  crashed runner leaves no permanent suppression. `occupancy()` lists waiters; `waiting()` returns
+  one campaign's live marker.
+- **Stop.** Each poll checks `stop` and `gates._stopping` (the `_stop_requested` rule). A stop
+  during the wait returns a `GateRun` with `interrupted=True` and no gate started (SPEC-0229
+  semantics); the marker is removed.
+- **`gates.run_all`** wraps its whole body in `acquire`: one slot per run, held across every gate
+  of the run and its retries. `t0`, the `deadline` (`events.gate_budget_s`) and each gate's
+  `timeout_s` count from the moment the slot is held, not from the wait, so a wait never eats
+  the budget. `seq` and `TMPDIR` claiming (SPEC-0253) happen after the slot is held, so a waiting
+  run does not occupy a `gate-<seq>` directory.
+- **Settings.** `agentic.gates.slots` in the user config, with a code-held default of 2. A value
+  that is not an integer from 1 to 16 (a bool, a string, `0`, `99`, a float) falls back to the
+  default, as `events.settings` does.
+- **Payload and event.** `run_all` records `slot_wait_s` (rounded; `0.0` when no wait) in the
+  gate payload (`gates.as_payload`). When a wait passes 30 s it appends one `gate_waiting` ledger
+  entry `{slots, held, waited_s}`, registers it in `schemas.py` and `events.EVENT_TYPES` (data
+  keys `slots`, `held`, `waited_s`), and the projector carries it into `events.jsonl` like
+  `waiting`. `gate_waiting` is `hold` in `quiet.RULES` (informational), and the `/wt-conduct`
+  skill's *Quiet stream* "Always held" list names it (`skills/wt-conduct/SKILL.md:81`).
+- **Detectors.** `events.py` learns of a wait only from the on-disk marker, since it can run in
+  another process:
+  - `campaign_silent` (`events.py:762`) and `state_stuck` (`stuck_items`, `events.py:488`, the
+    GATING and CLOSING branch) skip a campaign for which `gate_slots.waiting(cfg, cid)` returns a
+    live marker.
+  - A finished wait must not count against `state_stuck` either. `stuck_items` adds the
+    `slot_wait_s` of the campaign's newest `gate` ledger entry to `limit` in the GATING and
+    CLOSING branch. Without this, a long wait followed by a 1000 s gate could cross the 3600 s
+    limit after the marker is gone. The wait of a run still in flight is covered by the marker.
+  - `run_overdue` needs no change: gate runs write no `run.start`, so `_open_run` never returns
+    one and `run_overdue` cannot fire for a gate or a gate-slot wait. A test pins this, so that a
+    later `run.start` for gates cannot silently reintroduce the false alarm.
+- **CLI.** `wt queue gate-slots` (module `src/wt/agentic/cli_gate_slots.py`, attached with the
+  `cli_conduct.attach` pattern) prints `occupancy()` as text and as `--json`.
 
 ### Config
 
-- User config: `agentic.gates.slots` (int 1-16, default 2).
-- `.wt/project.yaml`: gate keys `affected_cmd`, `affected_tests`; `merge.regate: auto | always`
-  (default `auto`). `project.validate` rejects anything else with the key path.
+- User config: `agentic.gates.slots` (int 1-16, default 2). Nothing in `.wt/project.yaml`
+  changes shape; only wt's own `pytest` gate `cmd` and `retry_cmd` values change.
 
 ## Alternatives considered
 
@@ -214,111 +183,95 @@ Two new optional keys on a gate in `.wt/project.yaml`, validated in `project.py`
   unit. A separate gate pool matches what saturates the host.
 - **A bare `-n auto`.** It sizes workers to the host's cores, so N concurrent gates oversubscribe
   N times over. A fixed `-n 4` under a pool is predictable.
-- **A coverage-based source-to-test map (pytest-testmon).** Better selection, but it needs a
-  persistent per-worktree database and has its own invalidation failure modes. The changed
-  tests plus the previous failures cover the fix-loop case, and the close gate backstops it.
-- **"Base unchanged since the last green gate" as the reuse test.** It misses a rebased tree
-  that is identical after the base moved, and it trusts that nothing else touched the branch.
-  Hashing the tree is exact and costs one git call.
-- **Skip the close re-gate whenever the last full gate was green.** Unsound when the base moved:
-  the merge result was never tested.
+- **Hold the slot per gate instead of per run.** A run's gates are sequential, so a per-gate slot
+  would let a second campaign interleave between the fast `spec-lint` and the slow `pytest`, and
+  a campaign could wait mid-run with a half-finished result. One slot per run keeps a run's
+  wall time simple.
 - **Wait for a slot in the queue (a WAITING-like phase).** It would add a campaign state and
-  reopen SPEC-0200's slot accounting. A blocking wait inside the gate step, with a ledger event,
-  is smaller and keeps the state machine as it is.
+  reopen SPEC-0200's slot accounting. A blocking wait inside the gate step, with a marker file
+  and a ledger event, is smaller and keeps the state machine as it is.
+- **Tell the detectors about a wait through a ledger entry only.** `gate_waiting` is written once
+  after 30 s, and a later entry would be needed to say the wait ended. A marker removed in
+  `finally` cannot go out of date while its pid is alive.
 
 ## Acceptance criteria
 
 - [ ] `pytest-xdist` is in the `dev` extra, `.wt/project.yaml`'s pytest gate uses `-n 4` with a
-      serial `retry_cmd`, and `uv run pytest -q -n 4` passes on the full suite.
-- [ ] Parallel-safety evidence: three consecutive full `-n 4` runs on an idle host all pass with
+      serial `retry_cmd`, and the full suite passes under `uv run pytest -q -n 4`.
+- [ ] Parallel-safety evidence: three consecutive full `-n 4` runs on an idle host all pass, with
       no test failing in one run and passing in another. The three outcomes are recorded in *As
-      shipped*.
+      shipped*, with any test that needed fixing or `xdist_group`.
 - [ ] On an idle host the full `-n 4` suite takes at most 50% of the wall time of the serial run
-      on the same tree. Both durations are recorded in *As shipped*.
-- [ ] `gate_slots.acquire` never lets more than `agentic.gates.slots` holders in at once
-      across processes; a holder killed with SIGKILL frees its slot; a waiter returns promptly on
-      stop without starting a gate.
-- [ ] `gates.run_all` holds one slot for the whole run. The gate payload has `slot_wait_s`, and
-      `gate_waiting` is appended once the wait exceeds 30 s. `quiet.RULES` classifies
-      `gate_waiting` and `gate_reused` as `hold`, and the `/wt-conduct` skill lists both.
-- [ ] A GATING campaign waiting for a slot raises no `campaign_silent` or `state_stuck`.
-- [ ] `project.validate` accepts `affected_cmd`/`affected_tests` and `merge.regate`, and rejects:
-      `affected_cmd` without `{affected}`, `affected_cmd` without `affected_tests` or the
-      reverse, `affected_cmd` without `results: {format: pytest}`, empty or absolute or `..`
-      globs, and a `merge.regate` value other than `auto` or `always`.
-- [ ] The first gate of a campaign, every `wt gate run`, and the close re-gate run the gate's full
-      `cmd`. A later GATING step runs `affected_cmd` with the previous failing ids plus the
-      campaign's changed test files. With an empty affected set it runs the full `cmd`.
-- [ ] Gate results and the run payload carry `scope`; an affected gate's sidecar lists the
-      affected set.
-- [ ] A full-scope green run on a clean tree stores `last_green_gate`. An affected-scope run, a
-      red run, an interrupted run, or a run whose gates rewrote tracked files does not.
-- [ ] At close, a rebased tree equal to `last_green_gate.tree` with unchanged gate definitions
-      skips `run_all`, appends `gate_reused`, merges, and records `gates_reused: true`. A
-      different tree, changed gate definitions, a dirty worktree or `merge.regate: always`
-      re-gates in full and records the reason.
-- [ ] A zero-failure campaign run end to end by the fake runner executes exactly two full gate
-      runs when the base moved (first gate, close gate) and exactly one when it did not.
-- [ ] `uv run pytest` passes, and `python3 tools/spec_lint.py` exits 0.
+      on the same tree. Both durations and the ratio are recorded in *As shipped*.
+- [ ] `gate_slots.acquire` never lets more than `agentic.gates.slots` holders in at once across
+      processes; a holder killed with SIGKILL frees its slot; a waiter returns promptly on stop
+      without starting a gate and removes its waiter marker. A `slots` value that is not an int
+      from 1 to 16 falls back to 2.
+- [ ] `gates.run_all` holds one slot for the whole run, and its `deadline` and per-gate timeouts
+      count from the moment the slot is held. The gate payload has `slot_wait_s` (0.0 without a
+      wait), and exactly one `gate_waiting` entry is appended once a wait exceeds 30 s.
+- [ ] `quiet.RULES` classifies `gate_waiting` as `hold` and the `/wt-conduct` skill's *Quiet
+      stream* list names it (the existing rules-versus-skill comparison test passes).
+- [ ] A GATING or CLOSING campaign with a live `waiting-<campaign>.json` marker raises no
+      `campaign_silent` and no `state_stuck`, a marker with a dead pid does not suppress them, a
+      long wait plus a long gate does not raise `state_stuck` before `gate_budget_s` of actual
+      gate time, and no `run_overdue` is raised for a gate-slot wait.
+- [ ] `wt queue gate-slots` prints holders and waiters as text and with `--json`.
 
 ## Test plan
 
 - **Automated: `tests/test_gate_slots.py`.** Uses `tests/waits.py`, never a fixed sleep before a
-  positive assertion. Spawns three processes against `slots: 2` and asserts at most two hold at
-  once and the third enters after one releases. A holder killed with SIGKILL frees its slot. A
-  waiter with `stop` set returns an interrupted run, with no gate started. A bad
-  `agentic.gates.slots` (`0`, `"x"`, `true`, `99`) falls back to the default. `occupancy` lists
-  the holder.
-- **Automated: `tests/test_gate_scope.py`.** Fake project with a git repo and a pytest gate whose
-  `cmd`/`affected_cmd` are `echo` scripts, so the chosen command is visible in the log.
-  Asserts the first gate and `wt gate run` use `cmd`; a second GATING step uses `affected_cmd`
-  with the previous failing ids plus changed test files, de-duplicated and shell-quoted; an
-  incomplete failing list or an empty set falls back to `cmd`; `scope` shows in the payload and
-  sidecar; the retry ladder still works on an affected gate.
-- **Automated: `tests/test_close_regate_reuse.py`.** Temp git repos and the fake runner. A:
-  green full gate, no-op rebase, close skips the gates, emits `gate_reused`, merges, and the
-  close record has `gates_reused: true`. B: base moved with an unrelated file, so the rebased
-  tree differs and the close runs in full. C: base moved to the same resulting tree (the branch
-  change already on base), reuse. D: `gates` list edited between the gate and the close, full
-  re-gate with the reason `gates_changed`. E: a gate that rewrites a tracked file leaves
-  `tree: None`, so no `last_green_gate` and a full close re-gate. F: `merge.regate: always`. G: an
-  affected-scope last run and a red last run both leave `last_green_gate` unset. H: `pr_body`
-  shows `reused from gate run <n>`.
-- **Automated: `tests/test_agentic_project.py` (extend).** The `project.validate` cases in the
-  acceptance list.
-- **Automated: `tests/test_agentic_events.py` / `tests/test_quiet.py` (extend).** `gate_waiting` and
-  `gate_reused` are `hold`, the skill's *Quiet stream* paragraph lists them (the existing
-  comparison test), and a GATING campaign inside a slot wait raises no silent or stuck event.
+  positive assertion. Spawns three processes against `slots: 2`: at most two hold at once, and
+  the third enters after one releases. A holder killed with SIGKILL frees its slot. A waiter with
+  `stop` set returns an interrupted run with no gate started and no marker left. `settings`
+  falls back to 2 for `0`, `"x"`, `true`, `99`, `1.5`. `occupancy` lists the holder and the
+  waiter. A `run_all` against a fake project with one slot held by another process records
+  `slot_wait_s > 0`, appends one `gate_waiting` after the (monkeypatched) 30 s threshold, and its
+  `deadline` is computed after the wait.
+- **Automated: `tests/test_agentic_events.py` and `tests/test_quiet.py` (extend).**
+  `gate_waiting` is `hold`, and the skill's *Quiet stream* paragraph names it (the existing
+  comparison test). With a live marker for a GATING campaign whose ledger has been silent past
+  `silent_after_s` and whose state age is past the stuck limit, `_watch` emits neither
+  `campaign_silent` nor `state_stuck`. The same state with a dead-pid marker emits both. With a
+  recorded `slot_wait_s` on the current run, `stuck_items` extends its limit by that wait. A
+  GATING campaign with no `run.start` and an old ledger raises no `run_overdue`.
+- **Automated: `tests/test_cli_gate_slots.py`.** `wt queue gate-slots` and `--json` show a held
+  slot and a waiter from a temp data dir.
+- **Automated: existing gate tests.** `tests/test_agentic_gates*.py`, the close and queue tests,
+  run unchanged (with the pool at its default, a single `run_all` takes a free slot at once).
 - **Manual verification.**
   1. On an idle host, `time uv run pytest -q` then `time uv run pytest -q -n 4` on the same tree;
      record both durations and the ratio.
   2. Run `uv run pytest -q -n 4` three times; record the results. Any test that fails once and
      passes later is fixed or grouped before the spec is `done`.
   3. Queue two real campaigns together with `agentic.gates.slots: 1`. Check with
-     `wt gate slots` that one gate runs while the other waits, and that the waiter's
-     `gate_waiting` and `slot_wait_s` show in `wt queue events` and `wt campaign show`.
+     `wt queue gate-slots` that one gate runs while the other waits, that the waiter's
+     `gate_waiting` and `slot_wait_s` show in `wt queue events` and `wt campaign show`, and that
+     no `campaign_silent` or `state_stuck` arrives for the waiter.
   4. Over the first 5 campaigns that merge after this ships, run
-     `wt campaign export --since <ship date>` and report GATING minutes and full gate runs per
-     campaign next to the 2026-10-30 baseline (about 60 min of gate time and 3-4 full gates).
-     Record it in *As shipped*.
-- **Regression guard.** Full `uv run pytest`. The existing gate tests (`tests/test_agentic_gates*.py`,
-  the close and queue tests) pass unchanged. A project with none of the new keys behaves as
-  before, apart from the slot pool, which defaults to 2 and bounds only concurrent gate runs.
+     `wt campaign export --since <ship date>` and record GATING minutes per campaign next to the
+     2026-10-30 baseline (about 60 min of gate time and 3-4 full gates) in *As shipped*. The
+     expected effect of this spec alone is the per-gate wall-time ratio; the number of full gates
+     per campaign is the next two specs' target.
+- **Regression guard.** Full `uv run pytest` (run with `-n 4` once the gate is switched, and
+  serial once, so neither mode regresses). A project with no `agentic.gates` config behaves as
+  before, apart from the pool defaulting to 2, which bounds only concurrent gate runs.
 
 ## Rollout / migration
 
-1. Merge the code with the new `project.yaml` keys unused. Reuse and slots go live, scope and
-   `-n 4` stay off, so the first merge isolates their effect.
-2. Fix any parallel-unsafe tests found by the three-run check, then switch wt's own gate to
-   `-n 4` with the `retry_cmd`.
-3. Add `affected_cmd` and `affected_tests` to wt's pytest gate.
-4. Compare gate minutes per campaign over the next five merges. If a shortcut shows a
-   regression (a campaign merged with a test red on main, or a gate flake rate above 1 in 20
-   runs), set `merge.regate: always` or drop `affected_cmd` for that project. No data move is
-   needed. New fields are only added to payloads and state, and older campaigns without
-   `last_green_gate` re-gate in full.
-5. The pool applies to every project the runner serves. For comfort-assistant, set its gate
-   `cmd` worker count to its own suite.
+1. Merge the pool and detector code first, with `.wt/project.yaml` unchanged. The pool defaults
+   to 2 and bounds only concurrent gate runs, so serial gates are barely throttled.
+2. Run the three-run check on a branch with `pytest-xdist` installed. Fix or group any
+   parallel-unsafe tests found. Then switch wt's own pytest gate to `-n 4` with the serial
+   `retry_cmd`. The campaign gating that commit runs the new command in its own final gate.
+3. Compare per-gate wall time and the flake rate over the next five merges. If the flake rate
+   passes 1 in 20 gate runs, revert the gate `cmd` to serial (a one-line `project.yaml` edit)
+   and keep the pool; the pool needs no data migration, since slot and waiter files are
+   transient and a missing directory is created on first use.
+4. The pool applies to every project the runner serves. For comfort-assistant, set its gate
+   `cmd` worker count to its own suite when it joins the loop.
+5. Open the two non-goal specs (affected scope, close reuse) as ideas under SPEC-0298 once this
+   one is accepted, so their gates also run under the pool.
 
 ## Definition of done
 
