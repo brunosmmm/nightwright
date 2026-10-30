@@ -355,6 +355,16 @@ its own decisions in the same vocabulary as the conductor.
   `test_post_merge_base_moving_is_not_auto` added. Targeted run of `tests/test_agentic_queue_autopark.py`,
   `tests/test_agentic_autopark.py`, `tests/test_agentic_close.py`, `tests/test_agentic_queue_merge.py`:
   135 passed; the full suite is left to gating.
+- Gate timeout investigation (two `uv run pytest -q -x` kills near 96%, exit 143): no hang and no
+  loop in the new code. The whole suite was run to completion in two parts on a host at load 10-15
+  (other campaigns' pytest runs in parallel): `-k agentic` 2244 passed, 2 skipped, 1 failed in 989 s
+  (`tests/test_agentic_adopt.py::test_fanout_detach_precondition`, a thread-timing test in files
+  this change does not touch; it passed in 7 of 8 isolated reruns, so it is a load flake) and
+  `-k "not agentic"` 1841 passed, 1 skipped in 641 s. Together that is ~27 min wall and ~17 min of
+  CPU, so the suite itself exceeds the 1200 s gate timeout under load; progress was steady, not
+  stalled. No slowdown from this change: the tick-heavy `tests/test_agentic_queue.py`,
+  `test_agentic_close.py` and `test_agentic_queue_merge.py` (250 tests) take 57 s with it against 67 s
+  on the merge-base source tree. The gate timeout was not changed and no test was skipped.
 - Manual verification (`wt queue decisions --since 1d`, `wt queue wakeups`) can only run on the
   live queue after merge; it is not done yet and is the first thing to check there.
 
