@@ -542,7 +542,7 @@ def _no_specced_keyword(cfg):
 
 def _link_failure_checks(cfg, iid, cid):
     st = S.read_state(cfg, cid)
-    assert parked(cfg, cid)["reason"] == "spec_review_unavailable"
+    in_review(cfg, cid)         # SPEC-0214: the committed write goes on to its review
     assert st["spec_id"] == "SPEC-0002" and st["spec"]["id"] == "SPEC-0002"
     assert st["counters"].get("spec_write_retries", 0) == 0 and st["pending_brief"] is None
     (ev,) = ledger(cfg, cid, "spec_written")
