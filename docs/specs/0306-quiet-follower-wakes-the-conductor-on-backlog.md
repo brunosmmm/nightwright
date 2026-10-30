@@ -1,9 +1,10 @@
 ---
 id: SPEC-0306
 title: "Quiet follower holds `backlog_blocked_long` (and its ping item) while the blocker is an ordinary dependency wait with a live campaign"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-30
+updated: 2026-10-30
 milestone: "M10: agentic MVP"
 kind: feature
 source_idea: IDEA-412
