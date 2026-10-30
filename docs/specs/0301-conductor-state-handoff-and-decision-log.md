@@ -56,30 +56,49 @@ dispatches, escalations or pointers to standing rules, and its `recent_events` a
    spec_id|null, event_id|null, rule, kind, action, rationale}`.
    - `kind` is one of `resume, abandon, escalate, ask_steward, dispatch, restart_runner,
      wait, reconcile, apply_answer, merge, no_action, other`.
-   - `rule` is the decision-table row id: the event `type` (`runner_dead`,
-     `conductor_digest`, …) or `parked.<reason>` for park rows (`parked.cost_cap`). It is
-     validated against `^[a-z_]+(\.[a-z_]+)?$`. The table's first cell is the id, so the
-     skill and the log share one vocabulary.
+   - `rule` is the decision-table row id, validated against `^[a-z_]+(\.[a-z_]+)?$`
+     (`RULE_RE`). A row's rule id is `<event type>` (`runner_dead`, `conductor_ping`, …) or
+     `parked.<reason>` (`parked.cost_cap`). A row that lists several types or reasons yields
+     one id per listed item (e.g. `parked.loop_exhausted`, `parked.triage_escalated`). A
+     qualifier becomes a second segment (`run_failed.transient`, `message.answer`,
+     `parked.gates_failed` for the merge-campaign row). A row with no event gets an
+     explicit id (`wt_broken`). The skill's decision table gains a leading `rule id` column
+     listing each row's id(s), so the skill and the log share one vocabulary and the
+     scorecard child can tell which row a decision applied.
 2. **One write command:** `wt queue decision [CAMPAIGN] --kind K --rule R [--event N]
-   [--action "…"] [--by conductor] RATIONALE`. It applies at once, with no dry run,
+   [--action "…"] [--by conductor] RATIONALE`. `--by` is `conductor`, `queue` or
+   `steward:<P>`. It applies at once, with no dry run,
    because it is a pure append like `wt campaign note`. With a campaign it also appends a
    ledger `note`, `{text: "decision <kind> (<rule>): <rationale>", author: <by>,
    decision: {seq, kind, rule}}`, so `park_view`, `wt campaign log` and the TUI see it
-   unchanged. `wt campaign note` stays for non-decision remarks.
+   unchanged. The ledger note is appended first and the `decisions.jsonl` line is written
+   only after it succeeds, so a failure leaves at most a plain note, never a logged
+   decision that `park_view` cannot see. `wt campaign note` stays for non-decision remarks.
 3. **Listing:** `wt queue decisions [--campaign C] [--since D] [--tail N] [--parks] [--json]`.
-   `--parks` lists every `park` ledger event in the window with the first decision record
-   on that campaign after it, or `missing`, and a coverage ratio.
+   `--since` accepts an ISO date/datetime or a relative duration (`2h`, `1d`), like
+   `wt queue conductor-cost --since`. `--parks` lists every `park` ledger event in the
+   window with the decision record that covers it (see `park_coverage`), or `missing`, and a
+   coverage ratio. When `--since` is omitted, `--parks` (and `park_coverage(since=None)`)
+   counts only parks whose ts is at or after the first record in `decisions.jsonl`; with an
+   empty log it reports `parks: 0`. So parks decided by free-text notes before the merge are
+   never reported `missing`.
 4. **Brief:** `wt queue conductor-brief [--json]` (`wt.conductor.brief.v1`), built only from
    files. Each list has a fixed cap, with `+N more` when cut. The text form is at most
-   12,000 characters (about 3k tokens) and is truncated from the least important section
-   upward. It contains:
+   12,000 characters (about 3k tokens). Sections are kept in this priority order, highest
+   first: `runner`, `conductor`, `counts`, `parked`, `open_dispatches`, `escalations_open`,
+   `unanswered_mail`, `active`, `recent_decisions`, `standing`. Truncation removes items
+   from the lowest-priority section first and ends each cut section with `+N more`. It
+   contains:
    - `runner`: held, pid, heartbeat age, draining reason.
    - `conductor`: follower pid, `session_id` and `context_tokens` (the last turn's context
      from the SPEC-0299 reader), `compact_at`, and `compact_now`.
    - `counts`.
    - `parked` (cap 20): campaign, label, reason, a 200-char detail, `parked_for_s`, owner,
-     `last_decision` {kind, rule, a 200-char rationale, ts} or null, and the open
-     escalation id.
+     the open escalation id, `last_decision`, `decided` and `overdue`. `last_decision` is
+     `{kind, rule, a 200-char rationale, ts}` for the latest decision record on that
+     campaign with ts ≥ the current park's ts (from `park_view(...)["parked_at"]`), or
+     null: a decision from an earlier park is never shown as current. `decided` and
+     `overdue` come from `park_view`.
    - `active` (cap 20): campaign, label, state, loops, cost.
    - `open_dispatches`: `dispatch` decisions with no later decision on the same campaign,
      or on the queue for campaign-less ones.
@@ -89,7 +108,8 @@ dispatches, escalations or pointers to standing rules, and its `recent_events` a
    - `standing`: the path of the installed `/wt-conduct` skill, the configured
      `agentic.conductor.memory_paths` and the configured `agentic.conductor.standing_rules`
      strings.
-5. **Compaction rule.** `agentic.conductor.compact_at_tokens` defaults to 150000. The skill
+5. **Compaction rule.** `agentic.conductor.compact_at_tokens` (read from config) defaults
+   to 150000; `memory_paths` and `standing_rules` default to empty lists. The skill
    says: when `compact_now` is true, or the session's context indicator passes the
    threshold, finish the event in hand. Record any in-flight dispatch with
    `wt queue decision --kind dispatch`, then compact. After compacting, or on any fresh
@@ -105,15 +125,19 @@ dispatches, escalations or pointers to standing rules, and its `recent_events` a
   - `record(cfg, *, kind, rule, rationale, campaign=None, event_id=None, action=None,
     by="conductor") -> dict`. It validates the kind, the rule, that the campaign exists
     (`store.read_state`), and, when given, that `event_id` exists among
-    `events.read_since(cfg, event_id - 1)`. It appends under a flock with the next `seq`
-    and, with a campaign, the ledger note via `store.append_event(cfg, cid, "note", …,
-    by=f"agent:{by}")`.
+    `events.read_since(cfg, event_id - 1)`. With a campaign it first appends the ledger
+    note via `store.append_event(cfg, cid, "note", …, by=f"agent:{by}")`. Only after that
+    succeeds does it append the `decisions.jsonl` line, under a flock, with the next `seq`.
+    A failure of the note therefore writes no log line. Because the note carries `seq`, the
+    seq is reserved under the same flock before the note is written.
   - `read(cfg, *, campaign=None, since=None) -> list[dict]`.
   - `park_coverage(cfg, *, since=None) -> dict`: for each campaign from
     `store.list_campaigns(cfg, include_terminal=True)`, each `park` in
     `store.read_ledger(cfg, cid, types=["park"])` is matched to the first record with the
-    same campaign and `ts >=` the park's ts. Returns `{parks, covered, missing: [...],
-    ratio}`.
+    same campaign whose ts is ≥ the park's ts and < the next `park` on that campaign (ts
+    compared as parsed UTC datetimes, so ledger and decision timestamps are comparable).
+    One decision therefore covers at most one park. The `since=None` window is defined in
+    Decision 3. Returns `{parks, covered, missing: [...], ratio}`.
   - `open_dispatches(records) -> list[dict]`.
 - New module `src/wt/agentic/brief.py`:
   - `conductor_brief(cfg, now=None) -> dict` reuses `Q.queue_payload`, `queue.park_view`,
@@ -132,13 +156,17 @@ dispatches, escalations or pointers to standing rules, and its `recent_events` a
     --event <id> "…"` instead of `wt campaign note "conductor: …"`. *Bookkeeping* records
     dispatches with `--kind dispatch`.
   - A new *Compaction and handoff* section contains the rule in Decision 5.
-  - A sentence above the decision table: "the first cell of each row is its rule id; a
-    park row's id is `parked.<reason>`".
+  - A sentence above the decision table: "the first cell of each row lists its rule
+    id(s); a park row's id is `parked.<reason>`", and the decision table gains a leading
+    `rule id` column listing each row's id(s) per Decision 1 (e.g. `run_failed.transient`,
+    `message.answer`, `wt_broken`).
+  - The skill edits are rebased on SPEC-0300's if it lands first (both specs edit this
+    file); the skill's current periodic-digest row is `conductor_ping`.
 
 ## Alternatives considered
 
 - **A `conductor_decision` event in `events.jsonl`.** The conductor's own follower would
-  wake on its own writes, which is exactly the noise SPEC-0300 removes. A separate log plus
+  wake on its own writes, which is exactly the kind of noise SPEC-0300 removes. A separate log plus
   a ledger note gives the audit trail without the echo.
 - **Extend `conduct-status`.** Its JSON is consumed as is (`wt.conduct.status.v1`, the TUI,
   tests). A separate, size-capped brief keeps that contract and has one job: re-orient.
@@ -151,22 +179,31 @@ dispatches, escalations or pointers to standing rules, and its `recent_events` a
       1 with a clear message and writes nothing). It appends a `wt.conductor.decision.v1`
       record with a monotonically increasing `seq` and, with a campaign, a ledger `note`
       carrying `decision`, after which `park_view(...)["decided"]` is true.
-- [ ] `wt queue decisions --json` lists records filtered by campaign or since. `--parks`
-      reports each park with its covering decision or `missing`, plus `ratio`.
+- [ ] `wt queue decisions --json` lists records filtered by campaign or since (ISO or
+      relative like `2h`). `--parks` reports each park with its covering decision or
+      `missing`, plus `ratio`. One decision covers at most one park, and without `--since`
+      parks older than the first decision record are excluded.
 - [ ] `wt queue conductor-brief --json` (`wt.conductor.brief.v1`) contains runner,
       conductor, counts, parked items with `last_decision` and open escalation, active
       items, `open_dispatches`, `recent_decisions`, unanswered mail, open escalations and
-      `standing` pointers, with every list capped and the cut reported as `+N more`.
+      `standing` pointers, with every list capped and the cut reported as `+N more`. A
+      parked item's `last_decision` is null when the latest decision is older than the
+      current park, and the item carries `decided` and `overdue`.
 - [ ] The text brief is at most 12,000 characters for a store with 60 parked and 60 active
-      campaigns and 500 decisions, and parked items come before recent decisions when
-      truncating.
+      campaigns and 500 decisions. Truncation follows the section priority in Decision 4: the
+      `runner` and `conductor` lines and at least one parked item always survive, and
+      `recent_decisions` and `standing` are cut before `parked`.
 - [ ] `conductor.context_tokens` is the last turn's context of the newest registered
       conductor session, and `compact_now` is true exactly when it exceeds
-      `compact_at_tokens`. With no session or transcript both are null or false and the
-      command still succeeds.
+      `compact_at_tokens`, which is read from config (`agentic.conductor.compact_at_tokens`,
+      default 150000; `memory_paths` and `standing_rules` default to empty lists). With no
+      session or transcript both are null or false and the command still succeeds.
 - [ ] The `/wt-conduct` skill re-orients from `conductor-brief`, records decisions and
       dispatches with `wt queue decision`, states the rule-id convention, and contains the
-      compaction rule with the 150k default.
+      compaction rule with the 150k default. Every decision-table row has an explicit rule
+      id (or ids) matching `RULE_RE`.
+- [ ] `wt queue decision` writes the ledger note before the log line; if the note fails, no
+      log line is written. `--by` accepts only `conductor`, `queue` or `steward:<P>`.
 
 ## Test plan
 
@@ -179,25 +216,38 @@ dispatches, escalations or pointers to standing rules, and its `recent_events` a
     `decision` dict, and `park_view` is decided.
   - `test_queue_level_decision_no_campaign`.
   - `test_park_coverage`: 3 parks, 2 covered, 1 covered only by a record older than the
-    park → `missing`, `ratio == 2/3`.
+    park → `missing`, `ratio == 2/3`. Also: two parks on one campaign with a single later
+    decision after the second park → only the second is covered; a park older than the
+    first decision record is excluded when `since=None`; an empty log gives `parks: 0`.
+  - `test_record_write_order_and_by`: a failing ledger append leaves `decisions.jsonl`
+    unchanged; `--by` rejects values other than `conductor`, `queue`, `steward:<P>`;
+    `--since 2h` and an ISO date both parse.
   - `test_open_dispatches`: a dispatch followed by a resume on the same campaign is closed.
     A lone dispatch is open.
   - `test_brief_contents_and_caps`: every key is present, `parked[i].last_decision` is
-    populated, and lists over their cap report `+N more`.
-  - `test_brief_text_size_bound`: 60/60/500 fixture → `len(text) <= 12000`, and the
-    `parked` header is present.
+    populated, and lists over their cap report `+N more`. A decision older than the
+    current park (park, decide, resume, park again) gives `last_decision: null` and
+    `decided: false`.
+  - `test_brief_text_size_bound`: 60/60/500 fixture → `len(text) <= 12000`, the `runner`
+    and `conductor` lines and at least one parked item are present, and `recent_decisions`
+    and `standing` are the sections cut first.
   - `test_brief_context_from_transcript`: a SPEC-0299 session fixture whose last turn has
-    context 160k → `compact_now` is true. At 140k → false. With no session → null and false.
+    context 160k → `compact_now` is true. At 140k → false. With config
+    `compact_at_tokens: 100000`, a 140k context gives `compact_now: true`. With no session
+    → null and false.
   - `test_cli_decision_decisions_brief` (CliRunner, JSON and text).
-- `tests/test_skills.py`: `test_conduct_skill_uses_brief_and_decisions` and
-  `test_conduct_skill_has_compaction_rule`.
+- `tests/test_skills.py`: `test_conduct_skill_uses_brief_and_decisions`,
+  `test_conduct_skill_has_compaction_rule` and `test_conduct_skill_rule_ids`, which parses
+  the decision table in `skills/wt-conduct/SKILL.md` and asserts that every row has a
+  non-empty leading `rule id` cell whose ids (comma-separated) each match `RULE_RE`.
 - **Sabotage checks:**
   - Skip the ledger note. `test_decision_writes_log_and_ledger_note` must fail, because the
     park is not decided.
   - Match coverage records by campaign only, ignoring ts. `test_park_coverage` must fail.
   - Remove the truncation. `test_brief_text_size_bound` must fail.
 - **Manual verification:** on the live queue, run `wt queue conductor-brief` and check that
-  the output is under 12k characters and lists every parked item with its last decision.
+  the output is under 12k characters and lists every parked item (or the first 20 plus
+  `+N more`) with its last decision.
   Then compact the live conductor once per the rule, re-orient from the brief, and note in
   *As shipped* that no `park_undecided` fired in the next 15 min (exit criterion E6).
 - **Regression guard:** full `uv run pytest`. `tests/test_agentic_conduct_cli.py` (the
@@ -206,8 +256,11 @@ dispatches, escalations or pointers to standing rules, and its `recent_events` a
 ## Rollout / migration
 
 1. Merge after SPEC-0299. The conductor re-reads the skill on `code_changed`.
-2. Existing free-text notes stay as they are. Coverage counts only parks that start after
-   the merge, which is where the SPEC-0298 window begins.
+2. Existing free-text notes stay as they are. Coverage counts only parks whose ts is at or
+   after the first `decisions.jsonl` record (Decision 3), which is where the SPEC-0298
+   window begins; no `--since` needs to be passed for that.
+3. If SPEC-0300 merges first, rebase the shared `skills/wt-conduct/SKILL.md` edits on it and
+   keep its row names for the rule ids.
 
 ## Definition of done
 
