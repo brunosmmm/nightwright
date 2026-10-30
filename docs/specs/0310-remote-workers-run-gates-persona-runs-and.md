@@ -55,8 +55,8 @@ timeout triage).
 4. **Zero change when unused.** The local machine is just another worker. With no workers
    configured, behaviour is exactly today's.
 5. **Safe failure.** A worker dying or vanishing can never produce a half-merge.
-6. **Honest accounting.** Compute cost of cloud workers feeds project budgets (IDEA-424);
-   Claude cost is reported as today.
+6. **Honest accounting.** Claude cost per job is reported as today, attributed to the
+   worker that ran it.
 
 **Non-goals**
 - Replacing the coordinator with a distributed consensus system. There is one coordinator.
@@ -64,6 +64,9 @@ timeout triage).
 - Workers merging or pushing to `main`. Ever.
 - Remote foreman agents (a Claude per machine making judgment calls) in this epic.
 - Changing what a gate or a persona run does. Only where it runs.
+- **Cloud or hosted compute** (human 2026-10-30): no cloud VMs, no ephemeral or autoscaled
+  workers, no Anthropic-hosted managed sandboxes. Workers are the human's own machines.
+- **Several Claude accounts** (human 2026-10-30): one shared account, capped.
 
 ## Decision
 
@@ -135,9 +138,8 @@ Alternatives considered:
   jobs go to one worker while it is healthy (warm worktree, `uv` and caches).
 - **Account-aware scheduling**: the shared Claude account's concurrency is a second limit on
   persona jobs, separate from machine slots. A 429 parked a campaign before (the SPEC-0179
-  canary), so the scheduler caps concurrent persona runs per account and backs off on
-  transient 429 failures; several accounts are supported by tagging a worker with an
-  account.
+  canary), so the scheduler caps concurrent persona runs across all workers (one shared
+  account, human 2026-10-30) and backs off on transient 429 failures.
 
 ### Code flow
 
@@ -152,9 +154,9 @@ half-merge.
 
 - IDEA-427's stream-json is just more events on the job's stream, so the tail viewer and
   herdr panes work wherever a job runs.
-- Compute cost of cloud workers (instance-seconds times rate) is recorded as a job-level
-  field, summed per campaign, and feeds IDEA-424 project budgets. Claude cost is reported
-  as today.
+- Claude cost is reported per job as today, with the worker id, so per-worker spend shows
+  in the export and counts against IDEA-424 project budgets. Workers are the human's own
+  machines, so there is no compute bill to track.
 
 ### "Claude on the other side"
 
@@ -163,9 +165,8 @@ cost is unchanged. Delegated remote judgment is deferred. The preferred form is
 **federation**: a project's runner and steward run on a remote machine, the mailbox
 (`src/wt/agentic/mailbox.py`, per-address inboxes with sequence numbers, `mailbox.send`
 line 79) is carried over the network, and one conductor coordinates N project machines
-asynchronously. We also spike **Anthropic-hosted managed-sandbox agents** as a possible
-third backend for persona jobs; fit with the `claude -p` contract, budgets and git
-write-back is **unverified**.
+asynchronously. Hosted backends (Anthropic managed sandboxes, cloud VMs) are out of scope
+(Non-goals).
 
 ### Threat model (required)
 
@@ -195,16 +196,14 @@ children are created.
 - [ ] Job protocol `wt.job.v1`, worker registry and local worker adapter, with no behaviour change (project: Meta-Tools) — schemas, idempotent job/event ids, lease/heartbeat, event merge, `wt workers add|list|check|drain|off`, local machine as worker `local`.
 - [ ] Remote gates over SSH, async submit/attach (project: Meta-Tools) — `wt worker submit|attach|poll`, gate jobs on a remote worker with bundle or remote fetch, per-worker slots and gate preference, `wt worker bootstrap` (depends_on job protocol)
 - [ ] Remote persona runs with branch write-back (project: Meta-Tools) — persona jobs rebuilt via `build_argv` on the worker, campaign affinity, account-aware concurrency, implementer commits returned as `wt/<campaign>` (depends_on job protocol)
-- [ ] Pull workers: `wt worker serve` and a job store (project: Meta-Tools) — dial-out workers, option (a) `wt serve` API over the file store first, signed jobs, Tailscale/mTLS and per-worker credentials, threat-model tests (depends_on job protocol)
-- [ ] Ephemeral cloud workers scaled by queue depth, with compute cost accounting (project: Meta-Tools) — provision/teardown, scale on queue depth, compute cost into IDEA-424 budgets (depends_on pull workers)
+- [ ] Pull workers: `wt worker serve` and a job store (project: Meta-Tools) — dial-out workers for the human's own machines (laptop behind NAT, home server), option (a) `wt serve` API over the file store first, signed jobs, Tailscale/mTLS and per-worker credentials, threat-model tests (depends_on job protocol)
 - [ ] Federation: remote project runner and steward with a networked mailbox (project: Meta-Tools) — one conductor, N project machines, asynchronous (depends_on pull workers)
-- [ ] Spike: managed-sandbox backend for persona runs (project: Meta-Tools) — verify fit with the `claude -p` contract, budgets and git write-back; write up go/no-go
 
 Sequencing: the protocol child goes first and changes nothing observable. Remote gates and
 remote persona runs can then proceed in parallel; remote gates ship first (stateless,
 biggest win). Pull workers depend only on the protocol and may run in parallel with the SSH
-children. Cloud workers and federation both need pull workers. The spike is independent
-and can run any time after acceptance.
+children. Federation needs pull workers. Own machines come first: SSH workers on a second
+computer or home server (human 2026-10-30).
 
 ## Acceptance criteria
 
@@ -224,7 +223,8 @@ and can run any time after acceptance.
 - [ ] The stream-json viewer and herdr pane work against a remote job.
 - [ ] The threat-model section is implemented as tests (unsigned job refused on a pull
       worker, restricted SSH command, env allowlist).
-- [ ] Cloud worker compute cost is visible in project budget reports.
+- [ ] Per-worker Claude spend is visible in `wt campaign export` and counts against project
+      budgets.
 - [ ] Measured: with at least 2 remote workers, gate wall time per campaign and campaigns
       per hour improve over the local-only baseline recorded when IDEA-430 lands.
 
@@ -253,8 +253,7 @@ and can run any time after acceptance.
 2. Protocol and local adapter (no behaviour change), then remote gates over SSH on one
    machine, off by default (`wt workers` empty).
 3. Remote persona runs and account-aware scheduling.
-4. Pull workers, then cloud workers and federation as separate, individually switchable
-   steps. The managed-sandbox spike can inform step 3 or 4.
+4. Pull workers, then federation, as separate, individually switchable steps.
 5. Partial delivery is safe at every step: an unconfigured feature is today's behaviour.
 
 ## Definition of done
@@ -266,9 +265,10 @@ and can run any time after acceptance.
 
 ## Open questions
 
-Scope questions for the human; technical details are decided above.
-- Which machines first: an existing second computer, a home server, or cloud VMs? (Sets the
-  order of children 2 and 5.)
-- One Claude account or several for worker-side persona runs? (Decides whether
-  account-aware scheduling is a cap or a pool.)
-- Is the compute-cost budget for cloud workers a hard cap or a report-only number at first?
+Resolved by the human on 2026-10-30:
+- **Machines first:** the human's own machines (a second computer or home server) over SSH.
+- **Claude accounts:** one shared account; the scheduler caps total concurrent persona runs.
+- **Cloud compute:** not intended; cloud and hosted workers are Non-goals, so the cloud-worker
+  child and the managed-sandbox spike were dropped from the Breakdown.
+
+No open questions remain.
