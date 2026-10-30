@@ -1,7 +1,7 @@
 ---
 id: SPEC-0312
 title: "Make test_fanout_detach_precondition load-tolerant (no wall-clock races with real subprocesses)"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -141,23 +141,23 @@ past `draft`, so by superseding or an `As shipped` note, per AGENTS.md).
 
 ## Acceptance criteria
 
-- [ ] `test_fanout_detach_precondition` constructs its runner with
+- [x] `test_fanout_detach_precondition` constructs its runner with
       `spawn_timeout_s == waits.WAIT_S * 4` and never relies on the 30 s default.
-- [ ] The paused wrapper stub writes a `ready` marker, and the test waits for it with `until`
+- [x] The paused wrapper stub writes a `ready` marker, and the test waits for it with `until`
       before asserting `h_test.phase == "spawning"` and that `try_detach_all()` returns `None`.
-- [ ] After `go` is written the test still asserts a single grouped detach of both reviewer run
+- [x] After `go` is written the test still asserts a single grouped detach of both reviewer run
       ids and that both hooks are detached and `pool.flights` is empty (assertions unchanged in meaning).
-- [ ] `tick_until` gives up only after `waits.WAIT_S` (or an explicit `timeout`) seconds, not after a
+- [x] `tick_until` gives up only after `waits.WAIT_S` (or an explicit `timeout`) seconds, not after a
       fixed number of iterations; the `n=150` call sites still work unchanged.
-- [ ] `test_tick_until_is_time_bounded` exists and passes; it asserts only the return value,
+- [x] `test_tick_until_is_time_bounded` exists and passes; it asserts only the return value,
       elapsed `>= timeout`, and ticks `> 1` with `n=1` (no tick count per wall-clock window), and the
       AST guard fails if `tick_until` reintroduces a `range(n)` iteration bound.
-- [ ] `go` is written in a `finally`, so a failing `test_fanout_detach_precondition` tears down
+- [x] `go` is written in a `finally`, so a failing `test_fanout_detach_precondition` tears down
       within the normal fixture bounds and leaves no stub process (manual step 3).
-- [ ] No file under `src/` is changed; the diff is confined to `tests/test_agentic_adopt.py`.
-- [ ] `test_fanout_detach_precondition` passes 20 consecutive runs while the machine is saturated
+- [x] No file under `src/` is changed; the diff is confined to `tests/test_agentic_adopt.py`.
+- [x] `test_fanout_detach_precondition` passes 20 consecutive runs while the machine is saturated
       (manual step 2), and `uv run pytest` passes in full.
-- [ ] `python3 tools/spec_lint.py` exits 0.
+- [x] `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -189,6 +189,39 @@ past `draft`, so by superseding or an `As shipped` note, per AGENTS.md).
 - **Regression guard**: `uv run pytest` (full suite) passes; `python3 tools/spec_lint.py` exits 0;
   `git diff --stat` shows only `tests/test_agentic_adopt.py` (plus this spec and the regenerated ledger).
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_adopt.py tests/test_test_waits.py -q`: 42 passed (includes
+  `test_fanout_detach_precondition`, `test_tick_until_is_time_bounded`,
+  `test_tick_until_has_no_iteration_bound`, `test_fanout_detach_precondition_phases`).
+- Manual 1 (before, 16 busy loops on 8 cores, 20 runs of the original test): 5 failed / 15 passed;
+  every failure was `assert h_conf.detached() and h_test.detached()` (see As shipped).
+- Manual 1b (spawn timeout + `ready` + `finally` only, same load, 20 runs): 11 failed / 9 passed, same
+  `h_conf.detached()` assertion (plus one `try_detach_all()` returning `None`).
+- Manual 2 (after the final change, same load, 20 consecutive runs): 20 passed. Load generators killed.
+- Manual 3: with `assert False` after the `ready` wait the test failed in 1.8 s and left no stub from
+  this test; `assert False` removed afterwards.
+- The full suite was left to gating.
+
+### As shipped (2026-10-30)
+
+Deviations from Design, found by the Manual-1 reproduction the spec asks for:
+
+- **Root cause differs from the spec's hypothesis.** Under load the failing assertion was not the
+  paused wrapper timing out but the final `h_conf.detached() and h_test.detached()`. `both_fix()` makes
+  the conformance reviewer exit at once, so under load its task finished before the test reached the
+  detach; `StepPool.try_detach_all` only sets `detach` on *unfinished* tasks (and returns `None` while
+  a task is between `wait` and done), so `h_conf` was never detached. The spawn timeout and the
+  iteration-bound `tick_until` were secondary hazards, fixed as designed.
+- **Extra change in the test:** it passes its own `by_argv` (`both_fix()` minus the `FAKE_CLAUDE_SLEEP_S=0`
+  override) so both reviewers stay running (default sleep 60) until the detach. The finished-member case
+  stays covered by `test_adopt_review_group_with_finished_member` and
+  `test_fanout_detach_precondition_phases`. Assertions are otherwise unchanged in meaning.
+- `tick_until` ignores `n` entirely (single stopping rule: the deadline), as in the review brief; the
+  `n=150` call sites are unchanged. The `test_tick_until_has_no_iteration_bound` AST check inspects the
+  function in the test file itself.
+- Call-site count is 18 (not 19). No file under `src/` changed.
+
 ## Rollout / migration
 
 1. Reproduce under load (manual step 1) and record the result.
@@ -200,11 +233,11 @@ No data migration; test-only change.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed and noted.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed and noted.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

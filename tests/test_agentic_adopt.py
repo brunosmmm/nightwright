@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+import waits
 from test_agentic_e2e import _git, added, impl_done, make_cfg, make_repo, review, script, tr_review
 from test_agentic_reexec import _code_repo
 from test_agentic_runproc import child_pid, pid_alive, until
@@ -98,15 +99,19 @@ def adopt_journal(w):
     return [r for r in Q.read_journal(w.cfg) if r["kind"] == "adopt"]
 
 
-def tick_until(w, pool, cond, n=60, steps=None):
-    for _ in range(n):
+def tick_until(w, pool, cond, n=None, steps=None, timeout=None):
+    """Tick until `cond()` holds; gives up only at the deadline (`timeout` or `waits.WAIT_S`).
+    `n` is accepted for old callers and ignored: the deadline is the single stopping rule."""
+    end = time.monotonic() + (waits.WAIT_S if timeout is None else timeout)
+    while True:
         report = Q.tick(w.cfg, runner=w.runner, pool=pool)
         if steps is not None:
             steps.extend(report.steps)
         if cond():
             return True
+        if time.monotonic() >= end:
+            return False
         time.sleep(0.1)
-    return False
 
 
 def test_adopt_registry_complete():
@@ -823,28 +828,68 @@ def test_fanout_detach_precondition_phases():
 
 
 def test_fanout_detach_precondition(world, monkeypatch):
-    """Two reviewers, one wrapper start paused: the fan-out stays attached until it claims."""
-    go, real_popen = world.tmp / "go", subprocess.Popen
-    code = ("import os, sys, time, runpy\nwhile not os.path.exists(sys.argv[1]): time.sleep(0.05)\n"
+    """Two reviewers, one wrapper start paused: the fan-out stays attached until it claims.
+    The runner's spawn timeout is far above anything the test can reach, so only `go` releases
+    the paused wrapper (no race with the product's 30 s give-up)."""
+    world.runner = R.ClaudeRunner(spawn_timeout_s=waits.WAIT_S * 4)
+    go, ready, real_popen = world.tmp / "go", world.tmp / "ready", subprocess.Popen
+    code = ("import os, sys, time, runpy\nopen(sys.argv[3], 'w').close()\n"
+            "while not os.path.exists(sys.argv[1]): time.sleep(0.05)\n"
             "sys.argv = ['x', sys.argv[2]]\n"
             "runpy.run_module('wt.agentic.runproc', run_name='__main__')")
 
     def paused(argv, **kw):
         if "wt.agentic.runproc" in argv and "test_reviewer" in argv[-1]:
-            argv = [sys.executable, "-c", code, str(go), argv[-1]]
+            argv = [sys.executable, "-c", code, str(go), argv[-1], str(ready)]
         return real_popen(argv, **kw)
 
-    pool, rdirs = reviewing_flight(world, monkeypatch, both_fix(), prep=lambda: monkeypatch.setattr(
+    # both reviewers stay running (no sleep-0 exit): a conformance task that finished before the
+    # detach would not be detached (`try_detach_all` skips done tasks), which races under load
+    hold = [[k, {"FAKE_CLAUDE_VERDICT": env["FAKE_CLAUDE_VERDICT"]}] for k, env in both_fix()]
+    pool, rdirs = reviewing_flight(world, monkeypatch, hold, prep=lambda: monkeypatch.setattr(
         R.subprocess, "Popen", paused))
-    (_, _, h_conf), (_, _, h_test) = pool.flights[world.cid].tasks
-    assert until(lambda: h_conf.phase == "wait")
-    assert h_test.phase == "spawning"
-    assert pool.try_detach_all() is None and world.cid in pool.flights
-    go.write_text("")
-    assert until(lambda: h_test.phase == "wait" and RP.read_json(rdirs["test_reviewer"] / "child.json"))
-    assert pool.try_detach_all() == [{"campaign": world.cid, "run_ids": [
-        rdirs[p].name for p in ("conformance_reviewer", "test_reviewer")]}]
-    assert h_conf.detached() and h_test.detached() and not pool.flights
+    try:                                      # on failure the stub is released, never left spinning
+        (_, _, h_conf), (_, _, h_test) = pool.flights[world.cid].tasks
+        assert until(lambda: h_conf.phase == "wait")
+        assert until(ready.exists)                             # a live wrapper that has not claimed
+        assert not (rdirs["test_reviewer"] / "proc.json").exists()
+        assert h_test.phase == "spawning"
+        assert pool.try_detach_all() is None and world.cid in pool.flights
+        go.write_text("")
+        assert until(lambda: h_test.phase == "wait" and RP.read_json(rdirs["test_reviewer"] / "child.json"))
+        assert pool.try_detach_all() == [{"campaign": world.cid, "run_ids": [
+            rdirs[p].name for p in ("conformance_reviewer", "test_reviewer")]}]
+        assert h_conf.detached() and h_test.detached() and not pool.flights
+    finally:
+        go.write_text("")
+
+
+def test_tick_until_is_time_bounded(monkeypatch):
+    calls = []
+
+    def fake_tick(*a, **kw):
+        calls.append(1)
+        return type("Report", (), {"steps": []})()
+
+    monkeypatch.setattr(Q, "tick", fake_tick)
+    w = type("World", (), {"cfg": None, "runner": None})()
+    start = time.monotonic()
+    assert tick_until(w, None, lambda: False, n=1, timeout=0.3) is False
+    assert time.monotonic() - start >= 0.3
+    assert len(calls) > 1                                      # `n=1` does not bound the loop
+    calls.clear()
+    assert tick_until(w, None, lambda: True, timeout=0.3) is True and len(calls) == 1
+    got = []
+    monkeypatch.setattr(Q, "tick", lambda *a, **kw: type("Report", (), {"steps": [{"a": 1}]})())
+    assert tick_until(w, None, lambda: True, steps=got) is True and got == [{"a": 1}]
+
+
+def test_tick_until_has_no_iteration_bound():
+    import ast
+    fn = next(n for n in ast.walk(ast.parse(Path(__file__).read_text()))
+              if isinstance(n, ast.FunctionDef) and n.name == "tick_until")
+    assert not [n for n in ast.walk(fn) if isinstance(n, ast.For)
+                and isinstance(n.iter, ast.Call) and getattr(n.iter.func, "id", "") == "range"]
 
 
 def test_adopt_review_group_with_finished_member(world, monkeypatch):
