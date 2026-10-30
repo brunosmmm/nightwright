@@ -1,9 +1,10 @@
 ---
 id: SPEC-0308
 title: "A revise verdict keeps its sizing: select_profile honors size and tone for revise, not only approve"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-30
+updated: 2026-10-30
 source_idea: IDEA-415
 kind: feature
 parent: SPEC-0298
