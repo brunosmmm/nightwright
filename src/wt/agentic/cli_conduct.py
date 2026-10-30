@@ -168,7 +168,10 @@ def attach(queue_group):
     @click.pass_obj
     def queue_wakeups(cfg, since, until, reader, as_json):
         """Conductor wakeups (SPEC-0300): lines delivered vs events held, per merge."""
-        rep = QT.wakeups_report(cfg, since=since, until=until, reader=reader)
+        try:
+            rep = QT.wakeups_report(cfg, since=since, until=until, reader=reader)
+        except ValueError as e:
+            raise click.UsageError(str(e))
         if as_json:
             _dump_json(rep)
             return

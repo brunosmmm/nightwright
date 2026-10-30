@@ -90,6 +90,12 @@ def test_classify_backlog(tmp_path):
                                 blocked_by=["waiting on SPEC-0001 (accepted)"]), c) == "hold"
     assert QT.classify(cfg, _ev("backlog", ready=False,
                                 blocked_by=["SPEC-0999 not found"]), c) == "wake"
+    for st in ("draft", "proposed", "in-progress"):       # may still become accepted
+        assert QT.classify(cfg, _ev("backlog", ready=False,
+                                    blocked_by=[f"spec status is {st}"]), c) == "hold"
+    for st in ("missing", "rejected", "superseded", "done"):   # can never become ready
+        assert QT.classify(cfg, _ev("backlog", ready=False,
+                                    blocked_by=[f"spec status is {st}"]), c) == "wake"
 
 
 def test_ping_fingerprint_hold_and_change(tmp_path):
@@ -159,6 +165,35 @@ def test_settings_validate(tmp_path):
     assert QT.enabled_for(_cfg(tmp_path), "conductor")
     assert not QT.enabled_for(_cfg(tmp_path), "steward")
     assert not QT.enabled_for(_cfg(tmp_path, {"enabled": False}), "conductor")
+
+
+def test_settings_custom_readers_and_interval(tmp_path):
+    cfg = _cfg(tmp_path, {"readers": ["steward"], "digest_interval_s": 60})
+    assert QT.settings(cfg)["readers"] == ["steward"]
+    assert QT.settings(cfg)["digest_interval_s"] == 60
+    assert QT.enabled_for(cfg, "steward")
+    assert not QT.enabled_for(cfg, "conductor")
+
+
+def test_custom_digest_interval_changes_when_digest_prints(tmp_path):
+    cfg, clock = _cfg(tmp_path, {"digest_interval_s": 60}), Clock()
+    E.cursor_set(cfg, "conductor", 0)
+    E.append(cfg, "admitted", campaign="a")
+    out, calls = io.StringIO(), {"n": 0}
+
+    def stop():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            clock.advance(30)                           # inside 60 s: still held
+            return False
+        if calls["n"] == 2:
+            assert out.getvalue() == ""
+            clock.advance(31)                           # past 60 s, far inside the 1800 default
+            return False
+        return True
+    _follow(cfg, out, clock=clock, stop=stop)
+    (digest,) = _lines(out)
+    assert digest["type"] == "conductor_digest"
 
 
 # ---- the digest -----------------------------------------------------------------------------
@@ -284,6 +319,28 @@ def test_hold_crash_between_digest_and_cursor(tmp_path, monkeypatch):
     assert QT.wakeups_report(cfg)["held"] == 1            # recorded once
 
 
+def test_hold_crash_between_record_and_save_keeps_the_hold(tmp_path, monkeypatch):
+    cfg, clock = _cfg(tmp_path), Clock()
+    E.cursor_set(cfg, "conductor", 0)
+    E.append(cfg, "admitted", campaign="a")
+    real = QT.record_delivery
+    calls = {"n": 0}
+
+    def flaky(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("killed")
+        return real(*a, **kw)
+    monkeypatch.setattr(QT, "record_delivery", flaky)
+    with pytest.raises(OSError):
+        _follow(cfg, io.StringIO(), clock=clock)
+    assert E.cursor_get(cfg, "conductor") == 0
+    _follow(cfg, io.StringIO(), clock=clock)              # re-arm: the event is held again
+    assert E.cursor_get(cfg, "conductor") == 1
+    assert QT.wakeups_report(cfg)["held"] == 1
+    assert QT.Digest.load(cfg, "conductor").pending["held"] == {"admitted": 1}
+
+
 def test_digest_crash_before_print(tmp_path):
     cfg, clock = _cfg(tmp_path), Clock()
     E.cursor_set(cfg, "conductor", 0)
@@ -338,6 +395,19 @@ def test_quiet_off_is_byte_identical(tmp_path):
              stop=lambda: True)
     assert out.getvalue() == expected
     assert not (E.cursors_dir(cfg) / "conductor.digest.json").exists()
+    assert not QT.deliveries_path(cfg).exists()           # quiet off records nothing
+
+
+def test_quiet_off_text_mode_is_byte_identical(tmp_path):
+    cfg = _cfg(tmp_path)
+    _seed(cfg)
+    expected = "".join(E.summary_line(e) + "\n" for e in E.read_since(cfg, 0))
+    out = io.StringIO()
+    E.follow(cfg, "conductor", poll_s=0, out=out, code_root=None, quiet=False, as_json=False,
+             stop=lambda: True)
+    assert out.getvalue() == expected
+    assert not (E.cursors_dir(cfg) / "conductor.digest.json").exists()
+    assert not QT.deliveries_path(cfg).exists()
 
 
 def test_events_jsonl_unchanged(tmp_path):
@@ -409,7 +479,10 @@ def test_cli_events_all_flag(tmp_path, monkeypatch):
     assert run("--for", "steward").exit_code == 0
     cfg["agentic"]["conductor"] = {"quiet": {"enabled": False}}
     assert run("--for", "conductor").exit_code == 0
-    assert seen == [True, False, False, False]
+    cfg["agentic"]["conductor"] = {"quiet": {"readers": ["steward"]}}
+    assert run("--for", "conductor").exit_code == 0
+    assert run("--for", "steward").exit_code == 0
+    assert seen == [True, False, False, False, False, True]
 
 
 def test_cli_events_campaign_filter(tmp_path, monkeypatch):
@@ -439,3 +512,14 @@ def test_cli_wakeups_json(tmp_path, monkeypatch):
     assert (out["merges"], out["wakeups_per_merge"]) == (1, 1.0)
     r = CliRunner().invoke(cli, ["queue", "wakeups"])
     assert r.exit_code == 0 and "delivered 1" in r.output
+
+
+def test_wakeups_rejects_malformed_days(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    for args in (["--since", "2026-10-3"], ["--until", "tomorrow"], ["--since", "2026-13-01"]):
+        r = CliRunner().invoke(cli, ["queue", "wakeups", "--json", *args])
+        assert r.exit_code != 0 and "YYYY-MM-DD" in r.output
+    with pytest.raises(ValueError):
+        QT.wakeups_report(cfg, since="2026-10-3")
+    assert QT.wakeups_report(cfg, since="2026-10-03", until="2026-10-31")["delivered"] == 0

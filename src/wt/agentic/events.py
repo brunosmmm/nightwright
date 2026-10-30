@@ -1042,8 +1042,10 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
             for ev in read_since(cfg, after, types=types):
                 if quiet and QT.classify(cfg, ev, ctx) == "hold":
                     if ctx.digest.add(ev):
-                        ctx.digest.save()
+                        # recorded before the save: a crash in between re-reads the event and
+                        # records it again (at-least-once) rather than losing the hold
                         QT.record_delivery(cfg, reader, ev, "hold")
+                        ctx.digest.save()
                     cursor_set(cfg, reader, ev["id"])
                     continue
                 out.write((json.dumps(ev, ensure_ascii=False) if as_json else summary_line(ev))

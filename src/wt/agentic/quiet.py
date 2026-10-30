@@ -37,7 +37,8 @@ DEFAULTS = {"enabled": True, "readers": ["conductor"], "digest_interval_s": 1800
 
 # a `backlog` event is held when it only restates an ordinary dependency wait; any other
 # `blocked_by` text (a missing spec, a missing branch ...) wakes, see `backlog_resolved`
-_BENIGN_BLOCKED = ("waiting on ", "spec status is ")
+_BENIGN_BLOCKED = ("waiting on ", "spec status is draft", "spec status is proposed",
+                   "spec status is in-progress")
 _GRACE_S = 300                     # the table's own "wait" window past a drain's step timeout
 
 
@@ -120,7 +121,9 @@ def _silent_hold(ev, ctx) -> bool:
 
 def backlog_resolved(data) -> bool:
     """True for a `backlog` event that only restates a ready item or an ordinary dependency
-    wait (`waiting on SPEC-X (...)`, `spec status is ...`)."""
+    wait (`waiting on SPEC-X (...)`, or the queued spec still `draft` / `proposed` /
+    `in-progress`). A spec that is missing, rejected, superseded or done can never become ready,
+    so that text wakes."""
     if data.get("ready"):
         return True
     blocked = data.get("blocked_by") or []
@@ -259,6 +262,19 @@ def _read_deliveries(cfg, reader) -> list[dict]:
     return out
 
 
+def check_day(value, name="day") -> str | None:
+    """`value` unchanged when it is `None` or a `YYYY-MM-DD` date; else `ValueError`."""
+    if value is None:
+        return None
+    try:
+        if len(str(value)) != 10:
+            raise ValueError
+        dt.date.fromisoformat(str(value))
+    except ValueError:
+        raise ValueError(f"{name} must be YYYY-MM-DD, got {value!r}") from None
+    return str(value)
+
+
 def _in_window(ts, since, until) -> bool:
     day = str(ts)[:10]
     return (since is None or day >= since) and (until is None or day <= until)
@@ -267,6 +283,7 @@ def _in_window(ts, since, until) -> bool:
 def wakeups_report(cfg, *, since=None, until=None, reader="conductor") -> dict:
     """`wt.conductor.wakeups.v1`: delivered lines (wake events, digests, `code_changed`),
     held events and wakeups per merge over a window of days (`YYYY-MM-DD`, inclusive)."""
+    since, until = check_day(since, "--since"), check_day(until, "--until")
     by_type: dict[str, dict] = {}
     by_day: dict[str, dict] = {}
 

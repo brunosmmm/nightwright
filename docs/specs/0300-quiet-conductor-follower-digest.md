@@ -271,6 +271,11 @@ Nothing records what the follower delivered, so "wakeups per merge" (exit criter
 - Full `uv run pytest`: 3963 passed, 3 skipped (one earlier `-x` run hit
   `test_agentic_adopt.py::test_fanout_detach_precondition`, which passes alone and in the full
   run: a pre-existing timing flake, unrelated).
+- Review round 1 fixes: tests added for custom `readers` / `digest_interval_s`, the hold record
+  surviving a crash before the digest save, quiet-off recording nothing (JSON and `--text`),
+  backlog with a rejected/missing own spec waking, and malformed `--since`/`--until` rejected.
+  Re-ran the five quiet/skills/events/followers/conduct-cli test files: 148 passed. The full
+  suite is left to gating.
 - Manual verification (re-arm the live conductor, run `wt queue wakeups --since <day>` after a
   day) can only happen once this is merged and the conductor has re-armed. It is not done
   here; the conductor records the first wakeups-per-merge figure with a campaign note.
@@ -283,8 +288,13 @@ Nothing records what the follower delivered, so "wakeups per merge" (exit criter
   it with `quiet.enabled_for(cfg, reader) and not --all`, so the live conductor is quiet.
   `follow` also takes `now=` (a clock callable) for tests.
 - `backlog` is held by reading `blocked_by` text (`ready`, or only `waiting on …` / `spec
-  status is …` entries), not by a set of known spec ids in `Ctx`. Any other text (`… not
-  found`, `branch … missing`) wakes.
+  status is draft|proposed|in-progress` entries), not by a set of known spec ids in `Ctx`. Any
+  other text (`… not found`, `branch … missing`, `spec status is missing|rejected|superseded|
+  done`: the queued spec itself can never become ready) wakes.
+- On a hold, `record_delivery` runs before `Digest.save` (at-least-once). A crash between the two
+  re-reads the event and records the hold a second time, but a hold is never left unrecorded.
+  Only the `held` count can over-count in that window; wakeups are unaffected.
+- `wt queue wakeups --since/--until` must be `YYYY-MM-DD`; anything else is a usage error.
 - A held `conductor_ping` with an empty fingerprint also resets `last_ping_fp`, so items that
   recur after an all-clear wake again.
 - `wt queue events` gained `--campaign <id>` (history filter) because the skill's park rows
