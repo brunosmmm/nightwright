@@ -42,7 +42,8 @@ def _state(state="REVIEWING", **over):
 
 def rv(verdict="pass", *severities, brief="do it", score=90):
     return {"verdict": verdict, "score": score, "ac_assessment": [], "fix_brief": brief,
-            "findings": [{"severity": s, "title": f"{s} thing"} for s in severities]}
+            "findings": [{"severity": s, "title": f"{s} thing", "suggested_fix": "fix it"}
+                         for s in severities]}
 
 
 def entry(v, loop=0, run="002-x"):
@@ -106,8 +107,8 @@ def test_decide_reviews_triages_and_builds_the_merged_brief(second_reviewer):
     assert (step.kind, step.reason) == ("implement", "review_fix")
     brief = step.combined["brief"]
     assert brief["personas"] == [A, B]
-    assert brief["fix_brief"] == (f"[{A}] do X\n\n[{B}] do Y\n\n- [major] major thing\n"
-                                  f"- [must_fix] must_fix thing")      # B: pass + must_fix = fix
+    assert brief["fix_brief"] == (f"[{A}] do X\n\n[{B}] do Y\n\n- [major] major thing: Fix: fix it\n"
+                                  f"- [must_fix] must_fix thing: Fix: fix it")      # B: pass + must_fix = fix
     assert [m["severity"] for m in brief["must_fix"]] == ["major", "must_fix"]
     both = Q.decide_reviews(st, PROFILE2, {A: rv("pass"), B: rv("pass", "minor")})
     assert both.kind == "close" and both.combined["triage"]["outcome"] == "pass"
@@ -255,8 +256,8 @@ def test_apply_reviews_records_in_given_order_and_shapes_last_review(opened2):
     assert lr["verdicts"][A]["findings"] == v["findings"] and lr["verdicts"][A]["loop"] == 0
     assert st["pending_brief"] == {
         "source": "review", "personas": [A],
-        "fix_brief": f"[{A}] fix A\n\n- [must_fix] must_fix thing (a.py): d",
-        "must_fix": [{"ac": "AC1", "title": "must_fix thing", "detail": "d", "files": ["a.py"],
+        "fix_brief": f"[{A}] fix A\n\n- [must_fix] must_fix thing (a.py): d\nFix: fix it",
+        "must_fix": [{"ac": "AC1", "title": "must_fix thing", "detail": "d\nFix: fix it", "files": ["a.py"],
                       "id": f"{A}#0", "severity": "must_fix", "personas": [A]}],
         "human_notes": []}
     assert [a["id"] for a in lr["advisory"]] == [f"{B}#0"] and lr["waived"] == []

@@ -175,6 +175,7 @@ def review(verdict="pass", **kw):
     v = {"verdict": verdict, "score": 40 if fix else 95,
          "findings": [{"severity": "must_fix", "ac": "feature.txt exists",
                        "title": "feature.txt is wrong", "detail": "write the right text",
+                       "suggested_fix": "write the right text into feature.txt",
                        "files": ["feature.txt"]}] if fix else [],
          "ac_assessment": [{"ac": "feature.txt exists", "met": not fix, "evidence": "feature.txt"}],
          "fix_brief": "rewrite feature.txt" if fix else ""}
@@ -402,6 +403,7 @@ def test_e2e_review_fix_then_pass_merges(tmp_path, monkeypatch):
                 if f["persona"] == "conformance_reviewer"]
     assert [(f["severity"], f["title"]) for f in findings] == [
         ("must_fix", "feature.txt is wrong")]
+    assert "Fix: write the right text into feature.txt" in findings[0]["detail"]   # SPEC-0295
     trans = [(e["from"], e["to"], e["reason"]) for e in S.read_ledger(cfg, cid, types=["transition"])]
     assert ("REVIEWING", "IMPLEMENTING", "review_fix") in trans
     assert ("REVIEWING", "CLOSING", "review_pass") in trans
@@ -411,10 +413,12 @@ def test_e2e_review_fix_then_pass_merges(tmp_path, monkeypatch):
     # the second implementer saw the reviewer's brief
     prompt = (S.runs_dir(cfg, cid) / "003-implementer" / "prompt.md").read_text()
     assert "From: conformance_reviewer" in prompt and "rewrite feature.txt" in prompt
+    assert "Fix: write the right text into feature.txt" in prompt
 
 
 def _finding(sev, title, **kw):
-    return dict({"severity": sev, "title": title, "detail": "d", "files": ["feature.txt"]}, **kw)
+    return dict({"severity": sev, "title": title, "detail": "d", "suggested_fix": "do f",
+                 "files": ["feature.txt"]}, **kw)
 
 
 def _triage_run(tmp_path, monkeypatch, entries, **kw):

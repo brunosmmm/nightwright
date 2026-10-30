@@ -321,11 +321,13 @@ def norm_finding_title(title) -> str:
 
 def finding_detail(f: dict):
     """A finding's `detail` with its `trigger` folded in (SPEC-0202), so the ledger event and
-    the implementer brief carry the same text."""
+    the implementer brief carry the same text. `suggested_fix` / `acceptance` follow (SPEC-0295)."""
     detail, trigger = f.get("detail"), f.get("trigger")
     if detail and trigger:
-        return f"{detail}\ntrigger: {trigger}"
-    return f"trigger: {trigger}" if trigger else detail
+        detail = f"{detail}\ntrigger: {trigger}"
+    elif trigger:
+        detail = f"trigger: {trigger}"
+    return PS.finding_text(f, detail)
 
 
 def _covers(finding_ac, entry_ac) -> bool:
@@ -2390,7 +2392,7 @@ def _spec_review_brief(state: dict, review: dict) -> dict:
             title = f"[{f['severity']}] {f.get('title')}"
             if f.get("section"):
                 title += f" ({f['section']})"
-            must_fix.append({"title": title, "detail": f.get("detail") or None})
+            must_fix.append({"title": title, "detail": PS.finding_text(f)})
     brief = {"source": "spec_reviewer", "fix_brief": review.get("rationale"),
              "must_fix": must_fix,
              "human_notes": list((state.get("pending_brief") or {}).get("human_notes") or [])}

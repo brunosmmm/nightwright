@@ -699,7 +699,7 @@ def test_adopt_review_triager_is_its_own_group(world, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_SLEEP_S", "0")
     world.release()
     assert tick_until(world, pool, lambda: S.read_state(cfg, world.cid)["state"] == "GATING")
-    minor = [{"severity": "minor", "title": f"minor {i}", "detail": "d", "files": []}
+    minor = [{"severity": "minor", "title": f"minor {i}", "detail": "d", "suggested_fix": "f", "files": []}
              for i in range(6)]
     verdict = review("pass", findings=minor)["verdict"]
     monkeypatch.setenv("FAKE_CLAUDE_VERDICT", json.dumps(verdict))

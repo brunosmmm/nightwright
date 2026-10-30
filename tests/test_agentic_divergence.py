@@ -385,7 +385,7 @@ X, Y = "feature.txt is wrong", "docs are missing entirely"
 
 def _fix_review(title):
     return review("fix", findings=[{"severity": "must_fix", "ac": "feature.txt exists",
-                                    "title": title, "detail": "d", "files": ["feature.txt"]}])
+                                    "title": title, "detail": "d", "suggested_fix": "f", "files": ["feature.txt"]}])
 
 
 def _drive(tmp_path, monkeypatch, entries, **profile):

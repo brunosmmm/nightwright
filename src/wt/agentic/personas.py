@@ -129,11 +129,13 @@ CONFORMANCE_REVIEWER_SCHEMA = {
         "verdict": {"type": "string", "enum": ["pass", "fix"]},
         "score": {"type": "integer", "minimum": 0, "maximum": 100},
         "findings": {"type": "array", "items": {
-            "type": "object", "required": ["severity", "title"],
+            "type": "object", "required": ["severity", "title", "suggested_fix"],
             "properties": {"severity": {"type": "string",
                                         "enum": ["must_fix", "major", "minor", "nit"]},
                            "ac": {"type": "string"}, "title": {"type": "string"},
                            "detail": {"type": "string"},
+                           "suggested_fix": {"type": "string"},
+                           "acceptance": {"type": "string"},
                            "files": {"type": "array", "items": {"type": "string"}}}}},
         "ac_assessment": {"type": "array", "items": {
             "type": "object", "required": ["ac", "met"],
@@ -241,10 +243,12 @@ SPEC_REVIEWER_SCHEMA = {
         "tone": {"type": "string", "enum": ["cost-effective", "high-end", "critical"]},
         "rationale": {"type": "string"},
         "findings": {"type": "array", "items": {
-            "type": "object", "required": ["severity", "title"],
+            "type": "object", "required": ["severity", "title", "suggested_fix"],
             "properties": {"severity": {"type": "string", "enum": _SEVERITIES},
                            "section": {"type": "string"}, "title": {"type": "string"},
-                           "detail": {"type": "string"}}}},
+                           "detail": {"type": "string"},
+                           "suggested_fix": {"type": "string"},
+                           "acceptance": {"type": "string"}}}},
         "suggested_splits": {"type": "array", "items": {
             "type": "object", "required": ["title"],
             "properties": {"title": {"type": "string"}, "scope": {"type": "string"}}}},
@@ -369,6 +373,20 @@ def render_gate_results(last_gate) -> str:
         tail = "\n".join(tail_lines) if tail_lines else "(no output)"
         blocks.append(f"{head}\n```\n{tail}\n```")
     return "\n\n".join(blocks)
+
+
+def finding_text(f: dict, detail=None) -> str | None:
+    """`detail` (default `f['detail']`), then `Fix: …` and `Done when: …` lines for a non-blank
+    `suggested_fix` / `acceptance` (SPEC-0295); None when all three are empty. Pure: a stored
+    finding is never trusted to be well-typed, so non-string values are ignored."""
+    def clean(value):
+        return value.strip() if isinstance(value, str) and value.strip() else None
+    lines = [clean(f.get("detail") if detail is None else detail)]
+    lines += [f"{label}: {text}" for label, key in (("Fix", "suggested_fix"),
+                                                     ("Done when", "acceptance"))
+              if (text := clean(f.get(key)))]
+    lines = [line for line in lines if line]
+    return "\n".join(lines) or None
 
 
 def render_pending_brief(brief) -> str:

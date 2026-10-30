@@ -12,8 +12,10 @@ from wt.agentic import spec_review as SR
 
 SIZED = {"size": "m", "tone": "high-end", "rationale": "r"}            # SPEC-0219
 APPROVE = {"verdict": "approve", **SIZED, "findings": [{"severity": "nit", "section": "Context",
-                                               "title": "wording"}], "suggested_splits": []}
-MUST_FIX = {"verdict": "approve", **SIZED, "findings": [{"severity": "must_fix", "title": "t"}]}
+                                               "title": "wording", "suggested_fix": "reword it"}],
+                                   "suggested_splits": []}
+MUST_FIX = {"verdict": "approve", **SIZED, "findings": [{"severity": "must_fix", "title": "t",
+                                                              "suggested_fix": "f"}]}
 
 
 def _entry(verdict=None, **kw):

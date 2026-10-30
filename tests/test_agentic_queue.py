@@ -1264,7 +1264,7 @@ def test_first_implementer_prompt_has_findings_second_does_not(tmp_path, monkeyp
     entries = [impl_done(), {"persona": "conformance_reviewer", "cost_usd": 0.2, "verdict": {
         "verdict": "fix", "score": 40, "ac_assessment": [], "fix_brief": "rewrite feature.txt",
         "findings": [{"severity": "must_fix", "ac": "feature.txt exists", "title": "wrong text",
-                      "detail": "d", "files": ["feature.txt"]}]}},
+                      "detail": "d", "suggested_fix": "f", "files": ["feature.txt"]}]}},
                impl_done(content="better\n"), {"persona": "conformance_reviewer", "cost_usd": 0.2,
                                                "verdict": {"verdict": "pass", "score": 95,
                                                            "findings": [], "ac_assessment": [],

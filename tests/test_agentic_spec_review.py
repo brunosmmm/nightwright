@@ -19,7 +19,8 @@ import spec_lint as L  # noqa: E402
 
 SIZED = {"size": "m", "tone": "high-end", "rationale": "7 ACs across three modules."}
 APPROVE = {"verdict": "approve", **SIZED,
-           "findings": [{"severity": "nit", "section": "Context", "title": "wording"}],
+           "findings": [{"severity": "nit", "section": "Context", "title": "wording",
+                         "suggested_fix": "reword the first sentence"}],
            "suggested_splits": []}
 
 
@@ -68,7 +69,8 @@ def test_review_uses_the_project_profile_layer(tmp_path, monkeypatch):          
 
 def test_review_pretty_output(tmp_path, monkeypatch):
     split = {"verdict": "split", **SIZED, "findings": [{"severity": "major", "section": "Design",
-                                               "title": "too big", "detail": "x"}],
+                                               "title": "too big", "detail": "x",
+                                               "suggested_fix": "split it"}],
              "suggested_splits": [{"title": "Part A", "scope": "first half"}]}
     repo, cfg = _setup(tmp_path, [_review_entry(split)])
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001"])
@@ -81,12 +83,14 @@ def test_review_pretty_output(tmp_path, monkeypatch):
     _review_entry(malformed=True),
     _review_entry({"verdict": "maybe", **SIZED, "findings": []}),
     _review_entry({"verdict": "approve", **SIZED, "findings": [{"severity": "must_fix",
-                                                                 "title": "t"}]}),
+                                                                 "title": "t",
+                                                                 "suggested_fix": "f"}]}),
     _review_entry({"verdict": "approve", "findings": []}),                 # SPEC-0219: unsized
     _review_entry({"verdict": "approve", "size": "xl", "tone": "critical", "rationale": "r",
                    "findings": []}),
     _review_entry({"verdict": "revise", "size": "xl", "tone": "critical", "rationale": "r",
-                   "findings": [{"severity": "major", "title": "t"}]}),
+                   "findings": [{"severity": "major", "title": "t",
+                                 "suggested_fix": "f"}]}),
     _review_entry(exit_code=1),
     _review_entry(timed_out=True),
 ])
@@ -476,3 +480,71 @@ def test_cli_review_profile_with_show_usage_error(tmp_path, monkeypatch):
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--show",
                                    "--profile", "thorough"])
     assert r.exit_code == 2 and "--show and --profile cannot be combined" in r.output
+
+
+# ---- SPEC-0295: findings carry a required suggested_fix ----------------------------------------
+
+def _fixed(**kw):
+    return {"verdict": "revise", **SIZED,
+            "findings": [{"severity": "nit", "section": "Context", "title": "wording",
+                          "detail": "d", "suggested_fix": "reword it", **kw}],
+            "suggested_splits": []}
+
+
+@pytest.mark.parametrize("fix", ["", "   "])
+def test_blank_suggested_fix_is_rejected_and_stores_nothing(tmp_path, monkeypatch, fix):
+    repo, cfg = _setup(tmp_path, [_review_entry(_fixed(suggested_fix=fix))])
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001"])
+    assert r.exit_code != 0 and "wording" in r.output and "suggested_fix" in r.output
+    assert not (Path(cfg["data_dir"]) / "agentic" / "reviews").exists()
+
+
+@pytest.mark.parametrize("fix", ["", "   ", None, 3])
+def test_check_verdict_names_the_finding_without_a_usable_fix(fix):
+    with pytest.raises(ValueError, match="wording"):
+        SR._check_verdict("SPEC-0001", _fixed(suggested_fix=fix))
+
+
+def test_a_missing_suggested_fix_is_a_failed_run(tmp_path, monkeypatch):
+    v = _fixed()
+    del v["findings"][0]["suggested_fix"]
+    repo, cfg = _setup(tmp_path, [_review_entry(v)])
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001"])
+    assert r.exit_code != 0
+    assert not (Path(cfg["data_dir"]) / "agentic" / "reviews").exists()
+
+
+def test_review_stores_and_prints_fix_and_acceptance(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [_review_entry(_fixed(acceptance="no 'wordy' left")),
+                                  _review_entry(_fixed(acceptance="no 'wordy' left"))])
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001"])
+    assert r.exit_code == 0, r.output
+    assert "Fix: reword it" in r.output and "Done when: no 'wordy' left" in r.output
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--show"])
+    assert "Fix: reword it" in r.output and "Done when:" in r.output
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--show", "--json"])
+    f = json.loads(r.stdout)["review"]["findings"][0]
+    assert (f["suggested_fix"], f["acceptance"]) == ("reword it", "no 'wordy' left")
+
+
+def test_stored_review_without_the_new_keys_still_renders(tmp_path, monkeypatch):
+    repo, cfg = _setup(tmp_path, [])
+    spec = repo / "docs" / "specs" / "0001-trivial.md"
+    old = [{"severity": "major", "section": "Design", "title": "old gap", "detail": "d"}]
+    write_review(cfg, spec, "SPEC-0001", "revise", findings=old, **SIZED)
+    r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--show"])
+    assert r.exit_code == 0 and "old gap" in r.output and "Fix:" not in r.output
+    r = run_cli(cfg, monkeypatch, ["spec", "reviews"])
+    assert r.exit_code == 0, r.output
+    brief = SR.revision_brief({"spec_sha256": "ab" * 32, "findings": old})
+    assert brief["must_fix"][0]["detail"] == "d"
+
+
+def test_revision_brief_carries_the_fix_for_every_finding_nits_included():
+    fs = [{"severity": "major", "title": "gap", "detail": "d", "suggested_fix": "add X",
+           "acceptance": "X is stated"},
+          {"severity": "nit", "title": "wording", "suggested_fix": "say Y"}]
+    brief = SR.revision_brief({"spec_sha256": "ab" * 32, "findings": fs})
+    assert [m["detail"] for m in brief["must_fix"]] == ["d\nFix: add X\nDone when: X is stated",
+                                                        "Fix: say Y"]
+    assert "Fix: say Y" in PS.render_pending_brief(brief)

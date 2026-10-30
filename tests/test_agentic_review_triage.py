@@ -992,3 +992,16 @@ def test_accept_waivers_does_not_offer_a_human_waived_finding():
                                                  {"id": f"{A}#1", "reason": "r"}])
     assert [w["id"] for w in got] == [f"{A}#1"]
     assert ignored == [(f"{A}#0", "not a finding of this review")]
+
+
+def test_suggested_fix_reaches_the_brief_and_changes_nothing_else():          # SPEC-0295
+    plain = {A: v("fix", f("major", "boom", detail="why", files=["a.py"]), brief="do X")}
+    fixed = {A: v("fix", f("major", "boom", detail="why", files=["a.py"],
+                           suggested_fix="rename x", acceptance="test_x passes"), brief="do X")}
+    t0, t1 = tri(plain), tri(fixed)
+    strip = lambda t: {k: [{x: y for x, y in b.items() if x != "detail"} for b in t[k]]
+                       if k in ("blocking", "advisory") else t[k] for k in t}
+    assert strip(t0) == strip(t1)
+    brief = Q.review_brief(fixed, t1, 80)
+    assert brief["must_fix"][0]["detail"] == "why\nFix: rename x\nDone when: test_x passes"
+    assert Q.review_brief(plain, t0, 80)["must_fix"][0]["detail"] == "why"

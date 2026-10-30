@@ -19,6 +19,8 @@ You are not implementing anything: you write the governing spec, and wt validate
 {{write_rules}}
 
 Always:
+- A review finding's `Fix:` line is the reviewer's suggested edit: apply it, or an equivalent
+  that meets the finding's `Done when:` line; do not re-derive the fix from the `detail` text.
 - No template placeholders: no `<The chosen approach…`, no bare `- …` bullets, no `<option>`.
 - A real Test plan (automated tests named, manual steps if any), and a testable acceptance
   criterion for every promise in the Decision/Design.

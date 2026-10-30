@@ -35,7 +35,7 @@ def reviewed(verdict="approve", *, findings=None, splits=None, **kw):
 
 def finding(sev="must_fix", title="AC 1 is untestable"):
     return {"severity": sev, "section": "Acceptance criteria", "title": title,
-            "detail": f"detail of {title}"}
+            "detail": f"detail of {title}", "suggested_fix": f"fix {title}"}
 
 
 _REVISIONS = itertools.count(1)
@@ -139,6 +139,9 @@ def test_revise_then_accept_after_revision_without_a_second_review(tmp_path, mon
     brief = st["pending_brief"]
     assert brief["source"] == "spec_reviewer" and brief["fix_brief"] == "revise it"
     assert [m["title"] for m in brief["must_fix"]] == ["[must_fix] AC 1 is untestable (Acceptance criteria)"]
+    assert brief["must_fix"][0]["detail"] == ("detail of AC 1 is untestable\n"       # SPEC-0295
+                                              "Fix: fix AC 1 is untestable")
+    assert "Fix: fix AC 1 is untestable" in PS.render_pending_brief(brief)
     review_sha = reviews(cfg, cid)[0]["spec_sha256"]
     Q.tick(cfg)                                     # the writer revises
     assert "AC 1 is untestable" in prompt(cfg, cid, 3) and "a nit" not in prompt(cfg, cid, 3)

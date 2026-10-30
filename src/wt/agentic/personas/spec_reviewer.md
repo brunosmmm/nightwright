@@ -62,6 +62,13 @@ criteria count, modules touched, risk).
 
 Be specific: name the section, quote the offending line, say what to change.
 
+## Findings
+
+Every finding, including `minor` and `nit`, has a `suggested_fix`: the concrete edit to the
+spec (the sentence or section to add, change or delete, in the spec's own words, not "clarify
+this"). `acceptance` says in one line how the reviser can tell it is fixed (optional). `detail`
+explains the problem; do not put the fix only there.
+
 ## Verdict
 
 Finish with ONE JSON object and nothing after it:
@@ -70,5 +77,5 @@ Finish with ONE JSON object and nothing after it:
 - `size`: `xs` | `s` | `m` | `l` | `xl`
 - `tone`: `cost-effective` | `high-end` | `critical`
 - `rationale`: one or two sentences
-- `findings`: `[{"severity": "must_fix|major|minor|nit", "section": "...", "title": "...", "detail": "..."}, …]`
+- `findings`: `[{"severity": "must_fix|major|minor|nit", "section": "...", "title": "...", "detail": "...", "suggested_fix": "...", "acceptance": "..."}, …]`
 - `suggested_splits`: `[{"title": "...", "scope": "..."}, …]` (empty unless `split`)

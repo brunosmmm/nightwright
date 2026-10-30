@@ -182,7 +182,7 @@ def revision_brief(review) -> dict:
         title = f"[{f.get('severity')}] {f.get('title')}"
         if f.get("section"):
             title += f" ({f['section']})"
-        must_fix.append({"title": title, "detail": f.get("detail") or None})
+        must_fix.append({"title": title, "detail": PS.finding_text(f)})
     sha12 = str(review.get("spec_sha256") or "")[:12]
     return {
         "source": "spec_review",
@@ -322,6 +322,12 @@ def _check_verdict(spec_id, verdict) -> None:
     findings = verdict.get("findings") or []
     if verdict["verdict"] == "approve" and any(f.get("severity") == "must_fix" for f in findings):
         raise ValueError(f"spec review of {spec_id} is `approve` but lists a must_fix finding")
+    for f in findings:                                                  # SPEC-0295
+        fix = f.get("suggested_fix") if isinstance(f, dict) else None
+        if not (isinstance(fix, str) and fix.strip()):
+            title = f.get("title") if isinstance(f, dict) else f
+            raise ValueError(f"spec review of {spec_id} has a finding without a "
+                             f"`suggested_fix`: {title!r}")
     if verdict.get("size") == "xl" and verdict["verdict"] != "split":      # SPEC-0219
         raise ValueError(f"spec review of {spec_id} sizes the spec `xl` (too big for one "
                          f"campaign) but its verdict is `{verdict['verdict']}`, not `split`")

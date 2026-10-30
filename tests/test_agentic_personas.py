@@ -256,11 +256,15 @@ def test_build_request_conformance_reviewer(tmp_path):
 
 def test_conformance_reviewer_schema_and_diff_truncation(tmp_path):
     from wt.agentic.runner import _conforms
-    ok = {"verdict": "pass", "score": 90, "findings": [{"severity": "nit", "title": "t"}],
+    ok = {"verdict": "pass", "score": 90, "findings": [{"severity": "nit", "title": "t",
+                                            "suggested_fix": "rename it"}],
           "ac_assessment": [{"ac": "a", "met": True, "evidence": "e"}], "fix_brief": ""}
     assert _conforms(ok, PS.CONFORMANCE_REVIEWER_SCHEMA)
     assert not _conforms({**ok, "verdict": "maybe"}, PS.CONFORMANCE_REVIEWER_SCHEMA)
-    assert not _conforms({**ok, "findings": [{"severity": "huge", "title": "t"}]},
+    assert not _conforms({**ok, "findings": [{"severity": "huge", "title": "t",
+                                                "suggested_fix": "x"}]},
+                         PS.CONFORMANCE_REVIEWER_SCHEMA)
+    assert not _conforms({**ok, "findings": [{"severity": "nit", "title": "t"}]},
                          PS.CONFORMANCE_REVIEWER_SCHEMA)
     assert not _conforms({k: v for k, v in ok.items() if k != "score"},
                          PS.CONFORMANCE_REVIEWER_SCHEMA)
@@ -351,7 +355,10 @@ def test_test_reviewer_schema_keys_and_conformance():
                                    "fix_brief"}
     assert set(S_["properties"]) == set(PS.CONFORMANCE_REVIEWER_SCHEMA["properties"]) \
         - {"ac_assessment"} | {"coverage_assessment"}
-    assert S_["properties"]["findings"] == PS.CONFORMANCE_REVIEWER_SCHEMA["properties"]["findings"]
+    item = S_["properties"]["findings"]["items"]                    # SPEC-0295: not extended here
+    assert item["required"] == ["severity", "title"]
+    assert set(PS.CONFORMANCE_REVIEWER_SCHEMA["properties"]["findings"]["items"]["properties"]) \
+        - set(item["properties"]) == {"suggested_fix", "acceptance"}
     assert S_["properties"]["coverage_assessment"]["items"]["required"] == ["ac", "covered"]
     ok = {"verdict": "pass", "score": 90, "findings": [{"severity": "nit", "title": "t"}],
           "coverage_assessment": [{"ac": "a", "covered": True, "tests": ["t::x"]}],
@@ -889,3 +896,65 @@ def test_render_gate_results_summary_line():
     assert "results: 3 failed, 120 passed, 2 skipped; failing: a::b, c::d" in out
     assert "could not parse junit results (no such file)" in out
     assert out.count("results:") == 2          # none for the gate without a summary
+
+
+# ---- SPEC-0295: suggested_fix / acceptance on spec and conformance findings -----------------
+
+@pytest.mark.parametrize("schema", [PS.SPEC_REVIEWER_SCHEMA, PS.CONFORMANCE_REVIEWER_SCHEMA])
+def test_finding_schema_requires_suggested_fix(schema):
+    item = schema["properties"]["findings"]["items"]
+    assert item["required"] == ["severity", "title", "suggested_fix"]
+    assert item["properties"]["suggested_fix"] == {"type": "string"}
+    assert item["properties"]["acceptance"] == {"type": "string"}
+    assert "suggested_fix" not in PS.TEST_REVIEWER_SCHEMA["properties"]["findings"]["items"][
+        "properties"]
+    assert "suggested_fix" not in PS.ADVERSARIAL_REVIEWER_SCHEMA["properties"]["findings"][
+        "items"]["properties"]
+
+
+def test_spec_reviewer_verdict_needs_a_suggested_fix_per_finding():
+    from wt.agentic.runner import _conforms
+    ok = {"verdict": "revise", "size": "s", "tone": "high-end", "rationale": "r",
+          "findings": [{"severity": "nit", "title": "t", "suggested_fix": "do it"}]}
+    assert _conforms(ok, PS.SPEC_REVIEWER_SCHEMA)
+    bad = dict(ok, findings=[{"severity": "nit", "title": "t"}])
+    assert not _conforms(bad, PS.SPEC_REVIEWER_SCHEMA)
+
+
+def test_reviewer_and_writer_prompts_ask_for_the_fix():
+    spec = " ".join(PS.PERSONAS["spec_reviewer"].template.split())
+    assert '"suggested_fix": "...", "acceptance": "..."' in spec
+    assert "including `minor` and `nit`, has a `suggested_fix`" in spec
+    conf = " ".join(PS.PERSONAS["conformance_reviewer"].template.split())
+    assert '"suggested_fix": "...", "acceptance": "..."' in conf
+    assert "including `minor` and `nit`, has a `suggested_fix`" in conf
+    writer = " ".join(PS.PERSONAS["spec_writer"].template.split())
+    assert "`Fix:` line" in writer and "`Done when:` line" in writer
+
+
+def test_finding_text_parts_and_omissions():
+    f = {"detail": "why", "suggested_fix": "do X", "acceptance": "X holds"}
+    assert PS.finding_text(f) == "why\nFix: do X\nDone when: X holds"
+    assert PS.finding_text({"suggested_fix": " do X "}) == "Fix: do X"
+    assert PS.finding_text({"detail": "why", "suggested_fix": "  ", "acceptance": ""}) == "why"
+    assert PS.finding_text({"detail": 3, "suggested_fix": ["x"], "acceptance": None}) is None
+    assert PS.finding_text({}) is None
+    assert PS.finding_text({"detail": "why"}) == "why"
+    assert PS.finding_text({"detail": "ignored", "suggested_fix": "f"}, "given") == "given\nFix: f"
+
+
+def test_render_pending_brief_shows_the_fix_lines():
+    brief = {"source": "spec_reviewer", "must_fix": [
+        {"title": "gap", "section": "Design",
+         "detail": PS.finding_text({"detail": "why", "suggested_fix": "add X",
+                                    "acceptance": "X is stated"})}]}
+    text = PS.render_pending_brief(brief)
+    assert "- MUST FIX [Design]: gap — why\nFix: add X\nDone when: X is stated" in text
+
+
+def test_finding_detail_folds_trigger_then_the_fix():
+    from wt.agentic import queue as Q
+    f = {"detail": "d", "trigger": "t", "suggested_fix": "fix", "acceptance": "ok"}
+    assert Q.finding_detail(f) == "d\ntrigger: t\nFix: fix\nDone when: ok"
+    assert Q.finding_detail({"trigger": "t", "suggested_fix": "fix"}) == "trigger: t\nFix: fix"
+    assert Q.finding_detail({"detail": "d"}) == "d" and Q.finding_detail({}) is None

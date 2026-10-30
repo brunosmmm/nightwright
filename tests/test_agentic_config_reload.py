@@ -175,7 +175,7 @@ def test_profile_model_change_applies_to_next_run(make_env, monkeypatch):
 
 def test_inflight_harvest_uses_planning_profile(make_env, monkeypatch):
     weak = [{"severity": "minor", "ac": "feature.txt exists", "title": f"nit {i}",
-             "detail": "d", "files": ["feature.txt"]} for i in range(3)]       # score 88
+             "detail": "d", "suggested_fix": "f", "files": ["feature.txt"]} for i in range(3)]       # score 88
     env = make_env(profile={"review": {"pass_score": 80, "triager": False, "followups": False}},
                    entries=[impl_done(), review("pass", findings=weak)],
                    runner=lambda cfg: HeldRunner(cfg, personas=("conformance_reviewer",)))

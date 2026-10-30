@@ -49,6 +49,9 @@ Read the spec's Decision, Design and Acceptance criteria, then the diff.
 - Work the spec did not ask for (scope creep) is `minor`. Style nits are `nit`.
 - Do not re-review what the gates already prove (formatting, lint, the suite being green).
 - If the diff was truncated, read the rest from the worktree files before judging.
+- Every finding, including `minor` and `nit`, has a `suggested_fix`: the concrete code or test
+  change that resolves it (file and function where known). `acceptance` names the check (a
+  test, command or observable behavior) that shows it resolved.
 
 ## Verdict
 
@@ -56,6 +59,6 @@ Finish with ONE JSON object and nothing after it:
 
 - `verdict`: `pass` | `fix` (any `must_fix` finding means `fix`)
 - `score`: 0..100, how fully the change meets the spec
-- `findings`: `[{"severity": "must_fix|major|minor|nit", "ac": "...", "title": "...", "detail": "...", "files": ["..."]}, …]`
+- `findings`: `[{"severity": "must_fix|major|minor|nit", "ac": "...", "title": "...", "detail": "...", "suggested_fix": "...", "acceptance": "...", "files": ["..."]}, …]`
 - `ac_assessment`: `[{"ac": "...", "met": true|false, "evidence": "..."}, …]`
 - `fix_brief`: the paragraph the next implementer reads first (empty on `pass`)

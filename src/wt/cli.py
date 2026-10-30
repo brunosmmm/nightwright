@@ -1893,12 +1893,13 @@ def _print_review(review, pick):
     if findings:
         from rich.table import Table
         from rich.text import Text
+        from .agentic.personas import finding_text
         table = Table(show_header=True, header_style="bold")
         for col in ("severity", "section", "title", "detail"):
             table.add_column(col, overflow="fold")
         for f in findings:
-            table.add_row(*(Text(str(f.get(k) or ""))
-                            for k in ("severity", "section", "title", "detail")))
+            table.add_row(*(Text(str(f.get(k) or "")) for k in ("severity", "section", "title")),
+                          Text(finding_text(f) or ""))
         console.print(table)
     splits = review.get("suggested_splits")
     for sp in splits if isinstance(splits, list) else []:
