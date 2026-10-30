@@ -315,7 +315,8 @@ def record_delivery(cfg, reader, ev, action) -> None:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
-def _read_deliveries(cfg, reader) -> list[dict]:
+def read_deliveries(cfg, reader) -> list[dict]:
+    """Delivery records of `reader` (with a `ts`), in file order."""
     path = deliveries_path(cfg)
     out = []
     if path.is_file():
@@ -327,6 +328,9 @@ def _read_deliveries(cfg, reader) -> list[dict]:
             if isinstance(rec, dict) and rec.get("reader") == reader and rec.get("ts"):
                 out.append(rec)
     return out
+
+
+_read_deliveries = read_deliveries
 
 
 def check_day(value, name="day") -> str | None:

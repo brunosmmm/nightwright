@@ -15,6 +15,7 @@ from ..report import _dump_json
 from . import brief as BR
 from . import conductor_cost as CC
 from . import decisions as D
+from . import mvp_report as MVP
 from . import store as S
 
 
@@ -98,6 +99,29 @@ def attach(queue_group):
             s = rep["subagents"]
             console.print(f"sub-agents (not conductor context): {s['turns']} turns · "
                           f"{_usd(s['usd'])}", highlight=False)
+
+    @queue_group.command("mvp-report")
+    @click.option("--window", "n", type=click.IntRange(min=1), default=MVP.DEFAULT_WINDOW,
+                  show_default=True, help="the last N merged campaigns")
+    @click.option("--since", default=None,
+                  help="only campaigns opened at or after this ISO date/datetime")
+    @click.option("--project", default=None, help="only campaigns of this project")
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.conductor.mvp.v1 JSON")
+    @click.option("--check", is_flag=True, help="exit 1 unless the window qualifies and E1-E6 pass")
+    @click.pass_obj
+    def queue_mvp_report(cfg, n, since, project, as_json, check):
+        """SPEC-0298's exit criteria E1-E6 over the last N merged campaigns."""
+        try:
+            start = D.parse_since(since) if since else None
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        rep = MVP.report(cfg, n=n, since=start, project=project)
+        if as_json:
+            _dump_json(rep)
+        else:
+            console.print(MVP.render_text(rep), highlight=False, markup=False, soft_wrap=True)
+        if check and not rep["ok"]:
+            raise SystemExit(1)
 
     @queue_group.group("conductor-session")
     def conductor_session():

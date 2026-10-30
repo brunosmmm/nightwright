@@ -217,6 +217,55 @@ def _turns_of(cfg, paths, seen=None) -> list[dict]:
     return sorted(out, key=lambda t: t["ts"])
 
 
+def turns_between(cfg, start, end) -> list[dict]:
+    """Every turn of the registered conductor sessions (main transcripts only, message ids
+    de-duplicated as `_turns_of` does) with ts in `[start, end]`, time ordered. Each carries
+    `usd`, None when its model has no price."""
+    paths = [p for r in sessions(cfg) if (p := find_transcript(cfg, r["session_id"]))]
+    return [t for t in _turns_of(cfg, paths) if start <= t["ts"] <= end]
+
+
+BRIEF_CMD = "wt queue conductor-brief"
+
+
+def transcript_marks(path):
+    """`(ts, kind, assistant_turn_index)` for the `compact_boundary` lines of one transcript
+    (kind `compact_boundary`; the index is that of the next assistant turn) and for the Bash
+    tool calls whose command contains `wt queue conductor-brief` (kind `brief`; the index is
+    that of the turn making the call). Assistant turns are counted by distinct `message.id`."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    out, seen = [], {}
+    for raw in lines:
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        ts = _parse_ts(rec.get("timestamp"))
+        if ts is None:
+            continue
+        if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
+            out.append((ts, "compact_boundary", len(seen)))
+        elif rec.get("type") == "assistant" and isinstance(rec.get("message"), dict):
+            msg = rec["message"]
+            if msg.get("model") == "<synthetic>":
+                continue
+            key = msg.get("id") or f"line-{len(seen)}"
+            idx = seen.setdefault(key, len(seen))
+            content = msg.get("content")
+            for block in content if isinstance(content, list) else ():
+                cmd = (block.get("input") or {}).get("command") if isinstance(block, dict) \
+                    and block.get("type") == "tool_use" and block.get("name") == "Bash" \
+                    and isinstance(block.get("input"), dict) else None
+                if isinstance(cmd, str) and BRIEF_CMD in cmd:
+                    out.append((ts, "brief", idx))
+    return out
+
+
 def _split(turns, windows):
     """Equal split of each turn's USD over the campaigns live at its time:
     `({campaign: usd}, idle_usd)`. Unpriced turns contribute nothing."""

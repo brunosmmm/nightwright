@@ -134,6 +134,20 @@ def open_dispatches(records) -> list[dict]:
     return [r for r in records if r.get("kind") == "dispatch" and latest[r.get("campaign")] == r["seq"]]
 
 
+def match_parks(parks, records) -> list[tuple]:
+    """Pair each park with its covering decision. `parks` is `[(ts, event)]` and `records`
+    `[(ts, decision)]`, both of one campaign. A park is covered by the first decision with ts >=
+    the park's and < the next park's, so one decision covers at most one park. Returns `[(ts,
+    event, decision | None)]` in park order."""
+    parks = sorted(parks, key=lambda p: p[0])
+    out = []
+    for i, (t, e) in enumerate(parks):
+        upper = parks[i + 1][0] if i + 1 < len(parks) else None
+        hit = next((r for dt_, r in records if dt_ >= t and (upper is None or dt_ < upper)), None)
+        out.append((t, e, hit))
+    return out
+
+
 def park_coverage(cfg, *, since=None) -> dict:
     """`{parks, covered, missing, ratio}` over every `park` ledger event in the window. A park is
     covered by the first decision of its campaign with ts >= the park's and < the next park's, so
@@ -156,12 +170,9 @@ def park_coverage(cfg, *, since=None) -> dict:
         cid = st["id"]
         parks = [(parse_ts(e.get("ts")), e) for e in store.read_ledger(cfg, cid, types=["park"])]
         parks = [(t, e) for t, e in parks if t is not None]
-        for i, (t, e) in enumerate(parks):
+        for t, e, hit in match_parks(parks, by_campaign.get(cid, [])):
             if t < start:
                 continue
-            upper = parks[i + 1][0] if i + 1 < len(parks) else None
-            hit = next((r for dt_, r in by_campaign.get(cid, [])
-                        if dt_ >= t and (upper is None or dt_ < upper)), None)
             items.append({"campaign": cid, "ts": e.get("ts"), "reason": e.get("reason"),
                           "decision": hit})
     items.sort(key=lambda x: (x["ts"] or "", x["campaign"]))

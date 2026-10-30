@@ -1,7 +1,7 @@
 ---
 id: SPEC-0304
 title: "MVP scorecard: `wt queue mvp-report` computes exit criteria E1–E6 over the last N merged campaigns"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -177,31 +177,31 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
 
 ## Acceptance criteria
 
-- [ ] `wt queue mvp-report --json` emits `wt.conductor.mvp.v1` with the window (N
+- [x] `wt queue mvp-report --json` emits `wt.conductor.mvp.v1` with the window (N
       campaigns, `start`, `end`, `merges`, `qualifying`), six criteria each with `value`,
       `target` and a status in `pass|fail|incomplete|no_data`, `parks_undecided`, `ok`.
-- [ ] The window is the last N merged campaigns by terminal ts, filtered by `--since` and
+- [x] The window is the last N merged campaigns by terminal ts, filtered by `--since` and
       `--project`. With fewer than N available, `qualifying` is false. A window containing a
       campaign opened before the latest of SPEC-0299/0300/0301 merged is not qualifying.
-- [ ] E1 and E2 use only conductor turns inside `[start, end]`, and E1 is `incomplete` when
+- [x] E1 and E2 use only conductor turns inside `[start, end]`, and E1 is `incomplete` when
       any of them is unpriced. E3 counts only non-`hold` deliveries inside the interval.
       All three divide by merges that ended inside the interval.
-- [ ] E4 reports a park decided only after the first `transition` out of PARKED as `late` and
+- [x] E4 reports a park decided only after the first `transition` out of PARKED as `late` and
       one with no record as `missing`, and neither counts as covered. A park covered by a
       `by: queue` record counts as covered. A window with no parks gives E4 `no_data`.
-- [ ] E2 is `no_data` with no conductor turns in the interval. With no merged campaign in the
+- [x] E2 is `no_data` with no conductor turns in the interval. With no merged campaign in the
       window every criterion is `no_data` with a null `value` (E5 excepted) and the command
       exits 0.
-- [ ] E5 counts a PR-policy project's campaign whose `close.pr_state == "MERGED"` (including
+- [x] E5 counts a PR-policy project's campaign whose `close.pr_state == "MERGED"` (including
       one moved to MERGED by `sweep_handed_off`), lists its project, spec_id, PR URL and
       human touchpoints. A campaign with a human-owned `main_dirty` park does not pass E5.
-- [ ] E6 finds `compact_boundary` lines and session restarts in the interval, marks each
+- [x] E6 finds `compact_boundary` lines and session restarts in the interval, marks each
       oriented or not (a `conductor-brief` Bash call within 10 assistant turns) and clean or
       not (no `park_undecided` within 15 min), and passes only with ≥ 1 event, all of them
       oriented and clean.
-- [ ] `--check` exits 1 unless `ok`. Without it the exit code is 0. The text table has one
+- [x] `--check` exits 1 unless `ok`. Without it the exit code is 0. The text table has one
       row per criterion.
-- [ ] `tests/test_agentic_mvp_integration.py` exists and passes as the SPEC-0298 Test plan
+- [x] `tests/test_agentic_mvp_integration.py` exists and passes as the SPEC-0298 Test plan
       describes.
 
 ## Test plan
@@ -255,6 +255,40 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
   `tests/test_agentic_quiet.py` and `tests/test_agentic_decisions.py` unchanged (the
   `_read_deliveries` alias and the factored `match_parks` keep their callers working).
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_mvp_report.py tests/test_agentic_mvp_integration.py
+  tests/test_agentic_quiet.py tests/test_agentic_decisions.py
+  tests/test_agentic_conductor_cost.py tests/test_agentic_conductor_brief.py`: 129 passed
+  (the three regression files unchanged). The full suite was left to gating.
+- Sabotage checks run by hand, each failing the named test and then reverted: E4 exit-time
+  check removed (`test_e4_missing_late_covered`), day bounds in `turns_between`
+  (`test_e1_e2_interval`), `hold` deliveries counted in E3 (`test_e3_deliveries`).
+- Manual, live store: `wt queue mvp-report` and `--json` run. The window (last 20 merged
+  campaigns, 104 merges in the interval) is not qualifying: it holds campaigns opened before
+  SPEC-0301 merged. E1 $1.72 (fail), E2 468,211 (fail), E3 0.03 (pass), E4 0/12 (fail,
+  all `missing`: the parks predate the decision log), E5 0 (fail), E6 2 events, none oriented
+  (fail). Cross-check: `wt queue conductor-cost --since 2026-10-25 --until 2026-10-31`
+  gives median context 467,072 against 468,211 here; its USD (whole days, 116 merges) differs
+  because the report's interval is narrower.
+
+### As shipped (2026-10-30)
+
+- `src/wt/agentic/mvp_report.py` and the `wt queue mvp-report` command as designed. Helpers
+  added beside the existing code: `conductor_cost.turns_between` / `transcript_marks`,
+  `quiet.read_deliveries` (old name kept as an alias), `decisions.match_parks`.
+- E1 is also `no_data` (not `pass` at $0) when the interval has no conductor turns, since
+  an unregistered conductor would otherwise pass. E6's `value` is the event count.
+- E5 counts campaigns opened at or after the qualifying point (the latest terminal ts of the
+  merged SPEC-0299/0300/0301 campaigns); with one of them not merged yet it has no lower bound.
+  With no PR campaign E5 is `fail` with value 0. A project whose config cannot be loaded is
+  not a PR-policy project.
+- `qualifying` also names the shortfall ("15 of 20 merged campaigns") and the campaigns
+  opened before the point. Targets are keyed `e1`..`e6` under `agentic.conductor.mvp.targets`.
+- The integration test runs one campaign through the real queue (park, decision, resume,
+  merge) and writes the other two with fixed timestamps; running three real campaigns in one
+  temp repo added setup without testing anything more.
+
 ## Rollout / migration
 
 1. Merge after SPEC-0299, SPEC-0300 and SPEC-0301 (all merged). Read-only, so nothing to
@@ -264,11 +298,11 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
