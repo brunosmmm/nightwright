@@ -920,3 +920,17 @@ def test_decision_table_informational_rows_covered_by_rules():
     assert all(t not in QT.RULES for t in INFORMATIONAL_EXEMPT)
     fake = "| `foo_event` | `foo_event` | none: informational |\n| `merged` | `merged` | none |"
     assert uncovered_informational_types(fake) == {"foo_event"}
+
+
+def test_parked_auto_is_held(tmp_path):
+    """SPEC-0302: a park the queue decided itself is held; any other park, and the queue giving
+    up an automatic resume, wake."""
+    cfg = _cfg(tmp_path)
+    c = _ctx(cfg)
+    auto = {"rule": "parked.base_moving", "resume_at": "2026-10-30T10:01:00+00:00"}
+    assert QT.RULES["parked"] == "cond" and QT.RULES["auto_resume_failed"] == "wake"
+    assert QT.classify(cfg, _ev("parked", reason="base_moving", auto=auto), c) == "hold"
+    assert QT.classify(cfg, _ev("parked", reason="base_moving", auto=None), c) == "wake"
+    assert QT.classify(cfg, _ev("parked", reason="cost_cap"), c) == "wake"
+    assert QT.classify(cfg, _ev("auto_resume_failed", rule="parked.base_moving", error="x"),
+                       c) == "wake"

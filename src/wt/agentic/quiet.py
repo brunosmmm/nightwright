@@ -28,12 +28,12 @@ RULES = {
     # SPEC-0305: informational events of the idea-campaign spec phase (SPEC-0217)
     "spec_written": "hold", "spec_reviewed": "hold", "spec_accepted": "hold",
     "backlog": "cond", "backlog_blocked_long": "cond", "conductor_ping": "cond",
-    "runner_draining": "cond", "campaign_silent": "cond", "state_stuck": "cond",
-    "parked": "wake", "park_undecided": "wake", "runner_dead": "wake", "lease_stale": "wake",
+    "runner_draining": "cond", "campaign_silent": "cond", "state_stuck": "cond", "parked": "cond",
+    "park_undecided": "wake", "runner_dead": "wake", "lease_stale": "wake",
     "run_overdue": "wake", "message": "wake", "escalation_answered": "wake",
     "ready_not_admitted": "wake", "waiting_not_admitted": "wake",
     "runner_journal_silent": "wake", "temp_pressure": "wake", "runner_config_invalid": "wake",
-    "code_changed": "wake",
+    "code_changed": "wake", "auto_resume_failed": "wake",
 }
 
 DEFAULTS = {"enabled": True, "readers": ["conductor"], "digest_interval_s": 1800}
@@ -205,6 +205,8 @@ def classify(cfg, ev, ctx) -> str:
     if t == "backlog_blocked_long":
         return "hold" if dependency_wait(
             data.get("blocked_by"), ctx.live_specs, ev.get("project")) else "wake"
+    if t == "parked":                       # SPEC-0302: a park the queue decided itself
+        return "hold" if data.get("auto") else "wake"
     return "wake"
 
 

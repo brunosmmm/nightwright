@@ -33,7 +33,9 @@ import yaml
 
 from .. import specs as SP
 from ..specmeta import split_frontmatter
+from . import autopark as AP
 from . import close as CL
+from . import decisions as DEC
 from . import divergence as DV
 from . import followups as FU
 from . import gates as G
@@ -130,23 +132,26 @@ class Step:
     escalated: tuple = ()
     combined: dict | None = None
     by: str | None = None                  # SPEC-0232: who requested a deferred park
+    budget: float | None = None            # SPEC-0302: the run a `cost_cap` park blocked
 
 
-def _cap_blocks(state: dict, profile: dict, persona) -> str | None:
+def _cap_blocks(state: dict, profile: dict, persona) -> tuple[str, float] | tuple[None, None]:
     """Pessimistic cap check: a run may spend up to its budget, so never start one that could
     cross the campaign cap. `persona` is a name or a list of names (a fan-out is checked as
-    the sum of its budgets). Returns the park detail or None."""
+    the sum of its budgets). Returns `(park detail, the blocked run's budget)` or
+    `(None, None)`."""
     cost = state.get("cost") or {}
     cap = cost.get("cap_usd")
     if cap is None:
-        return None
+        return None, None
     names = [persona] if isinstance(persona, str) else list(persona)
     budget = sum(float(persona_settings(profile, p).get("max_budget_usd") or 0.0) for p in names)
     total = float(cost.get("total_usd") or 0.0)
     if total + budget > float(cap):
         who = f"a {names[0]} run" if len(names) == 1 else f"{', '.join(names)} runs"
-        return f"spent ${total:.2f}; {who} may cost ${budget:.2f}; cap ${float(cap):.2f}"
-    return None
+        return (f"spent ${total:.2f}; {who} may cost ${budget:.2f}; cap ${float(cap):.2f}",
+                budget)
+    return None, None
 
 
 def _valid_verdicts(state: dict, profile: dict) -> dict:
@@ -196,35 +201,35 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
         parts = (state.get("split") or {}).get("parts") or []
         if parts and all(p.get("spec_id") for p in parts):
             return Step("finalize_split")
-        blocked = _cap_blocks(state, profile, "spec_writer")
+        blocked, budget = _cap_blocks(state, profile, "spec_writer")
         if blocked:
             return Step("park", persona="spec_writer", reason="cost_cap", detail=blocked,
-                        resume_to=st)
+                        resume_to=st, budget=budget)
         return Step("write_spec", persona="spec_writer")
     if st == "SPEC_WRITING":
         # SPEC-0215: the spec writer writes (no spec yet) or revises (findings in the brief)
         if (state.get("spec") or {}).get("id") and not state.get("pending_brief"):
             return Step("park", reason="spec_review_unavailable", resume_to="SPEC_WRITING",
                         detail="nothing to revise; resume with --note to have the writer revise")
-        blocked = _cap_blocks(state, profile, "spec_writer")
+        blocked, budget = _cap_blocks(state, profile, "spec_writer")
         if blocked:
             return Step("park", persona="spec_writer", reason="cost_cap", detail=blocked,
-                        resume_to=st)
+                        resume_to=st, budget=budget)
         return Step("write_spec", persona="spec_writer")
     if st == "SPEC_REVIEW":                 # SPEC-0214
-        blocked = _cap_blocks(state, profile, "spec_reviewer")
+        blocked, budget = _cap_blocks(state, profile, "spec_reviewer")
         if blocked:
             return Step("park", persona="spec_reviewer", reason="cost_cap", detail=blocked,
-                        resume_to=st)
+                        resume_to=st, budget=budget)
         return Step("spec_review", persona="spec_reviewer")
     if st == "GATING":
         return Step("gate")
     if st == "CLOSING":
         if (state.get("closing") or {}).get("resolve"):         # SPEC-0221
-            blocked = _cap_blocks(state, profile, "conflict_resolver")
+            blocked, budget = _cap_blocks(state, profile, "conflict_resolver")
             if blocked:
                 return Step("park", persona="conflict_resolver", reason="cost_cap",
-                            detail=blocked, resume_to=st)
+                            detail=blocked, resume_to=st, budget=budget)
             return Step("resolve", persona="conflict_resolver")
         return Step("close")
     if st == "REVIEWING":
@@ -235,16 +240,17 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
             # when `triage` became pending
             return Step("review", persona="review_triager", personas=("review_triager",))
         pending = _pending_reviewers(state, profile)
-        blocked = _cap_blocks(state, profile, pending)
+        blocked, budget = _cap_blocks(state, profile, pending)
         if blocked:
             return Step("park", persona=pending[0], personas=tuple(pending), reason="cost_cap",
-                        detail=blocked, resume_to=st)
+                        detail=blocked, resume_to=st, budget=budget)
         return Step("review", persona=pending[0], personas=tuple(pending))
     persona, kind = ("implementer", "implement") if st == "IMPLEMENTING" \
         else ("gate_triager", "triage")
-    blocked = _cap_blocks(state, profile, persona)
+    blocked, budget = _cap_blocks(state, profile, persona)
     if blocked:
-        return Step("park", persona=persona, reason="cost_cap", detail=blocked, resume_to=st)
+        return Step("park", persona=persona, reason="cost_cap", detail=blocked, resume_to=st,
+                    budget=budget)
     return Step(kind, persona=persona)
 
 
@@ -928,14 +934,26 @@ def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_even
 
 
 def _park(cfg, state: dict, reason: str, detail: str, resume_to: str, *, by="tick",
-          extra_events=(), extra=None, count=True):
+          extra_events=(), extra=None, count=True, budget=None):
     """Park `state`. `extra` is merged into `state["park"]` (SPEC-0232 `escalated_from`);
-    `count=False` keeps a PARKED→PARKED re-park out of `counters.parks`."""
+    `count=False` keeps a PARKED→PARKED re-park out of `counters.parks`. `budget` is the run a
+    `cost_cap` park blocked (SPEC-0302). A park the queue decides itself carries `park.auto`;
+    its `wait` decision record is written by the tick, never here: `_park` runs under the
+    campaign lock and `decisions.record` would take the decisions lock after it."""
     if count:
         _counters(state)["parks"] += 1
     state["park"] = {"reason": reason, "detail": detail, "since": store.now_iso(),
                      "resume_to": resume_to, **(extra or {})}
     state.pop("park_requested", None)
+    if reason in ("base_moving", "cost_cap") and by == "tick":
+        import datetime as dt
+        sett = AP.settings(cfg)
+        if sett["enabled"]:
+            auto = AP.decide(state, store.read_ledger(cfg, state["id"],
+                                                      types=["open", "resume", "run.end"]),
+                             sett, dt.datetime.now().astimezone(), budget=budget)
+            if auto is not None:
+                state["park"]["auto"] = auto.park_data()
     events = list(extra_events) + [("park", dict(state["park"]))]
     return _transition(cfg, state, "PARKED", reason, by=by, extra_events=events)
 
@@ -3068,7 +3086,7 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
         tri = c["triage"]
         lr = state["last_review"]
         if lr.get("triage") is None and needs_triager(tri, profile):
-            if _cap_blocks(state, profile, ["review_triager"]) is None:
+            if _cap_blocks(state, profile, ["review_triager"])[0] is None:
                 lr["triage"] = "pending"
                 return finish("REVIEWING", "review_triage")
             lr["triage"] = "skipped"
@@ -3536,6 +3554,116 @@ def _train_head(cfg, st: dict) -> None:
     st["closing"] = dict(closing)
 
 
+# ---- parks the queue decides itself (SPEC-0302) -----------------------------------------
+
+_AUTO_REASON = {AP.RULE_BASE_MOVING: "base_moving", AP.RULE_COST_CAP: "cost_cap"}
+
+
+def _record_queue_decision(cfg, cid, kind, rule, rationale, *, action=None) -> bool:
+    """One `by: queue` decision record. Never called with an item lock held (`record` takes the
+    decisions lock first and the item lock inside it). A failure is journaled, not raised."""
+    try:
+        DEC.record(cfg, campaign=cid, by="queue", kind=kind, rule=rule, action=action,
+                   rationale=rationale)
+        return True
+    except (ValueError, OSError) as e:
+        journal(cfg, "decision_record_failed", campaign=cid, rule=rule, error=str(e))
+        return False
+
+
+def _auto_wait_recorded(cfg, cid, auto: dict) -> bool:
+    """True when the campaign's `wait` record exists; writes it when missing (a crash between
+    the park and the record, or a failed write, is repaired here)."""
+    if AP.has_wait_note(store.read_ledger(cfg, cid, types=["park", "note"]), auto.get("rule")):
+        return True
+    return _record_queue_decision(
+        cfg, cid, "wait", auto["rule"], auto.get("rationale") or "queue-decided park",
+        action=f"auto-resume at {auto.get('resume_at')}")
+
+
+def _record_auto_waits(cfg) -> None:
+    if not AP.settings(cfg)["enabled"]:
+        return
+    for st in store.list_campaigns(cfg, state="PARKED"):
+        auto = (st.get("park") or {}).get("auto")
+        if isinstance(auto, dict) and auto.get("rule"):
+            _auto_wait_recorded(cfg, st["id"], auto)
+
+
+def _auto_give_up(cfg, cid, rule, error) -> bool:
+    """The queue gives up an automatic resume: clear `park.auto`, append `auto_resume_failed`
+    (an always-wake event) and record why, so the conductor takes the park over. A campaign
+    that is no longer PARKED, or whose park was replaced, only loses a stale `auto`."""
+    with store.item_lock(cfg, cid):
+        st = store.read_state(cfg, cid)
+        park = st.get("park") if st.get("state") == "PARKED" else None
+        if not isinstance(park, dict) or not isinstance(park.get("auto"), dict):
+            return False
+        park.pop("auto")
+        store.write_state(cfg, cid, st)
+        store.append_event(cfg, cid, "auto_resume_failed", {"rule": rule, "error": error},
+                           by="queue")
+    _record_queue_decision(cfg, cid, "other", rule, f"auto-resume failed: {error}")
+    return True
+
+
+def _auto_resume_step(cfg, flying, *, busy_count, slots, report) -> list:
+    """Tick step 0a. Returns the states it resumed (for the tick's busy / queued lists)."""
+    import datetime as dt
+    sett = AP.settings(cfg)
+    pending = [s for s in store.list_campaigns(cfg, state="PARKED")
+               if isinstance((s.get("park") or {}).get("auto"), dict) and s["id"] not in flying]
+    if not sett["enabled"]:
+        for st in pending:
+            _auto_give_up(cfg, st["id"], st["park"]["auto"].get("rule") or "auto_resume",
+                          "auto-resume disabled")
+        return []
+    resumed = []
+    for st in pending:
+        _auto_wait_recorded(cfg, st["id"], st["park"]["auto"])
+    for st in AP.due(pending, dt.datetime.now().astimezone()):
+        cid, auto = st["id"], st["park"]["auto"]
+        rule = auto.get("rule")
+        cur = store.read_state(cfg, cid)
+        cur_park, cur_auto = cur.get("park") or {}, (cur.get("park") or {}).get("auto")
+        if cur.get("state") != "PARKED" or not isinstance(cur_auto, dict) \
+                or cur_auto.get("rule") != rule:
+            continue                    # a human resumed or re-parked it meanwhile
+        if not AP.has_wait_note(store.read_ledger(cfg, cid, types=["park", "note"]), rule):
+            continue                    # never apply an auto decision without its record
+        from . import escalations as ESC
+        n = int(((cur.get("counters") or {}).get("auto_resumes") or {}).get(rule, 0))
+        note = f"queue: {rule} auto-resume {n + 1}/{sett['max_per_campaign']}"
+        error = None
+        if cur_park.get("reason") != _AUTO_REASON.get(rule):
+            error = f"park reason is now {cur_park.get('reason')}"
+        elif ESC.open_for(cfg, cid) is not None:
+            error = "an escalation is open"
+        else:
+            try:
+                plan = plan_resume(cfg, cid, by="queue", raise_cap=cur_auto.get("raise_cap"),
+                                   note=note, auto_rule=rule)
+            except ValueError as e:
+                error = str(e)
+        if error is None:
+            cap = plan.get("raise_cap")
+            _record_queue_decision(
+                cfg, cid, "resume", rule, f"scheduled automatic resume reached ({note})",
+                action=f"resume to {plan['to']}" + (f" raise cap to ${cap:.2f}" if cap else ""))
+            try:
+                after = apply_resume(cfg, plan, busy=busy_count(), slots=slots)
+            except ValueError as e:
+                error = str(e)
+        if error is not None:
+            _auto_give_up(cfg, cid, rule, error)
+            continue
+        report.steps.append({"campaign": cid, "from": "PARKED", "to": after["state"],
+                             "action": "auto_resume", "reason": rule,
+                             "run_id": None, "cost_usd": None})
+        resumed.append(after)
+    return resumed
+
+
 def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, own: bool,
           draining: bool = False):
     if not pool.adopted:
@@ -3569,11 +3697,21 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             continue
         to = park.get("resume_to") or "QUEUED"
         frm = st.get("state")
+        _record_queue_decision(cfg, st["id"], "resume", "parked.config_invalid",
+                               "project config loads again", action=f"resume to {to}")
         st["park"] = None
         _enter_slot_or_wait(cfg, st, to, "config_recovered", busy=n_busy(), slots=slots)
         report.steps.append({"campaign": st["id"], "from": frm, "to": st["state"],
                              "action": "recover", "reason": "config_recovered",
                              "run_id": None, "cost_usd": None})
+        if st["state"] in ACTIVE_STATES:
+            busy.append(st)
+        elif st["state"] == "QUEUED":
+            queued.append(st)
+
+    # 0a. parks the queue decided itself (SPEC-0302): write their `wait` record, resume the due
+    #     ones, hand the rest back to the conductor when the feature is off
+    for st in _auto_resume_step(cfg, flying, busy_count=n_busy, slots=slots, report=report):
         if st["state"] in ACTIVE_STATES:
             busy.append(st)
         elif st["state"] == "QUEUED":
@@ -3741,6 +3879,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             if report.steps[-1].get("reason") != "base_moved":
                 break
             st = store.read_state(cfg, st["id"])
+    _record_auto_waits(cfg)          # SPEC-0302: parks written this tick, outside any item lock
 
 
 # ---- adoption of runs left open by an earlier runner (SPEC-0225) -------------------------
@@ -3982,7 +4121,7 @@ def _park_row(cfg, state: dict, step: Step) -> dict:
     by = step.by or ("human" if step.reason == "human" else "tick")
     extra = {"escalated_from": None} if step.reason == "human_decision" else None
     _park(cfg, state, step.reason, step.detail or step.reason, step.resume_to or frm, by=by,
-          extra=extra)
+          extra=extra, budget=step.budget)
     return {"campaign": state["id"], "from": frm, "to": "PARKED", "action": "park",
             "run_id": None, "cost_usd": None, "reason": step.reason}
 
@@ -6155,7 +6294,7 @@ def apply_park(cfg, plan: dict) -> dict:
 
 
 def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loops=False,
-                by="human") -> dict:
+                by="human", auto_rule=None) -> dict:
     st = store.read_state(cfg, campaign)
     if st.get("state") != "PARKED":
         raise ValueError(f"{campaign} is {st.get('state')}, not PARKED")
@@ -6171,15 +6310,18 @@ def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loop
     return {"campaign": campaign, "from": "PARKED", "to": target, "note": note,
             "raise_cap": raise_cap, "reset_loops": bool(reset_loops),
             "park": park, "cap_usd": (st.get("cost") or {}).get("cap_usd"),
-            "waits_for_slot": waits, "by": by}
+            "waits_for_slot": waits, "by": by, "auto_rule": auto_rule}
 
 
-def apply_resume(cfg, plan: dict) -> dict:
+def apply_resume(cfg, plan: dict, *, busy=None, slots=None) -> dict:
     cid, by = plan["campaign"], plan.get("by") or "human"
     with store.item_lock(cfg, cid):
         st = store.read_state(cfg, cid)
         if st.get("state") != "PARKED":
             raise ValueError(f"{cid} is {st.get('state')}, not PARKED")
+        if plan.get("auto_rule") and \
+                ((st.get("park") or {}).get("auto") or {}).get("rule") != plan["auto_rule"]:
+            raise ValueError(f"{cid}: the park changed since the automatic resume was planned")
         if plan.get("note"):
             brief = st.get("pending_brief") or {"source": "human", "fix_brief": None,
                                                 "must_fix": [], "human_notes": []}
@@ -6198,11 +6340,15 @@ def apply_resume(cfg, plan: dict) -> dict:
         _counters(st)["timeout_regates"] = 0                 # SPEC-0311: a fresh re-gate budget
         if (st.get("park") or {}).get("reason") == "gate_timeout" and plan["to"] == "GATING":
             st["gate_exclusive"] = {"entered_at": store.now_iso()}   # re-gate alone, first
+        if by == "queue" and plan.get("auto_rule"):      # SPEC-0302: bounded automatic resumes
+            counts = _counters(st).setdefault("auto_resumes", {})
+            counts[plan["auto_rule"]] = int(counts.get(plan["auto_rule"], 0)) + 1
         st["park"] = None
         st.pop("park_requested", None)
         ev = ("resume", {"to": plan["to"], "note": plan.get("note"),
                          "cap_usd": plan.get("raise_cap"), "loops_reset": bool(plan.get("reset_loops"))})
-        st = _enter_slot_or_wait(cfg, st, plan["to"], "resumed", by=by, extra_events=[ev])
+        st = _enter_slot_or_wait(cfg, st, plan["to"], "resumed", by=by, extra_events=[ev],
+                                 busy=busy, slots=slots)
         from . import escalations as ESC            # SPEC-0232: after the transition succeeded
         ESC.withdraw_for_campaign(cfg, cid, f"campaign resumed by {by}", by)
         return st

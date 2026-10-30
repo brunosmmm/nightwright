@@ -1,7 +1,7 @@
 ---
 id: SPEC-0302
 title: "Routine parks decided by the queue: `base_moving` and phantom-charge `cost_cap` resume themselves, logged `by: queue`"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -235,38 +235,38 @@ its own decisions in the same vocabulary as the conductor.
 
 ## Acceptance criteria
 
-- [ ] A `base_moving` park gets `park.auto` with `rule: parked.base_moving` and
+- [x] A `base_moving` park gets `park.auto` with `rule: parked.base_moving` and
       `resume_at = park time + 60 s × 2^n`, a `by: queue`, `kind: wait` decision record
       (so `park_view` is decided), and the queue resumes it to `CLOSING` at `resume_at`
       with a `kind: resume` record written before the resume. After 3 automatic resumes the
       next `base_moving` park has no `auto` and wakes the conductor.
-- [ ] A `cost_cap` park whose block is entirely phantom (transient-failed runs charged as
+- [x] A `cost_cap` park whose block is entirely phantom (transient-failed runs charged as
       estimates since the last resume) gets `auto` with `raise_cap = cap + phantom` and is
       resumed with that cap after `transient_backoff_s` (or a parsed reset time, at most 6 h
       out). A `cost_cap` park with real spend over the cap, with a non-transient
       estimated charge, or with a transient charge from a run that did work (non-zero
       output tokens and `duration_s` > `phantom_max_duration_s`), gets no `auto`.
-- [ ] A `parked` event with `auto` is held by the `conductor` follower; a `parked` event
+- [x] A `parked` event with `auto` is held by the `conductor` follower; a `parked` event
       without it, and `auto_resume_failed`, wake.
-- [ ] When the scheduled resume fails (`ValueError` from `plan_resume`/`apply_resume`, a
+- [x] When the scheduled resume fails (`ValueError` from `plan_resume`/`apply_resume`, a
       state that no longer matches `auto.rule`, or an open escalation), `park.auto` is
       cleared, a `kind: other` queue decision and an `auto_resume_failed` ledger event
       (readable with `store.read_ledger`) are written, and the campaign stays PARKED.
       Escalating an auto park re-parks it `human_decision` with no `auto`; step `0a` never
       resumes it and the escalation stays open.
-- [ ] The `wait` record is written by `_tick` with no item lock held (never from `_park`),
+- [x] The `wait` record is written by `_tick` with no item lock held (never from `_park`),
       and step `0a` does not resume a campaign whose `park.auto` has no such record.
-- [ ] `plan_resume` called for a queue auto-resume returns a plan with an `auto_rule` key,
+- [x] `plan_resume` called for a queue auto-resume returns a plan with an `auto_rule` key,
       and step `0a` applies the same `busy`/`slots` accounting as step 0.
-- [ ] The `config_invalid` recovery writes a `by: queue`, `kind: resume`,
+- [x] The `config_invalid` recovery writes a `by: queue`, `kind: resume`,
       `rule: parked.config_invalid` decision before re-entering the campaign.
-- [ ] `agentic.conductor.auto.enabled: false` produces no `auto`, no automatic resume, and
+- [x] `agentic.conductor.auto.enabled: false` produces no `auto`, no automatic resume, and
       the same `parked` deliveries as before this change. Disabling it with an auto park
       pending clears that `auto` and raises an `auto_resume_failed` event for the campaign.
-- [ ] Every rule id the queue writes matches `decisions.RULE_RE` and appears in the
+- [x] Every rule id the queue writes matches `decisions.RULE_RE` and appears in the
       `/wt-conduct` decision table's rule-id column, which gains `parked.base_moving` and
       `auto_resume_failed`.
-- [ ] `wt queue conductor-brief --json` shows `auto` on an auto-decided parked item.
+- [x] `wt queue conductor-brief --json` shows `auto` on an auto-decided parked item.
 
 ## Test plan
 
@@ -334,6 +334,36 @@ its own decisions in the same vocabulary as the conductor.
   `tests/test_agentic_close.py` and `tests/test_agentic_decisions.py` unchanged apart from
   the `_cap_blocks` return shape where a test calls it directly.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_autopark.py tests/test_agentic_queue_autopark.py
+  tests/test_agentic_quiet.py tests/test_agentic_conductor_brief.py tests/test_skills.py`:
+  all pass (pure rules, step 0a with the `wait` / `resume` records, give-up and disable
+  hand-back, escalation dropping `auto`, the lock-order test, slot accounting, the
+  `config_invalid` record, quiet hold / wake, brief `auto`, skill rule ids).
+- `uv run pytest tests -k agentic` (run before the new tests were added, so it covers the
+  existing suites): 2209 passed, 2 skipped.
+- The remaining, non-agentic part of the full suite was left to gating (no-regressions check). `python3 tools/spec_lint.py` passes.
+- Manual verification (`wt queue decisions --since 1d`, `wt queue wakeups`) can only run on the
+  live queue after merge; it is not done yet and is the first thing to check there.
+
+### As shipped (2026-10-30)
+
+- `Auto.park_data()` also carries `rationale`, which the tick uses as the `wait` record's
+  rationale; `_park` evaluates `autopark.decide` only for `base_moving` / `cost_cap` parks
+  written by the tick (`by == "tick"`).
+- `phantom_usd(ledger, since_seq=None, max_duration_s=120)` defaults `since_seq` to the last
+  `open` / `resume` in the ledger it is given.
+- Step `0a` lives in `queue._auto_resume_step` (called from `_tick`), the `wait` records in
+  `queue._record_auto_waits` (called at the end of `_tick`, so a park written by any step in
+  the tick is recorded with no item lock held, and again in step `0a`). `apply_resume` also
+  refuses (`ValueError`) when the plan carries `auto_rule` and the park no longer holds an
+  `auto` of that rule, which closes the race between the step's check and the resume.
+- The `auto_resume_failed` ledger event and its `kind: other` record are written by
+  `_auto_give_up`; the event is written under the item lock, the record after it.
+- The skill also gained a `parked.config_invalid` row (the queue's recovery record uses that
+  rule id).
+
 ## Rollout / migration
 
 1. Merge after SPEC-0301 (already done). The runner re-execs on `code_changed`; parks
@@ -345,11 +375,11 @@ its own decisions in the same vocabulary as the conductor.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

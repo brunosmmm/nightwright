@@ -93,7 +93,9 @@ def conductor_brief(cfg, now=None) -> dict:
             "last_decision": ({"kind": last["kind"], "rule": last["rule"],
                                "rationale": _clip(last.get("rationale"), 200), "ts": last["ts"]}
                               if last else None),
-            "decided": bool(park.get("decided")), "overdue": bool(park.get("overdue"))})
+            "decided": bool(park.get("decided")), "overdue": bool(park.get("overdue")),
+            "auto": ({"rule": park["auto"].get("rule"), "resume_at": park["auto"].get("resume_at")}
+                     if isinstance(park.get("auto"), dict) else None)})
     active = [{"campaign": i["campaign"], "label": i["label"], "state": i["state"],
                "loops": i["loops"], "cost_usd": i["cost_usd"]}
               for i in items if i["state"] in Q.ACTIVE_STATES]
@@ -156,7 +158,9 @@ def _sections(b) -> dict:
     s["parked"] = ("parked:", [
         f"- {p['campaign']} {p['label']} {p['reason']} owner={p['owner']} "
         f"for={p['parked_for_s']}s decided={str(p['decided']).lower()} "
-        f"overdue={str(p['overdue']).lower()} esc={p['escalation']} | {p['detail']} | last: "
+        f"overdue={str(p['overdue']).lower()} esc={p['escalation']}"
+        + (f" auto={p['auto']['rule']}@{p['auto']['resume_at']}" if p.get("auto") else "")
+        + f" | {p['detail']} | last: "
         + (f"{p['last_decision']['kind']}/{p['last_decision']['rule']} "
            f"{p['last_decision']['ts']} {p['last_decision']['rationale']}"
            if p["last_decision"] else "none") for p in b["parked"]], more.get("parked", 0))

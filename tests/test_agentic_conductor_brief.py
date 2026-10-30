@@ -242,3 +242,20 @@ def test_cli_decision_decisions_brief(cfg, clock, run):
     assert "resume/parked.loop_exhausted" in r.output and "last: none" not in r.output
     r = run("decision", "C1", "--kind", "resume", "--rule", "nope!", "x")
     assert r.exit_code == 1 and "bad rule id" in r.output
+
+
+def test_brief_shows_auto(cfg, clock):
+    """SPEC-0302: a park the queue decided shows its rule and resume time."""
+    mk(cfg, "AUTO")
+    mk(cfg, "PLAIN")
+    park(cfg, "AUTO", reason="base_moving")
+    park(cfg, "PLAIN")
+    st = S.read_state(cfg, "AUTO")
+    st["park"]["auto"] = {"rule": "parked.base_moving", "resume_at": "2026-10-30T10:01:00+00:00"}
+    S.write_state(cfg, "AUTO", st)
+    b = brief(cfg)
+    by = {p["campaign"]: p for p in b["parked"]}
+    assert by["AUTO"]["auto"] == {"rule": "parked.base_moving",
+                                  "resume_at": "2026-10-30T10:01:00+00:00"}
+    assert by["PLAIN"]["auto"] is None
+    assert "auto=parked.base_moving@2026-10-30T10:01:00+00:00" in BR.render_text(b)

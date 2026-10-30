@@ -539,3 +539,14 @@ def test_conduct_skill_rule_ids():
         seen.update(ids)
     assert {"run_failed.transient", "message.answer", "wt_broken", "parked.cost_cap",
             "conductor_ping"} <= seen
+
+
+def test_conduct_skill_auto_parks():
+    """SPEC-0302: the skill knows the queue's automatic resumes and the hand-back event."""
+    from wt.agentic.decisions import RULE_RE  # noqa: F401
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    table = conduct.split("## Decision table", 1)[1].split("\nExact flags:", 1)[0]
+    ids = {i.strip().strip("`") for row in table.splitlines() if row.startswith("|")
+           for i in row.split("|")[1].split(",")}
+    assert {"parked.base_moving", "auto_resume_failed", "parked.config_invalid"} <= ids
+    assert "the queue decided itself" in conduct and "SPEC-0302" in conduct

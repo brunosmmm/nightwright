@@ -36,7 +36,8 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "cost": ("persona", "delta_usd", "total_usd", "cap_usd"),
     "commit": ("sha", "message"),
     "gate": ("gate_seq", "ok", "started_at", "duration_s", "results"),
-    "park": ("reason", "detail", "resume_to"),
+    "park": ("reason", "detail", "resume_to"),      # + optional `auto` (SPEC-0302)
+    "auto_resume_failed": ("rule", "error"),        # SPEC-0302
     "resume": ("to", "note", "cap_usd", "loops_reset"),
     "close": ("mode",),
     "note": ("text",),

@@ -58,6 +58,7 @@ EVENT_TYPES = {
     "code_changed": ("from_sha", "to_sha", "paths", "skills_changed"),   # + EVENT_OPTIONAL
     # SPEC-0222
     "park_undecided": ("reason", "parked_for_s", "owner"),
+    "auto_resume_failed": ("rule", "error"),         # SPEC-0302
     # SPEC-0228
     "waiting_not_admitted": ("waiting_for_s", "active", "slots"),
     "runner_journal_silent": ("last_journal_ts", "silent_s", "heartbeat_age_s",
@@ -326,7 +327,9 @@ def _project_ledger_event(ev: dict, st: dict, sett: dict, warned: bool):
         return None
     if t == "park":
         return "parked", {"reason": ev.get("reason"), "detail": ev.get("detail"),
-                          "resume_to": ev.get("resume_to")}
+                          "resume_to": ev.get("resume_to"), "auto": ev.get("auto")}
+    if t == "auto_resume_failed":                            # SPEC-0302
+        return "auto_resume_failed", {"rule": ev.get("rule"), "error": ev.get("error")}
     if t == "resume":
         return "resumed", {"to": ev.get("to"), "note": ev.get("note")}
     if t == "run.end" and (ev.get("is_error") or ev.get("timed_out")):
