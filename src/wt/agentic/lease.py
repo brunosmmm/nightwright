@@ -204,7 +204,8 @@ def is_held(cfg) -> bool:
 def lease_status(cfg, now=None) -> dict:
     """`{held, pid, host, started_at, heartbeat_at, heartbeat_age_s, ttl_s, stale}`, plus
     `draining` (the runner's drain info or None), `config_errors` (SPEC-0226: path -> broken
-    config entry, `{}` when none) and the loop state of SPEC-0228 (`tick_at`, `poll_interval_s`,
+    config entry, `{}` when none), `log` / `detached` (SPEC-0291: set by `wt queue run --detach`,
+    None otherwise) and the loop state of SPEC-0228 (`tick_at`, `poll_interval_s`,
     `in_flight`, `slot_freed_at`, `busy`, `busy_ended_at`, `slots_full_at`; each None when the runner has not written it) while
     held."""
     info = read_lease(cfg) or {}
@@ -224,6 +225,8 @@ def lease_status(cfg, now=None) -> dict:
     out["draining"] = (info.get("draining") or None) if held else None     # SPEC-0224
     if held:
         out["config_errors"] = info.get("config_errors") or {}     # SPEC-0226
+        out["log"] = info.get("log")                               # SPEC-0291: --detach
+        out["detached"] = info.get("detached")
     for key in LOOP_KEYS:                                          # SPEC-0228
         out[key] = info.get(key) if held else None
     return out

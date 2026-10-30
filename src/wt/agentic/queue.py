@@ -4252,6 +4252,145 @@ def leftover_threads() -> list:
     return _LAST_POOL.leftover_threads() if _LAST_POOL is not None else []
 
 
+# ---- detached start and stop (SPEC-0291) ---------------------------------------------------------
+# `wt queue run --detach` re-executes the same entry point as a session leader and confirms the
+# child took the lease; `wt queue stop` signals the lease holder, honoring the close guard.
+
+RUNNER_LOG_ENV = "WT_RUNNER_LOG"
+_LOG_TAIL = 20
+
+
+def _strip_detach(argv) -> list:
+    """`argv` without `--detach` and `--log PATH` / `--log=PATH`."""
+    out, skip = [], False
+    for a in argv:
+        if skip:
+            skip = False
+        elif a == "--detach" or a.startswith("--log="):
+            continue
+        elif a == "--log":
+            skip = True
+        else:
+            out.append(a)
+    return out
+
+
+def _log_tail(path, n=_LOG_TAIL) -> str:
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(lines[-n:])
+
+
+def detach_runner(cfg, argv, log_path, *, timeout_s=15, popen=subprocess.Popen,
+                  clock=time.monotonic) -> dict:
+    """Start `argv` (minus `--detach`/`--log`) as a detached session leader, stdin closed and
+    output appended to `log_path`, then wait until the child holds the lease. Returns
+    `{pid, log}`. ValueError when the lease is already held, when the child exits first, or
+    when it has not taken the lease within `timeout_s` (the child is then left running)."""
+    if L.is_held(cfg):
+        st = L.lease_status(cfg)
+        age = st.get("heartbeat_age_s")
+        age_txt = f"heartbeat {age:.0f}s ago" if age is not None else "no heartbeat"
+        raise ValueError(f"queue held by pid {st.get('pid', '?')} ({age_txt}); "
+                         "stop it with wt queue stop")
+    log_path = Path(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    child_argv = _strip_detach(argv)
+    env = {**os.environ, RUNNER_LOG_ENV: str(log_path)}
+    env.pop(L.HANDOVER_ENV, None)
+    with open(log_path, "a", encoding="utf-8") as fh:
+        fh.write(f"--- wt queue run --detach {store.now_iso()} ---\n")
+        fh.flush()
+        child = popen(child_argv, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
+                      start_new_session=True, env=env)
+    end = clock() + timeout_s
+    while True:
+        if L.is_held(cfg) and (L.read_lease(cfg) or {}).get("pid") == child.pid:
+            return {"pid": child.pid, "log": str(log_path)}
+        rc = child.poll()
+        if rc is not None:
+            raise ValueError(f"runner pid {child.pid} exited with status {rc} before taking "
+                             f"the lease; {log_path} ends with:\n{_log_tail(log_path)}")
+        if clock() >= end:
+            raise ValueError(f"runner pid {child.pid} did not take the lease within "
+                             f"{timeout_s:g}s (still running, not killed); {log_path} ends "
+                             f"with:\n{_log_tail(log_path)}")
+        time.sleep(0.2)
+
+
+GUARDED_BUSY = ("open", "close")
+
+
+def close_guard(status: dict, now=None) -> dict | None:
+    """The lease's `busy` when a SIGTERM must wait (SPEC-0291): an `open` or `close` step
+    within `since + budget_s` (a killed close can leave the main checkout mid-merge, a killed
+    open a half-built worktree). An unparseable `since` counts as guarded. Else None."""
+    busy = (status or {}).get("busy")
+    if not isinstance(busy, dict) or busy.get("kind") not in GUARDED_BUSY:
+        return None
+    age = _age(busy.get("since"), now)
+    try:
+        budget = float(busy.get("budget_s"))
+    except (TypeError, ValueError):
+        return busy
+    if age is None or age <= budget:
+        return busy
+    return None
+
+
+def _guard_text(busy: dict) -> str:
+    return (f"close guard: {busy.get('kind')} of {busy.get('campaign') or '-'} started "
+            f"{busy.get('since')}, budget {busy.get('budget_s')}s")
+
+
+def stop_runner(cfg, *, timeout_s=60, wait_guard=False, guard_wait_s=None, kill=os.kill,
+                clock=time.monotonic, sleep=time.sleep) -> dict:
+    """SIGTERM the local lease holder and wait until the lease is released (SPEC-0291). Never
+    SIGKILLs. Returns `{stopped: False, reason: "no runner"}` when nothing holds the lease,
+    else `{stopped: True, pid, waited_s}`. ValueError for a holder on another host, inside the
+    close guard (unless `wait_guard`, which waits up to `guard_wait_s`, default the remaining
+    budget + 30 s), or when the lease is still held after `timeout_s`."""
+    import socket
+    st = L.lease_status(cfg)
+    if not st["held"]:
+        return {"stopped": False, "reason": "no runner"}
+    if st.get("host") != socket.gethostname():
+        raise ValueError(f"queue held by pid {st.get('pid')} on {st.get('host')}, not this "
+                         f"host ({socket.gethostname()}); stop it there")
+    busy = close_guard(st)
+    if busy is not None:
+        if not wait_guard:
+            raise ValueError(f"{_guard_text(busy)}; retry later or pass --wait-guard")
+        if guard_wait_s is None:
+            age = _age(busy.get("since")) or 0
+            try:
+                guard_wait_s = max(0.0, float(busy.get("budget_s")) - age) + 30
+            except (TypeError, ValueError):
+                guard_wait_s = 30
+        end = clock() + guard_wait_s
+        while busy is not None:
+            if clock() >= end:
+                raise ValueError(f"{_guard_text(busy)}; still guarded after "
+                                 f"{guard_wait_s:g}s of waiting")
+            sleep(0.2)
+            st = L.lease_status(cfg)
+            if not st["held"]:
+                return {"stopped": False, "reason": "no runner"}
+            busy = close_guard(st)
+    pid = st["pid"]
+    start = clock()
+    kill(pid, signal.SIGTERM)
+    end = start + timeout_s
+    while L.is_held(cfg):
+        if clock() >= end:
+            raise ValueError(f"pid {pid} did not release the lease within {timeout_s:g}s "
+                             "(still running); not killed")
+        sleep(0.2)
+    return {"stopped": True, "pid": pid, "waited_s": round(clock() - start, 1)}
+
+
 def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=False,
         on_tick=None, runner=None, argv=None, reexec=False, code_root=None,
         config_loader=None) -> int:
@@ -4282,6 +4421,8 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
     entered = False                     # SPEC-0262: the main `try` owns the lease from there on
     try:
         G.reset()                                          # SPEC-0229: no stale stop flag
+        if os.environ.get(RUNNER_LOG_ENV):                 # SPEC-0291: started by --detach
+            lease.update_info(log=os.environ[RUNNER_LOG_ENV], detached=True)
         lease.update_info(poll_interval_s=interval, slot_freed_at=store.now_iso())   # SPEC-0228
 
         def _handler(signum, _frame):

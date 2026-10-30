@@ -1,7 +1,8 @@
 ---
 id: SPEC-0291
 title: "`wt queue run --detach` and `wt queue stop`: start and stop the runner without a shell recipe"
-status: accepted
+status: done
+updated: 2026-10-30
 owner: user
 created: 2026-10-30
 milestone: "M9: agentic workflow"
@@ -147,20 +148,20 @@ skill rows can then reference instead of restating it.
 
 ## Acceptance criteria
 
-- [ ] `wt queue run --detach` starts a session-leader child with stdin closed and output
+- [x] `wt queue run --detach` starts a session-leader child with stdin closed and output
       appended to `--log` (default `<agentic_dir>/runner.log`). It returns 0 only after the
       lease is held by the child's pid, and prints the pid and the log path. The lease and
       `lease_status` carry `log` and `detached: true`, and keep them across a re-exec.
-- [ ] `--detach` refuses with exit 1, naming the holder, when the lease is held. A child that
+- [x] `--detach` refuses with exit 1, naming the holder, when the lease is held. A child that
       exits early, or a start that does not take the lease within 15 s, gives exit 1 with the
       log tail. `--detach` with `--once` or `--max-ticks` is a usage error.
-- [ ] `wt queue stop --yes` sends SIGTERM to the local lease holder and returns once the lease
+- [x] `wt queue stop --yes` sends SIGTERM to the local lease holder and returns once the lease
       is released. It returns exit 0 with "no runner" when none holds it, and exit 1 when the
       runner does not release the lease within `--timeout` (it never sends SIGKILL).
-- [ ] `wt queue stop` refuses inside the close guard (`busy.kind` `open`/`close` within
+- [x] `wt queue stop` refuses inside the close guard (`busy.kind` `open`/`close` within
       `since + budget_s`, or an unparseable `since`). With `--wait-guard` it waits for the
       guard to clear first. Without `--yes` it is a dry run.
-- [ ] The wt-conduct skill contains no `nohup` recipe. Its runner start and restart steps use
+- [x] The wt-conduct skill contains no `nohup` recipe. Its runner start and restart steps use
       `wt queue run --detach` and `wt queue stop --yes`. `agentic.run_launcher` is gone from
       the defaults.
 
@@ -215,6 +216,50 @@ skill rows can then reference instead of restating it.
 - **Regression guard:** full `uv run pytest`. A foreground `wt queue run` is unchanged
   (existing runner tests).
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_detach.py` (new, 19 tests: every detach, close-guard and
+  stop test named above, plus `test_reexec_adoption_keeps_log_and_detached`,
+  `test_lease_status_without_detach_has_null_detached` and
+  `test_stop_wait_guard_times_out`), `tests/test_agentic_queue_cli.py` (the three new CLI
+  tests), `tests/test_skills.py` (`test_conduct_skill_has_no_nohup_recipe`), and the related
+  `test_agentic_lease`, `test_agentic_drain_signal`, `test_agentic_reexec`,
+  `test_agentic_adopt`, `test_agentic_events*`, `test_agentic_config_reload`,
+  `test_agentic_dogfood_config`: all pass (198 + 110).
+- **Sabotage:** `detach_runner` returning right after `Popen` ⇒
+  `test_detach_child_dies_early` fails; `close_guard` ignoring `budget_s` ⇒
+  `test_close_guard_expired` fails. Both restored.
+- **Manual** (isolated `WT_DATA_DIR` / `WT_CONFIG_DIR` under `/tmp`, so the live runner's
+  lease was never touched): `wt queue run --detach --poll-interval 2` printed `runner started:
+  pid N, log …/agentic/runner.log` in 0.4 s; a second `--detach` exited 1 with `queue held by
+  pid N (heartbeat 0s ago); stop it with wt queue stop`; `ps` showed SID = PGID = pid,
+  `/proc/N/fd/0` → `/dev/null`, fds 1/2 → the log; `wt queue list --json` showed `.lease.log`
+  and `detached: true`; `wt queue stop` (dry run) printed the plan; `wt queue stop --yes`
+  returned in 0.2 s; `wt queue runner-log --tail 2` showed `start` then `stop signal after 3
+  tick(s)`; a further `stop --yes` printed `no runner` (exit 0).
+- Full `uv run pytest` left to gating (the no-regressions check).
+
+### As shipped (2026-10-30)
+
+- `python -m wt` did not exist, so the Decision's fallback entry point would have failed:
+  added `src/wt/__main__.py` (two lines). `cli_queue._entry_argv()` picks `sys.argv[0]`
+  when it is an executable file, else `[sys.executable, "-m", "wt"]`; the child argv is that
+  plus `sys.argv[1:]`, and `Q.detach_runner` strips `--detach`, `--log PATH` and `--log=PATH`
+  itself (so the stripping is unit-tested). `WT_RUNNER_LEASE_FD` is dropped from the child env.
+- `wt queue stop --by` is resolved like the other human commands (`_actor`) and only shown in
+  the plan / JSON (`by`); nothing is journaled by the command. The JSON is
+  `{schema: wt.queue.stop.v1, held, pid, host, guard, wait_guard, timeout_s, by, written,
+  result}` (`result` = the `stop_runner` return, null on a dry run).
+- `stop_runner` with `--wait-guard` returns `no runner` if the runner exits while it waits.
+- Skill: besides step 2 and the five rows, the *Never block* list now names `wt queue run
+  --detach` / `wt queue stop --yes` as quick commands (starting the loop is no longer a
+  background-shell job), and the re-exec-drain guardrail uses the two commands. The close
+  guard's definition is only in `runner_journal_silent`; the SPEC-0228 skill tests
+  (`test_new_watchdog_rows_present`, `test_close_guard_in_rows`) were updated to check the
+  new wording instead of "never SIGTERM" in every row.
+- The idea clock-in/out was skipped: wt refuses org writes from a campaign agent
+  (`WT_PERSONA_RUN=1`).
+
 ## Rollout / migration
 
 The skill update ships with the code. A runner started the old way works with `wt queue stop`,
@@ -222,11 +267,11 @@ since only the lease is read. Its lease has no `log` and reports `detached: null
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

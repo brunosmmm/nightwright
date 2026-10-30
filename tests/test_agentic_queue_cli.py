@@ -903,3 +903,45 @@ def test_batch_refused_idea_blocks_yes_without_skip_invalid(tmp_path, monkeypatc
     assert r.exit_code == 1 and not S.list_campaigns(cfg) and d["written"] is False
     r, d = batch(cfg, monkeypatch, "SPEC-0001", idea, "--yes", "--skip-invalid")
     assert r.exit_code == 1 and [c["spec_id"] for c in S.list_campaigns(cfg)] == ["SPEC-0001"]
+
+
+def test_queue_run_detach_once_usage_error(tmp_path, monkeypatch):
+    """SPEC-0291: short runs need no detach."""
+    repo, cfg = _cfg(tmp_path)
+    for extra in (["--once"], ["--max-ticks", "3"]):
+        r = run_cli(cfg, monkeypatch, ["queue", "run", "--detach", *extra])
+        assert r.exit_code == 2 and "--detach" in r.output, r.output
+    assert not (S.agentic_dir(cfg) / "runner.log").exists()
+
+
+def test_queue_stop_dry_run_no_signal(tmp_path, monkeypatch):
+    from wt.agentic import lease as L
+    repo, cfg = _cfg(tmp_path)
+    monkeypatch.setattr("os.kill", lambda *a: (_ for _ in ()).throw(AssertionError("killed")))
+    with L.acquire(cfg, ["wt", "queue", "run"]):
+        r = run_cli(cfg, monkeypatch, ["queue", "stop"])
+        assert r.exit_code == 0 and "not written" in r.output and "SIGTERM" in r.output, r.output
+        assert L.is_held(cfg)
+    r = run_cli(cfg, monkeypatch, ["queue", "stop", "--yes"])
+    assert r.exit_code == 0 and "no runner" in r.output, r.output
+
+
+def test_queue_stop_json_schema(tmp_path, monkeypatch):
+    import os
+
+    from wt.agentic import lease as L
+    repo, cfg = _cfg(tmp_path)
+    monkeypatch.delenv("WT_MAILBOX_ADDR", raising=False)
+    r = run_cli(cfg, monkeypatch, ["queue", "stop", "--yes", "--json"])
+    d = json.loads(r.output)
+    assert r.exit_code == 0 and d["schema"] == "wt.queue.stop.v1" and d["written"] is True
+    assert d["held"] is False and d["result"] == {"stopped": False, "reason": "no runner"}
+    with L.acquire(cfg, ["wt", "queue", "run"]) as lease:
+        lease.update_info(busy={"kind": "close", "campaign": "C-1", "since": S.now_iso(),
+                                "budget_s": 600})
+        d = json.loads(run_cli(cfg, monkeypatch, ["queue", "stop", "--json", "--wait-guard"]).output)
+        assert d["written"] is False and d["result"] is None and d["pid"] == os.getpid()
+        assert d["guard"]["kind"] == "close" and d["wait_guard"] is True and d["timeout_s"] == 60
+        assert d["by"] == "human"
+        r = run_cli(cfg, monkeypatch, ["queue", "stop", "--yes"])
+        assert r.exit_code == 1 and "close guard: close of C-1" in r.output, r.output

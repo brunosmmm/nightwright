@@ -87,7 +87,6 @@ DEFAULT_CONFIG = {
         "spec_review_profile": None,   # `wt spec review` default profile; None = default_profile (SPEC-0278)
         "poll_interval_s": 20,
         "lease_ttl_s": 120,
-        "run_launcher": "nohup",       # nohup | tmux | foreground (used by /wt-conduct)
         "pr_sweep": {"interval_s": 900},   # follower's HANDED_OFF PR sweep; 0 disables (SPEC-0283)
         "profiles": {},
     },

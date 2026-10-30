@@ -40,6 +40,15 @@ def _actor(cfg, by) -> str:
     return M.validate_address(cfg, by or os.environ.get("WT_MAILBOX_ADDR") or "human")
 
 
+def _entry_argv() -> list:
+    """How to re-run this `wt` (SPEC-0291): `sys.argv[0]` when it is an executable file,
+    else `python -m wt`."""
+    exe = sys.argv[0] if sys.argv else ""
+    if exe and os.path.isfile(exe) and os.access(exe, os.X_OK):
+        return [exe]
+    return [sys.executable, "-m", "wt"]
+
+
 def _age_txt(age) -> str:
     return f"{age}s" if age is not None and age < 120 else (f"{age // 60}m" if age else "")
 
@@ -1095,8 +1104,13 @@ def attach(queue_group):
                   help="one wt.queue.tick.v1 object per tick on stdout")
     @click.option("--no-reexec", "no_reexec", is_flag=True,
                   help="keep running old code when a merge changes wt (default: re-exec)")
+    @click.option("--detach", is_flag=True,
+                  help="start the loop as a detached session leader; wait for its lease")
+    @click.option("--log", "log_path", type=click.Path(dir_okay=False), default=None,
+                  help="--detach output (appended; default: <agentic_dir>/runner.log)")
     @click.pass_obj
-    def queue_run(cfg, once, max_ticks, poll_interval, until_idle, json_lines, no_reexec):
+    def queue_run(cfg, once, max_ticks, poll_interval, until_idle, json_lines, no_reexec,
+                  detach, log_path):
         """The loop: tick, heartbeat, sleep. One process at a time (lease-guarded).
 
         Agent steps carry across ticks (SPEC-0213): a tick starts steps and applies the ones
@@ -1108,7 +1122,23 @@ def attach(queue_group):
         exit are left running; the next `wt queue run` collects them. When a commit changes
         wt's own code, the loop keeps admitting while it drains (no new gate or close), then
         re-executes itself, keeping the lease (SPEC-0194/0229).
+
+        --detach (SPEC-0291) starts the same command in its own session, output appended to
+        --log, and returns once the child holds the lease (exit 1 with the log tail if it does
+        not within 15 s). Stop it with `wt queue stop`.
         """
+        if detach:
+            if once or max_ticks is not None:
+                raise click.UsageError("--detach runs the long-lived loop; it cannot be "
+                                       "combined with --once or --max-ticks")
+            log = log_path or str(store.agentic_dir(cfg) / "runner.log")
+            try:
+                d = Q.detach_runner(cfg, _entry_argv() + sys.argv[1:], log, timeout_s=15)
+            except ValueError as e:
+                raise click.ClickException(str(e))
+            console.print(f"runner started: pid {d['pid']}, log {d['log']}", highlight=False)
+            return
+
         def on_tick(report):
             if json_lines:
                 sys.stdout.write(json.dumps(report.payload(), ensure_ascii=False) + "\n")
@@ -1140,6 +1170,53 @@ def attach(queue_group):
             _exit_leftover()
         if not json_lines:
             console.print(f"[dim]{ticks} tick(s); lease released[/]")
+
+    @queue_group.command("stop")
+    @click.option("--timeout", "timeout_s", type=float, default=60, show_default=True,
+                  help="seconds to wait for the lease to be released after SIGTERM")
+    @click.option("--wait-guard", is_flag=True,
+                  help="inside the close guard, wait for it to clear instead of refusing")
+    @click.option("--by", default=None,
+                  help="who acts (default: $WT_MAILBOX_ADDR, then human)")
+    @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.stop.v1 JSON")
+    @click.pass_obj
+    def queue_stop(cfg, timeout_s, wait_guard, by, do_write, as_json):
+        """SIGTERM the runner holding the lease on this host and wait until it releases it
+        (SPEC-0291). Refuses inside the close guard (an `open` or `close` step within its
+        budget) unless --wait-guard; never SIGKILLs. Exit 0 with "no runner" when none runs."""
+        try:
+            actor = _actor(cfg, by)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        st = L.lease_status(cfg)
+        guard = Q.close_guard(st) if st["held"] else None
+        plan = {"held": st["held"], "pid": st["pid"], "host": st["host"], "guard": guard,
+                "wait_guard": wait_guard, "timeout_s": timeout_s, "by": actor}
+        result = None
+        if do_write:
+            try:
+                result = Q.stop_runner(cfg, timeout_s=timeout_s, wait_guard=wait_guard)
+            except ValueError as e:
+                raise click.ClickException(str(e))
+        if as_json:
+            _dump_json({"schema": "wt.queue.stop.v1", **plan, "written": bool(do_write),
+                        "result": result})
+            return
+        if not st["held"]:
+            console.print("[dim]no runner[/]")
+            return
+        if result is None:
+            shown = {**plan, "guard": guard and Q._guard_text(guard),
+                     "action": ("wait for the guard, then SIGTERM" if guard and wait_guard
+                                else "refuse (close guard)" if guard else "SIGTERM")}
+            _print_plan("stop runner", shown)
+            console.print(_NOT_WRITTEN)
+        elif result["stopped"]:
+            console.print(f"[green]✓[/] runner pid {result['pid']} stopped "
+                          f"({result['waited_s']}s)", highlight=False)
+        else:
+            console.print(f"[dim]{result['reason']}[/]")
 
     @queue_group.command("runner-log")
     @click.option("--tail", type=int, default=30, show_default=True,

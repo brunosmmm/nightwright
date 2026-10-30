@@ -353,16 +353,31 @@ def _conduct_row(name):
 def test_new_watchdog_rows_present():
     """SPEC-0228: the conductor acts at once on both new watchdog events."""
     wna = _conduct_row("waiting_not_admitted")
-    assert "within one event" in wna and "SIGTERM" in wna and "`drain`" in wna
+    assert "within one event" in wna and "wt queue stop --yes" in wna and "`drain`" in wna
     silent = _conduct_row("runner_journal_silent")
-    assert "immediately" in silent and "SIGTERM" in silent and "`busy`" in silent
+    assert "immediately" in silent and "wt queue stop --yes" in silent and "`busy`" in silent
 
 
 def test_close_guard_in_rows():
-    for name in ("waiting_not_admitted", "runner_journal_silent", "ready_not_admitted"):
+    """SPEC-0291: the guard is defined once (`runner_journal_silent`); the restart rows use
+    `wt queue stop --yes`, which refuses inside it."""
+    silent = _conduct_row("runner_journal_silent")
+    assert "`busy.kind`" in silent and "`open` or `close`" in silent
+    assert "no SIGTERM" in silent and "unparseable `since`" in silent
+    for name in ("waiting_not_admitted", "ready_not_admitted", "merged"):
         row = _conduct_row(name)
-        assert "`busy.kind`" in row and "`open` or `close`" in row, name
-        assert "never SIGTERM" in row, name
+        assert "`stop` refuses inside the close guard" in row, name
+        assert "never SIGTERM" not in row, name
+
+
+def test_conduct_skill_has_no_nohup_recipe():
+    """SPEC-0291: start and restart go through `wt queue run --detach` / `wt queue stop`."""
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    assert "nohup" not in conduct
+    assert "wt queue run --detach" in conduct and "wt queue stop" in conduct
+    for name in ("runner_dead", "ready_not_admitted", "waiting_not_admitted",
+                 "runner_journal_silent", "merged"):
+        assert "wt queue run --detach" in _conduct_row(name), name
 
 
 def test_rows_mention_new_fields():
