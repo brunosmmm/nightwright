@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (93/99 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (93/100 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -197,6 +197,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0292](./specs/0292-idea-linkage-campaign-extension-and-a-hub-agentic.md) Idea linkage: `:CAMPAIGN:` for spec campaigns, cleared on terminal states, and a hub agentic slice — done
   - [ ] [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) Gate ladder v2: a cross-campaign flaky-test record the triager sees — accepted
   - [ ] [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) Queue a split campaign's child specs on merge, in dependency order — accepted
+  - [ ] [SPEC-0295](./specs/0295-spec-review-findings-carry-a-required-structured.md) Review findings carry a required, structured suggested_fix — proposed
 
 ## Active & planned
 
@@ -213,6 +214,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0291](./specs/0291-wt-queue-run-detach-and-supervision.md) | `wt queue run --detach` and `wt queue stop`: start and stop the runner without a shell recipe | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
+| [SPEC-0295](./specs/0295-spec-review-findings-carry-a-required-structured.md) | Review findings carry a required, structured suggested_fix | feature | proposed | M9: agentic workflow | 2026-10-30 |
 
 ## Done
 
