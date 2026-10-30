@@ -282,6 +282,13 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
   Sabotage by hand (each failed the named new test, then reverted): `merges = len(window)`,
   `u` without the 15 min upper bound, ordering by open ts. The full suite was left to gating.
 
+### Test record (2026-10-30, second review fixes)
+
+- Added `test_check_needs_a_qualifying_window`: all six criteria `pass` on a window that does not
+  qualify (SPEC-0301's campaign removed) gives `ok` false and `--check` exit 1. Sabotage by hand
+  (`ok` without the qualifying conjunct) failed it, then reverted. `uv run pytest
+  tests/test_agentic_mvp_report.py`: 24 passed. The full suite was left to gating.
+
 ### As shipped (2026-10-30)
 
 - `src/wt/agentic/mvp_report.py` and the `wt queue mvp-report` command as designed. Helpers

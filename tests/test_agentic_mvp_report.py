@@ -1,6 +1,7 @@
 """SPEC-0304: `wt queue mvp-report`, the E1-E6 scorecard over the last N merged campaigns."""
 import datetime as dt
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -514,3 +515,16 @@ def test_cli_empty_store_and_since(cfg, run):
         camp(cfg, f"C{i}", T(day, 1), T(day, 2))
     j = json.loads(run("--window", "3", "--since", "2026-10-05", "--json").output)
     assert j["window"]["campaigns"] == ["C2", "C3"]
+
+
+def test_check_needs_a_qualifying_window(cfg, tmp_path, run):
+    """Six passing criteria on a window that does not qualify: `ok` is false, `--check` exits 1."""
+    all_pass(cfg, tmp_path)
+    shutil.rmtree(S.campaign_dir(cfg, "M0301"))  # SPEC-0301 no longer merged
+    rep = MVP.report(cfg, n=1)
+    assert {c["status"] for c in rep["criteria"]} == {"pass"}
+    assert rep["window"]["qualifying"] is False and rep["ok"] is False
+    r = run("--window", "1", "--check")
+    assert r.exit_code == 1, r.output
+    j = json.loads(run("--window", "1", "--json").output)
+    assert j["ok"] is False and {c["status"] for c in j["criteria"]} == {"pass"}
