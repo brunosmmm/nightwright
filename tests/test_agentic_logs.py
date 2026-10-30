@@ -266,3 +266,13 @@ def test_runs_and_run_start_carry_the_profile(tmp_path, monkeypatch):           
             assert rec["profile"] == "balanced"
             assert rec["profile_sources"] == want
             assert SC.record_problems(rec, SC.RUN_KEYS, SC.RUN_SCHEMA) == []
+
+
+def test_outbound_pulled_event_is_registered_and_requires_its_keys():            # SPEC-0297
+    keys = ("spec_id", "status", "outbox_path", "idea_id", "from", "to")
+    assert SC.EVENT_KEYS["outbound_pulled"] == keys
+    rec = {"ts": "t", "seq": 1, "campaign": "c", "type": "outbound_pulled", "by": "queue",
+           **{k: None for k in keys}}
+    assert SC.ledger_problems(rec) == []
+    del rec["idea_id"]
+    assert SC.ledger_problems(rec) == ["outbound_pulled: missing 'idea_id'"]

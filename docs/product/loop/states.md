@@ -98,8 +98,8 @@ flowchart LR
 | `REVIEWING` | active | The **conformance reviewer** checks the change against the spec's acceptance criteria | Pass, or a list of fixes |
 | `CLOSING` | active | Rebase on main, re-run gates, check the spec wasn't changed and its Definition of Done holds, then merge or open a PR | Merged, handed off, back to TRIAGING (a check failed), or parked |
 | `PARKED` | parked | Stopped with a **reason**, waiting for a decision | `wt queue resume` (to the right state) or `abandon` |
-| `MERGED` | done | Fast-forwarded into main | — |
-| `HANDED_OFF` | done | A PR is open for a human to merge | — |
+| `MERGED` | done | Fast-forwarded into main. An outbound spec then has its status pulled back into the outbox, ledgered as an `outbound_pulled` event | — |
+| `HANDED_OFF` | done | A PR is open for a human to merge. An outbound spec is pulled when the PR sweep records the merge | — |
 | `ABANDONED` | done | Given up; worktree removed | — |
 
 Park reasons, and what to do about each, are in **[Operating the loop](operate.md#when-something-parks)**.

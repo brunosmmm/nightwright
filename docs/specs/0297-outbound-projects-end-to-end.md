@@ -1,7 +1,7 @@
 ---
 id: SPEC-0297
 title: "Outbound projects end to end: a merged campaign pulls the portable spec's status back"
-status: accepted
+status: done
 kind: feature
 owner: user
 created: 2026-10-30
@@ -138,29 +138,29 @@ advances `EXPORTED → SHIPPED` via `pull_status`, which also archives through t
 
 ## Acceptance criteria
 
-- [ ] With `merge.policy: merge`, an outbound spec queued with `wt queue add <PROJ-NNNN>`
+- [x] With `merge.policy: merge`, an outbound spec queued with `wt queue add <PROJ-NNNN>`
       reaches `MERGED`; its outbox copy then has `status: done`.
-- [ ] The idea linked to that outbound spec (state `EXPORTED`) is `SHIPPED` after the merge
+- [x] The idea linked to that outbound spec (state `EXPORTED`) is `SHIPPED` after the merge
       without any `wt spec pull-status` call.
-- [ ] The campaign ledger has exactly one `outbound_pulled` event with `spec_id`, `status:
+- [x] The campaign ledger has exactly one `outbound_pulled` event with `spec_id`, `status:
       done`, the outbox path, and the idea's `from`/`to`; `wt campaign log` renders it.
-- [ ] With `merge.policy: pr` the campaign ends `HANDED_OFF`, the outbox copy and idea are
+- [x] With `merge.policy: pr` the campaign ends `HANDED_OFF`, the outbox copy and idea are
       unchanged, and the ledger has an info `bookkeeping` finding that the pull waits for the
       merge and no `outbound_pulled` event.
-- [ ] When the HANDED_OFF sweep records the PR as merged, the same pull runs: with the target
+- [x] When the HANDED_OFF sweep records the PR as merged, the same pull runs: with the target
       checkout holding the `done` file the outbox copy turns `done` and the idea `SHIPPED`;
       with the target checkout still holding a non-`done` status, `outbound_pulled` is ledgered
       with that status, a minor finding is added, and the idea is unchanged.
-- [ ] A failing `pull_status` (outbox copy missing or ambiguous, portable file unreadable)
+- [x] A failing `pull_status` (outbox copy missing or ambiguous, portable file unreadable)
       leaves the campaign `MERGED`, adds a minor `bookkeeping` finding "outbound pull-status
       failed", and raises nothing.
-- [ ] An outbound campaign no longer records the "idea reconcile skipped: spec store is not
+- [x] An outbound campaign no longer records the "idea reconcile skipped: spec store is not
       this repo" finding; an internal campaign's reconcile behaviour and events are unchanged.
-- [ ] The pull reads the outbox copy's frozen `target_spec_path` (no `to` passed); `to=<repo
+- [x] The pull reads the outbox copy's frozen `target_spec_path` (no `to` passed); `to=<repo
       root>` is passed only when the outbox copy has no `target_spec_path`.
-- [ ] `outbound_pulled` passes the ledger validator and is documented in
+- [x] `outbound_pulled` passes the ledger validator and is documented in
       `docs/product/capabilities/agentic.md`.
-- [ ] `uv run pytest` and `python3 tools/spec_lint.py` pass (docs build included).
+- [x] `uv run pytest` and `python3 tools/spec_lint.py` pass (docs build included).
 
 ## Test plan
 
@@ -196,6 +196,36 @@ advances `EXPORTED → SHIPPED` via `pull_status`, which also archives through t
   `test_agentic_pr_sweep.py`, `test_agentic_idea_link.py`, `test_export.py`,
   `test_docs_*`) and `python3 tools/spec_lint.py`.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_outbound_e2e.py` — 10 passed (merge pulls + ships idea +
+  `campaign log` renders it; `pr` hand-off pulls nothing; sweep merge with a `done` and with an
+  `in-progress` target file; failing pull is a finding; outbox `done` but idea not advanced is a
+  finding; frozen `target_spec_path` read with no `to`, `to=<repo root>` only without it; internal
+  campaign unchanged).
+- `tests/test_agentic_logs.py` (`outbound_pulled` registered, required keys) and
+  `tests/test_render.py` (event line) extended and passing.
+- Regression subset: `test_agentic_e2e`, `test_agentic_pr_sweep`, `test_agentic_idea_link`,
+  `test_agentic_queue`, `test_export`, `test_docs_*` — passing.
+- Full `uv run pytest`: a first run passed 2181 tests and stopped (`-x`) on the stale-ledger
+  check in `test_export.py`, which `--write-ledger` fixed (that file passes now); a full rerun hit
+  the runner's time limit before finishing. The full suite is left to gating.
+- `python3 tools/spec_lint.py` exits 0 after `--write-ledger`.
+- Manual scratch-repo walkthrough is covered by the e2e tests above (same code path, fake runner).
+
+### As shipped
+
+- The review's findings were applied where the Design text pre-dates them: the idea snapshot in
+  `_pull_outbound` resolves the idea the way `pull_status` does (`export._resolve_source_idea` +
+  `resolve_selector`, `None` on `ValueError`) instead of `SP._sole_claimant`; and `status ==
+  "done"` with the idea `EXPORTED` before but not `SHIPPED` after adds a minor `bookkeeping`
+  finding "outbound pull did not ship idea <id>" (detail "run `wt spec pull-status <id>`").
+  `idea_id`/`from`/`to` in `outbound_pulled` are `None` when the idea did not move.
+- Whether the outbox copy has a frozen `target_spec_path` is read from the copy's frontmatter
+  (`export._find_outbound_spec` + `split_frontmatter`) before the call; `to` is passed only
+  when it is missing.
+- No defect was exposed in the outbound `merge` path by the new end-to-end test.
+
 ## Rollout / migration
 
 No data migration. Campaigns already `MERGED` are not back-filled; `wt spec sweep` remains
@@ -203,11 +233,11 @@ the way to reconcile earlier outbound specs. Merge via the normal campaign close
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

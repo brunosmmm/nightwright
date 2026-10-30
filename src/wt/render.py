@@ -128,6 +128,10 @@ def campaign_event(ev: dict) -> Text:
     if etype == "idea_reconciled":                      # SPEC-0257
         t.append(f"idea {ev.get('idea_id')}: {ev.get('from')} -> {ev.get('to')}")
         return t
+    if etype == "outbound_pulled":                      # SPEC-0297
+        t.append(f"outbox {ev.get('spec_id')} → {ev.get('status')}; "
+                 f"idea {ev.get('idea_id')}: {ev.get('from')} -> {ev.get('to')}")
+        return t
     if etype == "idea_handed_off":                      # SPEC-0280
         t.append(f"idea {ev.get('idea_id')} handed off → {ev.get('pr_url')}")
         return t

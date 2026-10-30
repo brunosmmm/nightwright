@@ -56,6 +56,17 @@ A single `wt queue run` holds the runner lease (`queue.lock` + `queue.lease.json
 heartbeat); a second runner is refused and names the holder. A heartbeat older than
 `agentic.lease_ttl_s` is reported as `stale`, never taken over (SPEC-0171).
 
+### Outbound projects
+
+An outbound spec (`ACME-0001`, authored in the outbox) is queued like any other once it has
+been exported: `wt spec export ACME-0001`, then `wt queue add ACME-0001`. When its campaign
+reaches `MERGED` the close step runs `wt spec pull-status` for it: the outbox copy takes the
+merged file's `status` and the linked `EXPORTED` idea becomes `SHIPPED`, with an
+`outbound_pulled` event in the ledger. A pull failure is a minor `bookkeeping` finding and
+never undoes the merge. A `HANDED_OFF` campaign pulls nothing; the PR sweep (`wt queue
+sweep-prs`) runs the pull when it records the merge, which needs the target checkout to have
+pulled the merged file (otherwise a finding says to pull and rerun `wt spec pull-status`).
+
 ## Profiles
 
 Models, effort, budgets, loop limits and slots are workflow profiles (SPEC-0171, SPEC-0237).

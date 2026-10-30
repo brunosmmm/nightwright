@@ -122,3 +122,11 @@ def test_campaign_event_idea_reconciled():
     ev = {"seq": 7, "ts": "t", "type": "idea_reconciled", "by": "tick", "spec_id": "SPEC-0257",
           "idea_id": "IDEA-067", "from": "INCUBATE", "to": "PROMOTED"}
     assert R.campaign_event(ev).plain.endswith("idea IDEA-067: INCUBATE -> PROMOTED")
+
+
+def test_campaign_event_outbound_pulled():                                       # SPEC-0297
+    ev = {"seq": 8, "ts": "t", "type": "outbound_pulled", "by": "tick", "spec_id": "ACME-0001",
+          "status": "done", "outbox_path": "/o/acme/ACME-0001-x.md", "idea_id": "IDEA-038",
+          "from": "EXPORTED", "to": "SHIPPED"}
+    assert R.campaign_event(ev).plain.endswith(
+        "outbox ACME-0001 → done; idea IDEA-038: EXPORTED -> SHIPPED")

@@ -52,6 +52,7 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "spec_written": ("spec_id", "rel_path", "title", "mode"),
     "idea_link_failed": ("spec_id", "idea", "error"),            # SPEC-0256
     "idea_reconciled": ("spec_id", "idea_id", "from", "to"),     # SPEC-0257
+    "outbound_pulled": ("spec_id", "status", "outbox_path", "idea_id", "from", "to"),  # SPEC-0297
     "idea_handed_off": ("spec_id", "idea_id", "pr_url"),         # SPEC-0280
     "idea_linked": ("idea_id",),                                 # SPEC-0292
     "idea_link_skipped": ("spec_id", "reason"),                  # SPEC-0292

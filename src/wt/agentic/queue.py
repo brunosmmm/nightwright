@@ -2158,6 +2158,8 @@ def _reconcile_closed(cfg, state: dict, events: list, outcome: str) -> None:
     spec_id = state.get("spec_id") or (state.get("spec") or {}).get("id")
     if not spec_id or state.get("kind") == "split":       # SPEC-0290: no idea tracks the parts
         return
+    if SP._is_outbound_spec_id(spec_id):    # SPEC-0297: the outbox, not wt's spec store
+        return _pull_outbound(cfg, state, events, spec_id, outcome)
 
     def finding(severity, title, detail=""):
         events.append(("finding", {"persona": "close", "severity": severity,
@@ -2217,6 +2219,66 @@ def _reconcile_closed(cfg, state: dict, events: list, outcome: str) -> None:
                 reported([i for i, v in before.items() if now.get(i) != v], before)
             except Exception:               # noqa: BLE001 — the finding above already says it failed
                 pass
+
+
+def _pull_outbound(cfg, state: dict, events: list, spec_id: str, outcome: str) -> None:
+    """SPEC-0297: close the outbound loop. After a merge, run `export.pull_status` so the outbox
+    copy mirrors the merged portable file's status and its `EXPORTED` idea becomes `SHIPPED`.
+    Best-effort like `_reconcile_closed`: a failure is a minor `bookkeeping` finding, never a
+    change to the campaign state. `HANDED_OFF` waits (the base does not have the file yet); the
+    SPEC-0283 sweep reaches here with `MERGED`. Only reads the target repo."""
+    from .. import export as EX
+    from .. import org as ORG
+    from ..org_write import resolve_selector
+
+    def finding(severity, title, detail=""):
+        events.append(("finding", {"persona": "close", "severity": severity,
+                                   "gate": "bookkeeping", "title": title, "detail": detail,
+                                   "files": []}))
+
+    if outcome != "MERGED":
+        finding("info", "outbound pull-status waits for the merge",
+                f"{spec_id}: pulled when the PR merges (`wt queue sweep-prs`)")
+        return
+
+    def idea_state():
+        # the idea `pull_status` advances: `source_idea` first, `:SPEC:` scan as the fallback
+        try:
+            selector = EX._resolve_source_idea(cfg, spec_id)
+            ORG.invalidate_tasks_cache()        # org writes can land within one mtime tick
+            idea = resolve_selector(cfg, selector)
+        except ValueError:
+            return None, None, None
+        return selector, (idea.properties.get("ID") or idea.id), idea.state
+
+    try:
+        selector, idea_id, was = idea_state()
+        kw = {}
+        outbox = EX._find_outbound_spec(cfg, spec_id)
+        fm, _body = EX.split_frontmatter(outbox.read_text())
+        if not (fm or {}).get("target_spec_path"):      # an old export: the live-config guess
+            kw["to"] = (state.get("repo") or {}).get("root")
+        path, status = EX.pull_status(cfg, spec_id, **kw)
+        after = None
+        if selector is not None:
+            ORG.invalidate_tasks_cache()
+            try:
+                after = resolve_selector(cfg, selector).state
+            except ValueError:
+                after = None
+        moved = selector is not None and after != was
+        events.append(("outbound_pulled", {
+            "spec_id": spec_id, "status": status, "outbox_path": str(path),
+            "idea_id": idea_id if moved else None,
+            "from": was if moved else None, "to": after if moved else None}))
+        if status != "done":
+            finding("minor", f"outbound pulled status is {status}, not done",
+                    f"run `wt spec pull-status {spec_id}` after pulling the target repo")
+        elif (was or "").upper() == "EXPORTED" and (after or "").upper() != "SHIPPED":
+            finding("minor", f"outbound pull did not ship idea {idea_id}",
+                    f"run `wt spec pull-status {spec_id}`")
+    except Exception as e:                  # noqa: BLE001 — never block a finished merge
+        finding("minor", "outbound pull-status failed", str(e) or type(e).__name__)
 
 
 def _mark_handed_off(cfg, state: dict, events: list, spec_id: str, finding) -> None:
