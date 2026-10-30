@@ -917,11 +917,17 @@ def test_queue_run_detach_once_usage_error(tmp_path, monkeypatch):
 def test_queue_stop_dry_run_no_signal(tmp_path, monkeypatch):
     from wt.agentic import lease as L
     repo, cfg = _cfg(tmp_path)
-    monkeypatch.setattr("os.kill", lambda *a: (_ for _ in ()).throw(AssertionError("killed")))
+    real_stop = Q.stop_runner
+
+    def no_stop(*a, **k):                   # stop_runner's own `kill` default is bound early
+        raise AssertionError("a dry run must not call stop_runner")
+
+    monkeypatch.setattr(Q, "stop_runner", no_stop)
     with L.acquire(cfg, ["wt", "queue", "run"]):
         r = run_cli(cfg, monkeypatch, ["queue", "stop"])
         assert r.exit_code == 0 and "not written" in r.output and "SIGTERM" in r.output, r.output
-        assert L.is_held(cfg)
+        assert r.exception is None and L.is_held(cfg)
+    monkeypatch.setattr(Q, "stop_runner", real_stop)
     r = run_cli(cfg, monkeypatch, ["queue", "stop", "--yes"])
     assert r.exit_code == 0 and "no runner" in r.output, r.output
 
@@ -945,6 +951,10 @@ def test_queue_stop_json_schema(tmp_path, monkeypatch):
         assert d["by"] == "human"
         r = run_cli(cfg, monkeypatch, ["queue", "stop", "--yes"])
         assert r.exit_code == 1 and "close guard: close of C-1" in r.output, r.output
+        r = run_cli(cfg, monkeypatch, ["queue", "stop", "--yes", "--json"])
+        d = json.loads(r.output)                # a refusal is still wt.queue.stop.v1 JSON
+        assert r.exit_code == 1 and d["schema"] == "wt.queue.stop.v1" and d["result"] is None
+        assert d["error"].startswith("close guard: close of C-1") and L.is_held(cfg)
 
 
 def test_queue_run_detach_cli_wiring(tmp_path, monkeypatch):

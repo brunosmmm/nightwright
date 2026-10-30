@@ -90,12 +90,14 @@ def test_detach_refuses_when_held(tmp_path):
 def test_detach_waits_for_child_lease(tmp_path, children):
     cfg = _cfg(tmp_path)
     log = tmp_path / "logs" / "runner.log"
+    log.parent.mkdir()
+    log.write_text("previous runner's crash\n")
     d = Q.detach_runner(cfg, _child_argv(cfg, "hold"), log, popen=_recording_popen(children))
     (child,) = children
     assert d == {"pid": child.pid, "log": str(log)}
     assert L.lease_status(cfg)["pid"] == child.pid
     assert until(lambda: "holding" in log.read_text())
-    assert log.read_text().startswith("--- wt queue run --detach ")
+    assert log.read_text().startswith("previous runner's crash\n--- wt queue run --detach ")
 
 
 def test_detach_child_dies_early(tmp_path, children):
@@ -138,6 +140,7 @@ def test_detach_popen_args(tmp_path):
     assert argv == ["/bin/wt", "queue", "run", "--poll-interval", "5", "--no-reexec"]
     assert kw["start_new_session"] is True and kw["stdin"] is subprocess.DEVNULL
     assert kw["stderr"] is subprocess.STDOUT and kw["stdout"].name == str(log)
+    assert kw["stdout"].mode == "a"                 # appended, never truncated
     assert kw["env"]["WT_RUNNER_LOG"] == str(log)
 
 
@@ -149,6 +152,80 @@ def test_run_records_log_in_lease(tmp_path, monkeypatch):
     Q.run(cfg, once=True, on_tick=lambda _r: seen.append(L.lease_status(cfg)))
     assert seen and seen[0]["log"] == "/x/runner.log" and seen[0]["detached"] is True
     assert L.read_lease(cfg) is None                # released after the tick
+    assert "WT_RUNNER_LOG" not in os.environ        # consumed: no persona run or gate inherits it
+
+
+def test_nested_run_under_a_detached_runner_is_not_detached(tmp_path, monkeypatch):
+    """A `Q.run` started by a descendant of a detached runner does not claim its log."""
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), impl_done()]))
+    monkeypatch.setenv("WT_RUNNER_LOG", "/x/runner.log")
+    Q.run(cfg, once=True)
+    seen = []
+    Q.run(cfg, once=True, on_tick=lambda _r: seen.append(L.lease_status(cfg)))
+    assert seen and seen[0]["log"] is None and seen[0]["detached"] is None
+
+
+def test_loop_reexec_passes_the_runner_log_on(tmp_path, monkeypatch):
+    """The re-executed image records `log` / `detached` again even without the adopted file."""
+    from test_agentic_reexec import _loop_with_commits
+    monkeypatch.setenv("WT_RUNNER_LOG", "/x/runner.log")
+    _, _, calls = _loop_with_commits(tmp_path, monkeypatch, [("src/wt/x.py", "A = 3\n")])
+    ((_exe, _argv, env),) = calls
+    assert env["WT_RUNNER_LOG"] == "/x/runner.log" and L.HANDOVER_ENV in env
+    assert "WT_RUNNER_LOG" not in os.environ
+
+
+def test_loop_reexec_without_detach_sets_no_runner_log(tmp_path, monkeypatch):
+    from test_agentic_reexec import _loop_with_commits
+    _, _, calls = _loop_with_commits(tmp_path, monkeypatch, [("src/wt/x.py", "A = 3\n")])
+    ((_exe, _argv, env),) = calls
+    assert "WT_RUNNER_LOG" not in env
+
+
+def test_detach_log_oserror_is_a_clean_error(tmp_path):
+    cfg = _cfg(tmp_path)
+    blocker = tmp_path / "file"
+    blocker.write_text("")
+    with pytest.raises(ValueError, match=r"cannot start the runner"):
+        Q.detach_runner(cfg, ["wt", "queue", "run"], blocker / "r.log",
+                        popen=lambda *a, **k: pytest.fail("must not start a child"))
+
+
+def test_detach_popen_oserror_is_a_clean_error(tmp_path):
+    cfg = _cfg(tmp_path)
+    with pytest.raises(ValueError, match=r"cannot start the runner \(/nonexistent/wt"):
+        Q.detach_runner(cfg, ["/nonexistent/wt", "queue", "run"], tmp_path / "r.log")
+
+
+def test_detach_poll_reads_the_lease_file_before_probing_the_flock(tmp_path, monkeypatch):
+    """The parent's flock probe must not race the child's non-blocking acquire: no probe
+    while the lease file does not name the child yet."""
+    cfg = _cfg(tmp_path)
+    probes = []
+    real = L.is_held
+    monkeypatch.setattr(L, "is_held", lambda c: probes.append(L.read_lease(c)) or real(c))
+
+    held = []
+
+    class _Child:
+        pid = 4242
+
+        def poll(self):
+            if len(held) == 0 and len(probes) >= 1:
+                held.append(L.acquire(cfg, ["child"]))   # "the child" takes the lease, and
+                held[0].info["pid"] = self.pid           # the file names its pid
+                held[0].update_info()
+            return None
+
+    try:
+        d = Q.detach_runner(cfg, ["wt"], tmp_path / "r.log", popen=lambda *a, **k: _Child())
+    finally:
+        for lease in held:
+            lease.release()
+    assert d["pid"] == 4242
+    # one probe before the start (nothing held), then only once the file names the child
+    assert probes[0] is None and all(p and p["pid"] == 4242 for p in probes[1:])
 
 
 def test_reexec_adoption_keeps_log_and_detached(tmp_path, monkeypatch):
@@ -387,3 +464,67 @@ def test_stop_refuses_a_one_shot_tick(tmp_path):
     with L.acquire(cfg, ["wt", "queue", "tick"]):
         with pytest.raises(ValueError, match=r"one-shot `wt queue tick`, not a runner"):
             Q.stop_runner(cfg, kill=lambda *a: pytest.fail("no SIGTERM to a tick"))
+
+
+# ---- the lease file vs the flock holder (review round 2) ---------------------------------------
+
+def _stop_with(cfg, lease, on_sleep):
+    """`stop_runner` against a lease this process holds: `on_sleep(n)` runs at the n-th sleep,
+    a SIGTERM (recorded) releases the lease."""
+    kills, n = [], {"sleeps": 0}
+
+    def sleep(_s):
+        n["sleeps"] += 1
+        on_sleep(n["sleeps"])
+
+    def kill(pid, sig):
+        kills.append(pid)
+        lease.release()
+
+    return kills, lambda: Q.stop_runner(cfg, timeout_s=5, kill=kill, sleep=sleep)
+
+
+def test_stop_waits_for_a_missing_lease_file(tmp_path):
+    """Between acquire's flock and its file write the flock is held but no file names a pid."""
+    cfg = _cfg(tmp_path)
+    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    L.lease_path(cfg).unlink()
+    kills, stop = _stop_with(cfg, lease, lambda n: n == 1 and lease.heartbeat())
+    assert stop()["stopped"] is True and kills == [os.getpid()]
+
+
+def test_stop_never_signals_a_stale_record(tmp_path):
+    """A SIGKILLed predecessor's file, still there while the new holder takes the flock."""
+    cfg = _cfg(tmp_path)
+    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    stale = {**lease.info, "pid": 999999, "started_at": "2026-01-01T00:00:00+00:00"}
+    L.lease_path(cfg).write_text(json.dumps(stale))
+    kills, stop = _stop_with(cfg, lease, lambda n: n == 1 and lease.heartbeat())
+    assert stop()["stopped"] is True and kills == [os.getpid()]
+
+
+def test_stop_refuses_when_the_lease_file_never_settles(tmp_path):
+    cfg = _cfg(tmp_path)
+    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    try:
+        L.lease_path(cfg).unlink()
+        kills, stop = _stop_with(cfg, lease, lambda n: None)
+        with pytest.raises(ValueError, match=r"does not name a settled holder"):
+            stop()
+        assert kills == [] and L.is_held(cfg)
+    finally:
+        lease.release()
+
+
+def test_run_launcher_gone_from_defaults(tmp_path, monkeypatch):
+    """SPEC-0291 AC5: no `agentic.run_launcher` default; a user config that still sets it
+    loads fine (unknown `agentic` keys are ignored)."""
+    from wt import config as C
+    assert "run_launcher" not in C.DEFAULT_CONFIG["agentic"]
+    cdir = tmp_path / "conf"
+    cdir.mkdir()
+    (cdir / "config.yaml").write_text("agentic:\n  run_launcher: nohup\n")
+    monkeypatch.setenv("WT_CONFIG_DIR", str(cdir))
+    monkeypatch.setenv("WT_DATA_DIR", str(tmp_path / "data"))
+    cfg = C.load_config()
+    assert cfg["config_dir"] == str(cdir) and cfg["agentic"]["run_launcher"] == "nohup"

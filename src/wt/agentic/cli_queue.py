@@ -1184,15 +1184,19 @@ def attach(queue_group):
         guard = Q.close_guard(st) if st["held"] else None
         plan = {"held": st["held"], "pid": st["pid"], "host": st["host"], "guard": guard,
                 "wait_guard": wait_guard, "timeout_s": timeout_s, "by": actor}
-        result = None
+        result = error = None
         if do_write:
             try:
                 result = Q.stop_runner(cfg, timeout_s=timeout_s, wait_guard=wait_guard)
             except ValueError as e:
-                raise click.ClickException(str(e))
+                if not as_json:
+                    raise click.ClickException(str(e))
+                error = str(e)
         if as_json:
             _dump_json({"schema": "wt.queue.stop.v1", **plan, "written": bool(do_write),
-                        "result": result})
+                        "result": result, "error": error})
+            if error is not None:
+                raise click.exceptions.Exit(1)
             return
         if not st["held"]:
             console.print("[dim]no runner[/]")

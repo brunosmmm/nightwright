@@ -42,5 +42,7 @@ def code_repo(tmp_path):
 @pytest.fixture(autouse=True)
 def _no_persona_run(monkeypatch):
     """SPEC-0272: pytest run by a campaign agent inherits WT_PERSONA_RUN=1; behave as on a
-    human shell. Tests that exercise the guard opt in with monkeypatch.setenv."""
+    human shell. Tests that exercise the guard opt in with monkeypatch.setenv. Likewise
+    SPEC-0291's WT_RUNNER_LOG, should pytest run under a detached runner."""
     monkeypatch.delenv("WT_PERSONA_RUN", raising=False)
+    monkeypatch.delenv("WT_RUNNER_LOG", raising=False)

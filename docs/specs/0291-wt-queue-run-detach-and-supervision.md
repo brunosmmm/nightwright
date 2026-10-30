@@ -259,8 +259,43 @@ skill rows can then reference instead of restating it.
   --poll-interval 2`; `python -m wt queue stop --yes` stopped it in 0.2 s.
 - Full `uv run pytest` left to gating.
 
+### Test record (2026-10-30, review round 2)
+
+- Added to `tests/test_agentic_detach.py`: `test_nested_run_under_a_detached_runner_is_not_detached`,
+  `test_loop_reexec_passes_the_runner_log_on`, `test_loop_reexec_without_detach_sets_no_runner_log`,
+  `test_detach_log_oserror_is_a_clean_error`, `test_detach_popen_oserror_is_a_clean_error`,
+  `test_detach_poll_reads_the_lease_file_before_probing_the_flock`,
+  `test_stop_waits_for_a_missing_lease_file`, `test_stop_never_signals_a_stale_record`,
+  `test_stop_refuses_when_the_lease_file_never_settles`, `test_run_launcher_gone_from_defaults`
+  (AC5: no default, a config that still sets it loads). Extended: the log is pre-seeded and
+  kept (`test_detach_waits_for_child_lease`), `stdout.mode == "a"` (`test_detach_popen_args`),
+  `os.environ` has no `WT_RUNNER_LOG` after `Q.run` (`test_run_records_log_in_lease`).
+  `test_queue_stop_dry_run_no_signal` now patches `Q.stop_runner` to fail (the `os.kill`
+  patch could not reach its early-bound default); `test_queue_stop_json_schema` checks that a
+  `--yes --json` refusal still prints `wt.queue.stop.v1` with `error` and exits 1.
+  `test_agentic_detach`, `test_agentic_queue_cli`, `test_agentic_reexec`, `test_skills`,
+  `test_agentic_lease`, `test_agentic_drain_signal`, `test_agentic_adopt`: 216 passed.
+- **Sabotage:** log opened with `"w"`; flock probed before the file read; `stop_runner` on a
+  single `lease_status`; `WT_RUNNER_LOG` read instead of popped; re-exec without passing the
+  log on. Each makes at least one of the new tests fail; all restored.
+- **Manual** (isolated `WT_DATA_DIR`/`WT_CONFIG_DIR`): `--detach --log /proc/x.log` printed
+  `Error: cannot start the runner (…/wt, log /proc/x.log): [Errno 2] …` (exit 1, no
+  traceback); `--detach` started, the lease showed `log` and `detached: true`; `wt queue stop
+  --yes --json` stopped it (0.2 s, `error: null`); again gave `no runner`.
+- Full `uv run pytest` left to gating.
+
 ### As shipped (2026-10-30)
 
+- Review round 2: `run` pops `WT_RUNNER_LOG` from `os.environ` once it is recorded, so persona
+  runs, gates and nested runs do not inherit it; the SPEC-0194 re-exec passes it on explicitly
+  (from the lease's `log`). `detach_runner` reads the lease file before it probes the flock
+  (the child writes the file right after taking the flock, so the probe cannot race the
+  child's non-blocking acquire) and turns an `OSError` (log, `Popen`) into a `ValueError`.
+  `stop_runner` acts only on a *settled* holder (`_settled_holder`: held, `pid` and `host`
+  present, the same `(pid, host, started_at)` on two reads 0.05 s apart, up to 20 tries, else
+  a refusal), so a missing or stale lease file is never signalled; it re-checks after a
+  `--wait-guard` wait. `wt queue stop --yes --json` prints the JSON with `error` (null on
+  success) and exits 1 on a refusal. `tests/conftest.py` also scrubs `WT_RUNNER_LOG`.
 - Review round 1: the entry argv lives in `queue.py` and is shared with the SPEC-0194
   re-exec. `_started_as_module()` (`__main__.__spec__.name == "wt.__main__"`) makes both
   `self_argv()` (the re-exec: `python -m wt …`, else `python argv[0] …` as before) and

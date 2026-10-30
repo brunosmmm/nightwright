@@ -4321,18 +4321,23 @@ def detach_runner(cfg, argv, log_path, *, timeout_s=15, popen=subprocess.Popen,
         raise ValueError(f"queue held by pid {st.get('pid', '?')} ({age_txt}); "
                          "stop it with wt queue stop")
     log_path = Path(log_path).expanduser().absolute()      # the child's cwd may differ
-    log_path.parent.mkdir(parents=True, exist_ok=True)
     child_argv = _strip_detach(argv)
     env = {**os.environ, RUNNER_LOG_ENV: str(log_path)}
     env.pop(L.HANDOVER_ENV, None)
-    with open(log_path, "a", encoding="utf-8") as fh:
-        fh.write(f"--- wt queue run --detach {store.now_iso()} ---\n")
-        fh.flush()
-        child = popen(child_argv, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
-                      start_new_session=True, env=env)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(f"--- wt queue run --detach {store.now_iso()} ---\n")
+            fh.flush()
+            child = popen(child_argv, stdin=subprocess.DEVNULL, stdout=fh,
+                          stderr=subprocess.STDOUT, start_new_session=True, env=env)
+    except OSError as e:
+        raise ValueError(f"cannot start the runner ({child_argv[0]}, log {log_path}): {e}")
     end = clock() + timeout_s
     while True:
-        if L.is_held(cfg) and (L.read_lease(cfg) or {}).get("pid") == child.pid:
+        # the lease file first: the child writes it right after taking the flock, so the flock
+        # probe (a brief LOCK_EX of its own) never races the child's non-blocking acquire
+        if (L.read_lease(cfg) or {}).get("pid") == child.pid and L.is_held(cfg):
             return {"pid": child.pid, "log": str(log_path)}
         rc = child.poll()
         if rc is not None:
@@ -4370,6 +4375,32 @@ def _guard_text(busy: dict) -> str:
             f"{busy.get('since')}, budget {busy.get('budget_s')}s")
 
 
+_SETTLE_S = 0.05
+_SETTLE_TRIES = 20
+
+
+def _settled_holder(cfg, sleep=time.sleep) -> dict:
+    """`lease_status` once the lease file describes the flock holder: held with a `pid` and a
+    `host`, and the same `(pid, host, started_at)` on two reads `_SETTLE_S` apart. The file is
+    unlinked just before the flock is dropped and written just after it is taken, so a single
+    read can show no holder, or a crashed predecessor's record, while the flock is held.
+    Not held ⇒ returned as is. ValueError when it never settles."""
+    def key(st):
+        return (st.get("pid"), st.get("host"), st.get("started_at"))
+
+    prev = None
+    for _ in range(_SETTLE_TRIES):
+        st = L.lease_status(cfg)
+        if not st["held"]:
+            return st
+        if st.get("pid") and st.get("host") and prev is not None and key(st) == key(prev):
+            return st
+        prev = st
+        sleep(_SETTLE_S)
+    raise ValueError("the queue lease is held but its lease file does not name a settled "
+                     f"holder (last: pid {prev.get('pid')} on {prev.get('host')}); retry")
+
+
 def stop_runner(cfg, *, timeout_s=60, wait_guard=False, guard_wait_s=None, kill=os.kill,
                 clock=time.monotonic, sleep=time.sleep) -> dict:
     """SIGTERM the local lease holder and wait until the lease is released (SPEC-0291). Never
@@ -4378,7 +4409,7 @@ def stop_runner(cfg, *, timeout_s=60, wait_guard=False, guard_wait_s=None, kill=
     close guard (unless `wait_guard`, which waits up to `guard_wait_s`, default the remaining
     budget + 30 s), or when the lease is still held after `timeout_s`."""
     import socket
-    st = L.lease_status(cfg)
+    st = _settled_holder(cfg, sleep)
     if not st["held"]:
         return {"stopped": False, "reason": "no runner"}
     if st.get("host") != socket.gethostname():
@@ -4404,6 +4435,12 @@ def stop_runner(cfg, *, timeout_s=60, wait_guard=False, guard_wait_s=None, kill=
             if not st["held"]:
                 return {"stopped": False, "reason": "no runner"}
             busy = close_guard(st)
+        st = _settled_holder(cfg, sleep)
+        if not st["held"]:
+            return {"stopped": False, "reason": "no runner"}
+        if st.get("host") != socket.gethostname():
+            raise ValueError(f"queue held by pid {st.get('pid')} on {st.get('host')}, not "
+                             f"this host ({socket.gethostname()}); stop it there")
     pid = st["pid"]
     holder = (L.read_lease(cfg) or {}).get("argv") or []
     if holder[:3] == ["wt", "queue", "tick"]:
@@ -4455,8 +4492,9 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
     entered = False                     # SPEC-0262: the main `try` owns the lease from there on
     try:
         G.reset()                                          # SPEC-0229: no stale stop flag
-        if os.environ.get(RUNNER_LOG_ENV):                 # SPEC-0291: started by --detach
-            lease.update_info(log=os.environ[RUNNER_LOG_ENV], detached=True)
+        runner_log = os.environ.pop(RUNNER_LOG_ENV, None)  # SPEC-0291: started by --detach;
+        if runner_log:                                     # popped so no descendant inherits it
+            lease.update_info(log=runner_log, detached=True)
         lease.update_info(poll_interval_s=interval, slot_freed_at=store.now_iso())   # SPEC-0228
 
         def _handler(signum, _frame):
@@ -4657,6 +4695,8 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
         sys.stdout.flush()
         sys.stderr.flush()
         argv = self_argv()
+        if lease.info.get("detached") and lease.info.get("log"):   # SPEC-0291: the new image
+            handover_env = {**handover_env, RUNNER_LOG_ENV: lease.info["log"]}  # records it too
         _EXEC(argv[0], argv, {**os.environ, **handover_env})
     return ticks
 
