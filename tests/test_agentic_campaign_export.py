@@ -314,6 +314,20 @@ def test_sizing_ac_count_loop_max(cfg):
     assert r["loop_max"] == 2                       # builtin `frugal`
 
 
+def test_campaign_opened_from_a_revise_review_exports_its_sizing(tmp_path, monkeypatch):  # SPEC-0308
+    from test_agentic_e2e import make_cfg, make_repo, script, write_review
+    from wt.agentic import queue as Q
+    repo = make_repo(tmp_path, review=False)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    write_review(cfg, repo / "docs" / "specs" / "0001-trivial.md", "SPEC-0001", "revise",
+                 sha="f" * 64, size="s", tone="cost-effective", rationale="small")
+    plan = Q.plan_add(cfg, "SPEC-0001")
+    Q.apply_add(cfg, plan)
+    r = row_of(cfg, plan["campaign"])
+    assert (r["size"], r["tone"], r["profile"], r["profile_source"], r["sizing_rationale"]) == (
+        "s", "cost-effective", "frugal", "review", "small")
+
+
 def test_loop_max_follows_current_profile_config(cfg):
     full_campaign(cfg)
     assert row_of(cfg, "C-FULL")["loop_max"] == 2

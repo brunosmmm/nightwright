@@ -1,7 +1,7 @@
 ---
 id: SPEC-0308
 title: "A revise verdict keeps its sizing: select_profile honors size and tone for revise, not only approve"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -124,28 +124,28 @@ change scope. That is why SPEC-0230 admits it, and why it is used here.
 
 ## Acceptance criteria
 
-- [ ] `select_profile` with `{"verdict": "revise", "size": s, "tone": t}` returns the matrix
+- [x] `select_profile` with `{"verdict": "revise", "size": s, "tone": t}` returns the matrix
       profile for every valid `(tone, size)` cell, with `source == "review"` and the
       recorded `size` and `tone`.
-- [ ] That reason ends with `(revise review, applied without re-review)`; the approve reason
+- [x] That reason ends with `(revise review, applied without re-review)`; the approve reason
       is byte-for-byte unchanged.
-- [ ] `select_profile` with `verdict: split` and a valid size/tone returns the default
+- [x] `select_profile` with `verdict: split` and a valid size/tone returns the default
       profile, `size` and `tone` `None`, and the reason
       `review verdict split does not size a campaign`.
-- [ ] A `revise` review with `size: xl` returns the default profile, `size == "xl"` and the
+- [x] A `revise` review with `size: xl` returns the default profile, `size == "xl"` and the
       reason `size xl has no profile (split recommended)`.
-- [ ] A `revise` review with no size or tone returns the default profile and the reason
+- [x] A `revise` review with no size or tone returns the default profile and the reason
       `review predates sizing (no size/tone)`.
-- [ ] `--profile` still wins over a `revise` review, and records its size and tone.
-- [ ] A campaign queued from a spec with a stored `revise` review (admission
+- [x] `--profile` still wins over a `revise` review, and records its size and tone.
+- [x] A campaign queued from a spec with a stored `revise` review (admission
       `after_revision` or `revise_pending`) opens with `profile_source == "review"`, the
       review's `size` and `tone`, and a profile from the matrix, in both its `open` event
       and `state.sizing`.
-- [ ] `wt campaign export` shows that campaign's `size`, `tone` and
+- [x] `wt campaign export` shows that campaign's `size`, `tone` and
       `profile_source == "review"`.
-- [ ] `would_pick` returns the same pick for a `revise` review as for an `approve` with the
+- [x] `would_pick` returns the same pick for a `revise` review as for an `approve` with the
       same size and tone, and `None` for a `split`.
-- [ ] A custom matrix (`agentic.profile_matrix`) is honored for `revise` as for `approve`.
+- [x] A custom matrix (`agentic.profile_matrix`) is honored for `revise` as for `approve`.
 
 ## Test plan
 
@@ -171,6 +171,25 @@ change scope. That is why SPEC-0230 admits it, and why it is used here.
   assertions in `tests/test_agentic_profiles.py` and the admission tests in
   `tests/test_agentic_spec_review_loop.py`; `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_profiles.py tests/test_agentic_queue.py
+  tests/test_agentic_campaign_export.py tests/test_spec_review_show.py
+  tests/test_agentic_spec_review_loop.py tests/test_agentic_split.py
+  tests/test_agentic_queue_cli.py tests/test_agentic_spec_review.py`: all pass (one existing
+  assertion in `test_show_json_prefers_current_sha` was updated, see As shipped).
+- Manual: a stored `revise` review with size `s`, tone `cost-effective`, then `wt queue add
+  SPEC-0001` (dry run): `profile: frugal`, `profile_source: review`, reason
+  `size s, tone cost-effective → frugal (revise review, applied without re-review)`.
+- Full `uv run pytest` left to gating.
+
+### As shipped (2026-10-30)
+
+As designed. One consequence: `would_pick` now returns the default-profile pick (source
+`default`, reason `review predates sizing (no size/tone)`) for a `revise` review without size
+or tone, as it already did for an unsized `approve`; it was `None` before. The existing
+`--show --json` assertion on that case was updated.
+
 ## Rollout / migration
 
 1. Merge the change; it applies to campaigns queued afterwards. No data migration.
@@ -181,11 +200,11 @@ change scope. That is why SPEC-0230 admits it, and why it is used here.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

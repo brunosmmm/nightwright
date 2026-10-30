@@ -365,6 +365,17 @@ def test_profile_matrix_every_cell(tone):
     assert all("xl" not in row for row in P.PROFILE_MATRIX.values())
 
 
+@pytest.mark.parametrize("tone", MATRIX)
+def test_profile_matrix_every_cell_revise(tone):
+    for size, want in zip(("xs", "s", "m", "l"), MATRIX[tone]):
+        revise = P.select_profile(_cfg(), review={"verdict": "revise", "size": size, "tone": tone})
+        approve = P.select_profile(_cfg(), review={"verdict": "approve", "size": size, "tone": tone})
+        assert revise["profile"] == want and revise["source"] == "review"
+        assert (revise["size"], revise["tone"]) == (size, tone)
+        assert approve["reason"] == f"size {size}, tone {tone} → {want}"
+        assert revise["reason"] == approve["reason"] + " (revise review, applied without re-review)"
+
+
 def test_select_profile_precedence_and_reasons():
     cfg = _cfg(default_profile="frugal")
     flag = P.select_profile(cfg, flag="thorough", review=SIZED_REVIEW)
@@ -380,6 +391,19 @@ def test_select_profile_precedence_and_reasons():
     assert forced["reason"] == "no approving review (--force)"
     xl = P.select_profile(cfg, review={"verdict": "approve", "size": "xl", "tone": "critical"})
     assert xl["source"] == "default" and xl["size"] == "xl"
+    split = P.select_profile(cfg, review={**SIZED_REVIEW, "verdict": "split"})
+    assert (split["profile"], split["source"]) == ("frugal", "default")
+    assert (split["size"], split["tone"]) == (None, None)
+    assert split["reason"] == "review verdict split does not size a campaign"
+    rxl = P.select_profile(cfg, review={"verdict": "revise", "size": "xl", "tone": "critical"})
+    assert (rxl["profile"], rxl["source"], rxl["size"]) == ("frugal", "default", "xl")
+    assert rxl["reason"] == "size xl has no profile (split recommended)"
+    rold = P.select_profile(cfg, review={"verdict": "revise"})
+    assert (rold["profile"], rold["source"]) == ("frugal", "default")
+    assert rold["reason"] == "review predates sizing (no size/tone)"
+    rflag = P.select_profile(cfg, flag="thorough", review={**SIZED_REVIEW, "verdict": "revise"})
+    assert (rflag["profile"], rflag["source"]) == ("thorough", "flag")
+    assert (rflag["size"], rflag["tone"]) == ("m", "high-end")
 
 
 def test_matrix_config_overrides_one_cell():
@@ -389,6 +413,9 @@ def test_matrix_config_overrides_one_cell():
     assert P.PROFILE_MATRIX["high-end"]["m"] == "balanced"          # builtin untouched
     custom = _cfg(profiles={"mine": {}}, profile_matrix={"high-end": {"m": "mine"}})
     assert P.select_profile(custom, review=SIZED_REVIEW)["profile"] == "mine"
+    revise = {**SIZED_REVIEW, "verdict": "revise"}
+    assert P.select_profile(cfg, review=revise)["profile"] == "thorough"
+    assert P.select_profile(custom, review=revise)["profile"] == "mine"
 
 
 @pytest.mark.parametrize("matrix,needle", [

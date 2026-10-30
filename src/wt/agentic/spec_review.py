@@ -24,7 +24,7 @@ from ..specmeta import split_frontmatter
 from . import personas as PS
 from . import project as P
 from . import store
-from .profiles import resolve_profile, select_profile
+from .profiles import SIZING_VERDICTS, resolve_profile, select_profile
 from .runner import select_runner
 
 SCHEMA = "wt.spec.review.v1"
@@ -212,8 +212,8 @@ def revision_brief(review) -> dict:
 
 def would_pick(cfg, review, *, project_root=None) -> dict | None:
     """What `wt queue add` would pick for `review` under the current config (SPEC-0219), or
-    None unless the review approves. Not stored: the matrix is config and may change."""
-    if not review or review.get("verdict") != "approve":
+    None unless the review approves or revises. Not stored: the matrix is config and may change."""
+    if not review or review.get("verdict") not in SIZING_VERDICTS:
         return None
     return select_profile(cfg, review=review, project_root=project_root)
 

@@ -48,6 +48,19 @@ def test_show_after_edit_and_approve_profile(tmp_path, monkeypatch):
     assert "current · admissible: approved" in r.output and "→ profile" in r.output
 
 
+def test_show_reports_the_revise_would_pick_profile(tmp_path, monkeypatch):      # SPEC-0308
+    repo, cfg, spec = _setup(tmp_path)
+    write_review(cfg, spec, "SPEC-0001", "revise", findings=FINDINGS, **SIZED)
+    r = _show(cfg, monkeypatch)
+    assert r.exit_code == 0 and "→ profile" in r.output and "revise review" in r.output
+    revise = json.loads(_show(cfg, monkeypatch, "--json").stdout)["profile"]
+    write_review(cfg, spec, "SPEC-0001", "approve", reviewed_at="2026-10-26T00:00:00+00:00",
+                 **SIZED)
+    approve = json.loads(_show(cfg, monkeypatch, "--json").stdout)["profile"]
+    assert revise["profile"] == approve["profile"] and revise["source"] == "review"
+    assert SR.would_pick(cfg, {"verdict": "split", **SIZED}) is None
+
+
 def test_show_json_prefers_current_sha(tmp_path, monkeypatch):
     repo, cfg, spec = _setup(tmp_path)
     write_review(cfg, spec, "SPEC-0001", "revise", sha="a" * 64,
@@ -63,7 +76,8 @@ def test_show_json_prefers_current_sha(tmp_path, monkeypatch):
     assert out["profile"]["profile"] and out["stored"] == 2
     spec.write_text(spec.read_text() + "\nedited\n")                 # the newest review is a revise
     out = json.loads(_show(cfg, monkeypatch, "--json").stdout)
-    assert out["matches_current"] is False and out["profile"] is None
+    assert out["matches_current"] is False                       # SPEC-0308: a revise picks too
+    assert out["profile"]["source"] == "default" and out["profile"]["size"] is None
     assert out["admission"] == {"ok": True, "kind": "after_revision", "message": None}
 
 

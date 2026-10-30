@@ -357,6 +357,8 @@ def _resolve(layers, name) -> dict:
 # for one campaign" (the review verdict is `split`), so it has no cell.
 SIZES = ("xs", "s", "m", "l", "xl")
 TONES = ("cost-effective", "high-end", "critical")
+# Review verdicts whose size and tone pick a profile; a split review sizes the unsplit work.
+SIZING_VERDICTS = ("approve", "revise")
 PROFILE_MATRIX = {
     "cost-effective": {"xs": "frugal", "s": "frugal", "m": "balanced", "l": "balanced"},
     "high-end": {"xs": "balanced", "s": "balanced", "m": "balanced", "l": "thorough"},
@@ -389,14 +391,15 @@ def profile_matrix(cfg, *, project_root=None):
 
 
 def select_profile(cfg, *, flag=None, review=None, project_root=None) -> dict:
-    """Pick the campaign profile: `--profile` flag > the approving review's size and tone via
-    the matrix > `agentic.default_profile`. Pure (no I/O beyond `cfg`). Returns
+    """Pick the campaign profile: `--profile` flag > the approve or revise review's size and
+    tone via the matrix > `agentic.default_profile`. Pure (no I/O beyond `cfg`). Returns
     `{profile, source: flag|review|default, reason, size, tone}`; size and tone are recorded
     whenever the review has valid ones, even when the flag wins."""
     matrix = profile_matrix(cfg, project_root=project_root)
     review = review or {}
     size, tone = review.get("size"), review.get("tone")
-    sized = (size in SIZES and tone in TONES) and review.get("verdict", "approve") == "approve"
+    verdict = review.get("verdict", "approve")
+    sized = size in SIZES and tone in TONES and verdict in SIZING_VERDICTS
     if not sized:
         size = tone = None
     if flag:
@@ -404,15 +407,19 @@ def select_profile(cfg, *, flag=None, review=None, project_root=None) -> dict:
                 "size": size, "tone": tone}
     if sized and size != "xl":
         name = matrix[tone][size]
-        return {"profile": name, "source": "review", "size": size, "tone": tone,
-                "reason": f"size {size}, tone {tone} → {name}"}
+        why = f"size {size}, tone {tone} → {name}"
+        if verdict == "revise":
+            why += " (revise review, applied without re-review)"
+        return {"profile": name, "source": "review", "size": size, "tone": tone, "reason": why}
     default = _agentic(cfg).get("default_profile") or "balanced"
     if not review:
         why = "no approving review (--force)"
     elif sized:
         why = f"size {size} has no profile (split recommended)"
-    else:
+    elif verdict in SIZING_VERDICTS:
         why = "review predates sizing (no size/tone)"
+    else:
+        why = f"review verdict {verdict} does not size a campaign"
     return {"profile": default, "source": "default", "reason": why, "size": size, "tone": tone}
 
 

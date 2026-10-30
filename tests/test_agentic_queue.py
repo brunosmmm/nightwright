@@ -1241,6 +1241,47 @@ def test_queue_add_revise_pending_opens_into_spec_writing(tmp_path, monkeypatch)
     assert Q.plan_step(st, resolve_profile({}, "balanced")).kind == "write_spec"
 
 
+@pytest.mark.parametrize("amended", [True, False])
+def test_revise_review_sizing_picks_the_matrix_profile(tmp_path, amended):   # SPEC-0308
+    from wt.agentic import schemas as SC
+    from wt.agentic import spec_review as SR
+    repo = make_repo(tmp_path, review=False)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    spec = repo / "docs" / "specs" / "0001-trivial.md"
+    write_review(cfg, spec, "SPEC-0001", "revise", findings=REV_FINDINGS,
+                 sha=("f" * 64) if amended else None, size="s", tone="cost-effective",
+                 rationale="small")
+    plan = Q.plan_add(cfg, "SPEC-0001")
+    assert plan["review"] == ("after_revision" if amended else "revise_pending")
+    assert (plan["profile"], plan["size"], plan["tone"]) == ("frugal", "s", "cost-effective")
+    state = Q.apply_add(cfg, plan)
+    want = {"size": "s", "tone": "cost-effective", "source": "review"}
+    assert state["profile"] == "frugal"
+    assert {k: state["sizing"][k] for k in want} == want and state["sizing"]["rationale"] == "small"
+    assert state["sizing"]["reason"].endswith("(revise review, applied without re-review)")
+    opened = S.read_ledger(cfg, plan["campaign"])[0]
+    assert opened["type"] == "open" and SC.ledger_problems(opened) == []
+    assert (opened["profile"], opened["size"], opened["tone"], opened["profile_source"]) \
+        == ("frugal", "s", "cost-effective", "review")
+    assert SR.would_pick(cfg, SR.load_review(cfg, "SPEC-0001", "f" * 64 if amended
+                                             else SR.spec_sha256(spec)))["profile"] == "frugal"
+
+
+def test_split_review_sizing_stays_unsized(tmp_path, monkeypatch):           # SPEC-0308
+    from test_agentic_split import ORIG, _lint_ledger, _spec_md, _write, _git, make_project
+    repo = make_project(tmp_path, with_epic=True)
+    _write(repo, ORIG, _spec_md(5, None, title="Big thing", status="accepted"))
+    _lint_ledger(repo)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "x")
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    write_review(cfg, repo / ORIG, "SPEC-0005", "split", size="s", tone="cost-effective",
+                 suggested_splits=[{"title": "A", "scope": "sa"}, {"title": "B", "scope": "sb"}])
+    plan = Q.plan_add(cfg, "SPEC-0005")
+    assert plan["review"] == "split_pending"
+    assert (plan["size"], plan["tone"], plan["profile_source"]) == (None, None, "default")
+
+
 def test_plan_add_approved_and_forced_have_no_revision(tmp_path):
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
