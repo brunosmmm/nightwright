@@ -457,6 +457,7 @@ def _active_panel(it: dict) -> Panel:
     grid = Table.grid(padding=(0, 1))
     grid.add_column(style="dim", no_wrap=True, justify="right")
     grid.add_column(overflow="fold")
+    idea = it.get("idea")
     grid.add_row("spec", _idea_spec_cell(it) if idea else
                  _spec_cell(it.get("label") or it["spec_id"] or it.get("idea_id"),
                             it.get("spec_title")))
