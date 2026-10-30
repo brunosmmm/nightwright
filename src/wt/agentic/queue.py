@@ -725,7 +725,8 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
         except (OSError, ValueError):
             blocked.append(f"{dep} not found")
             continue
-        met, why = dependency_met(spec_path.parent, dep, dep_fm or {}, set())
+        met, why = dependency_met(spec_path.parent, dep, dep_fm or {},
+                                  {str(fm["id"])} if fm.get("id") else set())
         if not met:
             blocked.append(f"waiting on {dep} ({why})")
     return not blocked, blocked
@@ -4938,8 +4939,9 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
     split = None
     if review == "split_pending":                                      # SPEC-0290
         split = {"review_sha": review_doc["current_sha"],
-                 "parts": [{"title": str(p.get("title") or ""), "scope": str(p.get("scope") or "")}
-                           for p in review_doc.get("suggested_splits") or []]}
+                 "parts": [{"title": str(p.get("title") or "").strip() or f"Part {i}",
+                            "scope": str(p.get("scope") or "")}
+                           for i, p in enumerate(review_doc.get("suggested_splits") or [], 1)]}
         review_doc = None       # the review sizes the unsplit work, not writing the parts
     pick = select_profile(cfg, flag=profile, review=review_doc,         # SPEC-0219
                           project_root=root)

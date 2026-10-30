@@ -157,7 +157,9 @@ def test_split_part_wrong_wiring_retried_then_parked(tmp_path, monkeypatch, wron
     park = parked(cfg, cid)
     key = wrong.split()[0]
     assert park["reason"] == "spec_write_failed" and park["resume_to"] == "SPEC_WRITING"
-    assert f"front matter: {key}" in park["detail"] or "parent" in park["detail"]
+    assert f"front matter: {key} must be" in park["detail"]
+    others = {"status", "supersedes", "depends_on", "parent"} - {key}
+    assert not any(f"front matter: {o} must be" in park["detail"] for o in others)
 
 
 def test_split_step_never_parks_or_revises(tmp_path, monkeypatch):
@@ -175,6 +177,19 @@ def test_split_step_never_parks_or_revises(tmp_path, monkeypatch):
     assert Q.plan_step(st, profile).kind == "finalize_split"
     st["split"]["parts"][2]["spec_id"] = None
     assert Q.plan_step(st, profile).kind == "write_spec"
+
+
+def test_split_step_parks_on_the_cost_cap(tmp_path, monkeypatch):
+    cfg, repo, cid = split_fx(tmp_path, monkeypatch, good_parts())
+    st = S.read_state(cfg, cid)
+    profile = Q._Ctx(cfg).profile(st)
+    st["cost"] = {"cap_usd": 0.0001, "total_usd": 0.0}
+    step = Q.plan_step(st, profile)                      # a part is unwritten: the run is capped
+    assert step.kind == "park" and step.reason == "cost_cap" and step.persona == "spec_writer"
+    assert step.resume_to == "SPEC_WRITING"
+    for p in st["split"]["parts"]:                       # finalize runs no persona: never capped
+        p["spec_id"] = "SPEC-0101"
+    assert Q.plan_step(st, profile).kind == "finalize_split"
 
 
 # ---- readiness ---------------------------------------------------------------------------------
@@ -247,6 +262,60 @@ def test_superseded_dependency_without_replacement_is_met(tmp_path):
     assert Q.backlog_readiness(cfg, dep) == (True, [])
 
 
+def _chain_fx(tmp_path, specs):
+    """Specs 0005 (the dependency X) and `specs` {number: (status, fm)}, plus the accepted
+    dependent SPEC-0006 on X; returns the dependent's campaign dict."""
+    repo = make_project(tmp_path, with_epic=True)
+    _write(repo, "docs/specs/0006-dependent.md", _spec_md(
+        6, None, title="Dependent", status="accepted", fm={"depends_on": "[SPEC-0005]"}))
+    for number, (status, fm) in specs.items():
+        _write(repo, f"docs/specs/{number:04d}-s{number}.md", _spec_md(
+            number, None, title=f"S{number}", status=status, fm=fm))
+    return {"kind": "implement", "repo": {"root": str(repo)},
+            "spec": {"rel_path": "docs/specs/0006-dependent.md"}}
+
+
+def test_superseded_by_only_replacement_is_waited_for(tmp_path):
+    dep = _chain_fx(tmp_path, {5: ("superseded", {"superseded_by": "SPEC-0101"}),
+                               101: ("accepted", {})})         # no `supersedes` back-link
+    assert Q.backlog_readiness({}, dep) == (
+        False, ["waiting on SPEC-0005 (superseded; waiting on SPEC-0101)"])
+    p = tmp_path / "repo" / "docs/specs/0101-s101.md"
+    p.write_text(p.read_text().replace("status: accepted", "status: done"))
+    assert Q.backlog_readiness({}, dep) == (True, [])
+
+
+def test_superseded_replacement_that_is_itself_superseded_recurses(tmp_path):
+    dep = _chain_fx(tmp_path, {
+        5: ("superseded", {"superseded_by": "SPEC-0101"}),
+        101: ("superseded", {"supersedes": "[SPEC-0005]", "superseded_by": "SPEC-0102"}),
+        102: ("accepted", {"supersedes": "[SPEC-0101]"})})
+    assert Q.backlog_readiness({}, dep) == (
+        False, ["waiting on SPEC-0005 (superseded; waiting on SPEC-0101)"])
+    p = tmp_path / "repo" / "docs/specs/0102-s102.md"
+    p.write_text(p.read_text().replace("status: accepted", "status: done"))
+    assert Q.backlog_readiness({}, dep) == (True, [])
+
+
+def test_supersession_cycle_terminates(tmp_path):
+    dep = _chain_fx(tmp_path, {
+        5: ("superseded", {"superseded_by": "SPEC-0101"}),
+        101: ("superseded", {"supersedes": "[SPEC-0005, SPEC-0102]", "superseded_by": "SPEC-0102"}),
+        102: ("superseded", {"supersedes": "[SPEC-0101]", "superseded_by": "SPEC-0101"})})
+    assert Q.backlog_readiness({}, dep) == (True, [])
+
+
+def test_spec_that_supersedes_and_depends_on_the_same_spec_is_not_blocked_by_itself(tmp_path):
+    repo = make_project(tmp_path, with_epic=True)
+    _write(repo, ORIG, _spec_md(5, None, status="superseded", fm={"superseded_by": "SPEC-0006"}))
+    _write(repo, "docs/specs/0006-dependent.md", _spec_md(
+        6, None, title="Dependent", status="accepted",
+        fm={"depends_on": "[SPEC-0005]", "supersedes": "[SPEC-0005]"}))
+    state = {"kind": "implement", "repo": {"root": str(repo)},
+             "spec": {"rel_path": "docs/specs/0006-dependent.md"}}
+    assert Q.backlog_readiness({}, state) == (True, [])
+
+
 # ---- finalize and close ------------------------------------------------------------------------
 
 def test_finalize_split_supersedes_original(tmp_path, monkeypatch):
@@ -294,13 +363,15 @@ def test_supersede_rewrites_only_front_matter_status_lines(tmp_path):
 
 def test_split_close_skips_review_and_followups(tmp_path, monkeypatch):
     cfg, repo, cid = written(tmp_path, monkeypatch)
+    filed = []
+    monkeypatch.setattr(Q.FU, "file_followups", lambda *a, **k: filed.append(a) or ([], {}))
     st = run_ticks(cfg, cid, 3)                          # finalize, then the close
     assert st["state"] == "MERGED", st.get("park")
     assert st["close"]["mode"] == "merge"
     personas = {e["persona"] for e in ledger(cfg, cid, "run.start")}
     assert personas == {"spec_writer"}
     assert not ledger(cfg, cid, "followup")
-    assert "followups" not in st["close"]
+    assert "followups" not in st["close"] and filed == []        # the filer is never even called
     assert "superseded_by: SPEC-0101" in (repo / ORIG).read_text()
     assert (repo / "docs/specs/0103-part-3.md").is_file()
     assert subprocess.run([sys.executable, "tools/spec_lint.py"], cwd=repo,
@@ -334,3 +405,88 @@ def test_split_check_failure_resumes_to_spec_writing(tmp_path, monkeypatch):
     assert st["state"] == "CLOSING"
     assert len(ledger(cfg, cid, "split_finalized")) == 2
     assert run_ticks(cfg, cid, 1)["state"] == "MERGED"
+
+
+def test_split_red_gate_parks_gates_failed_then_resumes_to_merged(tmp_path, monkeypatch):
+    cfg, repo, cid = written(tmp_path, monkeypatch)
+    run_ticks(cfg, cid, 1)                               # finalize -> CLOSING
+    wt = wtree(cfg, cid)
+    (wt / "feature.txt").unlink()                        # the project's test gate wants it
+    _git(wt, "commit", "-qam", "break the gate")
+    for _ in range(4):
+        if S.read_state(cfg, cid)["state"] == "PARKED":
+            break
+        Q.tick(cfg)
+    park = parked(cfg, cid)                              # no triager for a split campaign
+    assert park["reason"] == "gates_failed" and park["resume_to"] == "CLOSING"
+    assert "triager" not in {e["persona"] for e in ledger(cfg, cid, "run.start")}
+    _write(wt, "feature.txt", "x\n")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-qm", "fix the gate")
+    resume(cfg, cid)
+    assert run_ticks(cfg, cid, 3)["state"] == "MERGED"
+
+
+def test_finalize_failure_parks_rolls_back_and_a_resume_succeeds(tmp_path, monkeypatch):
+    cfg, repo, cid = written(tmp_path, monkeypatch)
+    wt = wtree(cfg, cid)
+    head = _git(wt, "rev-parse", "HEAD")
+    original = (wt / ORIG).read_text()
+    (wt / "feature.txt").write_text("edited\n")          # tracked and dirty: finalize refuses
+    st = run_ticks(cfg, cid, 1)
+    assert st["state"] == "PARKED"
+    park = st["park"]
+    assert park["reason"] == "spec_write_failed" and park["resume_to"] == "SPEC_WRITING"
+    assert park["detail"].startswith("finalize_split step failed:")
+    assert (wt / ORIG).read_text() == original and _git(wt, "rev-parse", "HEAD") == head
+    assert not ledger(cfg, cid, "split_finalized")
+    _git(wt, "checkout", "--", "feature.txt")
+    resume(cfg, cid)
+    st = run_ticks(cfg, cid, 1)                          # every part is written: finalize again
+    assert st["state"] == "CLOSING", st.get("park")
+    assert "superseded_by: SPEC-0101" in (wt / ORIG).read_text()
+    assert len(ledger(cfg, cid, "split_finalized")) == 1
+
+
+def test_finalize_rolls_back_when_the_original_has_no_front_matter(tmp_path, monkeypatch):
+    cfg, repo, cid = written(tmp_path, monkeypatch)
+    wt = wtree(cfg, cid)
+    (wt / ORIG).write_text("no front matter here\n")
+    _git(wt, "commit", "-qam", "break the original")
+    head = _git(wt, "rev-parse", "HEAD")
+    run_ticks(cfg, cid, 1)
+    park = parked(cfg, cid)
+    assert park["reason"] == "spec_write_failed" and park["resume_to"] == "SPEC_WRITING"
+    assert "no front matter" in park["detail"]
+    assert _git(wt, "rev-parse", "HEAD") == head and _git(wt, "status", "--porcelain", "-uno") == ""
+
+
+def test_supersede_survives_crlf_and_block_list_superseded_by(tmp_path):
+    f = tmp_path / "s.md"
+    f.write_bytes(b"---\r\nid: SPEC-0005\r\nstatus: accepted\r\nupdated: 2020-01-01\r\n---\r\n\r\nbody\r\n")
+    assert SW.supersede(tmp_path, "s.md", "SPEC-0101") is True
+    fm, body = SW.split_frontmatter(f.read_text())       # read_text folds CRLF; the file is LF now
+    assert fm["status"] == "superseded" and fm["superseded_by"] == "SPEC-0101"
+    assert body == "\nbody\n"
+    g = tmp_path / "t.md"
+    g.write_text("---\nid: SPEC-0005\nstatus: accepted\nsuperseded_by:\n  - SPEC-0050\n"
+                 "  - SPEC-0051\nowner: u\n---\n\nbody\n")
+    assert SW.supersede(tmp_path, "t.md", "SPEC-0101") is True
+    text = g.read_text()
+    assert "SPEC-0050" not in text and "SPEC-0051" not in text
+    assert text.count("superseded_by:") == 1 and "owner: u" in text
+    fm, _ = SW.split_frontmatter(text)
+    assert fm["superseded_by"] == "SPEC-0101" and fm["owner"] == "u"
+
+
+def test_split_with_an_empty_part_title_gets_a_default_title(tmp_path, monkeypatch):
+    repo = make_project(tmp_path, with_epic=True)
+    _write(repo, ORIG, _spec_md(5, None, title="Big thing", status="accepted"))
+    _lint_ledger(repo)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "x")
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    write_review(cfg, repo / ORIG, "SPEC-0005", "split", suggested_splits=[
+        {"title": "  ", "scope": "sa"}, {"scope": "sb"}])
+    cid = added(cfg, monkeypatch, "SPEC-0005")
+    assert [p["title"] for p in S.read_state(cfg, cid)["split"]["parts"]] == ["Part 1", "Part 2"]

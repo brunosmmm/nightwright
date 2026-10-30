@@ -292,9 +292,12 @@ def supersede(worktree, original_rel, superseded_by) -> bool:
     today = dt.date.today().isoformat()
     if fm.get("status") == "superseded" and fm.get("superseded_by") == superseded_by:
         return False
-    out, seen = [], set()
+    out, seen, in_old_by = [], set(), False
     for ln in m.group(1).split("\n"):
         key = ln.split(":", 1)[0] if re.match(r"[A-Za-z_]+:", ln) else None
+        if in_old_by and key is None and re.match(r"\s|-", ln):
+            continue                            # a block-list `superseded_by:` value line
+        in_old_by = key == "superseded_by"
         if key == "status":
             out += ["status: superseded", f"superseded_by: {superseded_by}"]
         elif key == "updated":

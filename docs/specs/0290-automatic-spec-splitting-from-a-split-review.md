@@ -325,7 +325,17 @@ finalize step leaves the original `accepted`, so `test_split_close_skips_review_
 (it must reach MERGED through the split check) fails; `test_finalize_split_supersedes_original`
 asserts the superseded original directly.
 
-The full `uv run pytest` run passed too (3660 passed, 3 skipped; `tests/test_spec_review_store.py`
+Review round 2 additions (all passing, with `tests/test_spec_numbers.py`,
+`test_agentic_close.py`, `test_agentic_spec_writer.py`, `test_agentic_queue.py`,
+`test_agentic_queue_merge.py`): a failing finalize (dirty worktree, original without front
+matter) parks `spec_write_failed` / `SPEC_WRITING`, rolls back, and a resume finalizes; an
+abandoned split campaign frees its `<campaign>#k` reservations; the wrong-wiring park detail
+names the exact key; `dependency_met` for a `superseded_by`-only replacement, a recursive
+supersession, a cycle, and a spec that supersedes and depends on the same spec; the follow-up
+filer is not called for a split; a red gate parks `gates_failed` and a resume merges; the cost
+cap parks the split write step. The full suite is left to gating.
+
+The earlier full `uv run pytest` run passed too (3660 passed, 3 skipped; `tests/test_spec_review_store.py`
 ran separately after a message-wording fix: 89 passed together with `test_agentic_spec_review.py`).
 
 ### As shipped
@@ -347,6 +357,10 @@ ran separately after a message-wording fix: 89 passed together with `test_agenti
 - In `wt queue watch` the active card gets a `kind split` row (the table views show `split`
   under the campaign id); `wt campaign show` prints `split of SPEC-X into N parts` and one
   `part k: <id or (pending)> <title>` line per part.
+- `backlog_readiness` seeds `dependency_met`'s `seen` with the dependent's own id, so a spec
+  that both supersedes and depends on X is not blocked by itself. `SW.supersede` also drops the
+  value lines of a block-list `superseded_by:`. An empty `suggested_splits` title becomes
+  `Part N` at admission.
 - `_split_problems` treats an absent `parent` as expected when the original has none. The
   writer prompt's `{{idea_text}}` is replaced by a one-line note and `{{spec_text}}` is the
   original spec's text.

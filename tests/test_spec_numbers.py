@@ -158,6 +158,20 @@ def test_prune_on_commit_abandon_and_release(cfg, repo):
         SN.release(cfg, 99, specs_dir=sd)
 
 
+def test_abandoned_split_campaign_frees_its_per_part_reservations(cfg, repo):
+    sd = _sd(repo)
+    a = SN.allocate(cfg, by="t", campaign="C-SP#1", specs_dir=sd)      # SPEC-0290: `<campaign>#k`
+    b = SN.allocate(cfg, by="t", campaign="C-SP#2", specs_dir=sd)
+    assert a["number"] != b["number"]
+    store.campaign_dir(cfg, "C-SP").mkdir(parents=True)
+    store.write_state(cfg, "C-SP", {"id": "C-SP", "state": "SPEC_WRITING"})
+    assert [r["number"] for r in SN.list_reservations(cfg, specs_dir=sd)] == [
+        a["number"], b["number"]]
+    store.write_state(cfg, "C-SP", {"id": "C-SP", "state": "ABANDONED"})
+    assert SN.list_reservations(cfg, specs_dir=sd) == []
+    assert SN.allocate(cfg, by="t", specs_dir=sd)["number"] == a["number"]
+
+
 def test_release_is_per_key_and_rejects_bad_numbers(tmp_path, cfg, repo):
     other = _make_repo(tmp_path / "repo2")
     assert SN.allocate(cfg, by="t", specs_dir=_sd(other))["number"] == 2
