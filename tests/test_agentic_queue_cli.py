@@ -945,3 +945,38 @@ def test_queue_stop_json_schema(tmp_path, monkeypatch):
         assert d["by"] == "human"
         r = run_cli(cfg, monkeypatch, ["queue", "stop", "--yes"])
         assert r.exit_code == 1 and "close guard: close of C-1" in r.output, r.output
+
+
+def test_queue_run_detach_cli_wiring(tmp_path, monkeypatch):
+    """SPEC-0291: the command's argv, default log, `--log` and output; ValueError ⇒ exit 1."""
+    import sys
+    repo, cfg = _cfg(tmp_path)
+    exe = tmp_path / "bin" / "wt"
+    exe.parent.mkdir()
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    calls = []
+
+    def detach(cfg_, argv, log, *, timeout_s):
+        calls.append((argv, log, timeout_s))
+        return {"pid": 4242, "log": str(log)}
+
+    monkeypatch.setattr(Q, "detach_runner", detach)
+    args = ["queue", "run", "--detach", "--poll-interval", "5"]
+    monkeypatch.setattr(sys, "argv", [str(exe), *args])
+    r = run_cli(cfg, monkeypatch, args)
+    default_log = str(S.agentic_dir(cfg) / "runner.log")
+    assert r.exit_code == 0, r.output
+    assert calls == [([str(exe), *args], default_log, 15)]
+    assert f"runner started: pid 4242, log {default_log}" in r.output.replace("\n", "")
+    calls.clear()
+    monkeypatch.setattr(sys, "argv", [str(exe), *args, "--log", "x.log"])
+    r = run_cli(cfg, monkeypatch, [*args, "--log", "x.log"])
+    assert r.exit_code == 0 and calls[0][1] == "x.log", r.output
+
+    def refuse(*a, **k):
+        raise ValueError("queue held by pid 77 (heartbeat 1s ago); stop it with wt queue stop")
+
+    monkeypatch.setattr(Q, "detach_runner", refuse)
+    r = run_cli(cfg, monkeypatch, args)
+    assert r.exit_code == 1 and "queue held by pid 77" in r.output, r.output

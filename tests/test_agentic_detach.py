@@ -294,3 +294,96 @@ def test_stop_other_host_refused(tmp_path, children):
     L.lease_path(cfg).write_text(json.dumps(info))
     with pytest.raises(ValueError, match=r"on elsewhere.example, not this host"):
         Q.stop_runner(cfg, kill=lambda *a: pytest.fail("no remote kill"))
+
+
+# ---- how the runner re-runs itself (SPEC-0194 re-exec, SPEC-0291 detach) ------------------------
+
+def _module_start(monkeypatch, *args):
+    """Pretend this process was started as `python -m wt <args>`."""
+    import types
+    import wt
+    main_py = os.path.join(os.path.dirname(wt.__file__), "__main__.py")
+    monkeypatch.setitem(sys.modules, "__main__",
+                        types.SimpleNamespace(__spec__=types.SimpleNamespace(name="wt.__main__")))
+    monkeypatch.setattr(sys, "argv", [main_py, *args])
+    return main_py
+
+
+def test_module_start_reexec_and_detach_argv_are_runnable(monkeypatch):
+    main_py = _module_start(monkeypatch, "queue", "run", "--help")
+    argv = Q.self_argv()
+    assert argv == [sys.executable, "-m", "wt", "queue", "run", "--help"]
+    assert Q.entry_argv() == argv
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and "--detach" in r.stdout, r.stderr
+    # what the re-exec ran before: `python …/wt/__main__.py` cannot import its package
+    r = subprocess.run([sys.executable, main_py, "--help"], capture_output=True, text=True,
+                       timeout=60)
+    assert r.returncode != 0 and "ImportError" in r.stderr
+
+
+def test_loop_reexec_keeps_dash_m_wt(tmp_path, monkeypatch):
+    from test_agentic_reexec import _loop_with_commits
+    _module_start(monkeypatch, "queue", "run", "--poll-interval", "5")
+    _, _, calls = _loop_with_commits(tmp_path, monkeypatch, [("src/wt/x.py", "A = 3\n")])
+    ((exe, argv, env),) = calls
+    assert exe == sys.executable
+    assert argv == [sys.executable, "-m", "wt", "queue", "run", "--poll-interval", "5"]
+
+
+def test_script_start_argv(tmp_path, monkeypatch):
+    exe = tmp_path / "wt"
+    exe.write_text("#!/bin/sh\n")
+    monkeypatch.setitem(sys.modules, "__main__", object())
+    monkeypatch.setattr(sys, "argv", [str(exe), "queue", "run", "--detach"])
+    assert Q.self_argv() == [sys.executable, str(exe), "queue", "run", "--detach"]
+    assert Q.entry_argv() == [sys.executable, "-m", "wt", "queue", "run", "--detach"]
+    exe.chmod(0o755)                                # the console script runs itself
+    assert Q.entry_argv() == [str(exe), "queue", "run", "--detach"]
+
+
+def test_detach_relative_log_is_made_absolute(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    class _Child:
+        pid = 4242
+
+        def poll(self):
+            return 7
+
+    with pytest.raises(ValueError):
+        Q.detach_runner(cfg, ["wt", "queue", "run"], "rel.log",
+                        popen=lambda argv, **kw: calls.append(kw) or _Child())
+    assert calls[0]["env"]["WT_RUNNER_LOG"] == str(tmp_path / "rel.log")
+
+
+# ---- stop: hardening ----------------------------------------------------------------------------
+
+def test_stop_holder_gone_is_no_runner(tmp_path, children):
+    cfg = _cfg(tmp_path)
+    _spawn(cfg, "term", children)
+
+    def kill(pid, sig):
+        raise ProcessLookupError(pid)
+
+    assert Q.stop_runner(cfg, kill=kill) == {"stopped": False, "reason": "no runner"}
+
+
+def test_stop_permission_error_is_refused(tmp_path, children):
+    cfg = _cfg(tmp_path)
+    child = _spawn(cfg, "term", children)
+
+    def kill(pid, sig):
+        raise PermissionError(pid)
+
+    with pytest.raises(ValueError, match=rf"pid {child.pid} .*cannot be signalled"):
+        Q.stop_runner(cfg, kill=kill)
+
+
+def test_stop_refuses_a_one_shot_tick(tmp_path):
+    cfg = _cfg(tmp_path)
+    with L.acquire(cfg, ["wt", "queue", "tick"]):
+        with pytest.raises(ValueError, match=r"one-shot `wt queue tick`, not a runner"):
+            Q.stop_runner(cfg, kill=lambda *a: pytest.fail("no SIGTERM to a tick"))

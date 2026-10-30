@@ -20,6 +20,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -4260,6 +4261,30 @@ RUNNER_LOG_ENV = "WT_RUNNER_LOG"
 _LOG_TAIL = 20
 
 
+def _started_as_module() -> bool:
+    """True for a `python -m wt` start: `sys.argv[0]` is then `…/wt/__main__.py`, whose
+    relative import fails when it is run again as a plain script."""
+    spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    return getattr(spec, "name", None) == "wt.__main__"
+
+
+def self_argv() -> list:
+    """This process's command line as `sys.executable` runs it again (the SPEC-0194 re-exec):
+    `python -m wt …` keeps `-m wt`, anything else is `python argv[0] …`."""
+    if _started_as_module():
+        return [sys.executable, "-m", "wt", *sys.argv[1:]]
+    return [sys.executable, *sys.argv]
+
+
+def entry_argv() -> list:
+    """This process's command line for `--detach` (SPEC-0291): `sys.argv[0]` itself when it is
+    an executable file (the console script), else `python -m wt` with the same arguments."""
+    exe = sys.argv[0] if sys.argv else ""
+    if not _started_as_module() and exe and os.path.isfile(exe) and os.access(exe, os.X_OK):
+        return list(sys.argv)
+    return [sys.executable, "-m", "wt", *sys.argv[1:]]
+
+
 def _strip_detach(argv) -> list:
     """`argv` without `--detach` and `--log PATH` / `--log=PATH`."""
     out, skip = [], False
@@ -4295,7 +4320,7 @@ def detach_runner(cfg, argv, log_path, *, timeout_s=15, popen=subprocess.Popen,
         age_txt = f"heartbeat {age:.0f}s ago" if age is not None else "no heartbeat"
         raise ValueError(f"queue held by pid {st.get('pid', '?')} ({age_txt}); "
                          "stop it with wt queue stop")
-    log_path = Path(log_path)
+    log_path = Path(log_path).expanduser().absolute()      # the child's cwd may differ
     log_path.parent.mkdir(parents=True, exist_ok=True)
     child_argv = _strip_detach(argv)
     env = {**os.environ, RUNNER_LOG_ENV: str(log_path)}
@@ -4380,8 +4405,17 @@ def stop_runner(cfg, *, timeout_s=60, wait_guard=False, guard_wait_s=None, kill=
                 return {"stopped": False, "reason": "no runner"}
             busy = close_guard(st)
     pid = st["pid"]
+    holder = (L.read_lease(cfg) or {}).get("argv") or []
+    if holder[:3] == ["wt", "queue", "tick"]:
+        raise ValueError(f"pid {pid} holds the lease for a one-shot `wt queue tick`, not a "
+                         "runner; it releases the lease when the tick ends")
     start = clock()
-    kill(pid, signal.SIGTERM)
+    try:
+        kill(pid, signal.SIGTERM)
+    except ProcessLookupError:              # it exited (and released) since the lease was read
+        return {"stopped": False, "reason": "no runner"}
+    except PermissionError:
+        raise ValueError(f"pid {pid} holds the lease but cannot be signalled by this user")
     end = start + timeout_s
     while L.is_held(cfg):
         if clock() >= end:
@@ -4620,10 +4654,10 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                 except (ValueError, TypeError):
                     pass
     if handover_env is not None:
-        import sys
         sys.stdout.flush()
         sys.stderr.flush()
-        _EXEC(sys.executable, [sys.executable, *sys.argv], {**os.environ, **handover_env})
+        argv = self_argv()
+        _EXEC(argv[0], argv, {**os.environ, **handover_env})
     return ticks
 
 

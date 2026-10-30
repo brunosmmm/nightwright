@@ -40,15 +40,6 @@ def _actor(cfg, by) -> str:
     return M.validate_address(cfg, by or os.environ.get("WT_MAILBOX_ADDR") or "human")
 
 
-def _entry_argv() -> list:
-    """How to re-run this `wt` (SPEC-0291): `sys.argv[0]` when it is an executable file,
-    else `python -m wt`."""
-    exe = sys.argv[0] if sys.argv else ""
-    if exe and os.path.isfile(exe) and os.access(exe, os.X_OK):
-        return [exe]
-    return [sys.executable, "-m", "wt"]
-
-
 def _age_txt(age) -> str:
     return f"{age}s" if age is not None and age < 120 else (f"{age // 60}m" if age else "")
 
@@ -1133,7 +1124,7 @@ def attach(queue_group):
                                        "combined with --once or --max-ticks")
             log = log_path or str(store.agentic_dir(cfg) / "runner.log")
             try:
-                d = Q.detach_runner(cfg, _entry_argv() + sys.argv[1:], log, timeout_s=15)
+                d = Q.detach_runner(cfg, Q.entry_argv(), log, timeout_s=15)
             except ValueError as e:
                 raise click.ClickException(str(e))
             console.print(f"runner started: pid {d['pid']}, log {d['log']}", highlight=False)

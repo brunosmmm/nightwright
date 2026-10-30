@@ -239,7 +239,36 @@ skill rows can then reference instead of restating it.
   tick(s)`; a further `stop --yes` printed `no runner` (exit 0).
 - Full `uv run pytest` left to gating (the no-regressions check).
 
+### Test record (2026-10-30, review round 1)
+
+- Added `test_module_start_reexec_and_detach_argv_are_runnable` (a `python -m wt` start's
+  re-exec/detach argv is `python -m wt …` and actually runs; the old `python …/wt/__main__.py`
+  form fails with ImportError), `test_loop_reexec_keeps_dash_m_wt` (the SPEC-0194 loop
+  re-exec under a module start), `test_script_start_argv`,
+  `test_detach_relative_log_is_made_absolute`, `test_stop_holder_gone_is_no_runner`,
+  `test_stop_permission_error_is_refused`, `test_stop_refuses_a_one_shot_tick`
+  (`tests/test_agentic_detach.py`) and `test_queue_run_detach_cli_wiring`
+  (`tests/test_agentic_queue_cli.py`: argv, default log, `--log`, output, ValueError ⇒ exit 1).
+  `test_agentic_detach`, `test_agentic_queue_cli`, `test_agentic_reexec`,
+  `test_agentic_drain_signal`, `test_agentic_adopt`, `test_agentic_config_reload`,
+  `test_agentic_exit_paths`, `test_agentic_close_inflight`, `test_agentic_lease`,
+  `test_skills`: all pass.
+- **Manual** (isolated `WT_DATA_DIR`/`WT_CONFIG_DIR`): `python -m wt queue run --detach
+  --log rel.log` from `/tmp/…` printed the absolute log path; the lease showed it with
+  `detached: true`; the child's `/proc/N/cmdline` was `python -m wt queue run
+  --poll-interval 2`; `python -m wt queue stop --yes` stopped it in 0.2 s.
+- Full `uv run pytest` left to gating.
+
 ### As shipped (2026-10-30)
+
+- Review round 1: the entry argv lives in `queue.py` and is shared with the SPEC-0194
+  re-exec. `_started_as_module()` (`__main__.__spec__.name == "wt.__main__"`) makes both
+  `self_argv()` (the re-exec: `python -m wt …`, else `python argv[0] …` as before) and
+  `entry_argv()` (detach: `argv[0]` when executable, else `python -m wt …`) keep `-m wt`, since
+  `python …/wt/__main__.py` cannot import its package. `detach_runner` stores the log path as
+  an absolute path. `stop_runner` returns `no runner` when `kill` finds no process, turns a
+  `PermissionError` into a refusal, and refuses a lease held by a one-shot `wt queue tick`
+  (no `busy`, no SIGTERM handler; it ends by itself).
 
 - `python -m wt` did not exist, so the Decision's fallback entry point would have failed:
   added `src/wt/__main__.py` (two lines). `cli_queue._entry_argv()` picks `sys.argv[0]`
