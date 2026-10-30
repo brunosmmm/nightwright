@@ -118,10 +118,32 @@ def test_set_idea_epic_rejects_a_non_idea(tmp_path, monkeypatch):
         W.set_idea_epic(cfg, task.properties.get("ID") or task.heading, EPIC)
 
 
+OLD_STAMP = "[2000-01-01 Sat 00:00]"
+
+
+def _age_updated(cfg):
+    """Rewrite the idea's :UPDATED: to an old stamp, so a later bump is observable."""
+    path = Path(cfg["org_ideas_file"])
+    lines = path.read_text().splitlines(keepends=True)
+    assert any(l.strip().startswith(":UPDATED:") for l in lines)
+    path.write_text("".join(
+        f":UPDATED: {OLD_STAMP}\n" if l.strip().startswith(":UPDATED:") else l for l in lines))
+    assert _idea(cfg).properties["UPDATED"] == OLD_STAMP
+
+
 def test_setting_an_epic_stamps_updated(tmp_path, monkeypatch):
     cfg = _seed(tmp_path, monkeypatch)
+    _age_updated(cfg)
     W.set_idea_epic(cfg, "IDEA-001", EPIC)
-    assert (_idea(cfg).properties.get("UPDATED") or "").strip()
+    assert _idea(cfg).properties["UPDATED"] != OLD_STAMP
+
+
+def test_clearing_an_epic_stamps_updated(tmp_path, monkeypatch):
+    cfg = _seed(tmp_path, monkeypatch)
+    W.set_idea_epic(cfg, "IDEA-001", EPIC)
+    _age_updated(cfg)
+    W.set_idea_epic(cfg, "IDEA-001", "")
+    assert _idea(cfg).properties["UPDATED"] != OLD_STAMP
 
 
 def test_other_properties_survive_an_epic_change(tmp_path, monkeypatch):
@@ -168,6 +190,7 @@ def test_cli_epic_on_a_non_idea_is_a_clean_error(tmp_path, monkeypatch):
     assert CliRunner().invoke(cli, ["add", "a plain task"]).exit_code == 0
     r = CliRunner().invoke(cli, ["idea", "epic", "a plain task", "--set", EPIC])
     assert r.exit_code != 0
+    assert "not an idea" in r.output
     assert "Traceback" not in r.output
     assert r.exception is None or isinstance(r.exception, SystemExit)
 
