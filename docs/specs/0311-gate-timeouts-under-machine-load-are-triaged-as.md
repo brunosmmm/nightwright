@@ -1,9 +1,10 @@
 ---
 id: SPEC-0311
 title: "Gate timeouts under machine load are re-gated, not triaged as code fixes"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-30
+updated: 2026-10-30
 kind: feature
 source_idea: IDEA-432
 tags: [agentic, gates, queue]
