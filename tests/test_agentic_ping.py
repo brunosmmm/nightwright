@@ -132,8 +132,9 @@ def test_gating_in_process_gate_within_budget_is_not_stuck(tmp_path):
     cid = _campaign(cfg, "SPEC-0904-20261025-aaaa", state="GATING")
     _enter(cfg, cid, "GATING", 0)
     sett = E.settings(cfg)
-    assert E.stuck_items(cfg, at(1700), sett) == []
-    assert E.stuck_items(cfg, at(1801), sett)
+    budget = sett["gate_budget_s"]
+    assert E.stuck_items(cfg, at(budget - 100), sett) == []
+    assert E.stuck_items(cfg, at(budget + 1), sett)
 
 
 def test_state_stuck_fires_once_per_campaign_state(tmp_path):
@@ -275,16 +276,19 @@ def test_stuck_skips_open_run_even_when_overdue(tmp_path):
 def test_stuck_closing_measured_from_latest_gate_event(tmp_path):
     cfg = _cfg(tmp_path)
     cid = _campaign(cfg, "SPEC-0907-20261025-aaaa", state="CLOSING")
-    _enter(cfg, cid, "CLOSING", 0)
-    _ev_at(cfg, cid, "gate", 2200)
     sett = E.settings(cfg)
-    assert E.stuck_items(cfg, at(2500), sett) == []          # entered 2500s ago, gate 300s ago
-    assert E.stuck_items(cfg, at(4200), sett)                # gate 2000s old
+    budget = sett["gate_budget_s"]
+    gate_at = budget + 400                   # the latest gate event, well after entering CLOSING
+    late = gate_at + budget + 100            # gate event older than the budget
+    _enter(cfg, cid, "CLOSING", 0)
+    _ev_at(cfg, cid, "gate", gate_at)
+    assert E.stuck_items(cfg, at(gate_at + 300), sett) == []   # entered long ago, gate 300s ago
+    assert E.stuck_items(cfg, at(late), sett)                  # gate older than the budget
     head = _campaign(cfg, "SPEC-0907-20261025-bbbb", state="CLOSING")
     _set_state(cfg, cid, closing={"queued_behind": head})
-    assert cid not in {i["campaign"] for i in E.stuck_items(cfg, at(4200), sett)}  # train waiter
+    assert cid not in {i["campaign"] for i in E.stuck_items(cfg, at(late), sett)}  # train waiter
     _set_state(cfg, cid, closing={"queued_behind": "SPEC-0001"})       # SPEC-0287: head gone
-    assert cid in {i["campaign"] for i in E.stuck_items(cfg, at(4200), sett)}
+    assert cid in {i["campaign"] for i in E.stuck_items(cfg, at(late), sett)}
 
 
 def test_stuck_persona_state_without_runs_uses_state_age(tmp_path):
