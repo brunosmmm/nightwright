@@ -194,7 +194,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0289](./specs/0289-gate-ladder-v2.md) Gate ladder v2: per-gate retry policy and targeted reruns of failing pytest ids — accepted
   - [ ] [SPEC-0290](./specs/0290-automatic-spec-splitting-from-a-split-review.md) Automatic spec splitting: a split review turns into child specs written by a split campaign — accepted
   - [ ] [SPEC-0291](./specs/0291-wt-queue-run-detach-and-supervision.md) `wt queue run --detach` and `wt queue stop`: start and stop the runner without a shell recipe — accepted
-  - [ ] [SPEC-0292](./specs/0292-idea-linkage-campaign-extension-and-a-hub-agentic.md) Idea linkage: `:CAMPAIGN:` for spec campaigns, cleared on terminal states, and a hub agentic slice — accepted
+  - [x] [SPEC-0292](./specs/0292-idea-linkage-campaign-extension-and-a-hub-agentic.md) Idea linkage: `:CAMPAIGN:` for spec campaigns, cleared on terminal states, and a hub agentic slice — done
   - [ ] [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) Gate ladder v2: a cross-campaign flaky-test record the triager sees — accepted
   - [ ] [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) Queue a split campaign's child specs on merge, in dependency order — accepted
 
@@ -212,7 +212,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0289](./specs/0289-gate-ladder-v2.md) | Gate ladder v2: per-gate retry policy and targeted reruns of failing pytest ids | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0290](./specs/0290-automatic-spec-splitting-from-a-split-review.md) | Automatic spec splitting: a split review turns into child specs written by a split campaign | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0291](./specs/0291-wt-queue-run-detach-and-supervision.md) | `wt queue run --detach` and `wt queue stop`: start and stop the runner without a shell recipe | feature | accepted | M9: agentic workflow | 2026-10-30 |
-| [SPEC-0292](./specs/0292-idea-linkage-campaign-extension-and-a-hub-agentic.md) | Idea linkage: `:CAMPAIGN:` for spec campaigns, cleared on terminal states, and a hub agentic slice | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
 
@@ -489,6 +488,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0286](./specs/0286-escalation-overrides-are-idempotent-withdrawable.md) | Escalation overrides are idempotent, withdrawable and exact | feature | done | — | 2026-10-27 |
 | [SPEC-0287](./specs/0287-runner-safety-nets-train-watchdog-crash-sweep.md) | Runner safety nets: train watchdog, crash-sweep harvest, terminal tmp, regenerate renames | feature | done | — | 2026-10-27 |
 | [SPEC-0288](./specs/0288-implementer-prompt-run-targeted-tests-while.md) | Implementer prompt: targeted tests while iterating, full suite left to gating | feature | done | — | 2026-10-27 |
+| [SPEC-0292](./specs/0292-idea-linkage-campaign-extension-and-a-hub-agentic.md) | Idea linkage: `:CAMPAIGN:` for spec campaigns, cleared on terminal states, and a hub agentic slice | feature | done | M9: agentic workflow | 2026-10-30 |
 
 ## Superseded / rejected
 

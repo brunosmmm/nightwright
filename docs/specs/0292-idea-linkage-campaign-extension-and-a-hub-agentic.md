@@ -1,7 +1,7 @@
 ---
 id: SPEC-0292
 title: "Idea linkage: `:CAMPAIGN:` for spec campaigns, cleared on terminal states, and a hub agentic slice"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -151,25 +151,25 @@ The hub slice reads `store.list_campaigns(cfg)` (non-terminal only). That is che
 
 ## Acceptance criteria
 
-- [ ] `wt queue add SPEC-X` sets `:CAMPAIGN: <cid>` on the idea resolved from SPEC-X's
+- [x] `wt queue add SPEC-X` sets `:CAMPAIGN: <cid>` on the idea resolved from SPEC-X's
       `source_idea` by the SPEC-0267 rule, records `state.idea_link` and emits `idea_linked`.
       A mismatched, ambiguous or missing idea gets no write and an `idea_link_skipped` event,
       and the add still succeeds.
-- [ ] The add never overwrites `:CAMPAIGN:` held by a live campaign (`idea_link_skipped`,
+- [x] The add never overwrites `:CAMPAIGN:` held by a live campaign (`idea_link_skipped`,
       "held by …"). A link to a terminal or missing campaign is replaced.
-- [ ] On MERGED, HANDED_OFF or ABANDONED, the campaign's idea (idea or spec campaign) loses
+- [x] On MERGED, HANDED_OFF or ABANDONED, the campaign's idea (idea or spec campaign) loses
       `:CAMPAIGN:` only when it still names this campaign, with an `idea_unlinked` event.
       Errors become a minor bookkeeping finding and never change the terminal state. The
       release runs even when `_reconcile_closed` returns early (no `spec_id`, or a spec store
       outside the campaign's repo), and clears every idea carrying this campaign's id, so a
       reused `:ID:` twin cannot hide the linked idea.
-- [ ] A failure anywhere in `_link_spec_idea` (including non-`ValueError`/`OSError`) leaves the
+- [x] A failure anywhere in `_link_spec_idea` (including non-`ValueError`/`OSError`) leaves the
       add successful, with the campaign created and an `idea_link_skipped` event.
-- [ ] `wt hub --json` has an `agentic` key with the active campaigns (state, cost, cap, park
+- [x] `wt hub --json` has an `agentic` key with the active campaigns (state, cost, cap, park
       reason, idea id), `by_idea` and `counts`. A failure there yields `{"error": …}` and
       the rest of the hub output is unchanged. `wt hub --json --project P` lists only
       project P's campaigns in `agentic`; other idea filters do not affect it.
-- [ ] `wt ideas --json` / the hub's `ideas` rows include `campaign` when the idea has
+- [x] `wt ideas --json` / the hub's `ideas` rows include `campaign` when the idea has
       `:CAMPAIGN:`.
 
 ## Test plan
@@ -229,6 +229,37 @@ The hub slice reads `store.list_campaigns(cfg)` (non-terminal only). That is che
   tests pass unchanged, except the one asserting the unconditional clear, if any. That test is
   updated to the ownership rule, and the change is noted in As shipped.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_idea_link.py tests/test_hub.py tests/test_reconcile.py`: all
+  new tests pass (`tests/test_reconcile.py` holds the four `source_idea_task` tests,
+  `tests/test_hub.py` the hub tests, and the queue tests are in the new
+  `tests/test_agentic_idea_link.py` rather than `test_agentic_queue.py`).
+- Sabotage checks run and each failed the named test, then reverted: dropping the ownership
+  equality (`test_terminal_keeps_foreign_link`, `test_abandon_idea_campaign_ownership_check`);
+  moving the release inside `_reconcile_closed` (`test_release_runs_when_reconcile_skips`);
+  linking by id only (`test_spec_add_mismatch_no_write`).
+- Full `uv run pytest` run once at the end: 3665 passed, 3 skipped; the only 2 failures were the
+  stale-ledger lint tests (`test_all_specs_pass_lint`, `test_internal_spec_lint_unaffected_by_outbox`),
+  fixed by `python3 tools/spec_lint.py --write-ledger`, after which both pass.
+
+### As shipped (2026-10-30)
+
+- The queue tests live in `tests/test_agentic_idea_link.py`; `test_merged_clears_own_link` and
+  `test_handed_off_clears_own_link` are one parametrized test, as are the dead-link replacement
+  cases (ABANDONED campaign / missing campaign). Extra tests: a done spec merge (idea promoted
+  and archived, link still released) and a spec without `source_idea` (no event).
+- `_link_spec_idea(cfg, state, spec_fm, by)` appends its own events through
+  `store.append_event` rather than returning a list. `plan_add` carries
+  `plan["spec_fm"] = {source_idea, created}` (strings).
+- `_release_idea_link` re-scans the idea tasks after every clear (a clear shifts the lines of
+  the ideas below it in the same file) and clears each one naming the campaign.
+- The release is also called from the PR sweep's merge write (`_sweep_write`), next to its
+  `_reconcile_closed` call.
+- `_unlink_idea` now calls `_release_idea_link` first. A failure there is a minor
+  `bookkeeping` finding instead of an exception, and the ownership rule replaces the
+  unconditional clear. No existing test asserted the unconditional clear.
+
 ## Rollout / migration
 
 Additive. Spec campaigns that are already running have no `idea_link`. Their terminal
@@ -236,11 +267,11 @@ transition finds no idea id and does nothing.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

@@ -1162,3 +1162,46 @@ def test_reconcile_done_clears_handed_off_on_a_duplicate_id(tmp_path):
     S.reconcile_ideas(cfg, apply=True)
     assert _states(cfg) == {"old idea": "IDEA", "new idea": "PROMOTED"}
     assert _handed_off(cfg, "new idea") == ""
+
+
+# ---- SPEC-0292: source_idea_task --------------------------------------------------
+
+def _fm(cfg_spec_path):
+    from wt.specmeta import split_frontmatter
+    return split_frontmatter(pathlib.Path(cfg_spec_path).read_text())[0]
+
+
+def test_source_idea_task_resolves(tmp_path):
+    cfg = _cfg(tmp_path)
+    path = _spec(cfg, "SPEC-0001", "accepted", source_idea="IDEA-001")
+    _idea(cfg, "the idea", state="IDEA", spec_id="SPEC-0001")
+    task, why = S.source_idea_task(cfg, _fm(path))
+    assert why is None and task.properties["ID"] == "IDEA-001"
+
+
+def test_source_idea_task_mismatch(tmp_path):
+    cfg = _cfg(tmp_path)
+    path = _spec(cfg, "SPEC-0001", "accepted", source_idea="IDEA-001", created="2020-01-01")
+    _idea(cfg, "reused id", state="IDEA", spec_id="SPEC-0001")      # created today, after the spec
+    task, why = S.source_idea_task(cfg, _fm(path))
+    assert task is None and "flag-mismatch" in why
+
+
+def test_source_idea_task_ambiguous(tmp_path):
+    cfg = _cfg(tmp_path)
+    path = _spec(cfg, "SPEC-0001", "accepted", source_idea="IDEA-001")
+    _idea(cfg, "first", state="IDEA", spec_id="SPEC-0001")
+    _idea(cfg, "twin", state="IDEA", spec_id="SPEC-0001")
+    for t in [t for t in load_tasks(cfg) if t.is_idea]:
+        W.set_property(cfg, t, "CREATED", "[2026-10-20 Tue 10:00]")
+        t = [x for x in load_tasks(cfg) if x.is_idea and x.heading == t.heading][0]
+        W.set_property(cfg, t, "ID", "IDEA-001")
+    task, why = S.source_idea_task(cfg, _fm(path))
+    assert task is None and "flag-ambiguous" in why
+
+
+def test_source_idea_task_none(tmp_path):
+    cfg = _cfg(tmp_path)
+    assert S.source_idea_task(cfg, {"created": "2026-10-20"}) == (None, "no source_idea")
+    path = _spec(cfg, "SPEC-0001", "accepted", source_idea="IDEA-404")
+    assert S.source_idea_task(cfg, _fm(path)) == (None, "idea not found")

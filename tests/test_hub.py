@@ -146,3 +146,74 @@ def test_hub_help_documents_json():
     assert r.exit_code == 0
     assert "--json" in r.output
     assert "--tasks-slice" in r.output
+
+
+# ---- SPEC-0292: agentic slice + idea_row.campaign ---------------------------------
+
+def _campaign(cfg, cid, project, state, *, idea=None, link=None, cost=1.5, cap=10.0, park=None):
+    from wt.agentic import store
+    st = {"id": cid, "kind": "idea" if idea else "implement", "state": state,
+          "spec_id": None if idea else "SPEC-0001", "project": project, "priority": 3,
+          "cost": {"total_usd": cost, "cap_usd": cap}, "park": park}
+    if idea:
+        st["idea"] = {"id": idea}
+    if link:
+        st["idea_link"] = {"id": link}
+    store.create_campaign(cfg, st)
+
+
+def _hub(cfg, monkeypatch, *args):
+    _patch(monkeypatch, cfg)
+    r = CliRunner().invoke(cli, ["hub", "--json", *args])
+    assert r.exit_code == 0, r.output
+    return json.loads(r.output)
+
+
+def test_hub_agentic_slice(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    W.add_idea(cfg, "hub idea", state="IDEA", project="Meta-Tools")
+    _campaign(cfg, "C-1", "Meta-Tools", "IMPLEMENTING", link="IDEA-001")
+    _campaign(cfg, "C-2", "Other", "PARKED", idea="IDEA-002", park={"reason": "cost_cap"})
+    _campaign(cfg, "C-3", "Other", "MERGED", link="IDEA-001")              # terminal: hidden
+    _campaign(cfg, "C-4", "Meta-Tools", "QUEUED")                          # no idea at all
+    ag = _hub(cfg, monkeypatch)["agentic"]
+    rows = {c["id"]: c for c in ag["campaigns"]}
+    assert set(rows) == {"C-1", "C-2", "C-4"}
+    assert rows["C-1"]["idea_id"] == "IDEA-001" and rows["C-1"]["cost_usd"] == 1.5
+    assert rows["C-1"]["cap_usd"] == 10.0 and rows["C-1"]["state"] == "IMPLEMENTING"
+    assert rows["C-2"]["park_reason"] == "cost_cap" and rows["C-2"]["idea_id"] == "IDEA-002"
+    assert rows["C-4"]["idea_id"] is None and rows["C-4"]["park_reason"] is None
+    assert ag["by_idea"] == {"IDEA-001": ["C-1"], "IDEA-002": ["C-2"]}
+    assert ag["counts"] == {"IMPLEMENTING": 1, "PARKED": 1, "QUEUED": 1}
+    # --project filters the slice; the idea filters do not
+    only = _hub(cfg, monkeypatch, "--project", "Other")["agentic"]
+    assert [c["id"] for c in only["campaigns"]] == ["C-2"]
+    assert only["counts"] == {"PARKED": 1}
+    filtered = _hub(cfg, monkeypatch, "--tag", "nope", "--state", "INCUBATE")
+    assert filtered["ideas"] == [] and filtered["agentic"] == ag
+
+
+def test_hub_agentic_error_isolated(tmp_path, monkeypatch):
+    from wt.agentic import store
+
+    def boom(*a, **k):
+        raise RuntimeError("campaigns unreadable")
+    cfg = _cfg(tmp_path)
+    W.add_idea(cfg, "hub idea", state="IDEA")
+    monkeypatch.setattr(store, "list_campaigns", boom)
+    data = _hub(cfg, monkeypatch)
+    assert data["agentic"] == {"error": "campaigns unreadable"}
+    assert [i["id"] for i in data["ideas"]] == ["IDEA-001"]
+
+
+def test_idea_row_campaign_field(tmp_path):
+    from wt import report as RP
+    from wt.org import load_tasks
+    cfg = _cfg(tmp_path)
+    W.add_idea(cfg, "plain")
+    W.add_idea(cfg, "running")
+    tasks = {t.heading: t for t in load_tasks(cfg) if t.is_idea}
+    W.set_property(cfg, tasks["running"], "CAMPAIGN", "SPEC-0001-x")
+    tasks = {t.heading: t for t in load_tasks(cfg) if t.is_idea}
+    assert RP.idea_row(cfg, tasks["running"])["campaign"] == "SPEC-0001-x"
+    assert "campaign" not in RP.idea_row(cfg, tasks["plain"])

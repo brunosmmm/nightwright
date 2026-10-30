@@ -1906,6 +1906,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             if res.followups is not None:           # after the assignment replaced the dict
                 state["close"]["followups"] = res.followups
             _reconcile_closed(cfg, state, events, oc.next_state)
+            _release_idea_link(cfg, state, events)      # SPEC-0292: independent of the reconcile
             state["park"] = None
             return finish(oc.next_state, "closed")
         if oc.next_state == "TRIAGING" and state.get("kind") == "merge":
@@ -1985,6 +1986,7 @@ def _sweep_write(cfg, cid: str, row: dict, pr: dict | None) -> None:
             close.update(merged_sha=pr["merge_sha"], merged_at=pr["merged_at"], pr_state="MERGED")
             events: list = []
             _reconcile_closed(cfg, st, events, "MERGED")
+            _release_idea_link(cfg, st, events)         # SPEC-0292
             _transition(cfg, st, "MERGED", "pr_merged", by="sweep", extra_events=events)
             return
         if action == "closed":
@@ -4749,6 +4751,8 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         "profile_source": pick["source"], "profile_reason": pick["reason"],
         "review_sha256": (review_doc or {}).get("spec_sha256"),
         "profile_sources": list(prof.get("sources") or ()),             # SPEC-0238
+        "spec_fm": {"source_idea": str(fm.get("source_idea") or ""),    # SPEC-0292
+                    "created": str(fm.get("created") or "")},
     }
 
 
@@ -4799,7 +4803,80 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
     elif revision:
         store.append_event(cfg, plan["campaign"], "admitted_after_revision", revision, by=by)
     _clear_handed_off_on_requeue(cfg, plan["spec_id"], plan["campaign"], by)
+    _link_spec_idea(cfg, state, plan.get("spec_fm"), by)
     return state
+
+
+def _link_spec_idea(cfg, state: dict, spec_fm: dict | None, by: str) -> None:
+    """SPEC-0292: set `:CAMPAIGN: <cid>` on the spec's source idea (resolved by the SPEC-0267
+    identity rule) and record `state["idea_link"]`. Never overwrites a link held by a live
+    campaign. Best-effort: runs after `create_campaign`, so any failure is an
+    `idea_link_skipped` event and never refuses the add."""
+    from .. import org_write as OW
+    cid, spec_id = state["id"], state["spec_id"]
+    skipped = None
+    try:
+        task, reason = SP.source_idea_task(cfg, spec_fm)
+        if task is None:
+            skipped = None if reason == "no source_idea" else reason
+        else:
+            held = (task.properties.get("CAMPAIGN") or "").strip()
+            if held and held != cid:
+                try:
+                    live = store.read_state(cfg, held).get("state") not in TERMINAL_STATES
+                except ValueError:              # no such campaign: the link is dead
+                    live = False
+                if live:
+                    skipped = f"held by {held}"
+            if skipped is None:
+                idea_id = (task.properties.get("ID") or task.id or "").strip()
+                OW.set_property(cfg, task, "CAMPAIGN", cid)
+                with store.item_lock(cfg, cid):
+                    on_disk = store.read_state(cfg, cid)
+                    on_disk["idea_link"] = {"id": idea_id}
+                    store.write_state(cfg, cid, on_disk)
+                state["idea_link"] = {"id": idea_id}
+                store.append_event(cfg, cid, "idea_linked", {"idea_id": idea_id}, by=by)
+    except Exception as e:                  # noqa: BLE001 — the campaign exists; never refuse the add
+        skipped = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+    if skipped:
+        try:
+            store.append_event(cfg, cid, "idea_link_skipped",
+                               {"spec_id": spec_id, "reason": skipped}, by=by)
+        except Exception:                   # noqa: BLE001 — bookkeeping only
+            pass
+
+
+def _release_idea_link(cfg, state: dict, events: list) -> None:
+    """SPEC-0292: clear `:CAMPAIGN:` on every idea that still names this campaign (the equality
+    is the ownership check; a reused `:ID:` twin is untouched). Looks ideas up by the property,
+    not by id, so a never-persisted `idea_link` and rotated twins are handled. Appends
+    `idea_unlinked` events; an error becomes a minor `bookkeeping` finding. Never raises."""
+    from .. import org_write as OW
+    cid = state["id"]
+    done: set = set()
+    try:
+        while True:                         # re-scan: a clear shifts lines below it in the file
+            todo = [t for t in _ideas(cfg)
+                    if (t.properties.get("CAMPAIGN") or "").strip() == cid
+                    and (t.file, t.heading) not in done]
+            if not todo:
+                return
+            task = todo[0]
+            done.add((task.file, task.heading))
+            idea_id = (task.properties.get("ID") or task.id or "").strip()
+            try:
+                OW.clear_property(cfg, task, "CAMPAIGN")
+                events.append(("idea_unlinked", {"idea_id": idea_id}))
+            except Exception as e:          # noqa: BLE001 — bookkeeping must not change the state
+                events.append(("finding", {
+                    "persona": "close", "severity": "minor", "gate": "bookkeeping",
+                    "title": f"idea unlink failed: {idea_id}", "detail": str(e) or type(e).__name__,
+                    "files": []}))
+    except Exception as e:                  # noqa: BLE001 — never block a finished campaign
+        events.append(("finding", {
+            "persona": "close", "severity": "minor", "gate": "bookkeeping",
+            "title": "idea unlink failed", "detail": str(e) or type(e).__name__, "files": []}))
 
 
 def _campaign_on_branch(cfg, project, branch) -> dict | None:
@@ -5425,13 +5502,11 @@ def _unlink_idea(cfg, st: dict) -> list:
     cid, idea = st["id"], st.get("idea") or {}
     spec_id = (st.get("spec") or {}).get("id")
     events = []
+    _release_idea_link(cfg, st, events)       # SPEC-0292: only a `:CAMPAIGN:` naming this campaign
     task = _idea_task(cfg, idea.get("id"))
     if task is not None:
         cur, linked = task.state, (task.properties.get("SPEC") or "").strip()
         restore = cur == idea.get("state_before") or (cur == "SPECCED" and linked == spec_id)
-        if task.properties.get("CAMPAIGN"):
-            OW.clear_property(cfg, task, "CAMPAIGN")
-            task = _idea_task(cfg, idea.get("id"))
         if spec_id and linked == spec_id:
             OW.clear_property(cfg, task, "SPEC")
             task = _idea_task(cfg, idea.get("id"))
@@ -5473,6 +5548,8 @@ def apply_abandon(cfg, plan: dict) -> dict:
         st.pop("park_requested", None)
         if st.get("kind") == "idea":
             events += _unlink_idea(cfg, st)
+        else:
+            _release_idea_link(cfg, st, events)                        # SPEC-0292
         events.append(("close", {"mode": "abandoned", "merged_sha": None, "pr_url": None,
                                  "gates_seq": None, "worktree_removed": remove}))
         return _transition(cfg, st, "ABANDONED", "abandoned", by=by, extra_events=events,

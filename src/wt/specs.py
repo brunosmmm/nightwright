@@ -915,6 +915,25 @@ def _pick_idea(cands, spec_created):
     return best[0], None
 
 
+def source_idea_task(cfg, spec_fm):
+    """`(task, None)` for the idea a spec's `source_idea` names, or `(None, reason)` (SPEC-0292).
+    Carriers of the id are found across every org file (rotated ones included) and picked with
+    the SPEC-0267 rule (`_pick_idea`), so a reused id is never linked."""
+    from .org import filter_tasks, load_tasks
+
+    want = str((spec_fm or {}).get("source_idea") or "").strip().upper()
+    if not want:
+        return None, "no source_idea"
+    cands = [t for t in filter_tasks(load_tasks(cfg), is_idea=True)
+             if (t.properties.get("ID") or t.id or "").strip().upper() == want]
+    if not cands:
+        return None, "idea not found"
+    task, bad = _pick_idea(cands, _as_date((spec_fm or {}).get("created")))
+    if bad is not None:
+        return None, f"{bad[0]}: {bad[1]}"
+    return task, None
+
+
 def _resolve_idea(cfg, idea_id, pin):
     """The idea to write to: `W.resolve_selector`, except that an id several ideas carry
     (`pin` = the planned idea's `(file, heading)`, SPEC-0267) is found by that pin, or is None

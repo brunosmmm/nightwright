@@ -64,6 +64,9 @@ def idea_row(cfg, task) -> dict:
     handed = (task.properties.get("HANDED_OFF") or "").strip()     # SPEC-0280
     if handed:
         row["handed_off"] = handed
+    campaign = (task.properties.get("CAMPAIGN") or "").strip()      # SPEC-0292
+    if campaign:
+        row["campaign"] = campaign
     if task.priority:
         row["priority"] = task.priority
     from .explore import clock_fields, explored_count, open_question_count
@@ -478,6 +481,31 @@ def hub_open_tasks_payload(cfg, *, state=None, tag=None, project=None, workstrea
     return {"slice": "open", "tasks": [task_row(cfg, t) for t in rows]}
 
 
+def _hub_agentic(cfg, *, project=None) -> dict:
+    """SPEC-0292: the active (non-terminal) campaigns, a per-idea index and state counts.
+    Only `project` filters it; idea filters do not describe campaigns. Never raises: a failure
+    is `{"error": text}` so `wt hub` keeps working."""
+    try:
+        from .agentic import store
+        rows, by_idea, counts = [], {}, {}
+        for st in store.list_campaigns(cfg, project=project):
+            cost = st.get("cost") or {}
+            idea_id = (st.get("idea") or {}).get("id") or (st.get("idea_link") or {}).get("id")
+            rows.append({
+                "id": st.get("id"), "kind": st.get("kind"), "state": st.get("state"),
+                "spec_id": st.get("spec_id"), "idea_id": idea_id,
+                "project": st.get("project"), "priority": st.get("priority"),
+                "cost_usd": cost.get("total_usd"), "cap_usd": cost.get("cap_usd"),
+                "park_reason": (st.get("park") or {}).get("reason"),
+                "updated_at": st.get("updated_at")})
+            if idea_id:
+                by_idea.setdefault(idea_id, []).append(st.get("id"))
+            counts[st.get("state")] = counts.get(st.get("state"), 0) + 1
+        return {"campaigns": rows, "by_idea": by_idea, "counts": counts}
+    except Exception as e:                  # noqa: BLE001 — the hub must not fail on this slice
+        return {"error": str(e) or type(e).__name__}
+
+
 def hub_payload(cfg, *, tasks_slice="today", state=None, kind=None, tag=None,
                 project=None, workstream=None, priority=None) -> dict:
     """Read-only triage union for `wt hub --json` (SPEC-0052 + SPEC-0092 tasks slice).
@@ -533,6 +561,7 @@ def hub_payload(cfg, *, tasks_slice="today", state=None, kind=None, tag=None,
         "outbound": outbound,
         "stale_ideas": _stale_idea_count(cfg),      # SPEC-0078
         "ideas_with_open_questions": _open_question_idea_count(cfg),   # SPEC-0080
+        "agentic": _hub_agentic(cfg, project=project),                 # SPEC-0292
     }
     slice_name = (tasks_slice or "today").strip().lower()
     if slice_name == "today":
