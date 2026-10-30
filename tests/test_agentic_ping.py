@@ -108,6 +108,19 @@ def test_blocked_threshold_and_watchdog_once(tmp_path):
     assert _sync(cfg, now=at(1500)) == []                  # once per condition
 
 
+def test_blocked_dependency_wait_still_event_and_ping_item(tmp_path):
+    """SPEC-0306: holding is delivery-side only; the watchdog and the ping are unchanged."""
+    cfg = _cfg(tmp_path)
+    cfg["agentic"]["events"] = {"ping_interval_s": 60}
+    cid = "SPEC-0902-20261025-aaaa"
+    by = ["waiting on SPEC-0001 (proposed)"]
+    _queued(cfg, cid, ready=False, since=0, blocked_by=by)
+    out = _sync(cfg, now=at(1201), ping=True) + _sync(cfg, now=at(1262), ping=True)
+    assert [e["data"]["blocked_by"] for e in out if e["type"] == "backlog_blocked_long"] == [by]
+    (ping,) = _pings(cfg)
+    assert [(b["campaign"], b["blocked_by"]) for b in ping["data"]["blocked"]] == [(cid, by)]
+
+
 def test_stuck_threshold_and_in_budget_exclusion(tmp_path):
     cfg = _cfg(tmp_path)
     cid = _campaign(cfg, "SPEC-0903-20261025-aaaa", state="IMPLEMENTING")

@@ -1046,7 +1046,7 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
             ctx = QT.Ctx(cfg, reader, now=clock()) if quiet else None
             for ev in read_since(cfg, after, types=types):
                 if quiet and QT.classify(cfg, ev, ctx) == "hold":
-                    if ctx.digest.add(ev):
+                    if ctx.digest.add(ev, ctx):
                         # recorded before the save: a crash in between re-reads the event and
                         # records it again (at-least-once) rather than losing the hold
                         QT.record_delivery(cfg, reader, ev, "hold")
@@ -1061,7 +1061,7 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                 if quiet:
                     QT.record_delivery(cfg, reader, ev, "wake")
                     if ev["type"] == "conductor_ping":
-                        ctx.digest.note_ping_wake(ev)
+                        ctx.digest.note_ping_wake(ev, ctx)
                         ctx.digest.save()
                 cursor_set(cfg, reader, ev["id"])
                 printed += 1

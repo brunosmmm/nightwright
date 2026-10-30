@@ -1,7 +1,7 @@
 ---
 id: SPEC-0306
 title: "Quiet follower holds `backlog_blocked_long` (and its ping item) while the blocker is an ordinary dependency wait with a live campaign"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -141,37 +141,37 @@ Everything else about the quiet follower is unchanged, and unknown event types s
 
 ## Acceptance criteria
 
-- [ ] `quiet.RULES["backlog_blocked_long"] == "cond"`. With `live_specs` containing `SPEC-0001`,
+- [x] `quiet.RULES["backlog_blocked_long"] == "cond"`. With `live_specs` containing `SPEC-0001`,
       `classify` returns `"hold"` for a `backlog_blocked_long` event whose `blocked_by` is
       `["waiting on SPEC-0001 (in-progress)"]`, `["waiting on SPEC-0001 (proposed)"]`, or
       `["spec status is draft"]` / `proposed` / `in-progress`, and for the superseded form
       `["waiting on SPEC-0001 (superseded; waiting on SPEC-0007)"]` when `SPEC-0007` is live.
-- [ ] `classify` returns `"wake"` for `["waiting on SPEC-0001 (proposed)"]` when `live_specs`
+- [x] `classify` returns `"wake"` for `["waiting on SPEC-0001 (proposed)"]` when `live_specs`
       does not contain `SPEC-0001` (no campaign, or only a terminal one), for the superseded
       form when its replacement has no live campaign, and for an entry naming two dependencies
       of which one is not live.
-- [ ] `classify` returns `"wake"` for a `backlog_blocked_long` event whose `blocked_by` contains
+- [x] `classify` returns `"wake"` for a `backlog_blocked_long` event whose `blocked_by` contains
       `"SPEC-0999 not found"`, `"spec status is rejected"` (also `superseded`, `done`, `missing`),
       `"branch x missing"`, `"idea IDEA-1 not found"`, a mix of one benign and one non-benign
       entry, is empty, or is absent, even when every named dependency is live.
-- [ ] `Ctx.live_specs` is read from the store on first use only (a poll that sees no
+- [x] `Ctx.live_specs` is read from the store on first use only (a poll that sees no
       `backlog_blocked_long` or blocked ping item does not scan campaigns) and contains the
       `spec_id` of non-terminal campaigns only.
-- [ ] `ping_fingerprint` omits a `blocked` item whose `blocked_by` passes `dependency_wait` with
+- [x] `ping_fingerprint` omits a `blocked` item whose `blocked_by` passes `dependency_wait` with
       the supplied `live_specs`, keeps one whose dependency is not live, one with any other text
       and one without a `blocked_by` key, and leaves the other categories unchanged. A ping whose
       only actionable content is such an item is held, and the fingerprint stored by
       `note_ping_wake` equals the one `classify` compares against.
-- [ ] End to end through `events.follow` in quiet mode, a held `backlog_blocked_long` prints no
+- [x] End to end through `events.follow` in quiet mode, a held `backlog_blocked_long` prints no
       line, advances the cursor, is recorded as `hold`, and appears under `held` and `campaigns`
       in the next `conductor_digest`. A waking one (including a dependency with no live
       campaign) prints and is recorded as `wake`.
-- [ ] `events.jsonl`, `wt queue events` without `--follow`, and `wt queue events --follow --all`
+- [x] `events.jsonl`, `wt queue events` without `--follow`, and `wt queue events --follow --all`
       still show every `backlog_blocked_long` event, unchanged.
-- [ ] The skill's *Quiet stream* "Held while a fact says so" list names `backlog_blocked_long`,
+- [x] The skill's *Quiet stream* "Held while a fact says so" list names `backlog_blocked_long`,
       its table row contains the digest check ("each `waiting on SPEC-X` has a campaign"), and
       `test_conduct_skill_quiet_rules_match_code` passes.
-- [ ] `tests/test_agentic_quiet.py` no longer lists `backlog_blocked_long` among the unconditional
+- [x] `tests/test_agentic_quiet.py` no longer lists `backlog_blocked_long` among the unconditional
       WAKE types, and all existing quiet, events and ping tests pass.
 
 ## Test plan
@@ -206,6 +206,26 @@ Everything else about the quiet follower is unchanged, and unknown event types s
   shows `backlog_blocked_long` under `hold` for in-flight dependency waits and under `wake` for
   the rest.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_quiet.py tests/test_agentic_ping.py tests/test_skills.py
+  tests/test_agentic_events.py`: all pass. New tests: `test_classify_backlog_blocked_long`,
+  `test_waited_ids`, `test_ctx_live_specs_reads_store`, `test_ping_fingerprint_blocked_dependency_waits`,
+  `test_follow_holds_blocked_long_on_in_flight_dependency` (follow-through: cursor, `hold`/`wake`
+  deliveries, `wakeups_report` `by_type.backlog_blocked_long` hold 1 / wake 2, digest `held` and
+  `campaigns`, `events.jsonl` unchanged), the harmless-to-non-harmless switch in
+  `test_ping_fingerprint_hold_and_change`, `test_blocked_dependency_wait_still_event_and_ping_item`
+  and `test_conduct_skill_blocked_long_row_has_the_campaign_check`.
+- The manual scratch-data-dir run was not performed; the follow-through test covers the same
+  hold / wake paths against a real store and event log.
+- The full suite was left to gating. `python3 tools/spec_lint.py` is run with the ledger regenerated.
+
+### As shipped
+
+`ping_fingerprint` scans campaigns only for a ping that lists `blocked` items (`quiet._ping_fp`),
+so a poll without blocked items still reads no store. `Digest.add` and `note_ping_wake` take an
+optional `ctx` for the live specs. Nothing else deviates from Design.
+
 ## Rollout / migration
 
 No data migration. The follower re-reads `quiet.RULES` on start; a running conductor follower
@@ -216,11 +236,11 @@ ping after the upgrade.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

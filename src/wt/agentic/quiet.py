@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
+import re
 from pathlib import Path
 
 from ..export import _atomic_write
@@ -26,21 +27,24 @@ RULES = {
     "rebase_resolved": "hold", "run_failed": "hold", "merged": "hold", "handed_off": "hold",
     # SPEC-0305: informational events of the idea-campaign spec phase (SPEC-0217)
     "spec_written": "hold", "spec_reviewed": "hold", "spec_accepted": "hold",
-    "backlog": "cond", "conductor_ping": "cond", "runner_draining": "cond",
+    "backlog": "cond", "backlog_blocked_long": "cond", "conductor_ping": "cond",
+    "runner_draining": "cond",
     "campaign_silent": "cond", "state_stuck": "cond",
     "parked": "wake", "park_undecided": "wake", "runner_dead": "wake", "lease_stale": "wake",
     "run_overdue": "wake", "message": "wake", "escalation_answered": "wake",
     "ready_not_admitted": "wake", "waiting_not_admitted": "wake",
     "runner_journal_silent": "wake", "temp_pressure": "wake", "runner_config_invalid": "wake",
-    "backlog_blocked_long": "wake", "code_changed": "wake",
+    "code_changed": "wake",
 }
 
 DEFAULTS = {"enabled": True, "readers": ["conductor"], "digest_interval_s": 1800}
 
 # a `backlog` event is held when it only restates an ordinary dependency wait; any other
-# `blocked_by` text (a missing spec, a missing branch ...) wakes, see `backlog_resolved`
+# `blocked_by` text (a missing spec, a missing branch ...) wakes, see `backlog_resolved`.
+# `backlog_blocked_long` and the ping also require a live campaign per dependency (SPEC-0306)
 _BENIGN_BLOCKED = ("waiting on ", "spec status is draft", "spec status is proposed",
                    "spec status is in-progress")
+_ID_RE = re.compile(r"[A-Za-z]+-\d+")
 _GRACE_S = 300                     # the table's own "wait" window past a drain's step timeout
 
 
@@ -67,11 +71,39 @@ def enabled_for(cfg, reader) -> bool:
 
 # ---- classification -----------------------------------------------------------------------
 
-def ping_fingerprint(data: dict) -> list:
-    """Sorted `[category, campaign]` pairs of what in a `conductor_ping` needs action."""
+def _benign(entry) -> bool:
+    return isinstance(entry, str) and entry.startswith(_BENIGN_BLOCKED)
+
+
+def waited_ids(entry: str) -> list[str]:
+    """The dependency ids a `waiting on ...` entry waits for: the ids after its last `waiting
+    on `, so a superseded spec names its replacements, which are what actually block."""
+    return _ID_RE.findall(entry.rsplit("waiting on ", 1)[-1])
+
+
+def dependency_wait(blocked_by, live_specs) -> bool:
+    """True when `blocked_by` is a non-empty list of ordinary dependency waits and every
+    `waiting on` entry names only dependencies with a live campaign (`live_specs`)."""
+    if not isinstance(blocked_by, list) or not blocked_by:
+        return False
+    for b in blocked_by:
+        if not _benign(b):
+            return False
+        if b.startswith("waiting on "):
+            ids = waited_ids(b)
+            if not ids or not set(ids) <= set(live_specs):
+                return False
+    return True
+
+
+def ping_fingerprint(data: dict, live_specs=frozenset()) -> list:
+    """Sorted `[category, campaign]` pairs of what in a `conductor_ping` needs action. A
+    blocked item that only waits on dependencies being built (`dependency_wait`) is not."""
     fp = set()
     for cat in ("blocked", "stuck", "ready_not_admitted", "waiting_not_admitted"):
         for it in data.get(cat) or []:
+            if cat == "blocked" and dependency_wait(it.get("blocked_by"), live_specs):
+                continue
             fp.add((cat, str(it.get("campaign"))))
     for it in data.get("parked") or []:
         if it.get("owner") == "conductor" and not it.get("decided"):
@@ -82,14 +114,20 @@ def ping_fingerprint(data: dict) -> list:
     return [list(p) for p in sorted(fp)]
 
 
+def _ping_fp(data, ctx) -> list:
+    """`ping_fingerprint` with the live specs, scanned only when the ping lists blocked items."""
+    return ping_fingerprint(data, ctx.live_specs if ctx and data.get("blocked") else frozenset())
+
+
 class Ctx:
     """Facts for one poll, read lazily: the runner lease and the digest file (whose
     `last_ping_fp` is the last delivered ping's fingerprint)."""
 
-    def __init__(self, cfg, reader, *, lease=None, digest=None, now=None):
+    def __init__(self, cfg, reader, *, lease=None, digest=None, now=None, live_specs=None):
         self.cfg, self.reader = cfg, reader
         self.now = now or dt.datetime.now().astimezone()
         self._lease = lease
+        self._live_specs = live_specs
         self.digest = digest if digest is not None else Digest.load(cfg, reader)
 
     @property
@@ -97,6 +135,14 @@ class Ctx:
         if self._lease is None:
             self._lease = L.lease_status(self.cfg, now=self.now)
         return self._lease
+
+    @property
+    def live_specs(self) -> frozenset:
+        """`spec_id` of every campaign in a non-terminal state (something is building it)."""
+        if self._live_specs is None:
+            self._live_specs = frozenset(
+                c.get("spec_id") for c in store.list_campaigns(self.cfg) if c.get("spec_id"))
+        return frozenset(self._live_specs)
 
 
 def _drain_bound(cfg, data) -> float:
@@ -133,7 +179,7 @@ def backlog_resolved(data) -> bool:
     if data.get("ready"):
         return True
     blocked = data.get("blocked_by") or []
-    return all(isinstance(b, str) and b.startswith(_BENIGN_BLOCKED) for b in blocked)
+    return all(_benign(b) for b in blocked)
 
 
 def classify(cfg, ev, ctx) -> str:
@@ -143,7 +189,7 @@ def classify(cfg, ev, ctx) -> str:
     if rule != "cond":
         return "hold" if rule == "hold" else "wake"
     if t == "conductor_ping":
-        fp = ping_fingerprint(data)
+        fp = _ping_fp(data, ctx)
         return "hold" if not fp or fp == ctx.digest.last_ping_fp else "wake"
     if t == "runner_draining":
         return "hold" if _drain_hold(cfg, data) else "wake"
@@ -151,6 +197,8 @@ def classify(cfg, ev, ctx) -> str:
         return "hold" if _silent_hold(ev, ctx) else "wake"
     if t == "backlog":
         return "hold" if backlog_resolved(data) else "wake"
+    if t == "backlog_blocked_long":
+        return "hold" if dependency_wait(data.get("blocked_by"), ctx.live_specs) else "wake"
     return "wake"
 
 
@@ -217,7 +265,7 @@ class Digest:
     def empty(self) -> bool:
         return self.pending["first_id"] is None
 
-    def add(self, ev) -> bool:
+    def add(self, ev, ctx=None) -> bool:
         """Fold one held event in. False (a no-op) when its id is not past what the digest has
         seen or printed: a re-read after a crash between the digest and cursor writes."""
         p, eid = self.pending, ev["id"]
@@ -236,7 +284,7 @@ class Digest:
                                 "label": ev.get("label") or ev.get("spec_id") or cid})
         if t == "conductor_ping":
             p["pings_held"] += 1
-            p["ping_items"] = ping_fingerprint(ev.get("data") or {})
+            p["ping_items"] = _ping_fp(ev.get("data") or {}, ctx)
             if not p["ping_items"]:
                 self.last_ping_fp = []          # all clear: the same items later are news
         return True
@@ -276,8 +324,8 @@ class Digest:
             self.save()
         return woken
 
-    def note_ping_wake(self, ev) -> None:
-        self.last_ping_fp = ping_fingerprint(ev.get("data") or {})
+    def note_ping_wake(self, ev, ctx=None) -> None:
+        self.last_ping_fp = _ping_fp(ev.get("data") or {}, ctx)
 
     def due(self, now, interval) -> bool:
         if self.empty:

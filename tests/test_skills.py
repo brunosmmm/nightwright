@@ -483,6 +483,10 @@ def test_conduct_skill_quiet_rules_match_code():
     assert set(re.findall(r"`([a-z_]+)`", line.split(":**", 1)[1])) == cond
 
 
+def test_conduct_skill_blocked_long_row_has_the_campaign_check():
+    assert "each `waiting on SPEC-X` has a campaign" in _conduct_row("backlog_blocked_long")
+
+
 def test_conduct_skill_has_conductor_digest_row():
     row = _conduct_row("conductor_digest")
     assert "wt spec reconcile --apply" in row and "merged" in row and "held" in row

@@ -467,7 +467,8 @@ projected from the campaign ledgers exactly once, so the stream works with any l
 (a restarted follower resumes after the last delivered event) and runs a **watchdog** outside
 the loop: `runner_dead` (work pending, no runner), `lease_stale` (runner hung, no run in
 flight), `run_overdue` (a persona run past its timeout), `campaign_silent` (no activity for a
-long time), `backlog_blocked_long` (a queued item blocked past `blocked_after_s`, default 1200),
+long time), `backlog_blocked_long` (a queued item blocked past `blocked_after_s`, default 1200;
+the quiet conductor stream holds it while every dependency it waits on is being built),
 `state_stuck` (an active campaign in one state past `stuck_after_s`, default 900, unless a run
 or gate is in flight within budget), `ready_not_admitted` (a ready item not starting with a
 free slot past `ready_grace_s`, default 60), `waiting_not_admitted` (a WAITING campaign not

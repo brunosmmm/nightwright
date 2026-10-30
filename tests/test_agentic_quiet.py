@@ -12,6 +12,7 @@ from click.testing import CliRunner
 from wt.agentic import codewatch as CW
 from wt.agentic import events as E
 from wt.agentic import quiet as QT
+from wt.agentic import store
 from wt.cli import cli
 
 HOLD = ["admitted", "resumed", "waiting", "abandoned", "cost_warning", "escalation",
@@ -19,7 +20,7 @@ HOLD = ["admitted", "resumed", "waiting", "abandoned", "cost_warning", "escalati
 WAKE = ["parked", "park_undecided", "runner_dead", "lease_stale", "run_overdue", "message",
         "escalation_answered", "ready_not_admitted", "waiting_not_admitted",
         "runner_journal_silent", "temp_pressure", "runner_config_invalid",
-        "backlog_blocked_long", "code_changed", "brand_new_type"]
+        "code_changed", "brand_new_type"]
 
 DATA = {"merged": {"merged_sha": "s"}, "message": {"msg_id": "1", "from": "x", "kind": "info",
                                                    "text": "t"},
@@ -101,6 +102,76 @@ def test_classify_backlog(tmp_path):
                                     blocked_by=[f"spec status is {st}"]), c) == "wake"
 
 
+def _blocked_verdict(tmp_path, blocked_by, live=("SPEC-0001", "SPEC-0007")):
+    cfg = _cfg(tmp_path)
+    ev = _ev("backlog_blocked_long", "c-1", blocked_by=blocked_by, blocked_for_s=1300)
+    ctx = QT.Ctx(cfg, "conductor", lease={"held": False}, live_specs=frozenset(live))
+    return QT.classify(cfg, ev, ctx)
+
+
+def test_classify_backlog_blocked_long(tmp_path):
+    assert QT.RULES["backlog_blocked_long"] == "cond"
+    for hold in (["waiting on SPEC-0001 (in-progress)"], ["waiting on SPEC-0001 (proposed)"],
+                 ["spec status is draft"], ["spec status is proposed"],
+                 ["spec status is in-progress"],
+                 ["waiting on SPEC-0001 (superseded; waiting on SPEC-0007)"],
+                 ["waiting on SPEC-0001 (accepted)", "spec status is draft"]):
+        assert _blocked_verdict(tmp_path, hold) == "hold", hold
+    # no live campaign for the dependency, a replacement, or one of two dependencies
+    assert _blocked_verdict(tmp_path, ["waiting on SPEC-0001 (proposed)"], live=()) == "wake"
+    assert _blocked_verdict(tmp_path, ["waiting on SPEC-0002 (proposed)"]) == "wake"
+    assert _blocked_verdict(
+        tmp_path, ["waiting on SPEC-0001 (superseded; waiting on SPEC-0007, SPEC-0008)"]) == "wake"
+    assert _blocked_verdict(tmp_path, ["waiting on SPEC-0001, SPEC-0002 (proposed)"]) == "wake"
+    assert _blocked_verdict(tmp_path, ["waiting on nothing"]) == "wake"      # names no id
+    # anything that is not an ordinary dependency wait wakes, even with everything live
+    for wake in (["SPEC-0999 not found"], ["branch x missing"], ["idea IDEA-1 not found"],
+                 ["spec status is rejected"], ["spec status is superseded"],
+                 ["spec status is done"], ["spec status is missing"],
+                 ["waiting on SPEC-0001 (proposed)", "SPEC-0999 not found"], [], [7]):
+        assert _blocked_verdict(tmp_path, wake) == "wake", wake
+    cfg = _cfg(tmp_path)
+    ctx = QT.Ctx(cfg, "conductor", lease={"held": False}, live_specs=frozenset({"SPEC-0001"}))
+    assert QT.classify(cfg, _ev("backlog_blocked_long", "c-1"), ctx) == "wake"
+    assert QT.classify(cfg, _ev("backlog_blocked_long", "c-1", blocked_by="x"), ctx) == "wake"
+
+
+def test_waited_ids():
+    assert QT.waited_ids("waiting on SPEC-0001 (proposed)") == ["SPEC-0001"]
+    assert QT.waited_ids("waiting on SPEC-0001 (superseded; waiting on SPEC-0007, SPEC-0008)") \
+        == ["SPEC-0007", "SPEC-0008"]
+    assert QT.waited_ids("waiting on SPEC-0003, IDEA-5") == ["SPEC-0003", "IDEA-5"]
+    assert QT.waited_ids("waiting on someone") == []
+
+
+def test_ctx_live_specs_reads_store(tmp_path):
+    cfg = _cfg(tmp_path)
+    for n, state in ((1, "QUEUED"), (2, "IMPLEMENTING"), (3, "MERGED")):
+        store.create_campaign(cfg, {"id": f"SPEC-000{n}-20261030-aaaa", "spec_id": f"SPEC-000{n}",
+                                    "project": "Meta-Tools", "profile": "balanced",
+                                    "state": state, "repo": {"base": "main"}})
+    ctx = QT.Ctx(cfg, "conductor", lease={"held": False})
+    assert ctx._live_specs is None                          # nothing scanned yet
+    assert ctx.live_specs == {"SPEC-0001", "SPEC-0002"}
+    assert QT.Ctx(cfg, "conductor", lease={"held": False}, live_specs={"X-1"}).live_specs \
+        == {"X-1"}
+
+
+def test_ping_fingerprint_blocked_dependency_waits():
+    live = frozenset({"SPEC-0001"})
+
+    def ping(*items):
+        return {**_ping(), "blocked": [{"campaign": c, "blocked_by": b} for c, b in items]}
+    held = ["waiting on SPEC-0001 (proposed)"]
+    assert QT.ping_fingerprint(ping(("a", held)), live) == []
+    assert QT.ping_fingerprint(ping(("a", held)), frozenset()) == [["blocked", "a"]]
+    assert QT.ping_fingerprint(ping(("a", ["SPEC-9 not found"])), live) == [["blocked", "a"]]
+    assert QT.ping_fingerprint(ping(("a", held), ("b", [])), live) == [["blocked", "b"]]
+    assert QT.ping_fingerprint(_ping(blocked=["old"]), live) == [["blocked", "old"]]
+    other = {**ping(("a", held)), "stuck": [{"campaign": "s"}]}
+    assert QT.ping_fingerprint(other, live) == [["stuck", "s"]]
+
+
 def test_ping_fingerprint_hold_and_change(tmp_path):
     cfg = _cfg(tmp_path)
 
@@ -122,6 +193,53 @@ def test_ping_fingerprint_hold_and_change(tmp_path):
     assert QT.ping_fingerprint(_ping(parked=[quiet_park])) == []
     assert QT.ping_fingerprint(_ping(parked=[{**quiet_park, "owner": "conductor"}])) == \
         [["parked", "p"]]
+    # SPEC-0306: a blocked item on a dependency being built is held; once its blocker is
+    # not an ordinary dependency wait the next ping wakes (and then holds again)
+    store.create_campaign(cfg, {"id": "SPEC-0001-20261030-aaaa", "spec_id": "SPEC-0001",
+                                "project": "Meta-Tools", "profile": "balanced",
+                                "state": "QUEUED", "repo": {"base": "main"}})
+
+    def blocked(by, cid="b"):
+        return {**_ping(), "blocked": [{"campaign": cid, "blocked_by": by}]}
+    assert verdict(blocked(["waiting on SPEC-0001 (proposed)"])) == "hold"
+    assert verdict(blocked(["waiting on SPEC-0002 (proposed)"])) == "wake"   # not live
+    assert verdict(blocked(["waiting on SPEC-0002 (proposed)"])) == "hold"
+    assert verdict(_ping(blocked=["old"])) == "wake"           # legacy item: no blocked_by
+    assert verdict(_ping()) == "hold"                          # all clear
+    assert verdict(blocked(["waiting on SPEC-0001 (proposed)"], "c2")) == "hold"
+    # the same item turns harmless -> not an ordinary dependency wait: the next ping wakes
+    assert verdict(blocked(["SPEC-0999 not found"], "c2")) == "wake"
+    assert verdict(blocked(["SPEC-0999 not found"], "c2")) == "hold"
+
+
+def test_follow_holds_blocked_long_on_in_flight_dependency(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    store.create_campaign(cfg, {"id": "SPEC-0001-20261030-aaaa", "spec_id": "SPEC-0001",
+                                "project": "Meta-Tools", "profile": "balanced",
+                                "state": "IMPLEMENTING", "repo": {"base": "main"}})
+    E.cursor_set(cfg, "conductor", 0)
+    for cid, by in (("a", "waiting on SPEC-0001 (in-progress)"),
+                    ("b", "waiting on SPEC-0002 (proposed)"), ("c", "SPEC-0999 not found")):
+        E.append(cfg, "backlog_blocked_long", campaign=cid, by="watchdog",
+                 data={"blocked_by": [by], "blocked_for_s": 1300})
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    assert [e["campaign"] for e in _lines(out) if e["type"] == "backlog_blocked_long"] \
+        == ["b", "c"]
+    assert E.cursor_get(cfg, "conductor") == E.read_since(cfg, 0)[-1]["id"]
+    acts = [(r["campaign"], r["action"]) for r in QT._read_deliveries(cfg, "conductor")
+            if r["type"] == "backlog_blocked_long"]
+    assert acts == [("a", "hold"), ("b", "wake"), ("c", "wake")]
+    assert QT.wakeups_report(cfg)["by_type"]["backlog_blocked_long"] == {"wake": 2, "hold": 1}
+    clock.advance(1801)
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    (digest,) = [e for e in _lines(out) if e["type"] == "conductor_digest"]
+    assert digest["data"]["held"].get("backlog_blocked_long") == 1
+    assert digest["data"]["campaigns"] == {"backlog_blocked_long": ["a"]}
+    # the event stays visible without the quiet filter
+    assert [e["campaign"] for e in E.read_since(cfg, 0, types=["backlog_blocked_long"])] \
+        == ["a", "b", "c"]
 
 
 def test_runner_draining_hold_window(tmp_path):
