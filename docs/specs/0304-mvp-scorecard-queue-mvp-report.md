@@ -272,6 +272,16 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
   gives median context 467,072 against 468,211 here; its USD (whole days, 116 merges) differs
   because the report's interval is narrower.
 
+### Test record (2026-10-30, review fixes)
+
+- Added to `tests/test_agentic_mvp_report.py`: `merges` pinned to campaigns ended in the interval
+  (other-project campaign inside, others outside; E1/E3 = total ÷ 3), window order by terminal
+  ts, E6 clean bound (+16 min clean, +15 min not), restart outside the interval, brief before
+  the event, resumed-session replay, CLI empty store and `--since`. `uv run pytest` on the
+  mvp-report, mvp-integration, conductor-cost, quiet and decisions test files: 127 passed.
+  Sabotage by hand (each failed the named new test, then reverted): `merges = len(window)`,
+  `u` without the 15 min upper bound, ordering by open ts. The full suite was left to gating.
+
 ### As shipped (2026-10-30)
 
 - `src/wt/agentic/mvp_report.py` and the `wt queue mvp-report` command as designed. Helpers
@@ -288,6 +298,13 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
 - The integration test runs one campaign through the real queue (park, decision, resume,
   merge) and writes the other two with fixed timestamps; running three real campaigns in one
   temp repo added setup without testing anything more.
+
+### As shipped (review fix)
+
+- E6 de-duplicates a resumed session's replayed history by message id (as E1/E2 do): the
+  restart is dated by the session's first new turn, replayed turns do not count toward the
+  10-turn orientation window, and a replayed `compact_boundary` is not a second event
+  (`transcript_marks(path, replayed)`).
 
 ## Rollout / migration
 

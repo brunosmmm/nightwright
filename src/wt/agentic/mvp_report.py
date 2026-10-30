@@ -236,13 +236,24 @@ def e6(cfg, start, end, targets) -> tuple[dict, list[dict]]:
         path = CC.find_transcript(cfg, r["session_id"])
         turns = CC.read_turns(path) if path else []
         if turns:
-            sess.append((min(t["ts"] for t in turns), r["session_id"], path))
+            sess.append((min(t["ts"] for t in turns), r["session_id"], path, turns))
     sess.sort(key=lambda s: s[0])
+    # a resumed session's transcript replays earlier history under the same message ids:
+    # only its new turns date the restart, and replayed marks are not events
+    seen_ids, fresh = set(), []
+    for _, sid, path, turns in sess:
+        ids = {t["msg_id"] for t in turns if t["msg_id"] is not None}
+        replayed = ids & seen_ids
+        seen_ids |= ids
+        new = [t["ts"] for t in turns if t["msg_id"] not in replayed]
+        if new:
+            fresh.append((min(new), sid, path, replayed))
+    sess = fresh
     undecided = [t for e in E.read_since(cfg, 0, types=["park_undecided"])
                  if (t := CC._parse_ts(e.get("ts"))) is not None]
     events = []
-    for i, (first, sid, path) in enumerate(sess):
-        marks = CC.transcript_marks(path)
+    for i, (first, sid, path, replayed) in enumerate(sess):
+        marks = CC.transcript_marks(path, replayed)
         briefs = [idx for _, kind, idx in marks if kind == "brief"]
         found = [(ts, "compaction", idx) for ts, kind, idx in marks
                  if kind == "compact_boundary" and start <= ts <= end]

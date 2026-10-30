@@ -128,6 +128,42 @@ def test_window_selection(cfg):
     assert few["n"] == 28 and few["qualifying"] is False
 
 
+def test_window_ordered_by_terminal_ts(cfg):
+    """Open order, id order and terminal order all differ: the last N are by terminal ts."""
+    measurement_specs(cfg)
+    camp(cfg, "a", T(2, 1), T(12, 1))                  # opened first, merged last
+    camp(cfg, "b", T(3, 1), T(5, 1))
+    camp(cfg, "c", T(4, 1), T(6, 1))
+    camp(cfg, "d", T(3, 5), T(4, 1))
+    w = MVP.report(cfg, n=2)["window"]
+    assert w["campaigns"] == ["c", "a"]                # by start it would be d, c; by id c, d
+    assert w["start"] == T(2, 1) and w["end"] == T(12, 1)
+
+
+def test_merges_counts_campaigns_ended_in_interval(cfg):
+    """merges is neither the window size nor the all-time count: another project's campaign
+    ending inside [start, end] counts, campaigns ending outside do not."""
+    measurement_specs(cfg)
+    camp(cfg, "old1", T(5, 1), T(5, 2))
+    camp(cfg, "old2", T(5, 3), T(6, 2))
+    camp(cfg, "qold", T(5, 1), T(6, 3), project="Q")
+    camp(cfg, "A", T(10, 10), T(10, 14))
+    camp(cfg, "B", T(10, 11), T(10, 16))
+    camp(cfg, "qin", T(9, 1), T(10, 12), project="Q")          # other project, inside
+    camp(cfg, "qlate", T(10, 11), T(10, 20), project="Q")      # ends after the interval
+    conductor(cfg, "s1", [asst("a", T(10, 9), 900_000),
+                          asst("b", T(10, 11), 100_000), asst("c", T(10, 12), 200_000),
+                          asst("d", T(10, 13), 300_000), asst("e", T(10, 17), 900_000)])
+    deliveries(cfg, [(T(9, 1), "parked", "wake")] + [(T(10, 11, i), "parked", "wake")
+                                                     for i in range(1, 7)])
+    rep = MVP.report(cfg, n=2, project="P")
+    w = rep["window"]
+    assert w["campaigns"] == ["A", "B"] and w["n"] == 2
+    assert w["merges"] == 3                            # A, B and qin; not 2, not the 9 all-time
+    assert crit(rep, "E1")["value"] == pytest.approx(2.0)    # $6 / 3
+    assert crit(rep, "E3")["value"] == pytest.approx(2.0)    # 6 / 3
+
+
 def test_window_not_enough_campaigns(cfg):
     measurement_specs(cfg)
     for i in range(1, 13):                      # + the 3 measurement specs = 15
@@ -364,6 +400,63 @@ def test_e6_pass_and_far_brief(cfg):
     assert flags == {"s1": True, "s3": False}                           # 11th turn: too far
 
 
+def test_e6_clean_upper_bound(cfg, monkeypatch):
+    one_window(cfg)
+    conductor(cfg, "s1", [compact(T(10, 11)), asst("p", T(10, 11, 1), 1, brief=True)])
+    undecided_event(monkeypatch, T(10, 11, 16))
+    E.append(cfg, "park_undecided", campaign="W",
+             data={"reason": "loop_exhausted", "parked_for_s": 600, "owner": "conductor"})
+    assert [e["clean"] for e in MVP.report(cfg, n=1)["e6_events"]] == [True]   # +16 min: later
+    undecided_event(monkeypatch, T(10, 11, 15))
+    E.append(cfg, "park_undecided", campaign="W2",
+             data={"reason": "loop_exhausted", "parked_for_s": 600, "owner": "conductor"})
+    assert [e["clean"] for e in MVP.report(cfg, n=1)["e6_events"]] == [False]  # exactly +15
+
+
+def test_e6_restart_outside_interval_and_early_brief(cfg):
+    one_window(cfg)
+    conductor(cfg, "s1", [asst("a", T(10, 8), 1), asst("b", T(10, 9), 1)])
+    conductor(cfg, "s2", [asst("c", T(10, 9, 30), 1)])                  # first turn before start
+    conductor(cfg, "s3", [asst("d", T(10, 15), 1)])                     # first turn after end
+    rep = MVP.report(cfg, n=1)
+    assert rep["e6_events"] == [] and crit(rep, "E6")["status"] == "no_data"
+    # a conductor-brief call before the event does not orient it
+    conductor(cfg, "s4", [asst("e", T(10, 9, 45), 1, brief=True), compact(T(10, 11, 30)),
+                          asst("f", T(10, 11, 40), 1)])
+    ev = MVP.report(cfg, n=1)["e6_events"]
+    assert [(e["session_id"], e["oriented"]) for e in ev] == [("s4", False)]
+
+
+def test_e6_resumed_session_replay(cfg):
+    one_window(cfg)
+    hist = [asst("a", T(10, 9), 1), asst("b", T(10, 11), 1), compact(T(10, 11, 1)),
+            asst("c", T(10, 11, 2), 1, brief=True)]
+    conductor(cfg, "s1", hist)
+    # `claude --resume`: the new transcript replays the history under the same ids, with the
+    # compact_boundary, then continues; the restart is at its first new turn
+    conductor(cfg, "s2", hist + [asst("d", T(10, 12), 1), asst("e", T(10, 12, 1), 1, brief=True)])
+    ev = MVP.report(cfg, n=1)["e6_events"]
+    assert [(e["session_id"], e["kind"], e["ts"], e["oriented"]) for e in ev] == [
+        ("s1", "compaction", T(10, 11, 1), True), ("s2", "restart", T(10, 12), True)]
+    # resumed again: only the third session's own first turn is its restart
+    conductor(cfg, "s3", hist + [asst("d", T(10, 12), 1), asst("e", T(10, 12, 1), 1, brief=True),
+                                 asst("g", T(10, 13), 1)])
+    ev = MVP.report(cfg, n=1)["e6_events"]
+    assert [(e["session_id"], e["kind"], e["ts"]) for e in ev] == [
+        ("s1", "compaction", T(10, 11, 1)), ("s2", "restart", T(10, 12)),
+        ("s3", "restart", T(10, 13))]
+
+
+def test_e6_replayed_history_before_interval_is_no_restart(cfg):
+    one_window(cfg)
+    hist = [asst("a", T(10, 8), 1), asst("b", T(10, 9), 1)]
+    conductor(cfg, "s1", hist)
+    conductor(cfg, "s2", hist + [asst("c", T(10, 12), 1), asst("d", T(10, 12, 1), 1, brief=True)])
+    ev = MVP.report(cfg, n=1)["e6_events"]
+    assert [(e["session_id"], e["kind"], e["ts"], e["oriented"]) for e in ev] == [
+        ("s2", "restart", T(10, 12), True)]
+
+
 def test_e6_no_events(cfg):
     one_window(cfg)
     conductor(cfg, "s1", [asst("a", T(10, 11), 1)])
@@ -408,3 +501,16 @@ def test_cli_text_and_check(cfg, tmp_path, run):
     assert r.exit_code == 1 and "fail" in r.output
     assert run("--window", "2").exit_code == 0
     assert run("--since", "nonsense").exit_code != 0
+
+
+def test_cli_empty_store_and_since(cfg, run):
+    r = run("--check")
+    assert r.exit_code == 1 and "no_data" in r.output
+    r = run()
+    assert r.exit_code == 0, r.output
+    j = json.loads(run("--json").output)
+    assert j["window"]["start"] is None and j["ok"] is False
+    for i, day in enumerate((3, 6, 9), 1):
+        camp(cfg, f"C{i}", T(day, 1), T(day, 2))
+    j = json.loads(run("--window", "3", "--since", "2026-10-05", "--json").output)
+    assert j["window"]["campaigns"] == ["C2", "C3"]

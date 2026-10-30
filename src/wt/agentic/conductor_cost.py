@@ -228,16 +228,18 @@ def turns_between(cfg, start, end) -> list[dict]:
 BRIEF_CMD = "wt queue conductor-brief"
 
 
-def transcript_marks(path):
+def transcript_marks(path, replayed=()):
     """`(ts, kind, assistant_turn_index)` for the `compact_boundary` lines of one transcript
     (kind `compact_boundary`; the index is that of the next assistant turn) and for the Bash
     tool calls whose command contains `wt queue conductor-brief` (kind `brief`; the index is
-    that of the turn making the call). Assistant turns are counted by distinct `message.id`."""
+    that of the turn making the call). Assistant turns are counted by distinct `message.id`.
+    Turns whose id is in `replayed` (a resumed session's copy of earlier history) are not
+    counted, nor are the marks in that replayed stretch (before the first new turn)."""
     try:
         lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
-    out, seen = [], {}
+    out, seen, replaying = [], {}, False
     for raw in lines:
         try:
             rec = json.loads(raw)
@@ -249,10 +251,14 @@ def transcript_marks(path):
         if ts is None:
             continue
         if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
-            out.append((ts, "compact_boundary", len(seen)))
+            if not (replaying and not seen):
+                out.append((ts, "compact_boundary", len(seen)))
         elif rec.get("type") == "assistant" and isinstance(rec.get("message"), dict):
             msg = rec["message"]
             if msg.get("model") == "<synthetic>":
+                continue
+            if msg.get("id") in replayed:
+                replaying = True
                 continue
             key = msg.get("id") or f"line-{len(seen)}"
             idx = seen.setdefault(key, len(seen))
