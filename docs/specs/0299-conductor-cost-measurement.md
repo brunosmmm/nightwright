@@ -263,6 +263,13 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
   tests/test_agentic_campaign_export.py tests/test_skills.py`: 151 passed, 2 skipped. The full
   suite is left to gating.
 
+- Second review round (2026-10-30): added `test_campaign_ends_outside_window_are_not_counted`
+  (campaign ends before, on and after the window in `America/New_York`, plus an unpriced turn
+  inside a live campaign's window) and `test_live_window_falls_back_to_created_at_without_open_event`;
+  `test_unpriced_model_reported` now asserts `idle_usd`. Sabotage: dropping the `in_window(...)`
+  clause on `ended` in `cost_report` fails the new test. `uv run pytest
+  tests/test_agentic_conductor_cost.py`: 22 passed. The full suite is left to gating.
+
 ### As shipped (2026-10-30)
 
 - Implemented to Design in `conductor_cost.py`, `cli_conductor.py` and the `events.follow` /

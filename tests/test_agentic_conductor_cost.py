@@ -176,6 +176,7 @@ def test_unpriced_model_reported(cfg):
     assert t["usd_by_kind"]["input"] == 2.0
     assert rep["by_day"][0]["usd"] == 2.0
     assert rep["merges"] == 0 and rep["usd_per_merge"] is None
+    assert rep["idle_usd"] == 2.0
     assert "(partial: 1 unpriced turns)" in __import__("wt.agentic.cli_conductor",
                                                        fromlist=["x"]).summary_line(rep)
 
@@ -215,6 +216,41 @@ def test_cost_report_split_and_per_merge(cfg):
     assert [d["date"] for d in rep["by_day"]] == ["2026-10-19", "2026-10-20", "2026-10-21"]
     # B ended 18:00Z, so with the until bound removed the numbers for A/B are unchanged
     assert {c["campaign"]: c["conductor_usd"] for c in rep["campaigns"]}["A"] == 1.5
+
+
+def test_campaign_ends_outside_window_are_not_counted(cfg):
+    # local dates in New York (UTC-4): X ended on the 19th (before --since), Y at 03:00Z on the
+    # 21st (local 20th, on the --until date), Z at 15:00Z on the 21st (local 21st, after --until)
+    campaign(cfg, "X", "2026-10-18T00:00:00+00:00", "2026-10-19T16:00:00+00:00", total=2.0)
+    campaign(cfg, "Y", "2026-10-18T00:00:00+00:00", "2026-10-21T03:00:00+00:00", total=4.0)
+    campaign(cfg, "Z", "2026-10-21T04:00:00+00:00", "2026-10-21T15:00:00+00:00", total=8.0)
+    write_transcript(cfg, "s", [
+        turn("a", utc(20, 14)),                      # Y only
+        turn("u", utc(20, 15), 50, model="other-y"),  # unpriced, inside Y's window
+        turn("i", utc(21, 3, 30)),                   # local 20th, nobody live: idle
+    ])
+    rep = CC.cost_report(cfg, since=dt.date(2026, 10, 20), until=dt.date(2026, 10, 20),
+                         session_ids=["s"])
+    assert rep["merges"] == 1
+    assert rep["totals"]["usd"] == 2.0 and rep["usd_per_merge"] == rep["totals"]["usd"] / 1
+    assert rep["persona_usd"] == 4.0
+    assert [(d["date"], d["merges"]) for d in rep["by_day"]] == [("2026-10-20", 1)]
+    assert [c["campaign"] for c in rep["campaigns"]] == ["Y"]
+    y = rep["campaigns"][0]
+    # the unpriced turn adds nothing to the campaign share or to idle
+    assert y["conductor_usd"] == 1.0 and rep["idle_usd"] == 1.0
+    assert rep["unpriced_models"] == ["other-y"]
+    # open bounds: all three ended, so all three count
+    rep = CC.cost_report(cfg, session_ids=["s"])
+    assert rep["merges"] == 3 and rep["persona_usd"] == 14.0
+
+
+def test_live_window_falls_back_to_created_at_without_open_event(cfg):
+    campaign(cfg, "N", "2026-10-20T13:00:00+00:00", None)
+    (S.campaign_dir(cfg, "N") / "ledger.jsonl").write_text("")
+    (w,) = CC.live_windows(cfg)
+    assert w["start"] == dt.datetime(2026, 10, 20, 13, tzinfo=dt.timezone.utc)
+    assert w["end"] is None
 
 
 def test_subagents_only_with_flag(cfg):
