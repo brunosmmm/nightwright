@@ -1,9 +1,10 @@
 ---
 id: SPEC-0307
 title: "wt idea epic: set or clear :EPIC: on an existing idea"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-30
+updated: 2026-10-30
 kind: feature
 parent: SPEC-0298
 source_idea: IDEA-416

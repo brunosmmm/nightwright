@@ -207,7 +207,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0302](./specs/0302-routine-parks-decided-by-the-queue.md) Routine parks decided by the queue: `base_moving` and phantom-charge `cost_cap` resume themselves, logged `by: queue` — accepted
   - [ ] [SPEC-0303](./specs/0303-fewer-rebase-conflict-parks.md) Fewer `rebase_conflict` parks: base churn is not a conflict, the resolver is not blocked by the cap, and conflict pressure is exported — accepted
   - [ ] [SPEC-0304](./specs/0304-mvp-scorecard-queue-mvp-report.md) MVP scorecard: `wt queue mvp-report` computes exit criteria E1–E6 over the last N merged campaigns — accepted
-  - [ ] [SPEC-0307](./specs/0307-wt-idea-epic-set-or-clear-epic-on-an-existing.md) wt idea epic: set or clear :EPIC: on an existing idea — proposed
+  - [ ] [SPEC-0307](./specs/0307-wt-idea-epic-set-or-clear-epic-on-an-existing.md) wt idea epic: set or clear :EPIC: on an existing idea — accepted
 
 ## Active & planned
 
@@ -224,7 +224,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0302](./specs/0302-routine-parks-decided-by-the-queue.md) | Routine parks decided by the queue: `base_moving` and phantom-charge `cost_cap` resume themselves, logged `by: queue` | feature | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0303](./specs/0303-fewer-rebase-conflict-parks.md) | Fewer `rebase_conflict` parks: base churn is not a conflict, the resolver is not blocked by the cap, and conflict pressure is exported | feature | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0304](./specs/0304-mvp-scorecard-queue-mvp-report.md) | MVP scorecard: `wt queue mvp-report` computes exit criteria E1–E6 over the last N merged campaigns | feature | accepted | M10: agentic MVP | 2026-10-30 |
-| [SPEC-0307](./specs/0307-wt-idea-epic-set-or-clear-epic-on-an-existing.md) | wt idea epic: set or clear :EPIC: on an existing idea | feature | proposed | — | 2026-10-30 |
+| [SPEC-0307](./specs/0307-wt-idea-epic-set-or-clear-epic-on-an-existing.md) | wt idea epic: set or clear :EPIC: on an existing idea | feature | accepted | — | 2026-10-30 |
 
 ## Done
 
