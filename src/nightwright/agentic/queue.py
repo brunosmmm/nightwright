@@ -2331,6 +2331,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             if res.followups is not None:           # after the assignment replaced the dict
                 state["close"]["followups"] = res.followups
             _reconcile_closed(cfg, state, events, oc.next_state)
+            if oc.next_state == "MERGED":
+                _queue_split_children(cfg, state, events)   # SPEC-0294: the state is not MERGED on disk yet
             _release_idea_link(cfg, state, events)      # SPEC-0292: independent of the reconcile
             state["park"] = None
             return finish(oc.next_state, "closed")
@@ -2416,6 +2418,7 @@ def _sweep_write(cfg, cid: str, row: dict, pr: dict | None) -> None:
             close.update(merged_sha=pr["merge_sha"], merged_at=pr["merged_at"], pr_state="MERGED")
             events: list = []
             _reconcile_closed(cfg, st, events, "MERGED")
+            _queue_split_children(cfg, st, events)      # SPEC-0294
             _release_idea_link(cfg, st, events)         # SPEC-0292
             _transition(cfg, st, "MERGED", "pr_merged", by="sweep", extra_events=events)
             return
@@ -2664,6 +2667,48 @@ def _pull_outbound(cfg, state: dict, events: list, spec_id: str, outcome: str) -
                     f"run `nw spec pull-status {spec_id}`")
     except Exception as e:                  # noqa: BLE001 — never block a finished merge
         finding("minor", "outbound pull-status failed", str(e) or type(e).__name__)
+
+
+def _queue_split_children(cfg, state: dict, events: list) -> None:
+    """SPEC-0294: when a split campaign becomes MERGED, queue its parts as one SPEC-0276 batch
+    (dependency order, `skip_invalid`). The campaign is still CLOSING / HANDED_OFF on disk, so
+    it is passed as `split_origin`. Best-effort like `_reconcile_closed`: a refusal is a `major`
+    `bookkeeping` finding, an exception one more, and the state stays MERGED. `split_queued`
+    is always emitted."""
+    if state.get("kind") != "split":
+        return
+
+    def finding(title, detail=""):
+        events.append(("finding", {"persona": "close", "severity": "major",
+                                   "gate": "bookkeeping", "title": title, "detail": detail,
+                                   "files": []}))
+
+    ids = [p["spec_id"] for p in (state.get("split") or {}).get("parts") or [] if p.get("spec_id")]
+    queued, refused = [], []
+    try:
+        batch = plan_add_batch(cfg, ids, project=state.get("project"),
+                               priority=state.get("priority") or PRIORITY_DEFAULT,
+                               split_origin=state)
+        apply_add_batch(cfg, batch, skip_invalid=True, by="queue")
+        for it in batch["items"]:
+            if it.get("written"):
+                queued.append({"spec_id": it["id"], "campaign": it["plan"]["campaign"]})
+            else:
+                refused.append({"spec_id": it["id"], "error": it.get("error") or "not queued"})
+                finding(f"split child {it['id']} not queued", it.get("error") or "")
+    except Exception as e:                  # noqa: BLE001 — never block a finished merge
+        err = str(e) or type(e).__name__
+        try:                                # what exists, so that nothing is queued unrecorded
+            queued = [{"spec_id": c.get("spec_id"), "campaign": c["id"]} for c in
+                      store.list_campaigns(cfg, include_terminal=True)
+                      if c.get("split_origin") == state["id"]]
+            have = {q["spec_id"] for q in queued}
+            refused = [{"spec_id": i, "error": err} for i in ids if i not in have]
+        except Exception:                   # noqa: BLE001 — the finding below already says it failed
+            queued, refused = [], []
+        named = ", ".join(q["campaign"] for q in queued) or "none"
+        finding("split children queue failed", f"{err}; queued before the failure: {named}")
+    events.append(("split_queued", {"queued": queued, "refused": refused}))
 
 
 def _mark_handed_off(cfg, state: dict, events: list, spec_id: str, finding) -> None:
@@ -5953,10 +5998,29 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
 
 # ---- admission (nw queue add) --------------------------------------------------------------------
 
+def _split_origin(cfg, spec_id: str, inflight: dict | None = None) -> dict | None:
+    """SPEC-0294: the split campaign that wrote `spec_id` as one of its parts. With `inflight`
+    (a state dict, not MERGED on disk yet) only that state counts: it must be `kind: "split"`
+    and list the id, and there is no disk read. Without it, the durable MERGED split campaign
+    that lists the id."""
+    def lists(st):
+        return (st.get("kind") == "split"
+                and any(p.get("spec_id") == spec_id
+                        for p in ((st.get("split") or {}).get("parts") or [])))
+    if inflight is not None:
+        return inflight if lists(inflight) else None
+    for st in store.list_campaigns(cfg, include_terminal=True, state="MERGED"):
+        if lists(st):
+            return st
+    return None
+
+
 def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False,
-             priority=PRIORITY_DEFAULT) -> dict:
+             priority=PRIORITY_DEFAULT, split_origin=None) -> dict:
     """Resolve everything `nw queue add` needs and return the plan (no writes). Raises
-    ValueError with the fix when the spec is not admissible."""
+    ValueError with the fix when the spec is not admissible. SPEC-0294: a spec with no review
+    that a split campaign wrote as a part is admitted as `split_child` (`split_origin` is the
+    in-flight split campaign; without it the durable MERGED one)."""
     spec_id = (spec_id or "").strip()
     if not spec_id:
         raise ValueError("spec id is required")
@@ -5999,11 +6063,22 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         raise ValueError(f"{spec_id} already has an active campaign {active['id']} "
                          f"({active.get('state')}); abandon it first")
     revision = None
+    origin = None
     if force:                                                          # SPEC-0188
         review, review_doc = "forced", None
     else:
-        review_doc = SR.check_admissible(cfg, path, spec_id)
+        try:
+            review_doc = SR.check_admissible(cfg, path, spec_id)
+        except ValueError:
+            if SR.latest_review(cfg, spec_id, path) is not None:
+                raise
+            origin = _split_origin(cfg, spec_id, split_origin)         # SPEC-0294
+            if origin is None:
+                raise
+            review_doc = {"admission": "split_child"}
         review = review_doc["admission"]
+        if review == "split_child":
+            review_doc = None
         if review in ("after_revision", "revise_pending"):             # SPEC-0230 / SPEC-0279
             revision = {"review_sha": review_doc.get("spec_sha256"),
                         "current_sha": review_doc["current_sha"],
@@ -6037,7 +6112,7 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         "profile_sources": list(prof.get("sources") or ()),             # SPEC-0238
         "spec_fm": {"source_idea": str(fm.get("source_idea") or ""),    # SPEC-0292
                     "created": str(fm.get("created") or "")},
-        "split": split,
+        "split": split, "split_origin": origin["id"] if origin else None,
     }
 
 
@@ -6066,6 +6141,8 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
                    "source": plan.get("profile_source"), "reason": plan.get("profile_reason"),
                    "review_sha256": plan.get("review_sha256")},
     }
+    if plan.get("split_origin"):
+        state["split_origin"] = plan["split_origin"]                   # SPEC-0294
     split = plan.get("split")
     if split:                                                          # SPEC-0290
         state["kind"] = "split"
@@ -6091,6 +6168,9 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
         if active:
             raise ValueError(f"{plan['spec_id']} already has an active campaign {active['id']}")
         store.create_campaign(cfg, state, by=by)
+    if plan.get("split_origin"):                                       # SPEC-0294
+        store.append_event(cfg, plan["campaign"], "admitted_split_child",
+                           {"origin": plan["split_origin"]}, by=by)
     if split:
         store.append_event(cfg, plan["campaign"], "admitted_split",
                            {"review_sha": split["review_sha"], "parts": split["parts"]}, by=by)
@@ -6584,7 +6664,7 @@ def _cascade(items, deps_of) -> None:
 
 
 def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=False,
-                   priority=PRIORITY_DEFAULT) -> dict:
+                   priority=PRIORITY_DEFAULT, split_origin=None) -> dict:
     """SPEC-0276: plan several specs and ideas as one batch (no writes). Each id goes through
     `plan_add` / `plan_add_idea`; on top, specs are ordered by their in-batch `depends_on`
     (ideas follow), cycles and dependents of refused items are refused, and dependencies that
@@ -6592,6 +6672,10 @@ def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=Fal
     ids = list(dict.fromkeys(_canon_id(i) for i in ids if i and i.strip()))
     params = {"project": project, "profile": profile, "base": base, "force": bool(force),
               "priority": priority}
+    if split_origin is not None:       # SPEC-0294: kept in the params for apply's re-plan
+        params["split_origin"] = {"id": split_origin.get("id"), "kind": split_origin.get("kind"),
+                                  "split": {"parts": [{"spec_id": p.get("spec_id")} for p in
+                                                      (split_origin.get("split") or {}).get("parts") or []]}}
     items = {}
     for i in ids:
         kind = "idea" if _IDEA_ID_RE.match(i) else "spec"
@@ -6600,7 +6684,7 @@ def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=Fal
             item["plan"] = (plan_add_idea(cfg, i, project=project, profile=profile, base=base,
                                           priority=priority) if kind == "idea" else
                             plan_add(cfg, i, project=project, profile=profile, base=base,
-                                     force=force, priority=priority))
+                                     force=force, priority=priority, split_origin=split_origin))
         except ValueError as e:
             item["error"] = str(e)
         items[i] = item
@@ -6651,7 +6735,8 @@ def apply_add_batch(cfg, batch: dict, *, skip_invalid=False, by="human") -> dict
                 plan = plan_add(cfg, it["id"], project=prm.get("project"),
                                 profile=prm.get("profile"), base=prm.get("base"),
                                 force=bool(prm.get("force")),
-                                priority=prm.get("priority", PRIORITY_DEFAULT))
+                                priority=prm.get("priority", PRIORITY_DEFAULT),
+                                split_origin=prm.get("split_origin"))
                 apply_add(cfg, plan, by=by)
         except ValueError as e:
             it["error"] = str(e)

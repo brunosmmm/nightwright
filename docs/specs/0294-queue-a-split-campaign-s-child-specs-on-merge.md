@@ -1,7 +1,7 @@
 ---
 id: SPEC-0294
 title: "Queue a split campaign's child specs on merge, in dependency order"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -149,29 +149,29 @@ The admission is tied to the id, not to the child's text (see Non-goals). Status
 
 ## Acceptance criteria
 
-- [ ] When a `kind: "split"` campaign reaches MERGED in the close apply, its parts are queued
+- [x] When a `kind: "split"` campaign reaches MERGED in the close apply, its parts are queued
       as one SPEC-0276 batch in dependency order, although the campaign is still CLOSING on
       disk when the hook runs, and a `split_queued` event lists the queued campaigns and the
       refusals.
-- [ ] The same holds for a `HANDED_OFF` split campaign that the PR sweep moves to MERGED. If
+- [x] The same holds for a `HANDED_OFF` split campaign that the PR sweep moves to MERGED. If
       the child files are not in the main checkout yet, the parts are refused with `major`
       bookkeeping findings, the campaign still becomes MERGED, and a later `wt queue add`
       admits them.
-- [ ] An in-flight `split_origin` is accepted only when its `kind` is `"split"` and its parts
+- [x] An in-flight `split_origin` is accepted only when its `kind` is `"split"` and its parts
       list the spec id. The durable MERGED lookup serves only calls without `split_origin`.
       A child is admitted by id alone, whatever its text now says, if it is `accepted`.
-- [ ] `plan_add` admits a spec with no review as `split_child` only when a MERGED split
+- [x] `plan_add` admits a spec with no review as `split_child` only when a MERGED split
       campaign lists it as a part. Any other review-less spec is still refused. A child that
       has its own review is admitted by that review.
-- [ ] A refused part becomes a `major` bookkeeping finding and does not stop its non-dependent
+- [x] A refused part becomes a `major` bookkeeping finding and does not stop its non-dependent
       siblings. Its dependents are refused by the cascade. An exception in the hook leaves the
       campaign MERGED, still emits `split_queued` (listing any children already created), and
       adds one `major` bookkeeping finding.
-- [ ] An applied `split_child` admission persists `state["split_origin"]` (the split
+- [x] An applied `split_child` admission persists `state["split_origin"]` (the split
       campaign id) and appends an `admitted_split_child` `{origin}` event on the child.
-- [ ] A by-hand `wt queue add <child>` after a failed automatic queue uses the same
+- [x] A by-hand `wt queue add <child>` after a failed automatic queue uses the same
       `split_child` admission.
-- [ ] The wt-conduct skill's "One spec review round" bullet describes the automatic split
+- [x] The wt-conduct skill's "One spec review round" bullet describes the automatic split
       path.
 
 ## Test plan
@@ -227,6 +227,36 @@ The admission is tied to the id, not to the child's text (see Non-goals). Status
 - **Regression guard:** full `uv run pytest`. The SPEC-0276 batch tests and the admission
   tests are unchanged.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_split_queue.py` — 13 passed (the tests of this plan).
+- Related modules: `test_agentic_queue.py`, `test_agentic_queue_cli.py`,
+  `test_agentic_idea_campaign.py`, `test_spec_review_outbound_root.py`, `test_skills.py`,
+  `test_agentic_pr_sweep.py`, `test_agentic_idea_link.py`, `test_agentic_split.py`,
+  `test_agentic_spec_review.py` — 447 passed together.
+- Sabotage: dropping the origin check failed `test_split_child_admission_requires_origin` and
+  `test_split_origin_inflight_vs_durable`; `skip_invalid=False` failed
+  `test_split_queue_refusal_is_finding` (and the sweep missing-files test); ignoring `inflight`
+  failed `test_split_merge_queues_children_in_order`, `test_split_sweep_queues_children` and
+  three more. All restored afterwards.
+- `python3 tools/spec_lint.py` passes and the ledger is regenerated. The full `uv run pytest`
+  was left to gating.
+
+### As shipped (2026-10-30)
+
+- The tests are in `tests/test_agentic_split_queue.py` (reusing the `test_agentic_split.py`
+  flow), not `tests/test_agentic_queue.py`. The skill test is in `tests/test_skills.py`.
+- `test_split_queue_exception_keeps_merged` has the midway variant as a separate test,
+  `test_split_queue_exception_midway_lists_created_children` (it patches `queue.apply_add`).
+  The sweep tests mark the campaign `HANDED_OFF` by rewriting its state after a normal merge
+  (the hook is stubbed for that merge), as `test_agentic_idea_link.py` does.
+- `plan_add_batch` keeps a minimal copy of the origin (`id`, `kind`, `split.parts[*].spec_id`)
+  in `params["split_origin"]`, so `apply_add_batch`'s re-plan accepts the same in-flight origin
+  and the batch stays JSON-serializable. `plan_add` returns `split_origin` (the campaign id, or
+  `None`) in every plan.
+- In the close apply the hook runs only when the outcome is `MERGED`, not for `HANDED_OFF`;
+  the `HANDED_OFF` -> `MERGED` edge is the sweep's.
+
 ## Rollout / migration
 
 It takes effect for split campaigns that merge after this lands. Children of an earlier
@@ -234,11 +264,11 @@ split, if any, can be queued by hand with the same admission.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

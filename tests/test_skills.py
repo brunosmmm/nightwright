@@ -584,3 +584,13 @@ def test_conduct_skill_park_resume_decision_rules():                # SPEC-0318
     spans = [m for m in re.findall(r"`(nw queue (?:park|resume|abandon) [^`]*)`", conduct)]
     assert len(spans) >= 8
     assert not [c for c in spans if "--decision" not in c], spans
+
+
+def test_conduct_skill_split_rule_mentions_split_campaign():
+    """SPEC-0294: the split rule queues the spec as is; a split campaign writes and queues the
+    parts."""
+    conduct = (REPO_SKILLS_DIR / "nw-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    bullet = next(ln for ln in conduct.splitlines() if ln.startswith("- **One spec review round"))
+    assert "`split` ⇒ `nw queue add` the spec as is" in bullet
+    assert "split campaign" in bullet and "SPEC-0294" in bullet and "`split_queued`" in bullet
+    assert "each part gets its own single review" not in bullet
