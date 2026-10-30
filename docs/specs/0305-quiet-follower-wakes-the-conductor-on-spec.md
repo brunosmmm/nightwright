@@ -1,9 +1,10 @@
 ---
 id: SPEC-0305
 title: "Quiet follower holds the spec-phase events spec_written, spec_reviewed and spec_accepted"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-30
+updated: 2026-10-30
 source_idea: IDEA-411
 kind: feature
 tags: [agentic, conductor, events, cost]
