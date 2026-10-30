@@ -246,10 +246,10 @@ def test_e1_e2_passing_and_no_turns(cfg):
 
 # ---- E3 --------------------------------------------------------------------------------------
 
-def deliveries(cfg, rows):
+def deliveries(cfg, rows, reader="conductor"):
     path = quiet.deliveries_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps({"ts": ts, "reader": "conductor", "event_id": i,
+    path.write_text("".join(json.dumps({"ts": ts, "reader": reader, "event_id": i,
                                          "type": typ, "campaign": None, "action": act}) + "\n"
                             for i, (ts, typ, act) in enumerate(rows, 1)))
 
@@ -270,6 +270,18 @@ def test_e3_deliveries(cfg):
                                                      for i in range(1, 7)])
     e3 = crit(MVP.report(cfg, n=1), "E3")
     assert e3["value"] == 6 and e3["status"] == "fail"
+
+
+def test_e3_records_before_start_and_other_readers(cfg):
+    one_window(cfg)
+    deliveries(cfg, [(T(9, 1), "parked", "wake")])                      # only before the window
+    e3 = crit(MVP.report(cfg, n=1), "E3")
+    assert e3["value"] == 0 and e3["status"] == "pass"                  # recording, none inside
+    deliveries(cfg, [(T(10, 11), "parked", "wake")], reader="steward")  # not the conductor's
+    assert crit(MVP.report(cfg, n=1), "E3")["status"] == "no_data"
+    deliveries(cfg, [(T(9, 1), "parked", "wake"), (T(10, 11), "parked", "wake")], reader="steward")
+    e3 = crit(MVP.report(cfg, n=1), "E3")
+    assert e3["status"] == "no_data"
 
 
 # ---- E4 --------------------------------------------------------------------------------------
@@ -358,6 +370,29 @@ def test_e5_human_decision_park_is_allowed_and_policy_matters(cfg, tmp_path):
     pr_project(cfg, tmp_path)
     measurement_specs(cfg, end=T(10, 5))                              # A opened before the point
     assert crit(MVP.report(cfg, n=1), "E5")["status"] == "fail"
+
+
+def test_e5_conductor_owned_park_is_not_a_touchpoint(cfg, tmp_path):
+    pr_project(cfg, tmp_path)
+    assert Q.park_owner("loop_exhausted") != "human"
+    kw = dict(project="PR", state="MERGED", close={"pr_state": "MERGED", "pr_url": "u"})
+    camp(cfg, "A", T(10, 1), T(10, 2), events=[park_ev(T(10, 1, 30), "loop_exhausted")], **kw)
+    rep = MVP.report(cfg, n=1)
+    assert crit(rep, "E5")["status"] == "pass"
+    assert rep["e5_campaigns"][0]["touchpoints"] == []                # only human-owned parks count
+
+
+def test_e5_draft_pr_policy_and_handed_off_merged(cfg, tmp_path):
+    pr_project(cfg, tmp_path, policy="draft-pr")
+    camp(cfg, "A", T(10, 1), T(10, 2), outcome="HANDED_OFF", project="PR", state="HANDED_OFF",
+         close={"pr_state": "MERGED", "pr_url": "https://gh/p/9"})
+    rep = MVP.report(cfg, n=1)
+    assert crit(rep, "E5")["status"] == "pass" and crit(rep, "E5")["value"] == 1
+    assert [(c["campaign"], c["outcome"], c["pr_url"]) for c in rep["e5_campaigns"]] == [
+        ("A", "HANDED_OFF", "https://gh/p/9")]
+    camp(cfg, "B", T(10, 3), T(10, 4), outcome="HANDED_OFF", project="PR", state="HANDED_OFF",
+         close={"pr_state": "OPEN", "pr_url": "https://gh/p/10"})      # still open: not counted
+    assert [c["campaign"] for c in MVP.report(cfg, n=1)["e5_campaigns"]] == ["A"]
 
 
 # ---- E6 --------------------------------------------------------------------------------------
@@ -528,3 +563,16 @@ def test_check_needs_a_qualifying_window(cfg, tmp_path, run):
     assert r.exit_code == 1, r.output
     j = json.loads(run("--window", "1", "--json").output)
     assert j["ok"] is False and {c["status"] for c in j["criteria"]} == {"pass"}
+
+
+def test_e6_replayed_compact_boundary_before_any_replayed_turn(cfg):
+    one_window(cfg)
+    hist = [asst("a", T(10, 9), 1), asst("b", T(10, 11), 1), compact(T(10, 11, 1)),
+            asst("c", T(10, 11, 2), 1, brief=True)]
+    conductor(cfg, "s1", hist)
+    # the resumed transcript opens with the copied compact_boundary, before any replayed turn
+    conductor(cfg, "s2", [compact(T(10, 11, 1)), *hist[:2], hist[3],
+                          asst("d", T(10, 12), 1), asst("e", T(10, 12, 1), 1, brief=True)])
+    ev = MVP.report(cfg, n=1)["e6_events"]
+    assert [(e["session_id"], e["kind"], e["ts"]) for e in ev] == [
+        ("s1", "compaction", T(10, 11, 1)), ("s2", "restart", T(10, 12))]

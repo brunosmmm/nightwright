@@ -234,12 +234,13 @@ def transcript_marks(path, replayed=()):
     tool calls whose command contains `wt queue conductor-brief` (kind `brief`; the index is
     that of the turn making the call). Assistant turns are counted by distinct `message.id`.
     Turns whose id is in `replayed` (a resumed session's copy of earlier history) are not
-    counted, nor are the marks in that replayed stretch (before the first new turn)."""
+    counted, nor are the marks in that replayed stretch (before the first new turn, which a
+    resumed transcript may open with a copied `compact_boundary`)."""
     try:
         lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
-    out, seen, replaying = [], {}, False
+    out, seen = [], {}
     for raw in lines:
         try:
             rec = json.loads(raw)
@@ -251,14 +252,13 @@ def transcript_marks(path, replayed=()):
         if ts is None:
             continue
         if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
-            if not (replaying and not seen):
+            if not (replayed and not seen):
                 out.append((ts, "compact_boundary", len(seen)))
         elif rec.get("type") == "assistant" and isinstance(rec.get("message"), dict):
             msg = rec["message"]
             if msg.get("model") == "<synthetic>":
                 continue
             if msg.get("id") in replayed:
-                replaying = True
                 continue
             key = msg.get("id") or f"line-{len(seen)}"
             idx = seen.setdefault(key, len(seen))

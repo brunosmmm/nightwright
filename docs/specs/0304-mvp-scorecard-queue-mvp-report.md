@@ -289,6 +289,18 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
   (`ok` without the qualifying conjunct) failed it, then reverted. `uv run pytest
   tests/test_agentic_mvp_report.py`: 24 passed. The full suite was left to gating.
 
+### Test record (2026-10-30, third review fixes)
+
+- `transcript_marks` now skips a `compact_boundary` that precedes the first new turn of a
+  resumed transcript (`replayed and not seen`), so one that opens the copy is not a second
+  event. New tests in `tests/test_agentic_mvp_report.py`: that case, a conductor-owned
+  (`loop_exhausted`) park on a PR campaign is no E5 touchpoint, `draft-pr` policy and a
+  HANDED_OFF campaign with `pr_state: MERGED` (an OPEN one is not counted), E3 with deliveries
+  only before `start` (0, `pass`) and with a reader other than `conductor` (`no_data`).
+  `uv run pytest` on the mvp-report, mvp-integration and conductor-cost test files: 51 passed.
+  Sabotage by hand (each failed the named new tests, then reverted): dropping the `park_owner`
+  filter in E5, and counting every `compact_boundary`. The full suite was left to gating.
+
 ### As shipped (2026-10-30)
 
 - `src/wt/agentic/mvp_report.py` and the `wt queue mvp-report` command as designed. Helpers
