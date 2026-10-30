@@ -226,6 +226,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) | Agentic MVP: a cheap, durable, quiet conductor on a second project | epic | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0302](./specs/0302-routine-parks-decided-by-the-queue.md) | Routine parks decided by the queue: `base_moving` and phantom-charge `cost_cap` resume themselves, logged `by: queue` | feature | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0303](./specs/0303-fewer-rebase-conflict-parks.md) | Fewer `rebase_conflict` parks: base churn is not a conflict, the resolver is not blocked by the cap, and conflict pressure is exported | feature | accepted | M10: agentic MVP | 2026-10-30 |
+| [SPEC-0306](./specs/0306-quiet-follower-wakes-the-conductor-on-backlog.md) | Quiet follower holds `backlog_blocked_long` (and its ping item) while the blocker is an ordinary dependency still in flight | feature | proposed | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | draft | — | 2026-10-30 |
 
 ## Done
