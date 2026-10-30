@@ -201,7 +201,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) Outbound projects end to end: a merged campaign pulls the portable spec's status back — done
   - [ ] [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) Agentic MVP: a cheap, durable, quiet conductor on a second project — accepted
   - [ ] [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) Remote workers: run gates, persona runs and campaigns on other machines — draft
-- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · accepted · (5/7 done)
+- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · accepted · (5/8 done)
   - [x] [SPEC-0299](./specs/0299-conductor-cost-measurement.md) Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export — done
   - [x] [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups — done
   - [x] [SPEC-0301](./specs/0301-conductor-state-handoff-and-decision-log.md) Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule — done
@@ -209,6 +209,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0303](./specs/0303-fewer-rebase-conflict-parks.md) Fewer `rebase_conflict` parks: base churn is not a conflict, the resolver is not blocked by the cap, and conflict pressure is exported — accepted
   - [x] [SPEC-0304](./specs/0304-mvp-scorecard-queue-mvp-report.md) MVP scorecard: `wt queue mvp-report` computes exit criteria E1–E6 over the last N merged campaigns — done
   - [x] [SPEC-0307](./specs/0307-wt-idea-epic-set-or-clear-epic-on-an-existing.md) wt idea epic: set or clear :EPIC: on an existing idea — done
+  - [ ] [SPEC-0308](./specs/0308-spec-sizing-is-discarded-on-a-revise-verdict.md) A revise verdict keeps its sizing: select_profile honors size and tone for revise, not only approve — proposed
 - **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · draft · (0/0 done)
   - _(no child specs yet)_
 
@@ -226,6 +227,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) | Agentic MVP: a cheap, durable, quiet conductor on a second project | epic | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0302](./specs/0302-routine-parks-decided-by-the-queue.md) | Routine parks decided by the queue: `base_moving` and phantom-charge `cost_cap` resume themselves, logged `by: queue` | feature | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0303](./specs/0303-fewer-rebase-conflict-parks.md) | Fewer `rebase_conflict` parks: base churn is not a conflict, the resolver is not blocked by the cap, and conflict pressure is exported | feature | accepted | M10: agentic MVP | 2026-10-30 |
+| [SPEC-0308](./specs/0308-spec-sizing-is-discarded-on-a-revise-verdict.md) | A revise verdict keeps its sizing: select_profile honors size and tone for revise, not only approve | feature | proposed | — | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | draft | — | 2026-10-30 |
 
 ## Done
