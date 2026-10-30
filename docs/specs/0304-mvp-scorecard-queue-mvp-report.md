@@ -58,6 +58,8 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
   internal helpers with datetime bounds are added beside them.
 - Judging E5's "human pulled in only for scope decisions" beyond what the records show. The
   report lists the human touchpoints for the person reading it.
+- Deciding whether an E5 campaign is a comfort-assistant idea; `e5_campaigns` lists each
+  campaign's project, spec_id and PR URL so the reader can confirm it.
 - Rule conformance of decisions (the epic's "each decision carries a rule id" is enforced by
   `RULE_RE` at write time and only counted here).
 
@@ -81,40 +83,47 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
    - **E1** conductor USD per merge = the USD of registered conductor sessions' turns with
      ts in `[start, end]` ÷ `merges`. Target ≤ 1.00. Status `incomplete` if any turn in the
      interval is unpriced (its USD is unknown), `fail` if over the target, else `pass`.
-   - **E2** median `context` of those same turns. Target ≤ 150,000.
+   - **E2** median `context` of those same turns. Target ≤ 150,000. `no_data` when the
+     interval has no conductor turns, `fail` when the median is over the target, else
+     `pass`.
    - **E3** delivered lines (`deliveries.jsonl` records of reader `conductor` with
      `action` ≠ `hold`, ts in `[start, end]`) ÷ `merges`. Target ≤ 5. Status `no_data` when
      no delivery record exists before `start` and none in the interval (quiet mode was not
      yet recording).
    - **E4** parks in the window's campaigns with a covering decision written before the
-     campaign left PARKED ÷ all parks in those campaigns with ts in `[start, end]`. A park
-     is covered by the first decision on its campaign with `park.ts ≤ decision.ts <
-     next park ts` (the `park_coverage` rule) **and** `decision.ts ≤` the ts of the
-     transition out of PARKED that follows the park, or any decision if it is still
-     PARKED. Target 100%. Uncovered parks are listed with `campaign`, `reason`, `park ts`,
-     and `missing` or `late` (decided only after it left PARKED).
+     campaign left PARKED ÷ all parks in those campaigns with ts in `[start, end]`. Per
+     park: take the first decision on the campaign with `park.ts ≤ ts < next park ts`
+     (`decisions.match_parks`, the `park_coverage` rule). None → `missing`. Its ts > the ts
+     of the first `transition` ledger event with `from: PARKED` after the park → `late`.
+     Otherwise, or if no such transition exists yet, → covered. Target 100%. `no_data`
+     (value null) when the window has no parks, `fail` below 100%, else `pass`. Uncovered
+     parks are listed with `campaign`, `reason`, `park ts`, and `missing` or `late`.
    - **E5** count of campaigns, any time at or after the qualifying point, of a project
-     whose `merge.policy` is `pr` or `draft-pr`, with outcome `HANDED_OFF` and a PR that
-     is merged (`close.pr_state == "MERGED"`, written by `sweep_handed_off`) or outcome
-     `MERGED` via the sweep. Target ≥ 1. For each such campaign the report lists its
+     whose `merge.policy` is `pr` or `draft-pr`, whose terminal outcome is `HANDED_OFF` or
+     `MERGED` and whose `close.pr_state == "MERGED"` (set by `sweep_handed_off`, which also
+     moves the campaign to MERGED with reason `pr_merged`). Target ≥ 1. For each such campaign the report lists its
      human touchpoints: parks owned by the human (`queue.park_owner` == `human`) and
      escalations (`ESC` records for the campaign) with their question. Status `pass` when
      ≥ 1 such campaign has no human-owned park other than `human_decision`. Otherwise
      `fail`, with the touchpoints shown.
    - **E6** re-orientations in `[start, end]`. An event is a `compact_boundary` line in a
      registered conductor transcript, or the first turn of a registered conductor session
-     other than the earliest one (a restart). An event is **oriented** when a Bash
+     other than the earliest registered conductor session overall (by first-turn ts); a restart
+     counts when that first turn's ts is in `[start, end]`. A restart's event is at turn
+     index 0 of the new session's transcript. An event is **oriented** when a Bash
      `tool_use` whose command contains `wt queue conductor-brief` occurs in that transcript
      within the next 10 assistant turns. It is **clean** when no `park_undecided` event in
      `events.jsonl` has ts in `(event ts, event ts + 15 min]`. Target: ≥ 1 event, and all
      oriented and clean. Status `no_data` with zero events.
-   - Every criterion's status is one of `pass`, `fail`, `incomplete`, `no_data`. `ok` is
-     true only when the window qualifies and all six are `pass`.
+   - Every criterion's status is one of `pass`, `fail`, `incomplete`, `no_data`. With no
+     merged campaign in the window, `start`, `end` and every criterion's `value` are null
+     and every status is `no_data` (E5, which is not windowed, excepted). `ok` is true only
+     when the window qualifies and all six are `pass`.
 3. **Output.** `wt queue mvp-report [--window N] [--since D] [--project P] [--json]
    [--check]`. JSON schema `wt.conductor.mvp.v1`: `{window: {n, requested, start, end,
    merges, qualifying, qualifying_reason, campaigns: [ids]}, criteria: [{id, name, value,
-   target, op, status, detail}], parks_undecided: [...], e5_campaigns: [...],
-   e6_events: [...], ok}`. The text form is a six-row table (id, criterion, value, target,
+   target, op, status, detail}], parks_undecided: [...], e5_campaigns: [{campaign, project, spec_id, pr_url, outcome,
+   touchpoints, status}], e6_events: [...], ok}`. The text form is a six-row table (id, criterion, value, target,
    status), then the window line and the undecided parks. `--check` exits 1 unless `ok`;
    without it the command exits 0 whenever it ran.
 
@@ -126,8 +135,10 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
     end, outcome), built on `conductor_cost.live_windows` plus `store.read_state`.
   - `pick_window(merged, *, n, since) -> Window` and `qualifying(cfg, window, merged)`.
   - `e1_e2(cfg, start, end)`: uses a new `conductor_cost.turns_between(cfg, start, end)`,
-    which returns the priced turns of registered sessions in the interval (reusing
-    `sessions`, `find_transcript` and `_turns_of`).
+    which returns every turn of registered sessions (main transcripts, no subagents,
+    message ids de-duplicated as `_turns_of` does) with ts in `[start, end]`, each carrying
+    `usd` (None when the model has no price). It reuses `sessions`, `find_transcript` and
+    `_turns_of`.
   - `e3(cfg, start, end, merges)`: uses a new public `quiet.read_deliveries(cfg, reader)`
     (today's `_read_deliveries` under a public name, with the old name kept as an alias).
   - `e4(cfg, window)`: reads `decisions.read(cfg)` and each campaign's
@@ -138,8 +149,8 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
     config's `merge.policy` via the existing project loader, `queue.park_owner`, and
     `escalations` records for the campaign.
   - `e6(cfg, start, end)`: a new `conductor_cost.transcript_marks(path)` yields
-    `(ts, kind)` for `compact_boundary` lines and `(ts, "brief", turn_index)` for Bash
-    tool_use inputs containing `conductor-brief`. `park_undecided` events come from
+    `(ts, kind, assistant_turn_index)` for both `compact_boundary` lines and Bash tool_use
+    inputs whose command contains `wt queue conductor-brief` (kind `brief`). `park_undecided` events come from
     `events.read_since(cfg, 0, types=["park_undecided"])`.
   - `report(cfg, *, n=20, since=None, project=None, now=None) -> dict` and
     `render_text(rep) -> str`.
@@ -175,11 +186,15 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
 - [ ] E1 and E2 use only conductor turns inside `[start, end]`, and E1 is `incomplete` when
       any of them is unpriced. E3 counts only non-`hold` deliveries inside the interval.
       All three divide by merges that ended inside the interval.
-- [ ] E4 reports a park decided only after the campaign left PARKED as `late` and one with no
-      record as `missing`, and neither counts as covered. A park covered by a `by: queue`
-      record counts as covered.
-- [ ] E5 counts a PR-policy project's campaign whose PR is merged, and lists its human
-      touchpoints. A campaign with a human-owned `main_dirty` park does not pass E5.
+- [ ] E4 reports a park decided only after the first `transition` out of PARKED as `late` and
+      one with no record as `missing`, and neither counts as covered. A park covered by a
+      `by: queue` record counts as covered. A window with no parks gives E4 `no_data`.
+- [ ] E2 is `no_data` with no conductor turns in the interval. With no merged campaign in the
+      window every criterion is `no_data` with a null `value` (E5 excepted) and the command
+      exits 0.
+- [ ] E5 counts a PR-policy project's campaign whose `close.pr_state == "MERGED"` (including
+      one moved to MERGED by `sweep_handed_off`), lists its project, spec_id, PR URL and
+      human touchpoints. A campaign with a human-owned `main_dirty` park does not pass E5.
 - [ ] E6 finds `compact_boundary` lines and session restarts in the interval, marks each
       oriented or not (a `conductor-brief` Bash call within 10 assistant turns) and clean or
       not (no `park_undecided` within 15 min), and passes only with ≥ 1 event, all of them
@@ -196,19 +211,26 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
   timestamps, a registered conductor session pointing at a fixture transcript, prices
   configured):
   - `test_window_selection`: 25 merged campaigns → the last 20 by end ts; `--since` and
-    `--project` filter; 15 available → `qualifying: false`.
+    `--project` filter; 15 available → `qualifying: false`. Zero merged campaigns →
+    `start`, `end` and every `value` null, every criterion `no_data` (E5 excepted), exit 0.
   - `test_qualifying_after_measurement_specs`: a window campaign opened before the
     SPEC-0301 campaign merged → not qualifying, with the reason.
   - `test_e1_e2_interval`: fixture turns before, inside and after `[start, end]`; only the
-    inside ones count; one unpriced inside turn → E1 `incomplete`; E2 equals the
-    hand-computed median.
+    inside ones count; one unpriced inside turn (returned by `turns_between` with
+    `usd: None`) → E1 `incomplete`; E2 equals the hand-computed median; no turns inside →
+    E2 `no_data`.
   - `test_e3_deliveries`: holds are excluded, a digest and a `code_changed` count, and no
     deliveries at all → `no_data`.
   - `test_e4_missing_late_covered`: four parks: one covered by a conductor decision, one by a
     `by: queue` decision, one decided after its resume (`late`), one never (`missing`) →
-    `value == 0.5`, `fail`, both listed.
-  - `test_e5_pr_campaign`: a `merge: pr` project campaign HANDED_OFF with
-    `pr_state: MERGED` → pass. Add a `main_dirty` park → fail with the touchpoint listed.
+    `value == 0.5`, `fail`, both listed. The `late` park's decision is after the first
+    `transition` with `from: PARKED`; a still-PARKED campaign's decision counts as covered.
+    A window with no parks → E4 `no_data` (value null).
+  - `test_e5_pr_campaign`: a `merge: pr` project campaign driven to HANDED_OFF, then
+    through `queue.sweep_handed_off(cfg, apply=True, view=<fake returning MERGED>)`; the
+    resulting MERGED campaign (`close.pr_state == "MERGED"`, reason `pr_merged`) passes E5
+    and appears in `e5_campaigns` with its project, spec_id and PR URL. Add a `main_dirty`
+    park → fail with the touchpoint listed.
   - `test_e6_compaction_and_restart`: a transcript with a `compact_boundary` followed by a
     `wt queue conductor-brief` Bash call within 10 turns, and a second session registered
     later whose first turns never call it → 2 events, one not oriented → `fail`. A
