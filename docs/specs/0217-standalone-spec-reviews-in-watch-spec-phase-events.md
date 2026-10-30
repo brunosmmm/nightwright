@@ -161,6 +161,9 @@ status and age rules in memory. Project the new events in `events._project_ledge
   `timeout_s`, an unreadable journal, a corrupt start `ts` with a valid end, a missing
   `spec_id`, and the ledger event's `spec_id` winning over the campaign's. Dashboard / events /
   spec-review test files: 125 passed. The full `uv run pytest` run was left to gating.
+- Gate follow-up (loop 3): the REVISE fixture's finding lacked the `suggested_fix` that SPEC-0295
+  requires, so the CLI test exited 1; added it. `uv run pytest tests/test_agentic_dashboard_spec_reviews.py`:
+  15 passed; full `uv run pytest -q -x`: 3865 passed, 3 skipped; spec_lint exits 0.
 
 ### As shipped
 

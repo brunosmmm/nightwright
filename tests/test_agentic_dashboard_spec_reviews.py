@@ -19,7 +19,8 @@ from wt.agentic import store as S
 
 SIZED = {"size": "m", "tone": "high-end", "rationale": "small."}
 REVISE = {"verdict": "revise", **SIZED, "suggested_splits": [],
-          "findings": [{"severity": "must_fix", "section": "Design", "title": "gap"}]}
+          "findings": [{"severity": "must_fix", "section": "Design", "title": "gap",
+                        "suggested_fix": "fill the gap"}]}
 SKILL = Path(__file__).resolve().parent.parent / "skills" / "wt-conduct" / "SKILL.md"
 
 
