@@ -1020,3 +1020,30 @@ def test_render_gate_results_retries_line_inconclusive_and_full_only():
     assert "reproduced" not in out
     assert "could not run (pytest exit 5), no full rerun left" in render(
         False, {"kind": "targeted", "ok": False, "exit_code": 5})
+
+
+# ---- SPEC-0293: known flaky tests in the gate-triager prompt ----------------------------------
+
+def _failing_state(tmp_path):
+    st = _state(tmp_path)
+    st["last_gate"]["results"][0]["summary"] = {"failing": ["t::a", "t::fresh"]}
+    return st
+
+
+def test_triager_prompt_has_flaky_history(tmp_path):
+    from wt.agentic import flaky
+    cfg = _cfg(tmp_path)
+    flaky.record(cfg, "Meta-Tools", ["t::a"], campaign="C1", source="rerun")
+    flaky.record(cfg, "Meta-Tools", ["t::a", "t::other"], campaign="C2", source="triage_retry")
+    p = PS.build_prompt("gate_triager", PS.build_context(cfg, _failing_state(tmp_path), _project_cfg()))
+    assert "## Known flaky tests" in p
+    assert "- t::a — flaked 2× in 2 campaigns" in p and "via rerun 1, triage retry 1" in p
+    assert "t::fresh —" not in p and "t::other" not in p and "{{" not in p
+
+
+def test_flaky_history_none_known(tmp_path):
+    cfg = _cfg(tmp_path)
+    st = _failing_state(tmp_path)
+    p = PS.build_prompt("gate_triager", PS.build_context(cfg, st, _project_cfg()))
+    assert "## Known flaky tests" in p and "(none known)" in p
+    assert PS.render_flaky_history(cfg, dict(st, last_gate=None)) == "(none known)"

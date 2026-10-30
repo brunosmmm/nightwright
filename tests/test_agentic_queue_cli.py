@@ -135,7 +135,7 @@ def test_queue_help_lists_every_command(monkeypatch):
     r = run_cli({"agentic": {}, "data_dir": "/nonexistent", "config_dir": "/nonexistent"},
                 monkeypatch, ["queue", "--help"])
     for name in ("add", "list", "backlog", "prioritize", "watch", "tick", "run", "park", "resume",
-                 "abandon", "gates"):
+                 "abandon", "gates", "flaky"):
         assert f"  {name}" in r.output, name
 
 
@@ -1060,3 +1060,36 @@ def test_dangling_outbound_prefixed_file_and_handed_off_dep(tmp_path, monkeypatc
                             "state": "HANDED_OFF", "created_at": "2026-11-01T00:00:00"})
     assert Q._dangling(cfg, "ACME-0002", ["ACME-0003", "ACME-0004"], {"ACME-0002"}) == [
         "ACME-0004 is draft and not queued"]
+
+
+# ---- SPEC-0293: wt queue flaky ----------------------------------------------------------------
+
+def _seed_flaky(cfg):
+    from wt.agentic import flaky as FL
+    FL.record(cfg, "Meta-Tools", ["t::a", "t::b"], campaign="C1", source="rerun")
+    FL.record(cfg, "Meta-Tools", ["t::b"], campaign="C2", source="triage_retry")
+    FL.record(cfg, "Other", ["t::c"], campaign="C3", source="rerun")
+
+
+def test_queue_flaky_json(tmp_path, monkeypatch):
+    _, cfg = _cfg(tmp_path)
+    _seed_flaky(cfg)
+    before = (tmp_path / "data" / "agentic" / "flaky-tests.json").read_text()
+    r = run_cli(cfg, monkeypatch, ["queue", "flaky", "--json"])
+    d = json.loads(r.output)
+    assert d["schema"] == "wt.queue.flaky.v1" and d["path"].endswith("agentic/flaky-tests.json")
+    assert [e["id"] for e in d["entries"]][0] == "t::b"
+    assert sorted(e["id"] for e in d["entries"]) == ["t::a", "t::b", "t::c"]
+    assert d["entries"][0]["count"] == 2 and d["entries"][0]["project"] == "Meta-Tools"
+    r = run_cli(cfg, monkeypatch, ["queue", "flaky", "--project", "Other", "--json"])
+    assert [e["id"] for e in json.loads(r.output)["entries"]] == ["t::c"]
+    assert (tmp_path / "data" / "agentic" / "flaky-tests.json").read_text() == before
+
+
+def test_queue_flaky_text(tmp_path, monkeypatch):
+    _, cfg = _cfg(tmp_path)
+    r = run_cli(cfg, monkeypatch, ["queue", "flaky"])
+    assert r.exit_code == 0 and "no flaky tests" in r.output
+    _seed_flaky(cfg)
+    r = run_cli(cfg, monkeypatch, ["queue", "flaky"])
+    assert r.exit_code == 0 and "t::b" in r.output and "triage_retry 1" in r.output

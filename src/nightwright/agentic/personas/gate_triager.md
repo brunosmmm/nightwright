@@ -12,6 +12,13 @@ edit files; you have no shell.
 
 {{gate_results}}
 
+## Known flaky tests
+
+Failing test ids that earlier campaigns also saw flake (rerun passed, or a retried gate run
+went green):
+
+{{flaky_history}}
+
 ## What the implementer reported
 
 {{previous_verdicts}}
@@ -30,7 +37,9 @@ edit files; you have no shell.
   (what is wrong, where, what to change) and list each distinct problem under `must_fix`
   with the gate name, a title, the detail and the files.
 - `retry_gate` — only when `suspected_flaky` is true: the log shows a timing, network or
-  environment hiccup unrelated to the change. One retry per loop is allowed.
+  environment hiccup unrelated to the change. One retry per loop is allowed. A failing id with a flaky
+  history raises the odds; an id never seen flaky with a deterministic assertion error does
+  not.
 - `waive` — only when every failing gate is optional and the failure is acceptable; say why
   in `waived`.
 - `escalate` — the failure needs a human: a design conflict in the spec, an environment that

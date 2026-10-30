@@ -40,6 +40,7 @@ from . import autopark as AP
 from . import close as CL
 from . import decisions as DEC
 from . import divergence as DV
+from . import flaky as FL
 from . import followups as FU
 from . import gate_slots
 from . import gates as G
@@ -2068,6 +2069,30 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     return res
 
 
+def _flaky_events(cfg, state: dict, payload: dict, previous, ok: bool, *, retried: bool) -> list:
+    """SPEC-0293: record the flaky ids of a gate run in the cross-campaign record and return the
+    ledger events for it. `rerun` = the ids SPEC-0289's targeted rerun passed; `triage_retry` =
+    the ids that failed in `previous` when a triager `retry_gate` (`retried`) turned the gates
+    green. Best-effort: a failed write is a `note`, never a different transition."""
+    sources = {"rerun": [i for r in payload.get("results") or [] for i in r.get("flaky") or []]}
+    if ok and retried and previous and not previous.get("ok"):
+        sources["triage_retry"] = [i for r in previous.get("results") or [] if not r.get("ok")
+                                   for i in (r.get("summary") or {}).get("failing") or []]
+    events = []
+    for source, ids in sources.items():
+        ids = list(dict.fromkeys(ids))
+        if not ids:
+            continue
+        try:
+            FL.record(cfg, state.get("project") or "", ids, campaign=state["id"], source=source)
+        except (OSError, ValueError) as e:
+            events.append(("note", {"text": f"could not record flaky tests: {e}",
+                                    "author": "queue"}))
+        else:
+            events.append(("flaky_recorded", {"ids": ids, "source": source}))
+    return events
+
+
 def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
     res = StepResult(state["id"], Step("gate"), "GATING")
     try:
@@ -2446,10 +2471,13 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 RJ.mark_done(cfg, run.job_id)
                 return out
         events.append(("gate", payload))
+        previous = state.get("last_gate")
         state["last_gate"] = payload
         # SPEC-0359: the green loop result a clean close may reuse; any red loop run clears it
         state["last_green_loop"] = payload if (run.ok and not run.interrupted) else None
         state["gate_exclusive"] = None
+        events += _flaky_events(cfg, state, payload, previous, run.ok,
+                                retried=counters["gate_retries"] > 0)
         if run.ok:
             counters["timeout_regates"] = 0
             return finish("REVIEWING", "gates_green")

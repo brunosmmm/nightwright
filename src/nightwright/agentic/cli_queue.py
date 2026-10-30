@@ -25,6 +25,7 @@ from .. import render as R
 from ..config import load_config
 from ..console import console
 from ..report import _dump_json
+from . import flaky as FL
 from . import gate_progress as GPG
 from . import gates as G
 from . import journey as JY
@@ -1492,6 +1493,33 @@ def attach(queue_group):
         for r in G.blocking_failures(run):
             console.print(f"[red]✗[/] {r.name} — last lines:", highlight=False)
             R.print_code("\n".join(r.tail.splitlines()[-10:]) + "\n", "text", console=console)
+
+    @queue_group.command("flaky")
+    @click.option("--project", shell_complete=C.complete_project, help="only this project")
+    @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.flaky.v1 JSON")
+    @click.pass_obj
+    def queue_flaky(cfg, project, as_json):
+        """List the cross-campaign flaky-test record (SPEC-0293), most-flaked first.
+
+        Read-only: never writes and never prunes the record.
+        """
+        entries = FL.list_entries(cfg, project)
+        if as_json:
+            _dump_json({"schema": "nw.queue.flaky.v1", "path": str(FL.path(cfg)),
+                        "entries": entries})
+            return
+        if not entries:
+            console.print("no flaky tests on record")
+            return
+        table = Table(title="flaky tests")
+        for col in ("project", "test", "count", "campaigns", "last seen", "sources"):
+            table.add_column(col)
+        for e in entries:
+            src = ", ".join(f"{k} {v}" for k, v in sorted((e.get("sources") or {}).items()))
+            table.add_row(e["project"], e["id"], str(e.get("count")),
+                          str(len(e.get("campaigns") or [])), str(e.get("last_seen") or "")[:10],
+                          src)
+        console.print(table)
 
     # ---- SPEC-0176 -------------------------------------------------------------------------
 

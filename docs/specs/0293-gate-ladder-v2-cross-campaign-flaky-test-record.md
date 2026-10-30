@@ -1,7 +1,7 @@
 ---
 id: SPEC-0293
 title: "Gate ladder v2: a cross-campaign flaky-test record the triager sees"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-10-30
 milestone: "M9: agentic workflow"
@@ -107,18 +107,18 @@ failing in the current `last_gate` are looked up, so the prompt stays small.
 
 ## Acceptance criteria
 
-- [ ] `flaky.record` writes `<agentic_dir>/flaky-tests.json` (`wt.flaky.v1`) atomically under
+- [x] `flaky.record` writes `<agentic_dir>/flaky-tests.json` (`wt.flaky.v1`) atomically under
       `flaky.lock`. It increments counts, keeps first and last seen and at most 10 campaigns
       per id, drops entries unseen for 90 days, and caps 500 entries per project. A corrupt
       file is moved aside, not crashed on.
-- [ ] A gate run whose results carry SPEC-0289 `flaky` ids records them with `source: rerun`
+- [x] A gate run whose results carry SPEC-0289 `flaky` ids records them with `source: rerun`
       and appends a `flaky_recorded` ledger event.
-- [ ] A triager `retry_gate` that turns the gates green records the previously failing ids
+- [x] A triager `retry_gate` that turns the gates green records the previously failing ids
       with `source: triage_retry`. A green run that did not follow a retry records nothing.
-- [ ] A failed record write leaves the campaign's transition unchanged and appends a `note`.
-- [ ] The gate-triager prompt contains a `Known flaky tests` section with the history of the
+- [x] A failed record write leaves the campaign's transition unchanged and appends a `note`.
+- [x] The gate-triager prompt contains a `Known flaky tests` section with the history of the
       currently failing ids, or `(none known)`.
-- [ ] `wt queue flaky [--project] [--json]` lists entries sorted by count. `--json` emits
+- [x] `wt queue flaky [--project] [--json]` lists entries sorted by count. `--json` emits
       `wt.queue.flaky.v1`.
 
 ## Test plan
@@ -158,17 +158,30 @@ failing in the current `last_gate` are looked up, so the prompt stays small.
 - **Regression guard:** full `uv run pytest`. A triage with no flaky file renders
   `(none known)`, and the other prompt sections are unchanged.
 
+### Test record (2026-10-30)
+
+- New `tests/test_agentic_flaky.py` (7 tests), the SPEC-0293 tests in `tests/test_agentic_queue.py`
+  (4), `tests/test_agentic_personas.py` (2) and `tests/test_agentic_queue_cli.py` (2, plus
+  `flaky` in the help listing): all pass.
+- Sabotage: dropping the `flaky.lock` around the read-modify-write makes
+  `test_concurrent_records_do_not_lose_updates` fail; recording on every green run (not only
+  after a `retry_gate`) makes `test_green_without_retry_records_nothing` fail. Both reverted.
+- Full `uv run pytest`: 3812 passed, 3 skipped, 1 failed (`test_no_bare_join_before_result_read`:
+  my new test used a bare `p.join(60)`); fixed with `waits.join` and re-run on the touched files
+  (`tests/test_test_waits.py`, `tests/test_agentic_flaky.py`): pass.
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: exit 0.
+
 ## Rollout / migration
 
 New file, created on first write. No migration. Old campaigns are not back-filled.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

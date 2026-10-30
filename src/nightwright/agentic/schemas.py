@@ -52,6 +52,7 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "worker_job_retried": ("job_id", "from_worker", "to_worker", "attempt"),  # SPEC-0342
     "park": ("reason", "detail", "resume_to"),      # + optional `auto` (SPEC-0302)
     "auto_resume_failed": ("rule", "error"),        # SPEC-0302
+    "flaky_recorded": ("ids", "source"),                        # SPEC-0293
     "resume": ("to", "note", "cap_usd", "loops_reset"),
     "close": ("mode",),
     "note": ("text",),

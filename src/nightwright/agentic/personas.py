@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import flaky
 from . import gitops as git
 from . import persona_registry as PR
 from . import store
@@ -310,7 +311,7 @@ PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree",
                 "previous_verdicts", "diff", "test_files", "tests_touched", "changed_files",
                 "schema_text", "idea_text", "triage_input", "rebase_target", "conflicts",
                 "campaign_diff", "base_diff", "landed", "regenerate", "template_text",
-                "write_problems", "write_rules", "epic_text", "human_overrides")
+                "write_problems", "write_rules", "epic_text", "human_overrides", "flaky_history")
 
 # What the registry validator needs from this module (it cannot import it).
 KNOWN = {"output_schemas": frozenset(SCHEMAS), "invariants": frozenset(INVARIANTS),
@@ -472,6 +473,30 @@ def render_gate_results(last_gate) -> str:
         tail = "\n".join(tail_lines) if tail_lines else "(no output)"
         blocks.append(f"{head}\n```\n{tail}\n```")
     return "\n\n".join(blocks)
+
+
+def render_flaky_history(cfg, state) -> str:
+    """SPEC-0293: one line per currently failing test id that is on the cross-campaign flaky
+    record, or `(none known)`. Only the ids failing in `last_gate` are looked up."""
+    failing = list(dict.fromkeys(
+        i for r in ((state.get("last_gate") or {}).get("results") or []) if not r.get("ok")
+        for i in (r.get("summary") or {}).get("failing") or []))
+    try:
+        known = flaky.lookup(cfg, state.get("project") or "", failing) if failing else {}
+    except (OSError, ValueError):
+        known = {}
+    lines = []
+    for tid in failing:
+        e = known.get(tid)
+        if not e:
+            continue
+        via = ", ".join(f"{label} {e['sources'][key]}" for key, label in
+                        (("rerun", "via rerun"), ("triage_retry", "triage retry"))
+                        if (e.get("sources") or {}).get(key))
+        lines.append(f"- {tid} — flaked {e.get('count')}× in {len(e.get('campaigns') or [])} "
+                     f"campaigns (last {str(e.get('last_seen') or '')[:10]}"
+                     + (f"; {via}" if via else "") + ")")
+    return "\n".join(lines) or "(none known)"
 
 
 def finding_text(f: dict, detail=None) -> str | None:
@@ -840,6 +865,7 @@ def build_context(cfg, state, project_cfg=None, *, loop_max=None, previous=None,
         "loop_max": loop_max,
         "context_files": list(agents.get("context_files") or []),
         "gate_results": render_gate_results(state.get("last_gate")),
+        "flaky_history": render_flaky_history(cfg, state),
         "pending_brief": render_pending_brief(state.get("pending_brief")),
         "previous_verdicts": render_previous_verdicts(previous),
         "human_overrides": render_human_overrides(state),
