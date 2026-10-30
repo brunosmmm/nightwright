@@ -629,3 +629,155 @@ def test_run_launcher_gone_from_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("WT_DATA_DIR", str(tmp_path / "data"))
     cfg = C.load_config()
     assert cfg["config_dir"] == str(cdir) and cfg["agentic"]["run_launcher"] == "nohup"
+
+
+# ---- review round 4 -----------------------------------------------------------------------------
+
+def _fake_time():
+    """A clock and a sleep that advances it (no real waiting)."""
+    t = {"now": 1000.0}
+
+    def sleep(s):
+        t["now"] += s
+
+    return t, (lambda: t["now"]), sleep
+
+
+@pytest.mark.parametrize("budget_s, waited", [(130, (59, 60)), ("soon", (30,))])
+def test_stop_wait_guard_default_is_the_remaining_budget_plus_30s(tmp_path, budget_s, waited):
+    """No `guard_wait_s`: wait out the guard's remaining budget plus 30 s (an `open` 100 s into
+    a 130 s budget: 60 s), or 30 s when the budget is unreadable; then refuse, unsignalled."""
+    cfg = _cfg(tmp_path)
+    since = (dt.datetime.now().astimezone() - dt.timedelta(seconds=100)).isoformat()
+    with L.acquire(cfg, ["wt", "queue", "run"]) as lease:
+        lease.update_info(busy={"kind": "open", "campaign": "C-9", "since": since,
+                                "budget_s": budget_s})
+        t, clock, sleep = _fake_time()
+        with pytest.raises(ValueError, match=r"still guarded after (\d+)s of waiting") as e:
+            Q.stop_runner(cfg, wait_guard=True, clock=clock, sleep=sleep,
+                          kill=lambda *a: pytest.fail("no kill inside the guard"))
+        limit = int(e.value.args[0].rsplit("after ", 1)[1].split("s", 1)[0])
+        assert limit in waited
+        assert limit <= t["now"] - 1000.0 < limit + 0.5         # gave up at the limit, not later
+        assert L.is_held(cfg)
+
+
+def test_stop_never_signals_a_record_whose_pid_does_not_hold_the_lock(tmp_path, children):
+    """A SIGKILLed runner's file left behind, its pid now some unrelated live process, while a
+    `lease_status` probe holds the flock through both settle reads: no SIGTERM to that pid."""
+    import fcntl
+    import socket
+    cfg = _cfg(tmp_path)
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    children.append(other)
+    L.agentic_dir(cfg).mkdir(parents=True, exist_ok=True)
+    L.lease_path(cfg).write_text(json.dumps({
+        "pid": other.pid, "host": socket.gethostname(), "argv": ["wt", "queue", "run"],
+        "started_at": "2026-01-01T00:00:00+00:00", "heartbeat_at": S.now_iso()}))
+    fd = os.open(L.lock_path(cfg), os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)       # "the probe", held throughout
+    try:
+        assert L.lease_status(cfg)["pid"] == other.pid      # what the settle reads see
+        with pytest.raises(ValueError, match=rf"names pid {other.pid}, which does not hold the "
+                                             r"queue lock .*not signalled"):
+            Q.stop_runner(cfg, kill=lambda *a: pytest.fail("SIGTERM to a stale record"))
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    # the probe gone: nothing holds the lease, the stale file is "no runner"
+    assert Q.stop_runner(cfg, kill=lambda *a: pytest.fail("no kill")) == {
+        "stopped": False, "reason": "no runner"}
+    assert other.poll() is None
+
+
+def test_flock_holders_reads_proc_locks(tmp_path):
+    cfg = _cfg(tmp_path)
+    with L.acquire(cfg):
+        holders = Q._flock_holders(L.lock_path(cfg))
+    if holders is None:
+        pytest.skip("no /proc/locks")
+    assert os.getpid() in holders
+    st = os.stat(L.lock_path(cfg))
+    dev = f"00:2e:{st.st_ino}"                     # the device as btrfs shows it there
+    locks = tmp_path / "locks"
+    locks.write_text(f"1: FLOCK  ADVISORY  WRITE 4242 {dev} 0 EOF\n"
+                     f"1: -> FLOCK  ADVISORY  WRITE 4343 {dev} 0 EOF\n"
+                     f"2: POSIX  ADVISORY  WRITE 4444 {dev} 0 EOF\n"
+                     f"3: FLOCK  ADVISORY  WRITE 4545 00:2e:{st.st_ino + 1} 0 EOF\n")
+    assert Q._flock_holders(L.lock_path(cfg), locks) == {4242}
+    assert Q._flock_holders(L.lock_path(cfg), tmp_path / "missing") is None
+
+
+def _blocked():
+    return signal.pthread_sigmask(signal.SIG_BLOCK, [])
+
+
+def test_reexec_hands_the_stop_signals_over_blocked(tmp_path, monkeypatch):
+    """Between this image's last check and the new image's handler a SIGTERM must not meet
+    the default action: at the exec SIGINT/SIGTERM are blocked with the handler still set, and
+    a stop caught since the drain is pending for the new image. No exec ⇒ all restored."""
+    from test_agentic_reexec import _code_repo, _commit
+    before = signal.getsignal(signal.SIGTERM)
+    real_handover = L.Lease.handover
+
+    def handover(self):
+        env = real_handover(self)
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)    # a stop arrives now
+        return env
+
+    monkeypatch.setattr(L.Lease, "handover", handover)
+    at_exec = []
+    real_tick = Q.tick
+    root, n = _code_repo(tmp_path), {"ticks": 0}
+
+    def tick(*a, **k):
+        report = real_tick(*a, **k)
+        if n["ticks"] == 0:
+            _commit(root, "src/wt/x.py", "A = 3\n", "c0")
+        n["ticks"] += 1
+        return report
+
+    monkeypatch.setattr(Q, "tick", tick)
+    monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: at_exec.append(
+        (_blocked(), signal.sigpending(), signal.getsignal(signal.SIGTERM))))
+    repo = make_repo(tmp_path)
+    Q.run(make_cfg(tmp_path, repo, script(tmp_path, [])), max_ticks=3, poll_interval_s=0,
+          reexec=True, code_root=root)
+    ((blocked, pending, handler),) = at_exec
+    assert {signal.SIGINT, signal.SIGTERM} <= blocked
+    assert signal.SIGTERM in pending                    # passed on to the new image
+    assert callable(handler) and handler is not before  # never SIG_DFL before the exec
+    assert signal.SIGTERM not in _blocked() and signal.SIGTERM not in signal.sigpending()
+    assert signal.getsignal(signal.SIGTERM) is before
+
+
+def test_new_image_takes_a_pending_stop_once_its_handler_is_set(tmp_path):
+    """The re-executed image (SIGTERM blocked and pending from the old one) stops gracefully:
+    a `stop` record with reason `signal`, the lease released."""
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    old = signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGTERM])
+    try:
+        signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
+        Q.run(cfg, max_ticks=2, poll_interval_s=0.5)
+    finally:
+        keep = signal.signal(signal.SIGTERM, signal.SIG_IGN)    # a SIGTERM left pending is
+        signal.pthread_sigmask(signal.SIG_SETMASK, old)         # dropped, never kills pytest
+        signal.signal(signal.SIGTERM, keep)
+    stop = Q.read_journal(cfg)[-1]
+    assert stop["kind"] == "stop" and stop["reason"] == "signal" and stop["ticks"] <= 1
+    assert not L.is_held(cfg) and signal.SIGTERM not in _blocked()
+
+
+def test_blocked_pending_sigterm_survives_exec_and_wt_import():
+    """What the hand-over relies on: the mask and the pending SIGTERM survive `execve` and
+    Python's start-up plus importing wt (nothing unblocks it before `run` does)."""
+    code = ("import os, signal, sys\n"
+            "signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGTERM])\n"
+            "os.kill(os.getpid(), signal.SIGTERM)\n"
+            "os.execv(sys.executable, [sys.executable, '-c', "
+            "'import signal, wt.agentic.queue; "
+            "print(signal.SIGTERM in signal.pthread_sigmask(signal.SIG_BLOCK, []), "
+            "signal.SIGTERM in signal.sigpending())'])\n")
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and r.stdout.split() == ["True", "True"], r.stderr

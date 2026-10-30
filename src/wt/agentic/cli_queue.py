@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 import time
 
@@ -1192,16 +1193,18 @@ def attach(queue_group):
                 if not as_json:
                     raise click.ClickException(str(e))
                 error = str(e)
+        if result and result["stopped"] and result["pid"] != plan["pid"]:
+            # a runner that took the lease after the plan read: report the one stopped
+            plan.update(held=True, pid=result["pid"], host=socket.gethostname(), guard=None)
         if as_json:
             _dump_json({"schema": "wt.queue.stop.v1", **plan, "written": bool(do_write),
                         "result": result, "error": error})
             if error is not None:
                 raise click.exceptions.Exit(1)
             return
-        if not st["held"]:
+        if result is None and not st["held"]:
             console.print("[dim]no runner[/]")
-            return
-        if result is None:
+        elif result is None:
             shown = {**plan, "guard": guard and Q._guard_text(guard),
                      "action": ("wait for the guard, then SIGTERM" if guard and wait_guard
                                 else "refuse (close guard)" if guard else "SIGTERM")}

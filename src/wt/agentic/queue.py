@@ -4404,6 +4404,26 @@ def _settled_holder(cfg, sleep=time.sleep) -> dict:
                      f"holder (last: pid {prev.get('pid')} on {prev.get('host')}); retry")
 
 
+def _flock_holders(path, locks="/proc/locks") -> set | None:
+    """The pids holding a flock on `path`, from Linux's `/proc/locks`; None where that cannot
+    be read (then the lease file's `pid` is trusted as before)."""
+    try:
+        st = os.stat(path)
+        text = Path(locks).read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return None
+    ino = str(st.st_ino)
+    pids = set()
+    for line in text.splitlines():
+        f = line.split()
+        # `N: FLOCK  ADVISORY  WRITE <pid> <maj:min:inode> 0 EOF`; waiters carry `->`. Only
+        # the inode is compared: on btrfs the device there is not the file's `st_dev`
+        if (len(f) >= 6 and f[1] == "FLOCK" and f[5].rsplit(":", 1)[-1] == ino
+                and f[4].isdigit()):
+            pids.add(int(f[4]))
+    return pids
+
+
 def stop_runner(cfg, *, timeout_s=60, wait_guard=False, guard_wait_s=None, kill=os.kill,
                 clock=time.monotonic, sleep=time.sleep) -> dict:
     """SIGTERM the local lease holder and wait until the lease is released (SPEC-0291). Never
@@ -4447,6 +4467,14 @@ def stop_runner(cfg, *, timeout_s=60, wait_guard=False, guard_wait_s=None, kill=
     if holder[:3] == ["wt", "queue", "tick"]:
         raise ValueError(f"pid {pid} holds the lease for a one-shot `wt queue tick`, not a "
                          "runner; it releases the lease when the tick ends")
+    holders = _flock_holders(L.lock_path(cfg))
+    if holders is not None and pid not in holders:
+        # a crashed holder's record while something else holds the flock for a moment (a
+        # `lease_status` probe): that pid may be reused by an unrelated process
+        if not L.is_held(cfg):
+            return {"stopped": False, "reason": "no runner"}
+        raise ValueError(f"the lease file names pid {pid}, which does not hold the queue lock "
+                         "(a stale record); not signalled, retry")
     start = clock()
     try:
         kill(pid, signal.SIGTERM)
@@ -4490,6 +4518,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
     stop = threading.Event()
     lease = L.acquire(cfg, argv or ["wt", "queue", "run"])
     previous = {}
+    handover_env = held_mask = None     # SPEC-0194 re-exec; SPEC-0291: stop signals held for it
     entered = False                     # SPEC-0262: the main `try` owns the lease from there on
     try:
         G.reset()                                          # SPEC-0229: no stale stop flag
@@ -4505,6 +4534,8 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                 previous[sig] = signal.signal(sig, _handler)
             except ValueError:                                  # not the main thread (tests)
                 pass
+        if previous:        # SPEC-0291: a re-exec hands them over blocked (`_hold_stop_signals`)
+            _release_stop_signals(None, previous)
         if runner_log:      # only once SIGTERM is handled: `--detach` waits for this mark
             lease.update_info(log=runner_log, detached=True)
         ticks = 0
@@ -4684,23 +4715,67 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                         **exit_fields)
             if draining:
                 lease.pop_info("draining")
-            handover_env = lease.handover() if reason == "code_changed" else None
+            if reason == "code_changed":
+                if previous:
+                    held_mask = _hold_stop_signals()
+                handover_env = lease.handover()
             G.reset()
         finally:
             lease.release()
-            for sig, prev in previous.items():
-                try:
-                    signal.signal(sig, prev)
-                except (ValueError, TypeError):
-                    pass
+            if handover_env is None:
+                _release_stop_signals(held_mask)
+                _restore_handlers(previous)
     if handover_env is not None:
         sys.stdout.flush()
         sys.stderr.flush()
         argv = self_argv()
         if lease.info.get("detached") and lease.info.get("log"):   # SPEC-0291: the new image
             handover_env = {**handover_env, RUNNER_LOG_ENV: lease.info["log"]}  # records it too
-        _EXEC(argv[0], argv, {**os.environ, **handover_env})
+        if held_mask is not None and stop.is_set():
+            # SPEC-0291: a stop that came in since the drain is passed on, pending on this
+            # (blocked) thread, to the new image, which handles it once its handler is set
+            signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
+        try:
+            _EXEC(argv[0], argv, {**os.environ, **handover_env})
+        finally:                            # no exec happened (a failure; tests replace it)
+            _release_stop_signals(held_mask)
+            _restore_handlers(previous)
     return ticks
+
+
+_STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+
+def _hold_stop_signals():
+    """Block SIGINT/SIGTERM on this (the main) thread for the SPEC-0194 re-exec (SPEC-0291).
+    The handlers stay installed until the exec and the mask survives it, so a `wt queue stop`
+    landing before the new image installs its own handler stays pending until then, instead
+    of meeting SIGTERM's default action (no `stop` record, a stale lease file). Returns the
+    previous mask, or None where masks are unsupported."""
+    try:
+        return signal.pthread_sigmask(signal.SIG_BLOCK, _STOP_SIGNALS)
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+def _release_stop_signals(mask, sigs=None):
+    """Restore `mask` (from `_hold_stop_signals`; None: nothing held), or unblock `sigs` (the
+    new image, once its handlers are set): a pending stop is delivered to the handler."""
+    try:
+        if sigs:
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, list(sigs))
+        elif mask is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
+def _restore_handlers(previous: dict):
+    for sig, prev in previous.items():
+        try:
+            signal.signal(sig, prev)
+        except (ValueError, TypeError):
+            pass
 
 
 # ---- listing -----------------------------------------------------------------------------------

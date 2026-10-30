@@ -957,6 +957,21 @@ def test_queue_stop_json_schema(tmp_path, monkeypatch):
         assert d["error"].startswith("close guard: close of C-1") and L.is_held(cfg)
 
 
+def test_queue_stop_reports_a_runner_that_started_after_the_plan(tmp_path, monkeypatch):
+    """No holder at the plan read, then a runner takes the lease and `stop_runner` stops it:
+    the output names that runner, never "no runner"; the JSON is coherent with the result."""
+    import socket
+    repo, cfg = _cfg(tmp_path)
+    monkeypatch.setattr(Q, "stop_runner",
+                        lambda *a, **k: {"stopped": True, "pid": 4242, "waited_s": 0.3})
+    r = run_cli(cfg, monkeypatch, ["queue", "stop", "--yes"])
+    assert r.exit_code == 0 and "runner pid 4242 stopped" in r.output, r.output
+    assert "no runner" not in r.output
+    d = json.loads(run_cli(cfg, monkeypatch, ["queue", "stop", "--yes", "--json"]).output)
+    assert d["held"] is True and d["pid"] == 4242 and d["host"] == socket.gethostname()
+    assert d["result"]["stopped"] is True
+
+
 def test_queue_run_detach_cli_wiring(tmp_path, monkeypatch):
     """SPEC-0291: the command's argv, default log, `--log` and output; ValueError ⇒ exit 1."""
     import sys

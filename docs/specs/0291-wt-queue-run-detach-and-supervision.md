@@ -301,8 +301,44 @@ skill rows can then reference instead of restating it.
   fresh settle not re-checked): each makes the matching new test fail; all restored.
 - Full `uv run pytest` left to gating.
 
+### Test record (2026-10-30, review round 4)
+
+- Added to `tests/test_agentic_detach.py`:
+  `test_stop_wait_guard_default_is_the_remaining_budget_plus_30s` (injected clock and sleep:
+  an `open` 100 s into a 130 s budget gives up after 60 s, an unreadable budget after 30 s,
+  never signalled), `test_stop_never_signals_a_record_whose_pid_does_not_hold_the_lock` (a
+  stale file naming a live unrelated pid while a "probe" holds the flock through both settle
+  reads: refused, no SIGTERM; with the flock free it is `no runner`),
+  `test_flock_holders_reads_proc_locks`, `test_reexec_hands_the_stop_signals_over_blocked`
+  (at the exec SIGINT/SIGTERM are blocked, the handler is still set, a stop caught after the
+  drain is pending; no exec ⇒ mask and handlers restored),
+  `test_new_image_takes_a_pending_stop_once_its_handler_is_set` (a blocked pending SIGTERM
+  ⇒ `stop` with reason `signal`, the lease released) and
+  `test_blocked_pending_sigterm_survives_exec_and_wt_import` (a real `execv`). Added to
+  `tests/test_agentic_queue_cli.py`: `test_queue_stop_reports_a_runner_that_started_after_the_plan`.
+  `test_agentic_detach` (50), `test_agentic_queue_cli`, `test_agentic_reexec`,
+  `test_agentic_drain_signal`, `test_agentic_exit_paths`, `test_agentic_adopt`,
+  `test_agentic_lease`, `test_agentic_close_inflight`, `test_agentic_config_reload`,
+  `test_skills`: all pass.
+- **Sabotage:** no `_hold_stop_signals` at the handover; no unblock after the handler is set;
+  no `/proc/locks` check before the kill; `+ 300` instead of `+ 30` in the default guard wait;
+  the CLI's old "no runner" check before the result. Each makes the matching new test fail;
+  all restored.
+- Full `uv run pytest` left to gating.
+
 ### As shipped (2026-10-30)
 
+- Review round 4: the SPEC-0194 re-exec hands SIGINT/SIGTERM over *blocked*. Right before
+  `handover` the main thread blocks them, the handlers stay set until the exec (they are
+  restored only when no exec happens), a stop caught since the drain is re-raised pending on
+  the thread, and the new image unblocks them right after installing its handler. A
+  `wt queue stop --yes` landing in the exec window therefore stops the new image gracefully
+  instead of meeting SIGTERM's default action. Before the SIGTERM, `stop_runner` checks
+  Linux's `/proc/locks` (`_flock_holders`, matched by inode, since btrfs shows another device
+  there) that the lease file's `pid` holds the queue flock: a stale record is refused (or
+  `no runner` once the flock is free). Where `/proc/locks` cannot be read, the file's `pid` is
+  trusted as before. `wt queue stop --yes` reports the runner it stopped even when that runner
+  took the lease after the plan read (the JSON's `held`/`pid`/`host` then name it).
 - Review round 3: `run` writes `log` / `detached: true` right after it installs its
   SIGINT/SIGTERM handler (a few lines after `L.acquire`, not right after it), and
   `detach_runner` succeeds only once the lease file names the child's pid *and* carries
