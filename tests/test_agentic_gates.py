@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -465,6 +466,9 @@ def test_no_retry_when_stopping(world, tmp_path, monkeypatch, how):
     finally:
         G.reset()
     assert r.attempts == () and not r.ok and len(_args(tmp_path)) == 1
+    assert r.interrupted           # the stop cut the ladder: not a failure to triage (SPEC-0229)
+    side = json.loads((tmp_path / "g" / "001-pytest.json").read_text())
+    assert side["interrupted"] is True and "stopping" in side["error"]
 
 
 def test_stop_during_retry_is_interrupted(world, tmp_path, monkeypatch):
@@ -488,18 +492,36 @@ def test_stop_during_retry_is_interrupted(world, tmp_path, monkeypatch):
     assert run.interrupted and not run.ok
     side = json.loads((tmp_path / "data").rglob("001-pytest.json").__next__().read_text())
     assert side["interrupted"] is True and SC.record_problems(side, SC.GATE_KEYS, SC.GATE_SCHEMA) == []
+    assert "stopping" in side["error"]      # the cut retry's error, not attempt 0's
 
 
-def test_timed_out_attempt_zero_not_retried(world, tmp_path):
-    g = _fake(tmp_path, ["sleep 30", "exit 0"], results=False, timeout_s=1)
-    r = _ladder(world, tmp_path, g)
+def _patch_attempt(monkeypatch, n, **changes):
+    """Make `run_gate` report attempt `n` (0 = the first run) with `changes` applied."""
+    real = G.run_gate
+
+    def wrapped(*a, **kw):
+        r = real(*a, **kw)
+        return replace(r, **changes) if kw.get("attempt") == (n or None) else r
+    monkeypatch.setattr(G, "run_gate", wrapped)
+
+
+def test_timed_out_attempt_zero_not_retried(world, tmp_path, monkeypatch):
+    _patch_attempt(monkeypatch, 0, timed_out=True, ok=False)
+    r = _ladder(world, tmp_path, _fake(tmp_path, ["exit 1", "exit 0"], results=False))
     assert r.timed_out and not r.ok and r.attempts == () and len(_args(tmp_path)) == 1
 
 
-def test_retry_timeout_ends_ladder(world, tmp_path):
-    g = _fake(tmp_path, ["exit 1", "sleep 30", "exit 0"], retries=3, results=False, timeout_s=1)
+def test_interrupted_attempt_zero_not_retried(world, tmp_path, monkeypatch):
+    _patch_attempt(monkeypatch, 0, interrupted=True)
+    r = _ladder(world, tmp_path, _fake(tmp_path, ["exit 1", "exit 0"], results=False))
+    assert r.interrupted and not r.ok and r.attempts == () and len(_args(tmp_path)) == 1
+
+
+def test_retry_timeout_ends_ladder(world, tmp_path, monkeypatch):
+    _patch_attempt(monkeypatch, 1, timed_out=True, ok=False)
+    g = _fake(tmp_path, ["exit 1", "exit 1", "exit 0"], retries=3, results=False)
     r = _ladder(world, tmp_path, g)
-    assert len(r.attempts) == 2 and r.timed_out and not r.ok
+    assert len(r.attempts) == 2 and r.timed_out and not r.ok and len(_args(tmp_path)) == 2
 
 
 def test_result_fields_after_ladder(world, tmp_path):
@@ -511,6 +533,23 @@ def test_result_fields_after_ladder(world, tmp_path):
     t2.mkdir()
     r = _ladder(world, t2, _fake(t2, [PY_FAIL, PY_PASS], retries=1))
     assert r.summary["failed"] == 1 and r.summary["passed"] == 2 and not r.ok
+
+
+def test_tail_and_summary_come_from_the_last_full_attempt(world, tmp_path):
+    full_fail = "echo 'distinct full tail'; echo '=== 2 failed in 0.20s ==='; exit 1"
+    r = _ladder(world, tmp_path, _fake(tmp_path, [PY_FAIL, PY_PASS, full_fail]))
+    assert not r.ok and "distinct full tail" in r.tail and "boom" not in r.tail
+    assert r.summary["failed"] == 2 and r.summary["passed"] == 0
+    t2 = tmp_path / "t2"
+    t2.mkdir()
+    full_ok = "echo 'full ok tail'; echo '=== 5 passed in 0.20s ==='"
+    r = _ladder(world, t2, _fake(t2, [PY_FAIL, PY_PASS, full_ok]))
+    assert r.ok and "full ok tail" in r.tail and r.summary["passed"] == 5
+    assert r.summary["failed"] == 0
+    t3 = tmp_path / "t3"
+    t3.mkdir()
+    r = _ladder(world, t3, _fake(t3, ["echo boom; exit 1", "echo fine"], results=False))
+    assert "fine" in r.tail and "boom" not in r.tail
 
 
 def test_attempt0_sidecar_rewritten(world, tmp_path):
@@ -545,8 +584,94 @@ def test_retry_sidecars_validate(world, tmp_path):
     for n, p in enumerate(sides, 1):
         rec = json.loads(p.read_text())
         assert rec["attempt"] == n and SC.record_problems(rec, SC.GATE_KEYS, SC.GATE_SCHEMA) == []
+        assert rec["ok"] is True and rec["exit_code"] == 0
+        assert "attempts" not in rec and "flaky" not in rec
+    r1, r2 = (json.loads(p.read_text()) for p in sides)
+    assert r1["summary"]["passed"] == 1 and r1["cmd"].endswith("tests/a.py::t1")
+    assert r2["cmd"] == res.cmd
     payload = G.as_payload(run)
     assert payload["results"][0]["flaky"] == ["tests/a.py::t1"]
     ev = {"schema": SC.LEDGER_SCHEMA, "ts": "t", "seq": 1, "campaign": CID, "type": "gate",
           "by": "tick", **payload}
     assert SC.ledger_problems(ev) == []
+
+
+def _res(cmd="pytest -q", **summary):
+    base = {"passed": 1, "failed": 0, "errors": 0, "skipped": 0, "failing": []}
+    return G.GateResult("pytest", True, False, 1, False, 0.1, "l", "", cmd=cmd,
+                        summary={**base, **summary})
+
+
+PYTEST_GATE = {"results": {"format": "pytest"}}
+
+
+def test_targeted_ids_eligibility():
+    ok = _res(failed=2, failing=["a::1", "a::2"])
+    assert G._targeted_ids(PYTEST_GATE, ok) == ["a::1", "a::2"]
+    # not pytest results (JUnit, none)
+    assert G._targeted_ids({"results": {"format": "junit"}}, ok) == []
+    assert G._targeted_ids({}, ok) == []
+    # a parse error in the summary
+    assert G._targeted_ids(PYTEST_GATE, _res(failed=1, failing=["a::1"], error="bad")) == []
+    # the list does not account for every failure or error (either way)
+    assert G._targeted_ids(PYTEST_GATE, _res(failed=3, failing=["a::1", "a::2"])) == []
+    assert G._targeted_ids(PYTEST_GATE, _res(failed=1, failing=["a::1", "a::2"])) == []
+    assert G._targeted_ids(PYTEST_GATE, _res(failed=1, errors=1, failing=["a::1"])) == []
+    assert G._targeted_ids(PYTEST_GATE, _res(failed=0, failing=[])) == []
+
+
+@pytest.mark.parametrize("cmd", ["pytest -q 2>&1 | tee out.txt", "pytest -q > out.txt",
+                                 "cd x; pytest", "a && pytest", "pytest $(echo -q)"])
+def test_targeted_ids_need_an_appendable_cmd(cmd):
+    res = _res(cmd=cmd, failed=1, failing=["a::1"])
+    assert G._targeted_ids(PYTEST_GATE, res) == []
+    # an explicit retry_cmd takes the ids wherever it wants them
+    assert G._targeted_ids({**PYTEST_GATE, "retry_cmd": "make t IDS={failing}"}, res) == ["a::1"]
+
+
+def test_pytest_usage_error_on_targeted_rerun_is_not_reproduced(world, tmp_path):
+    g = _fake(tmp_path, [PY_FAIL, "echo 'ERROR: not found'; exit 4", PY_PASS])
+    r = _ladder(world, tmp_path, g)
+    assert r.ok and _kinds(r) == ["full", "targeted", "full"]
+    assert r.flaky == ()                # the ids never ran: no flake evidence
+    t2 = tmp_path / "t2"
+    t2.mkdir()
+    r = _ladder(world, t2, _fake(t2, [PY_FAIL, "exit 5", "exit 1"]))
+    assert not r.ok and len(r.attempts) == 3
+
+
+def test_deadline_skips_a_full_rerun_that_would_overrun(world, tmp_path):
+    g = _fake(tmp_path, ["exit 1", "exit 0"], results=False)
+    r = _ladder(world, tmp_path, g, deadline=time.monotonic() - 1)
+    assert not r.ok and r.attempts == () and len(_args(tmp_path)) == 1
+    t2 = tmp_path / "t2"
+    t2.mkdir()
+    g = _fake(t2, [PY_FAIL, PY_PASS, PY_PASS])      # the targeted rung is not budgeted
+    r = _ladder(world, t2, g, deadline=time.monotonic() - 1)
+    assert _kinds(r) == ["full", "targeted"] and not r.ok
+
+
+def test_rewrite_sidecar_error_and_clearing(world, tmp_path):
+    g = _fake(tmp_path, [PY_FAIL, PY_PASS, PY_PASS])
+    first = _ladder(world, tmp_path, g)
+    side = tmp_path / "g" / "001-pytest.json"
+    assert json.loads(side.read_text())["summary"] is not None
+    final = replace(first, summary=None, interrupted=False, flaky=(), attempts=first.attempts)
+    G._rewrite_sidecar(tmp_path / "g" / "001-pytest.log", final, "boom")
+    rec = json.loads(side.read_text())
+    assert rec["error"] == "boom"
+    assert "summary" not in rec and "interrupted" not in rec and "flaky" not in rec
+    assert not side.with_name(side.name + ".tmp").exists()
+    final = replace(final, interrupted=True, flaky=("x",))
+    G._rewrite_sidecar(tmp_path / "g" / "001-pytest.log", final, None)
+    rec = json.loads(side.read_text())
+    assert rec["interrupted"] is True and rec["flaky"] == ["x"] and rec["error"] is None
+
+
+def test_rewrite_sidecar_survives_an_unreadable_sidecar(world, tmp_path):
+    d = tmp_path / "g"
+    d.mkdir()
+    (d / "001-pytest.json").write_text("{trunc")
+    G._rewrite_sidecar(d / "001-pytest.log", G.GateResult("p", True, True, 0, False, 0.1, "l", ""),
+                       None)                # no raise; the file is left as it was
+    assert (d / "001-pytest.json").read_text() == "{trunc"

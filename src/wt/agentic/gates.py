@@ -27,6 +27,11 @@ from .project import expand_cmd
 TAIL_LINES = 60
 _KILL_GRACE_S = 5
 _LOG_SEQ_RE = re.compile(r"^(\d{3})-")
+# SPEC-0289: pytest exits 4 (usage error: ids not found) and 5 (nothing collected) when a targeted
+# rerun could not run the ids, which says nothing about whether the failure reproduces.
+TARGETED_UNRESOLVED_EXITS = (4, 5)
+# shell operators after which appended ids would no longer be arguments of the gate's own command
+_SHELL_OPS_RE = re.compile(r"[|&;<>()`\n]|\$\(")
 
 # SPEC-0229: live gate processes, so a stop can end them (gates run in their own sessions, out of
 # reach of any signal sent to the runner's group). `_stopping` makes a stop sticky until reset().
@@ -235,8 +240,12 @@ def targeted_cmd(gate: dict, cmd: str, failing, placeholders: dict | None = None
 
 def _targeted_ids(gate: dict, result: GateResult) -> list[str]:
     """The failing ids a targeted rerun may use: pytest results, 1..MAX_FAILING ids, and the
-    list accounts for every failure and error (so it is complete)."""
+    list accounts for every failure and error (so it is complete). Without a `retry_cmd` the
+    ids are appended to the expanded `cmd`, which only works when it has no shell operators
+    (a pipe or redirect would hand the ids to the wrong program)."""
     if (gate.get("results") or {}).get("format") != "pytest":
+        return []
+    if not gate.get("retry_cmd") and _SHELL_OPS_RE.search(result.cmd):
         return []
     s = result.summary
     if not isinstance(s, dict) or s.get("error"):
@@ -261,8 +270,8 @@ def _stop_requested(stop) -> bool:
 
 
 def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
-                          log_rel: str | None = None,
-                          stop: threading.Event | None = None) -> GateResult:
+                          log_rel: str | None = None, stop: threading.Event | None = None,
+                          deadline: float | None = None) -> GateResult:
     """`run_gate` plus the SPEC-0289 retry ladder (`gate["retries"]`).
 
     A failing pytest gate with a complete failing-id list first re-runs only those ids: a
@@ -270,7 +279,10 @@ def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholder
     suite, so only a *full* rerun that passes can turn the gate green. Timed-out, interrupted
     and stopped gates are never retried. The result is attempt 0's with the verdict (last full
     attempt) `ok`/`exit_code`/`tail`/`summary`, the last attempt's `interrupted`/`timed_out`,
-    the summed `duration_s`, plus `attempts` and `flaky`."""
+    the summed `duration_s`, plus `attempts` and `flaky`. `deadline` (a `time.monotonic()` value)
+    keeps the ladder inside the runner's busy budget: a full rerun does not start when it
+    would, going by attempt 0's duration, end after it. A targeted rerun that exits with a
+    pytest usage/no-tests code never ran the ids, so it is not "reproduced": the ladder goes on."""
     log_path = Path(log_path)
     first = run_gate(gate, worktree, env, log_path, placeholders, log_rel=log_rel)
     retries = int(gate.get("retries") or 0)
@@ -279,11 +291,15 @@ def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholder
     ids = _targeted_ids(gate, first)
     attempts = [_attempt(0, "full", first)]
     verdict = last = first
-    targeted_passed = False
+    targeted_passed = stopped = False
     for n in range(1, retries + 1):
         if _stop_requested(stop):
+            stopped = True
             break
         kind = "targeted" if (n == 1 and ids) else "full"
+        if kind == "full" and deadline is not None \
+                and time.monotonic() + first.duration_s > deadline:
+            break
         rpath = log_path.with_name(f"{log_path.stem}.r{n}.log")
         rrel = (f"{Path(log_rel).with_suffix('').as_posix()}.r{n}.log" if log_rel
                 else str(rpath))
@@ -297,6 +313,8 @@ def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholder
                 verdict = r
             break
         if kind == "targeted":
+            if r.exit_code in TARGETED_UNRESOLVED_EXITS:    # the ids never ran: inconclusive
+                continue
             if not r.ok:                # reproduced: the failure is real
                 break
             targeted_passed = True
@@ -304,38 +322,52 @@ def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholder
         verdict = r
         if r.ok:
             break
-    if len(attempts) == 1:              # a stop landed before any retry started
-        return first
+    if len(attempts) == 1:              # no retry started
+        if not stopped:
+            return first
+        # a stop cut the ladder: the gate is cut by it, not a failure to triage (SPEC-0229)
+        final = replace(first, interrupted=True)
+        _rewrite_sidecar(log_path, final, "interrupted: the runner is stopping")
+        return final
     flaky = tuple(ids) if (verdict.ok and targeted_passed) else ()
     final = replace(first, ok=verdict.ok, exit_code=verdict.exit_code, tail=verdict.tail,
-                    summary=verdict.summary, interrupted=last.interrupted,
+                    summary=verdict.summary, interrupted=last.interrupted or stopped,
                     timed_out=last.timed_out,
                     duration_s=round(sum(a["duration_s"] for a in attempts), 3),
                     attempts=tuple(attempts), flaky=flaky)
-    _rewrite_sidecar(log_path, final,
-                     log_path.with_name(f"{log_path.stem}.r{len(attempts) - 1}.log"))
+    # the error of the verdict attempt, or of a later retry that was cut short
+    err_attempt = last if (last.interrupted or last.timed_out) else verdict
+    n_err = next(a["attempt"] for a in reversed(attempts) if a["log"] == err_attempt.log)
+    err_path = log_path if n_err == 0 else log_path.with_name(f"{log_path.stem}.r{n_err}.log")
+    try:
+        error = json.loads(err_path.with_suffix(".json").read_text(encoding="utf-8")).get("error")
+    except (OSError, ValueError):
+        error = None
+    _rewrite_sidecar(log_path, final, error)
     return final
 
 
-def _rewrite_sidecar(log_path: Path, final: GateResult, last_path: Path) -> None:
+def _rewrite_sidecar(log_path: Path, final: GateResult, error: str | None) -> None:
     """Attempt 0's sidecar becomes the gate's final result (the same values as the `gate`
-    ledger event); attempt 0's raw values live on in `attempts[0]`."""
+    ledger event); attempt 0's raw values live on in `attempts[0]`. Best effort: an unreadable
+    sidecar is left as it is, and the rewrite goes through a temp file so it is never torn."""
     side = log_path.with_suffix(".json")
-    rec = json.loads(side.read_text(encoding="utf-8"))
     try:
-        rec["error"] = json.loads(last_path.with_suffix(".json").read_text(
-            encoding="utf-8")).get("error")
+        rec = json.loads(side.read_text(encoding="utf-8"))
+        rec.update(ok=final.ok, exit_code=final.exit_code, timed_out=final.timed_out,
+                   duration_s=final.duration_s, error=error)
+        for key, val in (("interrupted", final.interrupted or None),
+                         ("summary", final.summary), ("attempts", list(final.attempts) or None),
+                         ("flaky", list(final.flaky) or None)):
+            if val is None:
+                rec.pop(key, None)
+            else:
+                rec[key] = val
+        tmp = side.with_name(side.name + ".tmp")
+        tmp.write_text(json.dumps(rec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, side)
     except (OSError, ValueError):
         pass
-    rec.update(ok=final.ok, exit_code=final.exit_code, timed_out=final.timed_out,
-               duration_s=final.duration_s, attempts=list(final.attempts))
-    for key, val in (("interrupted", final.interrupted or None),
-                     ("summary", final.summary), ("flaky", list(final.flaky) or None)):
-        if val is None:
-            rec.pop(key, None)
-        else:
-            rec[key] = val
-    side.write_text(json.dumps(rec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def next_gate_seq(cfg, campaign_id) -> int:
@@ -374,6 +406,8 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
     t0 = time.monotonic()
     results = []
     cut = False
+    from .events import settings as events_settings     # lazy: events imports the queue lazily
+    deadline = t0 + float(events_settings(cfg)["gate_budget_s"])   # SPEC-0289: retries stay in it
     try:
         for gate in project_cfg.get("gates") or []:
             if stop is not None and stop.is_set():      # SPEC-0229: no next gate after a stop
@@ -381,7 +415,8 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
                 break
             rel = f"gates/{seq:03d}-{gate['name']}.log"
             results.append(run_gate_with_retries(gate, worktree, env, cdir / rel, ph,
-                                                 log_rel=rel, stop=stop))
+                                                 log_rel=rel, stop=stop,
+                                                 deadline=deadline))
     finally:                                    # SPEC-0253: only the owner removes its dir
         store.clear_child_tmp(cfg, cid, owner)
     ok = all(r.ok for r in results if r.required)

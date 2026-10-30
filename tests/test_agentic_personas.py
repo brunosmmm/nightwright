@@ -979,3 +979,27 @@ def test_render_gate_results_retries_line():
     assert "retries: full rerun 2/2 failed" in render(False, att(("full", False), ("full", False)))
     assert "retries:" not in render(False, [])
     assert "no full rerun left" in render(False, att(("targeted", True)))
+
+
+def test_render_gate_results_retries_line_inconclusive_and_full_only():
+    base = {"attempt": 0, "kind": "full", "ok": False, "failing": ["a::b", "c::d"]}
+
+    def render(ok, *retries):
+        attempts = [base] + [{"attempt": i, "failing": [], **a} for i, a in enumerate(retries, 1)]
+        return PS.render_gate_results({"results": [
+            {"name": "pytest", "required": True, "ok": ok, "exit_code": 0 if ok else 1,
+             "tail": "x", "attempts": attempts}]})
+    # a full-only ladder that ends in a pass
+    out = render(True, {"kind": "full", "ok": False}, {"kind": "full", "ok": True})
+    assert "retries: full rerun 1/2 passed" in out
+    # a targeted rerun that was cut short did not reproduce anything
+    for flag, word in (("timed_out", "timed out"), ("interrupted", "was interrupted")):
+        out = render(False, {"kind": "targeted", "ok": False, flag: True})
+        assert f"targeted rerun of 2 ids {word}" in out and "reproduced" not in out
+    # pytest usage / no-tests exits: the ids never ran
+    out = render(False, {"kind": "targeted", "ok": False, "exit_code": 4},
+                 {"kind": "full", "ok": False})
+    assert "could not run (pytest exit 4), full rerun 1/1 failed" in out
+    assert "reproduced" not in out
+    assert "could not run (pytest exit 5), no full rerun left" in render(
+        False, {"kind": "targeted", "ok": False, "exit_code": 5})

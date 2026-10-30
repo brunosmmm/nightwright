@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import gitops as git
 from . import store
-from .gates import tmp_env
+from .gates import TARGETED_UNRESOLVED_EXITS, tmp_env
 from .profiles import persona_settings
 from .runner import RunRequest
 
@@ -368,14 +368,20 @@ def _retries_line(r) -> str:
         n_ok = sum(1 for a in fulls if a.get("ok"))
         full = (f"full rerun {n_ok}/{len(fulls)} passed" if n_ok
                 else f"full rerun {len(fulls)}/{len(fulls)} failed")
+    tdesc = f"targeted rerun of {ids} ids"
     if targeted is None:
         line = full
+    elif targeted.get("timed_out") or targeted.get("interrupted"):
+        line = f"{tdesc} {'timed out' if targeted.get('timed_out') else 'was interrupted'}"
+    elif targeted.get("exit_code") in TARGETED_UNRESOLVED_EXITS:
+        line = f"{tdesc} could not run (pytest exit {targeted['exit_code']}), " \
+               + (full or "no full rerun left")
     elif not targeted.get("ok"):
-        line = f"targeted rerun of {ids} ids reproduced the failure"
+        line = f"{tdesc} reproduced the failure"
     elif not fulls:
-        line = f"targeted rerun of {ids} ids passed, no full rerun left (the gate stays failed)"
+        line = f"{tdesc} passed, no full rerun left (the gate stays failed)"
     elif r.get("ok"):
-        line = f"targeted rerun of {ids} ids passed, {full}"
+        line = f"{tdesc} passed, {full}"
     else:
         line = f"targeted rerun passed but {full} (order-dependent or other failure)"
     if r.get("flaky"):

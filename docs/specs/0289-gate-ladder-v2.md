@@ -298,6 +298,18 @@ early-stop and result-field tests failed), taking `interrupted` from attempt 0
 (`test_targeted_rerun_reproduces` failed). `python3 tools/spec_lint.py` passes. The full
 `uv run pytest` was left to gating (it did not finish inside the implementer's time window).
 
+### Test record, review round 1 (2026-10-30)
+
+Added tests for the review findings: `tail`/`summary` from the last full attempt (three
+cases), retry-sidecar contents, `_targeted_ids` eligibility (JUnit, `error`, `failed+errors`
+vs `len(failing)`, shell operators, `retry_cmd` exempt), exit 4/5 targeted reruns not counted
+as reproduced, the retry deadline, `_rewrite_sidecar` (error propagation, clearing, an
+unreadable sidecar), an interrupted attempt 0 not retried, and the persona wordings (full-only
+pass, timed-out/interrupted/unresolved targeted rerun). The timeout tests now patch
+`run_gate` instead of sleeping. Ran `uv run pytest -q` on the gates, project, personas,
+dashboard, queue, dogfood-config, close-train, loop-state, watchdog, lease and events test
+files: 430 passed. `python3 tools/spec_lint.py` passes. The full suite is left to gating.
+
 ### As shipped
 
 Matches the Design. Small additions: `run_gate` gained keyword-only `cmd_override` and
@@ -306,6 +318,29 @@ takes an optional `placeholders` argument so `retry_cmd` is expanded before the 
 substituted. When a stop lands before any retry starts, `run_gate_with_retries` returns
 attempt 0's result unchanged (no `attempts`). The persona line for a targeted pass with no full
 retry left reads "targeted rerun of N ids passed, no full rerun left (the gate stays failed)".
+
+Review-round additions (all outside the Design text, none changes an acceptance criterion):
+- **Inconclusive targeted rerun.** A targeted rerun that exits 4 or 5 (pytest usage error or no
+  tests collected, `gates.TARGETED_UNRESOLVED_EXITS`) never ran the ids, so it is not
+  "reproduced": the ladder goes on with full reruns and `flaky` stays empty. The persona line
+  reads "targeted rerun of N ids could not run (pytest exit 4), ...". A targeted rerun that
+  timed out or was interrupted reads "timed out" / "was interrupted", not "reproduced".
+- **No ids appended to a shell pipeline.** Without `retry_cmd`, a `cmd` containing a shell
+  operator (`| & ; < > ( ) \``, `$(`, a newline) gets no targeted rung (the ids would go to
+  the wrong program); the ladder runs full reruns. `retry_cmd` is not subject to this.
+- **Retry time budget.** `gate_budget_s` (the runner's busy and stuck budget, default raised
+  from 1800 to 3600 s) now bounds the ladder: `run_all` passes `run_gate_with_retries` a
+  `deadline` (start of the run + `gate_budget_s`), and a *full* rerun is not started when
+  `now + attempt 0's duration` would pass it. The targeted rung is never budgeted.
+- **A stop that skips the retries marks the gate `interrupted`** (also when it lands mid-ladder
+  after a completed retry), so `GateRun.interrupted` is true and the campaign is not triaged
+  (SPEC-0229). The gate's sidecar is rewritten with `interrupted: true` and the stop error.
+- The rewritten sidecar's `error` comes from the verdict attempt, or from a later retry that
+  was cut short; the rewrite is best effort (an unreadable sidecar is left as it is) and goes
+  through a temp file plus `os.replace`.
+- Wording: the full-rerun phrase is "full rerun K/N passed" (K passes among N full reruns) or
+  "full rerun N/N failed"; the Design's "full rerun 1/2 failed" is an illustration of the
+  shape, not a literal string.
 
 ## Rollout / migration
 

@@ -82,8 +82,9 @@ _TRANSIENT_MARKERS = ("usage_limit", "session limit", "rate limit", "429", "over
 DEFAULTS = {"poll_s": 2.0, "silent_after_s": 900, "overdue_grace_s": 60,
             "cost_warning_ratio": 0.8,
             # a GATING / CLOSING item runs project gates (and a rebase) in-process; the loop
-            # cannot heartbeat meanwhile, so its lease is not stale within this budget
-            "gate_budget_s": 1800,
+            # cannot heartbeat meanwhile, so its lease is not stale within this budget; SPEC-0289:
+            # a gate's retry ladder runs inside it (a full rerun that would end past it is skipped)
+            "gate_budget_s": 3600,
             # SPEC-0212: conductor ping interval and the "too long" thresholds
             "ping_interval_s": 600, "blocked_after_s": 1200, "stuck_after_s": 900,
             "ready_grace_s": 60,
