@@ -72,7 +72,9 @@ outbound campaign that *merges* (only the PR hand-off variant), so the outbound 
 
 `queue._reconcile_closed` branches on `specs._is_outbound_spec_id(spec_id)`. For an outbound
 spec it skips `reconcile_ideas` and, when the outcome is `MERGED`, calls
-`export.pull_status(cfg, spec_id, to=<campaign repo.root>)`. The result is ledgered as a new
+`export.pull_status(cfg, spec_id)` with no `to`, so the frozen `target_spec_path` (SPEC-0065)
+is read: the same file `queue.plan_add` queued. Only an outbox copy with no frozen path (an
+old export) is pulled with `to=<campaign repo.root>`. The result is ledgered as a new
 `outbound_pulled` event; any exception becomes a minor `bookkeeping` finding, exactly like the
 existing reconcile failure path. For `HANDED_OFF` it does nothing beyond a note that the pull
 waits for the merge. Because `_sweep_write` already calls `_reconcile_closed(…, "MERGED")`,
@@ -87,11 +89,12 @@ the sweep path needs no extra wiring.
 - `_pull_outbound(...)` (new, same file, next to `_mark_handed_off`):
   - `outcome != "MERGED"` → append an `info` finding (`gate: bookkeeping`, title "outbound
     pull-status waits for the merge") and return.
-  - `from .. import export as EX`; `path, status = EX.pull_status(cfg, spec_id,
-    to=state["repo"]["root"])`. `to` is the campaign's target checkout; it only takes effect
-    when the outbox copy has no frozen `target_spec_path` (`_portable_dest_path`), which is
-    the existing behaviour for old exports. The campaign root is the repo the file merged
-    into.
+  - `from .. import export as EX`; `path, status = EX.pull_status(cfg, spec_id)`, with no
+    `to`, so the frozen `target_spec_path` (SPEC-0065) is read, which is the same file
+    `queue.plan_add` queued. Only when the outbox copy has no `target_spec_path` (an old
+    export) pass `to=state["repo"]["root"]`, the repo the file merged into. Note that an
+    explicit `to` always overrides the frozen path in `_portable_dest_path`
+    (`src/wt/export.py:180-195`), so it must not be passed when the path is frozen.
   - Before the call, snapshot the linked idea's state with the same `_ideas(cfg)` /
     `SP._sole_claimant` helpers `_mark_handed_off` uses; after it, re-read. Append
     `("outbound_pulled", {"spec_id", "status", "outbox_path": str(path), "idea_id", "from",
@@ -152,6 +155,8 @@ advances `EXPORTED → SHIPPED` via `pull_status`, which also archives through t
       failed", and raises nothing.
 - [ ] An outbound campaign no longer records the "idea reconcile skipped: spec store is not
       this repo" finding; an internal campaign's reconcile behaviour and events are unchanged.
+- [ ] The pull reads the outbox copy's frozen `target_spec_path` (no `to` passed); `to=<repo
+      root>` is passed only when the outbox copy has no `target_spec_path`.
 - [ ] `outbound_pulled` passes the ledger validator and is documented in
       `docs/product/capabilities/agentic.md`.
 - [ ] `uv run pytest` and `python3 tools/spec_lint.py` pass (docs build included).
@@ -172,10 +177,14 @@ advances `EXPORTED → SHIPPED` via `pull_status`, which also archives through t
      finding, idea `EXPORTED` (AC 5).
   4. `test_outbound_pull_failure_is_a_finding` — remove the outbox copy before close;
      campaign `MERGED`, minor "outbound pull-status failed" finding (AC 6).
-  5. `test_internal_campaign_unchanged` — an internal merge still emits `idea_reconciled` and
+  5. `test_outbound_pull_uses_frozen_target_path` — export into a non-default spec dir so
+     the frozen `target_spec_path` differs from the `spec_dir` derivation; the pull reads
+     that file (outbox `done`); a second case strips `target_spec_path` from the outbox
+     copy and asserts the pull falls back to `<repo root>/<spec_dir>/` (AC 8).
+  6. `test_internal_campaign_unchanged` — an internal merge still emits `idea_reconciled` and
      no `outbound_pulled`, and an outbound one has no "reconcile skipped" finding (AC 7).
 - `tests/test_agentic_logs.py` (ledger schema) gets an `outbound_pulled` validity case;
-  `tests/test_render.py` a rendering case for the event (AC 3, 8).
+  `tests/test_render.py` a rendering case for the event (AC 3, 9).
 - Any defect in the outbound `merge` path that test 1 exposes (spec-DoD audit, rel path,
   worktree setup) is fixed in this spec's change and noted under "As shipped".
 - **Manual verification:** in a scratch git repo registered as an `outbox_targets` project:
