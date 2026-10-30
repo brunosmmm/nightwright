@@ -344,6 +344,11 @@ its own decisions in the same vocabulary as the conductor.
 - `uv run pytest tests -k agentic` (run before the new tests were added, so it covers the
   existing suites): 2209 passed, 2 skipped.
 - The remaining, non-agentic part of the full suite was left to gating (no-regressions check). `python3 tools/spec_lint.py` passes.
+- Review loop: added `test_auto_park_projects_auto_and_is_held`,
+  `test_close_park_inside_tick_is_decided_and_recorded` and `test_long_crashed_run_is_not_phantom`;
+  removing the end-of-tick `_record_auto_waits` or `auto` from the `parked` projection now fails
+  them. Targeted run of the five spec test files plus `tests/test_agentic_queue_merge.py` passes;
+  the full suite is left to gating.
 - Manual verification (`wt queue decisions --since 1d`, `wt queue wakeups`) can only run on the
   live queue after merge; it is not done yet and is the first thing to check there.
 
@@ -363,6 +368,12 @@ its own decisions in the same vocabulary as the conductor.
   `_auto_give_up`; the event is written under the item lock, the record after it.
 - The skill also gained a `parked.config_invalid` row (the queue's recovery record uses that
   rule id).
+- Phantom definition tightened in review: a run "did no measurable work" only when its
+  `duration_s` is known and ≤ `phantom_max_duration_s`. Empty `usage` does not count as no work
+  (the runner writes `usage: {}` for every crashed, timed-out or unparseable run, so it would
+  make the duration guard dead code), and zero output tokens with a long duration is not phantom
+  either. A run with no `duration_s` is not phantom. This supersedes the "usage is empty … or
+  duration ≤" wording in Decision 1 and the Design.
 
 ## Rollout / migration
 

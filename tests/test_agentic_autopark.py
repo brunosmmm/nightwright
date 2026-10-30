@@ -46,10 +46,24 @@ def test_phantom_usd():
               _end(7, 4.0, duration=1200, usage={"output_tokens": 900})]   # did work
     assert AP.phantom_usd(ledger) == 8.0
     assert AP.phantom_usd(ledger, since_seq=0) == 11.0
-    # long, but produced no tokens: still no measurable work
-    assert AP.phantom_usd([_end(1, 2.0, duration=1200, usage={"output_tokens": 0})]) == 2.0
+    # long with zero output tokens is not phantom either: the duration decides
+    assert AP.phantom_usd([_end(1, 2.0, duration=1200, usage={"output_tokens": 0})]) == 0.0
     # tokens but short: below `phantom_max_duration_s`
     assert AP.phantom_usd([_end(1, 2.0, duration=30, usage={"output_tokens": 5})]) == 2.0
+    # the `phantom_max_duration_s` boundary is inclusive; no duration is not phantom
+    assert AP.phantom_usd([_end(1, 2.0, duration=120)]) == 2.0
+    assert AP.phantom_usd([_end(1, 2.0, duration=120.5)]) == 0.0
+    assert AP.phantom_usd([_end(1, 2.0, duration=None)]) == 0.0
+
+
+def test_long_crashed_run_is_not_phantom():
+    """What the runner really writes for a 40-minute run killed by a 529: no usage, no cost."""
+    end = {"type": "run.end", "seq": 1, "usage": {}, "cost_usd": None, "cost_estimated": True,
+           "charged_usd": 4.0, "duration_s": 2400, "result_tail": "API Error: 529 overloaded"}
+    assert AP.phantom_usd([end]) == 0.0
+    assert AP.decide(_state("cost_cap", total=8.0), [end], SETT, NOW, budget=4.0) is None
+    short = dict(end, duration_s=3)
+    assert AP.phantom_usd([short]) == 4.0
 
 
 @pytest.mark.parametrize("ledger,total,expect", [

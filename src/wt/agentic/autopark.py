@@ -66,10 +66,9 @@ def _since_seq(ledger) -> int:
 
 
 def _did_no_work(ev: dict, max_duration_s: float) -> bool:
-    usage = ev.get("usage")
-    out = usage.get("output_tokens") if isinstance(usage, dict) else None
-    if not isinstance(out, (int, float)) or isinstance(out, bool) or out <= 0:
-        return True
+    """A run is taken to have done no work only when it was short. A crashed or unparseable run
+    reports `usage: {}` whatever it did, so empty usage proves nothing; a run without a
+    `duration_s` is not phantom either."""
     dur = ev.get("duration_s")
     return isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur <= max_duration_s
 
@@ -85,7 +84,8 @@ def _phantom_runs(ledger, max_duration_s, since_seq=None) -> list[dict]:
 def phantom_usd(ledger, since_seq=None, max_duration_s=120) -> float:
     """The sum of `charged_usd` of the `run.end` events after `since_seq` (default: the last
     `resume` / `open`) that were charged as an estimate, failed transiently and did no
-    measurable work (`usage` without output tokens, or `duration_s` ≤ `max_duration_s`)."""
+    measurable work (a known `duration_s` ≤ `max_duration_s`; usage is not consulted, since
+    crashed runs report none)."""
     return round(sum(float(e.get("charged_usd") or 0.0)
                      for e in _phantom_runs(ledger, max_duration_s, since_seq)), 4)
 

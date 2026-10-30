@@ -2,7 +2,10 @@
 carries `auto`, `_tick` writes the `wait` record outside any item lock, step 0a resumes."""
 import pytest
 
+from test_agentic_e2e import ENV, _git, _write
+from test_agentic_queue_merge import branch_wt, queue_merge
 from test_agentic_queue import PROFILE, _rr, opened  # noqa: F401  (fixture)
+from wt.agentic import close as CL
 from wt.agentic import decisions as D
 from wt.agentic import escalations as ESC
 from wt.agentic import events as E
@@ -263,3 +266,47 @@ def test_config_invalid_recovery_records_decision(opened, monkeypatch):
     recs = [r for r in D.read(cfg, campaign=cid) if r["rule"] == "parked.config_invalid"]
     assert [(r["by"], r["kind"]) for r in recs] == [("queue", "resume")]
     assert S.read_state(cfg, cid)["state"] != "PARKED"
+
+
+def test_auto_park_projects_auto_and_is_held(opened):
+    cfg, cid, ctx = opened
+    st = _park(cfg, cid)
+    ev = E._project_ledger_event(S.read_ledger(cfg, cid, types=["park"])[-1], st,
+                                 E.settings(cfg), False)
+    assert ev[0] == "parked" and ev[1]["auto"]["rule"] == BASE
+    assert QT.classify(cfg, {"type": ev[0], "data": ev[1]}, None) == "hold"
+
+
+def test_close_park_inside_tick_is_decided_and_recorded(tmp_path, monkeypatch):
+    """The real close → finish_close → `_park` path: the park happens during the tick, so only
+    the end-of-tick `_record_auto_waits` can have written the `wait` record by then."""
+    from test_agentic_e2e import make_cfg, make_repo, run_cli, script
+    for k, v in ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("WT_AGENTIC_RUNNER", raising=False)
+    monkeypatch.delenv("WT_AGENTIC_FAKE_SCRIPT", raising=False)
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    branch_wt(tmp_path, repo)
+    cid = queue_merge(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "tick"])            # admit + open
+    assert r.exit_code == 0, r.output
+    assert S.read_state(cfg, cid)["state"] == "CLOSING"
+    moves = {"n": 0}
+
+    def move_base():
+        moves["n"] += 1
+        _write(repo, f"m{moves['n']}.txt", "x\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", f"move {moves['n']}")
+
+    real = CL.finish_close
+    monkeypatch.setattr(CL, "finish_close",
+                        lambda *a, **k: real(*a, **k, _hooks={"before_merge": move_base}))
+    r = run_cli(cfg, monkeypatch, ["queue", "tick"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "base_moving" and moves["n"] == 2
+    assert st["park"]["auto"]["rule"] == BASE
+    recs = D.read(cfg, campaign=cid)
+    assert [(r["by"], r["kind"], r["rule"]) for r in recs] == [("queue", "wait", BASE)]
