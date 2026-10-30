@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (99/102 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (99/103 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -200,6 +200,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0295](./specs/0295-spec-review-findings-carry-a-required-structured.md) Review findings carry a required, structured suggested_fix — done
   - [x] [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) Outbound projects end to end: a merged campaign pulls the portable spec's status back — done
   - [ ] [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) Agentic MVP: a cheap, durable, quiet conductor on a second project — accepted
+  - [ ] [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) Remote workers: run gates, persona runs and campaigns on other machines — draft
 - **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · accepted · (4/7 done)
   - [x] [SPEC-0299](./specs/0299-conductor-cost-measurement.md) Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export — done
   - [x] [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups — done
@@ -208,6 +209,8 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0303](./specs/0303-fewer-rebase-conflict-parks.md) Fewer `rebase_conflict` parks: base churn is not a conflict, the resolver is not blocked by the cap, and conflict pressure is exported — accepted
   - [ ] [SPEC-0304](./specs/0304-mvp-scorecard-queue-mvp-report.md) MVP scorecard: `wt queue mvp-report` computes exit criteria E1–E6 over the last N merged campaigns — accepted
   - [x] [SPEC-0307](./specs/0307-wt-idea-epic-set-or-clear-epic-on-an-existing.md) wt idea epic: set or clear :EPIC: on an existing idea — done
+- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · draft · (0/0 done)
+  - _(no child specs yet)_
 
 ## Active & planned
 
@@ -224,6 +227,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0302](./specs/0302-routine-parks-decided-by-the-queue.md) | Routine parks decided by the queue: `base_moving` and phantom-charge `cost_cap` resume themselves, logged `by: queue` | feature | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0303](./specs/0303-fewer-rebase-conflict-parks.md) | Fewer `rebase_conflict` parks: base churn is not a conflict, the resolver is not blocked by the cap, and conflict pressure is exported | feature | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0304](./specs/0304-mvp-scorecard-queue-mvp-report.md) | MVP scorecard: `wt queue mvp-report` computes exit criteria E1–E6 over the last N merged campaigns | feature | accepted | M10: agentic MVP | 2026-10-30 |
+| [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | draft | — | 2026-10-30 |
 
 ## Done
 
