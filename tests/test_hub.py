@@ -193,6 +193,17 @@ def test_hub_agentic_slice(tmp_path, monkeypatch):
     assert filtered["ideas"] == [] and filtered["agentic"] == ag
 
 
+def test_hub_agentic_spec_id_falls_back_to_written_spec(tmp_path, monkeypatch):
+    """An idea campaign that wrote a spec carries the id in `spec.id`, not `spec_id`."""
+    from wt.agentic import store
+    cfg = _cfg(tmp_path)
+    store.create_campaign(cfg, {"id": "C-9", "kind": "idea", "state": "IMPLEMENTING",
+                                "spec_id": None, "spec": {"id": "SPEC-0042"},
+                                "idea": {"id": "IDEA-009"}, "project": "Meta-Tools"})
+    (row,) = _hub(cfg, monkeypatch)["agentic"]["campaigns"]
+    assert row["spec_id"] == "SPEC-0042" and row["idea_id"] == "IDEA-009"
+
+
 def test_hub_agentic_error_isolated(tmp_path, monkeypatch):
     from wt.agentic import store
 

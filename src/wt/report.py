@@ -493,7 +493,8 @@ def _hub_agentic(cfg, *, project=None) -> dict:
             idea_id = (st.get("idea") or {}).get("id") or (st.get("idea_link") or {}).get("id")
             rows.append({
                 "id": st.get("id"), "kind": st.get("kind"), "state": st.get("state"),
-                "spec_id": st.get("spec_id"), "idea_id": idea_id,
+                "spec_id": st.get("spec_id") or (st.get("spec") or {}).get("id"),
+                "idea_id": idea_id,
                 "project": st.get("project"), "priority": st.get("priority"),
                 "cost_usd": cost.get("total_usd"), "cap_usd": cost.get("cap_usd"),
                 "park_reason": (st.get("park") or {}).get("reason"),

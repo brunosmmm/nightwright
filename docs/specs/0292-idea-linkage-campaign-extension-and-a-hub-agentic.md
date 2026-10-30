@@ -239,6 +239,8 @@ The hub slice reads `store.list_campaigns(cfg)` (non-terminal only). That is che
   equality (`test_terminal_keeps_foreign_link`, `test_abandon_idea_campaign_ownership_check`);
   moving the release inside `_reconcile_closed` (`test_release_runs_when_reconcile_skips`);
   linking by id only (`test_spec_add_mismatch_no_write`).
+- Review round 1: the four targeted files (`test_agentic_idea_link`, `test_hub`, `test_reconcile`,
+  `test_agentic_pr_sweep`) pass (153); the full suite was left to gating.
 - Full `uv run pytest` run once at the end: 3665 passed, 3 skipped; the only 2 failures were the
   stale-ledger lint tests (`test_all_specs_pass_lint`, `test_internal_spec_lint_unaffected_by_outbox`),
   fixed by `python3 tools/spec_lint.py --write-ledger`, after which both pass.
@@ -259,6 +261,14 @@ The hub slice reads `store.list_campaigns(cfg)` (non-terminal only). That is che
 - `_unlink_idea` now calls `_release_idea_link` first. A failure there is a minor
   `bookkeeping` finding instead of an exception, and the ownership rule replaces the
   unconditional clear. No existing test asserted the unconditional clear.
+
+- Review round 1 fixes: `_release_idea_link` now counts failed clears instead of de-duplicating on
+  `(file, heading)`, so a same-headed twin naming the campaign is cleared too;
+  `source_idea_task` invalidates the org tasks cache first (like `_ideas`) so the held-by check
+  sees a link written within one mtime tick; `_hub_agentic` falls back to `spec.id` for `spec_id`.
+  New tests: `test_sweep_merge_releases_link`, `test_release_clears_same_heading_twin`,
+  `test_hub_agentic_spec_id_falls_back_to_written_spec` (sabotaging the `_sweep_write` release
+  line fails the sweep test).
 
 ## Rollout / migration
 

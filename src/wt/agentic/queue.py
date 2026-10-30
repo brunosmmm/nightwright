@@ -4854,21 +4854,20 @@ def _release_idea_link(cfg, state: dict, events: list) -> None:
     `idea_unlinked` events; an error becomes a minor `bookkeeping` finding. Never raises."""
     from .. import org_write as OW
     cid = state["id"]
-    done: set = set()
+    failed = 0
     try:
         while True:                         # re-scan: a clear shifts lines below it in the file
             todo = [t for t in _ideas(cfg)
-                    if (t.properties.get("CAMPAIGN") or "").strip() == cid
-                    and (t.file, t.heading) not in done]
-            if not todo:
+                    if (t.properties.get("CAMPAIGN") or "").strip() == cid]
+            if len(todo) <= failed:         # a failed clear stays in the list, ahead of the rest
                 return
-            task = todo[0]
-            done.add((task.file, task.heading))
+            task = todo[failed]
             idea_id = (task.properties.get("ID") or task.id or "").strip()
             try:
                 OW.clear_property(cfg, task, "CAMPAIGN")
                 events.append(("idea_unlinked", {"idea_id": idea_id}))
             except Exception as e:          # noqa: BLE001 — bookkeeping must not change the state
+                failed += 1
                 events.append(("finding", {
                     "persona": "close", "severity": "minor", "gate": "bookkeeping",
                     "title": f"idea unlink failed: {idea_id}", "detail": str(e) or type(e).__name__,

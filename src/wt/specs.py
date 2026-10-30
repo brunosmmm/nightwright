@@ -919,8 +919,9 @@ def source_idea_task(cfg, spec_fm):
     """`(task, None)` for the idea a spec's `source_idea` names, or `(None, reason)` (SPEC-0292).
     Carriers of the id are found across every org file (rotated ones included) and picked with
     the SPEC-0267 rule (`_pick_idea`), so a reused id is never linked."""
-    from .org import filter_tasks, load_tasks
+    from .org import filter_tasks, invalidate_tasks_cache, load_tasks
 
+    invalidate_tasks_cache()        # a link written within one mtime tick must be seen (held-by rule)
     want = str((spec_fm or {}).get("source_idea") or "").strip().upper()
     if not want:
         return None, "no source_idea"

@@ -255,3 +255,33 @@ def test_merged_done_spec_clears_link_on_the_promoted_idea(tmp_path, monkeypatch
     left = [t for t in ORG.load_tasks(cfg) if t.is_idea and t.properties.get("ID") == iid]
     assert left and all(not t.properties.get("CAMPAIGN") for t in left)
     assert len(types(cfg, cid, "idea_unlinked")) == 1
+
+
+def test_sweep_merge_releases_link(tmp_path, monkeypatch):
+    """The PR sweep's merge write (`_sweep_write`) releases the link like `_apply` does."""
+    cfg, _, iid = _world(tmp_path, monkeypatch)
+    cid = added(cfg, monkeypatch)
+    run_cli(cfg, monkeypatch, ["queue", "tick"])
+    st = S.read_state(cfg, cid)
+    S.write_state(cfg, cid, dict(st, state="HANDED_OFF",
+                                 close={"mode": "pr", "merged_sha": None, "pr_url": "https://gh/p/1"}))
+    assert prop(cfg, iid) == cid
+    view = lambda url: {"state": "MERGED", "merged_at": "2026-10-27T10:00:00Z", "merge_sha": "abc"}  # noqa: E731
+    (row,) = Q.sweep_handed_off(cfg, apply=True, view=view)
+    assert row["action"] == "merge" and S.read_state(cfg, cid)["state"] == "MERGED"
+    assert prop(cfg, iid) is None
+    (ev,) = types(cfg, cid, "idea_unlinked")
+    assert ev["idea_id"] == iid
+
+
+def test_release_clears_same_heading_twin(tmp_path, monkeypatch):
+    """Two ideas in one file with the same heading both naming the campaign are both cleared."""
+    cfg, _, iid = _world(tmp_path, monkeypatch)
+    cid = added(cfg, monkeypatch)
+    _, _, other = OW.add_idea(cfg, "link me")                       # same heading, later in the file
+    OW.set_property(cfg, idea(cfg, other), "CAMPAIGN", cid)
+    assert prop(cfg, iid) == cid and prop(cfg, other) == cid
+    st = _merge(cfg, monkeypatch, cid)
+    assert st["state"] == "MERGED"
+    assert prop(cfg, iid) is None and prop(cfg, other) is None
+    assert len(types(cfg, cid, "idea_unlinked")) == 2
