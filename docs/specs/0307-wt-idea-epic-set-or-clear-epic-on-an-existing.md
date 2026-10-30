@@ -1,7 +1,7 @@
 ---
 id: SPEC-0307
 title: "wt idea epic: set or clear :EPIC: on an existing idea"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -117,25 +117,25 @@ list if it enumerates them).
 
 ## Acceptance criteria
 
-- [ ] `set_idea_epic(cfg, "IDEA-N", "SPEC-0298")` writes `:EPIC: SPEC-0298` to that idea's
+- [x] `set_idea_epic(cfg, "IDEA-N", "SPEC-0298")` writes `:EPIC: SPEC-0298` to that idea's
       drawer, creating the drawer if absent, and returns the file path.
-- [ ] Setting a different value on an idea that already has `:EPIC:` replaces it, leaving
+- [x] Setting a different value on an idea that already has `:EPIC:` replaces it, leaving
       exactly one `:EPIC:` line.
-- [ ] `set_idea_epic(cfg, "IDEA-N", "")` (or `None`) removes the `:EPIC:` line entirely. No
+- [x] `set_idea_epic(cfg, "IDEA-N", "")` (or `None`) removes the `:EPIC:` line entirely. No
       empty `:EPIC:` line remains. Clearing an idea with no `:EPIC:` does not raise.
-- [ ] An id that is not a known `kind: epic` spec prints a warning on stderr naming the known
+- [x] An id that is not a known `kind: epic` spec prints a warning on stderr naming the known
       epics, and is still written.
-- [ ] Calling it on a non-idea task raises `ValueError`, and `wt idea epic` turns that into a
+- [x] Calling it on a non-idea task raises `ValueError`, and `wt idea epic` turns that into a
       clean `ClickException` (non-zero exit, no traceback).
-- [ ] Setting or clearing bumps `:UPDATED:` on the idea, and leaves `:PROJECT:`, `:KIND:`,
+- [x] Setting or clearing bumps `:UPDATED:` on the idea, and leaves `:PROJECT:`, `:KIND:`,
       `:ID:` and other properties and the headline unchanged.
-- [ ] After setting, `wt ideas list --epic SPEC-0298` includes the idea. After clearing, it
+- [x] After setting, `wt ideas list --epic SPEC-0298` includes the idea. After clearing, it
       does not.
-- [ ] `wt idea epic X` without `--set` exits non-zero with a usage message.
-- [ ] `wt idea epic X --set SPEC-0298` prints a success line, and `--set ""` prints
+- [x] `wt idea epic X` without `--set` exits non-zero with a usage message.
+- [x] `wt idea epic X --set SPEC-0298` prints a success line, and `--set ""` prints
       `(none)`.
-- [ ] `--set` offers epic ids through shell completion.
-- [ ] `wt spec new --from-idea` on an idea given an `:EPIC:` through this command sets
+- [x] `--set` offers epic ids through shell completion.
+- [x] `wt spec new --from-idea` on an idea given an `:EPIC:` through this command sets
       `parent:` to that epic.
 
 ## Test plan
@@ -161,6 +161,28 @@ list if it enumerates them).
   capture tests (`capture --epic` and `seed-children` untouched), and
   `python3 tools/spec_lint.py`.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_idea_epic.py tests/test_idea_project.py -q` — 34 passed (the 14 new
+  tests in `tests/test_idea_epic.py` cover every named Test plan item; the SPEC-0109 tests are
+  the regression guard for the sibling verb).
+- `uv run pytest tests/test_completion*.py tests/test_promote.py tests/test_epic*.py -q` — 55
+  passed (`capture --epic`, `seed-children`, epic filtering and promotion untouched).
+- `python3 tools/spec_lint.py` — OK; ledger regenerated with `--write-ledger`.
+- Manual verification: the scripted scratch-dir run was refused by the campaign guard
+  (`WT_PERSONA_RUN=1` blocks org writes outside tests), so the set / `idea show` / clear flow
+  was verified through `CliRunner` against a tmp data dir in `test_cli_epic_set_and_clear`,
+  `test_epic_makes_the_idea_visible_to_epic_filtering` and
+  `test_spec_new_from_idea_uses_the_set_epic_as_parent`. Backups come from `set_property` /
+  `clear_property`, unchanged.
+- The full suite was left to gating.
+
+### As shipped
+
+As designed. No `/wt-orient` or `wt idea --help` list enumerates the idea verbs (the
+`idea_group` docstring does not list `project` either), so no docs list needed an entry; the
+command's own help carries the examples.
+
 ## Rollout / migration
 
 Additive. No data migration. Ideas filed before this change are re-associated by running the
@@ -168,11 +190,11 @@ new command.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

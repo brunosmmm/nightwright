@@ -34,9 +34,9 @@ from .meetings import ingest_meetings, refresh_meetings
 from .export import export_spec
 from .export_schemes import available as available_schemes
 from .org_write import (IDEA_KINDS, add_idea, add_task, clock_in, clock_out, mark_done,
-                        reindex_ideas, resolve_selector, set_idea_kind, set_idea_priority,
-                        set_idea_project, set_idea_tags, set_idea_workstream,
-                        set_state_by_selector)
+                        reindex_ideas, resolve_selector, set_idea_epic, set_idea_kind,
+                        set_idea_priority, set_idea_project, set_idea_tags,
+                        set_idea_workstream, set_state_by_selector)
 from . import org_write as OW
 from . import explore as EX
 from . import idea_ext as IX
@@ -688,6 +688,31 @@ def idea_project_cmd(cfg, selector, project):
         raise click.ClickException(str(e)) from e
     shown = project.strip() or "(none)"
     console.print(f"[green]✓[/] project ← {selector}  [white]{shown}[/]  [dim]{path}[/]")
+
+
+@idea_group.command("epic")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--set", "epic", default=None, shell_complete=C.complete_epic,
+              help="link an epic spec id (SPEC-NNNN or outbound PROJ-NNNN); empty string clears")
+@click.pass_obj
+def idea_epic_cmd(cfg, selector, epic):
+    """Set or clear an idea's `:EPIC:` (SPEC-0307). Before this, `--epic` existed only at
+    capture and in `seed-children`, so an idea filed without one could never be re-associated.
+
+    Unknown ids warn but still write (SPEC-0018 is deliberately permissive).
+
+    \b
+    wt idea epic IDEA-012 --set SPEC-0298
+    wt idea epic IDEA-012 --set ""        # clear
+    """
+    if epic is None:
+        raise click.UsageError("pass --set (use --set '' to clear)")
+    try:
+        path = set_idea_epic(cfg, selector, epic)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    shown = epic.strip() or "(none)"
+    console.print(f"[green]✓[/] epic ← {selector}  [white]{shown}[/]  [dim]{path}[/]")
 
 
 @idea_group.command("tags")

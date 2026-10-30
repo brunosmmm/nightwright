@@ -1148,6 +1148,24 @@ def set_idea_project(cfg, selector, project):
     return set_property(cfg, task, "PROJECT", value)
 
 
+def set_idea_epic(cfg, selector, epic):
+    """Set/clear `:EPIC:` on an existing idea (SPEC-0307).
+
+    Same gap `set_idea_project` closed for `:PROJECT:` (SPEC-0109): `--epic` existed only at
+    capture and in `seed-children`. Permissive per SPEC-0018 — an unknown epic warns on stderr
+    and is still written. `epic=None`/`""` clears the property. The spec's `parent:` is not
+    touched; `:EPIC:` and `parent:` stay independent.
+    """
+    task = resolve_selector(cfg, selector)
+    if not task.is_idea:
+        raise ValueError(f"{selector!r} is not an idea")
+    value = (epic or "").strip()
+    if not value:
+        return clear_property(cfg, task, "EPIC")
+    _warn_unknown_associations(cfg, epic=value)
+    return set_property(cfg, task, "EPIC", value)
+
+
 def set_idea_workstream(cfg, selector, workstream):
     """Set `:WORKSTREAM:` on an idea (SPEC-0090). Validates against cfg['workstreams']."""
     task = resolve_selector(cfg, selector)
