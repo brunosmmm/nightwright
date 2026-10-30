@@ -78,6 +78,11 @@ What exists:
    `usd: null`, and the model is listed in `unpriced_models`. The report still prints
    tokens. No built-in table ships, because a stale hard-coded price would be worse than
    an explicit gap. The rollout step sets the user's config from the published price list.
+   Dollar aggregates (`totals.usd`, `usd_by_kind`, `idle_usd`, `by_day[].usd`, each
+   campaign's `conductor_usd`, `usd_per_merge` and the export's `conductor_usd`) sum priced
+   turns only. When `unpriced_models` is non-empty, `totals.usd_complete` is false and the
+   text form appends `(partial: N unpriced turns)`. `usd_per_merge` is null when
+   `merges == 0`.
 4. **Attribution.** A conductor turn at time *t* is split equally among campaigns that are
    *live* at *t*. A campaign is live from its `open` ledger event (or `created_at`) until its
    terminal transition, the same window `campaign_export.campaign_row` uses for
@@ -113,13 +118,16 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
   now=None) -> dict`: the `wt.conductor.cost.v1` payload:
   `{sessions: [{session_id, path, found, turns}], window: {since, until},
   totals: {turns, input, output, cache_read, cache_write_5m, cache_write_1h, usd,
-  usd_by_kind: {...}}, unpriced_models: [...], context: {median, p90, max, last},
-  by_day: [{date, turns, usd, cache_read, merges}], merges, usd_per_merge, idle_usd,
+  usd_complete, usd_by_kind: {...}}, unpriced_models: [...], context: {median, p90, max,
+  last}, by_day: [{date, turns, usd, cache_read, merges}], merges, usd_per_merge, idle_usd,
   persona_usd, campaigns: [{campaign, spec_id, outcome, conductor_usd, persona_usd}],
   subagents: {...} | null}`. Days are local dates in `cfg["_tz"]`. `persona_usd` sums
-  `state.cost.total_usd` of campaigns that ended in the window.
+  `state.cost.total_usd` of campaigns that ended in the window. `merges` counts campaigns
+  whose terminal transition to MERGED or HANDED_OFF falls in the window.
 - CLI: `wt queue conductor-cost [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--session ID]…
-  [--include-subagents] [--json]`. The text form is a totals line ("N turns · $X · median
+  [--include-subagents] [--json]`. `--since` and `--until` are local dates in `cfg["_tz"]`,
+  both inclusive. A turn or campaign end is in the window when its local date d satisfies
+  since ≤ d ≤ until. Omitted bounds are open. The text form is a totals line ("N turns · $X · median
   context Yk · $Z per merge (M merges)"), a by-day table and the top 10 campaigns by
   conductor share. `wt queue conductor-session add ID [--reader conductor]` validates that
   the transcript exists (a warning, not a refusal, if it does not) and appends with
@@ -128,7 +136,10 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
   `("cost_with_conductor_usd", "float")`, which is allowed under v1 because columns are only
   appended. `export_tables` calls a new `conductor_cost.attribute(cfg, now)` once, a
   campaign-id → USD map over all registered conductor sessions. Both columns are `None` when
-  no session is registered or every turn is unpriced. A `NOTES` entry explains the equal
+  no session is registered or every turn is unpriced. When at least one session is
+  registered and some turn is priced, a campaign with no attributed turn gets
+  `conductor_usd = 0.0`. `cost_with_conductor_usd = (cost_usd or 0) + conductor_usd`, and
+  it is None exactly when `conductor_usd` is None. A `NOTES` entry explains the equal
   split.
 
 ## Alternatives considered
@@ -160,9 +171,14 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
       `idle_usd`), `merges` and `usd_per_merge`. `--session` overrides the registry.
       Sub-agent transcripts are counted only under `--include-subagents`, and only in
       `subagents`.
+- [ ] With a mix of priced and unpriced turns, every dollar aggregate sums priced turns only,
+      `totals.usd_complete` is false, the text form appends `(partial: N unpriced turns)`,
+      and `usd_per_merge` is null when `merges == 0`. `--since` and `--until` are inclusive
+      local dates in `cfg["_tz"]`, and `merges` counts MERGED and HANDED_OFF campaigns.
 - [ ] `wt campaign export` campaigns rows end with `conductor_usd` and
-      `cost_with_conductor_usd` (= `cost_usd + conductor_usd`). Both are null when no session
-      is registered, and the earlier v1 columns keep their order.
+      `cost_with_conductor_usd` (= `(cost_usd or 0) + conductor_usd`). Both are null when no
+      session is registered or no turn is priced; otherwise a campaign with no attributed
+      turn has `conductor_usd == 0.0`. The earlier v1 columns keep their order.
 - [ ] `wt queue conductor-session add|list` work as specified, and the `/wt-conduct` skill
       names `wt queue conductor-cost` in its *Reporting* step (a daily one-liner: turns, $,
       $/merge, median context).
@@ -172,26 +188,38 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
 - **Automated tests** in `tests/test_agentic_conductor_cost.py`. Fixtures write a tiny
   transcript under a temp `cfg["_root"]/-slug/<sid>.jsonl`, and campaigns go into a temp
   agentic store with `store.create_campaign` / `append_event` (open, transition to MERGED).
-  - `test_follow_records_session_once`: run `events.follow(..., max_events=1)` twice with
-    `env` patched. There is one record, with reader `conductor` and `source: "follower"`.
+  - `test_follow_records_session_once`: append one event, then run
+    `events.follow(cfg, "conductor", from_start=True, max_events=1, code_root=None)` twice
+    with `env` patched (a fresh reader's cursor starts at the last event id, so without
+    `from_start=True` or `stop=lambda: True` the call would wait forever). There is one
+    record, with reader `conductor` and `source: "follower"`.
   - `test_follow_without_session_env_records_nothing` and
-    `test_record_failure_never_breaks_follow` (monkeypatch `record_session` to raise; the
-    follower still prints the event).
+    `test_record_failure_never_breaks_follow` (monkeypatch `record_session` to raise; append
+    one event and run `events.follow(cfg, "conductor", from_start=True, max_events=1,
+    code_root=None)`, or pass `stop=lambda: True`; the follower still prints the event).
   - `test_read_turns_dedupes_by_message_id`: three lines with one id plus one other id give
     2 turns, with the last line's usage for the first id.
   - `test_read_turns_kinds_and_context`: the 5m/1h split, the fallback to
     `cache_creation_input_tokens`, and context arithmetic. Malformed, `user` and
     `<synthetic>` lines are skipped.
-  - `test_price_longest_prefix` and `test_unpriced_model_reported`.
+  - `test_price_longest_prefix` and `test_unpriced_model_reported`. The latter mixes priced
+    and unpriced turns and asserts that the dollar aggregates sum priced turns only,
+    `totals.usd_complete` is false, the text form appends `(partial: N unpriced turns)`,
+    token totals still include the unpriced turns, and `usd_per_merge` is null when
+    `merges == 0`.
   - `test_cost_report_split_and_per_merge`: two campaigns live over overlapping windows and
-    turns before, during and after them. The shares, `idle_usd`, `merges == 2` and
-    `usd_per_merge` equal hand-computed values. `by_day` uses `cfg["_tz"]`.
+    turns before, during and after them, including a turn on the `--until` date, which must
+    be counted (both bounds inclusive, local dates in `cfg["_tz"]`). The shares,
+    `idle_usd`, `merges == 2` and `usd_per_merge` equal hand-computed values. `by_day` uses
+    `cfg["_tz"]`.
   - `test_subagents_only_with_flag`.
   - `test_cli_conductor_cost_json_and_text`, using CliRunner on both forms.
   - `test_conductor_session_add_list`.
 - `tests/test_agentic_campaign_export.py`: `test_export_conductor_columns_appended`, where
   the last two columns are the new ones and the values are null without sessions and set
-  with one.
+  with one. With a session and a priced turn it also asserts that a campaign with no
+  attributed turn gets `conductor_usd == 0.0`, and that a campaign whose `cost_usd` is None
+  gets `cost_with_conductor_usd == conductor_usd`.
 - `tests/test_skills.py`: `test_conduct_skill_mentions_conductor_cost`.
 - **Sabotage checks:**
   - Count every transcript line instead of deduping by `message.id`.
@@ -204,8 +232,12 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
   `wt queue conductor-cost --since 2026-10-25 --until 2026-10-30` with list prices
   configured. Total turns are about 2,386, cache reads about 1.09B and USD about $263. Note
   the figures in *As shipped*.
-- **Regression guard:** full `uv run pytest`. The existing export tests and
-  `tests/test_agentic_followers.py` are unchanged.
+- **Regression guard:** full `uv run pytest`. `tests/test_agentic_followers.py` is
+  unchanged. In `tests/test_agentic_campaign_export.py`, only `test_columns_and_key_order`
+  and `test_column_types_pinned` change, and only by appending `"conductor_usd"` /
+  `("conductor_usd", "float")` and `"cost_with_conductor_usd"` /
+  `("cost_with_conductor_usd", "float")` after `signals`. No other existing assertion
+  changes.
 
 ## Rollout / migration
 
