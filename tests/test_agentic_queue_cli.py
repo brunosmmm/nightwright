@@ -3,6 +3,8 @@ envelopes. Repos come from the e2e harness; nothing runs a persona here."""
 import json
 import subprocess
 
+import pytest
+
 from test_agentic_e2e import (SPEC_ACCEPTED, added, impl_done, make_cfg, make_repo, run_cli, script,
                               write_review)
 from wt import org_write as OW
@@ -955,6 +957,35 @@ def test_queue_stop_json_schema(tmp_path, monkeypatch):
         d = json.loads(r.output)                # a refusal is still wt.queue.stop.v1 JSON
         assert r.exit_code == 1 and d["schema"] == "wt.queue.stop.v1" and d["result"] is None
         assert d["error"].startswith("close guard: close of C-1") and L.is_held(cfg)
+
+
+def test_queue_stop_dry_run_shows_the_same_refusals(tmp_path, monkeypatch):
+    """The plan says "refuse" wherever `stop_runner` would: the close guard (without
+    --wait-guard), a one-shot tick, another host."""
+    import os
+
+    from wt.agentic import lease as L
+    repo, cfg = _cfg(tmp_path)
+    monkeypatch.setattr(Q, "stop_runner", lambda *a, **k: pytest.fail("a dry run"))
+
+    def plan(*extra):
+        r = run_cli(cfg, monkeypatch, ["queue", "stop", "--json", *extra])
+        assert r.exit_code == 0, r.output
+        return json.loads(r.output)
+
+    with L.acquire(cfg, ["wt", "queue", "run"]) as lease:
+        assert plan()["refusal"] is None
+        lease.update_info(busy={"kind": "open", "campaign": "C-1", "since": S.now_iso(),
+                                "budget_s": 600})
+        assert plan()["refusal"].startswith("close guard: open of C-1")
+        assert plan("--wait-guard")["refusal"] is None
+        r = run_cli(cfg, monkeypatch, ["queue", "stop"])
+        assert "refuse: close guard" in r.output.replace("\n", ""), r.output
+        lease.update_info(busy=None, host="elsewhere.example")
+        assert "not this host" in plan()["refusal"]
+    with L.acquire(cfg, ["wt", "queue", "tick"]):
+        d = plan()
+        assert d["pid"] == os.getpid() and "one-shot `wt queue tick`" in d["refusal"]
 
 
 def test_queue_stop_reports_a_runner_that_started_after_the_plan(tmp_path, monkeypatch):

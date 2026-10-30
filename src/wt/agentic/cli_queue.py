@@ -1183,8 +1183,11 @@ def attach(queue_group):
             raise click.ClickException(str(e))
         st = L.lease_status(cfg)
         guard = Q.close_guard(st) if st["held"] else None
+        refusal = (Q.stop_refusal(st, (L.read_lease(cfg) or {}).get("argv"),
+                                  wait_guard=wait_guard) if st["held"] else None)
         plan = {"held": st["held"], "pid": st["pid"], "host": st["host"], "guard": guard,
-                "wait_guard": wait_guard, "timeout_s": timeout_s, "by": actor}
+                "refusal": refusal, "wait_guard": wait_guard, "timeout_s": timeout_s,
+                "by": actor}
         result = error = None
         if do_write:
             try:
@@ -1195,7 +1198,8 @@ def attach(queue_group):
                 error = str(e)
         if result and result["stopped"] and result["pid"] != plan["pid"]:
             # a runner that took the lease after the plan read: report the one stopped
-            plan.update(held=True, pid=result["pid"], host=socket.gethostname(), guard=None)
+            plan.update(held=True, pid=result["pid"], host=socket.gethostname(), guard=None,
+                        refusal=None)
         if as_json:
             _dump_json({"schema": "wt.queue.stop.v1", **plan, "written": bool(do_write),
                         "result": result, "error": error})
@@ -1206,8 +1210,9 @@ def attach(queue_group):
             console.print("[dim]no runner[/]")
         elif result is None:
             shown = {**plan, "guard": guard and Q._guard_text(guard),
-                     "action": ("wait for the guard, then SIGTERM" if guard and wait_guard
-                                else "refuse (close guard)" if guard else "SIGTERM")}
+                     "action": (f"refuse: {refusal}" if refusal
+                                else "wait for the guard, then SIGTERM" if guard
+                                else "SIGTERM")}
             _print_plan("stop runner", shown)
             console.print(_NOT_WRITTEN)
         elif result["stopped"]:

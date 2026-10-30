@@ -4336,11 +4336,9 @@ def detach_runner(cfg, argv, log_path, *, timeout_s=15, popen=subprocess.Popen,
     end = clock() + timeout_s
     while True:
         # the lease file first: the child writes it right after taking the flock, so the flock
-        # probe (a brief LOCK_EX of its own) never races the child's non-blocking acquire.
-        # `detached` is written once the child handles SIGTERM, so a `wt queue stop` right
-        # after this returns stops it gracefully.
+        # probe (a brief LOCK_EX of its own) never races the child's non-blocking acquire
         info = L.read_lease(cfg) or {}
-        if info.get("pid") == child.pid and info.get("detached") and L.is_held(cfg):
+        if info.get("pid") == child.pid and L.is_held(cfg):
             return {"pid": child.pid, "log": str(log_path)}
         rc = child.poll()
         if rc is not None:
@@ -4404,46 +4402,47 @@ def _settled_holder(cfg, sleep=time.sleep) -> dict:
                      f"holder (last: pid {prev.get('pid')} on {prev.get('host')}); retry")
 
 
-def _flock_holders(path, locks="/proc/locks") -> set | None:
-    """The pids holding a flock on `path`, from Linux's `/proc/locks`; None where that cannot
-    be read (then the lease file's `pid` is trusted as before)."""
-    try:
-        st = os.stat(path)
-        text = Path(locks).read_text(encoding="ascii", errors="replace")
-    except OSError:
-        return None
-    ino = str(st.st_ino)
-    pids = set()
-    for line in text.splitlines():
-        f = line.split()
-        # `N: FLOCK  ADVISORY  WRITE <pid> <maj:min:inode> 0 EOF`; waiters carry `->`. Only
-        # the inode is compared: on btrfs the device there is not the file's `st_dev`
-        if (len(f) >= 6 and f[1] == "FLOCK" and f[5].rsplit(":", 1)[-1] == ino
-                and f[4].isdigit()):
-            pids.add(int(f[4]))
-    return pids
+def stop_refusal(st: dict, argv=None, *, wait_guard=False) -> str | None:
+    """Why `stop_runner` does not signal the holder of the held lease `st` (a `lease_status`),
+    or None: it runs on another host, it is a one-shot `wt queue tick` (`argv`, the lease
+    file's), or it is inside the close guard (unless `wait_guard`). The `wt queue stop` dry run
+    shows the same refusals."""
+    import socket
+    if st.get("host") != socket.gethostname():
+        return (f"queue held by pid {st.get('pid')} on {st.get('host')}, not this host "
+                f"({socket.gethostname()}); stop it there")
+    if list(argv or [])[:3] == ["wt", "queue", "tick"]:
+        return (f"pid {st.get('pid')} holds the lease for a one-shot `wt queue tick`, not a "
+                "runner; it releases the lease when the tick ends")
+    busy = close_guard(st)
+    if busy is not None and not wait_guard:
+        return f"{_guard_text(busy)}; retry later or pass --wait-guard"
+    return None
 
 
 def stop_runner(cfg, *, timeout_s=60, wait_guard=False, guard_wait_s=None, kill=os.kill,
                 clock=time.monotonic, sleep=time.sleep) -> dict:
     """SIGTERM the local lease holder and wait until the lease is released (SPEC-0291). Never
     SIGKILLs. Returns `{stopped: False, reason: "no runner"}` when nothing holds the lease,
-    else `{stopped: True, pid, waited_s}`. ValueError for a holder on another host, inside the
-    close guard (unless `wait_guard`, which waits up to `guard_wait_s`, default the remaining
-    budget + 30 s), or when the lease is still held after `timeout_s`."""
-    import socket
-    st = _settled_holder(cfg, sleep)
-    if not st["held"]:
-        return {"stopped": False, "reason": "no runner"}
-    if st.get("host") != socket.gethostname():
-        raise ValueError(f"queue held by pid {st.get('pid')} on {st.get('host')}, not this "
-                         f"host ({socket.gethostname()}); stop it there")
+    else `{stopped: True, pid, waited_s}`. ValueError on a `stop_refusal` (another host, a
+    tick, the close guard unless `wait_guard`, which waits up to `guard_wait_s`, default the
+    remaining budget + 30 s), or when the lease is still held after `timeout_s`."""
     end = None
-    # the guard is checked on the very status that is acted on: after a --wait-guard wait the
-    # holder is settled again and the guard re-checked on that read, never on an earlier one
-    while (busy := close_guard(st)) is not None:
-        if not wait_guard:
-            raise ValueError(f"{_guard_text(busy)}; retry later or pass --wait-guard")
+    while True:
+        st = _settled_holder(cfg, sleep)
+        if not st["held"]:
+            return {"stopped": False, "reason": "no runner"}
+        refusal = stop_refusal(st, (L.read_lease(cfg) or {}).get("argv"), wait_guard=wait_guard)
+        if refusal:
+            raise ValueError(refusal)
+        busy = close_guard(st)
+        if busy is None:
+            # re-checked right before the signal: an open or close that started since the
+            # settle reads (or another holder) is judged again on a fresh settle
+            fresh = L.lease_status(cfg)
+            if fresh["held"] and fresh.get("pid") == st["pid"] and close_guard(fresh) is None:
+                break
+            continue
         if end is None:
             if guard_wait_s is None:
                 age = _age(busy.get("since")) or 0
@@ -4456,25 +4455,7 @@ def stop_runner(cfg, *, timeout_s=60, wait_guard=False, guard_wait_s=None, kill=
             raise ValueError(f"{_guard_text(busy)}; still guarded after "
                              f"{guard_wait_s:g}s of waiting")
         sleep(0.2)
-        st = _settled_holder(cfg, sleep)
-        if not st["held"]:
-            return {"stopped": False, "reason": "no runner"}
-        if st.get("host") != socket.gethostname():
-            raise ValueError(f"queue held by pid {st.get('pid')} on {st.get('host')}, not "
-                             f"this host ({socket.gethostname()}); stop it there")
     pid = st["pid"]
-    holder = (L.read_lease(cfg) or {}).get("argv") or []
-    if holder[:3] == ["wt", "queue", "tick"]:
-        raise ValueError(f"pid {pid} holds the lease for a one-shot `wt queue tick`, not a "
-                         "runner; it releases the lease when the tick ends")
-    holders = _flock_holders(L.lock_path(cfg))
-    if holders is not None and pid not in holders:
-        # a crashed holder's record while something else holds the flock for a moment (a
-        # `lease_status` probe): that pid may be reused by an unrelated process
-        if not L.is_held(cfg):
-            return {"stopped": False, "reason": "no runner"}
-        raise ValueError(f"the lease file names pid {pid}, which does not hold the queue lock "
-                         "(a stale record); not signalled, retry")
     start = clock()
     try:
         kill(pid, signal.SIGTERM)
@@ -4518,12 +4499,13 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
     stop = threading.Event()
     lease = L.acquire(cfg, argv or ["wt", "queue", "run"])
     previous = {}
-    handover_env = held_mask = None     # SPEC-0194 re-exec; SPEC-0291: stop signals held for it
     entered = False                     # SPEC-0262: the main `try` owns the lease from there on
     try:
-        G.reset()                                          # SPEC-0229: no stale stop flag
         # SPEC-0291: started by --detach; popped so no descendant inherits it
         runner_log = os.environ.pop(RUNNER_LOG_ENV, None)
+        if runner_log:
+            lease.update_info(log=runner_log, detached=True)
+        G.reset()                                          # SPEC-0229: no stale stop flag
         lease.update_info(poll_interval_s=interval, slot_freed_at=store.now_iso())   # SPEC-0228
 
         def _handler(signum, _frame):
@@ -4534,10 +4516,6 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                 previous[sig] = signal.signal(sig, _handler)
             except ValueError:                                  # not the main thread (tests)
                 pass
-        if previous:        # SPEC-0291: a re-exec hands them over blocked (`_hold_stop_signals`)
-            _release_stop_signals(None, previous)
-        if runner_log:      # only once SIGTERM is handled: `--detach` waits for this mark
-            lease.update_info(log=runner_log, detached=True)
         ticks = 0
         reason = "signal"
         watch_root = (code_root or code_checkout()) if reexec else None
@@ -4715,67 +4693,22 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                         **exit_fields)
             if draining:
                 lease.pop_info("draining")
-            if reason == "code_changed":
-                if previous:
-                    held_mask = _hold_stop_signals()
-                handover_env = lease.handover()
+            handover_env = lease.handover() if reason == "code_changed" else None
             G.reset()
         finally:
             lease.release()
-            if handover_env is None:
-                _release_stop_signals(held_mask)
-                _restore_handlers(previous)
+            for sig, prev in previous.items():
+                try:
+                    signal.signal(sig, prev)
+                except (ValueError, TypeError):
+                    pass
     if handover_env is not None:
         sys.stdout.flush()
         sys.stderr.flush()
-        argv = self_argv()
         if lease.info.get("detached") and lease.info.get("log"):   # SPEC-0291: the new image
             handover_env = {**handover_env, RUNNER_LOG_ENV: lease.info["log"]}  # records it too
-        if held_mask is not None and stop.is_set():
-            # SPEC-0291: a stop that came in since the drain is passed on, pending on this
-            # (blocked) thread, to the new image, which handles it once its handler is set
-            signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
-        try:
-            _EXEC(argv[0], argv, {**os.environ, **handover_env})
-        finally:                            # no exec happened (a failure; tests replace it)
-            _release_stop_signals(held_mask)
-            _restore_handlers(previous)
+        _EXEC(sys.executable, self_argv(), {**os.environ, **handover_env})
     return ticks
-
-
-_STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM)
-
-
-def _hold_stop_signals():
-    """Block SIGINT/SIGTERM on this (the main) thread for the SPEC-0194 re-exec (SPEC-0291).
-    The handlers stay installed until the exec and the mask survives it, so a `wt queue stop`
-    landing before the new image installs its own handler stays pending until then, instead
-    of meeting SIGTERM's default action (no `stop` record, a stale lease file). Returns the
-    previous mask, or None where masks are unsupported."""
-    try:
-        return signal.pthread_sigmask(signal.SIG_BLOCK, _STOP_SIGNALS)
-    except (AttributeError, ValueError, OSError):
-        return None
-
-
-def _release_stop_signals(mask, sigs=None):
-    """Restore `mask` (from `_hold_stop_signals`; None: nothing held), or unblock `sigs` (the
-    new image, once its handlers are set): a pending stop is delivered to the handler."""
-    try:
-        if sigs:
-            signal.pthread_sigmask(signal.SIG_UNBLOCK, list(sigs))
-        elif mask is not None:
-            signal.pthread_sigmask(signal.SIG_SETMASK, mask)
-    except (AttributeError, ValueError, OSError):
-        pass
-
-
-def _restore_handlers(previous: dict):
-    for sig, prev in previous.items():
-        try:
-            signal.signal(sig, prev)
-        except (ValueError, TypeError):
-            pass
 
 
 # ---- listing -----------------------------------------------------------------------------------

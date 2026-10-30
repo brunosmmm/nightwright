@@ -326,24 +326,55 @@ skill rows can then reference instead of restating it.
   all restored.
 - Full `uv run pytest` left to gating.
 
+### Test record (2026-10-30, review round 5)
+
+- Removed with the code they covered: the `/proc/locks` and blocked-handover tests
+  (`test_stop_never_signals_a_record_whose_pid_does_not_hold_the_lock`,
+  `test_flock_holders_reads_proc_locks`, `test_reexec_hands_the_stop_signals_over_blocked`,
+  `test_new_image_takes_a_pending_stop_once_its_handler_is_set`,
+  `test_blocked_pending_sigterm_survives_exec_and_wt_import`) and
+  `test_detach_waits_for_the_detached_mark`. `test_run_marks_detached_only_once_sigterm_is_handled`
+  became `test_run_marks_the_lease_right_after_acquire` (the first lease update is `log` /
+  `detached`). Added `test_stop_rechecks_the_guard_right_before_the_signal` (an `open` written
+  between the settle reads and the SIGTERM: refused; with `--wait-guard` signalled only once
+  it is gone) and, in `tests/test_agentic_queue_cli.py`,
+  `test_queue_stop_dry_run_shows_the_same_refusals` (guard, `--wait-guard`, other host, tick).
+  `test_stop_wait_guard_then_stops` clears the guard once the stop is seen polling it
+  (`waits.until`) instead of a 0.3 s timer, and the positive stop waits use `WAIT_S`
+  (SPEC-0269); the remaining short bounds (0.3 s / 0.5 s) are the timeouts those tests expect
+  to fire, never a wait before a positive assertion.
+- `test_agentic_detach`, `test_agentic_queue_cli`, `test_agentic_reexec`,
+  `test_agentic_drain_signal`, `test_agentic_exit_paths`, `test_agentic_adopt`,
+  `test_agentic_lease`, `test_agentic_close_inflight`, `test_agentic_config_reload`,
+  `test_skills`, `test_agentic_runner`: 353 passed.
+- **Manual** (isolated `WT_DATA_DIR`/`WT_CONFIG_DIR`): `wt queue run --detach --poll-interval
+  2` printed `runner started: pid N, log …/agentic/runner.log` (exit 0); `wt queue list --json`
+  showed `.lease.log` and `detached: true`; the dry-run `wt queue stop` planned `action:
+  SIGTERM`; `wt queue stop --yes` stopped it in 0.2 s; `runner-log --tail 2` showed `start`
+  then `stop signal after 1 tick(s)`; a further `stop --yes` printed `no runner`.
+- **Sabotage:** dropping the pre-signal re-check (`if True:`) makes
+  `test_stop_rechecks_the_guard_right_before_the_signal` fail; restored.
+- Full `uv run pytest` left to gating.
+
 ### As shipped (2026-10-30)
 
-- Review round 4: the SPEC-0194 re-exec hands SIGINT/SIGTERM over *blocked*. Right before
-  `handover` the main thread blocks them, the handlers stay set until the exec (they are
-  restored only when no exec happens), a stop caught since the drain is re-raised pending on
-  the thread, and the new image unblocks them right after installing its handler. A
-  `wt queue stop --yes` landing in the exec window therefore stops the new image gracefully
-  instead of meeting SIGTERM's default action. Before the SIGTERM, `stop_runner` checks
-  Linux's `/proc/locks` (`_flock_holders`, matched by inode, since btrfs shows another device
-  there) that the lease file's `pid` holds the queue flock: a stale record is refused (or
-  `no runner` once the flock is free). Where `/proc/locks` cannot be read, the file's `pid` is
-  trusted as before. `wt queue stop --yes` reports the runner it stopped even when that runner
-  took the lease after the plan read (the JSON's `held`/`pid`/`host` then name it).
-- Review round 3: `run` writes `log` / `detached: true` right after it installs its
-  SIGINT/SIGTERM handler (a few lines after `L.acquire`, not right after it), and
-  `detach_runner` succeeds only once the lease file names the child's pid *and* carries
-  `detached`, so a `wt queue stop --yes` straight after `--detach` always meets the handler.
-  `stop_runner` checks the close guard on the settled status it then acts on: each
+- Review round 5 (conductor brief: back to the Design): the round-4 `/proc/locks` holder
+  check and the blocked-signal re-exec handover are removed; the runner is identified by the
+  settled lease file's `pid` + `host` + `argv` (a `wt queue tick` holder is refused), and the
+  SPEC-0194 re-exec restores the handlers and execs as before this spec (only its argv keeps
+  `-m wt`, and it passes `WT_RUNNER_LOG` on). `run` writes `log` / `detached: true` as its
+  first lease update right after `L.acquire` (before its SIGTERM handler is installed), and
+  `detach_runner` succeeds once the lease is held with the child's `pid` (it no longer waits
+  for `detached`). `stop_runner` re-reads `lease_status` right before the SIGTERM and only
+  signals when the same pid holds it outside the close guard (else it settles and judges
+  again: refuse, or wait with `--wait-guard`). The refusals live in one helper,
+  `stop_refusal` (another host, a tick, the close guard without `--wait-guard`), which the
+  `wt queue stop` dry run applies too: its plan shows `action: refuse: …` and the JSON gains
+  `refusal`. `src/wt/__main__.py` stays: the Decision's `python -m wt` fallback needs it.
+  `wt queue stop --yes` reports the runner it stopped even when that runner took the lease
+  after the plan read (the JSON's `held`/`pid`/`host` then name it).
+- Review round 3 (its `log` / `detached` placement and the detach wait for `detached` were
+  reverted in round 5): `stop_runner` checks the close guard on the settled status it then acts on: each
   `--wait-guard` poll re-settles the holder and re-checks the guard on that read. `read_lease`
   returns None for any `OSError` (a release unlinking the file mid-poll). `close_guard` counts
   a non-string `since` as guarded (`_age` also catches TypeError).
