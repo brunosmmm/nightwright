@@ -465,7 +465,11 @@ def read_journal(cfg, *, since_ts=None, tail=2000) -> list:
         return []
     since = _ts(since_ts) if since_ts is not None else None
     out = []
-    for raw in _tail_lines(p, tail):
+    try:
+        lines = _tail_lines(p, tail)
+    except OSError:                                        # unreadable: an optional side journal
+        return []
+    for raw in lines:
         try:
             rec = json.loads(raw)
         except ValueError:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -5059,7 +5060,12 @@ def _spec_review_rows(cfg, now, recent_hours) -> list[dict]:
     the rest, most recent end first."""
     import datetime as dt
     def _num(v):
-        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+        ok = isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+        return v if ok else None
+
+    def _timeout(v):                                 # malformed or absurd counts as 0
+        v = _num(v)
+        return v if v is not None and abs(v) <= 10 * 365 * 86400 else 0
 
     starts, ends = {}, {}
     for rec in SR.read_journal(cfg, tail=2000):
@@ -5075,14 +5081,16 @@ def _spec_review_rows(cfg, now, recent_hours) -> list[dict]:
     window = dt.timedelta(hours=recent_hours)
     for rid in dict.fromkeys([*starts, *ends]):
         start, end = starts.get(rid), ends.get(rid)
-        started = SR._ts((start or end).get("ts"))
+        started = SR._ts(start.get("ts")) if start else None
+        if started is None and end is not None:      # a corrupt start ts: fall back to the end's
+            started = SR._ts(end.get("ts"))
         if started is None:
             continue
         row = {"run_id": rid, "spec_id": (start or end).get("spec_id"), "status": None,
                "counts": None, "started_at": started.isoformat(timespec="seconds"),
                "duration_s": None, "cost_usd": None, "ended_at": None}
         if end is None:
-            deadline = started + dt.timedelta(seconds=_num(start.get("timeout_s")) or 0)
+            deadline = started + dt.timedelta(seconds=_timeout(start.get("timeout_s")))
             if now < deadline:
                 row.update(status="running", duration_s=max(0, int((now - started).total_seconds())))
                 running.append((started, row))

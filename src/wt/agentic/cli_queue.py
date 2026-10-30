@@ -613,7 +613,7 @@ def _dash_spec_reviews(items: list, generated_at=None) -> Table:
             when = f"▶ {_dur(r.get('duration_s'))}"
         else:
             when = _ago(Q._age(r.get("ended_at"), now))
-        t.add_row(str(r.get("spec_id")), Text(status, style=style.get(status, "")), findings,
+        t.add_row(str(r.get("spec_id") or "—"), Text(status, style=style.get(status, "")), findings,
                   "—" if cost is None else f"${float(cost):.2f}", when)
     return t
 

@@ -156,6 +156,11 @@ status and age rules in memory. Project the new events in `events._project_ledge
   unreadable `ts`, and malformed journal records (string `timeout_s`, unhashable `run_id`,
   list `counts`, non-numeric cost). Re-ran the dashboard/events/spec-review test files above:
   134 passed, twice. The full `uv run pytest` run was left to gating.
+- Review follow-up (loop 2): added tests for the boundary instants (`now == started_at +
+  timeout_s` is `failed`; an end exactly `recent_hours` old is listed), non-finite / huge
+  `timeout_s`, an unreadable journal, a corrupt start `ts` with a valid end, a missing
+  `spec_id`, and the ledger event's `spec_id` winning over the campaign's. Dashboard / events /
+  spec-review test files: 125 passed. The full `uv run pytest` run was left to gating.
 
 ### As shipped
 
@@ -167,6 +172,12 @@ status and age rules in memory. Project the new events in `events._project_ledge
 - Malformed journal records are tolerated: non-string `run_id` records are skipped, a
   non-numeric `timeout_s` counts as 0, a non-dict `counts` / non-numeric cost or duration
   becomes null, and a non-string verdict is treated as failed.
+- Also tolerated: a non-finite or absurd (over 10 years) `timeout_s` counts as 0; a non-finite
+  cost or duration becomes null; an unreadable `spec-reviews.jsonl` reads as empty
+  (`spec_review.read_journal` catches `OSError`); a start with an unreadable `ts` falls back to
+  its end record's `ts`, and is skipped only without one.
+- In the findings column an approve with no findings (all counts zero or `{}`) shows `none`;
+  `—` is for null counts. A row without a `spec_id` shows `—` in the spec column.
 - `_spec_review_rows` in `queue.py`, `_dash_spec_reviews` in `cli_queue.py` (placed after the
   attention tables, before Waiting).
 

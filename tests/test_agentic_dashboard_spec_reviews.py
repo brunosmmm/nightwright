@@ -204,6 +204,62 @@ def test_end_without_start_uses_its_ts(tmp_path):
     assert "$0.15" in _render(_payload(cfg))
 
 
+def test_boundary_instants(tmp_path):
+    _, cfg = _cfg(tmp_path)
+    _journal(cfg, _start("exact", 600, timeout_s=600),            # now == started + timeout_s
+             _start("inside", 599, timeout_s=600),
+             _start("o_edge", 2 * 3600 + 600, timeout_s=600),     # failed at exactly now - 2h
+             _start("o_gone", 2 * 3600 + 601, timeout_s=600),
+             _start("e_edge", 3700), _end("e_edge", 2 * 3600, verdict="approve", counts={}),
+             _start("e_gone", 3700), _end("e_gone", 2 * 3600 + 1, verdict="approve", counts={}))
+    rows = _rows(cfg, recent_hours=2)
+    assert rows["exact"]["status"] == "failed" and rows["inside"]["status"] == "running"
+    assert set(rows) == {"exact", "inside", "o_edge", "e_edge"}
+
+
+def test_nonfinite_or_huge_timeout_does_not_break_the_dashboard(tmp_path):
+    _, cfg = _cfg(tmp_path)
+    p = SR.journal_path(cfg)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    ts = _iso(30)
+    p.write_text("".join(
+        '{"kind":"start","run_id":"%s","ts":"%s","timeout_s":%s}\n' % (rid, ts, v)
+        for rid, v in (("inf", "Infinity"), ("nan", "NaN"), ("big", "1e20"))), encoding="utf-8")
+    pay = _payload(cfg)
+    assert {r["run_id"]: r["status"] for r in pay["spec_reviews"]} == \
+        {"inf": "failed", "nan": "failed", "big": "failed"}
+    assert "Spec reviews (3)" in _render(pay)
+
+
+def test_unreadable_journal_does_not_break_the_dashboard(tmp_path, monkeypatch):
+    _, cfg = _cfg(tmp_path)
+    _journal(cfg, _start("r", 30))
+
+    def boom(path, n):
+        raise PermissionError("denied")
+    monkeypatch.setattr(SR, "_tail_lines", boom)
+    pay = _payload(cfg)
+    assert pay["spec_reviews"] == [] and pay["totals"]["reviews_running"] == 0
+
+
+def test_bad_start_ts_keeps_the_paired_end(tmp_path):
+    _, cfg = _cfg(tmp_path)
+    _journal(cfg, {**_start("r", 200), "ts": "garbage"},
+             _end("r", 100, verdict="revise", counts={"must_fix": 1}, cost_usd=0.25),
+             {**_start("lost", 200), "ts": "garbage"})
+    rows = _rows(cfg)
+    assert rows["r"]["status"] == "revise" and rows["r"]["started_at"] == _iso(100)
+    assert rows["r"]["cost_usd"] == 0.25
+    assert "lost" not in rows                        # a start with neither a usable ts nor an end
+
+
+def test_missing_spec_id_renders_a_dash(tmp_path):
+    _, cfg = _cfg(tmp_path)
+    _journal(cfg, {**_end("r", 60, verdict="approve", counts={}), "spec_id": None})
+    line = _row_line(_render(_payload(cfg)), "approve")
+    assert "None" not in line and "—" in line and "none" in line
+
+
 def test_spec_phase_events_projected_once(tmp_path):
     repo, cfg = _cfg(tmp_path)
     cid = _campaign(cfg, repo, "IDEA-078-ev", "SPEC_WRITING", kind="idea", spec_id="SPEC-0001")
@@ -221,6 +277,16 @@ def test_spec_phase_events_projected_once(tmp_path):
     assert evs[1]["data"]["verdict"] == "revise" and evs[1]["data"]["round"] == 1
     assert [e["type"] for e in E.read_since(cfg, 0) if e.get("campaign") == cid] == \
         [e["type"] for e in evs]               # the accept's own transition projects nothing
+
+
+def test_event_spec_id_prefers_the_ledger_event(tmp_path):
+    repo, cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, repo, "IDEA-078-pref", "SPEC_WRITING", kind="idea", spec_id="SPEC-0001")
+    _ev(cfg, cid, "spec_review", {"spec_id": "SPEC-0099", "verdict": "approve", "round": 1})
+    _ev(cfg, cid, "spec_accepted", {"spec_id": "SPEC-0099", "round": 1})
+    E.sync(cfg)
+    evs = [e for e in E.read_since(cfg, 0) if e["type"].startswith("spec_")]
+    assert [e["data"]["spec_id"] for e in evs] == ["SPEC-0099", "SPEC-0099"]
 
 
 def test_conduct_skill_rows():
