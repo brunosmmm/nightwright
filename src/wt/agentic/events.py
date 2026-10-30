@@ -1045,6 +1045,8 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                         # recorded before the save: a crash in between re-reads the event and
                         # records it again (at-least-once) rather than losing the hold
                         QT.record_delivery(cfg, reader, ev, "hold")
+                        if ev["type"] == "runner_draining":
+                            ctx.digest.track_drain(cfg, ev, ctx.lease)
                         ctx.digest.save()
                     cursor_set(cfg, reader, ev["id"])
                     continue
@@ -1057,6 +1059,15 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                         ctx.digest.note_ping_wake(ev)
                         ctx.digest.save()
                 cursor_set(cfg, reader, ev["id"])
+                printed += 1
+                if max_events and printed >= max_events:
+                    return printed
+            for ev in (ctx.digest.drain_wakes(ctx) if quiet else ()):
+                # a held drain that outlived its window; the digest is saved before the print
+                out.write((json.dumps(ev, ensure_ascii=False) if as_json else summary_line(ev))
+                          + "\n")
+                out.flush()
+                QT.record_delivery(cfg, reader, ev, "wake")
                 printed += 1
                 if max_events and printed >= max_events:
                     return printed

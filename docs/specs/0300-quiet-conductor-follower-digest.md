@@ -276,6 +276,12 @@ Nothing records what the follower delivered, so "wakeups per merge" (exit criter
   backlog with a rejected/missing own spec waking, and malformed `--since`/`--until` rejected.
   Re-ran the five quiet/skills/events/followers/conduct-cli test files: 148 passed. The full
   suite is left to gating.
+- Review round 2 fix (held drains, see As shipped): tests for a held `runner_draining` waking
+  once its drain outlives the window, being dropped when the drain ends or changes, surviving a
+  re-arm and a digest `clear()`, and for a wrong-typed digest file falling back to fresh state.
+  Sabotage (never wake a held drain) failed `test_held_drain_wakes_when_it_outlives_its_window`
+  and `test_held_drain_survives_rearm_and_clear`, then reverted. The five quiet/skills/events/
+  followers/conduct-cli test files: 160 passed. The full suite is left to gating.
 - Manual verification (re-arm the live conductor, run `wt queue wakeups --since <day>` after a
   day) can only happen once this is merged and the conductor has re-armed. It is not done
   here; the conductor records the first wakeups-per-merge figure with a campaign note.
@@ -302,6 +308,18 @@ Nothing records what the follower delivered, so "wakeups per merge" (exit criter
 - `events.followers` skips `*.digest.json` files in the cursors dir.
 - Two existing `tests/test_skills.py` assertions about the re-exec check moved from the
   `merged` row to the `code_changed` row, as the Design says.
+- A held `runner_draining` is re-checked every poll. The watchdog raises it once per drain, with
+  `draining_s` just past `drain_grace_s`, so classifying it once at delivery could never see the
+  drain outlive its window. On a hold the digest file keeps `drains: [{since, bound_s, event}]`
+  (`since` and the bound taken from the lease and the event's `waiting_on` at hold time, kept
+  across `clear()` and re-arms). Each poll, `Digest.drain_wakes` compares the same drain's age
+  from the lease with `bound_s` (only reading the lease while a drain is watched): past it, the
+  original event is printed as a wake line with `draining_s` refreshed and recorded as `wake`;
+  a drain that ended or changed (lease not held, no `draining`, another `since`) is dropped. The
+  drain is removed and saved before the line is printed (at most once). `campaign_silent` /
+  `state_stuck` holds on `in_flight` are still unbounded (see follow-ups).
+- A persisted digest file with a wrong-typed field is ignored as a whole (fresh state), instead of
+  crashing `Digest.__init__` on every re-arm.
 - A digest line's `--text` form is `digest #a..#b held=type:n … merged=labels`
   (plus `ping_items=n` when set).
 

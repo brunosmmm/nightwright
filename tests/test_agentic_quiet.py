@@ -2,6 +2,7 @@
 import datetime as dt
 import io
 import json
+import types
 
 import pytest
 from click.testing import CliRunner
@@ -523,3 +524,99 @@ def test_wakeups_rejects_malformed_days(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         QT.wakeups_report(cfg, since="2026-10-3")
     assert QT.wakeups_report(cfg, since="2026-10-03", until="2026-10-31")["delivered"] == 0
+
+
+# ---- held drains are re-checked every poll ----------------------------------------------------
+
+def _drain_lease(clock, drained_s, *, since_s=None):
+    """A held lease draining since `since_s` before now (default `drained_s`)."""
+    since = clock() - dt.timedelta(seconds=drained_s if since_s is None else since_s)
+    return {"held": True, "in_flight": [], "busy": None,
+            "draining": {"since": since.isoformat(), "reason": "r"}}
+
+
+def _hold_drain(cfg, clock, lease, monkeypatch):
+    # only quiet sees this lease: the watchdog in `events.sync` must not raise its own drain
+    monkeypatch.setattr(QT, "L", types.SimpleNamespace(lease_status=lambda cfg, now=None:
+                                                       lease["v"]))
+    E.cursor_set(cfg, "conductor", 0)
+    E.append(cfg, "runner_draining", data={"reason": "r", "draining_s": 61, "ready": 0,
+                                           "slots": 1, "waiting_on": [{"campaign": "a",
+                                                                       "timeout_s": 100}]})
+
+
+def test_held_drain_wakes_when_it_outlives_its_window(tmp_path, monkeypatch):
+    cfg, clock = _cfg(tmp_path), Clock()
+    lease = {"v": _drain_lease(clock, 61)}                  # one drain, `since` never changes
+    _hold_drain(cfg, clock, lease, monkeypatch)
+    out = io.StringIO()
+    step = {"n": 0}
+
+    def stop():
+        step["n"] += 1
+        if step["n"] == 1:
+            assert out.getvalue() == ""                     # 61 s <= 100 + 300: held
+            clock.advance(400)                              # the same drain is now 461 s old
+            return False
+        return True
+    _follow(cfg, out, clock=clock, stop=stop)
+    (wake,) = _lines(out)
+    assert wake["type"] == "runner_draining" and wake["id"] == 1
+    assert wake["data"]["draining_s"] == pytest.approx(461, abs=2)
+    assert QT.Digest.load(cfg, "conductor").drains == []
+    actions = [json.loads(x)["action"] for x in
+               QT.deliveries_path(cfg).read_text().splitlines()]
+    assert actions == ["hold", "wake"]
+    out2 = io.StringIO()
+    _follow(cfg, out2, clock=clock)
+    assert out2.getvalue() == ""                            # woken once only
+
+
+def test_held_drain_dropped_when_the_drain_ends_or_changes(tmp_path, monkeypatch):
+    for after in ({"held": True, "draining": None}, {"held": False},
+                  {"held": True, "draining": {"since": "2000-01-01T00:00:00+00:00"}}):
+        cfg, clock = _cfg(tmp_path / str(len(str(after)))), Clock()
+        lease = {"v": _drain_lease(clock, 61)}
+        _hold_drain(cfg, clock, lease, monkeypatch)
+        out = io.StringIO()
+        _follow(cfg, out, clock=clock)
+        assert len(QT.Digest.load(cfg, "conductor").drains) == 1
+        clock.advance(10 ** 4)
+        lease["v"] = after
+        _follow(cfg, out, clock=clock)
+        assert [e["type"] for e in _lines(out)] == ["conductor_digest"]     # no drain wake
+        assert QT.Digest.load(cfg, "conductor").drains == []
+
+
+def test_held_drain_survives_rearm_and_clear(tmp_path, monkeypatch):
+    cfg, clock = _cfg(tmp_path), Clock()
+    lease = {"v": _drain_lease(clock, 61)}
+    _hold_drain(cfg, clock, lease, monkeypatch)
+    E.append(cfg, "admitted", campaign="a")
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    clock.advance(1801)
+    since = lease["v"]["draining"]["since"]
+    lease["v"] = _drain_lease(clock, 0)
+    lease["v"]["draining"]["since"] = since
+    _follow(cfg, out, clock=clock)
+    kinds = [e["type"] for e in _lines(out)]
+    assert sorted(kinds) == ["conductor_digest", "runner_draining"]
+
+
+@pytest.mark.parametrize("rec", [
+    {"held": []}, {"held": {"a": 1}, "last_id": "7"}, {"last_ping_fp": "x"},
+    {"pings_held": None}, {"last_printed_last_id": "3"}, {"drains": [1]},
+    {"drains": [{"since": "s", "bound_s": 1}]}, {"first_id": "a"}, ["list"]])
+def test_corrupt_digest_file_falls_back_to_fresh(tmp_path, rec):
+    cfg = _cfg(tmp_path)
+    path = E.cursors_dir(cfg) / "conductor.digest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rec))
+    d = QT.Digest.load(cfg, "conductor")
+    assert d.empty and d.last_ping_fp == [] and d.last_printed_last_id == 0 and d.drains == []
+    out = io.StringIO()
+    E.cursor_set(cfg, "conductor", 0)
+    E.append(cfg, "admitted", campaign="a")
+    _follow(cfg, out)                                       # re-arming does not crash
+    assert QT.Digest.load(cfg, "conductor").pending["held"] == {"admitted": 1}

@@ -97,12 +97,16 @@ class Ctx:
         return self._lease
 
 
-def _drain_hold(cfg, data) -> bool:
+def _drain_bound(cfg, data) -> float:
+    """Seconds a drain may last before it needs action: its slowest wait plus the grace."""
     budget = E.settings(cfg)["gate_budget_s"]
     waits = [w.get("timeout_s") or budget for w in data.get("waiting_on") or []
              if isinstance(w, dict)]
-    bound = max(waits, default=budget) + _GRACE_S
-    return float(data.get("draining_s") or 0) <= bound
+    return max(waits, default=budget) + _GRACE_S
+
+
+def _drain_hold(cfg, data) -> bool:
+    return float(data.get("draining_s") or 0) <= _drain_bound(cfg, data)
 
 
 def _silent_hold(ev, ctx) -> bool:
@@ -155,17 +159,43 @@ def _fresh() -> dict:
             "campaigns": {}, "merged": [], "pings_held": 0, "ping_items": []}
 
 
+def _int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _str_or_none(v) -> bool:
+    return v is None or isinstance(v, str)
+
+
+_FIELD_OK = {"first_id": lambda v: v is None or _int(v), "last_id": _int, "since": _str_or_none,
+             "until": _str_or_none, "held": lambda v: isinstance(v, dict),
+             "campaigns": lambda v: isinstance(v, dict), "merged": lambda v: isinstance(v, list),
+             "pings_held": _int, "ping_items": lambda v: isinstance(v, list),
+             "last_ping_fp": lambda v: isinstance(v, list), "last_printed_last_id": _int,
+             "drains": lambda v: isinstance(v, list) and all(
+                 isinstance(d, dict) and isinstance(d.get("since"), str)
+                 and isinstance(d.get("bound_s"), (int, float)) and isinstance(d.get("event"), dict)
+                 for d in v)}
+
+
+def _well_typed(rec) -> bool:
+    """False for a persisted digest with a wrong-typed field: that file is ignored."""
+    return isinstance(rec, dict) and all(ok(rec[k]) for k, ok in _FIELD_OK.items() if k in rec)
+
+
 class Digest:
     """Held events waiting for their digest line, persisted at `cursors/<reader>.digest.json`
-    (atomically) so it survives the follower's exits. `last_ping_fp` and `last_printed_last_id`
-    outlive `clear()`."""
+    (atomically) so it survives the follower's exits. `last_ping_fp`, `last_printed_last_id` and
+    `drains` (held `runner_draining` events still being watched, see `track_drain`) outlive
+    `clear()`. A wrong-typed file is treated as absent."""
 
     def __init__(self, path: Path, rec: dict | None = None):
         self.path = path
-        rec = rec or {}
+        rec = rec if _well_typed(rec) else {}
+        self.drains = [dict(d) for d in rec.get("drains") or []]
         self.pending = {**_fresh(), **{k: rec[k] for k in _fresh() if k in rec}}
         self.last_ping_fp = list(rec.get("last_ping_fp") or [])
-        self.last_printed_last_id = int(rec.get("last_printed_last_id") or 0)
+        self.last_printed_last_id = rec.get("last_printed_last_id") or 0
 
     @classmethod
     def load(cls, cfg, reader) -> "Digest":
@@ -178,7 +208,7 @@ class Digest:
 
     def save(self) -> None:
         rec = {**self.pending, "last_ping_fp": self.last_ping_fp,
-               "last_printed_last_id": self.last_printed_last_id}
+               "last_printed_last_id": self.last_printed_last_id, "drains": self.drains}
         _atomic_write(self.path, json.dumps(rec, ensure_ascii=False) + "\n")
 
     @property
@@ -208,6 +238,41 @@ class Digest:
             if not p["ping_items"]:
                 self.last_ping_fp = []          # all clear: the same items later are news
         return True
+
+    def track_drain(self, cfg, ev, lease) -> None:
+        """Keep a held `runner_draining` so `drain_wakes` can wake once the drain outlives its
+        window: the watchdog raises it once per drain, with `draining_s` just past the grace."""
+        drain = lease.get("draining") if lease.get("held") else None
+        since = drain.get("since") if isinstance(drain, dict) else None
+        if not isinstance(since, str):
+            return                              # the drain is already over: nothing to watch
+        self.drains = [d for d in self.drains if d["since"] != since]
+        self.drains.append({"since": since, "bound_s": _drain_bound(cfg, ev.get("data") or {}),
+                            "event": ev})
+
+    def drain_wakes(self, ctx) -> list[dict]:
+        """Held drains that are over their window now: returned as `runner_draining` events
+        (`draining_s` refreshed) and dropped, as are drains that ended. Reads the lease only
+        when a drain is being watched."""
+        if not self.drains:
+            return []
+        drain = ctx.lease.get("draining") if ctx.lease.get("held") else None
+        cur = drain.get("since") if isinstance(drain, dict) else None
+        woken, keep = [], []
+        for d in self.drains:
+            if d["since"] != cur:
+                continue
+            age = E._age_s(cur, ctx.now)
+            if age is not None and age > d["bound_s"]:
+                ev = dict(d["event"])
+                ev["data"] = {**(ev.get("data") or {}), "draining_s": round(age)}
+                woken.append(ev)
+            else:
+                keep.append(d)
+        if woken or len(keep) != len(self.drains):
+            self.drains = keep
+            self.save()
+        return woken
 
     def note_ping_wake(self, ev) -> None:
         self.last_ping_fp = ping_fingerprint(ev.get("data") or {})
