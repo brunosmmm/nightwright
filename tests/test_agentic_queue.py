@@ -1976,3 +1976,270 @@ def test_stop_during_gate_retry_not_triaged(opened, monkeypatch):
     finally:
         G.reset()
     assert row["to"] != "TRIAGING" and st["state"] == "GATING"
+
+
+# ---- SPEC-0311: gate timeouts are re-gated, serialized, not triaged -----------------------
+
+def _res(name="test", *, ok=False, timed_out=False, required=True, interrupted=False):
+    r = {"name": name, "required": required, "ok": ok, "timed_out": timed_out}
+    if interrupted:
+        r["interrupted"] = True
+    return r
+
+
+@pytest.mark.parametrize("results,expect", [
+    ([_res(timed_out=True)], True),
+    ([_res("a", timed_out=True), _res("b", timed_out=True)], True),
+    ([_res("a", timed_out=True), _res("b", ok=True)], True),
+    ([_res("a", timed_out=True), _res("lint", required=False)], True),    # optional failure ignored
+    ([_res("a", timed_out=True), _res("b")], False),                      # mixed: a real failure
+    ([_res()], False),
+    ([_res(timed_out=True, interrupted=True)], False),
+    ([_res(required=False, timed_out=True)], False),                      # only optional failed
+    ([_res(ok=True)], False),                                             # green
+    ([], False),
+])
+def test_timeout_only_classification(results, expect):
+    assert Q.timeout_only({"results": results}) is expect
+
+
+def test_gate_timeout_regates_then_parks():
+    gate = {"results": [_res("test", timed_out=True)]}
+    st = _state("GATING", last_gate=gate)
+    for used in (0, 1):
+        st["counters"]["timeout_regates"] = used
+        step = Q.decide_gate_timeout(st)
+        assert (step.kind, step.reason) == ("gate", "gate_timeout_regate")
+    st["counters"]["timeout_regates"] = Q.TIMEOUT_REGATE_MAX
+    step = Q.decide_gate_timeout(st, {"test": 1200})
+    assert (step.kind, step.reason, step.resume_to) == ("park", "gate_timeout", "GATING")
+    assert "test (1200s)" in step.detail and "2 gate timeout re-gates" in step.detail
+    assert "gate_timeout" in Q.PARK_REASONS
+
+
+def _gate_run(seq, *results):
+    from wt.agentic.gates import GateResult, GateRun
+    rs = tuple(GateResult(n, req, ok, None if to else (0 if ok else 1), to, 0.1,
+                          f"gates/{seq:03d}-{n}.log", "") for n, req, ok, to in results)
+    return GateRun(seq, all(r.ok or not r.required for r in rs), rs, "2026-10-25T00:00:00", 0.1)
+
+
+def _gating(cfg, cid, **counters):
+    st = S.read_state(cfg, cid)
+    st["state"] = "GATING"
+    st["counters"].update(counters)
+    S.write_state(cfg, cid, st)
+
+
+def test_mixed_timeout_and_failure_goes_to_triage(opened):
+    cfg, cid, ctx = opened
+    _gating(cfg, cid, timeout_regates=1)
+    run = _gate_run(1, ("test", True, False, True), ("lint", True, False, False))
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=run)
+    assert row["to"] == "TRIAGING" and row["reason"] == "gates_failed"
+    assert st["counters"]["timeout_regates"] == 0 and st["counters"]["loops"] == 0
+
+
+def test_timeout_only_run_skips_triager(opened):
+    cfg, cid, ctx = opened
+    _gating(cfg, cid)
+    run = _gate_run(1, ("test", True, False, True))
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=run)
+    assert row["to"] == "GATING" and row["reason"] == "gate_timeout_regate"
+    c = st["counters"]
+    assert (c["loops"], c["gate_retries"], c["triage_retries"], c["timeout_regates"]) == (0, 0, 0, 1)
+    assert st["state"] == "GATING" and Q.gate_exclusive(st)
+    assert not S.read_ledger(cfg, cid, types=["run.start"]) or all(
+        e.get("persona") != "gate_triager" for e in S.read_ledger(cfg, cid, types=["run.start"]))
+    gate, = S.read_ledger(cfg, cid, types=["gate"])
+    assert gate["results"][0]["timed_out"]
+    note = [n for n in S.read_ledger(cfg, cid, types=["note"]) if "gate timeout" in n["text"]]
+    assert len(note) == 1 and "test" in note[0]["text"] and "timeout_regates 1/2" in note[0]["text"]
+    assert Q.plan_step(st, PROFILE).kind == "gate"
+
+
+def test_timeout_budget_exhausted_parks_gate_timeout(opened):
+    cfg, cid, ctx = opened
+    _gating(cfg, cid)
+    for n in (1, 2):
+        row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(n, ("test", True, False, True)))
+        assert row["to"] == "GATING"
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(3, ("test", True, False, True)))
+    assert row["to"] == "PARKED" and row["reason"] == "gate_timeout"
+    assert st["park"]["reason"] == "gate_timeout" and st["park"]["resume_to"] == "GATING"
+    assert "test" in st["park"]["detail"] and st["counters"]["loops"] == 0
+    assert st["park"]["reason"] not in ("loop_exhausted", "triage_escalated")
+
+
+def test_timeout_regates_reset(opened):
+    cfg, cid, ctx = opened
+    # green
+    _gating(cfg, cid, timeout_regates=2)
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(1, ("test", True, True, False)))
+    assert row["to"] == "REVIEWING" and st["counters"]["timeout_regates"] == 0
+    assert not Q.gate_exclusive(st)
+    # non-timeout failure
+    _gating(cfg, cid, timeout_regates=1)
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(2, ("test", True, False, False)))
+    assert row["to"] == "TRIAGING" and st["counters"]["timeout_regates"] == 0
+    # fix triage
+    st = S.read_state(cfg, cid)
+    st.update(state="TRIAGING")
+    st["counters"]["timeout_regates"] = 1
+    S.write_state(cfg, cid, st)
+    row, st = _apply(ctx, cfg, cid, "triage", persona="gate_triager", run_id="002-gate_triager",
+                     run_result=_rr(_verdict("fix", fix_brief="x")), budget=0.5)
+    assert row["to"] == "IMPLEMENTING" and st["counters"]["timeout_regates"] == 0
+    # resume from the gate_timeout park: fresh budget, exclusive first gate
+    _gating(cfg, cid)
+    for n in (3, 4, 5):
+        row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(n, ("test", True, False, True)))
+    assert st["state"] == "PARKED" and st["counters"]["timeout_regates"] == 2
+    Q.apply_resume(cfg, Q.plan_resume(cfg, cid))
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "GATING" and st["counters"]["timeout_regates"] == 0
+    assert Q.gate_exclusive(st)
+
+
+def _gs(cid, entered=None, **over):
+    st = _state("GATING", id=cid)
+    if entered:
+        st["gate_exclusive"] = {"entered_at": entered}
+    st.update(over)
+    return st
+
+
+def test_timeout_regate_is_serialized():
+    a, b = _gs("A", "2026-10-30T10:00:00"), _gs("B")
+    # nothing in flight: only the exclusive step starts, the other waits for it
+    assert Q.select_gate_starts([b, a], 0, False) == ["A"]
+    # a gate in flight: the exclusive step is deferred, and so is everything else
+    assert Q.select_gate_starts([b, a], 1, False) == []
+    # an exclusive step in flight: no other gate starts
+    assert Q.select_gate_starts([b], 1, True) == []
+    assert Q.select_gate_starts([b], 0, True) == []
+    # no exclusive step anywhere: gates start as before (slot admission is the only limit)
+    assert Q.select_gate_starts([b, _gs("C")], 2, False) == ["B", "C"]
+    # a deferral changes no campaign state
+    before = dict(a)
+    Q.select_gate_starts([a], 1, False)
+    assert a == before
+
+
+def test_exclusive_regate_not_starved():
+    a, c = _gs("A", "2026-10-30T10:00:00"), _gs("C")
+    # B's gate is in flight, A is deferred exclusive, C enters GATING: C may not jump the queue
+    assert Q.select_gate_starts([a, c], 1, False) == []
+    # B finished: A starts first and alone; C waits behind it
+    assert Q.select_gate_starts([a, c], 0, False) == ["A"]
+    assert Q.select_gate_starts([c], 1, True) == []
+    # two pending exclusives start one at a time in (entered_at, id) order
+    late, tie_y, tie_z = (_gs("X", "2026-10-30T10:05:00"), _gs("Y", "2026-10-30T10:00:00"),
+                          _gs("Z", "2026-10-30T10:00:00"))
+    assert Q.select_gate_starts([tie_z, late, tie_y], 0, False) == ["Y"]
+    assert Q.select_gate_starts([tie_z, late], 0, False) == ["Z"]
+    assert Q.select_gate_starts([late], 0, False) == ["X"]
+
+
+def test_gate_starts_counts_flights_and_close_regates(opened):
+    from concurrent.futures import Future
+    cfg, cid, ctx = opened
+    pool = Q.StepPool()
+
+    def fly(state, kind, done=False):
+        fut = Future()
+        if done:
+            fut.set_result(None)
+        fl = Q._Flight(state, ctx)
+        fl.tasks.append((Q.Step(kind), fut, None))
+        pool.flights[state["id"]] = fl
+
+    a, c = _gs("A", "2026-10-30T10:00:00"), _gs("C")
+    fly(_state("GATING", id="B"), "gate")
+    assert Q._gates_in_flight(ctx, pool) == (1, False)
+    assert Q._gate_starts(ctx, pool, [a, c], set(), {"B"}) == set()      # A deferred, C blocked
+    pool.flights.clear()
+    fly(_state("IMPLEMENTING", id="B"), "implement")                     # non-gate steps ignored
+    assert Q._gate_starts(ctx, pool, [a, c], set(), {"B"}) == {"A"}
+    pool.flights.clear()
+    st = S.read_state(cfg, cid)                                          # a close that re-gates
+    fly(dict(st, id="D"), "close")
+    assert Q._gates_in_flight(ctx, pool)[0] == 1
+    assert Q._gate_starts(ctx, pool, [a], set(), {"D"}) == set()
+    pool.flights.clear()
+    fly(_state("GATING", id="B", gate_exclusive={"entered_at": "x"}), "gate")
+    assert Q._gates_in_flight(ctx, pool) == (1, True)
+    pool.flights.clear()
+    fly(_state("GATING", id="B"), "gate", done=True)
+    assert Q._gates_in_flight(ctx, pool) == (0, False)
+    # the deferral note is journaled once per campaign per timeout_regates value
+    calls = []
+    import wt.agentic.queue as QQ
+    orig = QQ.journal
+    QQ.journal = lambda cfg_, kind, **kw: calls.append((kind, kw))
+    try:
+        for _ in range(3):
+            Q._note_gate_deferred(ctx, pool, a)
+        Q._note_gate_deferred(ctx, pool, c)                              # not exclusive: silent
+        a["counters"]["timeout_regates"] = 1
+        Q._note_gate_deferred(ctx, pool, a)
+    finally:
+        QQ.journal = orig
+    assert [k for k, _ in calls] == ["gate_timeout_deferred"] * 2
+
+
+def test_six_campaigns_timeout_under_concurrency():
+    """Fake gate: times out when more than one gate runs at once, passes alone. One round =
+    the gates started in a tick run to completion together."""
+    states = [_gs(f"C{i}") for i in range(6)]
+    clock = iter(f"2026-10-30T10:{m:02d}:00" for m in range(60))
+    for _ in range(40):
+        gating = [s for s in states if s["state"] == "GATING"]
+        if not gating:
+            break
+        started = set(Q.select_gate_starts(gating, 0, False))
+        for s in gating:
+            if s["id"] not in started:
+                continue
+            s["gate_exclusive"] = None
+            if len(started) == 1:
+                s["state"] = "REVIEWING"
+                continue
+            s["last_gate"] = {"results": [_res("test", timed_out=True)]}
+            assert Q.timeout_only(s["last_gate"])
+            step = Q.decide_gate_timeout(s)
+            assert step.kind == "gate", step
+            s["counters"]["timeout_regates"] = s["counters"].get("timeout_regates", 0) + 1
+            s["gate_exclusive"] = {"entered_at": next(clock)}
+    assert [s["state"] for s in states] == ["REVIEWING"] * 6
+    assert all(s["counters"]["loops"] == 0 for s in states)
+
+
+def test_e2e_gate_timeout_regates_then_parks_and_resume_regates(tmp_path, monkeypatch):
+    """The manual verification of SPEC-0311: a gate that always times out is re-gated twice
+    (never triaged, `loops` stays 0), parks `gate_timeout`, and a resume re-gates twice more."""
+    repo = make_repo(tmp_path, test_gate="sleep 3")
+    yml = repo / ".wt" / "project.yaml"
+    yml.write_text(yml.read_text().replace("name: test, cmd: 'sh gates/test.sh', timeout_s: 30",
+                                           "name: test, cmd: 'sh gates/test.sh', timeout_s: 1"))
+    subprocess.run(["git", "-C", str(repo), "commit", "-qam", "short timeout"], check=True)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    cid = added(cfg, monkeypatch)
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "gate_timeout", st
+    assert st["counters"]["loops"] == 0 and st["counters"]["timeout_regates"] == 2
+    assert "test (1s)" in st["park"]["detail"]
+    types = [e["type"] for e in S.read_ledger(cfg, cid)]
+    assert types.count("gate") == 3
+    assert not any(e.get("persona") == "gate_triager" for e in S.read_ledger(cfg, cid, types=["run.start"]))
+    assert sum("gate timeout" in n["text"] for n in S.read_ledger(cfg, cid, types=["note"])) == 2
+    r = run_cli(cfg, monkeypatch, ["queue", "resume", cid, "--yes"])
+    assert r.exit_code == 0, r.output
+    r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "gate_timeout"
+    assert st["counters"]["loops"] == 0
+    assert [e["type"] for e in S.read_ledger(cfg, cid)].count("gate") == 6

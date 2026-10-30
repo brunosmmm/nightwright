@@ -79,7 +79,8 @@ RUNNER_KINDS = {"start": ("pid", "argv", "interval_s"),
                 "config_load_failed": ("scope", "path", "error"),
                 "reexec_deferred": ("reason", "to_sha"),
                 "admission_blocked": ("tick", "ready", "slots", "occupied", "holders", "draining"),
-                "adopt": ("runs",)}
+                "adopt": ("runs",),
+                "gate_timeout_deferred": ("campaign", "timeout_regates")}
 
 
 def with_defaults(etype: str, payload: dict | None = None) -> dict:

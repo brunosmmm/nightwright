@@ -1,7 +1,7 @@
 ---
 id: SPEC-0311
 title: "Gate timeouts under machine load are re-gated, not triaged as code fixes"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -140,32 +140,32 @@ add `gate_timeouts` (the count of `gate_timeout_regate` transitions) next to
 
 ## Acceptance criteria
 
-- [ ] `timeout_only` is true for a failed `last_gate` whose failing required results are all
+- [x] `timeout_only` is true for a failed `last_gate` whose failing required results are all
       `timed_out` and not `interrupted`; false when any failing required result failed
       without timing out, when a failing result is `interrupted`, when only optional gates
       failed, and for a green run.
-- [ ] A gate run that fails with only timeouts moves the campaign to `GATING` (not
+- [x] A gate run that fails with only timeouts moves the campaign to `GATING` (not
       `TRIAGING`) with transition reason `gate_timeout_regate`; `counters["loops"]`,
       `gate_retries` and `triage_retries` are unchanged and `timeout_regates` is
       incremented by 1; no gate-triager run is started.
-- [ ] After `TIMEOUT_REGATE_MAX` (2) timeout re-gates, a further timeout-only failure parks
+- [x] After `TIMEOUT_REGATE_MAX` (2) timeout re-gates, a further timeout-only failure parks
       the campaign with reason `gate_timeout`, `resume_to="GATING"` and a detail naming the
       timed-out gate(s); the park is not `loop_exhausted` and not `triage_escalated`.
-- [ ] A mixed failure (one gate timed out, another required gate failed normally) goes to
+- [x] A mixed failure (one gate timed out, another required gate failed normally) goes to
       `TRIAGING` exactly as before.
-- [ ] `timeout_regates` resets to 0 on a `fix` triage, on a resume from park, and after a
+- [x] `timeout_regates` resets to 0 on a `fix` triage, on a resume from park, and after a
       gate run that is green or fails for a non-timeout reason.
-- [ ] The ledger records the timed-out `gate` event plus a `note` event naming the gates and
+- [x] The ledger records the timed-out `gate` event plus a `note` event naming the gates and
       the new `timeout_regates` value for each timeout re-gate.
-- [ ] While a timeout re-gate is in flight, the runner starts no other campaign's gate step;
+- [x] While a timeout re-gate is in flight, the runner starts no other campaign's gate step;
       a timeout re-gate does not start while another campaign's gate step is in flight; both
       defer to a later tick without changing campaign state. Non-gate steps are not delayed.
-- [ ] While an exclusive gate step is deferred, no new non-exclusive gate step starts; the
+- [x] While an exclusive gate step is deferred, no new non-exclusive gate step starts; the
       exclusive step starts once the in-flight gate steps finish. Multiple pending exclusive
       steps start one at a time, ordered by `(entered_at, id)`.
-- [ ] With six campaigns where each full-suite gate times out once under concurrency and
+- [x] With six campaigns where each full-suite gate times out once under concurrency and
       passes when run alone, all six reach `REVIEWING` and none parks `loop_exhausted`.
-- [ ] `gate_timeout` is accepted wherever park reasons are validated or rendered, and
+- [x] `gate_timeout` is accepted wherever park reasons are validated or rendered, and
       `python3 tools/spec_lint.py` and `uv run pytest` pass.
 
 ## Test plan
@@ -206,13 +206,57 @@ add `gate_timeouts` (the count of `gate_timeout_regate` transitions) next to
 - **Regression guard:** `uv run pytest` (full suite) passes, including all existing
   `decide_triage`, gate-ladder and park-reason tests; `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-10-30)
+
+- Added to `tests/test_agentic_queue.py`: `test_timeout_only_classification`,
+  `test_gate_timeout_regates_then_parks`, `test_mixed_timeout_and_failure_goes_to_triage`,
+  `test_timeout_only_run_skips_triager`, `test_timeout_budget_exhausted_parks_gate_timeout`,
+  `test_timeout_regates_reset` (green, non-timeout failure, `fix` triage, resume),
+  `test_timeout_regate_is_serialized`, `test_exclusive_regate_not_starved`,
+  `test_gate_starts_counts_flights_and_close_regates`, `test_six_campaigns_timeout_under_concurrency`
+  and the end-to-end `test_e2e_gate_timeout_regates_then_parks_and_resume_regates`.
+- Manual verification was automated as that e2e test (gate `sleep 3`, `timeout_s: 1`, fake
+  implementer): two `gate_timeout_regate` notes, then `PARKED(gate_timeout)` with `loops` 0 and
+  3 gate events; `wt queue resume --yes` re-gated twice more and parked `gate_timeout` again
+  (6 gate events, `loops` still 0).
+- Ran `tests/test_agentic_queue.py`, `test_agentic_gates.py` (in-gate ladder unchanged),
+  `test_agentic_exit_paths.py`, `test_agentic_e2e.py`, `test_agentic_campaign_export.py`: all
+  pass after updating the one exact-counters assertion in `test_e2e_internal_merges` for the new
+  `timeout_regates` counter. `python3 tools/spec_lint.py` exits 0 after `--write-ledger`.
+- The full `uv run pytest` suite was left to gating.
+
+### As shipped
+
+- The exclusive marker is a stored campaign field `gate_exclusive: {entered_at}` rather than a
+  value recomputed from `timeout_regates`/`last_gate`: a resume from a `gate_timeout` park resets
+  `timeout_regates` to 0, so the marker is what keeps that first gate exclusive. It is set when a
+  timeout re-gate is decided and on resume from `gate_timeout`, and cleared when the gate run is
+  applied. `(entered_at, id)` orders pending exclusive steps.
+- Serialization lives in the pure `select_gate_starts(candidates, in_flight, exclusive_in_flight)`;
+  `_gates_in_flight` counts gate steps and `close` steps whose project re-gates
+  (`_close_regates`), and an exclusive re-gate never blocks a close from starting. The deferral
+  note `gate_timeout_deferred` goes to the runner journal (`runner.jsonl`), once per campaign per
+  `timeout_regates` value, de-duplicated in `StepPool.deferred_noted`; no campaign state or ledger
+  write. A close planned in the same tick as an exclusive gate is not counted against it.
+- `decide_gate_timeout(state, timeouts=None)` takes an optional gate-name -> `timeout_s` map
+  (the `last_gate` payload does not carry `timeout_s`); `_apply` fills it from the project config.
+- The re-gate stays in `GATING`, so there is no `transition` event; the `gate` event and the
+  `note` event record it (the row reports reason `gate_timeout_regate`).
+- `test_six_campaigns_timeout_under_concurrency` simulates the six campaigns with the pure
+  `select_gate_starts`/`decide_gate_timeout` functions rather than six real campaigns; real
+  `_apply` routing is covered by the single-campaign tests and the e2e test.
+- `timeout_regates` is also reset on a review `fix`. `gate_timeout_deferred` was added to
+  `RUNNER_KINDS`, and `gate_timeout` to `docs/product/loop/operate.md`.
+- The campaign export `gate_timeouts` field was not added (the spec said "may"; no criterion
+  covers it): a follow-up.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

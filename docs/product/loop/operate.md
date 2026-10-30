@@ -73,6 +73,7 @@ it would do.
 | `human_decision` | The conductor escalated a decision to you (`wt queue escalate`): the detail starts with the `ESC-NNNN` id and the question | `wt escalations show ESC-NNNN`. If it resolves without you, `wt escalations withdraw` it and resume the campaign |
 | `not_docs_only` | A `wt queue merge --docs-only` request changes a path outside `merge.docs_only_paths` (checked again after the rebase); no gate has covered it | A resume would park again: `wt queue abandon <id> --yes` (the worktree and branch are kept), then `wt queue merge <branch> --yes` without `--docs-only` |
 | `regenerate_failed` | After the rebase, a `merge.regenerate` command failed, or it left undeclared files changed (SPEC-0255); nothing was merged and the worktree is back at HEAD | Read the detail, fix the command or the source it reads, then `wt queue resume <id>` (back to `CLOSING`) |
+| `gate_timeout` | Gates timed out on three consecutive runs, two of them serialized re-gates (SPEC-0311); no fix loop was spent | Likely machine load or a `timeout_s` that is too low: raise it or wait for the load to drop, then `wt queue resume <id>` (re-gates alone, first) |
 | `open_failed` | Creating the worktree or a step failed unexpectedly | Read the detail and retry once; if it fails again, investigate |
 | `gh_failed` | Opening the PR (`pr` / `draft-pr` policy) failed | Check `gh auth`, then resume |
 | `config_invalid` | `.wt/project.yaml` didn't load | Fix the config. The campaign resumes **by itself** once it loads |

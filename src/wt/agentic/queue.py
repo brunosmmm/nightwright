@@ -73,6 +73,7 @@ PARK_REASONS = frozenset({
     "not_docs_only",                                   # SPEC-0234: --docs-only diff left the allowlist
     "diverging",                                       # SPEC-0247: the fix loop is not converging
     "regenerate_failed",                               # SPEC-0255: close-time regenerate failed/dirtied
+    "gate_timeout",                                    # SPEC-0311: gates keep timing out under load
 })
 # SPEC-0222: who a park waits for. The human only for their own checkout and explicit
 # escalations (`human_decision`, SPEC-0232); everything else is the conductor's.
@@ -96,6 +97,8 @@ SPEC_REVIEW_RETRY_MAX = 1
 TRIAGE_RETRY_MAX = 1
 # `retry_gate` dispositions honored per loop before they are treated as `fix`.
 GATE_RETRY_MAX = 1
+# SPEC-0311: consecutive timeout-only gate runs re-gated (serialized) before `gate_timeout`.
+TIMEOUT_REGATE_MAX = 2
 # Malformed conformance-review verdicts tolerated per loop before the review escalates.
 REVIEW_RETRY_MAX = 1
 # SPEC-0221: conflict-resolver runs per entry into CLOSING before the rebase_conflict park.
@@ -323,6 +326,73 @@ def decide_triage(state: dict, profile: dict, verdict: dict | None, verdict_ok: 
                     detail=f"{loops - 1}/{loop_max} implement loops used; still failing gates: "
                            + brief, resume_to="IMPLEMENTING")
     return Step("implement", reason="triage_fix")
+
+
+def timeout_only(run_payload: dict) -> bool:
+    """Pure (SPEC-0311): whether a failed gate run failed only because required gates timed out.
+    True iff some required result failed, every failing required result `timed_out`, and none
+    was `interrupted`; optional failing gates are ignored, as `GateRun.ok` ignores them."""
+    failing = [r for r in (run_payload or {}).get("results") or []
+               if not r.get("ok") and r.get("required", True)]
+    return bool(failing) and all(r.get("timed_out") and not r.get("interrupted") for r in failing)
+
+
+def _timed_out_gates(run_payload: dict) -> list:
+    return [r for r in (run_payload or {}).get("results") or []
+            if not r.get("ok") and r.get("required", True) and r.get("timed_out")]
+
+
+def decide_gate_timeout(state: dict, timeouts: dict | None = None) -> Step:
+    """Pure (SPEC-0311): the transition for a timeout-only gate run. Re-gate while
+    `timeout_regates < TIMEOUT_REGATE_MAX`, else park `gate_timeout` (resume re-gates).
+    `timeouts` maps a gate name to its configured `timeout_s` (the payload does not carry it)."""
+    used = int((state.get("counters") or {}).get("timeout_regates", 0))
+    if used < TIMEOUT_REGATE_MAX:
+        return Step("gate", reason="gate_timeout_regate")
+    names = ", ".join(_timed_out_names(state.get("last_gate") or {}, timeouts)) or "a gate"
+    limit = next(iter((timeouts or {}).values()), None)
+    after = f" after {limit}s" if limit else ""
+    return Step("park", reason="gate_timeout", resume_to="GATING",
+                detail=f"{used} gate timeout re-gates used; {names} still times out{after}; "
+                       "likely machine load or a gate whose timeout_s is too low")
+
+
+def _timed_out_names(run_payload: dict, timeouts: dict | None = None) -> list:
+    return [f"{r.get('name')} ({timeouts[r.get('name')]}s)" if (timeouts or {}).get(r.get("name"))
+            else str(r.get("name")) for r in _timed_out_gates(run_payload)]
+
+
+def _gate_timeouts(ctx, state: dict) -> dict:
+    """Configured `timeout_s` of each timed-out gate; {} when the project config is unreadable."""
+    try:
+        return {g.get("name"): int(g.get("timeout_s", 1200))
+                for g in ctx.project(state).get("gates") or []}
+    except (ValueError, OSError):
+        return {}
+
+
+def gate_exclusive(state: dict):
+    """The exclusive-gate marker of a campaign (SPEC-0311), or None: set after a timeout re-gate
+    is decided and on resume from a `gate_timeout` park; cleared when its gate run is applied."""
+    return state.get("gate_exclusive") or None
+
+
+def _exclusive_key(state: dict) -> tuple:
+    return ((gate_exclusive(state) or {}).get("entered_at") or "", state["id"])
+
+
+def select_gate_starts(candidates: list, in_flight: int, exclusive_in_flight: bool) -> list:
+    """Pure (SPEC-0311): the campaign ids whose gate step may start this tick. `candidates` are
+    the states that want a gate step; `in_flight` counts gate steps (and close re-gates) already
+    running. An exclusive gate step starts alone, once nothing is in flight; while any is
+    pending, no non-exclusive one starts, so it cannot starve. Exclusive ones go one at a time
+    in `(entered_at, id)` order."""
+    if exclusive_in_flight:
+        return []
+    pending = sorted((c for c in candidates if gate_exclusive(c)), key=_exclusive_key)
+    if pending:
+        return [pending[0]["id"]] if in_flight == 0 else []
+    return [c["id"] for c in candidates]
 
 
 def norm_finding_title(title) -> str:
@@ -797,7 +867,7 @@ def _record_backlog(cfg, st: dict, ready: bool, blocked_by: list) -> None:
 
 def _counters(state: dict) -> dict:
     c = state.setdefault("counters", {})
-    for k in ("loops", "runs", "gate_runs", "gate_retries", "triage_retries",
+    for k in ("loops", "runs", "gate_runs", "gate_retries", "timeout_regates", "triage_retries",
               "blocked_streak", "close_attempts", "parks", "review_retries"):
         c.setdefault(k, 0)
     return c
@@ -1803,7 +1873,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 return row
             for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
                       "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
-                      "merge", "admission", "spec_review", "split"):   # SPEC-0279: amend flips it
+                      "merge", "admission", "spec_review", "split",   # SPEC-0279: amend flips it
+                      "gate_exclusive"):
                 if k in state:
                     current[k] = state[k]
             requested = current.get("park_requested")
@@ -1977,6 +2048,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         # fix
         counters["loops"] += 1
         counters["gate_retries"] = 0
+        counters["timeout_regates"] = 0
         counters["triage_retries"] = 0
         v = rr.verdict or {}
         notes = ((state.get("pending_brief") or {}).get("human_notes") or [])
@@ -1996,8 +2068,26 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         payload = G.as_payload(run)
         events.append(("gate", payload))
         state["last_gate"] = payload
+        state["gate_exclusive"] = None
         if run.ok:
+            counters["timeout_regates"] = 0
             return finish("REVIEWING", "gates_green")
+        if timeout_only(payload):                        # SPEC-0311: load, not a code fix
+            timeouts = _gate_timeouts(ctx, state)
+            decision = decide_gate_timeout(state, timeouts)
+            if decision.kind == "park":
+                return finish("PARKED", decision.reason, park={
+                    "reason": decision.reason, "detail": decision.detail,
+                    "resume_to": decision.resume_to})
+            counters["timeout_regates"] += 1
+            state["gate_exclusive"] = {"entered_at": store.now_iso()}
+            events.append(("note", {
+                "text": f"gate timeout: {', '.join(_timed_out_names(payload, timeouts))}; "
+                        f"re-gating alone (timeout_regates "
+                        f"{counters['timeout_regates']}/{TIMEOUT_REGATE_MAX})",
+                "author": "queue"}))
+            return finish("GATING", decision.reason)
+        counters["timeout_regates"] = 0
         return finish("TRIAGING", "gates_failed")
 
     if kind == "close":
@@ -2996,6 +3086,7 @@ def _route_reviews(ctx, state, profile, counters, row, events, finish):
     # fix
     counters["loops"] += 1
     counters["gate_retries"] = 0
+    counters["timeout_regates"] = 0
     counters["triage_retries"] = 0
     _merge_carry(state, _carry_source(state, decision.combined["triage"]))
     notes = ((state.get("pending_brief") or {}).get("human_notes") or [])
@@ -3071,6 +3162,7 @@ class StepPool:
         self._seen: list = []                      # SPEC-0229: worker threads of ended executors
         self.forced: dict = {}                     # SPEC-0229: campaign -> run ids force-detached
         self.detach_all = False                    # SPEC-0229: set by the stop / crash sweep
+        self.deferred_noted: set = set()           # SPEC-0311: exclusive re-gates already journaled
 
     def hooks(self, run_dir=None, phase: str = "spawning") -> RunHooks:
         return RunHooks(self.lock, run_dir, phase, self)
@@ -3291,6 +3383,49 @@ def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
             report.steps.append(_finish_reviews(ctx, report, group))
 
 
+def _gates_in_flight(ctx: _Ctx, pool: StepPool) -> tuple[int, bool]:
+    """(gate steps in flight, whether one is exclusive) (SPEC-0311). A `close` whose project
+    re-gates counts as a gate step: it runs the same full suite."""
+    n, exclusive = 0, False
+    for fl in list(pool.flights.values()):
+        for step, fut, _hooks in list(fl.tasks):
+            if fut.done():
+                continue
+            if step.kind == "close":
+                try:
+                    if not _close_regates(fl.state, ctx.project(fl.state)):
+                        continue
+                except ValueError:
+                    continue
+            elif step.kind != "gate":
+                continue
+            n += 1
+            exclusive = exclusive or (step.kind == "gate" and bool(gate_exclusive(fl.state)))
+    return n, exclusive
+
+
+def _gate_starts(ctx: _Ctx, pool: StepPool, busy: list, admitted_ids: set, flying: set) -> set:
+    """Ids of the GATING campaigns allowed to start their gate step this tick (SPEC-0311)."""
+    candidates = [s for s in busy if s.get("state") == "GATING" and s["id"] not in admitted_ids
+                  and s["id"] not in flying]
+    n, exclusive = _gates_in_flight(ctx, pool)
+    return set(select_gate_starts(candidates, n, exclusive))
+
+
+def _note_gate_deferred(ctx: _Ctx, pool: StepPool, st: dict) -> None:
+    """Journal (runner memory de-dupes; no campaign state or ledger write) that an exclusive
+    re-gate waits, once per campaign per `timeout_regates` value (SPEC-0311)."""
+    marker = gate_exclusive(st)
+    if not marker:
+        return
+    key = (st["id"], int((st.get("counters") or {}).get("timeout_regates", 0)),
+           marker.get("entered_at"))
+    if key in pool.deferred_noted:
+        return
+    pool.deferred_noted.add(key)
+    journal(ctx.cfg, "gate_timeout_deferred", campaign=st["id"], timeout_regates=key[1])
+
+
 def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
          pool: StepPool | None = None, lease=None, draining: bool = False) -> TickReport:
     """One bounded iteration: apply finished steps, admit, open, plan, submit agent steps,
@@ -3482,6 +3617,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     members.update((s["id"], s) for s in busy)
     trains = close_train(members.values(), set(close_roots))
     train_pos = {cid: (ids[0], i) for ids in trains.values() for i, cid in enumerate(ids)}
+    gate_starts = _gate_starts(ctx, pool, busy, admitted_ids, flying)
     for st in busy:
         if st.get("state") not in ACTIVE_STATES or st["id"] in admitted_ids \
                 or st["id"] in flying:
@@ -3530,6 +3666,9 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
                 pending_close.append(st)
             else:
                 pending_agent.append((st, step, None, None, 0.0, None))
+            continue
+        if step.kind == "gate" and st["id"] not in gate_starts:
+            _note_gate_deferred(ctx, pool, st)       # SPEC-0311: retried on a later tick
             continue
         if step.kind in ("gate", "finalize_split"):
             pending_agent.append((st, step, None, None, 0.0, None))
@@ -5334,7 +5473,7 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
                  "branch": plan["branch"], "worktree": plan["worktree"], "head": None},
         "spec": {"rel_path": plan["spec_rel_path"], "internal": plan["internal"],
                  "sha256_at_open": None},
-        "counters": {"loops": 0, "runs": 0, "gate_runs": 0, "gate_retries": 0,
+        "counters": {"loops": 0, "runs": 0, "gate_runs": 0, "gate_retries": 0, "timeout_regates": 0,
                      "triage_retries": 0, "blocked_streak": 0, "close_attempts": 0, "parks": 0},
         "cost": {"total_usd": 0.0, "cap_usd": plan.get("cap_usd"), "by_persona": {}},
         "last_gate": None, "last_verdict": None,
@@ -5558,7 +5697,7 @@ def apply_merge(cfg, plan: dict, *, by="human") -> dict:
                   "note": plan.get("note"), "head_at_request": plan["head_at_request"],
                   "own_worktree": bool(plan["own_worktree"]),
                   "docs_only": bool(plan.get("docs_only"))},
-        "counters": {"loops": 0, "runs": 0, "gate_runs": 0, "gate_retries": 0,
+        "counters": {"loops": 0, "runs": 0, "gate_runs": 0, "gate_retries": 0, "timeout_regates": 0,
                      "triage_retries": 0, "blocked_streak": 0, "close_attempts": 0, "parks": 0},
         "cost": {"total_usd": 0.0, "cap_usd": plan.get("cap_usd"), "by_persona": {}},
         "last_gate": None, "last_verdict": None,
@@ -5647,7 +5786,7 @@ def apply_add_idea(cfg, plan: dict, *, by="human") -> dict:
             "repo": {"root": plan["repo_root"], "base": plan["base"], "base_sha_at_open": None,
                      "branch": plan["branch"], "worktree": plan["worktree"], "head": None},
             "spec": {"id": None, "rel_path": None, "internal": True},
-            "counters": {"loops": 0, "runs": 0, "gate_runs": 0, "gate_retries": 0,
+            "counters": {"loops": 0, "runs": 0, "gate_runs": 0, "gate_retries": 0, "timeout_regates": 0,
                          "triage_retries": 0, "blocked_streak": 0, "close_attempts": 0,
                          "parks": 0},
             "cost": {"total_usd": 0.0, "cap_usd": plan.get("cap_usd"), "by_persona": {}},
@@ -6027,6 +6166,9 @@ def apply_resume(cfg, plan: dict) -> dict:
             c["blocked_streak"] = 0
             c["triage_retries"] = 0
             c["gate_retries"] = 0
+        _counters(st)["timeout_regates"] = 0                 # SPEC-0311: a fresh re-gate budget
+        if (st.get("park") or {}).get("reason") == "gate_timeout" and plan["to"] == "GATING":
+            st["gate_exclusive"] = {"entered_at": store.now_iso()}   # re-gate alone, first
         st["park"] = None
         st.pop("park_requested", None)
         ev = ("resume", {"to": plan["to"], "note": plan.get("note"),
