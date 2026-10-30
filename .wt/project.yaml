@@ -15,7 +15,9 @@ gates:
   - name: pytest
     cmd: uv run pytest -q -x
     results: {format: pytest}
-    timeout_s: 1200
+    # 2400 (was 1200): the full suite takes 13-19 min alone and timed out under concurrent
+    # campaign gates (2026-10-30, SPEC-0302/0304, IDEA-412/415). IDEA-430 makes gates faster.
+    timeout_s: 2400
     required: true
     # SPEC-0289: a failing run re-runs its failing ids, then once in full, before triage.
     retries: 2
