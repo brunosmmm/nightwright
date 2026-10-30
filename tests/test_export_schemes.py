@@ -4,6 +4,7 @@ Uses TMP outbox + TMP --to targets only.
 """
 import importlib.util
 import pathlib
+import re
 
 import pytest
 from zoneinfo import ZoneInfo
@@ -104,7 +105,11 @@ def test_wt_native_is_default_and_matches_spec0015_shape(tmp_path):
     dest_spec2, dest_contract2 = E.export_spec(cfg, outbound_id, scheme="wt-native",
                                                to=str(target2))
     assert dest_spec2.read_text() == text
-    assert dest_contract2.read_text() == dest_contract.read_text()
+    # the contract carries a seconds-resolution timestamp; mask it so a second boundary
+    # between the two exports can't fail the comparison
+    def _masked(p):
+        return re.sub(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", "<ts>", p.read_text())
+    assert _masked(dest_contract2) == _masked(dest_contract)
 
 
 def test_wt_native_validate_blocks_missing_context(tmp_path):
