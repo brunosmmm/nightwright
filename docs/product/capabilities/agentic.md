@@ -456,6 +456,15 @@ ledger (`wt campaign log ID`). `--json` shapes: `wt.queue.v1`, `wt.queue.add.v1`
 `wt.queue.backlog.v1`, `wt.queue.prioritize.v1`, `wt.queue.tick.v1`, `wt.queue.park.v1`,
 `wt.queue.resume.v1`, `wt.queue.abandon.v1`.
 
+## Gate slots
+
+Gate runs share a host-wide pool of `agentic.gates.slots` slots (default 2, an integer from 1 to
+16; SPEC-0309). A gate run takes one slot for all its gates, so concurrent parallel-pytest gates
+never oversubscribe the CPU. A campaign waiting for a slot is not reported `campaign_silent` or
+`state_stuck`, and the wait does not count against its gate budget. A wait over 30 s writes a
+`gate_waiting` event, and the gate result records `slot_wait_s`. `wt queue gate-slots [--json]`
+shows the holders and the waiters.
+
 ## Events and watchdog
 
 `wt queue events` is the queue's alert stream (SPEC-0181): `<data_dir>/agentic/events.jsonl`,

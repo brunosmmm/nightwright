@@ -27,6 +27,8 @@ RULES = {
     "rebase_resolved": "hold", "run_failed": "hold", "merged": "hold", "handed_off": "hold",
     # SPEC-0305: informational events of the idea-campaign spec phase (SPEC-0217)
     "spec_written": "hold", "spec_reviewed": "hold", "spec_accepted": "hold",
+    # SPEC-0309: a gate waited over 30 s for a host-wide gate slot (informational)
+    "gate_waiting": "hold",
     "backlog": "cond", "backlog_blocked_long": "cond", "conductor_ping": "cond",
     "runner_draining": "cond", "campaign_silent": "cond", "state_stuck": "cond", "parked": "cond",
     "park_undecided": "wake", "runner_dead": "wake", "lease_stale": "wake",

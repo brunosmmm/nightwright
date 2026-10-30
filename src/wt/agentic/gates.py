@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from . import gate_results
+from . import gate_slots
 from . import schemas as SC
 from . import store
 from .project import expand_cmd
@@ -66,6 +67,7 @@ class GateRun:
     started_at: str
     duration_s: float
     interrupted: bool = False   # SPEC-0229: a gate was ended by a stop, or the run was cut short
+    slot_wait_s: float = 0.0    # SPEC-0309: seconds spent waiting for a gate slot (0.0: none)
 
 
 def terminate_all() -> None:
@@ -384,11 +386,28 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
             stop: threading.Event | None = None) -> GateRun:
     """Run every gate of `project_cfg` in the campaign's worktree; logs land at
     `gates/<seq:03>-<name>.log` under the campaign dir. `ok` = every *required* gate ok.
-    The returned `GateRun.seq` is the seq actually used (higher than `seq` if it was taken)."""
+    The returned `GateRun.seq` is the seq actually used (higher than `seq` if it was taken).
+    SPEC-0309: the whole run holds one host-wide gate slot; the budget, the gates' timeouts and
+    `GateRun.duration_s` count from the moment the slot is held."""
     cid = campaign_state["id"]
     worktree = (campaign_state.get("repo") or {}).get("worktree")
     if not worktree:
         raise ValueError(f"campaign {cid} has no worktree recorded")
+
+    def announce(occ, waited_s):
+        store.append_event(cfg, cid, "gate_waiting",
+                           {"slots": occ["slots"], "held": occ["held"], "waited_s": waited_s},
+                           by="gates")
+
+    with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce) as hold:
+        if hold.interrupted:                    # SPEC-0229: stopped while waiting, nothing ran
+            return GateRun(seq, True, (), store.now_iso(), 0.0, interrupted=True,
+                           slot_wait_s=hold.waited_s)
+        run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop)
+    return replace(run, slot_wait_s=hold.waited_s)
+
+
+def _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop) -> GateRun:
     # SPEC-0253: `next_gate_seq` only sees logs, which appear once the first gate starts, so a
     # concurrent `wt gate run` can pick the same seq. Claim `gate-<seq>` atomically and take
     # the next free seq on a collision, so two runs never share (and wipe) one TMPDIR.
@@ -445,7 +464,7 @@ def as_payload(run: GateRun) -> dict:
             continue
         r["interrupted"] = True
     return {"gate_seq": run.seq, "ok": run.ok, "started_at": run.started_at,
-            "duration_s": run.duration_s, "results": results}
+            "duration_s": run.duration_s, "slot_wait_s": run.slot_wait_s, "results": results}
 
 
 def run_and_log(cfg, campaign_state: dict, project_cfg: dict, *, seq=None, by="tick") -> GateRun:

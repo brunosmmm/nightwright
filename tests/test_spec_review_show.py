@@ -125,7 +125,7 @@ def test_reviews_list_filter_json_and_unresolvable(tmp_path, monkeypatch):
     assert rows["SPEC-0001"]["counts"] == {"must_fix": 1, "major": 1}
     assert rows["SPEC-0001"]["size"] == "m" and rows["SPEC-0001"]["tone"] == "high-end"
     assert rows["SPEC-0999"]["matches_current"] is None and rows["SPEC-0999"]["verdict"] == "approve"
-    monkeypatch.setattr("wt.cli.console.width", 120)        # the reviewer column needs the room
+    monkeypatch.setattr("wt.cli.console._width", 120)       # the reviewer column needs the room (restores to None, not the computed width)
     r = run_cli(cfg, monkeypatch, ["spec", "reviews"])
     assert r.exit_code == 0 and "must_fix" in r.output and "2026-10-26 00:00" in r.output
     assert "yes" in r.output and "?" in r.output and "edited" not in r.output

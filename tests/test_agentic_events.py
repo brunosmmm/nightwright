@@ -153,6 +153,69 @@ def test_run_overdue_and_silent(tmp_path):
         lease.release()
 
 
+def _marker(cfg, cid, pid):
+    from wt.agentic import gate_slots as GS
+    GS.slots_dir(cfg).mkdir(parents=True, exist_ok=True)
+    (GS.slots_dir(cfg) / f"waiting-{cid}.json").write_text(
+        json.dumps({"campaign": cid, "pid": pid, "since": store.now_iso()}))
+
+
+def _dead_pid():
+    import subprocess
+    import sys
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
+    p.wait()
+    return p.pid
+
+
+def test_gate_slot_wait_marker_silences_silent_and_stuck(tmp_path):
+    """SPEC-0309: a live waiter marker keeps `campaign_silent` and `state_stuck` quiet for a
+    GATING campaign; a marker with a dead pid does not."""
+    import os
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0903-20261025-cccc", state="GATING")
+    later = dt.datetime.now().astimezone() + dt.timedelta(seconds=9000)
+    sett = E.settings(cfg)
+
+    def found():
+        return {t for _k, t, c, _d in E.watchdog_checks(cfg, now=later) if c == cid}
+
+    assert {"campaign_silent", "state_stuck"} <= found()
+    _marker(cfg, cid, _dead_pid())
+    assert {"campaign_silent", "state_stuck"} <= found()
+    _marker(cfg, cid, os.getpid())
+    assert found() == set()
+    assert cid not in [i["campaign"] for i in E.stuck_items(cfg, later, sett)]
+
+
+def test_gate_slot_wait_extends_the_stuck_limit_and_never_raises_run_overdue(tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0904-20261025-dddd", state="GATING")
+    sett = E.settings(cfg)
+    limit = max(sett["stuck_after_s"], sett["gate_budget_s"])
+    _ev(cfg, cid, "gate", {"gate_seq": 1, "ok": True, "slot_wait_s": 1500.0})
+    now = dt.datetime.now().astimezone()
+    # state age and gate age past the plain limit, but inside limit + the recorded wait
+    st = store.read_state(cfg, cid)
+    st["updated_at"] = (now - dt.timedelta(seconds=limit + 100)).isoformat()
+    store.write_state(cfg, cid, st)
+    at = now + dt.timedelta(seconds=limit + 100)
+    assert E.stuck_items(cfg, at, sett) == []
+    at = now + dt.timedelta(seconds=limit + 1600)
+    assert [i["campaign"] for i in E.stuck_items(cfg, at, sett)] == [cid]
+    # gate runs write no `run.start`: nothing for `run_overdue` to measure
+    assert "run_overdue" not in {t for _k, t, _c, _d in E.watchdog_checks(cfg, now=at)}
+
+
+def test_gate_waiting_is_projected_into_the_event_stream(tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0905-20261025-eeee", state="GATING")
+    _ev(cfg, cid, "gate_waiting", {"slots": 2, "held": [{"slot": 0}], "waited_s": 31.0})
+    E.sync(cfg)
+    ev = [e for e in E.read_since(cfg, 0) if e["type"] == "gate_waiting"]
+    assert len(ev) == 1 and ev[0]["data"]["waited_s"] == 31.0 and ev[0]["data"]["slots"] == 2
+
+
 # ---- cursors, reader lock, follow -----------------------------------------------------------
 
 def test_follow_resumes_after_cursor_and_new_reader_starts_at_now(tmp_path):

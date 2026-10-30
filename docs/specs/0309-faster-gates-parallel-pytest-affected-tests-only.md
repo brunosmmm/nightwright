@@ -1,7 +1,7 @@
 ---
 id: SPEC-0309
 title: "Faster gates: parallel pytest under a host-wide gate-slot pool"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-10-30
 updated: 2026-10-30

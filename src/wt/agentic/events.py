@@ -22,6 +22,7 @@ from pathlib import Path
 
 from ..export import _atomic_write
 from . import codewatch as CW
+from . import gate_slots
 from . import lease as L
 from . import store
 
@@ -31,6 +32,7 @@ SCHEMA = "wt.event.v1"
 EVENT_TYPES = {
     "admitted": (),
     "waiting": ("from",),
+    "gate_waiting": ("slots", "held", "waited_s"),                # SPEC-0309
     "parked": ("reason", "detail", "resume_to"),
     "resumed": ("to",),
     "merged": ("merged_sha",),
@@ -342,6 +344,9 @@ def _project_ledger_event(ev: dict, st: dict, sett: dict, warned: bool):
         if isinstance(total, (int, float)) and isinstance(cap, (int, float)) and cap > 0 \
                 and total >= sett["cost_warning_ratio"] * cap:
             return "cost_warning", {"total_usd": total, "cap_usd": cap}
+    if t == "gate_waiting":                                 # SPEC-0309
+        return "gate_waiting", {"slots": ev.get("slots"), "held": ev.get("held") or [],
+                                "waited_s": ev.get("waited_s")}
     if t == "backlog":
         return "backlog", {"ready": ev.get("ready"), "blocked_by": ev.get("blocked_by") or []}
     if t == "rebase_resolved":                              # SPEC-0221
@@ -497,6 +502,8 @@ def stuck_items(cfg, now, sett) -> list[dict]:
             if run and (_age_s(run.get("ts"), now) or 0) <= float(run.get("timeout_s") or 1800) \
                     + sett["overdue_grace_s"]:
                 continue
+            if gate_slots.waiting(cfg, cid, now):        # SPEC-0309: blocked for a gate slot
+                continue
             closing = (st.get("closing") or {}) if state == "CLOSING" else {}
             # SPEC-0260: waiting in the close train; SPEC-0287: only behind a live CLOSING head
             if waits_in_close_train(st, closing_ids):
@@ -505,6 +512,10 @@ def stuck_items(cfg, now, sett) -> list[dict]:
                     _latest_age(cfg, cid, ["gate"], now)]
             clock = min(a for a in ages if a is not None)
             limit = max(limit, sett["gate_budget_s"])
+            last_gate = store.read_ledger(cfg, cid, types=["gate"])[-1:]
+            waited = last_gate[0].get("slot_wait_s") if last_gate else None   # SPEC-0309
+            if isinstance(waited, (int, float)) and not isinstance(waited, bool) and waited > 0:
+                limit += waited
         else:
             if run and (_age_s(run.get("ts"), now) or 0) <= float(run.get("timeout_s") or 1800) \
                     + sett["overdue_grace_s"]:
@@ -776,6 +787,8 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
                              "age_s": round(age), "timeout_s": run.get("timeout_s")}))
             continue
         if waits_in_close_train(r, closing_ids):                              # SPEC-0314
+            continue
+        if gate_slots.waiting(cfg, cid, now):            # SPEC-0309: blocked for a gate slot
             continue
         tail = store.read_ledger(cfg, cid, tail=1)
         silent = _age_s(tail[-1].get("ts"), now) if tail else _age_s(r.get("updated_at"), now)

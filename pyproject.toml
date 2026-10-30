@@ -28,6 +28,8 @@ wt = "wt.cli:cli"
 [dependency-groups]
 dev = [
     "pytest>=8",
+    # SPEC-0309: wt's own pytest gate runs `-n 4` under the host-wide gate-slot pool.
+    "pytest-xdist>=3",
     "jsonschema>=4",
     # SPEC-0115: a terminal emulator, so a test can assert what a REAL terminal renders. Textual
     # repaints incrementally, so you cannot reconstruct a screen from raw pty bytes by picking a
