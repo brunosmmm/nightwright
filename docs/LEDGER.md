@@ -198,7 +198,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) Gate ladder v2: a cross-campaign flaky-test record the triager sees — accepted
   - [ ] [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) Queue a split campaign's child specs on merge, in dependency order — accepted
   - [x] [SPEC-0295](./specs/0295-spec-review-findings-carry-a-required-structured.md) Review findings carry a required, structured suggested_fix — done
-  - [ ] [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) Outbound projects end to end: a merged campaign pulls the portable spec's status back — proposed
+  - [ ] [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) Outbound projects end to end: a merged campaign pulls the portable spec's status back — accepted
 
 ## Active & planned
 
@@ -212,7 +212,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
-| [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) | Outbound projects end to end: a merged campaign pulls the portable spec's status back | feature | proposed | — | 2026-10-30 |
+| [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) | Outbound projects end to end: a merged campaign pulls the portable spec's status back | feature | accepted | — | 2026-10-30 |
 
 ## Done
 

@@ -1,10 +1,11 @@
 ---
 id: SPEC-0297
 title: "Outbound projects end to end: a merged campaign pulls the portable spec's status back"
-status: proposed
+status: accepted
 kind: feature
 owner: user
 created: 2026-10-30
+updated: 2026-10-30
 source_idea: IDEA-038
 parent: SPEC-0169
 depends_on: [SPEC-0243, SPEC-0257, SPEC-0283]
