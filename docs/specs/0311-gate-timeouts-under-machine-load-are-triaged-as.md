@@ -58,8 +58,9 @@ Handle gate timeouts deterministically in the queue, before triage. After a gate
 failed, and every failing **required** gate result is `timed_out` and not `interrupted`, the
 campaign goes straight back to `GATING` (reason `gate_timeout_regate`) instead of
 `TRIAGING`, increments a new per-loop counter `timeout_regates`, and does not touch `loops`.
-Re-gates after a timeout are serialized: at most one timeout re-gate step runs at a time and
-it starts only while no other campaign's gate step is in flight in the same runner. Once
+Re-gates after a timeout are serialized: at most one timeout re-gate step runs at a time, it
+starts only when no gate step is in flight in the same runner, and while one is pending the
+runner starts no new non-exclusive gate step so it cannot be starved. Once
 `timeout_regates` reaches `TIMEOUT_REGATE_MAX` (2), the next timed-out run parks the
 campaign `gate_timeout` with `resume_to="GATING"`. A run that mixes a timeout with a
 genuine failure (a required gate that failed without timing out) goes to triage as today.
@@ -101,15 +102,19 @@ the budget is "consecutive timeouts", not "timeouts ever". `loops`, `gate_retrie
 
 **Serialization.** A campaign whose last gate event was a timeout re-gate (state
 `GATING` with `timeout_regates > 0` and the previous run `timeout_only`) is marked
-`exclusive` for its next gate step. The runner's tick planner does not start an exclusive
-gate step while any other campaign has a gate step in flight, and does not start a new
-gate step for any other campaign while an exclusive one is in flight; a deferred step is
-simply retried on a later tick (no state change, no event spam: at most one
-`gate_timeout_deferred` note per campaign per timeout). Only the gate step is serialized;
-implementer, reviewer and triager runs of other campaigns proceed. `G.run_all` and the
-per-gate timeout are unchanged. If the exclusive wait is itself long, the runner's
-existing stuck detection (`gate_budget_s`, `events.py:462`) applies as it does to any gate
-step.
+`exclusive` for its next gate step. While any campaign has a pending exclusive gate step
+(planned but deferred), the planner starts no new non-exclusive gate step for any
+campaign; gate steps already in flight run to completion, and the exclusive step starts on
+the first tick with no gate step in flight. Exclusive steps run one at a time, ordered by
+`(entered_at, id)`. Gate steps planned earlier in the same tick count as in flight. A
+deferred step is simply retried on a later tick (no state change, no event spam: at most
+one `gate_timeout_deferred` note per campaign per timeout). Blocking new non-exclusive
+starts while an exclusive step is pending (not only while it is in flight) is what keeps the
+re-gate from starving when other campaigns keep entering `GATING`. Only the gate step is
+serialized; implementer, reviewer and triager runs of other campaigns proceed.
+`G.run_all` and the per-gate timeout are unchanged. The deferred step was never submitted,
+so no busy budget (`gate_budget_s`) covers the wait; the wait is bounded instead by the
+drain of the gate steps already in flight.
 
 **Interaction with other paths.** `retry_gate` (triager) and `timeout_regates` are
 independent budgets. The review/close re-gate (`_close_regates`, `queue.py:1644`) is out of
@@ -154,6 +159,9 @@ add `gate_timeouts` (the count of `gate_timeout_regate` transitions) next to
 - [ ] While a timeout re-gate is in flight, the runner starts no other campaign's gate step;
       a timeout re-gate does not start while another campaign's gate step is in flight; both
       defer to a later tick without changing campaign state. Non-gate steps are not delayed.
+- [ ] While an exclusive gate step is deferred, no new non-exclusive gate step starts; the
+      exclusive step starts once the in-flight gate steps finish. Multiple pending exclusive
+      steps start one at a time, ordered by `(entered_at, id)`.
 - [ ] With six campaigns where each full-suite gate times out once under concurrency and
       passes when run alone, all six reach `REVIEWING` and none parks `loop_exhausted`.
 - [ ] `gate_timeout` is accepted wherever park reasons are validated or rendered, and
@@ -181,6 +189,10 @@ add `gate_timeouts` (the count of `gate_timeout_regate` transitions) next to
   - `test_timeout_regate_is_serialized`: two campaigns in `GATING`, one flagged for
     timeout re-gate; assert the planner never has two gate steps in flight with the
     exclusive one, and that the deferred step runs on a later tick with no state change.
+  - `test_exclusive_regate_not_starved`: campaign A is deferred exclusive while B's gate is
+    in flight and C enters `GATING`; C's gate does not start before A's, A starts on the
+    first tick with no gate step in flight, and two pending exclusive steps start in
+    `(entered_at, id)` order, one at a time.
   - `test_six_campaigns_timeout_under_concurrency`: six campaigns, a fake gate that times
     out when more than one gate runs at once and passes alone; all reach `REVIEWING`.
 - **Gate tests** (`tests/test_agentic_gates.py`): the existing
