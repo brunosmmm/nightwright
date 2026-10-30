@@ -218,13 +218,28 @@ Everything else about the quiet follower is unchanged, and unknown event types s
   and `test_conduct_skill_blocked_long_row_has_the_campaign_check`.
 - The manual scratch-data-dir run was not performed; the follow-through test covers the same
   hold / wake paths against a real store and event log.
+- Review round: added `test_classify_backlog_blocked_long_is_scoped_to_the_project`,
+  `test_ctx_live_specs_is_lazy_and_cached` (counting `store.list_campaigns`),
+  `test_follow_ping_with_live_dependency_item` (a mixed ping through `E.append` / `E.follow`:
+  wake then hold, stored fingerprint and digest `ping_items` leave the live item out), mixed
+  and cross-project cases in `test_ping_fingerprint_hold_and_change`, whose `verdict` helper now
+  passes `ctx` to `note_ping_wake`. Reverting `events.follow` to drop `ctx` makes the follow-through
+  test fail. The same four test files pass again (186 tests).
 - The full suite was left to gating. `python3 tools/spec_lint.py` is run with the ledger regenerated.
 
 ### As shipped
 
 `ping_fingerprint` scans campaigns only for a ping that lists `blocked` items (`quiet._ping_fp`),
 so a poll without blocked items still reads no store. `Digest.add` and `note_ping_wake` take an
-optional `ctx` for the live specs. Nothing else deviates from Design.
+optional `ctx` for the live specs.
+
+Deviation from Design, found in review: liveness is scoped to the project, because spec ids are
+numbered per repository and the store is shared. `Ctx.live_specs` is a frozenset of
+`(project, spec_id)` pairs (campaigns without a project are skipped), and
+`dependency_wait(blocked_by, live_specs, project=None)` only counts a dependency as live when
+the same project has it. `classify` passes the event's `project`, `ping_fingerprint` the blocked
+item's `project`; a missing project, or a caller that passes no live specs, counts as not live
+and wakes. Nothing else deviates from Design.
 
 ## Rollout / migration
 

@@ -28,8 +28,7 @@ RULES = {
     # SPEC-0305: informational events of the idea-campaign spec phase (SPEC-0217)
     "spec_written": "hold", "spec_reviewed": "hold", "spec_accepted": "hold",
     "backlog": "cond", "backlog_blocked_long": "cond", "conductor_ping": "cond",
-    "runner_draining": "cond",
-    "campaign_silent": "cond", "state_stuck": "cond",
+    "runner_draining": "cond", "campaign_silent": "cond", "state_stuck": "cond",
     "parked": "wake", "park_undecided": "wake", "runner_dead": "wake", "lease_stale": "wake",
     "run_overdue": "wake", "message": "wake", "escalation_answered": "wake",
     "ready_not_admitted": "wake", "waiting_not_admitted": "wake",
@@ -81,17 +80,20 @@ def waited_ids(entry: str) -> list[str]:
     return _ID_RE.findall(entry.rsplit("waiting on ", 1)[-1])
 
 
-def dependency_wait(blocked_by, live_specs) -> bool:
+def dependency_wait(blocked_by, live_specs, project=None) -> bool:
     """True when `blocked_by` is a non-empty list of ordinary dependency waits and every
-    `waiting on` entry names only dependencies with a live campaign (`live_specs`)."""
+    `waiting on` entry names only dependencies with a live campaign in `project`
+    (`live_specs` holds `(project, spec_id)` pairs; spec ids are per repository). A missing
+    project has no live dependency."""
     if not isinstance(blocked_by, list) or not blocked_by:
         return False
+    live = {s for p, s in live_specs if p == project} if project is not None else set()
     for b in blocked_by:
         if not _benign(b):
             return False
         if b.startswith("waiting on "):
             ids = waited_ids(b)
-            if not ids or not set(ids) <= set(live_specs):
+            if not ids or not set(ids) <= live:
                 return False
     return True
 
@@ -102,7 +104,8 @@ def ping_fingerprint(data: dict, live_specs=frozenset()) -> list:
     fp = set()
     for cat in ("blocked", "stuck", "ready_not_admitted", "waiting_not_admitted"):
         for it in data.get(cat) or []:
-            if cat == "blocked" and dependency_wait(it.get("blocked_by"), live_specs):
+            if cat == "blocked" and dependency_wait(it.get("blocked_by"), live_specs,
+                                                    it.get("project")):
                 continue
             fp.add((cat, str(it.get("campaign"))))
     for it in data.get("parked") or []:
@@ -138,11 +141,13 @@ class Ctx:
 
     @property
     def live_specs(self) -> frozenset:
-        """`spec_id` of every campaign in a non-terminal state (something is building it)."""
+        """`(project, spec_id)` of every campaign in a non-terminal state (something is
+        building it)."""
         if self._live_specs is None:
             self._live_specs = frozenset(
-                c.get("spec_id") for c in store.list_campaigns(self.cfg) if c.get("spec_id"))
-        return frozenset(self._live_specs)
+                (c.get("project"), c.get("spec_id")) for c in store.list_campaigns(self.cfg)
+                if c.get("project") and c.get("spec_id"))
+        return self._live_specs
 
 
 def _drain_bound(cfg, data) -> float:
@@ -198,7 +203,8 @@ def classify(cfg, ev, ctx) -> str:
     if t == "backlog":
         return "hold" if backlog_resolved(data) else "wake"
     if t == "backlog_blocked_long":
-        return "hold" if dependency_wait(data.get("blocked_by"), ctx.live_specs) else "wake"
+        return "hold" if dependency_wait(
+            data.get("blocked_by"), ctx.live_specs, ev.get("project")) else "wake"
     return "wake"
 
 

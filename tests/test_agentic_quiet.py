@@ -40,9 +40,9 @@ def _ctx(cfg, lease=None, now=None):
                   now=now)
 
 
-def _ev(type_, campaign=None, **data):
+def _ev(type_, campaign=None, project=None, **data):
     return {"id": 1, "ts": "2026-10-30T10:00:00+00:00", "type": type_, "campaign": campaign,
-            "data": data}
+            "project": project, "data": data}
 
 
 def _ping(*, stuck=(), blocked=(), runner=None, parked=()):
@@ -102,9 +102,12 @@ def test_classify_backlog(tmp_path):
                                     blocked_by=[f"spec status is {st}"]), c) == "wake"
 
 
-def _blocked_verdict(tmp_path, blocked_by, live=("SPEC-0001", "SPEC-0007")):
+LIVE = (("P", "SPEC-0001"), ("P", "SPEC-0007"))         # live_specs: (project, spec_id)
+
+
+def _blocked_verdict(tmp_path, blocked_by, live=LIVE, project="P"):
     cfg = _cfg(tmp_path)
-    ev = _ev("backlog_blocked_long", "c-1", blocked_by=blocked_by, blocked_for_s=1300)
+    ev = _ev("backlog_blocked_long", "c-1", project, blocked_by=blocked_by, blocked_for_s=1300)
     ctx = QT.Ctx(cfg, "conductor", lease={"held": False}, live_specs=frozenset(live))
     return QT.classify(cfg, ev, ctx)
 
@@ -131,9 +134,23 @@ def test_classify_backlog_blocked_long(tmp_path):
                  ["waiting on SPEC-0001 (proposed)", "SPEC-0999 not found"], [], [7]):
         assert _blocked_verdict(tmp_path, wake) == "wake", wake
     cfg = _cfg(tmp_path)
-    ctx = QT.Ctx(cfg, "conductor", lease={"held": False}, live_specs=frozenset({"SPEC-0001"}))
-    assert QT.classify(cfg, _ev("backlog_blocked_long", "c-1"), ctx) == "wake"
-    assert QT.classify(cfg, _ev("backlog_blocked_long", "c-1", blocked_by="x"), ctx) == "wake"
+    ctx = QT.Ctx(cfg, "conductor", lease={"held": False}, live_specs=frozenset(LIVE))
+    assert QT.classify(cfg, _ev("backlog_blocked_long", "c-1", "P"), ctx) == "wake"
+    assert QT.classify(cfg, _ev("backlog_blocked_long", "c-1", "P", blocked_by="x"), ctx) == "wake"
+
+
+def test_classify_backlog_blocked_long_is_scoped_to_the_project(tmp_path):
+    held = ["waiting on SPEC-0001 (proposed)"]
+    assert _blocked_verdict(tmp_path, held) == "hold"
+    # the same spec id is live only in another project: nothing builds this project's SPEC-0001
+    assert _blocked_verdict(tmp_path, held, live=(("Q", "SPEC-0001"),)) == "wake"
+    assert _blocked_verdict(tmp_path, held, project="Q") == "wake"
+    # the superseded form checks the replacement in the event's project too
+    sup = ["waiting on SPEC-0001 (superseded; waiting on SPEC-0007)"]
+    assert _blocked_verdict(tmp_path, sup, live=(("Q", "SPEC-0007"),)) == "wake"
+    # a missing project never counts as live, even if a campaign lacks one too
+    assert _blocked_verdict(tmp_path, held, project=None) == "wake"
+    assert _blocked_verdict(tmp_path, held, live=((None, "SPEC-0001"),), project=None) == "wake"
 
 
 def test_waited_ids():
@@ -152,22 +169,52 @@ def test_ctx_live_specs_reads_store(tmp_path):
                                     "state": state, "repo": {"base": "main"}})
     ctx = QT.Ctx(cfg, "conductor", lease={"held": False})
     assert ctx._live_specs is None                          # nothing scanned yet
-    assert ctx.live_specs == {"SPEC-0001", "SPEC-0002"}
-    assert QT.Ctx(cfg, "conductor", lease={"held": False}, live_specs={"X-1"}).live_specs \
-        == {"X-1"}
+    assert ctx.live_specs == {("Meta-Tools", "SPEC-0001"), ("Meta-Tools", "SPEC-0002")}
+    assert QT.Ctx(cfg, "conductor", lease={"held": False},
+                  live_specs={("P", "X-1")}).live_specs == {("P", "X-1")}
+
+
+def test_ctx_live_specs_is_lazy_and_cached(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    store.create_campaign(cfg, {"id": "SPEC-0001-20261030-aaaa", "spec_id": "SPEC-0001",
+                                "project": "Meta-Tools", "profile": "balanced",
+                                "state": "QUEUED", "repo": {"base": "main"}})
+    calls = []
+    real = store.list_campaigns
+    monkeypatch.setattr(QT.store, "list_campaigns",
+                        lambda *a, **kw: calls.append(1) or real(*a, **kw))
+    ctx = QT.Ctx(cfg, "conductor", lease={"held": False})
+    # events that need no liveness never scan campaigns
+    assert QT.classify(cfg, _ev("admitted"), ctx) == "hold"
+    assert QT.classify(cfg, _ev("conductor_ping", **_ping(stuck=["s"])), ctx) == "wake"
+    assert QT.classify(cfg, _ev("conductor_ping", **_ping()), ctx) == "hold"
+    assert QT.classify(cfg, _ev("backlog", blocked_by=["waiting on SPEC-0001 (x)"]), ctx) == "hold"
+    ctx.digest.add(_ev("conductor_ping", **_ping()), ctx)
+    ctx.digest.note_ping_wake(_ev("conductor_ping", **_ping(stuck=["s"])), ctx)
+    assert calls == []
+    held = _ev("backlog_blocked_long", "c", "Meta-Tools",
+               blocked_by=["waiting on SPEC-0001 (proposed)"])
+    assert QT.classify(cfg, held, ctx) == "hold"
+    assert ctx.live_specs == {("Meta-Tools", "SPEC-0001")}
+    assert QT.classify(cfg, held, ctx) == "hold"
+    assert calls == [1]                                     # read once, then cached
 
 
 def test_ping_fingerprint_blocked_dependency_waits():
-    live = frozenset({"SPEC-0001"})
+    live = frozenset({("P", "SPEC-0001")})
 
-    def ping(*items):
-        return {**_ping(), "blocked": [{"campaign": c, "blocked_by": b} for c, b in items]}
+    def ping(*items, project="P"):
+        return {**_ping(), "blocked": [{"campaign": c, "blocked_by": b, "project": project}
+                                       for c, b in items]}
     held = ["waiting on SPEC-0001 (proposed)"]
     assert QT.ping_fingerprint(ping(("a", held)), live) == []
     assert QT.ping_fingerprint(ping(("a", held)), frozenset()) == [["blocked", "a"]]
     assert QT.ping_fingerprint(ping(("a", ["SPEC-9 not found"])), live) == [["blocked", "a"]]
     assert QT.ping_fingerprint(ping(("a", held), ("b", [])), live) == [["blocked", "b"]]
     assert QT.ping_fingerprint(_ping(blocked=["old"]), live) == [["blocked", "old"]]
+    # a live SPEC-0001 in another project, or an item without a project, does not hold it
+    assert QT.ping_fingerprint(ping(("a", held), project="Q"), live) == [["blocked", "a"]]
+    assert QT.ping_fingerprint(ping(("a", held), project=None), live) == [["blocked", "a"]]
     other = {**ping(("a", held)), "stuck": [{"campaign": "s"}]}
     assert QT.ping_fingerprint(other, live) == [["stuck", "s"]]
 
@@ -180,7 +227,7 @@ def test_ping_fingerprint_hold_and_change(tmp_path):
         ctx = QT.Ctx(cfg, "conductor")
         res = QT.classify(cfg, ev, ctx)
         if res == "wake":
-            ctx.digest.note_ping_wake(ev)
+            ctx.digest.note_ping_wake(ev, ctx)
             ctx.digest.save()
         return res
     assert verdict(_ping()) == "hold"
@@ -199,8 +246,9 @@ def test_ping_fingerprint_hold_and_change(tmp_path):
                                 "project": "Meta-Tools", "profile": "balanced",
                                 "state": "QUEUED", "repo": {"base": "main"}})
 
-    def blocked(by, cid="b"):
-        return {**_ping(), "blocked": [{"campaign": cid, "blocked_by": by}]}
+    def blocked(by, cid="b", project="Meta-Tools", **more):
+        return {**_ping(**more), "blocked": [{"campaign": cid, "blocked_by": by,
+                                               "project": project}]}
     assert verdict(blocked(["waiting on SPEC-0001 (proposed)"])) == "hold"
     assert verdict(blocked(["waiting on SPEC-0002 (proposed)"])) == "wake"   # not live
     assert verdict(blocked(["waiting on SPEC-0002 (proposed)"])) == "hold"
@@ -210,6 +258,21 @@ def test_ping_fingerprint_hold_and_change(tmp_path):
     # the same item turns harmless -> not an ordinary dependency wait: the next ping wakes
     assert verdict(blocked(["SPEC-0999 not found"], "c2")) == "wake"
     assert verdict(blocked(["SPEC-0999 not found"], "c2")) == "hold"
+    assert verdict(_ping()) == "hold"
+    # the stored fingerprint leaves the live-dependency item out, as classify does: a ping that
+    # mixes it with an actionable item wakes once, then holds (fails if ctx is dropped)
+    live = ["waiting on SPEC-0001 (proposed)"]
+    assert verdict(blocked(live, stuck=["s"])) == "wake"
+    assert verdict(blocked(live, stuck=["s"])) == "hold"
+    assert _stored_fp(cfg) == [["stuck", "s"]]
+    # a live SPEC-0001 in another project does not hold this project's item
+    assert verdict(blocked(live, "o", project="Other")) == "wake"
+    assert verdict(blocked(live, "o", project="Other")) == "hold"
+    assert _stored_fp(cfg) == [["blocked", "o"]]
+
+
+def _stored_fp(cfg):
+    return QT.Digest.load(cfg, "conductor").last_ping_fp
 
 
 def test_follow_holds_blocked_long_on_in_flight_dependency(tmp_path):
@@ -220,7 +283,7 @@ def test_follow_holds_blocked_long_on_in_flight_dependency(tmp_path):
     E.cursor_set(cfg, "conductor", 0)
     for cid, by in (("a", "waiting on SPEC-0001 (in-progress)"),
                     ("b", "waiting on SPEC-0002 (proposed)"), ("c", "SPEC-0999 not found")):
-        E.append(cfg, "backlog_blocked_long", campaign=cid, by="watchdog",
+        E.append(cfg, "backlog_blocked_long", campaign=cid, project="Meta-Tools", by="watchdog",
                  data={"blocked_by": [by], "blocked_for_s": 1300})
     out = io.StringIO()
     _follow(cfg, out, clock=clock)
@@ -240,6 +303,39 @@ def test_follow_holds_blocked_long_on_in_flight_dependency(tmp_path):
     # the event stays visible without the quiet filter
     assert [e["campaign"] for e in E.read_since(cfg, 0, types=["backlog_blocked_long"])] \
         == ["a", "b", "c"]
+
+
+def test_follow_ping_with_live_dependency_item(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    store.create_campaign(cfg, {"id": "SPEC-0001-20261030-aaaa", "spec_id": "SPEC-0001",
+                                "project": "Meta-Tools", "profile": "balanced",
+                                "state": "IMPLEMENTING", "repo": {"base": "main"}})
+    E.cursor_set(cfg, "conductor", 0)
+    blocked = [{"campaign": "a", "project": "Meta-Tools",
+                "blocked_by": ["waiting on SPEC-0001 (proposed)"]},
+               {"campaign": "b", "project": "Meta-Tools", "blocked_by": ["SPEC-0999 not found"]},
+               {"campaign": "o", "project": "Other",
+                "blocked_by": ["waiting on SPEC-0001 (proposed)"]}]
+    for _ in range(2):                                      # the identical ping, twice
+        E.append(cfg, "conductor_ping", by="watchdog", data={**_ping(), "blocked": blocked})
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    assert [e["type"] for e in _lines(out) if e["type"] == "conductor_ping"] == ["conductor_ping"]
+    acts = [r["action"] for r in QT._read_deliveries(cfg, "conductor")
+            if r["type"] == "conductor_ping"]
+    assert acts == ["wake", "hold"]
+    dg = QT.Digest.load(cfg, "conductor")
+    # the in-flight item "a" is out of the stored fingerprint and the held digest items
+    assert dg.last_ping_fp == [["blocked", "b"], ["blocked", "o"]]
+    assert dg.pending["ping_items"] == [["blocked", "b"], ["blocked", "o"]]
+    assert dg.pending["pings_held"] == 1
+    # a ping that is only the live-dependency item is held and clears the fingerprint
+    E.append(cfg, "conductor_ping", by="watchdog", data={**_ping(), "blocked": blocked[:1]})
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    assert [e for e in _lines(out) if e["type"] == "conductor_ping"] == []
+    dg = QT.Digest.load(cfg, "conductor")
+    assert dg.pending["ping_items"] == [] and dg.last_ping_fp == []
 
 
 def test_runner_draining_hold_window(tmp_path):
