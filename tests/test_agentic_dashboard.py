@@ -97,7 +97,7 @@ def test_payload_sections_activity_and_totals(tmp_path):
     assert a["kind"] == "run" and a["persona"] == "implementer" and a["model"] == "sonnet"
     assert a["run_id"] == "002-implementer" and a["elapsed_s"] is not None and a["timeout_s"] == 1800
     assert active[ids["gating"]]["activity"] == {"kind": "gates"}
-    assert active[ids["impl"]]["phase_index"] == Q.PHASES.index("IMPLEMENTING")
+    assert active[ids["impl"]]["phase_index"] == Q.phases_for({"kind": "implement"}).index("IMPLEMENTING")
     assert active[ids["impl"]]["spec_title"] == "Trivial feature"
     assert active[ids["impl"]]["last_gate"]["results"][0] == {
         "name": "test", "ok": False, "required": True, "duration_s": 3.2}

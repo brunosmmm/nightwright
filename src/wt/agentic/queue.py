@@ -4409,6 +4409,8 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
         if r.get("state") == "PARKED":
             view = park_view(cfg, r, now, sett)
             park = {**(park or {}), **{k: view[k] for k in _PARK_VIEW_KEYS}}
+        spec_evs = (store.read_ledger(cfg, r["id"], types=["spec_review"])
+                    if r.get("kind") == "idea" else [])
         items.append({
             "campaign": r.get("id"), "spec_id": r.get("spec_id"), "project": r.get("project"),
             "kind": r.get("kind"), "idea_id": _idea_id_of(r), "label": campaign_label(r),
@@ -4427,7 +4429,13 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
             "priority": _priority(r), "waiting": r.get("waiting"),
             "review_score": (r.get("last_review") or {}).get("score"),
             "run": None if held else _detached_run(cfg, r),
+            "spec_round": spec_round(r, spec_evs),
         })
+        if r.get("kind") == "idea":                 # SPEC-0211: where an idea campaign came from
+            last = spec_evs[-1] if spec_evs else None
+            items[-1]["idea"] = {"id": _idea_id_of(r), "heading": (r.get("idea") or {}).get("heading")}
+            items[-1]["last_spec_review"] = (
+                {"round": last.get("round"), "verdict": last.get("verdict")} if last else None)
         b = backlog.get(r.get("id"))
         if b and r.get("state") == "QUEUED":
             items[-1]["backlog"] = {k: b[k] for k in ("position", "priority", "ready", "blocked_by")}
@@ -4437,8 +4445,31 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
 
 # ---- dashboard (wt queue watch, SPEC-0185) -------------------------------------------------------
 
-PHASES = ("OPENING", "SPEC_WRITING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING", "CLOSING")
+PHASES = ("OPENING", "SPEC_WRITING", "SPEC_REVIEW", "IMPLEMENTING", "GATING", "TRIAGING",
+          "REVIEWING", "CLOSING")
+_SPEC_PHASES = ("SPEC_WRITING", "SPEC_REVIEW")
 _TITLE_CACHE: dict = {}
+
+
+def phases_for(state: dict) -> tuple:
+    """SPEC-0211: the stepper's phases — the spec phases only for an idea campaign."""
+    if state.get("kind") == "idea":
+        return PHASES
+    return tuple(p for p in PHASES if p not in _SPEC_PHASES)
+
+
+def spec_round(state: dict, ledger: list) -> int | None:
+    """SPEC-0211: the spec-review round an idea campaign is at, from its `spec_review` events:
+    the round under review in SPEC_REVIEW, the last round while revising or once accepted, None
+    before any review (a spec campaign has no such events). PARKED / WAITING follow `resume_to`."""
+    evs = [e for e in ledger if e.get("type") == "spec_review"]
+    last = (evs[-1].get("round") or len(evs)) if evs else 0
+    st = state.get("state")
+    if st in ("PARKED", "WAITING"):
+        st = ((state.get("park") if st == "PARKED" else state.get("waiting")) or {}).get("resume_to")
+    if st == "SPEC_REVIEW":
+        return last + 1
+    return last or None
 
 
 def _spec_title(state: dict) -> str | None:
@@ -4448,14 +4479,22 @@ def _spec_title(state: dict) -> str | None:
         return (state.get("merge") or {}).get("note") or "merge request"
     if has_no_spec(state):
         return (state.get("idea") or {}).get("heading")
-    root = (state.get("repo") or {}).get("root")
+    repo = state.get("repo") or {}
     rel = (state.get("spec") or {}).get("rel_path")
-    if not root or not rel:
+    if not repo.get("root") or not rel:
         return None
-    path = Path(root) / rel
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
+    bases = [repo.get("root")]
+    if state.get("kind") == "idea":     # SPEC-0211: the worktree first; once merged it is gone
+        bases.insert(0, repo.get("worktree"))
+    for base in bases:
+        path = Path(base) / rel if base else None
+        try:
+            mtime = path.stat().st_mtime if path else None
+        except OSError:
+            mtime = None
+        if mtime is not None:
+            break
+    else:
         return None
     hit = _TITLE_CACHE.get(str(path))
     if hit and hit[0] == mtime:
@@ -4640,10 +4679,12 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
             except (ValueError, OSError):       # SPEC-0265: a broken profile never fails the view
                 reviewers_cache[key] = None
         reviews = _review_chips(st, ledger, reviewers_cache[key], now)
+        phases = phases_for(st)
         if state != "REVIEWING" and all(c["status"] == "not_run" for c in reviews):
             reviews = []
         active.append({**it, "spec_title": title,
-                       "phase_index": PHASES.index(state) if state in PHASES else None,
+                       "phases": list(phases),
+                       "phase_index": phases.index(state) if state in phases else None,
                        "activity": _activity(st, ledger, now), "reviews": reviews,
                        "last_gate": _gate_summary(st), "last_verdict": _verdict_summary(st),
                        "recent_events": ledger[-3:]})

@@ -132,7 +132,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0208](./specs/0208-spec-number-allocator-reservations-across-branches.md) Spec-number allocator: reservations that see every branch and worktree — done
   - [x] [SPEC-0209](./specs/0209-queue-an-idea-idea-campaigns-that-open-into-spec.md) Queue an idea: idea campaigns that open into SPEC_WRITING — done
   - [x] [SPEC-0210](./specs/0210-spec-review-store-in-the-data-dir-any-repo-reviews.md) Spec review store in the data dir, any-repo reviews and a standalone review journal — done
-  - [ ] [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) Spec phases and review rounds in queue watch and listing — accepted
+  - [x] [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) Spec phases and review rounds in queue watch and listing — done
   - [x] [SPEC-0212](./specs/0212-periodic-conductor-ping.md) Periodic conductor ping: a digest of blocked, stuck, parked and waiting items — done
   - [x] [SPEC-0213](./specs/0213-nonblocking-queue-ticks.md) Non-blocking queue ticks: in-flight steps carry across ticks — done
   - [x] [SPEC-0214](./specs/0214-spec-review-loop-inside-the-campaign-with-in-loop.md) Spec review loop inside the campaign, with in-loop acceptance — done
@@ -207,7 +207,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0087](./specs/0087-workstreams-and-concern-separation-routing.md) | Workstreams and concern separation (routing, streams, filters, hub; umbrella for priority & sort) | epic | accepted | M4: cli ergonomics | 2026-07-28 |
 | [SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) | Example-heavy docs: SVG captures and workflow architecture | epic | accepted | M8: product documentation | 2026-09-09 |
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) | Spec phases and review rounds in queue watch and listing | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0289](./specs/0289-gate-ladder-v2.md) | Gate ladder v2: per-gate retry policy and targeted reruns of failing pytest ids | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0290](./specs/0290-automatic-spec-splitting-from-a-split-review.md) | Automatic spec splitting: a split review turns into child specs written by a split campaign | feature | accepted | M9: agentic workflow | 2026-10-30 |
@@ -416,6 +415,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0208](./specs/0208-spec-number-allocator-reservations-across-branches.md) | Spec-number allocator: reservations that see every branch and worktree | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0209](./specs/0209-queue-an-idea-idea-campaigns-that-open-into-spec.md) | Queue an idea: idea campaigns that open into SPEC_WRITING | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0210](./specs/0210-spec-review-store-in-the-data-dir-any-repo-reviews.md) | Spec review store in the data dir, any-repo reviews and a standalone review journal | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0211](./specs/0211-spec-phases-and-review-rounds-in-queue-watch-and.md) | Spec phases and review rounds in queue watch and listing | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0212](./specs/0212-periodic-conductor-ping.md) | Periodic conductor ping: a digest of blocked, stuck, parked and waiting items | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0213](./specs/0213-nonblocking-queue-ticks.md) | Non-blocking queue ticks: in-flight steps carry across ticks | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0214](./specs/0214-spec-review-loop-inside-the-campaign-with-in-loop.md) | Spec review loop inside the campaign, with in-loop acceptance | feature | done | M9: agentic workflow | 2026-10-25 |

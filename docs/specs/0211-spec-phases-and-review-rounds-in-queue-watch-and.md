@@ -1,10 +1,10 @@
 ---
 id: SPEC-0211
 title: "Spec phases and review rounds in queue watch and listing"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
-updated: 2026-10-25
+updated: 2026-10-30
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0169
@@ -96,32 +96,32 @@ Derive everything from the campaign state and ledger (SPEC-0214's `spec_review` 
 
 ## Acceptance criteria
 
-- [ ] Idea campaign in SPEC_REVIEW after one revise review (fixture: one `spec_review` event,
+- [x] Idea campaign in SPEC_REVIEW after one revise review (fixture: one `spec_review` event,
       round 1, verdict revise):
   - `spec_round == 2`, and `last_spec_review == {round: 1, verdict: "revise"}`;
   - `wt queue list` shows `SPEC_REVIEW r2`.
-- [ ] Idea campaign in SPEC_WRITING:
+- [x] Idea campaign in SPEC_WRITING:
   - with no spec yet, plain `SPEC_WRITING`, and a spec row of `writing… ` plus the heading cut
     at 60 characters with `…`;
   - revising after round 1, `SPEC_WRITING r1`.
   - When parked with `spec_review_exhausted` (resume_to SPEC_WRITING), `spec_round` is R.
-- [ ] Idea campaign in its first SPEC_REVIEW (no `spec_review` event): `spec_round == 1`,
+- [x] Idea campaign in its first SPEC_REVIEW (no `spec_review` event): `spec_round == 1`,
       `last_spec_review` is None, the row reads `r1 · reviewing`, and the list shows
       `SPEC_REVIEW r1`.
-- [ ] Other states: an idea campaign in IMPLEMENTING after accept at round 2 has
+- [x] Other states: an idea campaign in IMPLEMENTING after accept at round 2 has
       `spec_round == 2` and the row `r2 · last: approve`; the same campaign parked with
       resume_to IMPLEMENTING has `spec_round == 2`; a spec campaign in any state has
       `spec_round` None and no `spec review` row.
-- [ ] Title: with the spec file present in the worktree, the title is read from it; with the
+- [x] Title: with the spec file present in the worktree, the title is read from it; with the
       worktree removed (merged), it is read from `repo.root`; with neither, the row falls
       back to the spec id alone.
-- [ ] The spec row cell, prefix included, is at most 60 characters for a 100-character
+- [x] The spec row cell, prefix included, is at most 60 characters for a 100-character
       heading, and ends in `…`.
-- [ ] Rendering at 80 and 160 columns shows `from IDEA-`, the spec phases on the stepper
+- [x] Rendering at 80 and 160 columns shows `from IDEA-`, the spec phases on the stepper
       (drawn from `it["phases"]`), and the `spec review` row.
-- [ ] A spec campaign's `phases` omit the spec phases, its `phase_index` is unchanged
+- [x] A spec campaign's `phases` omit the spec phases, its `phase_index` is unchanged
       from today, and its stepper renders as today.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -131,17 +131,24 @@ Derive everything from the campaign state and ledger (SPEC-0214's `spec_review` 
 - **Manual verification:** none.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_dashboard_spec_phase.py tests/test_agentic_dashboard.py
+  tests/test_agentic_idea_campaign.py tests/test_agentic_queue_cli.py
+  tests/test_agentic_spec_review_loop.py`: 151 passed (one or more tests per AC).
+- `python3 tools/spec_lint.py`: OK. The full `uv run pytest` was left to gating.
+
 ## Rollout / migration
 
 Ships through the agentic queue after SPEC-0214. The changes are additive.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`). (No manual steps.)
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`). (No manual steps.)
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

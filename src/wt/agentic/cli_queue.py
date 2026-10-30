@@ -110,6 +110,8 @@ def _queue_table(payload: dict, width: int | None = None) -> Group:
                 + (f"/{it['cap_usd']:.0f}" if it.get("cap_usd") else ""))
         park = it.get("park") or {}
         state = it["state"]
+        if state in ("SPEC_WRITING", "SPEC_REVIEW") and it.get("spec_round"):
+            state = f"{state} r{it['spec_round']}"      # SPEC-0211
         if it.get("run"):
             state = f"{state} ({it['run']})"           # SPEC-0229: run: detached (pid N)
         if park.get("reason"):
@@ -229,6 +231,41 @@ def _spec_cell(spec_id, title) -> Text:
     return t
 
 
+_SPEC_CELL_MAX = 60
+
+
+def _idea_spec_cell(it: dict) -> Text:
+    """SPEC-0211: an idea campaign's spec row — `SPEC-NNNN <title>`, or `writing… <heading>`
+    before a spec exists; the whole cell is cut to 60 characters."""
+    if it.get("spec_id"):
+        text, head = f"{it['spec_id']} {it.get('spec_title') or ''}".rstrip(), len(str(it["spec_id"]))
+    else:
+        text, head = f"writing… {it.get('spec_title') or ''}".rstrip(), 0
+    if len(text) > _SPEC_CELL_MAX:
+        text = text[:_SPEC_CELL_MAX - 1] + "…"
+    t = Text(text, style="dim")
+    if head:
+        t.stylize("bold", 0, head)
+    return t
+
+
+def _spec_review_text(it: dict):
+    """SPEC-0211: the `spec review` row of an idea campaign from its state, `spec_round` and
+    `last_spec_review`, or None when there is nothing to show."""
+    rnd = it.get("spec_round")
+    last = it.get("last_spec_review")
+    verdict = (last or {}).get("verdict")
+    if it["state"] == "SPEC_WRITING":
+        text = "writing" if rnd is None else f"r{rnd} · revising · last: {verdict}"
+    elif it["state"] == "SPEC_REVIEW":
+        text = f"r{rnd} · reviewing" + (f" · last: {verdict}" if last else "")
+    elif rnd is not None:
+        text = f"r{rnd} · last: {verdict}"
+    else:
+        return None
+    return Text(text, style=R.state_style("SPEC_REVIEW"))
+
+
 def _campaign_cell(it: dict) -> Text:
     """The campaign id; a merge request (SPEC-0233) also shows its `merge:<branch>` label."""
     t = Text(it["campaign"])
@@ -318,9 +355,9 @@ def _dash_header(p: dict) -> Panel:
                  subtitle_align="right", border_style="grey50", box=box.ROUNDED)
 
 
-def _stepper(state: str, phase_index) -> Text:
+def _stepper(state: str, phase_index, phases=None) -> Text:
     t = Text()
-    for i, name in enumerate(Q.PHASES):
+    for i, name in enumerate(phases or Q.PHASES):
         if i:
             t.append(" › ", style="grey50")
         label = name.lower()
@@ -413,14 +450,19 @@ def _active_panel(it: dict) -> Panel:
     grid = Table.grid(padding=(0, 1))
     grid.add_column(style="dim", no_wrap=True, justify="right")
     grid.add_column(overflow="fold")
-    grid.add_row("spec", _spec_cell(it.get("label") or it["spec_id"] or it.get("idea_id"),
-                                    it.get("spec_title")))
+    idea = it.get("idea")
+    grid.add_row("spec", _idea_spec_cell(it) if idea else
+                 _spec_cell(it.get("label") or it["spec_id"] or it.get("idea_id"),
+                            it.get("spec_title")))
     where = R.project_text(it.get("project"))
     where.append(f" · {_size_tone(it)} → {it.get('profile')}", style="dim")
     where.append_text(_source_marker(it))
     where.append(f" · {it.get('branch') or 'no branch yet'}", style="dim")
     grid.add_row("project", where)
-    grid.add_row("phase", _stepper(it["state"], it.get("phase_index")))
+    grid.add_row("phase", _stepper(it["state"], it.get("phase_index"), it.get("phases")))
+    review = _spec_review_text(it) if idea else None
+    if review:
+        grid.add_row("spec review", review)
     grid.add_row("now", _activity_text(it.get("activity"), it["state"]))
     cap = it.get("cap_usd")
     cost = Text(f"${it['cost_usd']:.2f}", style="bold")
@@ -443,9 +485,11 @@ def _active_panel(it: dict) -> Panel:
     state = it["state"]
     if it.get("park_requested"):
         state += " · park requested"
-    return Panel(grid, title=Text.assemble((it["campaign"], "bold"), "  ",
-                                           R.project_text(it.get("project")), "  ",
-                                           (state, R.state_style(it["state"]))),
+    title = Text.assemble((it["campaign"], "bold"), "  ", R.project_text(it.get("project")), "  ",
+                          (state, R.state_style(it["state"])))
+    if idea and idea.get("id"):
+        title.append(f" · from {idea['id']}", style="dim")
+    return Panel(grid, title=title,
                  title_align="left", border_style=R.state_style(it["state"]) or "cyan",
                  box=box.ROUNDED)
 
