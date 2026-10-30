@@ -80,7 +80,7 @@ NOTES = [
     "conductor_usd is the conductor's share (SPEC-0299): each conductor turn is split equally "
     "among the campaigns live at that moment (open to terminal transition). It is null when no "
     "conductor session is registered or no turn is priced (agentic.conductor.prices); "
-    "cost_with_conductor_usd = cost_usd + conductor_usd.",
+    "cost_with_conductor_usd = (cost_usd or 0) + conductor_usd.",
 ]
 
 

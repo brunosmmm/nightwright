@@ -75,16 +75,24 @@ def record_session(cfg, reader, env=os.environ, *, source="follower", session_id
 
 # ---- transcripts ---------------------------------------------------------------------------
 
+def _safe_id(session_id) -> bool:
+    """A session id is a file stem: no path separators or glob metacharacters."""
+    sid = str(session_id or "")
+    return bool(sid) and not any(c in sid for c in "/\\*?[]")
+
+
 def find_transcript(cfg, session_id) -> Path | None:
     root = cfg.get("_root")
     if not root:
+        return None
+    if not _safe_id(session_id):
         return None
     return next(iter(sorted(Path(root).glob(f"*/{session_id}.jsonl"))), None)
 
 
 def subagent_transcripts(cfg, session_id) -> list[Path]:
     root = cfg.get("_root")
-    if not root:
+    if not root or not _safe_id(session_id):
         return []
     return sorted(Path(root).glob(f"*/{session_id}/subagents/**/*.jsonl"))
 
@@ -141,10 +149,18 @@ def read_turns(path) -> list[dict]:
 
 # ---- prices --------------------------------------------------------------------------------
 
+def _valid_price(entry) -> bool:
+    """A price entry is a dict whose present kinds are all plain numbers; a typo in the hand-written
+    config makes the model unpriced rather than breaking every report and export."""
+    return isinstance(entry, dict) and all(
+        isinstance(entry[k], (int, float)) and not isinstance(entry[k], bool)
+        for k in KINDS if entry.get(k) is not None)
+
+
 def price_for(cfg, model) -> dict | None:
     """The price entry for `model`: longest matching prefix of `agentic.conductor.prices`."""
     prices = (((cfg.get("agentic") or {}).get("conductor") or {}).get("prices")) or {}
-    keys = [k for k in prices if isinstance(prices[k], dict) and str(model or "").startswith(str(k))]
+    keys = [k for k in prices if _valid_price(prices[k]) and str(model or "").startswith(str(k))]
     return prices[max(keys, key=len)] if keys else None
 
 
@@ -185,10 +201,17 @@ def _live_at(windows, t) -> list[dict]:
             and (w["end"] is None or t < w["end"])]
 
 
-def _turns_of(cfg, paths) -> list[dict]:
+def _turns_of(cfg, paths, seen=None) -> list[dict]:
+    """Priced turns of `paths`, sorted by time. A message id seen in an earlier transcript (a
+    resumed session replays its history) is skipped; `seen` carries ids across calls."""
     out = []
+    seen = set() if seen is None else seen
     for p in paths:
         for t in read_turns(p):
+            if t["msg_id"] is not None:
+                if t["msg_id"] in seen:
+                    continue
+                seen.add(t["msg_id"])
             price = price_for(cfg, t["model"])
             out.append({**t, "usd": turn_usd(t, price), "_price": price})
     return sorted(out, key=lambda t: t["ts"])
@@ -273,7 +296,8 @@ def cost_report(cfg, *, since=None, until=None, session_ids=None, include_subage
     def local_day(ts):
         return ts.astimezone(tz).date()
 
-    ids = list(session_ids) if session_ids else [r["session_id"] for r in sessions(cfg)]
+    ids = list(dict.fromkeys(session_ids if session_ids else
+                             [r["session_id"] for r in sessions(cfg)]))
     rows, main_paths, sub_paths = [], [], []
     for sid in ids:
         path = find_transcript(cfg, sid)
@@ -284,8 +308,9 @@ def cost_report(cfg, *, since=None, until=None, session_ids=None, include_subage
         if include_subagents:
             sub_paths.extend(subagent_transcripts(cfg, sid))
     turns = []
+    seen: set = set()
     for row, path in main_paths:
-        got = [t for t in _turns_of(cfg, [path]) if in_window(local_day(t["ts"]))]
+        got = [t for t in _turns_of(cfg, [path], seen) if in_window(local_day(t["ts"]))]
         row["turns"] = len(got)
         turns.extend(got)
     turns.sort(key=lambda t: t["ts"])

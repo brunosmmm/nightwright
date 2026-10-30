@@ -263,3 +263,101 @@ def test_conductor_session_add_list(cfg, monkeypatch):
     rows = json.loads(r.output)["sessions"]
     assert [(x["session_id"], x["source"]) for x in rows] == [("ghost", "manual"),
                                                              ("real", "manual")]
+
+
+# ---- review round: merge states, context percentiles, --session, dedupe, bad prices ---------
+
+def test_merges_count_merged_and_handed_off_only(cfg):
+    campaign(cfg, "H", "2026-10-20T14:00:00+00:00", "2026-10-20T16:00:00+00:00",
+             outcome="HANDED_OFF", total=1.0)
+    campaign(cfg, "X", "2026-10-20T14:00:00+00:00", "2026-10-20T17:00:00+00:00",
+             outcome="ABANDONED", total=4.0)
+    campaign(cfg, "M", "2026-10-21T13:00:00+00:00", "2026-10-21T15:00:00+00:00", total=2.0)
+    write_transcript(cfg, "s", [turn("t1", utc(20, 14, 30)),        # H and X live
+                                turn("t2", utc(21, 14))])           # M live
+    rep = CC.cost_report(cfg, session_ids=["s"])
+    assert rep["merges"] == 2                       # H counts, ABANDONED X does not
+    assert rep["usd_per_merge"] == 1.0              # $2 / 2
+    assert [(d["date"], d["merges"]) for d in rep["by_day"]] == [("2026-10-20", 1),
+                                                                 ("2026-10-21", 1)]
+    by = {c["campaign"]: c for c in rep["campaigns"]}
+    assert set(by) == {"H", "X", "M"}
+    assert by["X"]["outcome"] == "ABANDONED" and by["X"]["conductor_usd"] == 0.5
+    assert by["H"]["outcome"] == "HANDED_OFF"
+    assert rep["persona_usd"] == 7.0                # X's persona spend is still counted
+
+
+def test_context_percentiles(cfg):
+    # written newest first, so `last` must come from the time order, not the file order
+    write_transcript(cfg, "s", [turn(f"m{i}", utc(20, 10 + i), i * 1000) for i in range(10, 0, -1)])
+    ctx = CC.cost_report(cfg, session_ids=["s"])["context"]
+    assert ctx == {"median": 5500, "p90": 9000, "max": 10_000, "last": 10_000}
+    write_transcript(cfg, "s", [turn(f"m{i}", utc(20, 20 - i), i * 1000) for i in range(1, 11)])
+    assert CC.cost_report(cfg, session_ids=["s"])["context"]["last"] == 1000
+
+
+def test_window_edges_are_start_inclusive_end_exclusive(cfg):
+    campaign(cfg, "A", "2026-10-20T14:00:00+00:00", "2026-10-20T16:00:00+00:00")
+    write_transcript(cfg, "s", [turn("at-open", utc(20, 14)), turn("at-end", utc(20, 16))])
+    rep = CC.cost_report(cfg, session_ids=["s"])
+    assert rep["campaigns"][0]["conductor_usd"] == 1.0 and rep["idle_usd"] == 1.0
+
+
+def test_session_option_overrides_registry(cfg, monkeypatch):
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    write_transcript(cfg, "A", [turn("a1", utc(20, 14))])
+    write_transcript(cfg, "B", [turn("b1", utc(20, 14)), turn("b2", utc(20, 15)),
+                                turn("b3", utc(20, 16), 300_000)])
+    CC.record_session(cfg, "conductor", {}, source="manual", session_id="A")
+    assert CC.cost_report(cfg)["totals"]["turns"] == 1               # the registry alone: A
+    rep = CC.cost_report(cfg, session_ids=["B"])
+    assert rep["totals"]["turns"] == 3 and [s["session_id"] for s in rep["sessions"]] == ["B"]
+    r = CliRunner().invoke(cli, ["queue", "conductor-cost", "--json", "--session", "B"])
+    assert r.exit_code == 0, r.output
+    rep = json.loads(r.output)
+    assert rep["totals"]["turns"] == 3 and rep["totals"]["usd"] == 5.0
+    assert [s["session_id"] for s in rep["sessions"]] == ["B"]
+
+
+def test_turns_deduped_across_sessions(cfg):
+    campaign(cfg, "A", "2026-10-20T13:00:00+00:00", "2026-10-20T18:00:00+00:00")
+    # a resumed session replays the earlier history under a new id
+    write_transcript(cfg, "old", [turn("m1", utc(20, 14)), turn("m2", utc(20, 15))])
+    write_transcript(cfg, "new", [turn("m1", utc(20, 14)), turn("m2", utc(20, 15)),
+                                  turn("m3", utc(20, 16))])
+    for sid in ("old", "new"):
+        CC.record_session(cfg, "conductor", {}, source="manual", session_id=sid)
+    rep = CC.cost_report(cfg)
+    assert rep["totals"]["turns"] == 3 and rep["totals"]["usd"] == 3.0
+    assert [s["turns"] for s in rep["sessions"]] == [2, 1]
+    assert CC.attribute(cfg) == {"A": 3.0}
+    rep = CC.cost_report(cfg, session_ids=["old", "old"])
+    assert rep["totals"]["turns"] == 2 and len(rep["sessions"]) == 1
+
+
+def test_malformed_price_entry_means_unpriced(cfg):
+    write_transcript(cfg, "s", [turn("m1", utc(20, 14))])
+    CC.record_session(cfg, "conductor", {}, source="manual", session_id="s")
+    for bad in ({"input": "$15"}, {"input": [1]}, {"input": True}):
+        cfg["agentic"]["conductor"]["prices"] = {"claude-x": bad}
+        assert CC.price_for(cfg, "claude-x") is None
+        rep = CC.cost_report(cfg)
+        assert rep["totals"]["usd"] == 0.0 and rep["unpriced_models"] == ["claude-x"]
+        assert CC.attribute(cfg) is None
+    cfg["agentic"]["conductor"]["prices"] = {"claude-x": {"input": 3}}
+    assert CC.price_for(cfg, "claude-x") == {"input": 3}
+
+
+def test_session_ids_with_path_or_glob_chars_never_match(cfg):
+    write_transcript(cfg, "s", [turn("m1", utc(20, 14))])
+    for sid in ("*", "../s", "s*", "[s]", ""):
+        assert CC.find_transcript(cfg, sid) is None
+        assert CC.subagent_transcripts(cfg, sid) == []
+
+
+def test_conductor_session_list_text_rows(cfg, monkeypatch):
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    CC.record_session(cfg, "conductor", {"CLAUDE_PID": "77"}, session_id="sess-one")
+    r = CliRunner().invoke(cli, ["queue", "conductor-session", "list"])
+    assert r.exit_code == 0, r.output
+    assert "sess-one" in r.output and "follower" in r.output

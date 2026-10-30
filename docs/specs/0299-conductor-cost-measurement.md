@@ -255,6 +255,14 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
   now `render.warn`; 3,286 passed before it); that file passes after the fix. The tests after
   it in the order were not re-run and are left to gating.
 
+- Review round (2026-10-30): added tests for HANDED_OFF vs ABANDONED merge counting, exact
+  context median/p90/max/last, `--session` overriding a non-empty registry, window edges,
+  cross-transcript `message.id` dedupe, malformed price entries and the `conductor-session list`
+  table. Sabotage: `MERGE_STATES` restricted to MERGED, or widened to all terminal states, fails
+  `test_merges_count_merged_and_handed_off_only`. `uv run pytest tests/test_agentic_conductor_cost.py
+  tests/test_agentic_campaign_export.py tests/test_skills.py`: 151 passed, 2 skipped. The full
+  suite is left to gating.
+
 ### As shipped (2026-10-30)
 
 - Implemented to Design in `conductor_cost.py`, `cli_conductor.py` and the `events.follow` /
@@ -264,6 +272,11 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
   add` reuses the same flocked, idempotent append (`source: "manual"`).
 - The second follower arm in `test_follow_records_session_once` uses `stop=lambda: True`
   because the first run advanced the cursor past the only event.
+- Review round hardening: turns are deduped by `message.id` across all transcripts (a resumed
+  session replays history under a new id) and repeated `--session` ids collapse; a price entry
+  with a non-numeric kind value is treated as no price (the model is unpriced) so a config typo
+  cannot break `wt campaign export`; session ids with `/` or glob metacharacters never match a
+  transcript.
 - Manual verification, token half: `read_turns` on the 5-day session transcript
   (`9b76fcc8-…`, 2026-10-25 to 2026-10-30) gives 2,405 turns and 1,096,983,054 cache-read
   tokens, matching the baseline (about 2,386 turns and 1.09B at the time it was measured; the
