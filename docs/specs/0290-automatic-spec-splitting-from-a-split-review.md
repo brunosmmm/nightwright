@@ -4,6 +4,7 @@ title: "Automatic spec splitting: a split review turns into child specs written 
 status: accepted
 owner: user
 created: 2026-10-30
+updated: 2026-10-30
 milestone: "M9: agentic workflow"
 kind: feature
 source_idea: IDEA-065
@@ -49,6 +50,11 @@ Today a `split` spec review is a dead end:
 - After the last part, SPEC-X is marked `superseded` with `superseded_by: <part 1>`. The
   ledger is regenerated and the campaign goes straight to CLOSING. It has no implementer, no
   reviewers and no follow-ups. The children merge to base like any campaign branch.
+- A split campaign is ready as soon as the original is still `accepted` and the review sha
+  still matches. It does not wait for the original's `depends_on`: writing spec files needs none
+  of them built.
+- A spec that `depends_on` the original is not made ready by the supersession. It waits until
+  every spec that supersedes the original (all parts) is `done` or `superseded`.
 
 **Non-goals**
 - Queueing the children after the merge (SPEC-0294).
@@ -74,6 +80,11 @@ spec DoD on the original. Instead it runs a **split check**: every part file exi
 and the original is `superseded` by part 1. The regular gates (spec-lint, pytest) still run
 in the re-gate.
 
+Dependents of the original follow the supersession (Design, "backlog readiness"): a
+`superseded` dependency counts as met only once the specs that supersede it are built. This
+closes the hole where marking SPEC-X `superseded` would release every spec waiting on SPEC-X
+before any part exists in code.
+
 A chain (`part k depends on part k-1`) is the dependency default. The reviewer lists parts in
 build order, and a chain never lets a later part start on a missing foundation. It costs some
 parallelism, and a human can relax a child's `depends_on` before it is queued.
@@ -91,17 +102,39 @@ parallelism, and a human can relax a child's `depends_on` before it is queued.
   implementation, not the writing work.
 - `queue.apply_add`: with `plan["split"]`:
   - It creates the campaign with `kind: "split"`, `spec.id = spec_id` and
-    `state["split"] = {"original": spec_id, "review_sha", "parts": [{"title", "scope",
-    "number": None, "rel_path": None, "spec_id": None}]}`.
+    `state["split"] = {"original": spec_id, "original_rel": spec_rel_path, "review_sha",
+    "parts": [{"title", "scope", "number": None, "rel_path": None, "spec_id": None}]}`.
+    `original_rel` is the plan's `spec.rel_path`, captured once at admission. Finalize and
+    `split_check` read the original's path only from `state.split.original_rel`, never from
+    `state.spec`, which other code paths may rewrite.
   - It appends `admitted_split` `{review_sha, parts}`. Register the event in
     `schemas.EVENT_KEYS` as `("review_sha", "parts")`.
-- `queue` step decision for SPEC_WRITING (the `decide` branch that returns `write_spec`): for
-  `kind == "split"`:
-  - If a part has no `spec_id`, return `write_spec`.
+- `queue.backlog_readiness` (backlog readiness), two changes:
+  - For `kind == "split"` it checks only that the spec file at `state.split.original_rel` is
+    still `accepted` and that the spec's current sha still equals `state.split.review_sha`
+    (otherwise `["spec changed since the split review"]`). It skips the `depends_on` loop, so a
+    split of a spec whose dependency is not built is still ready.
+  - For every other campaign, the `depends_on` loop uses a new helper
+    `dependency_met(specs_dir, dep_id, dep_fm, seen)` instead of `dep_status in
+    DEPENDENCY_SATISFIED`. `done` is met. `superseded` is met only when every replacement is
+    met, recursively (`seen` guards cycles). The replacements are the `superseded_by` target
+    plus every spec in `specs_dir` whose `supersedes` lists `dep_id`. When no replacement can be
+    found or read, a `superseded` dependency stays met, as today. Any other status is unmet.
+    The blocker text names the pending replacement, for example `waiting on SPEC-X (superseded;
+    waiting on SPEC-A, SPEC-B)`. `_dangling` (`queue.py:4798`) is unchanged: a superseded
+    dependency with unbuilt replacements is not dangling, because the parts are queued or can be
+    queued.
+- `queue.decide` step decision for SPEC_WRITING (the branch that returns `write_spec`). The
+  `kind == "split"` check comes first, **before** the park
+  `spec.id and not pending_brief` → `spec_review_unavailable` (`queue.py:185-187`). A split
+  campaign sets `spec.id`, so the order is what keeps it from being parked:
+  - If a part has no `spec_id`, return `write_spec` (cost-cap check as today).
   - Otherwise return the new `Step("finalize_split")`.
   - The `open` apply sends `kind == "split"` to SPEC_WRITING.
-- `queue._prepare_spec_write`, for `kind == "split"`: the mode is `split`, applied to the first
-  part that has no `spec_id`.
+- `queue._prepare_spec_write`, for `kind == "split"`: the split branch comes first, **before**
+  the `admission == "revise_pending"` and `elif spec.get("id")` → `revise` branches
+  (`queue.py:1186-1189`), so a split campaign is never put into revise or amend mode. The mode
+  is `split`, applied to the first part that has no `spec_id`.
   - The number comes from `SN.allocate(cfg, by="queue", campaign=cid, specs_dir=worktree /
     "docs/specs")`.
   - The path is `docs/specs/NNNN-<slugify(part title)>.md`.
@@ -127,7 +160,8 @@ parallelism, and a human can relax a child's `depends_on` before it is queued.
 - New worker step `_do_finalize_split` (main thread is not needed; it touches only the
   worktree):
   - New `SW.supersede(worktree, original_rel, superseded_by)` rewrites only the original's
-    front matter: `status: superseded`, `superseded_by`, `updated: today`.
+    front matter: `status: superseded`, `superseded_by`, `updated: today`. The caller passes
+    `original_rel = state.split.original_rel` and `superseded_by = parts[0].spec_id`.
   - It then runs `SW.regenerate` (the ledger) and commits
     `wt(<cid>): split SPEC-X into A, B[, …]`.
   - Its apply emits `split_finalized` `{original, parts}` (register it in `EVENT_KEYS`) and
@@ -138,13 +172,22 @@ parallelism, and a human can relax a child's `depends_on` before it is queued.
     where it now skips `spec_guard` and `spec_dod` for merge requests.
   - For `kind == "split"`, it instead runs `split_check(worktree, state)`: each part file
     exists and passes `verify_spec_file` lint, ignoring status, and the original's front
-    matter has `status: superseded` and `superseded_by == parts[0].spec_id`. A failure is a
-    `must_fix` finding, and the campaign parks `spec_write_failed` (there is no triager for a
+    matter (found at `state.split.original_rel`) has `status: superseded` and
+    `superseded_by == parts[0].spec_id`. A failure is a `must_fix` finding, and the campaign
+    parks `spec_write_failed` with `resume_to: "SPEC_WRITING"` (there is no triager for a
     split).
+  - Resuming from that park goes back to SPEC_WRITING, and the step decision picks the work:
+    a part without a `spec_id` is written, and when every part has one the finalize step runs
+    again. Finalize is idempotent and re-supersedes the original if it is not yet superseded,
+    so a failed check on the original self-heals on resume.
+  - A human repairs a missing or bad part by clearing that part's `spec_id`, `number` and
+    `rel_path` in `state.split.parts` (and deleting its file if one exists in the worktree),
+    then resuming. The part is rewritten with a new number and finalize runs again.
 - `queue._do_prepare_close`: skip `FU.file_followups` for `kind == "split"`, as it does for
   merge.
 - `wt queue watch` / `wt campaign show`: the kind column shows `split`, and the campaign
-  detail lists the parts with their ids.
+  detail lists the parts with their ids (`part k: SPEC-NNNN <title>`, or `part k: (pending)
+  <title>` before it is written).
 
 ## Alternatives considered
 
@@ -174,6 +217,21 @@ parallelism, and a human can relax a child's `depends_on` before it is queued.
 - [ ] Close skips the spec guard, the spec DoD, reviewers and follow-ups for a split campaign,
       and runs the split check instead. A passing campaign merges the children and the
       superseded original to base.
+- [ ] A failed split check parks `spec_write_failed` with `resume_to: SPEC_WRITING`. Resuming
+      after a part's `spec_id` was cleared rewrites that part, runs finalize again and returns to
+      CLOSING.
+- [ ] A split campaign is never parked `spec_review_unavailable` and never prepared in
+      `revise` or `amend` mode: its SPEC_WRITING step returns `write_spec` or `finalize_split`.
+- [ ] `backlog_readiness` for a split campaign ignores the original's `depends_on` and requires
+      only that the original is `accepted` and the review sha is unchanged. A split of a spec
+      whose dependency is not done is ready.
+- [ ] A spec that `depends_on` a `superseded` original is not ready until every spec that
+      supersedes the original is `done` or `superseded`. With no readable replacement, a
+      `superseded` dependency is met as before.
+- [ ] `state.split.original_rel` is recorded at admission, and finalize and the split check use
+      it instead of `state.spec`.
+- [ ] `wt queue watch` and `wt campaign show` show kind `split`, and `campaign show` lists each
+      part with its id (or `(pending)`).
 
 ## Test plan
 
@@ -189,8 +247,27 @@ parallelism, and a human can relax a child's `depends_on` before it is queued.
   - `test_split_campaign_writes_each_part`: there are 3 parts. There are three `write_spec`
     runs, the three files exist with consecutive allocated numbers, and part 2 has
     `depends_on: [part 1]`.
-  - `test_split_part_wrong_wiring_retried_then_parked`: the fake writer omits `supersedes`.
-    It retries once, then parks `spec_write_failed`.
+  - `test_split_part_wrong_wiring_retried_then_parked`, parametrized over the wrong key
+    (`supersedes` missing, `depends_on` wrong, `parent` wrong, `status` not `accepted`): the
+    fake writer writes a part with that one key wrong. It retries once, then parks
+    `spec_write_failed`.
+  - `test_split_step_never_parks_or_revises`: a `kind: "split"` campaign in SPEC_WRITING with
+    `spec.id` set and no `pending_brief` gets `write_spec` (not `spec_review_unavailable`) while
+    a part is unwritten and `finalize_split` after the last. `_prepare_spec_write` returns mode
+    `split`, also when `admission` is `revise_pending`.
+  - `test_split_readiness_ignores_depends_on`: the original has `depends_on` on a spec that is
+    not done. `backlog_readiness` of the split campaign is ready. It is not ready when the
+    original is no longer `accepted` or when its sha differs from `review_sha`.
+  - `test_dependent_of_split_original_waits_for_parts`: SPEC-D `depends_on` SPEC-X. After
+    finalize (X `superseded`, parts `accepted`) SPEC-D is not ready and the blocker names the
+    parts. With one part still `accepted` it stays blocked. With every part `done` it is ready.
+  - `test_superseded_dependency_without_replacement_is_met`: a `superseded` dependency that no
+    spec lists in `supersedes` and with no readable `superseded_by` stays met (old behaviour).
+  - `test_split_check_failure_resumes_to_spec_writing`: a failed split check parks
+    `spec_write_failed` with `resume_to: SPEC_WRITING`. After clearing a part's `spec_id`,
+    resuming rewrites that part, finalizes again and reaches CLOSING.
+  - `test_split_original_rel_recorded`: `state.split.original_rel` equals the plan's spec path.
+    Rewriting `state.spec.rel_path` before finalize does not change which file is superseded.
   - `test_finalize_split_supersedes_original`: the original has `status: superseded` and
     `superseded_by` = part 1, the ledger is regenerated, the commit exists, `split_finalized`
     is emitted and the state is CLOSING.
@@ -203,21 +280,32 @@ parallelism, and a human can relax a child's `depends_on` before it is queued.
   - `test_split_check_missing_part_fails`;
   - `test_split_check_original_not_superseded_fails`;
   - `test_split_skips_spec_guard`.
+- `tests/test_agentic_queue_cli.py` and `tests/test_agentic_campaign_cli.py`: a `kind: "split"`
+  campaign with two written parts and one pending part. `wt queue watch --once` shows kind
+  `split`. `wt campaign show <id>` lists `part 1: SPEC-NNNN <title>` and `part 3: (pending)
+  <title>`.
 - `tests/test_agentic_spec_writer.py`: `_split_problems` reports each wrong key. `write_rules
   ("split", …)` names the scope, the other parts and the exact front matter.
 - **Sabotage check:**
   - Make `_split_problems` accept any `depends_on`.
-    `test_split_part_wrong_wiring_retried_then_parked` (the variant with a wrong chain) must
-    fail.
+    `test_split_part_wrong_wiring_retried_then_parked[depends_on wrong]` must fail.
   - Skip the finalize step. `test_split_check_original_not_superseded_fails` and
     `test_finalize_split_supersedes_original` must fail.
+  - Revert `dependency_met` to `status in DEPENDENCY_SATISFIED`.
+    `test_dependent_of_split_original_waits_for_parts` must fail.
+  - Remove the `kind == "split"` early return from `backlog_readiness`.
+    `test_split_readiness_ignores_depends_on` must fail.
 - **Regression guard:** full `uv run pytest`. Approve, revise and revise-pending admission
   tests are unchanged.
 
 ## Rollout / migration
 
 New admission path. Specs with a stale split review are still refused as before. Campaigns
-of other kinds are unaffected.
+of other kinds are unaffected, with one deliberate exception: `dependency_met` applies to every
+spec, so a hand-superseded dependency now also waits for the specs that supersede it. A
+dependent of a dependency superseded by hand, whose replacement is not yet `done`, becomes
+blocked where it was ready before; that is the intended fix, not a regression. The CLI change
+(kind `split`, parts listing) is additive.
 
 ## Definition of done
 
