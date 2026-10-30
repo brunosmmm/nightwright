@@ -349,6 +349,12 @@ its own decisions in the same vocabulary as the conductor.
   removing the end-of-tick `_record_auto_waits` or `auto` from the `parked` projection now fails
   them. Targeted run of the five spec test files plus `tests/test_agentic_queue_merge.py` passes;
   the full suite is left to gating.
+- Review loop 2: step 0a now counts the campaigns it resumed earlier in the same tick against
+  `slots` (`test_resume_slot_accounting_within_one_step`: slots=2, one active, two due → one
+  CLOSING, one WAITING); `test_decide_failure_never_blocks_the_park` and
+  `test_post_merge_base_moving_is_not_auto` added. Targeted run of `tests/test_agentic_queue_autopark.py`,
+  `tests/test_agentic_autopark.py`, `tests/test_agentic_close.py`, `tests/test_agentic_queue_merge.py`:
+  135 passed; the full suite is left to gating.
 - Manual verification (`wt queue decisions --since 1d`, `wt queue wakeups`) can only run on the
   live queue after merge; it is not done yet and is the first thing to check there.
 
@@ -374,6 +380,12 @@ its own decisions in the same vocabulary as the conductor.
   make the duration guard dead code), and zero output tokens with a long duration is not phantom
   either. A run with no `duration_s` is not phantom. This supersedes the "usage is empty … or
   duration ≤" wording in Decision 1 and the Design.
+
+- Review loop 2: `_park` wraps `autopark.decide` in a try/except (a failure becomes a `note` event
+  and no `auto`), and the `base_moving` backoff is clamped to 6 h. The post-merge
+  "merged != gated HEAD" `base_moving` park (`close.py`) carries `no_auto: True` and `_park(...,
+  auto_ok=False)`, so only the `moved()` park is auto-decided: the merge already happened, a blind
+  retry is not a mechanical decision.
 
 ## Rollout / migration
 

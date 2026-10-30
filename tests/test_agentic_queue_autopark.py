@@ -232,6 +232,38 @@ def test_resume_slot_accounting(opened):
     assert report.steps[0]["to"] == "WAITING"
 
 
+def test_resume_slot_accounting_within_one_step(opened):
+    """Two auto resumes due in one tick share the free slots: the second sees the first."""
+    cfg, cid, ctx = opened
+    other = "C2-" + cid
+    S.create_campaign(cfg, dict(S.read_state(cfg, cid), id=other))
+    for c in (cid, other):
+        _park(cfg, c)
+        _due(cfg, c)
+    Q._record_auto_waits(cfg)
+    report, resumed = _step0a(cfg, busy=1, slots=2)         # one other campaign is active
+    states = sorted(S.read_state(cfg, c)["state"] for c in (cid, other))
+    assert states == ["CLOSING", "WAITING"]
+    assert sorted(r["state"] for r in resumed) == states
+
+
+def test_decide_failure_never_blocks_the_park(opened, monkeypatch):
+    cfg, cid, ctx = opened
+
+    def boom(*a, **k):
+        raise RuntimeError("bad config")
+    monkeypatch.setattr(Q.AP, "decide", boom)
+    st = _park(cfg, cid)
+    assert st["state"] == "PARKED" and "auto" not in st["park"]
+    assert any("autopark.decide failed" in n["text"] for n in S.read_ledger(cfg, cid, types=["note"]))
+
+
+def test_post_merge_base_moving_is_not_auto(opened):
+    cfg, cid, ctx = opened
+    Q._park(cfg, S.read_state(cfg, cid), "base_moving", "d", "CLOSING", auto_ok=False)
+    assert "auto" not in S.read_state(cfg, cid)["park"]
+
+
 def test_disable_hands_back_pending_auto(opened):
     cfg, cid, ctx = opened
     _park(cfg, cid)

@@ -126,10 +126,10 @@ def decide(state: dict, ledger, sett: dict, now, *, budget=None) -> Auto | None:
         n = _count(state, rule)
         if n >= sett["max_per_campaign"]:
             return None
-        at = now + dt.timedelta(seconds=sett["base_moving_backoff_s"] * 2 ** n)
+        wait_s = min(sett["base_moving_backoff_s"] * 2 ** n, MAX_RESET_WAIT_S)
+        at = now + dt.timedelta(seconds=wait_s)
         return Auto(rule, "wait", store_iso(at), None, n,
-                    f"the base moved during the close; retry in "
-                    f"{int(sett['base_moving_backoff_s'] * 2 ** n)}s "
+                    f"the base moved during the close; retry in {int(wait_s)}s "
                     f"(automatic resume {n + 1}/{sett['max_per_campaign']})")
     if reason == "cost_cap":
         rule = RULE_COST_CAP

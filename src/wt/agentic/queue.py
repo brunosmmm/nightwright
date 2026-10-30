@@ -934,10 +934,10 @@ def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_even
 
 
 def _park(cfg, state: dict, reason: str, detail: str, resume_to: str, *, by="tick",
-          extra_events=(), extra=None, count=True, budget=None):
+          extra_events=(), extra=None, count=True, budget=None, auto_ok=True):
     """Park `state`. `extra` is merged into `state["park"]` (SPEC-0232 `escalated_from`);
     `count=False` keeps a PARKED→PARKED re-park out of `counters.parks`. `budget` is the run a
-    `cost_cap` park blocked (SPEC-0302). A park the queue decides itself carries `park.auto`;
+    `cost_cap` park blocked (SPEC-0302); `auto_ok=False` keeps the queue from deciding it. A park the queue decides itself carries `park.auto`;
     its `wait` decision record is written by the tick, never here: `_park` runs under the
     campaign lock and `decisions.record` would take the decisions lock after it."""
     if count:
@@ -945,16 +945,22 @@ def _park(cfg, state: dict, reason: str, detail: str, resume_to: str, *, by="tic
     state["park"] = {"reason": reason, "detail": detail, "since": store.now_iso(),
                      "resume_to": resume_to, **(extra or {})}
     state.pop("park_requested", None)
-    if reason in ("base_moving", "cost_cap") and by == "tick":
+    extra_events = list(extra_events)
+    if reason in ("base_moving", "cost_cap") and by == "tick" and auto_ok:
         import datetime as dt
-        sett = AP.settings(cfg)
-        if sett["enabled"]:
-            auto = AP.decide(state, store.read_ledger(cfg, state["id"],
-                                                      types=["open", "resume", "run.end"]),
-                             sett, dt.datetime.now().astimezone(), budget=budget)
-            if auto is not None:
-                state["park"]["auto"] = auto.park_data()
-    events = list(extra_events) + [("park", dict(state["park"]))]
+        try:                  # a bad config value or a bug must never block the park itself
+            sett = AP.settings(cfg)
+            auto = (AP.decide(state, store.read_ledger(cfg, state["id"],
+                                                       types=["open", "resume", "run.end"]),
+                              sett, dt.datetime.now().astimezone(), budget=budget)
+                    if sett["enabled"] else None)
+        except Exception as e:
+            auto = None
+            extra_events.append(("note", {"text": f"autopark.decide failed ({e!r}); the park is "
+                                                  "the conductor's", "author": "queue"}))
+        if auto is not None:
+            state["park"]["auto"] = auto.park_data()
+    events = extra_events + [("park", dict(state["park"]))]
     return _transition(cfg, state, "PARKED", reason, by=by, extra_events=events)
 
 
@@ -1940,7 +1946,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 return row
             if park:
                 _park(cfg, current, park["reason"], park["detail"], park["resume_to"],
-                      extra_events=events)
+                      extra_events=events, auto_ok=not park.get("no_auto"))
                 row["to"], row["reason"] = "PARKED", park["reason"]
                 return row
             _transition(cfg, current, to, reason, extra_events=events)
@@ -3651,7 +3657,9 @@ def _auto_resume_step(cfg, flying, *, busy_count, slots, report) -> list:
                 cfg, cid, "resume", rule, f"scheduled automatic resume reached ({note})",
                 action=f"resume to {plan['to']}" + (f" raise cap to ${cap:.2f}" if cap else ""))
             try:
-                after = apply_resume(cfg, plan, busy=busy_count(), slots=slots)
+                # states resumed earlier in this step are not in the tick's `busy` yet
+                taken = sum(1 for r in resumed if r["state"] in ACTIVE_STATES)
+                after = apply_resume(cfg, plan, busy=busy_count() + taken, slots=slots)
             except ValueError as e:
                 error = str(e)
         if error is not None:

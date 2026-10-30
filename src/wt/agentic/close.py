@@ -83,8 +83,10 @@ def _gate_failure_detail(gate_run, target: str, target_sha: str) -> str:
 
 
 def _park(reason, detail, resume_to, events, *, conflicts=None, target=None, target_sha=None,
-          **extra) -> CloseOutcome:
+          no_auto=False, **extra) -> CloseOutcome:
     payload = {"reason": reason, "detail": detail, "resume_to": resume_to}
+    if no_auto:                           # the queue must not resume this park by itself (SPEC-0302)
+        payload["no_auto"] = True
     if conflicts:
         payload.update(conflicts=conflicts, target=target, target_sha=target_sha)
     events.append(("park", payload))
@@ -605,7 +607,7 @@ def finish_close(cfg, state: dict, project_cfg: dict, prepared: PreparedClose, *
             return moved(f"ff-only merge refused: {e.tail}")
         if merged != prepared.head:
             return _park("base_moving", f"merged {merged[:10]} != gated HEAD {prepared.head[:10]}",
-                         "CLOSING", events, **extra)
+                         "CLOSING", events, no_auto=True, **extra)
         _run_post_cmds(mcfg.get("post_cmds"), root, events)
         if mcfg.get("push_after_merge"):
             try:
