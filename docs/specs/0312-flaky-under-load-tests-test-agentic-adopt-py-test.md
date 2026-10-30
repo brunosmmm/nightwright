@@ -98,11 +98,25 @@ All changes are in `tests/test_agentic_adopt.py`; nothing under `src/`.
    write `go` → `until(h_test.phase == "wait" and child.json)` → the grouped detach assertions
    (unchanged). The `h_test.phase == "spawning"` assertion is meaningful only after `ready`, since
    before it the stub may not even have started.
+
+   **Release in a `finally`.** Because the spawn timeout is now 240 s, a failure before `go` is
+   written would otherwise leave the worker thread parked in `_await_claim` (it starts its spawn
+   clock on entering `ClaudeRunner.run`, `runner.py:364`), and the `world` teardown
+   (`pool.detach_force()` only releases threads in phase `wait`; `pool.shutdown()` joins with
+   `wait=True`, `queue.py:3190`) would block for up to `WAIT_S * 4` while the paused stub (started
+   with `start_new_session`, no `proc.json`, so `RP.terminate_run` cannot kill it) spins forever.
+   So everything after `reviewing_flight` runs inside `try: ... finally: go.write_text("")`: on
+   any failure the stub is released and claims the run, the worker thread leaves `_await_claim`,
+   `detach_force` releases it, and the stub never outlives the test. On the success path the
+   `finally` write is an idempotent no-op (the file already exists).
 5. **Guard**: a unit test (`test_tick_until_is_time_bounded`) in `tests/test_agentic_adopt.py`
-   monkeypatches `Q.tick` to a no-op returning an object with `steps = []`, sets
-   `waits.WAIT_S`-derived `timeout=0.3`, and proves the helper keeps ticking for
-   about that long (more than the default `n=60` would allow in 0.3 s, i.e. > 3 ticks) and returns
-   `False` after the deadline, and that it returns `True` immediately when `cond()` is already true.
+   monkeypatches `Q.tick` to a no-op returning an object with `steps = []` (and counts its
+   calls), then calls `tick_until(fake_w, None, lambda: False, n=1, timeout=0.3)` and asserts:
+   it returns `False`; `time.monotonic()` elapsed is `>= 0.3` s; and the fake tick ran more than
+   once (so `n=1` does not bound the loop). It also asserts an immediate `True` after exactly one
+   tick when `cond` is already true, and that a passed `steps` list is extended. No assertion
+   depends on how many ticks fit in a wall-clock window: only elapsed `>= timeout`, the return
+   value, and ticks `> 1` with `n=1`.
    A second, tiny test asserts `tick_until` does not contain a bare `for _ in range(n)` bound, by
    AST inspection of the function, so the iteration bound cannot come back unnoticed.
 
@@ -134,8 +148,11 @@ past `draft`, so by superseding or an `As shipped` note, per AGENTS.md).
       ids and that both hooks are detached and `pool.flights` is empty (assertions unchanged in meaning).
 - [ ] `tick_until` gives up only after `waits.WAIT_S` (or an explicit `timeout`) seconds, not after a
       fixed number of iterations; the `n=150` call sites still work unchanged.
-- [ ] `test_tick_until_is_time_bounded` exists and passes, and the AST guard fails if `tick_until`
-      reintroduces a `range(n)` iteration bound.
+- [ ] `test_tick_until_is_time_bounded` exists and passes; it asserts only the return value,
+      elapsed `>= timeout`, and ticks `> 1` with `n=1` (no tick count per wall-clock window), and the
+      AST guard fails if `tick_until` reintroduces a `range(n)` iteration bound.
+- [ ] `go` is written in a `finally`, so a failing `test_fanout_detach_precondition` tears down
+      within the normal fixture bounds and leaves no stub process (manual step 3).
 - [ ] No file under `src/` is changed; the diff is confined to `tests/test_agentic_adopt.py`.
 - [ ] `test_fanout_detach_precondition` passes 20 consecutive runs while the machine is saturated
       (manual step 2), and `uv run pytest` passes in full.
@@ -146,9 +163,13 @@ past `draft`, so by superseding or an `As shipped` note, per AGENTS.md).
 - **Automated tests** (`tests/test_agentic_adopt.py`):
   - `test_fanout_detach_precondition` (revised): asserts the sequence in Design §4 — the fan-out stays
     attached while the wrapper is unclaimed, then detaches as one group after the claim.
-  - `test_tick_until_is_time_bounded` (new): fake `Q.tick`; asserts > 3 ticks inside a
-    `timeout=0.3` window with a never-true `cond`, `False` return after the deadline, immediate `True`
-    when `cond` already holds, and that `steps` is extended when passed.
+  - `test_tick_until_is_time_bounded` (new): monkeypatches `Q.tick` to a counting no-op returning an
+    object with `steps = []`; calls `tick_until(fake_w, None, lambda: False, n=1, timeout=0.3)` and
+    asserts it returns `False`, elapsed `time.monotonic()` is `>= 0.3` s, and the fake tick ran more
+    than once (so `n` does not bound the loop); asserts an immediate `True` (exactly one tick) when
+    `cond` is already true, and that `steps` is extended when passed. No assertion depends on how
+    many ticks fit in a wall-clock window.
+  - Failure-path release (covered by Design §4's `finally`): verified in manual step 3.
   - `test_tick_until_has_no_iteration_bound` (new): AST check that `tick_until` has no
     `for ... in range(...)` loop.
   - Existing `test_fanout_detach_precondition_phases` and all other `test_agentic_adopt.py` tests that
@@ -161,6 +182,9 @@ past `draft`, so by superseding or an `As shipped` note, per AGENTS.md).
      Record the failure rate and the assertion that fired.
   2. Repeat after the change under the same load: 20 consecutive passes. Kill the load generators
      afterwards. Note both results in the spec's `As shipped` section.
+  3. Failure-path teardown: temporarily insert `assert False` right after the `ready` wait in the
+     test, run it, and confirm it fails in well under a minute (not ~240 s) and that no paused stub
+     process remains (`pgrep -f runproc` shows none from the test); then remove the `assert False`.
 - **Regression guard**: `uv run pytest` (full suite) passes; `python3 tools/spec_lint.py` exits 0;
   `git diff --stat` shows only `tests/test_agentic_adopt.py` (plus this spec and the regenerated ledger).
 
