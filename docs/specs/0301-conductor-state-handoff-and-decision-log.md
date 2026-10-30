@@ -1,7 +1,7 @@
 ---
 id: SPEC-0301
 title: "Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -175,34 +175,34 @@ dispatches, escalations or pointers to standing rules, and its `recent_events` a
 
 ## Acceptance criteria
 
-- [ ] `wt queue decision` validates kind, rule, campaign and event id (each bad value exits
+- [x] `wt queue decision` validates kind, rule, campaign and event id (each bad value exits
       1 with a clear message and writes nothing). It appends a `wt.conductor.decision.v1`
       record with a monotonically increasing `seq` and, with a campaign, a ledger `note`
       carrying `decision`, after which `park_view(...)["decided"]` is true.
-- [ ] `wt queue decisions --json` lists records filtered by campaign or since (ISO or
+- [x] `wt queue decisions --json` lists records filtered by campaign or since (ISO or
       relative like `2h`). `--parks` reports each park with its covering decision or
       `missing`, plus `ratio`. One decision covers at most one park, and without `--since`
       parks older than the first decision record are excluded.
-- [ ] `wt queue conductor-brief --json` (`wt.conductor.brief.v1`) contains runner,
+- [x] `wt queue conductor-brief --json` (`wt.conductor.brief.v1`) contains runner,
       conductor, counts, parked items with `last_decision` and open escalation, active
       items, `open_dispatches`, `recent_decisions`, unanswered mail, open escalations and
       `standing` pointers, with every list capped and the cut reported as `+N more`. A
       parked item's `last_decision` is null when the latest decision is older than the
       current park, and the item carries `decided` and `overdue`.
-- [ ] The text brief is at most 12,000 characters for a store with 60 parked and 60 active
+- [x] The text brief is at most 12,000 characters for a store with 60 parked and 60 active
       campaigns and 500 decisions. Truncation follows the section priority in Decision 4: the
       `runner` and `conductor` lines and at least one parked item always survive, and
       `recent_decisions` and `standing` are cut before `parked`.
-- [ ] `conductor.context_tokens` is the last turn's context of the newest registered
+- [x] `conductor.context_tokens` is the last turn's context of the newest registered
       conductor session, and `compact_now` is true exactly when it exceeds
       `compact_at_tokens`, which is read from config (`agentic.conductor.compact_at_tokens`,
       default 150000; `memory_paths` and `standing_rules` default to empty lists). With no
       session or transcript both are null or false and the command still succeeds.
-- [ ] The `/wt-conduct` skill re-orients from `conductor-brief`, records decisions and
+- [x] The `/wt-conduct` skill re-orients from `conductor-brief`, records decisions and
       dispatches with `wt queue decision`, states the rule-id convention, and contains the
       compaction rule with the 150k default. Every decision-table row has an explicit rule
       id (or ids) matching `RULE_RE`.
-- [ ] `wt queue decision` writes the ledger note before the log line; if the note fails, no
+- [x] `wt queue decision` writes the ledger note before the log line; if the note fails, no
       log line is written. `--by` accepts only `conductor`, `queue` or `steward:<P>`.
 
 ## Test plan
@@ -253,6 +253,42 @@ dispatches, escalations or pointers to standing rules, and its `recent_events` a
 - **Regression guard:** full `uv run pytest`. `tests/test_agentic_conduct_cli.py` (the
   `conduct-status` contract) and the SPEC-0222 `park_view` tests are unchanged.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_decisions.py tests/test_agentic_conductor_brief.py
+  tests/test_skills.py` — 15 + 5 + 70 tests pass (`test_conduct_skill_uses_brief_and_decisions`,
+  `test_conduct_skill_has_compaction_rule`, `test_conduct_skill_rule_ids` included).
+- Related modules: `tests/test_agentic_conduct_cli.py`, `test_agentic_conductor_cost.py`,
+  `test_agentic_events.py`, `test_agentic_queue_cli.py`, `test_agentic_dashboard_spec_reviews.py`,
+  `test_agentic_tmp_isolation.py` — 249 tests pass together with the above.
+- Sabotage checks run: disabling the ledger note fails `test_decision_writes_log_and_ledger_note`
+  (and the write-order test); matching coverage by campaign only fails `test_park_coverage` and
+  the one-decision-one-park test; removing the truncation loop fails `test_brief_text_size_bound`.
+- Manual: `wt queue conductor-brief` on the live store gave 1,048 characters, listing all 3 parked
+  items (`last: none`, `decided=true`), the 2 active campaigns, the runner and the conductor
+  session (context 111,673 of 150,000, `compact_now=false`). `wt queue decisions --parks` reported
+  `0/0` on the still-empty log. Compacting the live conductor and watching for `park_undecided`
+  for 15 minutes (E6) needs this change on main and the conductor re-reading the skill, so it is
+  left to be observed after the merge.
+- The full `uv run pytest` run was left to gating.
+
+### As shipped
+
+- Matches the Design. `decisions.py` and `brief.py` are new; the three commands are registered in
+  `cli_conductor.py`. `wt queue decision` takes `[CAMPAIGN] RATIONALE` as one variadic argument
+  (click fills an optional first argument before a required second one), and a wrong argument
+  count is a usage error (exit 2); every bad value (kind, rule, `--by`, campaign, event) exits 1.
+- The ledger note is written under the log's flock, with the `seq` reserved first, and the log
+  line follows only after the note succeeded.
+- The brief JSON has a top-level `more` map (`{section: items cut}`) rather than per-list wrappers;
+  the text form ends a cut section with `+N more`. `park_coverage` also returns `items` (each park
+  with its covering record) and `ratio` is null when there are no parks.
+- `SKILL.md`: a leading `rule id` column on all 41 decision-table rows. Existing tests that
+  looked a row up by its first cell now skip that column (`_ev` in `tests/test_skills.py`, and
+  two inline equivalents in `test_agentic_dashboard_spec_reviews.py` and
+  `test_agentic_tmp_isolation.py`).
+- SPEC-0300 had not merged when this was built; its `conductor_ping` row keeps that id.
+
 ## Rollout / migration
 
 1. Merge after SPEC-0299. The conductor re-reads the skill on `code_changed`.
@@ -264,11 +300,11 @@ dispatches, escalations or pointers to standing rules, and its `recent_events` a
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

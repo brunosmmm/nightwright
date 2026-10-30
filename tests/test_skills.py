@@ -267,6 +267,12 @@ def test_superpowers_coexistence_guidance_spec_0138():
     assert "Superpowers" in verify
 
 
+def _ev(row):
+    """A decision-table row without its leading `rule id` cell (SPEC-0301)."""
+    parts = row.split("|", 2)
+    return "|" + parts[2] if row.startswith("|") and len(parts) == 3 else row
+
+
 def test_orient_carries_working_rules_and_session_skills_require_it():
     """Standing rules live in /wt-orient; conductor and steward must load it first."""
     orient = (REPO_SKILLS_DIR / "wt-orient" / "SKILL.md").read_text(encoding="utf-8")
@@ -286,7 +292,7 @@ def test_orient_carries_working_rules_and_session_skills_require_it():
     conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
     assert "Clear blockers yourself" in conduct
     assert "review_escalated" in conduct
-    row = next(r for r in conduct.splitlines() if r.startswith("| `parked` `rebase_conflict`"))
+    row = next(r for r in conduct.splitlines() if _ev(r).startswith("| `parked` `rebase_conflict`"))
     assert "park_undecided" in conduct                                       # SPEC-0222
     assert "resume to `CLOSING`" in row and "conflict_resolver" in row      # SPEC-0221
     assert "resume to `GATING`" not in row
@@ -306,7 +312,7 @@ def test_conduct_skill_mentions_conductor_cost():
 
 def test_conduct_skill_has_diverging_row_spec_0247():
     conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
-    row = next(r for r in conduct.splitlines() if r.startswith("| `parked` `diverging`"))
+    row = next(r for r in conduct.splitlines() if _ev(r).startswith("| `parked` `diverging`"))
     for phrase in ("loop_divergence", "pending_brief", "wt queue resume <id>",
                    "wt queue abandon <id>", "/wt-rework", "campaign note"):
         assert phrase in row, phrase
@@ -322,10 +328,10 @@ def test_conduct_skill_has_runner_draining_row_spec_0224():
     points to it."""
     text = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
     rows = [ln for ln in text.splitlines() if ln.startswith("| `")]
-    (draining,) = [r for r in rows if r.startswith("| `runner_draining`")]
+    (draining,) = [r for r in rows if _ev(r).startswith("| `runner_draining`")]
     for word in ("waiting_on", "ready", "lease_stale"):
         assert word in draining, word
-    (rna,) = [r for r in rows if r.startswith("| `ready_not_admitted`")]
+    (rna,) = [r for r in rows if _ev(r).startswith("| `ready_not_admitted`")]
     assert "`runner_draining: true`" in rna
 
 
@@ -333,7 +339,7 @@ def test_conduct_skill_has_runner_config_invalid_row_spec_0226():
     """SPEC-0226: the conductor table handles `runner_config_invalid` for both scopes."""
     text = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
     rows = [ln for ln in text.splitlines() if ln.startswith("| `")]
-    (row,) = [r for r in rows if r.startswith("| `runner_config_invalid`")]
+    (row,) = [r for r in rows if _ev(r).startswith("| `runner_config_invalid`")]
     assert "`scope: user`" in row and "do not edit their config" in row
     assert "`scope: project:<P>`" in row and "`config_invalid`" in row
     assert "steward" in row and "wt mailbox send" in row
@@ -353,7 +359,7 @@ def _conduct_rows():
 
 
 def _conduct_row(name):
-    (row,) = [r for r in _conduct_rows() if r.startswith(f"| `{name}`")]
+    (row,) = [r for r in _conduct_rows() if _ev(r).startswith(f"| `{name}`")]
     return row
 
 
@@ -407,9 +413,9 @@ def test_runner_draining_row_waits_on_in_process_work_spec_0229():
 def test_conduct_skill_escalates_through_records_spec_0232():
     conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
     assert "wt queue escalate" in conduct and "escalated ESC-NNNN" in conduct
-    row = next(r for r in conduct.splitlines() if r.startswith("| `parked` `human_decision`"))
+    row = next(r for r in conduct.splitlines() if _ev(r).startswith("| `parked` `human_decision`"))
     assert "wt escalations withdraw" in row and "wt queue resume" in row
-    assert any(r.startswith("| `escalation` / `escalation_withdrawn`")
+    assert any(_ev(r).startswith("| `escalation` / `escalation_withdrawn`")
                for r in conduct.splitlines())
 
 
@@ -417,13 +423,13 @@ def test_conduct_and_steward_route_merges_through_the_queue_spec_0234():
     conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
     steward = (REPO_SKILLS_DIR / "wt-steward" / "SKILL.md").read_text(encoding="utf-8")
     rows = [ln for ln in conduct.splitlines() if ln.startswith("| `")]
-    (request,) = [r for r in rows if r.startswith("| `message` (`kind` request)")]
+    (request,) = [r for r in rows if _ev(r).startswith("| `message` (`kind` request)")]
     assert "(add, merge, prioritize, park, resume)" in request
     assert "wt queue merge <branch> --by steward:<Project> [--docs-only]" in request
-    assert any(r.startswith("| `parked` `gates_failed` / `worktree_dirty`") for r in rows)
-    (not_docs,) = [r for r in rows if r.startswith("| `parked` `not_docs_only`")]
+    assert any(_ev(r).startswith("| `parked` `gates_failed` / `worktree_dirty`") for r in rows)
+    (not_docs,) = [r for r in rows if _ev(r).startswith("| `parked` `not_docs_only`")]
     assert "wt queue abandon" in not_docs and "without `--docs-only`" in not_docs
-    (rebase,) = [r for r in rows if r.startswith("| `parked` `rebase_conflict`")]
+    (rebase,) = [r for r in rows if _ev(r).startswith("| `parked` `rebase_conflict`")]
     assert "On a merge campaign" in rebase and "resumes to `CLOSING`" in rebase
     for gone in ("completing or retrying a merge", "merge repair", "git merge"):
         assert gone not in conduct, gone
@@ -446,7 +452,7 @@ def test_steward_scope_and_no_mechanical_requests_spec_0282():
 
 def test_conduct_and_steward_handle_escalation_answers_spec_0235():
     conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
-    (row,) = [r for r in conduct.splitlines() if r.startswith("| `escalation_answered`")]
+    (row,) = [r for r in conduct.splitlines() if _ev(r).startswith("| `escalation_answered`")]
     for word in ("choose", "override", "--to REVIEWING", "text", "wt queue escalate"):
         assert word in row, word
     steward = (REPO_SKILLS_DIR / "wt-steward" / "SKILL.md").read_text(encoding="utf-8")
@@ -488,3 +494,43 @@ def test_conduct_skill_park_rows_look_up_run_failed():
         assert "--type run_failed" in row, name
     assert "runner-log" in _conduct_row("code_changed")
     assert "runner-log" not in _conduct_row("merged")
+
+
+def test_conduct_skill_uses_brief_and_decisions():
+    """SPEC-0301: the conductor orients from the brief and records decisions with `wt queue
+    decision`, not free-text notes."""
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    step1 = next(l for l in conduct.splitlines() if l.startswith("1. **Situation report"))
+    assert "wt queue conductor-brief" in step1
+    assert "wt queue decision" in conduct and "--kind dispatch" in conduct
+    park_rule = conduct.split("**Every park gets a decision**", 1)[1].split("\n- ", 1)[0]
+    assert "wt queue decision" in park_rule
+    assert "parked.<reason>" in conduct
+
+
+def test_conduct_skill_has_compaction_rule():
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    section = conduct.split("## Compaction and handoff", 1)[1].split("\n## ", 1)[0]
+    assert "compact_now" in section and "150000" in section and "compact_at_tokens" in section
+    assert "wt queue conductor-brief" in section and "re-arm the" in section
+    assert "Never re-read event history" in section
+
+
+def test_conduct_skill_rule_ids():
+    """SPEC-0301: every decision-table row leads with its rule id(s), each matching RULE_RE."""
+    from wt.agentic.decisions import RULE_RE
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    table = conduct.split("## Decision table", 1)[1].split("\nExact flags:", 1)[0]
+    lines = [l for l in table.splitlines() if l.startswith("|")]
+    assert lines[0].startswith("| rule id |")
+    rows = lines[2:]
+    assert len(rows) > 30
+    seen = set()
+    for row in rows:
+        cell = row.split("|")[1].strip()
+        ids = [i.strip().strip("`") for i in cell.split(",")]
+        assert cell and all(RULE_RE.match(i) for i in ids), row[:80]
+        assert not seen & set(ids), f"duplicate rule id in {row[:80]}"
+        seen.update(ids)
+    assert {"run_failed.transient", "message.answer", "wt_broken", "parked.cost_cap",
+            "conductor_ping"} <= seen

@@ -200,10 +200,10 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0295](./specs/0295-spec-review-findings-carry-a-required-structured.md) Review findings carry a required, structured suggested_fix — done
   - [x] [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) Outbound projects end to end: a merged campaign pulls the portable spec's status back — done
   - [ ] [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) Agentic MVP: a cheap, durable, quiet conductor on a second project — accepted
-- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · accepted · (2/3 done)
+- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · accepted · (3/3 done)
   - [x] [SPEC-0299](./specs/0299-conductor-cost-measurement.md) Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export — done
   - [x] [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups — done
-  - [ ] [SPEC-0301](./specs/0301-conductor-state-handoff-and-decision-log.md) Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule — accepted
+  - [x] [SPEC-0301](./specs/0301-conductor-state-handoff-and-decision-log.md) Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule — done
 
 ## Active & planned
 
@@ -217,7 +217,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) | Agentic MVP: a cheap, durable, quiet conductor on a second project | epic | accepted | M10: agentic MVP | 2026-10-30 |
-| [SPEC-0301](./specs/0301-conductor-state-handoff-and-decision-log.md) | Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule | feature | accepted | M10: agentic MVP | 2026-10-30 |
 
 ## Done
 
@@ -502,6 +501,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) | Outbound projects end to end: a merged campaign pulls the portable spec's status back | feature | done | — | 2026-10-30 |
 | [SPEC-0299](./specs/0299-conductor-cost-measurement.md) | Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export | feature | done | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) | Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups | feature | done | M10: agentic MVP | 2026-10-30 |
+| [SPEC-0301](./specs/0301-conductor-state-handoff-and-decision-log.md) | Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule | feature | done | M10: agentic MVP | 2026-10-30 |
 
 ## Superseded / rejected
 

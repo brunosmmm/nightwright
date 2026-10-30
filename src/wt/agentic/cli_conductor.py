@@ -1,6 +1,7 @@
 """`wt queue conductor-cost` and `wt queue conductor-session` (SPEC-0299): what the conductor's
-own Claude Code session costs. Kept apart from `cli_conduct.py` so the cost report and the
-alert stream can change independently."""
+own Claude Code session costs; `wt queue decision`, `decisions` and `conductor-brief`
+(SPEC-0301): its decision log and state handoff. Kept apart from `cli_conduct.py` so the cost
+report and the alert stream can change independently."""
 from __future__ import annotations
 
 import datetime as dt
@@ -11,7 +12,9 @@ from rich.table import Table
 from .. import render as R
 from ..console import console
 from ..report import _dump_json
+from . import brief as BR
 from . import conductor_cost as CC
+from . import decisions as D
 
 
 def _date(ctx, param, value):
@@ -133,5 +136,87 @@ def attach(queue_group):
             t.add_row(r["session_id"], str(r.get("ts")), str(r.get("source")),
                       str(r.get("claude_pid") or "-"), str(r.get("cwd") or "-"))
         console.print(t)
+
+    @queue_group.command("decision")
+    @click.argument("words", nargs=-1, metavar="[CAMPAIGN] RATIONALE")
+    @click.option("--kind", required=True, help="one of: " + ", ".join(D.KINDS))
+    @click.option("--rule", required=True,
+                  help="the decision-table row id (<event> or parked.<reason>)")
+    @click.option("--event", "event_id", type=int, default=None, help="the queue event id")
+    @click.option("--action", default=None, help="what was done")
+    @click.option("--by", default="conductor", show_default=True,
+                  help="conductor, queue or steward:<P>")
+    @click.pass_obj
+    def queue_decision(cfg, words, kind, rule, event_id, action, by):
+        """Record a conductor or queue decision (applies at once, like `wt campaign note`).
+        With CAMPAIGN it also lands as a ledger note; without it, a queue-level decision."""
+        if not 1 <= len(words) <= 2:
+            raise click.UsageError("expected [CAMPAIGN] RATIONALE")
+        campaign, rationale = (words[0] if len(words) == 2 else None), words[-1]
+        try:
+            rec = D.record(cfg, kind=kind, rule=rule, rationale=rationale, campaign=campaign,
+                           event_id=event_id, action=action, by=by)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        console.print(f"decision #{rec['seq']} {kind} ({rule})"
+                      + (f" on {campaign}" if campaign else ""), highlight=False)
+
+    @queue_group.command("decisions")
+    @click.option("--campaign", default=None)
+    @click.option("--since", default=None, help="ISO date/datetime, or relative like 2h / 1d")
+    @click.option("--tail", type=int, default=None, help="last N records")
+    @click.option("--parks", is_flag=True, help="each park with its covering decision, and ratio")
+    @click.option("--json", "as_json", is_flag=True, help="emit JSON")
+    @click.pass_obj
+    def queue_decisions(cfg, campaign, since, tail, parks, as_json):
+        """The decision log (wt.conductor.decisions.v1), or with --parks the park coverage."""
+        try:
+            start = D.parse_since(since) if since else None
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        if parks:
+            cov = D.park_coverage(cfg, since=start)
+            if campaign:
+                cov["items"] = [x for x in cov["items"] if x["campaign"] == campaign]
+                cov["missing"] = [x for x in cov["missing"] if x["campaign"] == campaign]
+                cov["parks"] = len(cov["items"])
+                cov["covered"] = cov["parks"] - len(cov["missing"])
+                cov["ratio"] = cov["covered"] / cov["parks"] if cov["parks"] else None
+            if as_json:
+                _dump_json({"schema": "wt.conductor.park_coverage.v1", **cov})
+                return
+            for x in cov["items"]:
+                d = x["decision"]
+                console.print(f"{x['ts']}  {x['campaign']}  {x['reason']}  -> "
+                              + (f"#{d['seq']} {d['kind']} ({d['rule']})" if d else "[red]missing[/]"),
+                              highlight=False)
+            ratio = "-" if cov["ratio"] is None else f"{cov['ratio']:.0%}"
+            console.print(f"{cov['covered']}/{cov['parks']} parks decided ({ratio})",
+                          highlight=False)
+            return
+        rows = D.read(cfg, campaign=campaign, since=start)
+        if tail:
+            rows = rows[-tail:]
+        if as_json:
+            _dump_json({"schema": "wt.conductor.decisions.v1", "decisions": rows})
+            return
+        if not rows:
+            console.print("[dim]no decisions[/]")
+            return
+        for r in rows:
+            console.print(f"#{r['seq']} {r['ts']} {r['by']} {r.get('campaign') or '-'} "
+                          f"{r['kind']} ({r['rule']}) {r['rationale']}", highlight=False)
+
+    @queue_group.command("conductor-brief")
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.conductor.brief.v1 JSON")
+    @click.pass_obj
+    def queue_conductor_brief(cfg, as_json):
+        """What a fresh or compacted conductor needs to continue, in a few thousand tokens:
+        runner, parked items with their last decision, open dispatches, escalations, mail."""
+        brief = BR.conductor_brief(cfg)
+        if as_json:
+            _dump_json(brief)
+            return
+        console.print(BR.render_text(brief), highlight=False, markup=False, soft_wrap=True)
 
     return queue_group

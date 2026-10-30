@@ -294,5 +294,5 @@ def test_conduct_skill_rows():
     text = SKILL.read_text(encoding="utf-8")
     for reason in ("spec_writer_unavailable", "spec_review_unavailable", "spec_write_failed",
                    "spec_review_exhausted"):
-        assert any(line.startswith("| `parked` `%s`" % reason) for line in text.splitlines()), \
+        assert any(("|" + line.split("|", 2)[-1]).startswith("| `parked` `%s`" % reason) for line in text.splitlines()), \
             reason
