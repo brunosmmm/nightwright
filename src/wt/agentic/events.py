@@ -68,6 +68,10 @@ EVENT_TYPES = {
     "escalation_answered": ("escalation_id", "kind", "summary"),
     # SPEC-0253
     "temp_pressure": ("path", "free_mb", "free_inodes", "free_inodes_pct", "thresholds"),
+    # SPEC-0217: the spec phase of an idea campaign
+    "spec_written": ("spec_id",),
+    "spec_reviewed": ("spec_id", "verdict", "round"),
+    "spec_accepted": ("spec_id",),
 }
 
 # type -> {optional data key: accepted type(s)}
@@ -296,6 +300,9 @@ def _is_transient(text: str) -> bool:
     return any(m in low for m in _TRANSIENT_MARKERS)
 
 
+_SPEC_PHASE_EVENTS = ("spec_written", "spec_review", "spec_accepted")
+
+
 def _project_ledger_event(ev: dict, st: dict, sett: dict, warned: bool):
     """Map one ledger event to (type, data) or None. `warned` = cost warning already sent."""
     t = ev.get("type")
@@ -334,6 +341,12 @@ def _project_ledger_event(ev: dict, st: dict, sett: dict, warned: bool):
     if t == "rebase_resolved":                              # SPEC-0221
         return "rebase_resolved", {"conflicts": ev.get("conflicts") or [],
                                    "summary": ev.get("summary")}
+    if t in _SPEC_PHASE_EVENTS:                             # SPEC-0217
+        spec_id = ev.get("spec_id") or st.get("spec_id")
+        if t == "spec_review":
+            return "spec_reviewed", {"spec_id": spec_id, "verdict": ev.get("verdict"),
+                                     "round": ev.get("round")}
+        return t, {"spec_id": spec_id}
     return None
 
 

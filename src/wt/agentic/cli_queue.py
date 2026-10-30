@@ -587,6 +587,36 @@ def _dash_waiting(items: list) -> Table:
     return t
 
 
+def _dash_spec_reviews(items: list, generated_at=None) -> Table:
+    """SPEC-0217: standalone `wt spec review` runs (SPEC-0210 journal)."""
+    import datetime as dt
+    try:
+        now = dt.datetime.fromisoformat(generated_at) if generated_at else None
+    except ValueError:
+        now = None
+    t = R.section_table(f"Spec reviews ({len(items)})", border_style="cyan")
+    t.add_column("spec", no_wrap=True)
+    t.add_column("status", no_wrap=True)
+    t.add_column("findings", no_wrap=True, overflow="ellipsis")
+    t.add_column("cost", justify="right", no_wrap=True)
+    t.add_column("when", justify="right", no_wrap=True)
+    style = {"approve": "green", "revise": "yellow", "split": "yellow", "failed": "red",
+             "running": "cyan"}
+    for r in items:
+        status = r["status"]
+        counts = r.get("counts")
+        findings = ("—" if counts is None else
+                    " · ".join(f"{n} {k}" for k, n in counts.items() if n) or "none")
+        cost = r.get("cost_usd")
+        if status == "running":
+            when = f"▶ {_dur(r.get('duration_s'))}"
+        else:
+            when = _ago(Q._age(r.get("ended_at"), now))
+        t.add_row(str(r.get("spec_id")), Text(status, style=style.get(status, "")), findings,
+                  "—" if cost is None else f"${float(cost):.2f}", when)
+    return t
+
+
 def _dash_backlog(items: list):
     if not items:
         return Group(Text("Backlog (0)", style="bold"),
@@ -658,6 +688,8 @@ def _dashboard(p: dict, width: int = 120, recent_hours: int = 24) -> Group:
         parts.append(_needs_you_table(p["needs_you"]))
     if p.get("conductor_handling"):
         parts.append(_conductor_table(p["conductor_handling"]))
+    if p.get("spec_reviews"):
+        parts.append(_dash_spec_reviews(p["spec_reviews"], p.get("generated_at")))
     if p.get("waiting"):
         parts.append(_dash_waiting(p["waiting"]))
     parts.append(_dash_backlog(p["backlog"]))

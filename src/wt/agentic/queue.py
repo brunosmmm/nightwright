@@ -5053,6 +5053,54 @@ def _review_chips(state: dict, ledger: list, reviewers, now=None) -> list:
     return chips
 
 
+def _spec_review_rows(cfg, now, recent_hours) -> list[dict]:
+    """SPEC-0217: standalone `wt spec review` runs from the SPEC-0210 journal — running ones,
+    and ended or failed ones within `recent_hours`; running first (oldest start first), then
+    the rest, most recent end first."""
+    import datetime as dt
+    starts, ends = {}, {}
+    for rec in SR.read_journal(cfg, tail=2000):
+        rid = rec.get("run_id")
+        if rid and rec.get("kind") == "start":
+            starts[rid] = rec
+        elif rid and rec.get("kind") == "end":
+            ends[rid] = rec
+
+    running, done = [], []
+    window = dt.timedelta(hours=recent_hours)
+    for rid in dict.fromkeys([*starts, *ends]):
+        start, end = starts.get(rid), ends.get(rid)
+        started = SR._ts((start or end).get("ts"))
+        if started is None:
+            continue
+        row = {"run_id": rid, "spec_id": (start or end).get("spec_id"), "status": None,
+               "counts": None, "started_at": started.isoformat(timespec="seconds"),
+               "duration_s": None, "cost_usd": None, "ended_at": None}
+        if end is None:
+            deadline = started + dt.timedelta(seconds=float(start.get("timeout_s") or 0))
+            if now < deadline:
+                row.update(status="running", duration_s=max(0, int((now - started).total_seconds())))
+                running.append((started, row))
+                continue
+            row["status"] = "failed"
+            sort_ts = deadline
+            row["ended_at"] = deadline.isoformat(timespec="seconds")
+        else:
+            sort_ts = SR._ts(end.get("ts"))
+            if sort_ts is None:
+                continue
+            failed = bool(end.get("error")) or not end.get("verdict")
+            row.update(status="failed" if failed else end["verdict"],
+                       counts=None if failed else end.get("counts"),
+                       cost_usd=end.get("cost_usd"), duration_s=end.get("duration_s"),
+                       ended_at=sort_ts.isoformat(timespec="seconds"))
+        if now - sort_ts <= window:
+            done.append((sort_ts, row))
+    running.sort(key=lambda x: x[0])
+    done.sort(key=lambda x: x[0], reverse=True)
+    return [r for _, r in running] + [r for _, r in done]
+
+
 def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None) -> dict:
     """`wt.queue.dashboard.v1`: everything `wt queue watch` shows — the runner, the active
     campaigns with what each is doing now, what needs attention, the backlog, and what was
@@ -5145,6 +5193,8 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
     delivered.sort(key=lambda d: d["finished_age_s"])
     delivered = delivered[:recent]
     ready = sum(1 for b in backlog if b["ready"])
+    # SPEC-0217: the journal records carry no project, so --project hides the rows
+    spec_reviews = [] if project else _spec_review_rows(cfg, now, recent_hours)
     by_project: dict = {}
     waiting.sort(key=lambda w: (w.get("priority") or 3, -(w.get("waiting_s") or 0)))
     for key, rows in (("active", active), ("needs_you", needs_you), ("conductor", conductor),
@@ -5162,12 +5212,13 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                    "conductor_overdue": sum(1 for c in conductor if c["park"].get("overdue")),
                    "backlog": len(backlog),
                    "reviews_running": sum(c["status"] == "running"
-                                          for it in active for c in it["reviews"]),
+                                          for it in active for c in it["reviews"])
+                   + sum(r["status"] == "running" for r in spec_reviews),
                    "ready": ready, "blocked": len(backlog) - ready, "delivered": len(delivered),
                    "spend_today_usd": round(spend_today, 4), "by_project": by_project},
         "active": active, "needs_you": needs_you, "conductor_handling": conductor,
-        "attention": attention, "waiting": waiting, "backlog": backlog,
-        "delivered": delivered,
+        "attention": attention, "spec_reviews": spec_reviews, "waiting": waiting,
+        "backlog": backlog, "delivered": delivered,
     }
 
 

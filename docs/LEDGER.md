@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (98/102 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (99/102 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -137,7 +137,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0213](./specs/0213-nonblocking-queue-ticks.md) Non-blocking queue ticks: in-flight steps carry across ticks — done
   - [x] [SPEC-0214](./specs/0214-spec-review-loop-inside-the-campaign-with-in-loop.md) Spec review loop inside the campaign, with in-loop acceptance — done
   - [x] [SPEC-0215](./specs/0215-spec-writer-persona-and-the-spec-writing-step.md) spec_writer persona and the SPEC_WRITING step (write and revise) — done
-  - [ ] [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) Standalone spec reviews in queue watch, spec-phase queue events and conductor rows — accepted
+  - [x] [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) Standalone spec reviews in queue watch, spec-phase queue events and conductor rows — done
   - [x] [SPEC-0219](./specs/0219-spec-sizing-and-tone-pick-the-campaign-profile.md) Spec sizing and tone pick the campaign profile — done
   - [x] [SPEC-0220](./specs/0220-close-regate-off-main-thread.md) Close re-gate runs off the runner main thread — done
   - [x] [SPEC-0221](./specs/0221-rebase-conflict-resolver-persona.md) Rebase-conflict resolver persona — done
@@ -214,7 +214,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0087](./specs/0087-workstreams-and-concern-separation-routing.md) | Workstreams and concern separation (routing, streams, filters, hub; umbrella for priority & sort) | epic | accepted | M4: cli ergonomics | 2026-07-28 |
 | [SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) | Example-heavy docs: SVG captures and workflow architecture | epic | accepted | M8: product documentation | 2026-09-09 |
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) | Agentic MVP: a cheap, durable, quiet conductor on a second project | epic | accepted | M10: agentic MVP | 2026-10-30 |
@@ -428,6 +427,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0213](./specs/0213-nonblocking-queue-ticks.md) | Non-blocking queue ticks: in-flight steps carry across ticks | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0214](./specs/0214-spec-review-loop-inside-the-campaign-with-in-loop.md) | Spec review loop inside the campaign, with in-loop acceptance | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0215](./specs/0215-spec-writer-persona-and-the-spec-writing-step.md) | spec_writer persona and the SPEC_WRITING step (write and revise) | feature | done | M9: agentic workflow | 2026-10-25 |
+| [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0219](./specs/0219-spec-sizing-and-tone-pick-the-campaign-profile.md) | Spec sizing and tone pick the campaign profile | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0220](./specs/0220-close-regate-off-main-thread.md) | Close re-gate runs off the runner main thread | feature | done | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0221](./specs/0221-rebase-conflict-resolver-persona.md) | Rebase-conflict resolver persona | feature | done | M9: agentic workflow | 2026-10-25 |

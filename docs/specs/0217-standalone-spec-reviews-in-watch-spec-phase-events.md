@@ -1,10 +1,10 @@
 ---
 id: SPEC-0217
 title: "Standalone spec reviews in queue watch, spec-phase queue events and conductor rows"
-status: accepted
+status: done
 owner: user
 created: 2026-10-25
-updated: 2026-10-25
+updated: 2026-10-30
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0169
@@ -105,7 +105,7 @@ status and age rules in memory. Project the new events in `events._project_ledge
 
 ## Acceptance criteria
 
-- [ ] With journal records written by `wt spec review` (FakeRunner reviewer with `sleep_s`,
+- [x] With journal records written by `wt spec review` (FakeRunner reviewer with `sleep_s`,
       started in a thread; the test polls the dashboard until the row appears, with a
       10-second limit):
   - while it runs, the dashboard lists it as `running`, and `totals.reviews_running` counts
@@ -114,7 +114,7 @@ status and age rules in memory. Project the new events in `events._project_ledge
     `revise`, `1 must_fix`, `$0.00`;
   - while it runs, the header shows the `reviews 1` chip; with none running, no chip;
   - with `--project Meta-Tools`, the section and the chip are hidden.
-- [ ] Backdated journal records:
+- [x] Backdated journal records:
   - a start with no end past its `timeout_s` shows `failed`, and disappears after
     `recent_hours`;
   - an end with `error` shows `failed` with counts null and the record's cost;
@@ -123,13 +123,13 @@ status and age rules in memory. Project the new events in `events._project_ledge
     `timeout_s`) is still listed as `running`;
   - rows are ordered running first (oldest start first), then ended and failed rows, most
     recent first.
-- [ ] `spec_written`, `spec_reviewed` (with verdict and round) and `spec_accepted` are each
+- [x] `spec_written`, `spec_reviewed` (with verdict and round) and `spec_accepted` are each
       projected exactly once from an idea campaign's ledger (`events.sync` run twice). Their
       data `spec_id` matches the campaign's spec. The accept's SPEC_REVIEW → IMPLEMENTING
       transition (reason `spec_accepted`) projects no event of its own.
-- [ ] `skills/wt-conduct/SKILL.md` has a row for each of the four spec-phase park reasons
+- [x] `skills/wt-conduct/SKILL.md` has a row for each of the four spec-phase park reasons
       listed in the Design.
-- [ ] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes; `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -141,17 +141,38 @@ status and age rules in memory. Project the new events in `events._project_ledge
   - the skill rows are checked by grepping the file.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_dashboard_spec_reviews.py tests/test_test_waits.py` — 11 passed
+  (CLI running→ended run with a FakeRunner `sleep_s`, `--project` hiding, backdated failed /
+  window / long-timeout / ordering cases, events projected once over two `events.sync` runs,
+  skill rows).
+- Related modules: `tests/test_agentic_dashboard.py`, `test_agentic_dashboard_spec_phase.py`,
+  `test_agentic_events.py`, `test_agentic_spec_review.py` — all passed (128 with the new file).
+- `python3 tools/spec_lint.py` exits 0; ledger regenerated.
+- The full `uv run pytest` run was left to gating.
+
+### As shipped
+
+- `totals.reviews_running` already existed (SPEC-0277, campaign reviewer chips) and drives the
+  `reviews N` header chip, so standalone running rows are added to that total rather than a
+  second total; with `--project` only the campaign chips count.
+- Rows also carry `ended_at` (end `ts`, or `started_at + timeout_s` for a failed orphan; null
+  while running), which the **when** column ages; the other keys are as designed.
+- `_spec_review_rows` in `queue.py`, `_dash_spec_reviews` in `cli_queue.py` (placed after the
+  attention tables, before Waiting).
+
 ## Rollout / migration
 
 Ships through the agentic queue after SPEC-0211. The changes are additive.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`). (No manual steps.)
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`). (No manual steps.)
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
