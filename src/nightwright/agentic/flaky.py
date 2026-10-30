@@ -32,22 +32,31 @@ def _fresh() -> dict:
     return {"schema": SCHEMA, "projects": {}}
 
 
+def _valid_entry(e) -> bool:
+    return (isinstance(e, dict)
+            and isinstance(e.get("count"), int) and not isinstance(e["count"], bool)
+            and isinstance(e.get("first_seen"), str) and isinstance(e.get("last_seen"), str)
+            and isinstance(e.get("sources"), dict) and isinstance(e.get("campaigns"), list)
+            and all(isinstance(v, int) for v in e["sources"].values()))
+
+
 def _valid(doc) -> bool:
     return (isinstance(doc, dict) and doc.get("schema") == SCHEMA
             and isinstance(doc.get("projects"), dict)
-            and all(isinstance(p, dict) and all(isinstance(e, dict) for e in p.values())
+            and all(isinstance(p, dict) and all(_valid_entry(e) for e in p.values())
                     for p in doc["projects"].values()))
 
 
 def _load(cfg, stamp: str) -> dict:
     """The record, a fresh one when absent; an unreadable or foreign file is moved aside to
-    `flaky-tests.json.bad-<stamp>` first."""
+    `flaky-tests.json.bad-<stamp>` first. A read error (OSError) is not a bad file: it propagates
+    so the caller's best-effort note covers it."""
     p = path(cfg)
     if not p.is_file():
         return _fresh()
     try:
         doc = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except ValueError:                  # incl. UnicodeDecodeError
         doc = None
     if _valid(doc):
         return doc

@@ -2085,7 +2085,7 @@ def _flaky_events(cfg, state: dict, payload: dict, previous, ok: bool, *, retrie
             continue
         try:
             FL.record(cfg, state.get("project") or "", ids, campaign=state["id"], source=source)
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, TypeError, AttributeError) as e:
             events.append(("note", {"text": f"could not record flaky tests: {e}",
                                     "author": "queue"}))
         else:
@@ -2251,7 +2251,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
                       "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
                       "merge", "admission", "spec_review", "split",   # SPEC-0279: amend flips it
-                      "gate_exclusive", "last_green_loop", "close_red"):
+                      "gate_exclusive", "last_green_loop", "close_red", "gate_retry_pending"):
                 if k in state:
                     current[k] = state[k]
             requested = current.get("park_requested")
@@ -2425,6 +2425,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 "resume_to": decision.resume_to})
         if decision.kind == "gate":
             counters["gate_retries"] += 1
+            state["gate_retry_pending"] = True           # SPEC-0293: the next gate run follows it
             return finish("GATING", "retry_gate")
         if decision.kind == "close":
             return finish("CLOSING", "waived")
@@ -2476,8 +2477,9 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         # SPEC-0359: the green loop result a clean close may reuse; any red loop run clears it
         state["last_green_loop"] = payload if (run.ok and not run.interrupted) else None
         state["gate_exclusive"] = None
-        events += _flaky_events(cfg, state, payload, previous, run.ok,
-                                retried=counters["gate_retries"] > 0)
+        retried = bool(state.get("gate_retry_pending"))   # only the run a `retry_gate` led to
+        state["gate_retry_pending"] = False
+        events += _flaky_events(cfg, state, payload, previous, run.ok, retried=retried)
         if run.ok:
             counters["timeout_regates"] = 0
             return finish("REVIEWING", "gates_green")
@@ -7887,6 +7889,7 @@ def apply_resume(cfg, plan: dict, *, busy=None, slots=None) -> dict:
         _drop_decision_request(cfg, st)
         st["park"] = None
         st.pop("park_requested", None)
+        st.pop("gate_retry_pending", None)          # SPEC-0293: a resumed gate run is no retry
         ev = ("resume", {"to": plan["to"], "note": plan.get("note") or plan.get("event_note"),
                          "cap_usd": plan.get("raise_cap"), "loops_reset": bool(plan.get("reset_loops"))})
         st = _enter_slot_or_wait(cfg, st, plan["to"], "resumed", by=by, extra_events=[ev],

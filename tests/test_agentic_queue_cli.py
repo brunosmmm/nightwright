@@ -1093,3 +1093,13 @@ def test_queue_flaky_text(tmp_path, monkeypatch):
     _seed_flaky(cfg)
     r = run_cli(cfg, monkeypatch, ["queue", "flaky"])
     assert r.exit_code == 0 and "t::b" in r.output and "triage_retry 1" in r.output
+
+
+def test_queue_flaky_text_does_not_parse_ids_as_markup(tmp_path, monkeypatch):
+    from wt.agentic import flaky as FL
+    _, cfg = _cfg(tmp_path)
+    FL.record(cfg, "Meta-Tools", ["t::x[json]", "t::y[/tmp/a]"], campaign="C1", source="rerun")
+    r = run_cli(cfg, monkeypatch, ["queue", "flaky"])
+    assert r.exit_code == 0, r.output
+    flat = r.output.replace("\n", "").replace(" ", "").replace("│", "")
+    assert "t::x[json]" in flat and "t::y[/tmp/a]" in flat

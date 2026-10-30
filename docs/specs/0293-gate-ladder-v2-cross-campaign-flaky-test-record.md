@@ -1,7 +1,7 @@
 ---
 id: SPEC-0293
 title: "Gate ladder v2: a cross-campaign flaky-test record the triager sees"
-status: in-progress
+status: done
 owner: user
 created: 2026-10-30
 milestone: "M9: agentic workflow"
@@ -170,6 +170,22 @@ failing in the current `last_gate` are looked up, so the prompt stays small.
   my new test used a bare `p.join(60)`); fixed with `waits.join` and re-run on the touched files
   (`tests/test_test_waits.py`, `tests/test_agentic_flaky.py`): pass.
 - `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: exit 0.
+
+### As shipped (review round 1)
+
+- `triage_retry` is keyed on an explicit marker, `state["gate_retry_pending"]`: set in `_apply`'s
+  triage `gate` branch next to `retry_gate`, read and cleared on every gate run, copied by
+  `finish()` and dropped by `apply_resume`. It replaces the Design's `gate_retries > 0` test,
+  which a park + plain resume left stale.
+- `wt queue flaky` text cells are `rich.text.Text`, so ids like `t::x[json]` print verbatim.
+- `flaky._valid` checks entry field types (a malformed file is moved aside); a read `OSError` is
+  not a bad file and propagates as a best-effort note. `_flaky_events` and `render_flaky_history`
+  also swallow `TypeError`/`AttributeError`.
+- Round-1 tests: retry_gate whose rerun still fails, fail → retry → fail → escalate → plain
+  resume → green (records nothing), malformed entry fields, unreadable file not moved aside,
+  markup-like ids in the text table. Sabotage: reverting to `gate_retries > 0` fails the resume
+  test. Targeted run (flaky, queue, personas, queue_cli, test_waits, schema/state tests): 350
+  passed; the full suite was left to gating.
 
 ## Rollout / migration
 

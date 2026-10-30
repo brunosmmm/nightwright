@@ -2,6 +2,7 @@
 import datetime as dt
 import json
 import multiprocessing
+from pathlib import Path
 
 import pytest
 from waits import join
@@ -63,6 +64,34 @@ def test_corrupt_file_moved_aside(cfg):
     assert len(bad) == 1 and bad[0].read_text() == "{not json"
     FL.path(cfg).write_text(json.dumps({"schema": "other", "projects": {}}))
     FL.record(cfg, "P", ["t::a"], campaign="C1", source="rerun", now=T0)
+    assert _doc(cfg)["projects"]["P"]["t::a"]["count"] == 1
+
+
+def test_malformed_entry_fields_moved_aside_not_crashed(cfg):
+    FL.path(cfg).parent.mkdir(parents=True)
+    bad = {"schema": FL.SCHEMA, "projects": {"P": {"t::a": {
+        "count": "3", "first_seen": T0.isoformat(), "last_seen": T0.isoformat(),
+        "sources": [], "campaigns": "C1"}}}}
+    FL.path(cfg).write_text(json.dumps(bad))
+    assert FL.lookup(cfg, "P", ["t::a"]) == {} and FL.list_entries(cfg) == []
+    FL.record(cfg, "P", ["t::a"], campaign="C1", source="rerun", now=T0)
+    assert _doc(cfg)["projects"]["P"]["t::a"]["count"] == 1
+    assert len(list(FL.path(cfg).parent.glob("flaky-tests.json.bad-*"))) == 1
+
+
+def test_unreadable_file_is_not_moved_aside(cfg, monkeypatch):
+    FL.record(cfg, "P", ["t::a"], campaign="C1", source="rerun", now=T0)
+    real = Path.read_text
+
+    def boom(self, *a, **kw):
+        if self.name == "flaky-tests.json":
+            raise PermissionError("denied")
+        return real(self, *a, **kw)
+    with monkeypatch.context() as m:
+        m.setattr(Path, "read_text", boom)
+        with pytest.raises(OSError):
+            FL.record(cfg, "P", ["t::a"], campaign="C1", source="rerun", now=T0)
+    assert not list(FL.path(cfg).parent.glob("flaky-tests.json.bad-*"))
     assert _doc(cfg)["projects"]["P"]["t::a"]["count"] == 1
 
 

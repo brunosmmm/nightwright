@@ -1516,9 +1516,9 @@ def attach(queue_group):
             table.add_column(col)
         for e in entries:
             src = ", ".join(f"{k} {v}" for k, v in sorted((e.get("sources") or {}).items()))
-            table.add_row(e["project"], e["id"], str(e.get("count")),
-                          str(len(e.get("campaigns") or [])), str(e.get("last_seen") or "")[:10],
-                          src)
+            table.add_row(Text(str(e["project"])), Text(str(e["id"])), Text(str(e.get("count"))),
+                          Text(str(len(e.get("campaigns") or []))),
+                          Text(str(e.get("last_seen") or "")[:10]), Text(src))
         console.print(table)
 
     # ---- SPEC-0176 -------------------------------------------------------------------------

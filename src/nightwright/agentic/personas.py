@@ -483,7 +483,7 @@ def render_flaky_history(cfg, state) -> str:
         for i in (r.get("summary") or {}).get("failing") or []))
     try:
         known = flaky.lookup(cfg, state.get("project") or "", failing) if failing else {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError, AttributeError):
         known = {}
     lines = []
     for tid in failing:

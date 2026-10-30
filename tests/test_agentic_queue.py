@@ -2555,6 +2555,39 @@ def test_triage_retry_green_records_previous_failing(opened):
     assert ev["ids"] == ["t::b"] and ev["source"] == "triage_retry"
 
 
+def _triage(ctx, cfg, cid, kind, n):
+    return _apply(ctx, cfg, cid, "triage", persona="gate_triager", run_id=f"{n:03d}-gate_triager",
+                  run_result=_rr(_verdict(kind, suspected_flaky=True, fix_brief="human call")),
+                  budget=0.5)
+
+
+def test_retry_gate_still_failing_records_nothing(opened):
+    cfg, cid, ctx = opened
+    S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
+    _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(1, False, failing=["t::b"]))
+    row, st = _triage(ctx, cfg, cid, "retry_gate", 2)
+    assert row["to"] == "GATING"
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(2, False, failing=["t::b"]))
+    assert row["to"] == "TRIAGING" and st["state"] == "TRIAGING"
+    assert "t::b" not in _flaky_doc(cfg)
+    assert not S.read_ledger(cfg, cid, types=["flaky_recorded"])
+
+
+def test_resume_after_park_green_is_not_a_triage_retry(opened):
+    cfg, cid, ctx = opened
+    S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
+    _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(1, False, failing=["t::b"]))
+    _triage(ctx, cfg, cid, "retry_gate", 2)
+    _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(2, False, failing=["t::b"]))
+    row, st = _triage(ctx, cfg, cid, "escalate", 3)
+    assert st["state"] == "PARKED" and st["park"]["resume_to"] == "GATING"
+    assert st["counters"]["gate_retries"] == 1                # the stale counter must not matter
+    Q.apply_resume(cfg, Q.plan_resume(cfg, cid))
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=_gate_run(3, True))
+    assert row["to"] == "REVIEWING"
+    assert not _flaky_doc(cfg) and not S.read_ledger(cfg, cid, types=["flaky_recorded"])
+
+
 def test_green_without_retry_records_nothing(opened):
     cfg, cid, ctx = opened
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
