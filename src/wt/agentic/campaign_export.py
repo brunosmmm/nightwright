@@ -40,6 +40,7 @@ CAMPAIGN_COLUMNS = (
     ("time_in_state_s", "json"), ("review_score", "int"), ("must_fix_count", "int"),
     ("finding_count", "int"), ("waived_count", "int"),
     ("close_mode", "str"), ("merged_sha", "str"), ("signals", "json"),
+    ("conductor_usd", "float"), ("cost_with_conductor_usd", "float"),     # SPEC-0299
 )
 RUN_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"), ("tone", "str"),
@@ -76,6 +77,10 @@ NOTES = [
     "does not store its loop limit, so it may differ from the limit in force during the run.",
     "cap_usd, cost_cap_frac and the cost_near_cap signal use the final cost cap: "
     "`wt queue resume --raise-cap` overwrites the opening cap (cap_raises counts the raises).",
+    "conductor_usd is the conductor's share (SPEC-0299): each conductor turn is split equally "
+    "among the campaigns live at that moment (open to terminal transition). It is null when no "
+    "conductor session is registered or no turn is priced (agentic.conductor.prices); "
+    "cost_with_conductor_usd = cost_usd + conductor_usd.",
 ]
 
 
@@ -308,9 +313,15 @@ def export_tables(cfg, *, project=None, since=None, terminal_only=False, now=Non
         states = [s for s in states if (d := _created_date(cfg, s)) is not None and d >= since]
     states.sort(key=lambda s: (s.get("created_at") or "", s.get("id") or ""))
     tables: dict[str, list] = {"campaigns": [], "runs": [], "findings": []}
+    from . import conductor_cost        # SPEC-0299: campaign id -> conductor USD, or None
+    shares = conductor_cost.attribute(cfg, now)
     for s in states:
         events = store.read_ledger(cfg, s["id"])
         crow = campaign_row(cfg, s, events, now)
+        if shares is not None:
+            share = shares.get(s["id"], 0.0)
+            crow["conductor_usd"] = _coerce(share, "float")
+            crow["cost_with_conductor_usd"] = (crow["cost_usd"] or 0) + share
         tables["campaigns"].append(crow)
         tables["runs"].extend(run_rows(cfg, crow))
         tables["findings"].extend(finding_rows(crow, events))

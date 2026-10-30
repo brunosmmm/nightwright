@@ -297,6 +297,13 @@ def test_orient_carries_working_rules_and_session_skills_require_it():
         assert "Never use forks" in text, name
 
 
+def test_conduct_skill_mentions_conductor_cost():
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    reporting = conduct.split("**Reporting:**", 1)[1].split("## Decision table", 1)[0]
+    assert "wt queue conductor-cost" in reporting
+    assert "$/merge" in reporting and "median context" in reporting
+
+
 def test_conduct_skill_has_diverging_row_spec_0247():
     conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
     row = next(r for r in conduct.splitlines() if r.startswith("| `parked` `diverging`"))

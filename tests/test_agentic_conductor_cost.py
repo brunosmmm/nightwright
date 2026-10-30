@@ -1,0 +1,265 @@
+"""SPEC-0299: conductor session registry, transcript usage, `wt queue conductor-cost`."""
+import datetime as dt
+import io
+import json
+from zoneinfo import ZoneInfo
+
+import pytest
+from click.testing import CliRunner
+
+from wt.agentic import conductor_cost as CC
+from wt.agentic import events as E
+from wt.agentic import schemas as SC
+from wt.agentic import store as S
+from wt.cli import cli
+
+TZ = ZoneInfo("America/New_York")
+PRICE = {"input": 10.0, "output": 0.0, "cache_read": 1.0, "cache_write_5m": 0.0,
+         "cache_write_1h": 0.0}
+
+
+@pytest.fixture
+def cfg(tmp_path):
+    (tmp_path / "data").mkdir()
+    return {"data_dir": str(tmp_path / "data"), "config_dir": str(tmp_path / "config"),
+            "_root": str(tmp_path / "projects"), "_tz": TZ, "timezone": "America/New_York",
+            "agentic": {"conductor": {"prices": {"claude-x": PRICE, "claude": {"input": 99.0}}}}}
+
+
+def line(msg_id, ts, *, model="claude-x", typ="assistant", usage=None, **extra):
+    usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_creation_input_tokens": 0, **(usage or {})}
+    return {"type": typ, "timestamp": ts, "message": {"id": msg_id, "model": model,
+                                                      "usage": usage, **extra}}
+
+
+def write_transcript(cfg, sid, lines, *, sub=None):
+    from pathlib import Path
+    d = Path(cfg["_root"]) / "-slug"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{sid}.jsonl"
+    path.write_text("".join((l if isinstance(l, str) else json.dumps(l)) + "\n" for l in lines))
+    if sub:
+        sd = d / sid / "subagents"
+        sd.mkdir(parents=True)
+        (sd / "agent-1.jsonl").write_text("".join(json.dumps(l) + "\n" for l in sub))
+    return path
+
+
+def utc(day, hour, minute=0):
+    return f"2026-10-{day:02d}T{hour:02d}:{minute:02d}:00.000Z"
+
+
+def turn(msg_id, ts, tokens=100_000, **kw):
+    """A turn that costs tokens/1e5 dollars at PRICE (input only)."""
+    return line(msg_id, ts, usage={"input_tokens": tokens}, **kw)
+
+
+def campaign(cfg, cid, start, end, outcome="MERGED", total=2.0):
+    st = {"id": cid, "spec_id": f"SPEC-{cid}", "project": "P", "kind": "spec", "profile": "x",
+          "state": outcome or "IMPLEMENTING", "created_at": start,
+          "cost": {"total_usd": total}, "counters": {}}
+    S.create_campaign(cfg, st)
+    recs = [{"schema": SC.LEDGER_SCHEMA, "ts": start, "seq": 1, "campaign": cid, "type": "open",
+             "by": "t", **SC.with_defaults("open", {"spec_id": st["spec_id"], "project": "P"})}]
+    if end:
+        recs.append({"schema": SC.LEDGER_SCHEMA, "ts": end, "seq": 2, "campaign": cid,
+                     "type": "transition", "by": "t",
+                     **SC.with_defaults("transition", {"from": "CLOSING", "to": outcome,
+                                                       "reason": "x"})})
+    (S.campaign_dir(cfg, cid) / "ledger.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in recs))
+
+
+# ---- registry and follower -----------------------------------------------------------------
+
+def _follow_cfg(cfg):
+    E.append(cfg, "message", by="t", data={"msg_id": "1", "from": "x", "kind": "info",
+                                             "text": "t"})
+    return cfg
+
+
+def test_follow_records_session_once(cfg, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc")
+    monkeypatch.setenv("CLAUDE_PID", "4242")
+    _follow_cfg(cfg)
+    out = io.StringIO()
+    n = E.follow(cfg, "conductor", from_start=True, max_events=1, code_root=None, out=out)
+    assert n == 1
+    # the cursor is past the event now: the second arm stops at once
+    E.follow(cfg, "conductor", code_root=None, out=io.StringIO(), stop=lambda: True)
+    recs = CC.sessions(cfg)
+    assert len(recs) == 1
+    assert (recs[0]["reader"], recs[0]["session_id"], recs[0]["source"]) == \
+        ("conductor", "abc", "follower")
+    assert recs[0]["claude_pid"] == 4242 and recs[0]["cwd"]
+
+
+def test_follow_without_session_env_records_nothing(cfg, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    _follow_cfg(cfg)
+    E.follow(cfg, "conductor", from_start=True, max_events=1, code_root=None, out=io.StringIO())
+    assert CC.sessions(cfg) == []
+    assert not (CC.conductor_dir(cfg) / "sessions.jsonl").exists()
+
+
+def test_record_failure_never_breaks_follow(cfg, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc")
+
+    def boom(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(CC, "record_session", boom)
+    _follow_cfg(cfg)
+    out = io.StringIO()
+    assert E.follow(cfg, "conductor", from_start=True, max_events=1, code_root=None,
+                    out=out) == 1
+    assert '"message"' in out.getvalue()
+
+
+def test_record_session_is_per_reader(cfg):
+    assert CC.record_session(cfg, "conductor", {"CLAUDE_CODE_SESSION_ID": "s1"})
+    assert CC.record_session(cfg, "conductor", {"CLAUDE_CODE_SESSION_ID": "s1"}) is None
+    assert CC.record_session(cfg, "steward", {"CLAUDE_CODE_SESSION_ID": "s1"})
+    assert CC.record_session(cfg, "conductor", {}) is None
+    assert [r["session_id"] for r in CC.sessions(cfg, "conductor")] == ["s1"]
+
+
+# ---- transcripts ---------------------------------------------------------------------------
+
+def test_read_turns_dedupes_by_message_id(cfg):
+    p = write_transcript(cfg, "s", [
+        turn("m1", utc(20, 14), 1), turn("m1", utc(20, 14), 2), turn("m1", utc(20, 14), 3),
+        turn("m2", utc(20, 15), 7)])
+    turns = CC.read_turns(p)
+    assert [t["input"] for t in turns] == [3, 7]
+    assert [t["msg_id"] for t in turns] == ["m1", "m2"]
+
+
+def test_read_turns_kinds_and_context(cfg):
+    p = write_transcript(cfg, "s", [
+        "not json {", json.dumps([1, 2]),
+        line("u", utc(20, 14), typ="user", usage={"input_tokens": 5}),
+        line("syn", utc(20, 14), model="<synthetic>", usage={"input_tokens": 5}),
+        {"type": "assistant", "timestamp": utc(20, 14), "message": {"id": "nousage"}},
+        line("a", utc(20, 14), usage={
+            "input_tokens": 10, "output_tokens": 20, "cache_read_input_tokens": 300,
+            "cache_creation_input_tokens": 70,
+            "cache_creation": {"ephemeral_5m_input_tokens": 40,
+                               "ephemeral_1h_input_tokens": 30}}),
+        line("b", utc(20, 15), usage={"input_tokens": 1, "cache_creation_input_tokens": 9}),
+    ])
+    a, b = CC.read_turns(p)
+    assert (a["input"], a["output"], a["cache_read"], a["cache_write_5m"], a["cache_write_1h"]) \
+        == (10, 20, 300, 40, 30)
+    assert a["context"] == 10 + 300 + 40 + 30
+    assert (b["cache_write_5m"], b["cache_write_1h"], b["context"]) == (9, 0, 10)
+
+
+def test_price_longest_prefix(cfg):
+    assert CC.price_for(cfg, "claude-x-1")["input"] == 10.0
+    assert CC.price_for(cfg, "claude-y")["input"] == 99.0
+    assert CC.price_for(cfg, "gpt") is None
+    t = {k: 0 for k in CC.KINDS} | {"input": 1_000_000, "cache_read": 2_000_000}
+    assert CC.turn_usd(t, PRICE) == 12.0
+    assert CC.turn_usd(t, None) is None
+
+
+def test_unpriced_model_reported(cfg):
+    write_transcript(cfg, "s", [
+        turn("m1", utc(20, 14)), turn("m2", utc(20, 15)),
+        turn("m3", utc(20, 16), 50, model="other-y")])
+    rep = CC.cost_report(cfg, session_ids=["s"])
+    t = rep["totals"]
+    assert (t["turns"], t["input"], t["usd"], t["usd_complete"]) == (3, 200_050, 2.0, False)
+    assert rep["unpriced_models"] == ["other-y"]
+    assert t["usd_by_kind"]["input"] == 2.0
+    assert rep["by_day"][0]["usd"] == 2.0
+    assert rep["merges"] == 0 and rep["usd_per_merge"] is None
+    assert "(partial: 1 unpriced turns)" in __import__("wt.agentic.cli_conductor",
+                                                       fromlist=["x"]).summary_line(rep)
+
+
+def test_cost_report_split_and_per_merge(cfg):
+    campaign(cfg, "A", "2026-10-20T14:00:00+00:00", "2026-10-20T16:00:00+00:00", total=2.0)
+    campaign(cfg, "B", "2026-10-20T15:00:00+00:00", "2026-10-20T18:00:00+00:00", total=3.0)
+    campaign(cfg, "L", "2026-10-22T00:00:00+00:00", None, total=9.0)       # still live, later
+    write_transcript(cfg, "s", [
+        turn("t0", utc(19, 15)),            # before --since
+        turn("t1", utc(20, 13)),            # idle (before both)
+        turn("t2", utc(20, 14, 30)),        # A only
+        turn("t3", utc(20, 15, 30)),        # A and B
+        turn("t4", utc(20, 16, 30)),        # B only
+        turn("t5", utc(20, 19)),            # idle
+        turn("t6", utc(21, 3)),             # 23:00 local on the 20th: on the --until date
+        turn("t7", utc(21, 15)),            # local 21st: after --until
+    ])
+    import datetime as dt
+    rep = CC.cost_report(cfg, since=dt.date(2026, 10, 20), until=dt.date(2026, 10, 20),
+                         session_ids=["s"])
+    assert rep["schema"] == "wt.conductor.cost.v1"
+    assert rep["totals"]["turns"] == 6 and rep["totals"]["usd"] == 6.0
+    assert rep["totals"]["usd_complete"] is True
+    assert rep["idle_usd"] == 3.0
+    shares = {c["campaign"]: c["conductor_usd"] for c in rep["campaigns"]}
+    assert shares == {"A": 1.5, "B": 1.5}
+    assert sum(shares.values()) == rep["totals"]["usd"] - rep["idle_usd"]
+    assert rep["merges"] == 2 and rep["usd_per_merge"] == 3.0
+    assert rep["persona_usd"] == 5.0
+    assert rep["by_day"] == [{"date": "2026-10-20", "turns": 6, "usd": 6.0,
+                              "cache_read": 0, "merges": 2}]
+    assert rep["context"]["median"] == 100_000 and rep["context"]["max"] == 100_000
+    # open bounds: the 19th and 21st count too, and L (live) takes the late turn
+    rep = CC.cost_report(cfg, session_ids=["s"])
+    assert rep["totals"]["turns"] == 8
+    assert [d["date"] for d in rep["by_day"]] == ["2026-10-19", "2026-10-20", "2026-10-21"]
+    # B ended 18:00Z, so with the until bound removed the numbers for A/B are unchanged
+    assert {c["campaign"]: c["conductor_usd"] for c in rep["campaigns"]}["A"] == 1.5
+
+
+def test_subagents_only_with_flag(cfg):
+    write_transcript(cfg, "s", [turn("m1", utc(20, 14))], sub=[turn("x1", utc(20, 14), 500_000),
+                                                                turn("x2", utc(20, 15), 500_000)])
+    rep = CC.cost_report(cfg, session_ids=["s"])
+    assert rep["subagents"] is None and rep["totals"]["turns"] == 1
+    rep = CC.cost_report(cfg, session_ids=["s"], include_subagents=True)
+    assert rep["totals"]["turns"] == 1 and rep["totals"]["usd"] == 1.0
+    assert rep["subagents"]["turns"] == 2 and rep["subagents"]["usd"] == 10.0
+    assert rep["subagents"]["transcripts"] == 1
+
+
+# ---- CLI -----------------------------------------------------------------------------------
+
+def test_cli_conductor_cost_json_and_text(cfg, monkeypatch):
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    campaign(cfg, "A", "2026-10-20T14:00:00+00:00", "2026-10-20T16:00:00+00:00")
+    write_transcript(cfg, "s", [turn("t1", utc(20, 14, 30)), turn("t2", utc(20, 17))])
+    CC.record_session(cfg, "conductor", {}, source="manual", session_id="s")
+    r = CliRunner().invoke(cli, ["queue", "conductor-cost", "--json"])
+    assert r.exit_code == 0, r.output
+    rep = json.loads(r.output)
+    assert rep["totals"]["turns"] == 2 and rep["merges"] == 1 and rep["usd_per_merge"] == 2.0
+    r = CliRunner().invoke(cli, ["queue", "conductor-cost", "--since", "2026-10-20",
+                                 "--until", "2026-10-20", "--session", "s"])
+    assert r.exit_code == 0, r.output
+    assert "2 turns" in r.output and "per merge (1 merges)" in r.output
+    assert "By day" in r.output and "A" in r.output
+    r = CliRunner().invoke(cli, ["queue", "conductor-cost", "--since", "nope"])
+    assert r.exit_code != 0
+
+
+def test_conductor_session_add_list(cfg, monkeypatch):
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    r = CliRunner().invoke(cli, ["queue", "conductor-session", "list"])
+    assert r.exit_code == 0 and "no sessions" in r.output
+    r = CliRunner().invoke(cli, ["queue", "conductor-session", "add", "ghost"])
+    assert r.exit_code == 0 and "warning" in r.output and "registered" in r.output
+    write_transcript(cfg, "real", [turn("m", utc(20, 14))])
+    r = CliRunner().invoke(cli, ["queue", "conductor-session", "add", "real"])
+    assert r.exit_code == 0 and "warning" not in r.output
+    r = CliRunner().invoke(cli, ["queue", "conductor-session", "add", "real"])
+    assert "already registered" in r.output
+    r = CliRunner().invoke(cli, ["queue", "conductor-session", "list", "--json"])
+    rows = json.loads(r.output)["sessions"]
+    assert [(x["session_id"], x["source"]) for x in rows] == [("ghost", "manual"),
+                                                             ("real", "manual")]

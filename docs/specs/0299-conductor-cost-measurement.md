@@ -1,7 +1,7 @@
 ---
 id: SPEC-0299
 title: "Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -156,30 +156,30 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
 
 ## Acceptance criteria
 
-- [ ] Arming `events.follow` with `CLAUDE_CODE_SESSION_ID=abc` set appends exactly one
+- [x] Arming `events.follow` with `CLAUDE_CODE_SESSION_ID=abc` set appends exactly one
       `sessions.jsonl` record for `(conductor, abc)`. Re-arming does not append again.
       Without the variable nothing is written, and a raising `record_session` does not stop
       the follower.
-- [ ] `read_turns` returns one turn per `message.id` (the last line wins), skips malformed,
+- [x] `read_turns` returns one turn per `message.id` (the last line wins), skips malformed,
       non-assistant and `<synthetic>` lines, and computes each token kind and `context` as
       specified.
-- [ ] Prices resolve by longest model-id prefix from `agentic.conductor.prices`. An unpriced
+- [x] Prices resolve by longest model-id prefix from `agentic.conductor.prices`. An unpriced
       model yields `usd: null` for its turns and is listed in `unpriced_models`, and the token
       totals still include it.
-- [ ] `wt queue conductor-cost --json` emits `wt.conductor.cost.v1` with by-day totals,
+- [x] `wt queue conductor-cost --json` emits `wt.conductor.cost.v1` with by-day totals,
       context median/p90, the equal live-campaign split (shares sum to total minus
       `idle_usd`), `merges` and `usd_per_merge`. `--session` overrides the registry.
       Sub-agent transcripts are counted only under `--include-subagents`, and only in
       `subagents`.
-- [ ] With a mix of priced and unpriced turns, every dollar aggregate sums priced turns only,
+- [x] With a mix of priced and unpriced turns, every dollar aggregate sums priced turns only,
       `totals.usd_complete` is false, the text form appends `(partial: N unpriced turns)`,
       and `usd_per_merge` is null when `merges == 0`. `--since` and `--until` are inclusive
       local dates in `cfg["_tz"]`, and `merges` counts MERGED and HANDED_OFF campaigns.
-- [ ] `wt campaign export` campaigns rows end with `conductor_usd` and
+- [x] `wt campaign export` campaigns rows end with `conductor_usd` and
       `cost_with_conductor_usd` (= `(cost_usd or 0) + conductor_usd`). Both are null when no
       session is registered or no turn is priced; otherwise a campaign with no attributed
       turn has `conductor_usd == 0.0`. The earlier v1 columns keep their order.
-- [ ] `wt queue conductor-session add|list` work as specified, and the `/wt-conduct` skill
+- [x] `wt queue conductor-session add|list` work as specified, and the `/wt-conduct` skill
       names `wt queue conductor-cost` in its *Reporting* step (a daily one-liner: turns, $,
       $/merge, median context).
 
@@ -239,6 +239,37 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
   `("cost_with_conductor_usd", "float")` after `signals`. No other existing assertion
   changes.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_conductor_cost.py tests/test_agentic_campaign_export.py
+  tests/test_skills.py tests/test_agentic_followers.py`: all pass (new tests: 12 in
+  `test_agentic_conductor_cost.py`, `test_export_conductor_columns_appended`,
+  `test_conduct_skill_mentions_conductor_cost`).
+- Sabotage checks run, each failed the named test and was reverted: line-count instead of
+  `message.id` dedupe (`test_read_turns_dedupes_by_message_id`), whole attribution to the first
+  live campaign (`test_cost_report_split_and_per_merge`), new columns before `signals`
+  (`test_export_conductor_columns_appended`, `test_column_types_pinned`).
+- Regression guard: only `test_columns_and_key_order` and `test_column_types_pinned` changed
+  (append-only); `tests/test_agentic_followers.py` is unchanged. A full `uv run pytest -x` run
+  stopped at `tests/test_rich_output_guard.py` (a raw `click.echo` in `conductor-session add`,
+  now `render.warn`; 3,286 passed before it); that file passes after the fix. The tests after
+  it in the order were not re-run and are left to gating.
+
+### As shipped (2026-10-30)
+
+- Implemented to Design in `conductor_cost.py`, `cli_conductor.py` and the `events.follow` /
+  `campaign_export` hooks. Additions beyond the payload listing: `totals.unpriced_turns` (the
+  N in the text form's `(partial: N unpriced turns)`) and `subagents.transcripts`.
+- `record_session(..., session_id=None)` takes an optional explicit id so `conductor-session
+  add` reuses the same flocked, idempotent append (`source: "manual"`).
+- The second follower arm in `test_follow_records_session_once` uses `stop=lambda: True`
+  because the first run advanced the cursor past the only event.
+- Manual verification, token half: `read_turns` on the 5-day session transcript
+  (`9b76fcc8-…`, 2026-10-25 to 2026-10-30) gives 2,405 turns and 1,096,983,054 cache-read
+  tokens, matching the baseline (about 2,386 turns and 1.09B at the time it was measured; the
+  session kept running). The dollar half (about $263) needs `agentic.conductor.prices` in the
+  user's config, which is rollout step 2, so it was not run here.
+
 ## Rollout / migration
 
 1. Merge. The next conductor re-arm records its session automatically.
@@ -248,11 +279,11 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

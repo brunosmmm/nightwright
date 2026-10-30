@@ -78,6 +78,8 @@ run, handle it — that is the point.
    *Never block*). Then wait for the next event.
 6. **Reporting:** after a merge or an escalation, give the human one short line (spec, outcome,
    cost). Don't narrate routine events.
+   Once a day add one line from `wt queue conductor-cost --since <yesterday>`: turns, $, $/merge,
+   median context (SPEC-0299).
 
 ## Decision table
 

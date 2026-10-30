@@ -162,7 +162,8 @@ def test_columns_and_key_order(cfg):
         "loop_resets", "runs", "runs_by_persona", "gate_runs", "gate_failures", "gate_retries",
         "triage_retries", "parks", "park_reasons", "cost_usd", "cost_by_persona",
         "cost_cap_frac", "time_in_state_s", "review_score", "must_fix_count", "finding_count",
-        "waived_count", "close_mode", "merged_sha", "signals"]
+        "waived_count", "close_mode", "merged_sha", "signals", "conductor_usd",
+        "cost_with_conductor_usd"]
     assert [n for n, _ in CE.RUN_COLUMNS] == [
         "campaign", "spec_id", "profile", "size", "tone", "run_id", "persona", "model", "effort",
         "max_budget_usd", "timeout_s", "started_at", "duration_s", "cost_usd", "charged_usd",
@@ -196,7 +197,8 @@ def test_column_types_pinned():
         ("cost_usd", "float"), ("cost_by_persona", "json"), ("cost_cap_frac", "float"),
         ("time_in_state_s", "json"), ("review_score", "int"), ("must_fix_count", "int"),
         ("finding_count", "int"), ("waived_count", "int"),
-        ("close_mode", "str"), ("merged_sha", "str"), ("signals", "json"))
+        ("close_mode", "str"), ("merged_sha", "str"), ("signals", "json"),
+        ("conductor_usd", "float"), ("cost_with_conductor_usd", "float"))
     assert CE.RUN_COLUMNS == (
         ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"),
         ("tone", "str"),
@@ -788,3 +790,38 @@ def test_failed_write_cleanup_cannot_mask_the_error(cfg, invoke, tmp_path, monke
     assert r.exit_code != 0 and "export failed, nothing written: disk full" in r.output
     assert isinstance(r.exception, SystemExit)               # a ClickException, not a traceback
     assert [p.name for p in d.iterdir()] == ["foreign"]
+
+
+def test_export_conductor_columns_appended(cfg, tmp_path):
+    """SPEC-0299: the last two columns are the conductor's share and the total with it."""
+    from wt.agentic import conductor_cost as CC
+    assert [n for n, _ in CE.CAMPAIGN_COLUMNS][-2:] == ["conductor_usd", "cost_with_conductor_usd"]
+    make(cfg, "C1", [(10, "transition", tr("CLOSING", "MERGED"))], created=0,
+         state="MERGED", cost={"total_usd": 2.5, "cap_usd": None, "by_persona": {}})
+    make(cfg, "C2", [], created=600, cost={"total_usd": None, "cap_usd": None, "by_persona": {}})
+    cfg["_root"] = str(tmp_path / "projects")
+    cfg["agentic"]["conductor"] = {"prices": {"claude-x": {"input": 10.0}}}
+    (tmp_path / "projects" / "-s").mkdir(parents=True)
+
+    def transcript(model):
+        stamp = (T0 + dt.timedelta(minutes=5)).astimezone(dt.timezone.utc).isoformat()
+        (tmp_path / "projects" / "-s" / "sid.jsonl").write_text(json.dumps(
+            {"type": "assistant", "timestamp": stamp, "message": {
+                "id": "m", "model": model, "usage": {"input_tokens": 100_000}}}) + "\n")
+
+    def rows():
+        return {r["campaign"]: r for r in CE.export_tables(cfg, now=NOW)["campaigns"]}
+
+    for r in rows().values():                           # no session registered
+        assert (r["conductor_usd"], r["cost_with_conductor_usd"]) == (None, None)
+    CC.record_session(cfg, "conductor", {}, source="manual", session_id="sid")
+    transcript("unpriced-model")                        # a session, but no turn is priced
+    for r in rows().values():
+        assert (r["conductor_usd"], r["cost_with_conductor_usd"]) == (None, None)
+    transcript("claude-x")
+    got = rows()
+    assert list(got["C1"])[-2:] == ["conductor_usd", "cost_with_conductor_usd"]
+    assert got["C1"]["conductor_usd"] == 1.0 and got["C1"]["cost_with_conductor_usd"] == 3.5
+    assert got["C2"]["conductor_usd"] == 0.0                     # no attributed turn
+    assert got["C2"]["cost_usd"] is None
+    assert got["C2"]["cost_with_conductor_usd"] == got["C2"]["conductor_usd"] == 0.0
