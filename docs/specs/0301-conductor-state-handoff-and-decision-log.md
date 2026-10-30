@@ -271,6 +271,7 @@ dispatches, escalations or pointers to standing rules, and its `recent_events` a
   for 15 minutes (E6) needs this change on main and the conductor re-reading the skill, so it is
   left to be observed after the merge.
 - The full `uv run pytest` run was left to gating.
+- Review follow-up: `test_brief_escalation_and_mail_parts` (real escalation, 13 unanswered long messages: ids, caps, 160-char clip, `+3 more`) and a stricter `test_brief_text_size_bound` (recent decisions/standing/active empty before parked loses items; fails when `recent_decisions` is moved above `parked`). `tests/test_agentic_conductor_brief.py` passes (6).
 
 ### As shipped
 

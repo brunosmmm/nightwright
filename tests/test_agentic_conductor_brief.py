@@ -9,6 +9,8 @@ from test_agentic_decisions import (UTC, cfg, clock, decide, mk, park, resume, r
 from wt.agentic import brief as BR
 from wt.agentic import conductor_cost as CC
 from wt.agentic import decisions as D
+from wt.agentic import escalations as ESC
+from wt.agentic import mailbox as M
 from wt.agentic import store as S
 
 
@@ -78,19 +80,63 @@ def test_brief_text_size_bound(cfg, clock):
     assert lines[0].startswith("runner:") and any(l.startswith("conductor:") for l in lines)
     parked = lines[lines.index("parked:") + 1:]
     assert parked[0].startswith("- P")
-    # the lower-priority sections go first: standing and recent decisions are empty before
-    # any parked item is lost
+    # the lower-priority sections go first: active, recent decisions and standing are empty
+    # before any parked item is lost
     n_parked = sum(1 for l in parked if l.startswith("- P"))
+
+    def items(header):
+        out = []
+        for l in lines[lines.index(header) + 1:]:
+            if not l.startswith("- "):
+                break
+            out.append(l)
+        return out
+
     assert "standing:" in lines and "recent decisions:" in lines
-    sect = {name: [l for l in lines[lines.index(name) + 1:] if l.startswith("- ")]
-            for name in ("standing:", "recent decisions:")}
-    assert sect["standing:"] == [] or sect["recent decisions:"] == [] or n_parked == 20
+    assert items("standing:") == []
+    assert n_parked == 20 or (items("recent decisions:") == [] and not items("active:"))
+    # a limit that cannot hold all 20 parked items: everything below parked is already gone
+    tight = BR.render_text(b, limit=6000)
+    tl = tight.splitlines()
+    t_parked = [l for l in tl[tl.index("parked:") + 1:] if l.startswith("- P")]
+    assert 1 <= len(t_parked) < 20 and len(tight) <= 6000
+    lines = tl
+    assert items("recent decisions:") == [] and items("standing:") == []
+    assert "active:" not in lines or items("active:") == []
+    lines = text.splitlines()
     assert not [l for l in text.splitlines() if l.startswith("- A")] or n_parked == 20
     full = BR.render_text(b, limit=10 ** 9)
     assert len(full) > 12000 and "- skill" in full and "recent decisions:" in full
     assert "- skill" not in text
     tiny = BR.render_text(b, limit=800)
     assert len(tiny) <= 800 and tiny.startswith("runner:")
+
+
+def test_brief_escalation_and_mail_parts(cfg, clock, monkeypatch):
+    class Done:
+        returncode, stdout, stderr = 0, "", ""
+
+    monkeypatch.setattr(ESC, "_run_notify", lambda argv: Done())
+    mk(cfg, "E1")
+    park(cfg, "E1")
+    mk(cfg, "E2")
+    park(cfg, "E2")
+    rec = ESC.apply_escalate(cfg, ESC.plan_escalate(cfg, "E1", question="ship it? " + "q" * 300,
+                                                    options=["yes", "no"], recommend=1))
+    for i in range(13):
+        M.send(cfg, to="conductor", frm="human", kind="question", text=f"m{i} " + "t" * 300)
+    M.send(cfg, to="conductor", frm="human", kind="info", text="fyi, no reply needed")
+    b = brief(cfg)
+    by_cid = {p["campaign"]: p for p in b["parked"]}
+    assert by_cid["E1"]["escalation"] == rec["id"] and by_cid["E2"]["escalation"] is None
+    assert [e["id"] for e in b["escalations_open"]] == [rec["id"]]
+    assert b["escalations_open"][0]["campaign"] == "E1"
+    assert len(b["escalations_open"][0]["question"]) <= 160
+    assert len(b["unanswered_mail"]) == 10 and b["more"]["unanswered_mail"] == 3
+    assert all(len(m["text"]) <= 160 and m["id"].startswith("conductor:")
+               for m in b["unanswered_mail"])
+    text = BR.render_text(b)
+    assert f"esc={rec['id']}" in text and "open escalations:" in text and "+3 more" in text
 
 
 def test_brief_context_from_transcript(cfg, clock):
