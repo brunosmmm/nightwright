@@ -136,6 +136,7 @@ Derive everything from the campaign state and ledger (SPEC-0214's `spec_review` 
 - `uv run pytest tests/test_agentic_dashboard_spec_phase.py tests/test_agentic_dashboard.py
   tests/test_agentic_idea_campaign.py tests/test_agentic_queue_cli.py
   tests/test_agentic_spec_review_loop.py`: 151 passed (one or more tests per AC).
+- Loop 2: tightened `_active_panel` rendering tests for spec and no-spec idea campaigns and the list state cells; `tests/test_agentic_dashboard_spec_phase.py`: 11 passed.
 - `python3 tools/spec_lint.py`: OK. The full `uv run pytest` was left to gating.
 
 ## Rollout / migration

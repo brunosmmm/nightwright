@@ -73,6 +73,7 @@ def test_first_review(env):
     it = _item(cfg, cid)
     assert it["spec_round"] == 1 and it["last_spec_review"] is None
     assert str(CQ._spec_review_text(it)) == "r1 · reviewing"
+    assert "SPEC_REVIEW r1" in _text(CQ._queue_table(Q.queue_payload(cfg), 160), 160)
 
 
 def test_other_states_and_spec_campaign(env):
@@ -149,6 +150,15 @@ def test_list_state_cells(env):
     out = _text(CQ._queue_table(Q.queue_payload(cfg), 160), 160)
     assert "SPEC_WRITING r1" in out
     assert out.count("SPEC_WRITING") == 2
+    assert "rNone" not in out and out.count("SPEC_WRITING r") == 1   # the no-spec row is plain
+
+
+def test_active_panel_no_spec_writing(env):
+    repo, cfg = env
+    cid = _idea(cfg, repo, "IDEA-078-nospec", "SPEC_WRITING", spec=False)
+    out = _text(CQ._active_panel(_item(cfg, cid)), 160)
+    assert "writing…" in out and "spec review" in out
+    assert "● spec_writing" in out
 
 
 def test_spec_campaign_phases_unchanged(env):
@@ -158,3 +168,6 @@ def test_spec_campaign_phases_unchanged(env):
     assert it["phases"] == ["OPENING", "IMPLEMENTING", "GATING", "TRIAGING", "REVIEWING", "CLOSING"]
     assert it["phase_index"] == 1
     assert "spec_review" not in str(CQ._stepper("IMPLEMENTING", 1, it["phases"]))
+    out = _text(CQ._active_panel(it), 160)
+    assert "spec_writing" not in out and "spec_review" not in out
+    assert "● implementing" in out and "✓ opening" in out
