@@ -116,10 +116,10 @@ MVP is done when they hold over a real window of campaigns, not when the code me
 - [ ] SPEC-0299 — Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in `wt campaign export` (project: Meta-Tools)
 - [ ] SPEC-0300 — Quiet conductor: the follower suppresses informational events, prints a digest, and counts wakeups (project: Meta-Tools)
 - [ ] SPEC-0301 — Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule (project: Meta-Tools) (depends_on SPEC-0299)
-- [ ] Routine parks decided by the queue (project: Meta-Tools) — `base_moving` (9 parks) resumes itself with backoff, and a `cost_cap` park right after a transient run failure (no new work done) is resumed by the queue, not the conductor. Each auto-decision is written to the SPEC-0301 decision log as `by: queue`.
-- [ ] Fewer `rebase_conflict` parks (project: Meta-Tools) — classify the 34 conflict parks by file (generated ledger, shared CLI registration modules, specs), then fix the dominant cause at the source: regeneration on close, registration split or a merge driver.
+- [ ] SPEC-0302 — Routine parks decided by the queue (project: Meta-Tools) — `base_moving` (9 parks) resumes itself with backoff, and a `cost_cap` park right after a transient run failure (no new work done) is resumed by the queue, not the conductor. Each auto-decision is written to the SPEC-0301 decision log as `by: queue`.
+- [ ] SPEC-0303 — Fewer `rebase_conflict` parks (project: Meta-Tools) — classify the 34 conflict parks by file (generated ledger, shared CLI registration modules, specs), then fix the dominant cause at the source: regeneration on close, registration split or a merge driver.
 - [ ] comfort-assistant on the loop with PR hand-off (project: Meta-Tools) — `.wt/project.yaml` in comfort-assistant (gates, `merge: pr`), steward armed, one real idea taken from queue to merged PR with the conductor deciding every park.
-- [ ] MVP scorecard: `wt queue mvp-report` (project: Meta-Tools) — computes each exit criterion below over a window from the three logs plus the export, and flags parks with no decision record. (depends_on SPEC-0299, SPEC-0300, SPEC-0301)
+- [ ] SPEC-0304 — MVP scorecard: `wt queue mvp-report` (project: Meta-Tools) — computes each exit criterion below over a window from the three logs plus the export, and flags parks with no decision record. (depends_on SPEC-0299, SPEC-0300, SPEC-0301)
 
 Sequencing: SPEC-0299 and SPEC-0300 can run in parallel. SPEC-0301 follows SPEC-0299,
 because the brief reports the conductor's current context size from the cost reader. The
