@@ -54,7 +54,7 @@ its own decisions in the same vocabulary as the conductor.
 
 **Goals**
 - `base_moving` parks and phantom-charge `cost_cap` parks are decided by the queue: a `wait`
-  decision at park time, then a scheduled resume with backoff, each written to
+  decision recorded by the tick right after the park, then a scheduled resume with backoff, each written to
   `decisions.jsonl` with `by: queue` and the skill's rule id. Fewer conductor wakeups (E3),
   full decision coverage (E4).
 - A park the queue decided does not wake the conductor. One it gives up on does.
@@ -77,13 +77,18 @@ its own decisions in the same vocabulary as the conductor.
    `queue.py:859-869`). It returns `None` (the conductor decides, as today) or
    `Auto(rule, kind="wait", resume_at, raise_cap=None, rationale)`.
    - **`parked.base_moving`**: always auto while the campaign's auto-resume count is below
-     `max_per_campaign`. `resume_at = now + base_moving_backoff_s × 2^(n)`, where `n` is
-     the number of earlier automatic resumes of this campaign (60 s, 120 s, 240 s with the
-     defaults).
+     `max_per_campaign`. `resume_at = now + base_moving_backoff_s × 2^(n)`, where
+     `n = state.counters.auto_resumes.get(rule, 0)`, the number of earlier automatic resumes
+     of this campaign under this rule (60 s, 120 s, 240 s with the defaults).
    - **`parked.cost_cap`**: auto only when the block is entirely phantom. Phantom =
      the sum of `charged_usd` over `run.end` events since the campaign's last `resume` (or
-     its `open`) that have `cost_estimated: true` and whose error is transient
-     (`events._is_transient` on `result_tail`, as `runs.py:66-68` computes it). Auto when
+     its `open`) that have `cost_estimated: true`, whose error is transient
+     (`events._is_transient` on `result_tail`, as `runs.py:66-68` computes it) **and that did
+     no measurable work: `usage` is empty or reports zero output tokens, or `duration_s` ≤
+     `phantom_max_duration_s` (default 120 s, in `agentic.conductor.auto`)**. A run that
+     worked for a long time and then hit a 529, `overloaded`, `api_error` or a usage limit
+     reports no cost either, but its real spend is unknown and may be near its budget, so
+     it is not phantom and the park stays the conductor's. Auto when
      phantom > 0 and `total_usd − phantom + budget ≤ cap_usd`, i.e. the run would fit
      without the phantom charges. `raise_cap = cap_usd + phantom` (rounded up to the cent).
      `resume_at = now + transient_backoff_s` (default 900 s), or the reset time when the
@@ -92,26 +97,42 @@ its own decisions in the same vocabulary as the conductor.
      `now + 6 h`.
    - Every other reason: `None`.
 2. **At park time** an auto decision adds `auto: {rule, resume_at, raise_cap, n}` to
-   `state.park` and to the `park` ledger event, and, after the park transition is written,
-   `decisions.record(cfg, campaign=cid, by="queue", kind="wait", rule=<rule>,
-   action="auto-resume at <resume_at>", rationale=<rationale>)`. The ledger note that
-   `record` appends makes `park_view(...)["decided"]` true, so no `park_undecided` follows.
+   `state.park` and to the `park` ledger event; `_park` stores it and does nothing else. It
+   never calls `decisions.record`, because `_park` runs under the campaign item lock and
+   `record` takes the `decisions.jsonl.lock` flock before `store.append_event` takes the item
+   lock: calling it from `_park` would lock item → decisions, the reverse of a conductor's
+   `wt queue decision --campaign X` (decisions → item), and the two processes could deadlock.
+   The `wait` record, `decisions.record(cfg, campaign=cid, by="queue", kind="wait",
+   rule=<rule>, action="auto-resume at <resume_at>", rationale=<rationale>)`, is written by
+   `_tick` with **no item lock held**: right after the step's row is returned, and again in
+   step `0a` for any PARKED campaign whose `park.auto` has no decision note after its
+   `park_seq` (which also covers a crash between the park and the record). Until that record
+   exists, step `0a` does not resume the campaign. The ledger note that `record` appends
+   makes `park_view(...)["decided"]` true, so no `park_undecided` follows.
 3. **The resume** is a new tick step, `0a`, next to the `config_invalid` recovery in
-   `queue._tick`: for each PARKED campaign with `park.auto` and `resume_at ≤ now` that is not
-   in flight, the queue writes `decisions.record(..., by="queue", kind="resume",
-   rule=<rule>, action="resume to <resume_to>[ raise cap to $X]")` and then calls
-   `plan_resume` / `apply_resume` with `by="queue"`, `raise_cap=auto.raise_cap` and the note
-   `"queue: <rule> auto-resume <n+1>/<max>"`. It goes into a free slot or WAITING through
-   `_enter_slot_or_wait`, exactly like a conductor resume. The automatic resume count is
-   kept in `state.counters.auto_resumes` (`{rule: n}`), which a human or conductor resume
-   does not reset.
-4. **Giving up.** When `decide` would auto-decide but the count is at `max_per_campaign`
-   (default 3 per rule), it returns `None` and the park is an ordinary conductor park. When
-   the scheduled resume raises (`ValueError` from `plan_resume` or `apply_resume`, e.g. a
-   pending escalation or a human already resumed it), the queue clears `park.auto`, records
+   `queue._tick`: for each PARKED campaign with `park.auto`, a `wait` record and
+   `resume_at ≤ now` that is not in flight, the queue writes `decisions.record(...,
+   by="queue", kind="resume", rule=<rule>, action="resume to <resume_to>[ raise cap to $X]")`
+   (again with no item lock held) and then calls `plan_resume(cfg, cid, by="queue",
+   raise_cap=auto.raise_cap, note="queue: <rule> auto-resume <n+1>/<max>",
+   auto_rule=auto.rule)` and `apply_resume`. It goes into a free slot or WAITING through
+   `_enter_slot_or_wait`, with the same slot accounting as step 0 (see Design). The automatic
+   resume count is kept in `state.counters.auto_resumes` (`{rule: n}`), which a human or
+   conductor resume does not reset.
+4. **Giving up.** When `decide` would auto-decide but
+   `state.counters.auto_resumes.get(rule, 0)` is at `max_per_campaign` (default 3, per rule),
+   it returns `None` and the park is an ordinary conductor park. Step `0a` re-reads the state
+   under the item lock. If the campaign is no longer PARKED, its `park.reason` no longer
+   matches `auto.rule`, or `escalations.open_for(cfg, cid)` is not None, the queue skips the
+   resume and takes the give-up path. A `ValueError` from `plan_resume`/`apply_resume` (e.g.
+   a merge campaign target or a state change racing the tick) takes the same path. The
+   give-up path, while the campaign is still PARKED, clears `park.auto`, records
    `decisions.record(..., by="queue", kind="other", rule=<rule>, rationale="auto-resume
-   failed: <error>")` and appends a new `auto_resume_failed` event (always wake), so the
-   conductor takes over.
+   failed: <error>")` and appends a new `auto_resume_failed` ledger event (always wake), so
+   the conductor takes over. If the campaign is no longer PARKED or the park was replaced
+   (a human resumed it, or an escalation re-parked it as `human_decision`, which drops
+   `auto` because `decide` returns `None` for that reason), the queue only drops the stale
+   `auto` and never resumes it or withdraws the human's escalation.
 5. **The conductor stays out of it.** The `parked` event's data gains `auto` (projected in
    `events._project_ledger_event`, `events.py:327-329`). `quiet.RULES["parked"]` becomes
    `"cond"`: a `parked` with a non-null `auto` is **held** (it shows in the next
@@ -124,8 +145,14 @@ its own decisions in the same vocabulary as the conductor.
    rationale="project config loads again")` before it re-enters the campaign.
 7. **Config** at `agentic.conductor.auto` (code-held defaults; bad values fall back like
    `events.settings`): `{enabled: true, max_per_campaign: 3, base_moving_backoff_s: 60,
-   transient_backoff_s: 900}`. `enabled: false` makes `decide` always return `None`, which
-   restores today's behavior exactly (the config_invalid decision record is still written).
+   transient_backoff_s: 900, phantom_max_duration_s: 120}`. `enabled: false` makes `decide`
+   always return `None`, which restores today's behavior for new parks (the config_invalid
+   decision record is still written). With `enabled: false`, step `0a` does not resume. For
+   each PARKED campaign that still has `park.auto`, it takes the give-up path of Decision 4
+   (clear `auto`, a `kind: other` record with rationale `auto-resume disabled`, an
+   `auto_resume_failed` event), so the conductor gets those parks back: a park written while
+   the feature was on already has a `wait` note, so `park_undecided` and the
+   `conductor_ping` fingerprint would otherwise never wake anyone for it.
 
 ## Design
 
@@ -133,8 +160,10 @@ its own decisions in the same vocabulary as the conductor.
   - `DEFAULTS`, `settings(cfg) -> dict`.
   - `@dataclass(frozen=True) Auto: rule, kind, resume_at (ISO str), raise_cap (float|None),
     n (int), rationale`.
-  - `phantom_usd(ledger, since_seq) -> float`: sums `charged_usd` of `run.end` events after
-    `since_seq` with `cost_estimated` true and a transient `result_tail`.
+  - `phantom_usd(ledger, since_seq, max_duration_s) -> float`: sums `charged_usd` of
+    `run.end` events after `since_seq` with `cost_estimated` true, a transient `result_tail`
+    and no measurable work (`usage` empty or zero output tokens, or `duration_s` ≤
+    `max_duration_s`).
   - `reset_time(text, now) -> datetime | None`.
   - `decide(state, ledger, sett, now, *, budget) -> Auto | None`. `budget` is the blocked
     run's budget, which `_park` cannot recompute; the `cost_cap` Step carries it
@@ -146,25 +175,43 @@ its own decisions in the same vocabulary as the conductor.
     and `Step` gains `budget: float | None = None`.
   - `_park(..., budget=None)`: after building `state["park"]` and before `_transition`,
     call `autopark.decide` (reading `store.read_ledger(cfg, cid, types=["open", "resume",
-    "run.end"])`); on an `Auto`, put `auto` into the park. After `_transition` returns,
-    call `decisions.record(... kind="wait" ...)`. A failure of `record` is logged to the
-    runner log and leaves the park undecided (the conductor's `park_undecided` path, as
-    today): an auto decision is never applied without its record.
+    "run.end"])`); on an `Auto`, put `auto` into the park and the `park` event. `_park` only
+    stores `auto`; it never calls `decisions.record` (see Decision 2).
+  - `_tick` writes the `wait` record with no item lock held, right after the step's row is
+    returned (rows carry the campaign id and the `auto` of a new park). A failure of
+    `record` is logged to the runner log and retried by step `0a`, which does not resume a
+    campaign whose `park.auto` has no decision note after its `park_seq`: an auto decision
+    is never applied without its record.
   - `_tick` step `0a` (after step 0): `for st in autopark.due(store.list_campaigns(cfg,
-    state="PARKED"), now)` minus in-flight ids → record, then `plan_resume` /
-    `apply_resume`; on `ValueError` the give-up path of Decision 4. Report rows use
-    `action: "auto_resume"`, `reason: <rule>`.
+    state="PARKED"), now)` minus in-flight ids → (first, with `auto` set but no `wait`
+    note after `park_seq`, write that `wait` record) → re-read the state under the item lock
+    and run the Decision 4 checks → `kind: resume` record (no item lock held) →
+    `plan_resume` / `apply_resume`; on `ValueError` or a failed check the give-up path of
+    Decision 4. Report rows use `action: "auto_resume"`, `reason: <rule>`. With
+    `enabled: false` it runs only the disabled hand-back of Decision 7.
+  - Slot accounting: `apply_resume` gains optional `busy`/`slots` keyword arguments, passed
+    through to `_enter_slot_or_wait`. Step `0a` passes `busy=n_busy(), slots=slots` and
+    appends the resumed state to `busy` or `queued` as step 0 does (`queue.py:3418-3425`),
+    so in-flight campaigns count toward the slot limit and later steps in the same tick
+    see the resumed campaign.
   - Step 0 (`config_invalid`) gains its decision record.
-  - `apply_resume` increments `counters.auto_resumes[rule]` when `plan["by"] == "queue"`
-    and the plan carries `auto_rule`.
+  - `plan_resume` gains `auto_rule=None`, stored in the plan. `apply_resume` increments
+    `counters.auto_resumes[rule]` when `plan["by"] == "queue"` and the plan carries
+    `auto_rule`.
 - **`src/wt/agentic/events.py`**: `EVENT_TYPES` gains `"auto_resume_failed": ("rule",
   "error")`, raised from the ledger event of the same name in `_project_ledger_event`; the
   `parked` projection adds `auto`.
+- **`src/wt/agentic/schemas.py`**: the ledger type table gains `"auto_resume_failed":
+  ("rule", "error")` (`store.append_event` validates every record through `ledger_problems`
+  and raises `ValueError` on an unknown type, so the give-up path would otherwise crash in
+  the tick). The `park` record keeps accepting the optional `auto` key.
 - **`src/wt/agentic/quiet.py`**: `RULES["parked"] = "cond"`, `RULES["auto_resume_failed"] =
   "wake"`; `classify` holds a `parked` whose `data.auto` is truthy.
 - **`src/wt/agentic/brief.py`**: parked items carry `auto: {rule, resume_at} | null`.
 - **`skills/wt-conduct/SKILL.md`**: the quiet-stream paragraph lists "a `parked` the queue
-  decided (`auto` set)" among held events; the `parked.cost_cap` row says the queue already
+  decided (`auto` set)" among held events, and `parked` moves from the wake list to the
+  conditional list of that paragraph, so the existing RULES-vs-skill comparison test
+  (`quiet.py:20-22`) keeps passing; the `parked.cost_cap` row says the queue already
   resumes a phantom-charge cap park itself, so a `cost_cap` park that reaches the conductor
   is real spend; a new `auto_resume_failed` row (rule id `auto_resume_failed`): read the
   error, then decide the park per its reason's row. A `parked.base_moving` row (rule id
@@ -196,16 +243,26 @@ its own decisions in the same vocabulary as the conductor.
 - [ ] A `cost_cap` park whose block is entirely phantom (transient-failed runs charged as
       estimates since the last resume) gets `auto` with `raise_cap = cap + phantom` and is
       resumed with that cap after `transient_backoff_s` (or a parsed reset time, at most 6 h
-      out). A `cost_cap` park with real spend over the cap, or with a non-transient
-      estimated charge, gets no `auto`.
+      out). A `cost_cap` park with real spend over the cap, with a non-transient
+      estimated charge, or with a transient charge from a run that did work (non-zero
+      output tokens and `duration_s` > `phantom_max_duration_s`), gets no `auto`.
 - [ ] A `parked` event with `auto` is held by the `conductor` follower; a `parked` event
       without it, and `auto_resume_failed`, wake.
-- [ ] When the scheduled resume fails, `park.auto` is cleared, a `kind: other` queue
-      decision and an `auto_resume_failed` event are written, and the campaign stays PARKED.
+- [ ] When the scheduled resume fails (`ValueError` from `plan_resume`/`apply_resume`, a
+      state that no longer matches `auto.rule`, or an open escalation), `park.auto` is
+      cleared, a `kind: other` queue decision and an `auto_resume_failed` ledger event
+      (readable with `store.read_ledger`) are written, and the campaign stays PARKED.
+      Escalating an auto park re-parks it `human_decision` with no `auto`; step `0a` never
+      resumes it and the escalation stays open.
+- [ ] The `wait` record is written by `_tick` with no item lock held (never from `_park`),
+      and step `0a` does not resume a campaign whose `park.auto` has no such record.
+- [ ] `plan_resume` called for a queue auto-resume returns a plan with an `auto_rule` key,
+      and step `0a` applies the same `busy`/`slots` accounting as step 0.
 - [ ] The `config_invalid` recovery writes a `by: queue`, `kind: resume`,
       `rule: parked.config_invalid` decision before re-entering the campaign.
 - [ ] `agentic.conductor.auto.enabled: false` produces no `auto`, no automatic resume, and
-      the same `parked` deliveries as before this change.
+      the same `parked` deliveries as before this change. Disabling it with an auto park
+      pending clears that `auto` and raises an `auto_resume_failed` event for the campaign.
 - [ ] Every rule id the queue writes matches `decisions.RULE_RE` and appears in the
       `/wt-conduct` decision table's rule-id column, which gains `parked.base_moving` and
       `auto_resume_failed`.
@@ -215,10 +272,12 @@ its own decisions in the same vocabulary as the conductor.
 
 - **Automated, `tests/test_agentic_autopark.py`** (temp agentic store, campaigns from
   `store.create_campaign`, ledger events via `store.append_event`, a fake clock):
-  - `test_decide_base_moving_backoff`: n = 0, 1, 2 give 60/120/240 s; n = 3 gives `None`.
+  - `test_decide_base_moving_backoff`: `counters.auto_resumes["parked.base_moving"]` = 0, 1,
+    2 give 60/120/240 s; 3 gives `None`; a count under another rule does not change `n`.
   - `test_phantom_usd`: two transient estimated charges after the last resume count; an
-    estimated non-transient charge, a reported-cost transient failure, and a charge before
-    the resume do not.
+    estimated non-transient charge, a reported-cost transient failure, a charge before
+    the resume, and a transient estimated charge with `duration_s` 1200 and non-zero output
+    tokens do not.
   - `test_decide_cost_cap_phantom_only` (parametrized): all-phantom → `Auto` with
     `raise_cap = cap + phantom`; real spend over the cap → `None`; phantom present but not
     enough to explain the block → `None`.
@@ -238,9 +297,22 @@ its own decisions in the same vocabulary as the conductor.
     with no cost, the next plan parks `cost_cap`; assert `auto.raise_cap`, then after the
     backoff the campaign resumes with `cost.cap_usd == raise_cap` and the resume event's
     `cap_usd` matches.
-  - `test_auto_resume_failure_hands_back`: open an escalation on the campaign before
-    `resume_at`; the tick clears `auto`, writes the `other` record and an
-    `auto_resume_failed` ledger event; the campaign stays PARKED.
+  - `test_auto_resume_failure_hands_back`: monkeypatch `apply_resume` to raise `ValueError`
+    at `resume_at` and assert `auto` is cleared, the `other` record and the
+    `auto_resume_failed` event (read back with `store.read_ledger`) are written, and the
+    campaign stays PARKED.
+  - `test_escalation_drops_auto`: escalating an auto park re-parks it `human_decision` with
+    no `auto`, step `0a` never resumes it, and the escalation stays open.
+  - `test_wait_record_outside_item_lock`: assert `decisions.record` is never called while the
+    campaign's item lock is held (patch `store.item_lock` to track depth); a park whose
+    `wait` record is missing (record patched to fail once) is not resumed until step `0a`
+    writes it.
+  - `test_resume_slot_accounting`: with all slots busy, an auto resume goes to WAITING, and
+    the resumed state appears in this tick's `busy`/`queued` lists; the plan from
+    `plan_resume` carries `auto_rule`.
+  - `test_disable_hands_back_pending_auto`: park with `auto` while enabled, set
+    `enabled: false`, tick: `auto` cleared, `other` record with rationale `auto-resume
+    disabled`, an `auto_resume_failed` event, no resume.
   - `test_config_invalid_recovery_records_decision`.
   - `test_auto_disabled_is_today`: with `enabled: false` the same scenario parks with no
     `auto` and no decision record.
@@ -251,7 +323,7 @@ its own decisions in the same vocabulary as the conductor.
   `parked.base_moving` and `auto_resume_failed` rule ids and mentions held auto parks);
   `test_conduct_skill_rule_ids` keeps passing.
 - **Automated, `tests/test_agentic_conductor_brief.py`**: `test_brief_shows_auto`.
-- **Sabotage checks:** skip the `wait` record in `_park` → the coverage assertion in
+- **Sabotage checks:** skip the `wait` record in `_tick` → the coverage assertion in
   `test_base_moving_park_auto_decided_and_resumed` fails; treat non-transient estimated
   charges as phantom → `test_decide_cost_cap_phantom_only` fails; make `classify` ignore
   `auto` → `test_parked_auto_is_held` fails.
@@ -268,7 +340,8 @@ its own decisions in the same vocabulary as the conductor.
    written before the merge have no `auto` and stay the conductor's.
 2. The conductor re-reads the skill on `code_changed`.
 3. If an automatic resume turns out wrong in practice, set `agentic.conductor.auto.enabled:
-   false` (a conductor tuning call, no escalation) and file a follow-up.
+   false` (a conductor tuning call, no escalation) and file a follow-up. Pending auto parks
+   are handed back to the conductor on the next tick (Decision 7), not stranded.
 
 ## Definition of done
 
