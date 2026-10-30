@@ -571,3 +571,74 @@ def test_gh_pr_view_uses_short_timeout(monkeypatch):
     G.gh_pr_view("https://github.com/x/y/pull/7")
     assert seen["timeout"] == 30 and seen["timeout"] != G._NETWORK_TIMEOUT
     assert seen["cmd"][1:4] == ["pr", "view", "https://github.com/x/y/pull/7"]
+
+
+# ---- SPEC-0290: a split campaign closes without the spec guard or the spec DoD ---------------
+
+def _split_world(world, *, original_status="superseded"):
+    """The campaign becomes a split of SPEC-0001 into SPEC-0002 and SPEC-0003, both written and
+    committed on the branch, the original superseded by part 1."""
+    wt = world["wt"]
+    G.git(wt, "reset", "-q", "--hard", "main")
+    sup = "status: superseded\nsuperseded_by: SPEC-0002" if original_status == "superseded" \
+        else f"status: {original_status}"
+    _commit(wt, "docs/specs/0001-t.md", SPEC_DONE.replace("status: done", sup), "supersede")
+    parts = []
+    for n, (num, dep) in enumerate([(2, None), (3, "SPEC-0002")], 1):
+        extra = "supersedes: [SPEC-0001]" + (f"\ndepends_on: [{dep}]" if dep else "")
+        text = SPEC_DONE.replace("SPEC-0001", f"SPEC-{num:04d}").replace(
+            "status: done", f"status: accepted\n{extra}").replace("- [x]", "- [ ]")
+        rel = f"docs/specs/{num:04d}-p{n}.md"
+        _commit(wt, rel, text, f"part {n}")
+        parts.append({"title": f"P{n}", "scope": "s", "number": num, "rel_path": rel,
+                      "spec_id": f"SPEC-{num:04d}"})
+    st = world["state"]
+    st.update(kind="split", split={"original": "SPEC-0001",
+                                   "original_rel": "docs/specs/0001-t.md", "review_sha": "x",
+                                   "parts": parts})
+    st["spec"] = {"rel_path": "docs/specs/0002-p1.md", "internal": True}   # rewritten: not trusted
+    return st
+
+
+def test_split_check_passes_for_a_finalized_split(world):
+    st = _split_world(world)
+    assert CL.split_check(world["wt"], st) == []
+
+
+def test_split_check_missing_part_fails(world):
+    st = _split_world(world)
+    (world["wt"] / "docs/specs/0003-p2.md").unlink()
+    assert CL.split_check(world["wt"], st) == ["part 2 (P2): spec file missing"]
+    _commit(world["wt"], "x.txt", "x\n", "commit the deletion")
+    out = CL.prepare_close(world["cfg"], st, _pcfg(world)).outcome
+    assert out.next_state == "PARKED"
+    assert out.park["reason"] == "spec_write_failed" and out.park["resume_to"] == "SPEC_WRITING"
+    assert "part 2 (P2): spec file missing" in out.park["detail"]
+    assert [e for t, e in out.events if t == "finding"][0]["gate"] == "split-check"
+
+
+def test_split_check_original_not_superseded_fails(world):
+    st = _split_world(world, original_status="accepted")
+    (problem,) = CL.split_check(world["wt"], st)
+    assert "original SPEC-0001 is 'accepted'" in problem and "superseded by SPEC-0002" in problem
+
+
+def test_split_check_broken_chain_fails(world):
+    st = _split_world(world)
+    path = world["wt"] / "docs/specs/0003-p2.md"
+    path.write_text(path.read_text().replace("depends_on: [SPEC-0002]", "depends_on: [SPEC-0009]"))
+    (problem,) = CL.split_check(world["wt"], st)
+    assert problem.startswith("part 2 SPEC-0003: depends_on is")
+
+
+def test_split_skips_spec_guard(world):
+    st = _split_world(world)
+    # the original is superseded (not `done`) and differs from spec_at_open.md: for an ordinary
+    # campaign the spec DoD and the drift guard would send it back to TRIAGING
+    pcfg = _pcfg(world)
+    out = CL.close_campaign(world["cfg"], st, pcfg)
+    assert out.next_state == "MERGED", out
+    assert (world["root"] / "docs/specs/0003-p2.md").exists()
+    assert not [t for t, _ in out.events if t == "spec_drift"]
+    st2 = dict(st, kind="implement")
+    assert CL._is_spec_less(st) and not CL._is_spec_less(st2)

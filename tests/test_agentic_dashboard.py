@@ -537,3 +537,16 @@ def test_gate_text_retry_marker():
     assert "↻2 (flaky)" in CQ._gate_text(ok).plain
     assert "↻1" in CQ._gate_text(bad).plain and "flaky" not in CQ._gate_text(bad).plain
     assert "↻" not in CQ._gate_text(plain).plain
+
+
+def test_watch_shows_split_campaign_kind(tmp_path, monkeypatch):      # SPEC-0290
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    cid = _campaign(cfg, repo, "SPEC-0001-20261030-aaaa", "SPEC_WRITING", kind="split",
+                    split={"original": "SPEC-0001", "original_rel": "docs/specs/0001-trivial.md",
+                           "review_sha": "x", "parts": []})
+    r = run_cli(cfg, monkeypatch, ["queue", "watch", "--once"])
+    assert r.exit_code == 0, r.output
+    assert cid in r.output and "kind split" in r.output
+    (item,) = Q.queue_payload(cfg)["items"]
+    assert item["kind"] == "split"

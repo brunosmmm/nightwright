@@ -271,6 +271,8 @@ def _campaign_cell(it: dict) -> Text:
     t = Text(it["campaign"])
     if it.get("kind") == "merge" and it.get("label"):
         t.append("\n" + it["label"], style="dim")
+    if it.get("kind") == "split":                                      # SPEC-0290
+        t.append("\nsplit", style="dim")
     return t
 
 
@@ -455,10 +457,11 @@ def _active_panel(it: dict) -> Panel:
     grid = Table.grid(padding=(0, 1))
     grid.add_column(style="dim", no_wrap=True, justify="right")
     grid.add_column(overflow="fold")
-    idea = it.get("idea")
     grid.add_row("spec", _idea_spec_cell(it) if idea else
                  _spec_cell(it.get("label") or it["spec_id"] or it.get("idea_id"),
                             it.get("spec_title")))
+    if it.get("kind") == "split":                                      # SPEC-0290
+        grid.add_row("kind", Text("split", style="cyan"))
     where = R.project_text(it.get("project"))
     where.append(f" · {_size_tone(it)} → {it.get('profile')}", style="dim")
     where.append_text(_source_marker(it))

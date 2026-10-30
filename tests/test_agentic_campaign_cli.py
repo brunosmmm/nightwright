@@ -177,3 +177,21 @@ def test_show_prints_profile_sources_and_tolerates_old_campaigns(tmp_path, monke
     d = json.loads(_run(cfg, monkeypatch, ["campaign", "show", "SPEC-0173-20261025-dddd",
                                            "--json"]).output)
     assert d["profile_sources"][0] == "builtin:balanced.yaml"
+
+
+def test_show_lists_split_parts(tmp_path, monkeypatch):               # SPEC-0290
+    cfg = _cfg(tmp_path)
+    parts = [{"title": "First half", "scope": "a", "number": 101, "rel_path": "x", "spec_id": "SPEC-0101"},
+             {"title": "Second half", "scope": "b", "number": 102, "rel_path": "y", "spec_id": "SPEC-0102"},
+             {"title": "Rest", "scope": "c", "number": None, "rel_path": None, "spec_id": None}]
+    S.create_campaign(cfg, {"id": "SPEC-0005-20261030-cccc", "kind": "split", "spec_id": "SPEC-0005",
+                            "project": "Meta-Tools", "profile": "balanced", "state": "SPEC_WRITING",
+                            "created_at": "2026-10-30T10:00:00-04:00", "repo": {}, "counters": {},
+                            "cost": {}, "split": {"original": "SPEC-0005", "original_rel": "a.md",
+                                                  "review_sha": "x", "parts": parts}})
+    r = _run(cfg, monkeypatch, ["campaign", "show", "SPEC-0005-20261030-cccc"])
+    assert r.exit_code == 0, r.output
+    assert "split of SPEC-0005 into 3 parts" in r.output
+    assert "part 1: SPEC-0101 First half" in r.output
+    assert "part 2: SPEC-0102 Second half" in r.output
+    assert "part 3: (pending) Rest" in r.output

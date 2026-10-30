@@ -134,7 +134,8 @@ def _save(cfg, records):
 def _abandoned(cfg, campaign) -> bool:
     from .agentic import store as agentic_store       # lazy: plain `wt spec` skips the package
     try:
-        return agentic_store.read_state(cfg, campaign).get("state") == "ABANDONED"
+        # SPEC-0290: a split campaign reserves one number per part, keyed `<campaign>#k`
+        return agentic_store.read_state(cfg, campaign.split("#")[0]).get("state") == "ABANDONED"
     except ValueError:
         return False
 

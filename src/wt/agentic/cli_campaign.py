@@ -217,6 +217,13 @@ def attach(campaign_group):
                           f"{str(merge.get('head_at_request') or '-')[:10]}; worktree "
                           f"{'created' if merge.get('own_worktree') else 'adopted'})",
                           highlight=False)
+        split = st.get("split") or {}
+        if st.get("kind") == "split":                                  # SPEC-0290
+            console.print(f"  split of {split.get('original')} into "
+                          f"{len(split.get('parts') or [])} parts", highlight=False)
+            for i, part in enumerate(split.get("parts") or [], 1):
+                console.print(Text(f"  part {i}: {part.get('spec_id') or '(pending)'} "
+                                   f"{part.get('title')}"), highlight=False)
         lr = st.get("last_review") or {}
         if lr.get("verdict") is not None:
             adv = lr.get("advisory") or []

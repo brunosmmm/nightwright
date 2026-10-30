@@ -1064,3 +1064,51 @@ def test_amend_precedes_revise_branch(tmp_path, monkeypatch):
     assert st["spec"]["id"] == "SPEC-0005"             # the revise branch would match on this
     Q.tick(cfg)
     assert S.read_state(cfg, cid)["spec_write"]["mode"] == "amend"
+
+
+# ---- SPEC-0290: split mode ---------------------------------------------------------------------
+
+SPLIT_FM = {"id": "SPEC-0102", "status": "accepted", "kind": "feature",
+            "supersedes": ["SPEC-0005"], "depends_on": ["SPEC-0101"], "parent": "SPEC-0100"}
+
+
+@pytest.mark.parametrize("key,value", [
+    ("id", "SPEC-0109"), ("status", "proposed"), ("kind", "epic"), ("supersedes", []),
+    ("depends_on", ["SPEC-0001"]), ("depends_on", []), ("parent", "SPEC-0099"), ("parent", None)])
+def test_split_problems_reports_each_wrong_key(key, value):
+    fm = {**SPLIT_FM, key: value}
+    if value is None:
+        fm.pop(key)
+    (problem,) = SW._split_problems(fm, SPLIT_FM)
+    assert problem.startswith(f"front matter: {key} must be")
+    assert SW._split_problems(SPLIT_FM, SPLIT_FM) == []
+
+
+def test_split_problems_expects_no_parent_when_the_original_has_none():
+    expected = {k: v for k, v in SPLIT_FM.items() if k != "parent"}
+    assert SW._split_problems(expected, expected) == []
+    (problem,) = SW._split_problems(SPLIT_FM, expected)
+    assert "parent must be absent" in problem
+
+
+def test_split_write_rules_name_scope_other_parts_and_front_matter():
+    parts = [{"title": "A", "scope": "alpha"}, {"title": "B", "scope": "beta"},
+             {"title": "C", "scope": "gamma"}]
+    sw = {"path": "docs/specs/0102-b.md", "expected_fm": SPLIT_FM,
+          "split": {"k": 2, "n": 3, "original": "SPEC-0005", "parts": parts,
+                    "source_idea": "IDEA-065"}}
+    rules = SW.write_rules("split", sw, None, None)
+    assert rules.startswith("Split mode: create exactly `docs/specs/0102-b.md`")
+    assert "part 2 of 3" in rules and "Your scope: beta" in rules
+    assert "- part 1: A — alpha" in rules and "- part 3: C — gamma" in rules
+    assert "part 2: B" not in rules
+    assert "`id: SPEC-0102`" in rules and "`status: accepted`" in rules
+    assert '`supersedes: ["SPEC-0005"]`' in rules and '`depends_on: ["SPEC-0101"]`' in rules
+    assert "`parent: SPEC-0100`" in rules and "`source_idea: IDEA-065`" in rules
+    assert "Carry over only this part's Context" in rules
+
+
+def test_split_snapshot_validates_like_write(tmp_path):
+    repo = make_project(tmp_path)
+    sw = SW.snapshot(repo, mode="split", number=102, path="docs/specs/0102-b.md")
+    assert sw["mode"] == "split" and "fm_before" not in sw

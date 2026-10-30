@@ -45,6 +45,8 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "priority": ("from", "to"),
     "admitted_after_revision": ("review_sha", "current_sha", "findings"),
     "admitted_revise_pending": ("review_sha", "current_sha", "findings"),     # SPEC-0279
+    "admitted_split": ("review_sha", "parts"),                   # SPEC-0290
+    "split_finalized": ("original", "parts"),                    # SPEC-0290
     "rebase_resolved": ("run_id", "target_sha", "conflicts", "resolutions", "summary", "head",
                         "extra_commits", "absorbed_commits", "resolver_commit"),
     "spec_written": ("spec_id", "rel_path", "title", "mode"),

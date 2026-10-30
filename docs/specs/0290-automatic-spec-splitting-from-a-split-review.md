@@ -1,7 +1,7 @@
 ---
 id: SPEC-0290
 title: "Automatic spec splitting: a split review turns into child specs written by a split campaign"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -202,35 +202,35 @@ parallelism, and a human can relax a child's `depends_on` before it is queued.
 
 ## Acceptance criteria
 
-- [ ] `check_admissible` returns `admission: "split_pending"` for an internal spec whose latest
+- [x] `check_admissible` returns `admission: "split_pending"` for an internal spec whose latest
       review is `split` for its current sha with 2–5 suggested splits. Outbound specs, stale
       reviews and part counts outside 2–5 are still refused, with a message naming the reason.
-- [ ] `wt queue add` of such a spec creates a `kind: "split"` campaign with `state.split.parts`
+- [x] `wt queue add` of such a spec creates a `kind: "split"` campaign with `state.split.parts`
       and an `admitted_split` ledger event. Opening it leads to SPEC_WRITING.
-- [ ] Each part is written by its own spec-writer run in `split` mode, with a number from the
+- [x] Each part is written by its own spec-writer run in `split` mode, with a number from the
       SPEC-0208 allocator. Its front matter is validated to the exact wiring: `accepted`,
       `supersedes: [original]`, the original's `parent`, and the dependency chain. A violation
       gets the existing retry and then a `spec_write_failed` park.
-- [ ] After the last part, the finalize step marks the original `superseded` with
+- [x] After the last part, the finalize step marks the original `superseded` with
       `superseded_by: <part 1>`, regenerates the ledger, commits, emits `split_finalized` and
       moves to CLOSING. It is idempotent on retry.
-- [ ] Close skips the spec guard, the spec DoD, reviewers and follow-ups for a split campaign,
+- [x] Close skips the spec guard, the spec DoD, reviewers and follow-ups for a split campaign,
       and runs the split check instead. A passing campaign merges the children and the
       superseded original to base.
-- [ ] A failed split check parks `spec_write_failed` with `resume_to: SPEC_WRITING`. Resuming
+- [x] A failed split check parks `spec_write_failed` with `resume_to: SPEC_WRITING`. Resuming
       after a part's `spec_id` was cleared rewrites that part, runs finalize again and returns to
       CLOSING.
-- [ ] A split campaign is never parked `spec_review_unavailable` and never prepared in
+- [x] A split campaign is never parked `spec_review_unavailable` and never prepared in
       `revise` or `amend` mode: its SPEC_WRITING step returns `write_spec` or `finalize_split`.
-- [ ] `backlog_readiness` for a split campaign ignores the original's `depends_on` and requires
+- [x] `backlog_readiness` for a split campaign ignores the original's `depends_on` and requires
       only that the original is `accepted` and the review sha is unchanged. A split of a spec
       whose dependency is not done is ready.
-- [ ] A spec that `depends_on` a `superseded` original is not ready until every spec that
+- [x] A spec that `depends_on` a `superseded` original is not ready until every spec that
       supersedes the original is `done` or `superseded`. With no readable replacement, a
       `superseded` dependency is met as before.
-- [ ] `state.split.original_rel` is recorded at admission, and finalize and the split check use
+- [x] `state.split.original_rel` is recorded at admission, and finalize and the split check use
       it instead of `state.spec`.
-- [ ] `wt queue watch` and `wt campaign show` show kind `split`, and `campaign show` lists each
+- [x] `wt queue watch` and `wt campaign show` show kind `split`, and `campaign show` lists each
       part with its id (or `(pending)`).
 
 ## Test plan
@@ -298,6 +298,59 @@ parallelism, and a human can relax a child's `depends_on` before it is queued.
 - **Regression guard:** full `uv run pytest`. Approve, revise and revise-pending admission
   tests are unchanged.
 
+### Test record (2026-10-30)
+
+Ran, all passing:
+
+- `uv run pytest tests/test_agentic_split.py` (18 tests: admission, writing each part, the
+  parametrized wrong-wiring cases, the step ordering, split readiness, dependents of a
+  superseded original, finalize and its idempotence, close to MERGED, the failed-check resume);
+- `uv run pytest tests/test_agentic_spec_review.py` (split admission, outbound, stale, 1 and 6
+  parts);
+- `uv run pytest tests/test_agentic_close.py -k split` (split check, broken chain, spec guard
+  skipped);
+- `uv run pytest tests/test_agentic_spec_writer.py` (`_split_problems`, `write_rules("split")`,
+  snapshot), `tests/test_agentic_dashboard.py`, `tests/test_agentic_campaign_cli.py` (kind
+  `split` in `queue watch`, the parts in `campaign show`);
+- regression: `tests/test_agentic_queue.py`, `test_agentic_close.py`, `test_agentic_e2e.py`,
+  `test_spec_numbers.py`, `test_agentic_idea_campaign.py`, `test_agentic_queue_merge.py`,
+  `test_agentic_events.py`, `test_agentic_queue_cli.py`;
+- `python3 tools/spec_lint.py --write-ledger` and `python3 tools/spec_lint.py`.
+
+Sabotage checks run by hand, each failing the named test: `_split_problems` ignoring
+`depends_on` (the `depends_on wrong` case), `dependency_met` reverted to
+`status in DEPENDENCY_SATISFIED` (both dependents-of-original tests), the split early return
+removed from `backlog_readiness` (`test_split_readiness_ignores_depends_on`). Skipping the
+finalize step leaves the original `accepted`, so `test_split_close_skips_review_and_followups`
+(it must reach MERGED through the split check) fails; `test_finalize_split_supersedes_original`
+asserts the superseded original directly.
+
+The full `uv run pytest` run passed too (3660 passed, 3 skipped; `tests/test_spec_review_store.py`
+ran separately after a message-wording fix: 89 passed together with `test_agentic_spec_review.py`).
+
+### As shipped
+
+- Tests for the queue behaviour live in a new `tests/test_agentic_split.py` (reusing the
+  spec-writer harness) instead of `tests/test_agentic_queue.py`; the test names are the ones in
+  the Test plan.
+- `spec_numbers.allocate` is idempotent per `campaign`, so every part is reserved under
+  `<campaign>#<k>` (one reservation per part). `spec_numbers._abandoned` strips the `#k`
+  suffix so an abandoned split campaign still frees its reservations.
+- The finalize step is a pool task like the gate (`Step("finalize_split")`), not a persona run;
+  it is also deferred while the runner drains.
+- `split_check` also verifies the chain (part k > 1 has `depends_on: [part k-1]`). A human who
+  repairs a middle part clears that part and every later part (their `depends_on` names it),
+  not only the one; the allocator hands out numbers again (a part that still holds its
+  reservation keeps its number).
+- A split campaign whose re-gate fails parks `gates_failed` (like a merge request); it has no
+  triager. `_reconcile_closed` is skipped for it (no idea tracks the parts).
+- In `wt queue watch` the active card gets a `kind split` row (the table views show `split`
+  under the campaign id); `wt campaign show` prints `split of SPEC-X into N parts` and one
+  `part k: <id or (pending)> <title>` line per part.
+- `_split_problems` treats an absent `parent` as expected when the original has none. The
+  writer prompt's `{{idea_text}}` is replaced by a one-line note and `{{spec_text}}` is the
+  original spec's text.
+
 ## Rollout / migration
 
 New admission path. Specs with a stale split review are still refused as before. Campaigns
@@ -309,11 +362,11 @@ blocked where it was ready before; that is the intended fix, not a regression. T
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

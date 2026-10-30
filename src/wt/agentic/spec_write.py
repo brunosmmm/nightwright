@@ -67,7 +67,8 @@ def changed_paths(worktree, head_before, untracked_before) -> dict:
 
 def snapshot(worktree, *, mode, number, path) -> dict:
     """The `state.spec_write` record taken before the writer runs. `untracked_before` is
-    filled by the caller (first attempt only). `amend` (SPEC-0279) also keeps `fm_before`, the
+    filled by the caller (first attempt only). `split` (SPEC-0290) is validated like `write`
+    against `expected_fm`, which the caller adds. `amend` (SPEC-0279) also keeps `fm_before`, the
     spec's front matter at `HEAD`, which the amend may only touch in `updated`."""
     sw = {"mode": mode, "number": int(number), "path": path,
           "head_before": git.rev_parse(worktree), "untracked_before": untracked(worktree)}
@@ -148,6 +149,25 @@ def _amend_problems(fm_before, fm) -> list:
     return out
 
 
+def _split_problems(fm, expected) -> list:
+    """SPEC-0290: a split part carries the exact wiring `_prepare_spec_write` recorded in
+    `spec_write["expected_fm"]` (`id`, `status`, `kind`, `supersedes`, `parent`, `depends_on`);
+    an absent `parent` is expected when the original has none."""
+    out = []
+    for k in ("id", "status", "kind"):
+        if fm.get(k) != expected[k]:
+            out.append(f"front matter: {k} must be {expected[k]!r}, got {fm.get(k)!r}")
+    for k in ("supersedes", "depends_on"):
+        got = fm.get(k) or []
+        got = [got] if isinstance(got, str) else list(got)
+        if got != list(expected[k]):
+            out.append(f"front matter: {k} must be {list(expected[k])!r}, got {fm.get(k)!r}")
+    if fm.get("parent") != expected.get("parent"):
+        want = repr(expected["parent"]) if expected.get("parent") else "absent"
+        out.append(f"front matter: parent must be {want}, got {fm.get('parent')!r}")
+    return out
+
+
 def _content_problems(worktree, text, spec_id, idea, spec_write=None) -> list:
     try:
         fm, body = split_frontmatter(text)
@@ -157,6 +177,8 @@ def _content_problems(worktree, text, spec_id, idea, spec_write=None) -> list:
         return ["front matter: missing (a spec starts with a --- block)"]
     if (spec_write or {}).get("mode") == "amend":
         out = _schema_problems(worktree, fm) + _amend_problems(spec_write.get("fm_before"), fm)
+    elif (spec_write or {}).get("mode") == "split":
+        out = _schema_problems(worktree, fm) + _split_problems(fm, spec_write["expected_fm"])
     else:
         out = _schema_problems(worktree, fm) + _front_matter_problems(fm, spec_id, idea)
     secs = sections(body)
@@ -254,6 +276,40 @@ def rollback(worktree, spec_write) -> None:
         git.git(worktree, "clean", "-f", "-d", "--", *created)
 
 
+_FM_BLOCK_RE = re.compile(r"\A---\n(.*?)\n---\n", re.S)
+
+
+def supersede(worktree, original_rel, superseded_by) -> bool:
+    """SPEC-0290: mark the original spec `superseded` by `superseded_by` and bump `updated`,
+    rewriting only those front-matter lines (the body and every other key stay byte for byte).
+    Idempotent: False when the file already says so. ValueError when it has no front matter."""
+    path = Path(worktree) / original_rel
+    text = path.read_text(encoding="utf-8")
+    m = _FM_BLOCK_RE.match(text)
+    if not m:
+        raise ValueError(f"{original_rel}: no front matter")
+    fm = split_frontmatter(text)[0] or {}
+    today = dt.date.today().isoformat()
+    if fm.get("status") == "superseded" and fm.get("superseded_by") == superseded_by:
+        return False
+    out, seen = [], set()
+    for ln in m.group(1).split("\n"):
+        key = ln.split(":", 1)[0] if re.match(r"[A-Za-z_]+:", ln) else None
+        if key == "status":
+            out += ["status: superseded", f"superseded_by: {superseded_by}"]
+        elif key == "updated":
+            out.append(f"updated: {today}")
+        elif key != "superseded_by":
+            out.append(ln)
+        seen.add(key)
+    if "status" not in seen:
+        raise ValueError(f"{original_rel}: no `status` in the front matter")
+    if "updated" not in seen:
+        out.append(f"updated: {today}")
+    path.write_text("---\n" + "\n".join(out) + "\n---\n" + text[m.end():], encoding="utf-8")
+    return True
+
+
 def commit_staged(worktree, paths, message) -> str | None:
     """Stage exactly `paths` and commit; None when nothing changed against HEAD (the writer
     committed the file itself and regeneration changed nothing)."""
@@ -311,6 +367,26 @@ def write_rules(mode, spec_write, idea, brief) -> str:
         return (f"Write mode: create exactly `{path}`, following the template. Its front matter "
                 f"carries {', '.join(fm)} and no keys the schema does not know. Required "
                 f"sections: {', '.join(REQUIRED_HEADINGS)} (and Definition of done).")
+    if mode == "split":
+        sp = spec_write["split"]
+        efm = spec_write["expected_fm"]
+        fm = [f"`id: {efm['id']}`", f"`status: {efm['status']}`", f"`kind: {efm['kind']}`",
+              "`owner: user`", "`title`", "`created` (today, YYYY-MM-DD)",
+              f"`supersedes: {json.dumps(efm['supersedes'])}`",
+              f"`depends_on: {json.dumps(efm['depends_on'])}`"]
+        fm.append(f"`parent: {efm['parent']}`" if efm.get("parent") else "no `parent` key")
+        if sp.get("source_idea"):
+            fm.append(f"`source_idea: {sp['source_idea']}`")
+        others = "\n".join(f"- part {i}: {o['title']} — {o['scope']}"
+                           for i, o in enumerate(sp["parts"], 1) if i != sp["k"])
+        return (f"Split mode: create exactly `{path}`: part {sp['k']} of {sp['n']} of the spec "
+                f"{sp['original']}, which is being replaced by its parts. Your scope: "
+                f"{sp['parts'][sp['k'] - 1]['scope']}\nThe other parts are Non-goals of this "
+                f"spec (list them there):\n{others}\nCarry over only this part's Context, "
+                "Design, acceptance criteria and Test plan items from the original spec text, "
+                f"following the template. Its front matter carries exactly {', '.join(fm)} and no "
+                "keys the schema does not know. Required sections: "
+                f"{', '.join(REQUIRED_HEADINGS)} (and Definition of done).")
     if mode == "amend":
         return (f"Amend mode: edit only `{path}`; leave every front-matter key unchanged except "
                 "`updated`; address every finding in the brief.")

@@ -186,6 +186,16 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
     if state.get("kind") == "merge" and st != "CLOSING":
         # SPEC-0233: open goes straight to CLOSING; no persona ever runs for a merge request
         return Step("park", reason="human", detail=f"merge campaign in {st}", resume_to="CLOSING")
+    if st == "SPEC_WRITING" and state.get("kind") == "split":
+        # SPEC-0290: checked before the `spec.id` park below (a split campaign sets `spec.id`)
+        parts = (state.get("split") or {}).get("parts") or []
+        if parts and all(p.get("spec_id") for p in parts):
+            return Step("finalize_split")
+        blocked = _cap_blocks(state, profile, "spec_writer")
+        if blocked:
+            return Step("park", persona="spec_writer", reason="cost_cap", detail=blocked,
+                        resume_to=st)
+        return Step("write_spec", persona="spec_writer")
     if st == "SPEC_WRITING":
         # SPEC-0215: the spec writer writes (no spec yet) or revises (findings in the brief)
         if (state.get("spec") or {}).get("id") and not state.get("pending_brief"):
@@ -688,7 +698,10 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
             return True, []
         return False, [f"idea {iid} is {task.state}"]
     root = Path((state.get("repo") or {}).get("root") or "")
-    spec_path = root / ((state.get("spec") or {}).get("rel_path") or "")
+    split = state.get("kind") == "split"
+    rel = (state.get("split") or {}).get("original_rel") if split \
+        else (state.get("spec") or {}).get("rel_path")
+    spec_path = root / (rel or "")
     try:
         fm, _ = split_frontmatter(spec_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -699,6 +712,10 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
     allowed = ("accepted", "in-progress") if state.get("force") else ("accepted",)
     if status not in allowed:
         blocked.append(f"spec status is {status or 'missing'}")
+    if split:                                   # SPEC-0290: writing spec files needs no dependency
+        if _spec_sha(spec_path) != (state.get("split") or {}).get("review_sha"):
+            blocked.append("spec changed since the split review")
+        return not blocked, blocked
     deps = fm.get("depends_on") or []
     for dep in [deps] if isinstance(deps, str) else deps:
         dep = str(dep)
@@ -708,10 +725,40 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
         except (OSError, ValueError):
             blocked.append(f"{dep} not found")
             continue
-        dep_status = str((dep_fm or {}).get("status") or "")
-        if dep_status not in DEPENDENCY_SATISFIED:
-            blocked.append(f"waiting on {dep} ({dep_status or 'no status'})")
+        met, why = dependency_met(spec_path.parent, dep, dep_fm or {}, set())
+        if not met:
+            blocked.append(f"waiting on {dep} ({why})")
     return not blocked, blocked
+
+
+def dependency_met(specs_dir, dep_id, dep_fm, seen) -> tuple[bool, str]:
+    """(met, why) for a dependency (SPEC-0290). `done` is met. `superseded` is met only when its
+    replacements are: the `superseded_by` target plus every spec whose `supersedes` lists it,
+    recursively (`seen` guards cycles). With no readable replacement a `superseded` dependency
+    stays met, as before. Any other status is unmet; `why` names what is pending."""
+    status = str((dep_fm or {}).get("status") or "")
+    if status == "done":
+        return True, status
+    if status not in DEPENDENCY_SATISFIED:
+        return False, status or "no status"
+    seen = seen | {dep_id}
+    repl = {}                                   # id -> front matter
+    for f in sorted(Path(specs_dir).glob("[0-9]*.md")):
+        try:
+            rfm, _ = split_frontmatter(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rfm, dict) or not rfm.get("id") or rfm["id"] in seen:
+            continue
+        sup = rfm.get("supersedes") or []
+        if rfm["id"] == (dep_fm or {}).get("superseded_by") or dep_id in (
+                [sup] if isinstance(sup, str) else sup):
+            repl[str(rfm["id"])] = rfm
+    pending = [rid for rid, rfm in sorted(repl.items())
+               if not dependency_met(specs_dir, rid, rfm, seen)[0]]
+    if pending:
+        return False, "superseded; waiting on " + ", ".join(pending)
+    return True, status
 
 
 def backlog_view(cfg, *, readiness=None) -> list[dict]:
@@ -1206,7 +1253,9 @@ def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
         if SW.tracked_dirty(worktree):
             raise ValueError("the worktree has uncommitted changes to tracked files; clean the "
                              "worktree, then resume")
-        if state.get("admission") == "revise_pending":          # SPEC-0279, before `revise`
+        if state.get("kind") == "split":                        # SPEC-0290, before `amend`/`revise`
+            mode, number, path, split_sw = _prepare_split_part(ctx, state, worktree)
+        elif state.get("admission") == "revise_pending":        # SPEC-0279, before `revise`
             mode, number, path = "amend", int(str(spec["id"])[5:]), spec["rel_path"]
         elif spec.get("id"):
             mode, number, path = "revise", int(str(spec["id"])[5:]), spec["rel_path"]
@@ -1217,6 +1266,8 @@ def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
             mode, number = "write", rec["number"]
             path = f"docs/specs/{rec['number']:04d}-{SP.slugify(idea.get('heading') or '')}.md"
         sw = SW.snapshot(worktree, mode=mode, number=number, path=path)
+        if mode == "split":
+            sw.update(split_sw)
     except GitError as e:
         raise ValueError(e.tail or str(e)) from e
     prior = state.get("spec_write") or {}
@@ -1231,6 +1282,11 @@ def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
     state["spec_write"] = sw                                    # never join the baseline
     brief = state.get("pending_brief")
     spec_id = SW.spec_id_of(number)
+    extra = {}
+    if mode == "split":
+        extra = {"spec_text": _read_text(worktree / state["split"]["original_rel"]),
+                 "idea_text": f"(none: part {sw['split']['k']} of the split of "
+                              f"{state['split']['original']})"}
     return {
         "spec_id": spec_id, "spec_rel_path": path,
         "idea_text": json.dumps(idea, indent=2, ensure_ascii=False),
@@ -1239,7 +1295,43 @@ def _prepare_spec_write(ctx: _Ctx, state: dict) -> dict:
         "write_problems": SW.write_problems_text(brief),
         "write_rules": SW.write_rules(mode, sw, idea, brief),
         "epic_text": epic_text,
+        **extra,
     }
+
+
+def _prepare_split_part(ctx: _Ctx, state: dict, worktree: Path) -> tuple:
+    """SPEC-0290: the first part without a `spec_id`: allocate its number (one reservation per
+    part, keyed `<campaign>#k`), fix its path and the front matter it must carry. Returns
+    `(mode, number, path, extra)`; `extra` joins the `spec_write` snapshot."""
+    from .. import spec_numbers as SN
+    sp = state["split"]
+    parts = sp["parts"]
+    k = next((i for i, p in enumerate(parts) if not p.get("spec_id")), None)
+    if k is None:
+        raise ValueError("every part of the split is written")
+    try:
+        ofm, _ = split_frontmatter((worktree / sp["original_rel"]).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise ValueError(f"cannot read the original {sp['original_rel']}: {e}") from e
+    ofm = ofm if isinstance(ofm, dict) else {}
+    rec = SN.allocate(ctx.cfg, by="queue", campaign=f"{state['id']}#{k + 1}",
+                      specs_dir=worktree / "docs" / "specs")
+    number = rec["number"]
+    path = f"docs/specs/{number:04d}-{SP.slugify(parts[k]['title'])}.md"
+    if k == 0:
+        deps = ofm.get("depends_on") or []
+        deps = [str(deps)] if isinstance(deps, str) else [str(d) for d in deps]
+    else:
+        deps = [parts[k - 1]["spec_id"]]
+    expected = {"id": SW.spec_id_of(number), "status": "accepted", "kind": "feature",
+                "supersedes": [sp["original"]], "depends_on": deps}
+    if ofm.get("parent"):
+        expected["parent"] = str(ofm["parent"])
+    return "split", number, path, {
+        "expected_fm": expected,
+        "split": {"k": k + 1, "n": len(parts), "original": sp["original"],
+                  "parts": [{"title": p["title"], "scope": p["scope"]} for p in parts],
+                  "source_idea": ofm.get("source_idea")}}
 
 
 def _read_text(path) -> str | None:
@@ -1441,6 +1533,44 @@ def _save_worktree_changes(worktree, cid: str, run_id: str, head: str) -> list[s
     return saved
 
 
+def _do_finalize_split(ctx: _Ctx, state: dict) -> StepResult:
+    """Worker thread (SPEC-0290): once every part is written, mark the original `superseded` by
+    part 1, regenerate the project's generated files and commit. No persona runs. Idempotent: a
+    second run changes nothing and commits nothing. A failure leaves the worktree as it was."""
+    res = StepResult(state["id"], Step("finalize_split"), state["state"])
+    sp = state["split"]
+    repo = state.get("repo") or {}
+    worktree, branch = repo.get("worktree"), repo.get("branch")
+    res.write = {"sha": None, "head": None}
+    try:
+        if branch and git.current_branch(worktree) != branch:
+            raise ValueError(f"HEAD is not on {branch}; check the worktree out on it, then resume")
+        if SW.tracked_dirty(worktree):
+            raise ValueError("the worktree has uncommitted changes to tracked files; clean the "
+                             "worktree, then resume")
+        base = {"head_before": git.rev_parse(worktree), "untracked_before": SW.untracked(worktree),
+                "path": sp["original_rel"]}
+        try:
+            SW.supersede(worktree, sp["original_rel"], sp["parts"][0]["spec_id"])
+            regen = (ctx.project(state).get("merge") or {}).get("regenerate") or []
+            problems, generated = SW.regenerate(worktree, regen, base)
+            if problems:
+                raise ValueError("; ".join(problems))
+            ids = ", ".join(p["spec_id"] for p in sp["parts"])
+            msg = f"wt({state['id']}): split {sp['original']} into {ids}"
+            trailer = ((ctx.project(state).get("agents") or {}).get("commit_trailer") or "").strip()
+            if trailer:
+                msg += f"\n\n{trailer}"
+            res.write["sha"] = SW.commit_staged(worktree, [sp["original_rel"], *generated], msg)
+        except (GitError, ValueError, OSError):
+            SW.rollback(worktree, base)
+            raise
+        res.write["head"] = git.rev_parse(worktree)
+    except (GitError, ValueError, OSError) as e:
+        res.error = getattr(e, "tail", None) or str(e)
+    return res
+
+
 def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float,
                 hooks: RunHooks | None = None, adopted: dict | None = None) -> StepResult:
     """Worker thread: run the persona; for the implementer, commit afterwards (the triager and
@@ -1603,7 +1733,7 @@ def _do_prepare_close(ctx: _Ctx, state: dict) -> StepResult:
     res = StepResult(state["id"], Step("close"), "CLOSING")
     # SPEC-0207: file the follow-up ideas first; the filer never raises, and its events and
     # summary reach `_apply` whether or not the close then succeeds.
-    if state.get("kind") != "merge":            # SPEC-0233: a merge request has no review
+    if state.get("kind") not in ("merge", "split"):     # SPEC-0233/0290: no review, no follow-ups
         res.events_before, res.followups = FU.file_followups(ctx.cfg, state, ctx.profile(state))
     try:
         res.prepared = CL.prepare_close(ctx.cfg, state, ctx.project(state), stop=ctx.stop)
@@ -1670,7 +1800,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                 return row
             for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
                       "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
-                      "merge", "admission", "spec_review"):                          # SPEC-0279: amend flips it
+                      "merge", "admission", "spec_review", "split"):   # SPEC-0279: amend flips it
                 if k in state:
                     current[k] = state[k]
             requested = current.get("park_requested")
@@ -1735,7 +1865,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             "resume_to": resume if resume in RESUMABLE_STATES else "IMPLEMENTING"})
     if res.error and kind != "close":
         reason = {"open": "open_failed", "write_spec": "spec_write_failed",
-                  "spec_review": "spec_review_exhausted"}.get(kind, "open_failed")
+                  "spec_review": "spec_review_exhausted",
+                  "finalize_split": "spec_write_failed"}.get(kind, "open_failed")
         detail = f"{kind} step failed: {res.error}"
         if kind == "write_spec" and (res.write or {}).get("rollback_failed"):
             detail = res.error
@@ -1745,7 +1876,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         resume = {"open": "QUEUED", "implement": "IMPLEMENTING", "gate": "GATING",
                   "triage": "GATING", "review": "REVIEWING",
                   "resolve": "CLOSING", "write_spec": "SPEC_WRITING",
-                  "spec_review": "SPEC_REVIEW"}.get(kind, "IMPLEMENTING")
+                  "spec_review": "SPEC_REVIEW",
+                  "finalize_split": "SPEC_WRITING"}.get(kind, "IMPLEMENTING")
         if kind in ("resolve", "spec_review") and res.run_id:    # run.start is on the ledger: close it, run or no run
             rr = res.run_result or replace(_synthetic_failure(str(res.error)), cost_usd=0.0)
             events += _record_run(state, res.step.persona, res.run_id, rr, res.budget,
@@ -1760,6 +1892,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
     if kind == "open":
         if state.get("kind") == "merge":
             return finish("CLOSING", "opened")
+        if state.get("kind") == "split":                               # SPEC-0290
+            return finish("SPEC_WRITING", "opened")
         pending = state.get("admission") == "revise_pending"           # SPEC-0279
         return finish("SPEC_WRITING" if has_no_spec(state) or pending else "IMPLEMENTING",
                       "opened")
@@ -1772,6 +1906,16 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
 
     if kind == "spec_review":
         return _apply_spec_review(ctx, state, profile, counters, res, row, events, finish)
+
+    if kind == "finalize_split":                                       # SPEC-0290
+        sp = state["split"]
+        if res.write.get("sha"):
+            events.append(("commit", {"sha": res.write["sha"],
+                                      "message": f"split {sp['original']}"}))
+        state.setdefault("repo", {})["head"] = res.write.get("head") or state["repo"].get("head")
+        events.append(("split_finalized", {"original": sp["original"],
+                                           "parts": [p["spec_id"] for p in sp["parts"]]}))
+        return finish("CLOSING", "split_written")
 
     if kind in ("implement", "triage", "resolve"):
         persona = res.step.persona
@@ -1911,8 +2055,9 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             _release_idea_link(cfg, state, events)      # SPEC-0292: independent of the reconcile
             state["park"] = None
             return finish(oc.next_state, "closed")
-        if oc.next_state == "TRIAGING" and state.get("kind") == "merge":
-            # SPEC-0233: no gate triager for a merge request; the conductor relays the failure
+        if oc.next_state == "TRIAGING" and state.get("kind") in ("merge", "split"):
+            # SPEC-0233: no gate triager for a merge request (SPEC-0290: nor a split campaign);
+            # the conductor relays the failure
             return finish("PARKED", "gates_failed", park={
                 "reason": "gates_failed", "detail": oc.gate_detail or "gates failed",
                 "resume_to": "CLOSING"})
@@ -2009,7 +2154,7 @@ def _reconcile_closed(cfg, state: dict, events: list, outcome: str) -> None:
     SPEC-0280: for `HANDED_OFF` the same reconcile runs (an accepted spec gives SPECCED), then
     `:HANDED_OFF: <pr_url>` is set on the spec's sole claimant idea."""
     spec_id = state.get("spec_id") or (state.get("spec") or {}).get("id")
-    if not spec_id:
+    if not spec_id or state.get("kind") == "split":       # SPEC-0290: no idea tracks the parts
         return
 
     def finding(severity, title, detail=""):
@@ -2258,6 +2403,18 @@ def _apply_spec_write(ctx, state, counters, res, row, events, finish):
             "reason": "spec_write_failed", "detail": "; ".join(w["problems"]), **park_back})
     sw = state["spec_write"]
     spec_id = SW.spec_id_of(sw["number"])
+    if sw["mode"] == "split":                                          # SPEC-0290
+        # the part is recorded on `state.split`; the campaign's own spec stays the original
+        part = state["split"]["parts"][sw["split"]["k"] - 1]
+        part.update(number=sw["number"], rel_path=sw["path"], spec_id=spec_id)
+        if w["sha"]:
+            events.append(("commit", {"sha": w["sha"], "message": f"spec split — {spec_id}"}))
+        state.setdefault("repo", {})["head"] = w.get("head") or w["sha"]
+        counters["spec_write_retries"] = 0
+        state["pending_brief"] = None
+        events.append(("spec_written", {"spec_id": spec_id, "rel_path": sw["path"],
+                                        "title": w["title"], "mode": "split"}))
+        return finish("SPEC_WRITING", "split_part_written")
     record = {"id": spec_id, "rel_path": sw["path"], "internal": True}
     if w["sha"]:
         events.append(("commit", {"sha": w["sha"], "message": f"spec {sw['mode']} — {spec_id}"}))
@@ -3040,6 +3197,8 @@ def _submit(ctx: _Ctx, pool: StepPool, report: TickReport, pending_agent: list,
             report.started.append(rows[st["id"]])
         if step.kind == "gate":
             fl.tasks.append((step, pool.submit(_do_gate, ctx, st), None))
+        elif step.kind == "finalize_split":
+            fl.tasks.append((step, pool.submit(_do_finalize_split, ctx, st), None))
         elif step.kind == "close":
             fl.tasks.append((step, pool.submit(_do_prepare_close, ctx, st), None))
         elif step.kind == "resolve":
@@ -3284,7 +3443,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
         if step.kind == "open":
             report.steps.append(_apply(ctx, st, _do_open(ctx, st)))
             continue
-        if draining and (step.kind in ("gate", "close", "resolve", "write_spec")
+        if draining and (step.kind in ("gate", "close", "resolve", "write_spec", "finalize_split")
                          or not getattr(ctx.runner, "detachable", False)):
             if st["id"] in holder_rows:
                 holder_rows[st["id"]]["deferred"] = True        # SPEC-0268
@@ -3307,7 +3466,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             else:
                 pending_agent.append((st, step, None, None, 0.0, None))
             continue
-        if step.kind == "gate":
+        if step.kind in ("gate", "finalize_split"):
             pending_agent.append((st, step, None, None, 0.0, None))
             continue
         if ctx.stop.is_set():
@@ -4776,6 +4935,12 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
                         "findings": review_doc.get("findings") or []}
             if review == "revise_pending":
                 revision["pending"] = True
+    split = None
+    if review == "split_pending":                                      # SPEC-0290
+        split = {"review_sha": review_doc["current_sha"],
+                 "parts": [{"title": str(p.get("title") or ""), "scope": str(p.get("scope") or "")}
+                           for p in review_doc.get("suggested_splits") or []]}
+        review_doc = None       # the review sizes the unsplit work, not writing the parts
     pick = select_profile(cfg, flag=profile, review=review_doc,         # SPEC-0219
                           project_root=root)
     prof = resolve_profile(cfg, pick["profile"], project_root=root)
@@ -4796,6 +4961,7 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         "profile_sources": list(prof.get("sources") or ()),             # SPEC-0238
         "spec_fm": {"source_idea": str(fm.get("source_idea") or ""),    # SPEC-0292
                     "created": str(fm.get("created") or "")},
+        "split": split,
     }
 
 
@@ -4824,6 +4990,15 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
                    "source": plan.get("profile_source"), "reason": plan.get("profile_reason"),
                    "review_sha256": plan.get("review_sha256")},
     }
+    split = plan.get("split")
+    if split:                                                          # SPEC-0290
+        state["kind"] = "split"
+        state["spec"]["id"] = plan["spec_id"]
+        state["split"] = {
+            "original": plan["spec_id"], "original_rel": plan["spec_rel_path"],
+            "review_sha": split["review_sha"],
+            "parts": [{**p, "number": None, "rel_path": None, "spec_id": None}
+                      for p in split["parts"]]}
     revision = plan.get("revision")
     pending = bool(revision and revision.get("pending"))
     if revision:                                                       # SPEC-0230
@@ -4840,6 +5015,9 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
         if active:
             raise ValueError(f"{plan['spec_id']} already has an active campaign {active['id']}")
         store.create_campaign(cfg, state, by=by)
+    if split:
+        store.append_event(cfg, plan["campaign"], "admitted_split",
+                           {"review_sha": split["review_sha"], "parts": split["parts"]}, by=by)
     if pending:
         store.append_event(cfg, plan["campaign"], "admitted_revise_pending",
                            {k: v for k, v in revision.items() if k != "pending"}, by=by)

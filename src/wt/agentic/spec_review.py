@@ -132,6 +132,9 @@ def list_reviews(cfg, spec_id, spec_path=None) -> list:
     return sorted(out, key=_reviewed_at_key)
 
 
+SPLIT_PARTS_MIN, SPLIT_PARTS_MAX = 2, 5          # SPEC-0290: parts a split campaign writes
+
+
 def latest_review(cfg, spec_id, spec_path=None):
     """The most recent stored review of `spec_id` (of this spec's repository when `spec_path`
     is given), or None."""
@@ -146,7 +149,9 @@ def check_admissible(cfg, spec_path, spec_id) -> dict:
     `revise` for an earlier sha admits it (`admission: "after_revision"`, the revision
     happened); an unapplied `revise` of an internal spec admits it as `"revise_pending"`
     (SPEC-0279: the spec writer amends it first); a `split`, an unapplied `revise` of an
-    outbound spec or an edit after an `approve` is refused."""
+    outbound spec or an edit after an `approve` is refused. SPEC-0290: a `split` of an internal
+    spec for its current text with 2-5 suggested splits admits it as `"split_pending"` (a split
+    campaign writes the parts)."""
     sha = spec_sha256(spec_path)
     review = load_review(cfg, spec_id, sha)
     if not (review and review.get("verdict") == "approve"):
@@ -160,8 +165,19 @@ def check_admissible(cfg, spec_path, spec_id) -> dict:
         raise ValueError(f"{spec_id} has no spec review; run wt spec review {spec_id}")
     verdict, rsha = latest.get("verdict"), str(latest.get("spec_sha256") or "")
     if verdict == "split":
+        parts = latest.get("suggested_splits") or []
+        why = None
+        if SP._is_outbound_spec_id(spec_id):
+            why = "an outbound spec cannot be split automatically"
+        elif rsha != sha:
+            why = f"the review is stale (the text changed since {rsha[:12]})"
+        elif not SPLIT_PARTS_MIN <= len(parts) <= SPLIT_PARTS_MAX:
+            why = (f"it suggests {len(parts)} parts; a split campaign needs "
+                   f"{SPLIT_PARTS_MIN}-{SPLIT_PARTS_MAX}")
+        if why is None:                                                # SPEC-0290
+            return {**latest, "admission": "split_pending", "current_sha": sha}
         raise ValueError(f"{spec_id}: the spec review recommends a split ({rsha[:12]}); "
-                         f"split the spec and queue the parts")
+                         f"split the spec and queue the parts (not automatic: {why})")
     if verdict == "revise":
         if rsha == sha:
             if not SP._is_outbound_spec_id(spec_id):                   # SPEC-0279

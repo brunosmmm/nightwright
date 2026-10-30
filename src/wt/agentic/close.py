@@ -119,6 +119,44 @@ def spec_dod(worktree, spec_rel_path) -> tuple[bool, dict | None]:
                    "timed_out": False, "duration_s": 0.0, "log": "", "tail": "\n".join(failing)}
 
 
+def split_check(worktree, state: dict) -> list[str]:
+    """SPEC-0290: problems with a split campaign's result (empty = ok). Every part file exists
+    and lints (its status is not judged), and the original, found at `state.split.original_rel`,
+    is `superseded` by part 1."""
+    sp = state.get("split") or {}
+    worktree = Path(worktree)
+    out = []
+    for i, part in enumerate(sp.get("parts") or [], 1):
+        rel = part.get("rel_path")
+        if not part.get("spec_id") or not rel or not (worktree / rel).is_file():
+            out.append(f"part {i} ({part.get('title')}): spec file missing")
+            continue
+        path = worktree / rel
+        try:
+            audit = verify_spec_file(path, specs_dir=path.parent)
+            pfm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            out.append(f"part {i} {part['spec_id']}: {e}")
+            continue
+        if i > 1:                       # the chain: part k depends on part k-1
+            want = [sp["parts"][i - 2].get("spec_id")]
+            got = (pfm or {}).get("depends_on") or []
+            if (got if isinstance(got, list) else [got]) != want:
+                out.append(f"part {i} {part['spec_id']}: depends_on is {got!r}, not {want!r}")
+        out += [f"part {i} {part['spec_id']}: {c['name']}: {c['detail']}"
+                for c in audit["checks"] if c["status"] == "fail" and c["name"] != "status"]
+    try:
+        ofm, _ = split_frontmatter((worktree / sp["original_rel"]).read_text(encoding="utf-8"))
+    except (OSError, ValueError, KeyError) as e:
+        return out + [f"original {sp.get('original')}: cannot read {sp.get('original_rel')}: {e}"]
+    ofm = ofm if isinstance(ofm, dict) else {}
+    first = ((sp.get("parts") or [{}])[0]).get("spec_id")
+    if ofm.get("status") != "superseded" or ofm.get("superseded_by") != first:
+        out.append(f"original {sp.get('original')} is {ofm.get('status')!r} "
+                   f"(superseded_by {ofm.get('superseded_by')!r}); it must be superseded by {first}")
+    return out
+
+
 # ---- spec-change guard (SPEC-0186) -----------------------------------------------------------
 
 SPEC_AT_OPEN = "spec_at_open.md"
@@ -242,6 +280,12 @@ def pr_body(state: dict, spec_fm: dict, spec_sections: dict, gate_run: G.GateRun
 def _is_merge_request(state: dict) -> bool:
     """SPEC-0233: a campaign that merges an existing branch (no spec, no personas)."""
     return state.get("kind") == "merge"
+
+
+def _is_spec_less(state: dict) -> bool:
+    """SPEC-0290: no spec guard and no spec DoD on the campaign's own spec: a merge request has
+    none (SPEC-0233) and a split campaign's original is superseded, not delivered."""
+    return state.get("kind") in ("merge", "split")
 
 
 def _cleanup(root, worktree, branch, project_cfg, mode, events, *, merge_request=None) -> None:
@@ -397,7 +441,15 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
                                  f"{cur or 'a detached HEAD'}, not {state['repo']['branch']}",
                                  "CLOSING", events))
 
-    if not merge_request:
+    if state.get("kind") == "split":
+        problems = split_check(worktree, state)
+        if problems:
+            events.append(("finding", {"persona": "close", "severity": "must_fix",
+                                       "gate": "split-check", "title": "split check failed",
+                                       "detail": "\n".join(problems), "files": []}))
+            return decided(_park("spec_write_failed", "split check failed: " + "; ".join(problems),
+                                 "SPEC_WRITING", events))
+    if not _is_spec_less(state):
         # 0. spec-change guard (SPEC-0186): the governing text must be what was accepted
         ok, synthetic, guard_events = spec_guard(cfg, state)
         events.extend(guard_events)

@@ -548,3 +548,50 @@ def test_revision_brief_carries_the_fix_for_every_finding_nits_included():
     assert [m["detail"] for m in brief["must_fix"]] == ["d\nFix: add X\nDone when: X is stated",
                                                         "Fix: say Y"]
     assert "Fix: say Y" in PS.render_pending_brief(brief)
+
+# ---- SPEC-0290: a split review admits a split campaign --------------------------------------
+
+def _parts(n):
+    return [{"title": f"Part {i}", "scope": f"scope {i}"} for i in range(1, n + 1)]
+
+
+def _split_review(cfg, repo, n=3, **kw):
+    return write_review(cfg, _spec(repo), "SPEC-0001", "split", suggested_splits=_parts(n), **kw)
+
+
+def test_split_admitted_as_split_pending(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    _split_review(cfg, repo)
+    got = SR.check_admissible(cfg, _spec(repo), "SPEC-0001")
+    assert got["admission"] == "split_pending"
+    assert got["current_sha"] == SR.spec_sha256(_spec(repo))
+    assert [p["title"] for p in got["suggested_splits"]] == ["Part 1", "Part 2", "Part 3"]
+
+
+def test_split_outbound_refused(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    write_review(cfg, _spec(repo), "PROJ-0001", "split", suggested_splits=_parts(3))
+    with pytest.raises(ValueError, match="outbound spec cannot be split automatically"):
+        SR.check_admissible(cfg, _spec(repo), "PROJ-0001")
+
+
+def test_split_stale_sha_refused(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    _split_review(cfg, repo)
+    _spec(repo).write_text(_spec(repo).read_text() + "\nedited after review\n")
+    with pytest.raises(ValueError, match="the review is stale"):
+        SR.check_admissible(cfg, _spec(repo), "SPEC-0001")
+
+
+def test_split_one_part_refused(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    _split_review(cfg, repo, n=1)
+    with pytest.raises(ValueError, match=r"suggests 1 parts; a split campaign needs 2-5"):
+        SR.check_admissible(cfg, _spec(repo), "SPEC-0001")
+
+
+def test_split_six_parts_refused(tmp_path):
+    repo, cfg = _setup(tmp_path, [])
+    _split_review(cfg, repo, n=6)
+    with pytest.raises(ValueError, match=r"suggests 6 parts; a split campaign needs 2-5"):
+        SR.check_admissible(cfg, _spec(repo), "SPEC-0001")
