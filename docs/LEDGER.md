@@ -228,6 +228,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0303](./specs/0303-fewer-rebase-conflict-parks.md) | Fewer `rebase_conflict` parks: base churn is not a conflict, the resolver is not blocked by the cap, and conflict pressure is exported | feature | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0304](./specs/0304-mvp-scorecard-queue-mvp-report.md) | MVP scorecard: `wt queue mvp-report` computes exit criteria E1–E6 over the last N merged campaigns | feature | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | draft | — | 2026-10-30 |
+| [SPEC-0311](./specs/0311-gate-timeouts-under-machine-load-are-triaged-as.md) | Gate timeouts under machine load are re-gated, not triaged as code fixes | feature | proposed | — | 2026-10-30 |
 
 ## Done
 
