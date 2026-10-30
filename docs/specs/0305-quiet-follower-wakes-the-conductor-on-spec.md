@@ -1,7 +1,7 @@
 ---
 id: SPEC-0305
 title: "Quiet follower holds the spec-phase events spec_written, spec_reviewed and spec_accepted"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -108,24 +108,24 @@ match, and add a test that cross-checks the decision table's informational rows 
 
 ## Acceptance criteria
 
-- [ ] `quiet.RULES["spec_written"]`, `RULES["spec_reviewed"]` and `RULES["spec_accepted"]`
+- [x] `quiet.RULES["spec_written"]`, `RULES["spec_reviewed"]` and `RULES["spec_accepted"]`
       are each `"hold"`.
-- [ ] `quiet.classify` returns `"hold"` for an event of each of the three types, whatever its
+- [x] `quiet.classify` returns `"hold"` for an event of each of the three types, whatever its
       `data` (including a `spec_reviewed` whose `verdict` is not accepting).
-- [ ] With quiet mode on, `events.follow(cfg, "conductor", quiet=True)` over a log holding the
+- [x] With quiet mode on, `events.follow(cfg, "conductor", quiet=True)` over a log holding the
       three events and one `parked` event prints no line for the three events and a line for
       `parked`; the next `conductor_digest` has `held` counts of 1 for each of the three types.
-- [ ] With `quiet=False` (`wt queue events --follow --all`) and for a `steward` reader, all
+- [x] With `quiet=False` (`wt queue events --follow --all`) and for a `steward` reader, all
       three events are still printed, and `events.jsonl` holds them unchanged.
-- [ ] `wt queue wakeups` counts the three events under `held`, not `delivered`, in `by_type`.
-- [ ] `skills/wt-conduct/SKILL.md`'s **Always held** line names exactly the `hold` types of
+- [x] `wt queue wakeups` counts the three events under `held`, not `delivered`, in `by_type`.
+- [x] `skills/wt-conduct/SKILL.md`'s **Always held** line names exactly the `hold` types of
       `quiet.RULES`, including the three new ones
       (`test_conduct_skill_quiet_rules_match_code` passes), and the decision-table row for
       the three types says they arrive only in `conductor_digest`.
-- [ ] A test fails when a decision-table row marked informational (`none` / `informational`
+- [x] A test fails when a decision-table row marked informational (`none` / `informational`
       action) names an event type that is in neither `quiet.RULES` nor the documented exempt
       list, and passes on the repository as it stands after this change.
-- [ ] The whole existing suite passes, with no change to the events other than the three
+- [x] The whole existing suite passes, with no change to the events other than the three
       types in `tests/test_agentic_quiet.py`'s existing expectations.
 
 ## Test plan
@@ -156,6 +156,18 @@ match, and add a test that cross-checks the decision table's informational rows 
   `tests/test_agentic_dashboard_spec_reviews.py`) pass without edits to their expectations.
   `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_quiet.py tests/test_skills.py tests/test_agentic_dashboard_spec_reviews.py`: 155 passed (the four new tests included; the existing expectations are unchanged).
+- Also passed: `tests/test_agentic_events.py`, `test_agentic_events_settings.py`, `test_agentic_conduct_cli.py`, `test_agentic_conductor_brief.py`, `test_tui_events_model.py` (88 passed). `python3 tools/spec_lint.py` exits 0.
+- The full `uv run pytest` did not finish within a 10-minute limit here, so it was left to gating as the no-regressions check.
+- Manual verification: `test_follow_holds_spec_phase_events` and `test_wakeups_report_counts_spec_phase_as_held` run the same follow and wakeups paths as the CLI in a scratch data dir (`parked` plus digest printed, the three events held; quiet off and a steward reader print all four). No separate CLI run was made.
+
+### As shipped
+
+- `INFORMATIONAL_EXEMPT` is empty (a `dict[str, str]`): the audit found every type named in an informational row of the decision table already in `quiet.RULES`, so no exceptions are needed. The guard also asserts that no exempt type is itself in `RULES`.
+- The steward case in `test_follow_holds_spec_phase_events` passes `quiet=QT.enabled_for(cfg, "steward")`, which is False, because quiet mode is resolved per reader by the CLI and is off for non-conductor readers.
+
 ## Rollout / migration
 
 1. Land the `RULES` entries, the skill edit and the tests in one change.
@@ -166,11 +178,11 @@ match, and add a test that cross-checks the decision table's informational rows 
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped (notably the exempt list in the guard test).
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped (notably the exempt list in the guard test).
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

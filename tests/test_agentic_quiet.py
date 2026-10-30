@@ -2,7 +2,9 @@
 import datetime as dt
 import io
 import json
+import re
 import types
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -620,3 +622,87 @@ def test_corrupt_digest_file_falls_back_to_fresh(tmp_path, rec):
     E.append(cfg, "admitted", campaign="a")
     _follow(cfg, out)                                       # re-arming does not crash
     assert QT.Digest.load(cfg, "conductor").pending["held"] == {"admitted": 1}
+
+
+# ---- SPEC-0305: the spec-phase events are held ------------------------------------------------
+
+SPEC_PHASE = ("spec_written", "spec_reviewed", "spec_accepted")
+
+
+def _spec_phase_log(cfg):
+    E.cursor_set(cfg, "conductor", 0)
+    E.append(cfg, "spec_written", campaign="c", data={"spec_id": "SPEC-0001"})
+    E.append(cfg, "spec_reviewed", campaign="c",
+             data={"spec_id": "SPEC-0001", "verdict": "revise", "round": 1})
+    E.append(cfg, "spec_accepted", campaign="c", data={"spec_id": "SPEC-0001"})
+    E.append(cfg, "parked", campaign="c", data={"reason": "spec_review_exhausted", "detail": "d", "resume_to": "SPEC_WRITING"})
+
+
+def test_spec_phase_events_are_held(tmp_path):
+    cfg = _cfg(tmp_path)
+    ctx = _ctx(cfg)
+    for t in SPEC_PHASE:
+        assert QT.RULES[t] == "hold"
+    for data in ({}, {"verdict": "accept", "round": 1}, {"verdict": "revise", "round": 2}):
+        for t in SPEC_PHASE:
+            assert QT.classify(cfg, _ev(t, "c", **data), ctx) == "hold"
+
+
+def test_follow_holds_spec_phase_events(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    _spec_phase_log(cfg)
+    before = E.events_path(cfg).read_bytes()
+    clock.advance(1801)
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    assert [e["type"] for e in _lines(out)] == ["parked", "conductor_digest"]
+    digest = _lines(out)[-1]["data"]
+    assert all(digest["held"][t] == 1 for t in SPEC_PHASE)
+    assert E.events_path(cfg).read_bytes() == before
+    # --all (quiet off) and a steward reader (quiet is not enabled for it) see every event
+    assert not QT.enabled_for(cfg, "steward")
+    for reader, quiet in (("conductor", False), ("steward", QT.enabled_for(cfg, "steward"))):
+        E.cursor_set(cfg, reader, 0)
+        out = io.StringIO()
+        E.follow(cfg, reader, poll_s=0, out=out, code_root=None, quiet=quiet, stop=lambda: True)
+        assert [e["type"] for e in _lines(out)] == [*SPEC_PHASE, "parked"]
+
+
+def test_wakeups_report_counts_spec_phase_as_held(tmp_path):
+    cfg = _cfg(tmp_path)
+    _spec_phase_log(cfg)
+    _follow(cfg, io.StringIO(), clock=Clock())
+    by_type = QT.wakeups_report(cfg)["by_type"]
+    for t in SPEC_PHASE:
+        assert by_type[t] == {"wake": 0, "hold": 1}
+    assert by_type["parked"] == {"wake": 1, "hold": 0}
+
+
+# A decision-table row whose action says "none" / "informational" names event types the quiet
+# follower must hold unless one is listed here with the reason it must still wake (or is
+# synthetic). The audit of the table found none: every informational type is in `QT.RULES`.
+INFORMATIONAL_EXEMPT: dict[str, str] = {}
+
+_CONDUCT_SKILL = Path(__file__).resolve().parent.parent / "skills" / "wt-conduct" / "SKILL.md"
+
+
+def uncovered_informational_types(table_text: str) -> set[str]:
+    """Event types named in the first column of informational rows (action `none` /
+    `informational`) that are neither in `QT.RULES` nor in `INFORMATIONAL_EXEMPT`."""
+    missing = set()
+    for ln in table_text.splitlines():
+        cells = [c.strip() for c in ln.strip().strip("|").split("|")] if ln.startswith("|") else []
+        if len(cells) < 3 or not cells[-1].lower().startswith(("none", "informational")):
+            continue
+        for t in re.findall(r"`([a-z_]+)`", cells[0]):
+            if t not in QT.RULES and t not in INFORMATIONAL_EXEMPT:
+                missing.add(t)
+    return missing
+
+
+def test_decision_table_informational_rows_covered_by_rules():
+    text = _CONDUCT_SKILL.read_text(encoding="utf-8")
+    assert uncovered_informational_types(text) == set()
+    assert all(t not in QT.RULES for t in INFORMATIONAL_EXEMPT)
+    fake = "| `foo_event` | `foo_event` | none: informational |\n| `merged` | `merged` | none |"
+    assert uncovered_informational_types(fake) == {"foo_event"}

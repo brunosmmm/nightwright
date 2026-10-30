@@ -24,6 +24,8 @@ RULES = {
     "admitted": "hold", "resumed": "hold", "waiting": "hold", "abandoned": "hold",
     "cost_warning": "hold", "escalation": "hold", "escalation_withdrawn": "hold",
     "rebase_resolved": "hold", "run_failed": "hold", "merged": "hold", "handed_off": "hold",
+    # SPEC-0305: informational events of the idea-campaign spec phase (SPEC-0217)
+    "spec_written": "hold", "spec_reviewed": "hold", "spec_accepted": "hold",
     "backlog": "cond", "conductor_ping": "cond", "runner_draining": "cond",
     "campaign_silent": "cond", "state_stuck": "cond",
     "parked": "wake", "park_undecided": "wake", "runner_dead": "wake", "lease_stale": "wake",
