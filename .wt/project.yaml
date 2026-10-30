@@ -13,7 +13,9 @@ gates:
     timeout_s: 120
     required: true
   - name: pytest
-    cmd: uv run pytest -q -x
+    # SPEC-0309: 4 xdist workers (8 cores / 2 gate slots); the targeted rerun stays serial.
+    cmd: uv run pytest -q -x -n 4
+    retry_cmd: uv run pytest -q -n 0 {failing}
     results: {format: pytest}
     # 2400 (was 1200): the full suite takes 13-19 min alone and timed out under concurrent
     # campaign gates (2026-10-30, SPEC-0302/0304, IDEA-412/415). IDEA-430 makes gates faster.

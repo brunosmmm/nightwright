@@ -400,8 +400,8 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
                            by="gates")
 
     with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce) as hold:
-        if hold.interrupted:                    # SPEC-0229: stopped while waiting, nothing ran
-            return GateRun(seq, True, (), store.now_iso(), 0.0, interrupted=True,
+        if hold.interrupted:                    # SPEC-0229: stopped while waiting, nothing ran (ok=False: never counted green)
+            return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
                            slot_wait_s=hold.waited_s)
         run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop)
     return replace(run, slot_wait_s=hold.waited_s)

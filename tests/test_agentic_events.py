@@ -168,12 +168,13 @@ def _dead_pid():
     return p.pid
 
 
-def test_gate_slot_wait_marker_silences_silent_and_stuck(tmp_path):
+@pytest.mark.parametrize("state", ["GATING", "CLOSING"])
+def test_gate_slot_wait_marker_silences_silent_and_stuck(tmp_path, state):
     """SPEC-0309: a live waiter marker keeps `campaign_silent` and `state_stuck` quiet for a
-    GATING campaign; a marker with a dead pid does not."""
+    GATING or CLOSING campaign; a marker with a dead pid does not."""
     import os
     cfg = _cfg(tmp_path)
-    cid = _campaign(cfg, "SPEC-0903-20261025-cccc", state="GATING")
+    cid = _campaign(cfg, "SPEC-0903-20261025-cccc", state=state)
     later = dt.datetime.now().astimezone() + dt.timedelta(seconds=9000)
     sett = E.settings(cfg)
 
@@ -188,9 +189,10 @@ def test_gate_slot_wait_marker_silences_silent_and_stuck(tmp_path):
     assert cid not in [i["campaign"] for i in E.stuck_items(cfg, later, sett)]
 
 
-def test_gate_slot_wait_extends_the_stuck_limit_and_never_raises_run_overdue(tmp_path):
+@pytest.mark.parametrize("state", ["GATING", "CLOSING"])
+def test_gate_slot_wait_extends_the_stuck_limit_and_never_raises_run_overdue(tmp_path, state):
     cfg = _cfg(tmp_path)
-    cid = _campaign(cfg, "SPEC-0904-20261025-dddd", state="GATING")
+    cid = _campaign(cfg, "SPEC-0904-20261025-dddd", state=state)
     sett = E.settings(cfg)
     limit = max(sett["stuck_after_s"], sett["gate_budget_s"])
     _ev(cfg, cid, "gate", {"gate_seq": 1, "ok": True, "slot_wait_s": 1500.0})
@@ -205,6 +207,28 @@ def test_gate_slot_wait_extends_the_stuck_limit_and_never_raises_run_overdue(tmp
     assert [i["campaign"] for i in E.stuck_items(cfg, at, sett)] == [cid]
     # gate runs write no `run.start`: nothing for `run_overdue` to measure
     assert "run_overdue" not in {t for _k, t, _c, _d in E.watchdog_checks(cfg, now=at)}
+
+
+@pytest.mark.parametrize("state", ["GATING", "CLOSING"])
+def test_finished_wait_in_a_live_hold_extends_the_limit_with_no_gate_entry(tmp_path, state):
+    """The wait is over, the marker is gone and the gate is still running, so there is no `gate`
+    entry for this run yet: the live hold's `waited_s` carries the extension."""
+    import os
+    from wt.agentic import gate_slots as GS
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0906-20261025-ffff", state=state)
+    sett = E.settings(cfg)
+    limit = max(sett["stuck_after_s"], sett["gate_budget_s"])
+    now = dt.datetime.now().astimezone()
+    at = now + dt.timedelta(seconds=limit + 100)
+    assert [i["campaign"] for i in E.stuck_items(cfg, at, sett)] == [cid]    # no hold: stuck
+    GS.slots_dir(cfg).mkdir(parents=True, exist_ok=True)
+    (GS.slots_dir(cfg) / "slot-0.lock").write_text(json.dumps(
+        {"campaign": cid, "pid": os.getpid(), "since": store.now_iso(), "waited_s": 2800.0}))
+    assert GS.waiting(cfg, cid) is None                               # the marker is gone
+    assert E.stuck_items(cfg, at, sett) == []                         # 2800 s of wait forgiven
+    late = now + dt.timedelta(seconds=limit + 3000)
+    assert [i["campaign"] for i in E.stuck_items(cfg, late, sett)] == [cid]   # but not forever
 
 
 def test_gate_waiting_is_projected_into_the_event_stream(tmp_path):

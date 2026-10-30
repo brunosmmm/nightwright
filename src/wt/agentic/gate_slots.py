@@ -2,7 +2,8 @@
 at once on the host, so parallel pytest (`-n 4`) never oversubscribes the CPU. A slot is an
 `fcntl.flock` on `<agentic_dir>/gate-slots/slot-<n>.lock` — it dies with the holder's process, so
 a crashed runner never leaks one (the approach of `lease.py`) — and the file carries
-`{campaign, pid, since}` for `occupancy()`. A campaign blocked for a slot publishes
+`{campaign, pid, since, waited_s}` for `occupancy()` and `holding()` (the finished wait, which the
+stuck detector must not count against the gate that follows it). A campaign blocked for a slot publishes
 `waiting-<campaign>.json`, the one on-disk signal the stuck and silent detectors read."""
 from __future__ import annotations
 
@@ -67,8 +68,9 @@ def _waiter_path(cfg, campaign_id) -> Path:
     return slots_dir(cfg) / f"waiting-{campaign_id}.json"
 
 
-def _try_take(cfg, n_slots: int, campaign_id):
-    """Take the first free slot: `(slot, fd)`, else None."""
+def _try_take(cfg, n_slots: int, campaign_id, t0: float):
+    """Take the first free slot: `(slot, fd, waited_s)`, else None. The hold file records the
+    wait that ended in it (`waited_s`, seconds since `t0`)."""
     d = slots_dir(cfg)
     for n in range(n_slots):
         fd = os.open(d / f"slot-{n}.lock", os.O_RDWR | os.O_CREAT, 0o644)
@@ -77,10 +79,17 @@ def _try_take(cfg, n_slots: int, campaign_id):
         except OSError:
             os.close(fd)
             continue
-        info = {"campaign": campaign_id, "pid": os.getpid(), "since": now_iso()}
-        os.ftruncate(fd, 0)
-        os.write(fd, (json.dumps(info) + "\n").encode("utf-8"))
-        return n, fd
+        waited_s = round(time.monotonic() - t0, 1)
+        info = {"campaign": campaign_id, "pid": os.getpid(), "since": now_iso(),
+                "waited_s": waited_s}
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, (json.dumps(info) + "\n").encode("utf-8"))
+        except BaseException:                   # never keep a lock the caller cannot release
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+            raise
+        return n, fd, waited_s
     return None
 
 
@@ -128,6 +137,27 @@ def waiting(cfg, campaign_id, now=None) -> dict | None:
     return None
 
 
+def holding(cfg, campaign_id) -> dict | None:
+    """The live hold of `campaign_id` (`{campaign, pid, since, waited_s}`), else None. The
+    finished wait stays readable while the gate runs, after the waiter marker is gone."""
+    d = slots_dir(cfg)
+    if not d.is_dir():
+        return None
+    for p in sorted(d.glob("slot-*.lock")):
+        rec = _read_json(p)
+        if rec and rec.get("campaign") == campaign_id and _pid_alive(rec.get("pid")):
+            return rec
+    return None
+
+
+def _drop_marker(marker: Path) -> None:
+    """Remove our own waiter marker; one a second wait of the same campaign (another pid)
+    wrote over is left to its writer."""
+    rec = _read_json(marker)
+    if rec is None or rec.get("pid") == os.getpid():
+        marker.unlink(missing_ok=True)
+
+
 @contextmanager
 def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None) -> Iterator[SlotHold]:
     """Hold one slot for the `with` body. While none is free, poll every `poll_s` with the
@@ -139,7 +169,7 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None) -> Iterat
     slots_dir(cfg).mkdir(parents=True, exist_ok=True)
     n_slots = settings(cfg)["slots"]
     t0 = time.monotonic()
-    taken = _try_take(cfg, n_slots, campaign_id)
+    taken = _try_take(cfg, n_slots, campaign_id, t0)
     if taken is None:
         marker = _waiter_path(cfg, campaign_id)
         _atomic_write(marker, json.dumps({"campaign": campaign_id, "pid": os.getpid(),
@@ -157,14 +187,13 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None) -> Iterat
                     stop.wait(poll_s)
                 else:
                     time.sleep(poll_s)
-                taken = _try_take(cfg, n_slots, campaign_id)
+                taken = _try_take(cfg, n_slots, campaign_id, t0)
         finally:
-            marker.unlink(missing_ok=True)
-    waited_s = round(time.monotonic() - t0, 1)
+            _drop_marker(marker)
     if taken is None:
-        yield SlotHold(None, waited_s, interrupted=True)
+        yield SlotHold(None, round(time.monotonic() - t0, 1), interrupted=True)
         return
-    slot, fd = taken
+    slot, fd, waited_s = taken
     try:
         yield SlotHold(slot, waited_s)
     finally:

@@ -22,6 +22,7 @@ def env(tmp_path, monkeypatch):
     user.mkdir(parents=True)
     (proj / ".wt" / "profiles").mkdir(parents=True)
     monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("wt.console.console._width", 400)   # COLUMNS is read once, at import
     monkeypatch.setattr("wt.agentic.project.project_root", lambda c, name: proj.resolve())
     monkeypatch.setattr("wt.agentic.project.find_project_for_cwd", lambda c, cwd=None: None)
     return cfg, user, proj

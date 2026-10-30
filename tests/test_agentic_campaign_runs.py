@@ -23,6 +23,7 @@ LIST_KEYS = {"campaign", "run_id", "persona", "model", "effort", "max_budget_usd
 def merged(tmp_path, monkeypatch):
     """An e2e campaign (implementer + conformance reviewer) driven to MERGED."""
     monkeypatch.setenv("COLUMNS", "250")
+    monkeypatch.setattr("wt.console.console._width", 250)   # COLUMNS is read once, at import
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), review()]))
     cid = added(cfg, monkeypatch)

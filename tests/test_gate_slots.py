@@ -7,11 +7,13 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from wt.agentic import gate_slots as GS
+from wt.agentic import events as E
 from wt.agentic import gates as G
 from wt.agentic import store as S
 
@@ -162,6 +164,18 @@ def test_run_all_without_a_wait_records_zero(world):
 def test_run_all_waits_for_the_slot_and_counts_budget_from_the_hold(world, monkeypatch):
     cfg, st, _ = world
     monkeypatch.setattr(GS, "WAIT_EVENT_S", 0.05)
+    monkeypatch.setattr(GS, "POLL_S", 0.05)
+    budget = 600.0
+    real_settings = E.settings
+    monkeypatch.setattr(E, "settings", lambda c: {**real_settings(c), "gate_budget_s": budget})
+    seen = {}
+    real = G.run_gate_with_retries
+
+    def spy(*a, **kw):
+        seen["deadline"], seen["called"] = kw["deadline"], time.monotonic()
+        return real(*a, **kw)
+
+    monkeypatch.setattr(G, "run_gate_with_retries", spy)
     holder_release = threading.Event()
     held = threading.Event()
 
@@ -176,19 +190,85 @@ def test_run_all_waits_for_the_slot_and_counts_budget_from_the_hold(world, monke
     box = {}
     t = threading.Thread(target=lambda: box.update(
         run=G.run_all({"gates": [_gate("a", "true")]}, st, cfg, seq=1)))
-    monkeypatch.setattr(GS, "POLL_S", 0.05)          # the waiter polls at the default
     t.start()
     assert until(lambda: any(e["type"] == "gate_waiting" for e in S.read_ledger(cfg, CID)))
+    started = time.monotonic()
+    assert until(lambda: time.monotonic() - started >= 0.6)    # a wait clearly longer than the gate
+    released = time.monotonic()
     holder_release.set()
     join(h)
     join(t)
     run = box["run"]
-    assert run.ok and run.slot_wait_s > 0
-    assert run.duration_s < run.slot_wait_s + 5            # duration is gate time, not the wait
+    assert run.ok and run.slot_wait_s >= 0.5
+    assert run.duration_s < run.slot_wait_s             # gate time, not the wait
+    # the deadline counts from the hold: it cannot be earlier than release + the budget
+    assert seen["deadline"] >= released + budget
+    assert seen["deadline"] <= seen["called"] + budget
     waits = [e for e in S.read_ledger(cfg, CID) if e["type"] == "gate_waiting"]
     assert len(waits) == 1
     assert waits[0]["slots"] == 1 and waits[0]["held"][0]["campaign"] == "other"
     assert G.as_payload(run)["slot_wait_s"] == run.slot_wait_s
+
+
+def test_a_hold_records_the_wait_it_ended_in(world):
+    cfg, st, _ = world
+    got = {}
+
+    def waiter():
+        with GS.acquire(cfg, CID, poll_s=0.05) as hold:
+            got["rec"] = GS.holding(cfg, CID)
+            got["waited"] = hold.waited_s
+
+    with GS.acquire(cfg, "other", poll_s=0.05):
+        t = threading.Thread(target=waiter)
+        t.start()
+        assert until(lambda: GS.waiting(cfg, CID) is not None)
+        t0 = time.monotonic()
+        assert until(lambda: time.monotonic() - t0 >= 0.3)
+    join(t)
+    assert got["waited"] >= 0.3 and got["rec"]["waited_s"] == got["waited"]
+    assert GS.waiting(cfg, CID) is None and GS.holding(cfg, CID) is None   # released
+
+
+def test_a_wait_ends_on_the_sticky_stop_without_a_stop_event(world):
+    cfg, st, wt = world
+    box = {}
+    marker = wt / "ran"
+    with GS.acquire(cfg, "other", poll_s=0.05):
+        t = threading.Thread(target=lambda: box.update(run=G.run_all(
+            {"gates": [_gate("a", f"touch {marker}")]}, st, cfg, seq=1)))
+        try:
+            t.start()
+            assert until(lambda: GS.waiting(cfg, CID) is not None)
+            G.terminate_all()
+            join(t)
+            assert not t.is_alive()
+        finally:
+            G.reset()
+    run = box["run"]
+    assert run.interrupted and not run.ok and run.results == () and not marker.exists()
+    assert GS.waiting(cfg, CID) is None
+
+
+def test_a_marker_is_removed_only_by_its_writer(world, monkeypatch):
+    cfg, st, _ = world
+    stop = threading.Event()
+    box = {}
+
+    def waiter():
+        with GS.acquire(cfg, "w", stop=stop, poll_s=0.05) as hold:
+            box["hold"] = hold
+
+    with GS.acquire(cfg, "other", poll_s=0.05):
+        t = threading.Thread(target=waiter)
+        t.start()
+        assert until(lambda: GS.waiting(cfg, "w") is not None)
+        marker = GS.slots_dir(cfg) / "waiting-w.json"
+        marker.write_text(json.dumps({"campaign": "w", "pid": os.getpid() + 1,
+                                      "since": "2026-10-30T10:00:00-04:00"}))   # another wait's
+        stop.set()
+        join(t)
+    assert marker.exists()                                  # not ours: left to its writer
 
 
 def test_run_all_stopped_in_the_wait_starts_no_gate(world):

@@ -512,8 +512,16 @@ def stuck_items(cfg, now, sett) -> list[dict]:
                     _latest_age(cfg, cid, ["gate"], now)]
             clock = min(a for a in ages if a is not None)
             limit = max(limit, sett["gate_budget_s"])
-            last_gate = store.read_ledger(cfg, cid, types=["gate"])[-1:]
-            waited = last_gate[0].get("slot_wait_s") if last_gate else None   # SPEC-0309
+            # SPEC-0309: a finished slot wait is not stuck time. While the gate runs the wait
+            # sits in the live hold (the `gate` entry only lands after `run_all` returns); the
+            # newest `gate` entry is the fallback, and only when it belongs to this state.
+            hold = gate_slots.holding(cfg, cid)
+            waited = hold.get("waited_s") if hold else None
+            if hold is None:
+                last_gate = store.read_ledger(cfg, cid, types=["gate"])[-1:]
+                g_age = _age_s(last_gate[0].get("ts"), now) if last_gate else None
+                if g_age is not None and g_age <= since_state:
+                    waited = last_gate[0].get("slot_wait_s")
             if isinstance(waited, (int, float)) and not isinstance(waited, bool) and waited > 0:
                 limit += waited
         else:
