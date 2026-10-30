@@ -11,6 +11,7 @@ from wt.agentic import conductor_cost as CC
 from wt.agentic import decisions as D
 from wt.agentic import escalations as ESC
 from wt.agentic import mailbox as M
+from wt.agentic import queue as Q
 from wt.agentic import store as S
 
 
@@ -164,6 +165,65 @@ def test_brief_context_from_transcript(cfg, clock):
     assert b["standing"]["memory_paths"] == ["/m.md"] and b["standing"]["standing_rules"] == ["never X"]
     cfg["agentic"] = {"conductor": {"compact_at_tokens": "lots"}}
     assert brief(cfg)["conductor"]["compact_at"] == 150000
+
+
+def test_brief_follows_the_newest_session_and_the_threshold_edge(cfg, clock):
+    mk(cfg, "A")
+    CC.record_session(cfg, "conductor", {}, source="manual", session_id="old")
+    CC.record_session(cfg, "conductor", {}, source="manual", session_id="new")
+    write_transcript(cfg, "old", [line("o1", "2026-10-30T10:00:00.000Z",
+                                       usage={"input_tokens": 160_000})])
+    write_transcript(cfg, "new", [line("n1", "2026-10-30T09:00:00.000Z",
+                                       usage={"input_tokens": 140_000})])
+    c = brief(cfg)["conductor"]
+    assert (c["session_id"], c["context_tokens"], c["compact_now"]) == ("new", 140_000, False)
+    cfg["agentic"] = {"conductor": {"compact_at_tokens": 140_000}}      # context == compact_at
+    assert brief(cfg)["conductor"]["compact_now"] is False
+    cfg["agentic"] = {"conductor": {"compact_at_tokens": 139_999}}
+    assert brief(cfg)["conductor"]["compact_now"] is True
+
+
+def test_brief_overdue_and_runner_fields(cfg, clock, monkeypatch):
+    lease = {"held": True, "pid": 4242, "heartbeat_age_s": 7.5, "draining": {"reason": "code"}}
+    monkeypatch.setattr(Q.L, "lease_status", lambda cfg, now=None: dict(lease))
+    mk(cfg, "U")
+    park(cfg, "U")
+    mk(cfg, "V")
+    park(cfg, "V")
+    decide(cfg, "V")
+    soon = dt.datetime(2026, 10, 30, 12, 1, tzinfo=UTC)
+    late = dt.datetime(2026, 10, 30, 12, 30, tzinfo=UTC)              # past park_decide_s (300)
+    by = {p["campaign"]: p for p in BR.conductor_brief(cfg, now=soon)["parked"]}
+    assert by["U"]["overdue"] is False
+    b = BR.conductor_brief(cfg, now=late)
+    by = {p["campaign"]: p for p in b["parked"]}
+    assert by["U"]["overdue"] is True and by["U"]["decided"] is False
+    assert by["V"]["overdue"] is False and by["V"]["decided"] is True
+    assert "overdue=true" in BR.render_text(b)
+    assert b["runner"] == {"held": True, "pid": 4242, "heartbeat_age_s": 7.5, "draining": "code"}
+    assert "runner: held pid 4242, heartbeat 7.5s, draining code" in BR.render_text(b)
+    lease.update(held=False, pid=None, heartbeat_age_s=None, draining=None)
+    b = BR.conductor_brief(cfg, now=late)
+    assert b["runner"] == {"held": False, "pid": None, "heartbeat_age_s": None, "draining": None}
+    assert BR.render_text(b).startswith("runner: NOT RUNNING")
+
+
+def test_brief_caps_open_dispatches_and_escalations(cfg, clock, monkeypatch):
+    class Done:
+        returncode, stdout, stderr = 0, "", ""
+
+    monkeypatch.setattr(ESC, "_run_notify", lambda argv: Done())
+    for i in range(12):
+        cid = mk(cfg, f"D{i:02d}")
+        park(cfg, cid)
+        decide(cfg, cid, kind="dispatch", rule="run_overdue", why=f"check {i}")
+        ESC.apply_escalate(cfg, ESC.plan_escalate(cfg, cid, question=f"q{i}",
+                                                  options=["yes", "no"], recommend=1))
+    b = brief(cfg)
+    assert len(b["open_dispatches"]) == 10 and b["more"]["open_dispatches"] == 2
+    assert len(b["escalations_open"]) == 10 and b["more"]["escalations_open"] == 2
+    text = BR.render_text(b)
+    assert text.count("+2 more") >= 2
 
 
 def test_cli_decision_decisions_brief(cfg, clock, run):

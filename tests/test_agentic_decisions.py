@@ -242,3 +242,42 @@ def test_cli_decisions_listing_and_parks(cfg, clock, run):
     assert "missing" in r.output and "1/2 parks decided (50%)" in r.output
     r = run("decisions")
     assert "wt_broken" in r.output
+
+
+def test_cli_decisions_parks_filtered_by_campaign(cfg, clock, run):
+    for cid in ("A", "B", "C"):
+        mk(cfg, cid)
+        park(cfg, cid)
+    decide(cfg, "A", why="a")
+    decide(cfg, "C", why="c")
+    cov = json.loads(run("decisions", "--parks", "--since", "2026-10-30", "--campaign", "B", "--json").output)
+    assert (cov["parks"], cov["covered"], cov["ratio"]) == (1, 0, 0.0)
+    assert [m["campaign"] for m in cov["missing"]] == ["B"]
+    cov = json.loads(run("decisions", "--parks", "--since", "2026-10-30", "--campaign", "A", "--json").output)
+    assert (cov["parks"], cov["covered"], cov["ratio"]) == (1, 1, 1.0) and cov["missing"] == []
+    cov = json.loads(run("decisions", "--parks", "--since", "2026-10-30", "--campaign", "nobody", "--json").output)
+    assert (cov["parks"], cov["covered"], cov["ratio"]) == (0, 0, None)
+    r = run("decisions", "--parks", "--since", "2026-10-30", "--campaign", "B")
+    assert "0/1 parks decided (0%)" in r.output and "A " not in r.output
+
+
+def test_cli_decisions_text_does_not_read_rationale_as_markup(cfg, clock, run):
+    mk(cfg, "C1")
+    park(cfg, "C1")
+    r = run("decision", "C1", "--kind", "resume", "--rule", "parked.loop_exhausted",
+            "see [/wt-conduct] row and [x] more")
+    assert r.exit_code == 0, r.output
+    r = run("decisions")
+    assert r.exit_code == 0, r.output
+    assert "see [/wt-conduct] row and [x] more" in r.output
+    r = run("decisions", "--parks", "--since", "2026-10-30")
+    assert r.exit_code == 0 and "1/1 parks decided (100%)" in r.output
+
+
+def test_decision_with_only_a_campaign_id_is_rejected(cfg, run):
+    mk(cfg, "SPEC-0123-20261030-abcd")
+    r = run("decision", "SPEC-0123-20261030-abcd", "--kind", "resume", "--rule", "parked.cost_cap")
+    assert r.exit_code == 1 and "is a campaign id, not a rationale" in r.output
+    assert not D.log_path(cfg).exists()
+    r = run("decision", "--kind", "resume", "--rule", "parked.cost_cap", "a plain rationale")
+    assert r.exit_code == 0 and D.read(cfg)[0]["campaign"] is None

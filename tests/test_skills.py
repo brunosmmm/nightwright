@@ -314,7 +314,8 @@ def test_conduct_skill_has_diverging_row_spec_0247():
     conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
     row = next(r for r in conduct.splitlines() if _ev(r).startswith("| `parked` `diverging`"))
     for phrase in ("loop_divergence", "pending_brief", "wt queue resume <id>",
-                   "wt queue abandon <id>", "/wt-rework", "campaign note"):
+                   "wt queue abandon <id>", "/wt-rework",
+                   "wt queue decision <id> --kind resume|abandon|escalate --rule parked.diverging"):
         assert phrase in row, phrase
     for option in ("continue", "rework", "escalate"):
         assert f"**{option}**" in row, option

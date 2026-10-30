@@ -272,6 +272,7 @@ dispatches, escalations or pointers to standing rules, and its `recent_events` a
   left to be observed after the merge.
 - The full `uv run pytest` run was left to gating.
 - Review follow-up: `test_brief_escalation_and_mail_parts` (real escalation, 13 unanswered long messages: ids, caps, 160-char clip, `+3 more`) and a stricter `test_brief_text_size_bound` (recent decisions/standing/active empty before parked loses items; fails when `recent_decisions` is moved above `parked`). `tests/test_agentic_conductor_brief.py` passes (6).
+- Second review follow-up: tests for the newest of two sessions, the `context == compact_at` edge, `overdue` true/false, the runner fields, the caps on open dispatches and escalations, and `decisions --parks --campaign`. `wt queue decisions` prints with Rich markup off (a rationale like `[/x]` no longer crashes it), and `wt queue decision` rejects a lone argument that is an existing campaign id (forgotten rationale). The remaining decision-table rows now say to record with `wt queue decision`. `tests/test_agentic_decisions.py`, `tests/test_agentic_conductor_brief.py`, `tests/test_skills.py` — 97 pass; the full suite is left to gating.
 
 ### As shipped
 

@@ -15,6 +15,7 @@ from ..report import _dump_json
 from . import brief as BR
 from . import conductor_cost as CC
 from . import decisions as D
+from . import store as S
 
 
 def _date(ctx, param, value):
@@ -153,13 +154,22 @@ def attach(queue_group):
         if not 1 <= len(words) <= 2:
             raise click.UsageError("expected [CAMPAIGN] RATIONALE")
         campaign, rationale = (words[0] if len(words) == 2 else None), words[-1]
+        if campaign is None:
+            try:
+                S.read_state(cfg, rationale)
+            except (ValueError, OSError):
+                pass
+            else:                               # a campaign id alone: the rationale was forgotten
+                raise click.ClickException(
+                    f"{rationale!r} is a campaign id, not a rationale; "
+                    f"pass the rationale after it: wt queue decision {rationale} … RATIONALE")
         try:
             rec = D.record(cfg, kind=kind, rule=rule, rationale=rationale, campaign=campaign,
                            event_id=event_id, action=action, by=by)
         except ValueError as e:
             raise click.ClickException(str(e))
         console.print(f"decision #{rec['seq']} {kind} ({rule})"
-                      + (f" on {campaign}" if campaign else ""), highlight=False)
+                      + (f" on {campaign}" if campaign else ""), highlight=False, markup=False)
 
     @queue_group.command("decisions")
     @click.option("--campaign", default=None)
@@ -188,11 +198,11 @@ def attach(queue_group):
             for x in cov["items"]:
                 d = x["decision"]
                 console.print(f"{x['ts']}  {x['campaign']}  {x['reason']}  -> "
-                              + (f"#{d['seq']} {d['kind']} ({d['rule']})" if d else "[red]missing[/]"),
-                              highlight=False)
+                              + (f"#{d['seq']} {d['kind']} ({d['rule']})" if d else "missing"),
+                              highlight=False, markup=False)
             ratio = "-" if cov["ratio"] is None else f"{cov['ratio']:.0%}"
             console.print(f"{cov['covered']}/{cov['parks']} parks decided ({ratio})",
-                          highlight=False)
+                          highlight=False, markup=False)
             return
         rows = D.read(cfg, campaign=campaign, since=start)
         if tail:
@@ -205,7 +215,8 @@ def attach(queue_group):
             return
         for r in rows:
             console.print(f"#{r['seq']} {r['ts']} {r['by']} {r.get('campaign') or '-'} "
-                          f"{r['kind']} ({r['rule']}) {r['rationale']}", highlight=False)
+                          f"{r['kind']} ({r['rule']}) {r['rationale']}", highlight=False,
+                          markup=False, soft_wrap=True)
 
     @queue_group.command("conductor-brief")
     @click.option("--json", "as_json", is_flag=True, help="emit wt.conductor.brief.v1 JSON")
