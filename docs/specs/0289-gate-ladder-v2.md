@@ -310,6 +310,15 @@ pass, timed-out/interrupted/unresolved targeted rerun). The timeout tests now pa
 dashboard, queue, dogfood-config, close-train, loop-state, watchdog, lease and events test
 files: 430 passed. `python3 tools/spec_lint.py` passes. The full suite is left to gating.
 
+### Test record, review round 2 (2026-10-30)
+
+Added `test_stop_after_completed_retry_is_interrupted` and
+`test_stop_after_completed_retry_run_is_interrupted` (event and flag; a stop landing after a
+retry completed normally gives `interrupted` on the result, the rewritten sidecar and
+`GateRun`) and `test_targeted_retry_timeout_ends_ladder`. Sabotage by hand: dropping
+`or stopped` from the final `replace(...)` fails the four stop-after-retry cases. `uv run pytest
+-q tests/test_agentic_gates.py`: 52 passed. The full suite is left to gating.
+
 ### As shipped
 
 Matches the Design. Small additions: `run_gate` gained keyword-only `cmd_override` and

@@ -495,6 +495,54 @@ def test_stop_during_retry_is_interrupted(world, tmp_path, monkeypatch):
     assert "stopping" in side["error"]      # the cut retry's error, not attempt 0's
 
 
+def _stop_after_attempt_one(monkeypatch, ev, how):
+    """Set the stop once the real attempt 1 returned: it ran to completion (no terminate_all),
+    so the ladder sees the stop only at the top of the next iteration."""
+    real = G.run_gate
+
+    def wrapped(*a, **kw):
+        r = real(*a, **kw)
+        if kw.get("attempt") == 1:
+            if how == "event":
+                ev.set()
+            else:
+                monkeypatch.setattr(G, "_stopping", True)
+        return r
+    monkeypatch.setattr(G, "run_gate", wrapped)
+
+
+@pytest.mark.parametrize("how", ["event", "flag"])
+def test_stop_after_completed_retry_is_interrupted(world, tmp_path, monkeypatch, how):
+    ev = threading.Event()
+    _stop_after_attempt_one(monkeypatch, ev, how)
+    g = _fake(tmp_path, ["exit 1", "exit 1", "exit 0", "exit 0"], retries=3, results=False)
+    try:
+        r = _ladder(world, tmp_path, g, stop=ev)
+    finally:
+        G.reset()
+    assert len(_args(tmp_path)) == 2 and len(r.attempts) == 2
+    assert r.interrupted and not r.ok            # the stop cut the ladder: not a failure to triage
+    assert r.attempts[-1]["interrupted"] is False
+    side = json.loads((tmp_path / "g" / "001-pytest.json").read_text())
+    assert side["interrupted"] is True and SC.record_problems(side, SC.GATE_KEYS, SC.GATE_SCHEMA) == []
+    assert side["attempts"][0]["interrupted"] is False
+
+
+@pytest.mark.parametrize("how", ["event", "flag"])
+def test_stop_after_completed_retry_run_is_interrupted(world, tmp_path, monkeypatch, how):
+    cfg, st, wt = world
+    ev = threading.Event()
+    _stop_after_attempt_one(monkeypatch, ev, how)
+    g = _fake(tmp_path, ["exit 1", "exit 1", "exit 0", "exit 0"], retries=3, results=False)
+    try:
+        run = G.run_all(_project(g), st, cfg, seq=1, stop=ev)
+    finally:
+        G.reset()
+    (r,) = run.results
+    assert len(_args(tmp_path)) == 2 and r.interrupted and not r.ok
+    assert run.interrupted and not run.ok
+
+
 def _patch_attempt(monkeypatch, n, **changes):
     """Make `run_gate` report attempt `n` (0 = the first run) with `changes` applied."""
     real = G.run_gate
@@ -522,6 +570,15 @@ def test_retry_timeout_ends_ladder(world, tmp_path, monkeypatch):
     g = _fake(tmp_path, ["exit 1", "exit 1", "exit 0"], retries=3, results=False)
     r = _ladder(world, tmp_path, g)
     assert len(r.attempts) == 2 and r.timed_out and not r.ok and len(_args(tmp_path)) == 2
+
+
+def test_targeted_retry_timeout_ends_ladder(world, tmp_path, monkeypatch):
+    _patch_attempt(monkeypatch, 1, timed_out=True, ok=False)
+    g = _fake(tmp_path, [PY_FAIL, "exit 1", PY_PASS, PY_PASS], retries=3)
+    r = _ladder(world, tmp_path, g)
+    assert _kinds(r) == ["full", "targeted"] and len(_args(tmp_path)) == 2
+    assert r.timed_out and not r.ok and r.flaky == ()
+    assert r.exit_code == 1 and r.summary["failed"] == 1 and r.summary["passed"] == 2
 
 
 def test_result_fields_after_ladder(world, tmp_path):
