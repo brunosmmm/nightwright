@@ -54,7 +54,7 @@ def test_valid_loads_with_defaults(tmp_path):
     p.write_text(VALID)
     doc = P.load_project_config(p)
     assert doc["gates"][0] == {"name": "pytest", "cmd": "uv run pytest -q -x", "cwd": ".",
-                               "timeout_s": 1200, "required": True}
+                               "timeout_s": 1200, "required": True, "retries": 0}
     assert doc["gates"][1]["timeout_s"] == 60 and doc["gates"][1]["required"] is False
     assert doc["merge"]["policy"] == "pr" and doc["merge"]["base"] == "main"
     assert doc["merge"]["remote"] == "origin" and doc["merge"]["pr"]["labels"] == []
@@ -308,3 +308,62 @@ def test_gate_results_invalid(tmp_path, results, needle):
     p.write_text(_results_doc(results))
     with pytest.raises(ValueError, match=needle.replace("[", r"\[").replace("]", r"\]")):
         P.load_project_config(p)
+
+
+# ---- SPEC-0289: retries / on_fail / retry_cmd ----------------------------------------------
+
+def _gate_doc(tmp_path, body):
+    p = tmp_path / "project.yaml"
+    p.write_text("schema: wt.project.v1\ngates:\n  - name: g\n    cmd: x\n" + body)
+    return p
+
+
+def test_gate_retry_keys_valid(tmp_path):
+    p = _gate_doc(tmp_path, "    results: {format: pytest}\n    retries: 3\n    on_fail: block\n"
+                            "    retry_cmd: make t IDS={failing}\n")
+    g = P.load_project_config(p)["gates"][0]
+    assert g["retries"] == 3 and g["on_fail"] == "block" and g["required"] is True
+    assert g["retry_cmd"] == "make t IDS={failing}"
+    assert P.load_project_config(_gate_doc(tmp_path, ""))["gates"][0]["retries"] == 0
+
+
+@pytest.mark.parametrize("val", ["4", "-1", "true", "1.5", "'2'"])
+def test_gate_retries_out_of_range(tmp_path, val):
+    with pytest.raises(ValueError, match=r"gates\[0\]\.retries"):
+        P.load_project_config(_gate_doc(tmp_path, f"    retries: {val}\n"))
+
+
+def test_gate_on_fail_bad_enum(tmp_path):
+    with pytest.raises(ValueError, match=r"gates\[0\]\.on_fail: must be one of block, warn"):
+        P.load_project_config(_gate_doc(tmp_path, "    on_fail: escalate\n"))
+
+
+def test_retry_cmd_needs_failing_placeholder(tmp_path):
+    with pytest.raises(ValueError, match=r"retry_cmd: must be a string containing \{failing\}"):
+        P.load_project_config(_gate_doc(tmp_path, "    results: {format: pytest}\n"
+                                                  "    retry_cmd: make t\n"))
+
+
+@pytest.mark.parametrize("results", ["", "    results: {format: junit, path: r.xml}\n"])
+def test_retry_cmd_needs_pytest_results(tmp_path, results):
+    with pytest.raises(ValueError, match="retry_cmd: only valid with results"):
+        P.load_project_config(_gate_doc(tmp_path, results + "    retry_cmd: make t {failing}\n"))
+
+
+@pytest.mark.parametrize("body", ["    on_fail: warn\n    required: true\n",
+                                  "    on_fail: block\n    required: false\n"])
+def test_on_fail_contradicts_required(tmp_path, body):
+    with pytest.raises(ValueError, match="contradicts required"):
+        P.load_project_config(_gate_doc(tmp_path, body))
+
+
+def test_on_fail_warn_normalises_required(tmp_path):
+    g = P.load_project_config(_gate_doc(tmp_path, "    on_fail: warn\n"))["gates"][0]
+    assert g["required"] is False and g["on_fail"] == "warn"
+
+
+def test_repo_pytest_gate_retries():
+    root = Path(__file__).resolve().parent.parent
+    doc = P.load_project_config(root / ".wt" / "project.yaml")
+    (g,) = [g for g in doc["gates"] if g["name"] == "pytest"]
+    assert g["retries"] == 2

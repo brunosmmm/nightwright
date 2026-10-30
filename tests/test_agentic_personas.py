@@ -958,3 +958,24 @@ def test_finding_detail_folds_trigger_then_the_fix():
     assert Q.finding_detail(f) == "d\ntrigger: t\nFix: fix\nDone when: ok"
     assert Q.finding_detail({"trigger": "t", "suggested_fix": "fix"}) == "trigger: t\nFix: fix"
     assert Q.finding_detail({"detail": "d"}) == "d" and Q.finding_detail({}) is None
+
+
+def test_render_gate_results_retries_line():
+    def att(*kinds_ok):
+        return [{"attempt": 0, "kind": "full", "ok": False, "failing": ["a::b", "c::d"]}] + [
+            {"attempt": i, "kind": k, "ok": ok, "failing": []}
+            for i, (k, ok) in enumerate(kinds_ok, 1)]
+
+    def render(ok, attempts, **extra):
+        return PS.render_gate_results({"results": [
+            {"name": "pytest", "required": True, "ok": ok, "exit_code": 0 if ok else 1,
+             "tail": "x", "attempts": attempts, **extra}]})
+    assert "retries: targeted rerun of 2 ids reproduced the failure" in render(
+        False, att(("targeted", False)))
+    out = render(True, att(("targeted", True), ("full", True)), flaky=["a::b"])
+    assert "retries: targeted rerun of 2 ids passed, full rerun 1/1 passed (flaky: a::b)" in out
+    assert "retries: targeted rerun passed but full rerun 1/1 failed (order-dependent" in render(
+        False, att(("targeted", True), ("full", False)))
+    assert "retries: full rerun 2/2 failed" in render(False, att(("full", False), ("full", False)))
+    assert "retries:" not in render(False, [])
+    assert "no full rerun left" in render(False, att(("targeted", True)))

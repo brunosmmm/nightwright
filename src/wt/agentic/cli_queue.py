@@ -409,6 +409,11 @@ def _gate_text(g) -> Text:
         n = (r.get("summary") or {}).get("failed")
         if not ok and n:                    # SPEC-0284
             t.append(f" ({n} failed)", style="red")
+        retried = sum(1 for a in r.get("attempts") or [] if a.get("attempt"))
+        if retried:                         # SPEC-0289
+            t.append(f" ↻{retried}", style="dim")
+            if ok and r.get("flaky"):
+                t.append(" (flaky)", style="yellow")
     return t
 
 

@@ -7,7 +7,11 @@ command output) is kept beside a wt-written JSON record, never mixed with wt's o
 - `wt.run.v1` — `runs/<NNN-persona>/run.json`, normalized from the runner's result.
 - `wt.gate.v1` — `gates/<NNN-name>.json`, the sidecar of the raw `gates/<NNN-name>.log`. Optional
   `interrupted` (SPEC-0229) and `summary` (SPEC-0284: parsed `{format, passed, failed, errors,
-  skipped, failing}` or `{format, error}`; only for gates with `results:`).
+  skipped, failing}` or `{format, error}`; only for gates with `results:`). SPEC-0289: a retry's
+  sidecar (`NNN-<name>.r<n>.json`) carries `attempt`; once a retry ran, attempt 0's sidecar holds
+  the final result plus `attempts` (`[{attempt, kind: targeted|full, ok, exit_code, timed_out,
+  interrupted, duration_s, log, failing}]`) and, when the gate ended ok after a targeted pass,
+  `flaky` (the ids).
 - `wt.runner.record.v1` — one line of `<agentic>/runner.jsonl`, written by `wt queue run`.
 """
 from __future__ import annotations

@@ -354,6 +354,35 @@ def _summary_line(s) -> str:
     return line
 
 
+def _retries_line(r) -> str:
+    """SPEC-0289: how the gate's retry ladder went, from its `attempts`; "" without retries."""
+    attempts = r.get("attempts") or []
+    retried = [a for a in attempts if a.get("attempt")]
+    if not retried:
+        return ""
+    targeted = next((a for a in retried if a.get("kind") == "targeted"), None)
+    fulls = [a for a in retried if a.get("kind") == "full"]
+    ids = len(attempts[0].get("failing") or [])
+    full = ""
+    if fulls:
+        n_ok = sum(1 for a in fulls if a.get("ok"))
+        full = (f"full rerun {n_ok}/{len(fulls)} passed" if n_ok
+                else f"full rerun {len(fulls)}/{len(fulls)} failed")
+    if targeted is None:
+        line = full
+    elif not targeted.get("ok"):
+        line = f"targeted rerun of {ids} ids reproduced the failure"
+    elif not fulls:
+        line = f"targeted rerun of {ids} ids passed, no full rerun left (the gate stays failed)"
+    elif r.get("ok"):
+        line = f"targeted rerun of {ids} ids passed, {full}"
+    else:
+        line = f"targeted rerun passed but {full} (order-dependent or other failure)"
+    if r.get("flaky"):
+        line += f" (flaky: {', '.join(r['flaky'])})"
+    return "retries: " + line
+
+
 def render_gate_results(last_gate) -> str:
     """name / required / result / tail (≤ 60 lines each) per gate, or `(none)`."""
     results = (last_gate or {}).get("results") or []
@@ -369,6 +398,9 @@ def render_gate_results(last_gate) -> str:
         res = _summary_line(r.get("summary"))
         if res:
             head += f"\n{res}"
+        retries = _retries_line(r)
+        if retries:
+            head += f"\n{retries}"
         tail_lines = (r.get("tail") or "").rstrip("\n").splitlines()[-_GATE_TAIL_LINES:]
         tail = "\n".join(tail_lines) if tail_lines else "(no output)"
         blocks.append(f"{head}\n```\n{tail}\n```")

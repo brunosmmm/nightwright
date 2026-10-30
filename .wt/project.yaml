@@ -17,6 +17,8 @@ gates:
     results: {format: pytest}
     timeout_s: 1200
     required: true
+    # SPEC-0289: a failing run re-runs its failing ids, then once in full, before triage.
+    retries: 2
 merge:
   policy: merge
   base: main

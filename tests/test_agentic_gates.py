@@ -2,6 +2,7 @@
 tmp worktree; the data dir is a tmp dir."""
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -321,3 +322,231 @@ def test_no_results_no_summary_key(world, tmp_path):
     assert "summary" not in json.loads((tmp_path / "ok.json").read_text())
     payload = G.as_payload(G.GateRun(1, True, (r,), "t", 0.1))
     assert "summary" not in payload["results"][0]
+
+
+# ---- SPEC-0289: retry ladder ----------------------------------------------------------------
+
+PY_FAIL = ("echo 'FAILED tests/a.py::t1 - boom'; "
+           "echo '=== 1 failed, 2 passed in 0.10s ==='; exit 1")
+PY_PASS = "echo '=== 1 passed in 0.01s ==='; exit 0"
+PY_COLLECT = ("echo 'ERROR tests/x.py - ImportError'; "
+              "echo '!!! Interrupted: 1 error during collection !!!'; "
+              "echo '=== 1 error in 0.10s ==='; exit 2")
+
+
+def _fake(tmp_path, behaviours, *, retries=2, results=True, **extra):
+    """A gate whose Nth invocation runs `behaviours[N-1]` (a shell snippet). Every call
+    appends its argv to `args.log`."""
+    d = tmp_path / "fake"
+    d.mkdir(exist_ok=True)
+    for i, snippet in enumerate(behaviours, 1):
+        (d / f"beh.{i}").write_text(snippet + "\n")
+    script = d / "run.sh"
+    script.write_text(f'n=$(cat "{d}/cnt" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "{d}/cnt"\n'
+                      f'echo "$@" >> "{d}/args.log"; sh "{d}/beh.$n" "$@"\n')
+    g = {**_gate("pytest", f"sh {script}"), "retries": retries, **extra}
+    if results:
+        g["results"] = {"format": "pytest"}
+    return g
+
+
+def _args(tmp_path):
+    p = tmp_path / "fake" / "args.log"
+    return p.read_text().splitlines() if p.exists() else []
+
+
+def _ladder(world, tmp_path, gate, **kw):
+    cfg, st, wt = world
+    out = tmp_path / "g"
+    return G.run_gate_with_retries(gate, wt, G.gate_env(cfg, st), out / "001-pytest.log", {},
+                                   log_rel="gates/001-pytest.log", **kw)
+
+
+def _kinds(r):
+    return [a["kind"] for a in r.attempts]
+
+
+def test_full_retry_passes_second_time(world, tmp_path):
+    g = _fake(tmp_path, ["echo boom; exit 1", "echo fine"], results=False)
+    r = _ladder(world, tmp_path, g)
+    assert r.ok and len(r.attempts) == 2 and _kinds(r) == ["full", "full"]
+    assert (tmp_path / "g" / "001-pytest.r1.log").is_file()
+    assert r.attempts[1]["log"] == "gates/001-pytest.r1.log" and r.log == "gates/001-pytest.log"
+
+
+def test_full_retry_exhausted(world, tmp_path):
+    g = _fake(tmp_path, ["exit 1", "exit 2", "exit 3"], results=False)
+    r = _ladder(world, tmp_path, g)
+    assert not r.ok and len(r.attempts) == 3 and r.exit_code == 3
+    assert [a["exit_code"] for a in r.attempts] == [1, 2, 3] and r.flaky == ()
+
+
+def test_targeted_rerun_reproduces(world, tmp_path):
+    g = _fake(tmp_path, [PY_FAIL, "echo again; exit 1", PY_PASS, PY_PASS], retries=3)
+    r = _ladder(world, tmp_path, g)
+    assert not r.ok and _kinds(r) == ["full", "targeted"] and len(_args(tmp_path)) == 2
+    assert _args(tmp_path)[1] == "tests/a.py::t1" and r.exit_code == 1
+    assert r.attempts[0]["failing"] == ["tests/a.py::t1"]
+
+
+def test_targeted_rerun_flaky_ok(world, tmp_path):
+    g = _fake(tmp_path, [PY_FAIL, PY_PASS, PY_PASS])
+    r = _ladder(world, tmp_path, g)
+    assert r.ok and _kinds(r) == ["full", "targeted", "full"]
+    assert r.flaky == ("tests/a.py::t1",) and _args(tmp_path)[2] == ""
+
+
+def test_targeted_then_full_after_early_stop(world, tmp_path):
+    stop_fail = ("echo 'FAILED tests/a.py::t1 - boom'; echo '!!! stopping after 1 failures !!!'; "
+                 "echo '=== 1 failed, 2 passed in 0.10s ==='; exit 1")
+    r = _ladder(world, tmp_path, _fake(tmp_path, [stop_fail, PY_PASS, PY_PASS]))
+    assert r.ok
+    assert _kinds(r) == ["full", "targeted", "full"]
+    t2 = tmp_path / "t2"
+    t2.mkdir()
+    r = _ladder(world, t2, _fake(t2, [stop_fail, PY_PASS, PY_PASS], retries=1))
+    assert not r.ok and r.flaky == () and r.exit_code == 1
+    assert _kinds(r) == ["full", "targeted"] and r.attempts[1]["ok"] is True
+
+
+def test_targeted_then_full_fails(world, tmp_path):
+    r = _ladder(world, tmp_path, _fake(tmp_path, [PY_FAIL, PY_PASS, "exit 1"]))
+    assert not r.ok and r.flaky == () and _kinds(r) == ["full", "targeted", "full"]
+    assert r.attempts[1]["ok"] is True
+    t2 = tmp_path / "t2"
+    t2.mkdir()
+    r = _ladder(world, t2, _fake(t2, [PY_FAIL, PY_PASS, "exit 1", PY_PASS], retries=3))
+    assert r.ok and r.flaky == ("tests/a.py::t1",)
+
+
+def test_targeted_after_collection_error_runs_full(world, tmp_path):
+    r = _ladder(world, tmp_path, _fake(tmp_path, [PY_COLLECT, PY_PASS, PY_PASS]))
+    assert r.attempts[0]["failing"] == ["tests/x.py"] and _args(tmp_path)[1] == "tests/x.py"
+    assert r.ok and _kinds(r) == ["full", "targeted", "full"]
+    t2 = tmp_path / "t2"
+    t2.mkdir()
+    r = _ladder(world, t2, _fake(t2, [PY_COLLECT, PY_PASS, "exit 1"]))
+    assert not r.ok and r.flaky == ()
+
+
+def test_retry_cmd_template_used(world, tmp_path):
+    g = _fake(tmp_path, [PY_FAIL, PY_PASS, PY_PASS], retry_cmd=f"sh {tmp_path}/fake/run.sh -k {{failing}}")
+    r = _ladder(world, tmp_path, g)
+    assert r.ok and _args(tmp_path)[1] == "-k tests/a.py::t1"
+    cmd = G.targeted_cmd({"retry_cmd": "make t IDS={failing}"}, "make", ["a b::t[x y]", "c::d"])
+    assert cmd == "make t IDS='a b::t[x y]' c::d"
+    assert G.targeted_cmd({}, "uv run pytest", ["a b"]) == "uv run pytest 'a b'"
+
+
+def test_incomplete_failing_list_falls_back_to_full(world, tmp_path):
+    many = ("for i in $(seq 1 50); do echo \"FAILED tests/a.py::t$i\"; done; "
+            "echo '=== 60 failed, 1 passed in 1s ==='; exit 1")
+    r = _ladder(world, tmp_path, _fake(tmp_path, [many, PY_PASS]))
+    assert r.ok and _kinds(r) == ["full", "full"] and r.flaky == ()
+    assert _args(tmp_path)[1] == ""
+
+
+@pytest.mark.parametrize("how", ["event", "flag"])
+def test_no_retry_when_stopping(world, tmp_path, monkeypatch, how):
+    ev = threading.Event()
+    real = G.run_gate
+
+    def wrapped(*a, **kw):
+        r = real(*a, **kw)
+        if how == "event":
+            ev.set()
+        else:
+            monkeypatch.setattr(G, "_stopping", True)
+        return r
+    monkeypatch.setattr(G, "run_gate", wrapped)
+    g = _fake(tmp_path, ["exit 1", "exit 0"], results=False)
+    try:
+        r = _ladder(world, tmp_path, g, stop=ev)
+    finally:
+        G.reset()
+    assert r.attempts == () and not r.ok and len(_args(tmp_path)) == 1
+
+
+def test_stop_during_retry_is_interrupted(world, tmp_path, monkeypatch):
+    cfg, st, wt = world
+    ev = threading.Event()
+    real = G.run_gate
+
+    def wrapped(*a, **kw):
+        if kw.get("attempt") == 1:
+            ev.set()
+            G.terminate_all()
+        return real(*a, **kw)
+    monkeypatch.setattr(G, "run_gate", wrapped)
+    g = _fake(tmp_path, ["exit 1", "exit 0", "exit 0"], retries=3, results=False)
+    try:
+        run = G.run_all(_project(g), st, cfg, seq=1, stop=ev)
+    finally:
+        G.reset()
+    (r,) = run.results
+    assert r.interrupted and not r.ok and len(r.attempts) == 2 and r.attempts[-1]["interrupted"]
+    assert run.interrupted and not run.ok
+    side = json.loads((tmp_path / "data").rglob("001-pytest.json").__next__().read_text())
+    assert side["interrupted"] is True and SC.record_problems(side, SC.GATE_KEYS, SC.GATE_SCHEMA) == []
+
+
+def test_timed_out_attempt_zero_not_retried(world, tmp_path):
+    g = _fake(tmp_path, ["sleep 30", "exit 0"], results=False, timeout_s=1)
+    r = _ladder(world, tmp_path, g)
+    assert r.timed_out and not r.ok and r.attempts == () and len(_args(tmp_path)) == 1
+
+
+def test_retry_timeout_ends_ladder(world, tmp_path):
+    g = _fake(tmp_path, ["exit 1", "sleep 30", "exit 0"], retries=3, results=False, timeout_s=1)
+    r = _ladder(world, tmp_path, g)
+    assert len(r.attempts) == 2 and r.timed_out and not r.ok
+
+
+def test_result_fields_after_ladder(world, tmp_path):
+    r = _ladder(world, tmp_path, _fake(tmp_path, ["exit 1", "exit 0"], results=False))
+    assert r.ok and r.exit_code == 0 and not r.timed_out and not r.interrupted
+    assert r.duration_s == pytest.approx(sum(a["duration_s"] for a in r.attempts), abs=0.002)
+    assert r.log == "gates/001-pytest.log"
+    t2 = tmp_path / "t2"
+    t2.mkdir()
+    r = _ladder(world, t2, _fake(t2, [PY_FAIL, PY_PASS], retries=1))
+    assert r.summary["failed"] == 1 and r.summary["passed"] == 2 and not r.ok
+
+
+def test_attempt0_sidecar_rewritten(world, tmp_path):
+    r = _ladder(world, tmp_path, _fake(tmp_path, [PY_FAIL, PY_PASS, PY_PASS]))
+    side = json.loads((tmp_path / "g" / "001-pytest.json").read_text())
+    assert side["ok"] is True and side["exit_code"] == 0 and side["flaky"] == ["tests/a.py::t1"]
+    assert side["attempts"][0]["ok"] is False and side["attempts"][0]["exit_code"] == 1
+    assert [a["kind"] for a in side["attempts"]] == ["full", "targeted", "full"]
+    assert side["duration_s"] == r.duration_s
+    assert SC.record_problems(side, SC.GATE_KEYS, SC.GATE_SCHEMA) == []
+
+
+def test_payload_omits_empty_attempts(world, tmp_path):
+    cfg, st, wt = world
+    run = G.run_all(_project(_gate("plain", "exit 1")), st, cfg, seq=1)
+    (res,) = G.as_payload(run)["results"]
+    assert "attempts" not in res and "flaky" not in res
+    side = json.loads((S.campaign_dir(cfg, CID) / "gates" / "001-plain.json").read_text())
+    assert "attempts" not in side and "flaky" not in side and "attempt" not in side
+    assert not list((S.campaign_dir(cfg, CID) / "gates").glob("*.r1.*"))
+
+
+def test_retry_sidecars_validate(world, tmp_path):
+    cfg, st, wt = world
+    g = _fake(tmp_path, [PY_FAIL, PY_PASS, PY_PASS])
+    run = G.run_all(_project(g), st, cfg, seq=1)
+    (res,) = run.results
+    assert res.ok and res.flaky == ("tests/a.py::t1",)
+    gdir = S.campaign_dir(cfg, CID) / "gates"
+    sides = sorted(gdir.glob("001-pytest.r*.json"))
+    assert [p.name for p in sides] == ["001-pytest.r1.json", "001-pytest.r2.json"]
+    for n, p in enumerate(sides, 1):
+        rec = json.loads(p.read_text())
+        assert rec["attempt"] == n and SC.record_problems(rec, SC.GATE_KEYS, SC.GATE_SCHEMA) == []
+    payload = G.as_payload(run)
+    assert payload["results"][0]["flaky"] == ["tests/a.py::t1"]
+    ev = {"schema": SC.LEDGER_SCHEMA, "ts": "t", "seq": 1, "campaign": CID, "type": "gate",
+          "by": "tick", **payload}
+    assert SC.ledger_problems(ev) == []

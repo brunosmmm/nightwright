@@ -523,3 +523,17 @@ def test_dashboard_payload_carries_gate_summary_to_the_gate_cell(tmp_path):
     assert item["last_gate"]["results"][0]["summary"] == summary
     assert "summary" not in item["last_gate"]["results"][1]
     assert "(2 failed)" in CQ._gate_text(item["last_gate"]).plain
+
+
+def test_gate_text_retry_marker():
+    """SPEC-0289: `↻N` for a gate with retries; `(flaky)` only when the gate ended ok."""
+    att = [{"attempt": 0, "kind": "full"}, {"attempt": 1, "kind": "targeted"},
+           {"attempt": 2, "kind": "full"}]
+    ok = {"gate_seq": 1, "results": [{"name": "pytest", "ok": True, "duration_s": 3,
+                                      "attempts": att, "flaky": ["a::b"]}]}
+    bad = {"gate_seq": 1, "results": [{"name": "pytest", "ok": False, "duration_s": 3,
+                                       "attempts": att[:2], "flaky": ["a::b"]}]}
+    plain = {"gate_seq": 1, "results": [{"name": "pytest", "ok": True, "duration_s": 3}]}
+    assert "↻2 (flaky)" in CQ._gate_text(ok).plain
+    assert "↻1" in CQ._gate_text(bad).plain and "flaky" not in CQ._gate_text(bad).plain
+    assert "↻" not in CQ._gate_text(plain).plain

@@ -11,11 +11,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from . import gate_results
@@ -48,6 +49,8 @@ class GateResult:
     cwd: str = ""
     interrupted: bool = False   # SPEC-0229: killed by a stop, or not started because of one
     summary: dict | None = None  # SPEC-0284: parsed counts/failing ids; None without `results:`
+    attempts: tuple = ()        # SPEC-0289: one dict per attempt once a retry ran (attempt 0 first)
+    flaky: tuple = ()           # SPEC-0289: ids a targeted rerun passed, when the gate ended ok
 
 
 @dataclass(frozen=True)
@@ -135,7 +138,7 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 
 def _write_sidecar(log_path: Path, result: GateResult, *, timeout_s: int, started_at: str,
-                   error: str | None) -> None:
+                   error: str | None, attempt: int | None = None) -> None:
     """`gates/NNN-name.json` (`wt.gate.v1`, SPEC-0192): what wt knows about the run; the
     `.log` beside it holds only the command's own output."""
     rec = {"schema": SC.GATE_SCHEMA, "name": result.name, "cmd": result.cmd, "cwd": result.cwd,
@@ -146,16 +149,25 @@ def _write_sidecar(log_path: Path, result: GateResult, *, timeout_s: int, starte
         rec["interrupted"] = True
     if result.summary is not None:
         rec["summary"] = result.summary
+    if attempt is not None:                 # SPEC-0289: a retry's own sidecar
+        rec["attempt"] = attempt
+    if result.attempts:
+        rec["attempts"] = list(result.attempts)
+    if result.flaky:
+        rec["flaky"] = list(result.flaky)
     log_path.with_suffix(".json").write_text(json.dumps(rec, indent=2, ensure_ascii=False)
                                              + "\n", encoding="utf-8")
 
 
 def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
-             log_rel: str | None = None) -> GateResult:
+             log_rel: str | None = None, cmd_override: str | None = None,
+             attempt: int | None = None) -> GateResult:
     """Run one gate in `worktree / gate["cwd"]`, combined output to `log_path`, timeout
     `gate["timeout_s"]` (kills the whole process group). `ok` = exit code 0. The log is the
-    command's output only; command, cwd, exit, timing and errors go to the JSON sidecar."""
-    cmd = expand_cmd(gate["cmd"], **placeholders)
+    command's output only; command, cwd, exit, timing and errors go to the JSON sidecar.
+    `cmd_override` (SPEC-0289, a targeted rerun) replaces the expanded `cmd`; `attempt` marks
+    a retry's sidecar."""
+    cmd = cmd_override if cmd_override is not None else expand_cmd(gate["cmd"], **placeholders)
     cwd = Path(worktree) / gate.get("cwd", ".")
     timeout_s = int(gate.get("timeout_s", 1200))
     log_path = Path(log_path)
@@ -206,8 +218,124 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
     result = GateResult(gate["name"], bool(gate.get("required", True)), ok, exit_code,
                         timed_out, duration, log_rel or str(log_path), tail(log_path),
                         cmd=cmd, cwd=str(cwd), interrupted=interrupted, summary=summary)
-    _write_sidecar(log_path, result, timeout_s=timeout_s, started_at=started_at, error=error)
+    _write_sidecar(log_path, result, timeout_s=timeout_s, started_at=started_at, error=error,
+                   attempt=attempt)
     return result
+
+
+def targeted_cmd(gate: dict, cmd: str, failing, placeholders: dict | None = None) -> str:
+    """SPEC-0289: the command that re-runs only `failing`: the gate's `retry_cmd` with
+    `{failing}` replaced, else the expanded `cmd` followed by the ids. Ids are shell-quoted."""
+    ids = " ".join(shlex.quote(i) for i in failing)
+    rc = gate.get("retry_cmd")
+    if rc:
+        return expand_cmd(rc, **(placeholders or {})).replace("{failing}", ids)
+    return f"{cmd} {ids}"
+
+
+def _targeted_ids(gate: dict, result: GateResult) -> list[str]:
+    """The failing ids a targeted rerun may use: pytest results, 1..MAX_FAILING ids, and the
+    list accounts for every failure and error (so it is complete)."""
+    if (gate.get("results") or {}).get("format") != "pytest":
+        return []
+    s = result.summary
+    if not isinstance(s, dict) or s.get("error"):
+        return []
+    failing = list(s.get("failing") or [])
+    if not 0 < len(failing) <= gate_results.MAX_FAILING \
+            or (s.get("failed") or 0) + (s.get("errors") or 0) != len(failing):
+        return []
+    return failing
+
+
+def _attempt(n: int, kind: str, r: GateResult) -> dict:
+    failing = list((r.summary or {}).get("failing") or [])
+    rec = {"attempt": n, "kind": kind, "ok": r.ok, "exit_code": r.exit_code,
+           "timed_out": r.timed_out, "interrupted": r.interrupted,
+           "duration_s": r.duration_s, "log": r.log, "failing": failing}
+    return rec
+
+
+def _stop_requested(stop) -> bool:
+    return (stop is not None and stop.is_set()) or _stopping
+
+
+def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
+                          log_rel: str | None = None,
+                          stop: threading.Event | None = None) -> GateResult:
+    """`run_gate` plus the SPEC-0289 retry ladder (`gate["retries"]`).
+
+    A failing pytest gate with a complete failing-id list first re-runs only those ids: a
+    failure there is reproduced and ends the ladder; a pass proves nothing about the rest of the
+    suite, so only a *full* rerun that passes can turn the gate green. Timed-out, interrupted
+    and stopped gates are never retried. The result is attempt 0's with the verdict (last full
+    attempt) `ok`/`exit_code`/`tail`/`summary`, the last attempt's `interrupted`/`timed_out`,
+    the summed `duration_s`, plus `attempts` and `flaky`."""
+    log_path = Path(log_path)
+    first = run_gate(gate, worktree, env, log_path, placeholders, log_rel=log_rel)
+    retries = int(gate.get("retries") or 0)
+    if first.ok or first.interrupted or first.timed_out or retries <= 0:
+        return first
+    ids = _targeted_ids(gate, first)
+    attempts = [_attempt(0, "full", first)]
+    verdict = last = first
+    targeted_passed = False
+    for n in range(1, retries + 1):
+        if _stop_requested(stop):
+            break
+        kind = "targeted" if (n == 1 and ids) else "full"
+        rpath = log_path.with_name(f"{log_path.stem}.r{n}.log")
+        rrel = (f"{Path(log_rel).with_suffix('').as_posix()}.r{n}.log" if log_rel
+                else str(rpath))
+        cmd = targeted_cmd(gate, first.cmd, ids, placeholders) if kind == "targeted" else None
+        r = run_gate(gate, worktree, env, rpath, placeholders, log_rel=rrel,
+                     cmd_override=cmd, attempt=n)
+        attempts.append(_attempt(n, kind, r))
+        last = r
+        if r.interrupted or r.timed_out:
+            if kind == "full":
+                verdict = r
+            break
+        if kind == "targeted":
+            if not r.ok:                # reproduced: the failure is real
+                break
+            targeted_passed = True
+            continue
+        verdict = r
+        if r.ok:
+            break
+    if len(attempts) == 1:              # a stop landed before any retry started
+        return first
+    flaky = tuple(ids) if (verdict.ok and targeted_passed) else ()
+    final = replace(first, ok=verdict.ok, exit_code=verdict.exit_code, tail=verdict.tail,
+                    summary=verdict.summary, interrupted=last.interrupted,
+                    timed_out=last.timed_out,
+                    duration_s=round(sum(a["duration_s"] for a in attempts), 3),
+                    attempts=tuple(attempts), flaky=flaky)
+    _rewrite_sidecar(log_path, final,
+                     log_path.with_name(f"{log_path.stem}.r{len(attempts) - 1}.log"))
+    return final
+
+
+def _rewrite_sidecar(log_path: Path, final: GateResult, last_path: Path) -> None:
+    """Attempt 0's sidecar becomes the gate's final result (the same values as the `gate`
+    ledger event); attempt 0's raw values live on in `attempts[0]`."""
+    side = log_path.with_suffix(".json")
+    rec = json.loads(side.read_text(encoding="utf-8"))
+    try:
+        rec["error"] = json.loads(last_path.with_suffix(".json").read_text(
+            encoding="utf-8")).get("error")
+    except (OSError, ValueError):
+        pass
+    rec.update(ok=final.ok, exit_code=final.exit_code, timed_out=final.timed_out,
+               duration_s=final.duration_s, attempts=list(final.attempts))
+    for key, val in (("interrupted", final.interrupted or None),
+                     ("summary", final.summary), ("flaky", list(final.flaky) or None)):
+        if val is None:
+            rec.pop(key, None)
+        else:
+            rec[key] = val
+    side.write_text(json.dumps(rec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def next_gate_seq(cfg, campaign_id) -> int:
@@ -252,7 +380,8 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
                 cut = True
                 break
             rel = f"gates/{seq:03d}-{gate['name']}.log"
-            results.append(run_gate(gate, worktree, env, cdir / rel, ph, log_rel=rel))
+            results.append(run_gate_with_retries(gate, worktree, env, cdir / rel, ph,
+                                                 log_rel=rel, stop=stop))
     finally:                                    # SPEC-0253: only the owner removes its dir
         store.clear_child_tmp(cfg, cid, owner)
     ok = all(r.ok for r in results if r.required)
@@ -272,6 +401,11 @@ def as_payload(run: GateRun) -> dict:
     for r in results:
         if r["summary"] is None:          # SPEC-0284: only recorded with `results:`
             del r["summary"]
+        for key in ("attempts", "flaky"):     # SPEC-0289: only recorded when a retry ran
+            if not r[key]:
+                del r[key]
+            else:
+                r[key] = list(r[key])
         if not r.pop("interrupted"):      # SPEC-0229: only recorded when true
             continue
         r["interrupted"] = True

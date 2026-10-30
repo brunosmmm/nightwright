@@ -1938,3 +1938,41 @@ def test_plan_add_batch_orders_and_dedupes(tmp_path):                   # SPEC-0
     assert plan["items"][1]["would_block"] == []        # SPEC-0001 is in the batch
     with pytest.raises(ValueError, match="1 of 1 items cannot be queued"):
         Q.apply_add_batch(cfg, {"items": [{"id": "X", "kind": "spec", "error": "e"}]})
+
+
+def test_on_fail_warn_goes_to_reviewing(opened, tmp_path):
+    """SPEC-0289: `on_fail: warn` is `required: false` end to end."""
+    from wt.agentic import gates as G
+    from wt.agentic import project as P
+    cfg, cid, ctx = opened
+    p = tmp_path / "project.yaml"
+    p.write_text("schema: wt.project.v1\ngates:\n  - {name: soft, cmd: 'exit 1', on_fail: warn}\n")
+    S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
+    run = G.run_all(P.load_project_config(p), S.read_state(cfg, cid), cfg, seq=1)
+    assert run.ok and not run.results[0].ok
+    row, st = _apply(ctx, cfg, cid, "gate", gate_run=run)
+    assert row["to"] == "REVIEWING" and st["last_gate"]["ok"] is True
+
+
+def test_stop_during_gate_retry_not_triaged(opened, monkeypatch):
+    """SPEC-0289 x SPEC-0229: a stop landing in a retry is an interrupted run, not a failure."""
+    from wt.agentic import gates as G
+    cfg, cid, ctx = opened
+    real = G.run_gate
+
+    def wrapped(*a, **kw):
+        if kw.get("attempt") == 1:
+            ctx.stop.set()
+            G.terminate_all()
+        return real(*a, **kw)
+    monkeypatch.setattr(G, "run_gate", wrapped)
+    S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
+    proj = {"gates": [{"name": "t", "cmd": "exit 1", "cwd": ".", "timeout_s": 30,
+                       "required": True, "retries": 2}]}
+    try:
+        run = G.run_all(proj, S.read_state(cfg, cid), cfg, seq=1, stop=ctx.stop)
+        assert run.interrupted and not run.ok
+        row, st = _apply(ctx, cfg, cid, "gate", gate_run=run)
+    finally:
+        G.reset()
+    assert row["to"] != "TRIAGING" and st["state"] == "GATING"

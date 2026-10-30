@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (94/100 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (95/100 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -191,7 +191,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0284](./specs/0284-gate-result-parsing-read-structured-results-not.md) Gate result parsing: counts and failing test ids from pytest and JUnit XML — done
   - [x] [SPEC-0286](./specs/0286-escalation-overrides-are-idempotent-withdrawable.md) Escalation overrides are idempotent, withdrawable and exact — done
   - [x] [SPEC-0287](./specs/0287-runner-safety-nets-train-watchdog-crash-sweep.md) Runner safety nets: train watchdog, crash-sweep harvest, terminal tmp, regenerate renames — done
-  - [ ] [SPEC-0289](./specs/0289-gate-ladder-v2.md) Gate ladder v2: per-gate retry policy and targeted reruns of failing pytest ids — accepted
+  - [x] [SPEC-0289](./specs/0289-gate-ladder-v2.md) Gate ladder v2: per-gate retry policy and targeted reruns of failing pytest ids — done
   - [ ] [SPEC-0290](./specs/0290-automatic-spec-splitting-from-a-split-review.md) Automatic spec splitting: a split review turns into child specs written by a split campaign — accepted
   - [ ] [SPEC-0291](./specs/0291-wt-queue-run-detach-and-supervision.md) `wt queue run --detach` and `wt queue stop`: start and stop the runner without a shell recipe — accepted
   - [x] [SPEC-0292](./specs/0292-idea-linkage-campaign-extension-and-a-hub-agentic.md) Idea linkage: `:CAMPAIGN:` for spec campaigns, cleared on terminal states, and a hub agentic slice — done
@@ -209,7 +209,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) | Example-heavy docs: SVG captures and workflow architecture | epic | accepted | M8: product documentation | 2026-09-09 |
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0217](./specs/0217-standalone-spec-reviews-in-watch-spec-phase-events.md) | Standalone spec reviews in queue watch, spec-phase queue events and conductor rows | feature | accepted | M9: agentic workflow | 2026-10-25 |
-| [SPEC-0289](./specs/0289-gate-ladder-v2.md) | Gate ladder v2: per-gate retry policy and targeted reruns of failing pytest ids | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0290](./specs/0290-automatic-spec-splitting-from-a-split-review.md) | Automatic spec splitting: a split review turns into child specs written by a split campaign | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0291](./specs/0291-wt-queue-run-detach-and-supervision.md) | `wt queue run --detach` and `wt queue stop`: start and stop the runner without a shell recipe | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
@@ -489,6 +488,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0286](./specs/0286-escalation-overrides-are-idempotent-withdrawable.md) | Escalation overrides are idempotent, withdrawable and exact | feature | done | — | 2026-10-27 |
 | [SPEC-0287](./specs/0287-runner-safety-nets-train-watchdog-crash-sweep.md) | Runner safety nets: train watchdog, crash-sweep harvest, terminal tmp, regenerate renames | feature | done | — | 2026-10-27 |
 | [SPEC-0288](./specs/0288-implementer-prompt-run-targeted-tests-while.md) | Implementer prompt: targeted tests while iterating, full suite left to gating | feature | done | — | 2026-10-27 |
+| [SPEC-0289](./specs/0289-gate-ladder-v2.md) | Gate ladder v2: per-gate retry policy and targeted reruns of failing pytest ids | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0292](./specs/0292-idea-linkage-campaign-extension-and-a-hub-agentic.md) | Idea linkage: `:CAMPAIGN:` for spec campaigns, cleared on terminal states, and a hub agentic slice | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0295](./specs/0295-spec-review-findings-carry-a-required-structured.md) | Review findings carry a required, structured suggested_fix | feature | done | M9: agentic workflow | 2026-10-30 |
 

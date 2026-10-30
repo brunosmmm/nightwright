@@ -53,7 +53,8 @@ PROJECT_DEFAULTS = {
     },
 }
 
-GATE_DEFAULTS = {"cwd": ".", "timeout_s": 1200, "required": True}
+GATE_DEFAULTS = {"cwd": ".", "timeout_s": 1200, "required": True, "retries": 0}
+ON_FAIL_MODES = ("block", "warn")
 
 # What `wt projects init` writes: the defaults made explicit, with one example gate.
 STARTER = """\
@@ -179,6 +180,27 @@ def _check_enum(problems, value, path, allowed):
         problems.append(f"{path}: must be one of {', '.join(allowed)} (got {value!r})")
 
 
+def _check_gate_retry(problems, gate, p):
+    """SPEC-0289: `retries` (0-3), `on_fail` (block|warn) and `retry_cmd` (pytest only)."""
+    r = gate.get("retries")
+    if r is not None and (isinstance(r, bool) or not isinstance(r, int) or not 0 <= r <= 3):
+        problems.append(f"{p}.retries: must be an integer from 0 to 3 (got {r!r})")
+    on_fail = gate.get("on_fail")
+    _check_enum(problems, on_fail, f"{p}.on_fail", ON_FAIL_MODES)
+    required = gate.get("required")
+    if on_fail == "warn" and required is True:
+        problems.append(f"{p}.on_fail: warn contradicts required: true")
+    if on_fail == "block" and required is False:
+        problems.append(f"{p}.on_fail: block contradicts required: false")
+    rc = gate.get("retry_cmd")
+    if rc is not None:
+        if not _is_str(rc) or "{failing}" not in rc:
+            problems.append(f"{p}.retry_cmd: must be a string containing {{failing}}")
+        res = gate.get("results")
+        if not (isinstance(res, dict) and res.get("format") == "pytest"):
+            problems.append(f"{p}.retry_cmd: only valid with results: {{format: pytest}}")
+
+
 def validate(doc):
     """Collect every problem in `doc` and raise one ValueError naming them by key path."""
     problems = []
@@ -201,7 +223,7 @@ def validate(doc):
     for i, gate in enumerate(gates):
         p = f"gates[{i}]"
         if not _check_mapping(problems, gate, p, ("name", "cmd", "cwd", "timeout_s", "required",
-                                                  "results")):
+                                                  "results", "retries", "on_fail", "retry_cmd")):
             continue
         name = gate.get("name")
         if not _is_str(name):
@@ -220,6 +242,7 @@ def validate(doc):
         _check_bool(problems, gate.get("required"), f"{p}.required")
         if gate.get("results") is not None:
             _check_results(problems, gate["results"], f"{p}.results")
+        _check_gate_retry(problems, gate, p)
 
     merge = doc.get("merge")
     if merge is not None and _check_mapping(problems, merge, "merge",
@@ -272,6 +295,9 @@ def _with_defaults(doc):
     out["project"] = doc.get("project")
     out["base"] = doc.get("base", out["base"])
     out["gates"] = [{**GATE_DEFAULTS, **g} for g in doc.get("gates", [])]
+    for g in out["gates"]:
+        if g.get("on_fail") == "warn":          # SPEC-0289: the spelled-out `required: false`
+            g["required"] = False
     for section in ("merge", "worktrees", "agents"):
         out[section].update(doc.get(section) or {})
     out["merge"]["pr"] = {**PROJECT_DEFAULTS["merge"]["pr"], **((doc.get("merge") or {}).get("pr") or {})}
