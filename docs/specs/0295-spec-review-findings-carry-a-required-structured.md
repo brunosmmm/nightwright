@@ -1,9 +1,10 @@
 ---
 id: SPEC-0295
 title: "Review findings carry a required, structured suggested_fix"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-30
+updated: 2026-10-30
 milestone: "M9: agentic workflow"
 kind: feature
 source_idea: IDEA-076
