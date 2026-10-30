@@ -11,6 +11,7 @@ from ..console import console
 from ..report import _dump_json
 from . import events as E
 from . import queue as Q
+from . import quiet as QT
 from . import store
 from .cli_queue import _dur
 
@@ -62,6 +63,8 @@ def attach(queue_group):
                   help="reader name for --follow (cursor + one live follower per name)")
     @click.option("--since", type=int, default=None, help="events after this id")
     @click.option("--type", "types", multiple=True, help="only these event types (repeatable)")
+    @click.option("--campaign", "campaign", default=None,
+                  help="only this campaign's events (history mode)")
     @click.option("--tail", type=int, default=None, help="last N events (history mode)")
     @click.option("--text", "as_text", is_flag=True, help="one-line summaries instead of JSON")
     @click.option("--from-start", is_flag=True,
@@ -70,9 +73,11 @@ def attach(queue_group):
     @click.option("--no-code-watch", is_flag=True,
                   help="--follow never exits when wt's code changes (default: it prints "
                        "`code_changed` and exits 0 so the Monitor owner re-arms)")
+    @click.option("--all", "show_all", is_flag=True,
+                  help="--follow delivers every event: no quiet mode, no digest (SPEC-0300)")
     @click.pass_obj
-    def queue_events(cfg, do_follow, reader, since, types, tail, as_text, from_start, poll_s,
-                     no_code_watch):
+    def queue_events(cfg, do_follow, reader, since, types, campaign, tail, as_text, from_start,
+                     poll_s, no_code_watch, show_all):
         """The queue's alert stream: parks, merges, failed runs, watchdog signals, mail.
 
         \b
@@ -85,7 +90,8 @@ def attach(queue_group):
             try:
                 E.follow(cfg, reader, as_json=not as_text, poll_s=poll_s,
                          types=list(types) or None, from_start=from_start,
-                         **({"code_root": None} if no_code_watch else {}))
+                         **({"code_root": None} if no_code_watch else {}),
+                         quiet=QT.enabled_for(cfg, reader) and not show_all)
             except ValueError as e:
                 raise click.ClickException(str(e))
             except (KeyboardInterrupt, BrokenPipeError):
@@ -93,6 +99,8 @@ def attach(queue_group):
             return
         E.sync(cfg)
         evs = E.read_since(cfg, since or 0, types=list(types) or None)
+        if campaign:
+            evs = [e for e in evs if e.get("campaign") == campaign]
         if tail:
             evs = evs[-tail:]
         if as_text:
@@ -150,6 +158,30 @@ def attach(queue_group):
                 data = " ".join(f"{k}={v}" for k, v in (ev.get("data") or {}).items()
                                 if v not in (None, "", []))
                 t.add_row(str(ev["id"]), ev["type"], str(ev.get("campaign") or "-"), data[:70])
+            console.print(t)
+
+    @queue_group.command("wakeups")
+    @click.option("--since", default=None, help="first day, YYYY-MM-DD (inclusive)")
+    @click.option("--until", default=None, help="last day, YYYY-MM-DD (inclusive)")
+    @click.option("--reader", default="conductor", show_default=True)
+    @click.option("--json", "as_json", is_flag=True, help="emit wt.conductor.wakeups.v1 JSON")
+    @click.pass_obj
+    def queue_wakeups(cfg, since, until, reader, as_json):
+        """Conductor wakeups (SPEC-0300): lines delivered vs events held, per merge."""
+        rep = QT.wakeups_report(cfg, since=since, until=until, reader=reader)
+        if as_json:
+            _dump_json(rep)
+            return
+        per = rep["wakeups_per_merge"]
+        console.print(f"[bold]Wakeups[/] ({reader}) · delivered {rep['delivered']} "
+                      f"(digests {rep['digests']}) · held {rep['held']} · merges {rep['merges']}"
+                      f" · per merge {'-' if per is None else per}", highlight=False)
+        if rep["by_type"]:
+            t = Table(title="By type")
+            for col in ("type", "wake", "hold"):
+                t.add_column(col)
+            for typ, row in sorted(rep["by_type"].items(), key=lambda kv: str(kv[0])):
+                t.add_row(str(typ), str(row["wake"]), str(row["hold"]))
             console.print(t)
 
     @queue_group.command("followers")

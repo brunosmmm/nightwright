@@ -72,6 +72,8 @@ EVENT_TYPES = {
     "spec_written": ("spec_id",),
     "spec_reviewed": ("spec_id", "verdict", "round"),
     "spec_accepted": ("spec_id",),
+    # SPEC-0300: synthetic follower line (never appended to events.jsonl)
+    "conductor_digest": ("first_id", "last_id", "held", "merged"),
 }
 
 # type -> {optional data key: accepted type(s)}
@@ -937,6 +939,8 @@ def followers(cfg, now=None) -> list[dict]:
     d = cursors_dir(cfg)
     rows = []
     for p in sorted(d.glob("*.json")) if d.is_dir() else []:
+        if p.name.endswith(".digest.json"):              # SPEC-0300: a pending digest, not a cursor
+            continue
         try:
             rec = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -971,6 +975,13 @@ def summary_line(ev: dict) -> str:
         return (f"code_changed {str(d.get('from_sha'))[:7]}..{str(d.get('to_sha'))[:7]} "
                 f"skills={','.join(d.get('skills_changed') or []) or '-'}"
                 f"{' diff_failed' if d.get('diff_failed') else ''} (re-arm)")
+    if ev.get("type") == "conductor_digest":
+        d = ev.get("data") or {}
+        held = " ".join(f"{t}:{n}" for t, n in (d.get("held") or {}).items())
+        merged = ",".join(str(m.get("label") or m.get("campaign")) for m in d.get("merged") or [])
+        return (f"digest #{d.get('first_id')}..#{d.get('last_id')} held={held or '-'} "
+                f"merged={merged or '-'}"
+                f"{' ping_items=' + str(len(d['ping_items'])) if d.get('ping_items') else ''}")
     if ev.get("type") == "conductor_ping":
         d, c = ev.get("data") or {}, (ev.get("data") or {}).get("counts") or {}
         return (f"#{evid} conductor_ping blocked={len(d.get('blocked') or [])} "
@@ -992,13 +1003,24 @@ def code_changed_line(reader, change: dict, *, as_json=True) -> str:
 
 
 def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_events=None,
-           stop=None, from_start=False, code_root=CW.AUTO, code_check_s=None) -> int:
+           stop=None, from_start=False, code_root=CW.AUTO, code_check_s=None, quiet=False,
+           now=None) -> int:
     """Stream events after the reader's cursor forever: sync, print, advance cursor, sleep.
-    Holds the reader lock for its lifetime. Returns the number of events printed. When wt's
+    Holds the reader lock for its lifetime. Returns the number of lines printed. When wt's
     code changes (SPEC-0231) it prints one `code_changed` line and returns; `code_root=None`
-    turns that watch off."""
+    turns that watch off.
+
+    Quiet mode (SPEC-0300; off unless `quiet=True`: `wt queue events --follow` resolves it from
+    `agentic.conductor.quiet` for the reader, see `quiet.enabled_for`): events `quiet.classify` holds go into the reader's pending digest instead of
+    being printed, and one `conductor_digest` line is printed when the oldest held event is
+    older than `digest_interval_s`. A hold saves the digest *before* the cursor advances
+    (`Digest.add` ignores a re-read); a due digest is cleared and saved before it is printed.
+    `printed` and `max_events` count delivered lines only. `now` is a clock callable."""
+    from . import quiet as QT
     out = out or sys.stdout
     poll = float(poll_s if poll_s is not None else settings(cfg)["poll_s"])
+    clock = now or (lambda: dt.datetime.now().astimezone())
+    interval = QT.settings(cfg)["digest_interval_s"]
     printed = 0
     with reader_lock(cfg, reader):
         try:    # SPEC-0299: learn which Claude Code session this reader belongs to
@@ -1016,11 +1038,34 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
         while True:
             sync(cfg, ping=True)
             after = cursor_get(cfg, reader)
+            ctx = QT.Ctx(cfg, reader, now=clock()) if quiet else None
             for ev in read_since(cfg, after, types=types):
+                if quiet and QT.classify(cfg, ev, ctx) == "hold":
+                    if ctx.digest.add(ev):
+                        ctx.digest.save()
+                        QT.record_delivery(cfg, reader, ev, "hold")
+                    cursor_set(cfg, reader, ev["id"])
+                    continue
                 out.write((json.dumps(ev, ensure_ascii=False) if as_json else summary_line(ev))
                           + "\n")
                 out.flush()
+                if quiet:
+                    QT.record_delivery(cfg, reader, ev, "wake")
+                    if ev["type"] == "conductor_ping":
+                        ctx.digest.note_ping_wake(ev)
+                        ctx.digest.save()
                 cursor_set(cfg, reader, ev["id"])
+                printed += 1
+                if max_events and printed >= max_events:
+                    return printed
+            if quiet and ctx.digest.due(clock(), interval):
+                line = ctx.digest.line(as_json=as_json)
+                ctx.digest.clear()
+                ctx.digest.save()
+                out.write(line)
+                out.flush()
+                QT.record_delivery(cfg, reader, {"id": None, "type": "conductor_digest",
+                                                 "campaign": None}, "digest")
                 printed += 1
                 if max_events and printed >= max_events:
                     return printed
@@ -1028,6 +1073,9 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
             if change:
                 out.write(code_changed_line(reader, change, as_json=as_json))
                 out.flush()
+                if quiet:
+                    QT.record_delivery(cfg, reader, {"id": None, "type": "code_changed",
+                                                     "campaign": None}, "wake")
                 return printed
             if stop is not None and stop():
                 return printed

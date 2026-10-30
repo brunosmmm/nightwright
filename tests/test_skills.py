@@ -371,7 +371,7 @@ def test_close_guard_in_rows():
     silent = _conduct_row("runner_journal_silent")
     assert "`busy.kind`" in silent and "`open` or `close`" in silent
     assert "no SIGTERM" in silent and "unparseable `since`" in silent
-    for name in ("waiting_not_admitted", "ready_not_admitted", "merged"):
+    for name in ("waiting_not_admitted", "ready_not_admitted", "code_changed"):
         row = _conduct_row(name)
         assert "`stop` refuses inside the close guard" in row, name
         assert "never SIGTERM" not in row, name
@@ -383,7 +383,7 @@ def test_conduct_skill_has_no_nohup_recipe():
     assert "nohup" not in conduct
     assert "wt queue run --detach" in conduct and "wt queue stop" in conduct
     for name in ("runner_dead", "ready_not_admitted", "waiting_not_admitted",
-                 "runner_journal_silent", "merged"):
+                 "runner_journal_silent", "code_changed"):     # SPEC-0300: the re-exec check
         assert "wt queue run --detach" in _conduct_row(name), name
 
 
@@ -461,3 +461,30 @@ def test_skill_texts_no_steward_requirement():           # SPEC-0279
     assert "the author applies the findings" not in conduct
     assert "single-round admission rule ships" not in conduct
     assert "amends it headlessly" in conduct
+
+
+# ---- SPEC-0300: quiet conductor stream ------------------------------------------------------
+
+def test_conduct_skill_quiet_rules_match_code():
+    from wt.agentic import quiet as QT
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    held = {t for t, r in QT.RULES.items() if r == "hold"}
+    cond = {t for t, r in QT.RULES.items() if r == "cond"}
+    line = next(ln for ln in conduct.splitlines() if ln.lstrip().startswith("- **Always held"))
+    assert set(re.findall(r"`([a-z_]+)`", line.split(":**", 1)[1])) == held
+    line = next(ln for ln in conduct.splitlines() if ln.lstrip().startswith("- **Held while"))
+    assert set(re.findall(r"`([a-z_]+)`", line.split(":**", 1)[1])) == cond
+
+
+def test_conduct_skill_has_conductor_digest_row():
+    row = _conduct_row("conductor_digest")
+    assert "wt spec reconcile --apply" in row and "merged" in row and "held" in row
+    assert "ping_items" in row and ".wt/project.yaml" in row
+
+
+def test_conduct_skill_park_rows_look_up_run_failed():
+    for name in ("run_failed", "parked` `loop_exhausted"):
+        row = _conduct_row(name)
+        assert "--type run_failed" in row, name
+    assert "runner-log" in _conduct_row("code_changed")
+    assert "runner-log" not in _conduct_row("merged")

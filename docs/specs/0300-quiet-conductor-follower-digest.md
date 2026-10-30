@@ -1,7 +1,7 @@
 ---
 id: SPEC-0300
 title: "Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -177,10 +177,10 @@ Nothing records what the follower delivered, so "wakeups per merge" (exit criter
 
 ## Acceptance criteria
 
-- [ ] `quiet.classify` returns `hold` for every always-hold type and `wake` for every
+- [x] `quiet.classify` returns `hold` for every always-hold type and `wake` for every
       always-wake type listed in the Decision and for an unknown type. The `RULES` table and
       the skill's list match (a test parses both).
-- [ ] The conditional holds behave as specified. A ping with an empty or unchanged
+- [x] The conditional holds behave as specified. A ping with an empty or unchanged
       actionable fingerprint is held, and a changed one wakes. Held pings with a non-empty
       fingerprint put `ping_items` in the digest, and `clear()` keeps `last_ping_fp`.
       `runner_draining` is held within `max((timeout_s or gate_budget_s)…, default
@@ -188,24 +188,24 @@ Nothing records what the follower delivered, so "wakeups per merge" (exit criter
       `campaign_silent` / `state_stuck` are held
       while the campaign is in the held lease's `in_flight` or `busy` within budget, and wake
       otherwise.
-- [ ] Held events advance the cursor and come out in one `conductor_digest` line once the
+- [x] Held events advance the cursor and come out in one `conductor_digest` line once the
       oldest is older than `digest_interval_s`. The pending digest survives a follower exit
       and re-arm, with no event lost or delivered twice, and an empty digest is never
       printed. On `hold` the digest is saved before the cursor advances, so a crash between
       the two writes does not double-count the event; a due digest is cleared and saved
       before it is printed. In quiet mode `max_events` counts delivered lines only.
-- [ ] Quiet mode applies only to configured readers. `--all` and `enabled: false` restore
+- [x] Quiet mode applies only to configured readers. `--all` and `enabled: false` restore
       today's output byte for byte, and `events.jsonl` is identical with and without quiet
       mode.
-- [ ] Every classified event, digest and `code_changed` exit line is recorded in
+- [x] Every classified event, digest and `code_changed` exit line is recorded in
       `deliveries.jsonl`. `wt queue wakeups --json` emits `wt.conductor.wakeups.v1` with
       `delivered`, `held`, `merges` and `wakeups_per_merge`, which is `null` when there
       are no merges.
-- [ ] The `/wt-conduct` skill documents the quiet stream and the `conductor_digest` row
+- [x] The `/wt-conduct` skill documents the quiet stream and the `conductor_digest` row
       (including `ping_items`), and moves the merged/handed-off reconcile and report to the
       digest. The `code_changed` row carries the runner re-exec steps itself, and the digest
       row repeats the check when a merged campaign changed `.wt/project.yaml`.
-- [ ] The skill's park rows (`loop_exhausted` / `triage_escalated` / `implementer_blocked`)
+- [x] The skill's park rows (`loop_exhausted` / `triage_escalated` / `implementer_blocked`)
       and the transient `run_failed` row no longer rely on having seen a `run_failed` line:
       they tell the conductor to look it up with `wt queue events --campaign <id> --type
       run_failed`.
@@ -259,6 +259,44 @@ Nothing records what the follower delivered, so "wakeups per merge" (exit criter
 - **Regression guard:** full `uv run pytest`. `tests/test_agentic_events.py`,
   `tests/test_agentic_followers.py` and `tests/test_agentic_conduct_cli.py` are unchanged.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_quiet.py tests/test_skills.py tests/test_agentic_events.py
+  tests/test_agentic_followers.py tests/test_agentic_conduct_cli.py`: 143 passed. The three
+  named regression files are unchanged.
+- Sabotage checks run and each failed the named test, then reverted: unknown type held
+  (`test_classify_always_hold_and_wake_tables_wake[brand_new_type]`); digest not saved on hold
+  (`test_digest_survives_rearm` among five failures); `in_flight` check dropped
+  (`test_silent_held_while_in_flight`).
+- Full `uv run pytest`: 3963 passed, 3 skipped (one earlier `-x` run hit
+  `test_agentic_adopt.py::test_fanout_detach_precondition`, which passes alone and in the full
+  run: a pre-existing timing flake, unrelated).
+- Manual verification (re-arm the live conductor, run `wt queue wakeups --since <day>` after a
+  day) can only happen once this is merged and the conductor has re-armed. It is not done
+  here; the conductor records the first wakeups-per-merge figure with a campaign note.
+
+### As shipped (2026-10-30)
+
+- `events.follow(quiet=...)` defaults to `False`, not "resolved from settings". Existing tests
+  (`test_agentic_events.py`, which must stay unchanged) call `follow(cfg, "conductor")` directly
+  and expect every event; resolving there would hold them. `wt queue events --follow` resolves
+  it with `quiet.enabled_for(cfg, reader) and not --all`, so the live conductor is quiet.
+  `follow` also takes `now=` (a clock callable) for tests.
+- `backlog` is held by reading `blocked_by` text (`ready`, or only `waiting on …` / `spec
+  status is …` entries), not by a set of known spec ids in `Ctx`. Any other text (`… not
+  found`, `branch … missing`) wakes.
+- A held `conductor_ping` with an empty fingerprint also resets `last_ping_fp`, so items that
+  recur after an all-clear wake again.
+- `wt queue events` gained `--campaign <id>` (history filter) because the skill's park rows
+  tell the conductor to run `wt queue events --campaign <id> --type run_failed`.
+- `events.followers` skips `*.digest.json` files in the cursors dir.
+- Two existing `tests/test_skills.py` assertions about the re-exec check moved from the
+  `merged` row to the `code_changed` row, as the Design says.
+- A digest line's `--text` form is `digest #a..#b held=type:n … merged=labels`
+  (plus `ping_items=n` when set).
+
+
+
 ## Rollout / migration
 
 1. Merge. The conductor's follower exits with `code_changed`, the conductor re-reads the
@@ -269,11 +307,11 @@ Nothing records what the follower delivered, so "wakeups per merge" (exit criter
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
