@@ -33,11 +33,9 @@ def lease_path(cfg) -> Path:
 
 def read_lease(cfg) -> dict | None:
     p = lease_path(cfg)
-    if not p.is_file():
-        return None
     try:
         return json.loads(p.read_text(encoding="utf-8"))
-    except ValueError:
+    except (OSError, ValueError):       # absent, or unlinked by a release between polls
         return None
 
 

@@ -284,8 +284,33 @@ skill rows can then reference instead of restating it.
   --yes --json` stopped it (0.2 s, `error: null`); again gave `no runner`.
 - Full `uv run pytest` left to gating.
 
+### Test record (2026-10-30, review round 3)
+
+- Added to `tests/test_agentic_detach.py`: `test_close_guard_bad_budget_guarded` (`budget_s`
+  None, garbage, a list, missing), `test_close_guard_non_string_since_guarded`,
+  `test_stop_refuses_a_non_string_since`, `test_read_lease_vanishing_file_is_none` (the file
+  gone after an existence check), `test_detach_waits_for_the_detached_mark`,
+  `test_run_marks_detached_only_once_sigterm_is_handled` and
+  `test_stop_wait_guard_rechecks_the_guard_on_the_status_it_acts_on` (the guard poll lands
+  between two opens, the next open starts during the settle reads: the SIGTERM waits for it).
+  The test child marks the lease `detached` after its handler, as `Q.run` does.
+  `test_agentic_detach` (43): all pass; the related runner/lease/CLI/skill suites pass.
+- **Sabotage:** dropping the `budget_s` except branch, `_age` catching only ValueError,
+  `read_lease` with an `is_file()` pre-check and no OSError catch, the detach poll not
+  requiring `detached`, the old `--wait-guard` loop (guard checked on the poll read, then a
+  fresh settle not re-checked): each makes the matching new test fail; all restored.
+- Full `uv run pytest` left to gating.
+
 ### As shipped (2026-10-30)
 
+- Review round 3: `run` writes `log` / `detached: true` right after it installs its
+  SIGINT/SIGTERM handler (a few lines after `L.acquire`, not right after it), and
+  `detach_runner` succeeds only once the lease file names the child's pid *and* carries
+  `detached`, so a `wt queue stop --yes` straight after `--detach` always meets the handler.
+  `stop_runner` checks the close guard on the settled status it then acts on: each
+  `--wait-guard` poll re-settles the holder and re-checks the guard on that read. `read_lease`
+  returns None for any `OSError` (a release unlinking the file mid-poll). `close_guard` counts
+  a non-string `since` as guarded (`_age` also catches TypeError).
 - Review round 2: `run` pops `WT_RUNNER_LOG` from `os.environ` once it is recorded, so persona
   runs, gates and nested runs do not inherit it; the SPEC-0194 re-exec passes it on explicitly
   (from the lease's `log`). `detach_runner` reads the lease file before it probes the flock

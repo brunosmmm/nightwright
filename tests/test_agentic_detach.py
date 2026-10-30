@@ -18,7 +18,7 @@ from wt.agentic import store as S
 
 # A child that takes (or not) the lease of the data dir in argv[1]; argv[2] is the mode.
 CHILD = r"""
-import signal, sys, time
+import os, signal, sys, time
 from wt.agentic import lease as L
 cfg = {"data_dir": sys.argv[1], "config_dir": sys.argv[1], "agentic": {"lease_ttl_s": 120}}
 mode = sys.argv[2]
@@ -35,6 +35,8 @@ if mode == "term":
     signal.signal(signal.SIGTERM, _bye)
 elif mode == "ignore":
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if os.environ.get("WT_RUNNER_LOG") and mode != "nomark":     # as `Q.run`, after its handler
+    lease.update_info(log=os.environ["WT_RUNNER_LOG"], detached=True)
 print("holding", flush=True)
 while True:
     time.sleep(0.1)
@@ -116,6 +118,37 @@ def test_detach_timeout_leaves_child(tmp_path, children):
     (child,) = children
     assert f"pid {child.pid}" in str(e.value) and "not killed" in str(e.value)
     assert child.poll() is None                     # left running; the fixture kills it
+
+
+def test_detach_waits_for_the_detached_mark(tmp_path, children):
+    """A child that holds the lease but has not marked it `detached` (written only once its
+    SIGTERM handler is installed) is not reported as started: a `wt queue stop` right after
+    would kill it with SIGTERM's default action."""
+    cfg = _cfg(tmp_path)
+    with pytest.raises(ValueError, match=r"did not take the lease within 0.5s"):
+        Q.detach_runner(cfg, _child_argv(cfg, "nomark"), tmp_path / "r.log", timeout_s=0.5,
+                        popen=_recording_popen(children))
+    (child,) = children
+    assert L.lease_status(cfg)["pid"] == child.pid and child.poll() is None
+
+
+def test_run_marks_detached_only_once_sigterm_is_handled(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    monkeypatch.setenv("WT_RUNNER_LOG", "/x/runner.log")
+    at_mark = []
+    real = L.Lease.update_info
+
+    def update_info(self, **kv):
+        if "detached" in kv:
+            at_mark.append(signal.getsignal(signal.SIGTERM))
+        return real(self, **kv)
+
+    monkeypatch.setattr(L.Lease, "update_info", update_info)
+    before = signal.getsignal(signal.SIGTERM)
+    Q.run(cfg, once=True)
+    assert len(at_mark) == 1 and callable(at_mark[0]) and at_mark[0] is not before
+    assert signal.getsignal(signal.SIGTERM) is before           # restored on exit
 
 
 def test_detach_popen_args(tmp_path):
@@ -214,7 +247,7 @@ def test_detach_poll_reads_the_lease_file_before_probing_the_flock(tmp_path, mon
         def poll(self):
             if len(held) == 0 and len(probes) >= 1:
                 held.append(L.acquire(cfg, ["child"]))   # "the child" takes the lease, and
-                held[0].info["pid"] = self.pid           # the file names its pid
+                held[0].info.update(pid=self.pid, detached=True)    # the file names it
                 held[0].update_info()
             return None
 
@@ -281,6 +314,30 @@ def test_close_guard_drain_not_guarded():
 def test_close_guard_bad_since_guarded():
     assert Q.close_guard(_status("close", 0, since="not a time"), now=NOW) is not None
     assert Q.close_guard(_status("open", 0, since=""), now=NOW) is not None
+
+
+def test_close_guard_bad_budget_guarded():
+    for budget in (None, "soon", [600]):
+        st = _status("close", 5000, budget_s=budget)        # long past any real budget
+        assert Q.close_guard(st, now=NOW) == st["busy"]
+    st = _status("open", 5000)
+    del st["busy"]["budget_s"]
+    assert Q.close_guard(st, now=NOW) == st["busy"]
+
+
+def test_close_guard_non_string_since_guarded():
+    for since in (1761825600, 12.5, ["2026-10-30"], {"t": 1}):
+        assert Q.close_guard(_status("close", 0, since=since), now=NOW) is not None
+
+
+def test_read_lease_vanishing_file_is_none(tmp_path, monkeypatch):
+    """A release can unlink the file between an existence check and the read: no exception."""
+    from pathlib import Path
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(Path, "is_file", lambda self: True)    # the check "passed"
+    assert L.read_lease(cfg) is None
+    st = L.lease_status(cfg)
+    assert st["held"] is False
 
 
 # ---- stop ---------------------------------------------------------------------------------------
@@ -361,6 +418,50 @@ def test_stop_wait_guard_times_out(tmp_path, children):
     with pytest.raises(ValueError, match=r"still guarded after 0.3s"):
         Q.stop_runner(cfg, wait_guard=True, guard_wait_s=0.3,
                       kill=lambda *a: pytest.fail("no kill inside the guard"))
+
+
+def test_stop_refuses_a_non_string_since(tmp_path, children):
+    cfg = _cfg(tmp_path)
+    _spawn(cfg, "term", children)
+    _set_busy(cfg, {"kind": "close", "campaign": "C-9", "since": 12345, "budget_s": 600})
+    with pytest.raises(ValueError, match=r"close guard: close of C-9"):
+        Q.stop_runner(cfg, kill=lambda *a: pytest.fail("no kill inside the guard"))
+
+
+def test_stop_wait_guard_rechecks_the_guard_on_the_status_it_acts_on(tmp_path):
+    """--wait-guard: the poll lands between two opens (`busy` briefly gone), the next open
+    starts during the settle reads. The SIGTERM must wait for that open too."""
+    cfg = _cfg(tmp_path)
+    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    opening = {"kind": "open", "campaign": "C-1", "since": S.now_iso(), "budget_s": 600}
+    _set_busy(cfg, opening)
+    busy_at_kill = []
+
+    def on_sleep(n):
+        if n == 2:                                  # the guard poll (1 = the first settle
+            _set_busy(cfg, None)                    # read): between two opens
+        elif n == 3:                                # a settle read: the next open starts
+            _set_busy(cfg, {**opening, "campaign": "C-2"})
+        elif n == 6:
+            _set_busy(cfg, None)
+
+    kills, n = [], {"sleeps": 0}
+
+    def sleep(_s):
+        n["sleeps"] += 1
+        on_sleep(n["sleeps"])
+
+    def kill(pid, sig):
+        busy_at_kill.append((L.read_lease(cfg) or {}).get("busy"))
+        kills.append(pid)
+        lease.release()
+
+    try:
+        r = Q.stop_runner(cfg, timeout_s=5, wait_guard=True, kill=kill, sleep=sleep)
+    finally:
+        lease.release()
+    assert r["stopped"] is True and kills == [os.getpid()] and busy_at_kill == [None]
+    assert n["sleeps"] >= 6
 
 
 def test_stop_other_host_refused(tmp_path, children):

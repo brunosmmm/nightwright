@@ -4336,8 +4336,11 @@ def detach_runner(cfg, argv, log_path, *, timeout_s=15, popen=subprocess.Popen,
     end = clock() + timeout_s
     while True:
         # the lease file first: the child writes it right after taking the flock, so the flock
-        # probe (a brief LOCK_EX of its own) never races the child's non-blocking acquire
-        if (L.read_lease(cfg) or {}).get("pid") == child.pid and L.is_held(cfg):
+        # probe (a brief LOCK_EX of its own) never races the child's non-blocking acquire.
+        # `detached` is written once the child handles SIGTERM, so a `wt queue stop` right
+        # after this returns stops it gracefully.
+        info = L.read_lease(cfg) or {}
+        if info.get("pid") == child.pid and info.get("detached") and L.is_held(cfg):
             return {"pid": child.pid, "log": str(log_path)}
         rc = child.poll()
         if rc is not None:
@@ -4415,26 +4418,24 @@ def stop_runner(cfg, *, timeout_s=60, wait_guard=False, guard_wait_s=None, kill=
     if st.get("host") != socket.gethostname():
         raise ValueError(f"queue held by pid {st.get('pid')} on {st.get('host')}, not this "
                          f"host ({socket.gethostname()}); stop it there")
-    busy = close_guard(st)
-    if busy is not None:
+    end = None
+    # the guard is checked on the very status that is acted on: after a --wait-guard wait the
+    # holder is settled again and the guard re-checked on that read, never on an earlier one
+    while (busy := close_guard(st)) is not None:
         if not wait_guard:
             raise ValueError(f"{_guard_text(busy)}; retry later or pass --wait-guard")
-        if guard_wait_s is None:
-            age = _age(busy.get("since")) or 0
-            try:
-                guard_wait_s = max(0.0, float(busy.get("budget_s")) - age) + 30
-            except (TypeError, ValueError):
-                guard_wait_s = 30
-        end = clock() + guard_wait_s
-        while busy is not None:
-            if clock() >= end:
-                raise ValueError(f"{_guard_text(busy)}; still guarded after "
-                                 f"{guard_wait_s:g}s of waiting")
-            sleep(0.2)
-            st = L.lease_status(cfg)
-            if not st["held"]:
-                return {"stopped": False, "reason": "no runner"}
-            busy = close_guard(st)
+        if end is None:
+            if guard_wait_s is None:
+                age = _age(busy.get("since")) or 0
+                try:
+                    guard_wait_s = max(0.0, float(busy.get("budget_s")) - age) + 30
+                except (TypeError, ValueError):
+                    guard_wait_s = 30
+            end = clock() + guard_wait_s
+        if clock() >= end:
+            raise ValueError(f"{_guard_text(busy)}; still guarded after "
+                             f"{guard_wait_s:g}s of waiting")
+        sleep(0.2)
         st = _settled_holder(cfg, sleep)
         if not st["held"]:
             return {"stopped": False, "reason": "no runner"}
@@ -4492,9 +4493,8 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
     entered = False                     # SPEC-0262: the main `try` owns the lease from there on
     try:
         G.reset()                                          # SPEC-0229: no stale stop flag
-        runner_log = os.environ.pop(RUNNER_LOG_ENV, None)  # SPEC-0291: started by --detach;
-        if runner_log:                                     # popped so no descendant inherits it
-            lease.update_info(log=runner_log, detached=True)
+        # SPEC-0291: started by --detach; popped so no descendant inherits it
+        runner_log = os.environ.pop(RUNNER_LOG_ENV, None)
         lease.update_info(poll_interval_s=interval, slot_freed_at=store.now_iso())   # SPEC-0228
 
         def _handler(signum, _frame):
@@ -4505,6 +4505,8 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                 previous[sig] = signal.signal(sig, _handler)
             except ValueError:                                  # not the main thread (tests)
                 pass
+        if runner_log:      # only once SIGTERM is handled: `--detach` waits for this mark
+            lease.update_info(log=runner_log, detached=True)
         ticks = 0
         reason = "signal"
         watch_root = (code_root or code_checkout()) if reexec else None
@@ -4709,7 +4711,7 @@ def _age(ts: str | None, now=None) -> int | None:
     import datetime as dt
     try:
         t = dt.datetime.fromisoformat(ts)
-    except ValueError:
+    except (TypeError, ValueError):         # not a string (a hand-edited file), or garbage
         return None
     now = now or dt.datetime.now().astimezone()
     if t.tzinfo is None:
