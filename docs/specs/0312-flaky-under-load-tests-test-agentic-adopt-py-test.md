@@ -1,9 +1,10 @@
 ---
 id: SPEC-0312
 title: "Make test_fanout_detach_precondition load-tolerant (no wall-clock races with real subprocesses)"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-30
+updated: 2026-10-30
 kind: feature
 source_idea: IDEA-434
 tags: [tests, flaky, agentic]
