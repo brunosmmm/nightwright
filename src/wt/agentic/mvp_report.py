@@ -232,12 +232,16 @@ def e5(cfg, point, targets) -> tuple[dict, list[dict]]:
 
 def e6(cfg, start, end, targets) -> tuple[dict, list[dict]]:
     sess = []
-    for r in CC.sessions(cfg):
+    for order, r in enumerate(CC.sessions(cfg)):
         path = CC.find_transcript(cfg, r["session_id"])
         turns = CC.read_turns(path) if path else []
         if turns:
-            sess.append((min(t["ts"] for t in turns), r["session_id"], path, turns))
-    sess.sort(key=lambda s: s[0])
+            sess.append((min(t["ts"] for t in turns), len(turns), order,
+                         r["session_id"], path, turns))
+    # a resumed transcript copies the original's first turn (same ts), so ties go to the
+    # shorter transcript, then registry order: never to the random session-id string
+    sess.sort(key=lambda s: s[:3])
+    sess = [(s[0], *s[3:]) for s in sess]
     # a resumed session's transcript replays earlier history under the same message ids:
     # only its new turns date the restart, and replayed marks are not events
     seen_ids, fresh = set(), []

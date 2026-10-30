@@ -483,6 +483,18 @@ def test_e6_resumed_session_replay(cfg):
         ("s3", "restart", T(10, 13))]
 
 
+def test_e6_resume_order_does_not_depend_on_session_id(cfg):
+    one_window(cfg)
+    hist = [asst("a", T(10, 9), 1), asst("b", T(10, 11), 1), compact(T(10, 11, 1)),
+            asst("c", T(10, 11, 2), 1, brief=True)]
+    # the resumed session's id sorts before the original's; both start at the same ts
+    conductor(cfg, "sB", hist)
+    conductor(cfg, "sA", hist + [asst("d", T(10, 12), 1)])
+    ev = MVP.report(cfg, n=1)["e6_events"]
+    assert [(e["session_id"], e["kind"], e["ts"], e["oriented"]) for e in ev] == [
+        ("sB", "compaction", T(10, 11, 1), True), ("sA", "restart", T(10, 12), False)]
+
+
 def test_e6_replayed_history_before_interval_is_no_restart(cfg):
     one_window(cfg)
     hist = [asst("a", T(10, 8), 1), asst("b", T(10, 9), 1)]

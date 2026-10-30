@@ -301,6 +301,16 @@ is error-prone (day vs campaign windows, all-time vs windowed merges).
   Sabotage by hand (each failed the named new tests, then reverted): dropping the `park_owner`
   filter in E5, and counting every `compact_boundary`. The full suite was left to gating.
 
+### Test record (2026-10-30, fourth review fixes)
+
+- E6 now orders sessions by `(first-turn ts, number of turns, registry order)` instead of the
+  session-id string, so a resumed transcript (same first ts, more turns) never sorts ahead of its
+  original. New `test_e6_resume_order_does_not_depend_on_session_id` (original `sB`, resumed `sA`)
+  asserts the restart is still reported. Sabotage by hand (sorting by session id alone) failed it,
+  then reverted. `uv run pytest tests/test_agentic_mvp_report.py tests/test_agentic_mvp_integration.py
+  tests/test_agentic_conductor_cost.py`: 52 passed. The full suite was left to gating.
+- Note: a HANDED_OFF to MERGED sweep dates the campaign's `end` at the sweep (its terminal ts).
+
 ### As shipped (2026-10-30)
 
 - `src/wt/agentic/mvp_report.py` and the `wt queue mvp-report` command as designed. Helpers
