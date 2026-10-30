@@ -2,6 +2,7 @@
 conduct skill's spec-phase park rows."""
 import datetime as dt
 import json
+import re
 import threading
 from pathlib import Path
 
@@ -28,9 +29,11 @@ def _render(p, width=120):
     return console.export_text()
 
 
+NOW = dt.datetime(2026, 10, 30, 12, 0, 0, tzinfo=dt.timezone.utc)   # fixed: no wall-clock races
+
+
 def _iso(delta_s):
-    return (dt.datetime.now().astimezone() - dt.timedelta(seconds=delta_s)).isoformat(
-        timespec="seconds")
+    return (NOW - dt.timedelta(seconds=delta_s)).isoformat(timespec="seconds")
 
 
 def _journal(cfg, *recs):
@@ -57,32 +60,50 @@ def _cfg(tmp_path):
     return repo, make_cfg(tmp_path, repo, script(tmp_path, []))
 
 
+def _payload(cfg, **kw):
+    return Q.dashboard_payload(cfg, now=NOW, **kw)
+
+
 def _rows(cfg, **kw):
-    return {r["run_id"]: r for r in Q.dashboard_payload(cfg, **kw)["spec_reviews"]}
+    return {r["run_id"]: r for r in _payload(cfg, **kw)["spec_reviews"]}
+
+
+def _row_line(text, needle):
+    return next(line for line in text.splitlines() if needle in line)
 
 
 def test_cli_review_running_then_ended(tmp_path, monkeypatch):
     repo = make_repo(tmp_path, review=False)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [
-        {"persona": "spec_reviewer", "verdict": REVISE, "cost_usd": 0.0, "sleep_s": 2}]))
-    out = {}
+        {"persona": "spec_reviewer", "verdict": REVISE, "cost_usd": 0.0, "sleep_s": 4}]))
+    out, seen = {}, {}
     t = threading.Thread(target=lambda: out.update(
         r=run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])))
     t.start()
-    until(lambda: Q.dashboard_payload(cfg)["spec_reviews"], timeout=10)
-    p = Q.dashboard_payload(cfg)
+
+    def running():            # sample inside the poll: the running state is what we asserted on
+        p = Q.dashboard_payload(cfg)
+        if p["spec_reviews"]:
+            seen["p"], seen["text"] = p, _render(p)
+        return p["spec_reviews"]
+    until(running, timeout=10)
+    p = seen["p"]
     assert [r["status"] for r in p["spec_reviews"]] == ["running"]
+    assert p["spec_reviews"][0]["duration_s"] >= 0 and p["spec_reviews"][0]["ended_at"] is None
     assert p["totals"]["reviews_running"] == 1
-    assert "reviews 1" in _render(p)
-    join(t, 15)
+    assert "reviews 1" in seen["text"] and "▶" in _row_line(seen["text"], "SPEC-0001")
+    join(t, 20)
     assert out["r"].exit_code == 0, out["r"].output
     p = Q.dashboard_payload(cfg)
     assert p["totals"]["reviews_running"] == 0
     row = p["spec_reviews"][0]
     assert row["status"] == "revise" and row["counts"] == {"must_fix": 1}
+    assert row["ended_at"] is not None
     text = _render(p)
     assert "Spec reviews (1)" in text and "revise" in text and "1 must_fix" in text
     assert "$0.00" in text and "reviews 0" not in text and "reviews 1" not in text
+    line = _row_line(text, "revise")
+    assert re.search(r"\b\d+[smhd]\s*$", line.rstrip(" │")) and "▶" not in line
     # --project hides the section (and the chip while running)
     assert Q.dashboard_payload(cfg, project="Meta-Tools")["spec_reviews"] == []
     assert "Spec reviews" not in _render(Q.dashboard_payload(cfg, project="Meta-Tools"))
@@ -91,10 +112,10 @@ def test_cli_review_running_then_ended(tmp_path, monkeypatch):
 def test_running_hidden_by_project(tmp_path):
     _, cfg = _cfg(tmp_path)
     _journal(cfg, _start("r1", 5))
-    p = Q.dashboard_payload(cfg, project="Meta-Tools")
+    p = _payload(cfg, project="Meta-Tools")
     assert p["spec_reviews"] == [] and p["totals"]["reviews_running"] == 0
     assert "reviews 1" not in _render(p) and "Spec reviews" not in _render(p)
-    assert Q.dashboard_payload(cfg)["totals"]["reviews_running"] == 1
+    assert _payload(cfg)["totals"]["reviews_running"] == 1
 
 
 def test_backdated_failed_and_window(tmp_path):
@@ -114,12 +135,21 @@ def test_backdated_failed_and_window(tmp_path):
     assert rows["err"]["status"] == "failed" and rows["err"]["counts"] is None
     assert rows["err"]["cost_usd"] == 0.07 and rows["err"]["duration_s"] == 100
     assert rows["long"]["status"] == "running"
+    assert rows["long"]["duration_s"] == int(2.5 * h) and rows["long"]["ended_at"] is None
+    assert rows["orphan"]["ended_at"] == _iso(100)               # started_at + timeout_s
+    assert rows["err"]["ended_at"] == _iso(300)
     # the failed orphan disappears recent_hours after started_at + timeout_s
     _journal(cfg, _start("orphan2", 600 + 2 * h, timeout_s=600))
     assert "orphan2" not in _rows(cfg, recent_hours=1)
     assert "orphan2" in _rows(cfg, recent_hours=3)
-    text = _render(Q.dashboard_payload(cfg, recent_hours=1))
+    text = _render(_payload(cfg, recent_hours=1))
     assert "failed" in text and "—" in text and "$0.07" in text
+    assert "▶ 2h30m" in _row_line(text, "▶")
+    # when: running shows ▶ elapsed; failed rows age their end (err: 300s -> 5m, orphan: 100s -> 1m)
+    lines = [ln for ln in text.splitlines() if "failed" in ln]
+    assert any("$0.07" in ln and "5m" in ln for ln in lines)
+    assert any("—" in ln and "1m" in ln for ln in lines)
+    assert not any("▶" in ln for ln in lines)
 
 
 def test_order_running_first_then_recent(tmp_path):
@@ -130,9 +160,40 @@ def test_order_running_first_then_recent(tmp_path):
         _start("run_new", 20), _start("run_old", 90),
         _start("e_new", 500), _end("e_new", 100, verdict="split", counts={"major": 2}),
         _start("orphan", 1000, timeout_s=300))                      # failed at now-700
-    ids = [r["run_id"] for r in Q.dashboard_payload(cfg)["spec_reviews"]]
+    ids = [r["run_id"] for r in _payload(cfg)["spec_reviews"]]
     assert ids == ["run_old", "run_new", "e_new", "orphan", "e_old"]
-    assert "2 major" in _render(Q.dashboard_payload(cfg))
+    assert "2 major" in _render(_payload(cfg))
+
+
+def test_end_without_verdict_or_error_is_failed(tmp_path):
+    _, cfg = _cfg(tmp_path)
+    _journal(cfg, _start("blank", 200), _end("blank", 100, counts={"major": 3}, cost_usd=0.5),
+             _start("badts", 200), _end("badts", 0, ts="not-a-date", verdict="approve"))
+    rows = _rows(cfg)
+    assert rows["blank"]["status"] == "failed" and rows["blank"]["counts"] is None
+    assert rows["blank"]["cost_usd"] == 0.5
+    assert "badts" not in rows                    # an end with an unreadable ts is skipped
+
+
+def test_malformed_records_do_not_break_the_dashboard(tmp_path):
+    _, cfg = _cfg(tmp_path)
+    _journal(
+        cfg,
+        {"kind": "start", "run_id": "tstr", "ts": _iso(30), "timeout_s": "30m",
+         "spec_id": "SPEC-0002"},
+        {"kind": "start", "run_id": ["x"], "ts": _iso(30)},
+        {"kind": "end", "run_id": {"a": 1}, "ts": _iso(30), "verdict": "approve"},
+        _start("badcounts", 90), _end("badcounts", 60, verdict="approve", counts=["a"],
+                                      cost_usd="free", duration_s="long"),
+        _start("badverdict", 90), _end("badverdict", 60, verdict=["approve"]))
+    p = _payload(cfg)
+    rows = {r["run_id"]: r for r in p["spec_reviews"]}
+    assert set(rows) == {"tstr", "badcounts", "badverdict"}
+    assert rows["tstr"]["status"] == "failed"           # unreadable timeout_s counts as 0
+    assert rows["badcounts"]["status"] == "approve" and rows["badcounts"]["counts"] is None
+    assert rows["badcounts"]["cost_usd"] is None and rows["badcounts"]["duration_s"] is None
+    assert rows["badverdict"]["status"] == "failed"
+    assert "Spec reviews (3)" in _render(p)
 
 
 def test_end_without_start_uses_its_ts(tmp_path):
@@ -140,7 +201,7 @@ def test_end_without_start_uses_its_ts(tmp_path):
     _journal(cfg, _end("lonely", 60, verdict="approve", counts={}, cost_usd=0.15))
     row = _rows(cfg)["lonely"]
     assert row["status"] == "approve" and row["started_at"] == _iso(60)
-    assert "$0.15" in _render(Q.dashboard_payload(cfg))
+    assert "$0.15" in _render(_payload(cfg))
 
 
 def test_spec_phase_events_projected_once(tmp_path):

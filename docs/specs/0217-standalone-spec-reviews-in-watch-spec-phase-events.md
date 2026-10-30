@@ -150,7 +150,12 @@ status and age rules in memory. Project the new events in `events._project_ledge
 - Related modules: `tests/test_agentic_dashboard.py`, `test_agentic_dashboard_spec_phase.py`,
   `test_agentic_events.py`, `test_agentic_spec_review.py` — all passed (128 with the new file).
 - `python3 tools/spec_lint.py` exits 0; ledger regenerated.
-- The full `uv run pytest` run was left to gating.
+- Review follow-up (loop 1): backdated tests now use a fixed `now` (no wall-clock races) and
+  assert the **when** column (`▶ 2h30m` while running, aged end for failed/ended rows) plus
+  `ended_at` / `duration_s`; added an end with neither verdict nor error, an end with an
+  unreadable `ts`, and malformed journal records (string `timeout_s`, unhashable `run_id`,
+  list `counts`, non-numeric cost). Re-ran the dashboard/events/spec-review test files above:
+  134 passed, twice. The full `uv run pytest` run was left to gating.
 
 ### As shipped
 
@@ -159,6 +164,9 @@ status and age rules in memory. Project the new events in `events._project_ledge
   second total; with `--project` only the campaign chips count.
 - Rows also carry `ended_at` (end `ts`, or `started_at + timeout_s` for a failed orphan; null
   while running), which the **when** column ages; the other keys are as designed.
+- Malformed journal records are tolerated: non-string `run_id` records are skipped, a
+  non-numeric `timeout_s` counts as 0, a non-dict `counts` / non-numeric cost or duration
+  becomes null, and a non-string verdict is treated as failed.
 - `_spec_review_rows` in `queue.py`, `_dash_spec_reviews` in `cli_queue.py` (placed after the
   attention tables, before Waiting).
 

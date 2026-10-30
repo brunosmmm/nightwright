@@ -5058,12 +5058,17 @@ def _spec_review_rows(cfg, now, recent_hours) -> list[dict]:
     and ended or failed ones within `recent_hours`; running first (oldest start first), then
     the rest, most recent end first."""
     import datetime as dt
+    def _num(v):
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
     starts, ends = {}, {}
     for rec in SR.read_journal(cfg, tail=2000):
         rid = rec.get("run_id")
-        if rid and rec.get("kind") == "start":
+        if not rid or not isinstance(rid, str):      # foreign or hand-edited record
+            continue
+        if rec.get("kind") == "start":
             starts[rid] = rec
-        elif rid and rec.get("kind") == "end":
+        elif rec.get("kind") == "end":
             ends[rid] = rec
 
     running, done = [], []
@@ -5077,7 +5082,7 @@ def _spec_review_rows(cfg, now, recent_hours) -> list[dict]:
                "counts": None, "started_at": started.isoformat(timespec="seconds"),
                "duration_s": None, "cost_usd": None, "ended_at": None}
         if end is None:
-            deadline = started + dt.timedelta(seconds=float(start.get("timeout_s") or 0))
+            deadline = started + dt.timedelta(seconds=_num(start.get("timeout_s")) or 0)
             if now < deadline:
                 row.update(status="running", duration_s=max(0, int((now - started).total_seconds())))
                 running.append((started, row))
@@ -5089,10 +5094,12 @@ def _spec_review_rows(cfg, now, recent_hours) -> list[dict]:
             sort_ts = SR._ts(end.get("ts"))
             if sort_ts is None:
                 continue
-            failed = bool(end.get("error")) or not end.get("verdict")
-            row.update(status="failed" if failed else end["verdict"],
-                       counts=None if failed else end.get("counts"),
-                       cost_usd=end.get("cost_usd"), duration_s=end.get("duration_s"),
+            verdict = end.get("verdict")
+            failed = bool(end.get("error")) or not verdict or not isinstance(verdict, str)
+            counts = end.get("counts")
+            row.update(status="failed" if failed else verdict,
+                       counts=counts if not failed and isinstance(counts, dict) else None,
+                       cost_usd=_num(end.get("cost_usd")), duration_s=_num(end.get("duration_s")),
                        ended_at=sort_ts.isoformat(timespec="seconds"))
         if now - sort_ts <= window:
             done.append((sort_ts, row))

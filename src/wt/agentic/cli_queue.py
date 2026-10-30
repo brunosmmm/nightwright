@@ -605,9 +605,10 @@ def _dash_spec_reviews(items: list, generated_at=None) -> Table:
     for r in items:
         status = r["status"]
         counts = r.get("counts")
-        findings = ("—" if counts is None else
+        findings = ("—" if not isinstance(counts, dict) else
                     " · ".join(f"{n} {k}" for k, n in counts.items() if n) or "none")
         cost = r.get("cost_usd")
+        cost = cost if isinstance(cost, (int, float)) else None
         if status == "running":
             when = f"▶ {_dur(r.get('duration_s'))}"
         else:
