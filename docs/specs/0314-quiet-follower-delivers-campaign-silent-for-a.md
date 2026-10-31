@@ -1,9 +1,10 @@
 ---
 id: SPEC-0314
 title: "A CLOSING campaign waiting in the close train behind a live head is not `campaign_silent`, and the quiet follower holds it"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-30
+updated: 2026-10-30
 milestone: "M10: agentic MVP"
 kind: feature
 source_idea: IDEA-462
