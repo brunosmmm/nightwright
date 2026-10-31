@@ -51,7 +51,8 @@ them has fired at least once:
    `queue.py:2358-2372`). Nothing failed; the base was busy. That is `base_moving`, which
    [SPEC-0302](./0302-routine-parks-decided-by-the-queue.md) makes routine.
 2. **The resolver blocked by the cost cap.** `plan_step` checks the cap before a resolve
-   step (`queue.py:221-226`). SPEC-0225 parked `cost_cap` at $13.88 of $15 because "a
+   step (`queue.py:221-226`). SPEC-0225 parked `cost_cap` at $13.88 of a raised $15 cap (the balanced profile's
+   `campaign_cap_usd` is 10.0) because "a
    conflict_resolver run may cost $2.00". A campaign that already passed its gates and
    review then waits for the conductor over one cheap run (the median resolver run costs
    about $0.43).
@@ -85,7 +86,10 @@ them has fired at least once:
    (2) **failed** resolver runs per entry into CLOSING. A new bound, `MAX_RESOLVE_RUNS = 4`,
    caps all resolver runs (verified or not) per entry into CLOSING, so a base that never
    settles cannot loop forever. `_dispatch_resolver` dispatches while
-   `failed < MAX_RESOLVE_ATTEMPTS and runs < MAX_RESOLVE_RUNS`.
+   `failed < MAX_RESOLVE_ATTEMPTS and runs < MAX_RESOLVE_RUNS`. The run cap also holds on the
+   failed-run retry path (a failed run stays in CLOSING and is retried without passing
+   through `_dispatch_resolver`): `_apply_resolve` checks both bounds after a failed run
+   (see Design).
 2. **Name the park after its cause.** When the dispatch is refused:
    - because failed runs reached `MAX_RESOLVE_ATTEMPTS`, it parks `rebase_conflict` with
      today's detail (`_spent_resolver_park`);
@@ -93,7 +97,12 @@ them has fired at least once:
      **`base_moving`** with detail `"<base> moved and conflicted again after <k> verified
      resolutions"` and `resume_to: CLOSING`. SPEC-0302 then auto-resumes it with backoff,
      and the resume resets both budgets (entering CLOSING resets `closing`,
-     `queue.py:842`).
+     `queue.py:842`);
+   - because runs reached `MAX_RESOLVE_RUNS` on a **failed** last run, it is a real failure,
+     not base churn: it parks `rebase_conflict` with today's detail.
+   When an earlier run failed (`resolve_failed.n > 0`) and the base-moving park fires
+   anyway (for example verified, failed, verified, verified), the `base_moving` detail
+   appends `; an earlier attempt failed: <last>`.
 3. **Close allowance for the resolver.** In `plan_step`'s CLOSING branch, the resolver's
    cap check uses `cap_usd + resolver_allowance_usd`. `resolver_allowance_usd` is
    `merge.resolver_allowance_usd` in the project config, defaulting to the profile's
@@ -101,13 +110,18 @@ them has fired at least once:
    profile). The allowance is not added to `cost.cap_usd`. Spend over the cap is recorded
    as it happens, and the export shows it (`cost_cap_frac` > 1). Beyond the allowance the
    park is the ordinary `cost_cap`. A `finding` (`severity: info`, `gate: rebase`, title
-   "resolver ran on the close allowance") is appended whenever a resolve step starts above
-   the plain cap, so the overspend is auditable.
+   "resolver ran on the close allowance") is appended when the resolve step was allowed
+   only by the allowance, i.e. `cost.total_usd + resolver budget > cap_usd` at plan time
+   (the plain cap would have refused it), so the overspend is auditable. The condition is
+   the same in Decision, Design and the acceptance criteria.
 4. **Export conflict pressure.** `wt campaign export` campaigns rows gain, appended per the
    `wt.campaign.export.v1` contract: `rebase_regenerated` (count of "generated files
    regenerated during rebase" findings), `resolver_dispatches` (count of "rebase conflict;
    resolver dispatched" findings), `rebase_resolved` (count of `rebase_resolved` events) and
-   `resolver_allowance_usd` (the spend above `cap_usd` during resolve steps, or 0).
+   `resolver_overcap_usd` (named differently from the `merge.resolver_allowance_usd` config
+   key, because it is a different quantity: the sum, over `cost` events with
+   `persona: conflict_resolver`, of `max(0, total_usd - max(cap_usd, total_usd - delta_usd))`,
+   or 0).
 
 ## Design
 
@@ -118,19 +132,33 @@ them has fired at least once:
     `pre_head`/`target_sha`, `merge_base` failure) and parks `rebase_conflict` as today.
     Its caller (`queue.py:2075-2079`) maps `failed_out` and `no` to
     `_spent_resolver_park` / `rebase_conflict`, and `runs_out` to the `base_moving` park of
-    Decision 2.
-  - `_apply_resolve` (`queue.py:2379-2428`): its final park after a failed run checks
-    `resolve_failed.n` against `MAX_RESOLVE_ATTEMPTS` instead of `resolve_attempts`, so a
-    verified run followed by one failure gets a retry. The `resolve_attempts` counter stays
-    as the run count for `MAX_RESOLVE_RUNS`.
+    Decision 2. `failed_out` is kept as a defensive case (two failures already park inside
+    `_apply_resolve`, and a resume resets `closing`, so `_dispatch_resolver` will rarely
+    see it). The `base_moving` detail appends `; an earlier attempt failed: <last>` when
+    `resolve_failed.n > 0`. `_spent_resolver_park` drops its "all verified" branch, which is
+    now unreachable (all-verified exhaustion goes to `base_moving`); its mixed and failed
+    branches stay.
+  - `_apply_resolve` (`queue.py:2379-2428`): its final park after a failed run fires when
+    `resolve_failed.n >= MAX_RESOLVE_ATTEMPTS` or `resolve_attempts >= MAX_RESOLVE_RUNS`,
+    and in both cases parks `rebase_conflict` with today's detail (the last run failed, so
+    this is a real failure, not base churn). Only when both are below their bounds does it
+    stay CLOSING for a retry. This closes the retry path that never passes through
+    `_dispatch_resolver`, and means a verified run followed by one failure gets a retry. The
+    `resolve_attempts` counter stays as the run count for `MAX_RESOLVE_RUNS`.
   - `_resolver_allowance(project_cfg, profile) -> float` and, in `plan_step`'s CLOSING
     branch, `_cap_blocks` is called on a shallow copy of the state whose `cost.cap_usd` is
-    raised by the allowance. The "resolver ran on the close allowance" finding is appended
-    in the resolve step's apply when `cost.total_usd` exceeded the plain cap at dispatch.
+    raised by the allowance. `plan_step` stays pure. The runner records `on_allowance: true`
+    on `closing.resolve` when it starts a resolve step that `_cap_blocks` would refuse under
+    the plain cap (`total_usd + resolver budget > cap_usd`); the resolve step's apply
+    appends the "resolver ran on the close allowance" finding when that flag is set.
+    `cost.cap_usd` is never modified.
 - `src/wt/agentic/project.py`: `merge.resolver_allowance_usd` (number ≥ 0, optional) in the
   project schema next to `merge.resolver` (`project.py:40`).
 - `src/wt/agentic/campaign_export.py`: the four columns in the campaigns table schema and
-  `campaign_row`, counted from the ledger events the row already reads.
+  `campaign_row`, computed from the ledger events the row already reads: the three counts
+  from findings and `rebase_resolved` events, and `resolver_overcap_usd` from `cost` events
+  with `persona: conflict_resolver` (`total_usd`, `cap_usd`, `delta_usd`) per the formula
+  in Decision 4.
 - `skills/wt-conduct/SKILL.md`: the `parked.rebase_conflict` row drops the "two verified
   resolutions … overtaken by a base move" case (that is now `base_moving`) and says the
   park means the resolver failed twice or the project opted out.
@@ -160,14 +188,19 @@ them has fired at least once:
       today's detail, and a verified run followed by one failed run is retried.
 - [ ] `merge.resolver: false` and a missing `pre_head`/`target_sha` still park
       `rebase_conflict` as today.
-- [ ] A resolve step whose run would cross `cap_usd` but not `cap_usd +
+- [ ] The run cap holds on the retry path: verified ×3 then one failed run parks
+      `rebase_conflict` with no 5th run; a failed run with both bounds unmet stays CLOSING.
+- [ ] A resolve step with `total_usd + resolver budget > cap_usd` but within `cap_usd +
       resolver_allowance_usd` runs, and appends the "resolver ran on the close allowance"
+      finding (via `closing.resolve.on_allowance`). A step within the plain cap appends no
       finding. Beyond the allowance it parks `cost_cap`. `cost.cap_usd` itself is
       unchanged.
+- [ ] When an earlier run failed, the `base_moving` detail ends with `; an earlier attempt
+      failed: <last>`; `_spent_resolver_park` has no all-verified branch.
 - [ ] `merge.resolver_allowance_usd` validates in the project schema; when absent the
       default is the profile's resolver budget × 2.
 - [ ] `wt campaign export --table campaigns` rows carry `rebase_regenerated`,
-      `resolver_dispatches`, `rebase_resolved` and `resolver_allowance_usd` (appended
+      `resolver_dispatches`, `rebase_resolved` and `resolver_overcap_usd` (appended
       columns), and existing columns are unchanged.
 - [ ] The `/wt-conduct` `parked.rebase_conflict` row no longer describes the
       verified-then-moved case.
@@ -183,7 +216,18 @@ them has fired at least once:
     `rebase_conflict` park whose detail contains `last:`.
   - `test_verified_then_failed_gets_retry`: verified, base moves, then one failure → a third
     run is dispatched.
+  - `test_run_cap_applies_to_retry`: verified ×3 (base moves each time), then one failure →
+    `rebase_conflict` park and no 5th run.
+  - `test_earlier_failure_noted_in_base_moving_detail`: verified, failed, verified,
+    verified, then a new conflict → `base_moving` park whose detail ends with
+    `; an earlier attempt failed:`.
   - `test_resolver_opt_out_still_parks` (`merge.resolver: false`).
+  - `test_missing_merge_base_parks_rebase_conflict`: `merge_base` fails (and separately a
+    missing `pre_head`/`target_sha`) → `rebase_conflict` park, no resolver run.
+  - `test_resolve_on_allowance_records_finding`: cap set so that total + budget > cap ≥
+    total; the resolve runs, the "resolver ran on the close allowance" finding is appended,
+    and `state.cost.cap_usd` equals its value before the run. A companion case with total +
+    budget ≤ cap appends no finding.
 - **Automated, `tests/test_agentic_queue.py`** (pure `plan_step`):
   - `test_resolve_within_close_allowance` (parametrized): total + budget ≤ cap → `resolve`;
     ≤ cap + allowance → `resolve`; > cap + allowance → `cost_cap` park.
@@ -191,8 +235,8 @@ them has fired at least once:
     used; a negative value fails project validation.
 - **Automated, `tests/test_agentic_campaign_export.py`**:
   `test_export_conflict_pressure_columns`: a ledger with 2 regeneration findings, 1
-  dispatch, 1 `rebase_resolved` and an allowance overspend gives the four values; the
-  column order of existing columns is unchanged.
+  dispatch, 1 `rebase_resolved` and `conflict_resolver` `cost` events crossing `cap_usd` gives the four
+  values (`resolver_overcap_usd` per the Decision 4 formula); the column order of existing columns is unchanged.
 - **Automated, `tests/test_skills.py`**: `test_conduct_skill_rebase_conflict_row` (no
   "verified" case in the row; `test_conduct_skill_rule_ids` still passes).
 - **Sabotage checks:** count verified runs toward `MAX_RESOLVE_ATTEMPTS` again →
