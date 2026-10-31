@@ -275,7 +275,7 @@ step 5, the old `wt` binary is the live one.
 12. **STEWARD** — verify:
     ```sh
     nw --help | head -1                       # Usage: nw …
-    nw queue                                  # runner alive, old campaigns listed with their paths
+    nw queue list                             # runner alive, old campaigns listed with their paths
     nw campaign show <an old MERGED campaign>  # legacy wt.* ledger reads cleanly
     nw mailbox list --to conductor | head     # legacy messages readable
     nw spec reserve --for cutover-check   # then: nw spec release <that number> --yes
