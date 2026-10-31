@@ -3621,7 +3621,7 @@ def _auto_resume_step(cfg, flying, *, busy_count, slots, report) -> list:
                if isinstance((s.get("park") or {}).get("auto"), dict) and s["id"] not in flying]
     if not sett["enabled"]:
         for st in pending:
-            _auto_give_up(cfg, st["id"], st["park"]["auto"].get("rule") or "auto_resume",
+            _auto_give_up(cfg, st["id"], st["park"]["auto"].get("rule") or "auto_resume_failed",
                           "auto-resume disabled")
         return []
     resumed = []
@@ -3640,20 +3640,22 @@ def _auto_resume_step(cfg, flying, *, busy_count, slots, report) -> list:
         from . import escalations as ESC
         n = int(((cur.get("counters") or {}).get("auto_resumes") or {}).get(rule, 0))
         note = f"queue: {rule} auto-resume {n + 1}/{sett['max_per_campaign']}"
-        error = None
+        error, resume_recorded = None, False
         if cur_park.get("reason") != _AUTO_REASON.get(rule):
             error = f"park reason is now {cur_park.get('reason')}"
         elif ESC.open_for(cfg, cid) is not None:
             error = "an escalation is open"
         else:
             try:
+                # no `note`: it would become a persistent pseudo-human brief note; the ledger
+                # event carries the bookkeeping text instead
                 plan = plan_resume(cfg, cid, by="queue", raise_cap=cur_auto.get("raise_cap"),
-                                   note=note, auto_rule=rule)
+                                   auto_rule=rule, event_note=note)
             except ValueError as e:
                 error = str(e)
         if error is None:
             cap = plan.get("raise_cap")
-            _record_queue_decision(
+            resume_recorded = _record_queue_decision(
                 cfg, cid, "resume", rule, f"scheduled automatic resume reached ({note})",
                 action=f"resume to {plan['to']}" + (f" raise cap to ${cap:.2f}" if cap else ""))
             try:
@@ -3663,7 +3665,10 @@ def _auto_resume_step(cfg, flying, *, busy_count, slots, report) -> list:
             except ValueError as e:
                 error = str(e)
         if error is not None:
-            _auto_give_up(cfg, cid, rule, error)
+            if not _auto_give_up(cfg, cid, rule, error) and resume_recorded:
+                # the park was resumed or replaced by someone else after the `resume` record
+                _record_queue_decision(cfg, cid, "other", rule,
+                                       f"automatic resume not applied: {error}")
             continue
         report.steps.append({"campaign": cid, "from": "PARKED", "to": after["state"],
                              "action": "auto_resume", "reason": rule,
@@ -6302,7 +6307,7 @@ def apply_park(cfg, plan: dict) -> dict:
 
 
 def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loops=False,
-                by="human", auto_rule=None) -> dict:
+                by="human", auto_rule=None, event_note=None) -> dict:
     st = store.read_state(cfg, campaign)
     if st.get("state") != "PARKED":
         raise ValueError(f"{campaign} is {st.get('state')}, not PARKED")
@@ -6318,7 +6323,8 @@ def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loop
     return {"campaign": campaign, "from": "PARKED", "to": target, "note": note,
             "raise_cap": raise_cap, "reset_loops": bool(reset_loops),
             "park": park, "cap_usd": (st.get("cost") or {}).get("cap_usd"),
-            "waits_for_slot": waits, "by": by, "auto_rule": auto_rule}
+            "waits_for_slot": waits, "by": by, "auto_rule": auto_rule,
+            "event_note": event_note}
 
 
 def apply_resume(cfg, plan: dict, *, busy=None, slots=None) -> dict:
@@ -6353,7 +6359,7 @@ def apply_resume(cfg, plan: dict, *, busy=None, slots=None) -> dict:
             counts[plan["auto_rule"]] = int(counts.get(plan["auto_rule"], 0)) + 1
         st["park"] = None
         st.pop("park_requested", None)
-        ev = ("resume", {"to": plan["to"], "note": plan.get("note"),
+        ev = ("resume", {"to": plan["to"], "note": plan.get("note") or plan.get("event_note"),
                          "cap_usd": plan.get("raise_cap"), "loops_reset": bool(plan.get("reset_loops"))})
         st = _enter_slot_or_wait(cfg, st, plan["to"], "resumed", by=by, extra_events=[ev],
                                  busy=busy, slots=slots)

@@ -365,8 +365,18 @@ its own decisions in the same vocabulary as the conductor.
   stalled. No slowdown from this change: the tick-heavy `tests/test_agentic_queue.py`,
   `test_agentic_close.py` and `test_agentic_queue_merge.py` (250 tests) take 57 s with it against 67 s
   on the merge-base source tree. The gate timeout was not changed and no test was skipped.
-- Manual verification (`wt queue decisions --since 1d`, `wt queue wakeups`) can only run on the
-  live queue after merge; it is not done yet and is the first thing to check there.
+- Review loop 3: added tests for the park-reason mismatch and `plan_resume` `ValueError` give-up
+  paths, the real `apply_resume` `auto_rule` guard, the decision record preceding the `resume`
+  event (ledger seq), no brief note from an auto resume, the lost-race `other` record, `_tick`
+  planning the campaign step 0a resumed, an in-flight campaign being skipped, the disabled
+  fallback rule id, `RULE_RE` conformance of the queue's rule ids, the `--json` brief CLI and an
+  unrelated timestamp not being read as a reset time. Targeted run of
+  `tests/test_agentic_queue_autopark.py`, `test_agentic_autopark.py`, `test_agentic_quiet.py`,
+  `test_agentic_conductor_brief.py`, `test_skills.py`: all pass; the full suite is left to gating.
+- Manual verification (`wt queue decisions --since 1d`, `wt queue wakeups`) is, by the plan's own
+  wording, a post-merge check on the live queue, so it has **not** been performed yet and is the
+  first thing to check after merge. The "manual steps performed" part of the Definition of done
+  below is therefore pending, not claimed; the DoD text itself is left as accepted.
 
 ### As shipped (2026-10-30)
 
@@ -396,6 +406,20 @@ its own decisions in the same vocabulary as the conductor.
   "merged != gated HEAD" `base_moving` park (`close.py`) carries `no_auto: True` and `_park(...,
   auto_ok=False)`, so only the `moved()` park is auto-decided: the merge already happened, a blind
   retry is not a mechanical decision.
+
+- Review loop 3: a queue auto-resume passes no `note` to `plan_resume` (a note becomes a
+  `pending_brief.human_notes` entry that later briefs show as a human note); the bookkeeping text
+  `queue: <rule> auto-resume n/max` goes in the plan's `event_note`, which only the `resume`
+  ledger event carries. The `resume` decision record is still written before `apply_resume`; if
+  `apply_resume` then loses a race and the park is no longer the queue's to give up, a
+  `kind: other` record ("automatic resume not applied") follows, so `decisions.jsonl` never ends
+  on a `resume` that did not happen. The fallback rule id for an `auto` without `rule` is
+  `auto_resume_failed`. `reset_time` reads an ISO timestamp only when it follows a `reset(s)` /
+  `retry` / `try again` / `available` / `until` cue.
+- Locking: step `0a` re-reads the state without the item lock for its pre-checks; the authoritative
+  re-check is the `auto_rule` guard inside `apply_resume`'s item lock (and `_auto_give_up`'s own
+  lock), which refuses a resume whose park changed. This is the "re-reads under the item lock" of
+  Decision 4, with the check folded into the resume itself.
 
 ## Rollout / migration
 

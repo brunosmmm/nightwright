@@ -147,6 +147,125 @@ def test_auto_resume_failure_hands_back(opened, monkeypatch):
     assert len(S.read_ledger(cfg, cid, types=["auto_resume_failed"])) == 1
 
 
+def _pending_auto(cfg, cid):
+    _park(cfg, cid)
+    Q._record_auto_waits(cfg)
+    _due(cfg, cid)
+
+
+def test_auto_resume_gives_up_when_the_park_reason_changed(opened):
+    cfg, cid, ctx = opened
+    _pending_auto(cfg, cid)
+    st = S.read_state(cfg, cid)
+    st["park"]["reason"] = "loop_exhausted"                 # `auto` survives a rewritten reason
+    S.write_state(cfg, cid, st)
+    _step0a(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and "auto" not in st["park"]
+    assert "park reason is now loop_exhausted" in \
+        S.read_ledger(cfg, cid, types=["auto_resume_failed"])[0]["error"]
+    assert [r["kind"] for r in D.read(cfg, campaign=cid)] == ["wait", "other"]   # no `resume`
+
+
+def test_auto_resume_gives_up_when_plan_resume_raises(opened, monkeypatch):
+    cfg, cid, ctx = opened
+    _pending_auto(cfg, cid)
+
+    def boom(*a, **k):
+        raise ValueError("cannot plan")
+    monkeypatch.setattr(Q, "plan_resume", boom)
+    _step0a(cfg)
+    assert S.read_state(cfg, cid)["state"] == "PARKED"
+    assert S.read_ledger(cfg, cid, types=["auto_resume_failed"])[0]["error"] == "cannot plan"
+    assert [r["kind"] for r in D.read(cfg, campaign=cid)] == ["wait", "other"]
+
+
+def test_apply_resume_refuses_when_auto_changed_since_the_plan(opened):
+    cfg, cid, ctx = opened
+    _pending_auto(cfg, cid)
+    plan = Q.plan_resume(cfg, cid, by="queue", auto_rule=BASE)
+    st = S.read_state(cfg, cid)
+    st["park"].pop("auto")                                  # someone took `auto` away
+    S.write_state(cfg, cid, st)
+    with pytest.raises(ValueError, match="park changed"):
+        Q.apply_resume(cfg, plan)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and not (st.get("counters") or {}).get("auto_resumes")
+    st["park"]["auto"] = {"rule": CAP, "resume_at": LONG_AGO}     # or replaced it by another rule
+    S.write_state(cfg, cid, st)
+    with pytest.raises(ValueError, match="park changed"):
+        Q.apply_resume(cfg, plan)
+    # a human resume has no `auto_rule` and is not gated by `auto`
+    assert Q.apply_resume(cfg, Q.plan_resume(cfg, cid))["state"] != "PARKED"
+
+
+def test_auto_resume_leaves_no_brief_note_and_orders_record_first(opened):
+    cfg, cid, ctx = opened
+    _pending_auto(cfg, cid)
+    _step0a(cfg)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "CLOSING"
+    assert not (st.get("pending_brief") or {}).get("human_notes")     # no pseudo-human note
+    assert st["counters"]["auto_resumes"] == {BASE: 1}
+    ev = S.read_ledger(cfg, cid, types=["resume"])[-1]
+    assert ev["note"] == "queue: parked.base_moving auto-resume 1/3"
+    note = [e for e in S.read_ledger(cfg, cid, types=["note"])
+            if "scheduled automatic resume" in str(e)][-1]
+    assert note["seq"] < ev["seq"]                          # the decision record came first
+
+
+def test_lost_race_after_the_resume_record_is_recorded(opened, monkeypatch):
+    cfg, cid, ctx = opened
+    _pending_auto(cfg, cid)
+    real = Q.apply_resume
+
+    def raced(cfg_, plan, **kw):
+        real(cfg_, Q.plan_resume(cfg_, cid))                # a conductor resumed it meanwhile
+        return real(cfg_, plan, **kw)
+    monkeypatch.setattr(Q, "apply_resume", raced)
+    _step0a(cfg)
+    recs = D.read(cfg, campaign=cid)
+    assert [r["kind"] for r in recs] == ["wait", "resume", "other"]
+    assert "not applied" in recs[-1]["rationale"]
+
+
+def test_tick_plans_the_campaign_it_auto_resumed(opened, monkeypatch):
+    """`_tick` adds the step-0a campaign to `busy`, so the same tick plans it."""
+    cfg, cid, ctx = opened
+    _pending_auto(cfg, cid)
+    monkeypatch.setattr(L, "is_held", lambda cfg: True)
+    planned, real = [], Q.plan_step
+
+    def spy(st, *a, **k):
+        planned.append((st["id"], st["state"]))
+        return real(st, *a, **k)
+    monkeypatch.setattr(Q, "plan_step", spy)
+    report = Q.tick(cfg, admit=False)
+    assert any(r["action"] == "auto_resume" and r["campaign"] == cid for r in report.steps)
+    assert (cid, "CLOSING") in planned
+
+
+def test_auto_resume_skips_a_campaign_in_flight(opened):
+    cfg, cid, ctx = opened
+    _pending_auto(cfg, cid)
+    report = Q.TickReport()
+    assert Q._auto_resume_step(cfg, {cid}, busy_count=lambda: 0, slots=2, report=report) == []
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["auto"]["rule"] == BASE
+
+
+def test_missing_auto_rule_falls_back_to_a_table_rule_when_disabled(opened):
+    cfg, cid, ctx = opened
+    _park(cfg, cid)
+    st = S.read_state(cfg, cid)
+    st["park"]["auto"].pop("rule")
+    S.write_state(cfg, cid, st)
+    _auto_cfg(cfg, enabled=False)
+    _step0a(cfg)
+    assert D.read(cfg, campaign=cid)[-1]["rule"] == "auto_resume_failed"
+    assert S.read_ledger(cfg, cid, types=["auto_resume_failed"])[0]["rule"] == "auto_resume_failed"
+
+
 def test_escalation_drops_auto(opened, monkeypatch):
     cfg, cid, ctx = opened
     monkeypatch.setattr(ESC, "_run_notify", lambda argv: _Done())

@@ -97,6 +97,7 @@ def test_reset_time_parsing():
     iso = (NOW + dt.timedelta(hours=1)).isoformat()
     assert AP.reset_time(f"retry after {iso}", NOW) == NOW + dt.timedelta(hours=1)
     assert AP.reset_time("overloaded", NOW) is None
+    assert AP.reset_time(f"error at {iso} while writing the cache", NOW) is None   # not a reset
     assert AP.reset_time(f"resets at {epoch - 86400}", NOW) is None       # already past
     led = [_end(1, tail=f"usage_limit: resets at {epoch}")]
     auto = AP.decide(_state("cost_cap", total=4.0), led, SETT, NOW, budget=4.0)

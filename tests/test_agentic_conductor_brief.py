@@ -259,3 +259,14 @@ def test_brief_shows_auto(cfg, clock):
                                   "resume_at": "2026-10-30T10:01:00+00:00"}
     assert by["PLAIN"]["auto"] is None
     assert "auto=parked.base_moving@2026-10-30T10:01:00+00:00" in BR.render_text(b)
+
+
+def test_cli_conductor_brief_json_shows_auto(cfg, clock, run):
+    mk(cfg, "AUTO")
+    park(cfg, "AUTO", reason="base_moving")
+    st = S.read_state(cfg, "AUTO")
+    st["park"]["auto"] = {"rule": "parked.base_moving", "resume_at": "2026-10-30T10:01:00+00:00"}
+    S.write_state(cfg, "AUTO", st)
+    b = json.loads(run("conductor-brief", "--json").output)
+    assert b["parked"][0]["auto"] == {"rule": "parked.base_moving",
+                                      "resume_at": "2026-10-30T10:01:00+00:00"}

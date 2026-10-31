@@ -18,7 +18,10 @@ MAX_RESET_WAIT_S = 6 * 3600          # a reset further out than this is polled a
 RULE_BASE_MOVING = "parked.base_moving"
 RULE_COST_CAP = "parked.cost_cap"
 
-_ISO_RE = re.compile(r"\d{4}-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:?\d\d)?")
+# an ISO timestamp only counts as a reset time when the text names it as one
+_ISO_RE = re.compile(r"(?:resets?|retry|try again|available|until)\b[^\d\n]{0,30}"
+                     r"(\d{4}-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:?\d\d)?)",
+                     re.IGNORECASE)
 _EPOCH_RE = re.compile(r"resets?\s+at\s+(\d{9,11})\b", re.IGNORECASE)
 
 
@@ -103,7 +106,7 @@ def reset_time(text, now) -> dt.datetime | None:
             found = None
     if found is None:
         m = _ISO_RE.search(text)
-        found = _parse(m.group(0)) if m else None
+        found = _parse(m.group(1)) if m else None
     return found if found is not None and found > now else None
 
 
