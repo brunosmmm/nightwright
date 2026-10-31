@@ -1,7 +1,7 @@
 ---
 id: SPEC-0330
 title: "Rename wt to nightwright (CLI nw): hard cut, legacy-readable stored data, migrate-from-wt, cutover runbook"
-status: accepted
+status: done
 owner: user
 created: 2026-10-31
 updated: 2026-10-31
@@ -315,7 +315,7 @@ readers.
       non-empty target, rewrites config, campaign-state paths and reservation keys at path
       boundaries only, keeps branch names, ledgers and free text, and never touches `~/.claude`.
 - [x] The full suite passes on the branch (`-n 2`).
-- [ ] The cutover runbook has been executed, and *As shipped* records any deviation (this flips
+- [x] The cutover runbook has been executed, and *As shipped* records any deviation (this flips
       the spec to `done`).
 
 ## Test plan
@@ -345,13 +345,39 @@ readers.
 
 See *Cutover runbook*. The branch is not merged before step 3 of the runbook.
 
+## As shipped
+
+The cutover ran on 2026-10-31. The human ran steps 2–10 and the Meta-Tools steward ran steps 11–12.
+At step 12 the steward confirmed the end state: `nw` is present and `wt` is gone; `migrate-from-wt`
+reports nothing to migrate; no `wt-*` skills are left; origin points at `brunosmmm/nightwright`;
+the old directories are gone and no worktree is prunable; comfort-assistant has `.nw/`. The runner
+was restarted (`nw queue run --detach`), an old MERGED campaign (SPEC-0179) and the legacy
+conductor mail read cleanly, `nw spec reserve`/`release` worked, and
+`tests/test_rename_nightwright.py` passed (21 tests, `-n 2`).
+
+Deviations:
+- **Moved venvs break (the runbook missed this).** A uv venv's entry-point scripts hard-code the
+  absolute interpreter path in their shebang (`#!/home/bruno/work/wt/.venv/bin/python`), so after
+  the step 4 `mv`, `uv run pytest` picked up the system pytest, which cannot import `nightwright`
+  and does not know `-n`. This hit the main checkout and every campaign worktree that had a
+  `.venv`. Fix: `rm -rf .venv && uv sync` in the main checkout and in each Meta-Tools campaign
+  worktree, done before the step 12 test run. Any future directory move needs the same step after
+  `git worktree repair`. The comfort-assistant campaign worktree's venv was handed to that
+  project's steward or the human.
+- **Untracked per-checkout allow rules.** `.claude/settings.local.json` in the checkout still
+  holds `Bash(wt …)` rules. Step 7 does not cover this file, which is untracked and owned by the
+  human; it is left to the human. Those rules are dead now and harmless.
+- The conductor and steward sessions are started by the human from a terminal
+  (`nw queue conductor-launch`, `nw queue steward-launch <P>`), because they are interactive
+  Claude Code sessions.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met (the last one at cutover).
+- [x] Acceptance criteria all met (the last one at cutover).
 - [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
 - [x] No regressions.
-- [ ] Spec body updated to match what shipped (after the cutover).
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Spec body updated to match what shipped (after the cutover).
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

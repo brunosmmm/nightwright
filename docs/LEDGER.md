@@ -229,7 +229,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | draft | — | 2026-10-30 |
-| [SPEC-0330](./specs/0330-rename-to-nightwright.md) | Rename wt to nightwright (CLI nw): hard cut, legacy-readable stored data, migrate-from-wt, cutover runbook | feature | accepted | M9: agentic workflow | 2026-10-31 |
 
 ## Done
 
@@ -538,6 +537,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0326](./specs/0326-queue-watch-redesign-fixed-sections-adaptive-cards.md) | queue watch redesign: fixed sections, adaptive cards, journey track, why line, readable events | feature | done | M9: agentic workflow | 2026-10-31 |
 | [SPEC-0328](./specs/0328-tiered-gates-affected-test-selection.md) | Tiered gates (when: loop | close | always) + static affected-test selection for fix loops | feature | done | M9: agentic workflow | 2026-10-31 |
 | [SPEC-0329](./specs/0329-deflake-load-dependent-tests.md) | Deflake the load-dependent tests: condition waits, deterministic sync, and two real races in production code | feature | done | M9: agentic workflow | 2026-10-31 |
+| [SPEC-0330](./specs/0330-rename-to-nightwright.md) | Rename wt to nightwright (CLI nw): hard cut, legacy-readable stored data, migrate-from-wt, cutover runbook | feature | done | M9: agentic workflow | 2026-10-31 |
 
 ## Superseded / rejected
 
