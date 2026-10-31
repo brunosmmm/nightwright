@@ -1871,7 +1871,7 @@ def _close_regates(state: dict, pcfg: dict) -> bool:
     SPEC-0263: nor is it honored when no gate is required — `all()` over nothing passes."""
     if CL._is_merge_request(state) and (state.get("merge") or {}).get("docs_only"):
         return False
-    return any(g.get("required", True) for g in pcfg.get("gates") or [])
+    return any(g.get("required", True) for g in P.gates_for(pcfg, "close"))    # SPEC-0328
 
 
 def _declared_drops(state: dict, verdict: dict, pcfg: dict) -> list:
@@ -1953,7 +1953,7 @@ def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
             if raises:
                 res.events_before.append(("finding", P.gate_limits_finding(raises)))
         res.gate_run = G.run_all(pcfg, state, ctx.cfg, seq=G.next_gate_seq(ctx.cfg, state["id"]),
-                                 stop=ctx.stop)
+                                 stop=ctx.stop, tier="loop")     # SPEC-0328
     except (ValueError, OSError) as e:
         res.error = str(e)
     return res

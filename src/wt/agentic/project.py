@@ -56,6 +56,10 @@ PROJECT_DEFAULTS = {
 
 GATE_DEFAULTS = {"cwd": ".", "timeout_s": 1200, "required": True, "retries": 0}
 ON_FAIL_MODES = ("block", "warn")
+# SPEC-0328: gate tiers. `loop` gates run in the post-implement / fix-loop GATING state only,
+# `close` gates in the close re-gate only, `always` (the default when `when` is absent) in both.
+GATE_WHEN = ("loop", "close", "always")
+GATE_TIERS = ("loop", "close")
 
 # What `wt projects init` writes: the defaults made explicit, with one example gate.
 STARTER = """\
@@ -63,12 +67,13 @@ STARTER = """\
 schema: wt.project.v1
 project: {project}
 base: main
-gates:                         # run in order, all of them, inside the campaign worktree
+gates:                         # run in order inside the campaign worktree
   - name: tests
     cmd: echo "replace with your test command"
     cwd: .
     timeout_s: 1200
     required: true
+    when: always               # loop (after implement / each fix) | close (the close re-gate) | always
 merge:
   policy: pr                   # merge | pr | draft-pr
   base: main
@@ -224,7 +229,8 @@ def validate(doc):
     for i, gate in enumerate(gates):
         p = f"gates[{i}]"
         if not _check_mapping(problems, gate, p, ("name", "cmd", "cwd", "timeout_s", "required",
-                                                  "results", "retries", "on_fail", "retry_cmd")):
+                                                  "results", "retries", "on_fail", "retry_cmd",
+                                                  "when")):
             continue
         name = gate.get("name")
         if not _is_str(name):
@@ -244,6 +250,8 @@ def validate(doc):
         if gate.get("results") is not None:
             _check_results(problems, gate["results"], f"{p}.results")
         _check_gate_retry(problems, gate, p)
+        if "when" in gate:
+            _check_enum(problems, gate["when"], f"{p}.when", GATE_WHEN)
 
     merge = doc.get("merge")
     if merge is not None and _check_mapping(problems, merge, "merge",
@@ -324,6 +332,22 @@ def load_project_config(path):
         doc = {}
     validate(doc)
     return _with_defaults(doc)
+
+
+def gate_when(gate) -> str:
+    """SPEC-0328: a gate's tier; `always` when `when` is absent."""
+    return gate.get("when") or "always"
+
+
+def gates_for(project_cfg, tier=None) -> list:
+    """The gates that run in `tier` (`loop` | `close`): that tier's gates plus `always` ones,
+    in config order. `tier=None` is every gate (a debug `wt queue gate` run)."""
+    gates = list((project_cfg or {}).get("gates") or [])
+    if tier is None:
+        return gates
+    if tier not in GATE_TIERS:
+        raise ValueError(f"unknown gate tier {tier!r} (expected one of {', '.join(GATE_TIERS)})")
+    return [g for g in gates if gate_when(g) in (tier, "always")]
 
 
 def config_path(repo_root):

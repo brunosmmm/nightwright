@@ -548,7 +548,7 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
     gate_cfg, raises = P.campaign_gate_config(cfg, project_cfg, worktree)    # SPEC-0316
     if raises:
         events.append(("finding", P.gate_limits_finding(raises)))
-    gate_run = G.run_all(gate_cfg, state, cfg, seq=seq, stop=stop)
+    gate_run = G.run_all(gate_cfg, state, cfg, seq=seq, stop=stop, tier="close")   # SPEC-0328
     seq = gate_run.seq                          # run_all moves on when the seq's tmp dir is taken
     events.append(("gate", G.as_payload(gate_run)))
     if not gate_run.ok:

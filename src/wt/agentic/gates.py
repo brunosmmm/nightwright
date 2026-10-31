@@ -23,6 +23,7 @@ from . import gate_results
 from . import gate_slots
 from . import schemas as SC
 from . import store
+from . import project as P
 from .project import expand_cmd
 
 TAIL_LINES = 60
@@ -383,13 +384,16 @@ def next_gate_seq(cfg, campaign_id) -> int:
 
 
 def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
-            stop: threading.Event | None = None) -> GateRun:
+            stop: threading.Event | None = None, tier: str | None = None) -> GateRun:
     """Run every gate of `project_cfg` in the campaign's worktree; logs land at
     `gates/<seq:03>-<name>.log` under the campaign dir. `ok` = every *required* gate ok.
     The returned `GateRun.seq` is the seq actually used (higher than `seq` if it was taken).
     SPEC-0309: the whole run holds one host-wide gate slot; the budget, the gates' timeouts and
-    `GateRun.duration_s` count from the moment the slot is held."""
+    `GateRun.duration_s` count from the moment the slot is held.
+    SPEC-0328: `tier` (`loop` | `close`) runs only that tier's gates plus `always` ones;
+    None runs every gate."""
     cid = campaign_state["id"]
+    project_cfg = {**project_cfg, "gates": P.gates_for(project_cfg, tier)}
     worktree = (campaign_state.get("repo") or {}).get("worktree")
     if not worktree:
         raise ValueError(f"campaign {cid} has no worktree recorded")
@@ -467,12 +471,13 @@ def as_payload(run: GateRun) -> dict:
             "duration_s": run.duration_s, "slot_wait_s": run.slot_wait_s, "results": results}
 
 
-def run_and_log(cfg, campaign_state: dict, project_cfg: dict, *, seq=None, by="tick") -> GateRun:
+def run_and_log(cfg, campaign_state: dict, project_cfg: dict, *, seq=None, by="tick",
+                tier: str | None = None) -> GateRun:
     """`run_all` + one `gate` ledger event. Does not touch `state.json`; callers that steer
     the queue (SPEC-0176) update `last_gate` themselves."""
     cid = campaign_state["id"]
     seq = seq if seq is not None else next_gate_seq(cfg, cid)
-    run = run_all(project_cfg, campaign_state, cfg, seq=seq)
+    run = run_all(project_cfg, campaign_state, cfg, seq=seq, tier=tier)
     store.append_event(cfg, cid, "gate", as_payload(run), by=by)
     return run
 
