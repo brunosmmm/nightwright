@@ -54,7 +54,11 @@ def pid_alive(pid):
 
 
 def child_pid(req):
-    return int((req.cwd / "child.pid").read_text())
+    """The fake child's pid. The file exists a moment before the pid is written, so poll for text."""
+    path = req.cwd / "child.pid"
+    assert until(lambda: path.exists() and path.read_text().strip(), interval=0.02), \
+        f"{path} was never written with a pid"
+    return int(path.read_text().strip())
 
 
 def release(req):

@@ -16,7 +16,7 @@ from test_agentic_adopt import world  # noqa: F401  (fixture: ClaudeRunner + fak
 from test_agentic_adopt import _code_world, start_impl, run_ends
 from test_agentic_e2e import added, impl_done, make_cfg, make_repo, review, script
 from test_agentic_nonblocking import _second_spec
-from test_agentic_runproc import pid_alive, until
+from test_agentic_runproc import child_pid, pid_alive, until
 from waits import join
 from nightwright.agentic import cli_queue
 from nightwright.agentic import gates as G
@@ -235,7 +235,7 @@ def test_stop_with_run_in_wait_detaches_and_leaves_it_alive(world):
     assert stop["reason"] == "signal"
     assert stop["detached"] == [{"campaign": world.cid, "run_ids": ["001-implementer"]}]
     wt = Path(S.read_state(world.cfg, world.cid)["repo"]["worktree"])
-    assert pid_alive(int((wt / "child.pid").read_text())) and not run_ends(world)
+    assert pid_alive(child_pid(type("r", (), {"cwd": wt}))) and not run_ends(world)
 
 
 @pytest.mark.parametrize("kw", [{"once": True}, {"max_ticks": 3}])
@@ -251,7 +251,7 @@ def test_once_and_max_ticks_detach(world, kw):
     assert stop["detached"] == [{"campaign": world.cid, "run_ids": ["001-implementer"]}]
     wt = Path(S.read_state(world.cfg, world.cid)["repo"]["worktree"])
     assert until(lambda: (wt / "child.pid").exists())
-    assert pid_alive(int((wt / "child.pid").read_text())) and not run_ends(world)
+    assert pid_alive(child_pid(type("r", (), {"cwd": wt}))) and not run_ends(world)
 
 
 def test_until_idle_unchanged(tmp_path, monkeypatch):
