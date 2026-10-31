@@ -255,7 +255,9 @@ def write_run_record(req: RunRequest, result: RunResult, started_at: str) -> Run
 
 
 def _child_env(req: RunRequest) -> dict:
-    return {**os.environ, **req.env}
+    """The ambient environment plus `req.env`, minus a launched session's limits (SPEC-0319;
+    the same filter the detached wrapper applies, `runproc.child_env`)."""
+    return RP.child_env(req.env)
 
 
 # ---- the real thing ---------------------------------------------------------------------------

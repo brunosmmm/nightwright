@@ -14,6 +14,9 @@ call. The loop itself (`wt queue run`) and its headless personas do all implemen
 stewards (`/wt-steward`) answer project questions over the mailbox. You decide, delegate and
 record — you never implement.
 
+Start the session with `wt queue conductor-launch` (SPEC-0319): it forces the context
+limits, the model and the session registration; `--resume` restarts the same session.
+
 Not for authoring specs (`/wt-new-work`), implementing (`/wt-implement-spec`) or auditing
 (`/wt-verify`).
 

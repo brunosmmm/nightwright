@@ -497,8 +497,10 @@ def test_stop_after_detach_leaves_runs(world, monkeypatch):
     monkeypatch.setattr(Q, "tick", tick)
 
     def on_tick(report):
-        if RP.read_json(S.runs_dir(world.cfg, world.cid) / "001-implementer" / "child.json"):
-            state["changed"] = True
+        wt = Path(S.read_state(world.cfg, world.cid)["repo"]["worktree"])
+        if (wt / "child.pid").exists() and RP.read_json(
+                S.runs_dir(world.cfg, world.cid) / "001-implementer" / "child.json"):
+            state["changed"] = True                # the child is fully up before the stop
 
     Q.run(world.cfg, poll_interval_s=0.05, reexec=True, code_root=root, on_tick=on_tick,
           runner=world.runner, max_ticks=200)
@@ -932,7 +934,10 @@ def test_adopt_orphan_group_waited_and_killed(world):
     os.kill(RP.read_json(run_dir / "proc.json")["wrapper_pid"], 9)
     assert until(lambda: RP.run_status(run_dir) == "orphan_group")
     req = json.loads((run_dir / "request.json").read_text())
-    req["timeout_s"] = 3
+    # the deadline is `started_at + timeout_s` (the run's start, not the adoption): a short fixed
+    # timeout would expire under load before the "nothing happens" checks; keep it far away
+    # first, then move `started_at` into the past (re-read on every tick) to make it due
+    req["timeout_s"] = 600
     (run_dir / "request.json").write_text(json.dumps(req))
     new = Q.StepPool()
     world.pools.append(new)
@@ -943,6 +948,10 @@ def test_adopt_orphan_group_waited_and_killed(world):
         time.sleep(0.2)
     assert pid_alive(pid) and not run_ends(world)
     assert len(S.read_ledger(world.cfg, world.cid, types=["run.start"])) == 1
+    import datetime as dt
+    req["started_at"] = (dt.datetime.now().astimezone() - dt.timedelta(seconds=700)).isoformat(
+        timespec="seconds")
+    (run_dir / "request.json").write_text(json.dumps(req))       # now past its timeout
     assert tick_until(world, new, lambda: run_ends(world), n=150)
     ex = json.loads((run_dir / "exit.json").read_text())
     assert ex["synthesized"] and ex["killed_by"] == "timeout"

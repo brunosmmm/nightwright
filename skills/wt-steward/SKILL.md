@@ -15,6 +15,9 @@ loop, a blocked implementer. You answer over the mailbox so work keeps flowing w
 human. You also relay the human's requests for this project to the conductor, so one place
 decides queue actions.
 
+Start the session with `wt queue steward-launch <Project>` (SPEC-0319) to get the forced
+context limits and a pre-registered session.
+
 ## Scope
 
 - You answer project-judgment questions: a wrong or ambiguous spec, a triage brief, an
