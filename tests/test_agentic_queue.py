@@ -420,8 +420,9 @@ def test_merge_reconcile_skipped_for_another_repo(opened, tmp_path):
     S.write_state(cfg, cid, dict(st, repo=dict(st["repo"], root=str(other))))
     row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
     assert st["state"] == "MERGED"
+    # SPEC-0325: another repo's spec is read from that repo's git; here it has none
     (fnd,) = [f for f in S.read_ledger(cfg, cid, types=["finding"]) if f["gate"] == "bookkeeping"]
-    assert fnd["severity"] == "info" and "not this repo" in fnd["title"]
+    assert fnd["severity"] == "minor" and "spec not readable" in fnd["title"]
     assert _idea_state(cfg, iid) == "IDEA" and not list(S.read_ledger(cfg, cid, types=["idea_reconciled"]))
 
 

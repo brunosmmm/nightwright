@@ -941,8 +941,8 @@ def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_even
                 state.pop("closing", None)
             state["prev_state"] = frm
             state["state"] = to
-            store.append_event(cfg, cid, "transition", {"from": frm, "to": to, "reason": reason},
-                               by=by)
+            tr = store.append_event(cfg, cid, "transition",
+                                    {"from": frm, "to": to, "reason": reason}, by=by)
         store.write_state(cfg, cid, state)
         if to in TERMINAL_STATES:
             # SPEC-0253/0287: no child of a dead campaign needs it (HANDED_OFF too)
@@ -950,7 +950,69 @@ def _transition(cfg, state: dict, to: str, reason: str, *, by="tick", extra_even
             # SPEC-0232: nobody will answer a dead campaign
             from . import escalations as ESC
             ESC.withdraw_for_campaign(cfg, cid, withdraw_reason or f"campaign {to}", by)
+        if to != frm and to in STEWARD_NOTIFY_STATES:
+            _notify_steward(cfg, state, to, reason, tr.get("seq"), by)
     return state
+
+
+# SPEC-0325: the transitions a project's steward is told about (one `info` mail each)
+STEWARD_NOTIFY_STATES = frozenset({"HANDED_OFF", "MERGED", "PARKED", "ABANDONED"})
+_STEWARD_NOTIFIED_KEEP = 20
+
+
+def _steward_notice_text(state: dict, to: str, reason: str) -> str:
+    close = state.get("close") or {}
+    spec = state.get("spec_id") or (state.get("spec") or {}).get("id") or "-"
+    bits = [f"queue: campaign {state['id']} ({spec}) is {to} ({reason})"]
+    if close.get("pr_url"):
+        bits.append(f"PR {close['pr_url']}")
+    if close.get("merged_sha"):
+        bits.append(f"merged {str(close['merged_sha'])[:10]}")
+    if to == "PARKED" and (state.get("park") or {}).get("detail"):
+        bits.append(f"detail: {' '.join(str(state['park']['detail']).split())[:200]}")
+    bits.append(f"cost ${float((state.get('cost') or {}).get('total_usd') or 0.0):.2f}")
+    return "; ".join(bits)
+
+
+def _notify_steward(cfg, state: dict, to: str, reason: str, seq, by: str) -> None:
+    """SPEC-0325: mail one `info` message (no reply wanted) to `steward:<project>` about this
+    transition, only when that steward's mailbox has an armed follower. Called by `_transition`
+    under the campaign lock. Idempotent per transition: the ledger `seq` of the transition is
+    kept in `state["steward_notified"]`, so a re-run never mails it twice. Never raises: a failed
+    send is a ledger `note`, and the transition stands. Sent `from: conductor`, the address the
+    queue already mails from (`escalations.withdraw`); the conductor's own wakeups are untouched
+    (only conductor-bound mail is mirrored into the event stream)."""
+    from . import events as E
+    from . import mailbox as M
+    try:
+        project = (state.get("project") or "").strip()
+        if not project:
+            return
+        key = f"{to}#{seq}"
+        done = list(state.get("steward_notified") or [])
+        if key in done:
+            return
+        if E.reader_holder(cfg, f"mailbox:steward:{project}") is None:
+            return                        # nobody is listening: no mail, no marker
+        addr = M.validate_address(cfg, f"steward:{project}")
+    except Exception:                     # noqa: BLE001 — an unknown project has no steward
+        return
+    try:
+        M.send(cfg, to=addr, frm="conductor", kind="info", campaign=state["id"],
+               needs_reply=False, text=_steward_notice_text(state, to, reason))
+    except Exception as e:                # noqa: BLE001 — a mail failure never undoes the transition
+        try:
+            store.append_event(cfg, state["id"], "note", {
+                "text": f"steward notice to {addr} failed: {e or type(e).__name__}",
+                "author": "queue"}, by=by)
+        except Exception:                 # noqa: BLE001
+            pass
+        return
+    try:
+        state["steward_notified"] = (done + [key])[-_STEWARD_NOTIFIED_KEEP:]
+        store.write_state(cfg, state["id"], state)
+    except Exception:                     # noqa: BLE001 — the mail went out; the marker is best-effort
+        pass
 
 
 def _park(cfg, state: dict, reason: str, detail: str, resume_to: str, *, by="tick",
@@ -1185,9 +1247,10 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
         pcfg = ctx.project(state)
         root = Path(repo["root"])
         base = repo.get("base") or pcfg.get("base") or "main"
-        base_sha = git.rev_parse(root, base)
+        base_sha = git.rev_parse(root, _open_start(root, pcfg, base))
         worktree = Path(repo["worktree"])
-        git.worktree_add(root, worktree, repo["branch"], base)
+        # the sha, not `<remote>/<base>`: no upstream is set on the campaign branch
+        git.worktree_add(root, worktree, repo["branch"], base_sha)
         _run_worktree_setup(pcfg, worktree)
         repo["base_sha_at_open"] = base_sha
         repo["head"] = git.rev_parse(worktree)
@@ -1204,6 +1267,26 @@ def _do_open_unwrapped(ctx: _Ctx, state: dict) -> StepResult:
         res.error = getattr(e, "tail", None) or str(e)
         res.config_error = isinstance(e, ProjectConfigError)
     return res
+
+
+def _open_start(root: Path, pcfg: dict, base: str) -> str:
+    """The ref a new campaign branch starts from (SPEC-0325). `merge` policy: the local `base`
+    (wt merges into it locally). `pr` / `draft-pr`: `git fetch <remote> <base>`, then
+    `<remote>/<base>`, the ref the close step rebases onto and the PR targets; the human's local
+    `base` may be stale and is never read or touched. A failed fetch raises (the open parks
+    `open_failed`); it never falls back to the local base."""
+    mcfg = pcfg.get("merge") or {}
+    policy = mcfg.get("policy", "merge")
+    if policy == "merge":
+        return base
+    remote = mcfg.get("remote") or "origin"
+    try:
+        git.fetch(root, remote, base)
+    except GitError as e:
+        raise GitError(e.cmd, e.code, f"cannot fetch {remote}/{base} for a {policy} campaign "
+                       f"(the branch must start from the remote, not the local {base}): "
+                       f"{(e.tail or '').strip()}") from e
+    return f"{remote}/{base}"
 
 
 def _run_worktree_setup(pcfg: dict, worktree: Path) -> bool:
@@ -2316,8 +2399,9 @@ def _reconcile_closed(cfg, state: dict, events: list, outcome: str) -> None:
     """SPEC-0257: after a merge, advance the merged spec's idea by `specs.reconcile_ideas`
     scoped to that spec. Best-effort: the merge is irreversible, so a failure is a minor
     `bookkeeping` finding and never changes the campaign state. Skipped silently without a spec
-    (merge-kind campaigns) and with an info finding when the spec store is not this campaign's
-    repo (`_specs_dir` resolves to wt's own specs, not the project's).
+    (merge-kind campaigns) and with an info finding when the repo root is unknown or wt's spec
+    store cannot be located. SPEC-0325: a campaign whose repo is not wt's spec store (a second
+    project) reconciles against its own repo's spec (`_reconcile_project_spec`).
     SPEC-0280: for `HANDED_OFF` the same reconcile runs (an accepted spec gives SPECCED), then
     `:HANDED_OFF: <pr_url>` is set on the spec's sole claimant idea."""
     spec_id = state.get("spec_id") or (state.get("spec") or {}).get("id")
@@ -2360,6 +2444,9 @@ def _reconcile_closed(cfg, state: dict, events: list, outcome: str) -> None:
             specs_dir = None
         # an unknown repo root is not "the current directory": skip rather than guess
         if not root or specs_dir is None or not specs_dir.is_relative_to(Path(root).resolve()):
+            if root and specs_dir is not None and (state.get("spec") or {}).get("rel_path"):
+                # SPEC-0325: the spec lives in the campaign's own project repo
+                return _reconcile_project_spec(cfg, state, events, spec_id, outcome, finding)
             finding("info", "idea reconcile skipped: spec store is not this repo")
             return
         before = snapshot()
@@ -2384,6 +2471,104 @@ def _reconcile_closed(cfg, state: dict, events: list, outcome: str) -> None:
                 reported([i for i, v in before.items() if now.get(i) != v], before)
             except Exception:               # noqa: BLE001 — the finding above already says it failed
                 pass
+
+
+def _project_spec_fm(state: dict) -> tuple[dict | None, str | None]:
+    """SPEC-0325: the frontmatter of a project-repo campaign's spec as merged, read with
+    `git show <ref>:<rel_path>` in the project repo (never the working tree, never a fetch).
+    Refs tried in order: `close.merged_sha`, `<remote-tracking origin>/<base>`, the campaign
+    branch head (`repo.head`: what the PR merged, for a local clone that has not fetched the
+    merge yet). Returns `(fm, ref)` or `(None, None)`."""
+    repo, close = state.get("repo") or {}, state.get("close") or {}
+    rel = (state.get("spec") or {}).get("rel_path") or ""
+    base = repo.get("base") or "main"
+    for ref in (close.get("merged_sha"), f"origin/{base}", repo.get("head")):
+        if not ref:
+            continue
+        r = git.git(repo["root"], "show", f"{ref}:{rel}", check=False)
+        if r.returncode != 0:
+            continue
+        fm, _body = split_frontmatter(r.stdout or "")
+        if fm:
+            return fm, ref
+    return None, None
+
+
+def _reconcile_project_spec(cfg, state: dict, events: list, spec_id: str, outcome: str,
+                            finding) -> None:
+    """SPEC-0325: advance the idea of a spec that lives in the campaign's own project repo (a
+    second project, not wt's spec store). The spec is read from git (`_project_spec_fm`); the
+    bare `SPEC-NNNN` id is never resolved against wt's internal specs (it would name another
+    spec there, IDEA-533). The idea is the spec's `source_idea`, else the campaign's linked or
+    own idea, picked with the SPEC-0267 identity rule. Status `done` ships it (`SHIPPED`: the
+    work landed in another repo, as for an outbound spec; also from `PROMOTED`, which is what a
+    bare-id collision leaves behind); `accepted`/`in-progress` gives `SPECCED` from IDEA/INCUBATE;
+    `superseded`/`rejected` drops a pre-terminal idea. No spec file is ever written. `HANDED_OFF`
+    waits: the base does not have the spec yet; the sweep reaches here with `MERGED`. Errors
+    propagate to `_reconcile_closed`, which turns them into a minor finding."""
+    from .. import org as ORG
+    from .. import org_write as OW
+    if outcome != "MERGED":
+        finding("info", "project idea reconcile waits for the merge",
+                f"{spec_id}: reconciled when the PR merges (`wt queue sweep-prs`)")
+        return
+    fm, ref = _project_spec_fm(state)
+    if fm is None:
+        finding("minor", "project idea reconcile: spec not readable",
+                f"{(state.get('spec') or {}).get('rel_path')} at the merged sha, origin or head")
+        return
+    status = str(fm.get("status") or "").strip().lower()
+    want_id = (str(fm.get("source_idea") or "").strip()
+               or str((state.get("idea_link") or {}).get("id") or "").strip()
+               or str((state.get("idea") or {}).get("id") or "").strip()).upper()
+    if not want_id:
+        finding("info", "idea reconcile: spec has no source_idea", f"{spec_id} ({ref})")
+        return
+    cands = [t for t in _ideas(cfg)
+             if (t.properties.get("ID") or t.id or "").strip().upper() == want_id]
+    if not cands:
+        finding("minor", "project idea reconcile: idea not found", want_id)
+        return
+    task, bad = SP._pick_idea(cands, SP._as_date(fm.get("created")))
+    if bad is not None:
+        finding("minor", f"idea reconcile {bad[0].removeprefix('flag-')}", f"{want_id}: {bad[1]}")
+        return
+    linked = (task.properties.get("SPEC") or "").strip()
+    if linked and linked != spec_id:
+        finding("minor", "idea reconcile mismatch", f"{want_id} links {linked}, not {spec_id}")
+        return
+    cur = (task.state or "").upper()
+    target = None
+    if status == "done" and cur in SP._PRE_TERMINAL | {"PROMOTED"}:
+        target = "SHIPPED"
+    elif status in ("superseded", "rejected") and cur in SP._PRE_TERMINAL:
+        target = "DROPPED"
+    elif status in ("accepted", "in-progress") and cur in ("IDEA", "INCUBATE"):
+        target = "SPECCED"
+    if status != "done":
+        finding("minor", f"project spec status is {status or '?'}, not done",
+                f"{spec_id} at {str(ref)[:10]}")
+    if target is None:
+        return
+    pin = (task.file, task.heading) if len(cands) > 1 else None
+    if not linked:
+        OW.set_property(cfg, task, "SPEC", spec_id)
+        ORG.invalidate_tasks_cache()
+        task = SP._resolve_idea(cfg, want_id, pin)
+    if task is not None and target in SP._CLEARS_HANDED_OFF \
+            and (task.properties.get("HANDED_OFF") or "").strip():
+        OW.clear_property(cfg, task, "HANDED_OFF")
+        ORG.invalidate_tasks_cache()
+        task = SP._resolve_idea(cfg, want_id, pin)
+    if task is not None and OW.ensure_idea_keyword(cfg, task.file, target):
+        ORG.invalidate_tasks_cache()
+        task = SP._resolve_idea(cfg, want_id, pin)
+    if task is None:
+        finding("minor", "project idea reconcile: idea moved", f"{want_id}; not advanced")
+        return
+    OW.set_state(cfg, task, target)
+    events.append(("idea_reconciled", {"spec_id": spec_id, "idea_id": want_id,
+                                       "from": cur, "to": target}))
 
 
 def _pull_outbound(cfg, state: dict, events: list, spec_id: str, outcome: str) -> None:

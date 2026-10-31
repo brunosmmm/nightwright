@@ -53,6 +53,8 @@ decides queue actions.
    brief>", "abandon: the spec's AC 3 contradicts the module's contract; I will rework the
    spec", "raise cap to $X: the change is legitimately large", or "escalate: needs the
    human's decision on <question>".
+   **Campaign notices** (`kind` info about a `campaign`: it was handed off, merged, parked
+   or abandoned): report it to the human in one line, and send no reply.
 5. **Human requests in this session** ("queue SPEC-X", "pause that campaign", "bump this
    up"): send a request to the conductor rather than running queue writes yourself:
    `wt mailbox send --to conductor --kind request "queue SPEC-0190 priority 2"`; to land a
