@@ -1,9 +1,10 @@
 ---
 id: SPEC-0313
 title: "runner_journal_silent: count in-tick progress, so a busy tick with runs in flight is not a stall"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-30
+updated: 2026-10-30
 milestone: "M9: agentic workflow"
 kind: feature
 tags: [agentic, runner, watchdog, conductor, events]
