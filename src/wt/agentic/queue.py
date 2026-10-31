@@ -350,7 +350,8 @@ def decide_gate_timeout(state: dict, timeouts: dict | None = None) -> Step:
     if used < TIMEOUT_REGATE_MAX:
         return Step("gate", reason="gate_timeout_regate")
     names = ", ".join(_timed_out_names(state.get("last_gate") or {}, timeouts)) or "a gate"
-    limit = next(iter((timeouts or {}).values()), None)
+    limit = next(((timeouts or {}).get(r.get("name")) for r in _timed_out_gates(state.get("last_gate") or {})
+                  if (timeouts or {}).get(r.get("name"))), None)
     after = f" after {limit}s" if limit else ""
     return Step("park", reason="gate_timeout", resume_to="GATING",
                 detail=f"{used} gate timeout re-gates used; {names} still times out{after}; "

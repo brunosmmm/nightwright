@@ -224,6 +224,13 @@ add `gate_timeouts` (the count of `gate_timeout_regate` transitions) next to
   pass after updating the one exact-counters assertion in `test_e2e_internal_merges` for the new
   `timeout_regates` counter. `python3 tools/spec_lint.py` exits 0 after `--write-ledger`.
 - The full `uv run pytest` suite was left to gating.
+- Review follow-up: added `test_tick_defers_gate_steps_around_exclusive_regate` (real `Q.tick` with
+  a fake gate/persona: with B's gate in flight neither the exclusive A nor the later C is
+  submitted and their state/ledger are unchanged while D's implementer still starts; after B
+  finishes only A starts, then C). Deleting the deferral in `_tick` makes it fail. Fixed
+  `decide_gate_timeout` to take `timeout_s` from the timed-out gate (not the first configured
+  one), with `test_gate_timeout_park_detail_uses_timed_out_gates_limit`; also asserted the note
+  author `queue` and the reset on resume from a non-`gate_timeout` park.
 
 ### As shipped
 

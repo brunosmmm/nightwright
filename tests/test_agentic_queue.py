@@ -2017,6 +2017,15 @@ def test_gate_timeout_regates_then_parks():
     assert "gate_timeout" in Q.PARK_REASONS
 
 
+def test_gate_timeout_park_detail_uses_timed_out_gates_limit():
+    gate = {"results": [_res("lint"), _res("test", timed_out=True)]}
+    st = _state("GATING", last_gate=gate)
+    st["counters"]["timeout_regates"] = Q.TIMEOUT_REGATE_MAX
+    step = Q.decide_gate_timeout(st, {"lint": 60, "test": 1200})
+    assert "test (1200s)" in step.detail and "after 1200s" in step.detail
+    assert "lint" not in step.detail
+
+
 def _gate_run(seq, *results):
     from wt.agentic.gates import GateResult, GateRun
     rs = tuple(GateResult(n, req, ok, None if to else (0 if ok else 1), to, 0.1,
@@ -2046,6 +2055,8 @@ def test_timeout_only_run_skips_triager(opened):
     run = _gate_run(1, ("test", True, False, True))
     row, st = _apply(ctx, cfg, cid, "gate", gate_run=run)
     assert row["to"] == "GATING" and row["reason"] == "gate_timeout_regate"
+    assert all(n["author"] == "queue" for n in S.read_ledger(cfg, cid, types=["note"])
+               if "gate timeout" in n["text"])
     c = st["counters"]
     assert (c["loops"], c["gate_retries"], c["triage_retries"], c["timeout_regates"]) == (0, 0, 0, 1)
     assert st["state"] == "GATING" and Q.gate_exclusive(st)
@@ -2099,6 +2110,14 @@ def test_timeout_regates_reset(opened):
     st = S.read_state(cfg, cid)
     assert st["state"] == "GATING" and st["counters"]["timeout_regates"] == 0
     assert Q.gate_exclusive(st)
+    # resume from any other park also starts with a fresh budget
+    st = S.read_state(cfg, cid)
+    S.write_state(cfg, cid, dict(st, state="PARKED", gate_exclusive=None,
+                                 counters=dict(st["counters"], timeout_regates=1),
+                                 park={"reason": "loop_exhausted", "detail": "x", "resume_to": "GATING"}))
+    Q.apply_resume(cfg, Q.plan_resume(cfg, cid))
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "GATING" and st["counters"]["timeout_regates"] == 0
 
 
 def _gs(cid, entered=None, **over):
@@ -2186,6 +2205,79 @@ def test_gate_starts_counts_flights_and_close_regates(opened):
     finally:
         QQ.journal = orig
     assert [k for k, _ in calls] == ["gate_timeout_deferred"] * 2
+
+
+def test_tick_defers_gate_steps_around_exclusive_regate(opened, monkeypatch):
+    """`_tick` itself applies the serialization (SPEC-0311): with B's gate in flight, the
+    exclusive A and the later C are not submitted and their state and ledger stay untouched, while
+    D's implementer still is; once B is done only A starts, and C after it."""
+    import threading
+    cfg, d_id, _ctx = opened                      # the opened campaign is D (IMPLEMENTING)
+    base = S.read_state(cfg, d_id)
+    ids = {"D": d_id}
+    started = []
+    gates = {}
+
+    def clone(name, **over):
+        ids[name] = f"{d_id}-{name}"
+        S.write_state(cfg, ids[name], dict(base, id=ids[name], state="GATING",
+                                           counters=dict(base["counters"]), **over))
+
+    def fake_gate(ctx, state):
+        name = next(k for k, v in ids.items() if v == state["id"])
+        started.append(name)
+        gates[name].wait(10)
+        return Q.StepResult(state["id"], Q.Step("gate"), "GATING",
+                            gate_run=_gate_run(1, ("test", True, True, False)))
+
+    def fake_persona(ctx, state, step, *a):
+        started.append(f"{next(k for k, v in ids.items() if v == state['id'])}:{step.kind}")
+        gates["D"].wait(10)
+        return Q.StepResult(state["id"], step, state["state"], error="faked")
+
+    def finish(name):
+        gates[name].set()
+        pool.flights[ids[name]].tasks[0][1].result(10)
+
+    def gate_starts():
+        return [x for x in started if ":" not in x]
+
+    def snapshot(*names):
+        return {n: (S.read_state(cfg, ids[n]), S.read_ledger(cfg, ids[n])) for n in names}
+
+    gates.update({k: threading.Event() for k in "ABCD"})
+    monkeypatch.setattr(Q, "_do_gate", fake_gate)
+    monkeypatch.setattr(Q, "_do_persona", fake_persona)
+    S.write_state(cfg, d_id, dict(base, state="PARKED", park={"reason": "x", "detail": "",
+                                                                "resume_to": "IMPLEMENTING"}))
+    pool = Q.StepPool()
+    try:
+        clone("B")
+        Q.tick(cfg, pool=pool)
+        assert started == ["B"]
+        clone("A", gate_exclusive={"entered_at": "2026-10-30T10:00:00"})
+        clone("C")
+        S.write_state(cfg, d_id, base)            # D implements: a non-gate step
+        before = snapshot("A", "C")
+        Q.tick(cfg, pool=pool)
+        assert started == ["B", "D:implement"]    # (d) D goes ahead; (a)(b) no gate for A or C
+        assert set(pool.flights) == {ids["B"], ids["D"]}
+        Q.tick(cfg, pool=pool)
+        assert started == ["B", "D:implement"] and snapshot("A", "C") == before
+        finish("B")
+        Q.tick(cfg, pool=pool)                    # (c) B harvested: only the exclusive A starts
+        assert gate_starts() == ["B", "A"] and ids["C"] not in pool.flights
+        assert S.read_state(cfg, ids["B"])["state"] == "REVIEWING"
+        assert snapshot("C") == {"C": before["C"]}
+        Q.tick(cfg, pool=pool)                    # A in flight and exclusive: C still waits
+        assert gate_starts() == ["B", "A"]
+        finish("A")
+        Q.tick(cfg, pool=pool)
+        assert gate_starts() == ["B", "A", "C"]
+    finally:
+        for e in gates.values():
+            e.set()
+        pool.shutdown()
 
 
 def test_six_campaigns_timeout_under_concurrency():
