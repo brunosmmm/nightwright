@@ -229,6 +229,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | draft | — | 2026-10-30 |
+| [SPEC-0330](./specs/0330-rename-to-nightwright.md) | Rename wt to nightwright (CLI nw): hard cut, legacy-readable stored data, migrate-from-wt, cutover runbook | feature | accepted | M9: agentic workflow | 2026-10-31 |
 
 ## Done
 
