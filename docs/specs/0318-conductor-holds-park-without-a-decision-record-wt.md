@@ -284,3 +284,12 @@ command is cheaper and more reliable than a skill reminder.
 - `_require_decision` also exempts `by: queue` (the automatic resume), besides `park.auto` and
   `human`. The CLI validates option shape in `cli_queue._decision_request`; `plan_*` receive the
   validated request (`decision=`) and `plan_park` raises when a non-human actor has none.
+
+- Gate triage (loop 2): the two failures of the full `-n 4` run are load flakes, not caused by
+  this spec. On a host at load average ~32, `tests/test_agentic_adopt.py` +
+  `tests/test_agentic_exit_paths.py` under `-n 4` fail 3 tests with the change and 3 other tests
+  with the change reverted (`git apply -R` of the src diff), a different set each run
+  (`test_adopt_orphan_group_waited_and_killed`, `test_adopt_review_*`, `test_draining_ticks_*`,
+  `test_fanout_detach_precondition`); they pass alone. The tick step is a no-op unless a PARKED
+  campaign carries a `decision_request`, and the tick now wraps it so it can never raise
+  (`decision_record_failed` is journaled instead).

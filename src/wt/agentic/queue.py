@@ -4008,7 +4008,10 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     _record_auto_waits(cfg)          # SPEC-0302: parks written this tick, outside any item lock
     # SPEC-0318: after the step results (the deferred-park branch included), so a deferred park
     # gets its record in the tick that applies it
-    settle_decision_requests(cfg)
+    try:
+        settle_decision_requests(cfg)
+    except Exception as e:           # never let the repair step cost the tick
+        journal(cfg, "decision_record_failed", error=str(e))
 
 
 # ---- adoption of runs left open by an earlier runner (SPEC-0225) -------------------------
