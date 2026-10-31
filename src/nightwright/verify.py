@@ -58,6 +58,10 @@ def verify_spec(cfg, spec_id: str) -> dict:
             f"exported markdown; optional later: nw spec pull-status from nightwright (SPEC-0117)"
         )
 
+    from .spec_scope import foreign_scope_path   # SPEC-0327: ids are per project
+    hit = foreign_scope_path(cfg, spec_id)
+    if hit:
+        return verify_spec_file(hit[0], specs_dir=hit[0].parent, spec_id=spec_id)
     specs_dir = Path(_specs_dir(cfg))
     path = _find_spec(specs_dir, spec_id)
     return verify_spec_file(path, specs_dir=specs_dir, spec_id=spec_id)

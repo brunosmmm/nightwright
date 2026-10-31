@@ -15,6 +15,7 @@ from test_reconcile import TZ, _actions, _bytes, _cfg, _idea, _spec, _state_of
 from nightwright import org_write as W
 from nightwright import specs as S
 from nightwright import spec_scope as SS
+from nightwright import verify as V
 from nightwright.agentic import queue as Q
 from nightwright.agentic import store
 from nightwright.cli import cli
@@ -71,6 +72,34 @@ def test_reconcile_foreign_only_leaves_wt_spec_byte_identical(tmp_path):
     assert (other, "flag-foreign") in _actions(plan) and "flag-no-backlink" not in {
         a for _i, _s, a, _d in plan}
     assert _state_of(cfg, other) == "SPECCED"
+
+
+def test_wt_spec_naming_foreign_idea_is_flagged_foreign(tmp_path):
+    cfg = _cfg(tmp_path)
+    other = _foreign(cfg, "foreign idea", spec_id="SPEC-0009")
+    path = _spec(cfg, "SPEC-0001", "done", source_idea=other)
+    before, org_before = Path(path).read_bytes(), _bytes(cfg)
+    for apply in (False, True):
+        plan = S.reconcile_ideas(cfg, apply=apply)
+        assert (other, "flag-foreign") in _actions(plan)
+        assert any(i == other and s == "SPEC-0001" and "belongs to" in d
+                   for i, s, a, d in plan if a == "flag-foreign")
+        assert not {a for _i, _s, a, _d in plan} & {"advance", "link", "flag-no-backlink"}
+        assert Path(path).read_bytes() == before and _bytes(cfg) == org_before
+
+
+def test_refused_backlink_write_is_flag_mismatch_and_pass_continues(tmp_path):
+    cfg = _cfg(tmp_path)
+    old = _spec(cfg, "SPEC-0001", "accepted", source_idea=None, created="2026-01-01")
+    fine = _spec(cfg, "SPEC-0002", "accepted", source_idea=None)
+    newer = _idea(cfg, "created after SPEC-0001", state="SPECCED", spec_id="SPEC-0001")
+    good = _idea(cfg, "fine idea", state="SPECCED", spec_id="SPEC-0002")
+    before = Path(old).read_bytes()
+    plan = S.reconcile_ideas(cfg, apply=True, backlinks=True)     # must not raise
+    rows = [(i, s, a) for i, s, a, _d in plan]
+    assert (newer, "SPEC-0001", "flag-mismatch") in rows
+    assert Path(old).read_bytes() == before                       # the refused write left no trace
+    assert f"source_idea: {good}\n" in Path(fine).read_text()    # the pass went on to the next one
 
 
 def test_reconcile_foreign_idea_with_outbound_id_still_advances(tmp_path):
@@ -239,3 +268,22 @@ def test_cwd_in_foreign_project_does_not_fall_back_to_wt_store(scoped, tmp_path,
     assert path == top / "docs/specs/0001-trivial.md" and PROJ in origin
     with pytest.raises(ValueError, match="ambiguous"):
         S.resolve_spec_path_for_cwd(cfg, "SPEC-0002", cwd=cwd)
+    # `wt spec verify` too: the project's file is audited, wt's store is never consulted
+    monkeypatch.chdir(cwd)
+    assert V.verify_spec(cfg, "SPEC-0001")["path"] == str(top / "docs/specs/0001-trivial.md")
+    with pytest.raises(ValueError, match="ambiguous in a comfort-assistant"):
+        V.verify_spec(cfg, "SPEC-0002")
+
+
+def test_spec_verify_in_campaign_audits_the_campaign_copy(scoped, tmp_path, monkeypatch):
+    cfg, wt_repo, p2 = scoped
+    _st, wtree = _campaign(cfg, p2, tmp_path)
+    (wt_repo / "docs/specs/0002-wt-only.md").write_text("---\nid: SPEC-0002\n---\n")
+    monkeypatch.setenv("NW_CAMPAIGN", "cid")
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    monkeypatch.chdir(tmp_path)
+    assert V.verify_spec(cfg, "SPEC-0001")["path"] == str(wtree / "docs/specs/0001-trivial.md")
+    with pytest.raises(ValueError, match="ambiguous in a comfort-assistant campaign"):
+        V.verify_spec(cfg, "SPEC-0002")
+    r = CliRunner().invoke(cli, ["spec", "verify", "SPEC-0002"])
+    assert r.exit_code != 0 and "ambiguous in a comfort-assistant campaign" in r.output

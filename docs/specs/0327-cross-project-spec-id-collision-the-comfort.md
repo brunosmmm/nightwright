@@ -297,8 +297,18 @@ is repaired by hand once (the steward already reverted the observed edit).
   project's bare id in `<root>/docs/specs` and passes `project`; `apply_add` and the
   `_clear_handed_off_on_requeue` / `_mark_handed_off` callers pass the campaign's project;
   `expand_epic` and `_dangling` scope to `INTERNAL_PROJECT` for bare ids (they read wt's store).
-  `wt spec status` and `wt spec review` use the scope; `verify`/`show` take no id lookup through
-  `resolve_spec_path`, so they needed no change.
+  `wt spec status` and `wt spec review` use the scope. `verify.verify_spec` also calls
+  `spec_scope.foreign_scope_path` first (after the outbound check): in a non-wt campaign or project
+  checkout it audits the project's file, and an id absent there raises the scope error (surfaced by
+  `spec_verify_cmd` as a ClickException); otherwise it keeps the wt-store lookup. There is no
+  `wt spec show` subcommand.
+- Definition of done, "manual steps performed": the manual verification was **not** performed here
+  (the persona sandbox blocks `wt idea reconcile`); it is deferred to Rollout step 3 for the steward,
+  as the Test record says. The guarded DoD line itself is left as accepted.
+- Loop 3 tests: `tests/test_spec_scope.py` gained `verify_spec` coverage for the `WT_CAMPAIGN` case
+  and the cwd case (main checkout and linked worktree), a wt spec naming a foreign idea
+  (`flag-foreign`, nothing written), and a refused `_write_source_idea` becoming `flag-mismatch`
+  while the backlink pass continues.
 
 ## Rollout / migration
 
