@@ -231,6 +231,49 @@ def test_finished_wait_in_a_live_hold_extends_the_limit_with_no_gate_entry(tmp_p
     assert [i["campaign"] for i in E.stuck_items(cfg, late, sett)] == [cid]   # but not forever
 
 
+@pytest.mark.parametrize("state", ["GATING", "CLOSING"])
+def test_finished_wait_in_a_live_hold_is_not_silence(tmp_path, state):
+    """The wait is over, the gate runs and the ledger has no new entry: the silence is counted
+    without the wait the live hold served, and only that much."""
+    import os
+    from wt.agentic import gate_slots as GS
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0907-20261025-aaab", state=state)
+    silent_after = E.settings(cfg)["silent_after_s"]
+    later = dt.datetime.now().astimezone() + dt.timedelta(seconds=silent_after + 500)
+
+    def silent():
+        return "campaign_silent" in {t for _k, t, c, _d in E.watchdog_checks(cfg, now=later)
+                                      if c == cid}
+
+    def hold(waited):
+        GS.slots_dir(cfg).mkdir(parents=True, exist_ok=True)
+        (GS.slots_dir(cfg) / "slot-0.lock").write_text(json.dumps(
+            {"campaign": cid, "pid": os.getpid(), "since": store.now_iso(), "waited_s": waited}))
+
+    assert silent()                       # no hold: silent
+    hold(100.0)
+    assert silent()                       # a short wait does not cover the silence
+    hold(900.0)
+    assert GS.waiting(cfg, cid) is None   # the marker is gone
+    assert not silent()                   # the wait does
+
+
+@pytest.mark.parametrize("state", ["GATING", "CLOSING"])
+def test_gate_entry_from_an_earlier_state_does_not_extend_the_stuck_limit(tmp_path, state,
+                                                                          monkeypatch):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0908-20261025-aaac", state=state)
+    sett = E.settings(cfg)
+    limit = max(sett["stuck_after_s"], sett["gate_budget_s"])
+    _ev(cfg, cid, "gate", {"gate_seq": 1, "ok": False, "slot_wait_s": 1500.0})
+    later = dt.datetime.now().astimezone() + dt.timedelta(seconds=10)
+    monkeypatch.setattr(store, "now_iso", lambda now=None: later.isoformat(timespec="seconds"))
+    _ev(cfg, cid, "transition", {"from": "GATING", "to": state, "reason": "re-entered"})
+    at = dt.datetime.now().astimezone() + dt.timedelta(seconds=10 + limit + 1)
+    assert [i["campaign"] for i in E.stuck_items(cfg, at, sett)] == [cid]   # not limit + 1500
+
+
 def test_gate_waiting_is_projected_into_the_event_stream(tmp_path):
     cfg = _cfg(tmp_path)
     cid = _campaign(cfg, "SPEC-0905-20261025-eeee", state="GATING")

@@ -182,7 +182,10 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None) -> Iterat
                 waited = time.monotonic() - t0
                 if on_wait is not None and not announced and waited > WAIT_EVENT_S:
                     announced = True
-                    on_wait(occupancy(cfg), round(waited, 1))
+                    try:
+                        on_wait(occupancy(cfg), round(waited, 1))
+                    except Exception:           # informational: never abort the gate run
+                        pass
                 if stop is not None:
                     stop.wait(poll_s)
                 else:

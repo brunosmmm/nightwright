@@ -804,6 +804,12 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
             head_age = _age_s((r.get("closing") or {}).get("head_since"), now)
             if head_age is not None:
                 silent = head_age if silent is None else min(silent, head_age)
+        # SPEC-0309: a finished slot wait is not silence; the gate writes no ledger entry
+        # until `run_all` returns, so the live hold carries the wait it already served.
+        hold = gate_slots.holding(cfg, cid) if silent is not None else None
+        waited = hold.get("waited_s") if hold else None
+        if isinstance(waited, (int, float)) and not isinstance(waited, bool) and waited > 0:
+            silent -= waited
         if silent is not None and silent > sett["silent_after_s"]:
             out.append((f"campaign_silent:{cid}:{r.get('state')}", "campaign_silent", cid,
                         {"state": r.get("state"), "silent_s": round(silent)}))
