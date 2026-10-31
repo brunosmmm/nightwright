@@ -910,7 +910,7 @@ def test_quiet_off_is_byte_identical(tmp_path):
     E.follow(cfg, "steward", poll_s=0, out=out, code_root=None, from_start=True,
              stop=lambda: True)
     assert out.getvalue() == expected
-    assert not (E.cursors_dir(cfg) / "conductor.digest.json").exists()
+    assert not (E.cursors_dir(cfg) / "digests" / "conductor.json").exists()
     assert not QT.deliveries_path(cfg).exists()           # quiet off records nothing
 
 
@@ -922,7 +922,7 @@ def test_quiet_off_text_mode_is_byte_identical(tmp_path):
     E.follow(cfg, "conductor", poll_s=0, out=out, code_root=None, quiet=False, as_json=False,
              stop=lambda: True)
     assert out.getvalue() == expected
-    assert not (E.cursors_dir(cfg) / "conductor.digest.json").exists()
+    assert not (E.cursors_dir(cfg) / "digests" / "conductor.json").exists()
     assert not QT.deliveries_path(cfg).exists()
 
 
@@ -1122,14 +1122,20 @@ def test_held_drain_survives_rearm_and_clear(tmp_path, monkeypatch):
 @pytest.mark.parametrize("rec", [
     {"held": []}, {"held": {"a": 1}, "last_id": "7"}, {"last_ping_fp": "x"},
     {"pings_held": None}, {"last_printed_last_id": "3"}, {"drains": [1]},
-    {"drains": [{"since": "s", "bound_s": 1}]}, {"first_id": "a"}, ["list"]])
+    {"drains": [{"since": "s", "bound_s": 1}]}, {"first_id": "a"}, ["list"],
+    # SPEC-0324: wrong-typed elements, not just containers
+    {"held": {"merged": "x"}}, {"campaigns": {"merged": "x"}}, {"campaigns": {"merged": [1]}},
+    {"merged": ["x"]}, {"ping_items": ["x"]}, {"ping_items": [["a"]]},
+    {"last_ping_fp": [["a", 1]]}, {"watches": ["x"]},
+    {"watches": [{"key": "k", "type": "t", "bound_s": "1", "event": {}}]}])
 def test_corrupt_digest_file_falls_back_to_fresh(tmp_path, rec):
     cfg = _cfg(tmp_path)
-    path = E.cursors_dir(cfg) / "conductor.digest.json"
+    path = E.cursors_dir(cfg) / "digests" / "conductor.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(rec))
     d = QT.Digest.load(cfg, "conductor")
     assert d.empty and d.last_ping_fp == [] and d.last_printed_last_id == 0 and d.drains == []
+    assert d.watches == []
     out = io.StringIO()
     E.cursor_set(cfg, "conductor", 0)
     E.append(cfg, "admitted", campaign="a")
@@ -1300,3 +1306,360 @@ def test_wakeups_report_counts_conductor_park_as_held(tmp_path):
     _append_parks(cfg)
     _follow(cfg, io.StringIO(), clock=clock)
     assert QT.wakeups_report(cfg)["by_type"]["parked"] == {"wake": 1, "hold": 1}
+
+
+# ---- SPEC-0324: replay, digest file isolation, bounded silent/stuck holds ----------------------
+
+def _printed_digest(cfg, clock, n=2):
+    """Hold `n` admitted events and print their digest: cursor n, last_printed_last_id n."""
+    E.cursor_set(cfg, "conductor", 0)
+    for _ in range(n):
+        E.append(cfg, "admitted", campaign="a")
+    clock.advance(1801)
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    assert [e["type"] for e in _lines(out)] == ["conductor_digest"]
+    assert QT.Digest.load(cfg, "conductor").last_printed_last_id == n
+
+
+def _hold_ids(cfg):
+    return [json.loads(x)["event_id"] for x in QT.deliveries_path(cfg).read_text().splitlines()
+            if json.loads(x)["action"] == "hold"]
+
+
+def _cursor_file(cfg, reader="conductor"):
+    return E.cursors_dir(cfg) / f"{E._safe(reader)}.json"
+
+
+def test_from_start_replay_keeps_held_events(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    _printed_digest(cfg, clock)
+    _cursor_file(cfg).unlink()
+    clock.advance(1801)
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock, from_start=True)
+    (digest,) = _lines(out)
+    assert digest["data"]["held"] == {"admitted": 2}
+    assert (digest["data"]["first_id"], digest["data"]["last_id"]) == (1, 2)
+    assert _hold_ids(cfg) == [1, 2, 1, 2]                 # a hold record per re-read event
+
+
+def test_corrupt_cursor_replays_held_events(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    _printed_digest(cfg, clock)
+    _cursor_file(cfg).write_text("{not json")
+    clock.advance(1801)
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    (digest,) = _lines(out)
+    assert digest["data"]["held"] == {"admitted": 2}
+    assert _hold_ids(cfg) == [1, 2, 1, 2]
+
+
+def test_deleted_cursor_without_from_start_does_not_replay(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    _printed_digest(cfg, clock)
+    digest_path = E.cursors_dir(cfg) / "digests" / "conductor.json"
+    before = digest_path.read_text()
+    _cursor_file(cfg).unlink()
+    clock.advance(1801)
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    assert out.getvalue() == ""
+    assert E.cursor_get(cfg, "conductor") == 2            # the end of the stream
+    assert digest_path.read_text() == before              # not reset
+    assert _hold_ids(cfg) == [1, 2]
+
+
+def test_nonzero_cursor_keeps_crash_dedup(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    _printed_digest(cfg, clock)
+    E.cursor_set(cfg, "conductor", 1)                     # a crash left the cursor behind
+    clock.advance(1801)
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    assert out.getvalue() == ""                           # event 2 was printed: not added twice
+    dg = QT.Digest.load(cfg, "conductor")
+    assert dg.empty and dg.last_printed_last_id == 2      # no reset
+    assert _hold_ids(cfg) == [1, 2]
+
+
+def test_replay_does_not_track_or_wake_old_silent_events(tmp_path, monkeypatch):
+    cfg, clock = _cfg(tmp_path), Clock()
+    lease = {"held": True, "in_flight": ["c1"], "busy": None, "draining": None}
+    monkeypatch.setattr(QT, "L", types.SimpleNamespace(lease_status=lambda cfg, now=None: lease))
+    _printed_digest(cfg, clock)
+    E.append(cfg, "campaign_silent", campaign="c1", data={"state": "GATING", "silent_s": 900})
+    clock.advance(5000)                                   # the event is now far past its bound
+    _cursor_file(cfg).unlink()
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock, from_start=True)
+    (digest,) = _lines(out)                               # no stale wake line
+    assert digest["data"]["held"]["campaign_silent"] == 1
+    assert QT.Digest.load(cfg, "conductor").watches == []
+
+
+def test_corrupt_digest_non_utf8_and_directory(tmp_path, caplog):
+    cfg = _cfg(tmp_path / "a")
+    path = E.cursors_dir(cfg) / "digests" / "conductor.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff\xfe\x00{")
+    E.cursor_set(cfg, "conductor", 0)
+    E.append(cfg, "admitted", campaign="a")
+    _follow(cfg, io.StringIO())
+    assert json.loads(path.read_text())["held"] == {"admitted": 1}      # rewritten
+    cfg = _cfg(tmp_path / "b")                            # a directory at the digest path
+    path = E.cursors_dir(cfg) / "digests" / "conductor.json"
+    (path / "x").mkdir(parents=True)
+    assert QT.Digest.load(cfg, "conductor").empty
+    E.cursor_set(cfg, "conductor", 0)
+    E.append(cfg, "admitted", campaign="a")
+    with caplog.at_level("WARNING"):
+        _follow(cfg, io.StringIO())                       # save() does not raise
+    assert path.is_dir() and E.cursor_get(cfg, "conductor") == 1
+    assert "not saved" in caplog.text
+
+
+def test_digest_path_does_not_collide_with_cursor(tmp_path):
+    cfg = _cfg(tmp_path)
+    E.append(cfg, "admitted", campaign="a")
+    for reader in ("conductor", "conductor.digest"):
+        E.cursor_set(cfg, reader, 0)
+        E.follow(cfg, reader, poll_s=0, out=io.StringIO(), code_root=None, quiet=True,
+                 stop=lambda: True)
+    for reader in ("conductor", "conductor.digest"):
+        assert E.cursor_get(cfg, reader) == 1
+        assert QT.Digest.load(cfg, reader).pending["held"] == {"admitted": 1}
+        assert (E.cursors_dir(cfg) / "digests" / f"{reader}.json").is_file()
+    assert [r["reader"] for r in E.followers(cfg)] == ["conductor", "conductor.digest"]
+
+
+def test_legacy_digest_file_migrates(tmp_path):
+    cfg = _cfg(tmp_path)
+    base = E.cursors_dir(cfg)
+    base.mkdir(parents=True)
+    legacy = base / "conductor.digest.json"
+    legacy.write_text(json.dumps({**QT._fresh(), "first_id": 1, "last_id": 2,
+                                  "held": {"admitted": 2}, "last_printed_last_id": 0}))
+    assert E.followers(cfg) == []                         # an unmigrated digest is no reader
+    dg = QT.Digest.load(cfg, "conductor")
+    assert dg.pending["held"] == {"admitted": 2}
+    dg.save()
+    assert (base / "digests" / "conductor.json").is_file() and not legacy.exists()
+    assert QT.Digest.load(cfg, "conductor").pending["held"] == {"admitted": 2}
+    # a legacy-named file that is a reader's cursor (`after` key) stays, and is not a digest
+    legacy.write_text(json.dumps({"reader": "conductor.digest", "after": 3, "ts": "t"}))
+    (base / "digests" / "conductor.json").unlink()
+    dg = QT.Digest.load(cfg, "conductor")
+    assert dg.empty
+    dg.save()
+    assert json.loads(legacy.read_text())["after"] == 3
+    assert [r["reader"] for r in E.followers(cfg)] == ["conductor.digest"]
+
+
+def _silent_setup(cfg, lease, monkeypatch, type_, clock, campaign="c1"):
+    monkeypatch.setattr(QT, "L", types.SimpleNamespace(lease_status=lambda cfg, now=None:
+                                                       lease["v"]))
+    E.cursor_set(cfg, "conductor", 0)
+    field = "silent_s" if type_ == "campaign_silent" else "stuck_s"
+    E.append(cfg, type_, campaign=campaign, data={"state": "GATING", field: 3600})   # the watchdog fires near the budget
+    return field
+
+
+@pytest.mark.parametrize("type_", ["campaign_silent", "state_stuck"])
+def test_silent_hold_wakes_once_after_bound(tmp_path, monkeypatch, type_):
+    cfg, clock = _cfg(tmp_path), Clock()
+    lease = {"v": {"held": True, "in_flight": ["c1"], "busy": None, "draining": None}}
+    field = _silent_setup(cfg, lease, monkeypatch, type_, clock)
+    bound = E.settings(cfg)["gate_budget_s"] + 300
+    out, step = io.StringIO(), {"n": 0}
+
+    def stop():
+        step["n"] += 1
+        if step["n"] == 1:
+            assert out.getvalue() == ""                   # held: 3600 s old
+            clock.advance(bound - 3600 - 50)               # still short of the bound
+        elif step["n"] == 2:
+            assert out.getvalue() == ""
+            assert len(QT.Digest.load(cfg, "conductor").watches) == 1
+            clock.advance(100)                            # past it
+        return step["n"] >= 4
+    _follow(cfg, out, clock=clock, stop=stop)
+    (wake,) = _lines(out)
+    assert wake["type"] == type_ and wake["id"] == 1
+    assert wake["data"][field] == pytest.approx(bound + 50, abs=3)      # refreshed
+    assert QT.Digest.load(cfg, "conductor").watches == []
+    actions = [json.loads(x)["action"] for x in QT.deliveries_path(cfg).read_text().splitlines()]
+    assert actions == ["hold", "wake"]
+    out2 = io.StringIO()
+    _follow(cfg, out2, clock=clock)
+    assert out2.getvalue() == ""                          # woken once only
+
+
+@pytest.mark.parametrize("type_", ["campaign_silent", "state_stuck"])
+def test_silent_watch_dropped_when_flight_ends(tmp_path, monkeypatch, type_):
+    cfg, clock = _cfg(tmp_path), Clock()
+    lease = {"v": {"held": True, "in_flight": ["c1"], "busy": None, "draining": None}}
+    _silent_setup(cfg, lease, monkeypatch, type_, clock)
+    _follow(cfg, io.StringIO(), clock=clock)
+    assert len(QT.Digest.load(cfg, "conductor").watches) == 1
+    clock.advance(2000)
+    lease["v"] = {"held": True, "in_flight": [], "busy": None, "draining": None}
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    assert [e["type"] for e in _lines(out)] == ["conductor_digest"]     # no silent/stuck wake
+    assert QT.Digest.load(cfg, "conductor").watches == []
+
+
+def test_silent_watch_of_close_train_waiter_is_kept_without_waking(tmp_path, monkeypatch):
+    cfg, clock = _cfg(tmp_path), Clock()
+    for cid, closing in (("h", {"attempts": 0}), ("w", {"queued_behind": "h"})):
+        store.create_campaign(cfg, {"id": cid, "spec_id": "SPEC-0001", "project": "p",
+                                    "state": "CLOSING", "closing": closing})
+    lease = {"v": {"held": True, "in_flight": ["h"], "busy": None, "draining": None}}
+    _silent_setup(cfg, lease, monkeypatch, "campaign_silent", clock, campaign="w")
+    out, step = io.StringIO(), {"n": 0}
+
+    def stop():
+        step["n"] += 1
+        clock.advance(500)                                # well past the bound
+        return step["n"] >= 2
+    _follow(cfg, out, clock=clock, stop=stop)
+    # waiting behind a live head: no silent wake (the real watchdog's runner_dead is unrelated)
+    assert "campaign_silent" not in [e["type"] for e in _lines(out)]
+    assert len(QT.Digest.load(cfg, "conductor").watches) == 1
+
+
+def test_silent_hold_through_ctx_lease(tmp_path, monkeypatch):
+    cfg, clock = _cfg(tmp_path), Clock()
+    busy = {"kind": "close", "campaign": "c1", "since": clock().isoformat(), "budget_s": 3600}
+    # the key set `L.lease_status` really returns while held
+    lease = {"v": {"held": True, "pid": 1, "in_flight": [], "busy": busy, "draining": None,
+                   "stale": False}}
+    _silent_setup(cfg, lease, monkeypatch, "campaign_silent", clock)
+    out, step = io.StringIO(), {"n": 0}
+
+    def stop():
+        step["n"] += 1
+        if step["n"] == 1:
+            assert out.getvalue() == ""                   # held through Ctx.lease
+            clock.advance(400)
+        return step["n"] >= 3
+    _follow(cfg, out, clock=clock, stop=stop)
+    (wake,) = _lines(out)
+    assert wake["type"] == "campaign_silent"
+    from wt.agentic import lease as LS
+    with LS.acquire(cfg):
+        status = LS.lease_status(cfg)
+    assert {"held", "in_flight", "busy"} <= set(status) and status["held"] is True
+
+
+def test_deliveries_record_fields(tmp_path, monkeypatch):
+    cfg, clock = _cfg(tmp_path), Clock()
+    E.cursor_set(cfg, "conductor", 0)
+    E.append(cfg, "admitted", campaign="a")
+    E.append(cfg, "message", campaign="m", by="t", data=DATA["message"])
+    clock.advance(1801)
+    monkeypatch.setattr(CW, "Watcher", _FakeWatcher)
+    E.follow(cfg, "conductor", poll_s=0, out=io.StringIO(), code_root="x", quiet=True, now=clock)
+    recs = QT.read_deliveries(cfg, "conductor")
+    by_action = {r["action"]: r for r in recs}
+    assert [r["action"] for r in recs] == ["hold", "wake", "digest", "wake"]
+    for r in recs:
+        assert r["reader"] == "conductor" and set(r) == {"ts", "reader", "event_id", "type",
+                                                        "campaign", "action"}
+    assert (by_action["hold"]["event_id"], by_action["hold"]["type"],
+            by_action["hold"]["campaign"]) == (1, "admitted", "a")
+    assert (recs[1]["event_id"], recs[1]["type"], recs[1]["campaign"]) == (2, "message", "m")
+    assert by_action["digest"]["type"] == "conductor_digest"
+    assert by_action["digest"]["event_id"] is None and by_action["digest"]["campaign"] is None
+    assert recs[3]["type"] == "code_changed"
+    assert recs[3]["event_id"] is None and recs[3]["campaign"] is None
+
+
+def test_digest_counts_toward_max_events(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    E.cursor_set(cfg, "conductor", 0)
+    E.append(cfg, "admitted", campaign="a")
+    clock.advance(1801)
+    out = io.StringIO()
+    n = _follow(cfg, out, clock=clock, max_events=1,
+                stop=lambda: pytest.fail("max_events not reached by the digest line"))
+    assert n == 1 and [e["type"] for e in _lines(out)] == ["conductor_digest"]
+
+
+def test_drain_wake_counts_toward_max_events(tmp_path, monkeypatch):
+    cfg, clock = _cfg(tmp_path), Clock()
+    lease = {"v": _drain_lease(clock, 61)}
+    _hold_drain(cfg, clock, lease, monkeypatch)
+    _follow(cfg, io.StringIO(), clock=clock)              # held
+    clock.advance(400)
+    out = io.StringIO()
+    n = _follow(cfg, out, clock=clock, max_events=1,
+                stop=lambda: pytest.fail("max_events not reached by the drain wake"))
+    assert n == 1 and [e["type"] for e in _lines(out)] == ["runner_draining"]
+
+
+def test_silent_wake_counts_toward_max_events(tmp_path, monkeypatch):
+    cfg, clock = _cfg(tmp_path), Clock()
+    lease = {"v": {"held": True, "in_flight": ["c1"], "busy": None, "draining": None}}
+    _silent_setup(cfg, lease, monkeypatch, "state_stuck", clock)
+    _follow(cfg, io.StringIO(), clock=clock)
+    clock.advance(400)
+    out = io.StringIO()
+    n = _follow(cfg, out, clock=clock, max_events=1,
+                stop=lambda: pytest.fail("max_events not reached by the watch wake"))
+    assert n == 1 and [e["type"] for e in _lines(out)] == ["state_stuck"]
+
+
+def test_ping_fingerprint_all_categories():
+    data = {"blocked": [{"campaign": "b"}], "stuck": [{"campaign": "s"}],
+            "ready_not_admitted": [{"campaign": "r"}], "waiting_not_admitted": [{}],
+            "parked": [{"campaign": "p1", "owner": "conductor", "decided": False},
+                       {"campaign": "p2", "owner": "human", "decided": False},
+                       {"campaign": "p3", "owner": "conductor", "decided": True}],
+            "runner": {"pid": 7}}
+    assert QT.ping_fingerprint(data) == [
+        ["blocked", "b"], ["parked", "p1"], ["ready_not_admitted", "r"], ["runner", "7"],
+        ["stuck", "s"], ["waiting_not_admitted", "None"]]
+    assert QT.ping_fingerprint({}) == []
+
+
+def test_digest_campaign_cap_and_dedup(tmp_path):
+    dg = QT.Digest(tmp_path / "d.json")
+    for i in range(12):
+        assert dg.add({"id": i + 1, "type": "admitted", "campaign": f"c{i}", "ts": "t"})
+    assert dg.pending["held"] == {"admitted": 12}
+    assert dg.pending["campaigns"]["admitted"] == [f"c{i}" for i in range(10)]
+    assert dg.add({"id": 13, "type": "admitted", "campaign": "c0", "ts": "t"})
+    assert dg.pending["campaigns"]["admitted"] == [f"c{i}" for i in range(10)]   # no repeat
+    other = QT.Digest(tmp_path / "e.json")
+    for i in range(3):
+        other.add({"id": i + 1, "type": "waiting", "campaign": "same", "ts": "t"})
+    assert other.pending["campaigns"]["waiting"] == ["same"]
+
+
+def test_wakeups_window_filters_merges_and_until_is_inclusive(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    d1, d2, d3 = "2026-10-01", "2026-10-02", "2026-10-03"
+    rows = [(d1, "wake"), (d1, "wake"), (d1, "hold"), (d2, "digest"), (d2, "hold"),
+            (d2, "hold"), (d3, "wake")]
+    path = QT.deliveries_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps({"ts": f"{d}T12:00:00+00:00", "reader": "conductor",
+                                        "event_id": 1, "type": "message", "campaign": None,
+                                        "action": a}) + "\n" for d, a in rows))
+    merges = [(d1, "merged"), (d2, "handed_off"), (d3, "merged"), (d3, "merged")]
+    monkeypatch.setattr(E, "read_since", lambda cfg, after, types=None: [
+        {"ts": f"{d}T09:00:00+00:00", "type": t} for d, t in merges])
+
+    def rep(**kw):
+        r = QT.wakeups_report(cfg, **kw)
+        return r["delivered"], r["held"], r["merges"], [x["day"] for x in r["by_day"]]
+    assert rep() == (4, 3, 4, [d1, d2, d3])
+    assert rep(since=d2) == (2, 2, 3, [d2, d3])           # earlier days excluded
+    assert rep(until=d2) == (3, 3, 2, [d1, d2])           # `until` day included
+    assert rep(since=d2, until=d2) == (1, 2, 1, [d2])
+    assert QT.wakeups_report(cfg, since=d2, until=d2)["digests"] == 1
+    r = QT.wakeups_report(cfg, since=d2, until=d2)
+    assert r["by_day"] == [{"day": d2, "delivered": 1, "held": 2, "merges": 1}]

@@ -1079,14 +1079,12 @@ def followers(cfg, now=None, *, last_id=None, lag_from_last_id=False) -> list[di
     d = cursors_dir(cfg)
     rows = []
     for p in sorted(d.glob("*.json")) if d.is_dir() else []:
-        if p.name.endswith(".digest.json"):              # SPEC-0300: a pending digest, not a cursor
-            continue
         try:
             rec = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if not isinstance(rec, dict):
-            continue
+        if not isinstance(rec, dict) or "after" not in rec:     # a cursor always has `after`;
+            continue                         # SPEC-0300 digests (legacy path) have none
         reader = rec.get("reader") or p.stem
         try:
             after = int(rec.get("after", 0))
@@ -1185,6 +1183,17 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
         if not (cursors_dir(cfg) / f"{_safe(reader)}.json").is_file() and not from_start:
             # a brand-new reader starts at "now": history is for `nw queue events`, not alerts
             cursor_set(cfg, reader, _last_id(events_path(cfg)))
+        replay = False
+        if quiet and cursor_get(cfg, reader) == 0:
+            # SPEC-0324: a replay (`--from-start`, or a corrupt cursor) re-reads events the
+            # digest has already seen or printed; start it fresh so no hold is dropped. A
+            # digest that never printed (`last_printed_last_id` 0) is a crash-recovery one,
+            # and `Digest.add` dedups its re-reads.
+            dg = QT.Digest.load(cfg, reader)
+            if dg.last_printed_last_id > 0:
+                dg.reset()
+                dg.save()
+                replay = True
         while True:
             sync(cfg, ping=True)
             after = cursor_get(cfg, reader)
@@ -1196,7 +1205,9 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                         # records it again (at-least-once) rather than losing the hold
                         QT.record_delivery(cfg, reader, ev, "hold")
                         if ev["type"] == "runner_draining":
-                            ctx.digest.track_drain(cfg, ev, ctx.lease)
+                            ctx.digest.track_drain(cfg, ev, ctx.lease, ctx.now if replay else None)
+                        elif ev["type"] in ("campaign_silent", "state_stuck"):
+                            ctx.digest.track_watch(cfg, ev, ctx.now if replay else None)
                         ctx.digest.save()
                     cursor_set(cfg, reader, ev["id"])
                     continue
@@ -1212,8 +1223,11 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                 printed += 1
                 if max_events and printed >= max_events:
                     return printed
-            for ev in (ctx.digest.drain_wakes(ctx) if quiet else ()):
-                # a held drain that outlived its window; the digest is saved before the print
+            replay = False
+            for ev in (ctx.digest.drain_wakes(ctx) + ctx.digest.watch_wakes(ctx) if quiet
+                       else ()):
+                # a held drain or silent/stuck campaign that outlived its window; the digest is
+                # saved before the print
                 out.write((json.dumps(ev, ensure_ascii=False) if as_json else summary_line(ev))
                           + "\n")
                 out.flush()

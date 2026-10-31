@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
+import logging
 import re
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from . import gate_slots
 from . import lease as L
 from . import queue
 from . import store
+
+log = logging.getLogger(__name__)
 
 DIGEST_SCHEMA = "nw.conductor.digest.v1"
 WAKEUPS_SCHEMA = "nw.conductor.wakeups.v1"
@@ -215,6 +218,16 @@ class Ctx:
         return self._states
 
 
+_CLOCK_FIELD = {"campaign_silent": "silent_s", "state_stuck": "stuck_s"}
+
+
+def _watch_age(ev, now) -> float:
+    """Seconds a held silent/stuck campaign has been so: the event's own clock plus the time
+    since it was raised."""
+    clock = (ev.get("data") or {}).get(_CLOCK_FIELD.get(ev.get("type"), ""))
+    return float(clock if _num(clock) else 0) + (E._age_s(ev.get("ts"), now) or 0)
+
+
 def _drain_bound(cfg, data) -> float:
     """Seconds a drain may last before it needs action: its slowest wait plus the grace."""
     budget = E.settings(cfg)["gate_budget_s"]
@@ -341,15 +354,36 @@ def _str_or_none(v) -> bool:
     return v is None or isinstance(v, str)
 
 
+def _pair_list(v) -> bool:
+    return isinstance(v, list) and all(
+        isinstance(x, list) and len(x) == 2 and all(isinstance(y, str) for y in x) for x in v)
+
+
+def _num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _watch_ok(w) -> bool:
+    return (isinstance(w, dict) and isinstance(w.get("key"), str)
+            and isinstance(w.get("type"), str) and _num(w.get("bound_s"))
+            and isinstance(w.get("event"), dict))
+
+
 _FIELD_OK = {"first_id": lambda v: v is None or _int(v), "last_id": _int, "since": _str_or_none,
-             "until": _str_or_none, "held": lambda v: isinstance(v, dict),
-             "campaigns": lambda v: isinstance(v, dict), "merged": lambda v: isinstance(v, list),
-             "pings_held": _int, "ping_items": lambda v: isinstance(v, list),
-             "last_ping_fp": lambda v: isinstance(v, list), "last_printed_last_id": _int,
+             "until": _str_or_none,
+             "held": lambda v: isinstance(v, dict) and all(
+                 isinstance(k, str) and _int(n) for k, n in v.items()),
+             "campaigns": lambda v: isinstance(v, dict) and all(
+                 isinstance(k, str) and isinstance(c, list) and all(isinstance(x, str) for x in c)
+                 for k, c in v.items()),
+             "merged": lambda v: isinstance(v, list) and all(isinstance(m, dict) for m in v),
+             "pings_held": _int, "ping_items": _pair_list, "last_ping_fp": _pair_list,
+             "last_printed_last_id": _int,
              "drains": lambda v: isinstance(v, list) and all(
                  isinstance(d, dict) and isinstance(d.get("since"), str)
                  and isinstance(d.get("bound_s"), (int, float)) and isinstance(d.get("event"), dict)
-                 for d in v)}
+                 for d in v),
+             "watches": lambda v: isinstance(v, list) and all(_watch_ok(w) for w in v)}
 
 
 def _well_typed(rec) -> bool:
@@ -358,32 +392,64 @@ def _well_typed(rec) -> bool:
 
 
 class Digest:
-    """Held events waiting for their digest line, persisted at `cursors/<reader>.digest.json`
-    (atomically) so it survives the follower's exits. `last_ping_fp`, `last_printed_last_id` and
-    `drains` (held `runner_draining` events still being watched, see `track_drain`) outlive
-    `clear()`. A wrong-typed file is treated as absent."""
+    """Held events waiting for their digest line, persisted at `cursors/digests/<reader>.json`
+    (atomically) so it survives the follower's exits. `last_ping_fp`, `last_printed_last_id`,
+    `drains` (held `runner_draining` events still being watched, see `track_drain`) and
+    `watches` (held `campaign_silent` / `state_stuck`, see `track_watch`) outlive `clear()`.
+    A wrong-typed file is treated as absent."""
 
-    def __init__(self, path: Path, rec: dict | None = None):
+    def __init__(self, path: Path, rec: dict | None = None, legacy: Path | None = None):
         self.path = path
+        self._legacy = legacy                   # a migrated `<reader>.digest.json` to remove
         rec = rec if _well_typed(rec) else {}
         self.drains = [dict(d) for d in rec.get("drains") or []]
+        self.watches = [dict(w) for w in rec.get("watches") or []]
         self.pending = {**_fresh(), **{k: rec[k] for k in _fresh() if k in rec}}
-        self.last_ping_fp = list(rec.get("last_ping_fp") or [])
+        self.last_ping_fp = [list(p) for p in rec.get("last_ping_fp") or []]
         self.last_printed_last_id = rec.get("last_printed_last_id") or 0
 
     @classmethod
     def load(cls, cfg, reader) -> "Digest":
-        path = E.cursors_dir(cfg) / f"{E._safe(reader)}.digest.json"
+        base = E.cursors_dir(cfg)
+        path = base / "digests" / f"{E._safe(reader)}.json"
+        legacy = None
+        rec = cls._read(path)
+        if rec is None:                         # SPEC-0324: migrate the pre-`digests/` file
+            old = base / f"{E._safe(reader)}.digest.json"
+            rec = cls._read(old)
+            if rec is not None and "after" not in rec:
+                legacy = old
+            else:
+                rec = None                      # absent, or a reader's cursor: leave it alone
+        return cls(path, rec, legacy)
+
+    @staticmethod
+    def _read(path: Path) -> dict | None:
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            rec = None
-        return cls(path, rec if isinstance(rec, dict) else None)
+        except (OSError, ValueError):           # unreadable, non-UTF-8, a directory, bad JSON
+            return None
+        return rec if isinstance(rec, dict) else None
 
     def save(self) -> None:
         rec = {**self.pending, "last_ping_fp": self.last_ping_fp,
-               "last_printed_last_id": self.last_printed_last_id, "drains": self.drains}
-        _atomic_write(self.path, json.dumps(rec, ensure_ascii=False) + "\n")
+               "last_printed_last_id": self.last_printed_last_id, "drains": self.drains,
+               "watches": self.watches}
+        try:
+            _atomic_write(self.path, json.dumps(rec, ensure_ascii=False) + "\n")
+        except OSError as e:                    # e.g. a directory at the path: keep running
+            log.warning("quiet digest not saved to %s: %s", self.path, e)
+            return
+        if self._legacy is not None:
+            old, self._legacy = self._legacy, None
+            if "after" not in (self._read(old) or {"after": 1}):
+                old.unlink(missing_ok=True)
+
+    def reset(self) -> None:
+        """Forget everything seen: a follower replaying from cursor 0 must fold in every
+        re-read hold."""
+        self.pending, self.last_printed_last_id = _fresh(), 0
+        self.last_ping_fp, self.drains, self.watches = [], [], []
 
     @property
     def empty(self) -> bool:
@@ -420,16 +486,20 @@ class Digest:
                 self.last_ping_fp = []          # all clear: the same items later are news
         return True
 
-    def track_drain(self, cfg, ev, lease) -> None:
+    def track_drain(self, cfg, ev, lease, now=None) -> None:
         """Keep a held `runner_draining` so `drain_wakes` can wake once the drain outlives its
         window: the watchdog raises it once per drain, with `draining_s` just past the grace."""
         drain = lease.get("draining") if lease.get("held") else None
         since = drain.get("since") if isinstance(drain, dict) else None
         if not isinstance(since, str):
             return                              # the drain is already over: nothing to watch
+        bound = _drain_bound(cfg, ev.get("data") or {})
+        if now is not None:                     # a replay pass: an already-old event is history
+            clock = (ev.get("data") or {}).get("draining_s")
+            if (float(clock) if _num(clock) else 0) + (E._age_s(ev.get("ts"), now) or 0) > bound:
+                return
         self.drains = [d for d in self.drains if d["since"] != since]
-        self.drains.append({"since": since, "bound_s": _drain_bound(cfg, ev.get("data") or {}),
-                            "event": ev})
+        self.drains.append({"since": since, "bound_s": bound, "event": ev})
 
     def drain_wakes(self, ctx) -> list[dict]:
         """Held drains that are over their window now: returned as `runner_draining` events
@@ -452,6 +522,41 @@ class Digest:
                 keep.append(d)
         if woken or len(keep) != len(self.drains):
             self.drains = keep
+            self.save()
+        return woken
+
+    def track_watch(self, cfg, ev, now=None) -> None:
+        """Keep a held `campaign_silent` / `state_stuck` so `watch_wakes` can wake once the
+        campaign has stayed in flight past the gate budget: the watchdog raises each once.
+        With `now` (a replay pass) an event already past its bound is not kept: it is history."""
+        key = f"{ev.get('type')}:{ev.get('campaign')}:{(ev.get('data') or {}).get('state')}"
+        bound = E.settings(cfg)["gate_budget_s"] + _GRACE_S
+        if now is not None and _watch_age(ev, now) > bound:
+            return
+        self.watches = [w for w in self.watches if w["key"] != key]
+        self.watches.append({"key": key, "type": ev.get("type"), "bound_s": bound, "event": ev})
+
+    def watch_wakes(self, ctx) -> list[dict]:
+        """Held silent/stuck events whose campaign stayed in flight past the bound: returned
+        (clock field refreshed) and dropped, as are watches whose campaign left flight. A
+        watch kept only because the campaign waits behind a live close-train head is kept
+        without waking. Reads the lease only when a watch exists."""
+        if not self.watches:
+            return []
+        woken, keep = [], []
+        for w in self.watches:
+            ev = w["event"]
+            if not _silent_hold(ev, ctx):
+                continue
+            field = _CLOCK_FIELD[ev.get("type")]
+            data = ev.get("data") or {}
+            age = _watch_age(ev, ctx.now)
+            if age > w["bound_s"] and _alive(ctx.lease, ev.get("campaign"), ctx):
+                woken.append({**ev, "data": {**data, field: round(age)}})
+            else:
+                keep.append(w)
+        if woken or len(keep) != len(self.watches):
+            self.watches = keep
             self.save()
         return woken
 

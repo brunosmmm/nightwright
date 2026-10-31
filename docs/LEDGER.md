@@ -204,7 +204,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) Remote workers: run gates, persona runs and campaigns on other machines — accepted
   - [x] [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) Per-gate path sensitivity for the close re-gate — done
   - [x] [SPEC-0435](./specs/0435-cursor-agent-backend-for-the-agentic-queue.md) Cursor-agent backend for the agentic queue — done
-- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · done · (15/16 done)
+- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · done · (16/16 done)
   - [x] [SPEC-0299](./specs/0299-conductor-cost-measurement.md) Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export — done
   - [x] [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups — done
   - [x] [SPEC-0301](./specs/0301-conductor-state-handoff-and-decision-log.md) Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule — done
@@ -217,7 +217,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0318](./specs/0318-conductor-holds-park-without-a-decision-record-wt.md) A park, resume or abandon by the conductor carries its decision record: `wt queue park|resume|abandon` require `--decision` and `--rule` for a non-human actor — done
   - [x] [SPEC-0319](./specs/0319-wt-queue-conductor-launch-steward-launch-start.md) `wt queue conductor-launch` / `steward-launch`: start the conductor and stewards with forced context limits, a pinned model and a pre-registered session id — done
   - [x] [SPEC-0321](./specs/0321-wtfug-spec-0299-20261030-a7a2-spec-0299-review.md) Conductor cost measurement hardening: terminal campaigns without a transition, malformed config and transcripts, honest manual-check record, test gaps — done
-  - [ ] [SPEC-0324](./specs/0324-wtfug-spec-0300-20261030-5677-spec-0300-review.md) Quiet follower hardening: replay, digest file isolation, bounded silent/stuck holds, and the SPEC-0300 test gaps — accepted
+  - [x] [SPEC-0324](./specs/0324-wtfug-spec-0300-20261030-5677-spec-0300-review.md) Quiet follower hardening: replay, digest file isolation, bounded silent/stuck holds, and the SPEC-0300 test gaps — done
   - [x] [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote — done
   - [x] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — done
   - [x] [SPEC-0393](./specs/0393-wtfug-spec-0304-20261030-7a4f-spec-0304-review.md) SPEC-0304 review follow-ups: mvp-report edge cases in E4, E5 and E6, and the tests that pin them — done
@@ -286,7 +286,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) | Example-heavy docs: SVG captures and workflow architecture | epic | accepted | M8: product documentation | 2026-09-09 |
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | accepted | — | 2026-10-31 |
-| [SPEC-0324](./specs/0324-wtfug-spec-0300-20261030-5677-spec-0300-review.md) | Quiet follower hardening: replay, digest file isolation, bounded silent/stuck holds, and the SPEC-0300 test gaps | feature | accepted | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) | Federation over a networked mailbox | feature | accepted | — | 2026-10-31 |
 | [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) | Remote workers integration suite for gate and persona workers | feature | accepted | — | 2026-11-01 |
 | [SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) | Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane | epic | accepted | M9: agentic workflow | 2026-11-01 |
@@ -603,6 +602,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0321](./specs/0321-wtfug-spec-0299-20261030-a7a2-spec-0299-review.md) | Conductor cost measurement hardening: terminal campaigns without a transition, malformed config and transcripts, honest manual-check record, test gaps | feature | done | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0322](./specs/0322-flaky-under-load-tests-test-agentic-resolver-py.md) | Make test_interrupted_resolver_not_counted load-tolerant (stop only once the resolver run is in flight) | feature | done | — | 2026-10-31 |
 | [SPEC-0323](./specs/0323-flaky-under-load-tests-test-agentic-adopt-py-test.md) | Make test_adopt_orphan_group_waited_and_killed load-tolerant (timeout anchored to the run's started_at, not to test progress) | feature | done | — | 2026-10-31 |
+| [SPEC-0324](./specs/0324-wtfug-spec-0300-20261030-5677-spec-0300-review.md) | Quiet follower hardening: replay, digest file isolation, bounded silent/stuck holds, and the SPEC-0300 test gaps | feature | done | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) | Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote | feature | done | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0326](./specs/0326-queue-watch-redesign-fixed-sections-adaptive-cards.md) | queue watch redesign: fixed sections, adaptive cards, journey track, why line, readable events | feature | done | M9: agentic workflow | 2026-10-31 |
 | [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) | Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs | feature | done | M10: agentic MVP | 2026-10-31 |
