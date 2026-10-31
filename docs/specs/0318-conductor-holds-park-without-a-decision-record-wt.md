@@ -1,9 +1,10 @@
 ---
 id: SPEC-0318
 title: "A park, resume or abandon by the conductor carries its decision record: `wt queue park|resume|abandon` require `--decision` and `--rule` for a non-human actor"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-31
+updated: 2026-10-31
 source_idea: IDEA-508
 kind: feature
 parent: SPEC-0298
