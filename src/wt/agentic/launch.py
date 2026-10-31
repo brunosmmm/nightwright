@@ -172,4 +172,8 @@ def run(cfg, plan):
     except OSError as e:
         raise click.ClickException(f"cannot enter {plan['cwd']}: {e}")
     register(cfg, plan)
-    os.execvpe("claude", plan["argv"], exec_env(plan))
+    try:
+        os.execvpe("claude", plan["argv"], exec_env(plan))
+    except OSError as e:   # e.g. a broken `claude` wrapper: an error, not a traceback
+        raise click.ClickException(f"cannot start claude: {e}; the registered launch record "
+                                   "has no session, so start fresh (without --resume)")

@@ -135,6 +135,11 @@ def test_steward_unknown_project_lists_known(cfg):
     ("bash_max_output_length", float("inf"), 15000), ("bash_max_output_length", True, 15000),
     ("file_read_max_output_tokens", 5000, 5000), ("file_read_max_output_tokens", -2, 10000),
     ("file_read_max_output_tokens", "5000", 5000), ("file_read_max_output_tokens", False, 10000),
+    # inclusive floors / ceiling (review: a > vs >= slip must show)
+    ("autocompact", "100k", 100000), ("autocompact", 100000, 100000),
+    ("autocompact", 1000000, 1000000), ("autocompact", 1000001, 150000),
+    ("idle_compact_min_tokens", 100000, 100000),
+    ("bash_max_output_length", 1000, 1000), ("file_read_max_output_tokens", 1000, 1000),
 ])
 def test_settings_overrides_and_bad_values(cfg, key, value, expect):
     cfg["agentic"]["conductor"]["launch"] = {key: value}
@@ -330,3 +335,43 @@ def test_skills_mention_launcher():
     root = Path(__file__).resolve().parent.parent / "skills"
     assert "wt queue conductor-launch" in (root / "wt-conduct" / "SKILL.md").read_text()
     assert "wt queue steward-launch" in (root / "wt-steward" / "SKILL.md").read_text()
+
+
+def test_steward_bad_override_falls_back_to_default(cfg):
+    cfg["agentic"]["conductor"]["launch"] = {"effort": "high", "steward": {"effort": "ultra",
+                                                                            "model": "claude-x"}}
+    st = L.settings(cfg, "steward")
+    assert st["effort"] == "medium" and st["model"] == "claude-x"
+    assert L.settings(cfg)["effort"] == "high"
+
+
+def test_exec_argv_and_env_equal_plan(cfg, ex, monkeypatch):
+    monkeypatch.setenv("KEEP_ME", "1")
+    seen = {}
+    real = L.build_plan
+    monkeypatch.setattr(L, "build_plan", lambda *a, **k: seen.setdefault("plan", real(*a, **k)))
+    r = invoke("conductor-launch")
+    assert r.exit_code == 0, r.output
+    _, argv, env, _ = ex.calls[0]
+    plan = seen["plan"]
+    assert argv == plan["argv"]
+    assert env == L.exec_env(plan) and env["KEEP_ME"] == "1"
+    assert all(env[k] == v for k, v in plan["env"].items()) and len(plan["env"]) == 4
+
+
+def test_registration_failure_is_click_error_without_exec(cfg, ex, monkeypatch):
+    def boom(*a, **k):
+        raise OSError("read-only data dir")
+    monkeypatch.setattr(CC, "record_session", boom)
+    r = invoke("conductor-launch")
+    assert r.exit_code == 1 and "cannot register" in r.output and ex.calls == []
+
+
+def test_exec_failure_is_click_error(cfg, monkeypatch):
+    def bad_exec(*a):
+        raise OSError(8, "Exec format error")
+    monkeypatch.setattr(os, "execvpe", bad_exec)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    r = invoke("conductor-launch")
+    assert r.exit_code == 1 and "cannot start claude" in r.output
+    assert not isinstance(r.exception, OSError)
