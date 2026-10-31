@@ -183,17 +183,53 @@ def _req(tmp_path, env):
 def test_runner_child_env_drops_launch_keys(tmp_path, monkeypatch):
     req = _req(tmp_path, {"EXTRA": "1"})
     monkeypatch.setenv("UNRELATED", "u")
+    monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "high")        # kept outside a launched session
     assert R._child_env(req) == {**os.environ, "EXTRA": "1"}      # not a launched session
+    assert R._child_env(req)["CLAUDE_CODE_EFFORT_LEVEL"] == "high"
     monkeypatch.setenv("WT_LAUNCH_KEYS", KEYS)
     for k in KEYS.split(","):
         monkeypatch.setenv(k, "9")
-    monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "high")
     env = R._child_env(req)
     for k in (*KEYS.split(","), "WT_LAUNCH_KEYS", "CLAUDE_CODE_EFFORT_LEVEL"):
         assert k not in env
     assert env["UNRELATED"] == "u" and env["EXTRA"] == "1"
     env = R._child_env(_req(tmp_path, {"BASH_MAX_OUTPUT_LENGTH": "1234"}))   # explicit req.env wins
     assert env["BASH_MAX_OUTPUT_LENGTH"] == "1234"
+
+
+@pytest.mark.parametrize("launched", [True, False])
+def test_runproc_wrapper_child_env(tmp_path, monkeypatch, launched):
+    """The production path: the detached wrapper builds the real child's env (SPEC-0319)."""
+    import subprocess
+    import sys
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    dump = "import json,os;print(json.dumps(dict(os.environ)))"
+    (run_dir / "launch.json").write_text(json.dumps({
+        "argv": [sys.executable, "-c", dump], "cwd": str(tmp_path),
+        "env": {"BASH_MAX_OUTPUT_LENGTH": "1234", "EXTRA": "1"}}))
+    (run_dir / "request.json").write_text(json.dumps({"timeout_s": 60}))
+    (run_dir / "prompt.md").write_text("x")
+    env = {**os.environ, "UNRELATED": "u", "CLAUDE_CODE_EFFORT_LEVEL": "high",
+           "CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS": "120000",
+           "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS": "10000"}
+    env.pop("BASH_MAX_OUTPUT_LENGTH", None)
+    if launched:
+        env["WT_LAUNCH_KEYS"] = KEYS
+    else:
+        env.pop("WT_LAUNCH_KEYS", None)
+    subprocess.run([sys.executable, "-m", "wt.agentic.runproc", str(run_dir)], env=env,
+                   check=True, timeout=60)
+    got = json.loads((run_dir / "result.json").read_text())
+    assert got["UNRELATED"] == "u" and got["EXTRA"] == "1"
+    assert got["BASH_MAX_OUTPUT_LENGTH"] == "1234"               # req.env wins
+    if launched:
+        for k in ("CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS", "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS",
+                  "WT_LAUNCH_KEYS", "CLAUDE_CODE_EFFORT_LEVEL"):
+            assert k not in got
+    else:
+        assert got["CLAUDE_CODE_EFFORT_LEVEL"] == "high"
+        assert got["CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS"] == "120000"
 
 
 def test_launch_registers_once_before_exec(cfg, ex):

@@ -331,6 +331,12 @@ rate this is a small fraction of the turns removed by the lower context; it is m
   live session, the `conductor-cost` check a day later) need a real `claude` session and
   data over time; they belong to the rollout (SPEC-0298 step 3) and were not run here.
 
+- Review fix (loop 3): `tests/test_agentic_launch.py::test_runproc_wrapper_child_env` runs the
+  real `python -m wt.agentic.runproc` wrapper with a fake child that dumps its env, launched and
+  not launched, and `test_runner_child_env_drops_launch_keys` now sets an ambient
+  `CLAUDE_CODE_EFFORT_LEVEL=high` in the non-launched equality check. `uv run pytest
+  tests/test_agentic_launch.py tests/test_agentic_runner.py`: 70 passed. Full suite left to gating.
+
 ### As shipped (2026-10-31)
 
 - As designed. `launch.py` holds `settings`, `build_plan`, `check_price`, `exec_env`,
@@ -340,6 +346,11 @@ rate this is a small fraction of the turns removed by the lower context; it is m
   `os.execvpe`. A chdir failure is a `ClickException`.
 - `runner._child_env` also drops an ambient `CLAUDE_CODE_EFFORT_LEVEL` when `WT_LAUNCH_KEYS`
   is set; outside a launched session it is unchanged.
+- The filter lives in one function, `runproc.child_env(extra)`, used by both
+  `runner._child_env` (the `FakeRunner` shell path) and the detached wrapper in `runproc`, which
+  builds the real `claude -p` env as `child_env(launch["env"])`. `ClaudeRunner` itself writes
+  only `req.env` into `launch.json`, so the production path is covered by the wrapper (a review
+  found the first version filtered only the fake path).
 
 ## Rollout / migration
 

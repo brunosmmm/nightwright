@@ -255,15 +255,9 @@ def write_run_record(req: RunRequest, result: RunResult, started_at: str) -> Run
 
 
 def _child_env(req: RunRequest) -> dict:
-    """The ambient environment plus `req.env`. SPEC-0319: inside a launched conductor/steward
-    session the launcher's keys (`WT_LAUNCH_KEYS`) and any ambient effort pin are dropped, so a
-    campaign runner gets Claude Code's defaults and its own `--effort`."""
-    env = dict(os.environ)
-    launch = env.pop("WT_LAUNCH_KEYS", None)
-    if launch is not None:
-        for key in [k.strip() for k in launch.split(",") if k.strip()] + ["CLAUDE_CODE_EFFORT_LEVEL"]:
-            env.pop(key, None)
-    return {**env, **req.env}
+    """The ambient environment plus `req.env`, minus a launched session's limits (SPEC-0319;
+    the same filter the detached wrapper applies, `runproc.child_env`)."""
+    return RP.child_env(req.env)
 
 
 # ---- the real thing ---------------------------------------------------------------------------

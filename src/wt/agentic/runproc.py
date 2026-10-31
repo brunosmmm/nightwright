@@ -20,6 +20,19 @@ from pathlib import Path
 GRACE_S = float(os.environ.get("WT_RUNPROC_GRACE_S") or 10.0)   # TERM -> KILL grace (tests shorten it)
 
 
+def child_env(extra=None, environ=None) -> dict:
+    """The environment of a persona child: `environ` (default `os.environ`) plus `extra`.
+    SPEC-0319: inside a launched conductor/steward session the launcher's keys
+    (`WT_LAUNCH_KEYS`) and any ambient effort pin are dropped, so a campaign runner gets Claude
+    Code's defaults and its own `--effort`. Keys in `extra` always win."""
+    env = dict(os.environ if environ is None else environ)
+    launch = env.pop("WT_LAUNCH_KEYS", None)
+    if launch is not None:
+        for key in [k.strip() for k in launch.split(",") if k.strip()] + ["CLAUDE_CODE_EFFORT_LEVEL"]:
+            env.pop(key, None)
+    return {**env, **(extra or {})}
+
+
 def _now_iso() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -243,7 +256,7 @@ def main(argv=None) -> int:
         launch = json.loads((run_dir / "launch.json").read_text(encoding="utf-8"))
         req = json.loads((run_dir / "request.json").read_text(encoding="utf-8"))
         timeout_s = float(req.get("timeout_s") or 0) or None
-        env = {**os.environ, **(launch.get("env") or {})}
+        env = child_env(launch.get("env"))
         if state["term"]:
             finish(-1, killed_by="signal", sig=signal.SIGTERM)
             return 0
