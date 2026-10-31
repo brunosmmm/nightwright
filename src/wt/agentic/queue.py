@@ -1055,6 +1055,9 @@ class StepResult:
     spec_review: dict | None = None                  # SPEC-0214: a spec_review step's outcome
 
 
+_PROGRESS_MIN_INTERVAL_S = 1.0      # SPEC-0313: at most one `progress_at` lease write per second
+
+
 class _Ctx:
     """Per-tick context: cfg, resolved profiles / project configs, the runner, the stop flag."""
 
@@ -1065,6 +1068,18 @@ class _Ctx:
         self._runner = runner
         self._profiles: dict = {}
         self._projects: dict = {}
+        self._progress_mono: float | None = None
+
+    def progress(self) -> None:
+        """SPEC-0313: stamp `progress_at` in the lease info — the loop is alive inside a long
+        tick. Throttled to once per `_PROGRESS_MIN_INTERVAL_S`; does nothing without a lease."""
+        if self.lease is None:
+            return
+        mono = time.monotonic()
+        if self._progress_mono is not None and mono - self._progress_mono < _PROGRESS_MIN_INTERVAL_S:
+            return
+        self._progress_mono = mono
+        self.lease.update_info(progress_at=store.now_iso())
 
     @property
     def runner(self):
@@ -3525,9 +3540,12 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
           draining: bool = False):
     if not pool.adopted:
         _adopt(cfg, ctx, pool, report)
+    ctx.progress()                    # SPEC-0313: the loop is alive inside a long tick
     _harvest(pool, report)            # finished steps first: their slots are free this tick
+    ctx.progress()
     flying = pool.ids()
     for st in store.list_campaigns(cfg):          # SPEC-0253: residue of a killed runner
+        ctx.progress()
         store.sweep_campaign_tmp(cfg, st["id"])
     items = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
     slots = slots_for(cfg)
@@ -3540,6 +3558,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     # 0. campaigns parked on a bad project config resume once it loads (SPEC-0194) — into a
     #    free slot only, so a recovery never runs more campaigns than the profile allows
     for st in store.list_campaigns(cfg, state="PARKED"):
+        ctx.progress()
         park = st.get("park") or {}
         if park.get("reason") != "config_invalid" or st["id"] in flying:
             continue
@@ -3564,6 +3583,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     #     stopped — no re-open — so their branch does not go stale behind new work
     waiting = sorted((s for s in items if s.get("state") == "WAITING"), key=admission_key)
     for st in waiting:
+        ctx.progress()
         if not admit or ctx.stop.is_set() or n_busy() >= slots:
             break
         if st.get("park_requested") or st["id"] in flying:
@@ -3579,6 +3599,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     # 1. admission + opening (serial); an item admitted now waits for the next tick
     ready = {}
     for st in queued:
+        ctx.progress()
         ready[st["id"]] = backlog_readiness(cfg, st)
         _record_backlog(cfg, st, *ready[st["id"]])
     admitted_ids = set()
@@ -3588,6 +3609,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     if admit and not ctx.stop.is_set():
         for st in pick_admissions([s for s in queued if s["id"] not in flying], n_busy(),
                                   slots, lambda s: ready[s["id"]]):
+            ctx.progress()
             _transition(cfg, st, "OPENING", "admitted")
             report.admitted += 1
             admitted_ids.add(st["id"])
@@ -3620,6 +3642,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     train_pos = {cid: (ids[0], i) for ids in trains.values() for i, cid in enumerate(ids)}
     gate_starts = _gate_starts(ctx, pool, busy, admitted_ids, flying)
     for st in busy:
+        ctx.progress()
         if st.get("state") not in ACTIVE_STATES or st["id"] in admitted_ids \
                 or st["id"] in flying:
             continue
@@ -3643,6 +3666,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             report.steps.append(_park_row(cfg, st, step))
             continue
         if step.kind == "open":
+            ctx.progress()
             report.steps.append(_apply(ctx, st, _do_open(ctx, st)))
             continue
         if draining and (step.kind in ("gate", "close", "resolve", "write_spec", "finalize_split")
@@ -3699,6 +3723,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
 
     # 3. agent steps: submitted; a single-shot tick waits for its own and applies them now
     _submit(ctx, pool, report, pending_agent, groups)
+    ctx.progress()
     if own:
         pool.wait_all()
         _harvest(pool, report)
@@ -3707,6 +3732,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     #    moved base redoes the close within the tick until the budget is spent; in train order
     #    (SPEC-0260)
     for st in sorted(pending_close, key=_train_key):
+        ctx.progress()
         while not ctx.stop.is_set():
             pool.flights[st["id"]] = fl = _Flight(st, ctx)
             fl.tasks.append((Step("close"), pool.submit(_do_prepare_close, ctx, st), None))
@@ -4777,12 +4803,14 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                             interval = float((cfg.get("agentic") or {}).get("poll_interval_s")
                                              or 20)
                             lease.update_info(poll_interval_s=interval)   # SPEC-0228
+                tick_started = time.monotonic()
                 report = tick(cfg, stop=stop, runner=runner, pool=pool, lease=lease,
                               draining=draining)
+                tick_s = time.monotonic() - tick_started
                 ticks += 1
                 lease.heartbeat()
                 # SPEC-0228: stamp before `emit`, so a slow `on_tick` never delays it
-                slots.check(lease, tick_at=store.now_iso())
+                slots.check(lease, tick_at=store.now_iso(), last_tick_s=round(tick_s, 1))
                 emit(report)
                 if report.blocked and not report.admitted:
                     holders = report.blocked["holders"]

@@ -153,6 +153,20 @@ def test_lease_status_exposes_loop_state(tmp_path):
     assert all(st[k] is None for k in (*L.LOOP_KEYS, "draining"))
 
 
+def test_lease_status_exposes_progress_keys(tmp_path):
+    cfg = _cfg(tmp_path)
+    assert {"progress_at", "last_tick_s"} <= set(L.LOOP_KEYS)
+    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    st = L.lease_status(cfg)
+    assert st["progress_at"] is None and st["last_tick_s"] is None        # unwritten
+    lease.update_info(progress_at="t2", last_tick_s=4.5)
+    st = L.lease_status(cfg)
+    assert (st["progress_at"], st["last_tick_s"]) == ("t2", 4.5)
+    lease.release()
+    st = L.lease_status(cfg)
+    assert st["progress_at"] is None and st["last_tick_s"] is None
+
+
 def test_handover_drops_busy(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     lease = L.acquire(cfg, ["t"])

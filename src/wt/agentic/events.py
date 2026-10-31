@@ -60,7 +60,8 @@ EVENT_TYPES = {
     "park_undecided": ("reason", "parked_for_s", "owner"),
     # SPEC-0228
     "waiting_not_admitted": ("waiting_for_s", "active", "slots"),
-    "runner_journal_silent": ("last_journal_ts", "silent_s", "heartbeat_age_s"),
+    "runner_journal_silent": ("last_journal_ts", "silent_s", "heartbeat_age_s",
+                              "last_progress_at", "last_tick_s"),
     # SPEC-0232
     "escalation": ("escalation_id", "question", "options"),
     "escalation_withdrawn": ("escalation_id", "reason"),
@@ -606,7 +607,8 @@ def waiting_not_admitted_items(cfg, now, sett) -> list[dict]:
 def runner_silence(cfg, now, sett) -> dict | None:
     """The `runner_journal_silent` data (SPEC-0228), else None: the loop of a live runner has
     not ticked for `journal_silent_factor` poll intervals. Silence runs from the newer of the
-    lease's `tick_at` and the holder's newest journal record (idle ticks are not journaled).
+    lease's `tick_at`, `progress_at` (SPEC-0313: stamped from inside a tick) and the holder's
+    newest journal record (idle ticks are not journaled).
     Quiet while the lease is free or stale, for a runner that predates `tick_at`, and while a
     declared `busy` step is within its budget. One helper for the watchdog and the ping."""
     lease = L.lease_status(cfg, now=now)
@@ -617,8 +619,9 @@ def runner_silence(cfg, now, sett) -> dict | None:
     rec = journal_tail_for_pid(cfg, lease.get("pid"))
     journal_ts = rec.get("ts") if rec else None
     ended = lease.get("busy_ended_at")       # a step just ended; the tick stamp comes later
-    ages = [a for a in (_age_s(tick_at, now), _age_s(journal_ts, now), _age_s(ended, now))
-            if a is not None]
+    progress_at = lease.get("progress_at")   # SPEC-0313: the loop marks progress inside a tick
+    ages = [a for a in (_age_s(tick_at, now), _age_s(journal_ts, now), _age_s(ended, now),
+                        _age_s(progress_at, now)) if a is not None]
     if not ages:
         return None
     silent = min(ages)
@@ -634,7 +637,9 @@ def runner_silence(cfg, now, sett) -> dict | None:
     else:
         busy = None
     return {"pid": lease.get("pid"), "last_journal_ts": journal_ts, "last_tick_at": tick_at,
-            "busy_ended_at": ended, "silent_s": round(silent), "interval_s": interval,
+            "busy_ended_at": ended, "last_progress_at": progress_at,
+            "last_tick_s": lease.get("last_tick_s"),
+            "silent_s": round(silent), "interval_s": interval,
             "heartbeat_age_s": lease.get("heartbeat_age_s"),
             "draining": _drain_info(lease, now), "busy": busy}
 
@@ -791,7 +796,7 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
     silent_ = runner_silence(cfg, now, sett)
     if silent_:
         last = min((t for t in (silent_["last_tick_at"], silent_["last_journal_ts"],
-                          silent_["busy_ended_at"]) if t),
+                          silent_["busy_ended_at"], silent_["last_progress_at"]) if t),
                    key=lambda t: _age_s(t, now) or 0)
         out.append((f"runner_journal_silent:{silent_['pid']}:{last}", "runner_journal_silent",
                     None, silent_))

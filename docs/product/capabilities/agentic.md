@@ -473,9 +473,12 @@ or gate is in flight within budget), `ready_not_admitted` (a ready item not star
 free slot past `ready_grace_s`, default 60), `waiting_not_admitted` (a WAITING campaign not
 resumed although a slot has been free past `waiting_grace_s`, default 60) and
 `runner_journal_silent` (the loop has not ticked for 3 poll intervals while the lease is held
-and fresh, outside a declared long `open` / `close` / `drain` step; SPEC-0228). The runner
-publishes its loop state in the lease (`tick_at`, `poll_interval_s`, `in_flight`,
-`slot_freed_at`, `busy`) for these. Each watchdog condition fires once until it
+and fresh, outside a declared long `open` / `close` / `drain` step; SPEC-0228). The loop counts
+as alive while it marks progress inside a tick (`progress_at`, SPEC-0313), so a long tick with
+several runs in flight is not a stall; the event carries `last_progress_at` and `last_tick_s`
+(duration of the last completed tick). The runner publishes its loop state in the lease
+(`tick_at`, `progress_at`, `last_tick_s`, `poll_interval_s`, `in_flight`, `slot_freed_at`,
+`busy`) for these. Each watchdog condition fires once until it
 clears. The follower also appends a `conductor_ping` every `ping_interval_s` (default 600,
 SPEC-0212) with a digest of blocked, stuck, parked (and whether the conductor decided),
 waiting and ready-not-admitted items, so slow problems reach the conductor even when no

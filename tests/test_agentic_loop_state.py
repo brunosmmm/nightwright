@@ -445,3 +445,127 @@ def test_lease_released_when_startup_raises(tmp_path, monkeypatch):
     assert L.lease_status(cfg)["held"] is False
     lease = L.acquire(cfg, ["wt", "queue", "run"])
     lease.release()
+
+
+# ---- SPEC-0313: progress marks inside a tick -----------------------------------------------
+
+class _ClockLease:
+    """A lease double that records every `progress_at` write with the fake monotonic clock."""
+
+    def __init__(self, clock):
+        self.clock, self.info, self.writes = clock, {}, []
+
+    def update_info(self, **kv):
+        self.info.update(kv)
+        if "progress_at" in kv:
+            self.writes.append((kv["progress_at"], self.clock[0]))
+
+
+@pytest.fixture
+def fake_clock(monkeypatch):
+    """`[now]` driving `Q.time.monotonic` and `store.now_iso` (as a sortable string)."""
+    import time as real_time
+    clock = [1000.0]
+
+    class _Time:
+        monotonic = staticmethod(lambda: clock[0])
+
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+
+    monkeypatch.setattr(Q, "time", _Time())
+    monkeypatch.setattr(S, "now_iso", lambda now=None: f"{clock[0]:012.1f}")
+    return clock
+
+
+def _gaps(writes):
+    return [b[1] - a[1] for a, b in zip(writes, writes[1:])]
+
+
+def test_tick_marks_progress_between_campaigns(tmp_path, monkeypatch, fake_clock):
+    _repo, cfg, _cid = _env(tmp_path, monkeypatch)
+    for i in range(6):
+        S.create_campaign(cfg, {"id": f"SPEC-09{i:02d}-20261025-aaaa", "spec_id": f"SPEC-09{i:02d}",
+                                "project": "Meta-Tools", "profile": "balanced",
+                                "state": "IMPLEMENTING", "repo": {"base": "main"},
+                                "cost": {"total_usd": 0.0, "cap_usd": 10.0}})
+
+    def plan(st, profile, pcfg):
+        fake_clock[0] += 5.0                  # each busy campaign takes 5 s to plan
+        return Q.Step("none")
+
+    monkeypatch.setattr(Q, "plan_step", plan)
+    lease = _ClockLease(fake_clock)
+    Q.tick(cfg, lease=lease)
+    stamps = [w[0] for w in lease.writes]
+    assert len(stamps) > 1 and stamps == sorted(set(stamps))          # strictly increasing
+    assert all(g >= Q._PROGRESS_MIN_INTERVAL_S for g in _gaps(lease.writes))
+    assert len([w for w in lease.writes if w[1] > 1000.0]) >= 6      # advances during the tick
+
+
+def test_tick_marks_progress_in_sweep_and_readiness_loops(tmp_path, monkeypatch, fake_clock):
+    _repo, cfg, _cid = _env(tmp_path, monkeypatch)
+    for i in range(8):
+        S.create_campaign(cfg, {"id": f"SPEC-08{i:02d}-20261025-aaaa", "spec_id": f"SPEC-08{i:02d}",
+                                "project": "Meta-Tools", "profile": "balanced",
+                                "state": "QUEUED",
+                                "repo": {"base": "main"},
+                                "cost": {"total_usd": 0.0, "cap_usd": 10.0}})
+    for i in range(4):
+        S.create_campaign(cfg, {"id": f"SPEC-07{i:02d}-20261025-aaaa", "spec_id": f"SPEC-07{i:02d}",
+                                "project": "Meta-Tools", "profile": "balanced",
+                                "state": "MERGED", "repo": {"base": "main"},
+                                "cost": {"total_usd": 0.0, "cap_usd": 10.0}})
+    real_sweep = S.sweep_campaign_tmp
+
+    def sweep(cfg_, cid):
+        fake_clock[0] += 5.0
+        return real_sweep(cfg_, cid)
+
+    def readiness(cfg_, st):
+        fake_clock[0] += 5.0
+        return False, ["blocked"]
+
+    monkeypatch.setattr(S, "sweep_campaign_tmp", sweep)
+    monkeypatch.setattr(Q, "backlog_readiness", readiness)
+    lease = _ClockLease(fake_clock)
+    Q.tick(cfg, lease=lease)
+    elapsed = fake_clock[0] - 1000.0
+    assert elapsed > 60.0                                   # the loops alone outlast the threshold
+    assert len(lease.writes) >= elapsed / 5.0               # a mark per swept and per queued item
+    assert max(_gaps(lease.writes)) < 60.0                 # 3 x 20 s: no gap the watchdog would flag
+
+
+def test_ctx_progress_is_noop_without_lease(tmp_path):
+    ctx = Q._Ctx({}, lease=None)
+    ctx.progress()                                           # does not raise, writes nothing
+
+
+def test_ctx_progress_is_throttled(fake_clock):
+    lease = _ClockLease(fake_clock)
+    ctx = Q._Ctx({}, lease=lease)
+    for _ in range(5):
+        ctx.progress()
+    assert len(lease.writes) == 1                            # same instant: one write
+    fake_clock[0] += Q._PROGRESS_MIN_INTERVAL_S - 0.1
+    ctx.progress()
+    assert len(lease.writes) == 1
+    fake_clock[0] += 0.1
+    ctx.progress()
+    assert len(lease.writes) == 2
+
+
+def test_run_stamps_last_tick_s(tmp_path, monkeypatch, fake_clock):
+    _repo, cfg, _cid = _env(tmp_path, monkeypatch)
+    real_tick = Q.tick
+
+    def slow_tick(*a, **kw):
+        report = real_tick(*a, **kw)
+        fake_clock[0] += 7.34                                 # the tick took 7.34 s
+        return report
+
+    monkeypatch.setattr(Q, "tick", slow_tick)
+    seen = []
+    Q.run(cfg, once=True, poll_interval_s=0.05, on_tick=lambda r: seen.append(L.read_lease(cfg)))
+    (info,) = seen
+    assert info["last_tick_s"] == 7.3 and info["tick_at"]

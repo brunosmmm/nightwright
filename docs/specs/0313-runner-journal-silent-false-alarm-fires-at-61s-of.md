@@ -1,7 +1,7 @@
 ---
 id: SPEC-0313
 title: "runner_journal_silent: count in-tick progress, so a busy tick with runs in flight is not a stall"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -130,25 +130,25 @@ the event payload, as evidence for tuning.
 
 ## Acceptance criteria
 
-- [ ] `lease_status(cfg)` returns `progress_at` and `last_tick_s` (None when unwritten) and
+- [x] `lease_status(cfg)` returns `progress_at` and `last_tick_s` (None when unwritten) and
       `LOOP_KEYS` contains both.
-- [ ] While a tick processes several busy campaigns, the lease's `progress_at` advances during the
+- [x] While a tick processes several busy campaigns, the lease's `progress_at` advances during the
       tick (not only at its end), including while sweeping and refreshing readiness for many
       queued campaigns, and is written at most once per `_PROGRESS_MIN_INTERVAL_S`.
-- [ ] `ctx.progress()` without a lease does nothing and does not raise.
-- [ ] After each completed tick the lease carries `last_tick_s` equal to that tick's measured
+- [x] `ctx.progress()` without a lease does nothing and does not raise.
+- [x] After each completed tick the lease carries `last_tick_s` equal to that tick's measured
       duration (rounded to 0.1 s) in the same `update_info` call that stamps `tick_at`.
-- [ ] `runner_silence` returns None when `tick_at` is older than the threshold but `progress_at`
+- [x] `runner_silence` returns None when `tick_at` is older than the threshold but `progress_at`
       is fresh (the 61 s case from IDEA-433), and the sync event stream emits no
       `runner_journal_silent`.
-- [ ] `runner_silence` still returns data when `tick_at`, `progress_at`, the holder's journal
+- [x] `runner_silence` still returns data when `tick_at`, `progress_at`, the holder's journal
       record and `busy_ended_at` are all older than `journal_silent_factor` × interval, outside a
       declared `busy` step; the data has `last_progress_at` and `last_tick_s`.
-- [ ] The event still fires once per episode and re-arms when `progress_at` advances and then goes
+- [x] The event still fires once per episode and re-arms when `progress_at` advances and then goes
       stale again; a lease without `progress_at` behaves as before this spec.
-- [ ] Heartbeat age alone never clears or raises the alarm (a fresh heartbeat with all loop
+- [x] Heartbeat age alone never clears or raises the alarm (a fresh heartbeat with all loop
       stamps stale still fires).
-- [ ] The event type name and the existing payload keys are unchanged; `docs/product/capabilities/agentic.md`
+- [x] The event type name and the existing payload keys are unchanged; `docs/product/capabilities/agentic.md`
       and the `wt-conduct` row describe `progress_at`; the skills and quiet-stream tests pass.
 
 ## Test plan
@@ -187,6 +187,19 @@ the event payload, as evidence for tuning.
   tests in `tests/test_agentic_watchdog_gaps.py` and `tests/test_agentic_loop_state.py`;
   `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-10-30)
+
+- `uv run pytest tests/test_agentic_loop_state.py tests/test_agentic_lease.py tests/test_agentic_watchdog_gaps.py tests/test_skills.py tests/test_agentic_quiet.py tests/test_agentic_events.py` — 224 passed, including every new test named above.
+- The full suite was left to gating. The manual live-runner check was not performed in this run; `test_run_stamps_last_tick_s` and the two `Q.tick` mark tests cover the same stamps against the real lease code path.
+
+### As shipped (2026-10-30)
+
+- The Design's `EVENT_FIELDS` is the `EVENT_TYPES` table in `events.py` (type -> required data keys); `runner_journal_silent` there now lists `last_progress_at` and `last_tick_s`. The matching assertion is in `test_runner_journal_silent_progress_stamp_counts_as_activity`.
+- The `runner_silence` docstring now names `progress_at` among the activity stamps.
+- `without_progress_at_is_unchanged` is a concrete test: stale `tick_at`, no `progress_at`; it fires at the same time as before with `last_progress_at` and `last_tick_s` None and the episode key `runner_journal_silent:<pid>:<tick_at>`.
+- Mark points also include the single-shot close loop (step 4), next to the open dispatches, the admission loop, `_submit` and the loops listed in Design.
+- The episode key needed no change beyond adding `last_progress_at` to the set it takes the newest of.
+
 ## Rollout / migration
 
 1. Land the lease keys, `_Ctx.progress`, the `run()` timing and the `runner_silence` change
@@ -198,11 +211,11 @@ the event payload, as evidence for tuning.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

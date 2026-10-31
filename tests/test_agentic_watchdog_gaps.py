@@ -254,6 +254,62 @@ def test_runner_journal_silent_suppressed_during_close(tmp_path, held):
     assert ev["data"]["busy"]["kind"] == "close"
 
 
+# ---- SPEC-0313: progress_at counts as loop activity ---------------------------------------
+
+def test_runner_journal_silent_progress_stamp_counts_as_activity(tmp_path, held):
+    cfg = _cfg(tmp_path)
+    sett = E.settings(cfg)
+    held(cfg, poll_interval_s=20, tick_at=iso(0), progress_at=iso(50), last_tick_s=3.2)
+    for t in (70, 100):                       # the 61 s case: tick_at stale, progress fresh
+        assert E.runner_silence(cfg, at(t), sett) is None
+        assert _of(E.sync(cfg, now=at(t)), "runner_journal_silent") == []
+    (ev,) = _of(E.sync(cfg, now=at(130)), "runner_journal_silent")
+    d = ev["data"]
+    assert d["last_progress_at"] == iso(50) and d["last_tick_s"] == 3.2
+    assert d["last_tick_at"] == iso(0) and d["silent_s"] == 80
+    assert {"last_progress_at", "last_tick_s"} <= set(E.EVENT_TYPES["runner_journal_silent"])
+    assert "progress_at" in E.runner_silence.__doc__
+
+
+def test_runner_journal_silent_fires_when_every_stamp_is_stale_despite_fresh_heartbeat(
+        tmp_path, held):
+    cfg = _cfg(tmp_path)
+    sett = E.settings(cfg)
+    lease = held(cfg, poll_interval_s=20, tick_at=iso(0), progress_at=iso(10),
+                 busy_ended_at=iso(5))
+    lease.update_info(heartbeat_at=iso(95))                     # a fresh heartbeat
+    _journal(cfg, {"ts": iso(20), "kind": "tick", "pid": lease.info["pid"]})
+    d = E.runner_silence(cfg, at(100), sett)
+    assert d is not None and d["silent_s"] == 80
+    assert d["heartbeat_age_s"] == 5
+    assert d["last_progress_at"] == iso(10)
+
+
+def test_runner_journal_silent_rearms_when_progress_advances(tmp_path, held):
+    cfg = _cfg(tmp_path)
+    lease = held(cfg, poll_interval_s=20, tick_at=iso(0), progress_at=iso(5))
+    (first,) = _of(E.sync(cfg, now=at(70)), "runner_journal_silent")
+    assert first["data"]["last_progress_at"] == iso(5)
+    assert _of(E.sync(cfg, now=at(80)), "runner_journal_silent") == []        # same episode
+    lease.update_info(progress_at=iso(100))                                  # the tick moved on
+    assert _of(E.sync(cfg, now=at(110)), "runner_journal_silent") == []       # cleared
+    (again,) = _of(E.sync(cfg, now=at(200)), "runner_journal_silent")
+    assert again["data"]["last_progress_at"] == iso(100)
+
+
+def test_runner_journal_silent_without_progress_at_is_unchanged(tmp_path, held):
+    cfg = _cfg(tmp_path)
+    sett = E.settings(cfg)
+    lease = held(cfg, poll_interval_s=20, tick_at=iso(0))
+    assert E.runner_silence(cfg, at(50), sett) is None
+    d = E.runner_silence(cfg, at(70), sett)
+    assert d["silent_s"] == 70 and d["last_progress_at"] is None and d["last_tick_s"] is None
+    (key,) = [k for k, type_, _cid, _d in E.watchdog_checks(cfg, at(70))
+              if type_ == "runner_journal_silent"]
+    assert key == f"runner_journal_silent:{lease.info['pid']}:{iso(0)}"
+    assert len(_of(E.sync(cfg, now=at(70)), "runner_journal_silent")) == 1
+
+
 def test_journal_record_counts_as_activity(tmp_path, held):
     cfg = _cfg(tmp_path)
     sett = E.settings(cfg)

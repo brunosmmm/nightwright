@@ -228,7 +228,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0303](./specs/0303-fewer-rebase-conflict-parks.md) | Fewer `rebase_conflict` parks: base churn is not a conflict, the resolver is not blocked by the cap, and conflict pressure is exported | feature | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0304](./specs/0304-mvp-scorecard-queue-mvp-report.md) | MVP scorecard: `wt queue mvp-report` computes exit criteria E1–E6 over the last N merged campaigns | feature | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | draft | — | 2026-10-30 |
-| [SPEC-0313](./specs/0313-runner-journal-silent-false-alarm-fires-at-61s-of.md) | runner_journal_silent: count in-tick progress, so a busy tick with runs in flight is not a stall | feature | accepted | M9: agentic workflow | 2026-10-30 |
 
 ## Done
 
@@ -518,6 +517,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0307](./specs/0307-wt-idea-epic-set-or-clear-epic-on-an-existing.md) | wt idea epic: set or clear :EPIC: on an existing idea | feature | done | — | 2026-10-30 |
 | [SPEC-0311](./specs/0311-gate-timeouts-under-machine-load-are-triaged-as.md) | Gate timeouts under machine load are re-gated, not triaged as code fixes | feature | done | — | 2026-10-30 |
 | [SPEC-0312](./specs/0312-flaky-under-load-tests-test-agentic-adopt-py-test.md) | Make test_fanout_detach_precondition load-tolerant (no wall-clock races with real subprocesses) | feature | done | — | 2026-10-30 |
+| [SPEC-0313](./specs/0313-runner-journal-silent-false-alarm-fires-at-61s-of.md) | runner_journal_silent: count in-tick progress, so a busy tick with runs in flight is not a stall | feature | done | M9: agentic workflow | 2026-10-30 |
 
 ## Superseded / rejected
 
