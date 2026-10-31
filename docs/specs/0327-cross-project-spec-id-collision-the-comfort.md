@@ -79,14 +79,18 @@ resolved against wt's store when its owner is wt's own project (`rules.INTERNAL_
 1. **Ideas are scoped by `:PROJECT:`.** An idea whose `:PROJECT:` is empty or
    `INTERNAL_PROJECT` is internal; any other is **foreign**. Idea↔spec matching against wt's
    store (`reconcile_ideas`, `_spec_claims`, `plan_spec_link`, `_sole_claimant`) only
-   considers internal ideas. A foreign idea with a `:SPEC:` yields a report-only
-   `flag-foreign` row and is never advanced or backlinked through wt's store (its reconcile
-   is the campaign close path, `_reconcile_project_spec`, which reads the project's own repo).
+   considers internal ideas **when the `:SPEC:` is a bare `SPEC-NNNN`**. A foreign idea whose
+   `:SPEC:` is a bare `SPEC-NNNN` (not an outbound `PROJ-NNNN` id, `workflow._is_outbound_id`)
+   yields a report-only `flag-foreign` row and is never advanced or backlinked through wt's
+   store (its reconcile is the campaign close path, `_reconcile_project_spec`, which reads the
+   project's own repo). Ideas linked to outbound `PROJ-NNNN` ids are exempt: outbound ids are
+   unique across the outbox and such ideas normally carry another project's `:PROJECT:`, so
+   they reconcile through the outbox exactly as today.
 2. **Writing `source_idea` is guarded twice.** `_write_source_idea` refuses a foreign idea and
    also applies the SPEC-0267 identity rule (idea `:CREATED:` on or before the spec's `created`),
    so even a misrouted call cannot stamp a newer idea onto an older spec.
 3. **Inside a campaign, ids resolve through the campaign.** When `WT_CAMPAIGN` is set (persona
-   runs) or the cwd is a checkout of a registered non-wt project, a bare `SPEC-NNNN` is
+   runs) or the cwd is in a checkout (main or linked worktree) of a registered non-wt project, a bare `SPEC-NNNN` is
    resolved by one function that returns the campaign's own spec file, or fails. It never
    falls back to wt's store for a non-wt campaign.
 
@@ -109,12 +113,17 @@ one-line calls).**
      `INTERNAL_PROJECT`: the id must equal the campaign's `spec_id` (case-insensitive),
      return `campaign_spec_path`; any other bare `SPEC-NNNN` raises
      `ValueError("SPEC-NNNN is ambiguous in a <project> campaign: it would resolve against wt's own specs; use --path")`.
-  2. Otherwise, if `cwd` (default `Path.cwd()`) is inside a project registered in the project
-     registry other than `INTERNAL_PROJECT` (`projects.find_project_for_cwd`), look the id up
-     in that project's own specs directory (`<repo root>/<spec dir of the project>`, found by
-     globbing `**/specs/NNNN-*.md` only under the project's configured spec dir; the
-     project-config key already used for `spec_rel_path`'s parent), and fail with the same
-     kind of message when absent. wt's store is not consulted.
+  2. Otherwise, if `cwd` (default `Path.cwd()`) is in a git checkout (main **or linked
+     worktree**) whose `--git-common-dir` equals that of the `research.root` of a registered
+     project other than `INTERNAL_PROJECT`, look the id up with
+     `specs._find_spec(<checkout toplevel>/docs/specs, id)`. `docs/specs` is the fixed
+     convention (the same one `spec_review.py` and the campaign spec paths use); there is no
+     per-project spec-dir key. The checkout is matched with `specs._git_checkout(cwd)` and
+     `specs._git_checkout(root)` (toplevel and common dir), not with
+     `wt.agentic.project.find_project_for_cwd`: that compares the git toplevel with
+     `research.root`, so it never matches a campaign worktree
+     (`~/work/.wt-worktrees/<project>/<cid>`). If the file is absent, fail with the same kind of
+     message as step 1. wt's store is not consulted.
   3. Otherwise today's behaviour (`resolve_spec_path`).
 
 **Call sites changed.**
@@ -124,8 +133,9 @@ one-line calls).**
   branch is unaffected) call `resolve_in_scope` first. `workflow._resolve_spec_path` and
   `_load_spec_fm` stay store-only (they are the store lookup), but their callers in
   `reconcile_ideas`/`plan_spec_link` filter by idea project before calling them.
-- `specs.reconcile_ideas`: drop foreign ideas from `ideas`/`work`/`by_id`/claims walks; for each
-  dropped foreign idea with a `:SPEC:` append `(idea_id, spec_id, "flag-foreign", "idea belongs to <project>; its spec lives in that repo")`
+- `specs.reconcile_ideas`: drop foreign ideas whose `:SPEC:` is a bare `SPEC-NNNN` from the
+  `ideas`/`work`/`by_id`/claims walks (foreign ideas linked to an outbound `PROJ-NNNN` id stay in
+  them and reconcile through the outbox unchanged); for each dropped foreign idea append `(idea_id, spec_id, "flag-foreign", "idea belongs to <project>; its spec lives in that repo")`
   once. `_spec_claims` skips a wt spec whose `source_idea` names a foreign idea and reports it
   as `flag-foreign` too (a wt spec naming a foreign idea is a mis-link for a human to fix).
   `wt idea reconcile` prints `flag-foreign` rows as report-only, like `flag-mismatch`.
@@ -139,9 +149,17 @@ one-line calls).**
   `queue._clear_handed_off_on_requeue` pass `state["project"]` / the admitted campaign's
   project.
 - `store.active_campaign_for_spec(cfg, spec_id, project=None)`: forwards `project` to
-  `list_campaigns` (which already filters on it). `queue.plan_add` passes the resolved
-  `project`; other callers that have a campaign state pass its project. Callers with no project
-  keep today's behaviour.
+  `list_campaigns` (which already filters on it). Callers with a campaign state pass its
+  project, notably the epic-batch and dependency paths (`queue.py` ~6333, ~6415); callers with
+  no project keep today's behaviour.
+- `queue.plan_add` (`queue.py` ~5863): `resolve_spec_path(cfg, spec_id)` reads wt's
+  `SPEC-0001` for a second project's bare id and then fails with "not inside the project repo"
+  (or queues the wrong file). When `project` is given, is not `INTERNAL_PROJECT`, and the id is
+  a bare `SPEC-NNNN`, `plan_add` resolves the file in that project's repo instead:
+  `specs._find_spec(<project research.root>/docs/specs, id)` (the project's repo root from
+  `P.project_config`, the same lookup as `resolve_in_scope` step 2) and only then passes
+  `project` to `active_campaign_for_spec`. Outbound ids and internal projects keep
+  `resolve_spec_path`.
 - `queue._reconcile_closed` keeps its SPEC-0325 split; the internal branch now also
   passes `backlinks=False` (unchanged) and its scoped `spec_ids=[spec_id]` implies the
   campaign's idea is internal, which the new idea filter makes explicit.
@@ -170,6 +188,9 @@ is repaired by hand once (the steward already reverted the observed edit).
 - [ ] With two projects that both have `docs/specs/0001-*.md`, an idea whose `:PROJECT:` is the
       second project and `:SPEC: SPEC-0001`, `wt idea reconcile --apply` leaves wt's SPEC-0001
       file byte-identical and reports a `flag-foreign` row for that idea.
+- [ ] A foreign idea whose `:SPEC:` is an outbound `PROJ-NNNN` id is not filtered: it still
+      advances through the outbox under `wt idea reconcile --apply`, exactly as before, and no
+      `flag-foreign` row is reported for it.
 - [ ] `specs._write_source_idea` raises for a foreign idea, and for an idea created after the spec's
       `created` date; neither modifies the file.
 - [ ] `plan_spec_link` refuses a foreign idea with a message naming its project.
@@ -177,11 +198,14 @@ is repaired by hand once (the steward already reverted the observed edit).
       the campaign's project when an internal and a foreign idea both link `SPEC-0001`.
 - [ ] `store.active_campaign_for_spec(cfg, "SPEC-0001", project=X)` ignores an active
       `SPEC-0001` campaign of another project, and `plan_add` for the second project's
-      `SPEC-0001` is not refused because wt's `SPEC-0001` has an active campaign (and vice versa).
+      `SPEC-0001` is not refused because wt's `SPEC-0001` has an active campaign (and vice versa);
+      `plan_add(project=<second project>)` for a bare `SPEC-0001` returns a plan whose spec
+      path is the second project's `docs/specs/0001-*.md`, not wt's.
 - [ ] With `WT_CAMPAIGN` set to a non-wt campaign, `wt spec status SPEC-0001 --set <status>` edits the
       campaign's spec copy and not wt's `docs/specs/0001-*.md`; with another bare id such as
       `SPEC-0002` it fails with the "ambiguous in a <project> campaign" error and writes nothing.
-- [ ] From a cwd inside a registered non-wt project, a bare id never resolves to wt's store.
+- [ ] From a cwd inside a registered non-wt project, a bare id never resolves to wt's store,
+      both in the project's main checkout and in a linked worktree of it.
 - [ ] Closing (merging) a second-project campaign whose spec id equals an existing wt spec id
       leaves `git status --porcelain` of the wt checkout empty and its idea reconciled via the project repo.
 - [ ] Internal behaviour is unchanged: the pre-existing reconcile, queue, spec CLI and project tests pass.
@@ -197,16 +221,24 @@ is repaired by hand once (the steward already reverted the observed edit).
   - `test_reconcile_never_writes_foreign_backlink`: `reconcile_ideas(cfg, apply=True)` with the
     default `backlinks=True`; assert wt `0001` bytes unchanged, a `flag-foreign` row for IDEA-008,
     IDEA-001 handled as before.
+  - `test_reconcile_foreign_idea_with_outbound_id_still_advances`: an `IDEA-009`
+    (`:PROJECT: comfort-assistant`, `:SPEC: PROJ-0001`, outbox spec present); `reconcile_ideas`
+    advances it via the outbox as before and emits no `flag-foreign` row.
   - `test_write_source_idea_refuses_foreign_and_newer_idea`.
   - `test_plan_spec_link_refuses_foreign_idea`.
   - `test_mark_and_clear_handed_off_are_project_scoped`: with both ideas linking `SPEC-0001`,
     `_mark_handed_off` for a comfort-assistant state marks only IDEA-008.
-  - `test_active_campaign_for_spec_is_project_scoped` and `test_plan_add_same_spec_id_two_projects`.
+  - `test_active_campaign_for_spec_is_project_scoped` and `test_plan_add_same_spec_id_two_projects`
+    (wt `SPEC-0001` has an active campaign; `plan_add(spec_id="SPEC-0001", project="comfort-assistant")`
+    returns the project's file and is not refused, and the reverse).
   - `test_resolve_in_scope_campaign_env` (monkeypatch `WT_CAMPAIGN`, a campaign state under
     `store.campaigns_dir`): returns the project copy; other bare id raises; no `WT_CAMPAIGN` and
     cwd in wt returns wt's file.
   - `test_spec_status_set_in_campaign_leaves_wt_spec_untouched` via the click runner.
-  - `test_cwd_in_foreign_project_does_not_fall_back_to_wt_store`.
+  - `test_cwd_in_foreign_project_does_not_fall_back_to_wt_store`: parametrised over the
+    project's main checkout and a linked worktree created with `git worktree add` (no
+    `WT_CAMPAIGN`); the resolved path is under the project's checkout in both, and an id absent
+    there raises instead of reading wt's store.
   - `test_second_project_close_leaves_wt_checkout_clean`: extend the fake-runner second-project fixture in
     `tests/test_agentic_project.py` (campaign spec `SPEC-0001`, wt `SPEC-0001` present) to merge and
     assert `git status --porcelain` of the wt temp checkout is empty and `idea_reconciled` was emitted.
