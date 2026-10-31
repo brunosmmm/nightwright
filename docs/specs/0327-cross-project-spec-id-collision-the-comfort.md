@@ -1,9 +1,10 @@
 ---
 id: SPEC-0327
 title: "Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-31
+updated: 2026-10-31
 source_idea: IDEA-533
 kind: feature
 parent: SPEC-0298
