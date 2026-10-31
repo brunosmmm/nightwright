@@ -201,7 +201,11 @@ Your context is not the record; the files are. `wt queue conductor-brief` shows
   record, parks the campaign as `human_decision`, mails `human` and sends a desktop
   notification (SPEC-0232). Then give the human exactly one chat line:
   `escalated ESC-NNNN: <question>`. One open escalation per campaign.
-- **Mail identity:** send with `WT_MAILBOX_ADDR=conductor` set (or `--from conductor`).
+- **Mail identity:** pass `--from conductor` (mailbox) or `--by conductor` (queue writes that
+  take it). Never prefix a command with `WT_MAILBOX_ADDR=…`: Claude Code does not strip that
+  assignment when it matches allow rules, so a prefixed `wt` command falls through to the
+  auto-mode classifier and can be denied. Start every command with `wt`, with no `cd … &&`
+  in front (SPEC-0320).
 - **Shared ideas file:** verify headings before any `wt idea …` write.
 - **SPEC-0138:** the spec in the queue is the governing design.
 

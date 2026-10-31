@@ -2399,14 +2399,22 @@ def _skills_source():
 @click.option("--dest", type=click.Path(file_okay=False),
               help="install destination (default: ~/.claude/skills)")
 @click.option("--force", is_flag=True, help="overwrite a non-wt directory of the same name")
-def skills_install_cmd(link, dest, force):
-    """Install every skills/<name>/SKILL.md into --dest. Idempotent; refuses to clobber a
-    directory it doesn't already manage unless --force.
+@click.option("--permissions/--no-permissions", default=True,
+              help="also merge wt's agent allow rules into the Claude Code settings (SPEC-0320)")
+@click.option("--settings", "settings_path", type=click.Path(dir_okay=False),
+              help="Claude Code settings file for the allow rules (default: "
+                   "~/.claude/settings.json; with --dest, rules are written only when given)")
+def skills_install_cmd(link, dest, force, permissions, settings_path):
+    """Install every skills/<name>/SKILL.md into --dest, and merge the allow rules the conductor
+    and stewards need for their own `wt` commands into the Claude Code user settings (SPEC-0320).
+    Idempotent; refuses to clobber a directory it doesn't already manage unless --force.
 
     \b
-    wt skills install                 symlink all skills into ~/.claude/skills
+    wt skills install                 symlink all skills into ~/.claude/skills + allow rules
     wt skills install --copy          portable copy instead
-    wt skills install --dest /tmp/x   install elsewhere (tests MUST use this)
+    wt skills install --no-permissions   skills only
+    wt skills install --dest /tmp/x   install elsewhere (tests MUST use this); no rules
+                                      unless --settings is also given
     """
     source = _skills_source()
     try:
@@ -2416,18 +2424,43 @@ def skills_install_cmd(link, dest, force):
         raise click.ClickException(str(e))
     if not results:
         console.print("[yellow]no skills found under skills/[/]")
-        return
     for name, action in results:
         console.print(f"[green]✓[/] {name}  [dim]{action}[/]")
+    if permissions and (settings_path or not dest):
+        from . import agent_permissions as AP
+        target = settings_path or AP.default_settings_path()
+        try:
+            added = AP.install(target)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        if added:
+            console.print(f"[green]✓[/] allow rules  [dim]added {len(added)} to {target}[/]")
+            for rule in added:
+                console.print(f"    [dim]{rule}[/]")
+        else:
+            console.print(f"[green]✓[/] allow rules  [dim]up-to-date in {target}[/]")
 
 
 @skills_group.command("list")
 @click.option("--dest", type=click.Path(file_okay=False),
               help="destination to check (default: ~/.claude/skills)")
-def skills_list_cmd(dest):
-    """Show repo skills and whether/how each is installed at --dest."""
+@click.option("--settings", "settings_path", type=click.Path(dir_okay=False),
+              help="Claude Code settings file to check for the allow rules "
+                   "(default: ~/.claude/settings.json)")
+def skills_list_cmd(dest, settings_path):
+    """Show repo skills and whether/how each is installed at --dest, and whether the agent
+    allow rules (SPEC-0320) are present."""
     for entry in SK.status(dest=dest, source=_skills_source()):
         console.print(f"[white]{entry['name']}[/]  [dim]{entry['state']}[/]")
+    if dest and not settings_path:
+        return
+    from . import agent_permissions as AP
+    try:
+        gap = AP.missing(settings_path or AP.default_settings_path())
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    state = "present" if not gap else f"{len(gap)} missing (run wt skills install)"
+    console.print(f"[white]allow rules[/]  [dim]{state}[/]")
 
 
 @cli.group("completion")

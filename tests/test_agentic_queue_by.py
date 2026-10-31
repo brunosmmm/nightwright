@@ -155,3 +155,27 @@ def test_deferred_park_keeps_requester(tmp_path, monkeypatch):
         runner.release.set()
         pool.shutdown()
         lease.release()
+
+
+def test_queue_add_records_by(tmp_path, monkeypatch):
+    """SPEC-0320: `wt queue add --by conductor` attributes the campaign's opening events to
+    the conductor (a plain, unprefixed command that the allow rules match)."""
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    cid = added(cfg, monkeypatch, "SPEC-0001", "--by", "conductor")
+    assert {e["by"] for e in S.read_ledger(cfg, cid)} == {"conductor"}
+
+
+def test_queue_add_by_defaults_to_env_then_human(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    monkeypatch.setenv("WT_MAILBOX_ADDR", "steward:Meta-Tools")
+    cid = added(cfg, monkeypatch)
+    assert {e["by"] for e in S.read_ledger(cfg, cid)} == {"steward:Meta-Tools"}
+
+
+def test_queue_add_rejects_bad_by(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
+    r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--by", "no such", "--yes"])
+    assert r.exit_code != 0

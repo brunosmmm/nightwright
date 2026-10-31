@@ -785,19 +785,20 @@ def _print_plan(title: str, plan: dict) -> None:
     console.print(R.plan(title, plan), highlight=False)
 
 
-def _queue_add_one(cfg, spec_id, project, profile, base, force, priority, do_write, as_json):
+def _queue_add_one(cfg, spec_id, project, profile, base, force, priority, do_write, as_json,
+                    by="human"):
     """The single-id `wt queue add` (wt.queue.add.v1)."""
     try:
         if Q._IDEA_ID_RE.match((spec_id or "").strip()):
             plan = Q.plan_add_idea(cfg, spec_id, project=project, profile=profile,
                                    base=base, priority=priority)
             if do_write:
-                Q.apply_add_idea(cfg, plan)
+                Q.apply_add_idea(cfg, plan, by=by)
         else:
             plan = Q.plan_add(cfg, spec_id, project=project, profile=profile, base=base,
                               force=force, priority=priority)
             if do_write:
-                Q.apply_add(cfg, plan)
+                Q.apply_add(cfg, plan, by=by)
     except ValueError as e:
         raise click.ClickException(str(e))
     if as_json:
@@ -912,9 +913,11 @@ def attach(queue_group):
     @click.option("--yes", "do_write", is_flag=True, help="create the campaign (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True,
                   help="emit wt.queue.add.v1 JSON (wt.queue.add.batch.v1 for a batch)")
+    @click.option("--by", default=None,
+                  help="who acts (default: $WT_MAILBOX_ADDR, then human)")
     @click.pass_obj
     def queue_add(cfg, ids, from_file, epic, skip_invalid, project, profile, base, force,
-                  priority, do_write, as_json):
+                  priority, do_write, as_json, by):
         """Queue accepted specs and ideas as new campaigns (dry-run unless --yes).
 
         \b
@@ -928,9 +931,13 @@ def attach(queue_group):
         if not ids and not from_file and not epic:
             raise click.UsageError("give at least one SPEC-NNNN / IDEA-NNN id, --from-file or "
                                    "--epic")
+        try:
+            actor = _actor(cfg, by)
+        except ValueError as e:
+            raise click.ClickException(str(e))
         if len(ids) == 1 and not from_file and not epic:
             return _queue_add_one(cfg, ids[0], project, profile, base, force, priority,
-                                  do_write, as_json)
+                                  do_write, as_json, by=actor)
         try:
             batch_ids = list(ids)
             if from_file:
@@ -947,7 +954,7 @@ def attach(queue_group):
             refused = None
             if do_write:
                 try:
-                    Q.apply_add_batch(cfg, batch, skip_invalid=skip_invalid)
+                    Q.apply_add_batch(cfg, batch, skip_invalid=skip_invalid, by=actor)
                 except ValueError as e:
                     refused = str(e)
         except (ValueError, OSError) as e:

@@ -527,6 +527,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0315](./specs/0315-quiet-follower-echoes-the-conductor-s-own-parks.md) | Quiet follower holds a parked event the conductor itself caused (by=conductor) | feature | done | — | 2026-10-31 |
 | [SPEC-0316](./specs/0316-gate-config-for-a-campaign-comes-from-main-so-a.md) | A campaign's gate timeouts are the max of main's and its own branch's `.wt/project.yaml` | feature | done | — | 2026-10-31 |
 | [SPEC-0317](./specs/0317-conductor-digest-is-delivered-every-30-min-on-an.md) | Quiet follower skips a conductor_digest that holds only empty pings (nothing to act on) | feature | done | M10: agentic MVP | 2026-10-31 |
+| [SPEC-0320](./specs/0320-skills-install-provisions-agent-allow-rules.md) | `wt skills install` provisions the conductor and steward allow rules for wt commands | feature | done | M10: agentic MVP | 2026-10-31 |
 
 ## Superseded / rejected
 

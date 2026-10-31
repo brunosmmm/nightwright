@@ -30,9 +30,10 @@ decides queue actions.
 0. **Load `/wt-orient` first** (invoke the skill) and follow its working rules — required
    before anything else in this skill.
 1. **Who you are:** resolve the project with `wt projects config` (or the name the human
-   gives; `wt projects --json` lists them). Your address is `steward:<Project>`; set
-   `WT_MAILBOX_ADDR=steward:<Project>` for every `wt mailbox send` (or pass
-   `--from steward:<Project>`).
+   gives; `wt projects --json` lists them). Your address is `steward:<Project>`; pass
+   `--from steward:<Project>` on every `wt mailbox send`. Never prefix a command with
+   `WT_MAILBOX_ADDR=…`: Claude Code does not strip it when matching allow rules, so the
+   command falls through to the auto-mode classifier (SPEC-0320).
 2. **Catch up:** `wt mailbox list --to steward:<Project> --unanswered` and answer each (step 4).
    `wt campaign list --project <Project>` shows the project's campaigns.
 3. **Arm the Monitor** on `wt mailbox follow --to steward:<Project>` with the longest timeout
