@@ -1,7 +1,7 @@
 ---
 id: SPEC-0303
 title: "Fewer `rebase_conflict` parks: base churn is not a conflict, the resolver is not blocked by the cap, and conflict pressure is exported"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -181,28 +181,28 @@ them has fired at least once:
 
 ## Acceptance criteria
 
-- [ ] With every resolver run verified and the base conflicting again each time, the
+- [x] With every resolver run verified and the base conflicting again each time, the
       campaign runs the resolver up to `MAX_RESOLVE_RUNS` (4) times and then parks
       `base_moving` (`resume_to: CLOSING`), not `rebase_conflict`.
-- [ ] Two failed resolver runs in one CLOSING entry still park `rebase_conflict` with
+- [x] Two failed resolver runs in one CLOSING entry still park `rebase_conflict` with
       today's detail, and a verified run followed by one failed run is retried.
-- [ ] `merge.resolver: false` and a missing `pre_head`/`target_sha` still park
+- [x] `merge.resolver: false` and a missing `pre_head`/`target_sha` still park
       `rebase_conflict` as today.
-- [ ] The run cap holds on the retry path: verified ×3 then one failed run parks
+- [x] The run cap holds on the retry path: verified ×3 then one failed run parks
       `rebase_conflict` with no 5th run; a failed run with both bounds unmet stays CLOSING.
-- [ ] A resolve step with `total_usd + resolver budget > cap_usd` but within `cap_usd +
+- [x] A resolve step with `total_usd + resolver budget > cap_usd` but within `cap_usd +
       resolver_allowance_usd` runs, and appends the "resolver ran on the close allowance"
       finding (via `closing.resolve.on_allowance`). A step within the plain cap appends no
       finding. Beyond the allowance it parks `cost_cap`. `cost.cap_usd` itself is
       unchanged.
-- [ ] When an earlier run failed, the `base_moving` detail ends with `; an earlier attempt
+- [x] When an earlier run failed, the `base_moving` detail ends with `; an earlier attempt
       failed: <last>`; `_spent_resolver_park` has no all-verified branch.
-- [ ] `merge.resolver_allowance_usd` validates in the project schema; when absent the
+- [x] `merge.resolver_allowance_usd` validates in the project schema; when absent the
       default is the profile's resolver budget × 2.
-- [ ] `wt campaign export --table campaigns` rows carry `rebase_regenerated`,
+- [x] `wt campaign export --table campaigns` rows carry `rebase_regenerated`,
       `resolver_dispatches`, `rebase_resolved` and `resolver_overcap_usd` (appended
       columns), and existing columns are unchanged.
-- [ ] The `/wt-conduct` `parked.rebase_conflict` row no longer describes the
+- [x] The `/wt-conduct` `parked.rebase_conflict` row no longer describes the
       verified-then-moved case.
 
 ## Test plan
@@ -259,12 +259,66 @@ them has fired at least once:
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
 - None. `MAX_RESOLVE_RUNS` and the allowance default are tuning values for the conductor.
+
+### Test record (2026-10-30)
+
+Run in the worktree with `uv run pytest -p no:cacheprovider`:
+
+- `tests/test_agentic_resolver.py` (96 passed): `test_verified_runs_then_base_moving_park`,
+  `test_two_failures_park_rebase_conflict` (the SPEC-0221 test, renamed),
+  `test_verified_then_failed_gets_retry`, `test_run_cap_applies_to_retry`,
+  `test_earlier_failure_noted_in_base_moving_detail`, `test_failure_budget_ignores_verified_runs`,
+  `test_resolver_opt_out_still_parks`, `test_missing_merge_base_parks_rebase_conflict` (with the
+  existing pre_head/target_sha parametrization, now asserting `"no"`),
+  `test_resolve_on_allowance_records_finding` (finding appended, `cost.cap_usd` unchanged; the
+  companion case within the plain cap appends none), `test_resolve_beyond_the_allowance_parks_cost_cap`
+  and `test_resolver_cost_cap_parks` (allowance 0).
+- `tests/test_agentic_queue.py -k allowance` (5 passed): `test_resolve_within_close_allowance`
+  (4 cases), `test_allowance_default_and_config` (default 2 x resolver budget, configured value,
+  negative and non-number values fail validation).
+- `tests/test_agentic_campaign_export.py` and `tests/test_skills.py` (142 passed):
+  `test_export_conflict_pressure_columns`, `test_conduct_skill_rebase_conflict_row`; the pinned
+  column lists were extended by the four appended columns.
+- Regression guard: `tests/test_agentic_queue.py`, `test_agentic_project.py`,
+  `test_agentic_close.py`, `test_agentic_close_regenerate.py`, `test_agentic_gitops.py`,
+  `test_agentic_e2e.py`, `test_agentic_autopark.py`, `test_agentic_queue_autopark.py` (410
+  passed); the close, regenerate and gitops tests are unchanged. The full `uv run pytest` was
+  left to gating.
+- Sabotage check, not run separately: the verified-run count is no longer in the failure
+  budget by construction (`_dispatch_resolver` reads `resolve_failed.n`), and
+  `test_verified_runs_then_base_moving_park` and `test_resolve_within_close_allowance` pin both
+  behaviours.
+- Manual: `wt campaign export --table campaigns --stdout` on the local data shows the four new
+  columns last (134 campaigns; 43 resolver dispatches, 34 `rebase_resolved`, 99 regenerations,
+  0 over-cap resolver dollars so far). Of the 18 campaigns that ever parked `rebase_conflict`,
+  none was created on or after 2026-10-27. Re-check after merge on the next merged campaigns.
+
+### As shipped
+
+- `_cap_blocks` takes an optional `allowance` argument instead of `plan_step` passing it a
+  shallow copy of the state with a raised `cost.cap_usd`; the result is the same and
+  `cost.cap_usd` is never touched. A cost-cap park detail from the resolve step names the
+  allowance (`(including a $4.00 close allowance)`).
+- `on_allowance` is recorded in `_prepare_run` (the point where the runner starts the resolve
+  step and writes the state), as `closing.resolve.on_allowance`; `_apply_resolve` appends the
+  info finding (persona `close`, gate `rebase`) when it is set.
+- `_dispatch_resolver` checks `resolve_failed.n` first, then the run count; a run-cap hit whose
+  last run was not verified returns `failed_out`. The `base_moving` detail counts verified
+  runs only (`runs - failed`), so with one earlier failure and a 4-run cap it reads "after 3
+  verified resolutions; an earlier attempt failed: <last>".
+- The base_moving park carries `reason`, `detail` and `resume_to: CLOSING` (no conflict paths).
+- Existing tests that encoded the old semantics were rewritten:
+  `test_attempt_budget_spans_resolved_runs_in_one_closing_entry` and
+  `test_failed_then_verified_then_conflict_again_names_no_stale_failure` were replaced by the
+  tests above, and the column-order tests in `test_agentic_campaign_export.py` now expect the
+  four new trailing columns (the conductor columns are no longer the last two).
+- Export notes (`NOTES`) gained a line describing the four columns.

@@ -103,8 +103,11 @@ GATE_RETRY_MAX = 1
 TIMEOUT_REGATE_MAX = 2
 # Malformed conformance-review verdicts tolerated per loop before the review escalates.
 REVIEW_RETRY_MAX = 1
-# SPEC-0221: conflict-resolver runs per entry into CLOSING before the rebase_conflict park.
+# SPEC-0221: failed conflict-resolver runs per entry into CLOSING before the rebase_conflict park.
 MAX_RESOLVE_ATTEMPTS = 2
+# SPEC-0303: all resolver runs (verified or not) per entry into CLOSING; a verified run that the
+# base overtakes four times parks `base_moving`, not `rebase_conflict`.
+MAX_RESOLVE_RUNS = 4
 _STOP_GRACE_S = 30
 # With steps in flight, the loop never waits less than this between ticks (no busy spin).
 _MIN_INFLIGHT_WAIT_S = 0.1
@@ -135,21 +138,34 @@ class Step:
     budget: float | None = None            # SPEC-0302: the run a `cost_cap` park blocked
 
 
-def _cap_blocks(state: dict, profile: dict, persona) -> tuple[str, float] | tuple[None, None]:
+def _resolver_allowance(project_cfg: dict | None, profile: dict) -> float:
+    """SPEC-0303: the spend over `cost.cap_usd` a close may put into resolver runs:
+    `merge.resolver_allowance_usd`, else the resolver's budget × `MAX_RESOLVE_ATTEMPTS`."""
+    configured = ((project_cfg or {}).get("merge") or {}).get("resolver_allowance_usd")
+    if configured is not None:
+        return float(configured)
+    return float(persona_settings(profile, "conflict_resolver").get("max_budget_usd") or 0.0) \
+        * MAX_RESOLVE_ATTEMPTS
+
+
+def _cap_blocks(state: dict, profile: dict, persona,
+                allowance: float = 0.0) -> tuple[str, float] | tuple[None, None]:
     """Pessimistic cap check: a run may spend up to its budget, so never start one that could
-    cross the campaign cap. `persona` is a name or a list of names (a fan-out is checked as
-    the sum of its budgets). Returns `(park detail, the blocked run's budget)` or
-    `(None, None)`."""
+    cross the campaign cap (plus `allowance`, SPEC-0303: the cap itself is never changed).
+    `persona` is a name or a list of names (a fan-out is checked as the sum of its budgets).
+    Returns `(park detail, the blocked run's budget)` or `(None, None)`."""
     cost = state.get("cost") or {}
     cap = cost.get("cap_usd")
     if cap is None:
         return None, None
+    cap = float(cap) + allowance
     names = [persona] if isinstance(persona, str) else list(persona)
     budget = sum(float(persona_settings(profile, p).get("max_budget_usd") or 0.0) for p in names)
     total = float(cost.get("total_usd") or 0.0)
-    if total + budget > float(cap):
+    if total + budget > cap:
         who = f"a {names[0]} run" if len(names) == 1 else f"{', '.join(names)} runs"
-        return (f"spent ${total:.2f}; {who} may cost ${budget:.2f}; cap ${float(cap):.2f}",
+        return (f"spent ${total:.2f}; {who} may cost ${budget:.2f}; cap ${cap:.2f}"
+                + (f" (including a ${allowance:.2f} close allowance)" if allowance else ""),
                 budget)
     return None, None
 
@@ -226,7 +242,8 @@ def plan_step(state: dict, profile: dict, project_cfg: dict | None = None) -> St
         return Step("gate")
     if st == "CLOSING":
         if (state.get("closing") or {}).get("resolve"):         # SPEC-0221
-            blocked, budget = _cap_blocks(state, profile, "conflict_resolver")
+            blocked, budget = _cap_blocks(state, profile, "conflict_resolver",
+                                          _resolver_allowance(project_cfg, profile))
             if blocked:
                 return Step("park", persona="conflict_resolver", reason="cost_cap",
                             detail=blocked, resume_to=st, budget=budget)
@@ -1333,6 +1350,11 @@ def _prepare_run(ctx: _Ctx, state: dict, persona: str, step: Step | None = None)
     req = PS.build_request(cfg, profile, pcfg, state, persona, run_dir=run_dir, previous=previous,
                            extra=extra, invariant=invariant)
     budget = float(req.max_budget_usd)
+    if persona == "conflict_resolver" and (state.get("closing") or {}).get("resolve") is not None:
+        # SPEC-0303: remember whether only the close allowance let this run start (plan_step is
+        # pure); the apply appends the finding. `cost.cap_usd` is never touched.
+        state["closing"]["resolve"]["on_allowance"] = \
+            _cap_blocks(state, profile, persona)[0] is not None
     with store.item_lock(cfg, cid):
         store.append_event(cfg, cid, "run.start", {
             "persona": persona, "run_id": run_id, "model": req.model, "effort": req.effort,
@@ -2203,9 +2225,13 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         park = oc.park or {"reason": "open_failed", "detail": "close returned PARKED without a reason",
                            "resume_to": "CLOSING"}
         if park["reason"] == "rebase_conflict" and park.get("conflicts"):
-            if _dispatch_resolver(ctx, state, res, park, events):
+            outcome = _dispatch_resolver(ctx, state, res, park, events)
+            if outcome == "dispatched":
                 return finish("CLOSING", "resolve_dispatched")
-            park = _spent_resolver_park(state, park)
+            if outcome == "runs_out":       # SPEC-0303: every run verified; the base kept moving
+                park = _base_moving_park(state, park)
+            else:
+                park = _spent_resolver_park(state, park)
         return finish("PARKED", park["reason"], park=park)
 
     return finish(res.from_state, "noop")
@@ -2456,24 +2482,28 @@ def _ideas(cfg):
     return ORG.filter_tasks(ORG.load_tasks(cfg), is_idea=True)
 
 
-def _dispatch_resolver(ctx: _Ctx, state: dict, res: StepResult, park: dict, events: list) -> bool:
+def _dispatch_resolver(ctx: _Ctx, state: dict, res: StepResult, park: dict, events: list) -> str:
     """SPEC-0221: a close rebase conflicted on non-generated paths. With budget left (and the
     project not opted out) record `closing.resolve` and a finding, and stay CLOSING; the next
-    plan is the `resolve` step. False means park as before."""
+    plan is the `resolve` step. Returns `"dispatched"`, or why not: `"failed_out"` (failed
+    runs reached `MAX_RESOLVE_ATTEMPTS`), `"runs_out"` (runs reached `MAX_RESOLVE_RUNS`, SPEC-0303)
+    or `"no"` (opt-out, missing heads, no merge base). Anything but `"dispatched"` parks."""
     closing = dict(state.get("closing") or {"attempts": 0})
-    if int(closing.get("resolve_attempts") or 0) >= MAX_RESOLVE_ATTEMPTS:
-        return False
+    if int((closing.get("resolve_failed") or {}).get("n") or 0) >= MAX_RESOLVE_ATTEMPTS:
+        return "failed_out"
+    if int(closing.get("resolve_attempts") or 0) >= MAX_RESOLVE_RUNS:
+        return "runs_out" if closing.get("resolve_last_verified") else "failed_out"
     if (ctx.project(state).get("merge") or {}).get("resolver", True) is False:
-        return False
+        return "no"
     repo = state.get("repo") or {}
     pre_head = getattr(res.prepared, "pre_head", "") or ""
     target_sha = park.get("target_sha") or ""
     if not (pre_head and target_sha):
-        return False
+        return "no"
     try:
         fork = git.merge_base(repo["worktree"], pre_head, target_sha)
     except (GitError, KeyError):
-        return False
+        return "no"
     closing["resolve"] = {"target": park.get("target"), "target_sha": target_sha,
                           "conflicts": list(park["conflicts"]), "pre_head": pre_head,
                           "fork": fork, "branch": repo.get("branch")}
@@ -2482,13 +2512,27 @@ def _dispatch_resolver(ctx: _Ctx, state: dict, res: StepResult, park: dict, even
         "persona": "close", "severity": "info", "gate": "rebase",
         "title": "rebase conflict; resolver dispatched",
         "detail": park["detail"], "files": list(park["conflicts"])}))
-    return True
+    return "dispatched"
+
+
+def _base_moving_park(state: dict, park: dict) -> dict:
+    """SPEC-0303: the park after `MAX_RESOLVE_RUNS` resolver runs, the last one verified: nothing
+    failed, the base kept moving and conflicting again, so it is `base_moving` (routine,
+    SPEC-0302) and resumes to CLOSING. An earlier failed run is named in the detail."""
+    closing = state.get("closing") or {}
+    failed = closing.get("resolve_failed") or {}
+    verified = int(closing.get("resolve_attempts") or 0) - int(failed.get("n") or 0)
+    detail = f"{park.get('target') or 'the base'} moved and conflicted again after {verified} " \
+             f"verified resolutions"
+    if failed.get("n"):
+        detail += f"; an earlier attempt failed: {failed.get('last')}"
+    return {"reason": "base_moving", "detail": detail, "resume_to": "CLOSING"}
 
 
 def _spent_resolver_park(state: dict, park: dict) -> dict:
-    """The park detail after resolver runs were used up. Failed attempts are reported with the
-    last failure; runs that were all verified (the base moved and conflicted again each time)
-    are reported as such, so the conductor does not hunt for a failure that never happened."""
+    """The park detail after resolver runs were used up (a real failure, or a refusal): failed
+    attempts are reported with the last failure, and a verified last run that the base overtook
+    after an earlier failure says so, so the conductor knows which it was."""
     closing = state.get("closing") or {}
     used = int(closing.get("resolve_attempts") or 0)
     if not used:
@@ -2500,7 +2544,7 @@ def _spent_resolver_park(state: dict, park: dict) -> dict:
     elif failed.get("n"):
         tail = f" (resolver: {used} attempts, last: {failed.get('last')})"
     else:
-        tail = f" (resolver: {used} resolutions verified; the base moved and conflicted again)"
+        return park
     return {**park, "detail": park["detail"] + tail}
 
 
@@ -2508,8 +2552,10 @@ def _apply_resolve(state: dict, counters: dict, res: StepResult, rr, row: dict, 
                    finish):
     """SPEC-0221 harvest of a `resolve` step (not interrupted). Verified: clear
     `closing.resolve`, record `rebase_resolved` and stay CLOSING for the normal close.
-    Otherwise a `major` finding; stay CLOSING with the same `resolve` while attempts remain,
-    else park `rebase_conflict`."""
+    Otherwise a `major` finding; stay CLOSING with the same `resolve` while neither the failure
+    budget (`MAX_RESOLVE_ATTEMPTS`) nor the run budget (`MAX_RESOLVE_RUNS`, SPEC-0303) is spent,
+    else park `rebase_conflict`. A resolve step allowed only by the close allowance appends one
+    info finding."""
     closing = dict(state.get("closing") or {"attempts": 0})
     rs = closing.get("resolve") or {}
     info = res.resolution or {}
@@ -2517,6 +2563,13 @@ def _apply_resolve(state: dict, counters: dict, res: StepResult, rr, row: dict, 
     closing["resolve_attempts"] = used = int(closing.get("resolve_attempts") or 0) + 1
     closing["resolve_last_verified"] = bool(info.get("verified"))
     state["closing"] = closing
+    if rs.get("on_allowance"):              # SPEC-0303: the plain cap would have refused this run
+        events.append(("finding", {
+            "persona": "close", "severity": "info", "gate": "rebase",
+            "title": "resolver ran on the close allowance",
+            "detail": f"run {res.run_id}: total ${float((state.get('cost') or {}).get('total_usd') or 0):.2f}"
+                      f" against cap ${float((state.get('cost') or {}).get('cap_usd') or 0):.2f}",
+            "files": list(rs.get("conflicts") or [])}))
     if info.get("verified"):
         closing.pop("resolve", None)
         head = info.get("head")
@@ -2550,7 +2603,7 @@ def _apply_resolve(state: dict, counters: dict, res: StepResult, rr, row: dict, 
         "detail": why + ("\nQuestions:\n" + "\n".join(f"- {q}" for q in questions)
                         if questions else ""),
         "files": list(rs.get("conflicts") or [])}))
-    if used < MAX_RESOLVE_ATTEMPTS:
+    if int(closing["resolve_failed"]["n"]) < MAX_RESOLVE_ATTEMPTS and used < MAX_RESOLVE_RUNS:
         return finish("CLOSING", "resolve_failed")
     paths = ", ".join(rs.get("conflicts") or [])
     return finish("PARKED", "rebase_conflict", park={

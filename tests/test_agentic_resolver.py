@@ -81,13 +81,16 @@ def impl_with_app(**kw):
 
 class World:
     def __init__(self, tmp_path, monkeypatch, entries, *, profile=None, resolver_cfg=None,
-                 regenerate=False, test_gate="test -f feature.txt"):
+                 regenerate=False, test_gate="test -f feature.txt", allowance=None):
         self.tmp_path = tmp_path
         self.repo = make_repo(tmp_path, test_gate=test_gate)
         yml = self.repo / ".wt" / "project.yaml"
         text = yml.read_text()
         if resolver_cfg is not None:
             text = text.replace("  remote: origin\n", f"  remote: origin\n  resolver: {resolver_cfg}\n")
+        if allowance is not None:
+            text = text.replace("  remote: origin\n",
+                                f"  remote: origin\n  resolver_allowance_usd: {allowance}\n")
         if regenerate:
             text = text.replace("  remote: origin\n", "  remote: origin\n  regenerate:\n"
                                 "    - {path: gen.txt, cmd: 'echo regenerated > gen.txt'}\n")
@@ -274,7 +277,7 @@ def test_resolver_edits_spec_triages_spec_changed(tmp_path, monkeypatch):
 
 # ---- bounded attempts, verification and restore ----------------------------------------------
 
-def test_gave_up_twice_parks_rebase_conflict(tmp_path, monkeypatch):
+def test_two_failures_park_rebase_conflict(tmp_path, monkeypatch):
     w = basic(tmp_path, monkeypatch, gave_up("first"), gave_up("cannot decide c"), resolver())
     w.open_and_conflict()
     pre = w.dispatched()["closing"]["resolve"]["pre_head"]
@@ -499,7 +502,7 @@ def test_interrupted_resolver_not_counted(tmp_path, monkeypatch):
     assert len(w.run_ids()) == 2
 
 
-def test_resolver_opt_out_parks(tmp_path, monkeypatch):
+def test_resolver_opt_out_still_parks(tmp_path, monkeypatch):
     w = basic(tmp_path, monkeypatch, resolver(), resolver_cfg="false")
     w.open_and_conflict()
     st = w.drive(lambda s: s["state"] == "PARKED")
@@ -512,7 +515,7 @@ def test_resolver_cost_cap_parks(tmp_path, monkeypatch):
     prof = {"campaign_cap_usd": 2.0, "personas": {
         "implementer": {"max_budget_usd": 0.5}, "conformance_reviewer": {"max_budget_usd": 0.3},
         "conflict_resolver": {"max_budget_usd": 2.0}}}
-    w = basic(tmp_path, monkeypatch, resolver(), profile=prof)
+    w = basic(tmp_path, monkeypatch, resolver(), profile=prof, allowance=0)   # SPEC-0303: none
     w.open_and_conflict()
     st = w.drive(lambda s: s["state"] == "PARKED")
     assert st["park"]["reason"] == "cost_cap" and st["park"]["resume_to"] == "CLOSING"
@@ -545,26 +548,119 @@ def test_generated_only_conflict_no_resolver(tmp_path, monkeypatch):
                for f in w.ledger("finding"))
 
 
-def test_attempt_budget_spans_resolved_runs_in_one_closing_entry(tmp_path, monkeypatch):
-    """Two verified resolutions (the base moved and conflicted again in between) use the
-    whole budget: the third conflict parks without a third run."""
-    second = resolver(edits=False, extra_edits=[
-        {"path": "src/app.py", "write": "a\nb\nc-branch c-main c-main2\nd\ne\n"}])
-    w = basic(tmp_path, monkeypatch, resolver(), second, resolver())
-    w.open_and_conflict()
-    w.drive(lambda s: len(w.ledger("rebase_resolved")) == 1)
+def _chain(k):
+    """The resolver entry for the k-th conflict of a base that moves after every resolution."""
+    if k == 1:
+        return resolver()
+    merged = "a\nb\nc-branch c-main " + " ".join(f"c-main{i}" for i in range(2, k + 1)) + "\nd\ne\n"
+    return resolver(edits=False, extra_edits=[{"path": "src/app.py", "write": merged}])
+
+
+def _move_base_after(w, k):
+    """Wait for the k-th verified resolution, then move main so that the branch conflicts again."""
+    w.drive(lambda s: len(w.ledger("rebase_resolved")) == k)
     assert w.st()["state"] == "CLOSING" and not w.st()["closing"].get("resolve")
-    w.main_conflict("a\nb\nc-main2\nd\ne\n")
-    w.drive(lambda s: len(w.ledger("rebase_resolved")) == 2)
-    assert w.st()["closing"]["resolve_attempts"] == 2
-    w.main_conflict("a\nb\nc-main3\nd\ne\n")
+    w.main_conflict(f"a\nb\nc-main{k + 1}\nd\ne\n")
+
+
+def test_verified_runs_then_base_moving_park(tmp_path, monkeypatch):
+    """Verified runs do not use the failure budget: the base is busy, not the resolver failing.
+    `MAX_RESOLVE_RUNS` verified runs then park `base_moving`, which resumes to CLOSING."""
+    w = basic(tmp_path, monkeypatch, *[_chain(k) for k in range(1, 6)])
+    w.open_and_conflict()
+    for k in range(1, Q.MAX_RESOLVE_RUNS + 1):
+        _move_base_after(w, k)
     st = w.drive(lambda s: s["state"] == "PARKED")
-    assert st["park"]["reason"] == "rebase_conflict" and "src/app.py" in st["park"]["detail"]
-    # no resolver failure happened: the detail must not read like one
-    assert "2 resolutions verified" in st["park"]["detail"]
-    assert "last:" not in st["park"]["detail"] and "kept both sides" not in st["park"]["detail"]
+    assert len(w.ledger("rebase_resolved")) == 4 == len(w.run_ids())
+    assert st["park"]["reason"] == "base_moving" and st["park"]["resume_to"] == "CLOSING"
+    assert "4 verified resolutions" in st["park"]["detail"]
+    assert "earlier attempt failed" not in st["park"]["detail"]
     assert not w.findings("conflict resolver did not resolve")
-    assert len(w.run_ids()) == 2
+
+
+def test_verified_then_failed_gets_retry(tmp_path, monkeypatch):
+    w = basic(tmp_path, monkeypatch, _chain(1), gave_up("cannot decide"), _chain(2))
+    w.open_and_conflict()
+    _move_base_after(w, 1)
+    st = w.drive(lambda s: (s.get("closing") or {}).get("resolve_failed"))
+    assert st["state"] == "CLOSING" and st["closing"]["resolve"]
+    w.drive(lambda s: s["state"] in ("MERGED", "PARKED"))
+    assert w.st()["state"] == "MERGED"
+    assert len(w.run_ids()) == 3 and len(w.ledger("rebase_resolved")) == 2
+
+
+def test_run_cap_applies_to_retry(tmp_path, monkeypatch):
+    """Verified x3, then one failure: the failed-run retry path does not pass through
+    `_dispatch_resolver`, so `_apply_resolve` itself holds `MAX_RESOLVE_RUNS`."""
+    w = basic(tmp_path, monkeypatch, _chain(1), _chain(2), _chain(3), gave_up("cannot decide"),
+              _chain(4))
+    w.open_and_conflict()
+    for k in range(1, 4):
+        _move_base_after(w, k)
+    st = w.drive(lambda s: s["state"] == "PARKED")
+    assert st["park"]["reason"] == "rebase_conflict" and st["park"]["resume_to"] == "CLOSING"
+    assert "last: cannot decide" in st["park"]["detail"] and "4 attempts" in st["park"]["detail"]
+    assert len(w.run_ids()) == 4                                  # no 5th run
+
+
+def test_earlier_failure_noted_in_base_moving_detail(tmp_path, monkeypatch):
+    w = basic(tmp_path, monkeypatch, _chain(1), gave_up("cannot decide"), _chain(2), _chain(3),
+              _chain(4))
+    w.open_and_conflict()
+    _move_base_after(w, 1)
+    _move_base_after(w, 2)
+    _move_base_after(w, 3)
+    st = w.drive(lambda s: s["state"] == "PARKED")
+    assert len(w.run_ids()) == 4
+    assert st["park"]["reason"] == "base_moving"
+    assert "after 3 verified resolutions; an earlier attempt failed: cannot decide" \
+        in st["park"]["detail"]
+
+
+def test_failure_budget_ignores_verified_runs(tmp_path, monkeypatch):
+    """verified, failed, failed: two failures park rebase_conflict whatever ran before."""
+    w = basic(tmp_path, monkeypatch, _chain(1), gave_up("one"), gave_up("two"), _chain(2))
+    w.open_and_conflict()
+    _move_base_after(w, 1)
+    st = w.drive(lambda s: s["state"] == "PARKED")
+    assert st["park"]["reason"] == "rebase_conflict" and "last: two" in st["park"]["detail"]
+    assert len(w.run_ids()) == 3
+
+
+def _cap_profile(cap):
+    return {"campaign_cap_usd": cap, "personas": {
+        "implementer": {"max_budget_usd": 0.5}, "conformance_reviewer": {"max_budget_usd": 0.3},
+        "conflict_resolver": {"max_budget_usd": 2.0}}}
+
+
+def test_resolve_on_allowance_records_finding(tmp_path, monkeypatch):
+    """cap 2.0: spent < 2.0 but spent + 2.0 > 2.0, so only the close allowance lets the run start."""
+    title = "resolver ran on the close allowance"
+    w = basic(tmp_path, monkeypatch, resolver(), profile=_cap_profile(2.0))
+    w.open_and_conflict()
+    cap = w.st()["cost"]["cap_usd"]
+    assert cap == 2.0
+    w.drive(lambda s: s["state"] in ("MERGED", "PARKED") or w.findings(title))
+    w.drive(lambda s: s["state"] in ("MERGED", "PARKED"))
+    assert w.st()["state"] == "MERGED" and len(w.run_ids()) == 1
+    (f,) = w.findings(title)
+    assert f["severity"] == "info" and f["gate"] == "rebase" and f["files"] == ["src/app.py"]
+    assert w.st()["cost"]["cap_usd"] == cap                       # the cap itself is unchanged
+    assert not [e for e in w.ledger("park") if e["reason"] == "cost_cap"]
+    # companion: total + budget within the plain cap, so no finding
+    (tmp_path / "plain").mkdir()
+    w2 = basic(tmp_path / "plain", monkeypatch, resolver(), profile=_cap_profile(20.0))
+    w2.open_and_conflict()
+    w2.drive(lambda s: s["state"] in ("MERGED", "PARKED"))
+    assert w2.st()["state"] == "MERGED" and not w2.findings(title)
+
+
+def test_resolve_beyond_the_allowance_parks_cost_cap(tmp_path, monkeypatch):
+    w = basic(tmp_path, monkeypatch, resolver(), profile=_cap_profile(2.0), allowance=0.5)
+    w.open_and_conflict()
+    st = w.drive(lambda s: s["state"] == "PARKED")
+    assert st["park"]["reason"] == "cost_cap" and w.run_ids() == []
+    assert not w.findings("resolver ran on the close allowance")
 
 
 # ---- a failed run (non-zero exit, malformed verdict, crash) and a failed restore ---------------
@@ -708,7 +804,7 @@ def test_attempts_survive_a_base_moved_redo(tmp_path, monkeypatch):
 
 # ---- dispatch fallbacks and the spent-budget detail ---------------------------------------------
 
-def test_merge_base_failure_falls_back_to_the_park(tmp_path, monkeypatch):
+def test_missing_merge_base_parks_rebase_conflict(tmp_path, monkeypatch):
     w = basic(tmp_path, monkeypatch, resolver())
 
     def broken(*a, **kw):
@@ -737,7 +833,7 @@ def test_dispatch_needs_pre_head_and_target_sha(tmp_path, pre_head, target_sha):
             "target": "main", "target_sha": target_sha}
     events = []
     ctx = type("Ctx", (), {"project": lambda self, st: {}})()
-    assert Q._dispatch_resolver(ctx, state, res, park, events) is False
+    assert Q._dispatch_resolver(ctx, state, res, park, events) == "no"
     assert events == [] and "resolve" not in state["closing"]
 
 
@@ -751,30 +847,16 @@ def test_spent_resolver_park_detail_cases():
           "last_verdict": {"persona": "implementer", "verdict": {"summary": "other"}}}
     d = Q._spent_resolver_park(st, park)["detail"]
     assert d.endswith("(resolver: 2 attempts, last: cannot decide)") and "other" not in d
-    # all verified: no `last:`, and nothing that reads like a failure
+    # all verified: no failure to report (SPEC-0303: that is `base_moving`, not this park)
     st = {"closing": {"resolve_attempts": 2}, "last_verdict": {
         "persona": "conflict_resolver", "verdict": {"summary": "kept both sides"}}}
-    d = Q._spent_resolver_park(st, park)["detail"]
-    assert "2 resolutions verified" in d and "last:" not in d and "kept both" not in d
+    assert Q._spent_resolver_park(st, park) == park
     # attempt 1 failed, attempt 2 verified, then the base moved: the failure is not "the last"
     st = {"closing": {"resolve_attempts": 2, "resolve_last_verified": True,
                       "resolve_failed": {"n": 1, "last": "cannot decide"}}}
     d = Q._spent_resolver_park(st, park)["detail"]
     assert "the last was verified" in d and "an earlier attempt failed: cannot decide" in d
     assert "last: cannot decide" not in d
-
-
-def test_failed_then_verified_then_conflict_again_names_no_stale_failure(tmp_path, monkeypatch):
-    w = basic(tmp_path, monkeypatch, gave_up("cannot decide"), resolver(), resolver())
-    w.open_and_conflict()
-    w.drive(lambda s: len(w.ledger("rebase_resolved")) == 1)
-    assert w.st()["closing"]["resolve_attempts"] == 2
-    w.main_conflict("a\nb\nc-main2\nd\ne\n")
-    st = w.drive(lambda s: s["state"] == "PARKED")
-    d = st["park"]["detail"]
-    assert st["park"]["reason"] == "rebase_conflict"
-    assert "the last was verified" in d and "last: cannot decide" not in d
-    assert len(w.run_ids()) == 2
 
 
 # ---- gitops: the verification and restore helpers on their own --------------------------------

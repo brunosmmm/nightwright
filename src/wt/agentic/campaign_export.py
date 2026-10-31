@@ -41,6 +41,8 @@ CAMPAIGN_COLUMNS = (
     ("finding_count", "int"), ("waived_count", "int"),
     ("close_mode", "str"), ("merged_sha", "str"), ("signals", "json"),
     ("conductor_usd", "float"), ("cost_with_conductor_usd", "float"),     # SPEC-0299
+    ("rebase_regenerated", "int"), ("resolver_dispatches", "int"),         # SPEC-0303
+    ("rebase_resolved", "int"), ("resolver_overcap_usd", "float"),
 )
 RUN_COLUMNS = (
     ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"), ("tone", "str"),
@@ -81,6 +83,9 @@ NOTES = [
     "among the campaigns live at that moment (open to terminal transition). It is null when no "
     "conductor session is registered or no turn is priced (agentic.conductor.prices); "
     "cost_with_conductor_usd = (cost_usd or 0) + conductor_usd.",
+    "rebase_regenerated, resolver_dispatches and rebase_resolved count the close's rebase "
+    "findings and events (SPEC-0303); resolver_overcap_usd is the conflict_resolver spend above "
+    "the campaign cap (the close allowance), 0 when there was none.",
 ]
 
 
@@ -193,6 +198,20 @@ def signals(row: dict) -> list[str]:
     return [name for name in SIGNAL_ORDER if on[name]]
 
 
+def _resolver_overcap(events: list[dict]) -> float:
+    """SPEC-0303: the sum, over `conflict_resolver` `cost` events, of the part of the charge that
+    landed above `cap_usd`: `max(0, total - max(cap, total - delta))`."""
+    over = 0.0
+    for e in events:
+        if e.get("type") != "cost" or e.get("persona") != "conflict_resolver":
+            continue
+        cap, total, delta = e.get("cap_usd"), e.get("total_usd"), e.get("delta_usd")
+        if cap is None or total is None or delta is None:
+            continue
+        over += max(0.0, float(total) - max(float(cap), float(total) - float(delta)))
+    return round(over, 4)
+
+
 def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
     cid = state["id"]
     sizing = state.get("sizing") or {}
@@ -256,6 +275,12 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
         "waived_count": len(of("note", lambda e: e.get("author") == "queue"
                                and str(e.get("text") or "").startswith("waived "))),
         "close_mode": close.get("mode"), "merged_sha": close.get("merged_sha"),
+        "rebase_regenerated": sum(1 for e in findings
+                                  if e.get("title") == "generated files regenerated during rebase"),
+        "resolver_dispatches": sum(1 for e in findings
+                                   if e.get("title") == "rebase conflict; resolver dispatched"),
+        "rebase_resolved": len(of("rebase_resolved")),
+        "resolver_overcap_usd": _resolver_overcap(events),
     }
     out = _project(row, CAMPAIGN_COLUMNS)       # signals read the coerced values
     out["signals"] = signals(out)

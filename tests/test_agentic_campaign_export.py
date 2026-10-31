@@ -163,7 +163,8 @@ def test_columns_and_key_order(cfg):
         "triage_retries", "parks", "park_reasons", "cost_usd", "cost_by_persona",
         "cost_cap_frac", "time_in_state_s", "review_score", "must_fix_count", "finding_count",
         "waived_count", "close_mode", "merged_sha", "signals", "conductor_usd",
-        "cost_with_conductor_usd"]
+        "cost_with_conductor_usd", "rebase_regenerated", "resolver_dispatches",
+        "rebase_resolved", "resolver_overcap_usd"]
     assert [n for n, _ in CE.RUN_COLUMNS] == [
         "campaign", "spec_id", "profile", "size", "tone", "run_id", "persona", "model", "effort",
         "max_budget_usd", "timeout_s", "started_at", "duration_s", "cost_usd", "charged_usd",
@@ -198,7 +199,9 @@ def test_column_types_pinned():
         ("time_in_state_s", "json"), ("review_score", "int"), ("must_fix_count", "int"),
         ("finding_count", "int"), ("waived_count", "int"),
         ("close_mode", "str"), ("merged_sha", "str"), ("signals", "json"),
-        ("conductor_usd", "float"), ("cost_with_conductor_usd", "float"))
+        ("conductor_usd", "float"), ("cost_with_conductor_usd", "float"),
+        ("rebase_regenerated", "int"), ("resolver_dispatches", "int"),
+        ("rebase_resolved", "int"), ("resolver_overcap_usd", "float"))
     assert CE.RUN_COLUMNS == (
         ("campaign", "str"), ("spec_id", "str"), ("profile", "str"), ("size", "str"),
         ("tone", "str"),
@@ -807,9 +810,11 @@ def test_failed_write_cleanup_cannot_mask_the_error(cfg, invoke, tmp_path, monke
 
 
 def test_export_conductor_columns_appended(cfg, tmp_path):
-    """SPEC-0299: the last two columns are the conductor's share and the total with it."""
+    """SPEC-0299: two columns are the conductor's share and the total with it (SPEC-0303
+    appended four more after them)."""
     from wt.agentic import conductor_cost as CC
-    assert [n for n, _ in CE.CAMPAIGN_COLUMNS][-2:] == ["conductor_usd", "cost_with_conductor_usd"]
+    names = [n for n, _ in CE.CAMPAIGN_COLUMNS]
+    assert names[-6:-4] == ["conductor_usd", "cost_with_conductor_usd"]
     make(cfg, "C1", [(10, "transition", tr("CLOSING", "MERGED"))], created=0,
          state="MERGED", cost={"total_usd": 2.5, "cap_usd": None, "by_persona": {}})
     make(cfg, "C2", [], created=600, cost={"total_usd": None, "cap_usd": None, "by_persona": {}})
@@ -834,8 +839,40 @@ def test_export_conductor_columns_appended(cfg, tmp_path):
         assert (r["conductor_usd"], r["cost_with_conductor_usd"]) == (None, None)
     transcript("claude-x")
     got = rows()
-    assert list(got["C1"])[-2:] == ["conductor_usd", "cost_with_conductor_usd"]
+    assert list(got["C1"])[-6:-4] == ["conductor_usd", "cost_with_conductor_usd"]
     assert got["C1"]["conductor_usd"] == 1.0 and got["C1"]["cost_with_conductor_usd"] == 3.5
     assert got["C2"]["conductor_usd"] == 0.0                     # no attributed turn
     assert got["C2"]["cost_usd"] is None
     assert got["C2"]["cost_with_conductor_usd"] == got["C2"]["conductor_usd"] == 0.0
+
+
+def test_export_conflict_pressure_columns(cfg):                    # SPEC-0303
+    def finding(title):
+        return {"persona": "close", "severity": "info", "gate": "rebase", "title": title,
+                "detail": "", "files": []}
+
+    def cost(delta, total, cap, persona="conflict_resolver"):
+        return {"persona": persona, "delta_usd": delta, "total_usd": total, "cap_usd": cap,
+                "estimated": False}
+
+    make(cfg, "C-PRESSURE", [
+        (10, "finding", finding("generated files regenerated during rebase")),
+        (11, "finding", finding("generated files regenerated during rebase")),
+        (12, "finding", finding("rebase conflict; resolver dispatched")),
+        (13, "finding", finding("resolver ran on the close allowance")),
+        (14, "rebase_resolved", {"run_id": "003-conflict_resolver", "target_sha": "abc"}),
+        (15, "cost", cost(0.5, 1.5, 2.0, persona="implementer")),     # not the resolver
+        (16, "cost", cost(0.6, 2.4, 2.0)),       # 0.4 of the charge landed above the cap
+        (17, "cost", cost(0.5, 2.9, 2.0)),       # all of it above
+        (18, "cost", cost(0.3, 1.8, 2.0)),       # below the cap
+    ], cost={"total_usd": 2.9, "cap_usd": 2.0, "by_persona": {}})
+    make(cfg, "C-QUIET", [], created=1, cost={"total_usd": 1.0, "cap_usd": None, "by_persona": {}})
+    rows = {r["campaign"]: r for r in CE.export_tables(cfg, now=NOW)["campaigns"]}
+    row = rows["C-PRESSURE"]
+    assert (row["rebase_regenerated"], row["resolver_dispatches"], row["rebase_resolved"]) \
+        == (2, 1, 1)
+    assert row["resolver_overcap_usd"] == pytest.approx(0.9)
+    quiet = rows["C-QUIET"]
+    assert (quiet["rebase_regenerated"], quiet["resolver_dispatches"], quiet["rebase_resolved"],
+            quiet["resolver_overcap_usd"]) == (0, 0, 0, 0.0)
+    assert [n for n, _ in CE.CAMPAIGN_COLUMNS][:42] == list(row)[:42]

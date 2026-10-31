@@ -1161,6 +1161,48 @@ def test_cap_sum_includes_the_adversarial_reviewer():
     assert "adversarial_reviewer" in step.detail and "$4.00" in step.detail
 
 
+@pytest.mark.parametrize("total,expect", [
+    (1.0, "resolve"),          # total + 2.0 <= cap 4.0: plain cap
+    (3.0, "resolve"),          # over the plain cap, within cap + allowance (4.0 + 4.0)
+    (6.0, "resolve"),          # 6.0 + 2.0 == 8.0: still within
+    (6.5, "park"),             # 8.5 > 8.0: ordinary cost_cap
+])
+def test_resolve_within_close_allowance(total, expect):         # SPEC-0303
+    from wt.agentic.profiles import resolve_profile
+    profile = resolve_profile({}, "balanced")
+    st = _state("CLOSING", closing={"attempts": 0, "resolve": {"target": "main"}},
+                cost={"total_usd": total, "cap_usd": 4.0, "by_persona": {}})
+    step = Q.plan_step(st, profile)
+    assert step.kind == expect
+    if expect == "park":
+        assert step.reason == "cost_cap" and step.persona == "conflict_resolver"
+        assert step.resume_to == "CLOSING" and "close allowance" in step.detail
+    assert st["cost"]["cap_usd"] == 4.0                          # the cap itself never changes
+
+
+def test_allowance_default_and_config():                        # SPEC-0303
+    from wt.agentic.profiles import persona_settings, resolve_profile
+    profile = resolve_profile({}, "balanced")
+    budget = float(persona_settings(profile, "conflict_resolver")["max_budget_usd"])
+    assert Q._resolver_allowance(None, profile) == budget * Q.MAX_RESOLVE_ATTEMPTS
+    assert Q._resolver_allowance({"merge": {"resolver_allowance_usd": None}}, profile) \
+        == budget * 2
+    assert Q._resolver_allowance({"merge": {"resolver_allowance_usd": 0.5}}, profile) == 0.5
+    assert Q._resolver_allowance({"merge": {"resolver_allowance_usd": 0}}, profile) == 0.0
+    st = _state("CLOSING", closing={"attempts": 0, "resolve": {"target": "main"}},
+                cost={"total_usd": 3.0, "cap_usd": 4.0, "by_persona": {}})
+    cfg = {"merge": {"resolver_allowance_usd": 0}}
+    assert Q.plan_step(st, profile, cfg).reason == "cost_cap"
+    cfg = {"merge": {"resolver_allowance_usd": 5}}
+    assert Q.plan_step(st, profile, cfg).kind == "resolve"
+    from wt.agentic import project as P
+    with pytest.raises(ValueError, match="resolver_allowance_usd"):
+        P.validate({"schema": P.SCHEMA, "merge": {"resolver_allowance_usd": -1}})
+    with pytest.raises(ValueError, match="resolver_allowance_usd"):
+        P.validate({"schema": P.SCHEMA, "merge": {"resolver_allowance_usd": "2"}})
+    P.validate({"schema": P.SCHEMA, "merge": {"resolver_allowance_usd": 0}})
+
+
 def test_queue_payload_sizing_fields_null_without_sizing(tmp_path):    # SPEC-0219
     cfg = {"data_dir": str(tmp_path / "data"), "agentic": {}}
     S.create_campaign(cfg, {"id": "A", "spec_id": "SPEC-0001", "profile": "balanced",

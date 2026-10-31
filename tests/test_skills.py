@@ -555,3 +555,11 @@ def test_conduct_skill_auto_parks():
     assert all(RULE_RE.match(r) for r in queue_rules) and queue_rules <= ids
     assert {"parked.base_moving", "auto_resume_failed", "parked.config_invalid"} <= ids
     assert "the queue decided itself" in conduct and "SPEC-0302" in conduct
+
+
+def test_conduct_skill_rebase_conflict_row():                       # SPEC-0303
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    (row,) = [r for r in conduct.splitlines() if _ev(r).startswith("| `parked` `rebase_conflict`")]
+    assert "verified" not in row and "overtaken" not in row     # that case is `base_moving` now
+    assert "base_moving" in row and "MAX_RESOLVE_RUNS" in row
+    assert "failed twice" in row and "merge.resolver: false" in row

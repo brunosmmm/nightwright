@@ -38,6 +38,7 @@ PROJECT_DEFAULTS = {
         "regenerate": [],        # [{path, cmd}]: generated files resolved by regeneration at rebase
         "docs_only_paths": [],   # SPEC-0234: paths no gate reads; [] ⇒ `wt queue merge --docs-only` off
         "resolver": True,        # SPEC-0221: a conflict_resolver persona run before parking rebase_conflict
+        "resolver_allowance_usd": None,  # SPEC-0303: spend over the cap a close may give resolver runs; None ⇒ resolver budget × 2
         "pr": {"labels": [], "reviewers": [], "title_prefix": ""},
     },
     "worktrees": {
@@ -255,6 +256,10 @@ def validate(doc):
         _check_bool(problems, merge.get("push_after_merge"), "merge.push_after_merge")
         _check_bool(problems, merge.get("delete_branch"), "merge.delete_branch")
         _check_bool(problems, merge.get("resolver"), "merge.resolver")
+        allowance = merge.get("resolver_allowance_usd")
+        if allowance is not None and (isinstance(allowance, bool)
+                                      or not isinstance(allowance, (int, float)) or allowance < 0):
+            problems.append("merge.resolver_allowance_usd: must be a number >= 0")
         _check_str_list(problems, merge.get("post_cmds"), "merge.post_cmds")
         _check_docs_only_paths(problems, merge.get("docs_only_paths"))
         _check_regenerate(problems, merge.get("regenerate"))
