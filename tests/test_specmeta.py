@@ -1,10 +1,10 @@
-"""Spec-markdown parsing lives in the wt package (wt.specmeta), NOT tools/spec_lint.py — so the
+"""Spec-markdown parsing lives in the nightwright package (nightwright.specmeta), NOT tools/spec_lint.py — so the
 installed CLI never reaches into repo dev-tooling (which imports dev-only jsonschema) at runtime.
-Regression guard for the ModuleNotFoundError the installed `wt spec new` hit."""
+Regression guard for the ModuleNotFoundError the installed `nw spec new` hit."""
 import pathlib
 
-import wt.specs
-from wt.specmeta import sections, split_frontmatter
+import nightwright.specs
+from nightwright.specmeta import sections, split_frontmatter
 
 
 def test_split_frontmatter_and_sections():
@@ -21,8 +21,8 @@ def test_no_frontmatter():
 
 def test_specs_module_has_no_runtime_dep_on_tools_or_jsonschema():
     # check the actual mechanism, not word mentions: no dynamic exec of tools/spec_lint.py and
-    # no dev-only imports. (The installed `wt` hit ModuleNotFoundError: jsonschema before this.)
-    src = pathlib.Path(wt.specs.__file__).read_text()
+    # no dev-only imports. (The installed `nw` hit ModuleNotFoundError: jsonschema before this.)
+    src = pathlib.Path(nightwright.specs.__file__).read_text()
     assert "importlib" not in src, "no dynamic module loading of the repo linter"
     assert "exec_module" not in src
     assert "import jsonschema" not in src

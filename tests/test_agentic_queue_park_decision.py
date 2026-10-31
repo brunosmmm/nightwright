@@ -5,11 +5,11 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from wt.agentic import decisions as D
-from wt.agentic import mvp_report as MR
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.cli import cli
+from nightwright.agentic import decisions as D
+from nightwright.agentic import mvp_report as MR
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.cli import cli
 
 UTC = dt.timezone.utc
 T0 = dt.datetime(2026, 10, 30, 12, 0, 0, tzinfo=UTC)
@@ -20,7 +20,7 @@ def cfg(tmp_path, monkeypatch):
     (tmp_path / "data").mkdir()
     c = {"data_dir": str(tmp_path / "data"), "config_dir": str(tmp_path / "config"),
          "_root": str(tmp_path / "projects"), "_tz": UTC, "timezone": "UTC", "agentic": {}}
-    monkeypatch.setattr("wt.cli.load_config", lambda: c)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: c)
     return c
 
 
@@ -188,7 +188,7 @@ def test_resume_abandon_need_covering_decision(cfg, monkeypatch, verb, actor):
     now = [T0]
     orig = S.now_iso
     monkeypatch.setattr(S, "now_iso", lambda n=None: orig(n) if n else orig(now[0]))
-    monkeypatch.setattr("wt.agentic.cli_queue.M.validate_address", lambda c, a: a)
+    monkeypatch.setattr("nightwright.agentic.cli_queue.M.validate_address", lambda c, a: a)
     final = {"resume": "IMPLEMENTING", "abandon": "ABANDONED"}[verb]
     old = D.record(cfg, kind="wait", rule="wt_broken", rationale="older", by="conductor")
     now[0] += dt.timedelta(seconds=10)

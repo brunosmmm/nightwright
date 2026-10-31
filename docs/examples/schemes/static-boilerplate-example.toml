@@ -1,19 +1,19 @@
 # static-boilerplate-example: example TemplateScheme manifest (SPEC-0059).
 #
 # Demonstrates a config-dir scheme with fixed boilerplate sections plus
-# {{field}} placeholders filled from a wt CanonicalSpec. Not registered by
-# wt itself — copy into your config dir to activate:
+# {{field}} placeholders filled from a nightwright CanonicalSpec. Not registered by
+# nightwright itself — copy into your config dir to activate:
 #
-#   mkdir -p "$(python3 -c 'import os;print(os.environ.get("WT_CONFIG_DIR") or os.path.expanduser("~/.config/wt"))')/schemes"
+#   mkdir -p "$(python3 -c 'import os;print(os.environ.get("NW_CONFIG_DIR") or os.path.expanduser("~/.config/nightwright"))')/schemes"
 #   cp docs/examples/schemes/static-boilerplate-example.toml <that dir>/schemes/
-#   wt spec schemes            # confirm it lists with [user-config]
-#   wt spec export --scheme static-boilerplate-example ...
+#   nw spec schemes            # confirm it lists with [user-config]
+#   nw spec export --scheme static-boilerplate-example ...
 #
 # This file is intentionally fictional / generic. Do not vendor customer-
-# specific templates into the public wt tree — keep those under ~/.config/wt.
+# specific templates into the public nightwright tree — keep those under ~/.config/nightwright.
 
 name = "static-boilerplate-example"
-description = "Generic TemplateScheme example: fixed boilerplate interleaved with wt-sourced fields (SPEC-0059/0161)."
+description = "Generic TemplateScheme example: fixed boilerplate interleaved with nightwright-sourced fields (SPEC-0059/0161)."
 required_fields = ["id", "title", "context", "acceptance"]
 naming = "specs/tasks/{id}-{slug}.md"
 artifact = "spec"

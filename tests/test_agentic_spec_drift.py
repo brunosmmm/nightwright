@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from wt.agentic import close as CL
-from wt.agentic import store as S
+from nightwright.agentic import close as CL
+from nightwright.agentic import store as S
 
 from test_agentic_e2e import (SPEC_ACCEPTED, _git, added, make_cfg, make_repo, run_cli,
                               script, review, triage)
@@ -92,7 +92,7 @@ def test_governing_edits_are_drift(edit, needle):
 
 
 def _state(tmp_path, cfg, text):
-    wt = tmp_path / "wt"
+    wt = tmp_path / "nw"
     (wt / "docs/specs").mkdir(parents=True)
     (wt / "docs/specs/0900-g.md").write_text(text)
     st = {"id": "SPEC-0900-20261026-aaaa", "spec": {"rel_path": "docs/specs/0900-g.md"},

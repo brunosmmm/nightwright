@@ -11,8 +11,8 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import tui as T
-from wt.cli import cli
+from nightwright import tui as T
+from nightwright.cli import cli
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -39,7 +39,7 @@ def _cfg(tmp_path):
 
 def _seed(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "aardvark migration plan"]).exit_code == 0
     assert run(cli, ["idea", "buffalo pipeline rewrite"]).exit_code == 0
@@ -49,7 +49,7 @@ def _seed(tmp_path, monkeypatch):
 
 async def _settle(pilot):
     """Wait past the debounce, then let the reload paint."""
-    from wt.tui.app import SEARCH_DEBOUNCE
+    from nightwright.tui.app import SEARCH_DEBOUNCE
 
     await pilot.pause(SEARCH_DEBOUNCE + 0.3)
     await pilot.pause()
@@ -74,7 +74,7 @@ def test_typed_text_is_actually_on_screen(tmp_path, monkeypatch):
     """
     from test_tui_desk import _grid
 
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -98,7 +98,7 @@ def test_typed_text_is_actually_on_screen(tmp_path, monkeypatch):
 @needs_textual
 def test_search_hint_and_footer_each_own_a_row(tmp_path, monkeypatch):
     """Root cause was three widgets laid out on the same line, Footer painted over the rest."""
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -126,7 +126,7 @@ def test_search_hint_and_footer_each_own_a_row(tmp_path, monkeypatch):
 
 @needs_textual
 def test_typing_filters_without_pressing_enter(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -148,7 +148,7 @@ def test_typing_filters_without_pressing_enter(tmp_path, monkeypatch):
 @needs_textual
 def test_clearing_the_query_live_restores_the_full_list(tmp_path, monkeypatch):
     """Backspacing out of a search must not strand the user on an empty result."""
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -174,8 +174,8 @@ def test_clearing_the_query_live_restores_the_full_list(tmp_path, monkeypatch):
 @needs_textual
 def test_a_burst_of_typing_costs_one_search(tmp_path, monkeypatch):
     """Debounce, not per-keystroke: each character restarts the timer."""
-    from wt.tui import model as M
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui import model as M
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     calls = []
@@ -205,7 +205,7 @@ def test_a_burst_of_typing_costs_one_search(tmp_path, monkeypatch):
 
 @needs_textual
 def test_enter_still_applies_and_closes_the_box(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -227,7 +227,7 @@ def test_enter_still_applies_and_closes_the_box(tmp_path, monkeypatch):
 
 @needs_textual
 def test_escape_cancels_a_live_filter(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -252,7 +252,7 @@ def test_escape_cancels_a_live_filter(tmp_path, monkeypatch):
 @needs_textual
 def test_a_pending_debounce_does_not_fire_after_escape(tmp_path, monkeypatch):
     """Esc must cancel the timer, not merely reset the query before it lands."""
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -275,8 +275,8 @@ def test_a_pending_debounce_does_not_fire_after_escape(tmp_path, monkeypatch):
 
 def test_the_desk_defines_no_search_of_its_own():
     """Live filtering must reuse `search_idea_tasks`, not fork ranking into the UI."""
-    app_src = (ROOT / "src" / "wt" / "tui" / "app.py").read_text()
-    model_src = (ROOT / "src" / "wt" / "tui" / "model.py").read_text()
+    app_src = (ROOT / "src" / "nightwright" / "tui" / "app.py").read_text()
+    model_src = (ROOT / "src" / "nightwright" / "tui" / "model.py").read_text()
     assert "search_idea_tasks" in model_src
     for banned in ("score_idea_match", "tokenize_idea_query", "idea_match_snippet"):
         assert banned not in app_src, f"{banned} reimplemented in the desk UI"

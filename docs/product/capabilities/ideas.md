@@ -10,19 +10,19 @@ Parking a thought without breaking flow; morning triage; agent `--json` lists.
 
 | Command | Role |
 |---------|------|
-| `wt idea TEXT` | Capture (optional `--project`, `--tag`, `--kind`) |
-| `wt idea show\|summary\|log\|questions …` | Read / enrich |
-| `wt idea clock-in\|clock-out` | Supplemental wall-time — [Clock](clock.md) |
-| `wt idea state` | Force lifecycle keyword when needed |
-| `wt ideas` | List open ideas; `--all`, `--query`, `--tree`, `--json` |
-| `wt next` | Next-step hint per idea (`--all` includes build reminders) |
+| `nw idea TEXT` | Capture (optional `--project`, `--tag`, `--kind`) |
+| `nw idea show\|summary\|log\|questions …` | Read / enrich |
+| `nw idea clock-in\|clock-out` | Supplemental wall-time — [Clock](clock.md) |
+| `nw idea state` | Force lifecycle keyword when needed |
+| `nw ideas` | List open ideas; `--all`, `--query`, `--tree`, `--json` |
+| `nw next` | Next-step hint per idea (`--all` includes build reminders) |
 
 Open clocks show `◕` on the idea id in CLI tables (and on the desk). Ideas are seeds;
-actionable one-liners belong in `wt add` — see [Tasks & agenda](tasks-agenda.md).
+actionable one-liners belong in `nw add` — see [Tasks & agenda](tasks-agenda.md).
 
 Workflow: [Idea → ship](../guides/idea-to-ship.md). Storage layout:
 [Org-mode storage](../guides/org-storage.md).
 
-![wt ideas](../assets/captures/cli-ideas.svg)
+![nw ideas](../assets/captures/cli-ideas.svg)
 
-![wt idea show](../assets/captures/cli-idea-show.svg)
+![nw idea show](../assets/captures/cli-idea-show.svg)

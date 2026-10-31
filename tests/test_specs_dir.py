@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from wt import specs as S
+from nightwright import specs as S
 
 
 def test_explicit_specs_dir_wins(tmp_path):
@@ -37,7 +37,7 @@ def test_default_is_wts_own_specs_dir():
 
 
 def test_missing_docs_specs_raises(tmp_path, monkeypatch):
-    """An installed wt with no spec corpus must say so, not guess a path."""
+    """An installed nightwright with no spec corpus must say so, not guess a path."""
     monkeypatch.setattr(S, "_package_specs_dir", lambda: tmp_path / "nope" / "docs" / "specs")
     with pytest.raises(ValueError, match="specs_dir"):
         S._specs_dir({})
@@ -62,7 +62,7 @@ def test_no_test_fixture_omits_specs_dir():
         if _CFG_MARKER.search(text) and "specs_dir" not in text:
             offenders.append(path.name)
     assert not offenders, (
-        "these fixtures build a wt config without `specs_dir`, so spec lookups would resolve "
+        "these fixtures build a nightwright config without `specs_dir`, so spec lookups would resolve "
         f"against the live docs/specs: {offenders}")
 
 

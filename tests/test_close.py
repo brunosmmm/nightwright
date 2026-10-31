@@ -1,13 +1,13 @@
-"""Idea terminal-outcome model: `wt idea close`, RESEARCHED state, reason + pointers
+"""Idea terminal-outcome model: `nw idea close`, RESEARCHED state, reason + pointers
 (SPEC-0055 / 0056 / 0057)."""
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from wt import explore as EX
-from wt import org_write as W
-from wt.org import load_tasks
-from wt.workflow import next_step_for_idea
+from nightwright import explore as EX
+from nightwright import org_write as W
+from nightwright.org import load_tasks
+from nightwright.workflow import next_step_for_idea
 
 IDEA_KW = ["IDEA", "INCUBATE", "SPECCED", "|", "PROMOTED", "EXPORTED", "SHIPPED",
            "DROPPED", "RESEARCHED"]
@@ -77,7 +77,7 @@ def test_researched_hidden_from_next_and_default_ideas_shown_all(tmp_path):
     EX.close_idea(cfg, "IDEA-001", "researched", reason="done exploring")
     t = _idea(cfg)
     assert next_step_for_idea(cfg, t) == ""                   # no hint
-    from wt.report import collect_next_tasks, collect_idea_tasks
+    from nightwright.report import collect_next_tasks, collect_idea_tasks
     assert not any(x.properties.get("ID") == "IDEA-001" for x in collect_next_tasks(cfg))
     assert not any(x.properties.get("ID") == "IDEA-001"
                    for x in collect_idea_tasks(cfg, all_done=False))
@@ -168,11 +168,11 @@ def test_set_idea_state_to_shipped_archives(tmp_path):
 
 def test_cli_idea_state(tmp_path, monkeypatch):
     from click.testing import CliRunner
-    from wt.cli import cli
+    from nightwright.cli import cli
 
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "cli force")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     result = CliRunner().invoke(cli, ["idea", "state", "IDEA-001", "SHIPPED"])
     assert result.exit_code == 0, result.output
     assert "SHIPPED" in result.output

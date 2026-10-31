@@ -13,65 +13,70 @@ flowchart LR
 ## 1 · Install
 
 ```bash
-git clone <this repo> wt && cd wt
+git clone <this repo> nightwright && cd nightwright
 uv sync                                 # creates .venv
-uv tool install --editable '.[tui]'     # puts `wt` on your PATH, editable
-wt skills install                       # installs /wt-* skills for Claude Code / Cursor
+uv tool install --editable '.[tui]'     # puts `nw` on your PATH, editable
+nw skills install                       # installs /nw-* skills for Claude Code / Cursor
 ```
 
 !!! check "Check"
-    `wt --help` lists `idea`, `spec`, `queue`, `campaign` and `mailbox`. (A different tool on
-    PyPI is also called `wt`. If its help talks about static sites, you have the wrong one.)
+    `nw --help` lists `idea`, `spec`, `queue`, `campaign` and `mailbox`. (A different tool on
+    PyPI is also called `nw`. If its help talks about static sites, you have the wrong one.)
 
 Install **editable**. The skills, the internal specs, and the agentic runner all run from
 this checkout, and a `git pull` (or a merge by the loop) takes effect without reinstalling.
 
 ## 2 · Configure
 
-wt keeps its config and data outside the repo (XDG):
+nightwright keeps its config and data outside the repo (XDG):
 
 | Path | Holds |
 |---|---|
-| `~/.config/wt/config.yaml` | where your org files live, timezone, outbound projects |
-| `~/.local/share/wt/` | the data dir: campaigns, ledgers, events, mailbox, backups |
+| `~/.config/nightwright/config.yaml` | where your org files live, timezone, outbound projects |
+| `~/.local/share/nightwright/` | the data dir: campaigns, ledgers, events, mailbox, backups |
 | your org dir (e.g. `~/org/`) | `ideas.org`: your ideas, as plain text you own |
 
+Coming from the tool's earlier name, `wt`? Run `nw migrate-from-wt` once. It is a dry run by
+default, and `--yes` applies it. It moves `~/.config/wt` and `~/.local/share/wt` here and fixes
+the paths in campaign state. Then run `nw skills install` to replace the old `wt-*` skills and
+allow rules.
+
 ```yaml
-# ~/.config/wt/config.yaml (minimal)
+# ~/.config/nightwright/config.yaml (minimal)
 org_files: [~/org]
 org_ideas_file: ~/org/ideas.org
 timezone: Europe/Lisbon
 ```
 
 !!! check "Check"
-    `wt idea "hello wt"` prints `✓ IDEA-001 …`, and `wt ideas` lists it.
+    `nw idea "hello nightwright"` prints `✓ IDEA-001 …`, and `nw ideas` lists it.
 
 ## 3 · Register a project
 
-Ideas and campaigns belong to a **project**, a repository the loop works on. wt's own repo
+Ideas and campaigns belong to a **project**, a repository the loop works on. nightwright's own repo
 is the built-in project `Meta-Tools`. Register others by path:
 
 ```bash
-wt projects add Acme --repo ~/src/acme --yes
-wt projects                      # every project: topics, outbound, repo
+nw projects add Acme --repo ~/src/acme --yes
+nw projects                      # every project: topics, outbound, repo
 ```
 
 !!! check "Check"
-    `wt projects` shows `Acme`, with its repo path.
+    `nw projects` shows `Acme`, with its repo path.
 
 ## 4 · Describe the project for the loop
 
 The loop needs to know how to test and merge your code. That lives **in the repo**, in
-`.wt/project.yaml`:
+`.nw/project.yaml`:
 
 ```bash
-wt projects init Acme            # prints a starter (dry run)
-wt projects init Acme --yes      # writes <repo>/.wt/project.yaml
+nw projects init Acme            # prints a starter (dry run)
+nw projects init Acme --yes      # writes <repo>/.nw/project.yaml
 ```
 
 ```yaml
-# <repo>/.wt/project.yaml
-schema: wt.project.v1
+# <repo>/.nw/project.yaml
+schema: nw.project.v1
 project: Acme
 base: main
 gates:                     # run in the campaign's worktree; required ones must pass
@@ -92,17 +97,17 @@ Commit this file. It's part of the project, and campaigns read it from main. (a 
 branch may only raise a gate's `timeout_s`, up to `gate_budget_s`).
 
 !!! check "Check"
-    `wt projects config Acme` prints the resolved file with the defaults filled in, and no
+    `nw projects config Acme` prints the resolved file with the defaults filled in, and no
     errors.
 
 ## 5 · Capture an idea
 
 ```bash
-wt idea capture "CSV export for the weekly report" --project Acme --kind improvement
+nw idea capture "CSV export for the weekly report" --project Acme --kind improvement
 ```
 
 !!! check "Check"
-    `wt next` shows it with a suggested next command.
+    `nw next` shows it with a suggested next command.
 
 See [Capture ideas](../ideas/capture.md) for the details.
 
@@ -111,15 +116,15 @@ See [Capture ideas](../ideas/capture.md) for the details.
 Write down what you learn until the idea could be built by someone with no context:
 
 ```bash
-wt idea summary IDEA-002 --set "Weekly report has no machine-readable export. Add
-  'wt report --week --csv': one row per project+topic, hours as decimals. Out of scope:
+nw idea summary IDEA-002 --set "Weekly report has no machine-readable export. Add
+  'nw report --week --csv': one row per project+topic, hours as decimals. Out of scope:
   XLSX, scheduling."
-wt idea questions IDEA-002 --add "Include zero-hour topics?"
-wt idea log IDEA-002 --note "report.py builds rows in week_rows(); reuse it"
-wt idea questions IDEA-002 --resolve 1        # once decided (record the answer in Summary)
+nw idea questions IDEA-002 --add "Include zero-hour topics?"
+nw idea log IDEA-002 --note "report.py builds rows in week_rows(); reuse it"
+nw idea questions IDEA-002 --resolve 1        # once decided (record the answer in Summary)
 ```
 
-Or, in an agent session: `/wt-explore IDEA-002`.
+Or, in an agent session: `/nw-explore IDEA-002`.
 
 !!! check "Check"
     Your answer to "is it ready?" on [Explore](../ideas/explore.md#is-it-ready) is yes.
@@ -127,41 +132,41 @@ Or, in an agent session: `/wt-explore IDEA-002`.
 ## 7 · Write and review the spec
 
 ```bash
-wt spec new --from-idea IDEA-002      # scaffold docs/specs/NNNN-….md in the project repo
+nw spec new --from-idea IDEA-002      # scaffold docs/specs/NNNN-….md in the project repo
 ```
 
 Then fill in the Decision, Design, Acceptance criteria and Test plan, or let an agent do it
-with `/wt-new-work IDEA-002`, and set `status: accepted`. Commit it to main. Then:
+with `/nw-new-work IDEA-002`, and set `status: accepted`. Commit it to main. Then:
 
 ```bash
-wt spec review SPEC-0001              # approve | revise | split, with findings
+nw spec review SPEC-0001              # approve | revise | split, with findings
 ```
 
 Fix findings until it approves. See
 [Write a spec the loop can build](../ideas/spec.md).
 
 !!! check "Check"
-    `wt spec review SPEC-0001` says `approve`.
+    `nw spec review SPEC-0001` says `approve`.
 
 ## 8 · Run the loop
 
 ```bash
-wt queue add SPEC-0001                # dry run: shows the plan
-wt queue add SPEC-0001 --yes          # queue it
+nw queue add SPEC-0001                # dry run: shows the plan
+nw queue add SPEC-0001 --yes          # queue it
 ```
 
-Then, in Claude Code, start the conductor: `/wt-conduct`. It starts the runner
-(`wt queue run`) if it isn't running, and watches every event from then on.
+Then, in Claude Code, start the conductor: `/nw-conduct`. It starts the runner
+(`nw queue run`) if it isn't running, and watches every event from then on.
 
 !!! check "Check"
-    `wt queue list` shows the campaign, and within a minute it moves from QUEUED to OPENING
+    `nw queue list` shows the campaign, and within a minute it moves from QUEUED to OPENING
     to IMPLEMENTING.
 
 ## 9 · Watch it merge
 
 ```bash
-wt queue watch                        # live dashboard
-wt campaign log SPEC-0001-… --tail 20 # the story so far
+nw queue watch                        # live dashboard
+nw campaign log SPEC-0001-… --tail 20 # the story so far
 ```
 
 You'll see it implement, run your gates, get reviewed, rebase onto main, re-run the gates

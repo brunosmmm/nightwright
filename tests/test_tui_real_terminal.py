@@ -4,7 +4,7 @@ Every desk defect the human reported got past headless pilots. The reason is str
 repaints *incrementally*, so raw pty bytes cannot be turned back into a screen by picking a frame
 — you need a terminal emulator to apply the updates. `pyte` is that emulator.
 
-This is deliberately one slow test rather than a suite: it spawns `wt tui` under a pty against a
+This is deliberately one slow test rather than a suite: it spawns `nw tui` under a pty against a
 throwaway org, and asserts on the composited screen.
 """
 import os
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from wt import tui as T
+from nightwright import tui as T
 
 pyte = pytest.importorskip("pyte", reason="pyte (dev dep) not installed")
 pytestmark = pytest.mark.skipif(
@@ -73,7 +73,7 @@ def _loaded(lines):
 
 
 def _render(conf_dir, steps):
-    """Spawn `wt tui` under a pty, wait for the desk to load, then for each `(key, ready)` type
+    """Spawn `nw tui` under a pty, wait for the desk to load, then for each `(key, ready)` type
     `key` and pump until `ready(lines)` holds (SPEC-0269: a condition, never a fixed settle).
     Returns the composited screen as lines and per-cell colours."""
     import fcntl
@@ -87,8 +87,8 @@ def _render(conf_dir, steps):
     pid, fd = pty.fork()
     if pid == 0:                                            # child
         os.environ.update(TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS),
-                          WT_CONFIG_DIR=str(conf_dir), WT_DATA_DIR=str(conf_dir))
-        os.execvp(sys.executable, [sys.executable, "-m", "wt.cli", "tui"])
+                          NW_CONFIG_DIR=str(conf_dir), NW_DATA_DIR=str(conf_dir))
+        os.execvp(sys.executable, [sys.executable, "-m", "nightwright.cli", "tui"])
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
 
     screen = pyte.Screen(COLS, ROWS)

@@ -1,0 +1,42 @@
+schema: nw.profile.v1
+description: "opus implements, larger caps and one more loop"
+slots: 3
+loop_max: 4
+campaign_cap_usd: 30.0
+run_timeout_s: 2700
+reviewers: [conformance_reviewer, test_reviewer, adversarial_reviewer]
+review:
+  pass_score: 90
+  weights: {must_fix: 100, major: 15, minor: 4, nit: 1}
+  triager: true
+  followups: true
+  followups_nits: false
+  followups_max: 10
+personas:
+  implementer:
+    {model: opus, effort: high, max_budget_usd: 10.0,
+     permission_mode: bypassPermissions, read_only: false}
+  conflict_resolver:
+    {model: opus, effort: high, max_budget_usd: 4.0,
+     permission_mode: bypassPermissions, read_only: false}
+  gate_triager:
+    {model: sonnet, effort: high, max_budget_usd: 1.0,
+     permission_mode: dontAsk, read_only: true}
+  conformance_reviewer:
+    {model: opus, effort: high, max_budget_usd: 1.5,
+     permission_mode: dontAsk, read_only: true}
+  test_reviewer:
+    {model: opus, effort: high, max_budget_usd: 1.0,
+     permission_mode: dontAsk, read_only: true}
+  adversarial_reviewer:
+    {model: opus, effort: high, max_budget_usd: 2.5,
+     permission_mode: dontAsk, read_only: true}
+  spec_reviewer:
+    {model: opus, effort: high, max_budget_usd: 1.5,
+     permission_mode: dontAsk, read_only: true}
+  spec_writer:
+    {model: opus, effort: high, max_budget_usd: 3.0,
+     permission_mode: bypassPermissions, read_only: false}
+  review_triager:
+    {model: sonnet, effort: medium, max_budget_usd: 0.5,
+     permission_mode: dontAsk, read_only: true}

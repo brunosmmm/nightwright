@@ -11,8 +11,8 @@ narrative.
 ## Commands
 
 ```bash
-wt idea clock-in IDEA-00N
-wt idea clock-out IDEA-00N
+nw idea clock-in IDEA-00N
+nw idea clock-out IDEA-00N
 ```
 
 Desk: toggle with key `i` on the selected idea ([Desk](tui.md)). Open clocks show `◕`

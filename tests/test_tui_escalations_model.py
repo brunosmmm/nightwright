@@ -6,10 +6,10 @@ import pytest
 
 from test_agentic_escalations import (AC4, CID, RV, _answer, _camp, _cfg, _esc,
                                       _half_answered, _parked, _reviewed)
-from wt.agentic import escalations as ESC
-from wt.agentic import mailbox as MB
-from wt.agentic import store as S
-from wt.tui import agentic_model as AM
+from nightwright.agentic import escalations as ESC
+from nightwright.agentic import mailbox as MB
+from nightwright.agentic import store as S
+from nightwright.tui import agentic_model as AM
 
 
 def cfg_(tmp_path):
@@ -48,7 +48,7 @@ def test_escalation_text_for_an_open_record_shows_every_field(tmp_path):
                  "  2. no (recommended)", "facts:", "  - gate red", "  - two loops",
                  "park: loop_exhausted → IMPLEMENTING (immediate)", "notified via none ok",
                  "reminded never", "override (CLI):",
-                 'wt escalations answer ESC-0001 --waive <finding-id> --attest <ac> '
+                 'nw escalations answer ESC-0001 --waive <finding-id> --attest <ac> '
                  '--reason "<why>" --yes'):
         assert want in text, want
     assert "  1. yes (recommended)" not in text

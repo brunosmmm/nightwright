@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/user/work-tracking/docs/specs/spec.schema.json",
-  "title": "wt spec frontmatter",
+  "title": "nw spec frontmatter",
   "description": "Schema for the YAML frontmatter block of a docs/specs/NNNN-slug.md file.",
   "type": "object",
   "additionalProperties": false,
@@ -79,7 +79,7 @@
     "source_idea": {
       "type": "string",
       "minLength": 1,
-      "description": "The org idea this spec was promoted from (its :ID: or file:line), set by `wt spec new --from-idea` (SPEC-0013)."
+      "description": "The org idea this spec was promoted from (its :ID: or file:line), set by `nw spec new --from-idea` (SPEC-0013)."
     }
   },
   "allOf": [

@@ -8,14 +8,14 @@ from rich.text import Text
 
 from test_agentic_dashboard import _campaign, _fixture, _iso, _park_fixture
 from test_agentic_e2e import run_cli
-from wt import tui as T
-from wt.agentic import events as EV
-from wt.agentic import lease as L
-from wt.agentic import mailbox as MB
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.tui import agentic_model as AM
-from wt.tui import queue_tab as QT
+from nightwright import tui as T
+from nightwright.agentic import events as EV
+from nightwright.agentic import lease as L
+from nightwright.agentic import mailbox as MB
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.tui import agentic_model as AM
+from nightwright.tui import queue_tab as QT
 from waits import pilot_until
 
 needs_textual = pytest.mark.skipif(not T.textual_available(),
@@ -30,7 +30,7 @@ def _sub(tmp_path, name):
 
 
 def _desk(cfg, **kw):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
     app = IdeaDesk(cfg, **kw)
     app.notes = []
     app.notify = lambda msg, **k: app.notes.append((msg, k))
@@ -49,7 +49,7 @@ async def settle(app, pilot, n=3):
 
 
 def view(app):
-    from wt.tui.queue_tab import QueueView
+    from nightwright.tui.queue_tab import QueueView
     return app.query_one("#queue-view", QueueView)
 
 
@@ -72,7 +72,7 @@ def state_of(cfg, cid):
 class spy_titles:
     """Record every ChoiceScreen (title, choices) while the context is open."""
     def __enter__(self):
-        from wt.tui.app import ChoiceScreen
+        from nightwright.tui.app import ChoiceScreen
         self.titles, self.cls = [], ChoiceScreen
         self.real = ChoiceScreen.__init__
         titles, real = self.titles, self.real
@@ -546,7 +546,7 @@ def _give_worktree(cfg, cid, path):
     st = state_of(cfg, cid)
     path.parent.mkdir(parents=True, exist_ok=True)          # a real worktree, so removal is visible
     subprocess.run(["git", "-C", st["repo"]["root"], "worktree", "add", "-q", "-b",
-                    f"wt/{cid}-tui", str(path)], check=True)
+                    f"nw/{cid}-tui", str(path)], check=True)
     st["repo"]["worktree"] = str(path)
     S.write_state(cfg, cid, st)
 
@@ -556,7 +556,7 @@ def test_abandon_without_a_worktree_offers_no_keep_choice(tmp_path):
     cid = ids["ready"]
     titles = []
     app = _desk(cfg, tab="queue")
-    from wt.tui.app import ChoiceScreen
+    from nightwright.tui.app import ChoiceScreen
     real_init = ChoiceScreen.__init__
 
     def spy(self, title, choices, current=""):
@@ -584,7 +584,7 @@ def test_abandon_with_a_worktree_offers_keep(tmp_path, keep):
     wt = tmp_path / "wts" / cid
     _give_worktree(cfg, cid, wt)
     titles = []
-    from wt.tui.app import ChoiceScreen
+    from nightwright.tui.app import ChoiceScreen
     real_init = ChoiceScreen.__init__
 
     def spy(self, title, choices, current=""):
@@ -696,7 +696,7 @@ def test_enter_posts_campaign_selected_and_opens_the_campaign_screen(tmp_path):
     repo, cfg, ids = _fixture(tmp_path)
     app = _desk(cfg, tab="queue")
     seen = []
-    from wt.tui.queue_tab import QueueView
+    from nightwright.tui.queue_tab import QueueView
     real = QueueView.open_selected
 
     def spy(self):

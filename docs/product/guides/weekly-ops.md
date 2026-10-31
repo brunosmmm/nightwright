@@ -6,8 +6,8 @@ leave idea/spec loops half-closed.
 ## 1. Hours this week
 
 ```bash
-wt report --week
-wt report --week --by bucket    # or project / other facet axis you use
+nw report --week
+nw report --week --by bucket    # or project / other facet axis you use
 ```
 
 ![Weekly report](../assets/captures/cli-report-week.svg)
@@ -15,21 +15,21 @@ wt report --week --by bucket    # or project / other facet axis you use
 ## 2. Map the unknowns
 
 ```bash
-wt topics --unmapped
-wt map <base-topic> bucket=Acme area=docs
+nw topics --unmapped
+nw map <base-topic> bucket=Acme area=docs
 ```
 
 ![Unmapped topics](../assets/captures/cli-topics-unmapped.svg)
 
 ![map](../assets/captures/cli-map.svg)
 
-Bare `wt map topic Acme` is shorthand for `bucket=Acme`.
+Bare `nw map topic Acme` is shorthand for `bucket=Acme`.
 
 ## 3. Review segments
 
 ```bash
-wt review --week            # timeline + unclassified inbox
-wt review --week --fix   # map interactively when you want
+nw review --week            # timeline + unclassified inbox
+nw review --week --fix   # map interactively when you want
 ```
 
 ![review](../assets/captures/cli-review-week.svg)
@@ -39,15 +39,15 @@ wt review --week --fix   # map interactively when you want
 Claude Code deletes old transcripts. Snapshot closed days before they vanish:
 
 ```bash
-wt snapshot                 # through yesterday by default
+nw snapshot                 # through yesterday by default
 ```
 
 ## 5. Idea / outbound hygiene
 
 ```bash
-wt hub --json               # stale ideas, open questions, outbound debt
-wt next
-wt idea questions IDEA-… --resolve N   # clear what the accepted spec decided
+nw hub --json               # stale ideas, open questions, outbound debt
+nw next
+nw idea questions IDEA-… --resolve N   # clear what the accepted spec decided
 ```
 
 ![hub](../assets/captures/cli-hub.svg)

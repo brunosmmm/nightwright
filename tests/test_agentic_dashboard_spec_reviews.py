@@ -1,4 +1,4 @@
-"""SPEC-0217: standalone spec reviews in `wt queue watch`, the spec-phase queue events and the
+"""SPEC-0217: standalone spec reviews in `nw queue watch`, the spec-phase queue events and the
 conduct skill's spec-phase park rows."""
 import datetime as dt
 import json
@@ -11,17 +11,17 @@ from rich.console import Console
 from test_agentic_dashboard import _campaign, _ev
 from waits import join, until
 from test_agentic_e2e import make_cfg, make_repo, run_cli, script
-from wt.agentic import cli_queue as CQ
-from wt.agentic import events as E
-from wt.agentic import queue as Q
-from wt.agentic import spec_review as SR
-from wt.agentic import store as S
+from nightwright.agentic import cli_queue as CQ
+from nightwright.agentic import events as E
+from nightwright.agentic import queue as Q
+from nightwright.agentic import spec_review as SR
+from nightwright.agentic import store as S
 
 SIZED = {"size": "m", "tone": "high-end", "rationale": "small."}
 REVISE = {"verdict": "revise", **SIZED, "suggested_splits": [],
           "findings": [{"severity": "must_fix", "section": "Design", "title": "gap",
                         "suggested_fix": "fill the gap"}]}
-SKILL = Path(__file__).resolve().parent.parent / "skills" / "wt-conduct" / "SKILL.md"
+SKILL = Path(__file__).resolve().parent.parent / "skills" / "nw-conduct" / "SKILL.md"
 
 
 def _render(p, width=120):

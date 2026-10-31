@@ -1,4 +1,4 @@
-"""wt projects rename — outbox bucket migrate (SPEC-0159)."""
+"""nw projects rename — outbox bucket migrate (SPEC-0159)."""
 import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -6,11 +6,11 @@ from zoneinfo import ZoneInfo
 import yaml
 from click.testing import CliRunner
 
-from wt.cli import cli
-from wt.idea_ext import read_idea_extensions
-from wt.org import filter_tasks, invalidate_tasks_cache, load_tasks
-from wt.outbox_migrate import apply_project_rename, plan_project_rename
-from wt.specmeta import split_frontmatter
+from nightwright.cli import cli
+from nightwright.idea_ext import read_idea_extensions
+from nightwright.org import filter_tasks, invalidate_tasks_cache, load_tasks
+from nightwright.outbox_migrate import apply_project_rename, plan_project_rename
+from nightwright.specmeta import split_frontmatter
 
 
 def _cfg(tmp_path, *, outbox=None, idea_extensions=None):
@@ -176,7 +176,7 @@ def test_cli_dry_run_writes_nothing(tmp_path, monkeypatch):
     cfg_path.write_text("outbox_targets:\n  DemoCo:\n    repo_path: /tmp/tf\n", encoding="utf-8")
     before = cfg_path.read_text(encoding="utf-8")
     _seed_outbox(Path(cfg["data_dir"]), "DemoCo")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["projects", "rename", "DemoCo", "DemoLabs"])
     assert r.exit_code == 0, r.output
     assert "not written" in r.output.lower() or "--yes" in r.output
@@ -190,11 +190,11 @@ def test_cli_yes_applies(tmp_path, monkeypatch):
     cfg_path.write_text("outbox_targets:\n  DemoCo: {}\n", encoding="utf-8")
     _seed_idea(Path(cfg["org_files"][0]))
     _seed_outbox(Path(cfg["data_dir"]), "DemoCo")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["projects", "rename", "DemoCo", "DemoLabs", "--yes", "--json"])
     assert r.exit_code == 0, r.output
     payload = json.loads(r.output)
-    assert payload["schema"] == "wt.projects.rename.v1"
+    assert payload["schema"] == "nw.projects.rename.v1"
     assert payload["written"] is True
     disk = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert "DemoLabs" in disk["outbox_targets"]
@@ -203,7 +203,7 @@ def test_cli_yes_applies(tmp_path, monkeypatch):
 
 def test_cli_conflict_nonzero(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, outbox={"DemoCo": {}, "DemoLabs": {}})
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["projects", "rename", "DemoCo", "DemoLabs", "--yes"])
     assert r.exit_code != 0
     assert "conflict" in r.output.lower()

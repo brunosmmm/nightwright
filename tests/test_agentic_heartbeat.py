@@ -1,11 +1,11 @@
 """SPEC-0204: the lease is heartbeated while a long tick runs, so an alive runner never looks
-stale (`lease_status`, `wt queue list`, the dashboard, conduct-status)."""
+stale (`lease_status`, `nw queue list`, the dashboard, conduct-status)."""
 import threading
 import time
 
 from test_agentic_e2e import make_cfg, make_repo, script
-from wt.agentic import lease as L
-from wt.agentic import queue as Q
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
 
 
 def test_long_tick_keeps_the_lease_fresh(tmp_path, monkeypatch):
@@ -39,6 +39,6 @@ def test_heartbeat_thread_stops_with_the_tick(tmp_path):
             time.sleep(0.2)
         time.sleep(0.1)
         assert threading.active_count() == before
-        assert not any(t.name == "wt-lease-heartbeat" for t in threading.enumerate())
+        assert not any(t.name == "nw-lease-heartbeat" for t in threading.enumerate())
     finally:
         lease.release()

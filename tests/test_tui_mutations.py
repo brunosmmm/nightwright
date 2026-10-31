@@ -1,6 +1,6 @@
 """Explore mutations in the TUI desk (SPEC-0102).
 
-Two layers: `wt.tui.model.apply_mutation` (no Textual — the dispatch every desk write goes
+Two layers: `nightwright.tui.model.apply_mutation` (no Textual — the dispatch every desk write goes
 through) and pilot drives of the real key bindings and modals.
 """
 import asyncio
@@ -10,11 +10,11 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt import tui as T
-from wt.cli import cli
-from wt.org import load_tasks
-from wt.tui import model as M
+from nightwright import explore as EX
+from nightwright import tui as T
+from nightwright.cli import cli
+from nightwright.org import load_tasks
+from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -41,7 +41,7 @@ def _cfg(tmp_path):
 
 def _seed(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     assert CliRunner().invoke(cli, ["idea", "a desk idea"]).exit_code == 0
     return cfg
 
@@ -103,7 +103,7 @@ def test_capture_idea_returns_the_new_id(tmp_path, monkeypatch):
 
 
 def test_mutations_are_visible_to_the_classic_cli(tmp_path, monkeypatch):
-    """AC: writes persist to org and `wt idea show` agrees."""
+    """AC: writes persist to org and `nw idea show` agrees."""
     cfg = _seed(tmp_path, monkeypatch)
     M.apply_mutation(cfg, "summary", "IDEA-001", text="written from the desk")
     M.apply_mutation(cfg, "question_add", "IDEA-001", text="still open?")
@@ -122,7 +122,7 @@ async def _type(pilot, text):
 
 @needs_textual
 def test_log_binding_writes_and_refreshes(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -143,7 +143,7 @@ def test_log_binding_writes_and_refreshes(tmp_path, monkeypatch):
 
 @needs_textual
 def test_capture_binding_adds_an_idea_and_selects_it(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -165,7 +165,7 @@ def test_capture_binding_adds_an_idea_and_selects_it(tmp_path, monkeypatch):
 
 @needs_textual
 def test_escape_cancels_a_prompt_without_writing(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -186,7 +186,7 @@ def test_escape_cancels_a_prompt_without_writing(tmp_path, monkeypatch):
 
 @needs_textual
 def test_explored_binding_increments(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -203,7 +203,7 @@ def test_explored_binding_increments(tmp_path, monkeypatch):
 
 @needs_textual
 def test_summary_modal_saves_with_ctrl_s(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -225,7 +225,7 @@ def test_summary_modal_saves_with_ctrl_s(tmp_path, monkeypatch):
 
 @needs_textual
 def test_questions_screen_full_crud(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     EX.add_question(cfg, "IDEA-001", "first?")
@@ -276,7 +276,7 @@ def test_questions_screen_full_crud(tmp_path, monkeypatch):
 @needs_textual
 def test_questions_screen_survives_a_bad_index(tmp_path, monkeypatch):
     """Deleting the last question then acting again must not raise out of the screen."""
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     EX.add_question(cfg, "IDEA-001", "only one?")
@@ -304,7 +304,7 @@ def test_questions_screen_survives_a_bad_index(tmp_path, monkeypatch):
 @needs_textual
 def test_drift_is_reported_and_non_fatal(tmp_path, monkeypatch):
     """A write that raises must leave the app running and reload from disk."""
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 

@@ -1,13 +1,13 @@
-"""Filter parity for wt next / hub / agenda (SPEC-0096)."""
+"""Filter parity for nw next / hub / agenda (SPEC-0096)."""
 import datetime as dt
 import json
 from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 
-from wt import org_write as W
-from wt import report as R
-from wt.cli import cli
+from nightwright import org_write as W
+from nightwright import report as R
+from nightwright.cli import cli
 
 
 def _cfg(tmp_path):
@@ -37,7 +37,7 @@ def _cfg(tmp_path):
 
 
 def _patch(monkeypatch, cfg):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
 
 
 def test_next_filters_by_project_and_kind(tmp_path, monkeypatch):
@@ -76,7 +76,7 @@ def test_agenda_filters_project(tmp_path, monkeypatch):
     W.add_task(cfg, "other task", project="Example", scheduled=today)
     _patch(monkeypatch, cfg)
     # Render via report capture
-    from wt.console import console
+    from nightwright.console import console
     prev_w, prev_h = console._width, console._height
     console._width, console._height = 120, 40
     try:

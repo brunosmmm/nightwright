@@ -8,12 +8,12 @@ from pathlib import Path
 import pytest
 
 from test_agentic_e2e import added, impl_done, make_cfg, make_repo, review, run_cli, script
-from wt.agentic import queue as Q
-from wt.agentic import runner as R
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
-from wt.agentic.runner import RunResult
-from wt import render
+from nightwright.agentic import queue as Q
+from nightwright.agentic import runner as R
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
+from nightwright.agentic.runner import RunResult
+from nightwright import render
 
 
 def _res(cost, *, timed_out=False, interrupted=False, is_error=False, exit_code=0):
@@ -171,7 +171,7 @@ def _rendered(renderable) -> str:
 @pytest.mark.parametrize("cost,shown", [({"estimated_usd": 4.0}, True),
                                          ({"estimated_usd": 0.0}, False), (None, False)])
 def test_queue_watch_shows_estimate_only_when_above_zero(tmp_path, monkeypatch, cost, shown):
-    from wt.agentic import cli_queue
+    from nightwright.agentic import cli_queue
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
     added(cfg, monkeypatch)

@@ -1,4 +1,4 @@
-"""SPEC-0173: deterministic gate executor + `wt queue gates`. All gates are `sh -c` scripts in a
+"""SPEC-0173: deterministic gate executor + `nw queue gates`. All gates are `sh -c` scripts in a
 tmp worktree; the data dir is a tmp dir."""
 import json
 import os
@@ -11,10 +11,10 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt.agentic import gates as G
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
-from wt.cli import cli
+from nightwright.agentic import gates as G
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
+from nightwright.cli import cli
 
 CID = "SPEC-0170-20261025-c0de"
 
@@ -43,7 +43,7 @@ def _gate(name, cmd, *, required=True, timeout_s=30, cwd="."):
 def _state(worktree):
     return {"id": CID, "spec_id": "SPEC-0170", "project": "demo", "profile": "balanced",
             "state": "GATING", "created_at": "2026-10-25T10:00:00-04:00",
-            "repo": {"base": "main", "worktree": str(worktree), "branch": f"wt/{CID}"},
+            "repo": {"base": "main", "worktree": str(worktree), "branch": f"nw/{CID}"},
             "counters": {"loops": 0, "runs": 0}, "cost": {"total_usd": 0.0, "cap_usd": 10.0},
             "last_gate": None, "park": None}
 
@@ -103,8 +103,8 @@ def test_timeout_kills_the_process_group(world, tmp_path):
 def test_env_placeholders_and_cwd(world, tmp_path):
     cfg, st, wt = world
     env = G.gate_env(cfg, st)
-    r = G.run_gate(_gate("env", "echo $WT_CAMPAIGN $WT_SPEC_ID $WT_WORKTREE $WT_BASE "
-                                "$WT_DATA_DIR $WT_CONFIG_DIR; pwd", cwd="sub"),
+    r = G.run_gate(_gate("env", "echo $NW_CAMPAIGN $NW_SPEC_ID $NW_WORKTREE $NW_BASE "
+                                "$NW_DATA_DIR $NW_CONFIG_DIR; pwd", cwd="sub"),
                    wt, env, tmp_path / "env.log", G.placeholders(st))
     lines = r.tail.splitlines()
     assert lines[-2].split() == [CID, "SPEC-0170", str(wt), "main", cfg["data_dir"],
@@ -177,20 +177,20 @@ def test_run_all_without_worktree_errors(world):
         G.run_all(_project(_gate("a", "true")), st, cfg, seq=1)
 
 
-# ---- wt queue gates -------------------------------------------------------------------------
+# ---- nw queue gates -------------------------------------------------------------------------
 
 def _repo_with_project_yaml(tmp_path, gates_yaml):
     root = tmp_path / "repo"
-    (root / "src" / "wt").mkdir(parents=True)
+    (root / "src" / "nightwright").mkdir(parents=True)
     (root / "pyproject.toml").write_text("[project]\nname='x'\n")
-    (root / ".wt").mkdir()
-    (root / ".wt" / "project.yaml").write_text(
-        "schema: wt.project.v1\nproject: Meta-Tools\nbase: main\ngates:\n" + gates_yaml)
+    (root / ".nw").mkdir()
+    (root / ".nw" / "project.yaml").write_text(
+        "schema: nw.project.v1\nproject: Meta-Tools\nbase: main\ngates:\n" + gates_yaml)
     return root
 
 
 def _cli(cfg, monkeypatch, args):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     return CliRunner().invoke(cli, args)
 
 
@@ -198,7 +198,7 @@ def test_cli_gates_logs_event_and_leaves_state_alone(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     root = _repo_with_project_yaml(tmp_path, "  - {name: good, cmd: 'echo fine'}\n"
                                              "  - {name: bad, cmd: 'exit 4', required: false}\n")
-    cfg["wt_checkout"] = str(root)                 # Meta-Tools resolves to this repo
+    cfg["nw_checkout"] = str(root)                 # Meta-Tools resolves to this repo
     wt = tmp_path / "worktree"
     wt.mkdir()
     st = dict(_state(wt), project="Meta-Tools")
@@ -208,7 +208,7 @@ def test_cli_gates_logs_event_and_leaves_state_alone(tmp_path, monkeypatch):
     r = _cli(cfg, monkeypatch, ["queue", "gates", CID, "--json"])
     assert r.exit_code == 0, r.output
     d = json.loads(r.output)
-    assert d["schema"] == "wt.campaign.gate.v1" and d["campaign"] == CID
+    assert d["schema"] == "nw.campaign.gate.v1" and d["campaign"] == CID
     assert d["ok"] is True and d["gate_seq"] == 1
     assert [(x["name"], x["ok"], x["required"]) for x in d["results"]] == [
         ("good", True, True), ("bad", False, False)]
@@ -232,7 +232,7 @@ def test_cli_gates_errors(tmp_path, monkeypatch):
     r = _cli(cfg, monkeypatch, ["queue", "gates", "SPEC-0000-00000000-dead"])
     assert r.exit_code != 0 and "no campaign" in r.output
     root = _repo_with_project_yaml(tmp_path, "  - {name: good, cmd: 'true'}\n")
-    cfg["wt_checkout"] = str(root)
+    cfg["nw_checkout"] = str(root)
     st = dict(_state(tmp_path / "gone"), project="Meta-Tools")
     S.create_campaign(cfg, st)
     r = _cli(cfg, monkeypatch, ["queue", "gates", CID])

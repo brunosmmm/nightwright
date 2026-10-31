@@ -5,24 +5,24 @@ from pathlib import Path
 
 import pytest
 
-from wt.agentic import runner as R
-from wt.agentic.personas import GATE_TRIAGER_SCHEMA, IMPLEMENTER_SCHEMA
+from nightwright.agentic import runner as R
+from nightwright.agentic.personas import GATE_TRIAGER_SCHEMA, IMPLEMENTER_SCHEMA
 
 
 def _req(tmp_path, **over):
     base = dict(
         persona="implementer", prompt="do the thing", system_append="invariant",
-        cwd=tmp_path / "wt", model="sonnet", effort="high", max_budget_usd=4.0,
+        cwd=tmp_path / "nw", model="sonnet", effort="high", max_budget_usd=4.0,
         timeout_s=30, permission_mode="bypassPermissions", read_only=False,
-        allowed_tools=("Bash(uv run wt *)",), add_dirs=(tmp_path / "wt",),
+        allowed_tools=("Bash(uv run nw *)",), add_dirs=(tmp_path / "nw",),
         json_schema=IMPLEMENTER_SCHEMA,
-        env={"WT_CAMPAIGN": "C-1", "WT_DATA_DIR": str(tmp_path / "d"),
-             "WT_CONFIG_DIR": str(tmp_path / "c"), "WT_SPEC_ID": "SPEC-0001",
-             "WT_WORKTREE": str(tmp_path / "wt"), "WT_BASE": "main"},
+        env={"NW_CAMPAIGN": "C-1", "NW_DATA_DIR": str(tmp_path / "d"),
+             "NW_CONFIG_DIR": str(tmp_path / "c"), "NW_SPEC_ID": "SPEC-0001",
+             "NW_WORKTREE": str(tmp_path / "nw"), "NW_BASE": "main"},
         run_dir=tmp_path / "runs" / "001-implementer",
     )
     base.update(over)
-    (tmp_path / "wt").mkdir(exist_ok=True)
+    (tmp_path / "nw").mkdir(exist_ok=True)
     return R.RunRequest(**base)
 
 
@@ -73,14 +73,14 @@ def test_claude_runner_argv_and_stdin(tmp_path, monkeypatch):
     assert json.loads(argv[i + 1]) == IMPLEMENTER_SCHEMA
     for flag, val in [("--model", "sonnet"), ("--effort", "high"), ("--max-budget-usd", "4"),
                       ("--permission-mode", "bypassPermissions"), ("--permission-prompts", "none"),
-                      ("--add-dir", str(tmp_path / "wt")), ("--append-system-prompt", "invariant"),
-                      ("--allowedTools", "Bash(uv run wt *)")]:
+                      ("--add-dir", str(tmp_path / "nw")), ("--append-system-prompt", "invariant"),
+                      ("--allowedTools", "Bash(uv run nw *)")]:
         assert val in argv[argv.index(flag) + 1:argv.index(flag) + 2], flag
     assert "--no-session-persistence" in argv
     assert "--restricted" not in argv
     assert "--max-turns" not in argv
     assert kw["input"] == "do the thing"
-    assert kw["cwd"] == str(tmp_path / "wt")
+    assert kw["cwd"] == str(tmp_path / "nw")
     for k, v in req.env.items():
         assert kw["env"][k] == v
 
@@ -196,19 +196,19 @@ def test_fake_runner_applies_edits_in_order_and_advances_across_instances(tmp_pa
                                                {"path": "gone.txt", "delete": True}],
          "verdict": {"disposition": "fix", "fix_brief": "do it"}, "cost_usd": 0.1},
     ])
-    (tmp_path / "wt").mkdir()
-    (tmp_path / "wt" / "gone.txt").write_text("bye")
+    (tmp_path / "nw").mkdir()
+    (tmp_path / "nw" / "gone.txt").write_text("bye")
     r1 = R.FakeRunner(script).run(_req(tmp_path))
     assert r1.verdict_ok and r1.cost_usd == 0.5 and r1.verdict["summary"] == "wrote feat"
-    assert (tmp_path / "wt" / "src" / "feat.py").read_text() == "X = 1\n"
+    assert (tmp_path / "nw" / "src" / "feat.py").read_text() == "X = 1\n"
     assert (tmp_path / "runs" / "001-implementer" / "prompt.md").exists()
     # a fresh instance (another process) continues from the cursor
     r2 = R.FakeRunner(script).run(_req(tmp_path, persona="gate_triager", read_only=True,
                                        json_schema=GATE_TRIAGER_SCHEMA,
                                        run_dir=tmp_path / "runs" / "002-gate_triager"))
     assert r2.verdict_ok and r2.verdict["disposition"] == "fix"
-    assert (tmp_path / "wt" / "src" / "feat.py").read_text() == "X = 1\nY = 2\n"
-    assert not (tmp_path / "wt" / "gone.txt").exists()
+    assert (tmp_path / "nw" / "src" / "feat.py").read_text() == "X = 1\nY = 2\n"
+    assert not (tmp_path / "nw" / "gone.txt").exists()
     with pytest.raises(ValueError, match="exhausted"):
         R.FakeRunner(script).run(_req(tmp_path, run_dir=tmp_path / "runs" / "003-implementer"))
 
@@ -248,30 +248,30 @@ def test_fake_runner_rejects_missing_or_non_list_script(tmp_path):
 
 def test_select_runner(tmp_path, monkeypatch):
     script = _script(tmp_path, [])
-    monkeypatch.delenv("WT_AGENTIC_RUNNER", raising=False)
-    monkeypatch.delenv("WT_AGENTIC_FAKE_SCRIPT", raising=False)
+    monkeypatch.delenv("NW_AGENTIC_RUNNER", raising=False)
+    monkeypatch.delenv("NW_AGENTIC_FAKE_SCRIPT", raising=False)
     assert isinstance(R.select_runner({"agentic": {"runner": "claude"}}), R.ClaudeRunner)
     assert isinstance(R.select_runner({}), R.ClaudeRunner)
     fake = R.select_runner({"agentic": {"runner": "fake", "fake_script": str(script)}})
     assert isinstance(fake, R.FakeRunner)
-    monkeypatch.setenv("WT_AGENTIC_RUNNER", "fake")
-    monkeypatch.setenv("WT_AGENTIC_FAKE_SCRIPT", str(script))
+    monkeypatch.setenv("NW_AGENTIC_RUNNER", "fake")
+    monkeypatch.setenv("NW_AGENTIC_FAKE_SCRIPT", str(script))
     assert isinstance(R.select_runner({"agentic": {"runner": "claude"}}), R.FakeRunner)
-    monkeypatch.delenv("WT_AGENTIC_FAKE_SCRIPT")
+    monkeypatch.delenv("NW_AGENTIC_FAKE_SCRIPT")
     with pytest.raises(ValueError, match="no script"):
         R.select_runner({"agentic": {"runner": "fake"}})
-    monkeypatch.setenv("WT_AGENTIC_RUNNER", "bogus")
+    monkeypatch.setenv("NW_AGENTIC_RUNNER", "bogus")
     with pytest.raises(ValueError, match="unknown agentic.runner"):
         R.select_runner({})
 
 
 def test_fake_runner_pre_shell_and_shell_run_in_cwd_with_env(tmp_path):      # SPEC-0221
-    (tmp_path / "wt").mkdir()
+    (tmp_path / "nw").mkdir()
     script = _script(tmp_path, [
-        {"persona": "implementer", "pre_shell": ["echo pre-$WT_BASE > order.txt"],
+        {"persona": "implementer", "pre_shell": ["echo pre-$NW_BASE > order.txt"],
          "edits": [{"path": "edit.txt", "write": "x"}],
          "shell": ["echo post >> order.txt", "test -f edit.txt && echo saw-edit >> order.txt"],
          "verdict": {"status": "done", "summary": "s"}, "cost_usd": 0.1}])
     r = R.FakeRunner(script).run(_req(tmp_path))
     assert r.verdict_ok
-    assert (tmp_path / "wt" / "order.txt").read_text().split() == ["pre-main", "post", "saw-edit"]
+    assert (tmp_path / "nw" / "order.txt").read_text().split() == ["pre-main", "post", "saw-edit"]

@@ -13,9 +13,9 @@ import pytest
 from test_agentic_adopt import die, start_impl, tick_until, world  # noqa: F401  (fixture)
 from test_agentic_e2e import _git, make_repo
 from test_agentic_runproc import until
-from wt.agentic import gitops as G
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright.agentic import gitops as G
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 _KEYS = {"path", "removed", "reason", "holders"}
 
@@ -52,7 +52,7 @@ def _pid(proc, n, *, cwd=None, fds=()):
 
 
 def test_lock_holders_fake_proc(tmp_path):
-    wt = tmp_path / "wt"
+    wt = tmp_path / "nw"
     (wt / "sub").mkdir(parents=True)
     lock = tmp_path / "gitdir" / "index.lock"
     lock.parent.mkdir()
@@ -63,7 +63,7 @@ def test_lock_holders_fake_proc(tmp_path):
     _pid(proc, 11, cwd=elsewhere, fds=[tmp_path / "nothing", lock])     # fd -> the lock
     _pid(proc, 12, cwd=wt / "sub")                                      # cwd inside the worktree
     _pid(proc, 13, cwd=elsewhere)                                       # unrelated
-    _pid(proc, 14, cwd=tmp_path / "wt-other")                           # sibling with same prefix
+    _pid(proc, 14, cwd=tmp_path / "nw-other")                           # sibling with same prefix
     _pid(proc, os.getpid(), cwd=wt)                                     # ourselves: skipped
     (proc / "15").mkdir()                                               # no cwd/fd: OSError, skipped
     (proc / "self").mkdir()                                             # not a pid
@@ -74,7 +74,7 @@ def test_lock_holders_fake_proc(tmp_path):
 def test_lock_holders_real_proc_sees_a_process_in_the_worktree(tmp_path):
     if not Path("/proc/self/cwd").exists():
         pytest.skip("no /proc")
-    wt = tmp_path / "wt"
+    wt = tmp_path / "nw"
     wt.mkdir()
     p = subprocess.Popen(["sleep", "30"], cwd=wt)
     try:
@@ -222,7 +222,7 @@ def test_adopted_flight_with_a_held_lock_keeps_it_and_parks(world, monkeypatch):
 
 def test_fresh_flight_never_calls_the_helper(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
-    wt = tmp_path / "wt"
+    wt = tmp_path / "nw"
     G.worktree_add(repo, wt, "feature", "main")
     (wt / "f.txt").write_text("x\n")
     G.index_lock_path(wt).write_text("")

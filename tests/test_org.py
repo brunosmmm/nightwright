@@ -3,8 +3,8 @@ splitting, priority/CLOSED/properties capture, topic_key extraction (headline + 
 override), id fallback, project derivation, source expansion, and list-replace config."""
 import os
 
-from wt import config as C
-from wt.org import Task, _iter_org_paths, _split_keywords, filter_tasks, load_tasks
+from nightwright import config as C
+from nightwright.org import Task, _iter_org_paths, _split_keywords, filter_tasks, load_tasks
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "org")
 
@@ -145,7 +145,7 @@ def test_filter_tasks_compose():
 def test_load_tasks_cache_hit_skips_orgparse(tmp_path, monkeypatch):
     """Unchanged corpus: second load_tasks must not call orgparse.load again."""
     import orgparse
-    from wt.org import invalidate_tasks_cache
+    from nightwright.org import invalidate_tasks_cache
 
     org = tmp_path / "org"
     org.mkdir()
@@ -179,7 +179,7 @@ def test_load_tasks_cache_hit_skips_orgparse(tmp_path, monkeypatch):
 
 def test_load_tasks_cache_miss_on_mtime_bump(tmp_path, monkeypatch):
     import time
-    from wt.org import invalidate_tasks_cache
+    from nightwright.org import invalidate_tasks_cache
 
     org = tmp_path / "org"
     org.mkdir()
@@ -196,7 +196,7 @@ def test_load_tasks_cache_miss_on_mtime_bump(tmp_path, monkeypatch):
 
 def test_invalidate_tasks_cache_forces_reparse(tmp_path, monkeypatch):
     import orgparse
-    from wt.org import invalidate_tasks_cache
+    from nightwright.org import invalidate_tasks_cache
 
     org = tmp_path / "org"
     org.mkdir()
@@ -228,7 +228,7 @@ def test_invalidate_tasks_cache_forces_reparse(tmp_path, monkeypatch):
 def test_load_tasks_cache_miss_on_keyword_change(tmp_path, monkeypatch):
     """Keyword lists shape is_idea / is_done — changing them must bust the cache."""
     import orgparse
-    from wt.org import invalidate_tasks_cache
+    from nightwright.org import invalidate_tasks_cache
 
     org = tmp_path / "org"
     org.mkdir()

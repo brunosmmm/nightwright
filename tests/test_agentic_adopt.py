@@ -15,12 +15,12 @@ import waits
 from test_agentic_e2e import _git, added, impl_done, make_cfg, make_repo, review, script, tr_review
 from test_agentic_reexec import _code_repo
 from test_agentic_runproc import child_pid, pid_alive, until
-from wt.agentic import lease as L
-from wt.agentic import personas as PS
-from wt.agentic import queue as Q
-from wt.agentic import runner as R
-from wt.agentic import runproc as RP
-from wt.agentic import store as S
+from nightwright.agentic import lease as L
+from nightwright.agentic import personas as PS
+from nightwright.agentic import queue as Q
+from nightwright.agentic import runner as R
+from nightwright.agentic import runproc as RP
+from nightwright.agentic import store as S
 
 FAKE = Path(__file__).parent / "fixtures" / "fake_claude.py"
 
@@ -31,7 +31,7 @@ def world(tmp_path, monkeypatch):
     bindir.mkdir()
     (bindir / "claude").symlink_to(FAKE)
     monkeypatch.setenv("PATH", f"{bindir}:/usr/bin:/bin")
-    monkeypatch.setenv("WT_RUNPROC_GRACE_S", "1")
+    monkeypatch.setenv("NW_RUNPROC_GRACE_S", "1")
     monkeypatch.setattr(RP, "GRACE_S", 1.0)
     monkeypatch.setenv("FAKE_CLAUDE_RELEASE", str(tmp_path / "release"))
     monkeypatch.setenv("FAKE_CLAUDE_SLEEP_S", "60")
@@ -327,7 +327,7 @@ def test_stop_detaches_runs_instead_of_killing(world):
     stop = pool.flights[world.cid].ctx.stop
     pid = child_pid(type("r", (), {"cwd": Path(S.read_state(world.cfg, world.cid)["repo"]["worktree"])}))
     stop.set()
-    lease = L.acquire(world.cfg, ["wt", "queue", "run"])
+    lease = L.acquire(world.cfg, ["nw", "queue", "run"])
     try:
         report = Q._drain(world.cfg, pool, lease, reason="signal", stop=stop)
     finally:
@@ -386,7 +386,7 @@ def test_run_finishing_while_stopping_is_not_interrupted(world):
     world.release()
     assert until((run_dir / "exit.json").exists)               # exited normally, then stop
     pool.flights[world.cid].ctx.stop.set()
-    lease = L.acquire(world.cfg, ["wt", "queue", "run"])
+    lease = L.acquire(world.cfg, ["nw", "queue", "run"])
     try:
         Q._drain(world.cfg, pool, lease, reason="signal")
     finally:
@@ -428,7 +428,7 @@ def _code_world(world, monkeypatch):
     state = {"changed": False}
     real = Q.code_changes
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if state["changed"] else real(r, since)))
+        ("newsha", ["src/nightwright/x.py"]) if state["changed"] else real(r, since)))
     return root, state
 
 
@@ -439,7 +439,7 @@ def test_reexec_does_not_wait_for_persona_run(world, monkeypatch):
     def fake_exec(exe, argv, env):
         wt = Path(S.read_state(world.cfg, world.cid)["repo"]["worktree"])
         seen["alive"] = pid_alive(int((wt / "child.pid").read_text()))
-        seen["threads"] = [t.name for t in threading.enumerate() if t.name.startswith("wt-step")
+        seen["threads"] = [t.name for t in threading.enumerate() if t.name.startswith("nw-step")
                            and t.is_alive()]
         seen["env"] = env
 
@@ -634,7 +634,7 @@ def test_adopt_review_group_applied_once(tmp_path, monkeypatch, world):
 
 def test_adopt_honours_park_request(world):
     pool, run_dir = start_impl(world)
-    lease = L.acquire(world.cfg, ["wt", "queue", "run"])         # a loop holds the lease: deferred
+    lease = L.acquire(world.cfg, ["nw", "queue", "run"])         # a loop holds the lease: deferred
     try:
         plan = Q.plan_park(world.cfg, world.cid, "pause")
         assert plan["mode"] == "deferred"
@@ -838,10 +838,10 @@ def test_fanout_detach_precondition(world, monkeypatch):
     code = ("import os, sys, time, runpy\nopen(sys.argv[3], 'w').close()\n"
             "while not os.path.exists(sys.argv[1]): time.sleep(0.05)\n"
             "sys.argv = ['x', sys.argv[2]]\n"
-            "runpy.run_module('wt.agentic.runproc', run_name='__main__')")
+            "runpy.run_module('nightwright.agentic.runproc', run_name='__main__')")
 
     def paused(argv, **kw):
-        if "wt.agentic.runproc" in argv and "test_reviewer" in argv[-1]:
+        if "nightwright.agentic.runproc" in argv and "test_reviewer" in argv[-1]:
             argv = [sys.executable, "-c", code, str(go), argv[-1], str(ready)]
         return real_popen(argv, **kw)
 
@@ -965,7 +965,7 @@ def test_adopt_exited_before_start_from_ended_at(world, monkeypatch, mode, recor
     earlier than the lease `started_at`; a handover keeps the lease `started_at`."""
     import datetime as dt
     cfg = world.cfg
-    lease = L.acquire(cfg, ["wt", "queue", "run"]) if mode == "handover" else None
+    lease = L.acquire(cfg, ["nw", "queue", "run"]) if mode == "handover" else None
     pool, run_dir = start_impl(world)
     die(pool)
     world.release()
@@ -977,12 +977,12 @@ def test_adopt_exited_before_start_from_ended_at(world, monkeypatch, mode, recor
     if mode == "handover":
         monkeypatch.setenv(L.HANDOVER_ENV, lease.handover()[L.HANDOVER_ENV])
         started = L.read_lease(cfg)["started_at"]
-        lease = L.acquire(cfg, ["wt", "queue", "run"])
+        lease = L.acquire(cfg, ["nw", "queue", "run"])
         assert L.read_lease(cfg)["started_at"] == started
         assert dt.datetime.fromisoformat(json.loads(
             (run_dir / "exit.json").read_text())["ended_at"]) >= dt.datetime.fromisoformat(started)
     else:
-        lease = L.acquire(cfg, ["wt", "queue", "run"])
+        lease = L.acquire(cfg, ["nw", "queue", "run"])
         started = dt.datetime.fromisoformat(L.read_lease(cfg)["started_at"])
         ex = json.loads((run_dir / "exit.json").read_text())
         delta = dt.timedelta(seconds=-5 if mode == "earlier" else 5)
@@ -1014,7 +1014,7 @@ def test_try_detach_all_never_drops_a_finished_implementer(world, monkeypatch):
             assert fut.done()
 
     monkeypatch.setattr(Q, "_harvest", late)
-    lease = L.acquire(world.cfg, ["wt", "queue", "run"])
+    lease = L.acquire(world.cfg, ["nw", "queue", "run"])
     try:
         report = Q._drain(world.cfg, pool, lease, reason="code_changed")
     finally:

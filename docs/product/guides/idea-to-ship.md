@@ -14,28 +14,28 @@ On-disk shape (Summary / questions / Log, rotation, archive): [Org-mode storage]
 
 After capture, triage looks like this:
 
-![wt ideas](../assets/captures/cli-ideas.svg)
+![nw ideas](../assets/captures/cli-ideas.svg)
 
-![wt next](../assets/captures/cli-next.svg)
+![nw next](../assets/captures/cli-next.svg)
 
 | Step | Human CLI | Agent skill (optional) |
 |------|-----------|------------------------|
-| Capture | `wt idea "…"` | `/wt-capture`, `/wt-seed` |
-| Enrich | `wt idea summary\|log\|questions` | `/wt-explore` |
-| Related? | `wt ideas --query …` | `/wt-related` |
-| Spec | `wt spec new --from-idea …` | `/wt-new-work` |
-| Tasks | `wt spec generate SPEC-NNNN` | `/wt-generate` |
-| Done? | `wt spec verify` / ledger | `/wt-verify` |
+| Capture | `nw idea "…"` | `/nw-capture`, `/nw-seed` |
+| Enrich | `nw idea summary\|log\|questions` | `/nw-explore` |
+| Related? | `nw ideas --query …` | `/nw-related` |
+| Spec | `nw spec new --from-idea …` | `/nw-new-work` |
+| Tasks | `nw spec generate SPEC-NNNN` | `/nw-generate` |
+| Done? | `nw spec verify` / ledger | `/nw-verify` |
 
-`wt next` (and `wt ideas --json`) recommend the next command per idea.
+`nw next` (and `nw ideas --json`) recommend the next command per idea.
 
 ## Capture vs task
 
 Ideas are **seeds**. Actionable one-offs are tasks:
 
 ```bash
-wt idea "systemic gate design" --project Meta-Tools
-wt add "fix the flaky CI gate" --project Meta-Tools
+nw idea "systemic gate design" --project Meta-Tools
+nw add "fix the flaky CI gate" --project Meta-Tools
 ```
 
 ## Explore before promote
@@ -43,10 +43,10 @@ wt add "fix the flaky CI gate" --project Meta-Tools
 Do not promote an empty idea. Put durable notes on it first:
 
 ```bash
-wt idea summary IDEA-00N --set "…"
-wt idea log IDEA-00N "what we learned"
-wt idea show IDEA-00N
-wt idea mark-explored IDEA-00N   # when Summary is ready
+nw idea summary IDEA-00N --set "…"
+nw idea log IDEA-00N "what we learned"
+nw idea show IDEA-00N
+nw idea mark-explored IDEA-00N   # when Summary is ready
 ```
 
 States that matter: `IDEA` / `INCUBATE` → exploring; `SPECCED` → draft/accepted spec;
@@ -54,26 +54,26 @@ States that matter: `IDEA` / `INCUBATE` → exploring; `SPECCED` → draft/accep
 
 ## Accept, then generate
 
-1. `wt spec new --from-idea IDEA-00N --internal` (or routing default for Meta-Tools).
+1. `nw spec new --from-idea IDEA-00N --internal` (or routing default for Meta-Tools).
 2. Fill Decision / Design / Acceptance criteria / **Test plan**.
 3. Set frontmatter `status: accepted`.
 4. `python3 tools/spec_lint.py --write-ledger`
-5. `wt spec generate SPEC-NNNN` → idea becomes **PROMOTED**.
-6. Implement; clock with `wt idea clock-in` / `clock-out` while you work the slice.
-7. Close the loop: tests + AC true + `status: done` + ledger — `/wt-verify` or
-   `wt spec verify`.
+5. `nw spec generate SPEC-NNNN` → idea becomes **PROMOTED**.
+6. Implement; clock with `nw idea clock-in` / `clock-out` while you work the slice.
+7. Close the loop: tests + AC true + `status: done` + ledger — `/nw-verify` or
+   `nw spec verify`.
 
-If the design is wrong: `/wt-rework` (supersede), do not silently rewrite past `draft`.
+If the design is wrong: `/nw-rework` (supersede), do not silently rewrite past `draft`.
 
 ## Triage rhythm
 
 ```bash
-wt ideas
-wt agenda
-wt next
-wt hub                 # union of ideas + specs + outbox
+nw ideas
+nw agenda
+nw next
+nw hub                 # union of ideas + specs + outbox
 ```
 
-Optional desk: `wt tui` ([Desk](../capabilities/tui.md)).
+Optional desk: `nw tui` ([Desk](../capabilities/tui.md)).
 
 Next: [Outbound](outbound.md) when `:PROJECT:` points at another repo.

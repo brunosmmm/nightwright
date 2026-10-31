@@ -1,7 +1,7 @@
 # Principles
 
 The loop is small on purpose. A handful of principles keep it predictable, cheap to reason
-about, and safe to leave running. When a design choice in wt looks odd, it's usually one of
+about, and safe to leave running. When a design choice in nightwright looks odd, it's usually one of
 these at work.
 
 ```mermaid
@@ -52,10 +52,10 @@ confused run from contaminating the next.
 ## 3. Every step is written down
 
 A campaign's `ledger.jsonl` records every transition, persona run, gate result, finding,
-commit, cost and note, in a validated schema (`wt.ledger.event.v1`). The runner keeps its own
+commit, cost and note, in a validated schema (`nw.ledger.event.v1`). The runner keeps its own
 journal (`runner.jsonl`). Gate logs keep the raw command output, with a JSON record beside
 each one. This is what lets the loop run unattended. You can always answer "what happened,
-and why", with `wt campaign log`, `wt campaign runs` and `wt queue runner-log`.
+and why", with `nw campaign log`, `nw campaign runs` and `nw queue runner-log`.
 
 ## 4. Never block — park
 

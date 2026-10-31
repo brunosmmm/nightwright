@@ -4,11 +4,11 @@ import json
 from pathlib import Path
 
 from test_agentic_e2e import SPEC_ACCEPTED, make_cfg, make_repo, run_cli, script, write_review
-from wt.agentic import queue as Q
-from wt.agentic import spec_review as SR
-from wt import org_write as OW
-from wt import specs as SP
-from wt.agentic import store
+from nightwright.agentic import queue as Q
+from nightwright.agentic import spec_review as SR
+from nightwright import org_write as OW
+from nightwright import specs as SP
+from nightwright.agentic import store
 
 SIZED = {"size": "m", "tone": "high-end", "rationale": "r"}
 APPROVE = {"verdict": "approve", **SIZED, "findings": [], "suggested_splits": []}
@@ -25,7 +25,7 @@ class Spy:
 
 def _world(tmp_path, *, outbox_dir="acme", target_project="acme", registered=True,
            target_schema=None):
-    """wt's checkout (`repo`), a scratch target checkout and an outbox spec ACME-0001."""
+    """nightwright's checkout (`repo`), a scratch target checkout and an outbox spec ACME-0001."""
     wt = make_repo(tmp_path, review=False)
     (wt / "docs" / "specs" / "SCHEMA.md").write_text("META-SCHEMA-MARKER\n")
     (tmp_path / "t").mkdir()

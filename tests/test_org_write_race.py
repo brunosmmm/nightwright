@@ -8,11 +8,11 @@ import pathlib
 import pytest
 
 from test_assoc import _cfg
-from wt import explore as X
-from wt import org_write as W
-from wt.org import load_tasks
+from nightwright import explore as X
+from nightwright import org_write as W
+from nightwright.org import load_tasks
 
-SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "wt"
+SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "nightwright"
 
 
 def _idea(cfg, iid):
@@ -138,9 +138,9 @@ def test_concurrent_processes_lose_nothing_and_never_reuse_an_id(tmp_path):
 
 def test_a_directory_scan_that_misses_the_ideas_file_still_loads_it(tmp_path, monkeypatch):
     """A directory scan racing another process's atomic rewrite of `ideas.org` can miss the file
-    (btrfs, ~2% of scans): the concurrent-writers test then failed with 'no task matched'. wt's
+    (btrfs, ~2% of scans): the concurrent-writers test then failed with 'no task matched'. nightwright's
     own files under a configured directory are listed by name, not left to the scan."""
-    from wt import org as ORG
+    from nightwright import org as ORG
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "an idea")
     W.add_task(cfg, "a captured task", state="TODO")

@@ -473,6 +473,54 @@ wheels = [
 ]
 
 [[package]]
+name = "nightwright"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "click" },
+    { name = "orgparse" },
+    { name = "pyyaml" },
+    { name = "rich" },
+]
+
+[package.optional-dependencies]
+docs = [
+    { name = "mkdocs-material" },
+]
+tui = [
+    { name = "textual" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "jsonschema" },
+    { name = "mkdocs-material" },
+    { name = "pyte" },
+    { name = "pytest" },
+    { name = "pytest-xdist" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8" },
+    { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9" },
+    { name = "orgparse", specifier = ">=0.4" },
+    { name = "pyyaml", specifier = ">=6" },
+    { name = "rich", specifier = ">=13" },
+    { name = "textual", marker = "extra == 'tui'", specifier = ">=8,<9" },
+]
+provides-extras = ["tui", "docs"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "jsonschema", specifier = ">=4" },
+    { name = "mkdocs-material", specifier = ">=9" },
+    { name = "pyte", specifier = ">=0.8" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-xdist", specifier = ">=3" },
+]
+
+[[package]]
 name = "orgparse"
 version = "0.4.20251020"
 source = { registry = "https://pypi.org/simple" }
@@ -881,52 +929,4 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/34/74/c6428f875774288bec1396f5bfcbc2d925700a4dad61727fd5f2b12f249d/wcwidth-0.8.2.tar.gz", hash = "sha256:91fbef97204b96a3d4d421609b80340b760cf33e26da123ff243d76b1fda8dda", size = 1466253, upload-time = "2026-06-29T18:11:11.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/96/42/3e5985a0a7e57de470b320c6d6a1a67c844f6737a587f3d44dd13d1819e7/wcwidth-0.8.2-py3-none-any.whl", hash = "sha256:d63947694a0539a1d51e01eda7caf800c291020e6cdd7e28ad7b14dd33ad4f85", size = 323166, upload-time = "2026-06-29T18:11:09.888Z" },
-]
-
-[[package]]
-name = "wt"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "click" },
-    { name = "orgparse" },
-    { name = "pyyaml" },
-    { name = "rich" },
-]
-
-[package.optional-dependencies]
-docs = [
-    { name = "mkdocs-material" },
-]
-tui = [
-    { name = "textual" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "jsonschema" },
-    { name = "mkdocs-material" },
-    { name = "pyte" },
-    { name = "pytest" },
-    { name = "pytest-xdist" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "click", specifier = ">=8" },
-    { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9" },
-    { name = "orgparse", specifier = ">=0.4" },
-    { name = "pyyaml", specifier = ">=6" },
-    { name = "rich", specifier = ">=13" },
-    { name = "textual", marker = "extra == 'tui'", specifier = ">=8,<9" },
-]
-provides-extras = ["tui", "docs"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "jsonschema", specifier = ">=4" },
-    { name = "mkdocs-material", specifier = ">=9" },
-    { name = "pyte", specifier = ">=0.8" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "pytest-xdist", specifier = ">=3" },
 ]

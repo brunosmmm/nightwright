@@ -1,5 +1,5 @@
 """SPEC-0316: a campaign's gate `timeout_s` is the max of main's and its own branch's
-`.wt/project.yaml`, capped at the wt-level `gate_budget_s`; nothing else is read from the branch."""
+`.nw/project.yaml`, capped at the nightwright-level `gate_budget_s`; nothing else is read from the branch."""
 import copy
 import json
 from pathlib import Path
@@ -7,19 +7,19 @@ from pathlib import Path
 import pytest
 
 from test_agentic_gates import CID, _cfg, _cli, _gate, _repo_with_project_yaml, _state
-from wt.agentic import gates as G
-from wt.agentic import project as P
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright.agentic import gates as G
+from nightwright.agentic import project as P
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 
 def _branch_yaml(wt, *gates, raw=None):
-    (Path(wt) / ".wt").mkdir(exist_ok=True)
+    (Path(wt) / ".nw").mkdir(exist_ok=True)
     body = raw if raw is not None else (
-        "schema: wt.project.v1\ngates:\n" + "".join(
+        "schema: nw.project.v1\ngates:\n" + "".join(
             "  - {" + ", ".join(f"{k}: {v!r}" if isinstance(v, str) else f"{k}: {v}"
                                 for k, v in g.items()) + "}\n" for g in gates))
-    (Path(wt) / ".wt" / "project.yaml").write_text(body)
+    (Path(wt) / ".nw" / "project.yaml").write_text(body)
 
 
 def _g(name, cmd="true", **kw):
@@ -66,7 +66,7 @@ def test_overlay_ignores_everything_but_timeout(tmp_path):
     assert [r["gate"] for r in raises] == ["t"]
 
 
-@pytest.mark.parametrize("raw", [None, "gates: [", "schema: wt.project.v1\nbogus: 1\n"])
+@pytest.mark.parametrize("raw", [None, "gates: [", "schema: nw.project.v1\nbogus: 1\n"])
 def test_overlay_unusable_branch_yaml_is_ignored(tmp_path, raw):
     if raw is not None:
         _branch_yaml(tmp_path, raw=raw)
@@ -75,8 +75,8 @@ def test_overlay_unusable_branch_yaml_is_ignored(tmp_path, raw):
 
 
 def test_overlay_non_utf8_yaml_is_ignored(tmp_path):
-    (tmp_path / ".wt").mkdir()
-    (tmp_path / ".wt" / "project.yaml").write_bytes(b"schema: \xff\xfe\n")
+    (tmp_path / ".nw").mkdir()
+    (tmp_path / ".nw" / "project.yaml").write_bytes(b"schema: \xff\xfe\n")
     main = {"gates": [_g("t", timeout_s=1)]}
     assert P.gate_limits_overlay(main, tmp_path, cap_s=3600) == (main, [])
 
@@ -182,12 +182,12 @@ def test_gate_timeouts_names_the_effective_limit(world):
     assert d.kind == "park" and "slow (3600s)" in d.detail and "after 3600s" in d.detail
 
 
-# ---- wt queue gates ---------------------------------------------------------------------------
+# ---- nw queue gates ---------------------------------------------------------------------------
 
 def test_cli_queue_gates_applies_the_overlay(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     root = _repo_with_project_yaml(tmp_path, "  - {name: slow, cmd: 'sleep 2', timeout_s: 1}\n")
-    cfg["wt_checkout"] = str(root)
+    cfg["nw_checkout"] = str(root)
     wt = tmp_path / "worktree"
     wt.mkdir()
     _branch_yaml(wt, {"name": "slow", "cmd": "sleep 2", "timeout_s": 30})

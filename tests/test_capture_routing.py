@@ -3,8 +3,8 @@ from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 
 def _cfg(tmp_path):
@@ -30,7 +30,7 @@ def _cfg(tmp_path):
 
 
 def _patch(monkeypatch, cfg):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
 
 
 def test_kind_bug_warns_and_still_creates(tmp_path, monkeypatch):
@@ -40,8 +40,8 @@ def test_kind_bug_warns_and_still_creates(tmp_path, monkeypatch):
         "idea", "flaky gate", "--kind", "bug", "--project", "Meta-Tools", "--tag", "ci",
     ])
     assert r.exit_code == 0, r.output
-    assert "prefer a task" in r.output.lower() or "wt add" in r.output
-    assert "wt add" in r.output
+    assert "prefer a task" in r.output.lower() or "nw add" in r.output
+    assert "nw add" in r.output
     assert "flaky gate" in r.output
     assert "--project" in r.output and "Meta-Tools" in r.output
     assert "--tag" in r.output

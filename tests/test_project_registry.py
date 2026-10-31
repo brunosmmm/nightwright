@@ -1,16 +1,16 @@
 """SPEC-0189: one project registry — mapping buckets ∪ outbox_targets ∪ Meta-Tools — for the
 capture warning, --project completion, idea_extensions, Breakdown annotations, promotion
-routing and the `wt projects` table."""
+routing and the `nw projects` table."""
 import pytest
 from click.testing import CliRunner
 
 from test_assoc import _cfg
-from wt import completion as C
-from wt import extension_schema as X
-from wt import org_write as W
-from wt import rules as RU
-from wt import specs as S
-from wt.cli import cli
+from nightwright import completion as C
+from nightwright import extension_schema as X
+from nightwright import org_write as W
+from nightwright import rules as RU
+from nightwright import specs as S
+from nightwright.cli import cli
 
 
 def _with_outbox(tmp_path, mappings=None):
@@ -75,7 +75,7 @@ def test_unconfigured_project_still_refuses_promotion(tmp_path):
 
 def test_cli_projects_table_lists_every_registered_project(tmp_path, monkeypatch):
     cfg = _with_outbox(tmp_path, mappings={"repoA": "Logging"})
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["projects"])
     assert r.exit_code == 0, r.output
     for name in ("Logging", "Meta-Tools", "comfort-assistant"):

@@ -4,11 +4,11 @@ from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 
-from wt import org_write as W
-from wt import specs as S
-from wt.cli import cli
-from wt.org import load_tasks
-from wt.specmeta import split_frontmatter
+from nightwright import org_write as W
+from nightwright import specs as S
+from nightwright.cli import cli
+from nightwright.org import load_tasks
+from nightwright.specmeta import split_frontmatter
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -103,7 +103,7 @@ def test_seed_ideas_from_epic_idempotent(tmp_path):
 def test_cli_seed_children(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     _write_outbound_epic(cfg, breakdown_lines=["Only slice"])
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["spec", "seed-children", "ACME-0001"])
     assert r.exit_code == 0, r.output
     assert "1 child idea" in r.output

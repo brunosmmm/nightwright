@@ -23,7 +23,7 @@ campaign note and tune later from evidence. Escalate to the human only decisions
 gets built (scope, priorities, product direction) or anything touching their own checkout;
 never hand them parameters to adjust. Full working rules (worktree-only, background fresh
 sub-agents with per-task models and never forks, missing-CLI -> file an idea, ideas-file
-heading check, decide-don't-defer): `/wt-orient`.
+heading check, decide-don't-defer): `/nw-orient`.
 
 ## Agent skill priority (SPEC-0138)
 
@@ -31,12 +31,12 @@ Other agent skill packs (notably **Superpowers** — brainstorming, writing-plan
 Cursor may load from `~/.claude/plugins` even when you are not using Claude Code) are
 **tactical only** in this repo:
 
-- **wt owns** idea→spec→verify lifecycle and the **governing** design (`docs/specs/`, ledger).
+- **nightwright owns** idea→spec→verify lifecycle and the **governing** design (`docs/specs/`, ledger).
 - Do **not** treat `docs/superpowers/specs` or `docs/superpowers/plans` as governing authxxity
   here.
-- “Just build” / “keep working” → continue via `wt hub` / `wt next` (or promote a thin
+- “Just build” / “keep working” → continue via `nw hub` / `nw next` (or promote a thin
   accepted slice); it is not a waive of this file unless the human explicitly says so.
-- Claiming `done` requires this contract’s DoD / `/wt-verify` — not Superpowers verification
+- Claiming `done` requires this contract’s DoD / `/nw-verify` — not Superpowers verification
   alone.
 
 ## Before you write code
@@ -60,9 +60,9 @@ Cursor may load from `~/.claude/plugins` even when you are not using Claude Code
   *Decision*/*Design* as you go — don't let it drift from reality.
 - **Follow the spec's Test plan.** If a feature spec has no Test plan, it is incomplete —
   add one before writing code.
-- **Clock in/out on the linked idea** (SPEC-0060/0061): `wt idea clock-in <IDEA-ID>` when you
-  start working a spec's implementation, `wt idea clock-out <IDEA-ID>` when you pause or
-  finish. This is supplemental wall-time data alongside wt's passive transcript tracking —
+- **Clock in/out on the linked idea** (SPEC-0060/0061): `nw idea clock-in <IDEA-ID>` when you
+  start working a spec's implementation, `nw idea clock-out <IDEA-ID>` when you pause or
+  finish. This is supplemental wall-time data alongside nightwright's passive transcript tracking —
   every clock-in needs a matching clock-out before you stop.
 
 ## Closing the loop — Definition of Done (MANDATORY)
@@ -89,10 +89,10 @@ must stay a faithful timeline.
 
 ## Tooling
 
-- Build / run / dev: **uv** — `uv run wt …`, `uv run pytest`.
+- Build / run / dev: **uv** — `uv run nw …`, `uv run pytest`.
 - Specs: `python3 tools/spec_lint.py` (lint) · `--write-ledger` (regenerate the index).
   `uv run pytest` fails if any spec or the ledger drifts.
-- Tests: wait with `tests/waits.py` (`WT_TEST_WAIT_S`), never with a fixed sleep before a
+- Tests: wait with `tests/waits.py` (`NW_TEST_WAIT_S`), never with a fixed sleep before a
   positive assertion (SPEC-0269; `tests/test_test_waits.py` guards it).
 - Authxxing guidance: `docs/specs/SCHEMA.md`, the meta-spec
   [SPEC-0000](./docs/specs/0000-how-we-write-specs.md), and the epic model

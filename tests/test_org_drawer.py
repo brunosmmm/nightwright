@@ -1,8 +1,8 @@
 """SPEC-0196: property writes reuse an existing drawer wherever it sits before the next headline."""
 from zoneinfo import ZoneInfo
 
-from wt import org_write as W
-from wt.org import load_tasks
+from nightwright import org_write as W
+from nightwright.org import load_tasks
 
 AFTER_BODY = """\
 * TODO Misplaced drawer

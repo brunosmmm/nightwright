@@ -11,10 +11,10 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import report as R
-from wt import tui as T
-from wt.cli import cli
-from wt.tui import model as M
+from nightwright import report as R
+from nightwright import tui as T
+from nightwright.cli import cli
+from nightwright.tui import model as M
 
 needs_textual = pytest.mark.skipif(not T.textual_available(),
                                    reason="optional tui extra not installed")
@@ -58,7 +58,7 @@ def _spec(cfg, num, title, *, parent=None, source=None, kind="feature"):
 def _seed(tmp_path, monkeypatch):
     """Alpha: an epic with 2 children + 1 loose. Zulu: 1 idea. Plus a project-less idea."""
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     for text, proj in (("the epic", "Alpha"), ("child one", "Alpha"), ("child two", "Alpha"),
                        ("loose alpha", "Alpha"), ("zulu thing", "Zulu")):
@@ -70,7 +70,7 @@ def _seed(tmp_path, monkeypatch):
     _spec(cfg, 3, "child two", parent="SPEC-0001", source="IDEA-003")
     for idea, spec in (("IDEA-001", "SPEC-0001"), ("IDEA-002", "SPEC-0002"),
                        ("IDEA-003", "SPEC-0003")):
-        from wt.org_write import resolve_selector, set_property
+        from nightwright.org_write import resolve_selector, set_property
         set_property(cfg, resolve_selector(cfg, idea), "SPEC", spec)
     return cfg
 
@@ -235,7 +235,7 @@ def test_desk_tree_has_real_levels_and_collapses(tmp_path, monkeypatch):
     """
     from textual.widgets import Tree
 
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -273,7 +273,7 @@ def test_desk_tree_has_real_levels_and_collapses(tmp_path, monkeypatch):
 def test_every_flat_idea_is_reachable_in_the_tree(tmp_path, monkeypatch):
     from textual.widgets import Tree
 
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -305,7 +305,7 @@ def test_jk_moves_the_tree_not_the_hidden_table(tmp_path, monkeypatch):
     which made Enter look like it did not expand anything."""
     from textual.widgets import Tree
 
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -330,7 +330,7 @@ def test_tree_mode_opens_with_a_selection(tmp_path, monkeypatch):
     """A fresh Tree has cursor_line == -1, which left the detail pane showing a stale idea."""
     from textual.widgets import Tree
 
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -352,9 +352,9 @@ def test_mutations_act_on_the_tree_selection(tmp_path, monkeypatch):
     idea — the same class of bug as the j/k routing."""
     from textual.widgets import Tree
 
-    from wt.explore import explored_count
-    from wt.org_write import resolve_selector
-    from wt.tui.app import IdeaDesk
+    from nightwright.explore import explored_count
+    from nightwright.org_write import resolve_selector
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -380,7 +380,7 @@ def test_mutations_act_on_the_tree_selection(tmp_path, monkeypatch):
 
 @needs_textual
 def test_toggling_back_restores_the_table(tmp_path, monkeypatch):
-    from wt.tui.app import DESK_COLUMNS, IdeaDesk
+    from nightwright.tui.app import DESK_COLUMNS, IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 

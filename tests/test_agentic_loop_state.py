@@ -9,12 +9,12 @@ import pytest
 
 from test_agentic_e2e import (added, impl_done, make_cfg, make_repo, review, script)
 from test_agentic_reexec import _code_repo, _commit
-from wt.agentic import close as CL
-from wt.agentic import events as E
-from wt.agentic import lease as L
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.agentic.gitops import GitError
+from nightwright.agentic import close as CL
+from nightwright.agentic import events as E
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.agentic.gitops import GitError
 
 
 @pytest.fixture
@@ -443,7 +443,7 @@ def test_lease_released_when_startup_raises(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="startup failed"):
         Q.run(cfg, once=True, poll_interval_s=0.05)
     assert L.lease_status(cfg)["held"] is False
-    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    lease = L.acquire(cfg, ["nw", "queue", "run"])
     lease.release()
 
 

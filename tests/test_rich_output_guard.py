@@ -1,17 +1,18 @@
 """SPEC-0185 guard: human output goes through Rich. A bare `print`, `click.echo`,
-`sys.stdout.write` or `sys.stderr.write` in `src/wt` must be a listed machine-output path."""
+`sys.stdout.write` or `sys.stderr.write` in `src/nightwright` must be a listed machine-output path."""
 import ast
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1] / "src" / "wt"
+SRC = Path(__file__).resolve().parents[1] / "src" / "nightwright"
 
-# (module relative to src/wt, enclosing function) -> why it may write raw
+# (module relative to src/nightwright, enclosing function) -> why it may write raw
 ALLOWED = {
     ("config.py", "<module>"): "pyyaml missing: fails before rich can be relied on",
     ("report.py", "_dump_json"): "JSON emitter",
     ("explore.py", "dump_idea_show_json"): "JSON emitter",
     ("explore.py", "print_idea_show"): "idea show --plain / piped: exact org text",
     ("cli.py", "projects_list_cmd"): "JSON emitter (--json)",
+    ("cli.py", "migrate_from_wt_cmd"): "JSON emitter (--json)",
     ("cli.py", "projects_add_cmd"): "JSON emitter (--json)",
     ("cli.py", "projects_rename_cmd"): "JSON emitter (--json)",
     ("cli.py", "spec_status_cmd"): "JSON emitter (--json)",
@@ -70,9 +71,9 @@ def test_no_unlisted_raw_writes():
         rel = path.relative_to(SRC).as_posix()
         for rel_, func, line in raw_writes(path, rel):
             if (rel_, func) not in ALLOWED:
-                bad.append(f"src/wt/{rel_}:{line} in {func}()")
-    assert not bad, ("raw output outside the allowlist — print through wt.console / "
-                     "wt.render (warn, print_code, …) or, for a machine path, add it to "
+                bad.append(f"src/nightwright/{rel_}:{line} in {func}()")
+    assert not bad, ("raw output outside the allowlist — print through nightwright.console / "
+                     "nightwright.render (warn, print_code, …) or, for a machine path, add it to "
                      "ALLOWED with a reason:\n  " + "\n  ".join(bad))
 
 

@@ -4,12 +4,12 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import export as E
-from wt import explore as EX
-from wt import org_write as W
-from wt import specs as S
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright import export as E
+from nightwright import explore as EX
+from nightwright import org_write as W
+from nightwright import specs as S
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 
 def _cfg(tmp_path):
@@ -70,7 +70,7 @@ def test_fit_log_cli(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "cli fit", project="acme")
     S.scaffold_outbound(cfg, "acme", from_idea="IDEA-001", title="Cli fit")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["spec", "fit-log", "ACME-0001", "--note", "missed filters"])
     assert r.exit_code == 0, r.output
     assert "fit-log" in r.output
@@ -203,7 +203,7 @@ def test_postmortem_cli(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "cli postmortem")
     _path, spec_id = S.scaffold_from_idea(cfg, "IDEA-001", title="Cli postmortem")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["spec", "postmortem", spec_id, "--note", "found a defect"])
     assert r.exit_code == 0, r.output
     assert "postmortem" in r.output

@@ -14,14 +14,14 @@ from test_agentic_e2e import (_git, added, impl_done, make_cfg, make_repo,
 from test_agentic_idea_campaign import add_idea_campaign, capture
 from test_agentic_spec_writer import (Hooked, in_review, ledger, parked, prompt, resume,
                                       spec_written, start, wtree)
-from wt.agentic import gitops
-from wt.agentic import personas as PS
-from wt.agentic import profiles as PR
-from wt.agentic import queue as Q
-from wt.agentic import schemas as SC
-from wt.agentic import spec_review as SR
-from wt.agentic import store as S
-from wt.agentic.gitops import GitError
+from nightwright.agentic import gitops
+from nightwright.agentic import personas as PS
+from nightwright.agentic import profiles as PR
+from nightwright.agentic import queue as Q
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import spec_review as SR
+from nightwright.agentic import store as S
+from nightwright.agentic.gitops import GitError
 
 SPEC = "docs/specs/0002-add-a-thing.md"
 
@@ -91,7 +91,7 @@ def test_approve_accepts_in_the_loop_and_runs_to_merged(tmp_path, monkeypatch):
     assert st["state"] == "IMPLEMENTING"
     assert "status: accepted" in (wt / SPEC).read_text()
     head = _git(wt, "rev-parse", "HEAD")
-    assert _git(wt, "log", "-1", "--format=%s") == f"wt({cid}): accept SPEC-0002 (round 1)"
+    assert _git(wt, "log", "-1", "--format=%s") == f"nw({cid}): accept SPEC-0002 (round 1)"
     assert sorted(_git(wt, "show", "--name-only", "--format=", "HEAD").splitlines()) \
         == sorted([SPEC, "docs/LEDGER.md"])
     assert (wt / "setup-out.txt").exists() and "setup-out.txt" not in _git(wt, "ls-files")
@@ -123,7 +123,7 @@ def test_approve_accepts_in_the_loop_and_runs_to_merged(tmp_path, monkeypatch):
     assert st["state"] == "MERGED", st.get("park")
     assert "status: done" in (repo / SPEC).read_text()
     assert (repo / "feature.txt").exists()
-    assert any(s.startswith(f"wt({cid}): accept SPEC-0002") for s in subjects(repo, 12))
+    assert any(s.startswith(f"nw({cid}): accept SPEC-0002") for s in subjects(repo, 12))
 
 
 # ---- revise, split ---------------------------------------------------------------------------------
@@ -327,15 +327,15 @@ def test_a_reset_after_the_review_keeps_a_human_edit_and_commit_in_refs(tmp_path
     assert S.read_state(cfg, cid)["state"] == "SPEC_REVIEW"
     assert _git(wt, "rev-parse", "HEAD") == head and "human edit" not in (wt / SPEC).read_text()
     (note,) = [e for e in ledger(cfg, cid, "note") if "spec review reset" in e["text"]]
-    refs = _git(wt, "for-each-ref", "--format=%(refname)", "refs/wt/spec-review-saved/").splitlines()
+    refs = _git(wt, "for-each-ref", "--format=%(refname)", "refs/nw/spec-review-saved/").splitlines()
     assert len(refs) == 2 and all(r in note["text"] for r in refs)
-    assert all(r.startswith(f"refs/wt/spec-review-saved/{cid}/002-spec_reviewer/") for r in refs)
+    assert all(r.startswith(f"refs/nw/spec-review-saved/{cid}/002-spec_reviewer/") for r in refs)
     moved = next(r for r in refs if r.endswith("/head"))
     wip = next(r for r in refs if r.endswith("/wip"))
     assert _git(wt, "log", "-1", "--format=%s", moved) == "human commit"
     assert "human edit" in _git(wt, "show", f"{wip}:{SPEC}")
     Q.tick(cfg, runner=Hooked(tmp_path, after=human))
-    assert "worktree changes saved as refs/wt/spec-review-saved/" in parked(cfg, cid)["detail"]
+    assert "worktree changes saved as refs/nw/spec-review-saved/" in parked(cfg, cid)["detail"]
 
 
 def test_a_timed_out_review_is_a_failed_run(tmp_path, monkeypatch):

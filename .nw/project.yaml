@@ -1,0 +1,75 @@
+# nightwright's own agentic project configuration (SPEC-0177; schema SPEC-0170).
+# Gates are the repo's DoD commands; policy is merge-to-main after rebase + re-gate.
+schema: nw.project.v1
+project: Meta-Tools
+base: main
+gates:
+  # spec-lint first (SPEC-0214 park 2026-10-26): it regenerates the ledger, so pytest's ledger
+  # staleness test sees a fresh block after any rebase.
+  - name: spec-lint
+    # Regenerate the generated ledger block first: it is derived from frontmatter, so an
+    # implementer that edited a spec but forgot --write-ledger must not fail the gate for it.
+    cmd: python3 tools/spec_lint.py --write-ledger >/dev/null && python3 tools/spec_lint.py
+    timeout_s: 120
+    required: true
+  # SPEC-0328: tiered gates. The fix loop (GATING after implement / each fix) runs only the
+  # tests the branch affects (static import graph, tools/affected_tests.py; it falls back to the
+  # full suite when selection is unsafe) plus a ~1 s config smoke set; the full suite runs once,
+  # in the close re-gate on the rebased tree.
+  - name: pytest-affected
+    when: loop
+    # A worktree branched before SPEC-0328 has no tools/affected_tests.py (the gate list comes
+    # from main's project.yaml): run the full suite there instead of failing (IDEA-533, 2026-10-31).
+    cmd: >-
+      if [ -f tools/affected_tests.py ]; then
+      python3 tools/affected_tests.py
+      --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py
+      --run uv run pytest -q -x -n 2;
+      else uv run pytest -q -x -n 2; fi
+    retry_cmd: uv run pytest -q -n 0 {failing}
+    results: {format: pytest}
+    # the fallback is the full suite, so the full suite's limit
+    timeout_s: 2400
+    required: true
+    retries: 2
+  - name: pytest
+    when: close
+    # SPEC-0309: 4 xdist workers (8 cores / 2 gate slots); the targeted rerun stays serial.
+    cmd: uv run pytest -q -x -n 4
+    retry_cmd: uv run pytest -q -n 0 {failing}
+    results: {format: pytest}
+    # 2400 (was 1200): the full suite takes 13-19 min alone and timed out under concurrent
+    # campaign gates (2026-10-30, SPEC-0302/0304, IDEA-412/415). IDEA-430 makes gates faster.
+    timeout_s: 2400
+    required: true
+    # SPEC-0289: a failing run re-runs its failing ids, then once in full, before triage.
+    retries: 2
+merge:
+  policy: merge
+  base: main
+  push_after_merge: false
+  delete_branch: true
+  # Generated files: a rebase conflict touching only these is resolved by regenerating (SPEC-0191).
+  regenerate:
+    - path: docs/LEDGER.md
+      cmd: python3 tools/spec_lint.py --write-ledger
+  # SPEC-0234: paths no gate reads, so `nw queue merge --docs-only` may skip the gates. docs/specs/,
+  # docs/LEDGER.md, docs/product/, README.md, skills/ and persona prompts are read by spec-lint or
+  # pytest and stay out. A test that starts reading one of these must remove it from this list.
+  docs_only_paths:
+    - docs/design/
+    - docs/WORKFLOW.md
+worktrees:
+  setup:
+    - uv sync --extra tui
+  cleanup: on_merge
+agents:
+  context_files:
+    - AGENTS.md
+    - docs/specs/SCHEMA.md
+  allowed_tools:
+    - "Bash(uv run nw *)"
+    - "Bash(nw *)"
+    - "Bash(git status*)"
+    - "Bash(git diff*)"
+    - "Bash(git log*)"

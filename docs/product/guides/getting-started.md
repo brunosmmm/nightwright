@@ -1,30 +1,30 @@
 # Getting started
 
-Install wt from **this** checkout (or a clone of it). PyPI’s package named `wt` is a
-different tool — if `wt --help` talks about static sites (`init` / `build`), you have
+Install nightwright from **this** checkout (or a clone of it). PyPI’s package named `nw` is a
+different tool — if `nw --help` talks about static sites (`init` / `build`), you have
 the wrong binary.
 
 ## Install
 
 ```bash
 uv sync                       # .venv + base deps
-uv run wt --help              # verify: idea, report, projects, …
-uv tool install --editable .  # put wt on PATH
+uv run nw --help              # verify: idea, report, projects, …
+uv tool install --editable .  # put nightwright on PATH
 # optional desk UI:
-uv tool install --editable '.[tui]'   # from this checkout — not `uv tool install 'wt[tui]'`
+uv tool install --editable '.[tui]'   # from this checkout — not `uv tool install 'nightwright[tui]'`
 ```
 
-Install **editable**: `wt skills install`, internal specs and the Meta-Tools research root
+Install **editable**: `nw skills install`, internal specs and the Meta-Tools research root
 all resolve from this checkout, and a `git pull` takes effect without reinstalling. For a
-non-editable install, set `wt_checkout: /path/to/wt` in `config.yaml`; otherwise those
+non-editable install, set `nw_checkout: /path/to/nightwright` in `config.yaml`; otherwise those
 commands stop with a hint saying so.
 
-Config and data live under XDG (`~/.config/wt/`, `~/.local/share/wt/`), not in the repo.
+Config and data live under XDG (`~/.config/nightwright/`, `~/.local/share/nightwright/`), not in the repo.
 
 Optional completion:
 
 ```bash
-wt completion install --shell fish   # or bash / zsh
+nw completion install --shell fish   # or bash / zsh
 ```
 
 ## Pick a first path
@@ -32,9 +32,9 @@ wt completion install --shell fish   # or bash / zsh
 ### Path A — capture and ship a thought
 
 ```bash
-wt idea "short thought"
-wt ideas
-wt next
+nw idea "short thought"
+nw ideas
+nw next
 ```
 
 ![ideas](../assets/captures/cli-ideas.svg)
@@ -48,28 +48,28 @@ How the file looks: [Org-mode storage](org-storage.md). Full mini-spec loop:
 ### Path B — agent / automation
 
 ```bash
-wt skills install
-wt ideas --json
-wt hub --json
-wt next --json
+nw skills install
+nw ideas --json
+nw hub --json
+nw next --json
 ```
 
 ![hub JSON](../assets/captures/cli-hub.svg)
 
-Install skills, then use `/wt-orient` (or the skill that matches your step) in Cursor/Claude.
-Claim done with `/wt-verify`. Full catalog: [Agent surface](agent-surface.md).
-Humans can stay on the CLI or open `wt tui` ([Desk](../capabilities/tui.md)).
+Install skills, then use `/nw-orient` (or the skill that matches your step) in Cursor/Claude.
+Claim done with `/nw-verify`. Full catalog: [Agent surface](agent-surface.md).
+Humans can stay on the CLI or open `nw tui` ([Desk](../capabilities/tui.md)).
 
 ### Path C — see your hours
 
 ```bash
-wt                            # today + this week
-wt report --week
-wt topics --unmapped
-wt map <base-topic> bucket=Acme
+nw                                     # today + this week
+nw report --week
+nw topics --unmapped
+nw map <base-topic> bucket=Acme
 ```
 
-![Dashboard](../assets/captures/cli-wt-dashboard.svg)
+![Dashboard](../assets/captures/cli-nw-dashboard.svg)
 
 ![Weekly report](../assets/captures/cli-report-week.svg)
 

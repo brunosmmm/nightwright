@@ -10,13 +10,13 @@ import pytest
 
 from test_agentic_e2e import (_git, _write, added, fake_gh, impl_done, make_cfg, make_repo,
                               review, run_cli, script, triage)
-from wt.agentic import personas as PS
-from wt.agentic import gitops as G
-from wt.agentic import profiles as PR
-from wt.agentic import project as P
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.agentic.runner import FakeRunner
+from nightwright.agentic import personas as PS
+from nightwright.agentic import gitops as G
+from nightwright.agentic import profiles as PR
+from nightwright.agentic import project as P
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.agentic.runner import FakeRunner
 
 
 def _no_entry(closing: dict) -> dict:
@@ -58,7 +58,7 @@ def _verdict(status="resolved", summary="kept both sides", questions=(), strateg
 CONTINUE = "git add -A && GIT_EDITOR=true git rebase --continue"
 
 
-def resolver(shell=(CONTINUE,), edits=True, pre=("git rebase $WT_REBASE_TARGET || true",),
+def resolver(shell=(CONTINUE,), edits=True, pre=("git rebase $NW_REBASE_TARGET || true",),
              verdict=None, extra_edits=(), **more):
     """A resolver FakeRunner entry: rebase, write the merged file, continue."""
     entry = {"persona": "conflict_resolver", "pre_shell": list(pre),
@@ -84,7 +84,7 @@ class World:
                  regenerate=False, test_gate="test -f feature.txt", allowance=None):
         self.tmp_path = tmp_path
         self.repo = make_repo(tmp_path, test_gate=test_gate)
-        yml = self.repo / ".wt" / "project.yaml"
+        yml = self.repo / ".nw" / "project.yaml"
         text = yml.read_text()
         if resolver_cfg is not None:
             text = text.replace("  remote: origin\n", f"  remote: origin\n  resolver: {resolver_cfg}\n")
@@ -185,7 +185,7 @@ def test_conflict_dispatches_resolver_then_merges(tmp_path, monkeypatch):
     assert st["cost"]["by_persona"]["conflict_resolver"] == 0.4
     reasons = [t["reason"] for t in w.ledger("transition") if t["from"] == "CLOSING"]
     assert reasons[-1] == "closed"
-    from wt.agentic import schemas as SC
+    from nightwright.agentic import schemas as SC
     assert all(SC.ledger_problems(e) == [] for e in w.ledger())
 
 
@@ -194,12 +194,12 @@ def test_resolver_prompt_context(tmp_path, monkeypatch):
     w.open_and_conflict()
     st = w.dispatched()
     cfg = w.cfg
-    from wt.agentic import project as PJ
+    from nightwright.agentic import project as PJ
     pcfg = PJ.project_config(cfg, st["project"])
     req = PS.build_request(cfg, PR.resolve_profile(cfg, st.get("profile")), pcfg, st,
                            "conflict_resolver", run_dir=tmp_path / "runs" / "x")
     target = _git(w.repo, "rev-parse", "main")
-    assert req.env["WT_REBASE_TARGET"] == target
+    assert req.env["NW_REBASE_TARGET"] == target
     p = req.prompt
     assert "src/app.py" in p
     assert "+c-branch" in p and "-c" in p                          # campaign hunk
@@ -410,13 +410,13 @@ ADD_PRE_MAIN = ADD_PRE.replace("'pre commit'", "'landed on main'")   # else the 
 def test_emptied_commit_verified(tmp_path, monkeypatch, variant):
     """A campaign commit the target already holds (or one empty from the start) is dropped by
     the rebase: absorbed into HEAD, not a failure."""
-    pre = ("git rebase $WT_REBASE_TARGET || true",)
+    pre = ("git rebase $NW_REBASE_TARGET || true",)
     wt_script, main_script = ADD_PRE, ADD_PRE_MAIN
     if variant == "context":                # a different patch-id: the target commit adds more
         main_script = "echo y > other.txt && git add other.txt && " + ADD_PRE_MAIN
     elif variant == "empty":
         wt_script, main_script = "git commit -q --allow-empty -m 'pre commit'", "true"
-        pre = ("git rebase --no-keep-empty $WT_REBASE_TARGET || true",)
+        pre = ("git rebase --no-keep-empty $NW_REBASE_TARGET || true",)
     w = _precommit_world(tmp_path, monkeypatch, resolver(pre=pre), wt_script, main_script)
     ev, = _merged(w)
     assert [c["subject"] for c in ev["absorbed_commits"]] == ["pre commit"]
@@ -434,7 +434,7 @@ def test_rebase_resolved_text_extra_and_absorbed_and_old_events():
 
 
 def _render_resolved(ev):
-    from wt import render
+    from nightwright import render
     return render.rebase_resolved_text(ev)
 
 
@@ -451,9 +451,9 @@ def test_staged_changes_committed_by_runner(tmp_path, monkeypatch, summary):
     assert ev["resolver_commit"] == head and ev["head"] == head
     msg = _git(wt, "log", "-1", "--format=%B")
     first = msg.splitlines()[0]
-    assert first == (f"wt({w.cid}): conflict resolver run 003"
+    assert first == (f"nw({w.cid}): conflict resolver run 003"
                      + (f" \u2014 {summary}" if summary else ""))
-    assert msg.rstrip().endswith("Co-Authored-By: wt test <wt@test>")
+    assert msg.rstrip().endswith("Co-Authored-By: nightwright test <nightwright@test>")
     assert set(_git(wt, "show", "--name-only", "--format=", "HEAD").split()) \
         == {"new.txt", "feature.txt"}
     assert not (Path(wt) / "app.py.orig").exists()
@@ -676,7 +676,7 @@ class CrashingRunner(FakeRunner):
     def run(self, req):
         if req.persona == "conflict_resolver" and not self.crashed:
             type(self).crashed = self.crashed = True
-            self._shell(req, ["git rebase $WT_REBASE_TARGET || true"])
+            self._shell(req, ["git rebase $NW_REBASE_TARGET || true"])
             raise RuntimeError("resolver blew up")
         return super().run(req)
 
@@ -832,7 +832,7 @@ def test_dispatch_needs_pre_head_and_target_sha(tmp_path, pre_head, target_sha):
     if pre_head is not None:
         prepared.pre_head = pre_head
     res = Q.StepResult("c", Q.Step("close"), "CLOSING", prepared=prepared)
-    state = {"id": "c", "repo": {"worktree": str(tmp_path), "branch": "wt/c"}, "closing": {"attempts": 0}}
+    state = {"id": "c", "repo": {"worktree": str(tmp_path), "branch": "nw/c"}, "closing": {"attempts": 0}}
     park = {"reason": "rebase_conflict", "detail": "conflicts: a.py", "conflicts": ["a.py"],
             "target": "main", "target_sha": target_sha}
     events = []
@@ -876,7 +876,7 @@ def grepo(tmp_path):
     _git(r, "add", "-A")
     _git(r, "commit", "-q", "-m", "base")
     fork = _git(r, "rev-parse", "HEAD")
-    _git(r, "checkout", "-q", "-b", "wt/x")
+    _git(r, "checkout", "-q", "-b", "nw/x")
     _write(r, "f.txt", "1\n2\nbranch\n")
     _git(r, "commit", "-qam", "branch edit")
     pre = _git(r, "rev-parse", "HEAD")
@@ -884,7 +884,7 @@ def grepo(tmp_path):
     _write(r, "f.txt", "1\n2\nmain\n")
     _git(r, "commit", "-qam", "main edit")
     target = _git(r, "rev-parse", "HEAD")
-    _git(r, "checkout", "-q", "wt/x")
+    _git(r, "checkout", "-q", "nw/x")
     return r, fork, pre, target
 
 
@@ -896,7 +896,7 @@ def test_verify_resolution_rebase_in_progress_fires_alone(grepo):
     gitdir.mkdir(parents=True)
     try:
         assert G.rebase_in_progress(r)
-        assert G.verify_resolution(r, "wt/x", target, fork, pre).failed == "a rebase is still in progress"
+        assert G.verify_resolution(r, "nw/x", target, fork, pre).failed == "a rebase is still in progress"
     finally:
         gitdir.rmdir()
 
@@ -905,14 +905,14 @@ def test_verify_resolution_unmerged_paths_fire_alone(grepo):
     r, fork, pre, target = grepo
     subprocess.run(["git", "merge", "main"], cwd=r, capture_output=True)       # conflicts, no rebase
     assert _git(r, "ls-files", "-u")
-    assert G.verify_resolution(r, "wt/x", target, fork, pre).failed == "unmerged paths remain"
+    assert G.verify_resolution(r, "nw/x", target, fork, pre).failed == "unmerged paths remain"
 
 
 def test_restore_branch_cleans_untracked_leftovers(grepo):
     r, fork, pre, target = grepo
     _write(r, "stray.orig", "x\n")
     _write(r, "d/inner.txt", "y\n")
-    G.restore_branch(r, "wt/x", pre)
+    G.restore_branch(r, "nw/x", pre)
     assert not (r / "stray.orig").exists() and not (r / "d").exists()
     assert _git(r, "status", "--porcelain") == ""
 
@@ -924,18 +924,18 @@ def _sh(r, script):
 
 
 def vrepo(tmp_path, branch, target, resolve):
-    """A repo with `main` (base + `target` commits) and `wt/x` (base + `branch` commits), then
-    `resolve` run on wt/x. Returns (repo, fork, pre_head, target_sha)."""
+    """A repo with `main` (base + `target` commits) and `nw/x` (base + `branch` commits), then
+    `resolve` run on nw/x. Returns (repo, fork, pre_head, target_sha)."""
     r = tmp_path / "v"
     r.mkdir()
     _sh(r, "git init -q -b main && git config user.email t@t && git config user.name t "
            "&& echo 1 > f.txt && git add -A && git commit -q -m base")
     fork = _git(r, "rev-parse", "HEAD")
-    _sh(r, "git checkout -q -b wt/x\n" + branch)
+    _sh(r, "git checkout -q -b nw/x\n" + branch)
     pre = _git(r, "rev-parse", "HEAD")
     _sh(r, "git checkout -q main\n" + target)
     tgt = _git(r, "rev-parse", "HEAD")
-    _sh(r, "git checkout -q wt/x\n" + resolve)
+    _sh(r, "git checkout -q nw/x\n" + resolve)
     return r, fork, pre, tgt
 
 
@@ -949,7 +949,7 @@ def _commit_file(name, data="x", msg=None, binary=False):
 
 
 def _check(r, fork, pre, tgt):
-    return G.verify_resolution(r, "wt/x", tgt, fork, pre)
+    return G.verify_resolution(r, "nw/x", tgt, fork, pre)
 
 
 def test_verify_resolution_paired_commit_passes_with_nothing_extra(tmp_path):
@@ -1087,13 +1087,13 @@ def test_verify_resolution_conflicted_latin1_commit_does_not_raise(tmp_path):
            "&& git config core.autocrlf false && printf 'l1\\nl2\\ncaf\\351\\nl4\\nl5\\nl6\\n' > w.txt "
            "&& git add -A && git commit -q -m base")
     fork = _git(r, "rev-parse", "HEAD")
-    _sh(r, "git checkout -q -b wt/x\n"
+    _sh(r, "git checkout -q -b nw/x\n"
            "printf 'l1\\nl2\\ncaf\\351 branch\\nl4\\nl5\\nl6\\n' > w.txt && git commit -qam \"$(printf 'caf\\351')\"")
     pre = _git(r, "rev-parse", "HEAD")
     _sh(r, "git checkout -q main\n"
            "printf 'l1\\nl2\\ncaf\\351 main\\nl4\\nl5\\nl6\\n' > w.txt && git commit -qam landed")
     tgt = _git(r, "rev-parse", "HEAD")
-    _sh(r, "git checkout -q wt/x\n"
+    _sh(r, "git checkout -q nw/x\n"
            "git rebase main -q || true\n"
            "printf 'l1\\nl2\\ncaf\\351 merged\\nl4\\nl5\\nl6\\n' > w.txt && git add w.txt && GIT_EDITOR=true git rebase --continue")
     c = _check(r, fork, pre, tgt)
@@ -1143,19 +1143,19 @@ def test_resolver_commit_message_keeps_first_summary_line_cut_to_72(grepo):
     r, *_ = grepo
     _write(r, "f.txt", "changed\n")
     summary = ("x" * 100) + "\nsecond line"
-    sha = Q._commit_resolver_changes(_Ctx("Co-Authored-By: t <t@t>"), {"id": "C1"}, r, "wt/x",
+    sha = Q._commit_resolver_changes(_Ctx("Co-Authored-By: t <t@t>"), {"id": "C1"}, r, "nw/x",
                                      "abcdef", {"summary": summary})
     assert sha == _git(r, "rev-parse", "HEAD")
     msg = _git(r, "log", "-1", "--format=%B")
-    assert msg.splitlines()[0] == "wt(C1): conflict resolver run abc \u2014 " + "x" * 72
+    assert msg.splitlines()[0] == "nw(C1): conflict resolver run abc \u2014 " + "x" * 72
     assert "second line" not in msg and msg.endswith("Co-Authored-By: t <t@t>")
 
 
 def test_resolver_commit_message_without_a_trailer_has_no_trailer_block(grepo):
     r, *_ = grepo
     _write(r, "f.txt", "changed\n")
-    Q._commit_resolver_changes(_Ctx(), {"id": "C1"}, r, "wt/x", "abcdef", {"summary": "ok"})
-    assert _git(r, "log", "-1", "--format=%B") == "wt(C1): conflict resolver run abc \u2014 ok"
+    Q._commit_resolver_changes(_Ctx(), {"id": "C1"}, r, "nw/x", "abcdef", {"summary": "ok"})
+    assert _git(r, "log", "-1", "--format=%B") == "nw(C1): conflict resolver run abc \u2014 ok"
 
 
 # ---- review loop 3 --------------------------------------------------------------------------
@@ -1296,7 +1296,7 @@ def _ctx_repo(tmp_path, *, commits, unnamed=False, base_specs=(2001, 2002, 2003,
     _git(r, "add", "-A")
     _git(r, "commit", "-q", "-m", "base")
     fork = _git(r, "rev-parse", "HEAD")
-    _git(r, "checkout", "-q", "-b", "wt/x")
+    _git(r, "checkout", "-q", "-b", "nw/x")
     _write(r, "f.txt", "".join(f"B{i}\n" for i in range(800)))
     _git(r, "commit", "-qam", "branch edit")
     pre = _git(r, "rev-parse", "HEAD")
@@ -1311,7 +1311,7 @@ def _ctx_repo(tmp_path, *, commits, unnamed=False, base_specs=(2001, 2002, 2003,
     _git(r, "add", "-A")
     _git(r, "commit", "-q", "-m", "docs only")
     target = _git(r, "rev-parse", "HEAD")
-    _git(r, "checkout", "-q", "wt/x")
+    _git(r, "checkout", "-q", "nw/x")
     state = {"repo": {"worktree": str(r)}, "spec": {"rel_path": OWN_SPEC}}
     resolve = {"fork": fork, "pre_head": pre, "target_sha": target, "conflicts": ["f.txt"]}
     return r, state, resolve
@@ -1369,7 +1369,7 @@ def test_resolve_context_skips_the_campaign_spec_named_in_a_subject(tmp_path):
     _write(r, "f.txt", "".join(f"X{j}\n" for j in range(800)))
     _git(r, "commit", "-qam", "SPEC-0500: touches the campaign's own spec id")
     resolve["target_sha"] = _git(r, "rev-parse", "HEAD")
-    _git(r, "checkout", "-q", "wt/x")
+    _git(r, "checkout", "-q", "nw/x")
     landed = PS.resolve_context(state, resolve, {})["landed"]
     assert "SPEC-0500: touches" in landed and "### Governing spec" not in landed
 
@@ -1388,7 +1388,7 @@ def _supersede_vrepo(tmp_path):
 def test_verify_resolution_declared_missing_commit_is_superseded(tmp_path):
     r, fork, pre, tgt = _supersede_vrepo(tmp_path)
     assert _git(r, "cherry", tgt, pre).startswith("+")
-    c = G.verify_resolution(r, "wt/x", tgt, fork, pre, [(pre[:8], "fixed another way")])
+    c = G.verify_resolution(r, "nw/x", tgt, fork, pre, [(pre[:8], "fixed another way")])
     assert c.failed is None and c.absorbed == [] and c.extra == []
     assert [(e["sha"], e["subject"], e["reason"]) for e in c.superseded] \
         == [(pre, "mine", "fixed another way")]
@@ -1398,20 +1398,20 @@ def test_verify_resolution_declared_missing_commit_is_superseded(tmp_path):
 def test_verify_resolution_undeclared_missing_commit_still_fails(tmp_path):
     r, fork, pre, tgt = _supersede_vrepo(tmp_path)
     assert _check(r, fork, pre, tgt).failed.endswith("(mine) is missing after the resolution")
-    assert G.verify_resolution(r, "wt/x", tgt, fork, pre, ()).failed
+    assert G.verify_resolution(r, "nw/x", tgt, fork, pre, ()).failed
 
 
 def test_declared_but_present_commit_ignored(tmp_path):
     r, fork, pre, tgt = vrepo(tmp_path, _commit_file("a.txt"), _commit_file("m.txt"),
                               "git rebase main -q")
-    c = G.verify_resolution(r, "wt/x", tgt, fork, pre, [(pre, "wrongly declared")])
+    c = G.verify_resolution(r, "nw/x", tgt, fork, pre, [(pre, "wrongly declared")])
     assert c.failed is None and c.superseded == [] and c.extra == []
 
 
 def test_declared_unknown_sha_ignored(tmp_path):
     r, fork, pre, tgt = _supersede_vrepo(tmp_path)
     for sha in ("deadbeef", tgt, fork, "not a sha"):    # unknown, target commit, pre-fork commit
-        c = G.verify_resolution(r, "wt/x", tgt, fork, pre, [(sha, "r")])
+        c = G.verify_resolution(r, "nw/x", tgt, fork, pre, [(sha, "r")])
         assert c.failed and "is missing after the resolution" in c.failed, sha
         assert c.superseded == []
 
@@ -1419,7 +1419,7 @@ def test_declared_unknown_sha_ignored(tmp_path):
 def test_declared_drop_does_not_relax_other_checks(tmp_path):
     r, fork, pre, tgt = _supersede_vrepo(tmp_path)
     _sh(r, "git checkout -q --detach")
-    c = G.verify_resolution(r, "wt/x", tgt, fork, pre, [(pre, "r")])
+    c = G.verify_resolution(r, "nw/x", tgt, fork, pre, [(pre, "r")])
     assert c.failed == "HEAD is not attached to the campaign branch"
 
 

@@ -1,5 +1,5 @@
-"""SPEC-0291: `wt queue run --detach` (start a session-leader runner, confirm its lease) and
-`wt queue stop` (SIGTERM the lease holder, honoring the close guard, never SIGKILL)."""
+"""SPEC-0291: `nw queue run --detach` (start a session-leader runner, confirm its lease) and
+`nw queue stop` (SIGTERM the lease holder, honoring the close guard, never SIGKILL)."""
 import datetime as dt
 import json
 import os
@@ -13,14 +13,14 @@ import pytest
 
 from test_agentic_e2e import impl_done, make_cfg, make_repo, script
 from waits import WAIT_S, until
-from wt.agentic import lease as L
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 # A child that takes (or not) the lease of the data dir in argv[1]; argv[2] is the mode.
 CHILD = r"""
 import os, signal, sys, time
-from wt.agentic import lease as L
+from nightwright.agentic import lease as L
 cfg = {"data_dir": sys.argv[1], "config_dir": sys.argv[1], "agentic": {"lease_ttl_s": 120}}
 mode = sys.argv[2]
 if mode == "boom":
@@ -36,8 +36,8 @@ if mode == "term":
     signal.signal(signal.SIGTERM, _bye)
 elif mode == "ignore":
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-if os.environ.get("WT_RUNNER_LOG"):                          # as `Q.run`
-    lease.update_info(log=os.environ["WT_RUNNER_LOG"], detached=True)
+if os.environ.get("NW_RUNNER_LOG"):                          # as `Q.run`
+    lease.update_info(log=os.environ["NW_RUNNER_LOG"], detached=True)
 print("holding", flush=True)
 while True:
     time.sleep(0.1)
@@ -85,8 +85,8 @@ def _recording_popen(children):
 def test_detach_refuses_when_held(tmp_path):
     cfg = _cfg(tmp_path)
     with L.acquire(cfg):
-        with pytest.raises(ValueError, match=rf"queue held by pid {os.getpid()} .*wt queue stop"):
-            Q.detach_runner(cfg, ["wt", "queue", "run", "--detach"], tmp_path / "r.log",
+        with pytest.raises(ValueError, match=rf"queue held by pid {os.getpid()} .*nw queue stop"):
+            Q.detach_runner(cfg, ["nw", "queue", "run", "--detach"], tmp_path / "r.log",
                             popen=lambda *a, **k: pytest.fail("must not start a child"))
 
 
@@ -100,7 +100,7 @@ def test_detach_waits_for_child_lease(tmp_path, children):
     assert d == {"pid": child.pid, "log": str(log)}
     assert L.lease_status(cfg)["pid"] == child.pid
     assert until(lambda: "holding" in log.read_text())
-    assert log.read_text().startswith("previous runner's crash\n--- wt queue run --detach ")
+    assert log.read_text().startswith("previous runner's crash\n--- nw queue run --detach ")
 
 
 def test_detach_child_dies_early(tmp_path, children):
@@ -125,7 +125,7 @@ def test_run_marks_the_lease_right_after_acquire(tmp_path, monkeypatch):
     """`log` / `detached` are the first lease update of a detached `Q.run` (the Design)."""
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
-    monkeypatch.setenv("WT_RUNNER_LOG", "/x/runner.log")
+    monkeypatch.setenv("NW_RUNNER_LOG", "/x/runner.log")
     updates = []
     real = L.Lease.update_info
 
@@ -155,32 +155,32 @@ def test_detach_popen_args(tmp_path):
 
     log = tmp_path / "r.log"
     with pytest.raises(ValueError):
-        Q.detach_runner(cfg, ["/bin/wt", "queue", "run", "--detach", "--log", str(log),
+        Q.detach_runner(cfg, ["/bin/nightwright", "queue", "run", "--detach", "--log", str(log),
                               "--poll-interval", "5", "--log=x", "--no-reexec"], log, popen=popen)
     ((argv, kw),) = calls
-    assert argv == ["/bin/wt", "queue", "run", "--poll-interval", "5", "--no-reexec"]
+    assert argv == ["/bin/nightwright", "queue", "run", "--poll-interval", "5", "--no-reexec"]
     assert kw["start_new_session"] is True and kw["stdin"] is subprocess.DEVNULL
     assert kw["stderr"] is subprocess.STDOUT and kw["stdout"].name == str(log)
     assert kw["stdout"].mode == "a"                 # appended, never truncated
-    assert kw["env"]["WT_RUNNER_LOG"] == str(log)
+    assert kw["env"]["NW_RUNNER_LOG"] == str(log)
 
 
 def test_run_records_log_in_lease(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
-    monkeypatch.setenv("WT_RUNNER_LOG", "/x/runner.log")
+    monkeypatch.setenv("NW_RUNNER_LOG", "/x/runner.log")
     seen = []
     Q.run(cfg, once=True, on_tick=lambda _r: seen.append(L.lease_status(cfg)))
     assert seen and seen[0]["log"] == "/x/runner.log" and seen[0]["detached"] is True
     assert L.read_lease(cfg) is None                # released after the tick
-    assert "WT_RUNNER_LOG" not in os.environ        # consumed: no persona run or gate inherits it
+    assert "NW_RUNNER_LOG" not in os.environ        # consumed: no persona run or gate inherits it
 
 
 def test_nested_run_under_a_detached_runner_is_not_detached(tmp_path, monkeypatch):
     """A `Q.run` started by a descendant of a detached runner does not claim its log."""
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), impl_done()]))
-    monkeypatch.setenv("WT_RUNNER_LOG", "/x/runner.log")
+    monkeypatch.setenv("NW_RUNNER_LOG", "/x/runner.log")
     Q.run(cfg, once=True)
     seen = []
     Q.run(cfg, once=True, on_tick=lambda _r: seen.append(L.lease_status(cfg)))
@@ -190,18 +190,18 @@ def test_nested_run_under_a_detached_runner_is_not_detached(tmp_path, monkeypatc
 def test_loop_reexec_passes_the_runner_log_on(tmp_path, monkeypatch):
     """The re-executed image records `log` / `detached` again even without the adopted file."""
     from test_agentic_reexec import _loop_with_commits
-    monkeypatch.setenv("WT_RUNNER_LOG", "/x/runner.log")
-    _, _, calls = _loop_with_commits(tmp_path, monkeypatch, [("src/wt/x.py", "A = 3\n")])
+    monkeypatch.setenv("NW_RUNNER_LOG", "/x/runner.log")
+    _, _, calls = _loop_with_commits(tmp_path, monkeypatch, [("src/nightwright/x.py", "A = 3\n")])
     ((_exe, _argv, env),) = calls
-    assert env["WT_RUNNER_LOG"] == "/x/runner.log" and L.HANDOVER_ENV in env
-    assert "WT_RUNNER_LOG" not in os.environ
+    assert env["NW_RUNNER_LOG"] == "/x/runner.log" and L.HANDOVER_ENV in env
+    assert "NW_RUNNER_LOG" not in os.environ
 
 
 def test_loop_reexec_without_detach_sets_no_runner_log(tmp_path, monkeypatch):
     from test_agentic_reexec import _loop_with_commits
-    _, _, calls = _loop_with_commits(tmp_path, monkeypatch, [("src/wt/x.py", "A = 3\n")])
+    _, _, calls = _loop_with_commits(tmp_path, monkeypatch, [("src/nightwright/x.py", "A = 3\n")])
     ((_exe, _argv, env),) = calls
-    assert "WT_RUNNER_LOG" not in env
+    assert "NW_RUNNER_LOG" not in env
 
 
 def test_detach_log_oserror_is_a_clean_error(tmp_path):
@@ -209,14 +209,14 @@ def test_detach_log_oserror_is_a_clean_error(tmp_path):
     blocker = tmp_path / "file"
     blocker.write_text("")
     with pytest.raises(ValueError, match=r"cannot start the runner"):
-        Q.detach_runner(cfg, ["wt", "queue", "run"], blocker / "r.log",
+        Q.detach_runner(cfg, ["nw", "queue", "run"], blocker / "r.log",
                         popen=lambda *a, **k: pytest.fail("must not start a child"))
 
 
 def test_detach_popen_oserror_is_a_clean_error(tmp_path):
     cfg = _cfg(tmp_path)
-    with pytest.raises(ValueError, match=r"cannot start the runner \(/nonexistent/wt"):
-        Q.detach_runner(cfg, ["/nonexistent/wt", "queue", "run"], tmp_path / "r.log")
+    with pytest.raises(ValueError, match=r"cannot start the runner \(/nonexistent/nightwright"):
+        Q.detach_runner(cfg, ["/nonexistent/nightwright", "queue", "run"], tmp_path / "r.log")
 
 
 def test_detach_poll_reads_the_lease_file_before_probing_the_flock(tmp_path, monkeypatch):
@@ -240,7 +240,7 @@ def test_detach_poll_reads_the_lease_file_before_probing_the_flock(tmp_path, mon
             return None
 
     try:
-        d = Q.detach_runner(cfg, ["wt"], tmp_path / "r.log", popen=lambda *a, **k: _Child())
+        d = Q.detach_runner(cfg, ["nw"], tmp_path / "r.log", popen=lambda *a, **k: _Child())
     finally:
         for lease in held:
             lease.release()
@@ -431,7 +431,7 @@ def test_stop_wait_guard_rechecks_the_guard_on_the_status_it_acts_on(tmp_path):
     """--wait-guard: the poll lands between two opens (`busy` briefly gone), the next open
     starts during the settle reads. The SIGTERM must wait for that open too."""
     cfg = _cfg(tmp_path)
-    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    lease = L.acquire(cfg, ["nw", "queue", "run"])
     opening = {"kind": "open", "campaign": "C-1", "since": S.now_iso(), "budget_s": 600}
     _set_busy(cfg, opening)
     busy_at_kill = []
@@ -477,11 +477,11 @@ def test_stop_rechecks_the_guard_right_before_the_signal(tmp_path, monkeypatch):
         return real(c, now)
 
     monkeypatch.setattr(L, "lease_status", lease_status)
-    with L.acquire(cfg, ["wt", "queue", "run"]):
+    with L.acquire(cfg, ["nw", "queue", "run"]):
         with pytest.raises(ValueError, match=r"close guard: open of C-3"):
             Q.stop_runner(cfg, kill=lambda *a: pytest.fail("SIGTERM inside the guard"),
                           sleep=lambda _s: None)
-    with L.acquire(cfg, ["wt", "queue", "run"]) as lease:
+    with L.acquire(cfg, ["nw", "queue", "run"]) as lease:
         n["reads"], busy_at_kill = 0, []
 
         def kill(pid, sig):
@@ -507,12 +507,12 @@ def test_stop_other_host_refused(tmp_path, children):
 # ---- how the runner re-runs itself (SPEC-0194 re-exec, SPEC-0291 detach) ------------------------
 
 def _module_start(monkeypatch, *args):
-    """Pretend this process was started as `python -m wt <args>`."""
+    """Pretend this process was started as `python -m nightwright <args>`."""
     import types
-    import wt
-    main_py = os.path.join(os.path.dirname(wt.__file__), "__main__.py")
+    import nightwright
+    main_py = os.path.join(os.path.dirname(nightwright.__file__), "__main__.py")
     monkeypatch.setitem(sys.modules, "__main__",
-                        types.SimpleNamespace(__spec__=types.SimpleNamespace(name="wt.__main__")))
+                        types.SimpleNamespace(__spec__=types.SimpleNamespace(name="nightwright.__main__")))
     monkeypatch.setattr(sys, "argv", [main_py, *args])
     return main_py
 
@@ -520,32 +520,32 @@ def _module_start(monkeypatch, *args):
 def test_module_start_reexec_and_detach_argv_are_runnable(monkeypatch):
     main_py = _module_start(monkeypatch, "queue", "run", "--help")
     argv = Q.self_argv()
-    assert argv == [sys.executable, "-m", "wt", "queue", "run", "--help"]
+    assert argv == [sys.executable, "-m", "nightwright", "queue", "run", "--help"]
     assert Q.entry_argv() == argv
     r = subprocess.run(argv, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0 and "--detach" in r.stdout, r.stderr
-    # what the re-exec ran before: `python …/wt/__main__.py` cannot import its package
+    # what the re-exec ran before: `python …/nw/__main__.py` cannot import its package
     r = subprocess.run([sys.executable, main_py, "--help"], capture_output=True, text=True,
                        timeout=60)
     assert r.returncode != 0 and "ImportError" in r.stderr
 
 
-def test_loop_reexec_keeps_dash_m_wt(tmp_path, monkeypatch):
+def test_loop_reexec_keeps_dash_m_nightwright(tmp_path, monkeypatch):
     from test_agentic_reexec import _loop_with_commits
     _module_start(monkeypatch, "queue", "run", "--poll-interval", "5")
-    _, _, calls = _loop_with_commits(tmp_path, monkeypatch, [("src/wt/x.py", "A = 3\n")])
+    _, _, calls = _loop_with_commits(tmp_path, monkeypatch, [("src/nightwright/x.py", "A = 3\n")])
     ((exe, argv, env),) = calls
     assert exe == sys.executable
-    assert argv == [sys.executable, "-m", "wt", "queue", "run", "--poll-interval", "5"]
+    assert argv == [sys.executable, "-m", "nightwright", "queue", "run", "--poll-interval", "5"]
 
 
 def test_script_start_argv(tmp_path, monkeypatch):
-    exe = tmp_path / "wt"
+    exe = tmp_path / "nw"
     exe.write_text("#!/bin/sh\n")
     monkeypatch.setitem(sys.modules, "__main__", object())
     monkeypatch.setattr(sys, "argv", [str(exe), "queue", "run", "--detach"])
     assert Q.self_argv() == [sys.executable, str(exe), "queue", "run", "--detach"]
-    assert Q.entry_argv() == [sys.executable, "-m", "wt", "queue", "run", "--detach"]
+    assert Q.entry_argv() == [sys.executable, "-m", "nightwright", "queue", "run", "--detach"]
     exe.chmod(0o755)                                # the console script runs itself
     assert Q.entry_argv() == [str(exe), "queue", "run", "--detach"]
 
@@ -562,9 +562,9 @@ def test_detach_relative_log_is_made_absolute(tmp_path, monkeypatch):
             return 7
 
     with pytest.raises(ValueError):
-        Q.detach_runner(cfg, ["wt", "queue", "run"], "rel.log",
+        Q.detach_runner(cfg, ["nw", "queue", "run"], "rel.log",
                         popen=lambda argv, **kw: calls.append(kw) or _Child())
-    assert calls[0]["env"]["WT_RUNNER_LOG"] == str(tmp_path / "rel.log")
+    assert calls[0]["env"]["NW_RUNNER_LOG"] == str(tmp_path / "rel.log")
 
 
 # ---- stop: hardening ----------------------------------------------------------------------------
@@ -592,8 +592,8 @@ def test_stop_permission_error_is_refused(tmp_path, children):
 
 def test_stop_refuses_a_one_shot_tick(tmp_path):
     cfg = _cfg(tmp_path)
-    with L.acquire(cfg, ["wt", "queue", "tick"]):
-        with pytest.raises(ValueError, match=r"one-shot `wt queue tick`, not a runner"):
+    with L.acquire(cfg, ["nw", "queue", "tick"]):
+        with pytest.raises(ValueError, match=r"one-shot `nw queue tick`, not a runner"):
             Q.stop_runner(cfg, kill=lambda *a: pytest.fail("no SIGTERM to a tick"))
 
 
@@ -618,7 +618,7 @@ def _stop_with(cfg, lease, on_sleep):
 def test_stop_waits_for_a_missing_lease_file(tmp_path):
     """Between acquire's flock and its file write the flock is held but no file names a pid."""
     cfg = _cfg(tmp_path)
-    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    lease = L.acquire(cfg, ["nw", "queue", "run"])
     L.lease_path(cfg).unlink()
     kills, stop = _stop_with(cfg, lease, lambda n: n == 1 and lease.heartbeat())
     assert stop()["stopped"] is True and kills == [os.getpid()]
@@ -627,7 +627,7 @@ def test_stop_waits_for_a_missing_lease_file(tmp_path):
 def test_stop_never_signals_a_stale_record(tmp_path):
     """A SIGKILLed predecessor's file, still there while the new holder takes the flock."""
     cfg = _cfg(tmp_path)
-    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    lease = L.acquire(cfg, ["nw", "queue", "run"])
     stale = {**lease.info, "pid": 999999, "started_at": "2026-01-01T00:00:00+00:00"}
     L.lease_path(cfg).write_text(json.dumps(stale))
     kills, stop = _stop_with(cfg, lease, lambda n: n == 1 and lease.heartbeat())
@@ -636,7 +636,7 @@ def test_stop_never_signals_a_stale_record(tmp_path):
 
 def test_stop_refuses_when_the_lease_file_never_settles(tmp_path):
     cfg = _cfg(tmp_path)
-    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    lease = L.acquire(cfg, ["nw", "queue", "run"])
     try:
         L.lease_path(cfg).unlink()
         kills, stop = _stop_with(cfg, lease, lambda n: None)
@@ -650,13 +650,13 @@ def test_stop_refuses_when_the_lease_file_never_settles(tmp_path):
 def test_run_launcher_gone_from_defaults(tmp_path, monkeypatch):
     """SPEC-0291 AC5: no `agentic.run_launcher` default; a user config that still sets it
     loads fine (unknown `agentic` keys are ignored)."""
-    from wt import config as C
+    from nightwright import config as C
     assert "run_launcher" not in C.DEFAULT_CONFIG["agentic"]
     cdir = tmp_path / "conf"
     cdir.mkdir()
     (cdir / "config.yaml").write_text("agentic:\n  run_launcher: nohup\n")
-    monkeypatch.setenv("WT_CONFIG_DIR", str(cdir))
-    monkeypatch.setenv("WT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NW_CONFIG_DIR", str(cdir))
+    monkeypatch.setenv("NW_DATA_DIR", str(tmp_path / "data"))
     cfg = C.load_config()
     assert cfg["config_dir"] == str(cdir) and cfg["agentic"]["run_launcher"] == "nohup"
 
@@ -679,7 +679,7 @@ def test_stop_wait_guard_default_is_the_remaining_budget_plus_30s(tmp_path, budg
     a 130 s budget: 60 s), or 30 s when the budget is unreadable; then refuse, unsignalled."""
     cfg = _cfg(tmp_path)
     since = (dt.datetime.now().astimezone() - dt.timedelta(seconds=100)).isoformat()
-    with L.acquire(cfg, ["wt", "queue", "run"]) as lease:
+    with L.acquire(cfg, ["nw", "queue", "run"]) as lease:
         lease.update_info(busy={"kind": "open", "campaign": "C-9", "since": since,
                                 "budget_s": budget_s})
         t, clock, sleep = _fake_time()

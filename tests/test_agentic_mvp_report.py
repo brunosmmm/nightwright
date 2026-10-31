@@ -1,4 +1,4 @@
-"""SPEC-0304: `wt queue mvp-report`, the E1-E6 scorecard over the last N merged campaigns."""
+"""SPEC-0304: `nw queue mvp-report`, the E1-E6 scorecard over the last N merged campaigns."""
 import datetime as dt
 import json
 import shutil
@@ -9,15 +9,15 @@ from click.testing import CliRunner
 
 from test_agentic_events import _campaign as ev_campaign
 from test_agentic_events import _set_state
-from wt.agentic import conductor_cost as CC
-from wt.agentic import escalations as ESC
-from wt.agentic import events as E
-from wt.agentic import mvp_report as MVP
-from wt.agentic import queue as Q
-from wt.agentic import quiet
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
-from wt.cli import cli
+from nightwright.agentic import conductor_cost as CC
+from nightwright.agentic import escalations as ESC
+from nightwright.agentic import events as E
+from nightwright.agentic import mvp_report as MVP
+from nightwright.agentic import queue as Q
+from nightwright.agentic import quiet
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
+from nightwright.cli import cli
 
 UTC = dt.timezone.utc
 PRICE = {"input": 10.0, "output": 0.0, "cache_read": 0.0, "cache_write_5m": 0.0,
@@ -73,7 +73,7 @@ def out_of_park(ts):
 def decide(cfg, seq, cid, ts, by="conductor"):
     path = Path(S.agentic_dir(cfg)) / "conductor" / "decisions.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
-    rec = {"schema": "wt.conductor.decision.v1", "seq": seq, "ts": ts, "by": by, "campaign": cid,
+    rec = {"schema": "nw.conductor.decision.v1", "seq": seq, "ts": ts, "by": by, "campaign": cid,
            "spec_id": None, "event_id": None, "rule": "parked.loop_exhausted", "kind": "resume",
            "action": None, "rationale": "r"}
     with open(path, "a") as f:
@@ -82,7 +82,7 @@ def decide(cfg, seq, cid, ts, by="conductor"):
 
 def asst(msg_id, ts, tokens=0, model="claude-x", brief=False):
     content = [{"type": "tool_use", "name": "Bash",
-                "input": {"command": "wt queue conductor-brief"}}] if brief else []
+                "input": {"command": "nw queue conductor-brief"}}] if brief else []
     return {"type": "assistant", "timestamp": ts, "message": {
         "id": msg_id, "model": model, "content": content,
         "usage": {"input_tokens": tokens, "output_tokens": 0, "cache_read_input_tokens": 0,
@@ -113,7 +113,7 @@ def test_window_selection(cfg):
              project="Q" if i % 5 == 0 else "P")
     rep = MVP.report(cfg)
     w = rep["window"]
-    assert rep["schema"] == "wt.conductor.mvp.v1"
+    assert rep["schema"] == "nw.conductor.mvp.v1"
     assert w["campaigns"] == [f"C{i:02d}" for i in range(6, 26)] and w["n"] == w["requested"] == 20
     assert w["qualifying"] is True and w["qualifying_reason"] is None
     assert w["start"] == "2026-10-05T01:00:00+00:00" and w["end"] == "2026-10-14T06:00:00+00:00"
@@ -323,9 +323,9 @@ class FakeView:
 
 def pr_project(cfg, tmp_path, policy="pr"):
     repo = tmp_path / "prrepo"
-    (repo / ".wt").mkdir(parents=True, exist_ok=True)
-    (repo / ".wt" / "project.yaml").write_text(
-        f"schema: wt.project.v1\nproject: PR\nbase: main\nmerge:\n  policy: {policy}\n")
+    (repo / ".nw").mkdir(parents=True, exist_ok=True)
+    (repo / ".nw" / "project.yaml").write_text(
+        f"schema: nw.project.v1\nproject: PR\nbase: main\nmerge:\n  policy: {policy}\n")
     cfg["outbox_targets"] = {"PR": {"repo_path": str(repo)}}
 
 
@@ -516,7 +516,7 @@ def test_e6_no_events(cfg):
 
 @pytest.fixture
 def run(cfg, monkeypatch):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     return lambda *args: CliRunner().invoke(cli, ["queue", "mvp-report", *args])
 
 

@@ -1,4 +1,4 @@
-"""`wt add` — capture work items (SPEC-0010): headline building, state validation, options
+"""`nw add` — capture work items (SPEC-0010): headline building, state validation, options
 round-trip via load_tasks, capture-file creation + backup, and CLI."""
 import glob
 import os
@@ -7,9 +7,9 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import org_write as W
-from wt.cli import cli
-from wt.org import filter_tasks, load_tasks
+from nightwright import org_write as W
+from nightwright.cli import cli
+from nightwright.org import filter_tasks, load_tasks
 
 
 def _cfg(tmp_path, capture="inbox.org"):
@@ -92,7 +92,7 @@ def test_new_file_makes_no_backup(tmp_path):
 
 def test_cli_add(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["add", "DEMO-100", "do", "the", "thing", "--priority", "B"])
     assert r.exit_code == 0, r.output

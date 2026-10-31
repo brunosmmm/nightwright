@@ -1,16 +1,16 @@
-"""SPEC-0239: `wt ideas group-followups` — the one-off migration of the SPEC-0207 single
-`wtfu:` ideas into one grouped idea per spec."""
+"""SPEC-0239: `nw ideas group-followups` — the one-off migration of the SPEC-0207 single
+`nwfu:` ideas into one grouped idea per spec."""
 import json
 from zoneinfo import ZoneInfo
 
 import pytest
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt import org as ORG
-from wt import org_write as OW
-from wt.agentic import followups as FU
-from wt.cli import cli
+from nightwright import explore as EX
+from nightwright import org as ORG
+from nightwright import org_write as OW
+from nightwright.agentic import followups as FU
+from nightwright.cli import cli
 
 K1, K2, K3, K4, K5 = ("1" * 12, "2" * 12, "3" * 12, "4" * 12, "5" * 12)
 S1, S2 = "SPEC-0207", "SPEC-0100"
@@ -29,12 +29,12 @@ def cfg(tmp_path, monkeypatch):
         "org_capture_file": str(org / "inbox.org"), "org_ideas_file": str(org / "ideas.org"),
         "specs_dir": str(tmp_path / "specs"), "agentic": {},
     }
-    monkeypatch.setattr("wt.cli.load_config", lambda: c)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: c)
     return c
 
 
 def single(cfg, key, spec, title, **kw):
-    _, _, idea_id = OW.add_idea(cfg, f"wtfu:{key} [{spec}] test_reviewer/AC 1: {title} - detail",
+    _, _, idea_id = OW.add_idea(cfg, f"nwfu:{key} [{spec}] test_reviewer/AC 1: {title} - detail",
                                 kind="improvement", **kw)
     return idea_id
 
@@ -66,7 +66,7 @@ def as_json(out):
 
 
 def groups(cfg):
-    return [t for t in tasks(cfg).values() if "wtfug:" in t.heading and not t.is_done]
+    return [t for t in tasks(cfg).values() if "nwfug:" in t.heading and not t.is_done]
 
 
 def test_dry_run_text_and_json_write_nothing(cfg):
@@ -76,7 +76,7 @@ def test_dry_run_text_and_json_write_nothing(cfg):
     assert f"{S1}  3 singles (IDEA-001, IDEA-002, IDEA-003)" in r.output and "new" in r.output
     assert f"{S2}  1 singles (IDEA-004)" in r.output and "re-run with --yes" in r.output
     payload = as_json(run("--json").output)
-    assert payload["schema"] == "wt.ideas.group_followups.v1" and payload["written"] is False
+    assert payload["schema"] == "nw.ideas.group_followups.v1" and payload["written"] is False
     assert [(g["spec_id"], g["singles"], g["target"], len(g["lines"]))
             for g in payload["groups"]] == [
         (S2, ["IDEA-004"], "new", 1), (S1, ["IDEA-001", "IDEA-002", "IDEA-003"], "new", 2)]
@@ -90,13 +90,13 @@ def test_yes_creates_one_group_per_spec_and_folds_the_singles(cfg):
     t = tasks(cfg)
     g1 = [x for x in groups(cfg) if S1 in x.heading][0]
     g2 = [x for x in groups(cfg) if S2 in x.heading][0]
-    assert g1.heading == f"wtfug:legacy-{S1} [{S1}] review follow-ups (2 findings)"
+    assert g1.heading == f"nwfug:legacy-{S1} [{S1}] review follow-ups (2 findings)"
     assert g1.project == "Meta-Tools" and g1.epic == "SPEC-0169"   # lowest-numbered single's
     assert g1.properties["KIND"] == "improvement"
     assert g2.heading.endswith("(1 finding)") and g2.project != "Meta-Tools" and g2.epic is None   # none inherited
     lines = EX.read_idea_enrichment(cfg, g1)["summary"].splitlines()
-    assert lines == [f"- [ ] wtfu:{K1} test_reviewer/AC 1: first - detail (was IDEA-001)",
-                     f"- [ ] wtfu:{K2} test_reviewer/AC 1: second - detail (was IDEA-002)"]
+    assert lines == [f"- [ ] nwfu:{K1} test_reviewer/AC 1: first - detail (was IDEA-001)",
+                     f"- [ ] nwfu:{K2} test_reviewer/AC 1: second - detail (was IDEA-002)"]
     for sid in ("IDEA-001", "IDEA-002", "IDEA-003"):
         s = t[sid]
         assert s.state == "DROPPED" and s.properties["CLOSE_REASON"] == CLOSED_MSG
@@ -110,7 +110,7 @@ def test_a_single_already_in_an_open_campaign_group_gets_no_line(cfg):
     ids, _ = seed(cfg)
     _, _, other = OW.add_idea(cfg, FU.group_title("SPEC-0207-20261025-bbbb", S1, 1),
                               kind="improvement")
-    EX.set_summary(cfg, other, f"- [ ] wtfu:{K2} minor x: y")
+    EX.set_summary(cfg, other, f"- [ ] nwfu:{K2} minor x: y")
     run("--yes")
     t = tasks(cfg)
     legacy = [x for x in groups(cfg) if "legacy-" in x.heading and S1 in x.heading][0]
@@ -124,7 +124,7 @@ def test_everything_listed_elsewhere_creates_no_legacy_group(cfg):
     single(cfg, K1, S1, "only")
     _, _, other = OW.add_idea(cfg, FU.group_title("SPEC-0207-20261025-bbbb", S1, 1),
                               kind="improvement")
-    EX.set_summary(cfg, other, f"- [ ] wtfu:{K1} minor x: y")
+    EX.set_summary(cfg, other, f"- [ ] nwfu:{K1} minor x: y")
     run("--yes")
     assert [x.properties["ID"] for x in groups(cfg)] == [other]
     assert tasks(cfg)["IDEA-001"].properties["FOLDED_INTO"] == other
@@ -173,7 +173,7 @@ def test_a_crash_between_the_group_and_the_closes_is_adopted(cfg, monkeypatch):
 def test_a_closed_legacy_group_is_not_the_target(cfg, archive):
     old = FU.group_title(f"legacy-{S1}", S1, 1)
     _, _, closed = OW.add_idea(cfg, old, kind="improvement")
-    EX.set_summary(cfg, closed, f"- [ ] wtfu:{K1} minor x: y (was IDEA-900)")
+    EX.set_summary(cfg, closed, f"- [ ] nwfu:{K1} minor x: y (was IDEA-900)")
     EX.close_idea(cfg, closed, "drop", reason="done")
     if archive:
         OW.archive_idea(cfg, tasks(cfg)[closed])
@@ -182,16 +182,16 @@ def test_a_closed_legacy_group_is_not_the_target(cfg, archive):
     assert plan["groups"][0]["target"] == "new" and len(plan["groups"][0]["lines"]) == 1
     run("--yes")
     [fresh] = groups(cfg)
-    assert fresh.properties["ID"] != closed and f"wtfug:legacy-{S1}" in fresh.heading
+    assert fresh.properties["ID"] != closed and f"nwfug:legacy-{S1}" in fresh.heading
     assert FU.summary_keys(EX.read_idea_enrichment(cfg, fresh)["summary"]) == [K1]
-    t = [x for x in tasks(cfg).values() if x.heading.startswith("wtfu:")]
+    t = [x for x in tasks(cfg).values() if x.heading.startswith("nwfu:")]
     assert [x.properties["FOLDED_INTO"] for x in t] == [fresh.properties["ID"]]
     assert as_json(run("--yes", "--json").output)["groups"] == []
 
 
 def test_dry_run_names_an_existing_open_legacy_group_as_the_target(cfg):
     _, _, legacy = OW.add_idea(cfg, FU.group_title(f"legacy-{S1}", S1, 1), kind="improvement")
-    EX.set_summary(cfg, legacy, f"- [ ] wtfu:{K2} minor x: y")
+    EX.set_summary(cfg, legacy, f"- [ ] nwfu:{K2} minor x: y")
     single(cfg, K1, S1, "new one")
     g = as_json(run("--json").output)["groups"][0]
     assert g["target"] == legacy and len(g["lines"]) == 1

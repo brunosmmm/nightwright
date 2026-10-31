@@ -6,12 +6,12 @@ import json
 
 import pytest
 
-from wt.agentic import escalations as ESC
-from wt.agentic import events as E
-from wt.agentic import lease as L
-from wt.agentic import mailbox as M
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright.agentic import escalations as ESC
+from nightwright.agentic import events as E
+from nightwright.agentic import lease as L
+from nightwright.agentic import mailbox as M
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 T0 = dt.datetime(2026, 10, 25, 12, 0, 0).astimezone()
 CID = "SPEC-0900-20261025-aaaa"
@@ -74,7 +74,7 @@ def test_campaignless_plan_writes_nothing_and_apply_writes_every_field(tmp_path)
     rec = ESC.apply_escalate(cfg, plan)
     assert rec["id"] == "ESC-0001"
     assert rec == ESC.read(cfg, "ESC-0001")
-    assert rec["schema"] == "wt.escalation.v1" and rec["status"] == "open"
+    assert rec["schema"] == "nw.escalation.v1" and rec["status"] == "open"
     assert (rec["campaign"], rec["park"], rec["by"]) == (None, None, "conductor")
     assert rec["options"] == [{"n": 1, "label": "restart"}, {"n": 2, "label": "wait"}]
     assert rec["recommendation"] == 2 and rec["facts"] == ["dead 10m"]
@@ -271,7 +271,7 @@ def test_event_and_human_mail(tmp_path):
     assert msg["kind"] == "question" and msg["needs_reply"] is False
     assert msg["id"] == rec["mail_id"] and msg["campaign"] == CID
     assert "1. yes (recommended)" in msg["text"] and "2. no" in msg["text"]
-    assert f"answer: wt escalations show {rec['id']}" in msg["text"]
+    assert f"answer: nw escalations show {rec['id']}" in msg["text"]
     assert M.unanswered(cfg, "human") == []
 
 
@@ -340,8 +340,8 @@ def test_hand_edited_state_is_skipped_and_remind_due_withdraws(tmp_path, calls):
 def test_notify_auto_runs_notify_send(tmp_path, calls):
     cfg = _cfg(tmp_path)
     rec = _esc(cfg, None)
-    assert calls == [["/usr/bin/notify-send", "--app-name=wt", "--urgency=critical",
-                      "--", f"wt: {rec['id']} needs you", "ship it?"]]
+    assert calls == [["/usr/bin/notify-send", "--app-name=nightwright", "--urgency=critical",
+                      "--", f"nw: {rec['id']} needs you", "ship it?"]]
     assert rec["notified"]["via"] == "notify-send" and rec["notified"]["ok"] is True
 
 
@@ -396,7 +396,7 @@ def test_remind_due_once_per_interval_and_never_for_withdrawn(tmp_path, calls):
     due = created + dt.timedelta(seconds=601)
     out = ESC.remind_due(cfg, due)
     assert [o["id"] for o in out] == [rec["id"]]
-    assert calls[0][-2] == f"wt: {rec['id']} still needs you"
+    assert calls[0][-2] == f"nw: {rec['id']} still needs you"
     assert ESC.read(cfg, rec["id"])["reminded_at"]
     assert ESC.remind_due(cfg, due) == []                 # a second caller at the same time
     assert len(calls) == 1
@@ -904,7 +904,7 @@ def test_waiving_a_merged_finding_by_its_merged_id(tmp_path):
     st["last_review"]["verdicts"][RV] = {**base, "run": "002-r"}
     st["last_review"]["verdicts"]["test_reviewer"] = base
     S.write_state(cfg, CID, st)
-    from wt.agentic import profiles as PR
+    from nightwright.agentic import profiles as PR
     tri = Q.triage_reviews(st["last_review"]["verdicts"], PR.resolve_profile(cfg, "balanced"))
     [merged] = [f for f in tri["blocking"] if f["title"] == "Wrong order"]
     assert sorted(merged["personas"]) == ["conformance_reviewer", "test_reviewer"]
@@ -1071,7 +1071,7 @@ def test_apply_answer_returns_event_error_without_persisting_it(tmp_path, monkey
 
 
 def test_waived_partial_ac_finding_clears_full_ac_on_next_triage(tmp_path):
-    from wt.agentic import queue as Q
+    from nightwright.agentic import queue as Q
     cfg = _cfg(tmp_path)
     _reviewed(cfg)
     st = _state(cfg)
@@ -1229,7 +1229,7 @@ def test_system_withdraw_keeps_the_half_written_overrides(tmp_path, monkeypatch)
     monkeypatch.setattr(S, "write_state", real)
     before = _overrides(cfg, "ESC-0001")
     assert len(before[0]) == len(before[1]) == 1
-    rec = ESC.withdraw_for_campaign(cfg, CID, "resumed", "wt")   # clear_request=False
+    rec = ESC.withdraw_for_campaign(cfg, CID, "resumed", "nw")   # clear_request=False
     assert rec["status"] == "withdrawn" and "overrides_removed" not in rec
     assert _overrides(cfg, "ESC-0001") == before            # the resume keeps them (Non-goal)
     note = S.read_ledger(cfg, CID, types=["note"])[-1]["text"]

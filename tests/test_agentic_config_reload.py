@@ -10,12 +10,12 @@ import yaml
 
 from test_agentic_e2e import (_git, _write, added, impl_done, make_cfg, make_repo, review,
                               run_cli, script, write_review)
-from wt.agentic import events as E
-from wt.agentic import lease as L
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.agentic.runner import select_runner
-from wt.config import load_config
+from nightwright.agentic import events as E
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.agentic.runner import select_runner
+from nightwright.config import load_config
 
 RUNTIME = ("_tz", "data_dir", "config_dir")
 
@@ -26,9 +26,9 @@ class Env:
 
     def __init__(self, tmp_path, monkeypatch, *, profile=None, runner=None, entries=None):
         self.tmp = tmp_path
-        monkeypatch.setenv("WT_CONFIG_DIR", str(tmp_path / "cfg"))
-        monkeypatch.setenv("WT_DATA_DIR", str(tmp_path / "data"))
-        monkeypatch.setenv("WT_CACHE_DIR", str(tmp_path / "cache"))
+        monkeypatch.setenv("NW_CONFIG_DIR", str(tmp_path / "cfg"))
+        monkeypatch.setenv("NW_DATA_DIR", str(tmp_path / "data"))
+        monkeypatch.setenv("NW_CACHE_DIR", str(tmp_path / "cache"))
         self.repo = make_repo(tmp_path)
         base = make_cfg(tmp_path, self.repo,
                         script(tmp_path, entries if entries is not None else [impl_done()]),
@@ -39,7 +39,7 @@ class Env:
         self.write(self.doc)
         self.cfg = load_config()
         self.monkeypatch = monkeypatch
-        self.lease = L.acquire(self.cfg, ["wt", "queue", "run"])
+        self.lease = L.acquire(self.cfg, ["nw", "queue", "run"])
         self.watch = Q.ConfigWatch(self.cfg, load_config)
         self.pool = Q.StepPool()
         self.runner = runner(self.cfg) if runner else None
@@ -332,7 +332,7 @@ def test_removing_a_live_campaigns_profile_is_invalid(make_env, monkeypatch):
 # ---- project configs ---------------------------------------------------------------------------
 
 def _project_yaml(env):
-    return env.repo / ".wt" / "project.yaml"
+    return env.repo / ".nw" / "project.yaml"
 
 
 def test_project_config_change_journaled(make_env, monkeypatch):
@@ -567,7 +567,7 @@ def test_reexec_is_deferred_while_the_user_config_is_broken(make_env, monkeypatc
         if n["ticks"] == 1:
             env.write_raw("")                               # seen by the check of tick 2
         elif n["ticks"] == 2:
-            _commit(root, "src/wt/x.py", "A = 2\n", "code")
+            _commit(root, "src/nightwright/x.py", "A = 2\n", "code")
         elif n["ticks"] == 4:
             env.write(env.doc)                              # fixed
 
@@ -582,7 +582,7 @@ def test_reexec_is_deferred_while_the_user_config_is_broken(make_env, monkeypatc
     assert [r["kind"] for r in journal].index("config_load_failed") < \
         [r["kind"] for r in journal].index("reexec_deferred")
     monkeypatch.setenv(L.HANDOVER_ENV, calls[0][L.HANDOVER_ENV])
-    env.lease = L.acquire(env.cfg, ["wt", "queue", "run"])  # adopt the handed-over lease
+    env.lease = L.acquire(env.cfg, ["nw", "queue", "run"])  # adopt the handed-over lease
 
 
 def test_no_loader_no_reload(make_env, monkeypatch):
@@ -657,11 +657,11 @@ def test_runner_log_renders_config_records(make_env, monkeypatch):
     cfg = env.cfg
     Q.journal(cfg, "config_reloaded", scope="user", path="/p", changed=["a.b", "c"],
               restart_required=["agentic.lease_ttl_s"])
-    Q.journal(cfg, "config_load_failed", scope="project:wt", path="/q", error="boom")
+    Q.journal(cfg, "config_load_failed", scope="project:nightwright", path="/q", error="boom")
     Q.journal(cfg, "reexec_deferred", reason="user_config_invalid", to_sha="abcdef123456")
     r = run_cli(cfg, monkeypatch, ["queue", "runner-log", "--tail", "0"])
     assert r.exit_code == 0, r.output
     text = " ".join(r.output.split())
     assert "config reloaded (user): a.b, c" in text and "restart required" in text
-    assert "config load failed (project:wt): boom" in text
+    assert "config load failed (project:nightwright): boom" in text
     assert "re-exec deferred user_config_invalid (code at abcdef12)" in text

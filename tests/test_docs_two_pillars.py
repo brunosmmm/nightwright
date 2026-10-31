@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from wt.agentic import queue as Q
+from nightwright.agentic import queue as Q
 
 ROOT = Path(__file__).resolve().parent.parent
 PRODUCT = ROOT / "docs" / "product"

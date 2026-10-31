@@ -1,6 +1,6 @@
 """Question rationale: display + capture (SPEC-0112).
 
-SPEC-0111 made the body exist and reach `wt.idea.v1`; this covers rendering it in both surfaces
+SPEC-0111 made the body exist and reach `nw.idea.v1`; this covers rendering it in both surfaces
 and writing it without leaving the desk.
 """
 import asyncio
@@ -11,11 +11,11 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt import tui as T
-from wt.cli import cli
-from wt.org import load_tasks
-from wt.tui import model as M
+from nightwright import explore as EX
+from nightwright import tui as T
+from nightwright.cli import cli
+from nightwright.org import load_tasks
+from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -44,7 +44,7 @@ def _cfg(tmp_path):
 
 def _seed(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "rationale probe"]).exit_code == 0
     assert run(cli, ["idea", "questions", "IDEA-001", "--add", "is textual pinned?"]).exit_code == 0
@@ -135,7 +135,7 @@ def test_cli_body_and_edit_stay_distinct(tmp_path, monkeypatch):
     assert r.exit_code != 0
 
 
-def test_wt_idea_show_renders_the_rationale(tmp_path, monkeypatch):
+def test_nw_idea_show_renders_the_rationale(tmp_path, monkeypatch):
     cfg = _seed(tmp_path, monkeypatch)
     EX.set_question_body(cfg, "IDEA-001", 2, WHY)
     out = CliRunner().invoke(cli, ["idea", "show", "IDEA-001"]).output
@@ -163,7 +163,7 @@ def test_apply_mutation_writes_a_rationale(tmp_path, monkeypatch):
 
 
 def test_desk_owns_no_body_write_rule():
-    app_src = (ROOT / "src" / "wt" / "tui" / "app.py").read_text()
+    app_src = (ROOT / "src" / "nightwright" / "tui" / "app.py").read_text()
     assert "set_question_body" not in app_src        # goes through apply_mutation
     assert "question_body" in app_src
 
@@ -172,7 +172,7 @@ def test_desk_owns_no_body_write_rule():
 def test_modal_shows_the_rationale_under_its_question(tmp_path, monkeypatch):
     from test_tui_desk import _grid
 
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     EX.resolve_question(cfg, "IDEA-001", 2)
@@ -195,7 +195,7 @@ def test_modal_shows_the_rationale_under_its_question(tmp_path, monkeypatch):
 
 @needs_textual
 def test_r_writes_then_edits_a_rationale(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -229,7 +229,7 @@ def test_r_writes_then_edits_a_rationale(tmp_path, monkeypatch):
 @needs_textual
 def test_enter_still_resolves_with_no_prompt(tmp_path, monkeypatch):
     """`Enter` must stay a single keystroke — the whole reason rationale got its own key."""
-    from wt.tui.app import BodyPrompt, IdeaDesk
+    from nightwright.tui.app import BodyPrompt, IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -249,7 +249,7 @@ def test_enter_still_resolves_with_no_prompt(tmp_path, monkeypatch):
 
 @needs_textual
 def test_escaping_the_rationale_prompt_writes_nothing(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 

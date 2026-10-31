@@ -1,4 +1,4 @@
-"""SPEC-0211: spec phases and review rounds in `wt queue watch` and `wt queue list`."""
+"""SPEC-0211: spec phases and review rounds in `nw queue watch` and `nw queue list`."""
 import shutil
 
 import pytest
@@ -6,9 +6,9 @@ from rich.console import Console
 
 from test_agentic_dashboard import _campaign, _ev
 from test_agentic_e2e import make_cfg, make_repo, run_cli, script
-from wt.agentic import cli_queue as CQ
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright.agentic import cli_queue as CQ
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 HEADING = "H" * 100
 
@@ -104,7 +104,7 @@ def test_other_states_and_spec_campaign(env):
 
 def test_title_sources(env):
     repo, cfg = env
-    wt = repo.parent / "wt-title"
+    wt = repo.parent / "nw-title"
     (wt / "docs/specs").mkdir(parents=True)
     cid = _idea(cfg, repo, "IDEA-078-title", "IMPLEMENTING")
     st = S.read_state(cfg, cid)

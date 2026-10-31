@@ -1,4 +1,4 @@
-"""SPEC-0179: `set_spec_status` / `spec_status` and `wt spec status`."""
+"""SPEC-0179: `set_spec_status` / `spec_status` and `nw spec status`."""
 import json
 import pathlib
 
@@ -6,8 +6,8 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from wt.cli import cli
-from wt.specs import SPEC_STATUSES, set_spec_status, spec_status
+from nightwright.cli import cli
+from nightwright.specs import SPEC_STATUSES, set_spec_status, spec_status
 
 TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "docs/specs/TEMPLATE.md"
 
@@ -96,7 +96,7 @@ def cfg(tmp_path, monkeypatch):
     specs.mkdir()
     _spec(specs)
     c = {"specs_dir": str(specs), "outbox_dir": str(tmp_path / "outbox")}
-    monkeypatch.setattr("wt.cli.load_config", lambda: c)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: c)
     return c
 
 
@@ -114,7 +114,7 @@ def test_cli_json(cfg, tmp_path):
     r = CliRunner().invoke(cli, ["spec", "status", "SPEC-0179", "--set", "done", "--json"])
     assert r.exit_code == 0, r.output
     d = json.loads(r.output)
-    assert d["schema"] == "wt.spec.status.v1" and d["id"] == "SPEC-0179"
+    assert d["schema"] == "nw.spec.status.v1" and d["id"] == "SPEC-0179"
     assert d["status"] == "done" and d["path"].endswith("0179-demo.md") and d["updated"]
 
 

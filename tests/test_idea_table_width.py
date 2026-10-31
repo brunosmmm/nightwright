@@ -1,5 +1,5 @@
-"""SPEC-0075: the `wt ideas` / `wt next` triage tables. `wt ideas` drops the `next` column
-(the hint lives on `wt next`), and both give the headline whatever width the terminal leaves
+"""SPEC-0075: the `nw ideas` / `nw next` triage tables. `nw ideas` drops the `next` column
+(the hint lives on `nw next`), and both give the headline whatever width the terminal leaves
 over instead of a hard-coded 40 chars — without letting a column collapse or a truncation go
 unmarked."""
 import json
@@ -10,9 +10,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from wt import org_write as W
-from wt import report as R
-from wt.console import console
+from nightwright import org_write as W
+from nightwright import report as R
+from nightwright.console import console
 
 LONG = ("Unified SpecRef resolver: stop outbound ids from being parsed as internal "
         "SPEC-NNNN everywhere in the codebase")
@@ -63,7 +63,7 @@ def _rows(out):
 WIDTHS = [200, 120, 80, 60]
 
 
-# ---- the `next` column moves to `wt next` -----------------------------------------
+# ---- the `next` column moves to `nw next` -----------------------------------------
 
 def test_ideas_table_has_no_next_column(tmp_path):
     out = _render(R.ideas, _seeded(tmp_path), 200)
@@ -95,12 +95,12 @@ def test_json_still_carries_next(tmp_path, capsys):
     cfg = _seeded(tmp_path)
     R.ideas(cfg, as_json=True)
     ideas = json.loads(capsys.readouterr().out)
-    assert ideas["schema"] == "wt.ideas.v1"
+    assert ideas["schema"] == "nw.ideas.v1"
     assert all("next" in row for row in ideas["ideas"])
 
     R.next_ideas(cfg, as_json=True)
     nxt = json.loads(capsys.readouterr().out)
-    assert nxt["schema"] == "wt.next.v1"
+    assert nxt["schema"] == "nw.next.v1"
     assert all("next" in row for row in nxt["ideas"])
 
 
@@ -201,14 +201,14 @@ def test_headline_budget_reclaims_from_capped_columns_when_cramped():
 # ---- $COLUMNS (Rich behaviour this spec depends on but does not own) ---------------
 
 def test_columns_env_var_controls_width_when_piped(tmp_path):
-    """`COLUMNS=N wt ideas | cat` must use N columns. Pins Rich's own $COLUMNS support: if a
+    """`COLUMNS=N nw ideas | cat` must use N columns. Pins Rich's own $COLUMNS support: if a
     future Rich drops it, piping silently falls back to 80 and this fails loudly instead."""
     cfg = _seeded(tmp_path)
     plain = {k: v for k, v in cfg.items() if k != "_tz"}   # ZoneInfo has no eval-able repr
     env = dict(os.environ, COLUMNS="200")
     code = (
         "from zoneinfo import ZoneInfo\n"
-        "from wt import report as R\n"
+        "from nightwright import report as R\n"
         f"cfg = {plain!r}\n"
         "cfg['_tz'] = ZoneInfo(cfg['timezone'])\n"
         "R.ideas(cfg)\n"
@@ -237,7 +237,7 @@ def test_ideas_and_next_tables_show_open_clock_glyph(tmp_path):
         assert clocked and "◕" in clocked[0]
         assert idle and "◕" not in idle[0]
     # JSON id stays bare (agents use clock_open)
-    from wt.report import idea_row, collect_idea_tasks
+    from nightwright.report import idea_row, collect_idea_tasks
     by_id = {r["id"]: r for r in (idea_row(cfg, t) for t in collect_idea_tasks(cfg))}
     assert by_id["IDEA-001"]["clock_open"] is True
     assert by_id["IDEA-001"]["id"] == "IDEA-001"

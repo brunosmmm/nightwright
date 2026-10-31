@@ -6,10 +6,10 @@ without `when` keys (comfort-assistant style) runs every gate in both, as before
 import pytest
 
 from test_agentic_e2e import _git, _write, added, impl_done, make_cfg, make_repo, review, run_cli, script
-from wt.agentic import project as P
-from wt.agentic import store as S
+from nightwright.agentic import project as P
+from nightwright.agentic import store as S
 
-BASE = {"schema": "wt.project.v1"}
+BASE = {"schema": "nw.project.v1"}
 
 
 def _doc(*gates):
@@ -74,7 +74,7 @@ def test_comfort_assistant_style_config_is_unchanged():
 
 # ---- integration: GATING vs CLOSING -----------------------------------------------------------
 
-TIERED_YAML = """schema: wt.project.v1
+TIERED_YAML = """schema: nw.project.v1
 base: main
 gates:
   - {name: always-g, cmd: 'true', timeout_s: 30}
@@ -85,7 +85,7 @@ merge:
   base: main
   remote: origin
 agents:
-  commit_trailer: "Co-Authored-By: wt test <wt@test>"
+  commit_trailer: "Co-Authored-By: nightwright test <nightwright@test>"
 """
 
 
@@ -95,7 +95,7 @@ def _gate_events(cfg, cid):
 
 def test_gating_runs_loop_and_always_close_runs_close_and_always(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
-    _write(repo, ".wt/project.yaml", TIERED_YAML)
+    _write(repo, ".nw/project.yaml", TIERED_YAML)
     _git(repo, "commit", "-qam", "tiered gates")
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), review()]))
     cid = added(cfg, monkeypatch)

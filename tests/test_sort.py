@@ -1,12 +1,12 @@
-"""Optional --sort on wt ideas / wt tasks (SPEC-0094)."""
+"""Optional --sort on nw ideas / nw tasks (SPEC-0094)."""
 from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt import org_write as W
-from wt import report as R
-from wt.cli import cli
+from nightwright import explore as EX
+from nightwright import org_write as W
+from nightwright import report as R
+from nightwright.cli import cli
 
 
 def _cfg(tmp_path):
@@ -32,7 +32,7 @@ def _cfg(tmp_path):
 
 
 def _patch(monkeypatch, cfg):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
 
 
 def test_ideas_default_freshness_and_priority_sort(tmp_path):

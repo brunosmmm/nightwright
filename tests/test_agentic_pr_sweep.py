@@ -1,4 +1,4 @@
-"""SPEC-0283: `sweep_handed_off` / `wt queue sweep-prs` and the follower's periodic sweep, with an
+"""SPEC-0283: `sweep_handed_off` / `nw queue sweep-prs` and the follower's periodic sweep, with an
 injected `view` (nothing calls the real gh)."""
 import datetime as dt
 import json
@@ -8,12 +8,12 @@ from click.testing import CliRunner
 
 from test_agentic_events import _campaign, _cfg, _set_state
 from test_agentic_queue import _merge_with_idea, opened  # noqa: F401 — fixture
-from wt.agentic import events as E
-from wt.agentic import queue as Q
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
-from wt.agentic.gitops import GitError
-from wt.cli import cli
+from nightwright.agentic import events as E
+from nightwright.agentic import queue as Q
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
+from nightwright.agentic.gitops import GitError
+from nightwright.cli import cli
 
 MERGED = {"state": "MERGED", "merged_at": "2026-10-27T10:00:00Z", "merge_sha": "abc123"}
 CLOSED = {"state": "CLOSED", "merged_at": None, "merge_sha": None}
@@ -164,8 +164,8 @@ def test_cli_sweep_prs(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     cfg["org_files"] = []
     (cid,) = _handed(cfg)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
-    monkeypatch.setattr("wt.agentic.gitops.gh_pr_view", lambda url: MERGED)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.agentic.gitops.gh_pr_view", lambda url: MERGED)
     r = CliRunner().invoke(cli, ["queue", "sweep-prs", "--json"])
     assert r.exit_code == 0, r.output
     (row,) = json.loads(r.output)

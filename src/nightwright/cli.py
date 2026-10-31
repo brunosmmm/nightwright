@@ -1,0 +1,2687 @@
+"""nightwright CLI (click + rich). Subcommands:
+  report / export / review / topics / snapshot / map / override
+  tasks / agenda / digest / add / state / done   (org-mode task management, SPEC-0004/0010)
+  idea / ideas                                   (idea capture & lifecycle, SPEC-0012)
+  next                                           (next-step hints for open ideas)
+  hub                                            (triage JSON across ideas/specs/outbox, SPEC-0052)
+  tui                                            (optional interactive ideas desk, SPEC-0099)
+  spec new / generate / export / schemes / verify (idea -> spec promotion SPEC-0013, spec ->
+                                                   task generation SPEC-0014, outbound export
+                                                   SPEC-0015, pluggable export schemes
+                                                   SPEC-0016, post-hoc DoD audit SPEC-0117)
+  skills install / list                          (agent workflow skills, SPEC-0017)
+  completion / completion install                (shell completion, SPEC-0022)
+  sheet plan / record                            (JSON-only sheet-sync diff, SPEC-0125;
+                                                   nightwright never touches the network)
+  ingest-meetings / refresh-meetings
+Run with no command for a today + this-week dashboard.
+"""
+import datetime as dt
+import json
+import re
+import sys
+
+import click
+from rich.markup import escape
+
+from . import report as R
+from . import completion as C
+from .config import load_config
+from .console import console
+from .dates import parse_date, week_days
+from .history import snapshot
+from .meetings import ingest_meetings, refresh_meetings
+from .export import export_spec
+from .export_schemes import available as available_schemes
+from .org_write import (IDEA_KINDS, add_idea, add_task, clock_in, clock_out, mark_done,
+                        reindex_ideas, resolve_selector, set_idea_epic, set_idea_kind,
+                        set_idea_priority, set_idea_project, set_idea_tags,
+                        set_idea_workstream, set_state_by_selector)
+from . import org_write as OW
+from . import explore as EX
+from . import idea_ext as IX
+from .extension_schema import enum_values_for
+from .idea_ext import resolve_ext_project
+from .rules import add_override_rec, known_projects, load_mappings, set_facets
+from .specs import (SPEC_STATUSES, generate_from_spec, promote_idea, scaffold_outbound,
+                    seed_ideas_from_epic)
+from . import skills as SK
+from . import sheet_sync as SHS
+
+
+class NwRootGroup(click.Group):
+    """Root group: a campaign-agent org-write refusal is a clean CLI error (SPEC-0272)."""
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except OW.PersonaOrgWriteRefused as e:
+            raise click.ClickException(str(e))
+
+
+@click.group(cls=NwRootGroup, invoke_without_command=True,
+             context_settings={"help_option_names": ["-h", "--help"]})
+@click.option("--split", is_flag=True, help="diagnostic: Claude-generating vs your-turn time")
+@click.pass_context
+def cli(ctx, split):
+    """nightwright — passive work-time tracker. Turns Claude transcripts + meetings into
+    per-topic hours. Run with no command for a today + this-week dashboard."""
+    ctx.obj = load_config()
+    if ctx.invoked_subcommand is None:
+        cfg = ctx.obj
+        console.rule("[bold cyan]today[/]")
+        R.report(cfg, split=split)
+        console.rule("[bold cyan]this week[/]")
+        R.report(cfg, week="now", split=split)
+        console.print("[dim]› nw report --week · nw review --day --fix · nw refresh-meetings[/]")
+
+
+@cli.command("report")
+@click.argument("date", required=False)
+@click.option("--week", "-w", is_flag=True, help="weekly view (of DATE, or this week)")
+@click.option("--last", type=int, help="last N days")
+@click.option("--by", help="group by a facet axis (e.g. project, area); default: topic",
+              shell_complete=C.complete_by_axis)
+@click.option("--md", is_flag=True, help="also write a markdown file to reports/")
+@click.option("--split", is_flag=True, help="diagnostic: Claude-generating vs your-turn time")
+@click.pass_obj
+def report_cmd(cfg, date, week, last, by, md, split):
+    """Per-topic hours. DATE optional (YYYY-MM-DD).
+
+    \b
+    nw report                 today
+    nw report --week          this week
+    nw report 2026-06-01      that day
+    nw report -w 2026-06-01   that week
+    nw report --last 7        last 7 days
+    nw report --week --by project   this week grouped by the 'project' facet
+    """
+    if last:
+        R.report(cfg, last=last, md=md, split=split, by=by)
+    elif week:
+        R.report(cfg, week=date or "now", md=md, split=split, by=by)
+    else:
+        R.report(cfg, day=date or "now", md=md, split=split, by=by)
+
+
+@cli.command("export")
+@click.argument("date", required=False)
+@click.option("--week", "-w", is_flag=True, help="export the week of DATE (or this week)")
+@click.option("--last", type=int, help="export the last N days")
+@click.option("--format", "fmt", type=click.Choice(["csv", "json"]), default="csv",
+              help="output format (default: csv)")
+@click.option("-o", "--out", type=click.Path(),
+              help="output path (default: exports/<scope>.<fmt>)")
+@click.pass_obj
+def export_cmd(cfg, date, week, last, fmt, out):
+    """Save a tidy dataset (date, topic, hours, facet columns). DATE/-w/--last optional;
+    default exports ALL available days."""
+    tz = cfg["_tz"]
+    if last:
+        today = dt.datetime.now(tz).date()
+        days = [(today - dt.timedelta(days=i)).isoformat() for i in range(last - 1, -1, -1)]
+        name = f"last{last}"
+    elif week:
+        wd = week_days(parse_date(date or "now", tz)); days = [x.isoformat() for x in wd]
+        name = f"week_{days[0]}"
+    elif date:
+        days = [parse_date(date, tz).isoformat()]; name = days[0]
+    else:
+        days = None; name = "all"
+    R.export(cfg, days, name, fmt, out)
+
+
+@cli.command("review")
+@click.argument("date", required=False)
+@click.option("--week", "-w", is_flag=True, help="weekly view (of DATE, or this week)")
+@click.option("--fix", "interactive", is_flag=True, help="interactively map unclassified topics")
+@click.pass_obj
+def review_cmd(cfg, date, week, interactive):
+    """Segment breakdown, unclassified inbox, and orphaned overrides. DATE optional."""
+    if week:
+        R.review(cfg, week=date or "now", interactive=interactive)
+    else:
+        R.review(cfg, day=date or "now", interactive=interactive)
+
+
+@cli.command("topics")
+@click.option("--last", type=int, help="restrict to last N days (default: all time)")
+@click.option("--unmapped", is_flag=True, help="show only topics with no mapping yet")
+@click.option("--by", help="regroup by facet axis (e.g. bucket, project); all-time condensed view",
+              shell_complete=C.complete_by_axis)
+@click.pass_obj
+def topics_cmd(cfg, last, unmapped, by):
+    """List discovered base topics (+ hours) and the current mappings/overrides.
+
+    \b
+    nw topics                 all-time base topics + facets
+    nw topics --unmapped      only topics with no effective mapping
+    nw topics --by bucket     all-time hours rolled up by facet axis
+    nw topics --by bucket --last 30
+    """
+    try:
+        R.topics(cfg, last, unmapped, by=by)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+
+
+@cli.command("tasks")
+@click.option("--state", help="only this TODO state (e.g. INPROGRESS)",
+              shell_complete=C.complete_todo_state)
+@click.option("--tag", help="only tasks with this tag (grouped tags are split)")
+@click.option("--project", help="only tasks under this project/category",
+              shell_complete=C.complete_project)
+@click.option("--priority", type=click.Choice(["A", "B", "C"]),
+              help="only this priority (A/B/C)")
+@click.option("--workstream", help="only this :WORKSTREAM: (SPEC-0090)",
+              shell_complete=C.complete_workstream)
+@click.option("--all", "all_done", is_flag=True, help="include done + structural headings")
+@click.option("--key", is_flag=True, help="only tasks with a topic_key (JIRA-linked)")
+@click.option("--json", "as_json", is_flag=True,
+              help="emit nw.tasks.v1 JSON on stdout (SPEC-0092)")
+@click.option("--sort", type=click.Choice(list(R.TASK_SORT_NAMES), case_sensitive=False),
+              help="override order (SPEC-0094; default: done/pri/project/heading)")
+@click.option("--desc", is_flag=True, help="reverse --sort order (SPEC-0094)")
+@click.pass_obj
+def tasks_cmd(cfg, state, tag, project, priority, workstream, all_done, key, as_json,
+              sort, desc):
+    """List org tasks. Default: open, actionable items (a TODO state that isn't done).
+
+    \b
+    nw tasks                    open tasks
+    nw tasks --state INPROGRESS only that state
+    nw tasks --tag example         tagged example
+    nw tasks --project Example     under that project
+    nw tasks --priority A       only [#A]
+    nw tasks --workstream ops   only that workstream (SPEC-0090)
+    nw tasks --key              only JIRA-linked tasks
+    nw tasks --all              include done + structural headings
+    nw tasks --json             nw.tasks.v1 for agents (SPEC-0092)
+    nw tasks --sort priority    A before B before C (SPEC-0094)
+    """
+    R.tasks(cfg, state=state, tag=tag, project=project, priority=priority,
+            all_done=all_done, key=key, workstream=workstream, as_json=as_json,
+            sort=sort, desc=desc)
+
+
+@cli.command("agenda")
+@click.argument("date", required=False)
+@click.option("--week", "-w", is_flag=True, help="weekly view (of DATE, or this week)")
+@click.option("--last", type=int, help="last N days")
+@click.option("--ideas", "include_ideas", is_flag=True,
+              help="include dated ideas alongside tasks (SPEC-0088; default: tasks only)")
+@click.option("--state", help="only this TODO/idea state (SPEC-0096)",
+              shell_complete=C.complete_todo_state)
+@click.option("--kind", type=click.Choice(list(IDEA_KINDS), case_sensitive=False),
+              help="only this idea kind when --ideas (SPEC-0096)")
+@click.option("--tag", help="only this tag (SPEC-0096)")
+@click.option("--project", help="only this project (SPEC-0096)",
+              shell_complete=C.complete_project)
+@click.option("--workstream", help="only this :WORKSTREAM: (SPEC-0096)",
+              shell_complete=C.complete_workstream)
+@click.option("--priority", type=click.Choice(["A", "B", "C"]),
+              help="only this priority (SPEC-0096)")
+@click.pass_obj
+def agenda_cmd(cfg, date, week, last, include_ideas, state, kind, tag, project, workstream,
+               priority):
+    """Tasks by SCHEDULED/DEADLINE over a date scope, plus overdue. DATE optional.
+
+    Default excludes ideas (SPEC-0088). Pass --ideas to include dated ideas too.
+
+    \b
+    nw agenda                 today (tasks only)
+    nw agenda --week          this week
+    nw agenda --ideas         today including dated ideas
+    nw agenda --project P     only that project (SPEC-0096)
+    nw agenda 2026-07-20      that day
+    nw agenda -w 2026-07-20   that week
+    nw agenda --last 7        last 7 days
+    """
+    kw = {"include_ideas": include_ideas, "state": state, "kind": kind, "tag": tag,
+          "project": project, "workstream": workstream, "priority": priority}
+    if last:
+        R.agenda(cfg, last=last, **kw)
+    elif week:
+        R.agenda(cfg, week=date or "now", **kw)
+    else:
+        R.agenda(cfg, day=date or "now", **kw)
+
+
+@cli.command("digest")
+@click.argument("date", required=False)
+@click.option("--week", "-w", is_flag=True, help="weekly view (of DATE, or this week)")
+@click.option("--last", type=int, help="last N days")
+@click.option("--by", help="group by 'project' instead of per task",
+              shell_complete=C.complete_by_axis)
+@click.pass_obj
+def digest_cmd(cfg, date, week, last, by):
+    """Tracked hours joined to org tasks by JIRA key, over a date scope. DATE optional.
+
+    \b
+    nw digest                 today: tasks + tracked hours
+    nw digest --week          this week
+    nw digest -w 2026-07-06   that week
+    nw digest --last 7        last 7 days
+    nw digest --by project    group by task project
+    """
+    if last:
+        R.digest(cfg, last=last, by=by)
+    elif week:
+        R.digest(cfg, week=date or "now", by=by)
+    else:
+        R.digest(cfg, day=date or "now", by=by)
+
+
+@cli.command("add")
+@click.argument("text", nargs=-1, required=True)
+@click.option("--state", help="TODO state (default: the file's first active keyword)",
+              shell_complete=C.complete_todo_state)
+@click.option("--tag", "tags", multiple=True, help="tag (repeatable)")
+@click.option("--priority", type=click.Choice(["A", "B", "C"]),
+              help="priority cookie (A/B/C)")
+@click.option("--scheduled", help="SCHEDULED date (YYYY-MM-DD)")
+@click.option("--deadline", help="DEADLINE date (YYYY-MM-DD)")
+@click.option("--file", type=click.Path(exists=False),
+              help="target .org file (default: org_capture_file)")
+@click.option("--project", help="associate a known project/bucket (see `nw projects`)",
+              shell_complete=C.complete_project)
+@click.option("--epic", help="associate a known epic (SPEC-NNNN or outbound PROJ-NNNN)",
+              shell_complete=C.complete_epic)
+@click.option("--key", help="JIRA key (e.g. DEMO-100) to set as the task's topic_key")
+@click.option("--workstream", help="curated :WORKSTREAM: lane (SPEC-0090)",
+              shell_complete=C.complete_workstream)
+@click.pass_obj
+def add_cmd(cfg, text, state, tags, priority, scheduled, deadline, file, project, epic, key,
+            workstream):
+    """Capture a new task (append a headline to the capture file). TEXT needs no quotes.
+
+    \b
+    nw add DEMO-100 wire up the thing
+    nw add "fix the flaky test" --priority A --tag ci --tag flaky
+    nw add "prep review" --scheduled 2026-07-20 --file ~/work/org/agenda.org
+    nw add "wire the dashboard" --project Demo-ATS --key DEMO-100
+    nw add "ops chore" --workstream ops
+    """
+    try:
+        path, headline = add_task(cfg, " ".join(text), state=state, tags=tags,
+                                  priority=priority, scheduled=scheduled, deadline=deadline,
+                                  file=file, project=project, epic=epic, key=key,
+                                  workstream=workstream)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] added  [white]{headline}[/]  [dim]{path}[/]")
+
+
+class IdeaGroup(click.Group):
+    """`nw idea TEXT…` captures; `nw idea log|summary|…` are subcommands (SPEC-0024/0031)."""
+
+    def resolve_command(self, ctx, args):
+        args = list(args)
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a in ("-h", "--help"):
+                break
+            if a.startswith("--"):
+                name = a.split("=", 1)[0]
+                if name in ("--state", "--tag", "--priority", "--project", "--epic",
+                            "--key", "--kind", "--workstream"):
+                    if "=" not in a and i + 1 < len(args):
+                        i += 2
+                        continue
+                i += 1
+                continue
+            if a.startswith("-") and len(a) <= 2:
+                i += 2 if i + 1 < len(args) else 1
+                continue
+            break
+        if i < len(args) and args[i] in self.commands:
+            return super().resolve_command(ctx, args)
+        return super().resolve_command(ctx, ["capture", *args])
+
+
+@cli.group("idea", cls=IdeaGroup)
+def idea_group():
+    """Capture or enrich ideas. Bare TEXT captures; subcommands log/show/….
+
+    \b
+    nw idea Investigate self-assessing AI usage          # capture
+    nw idea log IDEA-011 --note "finding…"               # append Log
+    nw idea show IDEA-011                                # read enrichment
+    """
+
+
+@idea_group.command("capture")
+@click.argument("text", nargs=-1, required=True)
+@click.option("--state", help="idea state (default: IDEA)",
+              shell_complete=C.complete_idea_state)
+@click.option("--tag", "tags", multiple=True, help="tag (repeatable)")
+@click.option("--priority", type=click.Choice(["A", "B", "C"]),
+              help="priority cookie (A/B/C)")
+@click.option("--project", help="associate a known project/bucket (see `nw projects`)",
+              shell_complete=C.complete_project)
+@click.option("--epic", help="associate a known epic (SPEC-NNNN or outbound PROJ-NNNN)",
+              shell_complete=C.complete_epic)
+@click.option("--key", help="JIRA key (e.g. DEMO-100) to set as the idea's topic_key")
+@click.option("--kind", type=click.Choice(list(IDEA_KINDS), case_sensitive=False),
+              help="capture kind label (default: idea; SPEC-0044)")
+@click.option("--workstream", help="curated :WORKSTREAM: lane (SPEC-0090)",
+              shell_complete=C.complete_workstream)
+@click.option("--force-idea", "force_idea", is_flag=True,
+              help="keep as idea even with --kind bug; suppress routing warn (SPEC-0091); "
+                   "independent of --force")
+@click.option("--force", is_flag=True,
+              help="capture a lone command-like word (e.g. `list`) anyway (SPEC-0272); "
+                   "independent of --force-idea")
+@click.pass_obj
+def idea_capture_cmd(cfg, text, state, tags, priority, project, epic, key, kind, workstream,
+                     force_idea, force):
+    """Capture an idea (default when you pass bare text after `nw idea`)."""
+    joined = " ".join(text)
+    if not force:
+        _refuse_verb_capture(joined)
+    if kind is not None and str(kind).strip().lower() == "bug" and not force_idea:
+        _warn_bug_as_idea(joined, tags=tags, priority=priority, project=project,
+                          epic=epic, key=key, workstream=workstream)
+    try:
+        path, headline, idea_id = add_idea(cfg, joined, state=state, tags=tags,
+                                           priority=priority, project=project, epic=epic,
+                                           key=key, kind=kind, workstream=workstream)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] {idea_id}  [white]{headline}[/]  [dim]{path}[/]")
+
+
+_EXTRA_CAPTURE_VERBS = frozenset({"list", "ls", "help", "rm", "delete", "del", "new", "edit",
+                                  "status", "get"})
+
+
+def _capture_verbs():
+    """Single words that are more likely a mistyped command than an idea (SPEC-0272).
+    Lazy: `cli.commands` is complete only once every subcommand module has registered."""
+    return _EXTRA_CAPTURE_VERBS | {c.casefold() for c in cli.commands}
+
+
+def _refuse_verb_capture(joined):
+    word = joined.strip()
+    if len(word.split()) != 1 or word.casefold() not in _capture_verbs():
+        return
+    hint = "nw ideas" if word.casefold() in ("list", "ls") else "nw idea --help"
+    raise click.ClickException(
+        f"refusing to capture the single word '{word}' as an idea — did you mean "
+        f"`{hint}`? (pass --force to capture it anyway)")
+
+
+def _warn_bug_as_idea(text, *, tags=(), priority=None, project=None, epic=None, key=None,
+                      workstream=None):
+    """Soft routing warn for --kind bug (SPEC-0091). Still allows capture."""
+    parts = ["nw", "add", _shell_quote(text)]
+    for t in tags:
+        parts.extend(["--tag", _shell_quote(t)])
+    if priority:
+        parts.extend(["--priority", priority])
+    if project:
+        parts.extend(["--project", _shell_quote(project)])
+    if epic:
+        parts.extend(["--epic", _shell_quote(epic)])
+    if key:
+        parts.extend(["--key", _shell_quote(key)])
+    if workstream:
+        parts.extend(["--workstream", _shell_quote(workstream)])
+    suggested = " ".join(parts)
+    console.print(
+        "[yellow]note[/]: `--kind bug` still writes an /idea/. "
+        "If this is actionable work, prefer a task instead:")
+    console.print(f"  [cyan]{suggested}[/]")
+    console.print("[dim]Pass --force-idea to keep a design-needed bug as an idea silently.[/]")
+
+
+def _shell_quote(value: str) -> str:
+    """Minimal quoting for suggested CLI lines (spaces → double quotes)."""
+    s = str(value)
+    if not s:
+        return '""'
+    if any(c.isspace() for c in s) or any(c in s for c in "\"'`$"):
+        return '"' + s.replace('"', '\\"') + '"'
+    return s
+
+
+def _idea_log(cfg, selector, note):
+    try:
+        path = EX.append_log(cfg, selector, note)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    console.print(f"[green]✓[/] log ← {selector}  [dim]{path}[/]")
+
+
+@idea_group.command("log")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--note", required=True, help="finding to append under Log (date+time)")
+@click.pass_obj
+def idea_log_cmd(cfg, selector, note):
+    """Append a Log entry (date+time); ensure Summary/questions/Log skeleton; INCUBATE if IDEA."""
+    _idea_log(cfg, selector, note)
+
+
+@idea_group.command("explore", hidden=True)
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--note", required=True, help="finding to append under Log (date+time)")
+@click.pass_obj
+def idea_explore_cmd(cfg, selector, note):
+    """Deprecated alias of `nw idea log` (SPEC-0031)."""
+    _idea_log(cfg, selector, note)
+
+
+@idea_group.command("normalize-logs")
+@click.argument("selector", required=False, shell_complete=C.complete_idea_id)
+@click.pass_obj
+def idea_normalize_logs_cmd(cfg, selector):
+    """Rewrite plain Log headlines to inactive org timestamps (SPEC-0032 migration).
+
+    \b
+    nw idea normalize-logs              # whole org_ideas_file
+    nw idea normalize-logs IDEA-020     # file containing that idea
+    """
+    try:
+        results = EX.normalize_idea_log_stamps(cfg, selector)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    total = 0
+    for path, n in results:
+        total += n
+        console.print(f"[green]✓[/] normalize-logs  {n} rewritten  [dim]{path}[/]")
+    if total == 0:
+        console.print("[dim]normalize-logs: nothing to rewrite[/]")
+
+
+@idea_group.command("mark-explored")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.pass_obj
+def idea_explored_cmd(cfg, selector):
+    """Record an exploration pass on an idea (SPEC-0081).
+
+    Increments `:EXPLORED:` and refreshes `:EXPLORED_AT:`. Nothing else ever writes them, so an
+    INCUBATE idea with no marker is one that was seeded with context but never explored.
+
+    Named `mark-explored`, not `explored`, because `nw idea explore` is a hidden alias for
+    `log` (SPEC-0031) — one letter apart would mean typing the alias and silently appending a
+    Log entry instead of recording the pass.
+
+    \b
+    nw idea mark-explored IDEA-105
+    """
+    try:
+        n = EX.mark_explored(cfg, selector)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    console.print(f"[green]✓[/] {selector} explored [dim](pass {n})[/]")
+
+
+@idea_group.command("backfill-stamps")
+@click.pass_obj
+def idea_backfill_stamps_cmd(cfg):
+    """Give pre-SPEC-0076 ideas a best-effort `:UPDATED:` stamp.
+
+    Derived from the newest Log headline, else the CLOSED: stamp, else skipped — never invented.
+    Idempotent: ideas that already have `:UPDATED:` are untouched, so a re-run does nothing.
+    New captures get `:CREATED:`/`:UPDATED:` automatically; this is only for the backlog.
+    """
+    results = EX.backfill_idea_stamps(cfg)
+    stamped = [(i, s) for i, s in results if s != "skipped"]
+    for idea_id, source in results:
+        style = "dim" if source == "skipped" else "green"
+        console.print(f"[{style}]{'·' if source == 'skipped' else '✓'}[/] {idea_id}  "
+                      f"[dim]{source}[/]")
+    if not results:
+        console.print("[dim]backfill-stamps: every idea already has :UPDATED:[/]")
+    else:
+        console.print(f"[dim]{len(stamped)} stamped, "
+                      f"{len(results) - len(stamped)} skipped (no Log or CLOSED signal)[/]")
+
+
+@idea_group.command("summary")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--set", "text", required=True, help="replace Summary body")
+@click.pass_obj
+def idea_summary_cmd(cfg, selector, text):
+    """Replace the idea's Summary section."""
+    try:
+        path = EX.set_summary(cfg, selector, text)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] summary ← {selector}  [dim]{path}[/]")
+
+
+@idea_group.command("questions")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--set", "text", default=None, help="replace section (each line → an OPEN question)")
+@click.option("--add", "bullet", default=None, help="append one question headline")
+@click.option("--state", type=click.Choice(["open", "resolved"]), default="open",
+              show_default=True, help="state for --add")
+@click.option("--resolve", "resolve_idx", type=int, multiple=True,
+              help="flip the Nth question (1-based) to RESOLVED; repeatable")
+@click.option("--resolve-all", is_flag=True, help="flip every open question to RESOLVED")
+@click.option("--unresolve", "unresolve_idx", type=int, default=None,
+              help="flip the Nth question (1-based) back to OPEN (SPEC-0101)")
+@click.option("--edit", "edit_idx", type=int, default=None,
+              help="replace the Nth question's text; needs --text (SPEC-0101)")
+@click.option("--text", "edit_text", default=None, help="new text for --edit")
+@click.option("--delete", "delete_idx", type=int, default=None,
+              help="remove the Nth question (1-based) (SPEC-0101)")
+@click.option("--priority", "prio_idx", type=int, default=None,
+              help="set/clear the Nth question's [#A|B|C]; needs --pri (SPEC-0101)")
+@click.option("--body", "body_idx", type=int, default=None,
+              help="set/clear the Nth question's rationale; needs --text (SPEC-0112)")
+@click.option("--pri", type=click.Choice(["A", "B", "C", "none"], case_sensitive=False),
+              default=None, help="cookie for --priority ('none' clears it)")
+@click.pass_obj
+def idea_questions_cmd(cfg, selector, text, bullet, state, resolve_idx, resolve_all,
+                       unresolve_idx, edit_idx, edit_text, delete_idx, prio_idx, pri,
+                       body_idx):
+    """Replace, append, resolve or edit Open questions (`*** OPEN|RESOLVED` headlines,
+    SPEC-0054/0101). Every N is a 1-based index into `nw idea show`'s order.
+
+    \b
+    nw idea questions IDEA-012 --resolve 1 --resolve 3
+    nw idea questions IDEA-012 --resolve-all
+    nw idea questions IDEA-012 --unresolve 2
+    nw idea questions IDEA-012 --edit 2 --text "sharper wording"
+    nw idea questions IDEA-012 --delete 3
+    nw idea questions IDEA-012 --priority 1 --pri A
+    nw idea questions IDEA-012 --body 2 --text "ANSI: hex was invisible on dark"
+    """
+    if resolve_idx and resolve_all:
+        raise click.UsageError("pass either --resolve or --resolve-all, not both")
+    chose = [text is not None and edit_idx is None and body_idx is None,
+             bullet is not None, bool(resolve_idx) or resolve_all,
+             unresolve_idx is not None, edit_idx is not None, delete_idx is not None,
+             prio_idx is not None, body_idx is not None]
+    if sum(chose) != 1:
+        raise click.UsageError("pass exactly one of --set / --add / --resolve / --resolve-all / "
+                               "--unresolve / --edit / --delete / --priority / --body")
+    if edit_idx is not None and edit_text is None:
+        raise click.UsageError("--edit needs --text")
+    if prio_idx is not None and pri is None:
+        raise click.UsageError("--priority needs --pri (A/B/C or 'none')")
+    if body_idx is not None and edit_text is None:
+        raise click.UsageError("--body needs --text (use --text '' to clear)")
+    try:
+        if text is not None:
+            path = EX.set_questions(cfg, selector, text)
+            console.print(f"[green]✓[/] questions ← {selector}  [dim]{path}[/]")
+        elif bullet is not None:
+            path = EX.add_question(cfg, selector, bullet, state=state)
+            console.print(f"[green]✓[/] questions ← {selector}  [dim]{path}[/]")
+        elif unresolve_idx is not None:
+            path = EX.unresolve_question(cfg, selector, unresolve_idx)
+            console.print(f"[green]✓[/] question #{unresolve_idx} reopened ← {selector}"
+                          f"  [dim]{path}[/]")
+        elif edit_idx is not None:
+            path = EX.edit_question(cfg, selector, edit_idx, edit_text)
+            console.print(f"[green]✓[/] question #{edit_idx} rewritten ← {selector}"
+                          f"  [dim]{path}[/]")
+        elif delete_idx is not None:
+            path = EX.delete_question(cfg, selector, delete_idx)
+            console.print(f"[green]✓[/] question #{delete_idx} deleted ← {selector}"
+                          f"  [dim]{path}[/]")
+        elif body_idx is not None:
+            path = EX.set_question_body(cfg, selector, body_idx, edit_text)
+            shown = "cleared" if not edit_text.strip() else "set"
+            console.print(f"[green]✓[/] question #{body_idx} rationale {shown} ← {selector}"
+                          f"  [dim]{path}[/]")
+        elif prio_idx is not None:
+            want = None if pri.lower() == "none" else pri.upper()
+            path = EX.set_question_priority(cfg, selector, prio_idx, want)
+            console.print(f"[green]✓[/] question #{prio_idx} priority "
+                          f"{'cleared' if want is None else want} ← {selector}  [dim]{path}[/]")
+        else:
+            n = EX.resolve_questions(cfg, selector, None if resolve_all else resolve_idx)
+            console.print(f"[green]✓[/] {n} question(s) resolved ← {selector}"
+                          if n else f"[dim]· nothing to resolve on {selector}[/]")
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+
+@idea_group.command("normalize-questions")
+@click.argument("selector", required=False, shell_complete=C.complete_idea_id)
+@click.pass_obj
+def idea_normalize_questions_cmd(cfg, selector):
+    """Rewrite legacy Open-questions forms to `*** OPEN|RESOLVED` headlines (SPEC-0054).
+
+    \b
+    nw idea normalize-questions           # whole org_ideas_file
+    nw idea normalize-questions IDEA-063  # file containing that idea
+    """
+    try:
+        results = EX.normalize_idea_questions(cfg, selector)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    total = 0
+    for path, n in results:
+        total += n
+        if n:
+            console.print(f"[green]✓[/] normalize-questions  {n} idea(s)  [dim]{path}[/]")
+    if total == 0:
+        console.print("[dim]normalize-questions: nothing to rewrite[/]")
+
+
+@idea_group.command("project")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--set", "project", default=None,
+              help="associate a project/bucket (see `nw projects`); empty string clears")
+@click.pass_obj
+def idea_project_cmd(cfg, selector, project):
+    """Set or clear an idea's `:PROJECT:` (SPEC-0109). Before this, `--project` existed only at
+    capture, so an idea captured without one could never be given a project.
+
+    Unknown names warn but still write (SPEC-0018 is deliberately permissive).
+
+    \b
+    nw idea project IDEA-012 --set Example
+    nw idea project IDEA-012 --set ""     # clear
+    """
+    if project is None:
+        raise click.UsageError("pass --set (use --set '' to clear)")
+    try:
+        path = set_idea_project(cfg, selector, project)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    shown = project.strip() or "(none)"
+    console.print(f"[green]✓[/] project ← {selector}  [white]{shown}[/]  [dim]{path}[/]")
+
+
+@idea_group.command("epic")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--set", "epic", default=None, shell_complete=C.complete_epic,
+              help="link an epic spec id (SPEC-NNNN or outbound PROJ-NNNN); empty string clears")
+@click.pass_obj
+def idea_epic_cmd(cfg, selector, epic):
+    """Set or clear an idea's `:EPIC:` (SPEC-0307). Before this, `--epic` existed only at
+    capture and in `seed-children`, so an idea filed without one could never be re-associated.
+
+    Unknown ids warn but still write (SPEC-0018 is deliberately permissive).
+
+    \b
+    nw idea epic IDEA-012 --set SPEC-0298
+    nw idea epic IDEA-012 --set ""        # clear
+    """
+    if epic is None:
+        raise click.UsageError("pass --set (use --set '' to clear)")
+    try:
+        path = set_idea_epic(cfg, selector, epic)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    shown = epic.strip() or "(none)"
+    console.print(f"[green]✓[/] epic ← {selector}  [white]{shown}[/]  [dim]{path}[/]")
+
+
+@idea_group.command("tags")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--set", "tags", default=None,
+              help="replace the headline's tags (comma/space separated; empty string clears)")
+@click.pass_obj
+def idea_tags_cmd(cfg, selector, tags):
+    """Replace the `:tag:tag:` block on an idea headline (SPEC-0101). Whole-set replace, so
+    read `nw idea show` first if you mean to add one.
+
+    \b
+    nw idea tags IDEA-012 --set "tui,ideas"
+    nw idea tags IDEA-012 --set ""        # strip all tags
+    """
+    if tags is None:
+        raise click.UsageError("pass --set (use --set '' to clear)")
+    names = [t for t in re.split(r"[,\s]+", tags.strip()) if t]
+    try:
+        path = set_idea_tags(cfg, selector, names)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    shown = ":".join(names) or "(none)"
+    console.print(f"[green]✓[/] tags ← {selector}  [white]{shown}[/]  [dim]{path}[/]")
+
+
+@idea_group.command("close")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--as", "outcome", type=click.Choice(["drop", "researched"]), required=True,
+              help="terminal outcome: drop (won't-do) or researched (explored, no spec)")
+@click.option("--reason", default=None, help="why it's closed (stored as a property + Log line)")
+@click.option("--folded-into", "folded_into", default=None,
+              help="idea/spec id this idea's value moved into")
+@click.option("--superseded-by", "superseded_by", default=None,
+              help="idea/spec id that supersedes this one")
+@click.pass_obj
+def idea_close_cmd(cfg, selector, outcome, reason, folded_into, superseded_by):
+    """Close an idea with a terminal outcome + reason/pointers (SPEC-0055/0056/0057).
+
+    \b
+    nw idea close IDEA-062 --as researched --reason "…" --folded-into IDEA-059
+    nw idea close IDEA-070 --as drop --reason "duplicate of IDEA-071"
+    """
+    try:
+        path = EX.close_idea(cfg, selector, outcome, reason=reason,
+                             folded_into=folded_into, superseded_by=superseded_by)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] closed {selector} as [bold]{outcome}[/]  [dim]{path}[/]")
+
+
+@idea_group.command("state")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.argument("new_state", shell_complete=C.complete_idea_state)
+@click.pass_obj
+def idea_state_cmd(cfg, selector, new_state):
+    """Force an idea's lifecycle keyword (SPEC-0135). Bare flip — no CLOSE_REASON.
+
+    \b
+    nw idea state IDEA-161 SHIPPED
+    nw idea state IDEA-060 EXPORTED
+    nw idea state IDEA-113 INCUBATE
+    """
+    try:
+        path = EX.set_idea_state(cfg, selector, new_state)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(
+        f"[green]✓[/] {selector} → [bold]{(new_state or '').strip().upper()}[/]  [dim]{path}[/]")
+
+
+@idea_group.command("spec-link")
+@click.argument("idea", shell_complete=C.complete_idea_id)
+@click.argument("spec", shell_complete=C.complete_spec_id)
+@click.option("--heading", default=None,
+              help="case-insensitive substring of the idea's headline (required with --yes)")
+@click.option("--yes", "do_yes", is_flag=True, help="write the link (default: dry run)")
+@click.option("--json", "as_json", is_flag=True, help="machine-readable output")
+@click.pass_obj
+def idea_spec_link_cmd(cfg, idea, spec, heading, do_yes, as_json):
+    """Set or replace an idea's :SPEC:, identity-checked (SPEC-0281). Dry run by default.
+
+    Finds the idea in every org file (rotated ones included); an id several ideas carry
+    resolves by the SPEC-0267 rule, and an idea created after the spec, an ambiguous pick, or
+    a spec whose source_idea names another idea is refused. --yes needs --heading, a substring
+    of the picked idea's headline (copy it from the dry run). The reconcile scoped to the spec
+    then advances the idea's state. Spec files are never edited.
+
+    \b
+    nw idea spec-link IDEA-056 SPEC-0281
+    nw idea spec-link IDEA-056 SPEC-0281 --yes --heading "spec-link"
+    """
+    from .specs import apply_spec_link, plan_spec_link
+
+    try:
+        plan = plan_spec_link(cfg, idea, spec)
+        if do_yes:
+            if heading is None:
+                raise click.UsageError("--yes requires --heading (copy it from the dry run)")
+            if heading.lower() not in plan["heading"].lower():
+                raise click.ClickException(
+                    f"--heading {heading!r} does not match the idea's headline: {plan['heading']!r}")
+        rows = apply_spec_link(cfg, plan) if do_yes else []
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        out = {k: (list(v) if k == "pin" else v) for k, v in plan.items()}
+        click.echo(json.dumps({"plan": out, "applied": do_yes and plan["action"] != "unchanged",
+                               "reconcile": [list(r) for r in rows]}, indent=2))
+        return
+    console.print(f"{plan['idea_id']}  [dim]{plan['file']}:{plan['line']}[/]  {plan['heading']}")
+    console.print(f"  :CREATED: {plan['created'] or '?'}   "
+                  f":SPEC: {plan['current_spec'] or '(none)'} → {plan['spec_id']}   "
+                  f"[bold]{plan['action']}[/]")
+    if not do_yes:
+        if plan["action"] != "unchanged":
+            console.print("[dim]dry run — re-run with --yes --heading TEXT to write[/]")
+        return
+    for _i, spec_id, action, detail in rows:
+        if action == "unchanged":
+            continue
+        style = "green" if action == "advance" else "yellow"
+        hint = "  [dim](hint: add source_idea to the spec)[/]" if action == "flag-no-backlink" else ""
+        console.print(f"[{style}]{'✓' if action == 'advance' else '!'}[/] {action}  "
+                      f"[dim]{spec_id}[/]  {detail}{hint}")
+    console.print(f"[green]✓[/] {plan['idea_id']} :SPEC: {plan['spec_id']}"
+                  if plan["action"] != "unchanged" else "[dim]already linked; nothing written[/]")
+
+
+@idea_group.command("clock-in")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.pass_obj
+def idea_clock_in_cmd(cfg, selector):
+    """Open an org-native CLOCK: entry on an idea (SPEC-0061)."""
+    try:
+        path = clock_in(cfg, selector)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] clocked in on {selector}  [dim]{path}[/]")
+
+
+@idea_group.command("clock-out")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.pass_obj
+def idea_clock_out_cmd(cfg, selector):
+    """Close the open CLOCK: entry on an idea (SPEC-0061)."""
+    try:
+        path = clock_out(cfg, selector)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] clocked out on {selector}  [dim]{path}[/]")
+
+
+@idea_group.command("retitle")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.argument("title", nargs=-1, required=True)
+@click.pass_obj
+def idea_retitle_cmd(cfg, selector, title):
+    """Rewrite the idea headline; keep id/state/properties/tags."""
+    try:
+        path = EX.retitle_idea(cfg, selector, " ".join(title))
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] retitled {selector}  [dim]{path}[/]")
+
+
+@idea_group.command("kind")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--set", "kind", required=True,
+              type=click.Choice(list(IDEA_KINDS), case_sensitive=False),
+              help="capture kind (idea/bug/improvement/chore)")
+@click.pass_obj
+def idea_kind_cmd(cfg, selector, kind):
+    """Set the idea's :KIND: label (SPEC-0044). Does not change TODO state or next hints."""
+    try:
+        path = set_idea_kind(cfg, selector, kind)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] kind ← {selector} = {kind.lower()}  [dim]{path}[/]")
+
+
+@idea_group.command("workstream")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--set", "workstream", required=True,
+              help="curated workstream lane (must be in config workstreams:)",
+              shell_complete=C.complete_workstream)
+@click.pass_obj
+def idea_workstream_cmd(cfg, selector, workstream):
+    """Set the idea's :WORKSTREAM: lane (SPEC-0090)."""
+    try:
+        path = set_idea_workstream(cfg, selector, workstream)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] workstream ← {selector} = {workstream}  [dim]{path}[/]")
+
+
+@idea_group.command("priority")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--set", "priority", required=True, type=click.Choice(["A", "B", "C"]),
+              help="org priority cookie [#A|B|C] (SPEC-0093)")
+@click.pass_obj
+def idea_priority_cmd(cfg, selector, priority):
+    """Set the idea's [#A|B|C] priority cookie (SPEC-0093)."""
+    try:
+        path = set_idea_priority(cfg, selector, priority)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] priority ← {selector} = {priority}  [dim]{path}[/]")
+
+
+@idea_group.command("show")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--json", "as_json", is_flag=True,
+              help="emit nw.idea.v1 JSON on stdout (no human text)")
+@click.option("--plain", is_flag=True,
+              help="force plain text (no Rich/Pygments highlighting)")
+@click.pass_obj
+def idea_show_cmd(cfg, selector, as_json, plain):
+    """Print headline + Summary / Open questions / Log (read-only).
+
+    On a TTY, highlights org-shaped output via Rich + Pygments unless --plain or --json
+    (SPEC-0035)."""
+    try:
+        task = resolve_selector(cfg, selector)
+        if not task.is_idea:
+            raise ValueError(f"{selector!r} is not an idea")
+        if as_json:
+            EX.dump_idea_show_json(cfg, task)
+        else:
+            EX.print_idea_show(cfg, task, plain=plain)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+
+@idea_group.group("ext")
+def idea_ext_group():
+    """Project-private Ext fields under `** Ext <Project>` (SPEC-0119/0122)."""
+
+
+@idea_ext_group.command("show")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.option("--project", help="Ext namespace (default: idea's :PROJECT:)",
+              shell_complete=C.complete_project)
+@click.pass_obj
+def idea_ext_show_cmd(cfg, selector, project):
+    """Print Ext key/value map for an idea."""
+    try:
+        task = resolve_selector(cfg, selector)
+        if not task.is_idea:
+            raise ValueError(f"{selector!r} is not an idea")
+        project = resolve_ext_project(task, project)
+        mapping = IX.read_idea_extension(cfg, task, project)
+        if not mapping:
+            console.print(f"[dim]no Ext keys under {project!r}[/]")
+            return
+        for key in sorted(mapping):
+            console.print(f"[white]{key}[/]=[cyan]{mapping[key]}[/]")
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+
+@idea_ext_group.command("list")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.pass_obj
+def idea_ext_list_cmd(cfg, selector):
+    """List Ext namespaces present on an idea."""
+    try:
+        task = resolve_selector(cfg, selector)
+        if not task.is_idea:
+            raise ValueError(f"{selector!r} is not an idea")
+        exts = IX.read_idea_extensions(cfg, task)
+        if not exts:
+            console.print("[dim]no Ext namespaces[/]")
+            return
+        for project in sorted(exts):
+            keys = ", ".join(sorted(exts[project]))
+            console.print(f"[white]{project}[/]  [dim]({keys})[/]")
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+
+@idea_ext_group.command("set")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.argument("key", shell_complete=C.complete_ext_key)
+@click.argument("value")
+@click.option("--project", help="Ext namespace (default: idea's :PROJECT:)",
+              shell_complete=C.complete_project)
+@click.pass_obj
+def idea_ext_set_cmd(cfg, selector, key, value, project):
+    """Set one Ext key (schema-validated when configured)."""
+    try:
+        task = resolve_selector(cfg, selector)
+        if not task.is_idea:
+            raise ValueError(f"{selector!r} is not an idea")
+        proj = resolve_ext_project(task, project)
+        allowed = enum_values_for(cfg, proj, key.strip())
+        if allowed is not None and value not in allowed:
+            raise ValueError(f"value {value!r} not in {allowed}")
+        path = IX.set_idea_extension(cfg, selector, key, value, project=proj)
+        console.print(f"[green]✓[/] ext ← {selector} {key}={value!r}  [dim]{path}[/]")
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+
+@idea_ext_group.command("clear")
+@click.argument("selector", shell_complete=C.complete_idea_id)
+@click.argument("key", shell_complete=C.complete_ext_key)
+@click.option("--project", help="Ext namespace (default: idea's :PROJECT:)",
+              shell_complete=C.complete_project)
+@click.pass_obj
+def idea_ext_clear_cmd(cfg, selector, key, project):
+    """Remove one Ext key."""
+    try:
+        task = resolve_selector(cfg, selector)
+        if not task.is_idea:
+            raise ValueError(f"{selector!r} is not an idea")
+        proj = resolve_ext_project(task, project)
+        path = IX.clear_idea_extension(cfg, selector, key, project=proj)
+        console.print(f"[green]✓[/] ext cleared ← {selector} {key}  [dim]{path}[/]")
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+
+@idea_ext_group.command("lint")
+@click.argument("selector", required=False, shell_complete=C.complete_idea_id)
+@click.option("--all", "all_ideas", is_flag=True, help="lint every idea")
+@click.option("--strict", is_flag=True, help="exit 1 when any problem is found")
+@click.pass_obj
+def idea_ext_lint_cmd(cfg, selector, all_ideas, strict):
+    """Report Ext schema / :PROJECT: problems (read-only)."""
+    try:
+        if all_ideas:
+            problems = IX.lint_all_idea_extensions(cfg)
+        elif selector:
+            task = resolve_selector(cfg, selector)
+            if not task.is_idea:
+                raise ValueError(f"{selector!r} is not an idea")
+            problems = IX.lint_idea_extensions(cfg, task)
+        else:
+            raise click.ClickException("pass SELECTOR or --all")
+        if not problems:
+            console.print("[green]✓[/] no Ext problems")
+            return
+        for msg in problems:
+            console.print(f"[yellow]![/] {msg}")
+        if strict:
+            raise SystemExit(1)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+
+class ProjectsGroup(click.Group):
+    """`nw projects [filters…]` lists; `nw projects add|list …` are subcommands (SPEC-0137).
+
+    Prepends `list` in `parse_args` so flags like `--json` bind to the list command
+    (same pattern as IdeasGroup).
+    """
+
+    def parse_args(self, ctx, args):
+        args = list(args)
+        if not args or args[0] not in self.commands:
+            args = ["list", *args]
+        return super().parse_args(ctx, args)
+
+
+@cli.group("projects", cls=ProjectsGroup)
+def projects_group():
+    """List known projects or register an outbox target (SPEC-0095 / SPEC-0137 / SPEC-0159).
+
+    \b
+    nw projects                      Rich list of mapping buckets + topic counts
+    nw projects --json               nw.projects.v1 for agents
+    nw projects add NAME             dry-run plan (association stub)
+    nw projects add NAME --repo P --yes   write outbox_targets[NAME]
+    nw projects rename OLD NEW       dry-run bucket rename (SPEC-0159)
+    nw projects rename OLD NEW --yes apply rename
+    """
+
+
+@projects_group.command("list")
+@click.option("--json", "as_json", is_flag=True,
+              help="emit nw.projects.v1 JSON (SPEC-0095; includes outbox + research)")
+@click.pass_obj
+def projects_list_cmd(cfg, as_json):
+    """List every registered project (mapping buckets, outbox targets, Meta-Tools — SPEC-0189):
+    a table, or the full routing map with --json."""
+    if as_json:
+        import json
+        import sys
+        from .rules import projects_payload
+        json.dump(projects_payload(cfg), sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return
+    from rich.text import Text
+
+    from . import render as R
+    from .rules import projects_payload
+    table = R.section_table("Projects")
+    table.add_column("project", no_wrap=True)
+    table.add_column("topics", justify="right")
+    table.add_column("outbound", justify="center")
+    table.add_column("research root", overflow="fold")
+    for p in projects_payload(cfg)["projects"]:
+        research = p.get("research") or {}
+        root = research.get("root")
+        where = (Text(root) if root else Text(research.get("note") or "—", style="dim"))
+        if root and research.get("source"):
+            where.append(f"  ({research['source']})", style="dim")
+        table.add_row(R.project_text(p["name"]), str(p["topics"]),
+                      Text("✓", style="green") if p["outbound"] else Text("—", style="dim"),
+                      where)
+    console.print(table)
+    if not known_projects(cfg):
+        console.print("[dim]no projects mapped to topics yet — see `nw map`[/]")
+
+
+@projects_group.command("add")
+@click.argument("name")
+@click.option("--repo", "repo", default=None,
+              help="destination repo path (sets outbox_targets[NAME].repo_path)")
+@click.option("--scheme", default=None, help="optional export scheme name")
+@click.option("--spec-dir", "spec_dir", default=None,
+              help="optional specs subdirectory inside the repo")
+@click.option("--force", is_flag=True,
+              help="allow missing repo path or overwrite conflicting repo_path")
+@click.option("--yes", "do_write", is_flag=True,
+              help="commit the plan to config.yaml (default is dry-run)")
+@click.option("--json", "as_json", is_flag=True, help="emit the plan/result as JSON")
+@click.pass_obj
+def projects_add_cmd(cfg, name, repo, scheme, spec_dir, force, do_write, as_json):
+    """Register or update outbox_targets[NAME] (SPEC-0137). Dry-run unless --yes."""
+    import json
+    import sys
+    from .rules import apply_project_add, plan_project_add
+    try:
+        plan = plan_project_add(cfg, name, repo=repo, scheme=scheme, spec_dir=spec_dir,
+                                force=force)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if do_write:
+        apply_project_add(cfg, plan)
+        plan = {**plan, "written": True}
+    else:
+        plan = {**plan, "written": False}
+    if as_json:
+        json.dump({"schema": "nw.projects.add.v1", **plan}, sys.stdout, indent=2,
+                  ensure_ascii=False)
+        sys.stdout.write("\n")
+        return
+    action = plan["action"]
+    console.print(f"[bold]plan[/]  {action}  outbox_targets[{name!r}]")
+    console.print(f"  config: {plan['config_path']}")
+    if plan["before"] is not None:
+        console.print(f"  before: {plan['before']!r}")
+    console.print(f"  after:  {plan['after']!r}")
+    if do_write:
+        console.print(f"[green]✓ wrote[/] {plan['config_path']}")
+    else:
+        console.print("[dim]not written — re-run with --yes to commit[/]")
+
+
+@projects_group.command("rename")
+@click.argument("old")
+@click.argument("new")
+@click.option("--yes", "do_write", is_flag=True,
+              help="apply the rename (default is dry-run)")
+@click.option("--json", "as_json", is_flag=True, help="emit the plan/result as JSON")
+@click.pass_obj
+def projects_rename_cmd(cfg, old, new, do_write, as_json):
+    """Rename outbox_targets[OLD]→[NEW] + outbox dir + idea :PROJECT: (SPEC-0159).
+
+    Dry-run unless --yes. Does not rekey outbound ids (DEMO-* stays DEMO-*).
+    """
+    import json
+    import sys
+    from .outbox_migrate import apply_project_rename, plan_project_rename
+    try:
+        plan = plan_project_rename(cfg, old, new)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if do_write:
+        try:
+            plan = apply_project_rename(cfg, plan)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+    else:
+        plan = {**plan, "written": False}
+    if as_json:
+        json.dump({"schema": "nw.projects.rename.v1", **plan}, sys.stdout, indent=2,
+                  ensure_ascii=False)
+        sys.stdout.write("\n")
+        return
+    console.print(f"[bold]plan[/]  rename  {plan['old']!r} → {plan['new']!r}")
+    console.print(f"  config: {plan['config_path']}")
+    console.print(f"  outbox: {plan['outbox_old']} → {plan['outbox_new']}"
+                  f"  ({'exists' if plan['outbox_exists'] else 'missing — config-only'})")
+    console.print(f"  ideas:  {plan['idea_count']} :PROJECT: rewrite(s); "
+                  f"{plan['ext_headline_hits']} Ext headline(s); "
+                  f"idea_extensions key={'yes' if plan['idea_extensions_key'] else 'no'}")
+    for w in plan.get("warnings") or []:
+        console.print(f"  [yellow]![/] {w}")
+    if do_write:
+        console.print(
+            f"[green]✓ applied[/] ideas={plan.get('ideas_updated', 0)} "
+            f"ext={plan.get('ext_renamed', 0)} "
+            f"fm_target_project={plan.get('fm_target_project_updated', 0)} "
+            f"outbox_renamed={plan.get('outbox_renamed', False)}")
+        console.print("[dim]outbound ids unchanged (v1); optional: nw spec reconcile[/]")
+    else:
+        console.print("[dim]not written — re-run with --yes to apply[/]")
+
+
+class IdeasGroup(click.Group):
+    """`nw ideas [filters…]` lists; `nw ideas export|list …` are explicit subcommands (SPEC-0132).
+
+
+    Prepends `list` in `parse_args` so flags like `--json` are not rejected as unknown
+    *group* options before the subcommand is chosen (same problem `IdeaGroup` avoids by
+    putting free text first).
+    """
+
+    def parse_args(self, ctx, args):
+        args = list(args)
+        if not args or args[0] not in self.commands:
+            args = ["list", *args]
+        return super().parse_args(ctx, args)
+
+
+@cli.group("ideas", cls=IdeasGroup)
+def ideas_group():
+    """List ideas (default) or export a filtered org slice (SPEC-0132).
+
+    \b
+    nw ideas                open ideas
+    nw ideas --all          incl. PROMOTED/DROPPED
+    nw ideas export -o PATH --project Meta-Tools --all
+    """
+
+
+@ideas_group.command("list")
+@click.option("--state", help="only this idea state",
+              shell_complete=C.complete_idea_state)
+@click.option("--kind", type=click.Choice(list(IDEA_KINDS), case_sensitive=False),
+              help="only this capture kind (SPEC-0044)")
+@click.option("--tag", help="only ideas with this tag (SPEC-0089)")
+@click.option("--project", help="only ideas under this project (SPEC-0089)",
+              shell_complete=C.complete_project)
+@click.option("--epic", help="only ideas under this :EPIC: spec id (SPEC-0116)")
+@click.option("--workstream", help="only this :WORKSTREAM: (SPEC-0090)",
+              shell_complete=C.complete_workstream)
+@click.option("--priority", type=click.Choice(["A", "B", "C"]),
+              help="only this priority (A/B/C; SPEC-0093)")
+@click.option("--all", "all_done", is_flag=True, help="include PROMOTED/DROPPED")
+@click.option("--query", "query", default=None,
+              help="search heading+Summary/questions/Log (SPEC-0086); implies full corpus")
+@click.option("--limit", default=25, show_default=True, type=int,
+              help="max --query hits (0 = unlimited)")
+@click.option("--tree", is_flag=True,
+              help="group project > epic > idea (SPEC-0114); nesting needs --all")
+@click.option("--reindex", is_flag=True, help="backfill :ID: on id-less ideas, then list")
+@click.option("--json", "as_json", is_flag=True,
+              help="emit nw.ideas.v1 JSON on stdout (no Rich table)")
+@click.option("--plain", is_flag=True, help="spell the kind out instead of using a glyph")
+@click.option("--sort", type=click.Choice(list(R.IDEA_SORT_NAMES), case_sensitive=False),
+              help="override order (SPEC-0094; default freshness; ignored with --query)")
+@click.option("--desc", is_flag=True, help="reverse --sort order (SPEC-0094)")
+@click.pass_obj
+def ideas_list_cmd(cfg, state, kind, tag, project, epic, workstream, priority, all_done, query,
+                   limit, reindex, as_json, plain, sort, desc, tree):
+    """List ideas. Default: open (non-done) ideas. The headline column uses the full terminal
+    width (set COLUMNS=N when piping); next-step hints live on `nw next` (SPEC-0075).
+
+    \b
+    nw ideas                open ideas
+    nw ideas --all          incl. PROMOTED/DROPPED
+    nw ideas --state INCUBATE
+    nw ideas --kind bug     only bugs (capture label)
+    nw ideas --tag X        only tagged X (SPEC-0089)
+    nw ideas --project P    only that project (SPEC-0089)
+    nw ideas --workstream W only that workstream (SPEC-0090)
+    nw ideas --priority A   only [#A] (SPEC-0093)
+    nw ideas --sort priority  A before B before C (SPEC-0094)
+    nw ideas --query TEXT   related-idea search (open+closed; SPEC-0086)
+    nw ideas --json         structured stdout for agents
+    nw ideas --reindex      backfill ids onto pre-existing id-less ideas
+    """
+    if reindex:
+        assigned = reindex_ideas(cfg)
+        if assigned:
+            for idea_id, heading in assigned:
+                console.print(f"[green]✓[/] {idea_id}  [white]{heading}[/]")
+        else:
+            console.print("[dim]no id-less ideas to reindex[/]")
+    if query is not None and not query.strip():
+        raise click.BadParameter("query must contain at least one token", param_hint="--query")
+    if project:
+        from .org_write import _warn_unknown_associations
+        _warn_unknown_associations(cfg, project=project)
+    R.ideas(cfg, state=state, all_done=all_done, as_json=as_json, kind=kind, plain=plain,
+            query=query, limit=limit, tag=tag, project=project, workstream=workstream,
+            priority=priority, sort=sort, desc=desc, tree=tree, epic=epic)
+
+
+@ideas_group.command("group-followups")
+@click.option("--yes", "apply", is_flag=True, help="write the groups and close the singles")
+@click.option("--json", "as_json", is_flag=True, help="emit nw.ideas.group_followups.v1 JSON")
+@click.pass_obj
+def ideas_group_followups_cmd(cfg, apply, as_json):
+    """Fold the open single `nwfu:` review follow-up ideas into one grouped idea per spec
+    (SPEC-0239). Dry run unless --yes; the singles are closed as DROPPED, FOLDED_INTO the group.
+
+    \b
+    nw ideas group-followups          plan only
+    nw ideas group-followups --yes    write it
+    """
+    from .agentic import followups as FU
+    try:
+        report = FU.group_legacy(cfg, apply=apply)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        click.echo(json.dumps(report, indent=2))
+        return
+    if not report["groups"]:
+        console.print("[dim]no open single follow-up ideas to group[/]")
+        return
+    for g in report["groups"]:
+        ids = ", ".join(g["singles"])
+        target = (g.get("group_id") or g["target"]) if apply else g["target"]
+        console.print(f"{g['spec_id']}  {len(g['singles'])} singles ({escape(ids)})  "
+                      f"\u2192 {target}  ({len(g['lines'])} new lines)", highlight=False)
+    console.print(f"{len(report['groups'])} groups, {report['singles']} singles"
+                  + ("" if apply else "  \u2014 re-run with --yes"), highlight=False)
+
+
+@ideas_group.command("export")
+@click.option("--state", help="only this idea state",
+              shell_complete=C.complete_idea_state)
+@click.option("--kind", type=click.Choice(list(IDEA_KINDS), case_sensitive=False),
+              help="only this capture kind (SPEC-0044)")
+@click.option("--tag", help="only ideas with this tag (SPEC-0089)")
+@click.option("--project", help="only ideas under this project (SPEC-0089)",
+              shell_complete=C.complete_project)
+@click.option("--epic", help="only ideas under this :EPIC: spec id (SPEC-0116)")
+@click.option("--workstream", help="only this :WORKSTREAM: (SPEC-0090)",
+              shell_complete=C.complete_workstream)
+@click.option("--priority", type=click.Choice(["A", "B", "C"]),
+              help="only this priority (A/B/C; SPEC-0093)")
+@click.option("--all", "all_done", is_flag=True, help="include PROMOTED/DROPPED")
+@click.option("-o", "--output", "output", type=click.Path(),
+              help="write org file here (required unless --dry-run)")
+@click.option("--dry-run", is_flag=True, help="print matching idea ids; do not write")
+@click.pass_obj
+def ideas_export_cmd(cfg, state, kind, tag, project, epic, workstream, priority, all_done,
+                     output, dry_run):
+    """Export filtered idea subtrees to an org file (SPEC-0132). Read-only — never moves org.
+
+    \b
+    nw ideas export --project Meta-Tools --all -o /tmp/ideas.org
+    nw ideas export --project Meta-Tools --all --dry-run
+    """
+    from .idea_export import export_idea_subtrees
+    if not dry_run and not output:
+        raise click.UsageError("pass -o/--output PATH or --dry-run")
+    try:
+        ids = export_idea_subtrees(
+            cfg, None if dry_run else output, dry_run=dry_run, state=state, all_done=all_done,
+            kind=kind, tag=tag, project=project, epic=epic, workstream=workstream,
+            priority=priority,
+        )
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if dry_run:
+        console.print(f"[dim]{len(ids)} idea(s)[/]")
+        for iid in ids:
+            console.print(iid)
+        return
+    console.print(f"[green]✓[/] exported {len(ids)} idea(s) → [white]{output}[/]")
+
+
+@cli.command("release-archive")
+@click.option("-o", "--output", "output", type=click.Path(),
+              help="output .tar.gz path (default: ../work-tracking-YYYYMMDD-<sha>.tar.gz)")
+@click.option("--project", default="Meta-Tools", show_default=True,
+              help="idea :PROJECT: for the ideas/ slice",
+              shell_complete=C.complete_project)
+@click.option("--all/--no-all", "all_done", default=True, show_default=True,
+              help="include done/archived ideas in the slice (SPEC-0133)")
+@click.pass_obj
+def release_archive_cmd(cfg, output, project, all_done):
+    """Pack git HEAD + a filtered idea org slice into one release tarball (SPEC-0133).
+
+    \b
+    nw release-archive
+    nw release-archive -o /tmp/nightwright.tgz --project Meta-Tools
+    """
+    from .release_archive import build_release_archive
+    try:
+        path = build_release_archive(cfg, output, project=project, all_done=all_done)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] release archive → [white]{path}[/]")
+
+
+@cli.command("next")
+@click.option("--all", "all_done", is_flag=True,
+              help="include PROMOTED (DROPPED still omitted)")
+@click.option("--json", "as_json", is_flag=True,
+              help="emit nw.next.v1 JSON on stdout (no Rich table)")
+@click.option("--plain", is_flag=True, help="spell the kind out instead of using a glyph")
+@click.option("--state", help="only this idea state (SPEC-0096)",
+              shell_complete=C.complete_idea_state)
+@click.option("--kind", type=click.Choice(list(IDEA_KINDS), case_sensitive=False),
+              help="only this capture kind (SPEC-0096)")
+@click.option("--tag", help="only this tag (SPEC-0096)")
+@click.option("--project", help="only this project (SPEC-0096)",
+              shell_complete=C.complete_project)
+@click.option("--workstream", help="only this :WORKSTREAM: (SPEC-0096)",
+              shell_complete=C.complete_workstream)
+@click.option("--priority", type=click.Choice(["A", "B", "C"]),
+              help="only this priority (SPEC-0096)")
+@click.pass_obj
+def next_cmd(cfg, all_done, as_json, plain, state, kind, tag, project, workstream, priority):
+    """Next-step hints for open ideas. Same rules as the `next` column on `nw ideas`.
+    See docs/WORKFLOW.md.
+
+    \b
+    nw next                 open ideas + recommended command
+    nw next --all           also PROMOTED (build reminders)
+    nw next --project P     only that project (SPEC-0096)
+    nw next --json          structured stdout for agents
+    """
+    R.next_ideas(cfg, all_done=all_done, as_json=as_json, plain=plain, state=state,
+                 kind=kind, tag=tag, project=project, workstream=workstream,
+                 priority=priority)
+
+
+@cli.command("hub")
+@click.option("--json", "as_json", is_flag=True,
+              help="emit nw.hub.v1 JSON on stdout (required in v1)")
+@click.option("--tasks-slice", "tasks_slice",
+              type=click.Choice(["today", "open", "none"], case_sensitive=False),
+              default="today", show_default=True,
+              help="hub task block: today+overdue (default), capped open, or omit (SPEC-0092)")
+@click.option("--state", help="filter ideas + today/open tasks by state (SPEC-0096)",
+              shell_complete=C.complete_idea_state)
+@click.option("--kind", type=click.Choice(list(IDEA_KINDS), case_sensitive=False),
+              help="filter hub ideas by capture kind (SPEC-0096)")
+@click.option("--tag", help="filter ideas + today/open tasks by tag (SPEC-0096)")
+@click.option("--project", help="filter ideas + today/open tasks by project (SPEC-0096)",
+              shell_complete=C.complete_project)
+@click.option("--workstream", help="filter ideas + today/open tasks by workstream (SPEC-0096)",
+              shell_complete=C.complete_workstream)
+@click.option("--priority", type=click.Choice(["A", "B", "C"]),
+              help="filter ideas + today/open tasks by priority (SPEC-0096)")
+@click.pass_obj
+def hub_cmd(cfg, as_json, tasks_slice, state, kind, tag, project, workstream, priority):
+    """Read-only triage across open ideas, active internal specs, and outbound outbox
+    (SPEC-0052). Never writes docs/LEDGER.md. Includes a tasks/today slice (SPEC-0092).
+
+    \b
+    nw hub --json                     nw.hub.v1 + today{date,overdue,tasks}
+    nw hub --json --project P         ideas + today filtered (SPEC-0096)
+    nw hub --json --tasks-slice open  capped open actionable tasks
+    nw hub --json --tasks-slice none  ideas/specs only
+    """
+    try:
+        R.hub(cfg, as_json=as_json, tasks_slice=tasks_slice, state=state, kind=kind,
+              tag=tag, project=project, workstream=workstream, priority=priority)
+    except ValueError as e:
+        raise click.UsageError(str(e))
+
+
+@cli.command("tui")
+@click.option("--state", help="open pre-filtered to this idea state (SPEC-0100)",
+              shell_complete=C.complete_idea_state)
+@click.option("--kind", type=click.Choice(list(IDEA_KINDS), case_sensitive=False),
+              help="open pre-filtered to this capture kind")
+@click.option("--tag", help="open pre-filtered to this tag")
+@click.option("--project", help="open pre-filtered to this project",
+              shell_complete=C.complete_project)
+@click.option("--workstream", help="open pre-filtered to this :WORKSTREAM:",
+              shell_complete=C.complete_workstream)
+@click.option("--priority", type=click.Choice(["A", "B", "C"]),
+              help="open pre-filtered to this priority")
+@click.option("--sort", type=click.Choice(list(R.IDEA_SORT_NAMES), case_sensitive=False),
+              help="list order (default freshness, same as `nw ideas`)")
+@click.option("--desc", is_flag=True, help="reverse --sort order")
+@click.option("--all", "all_done", is_flag=True, help="start with non-active ideas shown")
+@click.option("--query", default=None, help="open on a related-idea search (SPEC-0086)")
+@click.option("--tab", type=click.Choice(["ideas", "hub", "queue", "events", "mailbox"],
+                                case_sensitive=False),
+              default="ideas", show_default=True, help="tab to open on (SPEC-0241/0249/0251)")
+@click.option("--campaign", "campaign", default=None, shell_complete=C.complete_campaign_id,
+              help="open this campaign's detail screen (id or unique prefix, SPEC-0246)")
+@click.pass_obj
+def tui_cmd(cfg, state, kind, tag, project, workstream, priority, sort, desc, all_done, query,
+            tab, campaign):
+    """Interactive ideas desk (SPEC-0098/0099/0100). Needs the optional `tui` extra.
+
+    Read-only in v1: browse, search, expand Summary / questions / Log. Human-only surface —
+    agents keep the classic commands and `--json`. Install with `uv sync --extra tui` from a
+    checkout, or `uv tool install 'nightwright[tui]'`.
+
+    \b
+    nw tui                    active ideas, freshest first
+    nw tui --all              start with non-active shown (`a` toggles in-app)
+    nw tui --project Example    open pre-filtered
+    nw tui --query textual    open on a search (`/` searches in-app)
+    nw tui --tab queue        open on the live agentic queue (`1`..`5` switch tabs)
+    nw tui --tab events       open on the queue event stream and watchdog conditions
+    nw tui --tab mailbox      open on the mailbox: inboxes, threads, reply as human
+    nw tui --campaign ID      open one campaign's timeline, runs, gates and reviews
+    """
+    from . import tui as T
+
+    if campaign:
+        from .agentic import store as agentic_store
+        known = [c["id"] for c in agentic_store.list_campaigns(cfg, include_terminal=True)]
+        hits = [c for c in known if c == campaign] or [c for c in known if c.startswith(campaign)]
+        if not hits:
+            raise click.ClickException(f"unknown campaign {campaign!r}")
+        if len(hits) > 1:
+            raise click.ClickException(
+                f"campaign prefix {campaign!r} is ambiguous: {', '.join(sorted(hits))}")
+        campaign = hits[0]
+    try:
+        T.run(cfg, all_done=all_done, query=query, tab=tab.lower(), campaign=campaign,
+              filters={"state": state, "kind": kind, "tag": tag, "project": project,
+                       "workstream": workstream, "priority": priority,
+                       "sort": sort, "desc": desc})
+    except T.MissingTextual as e:
+        raise click.ClickException(str(e))
+
+
+@cli.group("spec")
+def spec_group():
+    """Spec scaffolding (SPEC-0013+). Doesn't wrap tools/spec_lint.py (still a dev tool)."""
+
+
+@spec_group.command("new")
+@click.option("--from-idea", "from_idea", help="idea selector to promote",
+              shell_complete=C.complete_idea_id)
+@click.option("--target",
+              help="scaffold an OUTBOUND spec for this project "
+                   "(<data_dir>/outbox/<target>/)",
+              shell_complete=C.complete_outbox_target)
+@click.option("--internal", is_flag=True,
+             help="force an internal SPEC-NNNN even if the idea has a :PROJECT:")
+@click.option("--epic", is_flag=True,
+              help="scaffold from TEMPLATE-epic.md (internal or outbound)")
+@click.option("--title", help="override the derived title (default: the idea's heading)")
+@click.option("--force", is_flag=True,
+              help="re-promote an idea that already has a :SPEC:; also skip empty-Summary warn")
+@click.pass_obj
+def spec_new_cmd(cfg, from_idea, target, internal, epic, title, force):
+    """Promote an org idea into a scaffolded draft spec, routed by its :PROJECT: association
+    (SPEC-0020): a project mapped in outbox_targets promotes OUTBOUND
+    (<data_dir>/outbox/<proj>/); no project (or --internal) promotes an internal SPEC-NNNN;
+    an unconfigured project errors rather than silently minting an internal id. --target
+    overrides the routing target and also scaffolds a blank OUTBOUND spec when --from-idea
+    is omitted.
+
+    \b
+    nw spec new --from-idea "instant review agent"
+    nw spec new --from-idea idea-42 --epic --title "Review platform"
+    nw spec new --from-idea idea-7 --internal
+    nw spec new --target acme --from-idea "adversarial reviewer"
+    nw spec new --target acme --title "Adversarial reviewer"
+    """
+    project = target
+    try:
+        if from_idea:
+            idea = resolve_selector(cfg, from_idea)
+            if project is None and not internal:
+                project = idea.properties.get("PROJECT")
+            path, spec_id, kind = promote_idea(cfg, from_idea, internal=internal, target=target,
+                                               epic=epic, title=title, force=force)
+        elif target:
+            path, spec_id = scaffold_outbound(cfg, target, from_idea=from_idea, title=title)
+            kind = "outbound"
+        else:
+            raise click.UsageError("--from-idea is required (or pass --target for an "
+                                   "outbound spec)")
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if kind == "internal":
+        routed = "internal"
+    else:
+        repo = (cfg.get("outbox_targets") or {}).get(project, {}).get("repo_path", project)
+        routed = f"outbound → {repo}"
+    # SPEC-0167: name the idea's heading so a wrong id is visible at a glance.
+    src = f"<- {idea.id or from_idea} {escape(repr(idea.heading))}" if from_idea else ""
+    console.print(f"[green]✓[/] {spec_id}  [white]{path}[/]  [dim]{routed} {src}[/]")
+
+
+def _spec_by():
+    import os
+    return os.environ.get("NW_MAILBOX_ADDR") or "human"
+
+
+def _reservation_age(rec):
+    try:
+        secs = (dt.datetime.now().astimezone() - dt.datetime.fromisoformat(rec["at"])
+                ).total_seconds()
+    except (KeyError, ValueError, TypeError):
+        return "?"
+    secs = max(int(secs), 0)
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if secs >= size:
+            return f"{secs // size}{unit}"
+    return f"{secs}s"
+
+
+_specs_dir_opt = click.option("--specs-dir", "specs_dir", type=click.Path(file_okay=False),
+                              help="another repository's spec directory (default: the "
+                                   "internal specs directory)")
+
+
+@spec_group.command("reserve")
+@click.option("--for", "for_", help="free-text note: what the number is for")
+@click.option("--json", "as_json", is_flag=True, help="machine-readable output")
+@_specs_dir_opt
+@click.pass_obj
+def spec_reserve_cmd(cfg, for_, as_json, specs_dir):
+    """Reserve the next free SPEC number (SPEC-0208), visible across every branch and
+    worktree of the repository. Release with `nw spec release`; it is pruned automatically
+    once the number is committed on a branch."""
+    from . import spec_numbers as SN
+    try:
+        rec = SN.allocate(cfg, by=_spec_by(), note=for_, specs_dir=specs_dir)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        click.echo(json.dumps({"schema": "nw.spec.reservation.v1", **rec}, indent=2))
+    else:
+        click.echo(rec["id"])
+
+
+@spec_group.command("reservations")
+@click.option("--all", "all_keys", is_flag=True, help="every repository / spec directory")
+@click.option("--json", "as_json", is_flag=True, help="machine-readable output")
+@_specs_dir_opt
+@click.pass_obj
+def spec_reservations_cmd(cfg, all_keys, as_json, specs_dir):
+    """List live SPEC-number reservations (SPEC-0208); committed ones are pruned first."""
+    from . import spec_numbers as SN
+    try:
+        recs = SN.list_reservations(cfg, specs_dir=specs_dir, all_keys=all_keys)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        click.echo(json.dumps({"schema": "nw.spec.reservations.v1", "reservations": recs},
+                              indent=2))
+        return
+    if not recs:
+        console.print("[dim]no reservations[/]")
+        return
+    from rich.table import Table
+    table = Table(show_header=True, header_style="bold")
+    for col in ("id", "note", "by", "campaign", "age"):
+        table.add_column(col)
+    for r in recs:
+        table.add_row(r["id"], escape(r.get("note") or ""), escape(r.get("by") or ""),
+                      escape(r.get("campaign") or ""), _reservation_age(r))
+    console.print(table)
+
+
+@spec_group.command("release")
+@click.argument("number")
+@click.option("--yes", is_flag=True, help="apply (default is a dry run)")
+@_specs_dir_opt
+@click.pass_obj
+def spec_release_cmd(cfg, number, yes, specs_dir):
+    """Release a SPEC-number reservation (SPEC-0208). Dry run without --yes."""
+    from . import spec_numbers as SN
+    try:
+        if yes:
+            rec = SN.release(cfg, number, specs_dir=specs_dir)
+        else:
+            n = SN.parse_number(number)
+            rec = next((r for r in SN.list_reservations(cfg, specs_dir=specs_dir)
+                        if r["number"] == n), None)
+            if rec is None:
+                raise ValueError(f"SPEC-{n:04d} is not reserved under this spec directory")
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if yes:
+        console.print(f"[green]✓[/] released {rec['id']}")
+    else:
+        console.print(f"would release {rec['id']} (by {escape(rec.get('by') or '')}); "
+                      f"pass --yes to apply")
+
+
+@spec_group.command("export")
+@click.argument("outbound_id", shell_complete=C.complete_outbound_id)
+@click.option("--scheme", help="export scheme (default: nw-native, or the target's "
+                              "configured outbox_targets[project].scheme)",
+              shell_complete=C.complete_scheme)
+@click.option("--emit", "emit", multiple=True,
+             help="only emit this artifact (repeatable); default: everything the scheme owns",
+             shell_complete=C.complete_emit)
+@click.option("--to", type=click.Path(file_okay=False),
+              help="destination repo path (default: configured outbox_targets[...])")
+@click.option("--force", is_flag=True,
+             help="overwrite existing owned/spliced content that differs")
+@click.option("--task-id", "task_id",
+              help="pin allocated task id X.Y.Z when the scheme supports it (overrides frontmatter task_id)")
+@click.pass_obj
+def spec_export_cmd(cfg, outbound_id, scheme, emit, to, force, task_id):
+    """File-drop an outbound spec into its target repo via a pluggable export scheme
+    (SPEC-0015's nw-native by default; other schemes via --scheme, SPEC-0016).
+
+    Successful export advances the linked idea to EXPORTED (SPEC-0041).
+
+    \b
+    nw spec export ACME-0001                             into outbox_targets[acme]
+    nw spec export ACME-0001 --to /tmp/somerepo           explicit destination
+    nw spec export ACME-0001 --scheme nw-native --to .
+    nw spec export ACME-0001 --emit task-spec             only that artifact
+    nw spec export ACME-0001 --force                      overwrite despite divergence
+    nw spec export ACME-0001 --scheme nw-native --to .
+    """
+    try:
+        result = export_spec(cfg, outbound_id, scheme=scheme, emit=emit or None, to=to,
+                             force=force, task_id=task_id)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if isinstance(result, tuple):
+        dest_spec, dest_contract = result
+        detail = f"[white]{dest_spec}[/]"
+        if dest_contract:
+            detail += f"  [dim]+ {dest_contract}[/]"
+    else:
+        detail = "  ".join(f"[white]{p}[/]" for p in result)
+    console.print(f"[green]✓[/] {outbound_id} exported  {detail}")
+
+
+@spec_group.command("pull-status")
+@click.argument("outbound_id", shell_complete=C.complete_outbound_id)
+@click.option("--to", type=click.Path(file_okay=False),
+              help="destination repo path (default: configured outbox_targets[...])")
+@click.pass_obj
+def spec_pull_status_cmd(cfg, outbound_id, to):
+    """Mirror portable `status` from the target repo into the outbox copy (SPEC-0041).
+
+    The portable file in the target is the working copy for build progress; this command
+    is optional convenience — you can also edit the outbox frontmatter by hand.
+
+    \b
+    nw spec pull-status ACME-0001
+    nw spec pull-status ACME-0001 --to /tmp/somerepo
+    """
+    from .export import pull_status
+    try:
+        path, status = pull_status(cfg, outbound_id, to=to)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] {outbound_id} status → {status}  [dim]{path}[/]")
+
+
+@spec_group.command("pull-clock")
+@click.argument("outbound_id", shell_complete=C.complete_outbound_id)
+@click.option("--to", type=click.Path(file_okay=False),
+              help="destination repo path (default: configured outbox_targets[...])")
+@click.pass_obj
+def spec_pull_clock_cmd(cfg, outbound_id, to):
+    """Reconcile a portable spec's markdown Clock Log into org CLOCK: entries on the linked
+    idea (SPEC-0060/0062/0063). Idempotent; requires source_idea on the outbound spec.
+
+    \b
+    nw spec pull-clock ACME-0001
+    """
+    from .export import pull_clock
+    try:
+        idea_id, added = pull_clock(cfg, outbound_id, to=to)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] {outbound_id} → {idea_id}  {added} clock entr"
+                 f"{'y' if added == 1 else 'ies'} added")
+
+
+@spec_group.command("fit-log")
+@click.argument("outbound_id", shell_complete=C.complete_outbound_id)
+@click.option("--note", required=True, help="fit/miss note to append on the source idea Log")
+@click.pass_obj
+def spec_fit_log_cmd(cfg, outbound_id, note):
+    """Append a post-ship fit/miss note to the outbound's source idea Log (SPEC-0049).
+
+    \b
+    nw spec fit-log ACME-0001 --note "used it; filters still too coarse"
+    """
+    from .export import fit_log
+    try:
+        idea_id, path = fit_log(cfg, outbound_id, note)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] fit-log ← {idea_id} ({outbound_id})  [dim]{path}[/]")
+
+
+@spec_group.command("postmortem")
+@click.argument("spec_id", shell_complete=C.complete_any_spec_id)
+@click.option("--note", required=True, help="defect/post-mortem note to append on the source idea Log")
+@click.pass_obj
+def spec_postmortem_cmd(cfg, spec_id, note):
+    """Append a post-mortem/defect note to a spec's linked source idea's Log (SPEC-0069).
+
+    Works for internal (SPEC-NNNN) and outbound (PROJ-NNNN) specs alike — for a defect found
+    in already-done (or any) work, distinct from `nw spec fit-log`'s narrower post-ship
+    fit/miss framing.
+
+    \b
+    nw spec postmortem SPEC-0063 --note "parse_clock_log silently dropped unbracketed timestamps"
+    """
+    from .export import postmortem
+    try:
+        idea_id, path = postmortem(cfg, spec_id, note)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] postmortem ← {idea_id} ({spec_id})  [dim]{path}[/]")
+
+
+@spec_group.command("status")
+@click.argument("spec_id", shell_complete=C.complete_any_spec_id)
+@click.option("--set", "new_status", type=click.Choice(SPEC_STATUSES), default=None,
+              help="set the frontmatter status (edits only status: and updated:)")
+@click.option("--json", "as_json", is_flag=True, help="emit nw.spec.status.v1")
+@click.pass_obj
+def spec_status_cmd(cfg, spec_id, new_status, as_json):
+    """Show or set a spec's frontmatter status (SPEC-0179).
+
+    A pencil, not a judge: no lifecycle validation (`nw spec verify` and the linter own that)
+    and no ledger regeneration (run `python3 tools/spec_lint.py --write-ledger`).
+
+    \b
+    nw spec status SPEC-0179
+    nw spec status SPEC-0179 --set in-progress
+    nw spec status SPEC-0179 --json
+    """
+    import json as _json
+    import sys
+
+    from .specs import resolve_spec_path, set_spec_status, spec_status
+    try:
+        path = resolve_spec_path(cfg, spec_id)
+        old = None
+        if new_status:
+            old, _ = set_spec_status(path, new_status)
+        info = spec_status(path)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        _json.dump({"schema": "nw.spec.status.v1", "id": spec_id, "path": str(path),
+                    "status": info["status"], "updated": info["updated"]},
+                   sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+    elif new_status:
+        console.print(f"{spec_id}  {old} → {new_status}  [dim]{path}[/]")
+    else:
+        console.print(f"{spec_id}  {info['status']}")
+
+
+def _show_review(shown, as_json):
+    """`nw spec review --show` output (SPEC-0242): the review, then one status line."""
+    import json as _json
+    import sys
+    if as_json:
+        _json.dump(shown, sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return
+    review, adm = shown["review"], shown["admission"]
+    _print_review(review, shown["profile"])
+    admissible = adm["kind"] if adm["ok"] else f"no — {adm['message']}"
+    console.print(f"reviewed {str(review.get('spec_sha256') or '')[:12]} · "
+                  f"{'current' if shown['matches_current'] else 'edited since'} · "
+                  f"admissible: {admissible}", highlight=False, markup=False, soft_wrap=True)
+
+
+def _print_review(review, pick):
+    """The human rendering of a stored or fresh spec review (SPEC-0188, SPEC-0242)."""
+    spec_id, verdict = review.get("spec_id"), review.get("verdict")
+    color = {"approve": "green", "revise": "yellow", "split": "yellow"}.get(verdict, "default")
+    cost = review.get("cost_usd")
+    cost_txt = f"  ${cost:.2f}" if isinstance(cost, (int, float)) else ""
+    # Stored fields are untrusted persona text: escape before they enter markup (SPEC-0265).
+    def esc(v):
+        return escape(str(v))
+
+    console.print(f"[bold]{esc(spec_id)}[/]  [{color}]{esc(verdict)}[/]  "
+                  f"{esc(review.get('model'))}{cost_txt}  "
+                  f"[dim]profile {esc(review.get('reviewer_profile') or '-')}[/]")
+    if review.get("size"):
+        console.print(f"  size {esc(review['size'])}  tone {esc(review.get('tone'))}",
+                      highlight=False)
+        console.print(f"  rationale: {esc(review.get('rationale') or '-')}", highlight=False)
+        if review["size"] == "xl":
+            console.print("  xl: split recommended, no profile", highlight=False)
+        elif pick:
+            console.print(f"  → profile [bold]{esc(pick['profile'])}[/]  "
+                          f"[dim]{esc(pick['reason'])}[/]")
+    findings = [f for f in review.get("findings") or [] if isinstance(f, dict)] \
+        if isinstance(review.get("findings"), list) else []
+    if findings:
+        from rich.table import Table
+        from rich.text import Text
+        from .agentic.personas import finding_text
+        table = Table(show_header=True, header_style="bold")
+        for col in ("severity", "section", "title", "detail"):
+            table.add_column(col, overflow="fold")
+        for f in findings:
+            table.add_row(*(Text(str(f.get(k) or "")) for k in ("severity", "section", "title")),
+                          Text(finding_text(f) or ""))
+        console.print(table)
+    splits = review.get("suggested_splits")
+    for sp in splits if isinstance(splits, list) else []:
+        if not isinstance(sp, dict):
+            continue
+        console.print(f"  split: [bold]{esc(sp.get('title'))}[/] — {esc(sp.get('scope', ''))}",
+                      highlight=False)
+
+
+@spec_group.command("review")
+@click.argument("spec_id", required=False, shell_complete=C.complete_any_spec_id)
+@click.option("--path", "path", type=click.Path(exists=True, dir_okay=False),
+              help="review this spec file (any repository) instead of a SPEC-ID")
+@click.option("--json", "as_json", is_flag=True, help="emit the nw.spec.review.v1 payload")
+@click.option("--force", is_flag=True,
+              help="review a spec that already has a stored review (an extra round)")
+@click.option("--show", is_flag=True,
+              help="print the stored review without running a reviewer (SPEC-0242)")
+@click.option("--profile", default=None, shell_complete=C.complete_profile,
+              help="reviewer profile (default: agentic.spec_review_profile, else "
+                   "agentic.default_profile)")
+@click.pass_obj
+def spec_review_cmd(cfg, spec_id, path, as_json, force, show, profile):
+    """Review a spec with the read-only spec_reviewer persona (SPEC-0188).
+
+    Stores the review in the data dir, keyed by the spec id and the file's hash
+    (`<data>/agentic/reviews/<SPEC-ID>/<sha>.json`); `nw queue add` admits a spec with an
+    `approve` for its current text, or one whose latest review is a `revise` and whose text
+    was edited since. A spec is reviewed once: reviewing an already-reviewed spec needs
+    --force and warns. Give exactly one of SPEC-ID and --path;
+    --path reviews a file in any repository, with that repository as the reviewer's root.
+    Run inside a checkout (main or linked worktree) of the specs repository, a SPEC-ID
+    reviews that checkout's copy; elsewhere, the registered checkout's. The reviewed file
+    is printed first.
+
+    --show prints the stored review instead (no reviewer runs, nothing is journaled): the
+    verdict and findings, whether the file changed since, the profile `nw queue add` would
+    pick and whether it would admit the spec now. `nw spec reviews` lists them all.
+
+    --profile NAME runs the reviewer with that profile's spec_reviewer model, effort and
+    budget (SPEC-0278); without it `agentic.spec_review_profile` is used, else
+    `agentic.default_profile`. The profile is recorded in the review. It does not allow a
+    second round: that still needs --force.
+
+    \b
+    nw spec review SPEC-0188
+    nw spec review SPEC-0188 --profile thorough
+    nw spec review SPEC-0188 --json
+    nw spec review SPEC-0188 --show
+    nw spec review --path ~/code/other/docs/specs/0007-thing.md
+    """
+    import json as _json
+    import sys
+    from pathlib import Path
+
+    from .agentic.spec_review import (latest_review, reviewer_run_settings, reviewing_line,
+                                      run_spec_review, show_payload, spec_root, would_pick)
+    from .specmeta import split_frontmatter
+    from .specs import resolve_spec_path_for_cwd
+    if bool(spec_id) == bool(path):
+        raise click.UsageError("give exactly one of SPEC-ID and --path")
+    if show and force:
+        raise click.UsageError("--show and --force cannot be combined")
+    if show and profile:
+        raise click.UsageError("--show and --profile cannot be combined")
+    try:
+        if path:
+            fm, _ = split_frontmatter(Path(path).read_text(encoding="utf-8"))
+            spec_id = str((fm or {}).get("id") or "")
+            if not spec_id:
+                raise click.ClickException(f"{path}: front matter has no `id`")
+            spec_path, origin = Path(path), "path"
+        else:
+            spec_path, origin = resolve_spec_path_for_cwd(cfg, spec_id)
+        if show:
+            shown = show_payload(cfg, spec_path, spec_id)
+            if shown is None:
+                raise click.ClickException(
+                    f"{spec_id} has no stored review; run nw spec review {spec_id}")
+            _show_review(shown, as_json)
+            return
+        prior = latest_review(cfg, spec_id, spec_path)                # SPEC-0230
+        if prior is not None:
+            what = f"{prior.get('verdict')}, {str(prior.get('spec_sha256') or '')[:12]}"
+            if not force:
+                raise click.ClickException(
+                    f"{spec_id} was already reviewed ({what}); a revised spec is queued "
+                    f"without a second review. Pass --force for an extra round")
+            click.echo(f"warning: extra review round for {spec_id} (previous: {what})",
+                       err=True)
+        prof, settings = reviewer_run_settings(cfg, spec_path, profile)   # SPEC-0278
+        line = (f"{reviewing_line(cfg, spec_path, origin)}  "
+                f"· profile {prof['name']} ({settings.get('model') or 'sonnet'})")
+        if as_json:
+            click.echo(line, err=True)
+        else:
+            console.print(line, highlight=False, markup=False, soft_wrap=True)
+        review = run_spec_review(cfg, spec_path, spec_id, origin=origin,
+                                 resolved=(prof, settings))
+        pick = would_pick(cfg, review, project_root=spec_root(cfg, spec_path))
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        _json.dump({**review, "profile": pick["profile"] if pick else None}, sys.stdout,
+                   indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return
+    _print_review(review, pick)
+
+
+@spec_group.command("reviews")
+@click.option("--verdict", type=click.Choice(["approve", "revise", "split"]),
+              help="only reviews with this verdict")
+@click.option("--json", "as_json", is_flag=True, help="emit nw.spec.reviews.v1")
+@click.pass_obj
+def spec_reviews_cmd(cfg, verdict, as_json):
+    """List the latest stored review of every spec (SPEC-0242).
+
+    One row per spec in the review store: verdict, the reviewer (`<profile>/<model>`,
+    SPEC-0278), size, tone, finding counts, when it was reviewed and whether it still matches
+    the spec file (`edited` = the spec changed since; `?` = the spec id no longer resolves
+    here). Read one with `nw spec review SPEC-ID --show`.
+
+    \b
+    nw spec reviews
+    nw spec reviews --verdict revise
+    nw spec reviews --json
+    """
+    import json as _json
+    import sys
+
+    from .agentic.spec_review import all_latest_reviews
+    every = all_latest_reviews(cfg)
+    rows = [r for r in every if not verdict or r["verdict"] == verdict]
+    if as_json:
+        _json.dump({"schema": "nw.spec.reviews.v1", "reviews": rows}, sys.stdout, indent=2,
+                   ensure_ascii=False)
+        sys.stdout.write("\n")
+        return
+    from rich.table import Table
+    table = Table(show_header=True, header_style="bold", box=None,
+                  pad_edge=False, collapse_padding=True)
+    for col in ("spec", "verdict", "reviewer", "size", "tone", "findings", "reviewed", "current"):
+        table.add_column(col, overflow="fold", no_wrap=col not in ("tone", "findings"),
+                         min_width=20 if col == "findings" else None)
+    order = ("must_fix", "major", "minor", "nit")
+    for r in rows:
+        counts = r["counts"]
+        sevs = [s for s in order if counts.get(s)] + sorted(s for s in counts if s not in order)
+        found = " · ".join(f"{counts[s]} {s}" for s in sevs) or "-"
+        at = str(r.get("reviewed_at") or "")[:16].replace("T", " ")
+        cur = {True: "yes", False: "edited", None: "?"}[r["matches_current"]]
+        who = "/".join(str(r[k]) for k in ("reviewer_profile", "model") if r.get(k)) or "-"
+        table.add_row(r["spec_id"], str(r["verdict"] or ""), who, str(r.get("size") or "-"),
+                      str(r.get("tone") or "-"), found, at or "-", cur)
+    console.print(table)
+    if not rows:
+        console.print(f"[dim]no {verdict} spec reviews[/]" if every and verdict
+                      else "[dim]no stored spec reviews[/]")
+
+
+@spec_group.command("verify")
+@click.argument("spec_id", shell_complete=C.complete_spec_id)
+@click.option("--json", "as_json", is_flag=True, help="emit nw.spec.verify.v1")
+@click.option("--strict", is_flag=True,
+              help="exit 1 if any mechanical check failed (SPEC-0117)")
+@click.pass_obj
+def spec_verify_cmd(cfg, spec_id, as_json, strict):
+    """Post-hoc Definition-of-Done audit for an internal SPEC-NNNN (SPEC-0117).
+
+    Mechanical checks only (AC boxes, Test plan present, epic children/Breakdown). Does not
+    mutate status. The global /nw-verify skill uses this for internal specs; outbound
+    portables are audited by that skill's Procedure B (no CLI). Outbound ids refused here.
+
+    \b
+    nw spec verify SPEC-0117
+    nw spec verify SPEC-0117 --json
+    nw spec verify SPEC-0117 --strict
+    """
+    import json as _json
+    import sys
+
+    from .verify import verify_spec
+
+    try:
+        report = verify_spec(cfg, spec_id)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if as_json:
+        _json.dump(report, sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+    else:
+        marks = {"pass": ("green", "✓"), "fail": ("red", "✗"),
+                 "warn": ("yellow", "!"), "skip": ("dim", "·")}
+        console.print(f"[bold]{report['id']}[/]  {report.get('kind')}  "
+                      f"status={report.get('status') or '?'}  "
+                      f"{'[green]ok[/]' if report['ok'] else '[red]not ok[/]'}")
+        for c in report["checks"]:
+            style, glyph = marks.get(c["status"], ("dim", "·"))
+            console.print(f"  [{style}]{glyph}[/] {c['name']}: {c['detail']}")
+        console.print("[dim]judgment (agent must attest — not scored by CLI):[/]")
+        for j in report["judgment"]:
+            console.print(f"  [dim]-[/] {j}")
+        console.print("[dim]playbook: /nw-verify[/]")
+    if strict and not report["ok"]:
+        raise SystemExit(1)
+
+
+@spec_group.command("reconcile")
+@click.option("--apply", "do_apply", is_flag=True,
+              help="write the changes (default: dry run)")
+@click.pass_obj
+def spec_reconcile_cmd(cfg, do_apply):
+    """Sync idea states with their linked spec's status (SPEC-0078). Dry run by default.
+
+    Walks every idea carrying a :SPEC: — internal or outbound — plus every idea an internal
+    spec names as `source_idea` but that has no :SPEC: yet (`link`: --apply writes it), and
+    reports where its org state
+    disagrees with the spec: a `done` spec whose idea is still SPECCED, a `superseded`/`rejected`
+    spec whose idea is still open, an idea left behind at IDEA/INCUBATE while its spec is being
+    built. An idea *ahead* of its spec is flagged, never rewound.
+
+    A `source_idea` whose idea was created after the spec (the id was reused since the ideas-file
+    rotation) is reported as `≠ flag-mismatch` and never linked, advanced or archived (SPEC-0267).
+
+    --apply also writes a missing `source_idea` back onto a spec, and advancing to
+    PROMOTED/DROPPED archives the idea's subtree (SPEC-0073) — hence the dry-run default.
+
+    \b
+    nw spec reconcile            # what would change
+    nw spec reconcile --apply    # change it
+    """
+    from .specs import reconcile_ideas
+
+    plan = reconcile_ideas(cfg, apply=do_apply)
+    marks = {"advance": ("green", "✓" if do_apply else "→"),
+             "flag-ahead": ("yellow", "!"),
+             "flag-no-backlink": ("yellow", "!"),
+             "link": ("green", "+" if do_apply else "→"),      # SPEC-0257: writes :SPEC:
+             "flag-conflict": ("yellow", "!"),
+             "flag-ambiguous": ("yellow", "!"),
+             "flag-mismatch": ("yellow", "≠"),       # SPEC-0267: reused id, report-only
+             "questions-open": ("yellow", "?"),      # SPEC-0080: report-only, never written
+             "missing": ("red", "✗"),
+             "unchanged": ("dim", "·")}
+    shown = 0
+    for idea_id, spec_id, action, detail in plan:
+        if action == "unchanged":
+            continue
+        style, glyph = marks.get(action, ("dim", "·"))
+        shown += 1
+        console.print(f"[{style}]{glyph}[/] {idea_id}  [dim]{spec_id}[/]  {detail}")
+    if not shown:
+        console.print("[dim]reconcile: every linked idea already matches its spec[/]")
+        return
+    n_adv = sum(1 for _i, _s, a, _d in plan if a == "advance")
+    n_link = sum(1 for _i, _s, a, _d in plan if a == "link")
+    if do_apply:
+        console.print(f"[dim]{n_adv} idea(s) advanced, {n_link} linked[/]")
+    elif n_adv or n_link:
+        console.print(f"[dim]{n_adv} idea(s) would advance, {n_link} would be linked "
+                      f"— re-run with --apply[/]")
+
+
+@spec_group.command("sweep")
+@click.pass_obj
+def spec_sweep_cmd(cfg):
+    """Bulk pull-status/pull-clock across every pending EXPORTED idea (SPEC-0067/0064).
+
+    "Pending" = idea state EXPORTED whose linked outbound spec's status isn't yet `done`.
+    A destination that no longer exists on disk is logged to that project's PROVENANCE.md
+    (not raised) and the sweep continues with the rest.
+
+    \b
+    nw spec sweep
+    """
+    from .export import sweep
+    results = sweep(cfg)
+    if not results:
+        console.print("[dim]nothing pending[/]")
+        return
+    marks = {"missing": ("yellow", "!"), "unchanged": ("dim", "·"), "updated": ("green", "✓")}
+    for idea_id, outbound_id, result in results:
+        label = result.split(":", 1)[0]
+        style, mark = marks.get(label, ("green", "✓"))
+        console.print(f"[{style}]{mark}[/] {idea_id} ({outbound_id})  {result}")
+
+
+@spec_group.command("schemes")
+@click.pass_obj
+def spec_schemes_cmd(cfg):
+    """List available export schemes: name, description, required fields, emittable
+    artifacts (SPEC-0016). A user-config manifest scheme (SPEC-0058) shows its origin."""
+    for s in available_schemes():
+        origin = getattr(s, "origin", "built-in")
+        tag = r"  [yellow]\[user-config][/]" if origin == "user-config" else ""
+        console.print(f"[bold]{s.name}[/]{tag}  [dim]{s.description}[/]")
+        console.print(f"  required: {', '.join(s.required_fields) or '(none)'}")
+        console.print(f"  emit: {', '.join(s.artifacts)}")
+
+
+@spec_group.command("generate")
+@click.argument("spec_id", shell_complete=C.complete_spec_id)
+@click.option("--file", type=click.Path(exists=False),
+              help="target .org file (default: org_capture_file)")
+@click.option("--key", help="JIRA key (e.g. DEMO-100) to set as each task's topic_key")
+@click.pass_obj
+def spec_generate_cmd(cfg, spec_id, file, key):
+    """Generate org tasks from a spec's breakdown (epic) / acceptance criteria (feature).
+
+    \b
+    nw spec generate SPEC-0011                   tasks from the epic's breakdown
+    nw spec generate SPEC-0020 --key DEMO-100    feature spec, tasks keyed to a JIRA id
+    nw spec generate SPEC-0011 --file ~/work/org/agenda.org
+    """
+    try:
+        path, added = generate_from_spec(cfg, spec_id, file=file, key=key)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] {spec_id} → {added} new task(s)  [dim]{path}[/]")
+
+
+@spec_group.command("seed-children")
+@click.argument("epic_id", shell_complete=C.complete_epic)
+@click.pass_obj
+def spec_seed_children_cmd(cfg, epic_id):
+    """Seed INCUBATE ideas from an epic's Breakdown bullets (SPEC-0043 + SPEC-0097).
+
+    Each idea gets :EPIC: <epic_id>. :PROJECT: from optional `(project: Name)` on the bullet,
+    else outbound target_project. Unknown annotated names hard-fail. Idempotent on headings.
+
+    \b
+    nw spec seed-children SPEC-0011
+    nw spec seed-children DEMO-0001
+    """
+    try:
+        added = seed_ideas_from_epic(cfg, epic_id)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if not added:
+        console.print(f"[dim]✓[/] {epic_id} — no new child ideas (Breakdown empty or already seeded)")
+        return
+    console.print(f"[green]✓[/] {epic_id} → {len(added)} child idea(s)  "
+                  + " ".join(f"[cyan]{i}[/]" for i in added))
+
+
+def _read_json_arg(path):
+    """Read a JSON value from a file path, or stdin when path is '-'."""
+    if path == "-":
+        return json.load(sys.stdin)
+    with open(path) as f:
+        return json.load(f)
+
+
+@cli.group("sheet")
+def sheet_group():
+    """Sheet-sync plan/record (SPEC-0125): JSON-only, no network access ever — `nw` computes
+    a sync diff and records its outcome; the driving agent performs the actual Sheets reads/
+    writes via its own tools (see the /nw-sheet-sync skill)."""
+
+
+@sheet_group.command("plan")
+@click.option("--project", required=True, help="project to sync (see `nw projects`)")
+@click.option("--sheet-rows", default=None,
+              help="path to a JSON array of current sheet rows ('-' for stdin); when given, "
+                   "also computes the pull list (unknown rows to adopt)")
+@click.pass_obj
+def sheet_plan_cmd(cfg, project, sheet_rows):
+    """Print the sync plan (push + optional pull) for PROJECT as JSON."""
+    rows = _read_json_arg(sheet_rows) if sheet_rows else None
+    try:
+        result = SHS.make_plan(cfg, project, rows)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    print(json.dumps(result, indent=2))
+
+
+@sheet_group.command("record")
+@click.option("--project", required=True, help="project to sync (see `nw projects`)")
+@click.option("--payload", required=True,
+              help="path to a JSON {pushed: [...], adopted: [...]} payload ('-' for stdin)")
+@click.pass_obj
+def sheet_record_cmd(cfg, project, payload):
+    """Persist a completed sync run's outcome (Ext sheet_row/sheet_hash + adopted ideas)."""
+    data = _read_json_arg(payload)
+    try:
+        result = SHS.record(cfg, project, data)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    print(json.dumps(result, indent=2))
+
+
+@cli.group("backups")
+def backups_group():
+    """Org-file backups under <data_dir>/org-backups (SPEC-0271): retention and pruning."""
+
+
+@backups_group.command("prune")
+@click.option("--keep-last", type=click.IntRange(min=0), default=None,
+              help="keep the newest N backups per file (default: org_backups.keep_last)")
+@click.option("--keep-days", type=click.IntRange(min=0), default=None,
+              help="also keep the newest backup of each of the last D days "
+                   "(default: org_backups.keep_days)")
+@click.option("--yes", is_flag=True, help="actually delete (default: dry-run preview)")
+@click.option("--json", "as_json", is_flag=True, help="print the result as JSON")
+@click.pass_obj
+def backups_prune_cmd(cfg, keep_last, keep_days, yes, as_json):
+    """Apply backup retention to every backed-up file at once. Dry run unless --yes.
+
+    \b
+    nw backups prune                              preview what would be deleted
+    nw backups prune --yes                        delete it
+    nw backups prune --keep-last 5 --keep-days 0  override the config for this run
+    """
+    from . import render
+    import contextlib
+    from .org_write import (BACKUP_RE, clear_prune_error, org_write_lock, prune_backups,
+                            read_prune_error, refuse_in_persona_run)
+    if yes:
+        refuse_in_persona_run()                     # before the lock, as `org_writer` does
+    # --yes holds the org write lock so it can't interleave with an automatic prune (a lost
+    # marker, or both deleting the same backup); a dry run only reads
+    with org_write_lock(cfg) if yes else contextlib.nullcontext():
+        marker = read_prune_error(cfg)              # read first: the --yes run that clears it shows it
+        res = prune_backups(cfg, keep_last=keep_last, keep_days=keep_days, dry_run=not yes)
+        if yes and not res["failed"]:
+            clear_prune_error(cfg, None)
+    if as_json:
+        print(json.dumps({**res, "dry_run": not yes, "last_auto_prune_error": marker}, indent=2))
+        return
+    if marker:
+        render.warn(f"last automatic prune failed at {marker.get('at')} "
+                    f"({marker.get('basename')}): {marker.get('error')}")
+    failed = set(res["failed"])
+    done = [name for name in res["delete"] if name not in failed]
+    n, mb = len(done), res["bytes"] / 1e6
+    verb = "deleted" if yes else "would delete"
+    console.print(f"{verb} {n} of {res['scanned']} backups ({mb:.1f} MB); kept {res['kept']}"
+                  f"  [dim]{escape(res['dir'])}[/]")
+    if failed:
+        console.print(f"[yellow]{len(failed)} delete(s) failed[/]")
+    per = {}
+    for name in done:
+        base = BACKUP_RE.match(name).group("base")
+        per[base] = per.get(base, 0) + 1
+    for base in sorted(per):
+        console.print(f"  {per[base]:>6}  {escape(base)}")
+
+
+@cli.group("skills")
+def skills_group():
+    """Install/list the repo's agent-workflow skills (SPEC-0017) into ~/.claude/skills/ (or
+    any --dest), so a fresh agent session can drive nightwright without reading its code."""
+
+
+def _skills_source():
+    """The checkout's skills/ dir, or a ClickException with the SPEC-0166 fix hint — never a
+    silent empty install."""
+    from .rules import CHECKOUT_HINT
+    try:
+        source = SK.repo_skills_dir(load_config())
+    except ValueError as e:                     # invalid `nw_checkout` override
+        raise click.ClickException(str(e))
+    if source is None:
+        raise click.ClickException(f"cannot find nightwright's skills/ directory; {CHECKOUT_HINT}")
+    return source
+
+
+@skills_group.command("install")
+@click.option("--link/--copy", "link", default=True,
+              help="symlink into the repo (default) or make a portable copy")
+@click.option("--dest", type=click.Path(file_okay=False),
+              help="install destination (default: ~/.claude/skills)")
+@click.option("--force", is_flag=True, help="overwrite a non-nightwright directory of the same name")
+@click.option("--permissions/--no-permissions", default=True,
+              help="also merge nightwright's agent allow rules into the Claude Code settings (SPEC-0320)")
+@click.option("--settings", "settings_path", type=click.Path(dir_okay=False),
+              help="Claude Code settings file for the allow rules (default: "
+                   "~/.claude/settings.json; with --dest, rules are written only when given)")
+def skills_install_cmd(link, dest, force, permissions, settings_path):
+    """Install every skills/<name>/SKILL.md into --dest, and merge the allow rules the conductor
+    and stewards need for their own `nw` commands into the Claude Code user settings (SPEC-0320).
+    Idempotent; refuses to clobber a directory it doesn't already manage unless --force.
+
+    \b
+    nw skills install                 symlink all skills into ~/.claude/skills + allow rules
+    nw skills install --copy          portable copy instead
+    nw skills install --no-permissions   skills only
+    nw skills install --dest /tmp/x   install elsewhere (tests MUST use this); no rules
+                                      unless --settings is also given
+    """
+    source = _skills_source()
+    try:
+        results = SK.install(dest=dest, mode="link" if link else "copy", force=force,
+                             source=source)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if not results:
+        console.print("[yellow]no skills found under skills/[/]")
+    for name, action in results:
+        console.print(f"[green]✓[/] {name}  [dim]{action}[/]")
+    for name in SK.remove_legacy(dest=dest, source=source):     # SPEC-0330: stale wt-* skills
+        console.print(f"[green]✓[/] {name}  [dim]removed (pre-rename wt skill)[/]")
+    if permissions and (settings_path or not dest):
+        from . import agent_permissions as AP
+        target = settings_path or AP.default_settings_path()
+        try:
+            res = AP.sync(target)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        if res["added"]:
+            console.print(f"[green]✓[/] allow rules  [dim]added {len(res['added'])} to {target}[/]")
+            for rule in res["added"]:
+                console.print(f"    [dim]{rule}[/]")
+        if res["removed"]:
+            console.print(f"[green]✓[/] allow rules  [dim]removed {len(res['removed'])} legacy "
+                          f"wt rules from {target}[/]")
+            for rule in res["removed"]:
+                console.print(f"    [dim]{rule}[/]")
+        if not res["added"] and not res["removed"]:
+            console.print(f"[green]✓[/] allow rules  [dim]up-to-date in {target}[/]")
+
+
+@skills_group.command("list")
+@click.option("--dest", type=click.Path(file_okay=False),
+              help="destination to check (default: ~/.claude/skills)")
+@click.option("--settings", "settings_path", type=click.Path(dir_okay=False),
+              help="Claude Code settings file to check for the allow rules "
+                   "(default: ~/.claude/settings.json)")
+def skills_list_cmd(dest, settings_path):
+    """Show repo skills and whether/how each is installed at --dest, and whether the agent
+    allow rules (SPEC-0320) are present."""
+    for entry in SK.status(dest=dest, source=_skills_source()):
+        console.print(f"[white]{entry['name']}[/]  [dim]{entry['state']}[/]")
+    if dest and not settings_path:
+        return
+    from . import agent_permissions as AP
+    try:
+        gap = AP.missing(settings_path or AP.default_settings_path())
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    state = "present" if not gap else f"{len(gap)} missing (run nw skills install)"
+    console.print(f"[white]allow rules[/]  [dim]{state}[/]")
+
+
+@cli.command("migrate-from-wt")
+@click.option("--yes", is_flag=True, help="carry the migration out (default: dry run)")
+@click.option("--old-checkout", default=None, show_default=False,
+              help="the checkout path before the move (default: /home/bruno/work/wt)")
+@click.option("--new-checkout", default=None, show_default=False,
+              help="the checkout path after the move (default: /home/bruno/work/nightwright)")
+@click.option("--old-config-dir", type=click.Path(file_okay=False), default=None,
+              help="pre-rename config dir (default: $XDG_CONFIG_HOME/wt or ~/.config/wt)")
+@click.option("--old-data-dir", type=click.Path(file_okay=False), default=None,
+              help="pre-rename data dir (default: $XDG_DATA_HOME/wt or ~/.local/share/wt)")
+@click.option("--json", "as_json", is_flag=True, help="machine-readable plan")
+def migrate_from_wt_cmd(yes, old_checkout, new_checkout, old_config_dir, old_data_dir, as_json):
+    """Move a pre-rename `wt` install to nightwright's locations (SPEC-0330). Dry run unless
+    --yes; idempotent.
+
+    \b
+    1. ~/.config/wt -> the nightwright config dir, ~/.local/share/wt -> the data dir
+       (refuses when a target exists and is not empty)
+    2. config YAML: old data/config dir, old checkout, .wt-worktrees, wt_checkout key
+    3. campaign state.json: repo root / worktree / gate cwd paths (branch names stay)
+    4. spec-reservation store keys: the moved checkout
+    Never touches ~/.claude: run `nw skills install` for skills and allow rules.
+    """
+    from rich.markup import escape
+    from . import migrate as MG
+    try:
+        plan = MG.plan(old_config=old_config_dir, old_data=old_data_dir,
+                       old_checkout=old_checkout or MG.DEFAULT_OLD_CHECKOUT,
+                       new_checkout=new_checkout or MG.DEFAULT_NEW_CHECKOUT)
+    except MG.MigrationRefused as e:
+        raise click.ClickException(f"refused, nothing changed: {e}")
+    if yes:
+        MG.apply(plan)
+    if as_json:
+        doc = plan.as_dict()
+        doc["applied"] = bool(yes)
+        click.echo(json.dumps(doc, indent=2))
+        return
+    verb = "" if yes else "would "
+    for src, dst in plan.moves:
+        console.print(f"[green]{verb}move[/] {src} -> {dst}")
+    for r in plan.rewrites:
+        console.print(f"[green]{verb}rewrite[/] {r['file']} ({len(r['changes'])} change(s))")
+        for a, b in dict.fromkeys(r["changes"]):
+            console.print(f"    [red]- {escape(a)}[/]\n    [green]+ {escape(b)}[/]", highlight=False)
+    for n in plan.notes:
+        console.print(f"[dim]{n}[/]")
+    if plan.empty():
+        console.print("[green]✓[/] nothing to migrate")
+    elif not yes:
+        console.print("[yellow]dry run[/]: re-run with --yes to apply")
+
+
+@cli.group("completion")
+def completion_group():
+    """Generate / install shell completion scripts for bash, zsh, or fish (SPEC-0022).
+
+    \b
+    nw completion fish                         print fish script to stdout
+    nw completion install --shell fish         write ~/.config/fish/completions/nw.fish
+    nw completion install --shell bash --dest /tmp/nightwright.bash
+    """
+
+
+def _print_completion(shell):
+    click.echo(C.source_script(shell), nl=False)
+
+
+@completion_group.command("bash")
+def completion_bash_cmd():
+    """Print the bash completion script to stdout."""
+    _print_completion("bash")
+
+
+@completion_group.command("zsh")
+def completion_zsh_cmd():
+    """Print the zsh completion script to stdout."""
+    _print_completion("zsh")
+
+
+@completion_group.command("fish")
+def completion_fish_cmd():
+    """Print the fish completion script to stdout."""
+    _print_completion("fish")
+
+
+@completion_group.command("install")
+@click.option("--shell", type=click.Choice(list(C.SHELLS)), required=True,
+              help="shell to install completion for")
+@click.option("--dest", type=click.Path(dir_okay=False),
+              help="override the default install path")
+@click.option("--force", is_flag=True,
+              help="overwrite a divergent non-nw completion file")
+def completion_install_cmd(shell, dest, force):
+    """Write the completion script to the shell's conventional path (or --dest).
+
+    \b
+    nw completion install --shell fish
+    nw completion install --shell zsh --dest ~/.zsh/completion/_nw
+    nw completion install --shell bash --force
+    """
+    try:
+        path = C.install(shell, dest=dest, force=force)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] {shell} completion → [white]{path}[/]")
+
+
+@cli.command("state")
+@click.argument("selector", shell_complete=C.complete_task_selector)
+@click.argument("new_state", shell_complete=C.complete_todo_state)
+@click.option("--no-closed", is_flag=True, help="don't add/remove a CLOSED: stamp")
+@click.pass_obj
+def state_cmd(cfg, selector, new_state, no_closed):
+    """Set a task's TODO state. SELECTOR is an :ID:, file:line, JIRA key, or heading substring.
+
+    \b
+    nw state DEMO-100 DONE
+    nw state est-504 INPROGRESS --no-closed
+    """
+    try:
+        path = set_state_by_selector(cfg, selector, new_state, stamp_closed=not no_closed)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] {selector} → [bold green]{new_state}[/]  [dim]{path}[/]")
+
+
+@cli.command("done")
+@click.argument("selector", shell_complete=C.complete_task_selector)
+@click.option("--no-closed", is_flag=True, help="don't add a CLOSED: stamp")
+@click.pass_obj
+def done_cmd(cfg, selector, no_closed):
+    """Mark a task done (its file's first done keyword). SELECTOR as for `nw state`."""
+    try:
+        path = mark_done(cfg, selector, stamp_closed=not no_closed)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    console.print(f"[green]✓[/] {selector} → [bold green]done[/]  [dim]{path}[/]")
+
+
+@cli.command("snapshot")
+@click.option("--through", help="archive closed days up to this YYYY-MM-DD (default: yesterday)")
+@click.pass_obj
+def snapshot_cmd(cfg, through):
+    """Archive past days to history.jsonl so reports survive Claude transcript cleanup."""
+    snapshot(cfg, through)
+
+
+@cli.command("map")
+@click.argument("raw", shell_complete=C.complete_mapped_topic)
+@click.argument("assignments", nargs=-1, required=True)
+@click.pass_obj
+def map_cmd(cfg, raw, assignments):
+    """Assign facets to a base topic: RAW axis=value [axis=value ...].
+
+    \b
+    nw map acme project=Acme area=perf
+    nw map acme Acme          # shorthand for bucket=Acme
+    """
+    facets = {}
+    for a in assignments:
+        k, v = a.split("=", 1) if "=" in a else ("bucket", a)
+        facets[k] = v
+    set_facets(cfg, raw, facets)
+    shown = "  ".join(f"[cyan]{k}[/]=[green]{v}[/]" for k, v in facets.items())
+    console.print(f"[green]✓[/] [white]{raw}[/] → {shown}")
+
+
+@cli.command("override")
+@click.argument("session")
+@click.argument("start")
+@click.argument("end")
+@click.argument("topic")
+@click.option("--note", default="")
+@click.pass_obj
+def override_cmd(cfg, session, start, end, topic, note):
+    """One-off time-scoped reclassification (SESSION START END TOPIC)."""
+    add_override_rec(cfg, session, start, end, topic, note)
+    console.print(f"[green]✓[/] override: {session[:8]} [{start}..{end}] → [bold green]{topic}[/]")
+
+
+@cli.command("ingest-meetings")
+@click.argument("rawfile", type=click.Path(exists=True, dir_okay=False))
+@click.pass_obj
+def ingest_cmd(cfg, rawfile):
+    """Filter a raw search_events JSON dump into meetings.jsonl."""
+    ingest_meetings(cfg, rawfile)
+
+
+@cli.command("refresh-meetings")
+@click.argument("date", required=False)
+@click.option("--week", "-w", is_flag=True, help="pull the whole week (of DATE, or this week)")
+@click.option("--days", type=int, default=7, help="trailing N days (default mode)")
+@click.pass_obj
+def refresh_cmd(cfg, date, week, days):
+    """Pull Outlook calendar via headless claude + m365 MCP into meetings.jsonl."""
+    tz = cfg["_tz"]
+    if week:
+        wd = week_days(parse_date(date or "now", tz)); start, end = wd[0], wd[-1] + dt.timedelta(days=1)
+    elif date:
+        d = parse_date(date, tz); start, end = d, d + dt.timedelta(days=1)
+    else:
+        end = dt.datetime.now(tz).date() + dt.timedelta(days=1); start = end - dt.timedelta(days=days)
+    off = dt.datetime.now(tz).strftime("%z"); off = off[:3] + ":" + off[3:]
+    refresh_meetings(cfg, f"{start}T00:00:00{off}", f"{end}T00:00:00{off}")
+
+
+# SPEC-0169: agentic workflow groups (`nw queue`, `nw campaign`, `nw projects config|init`).
+from .agentic.cli import register as _register_agentic  # noqa: E402
+
+_register_agentic(cli, projects_group)
+
+
+if __name__ == "__main__":
+    cli()

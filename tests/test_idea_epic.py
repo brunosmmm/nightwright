@@ -1,6 +1,6 @@
-"""Idea epic association (SPEC-0307): `set_idea_epic` and `wt idea epic`, modelled on
+"""Idea epic association (SPEC-0307): `set_idea_epic` and `nw idea epic`, modelled on
 `tests/test_idea_project.py` (SPEC-0109). Covers the mutator, the CLI verb, and the readers that
-make `:EPIC:` matter (`wt ideas --epic`, `wt spec new --from-idea`)."""
+make `:EPIC:` matter (`nw ideas --epic`, `nw spec new --from-idea`)."""
 import json
 import shutil
 from pathlib import Path
@@ -8,10 +8,10 @@ from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 
-from wt import completion as C
-from wt import org_write as W
-from wt.cli import cli, idea_epic_cmd
-from wt.org import load_tasks
+from nightwright import completion as C
+from nightwright import org_write as W
+from nightwright.cli import cli, idea_epic_cmd
+from nightwright.org import load_tasks
 
 ROOT = Path(__file__).resolve().parent.parent
 EPIC = "SPEC-0298"
@@ -46,7 +46,7 @@ def _cfg(tmp_path, epics=()):
 
 def _seed(tmp_path, monkeypatch, epics=(EPIC,)):
     cfg = _cfg(tmp_path, epics)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     assert CliRunner().invoke(cli, ["idea", "an unlinked idea"]).exit_code == 0
     return cfg
 

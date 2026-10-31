@@ -7,10 +7,10 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt import org_write as W
-from wt.cli import cli
-from wt.org import load_tasks, filter_tasks
+from nightwright import explore as EX
+from nightwright import org_write as W
+from nightwright.cli import cli
+from nightwright.org import load_tasks, filter_tasks
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -236,7 +236,7 @@ def test_normalize_log_stamps_covers_every_idea_bearing_file(tmp_path):
 
 def test_question_headlines_do_not_leak_into_tasks(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     W.add_idea(cfg, "no leak")
     EX.add_question(cfg, "IDEA-001", "an open question")
     EX.add_question(cfg, "IDEA-001", "a resolved one", state="resolved")
@@ -257,7 +257,7 @@ def test_question_headlines_do_not_leak_into_tasks(tmp_path, monkeypatch):
 
 def test_show_and_json_expose_question_state(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     W.add_idea(cfg, "render states")
     EX.add_question(cfg, "IDEA-001", "still curious")
     EX.add_question(cfg, "IDEA-001", "settled", state="resolved")
@@ -338,8 +338,8 @@ def test_bulk_resolve_is_one_write(tmp_path, monkeypatch):
 def test_resolve_and_resolve_all_conflict(tmp_path, monkeypatch):
     from click.testing import CliRunner
 
-    import wt.cli as cli_mod
-    from wt.cli import cli
+    import nightwright.cli as cli_mod
+    from nightwright.cli import cli
 
     cfg = _three_questions(tmp_path)
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
@@ -351,8 +351,8 @@ def test_resolve_and_resolve_all_conflict(tmp_path, monkeypatch):
 def test_cli_resolve_multiple(tmp_path, monkeypatch):
     from click.testing import CliRunner
 
-    import wt.cli as cli_mod
-    from wt.cli import cli
+    import nightwright.cli as cli_mod
+    from nightwright.cli import cli
 
     cfg = _three_questions(tmp_path)
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)

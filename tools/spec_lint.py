@@ -4,7 +4,7 @@ LEDGER spec index.
 
 Standalone: `python3 tools/spec_lint.py` (validate, exit non-zero on any violation) or
 `python3 tools/spec_lint.py --write-ledger` (regenerate the LEDGER's generated block).
-Also exposed as `wt spec lint` / `wt spec write-ledger` once the package is installed.
+Also exposed as `nw spec lint` / `nw spec write-ledger` once the package is installed.
 
 Checks:
   1. frontmatter validates against spec.schema.json (dates normalized to ISO strings)
@@ -226,18 +226,18 @@ STALE_IDEA_STATES = {"IDEA", "INCUBATE", "SPECCED"}
 def check_source_idea_promotion(specs):
     """Advisory check (NOT part of `validate`/the pytest-gated lint): flag a 'done' spec whose
     `source_idea` never left the pre-promotion states. PROMOTED only happens as a side-effect
-    of `wt spec generate` (specs.py:generate_from_spec) — a spec whose code was written by hand
+    of `nw spec generate` (specs.py:generate_from_spec) — a spec whose code was written by hand
     without running generate leaves its idea stuck at IDEA/INCUBATE/SPECCED forever with
     nothing flagging it.
 
-    Deliberately excluded from `validate()`: it reads the live `org_ideas_file` via the `wt`
+    Deliberately excluded from `validate()`: it reads the live `org_ideas_file` via the `nw`
     package (config + org parsing) — a machine-local file outside this repo, not deterministic
-    repo content — so it must never gate `uv run pytest` or run in an environment without `wt`
+    repo content — so it must never gate `uv run pytest` or run in an environment without `nw`
     importable (e.g. a bare `python3` without the project's venv). Run explicitly via
-    `python3 tools/spec_lint.py --check-source-ideas` (inside `uv run`, or any env with `wt`
+    `python3 tools/spec_lint.py --check-source-ideas` (inside `uv run`, or any env with `nw`
     on the path)."""
-    from wt.config import load_config
-    from wt.org import load_tasks
+    from nightwright.config import load_config
+    from nightwright.org import load_tasks
 
     cfg = load_config()
     ideas_by_id = {t.properties.get("ID"): t for t in load_tasks(cfg)
@@ -255,8 +255,8 @@ def check_source_idea_promotion(specs):
         if state in STALE_IDEA_STATES:
             problems.append(
                 f"{s['file']}: status: done but source_idea {source_idea} is still {state} — "
-                f"run `wt spec generate {s['id']}` or advance it "
-                f"(`wt state {source_idea} PROMOTED`)")
+                f"run `nw spec generate {s['id']}` or advance it "
+                f"(`nw state {source_idea} PROMOTED`)")
     return problems
 
 
@@ -331,7 +331,7 @@ def main():
                     help="regenerate LEDGER.md's generated block from spec frontmatter")
     ap.add_argument("--check-source-ideas", action="store_true",
                     help="advisory: flag 'done' specs whose source_idea is still stuck at "
-                         "IDEA/INCUBATE/SPECCED (reads the live ideas file; requires `wt` "
+                         "IDEA/INCUBATE/SPECCED (reads the live ideas file; requires `nw` "
                          "importable — run via `uv run`; not part of the main lint/pytest gate)")
     args = ap.parse_args()
     specs = load_specs()

@@ -7,10 +7,10 @@ from rich.console import Console
 from rich.table import Table
 
 from test_agentic_e2e import added, make_cfg, make_repo, run_cli, script
-from wt import render as R
-from wt.agentic import mailbox as M
-from wt.agentic.cli_mailbox import mailbox_group
-from wt.console import WtConsole
+from nightwright import render as R
+from nightwright.agentic import mailbox as M
+from nightwright.agentic.cli_mailbox import mailbox_group
+from nightwright.console import NwConsole
 
 
 def _words(n: int) -> str:
@@ -20,7 +20,7 @@ def _words(n: int) -> str:
 
 def _render(obj, *, terminal=False, **kw) -> str:
     buf = io.StringIO()
-    WtConsole(file=buf, width=80, force_terminal=terminal, color_system=None).print(
+    NwConsole(file=buf, width=80, force_terminal=terminal, color_system=None).print(
         obj, highlight=False, **kw)
     return buf.getvalue()
 
@@ -84,7 +84,7 @@ def test_table_unchanged():
     for terminal in (False, True):
         kw = dict(width=80, force_terminal=terminal, color_system=None)
         mine, plain = io.StringIO(), io.StringIO()
-        c1, c2 = WtConsole(file=mine, **kw), Console(file=plain, **kw)
+        c1, c2 = NwConsole(file=mine, **kw), Console(file=plain, **kw)
         c1.print(table())
         c2.print(table())
         assert mine.getvalue() == plain.getvalue()

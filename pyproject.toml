@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "wt"
+name = "nightwright"
 version = "0.1.0"
 description = "Passive work-time tracker from Claude Code / Cursor transcripts and Outlook meetings."
 readme = "README.md"
@@ -16,19 +16,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# SPEC-0099: the interactive desk (`wt tui`) is opt-in. Base installs — agents, CI —
+# SPEC-0099: the interactive desk (`nw tui`) is opt-in. Base installs — agents, CI —
 # stay on click/rich/pyyaml/orgparse only.
 tui = ["textual>=8,<9"]
 # SPEC-0143: product docs site (`mkdocs.yml` → docs/product/).
 docs = ["mkdocs-material>=9"]
 
 [project.scripts]
-wt = "wt.cli:cli"
+nw = "nightwright.cli:cli"
 
 [dependency-groups]
 dev = [
     "pytest>=8",
-    # SPEC-0309: wt's own pytest gate runs `-n 4` under the host-wide gate-slot pool.
+    # SPEC-0309: nightwright's own pytest gate runs `-n 4` under the host-wide gate-slot pool.
     "pytest-xdist>=3",
     "jsonschema>=4",
     # SPEC-0115: a terminal emulator, so a test can assert what a REAL terminal renders. Textual
@@ -40,7 +40,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/wt"]
+packages = ["src/nightwright"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

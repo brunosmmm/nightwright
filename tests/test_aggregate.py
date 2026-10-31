@@ -2,7 +2,7 @@
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-from wt import aggregate
+from nightwright import aggregate
 
 
 def _dtu(h, m):

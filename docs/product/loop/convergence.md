@@ -1,7 +1,7 @@
 # Convergence and escalation
 
 A loop that writes code, tests it and fixes it can fail in two ways: it never finishes, or it
-finishes with the wrong thing. wt's answer is not one smart controller. It layers several
+finishes with the wrong thing. nightwright's answer is not one smart controller. It layers several
 small mechanisms, each catching a different kind of trouble, and a clear ladder for what
 happens when they all run out.
 
@@ -29,7 +29,7 @@ flowchart TB
 
 | Mechanism | Catches | How |
 |---|---|---|
-| **A good spec** | Building the wrong thing | Objective acceptance criteria and a test plan. Reviewed *before* it is queued (`wt spec review`) |
+| **A good spec** | Building the wrong thing | Objective acceptance criteria and a test plan. Reviewed *before* it is queued (`nw spec review`) |
 | **Gates** | Code that doesn't work | Your own test and lint commands, deterministic, in the worktree. Required gates must pass |
 | **Gate triage** | Flaky tests; misleading failures | A triager persona reads the failure and picks **fix** (with a brief), **retry** once, **waive** (optional gates only) or **escalate** |
 | **Conformance review** | Code that works but misses the spec | A read-only reviewer checks each AC against the change. Any must_fix sends it back |
@@ -91,11 +91,11 @@ its idea or its spec, with a brief that carries what was learned:
 - the recurring findings, as constraints;
 - the scope that turned out to be too much, cut.
 
-For an accepted spec that means superseding it with a new one (`/wt-rework`), never quietly
+For an accepted spec that means superseding it with a new one (`/nw-rework`), never quietly
 editing the old one.
 
 !!! note "Planned: divergence detectors ([IDEA-089](../ideas/index.md))"
-    Today a human or the conductor notices divergence. Planned: wt computes signals per round
+    Today a human or the conductor notices divergence. Planned: nightwright computes signals per round
     from the ledger and the review store:
     - must_fix/major counts not falling;
     - a high share of *new* findings each round;

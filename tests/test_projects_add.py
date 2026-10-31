@@ -1,4 +1,4 @@
-"""wt projects add — register outbox targets (SPEC-0137)."""
+"""nw projects add — register outbox targets (SPEC-0137)."""
 import json
 import os
 from pathlib import Path
@@ -8,8 +8,8 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from wt.cli import cli
-from wt.rules import apply_project_add, plan_project_add, projects_payload
+from nightwright.cli import cli
+from nightwright.rules import apply_project_add, plan_project_add, projects_payload
 
 
 def _cfg(tmp_path, *, outbox=None):
@@ -50,11 +50,11 @@ def test_plan_repo_create(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     cfg = _cfg(tmp_path)
-    plan = plan_project_add(cfg, "Example", repo=str(repo), scheme="wt-native",
+    plan = plan_project_add(cfg, "Example", repo=str(repo), scheme="nw-native",
                             spec_dir="docs/specs")
     assert plan["action"] == "create"
     assert plan["after"]["repo_path"] == str(repo)
-    assert plan["after"]["scheme"] == "wt-native"
+    assert plan["after"]["scheme"] == "nw-native"
     assert plan["after"]["spec_dir"] == "docs/specs"
 
 
@@ -124,7 +124,7 @@ def test_cli_dry_run_does_not_write(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     cfg_path = Path(cfg["config_dir"]) / "config.yaml"
     cfg_path.write_text("outbox_targets: {}\n", encoding="utf-8")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     before = cfg_path.read_text(encoding="utf-8")
     r = CliRunner().invoke(cli, ["projects", "add", "Example"])
     assert r.exit_code == 0, r.output
@@ -137,7 +137,7 @@ def test_cli_yes_writes(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     cfg_path = Path(cfg["config_dir"]) / "config.yaml"
     cfg_path.write_text("outbox_targets: {}\n", encoding="utf-8")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["projects", "add", "Example", "--yes"])
     assert r.exit_code == 0, r.output
     data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
@@ -150,7 +150,7 @@ def test_cli_add_repo_yes(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     cfg_path = Path(cfg["config_dir"]) / "config.yaml"
     cfg_path.write_text("outbox_targets: {}\n", encoding="utf-8")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["projects", "add", "Example", "--repo", str(repo), "--yes"])
     assert r.exit_code == 0, r.output
     data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
@@ -166,18 +166,18 @@ def test_cli_projects_list_still_works(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     (Path(cfg["config_dir"]) / "mappings.yaml").write_text(
         "T1:\n  bucket: Logging\n", encoding="utf-8")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["projects"])
     assert r.exit_code == 0, r.output
     assert "Logging" in r.output
     r2 = CliRunner().invoke(cli, ["projects", "--json"])
     assert r2.exit_code == 0, r2.output
-    assert json.loads(r2.output)["schema"] == "wt.projects.v1"
+    assert json.loads(r2.output)["schema"] == "nw.projects.v1"
 
 
 def test_promote_error_mentions_projects_add():
-    from wt.specs import promote_idea
+    from nightwright.specs import promote_idea
     # Just assert the error string template used in source path — call with minimal mock
-    msg_src = Path(__file__).resolve().parents[1] / "src" / "wt" / "specs.py"
+    msg_src = Path(__file__).resolve().parents[1] / "src" / "nightwright" / "specs.py"
     text = msg_src.read_text(encoding="utf-8")
-    assert "wt projects add" in text
+    assert "nw projects add" in text

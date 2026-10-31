@@ -1,18 +1,18 @@
-"""SPEC-0232: `wt queue escalate` and `wt escalations list|show|withdraw` through the CLI."""
+"""SPEC-0232: `nw queue escalate` and `nw escalations list|show|withdraw` through the CLI."""
 import json
 
 import pytest
 from click.testing import CliRunner
 
 from test_agentic_escalations import CID, _camp, _cfg, _parked, calls  # noqa: F401 (autouse)
-from wt.agentic import escalations as ESC
-from wt.agentic import mailbox as M
-from wt.agentic import store as S
-from wt.cli import cli
+from nightwright.agentic import escalations as ESC
+from nightwright.agentic import mailbox as M
+from nightwright.agentic import store as S
+from nightwright.cli import cli
 
 
 def run(cfg, monkeypatch, *args):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     return CliRunner().invoke(cli, list(args))
 
 
@@ -26,7 +26,7 @@ def test_escalate_dry_run_then_yes(tmp_path, monkeypatch):
     r = run(cfg, monkeypatch, *ESCALATE, "--json")
     assert r.exit_code == 0, r.output
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.escalate.v1" and d["written"] is False
+    assert d["schema"] == "nw.queue.escalate.v1" and d["written"] is False
     assert d["park"]["escalated_from"] == "loop_exhausted"
     assert ESC.list_all(cfg) == [] and S.read_state(cfg, CID)["park"]["reason"] == "loop_exhausted"
     r = run(cfg, monkeypatch, *ESCALATE, "--yes", "--json")
@@ -67,7 +67,7 @@ def test_list_all_and_json(two, monkeypatch):
     r = run(cfg, monkeypatch, "escalations", "list", "--all")
     assert "ESC-0001" in r.output and "ESC-0002" in r.output and "withdrawn" in r.output
     d = json.loads(run(cfg, monkeypatch, "escalations", "list", "--all", "--json").output)
-    assert d["schema"] == "wt.escalation.list.v1"
+    assert d["schema"] == "nw.escalation.list.v1"
     assert [e["id"] for e in d["escalations"]] == ["ESC-0002", "ESC-0001"]
     d = json.loads(run(cfg, monkeypatch, "escalations", "list", "--json").output)
     assert [e["id"] for e in d["escalations"]] == ["ESC-0001"]
@@ -94,7 +94,7 @@ def test_withdraw_dry_run_then_yes_leaves_campaign_parked(two, monkeypatch):
     r = run(cfg, monkeypatch, "escalations", "withdraw", "ESC-0001", "--reason", "settled",
             "--yes")
     assert r.exit_code == 0, r.output
-    assert f"wt queue resume {CID} --yes" in r.output
+    assert f"nw queue resume {CID} --yes" in r.output
     rec = ESC.read(cfg, "ESC-0001")
     assert rec["status"] == "withdrawn" and rec["withdrawn"]["reason"] == "settled"
     st = S.read_state(cfg, CID)
@@ -110,7 +110,7 @@ def test_withdraw_dry_run_then_yes_leaves_campaign_parked(two, monkeypatch):
     assert r.exit_code != 0
 
 
-# ---- SPEC-0235: wt escalations answer ----------------------------------------------------
+# ---- SPEC-0235: nw escalations answer ----------------------------------------------------
 
 def test_answer_dry_run_then_yes(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
@@ -119,7 +119,7 @@ def test_answer_dry_run_then_yes(tmp_path, monkeypatch):
     r = run(cfg, monkeypatch, "escalations", "answer", "ESC-0001", "--choose", "no", "--json")
     assert r.exit_code == 0, r.output
     d = json.loads(r.output)
-    assert d["schema"] == "wt.escalation.answer.v1" and d["written"] is False
+    assert d["schema"] == "nw.escalation.answer.v1" and d["written"] is False
     assert d["answer"]["choice"] == 2 and d["by"] == "human"
     assert ESC.read(cfg, "ESC-0001")["status"] == "open"
     r = run(cfg, monkeypatch, "escalations", "answer", "ESC-0001", "--choose", "no")
@@ -170,7 +170,7 @@ def test_answer_override_plan_output_json_and_show(tmp_path, monkeypatch):
     assert "human_overrides" not in S.read_state(cfg, CID)
     r = run(cfg, monkeypatch, *base, "--json")
     d = json.loads(r.output)
-    assert d["schema"] == "wt.escalation.answer.v1" and d["written"] is False
+    assert d["schema"] == "nw.escalation.answer.v1" and d["written"] is False
     ov = d["override"]
     assert [w["id"] for w in ov["waive"]] == [f"{RV}#0"] and ov["attest"] == [AC4]
     assert ov["implicitly_attested"] == [AC4] and ov["reach"] == {AC4: [AC4]}
@@ -190,7 +190,7 @@ def test_answer_reports_failed_wake_event(tmp_path, monkeypatch):
 
     def boom(*a, **kw):
         raise OSError("events log unwritable")
-    monkeypatch.setattr("wt.agentic.escalations.E.append", boom)
+    monkeypatch.setattr("nightwright.agentic.escalations.E.append", boom)
     r = run(cfg, monkeypatch, "escalations", "answer", "ESC-0001", "--choose", "1", "--yes",
             "--json")
     assert r.exit_code == 0, r.output

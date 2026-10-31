@@ -13,5 +13,5 @@ site/
 # Rotated live idea files (dated) — never commit from a checkout used as data-dir
 ideas/ideas-20*.org
 
-# wt spec review sidecars are machine-local state (keyed by spec hash); never tracked
+# nw spec review sidecars are machine-local state (keyed by spec hash); never tracked
 docs/specs/reviews/

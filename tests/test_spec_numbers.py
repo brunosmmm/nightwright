@@ -10,11 +10,11 @@ import pytest
 from click.testing import CliRunner
 
 from test_promote import _cfg as _promote_cfg, _find, _seed_idea
-from wt import org_write as W
-from wt import spec_numbers as SN
-from wt import specs as S
-from wt.agentic import store
-from wt.cli import cli
+from nightwright import org_write as W
+from nightwright import spec_numbers as SN
+from nightwright import specs as S
+from nightwright.agentic import store
+from nightwright.cli import cli
 
 
 def _git(cwd, *args):
@@ -293,9 +293,9 @@ def test_missing_specs_dir_keeps_key(tmp_path, cfg):
 
 @pytest.fixture
 def run(cfg, monkeypatch, repo):
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: {**cfg, "specs_dir": str(_sd(repo))})
-    monkeypatch.delenv("WT_MAILBOX_ADDR", raising=False)
+    monkeypatch.delenv("NW_MAILBOX_ADDR", raising=False)
     return lambda *a, **kw: CliRunner().invoke(cli, ["spec", *a], **kw)
 
 
@@ -303,14 +303,14 @@ def test_cli_reserve_human_and_json(run, monkeypatch):
     r = run("reserve")
     assert r.exit_code == 0, r.output
     assert r.output.strip() == "SPEC-0002"
-    monkeypatch.setenv("WT_MAILBOX_ADDR", "steward:Meta")
+    monkeypatch.setenv("NW_MAILBOX_ADDR", "steward:Meta")
     r = run("reserve", "--for", "demo", "--json")
     d = json.loads(r.output)
-    assert d["schema"] == "wt.spec.reservation.v1"
+    assert d["schema"] == "nw.spec.reservation.v1"
     assert (d["id"], d["by"], d["note"], d["campaign"]) == ("SPEC-0003", "steward:Meta",
                                                             "demo", None)
     assert json.loads(run("reserve", "--json").output)["by"] == "steward:Meta"
-    monkeypatch.delenv("WT_MAILBOX_ADDR")
+    monkeypatch.delenv("NW_MAILBOX_ADDR")
     assert json.loads(run("reserve", "--json").output)["by"] == "human"
 
 
@@ -323,7 +323,7 @@ def test_cli_reservations_table_json_all(run, tmp_path):
     assert re.findall(r"[a-z]+", header) == ["id", "note", "by", "campaign", "age"]
     assert "alpha" in table and "beta" not in table
     d = json.loads(run("reservations", "--json").output)
-    assert d["schema"] == "wt.spec.reservations.v1" and len(d["reservations"]) == 1
+    assert d["schema"] == "nw.spec.reservations.v1" and len(d["reservations"]) == 1
     both = json.loads(run("reservations", "--all", "--json").output)
     assert sorted(r["note"] for r in both["reservations"]) == ["alpha", "beta"]
     assert [r["note"] for r in json.loads(

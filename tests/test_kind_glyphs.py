@@ -12,9 +12,9 @@ import pytest
 from rich.cells import cell_len
 from rich.console import Console
 
-from wt import org_write as W
-from wt import report as R
-from wt.org_write import IDEA_KINDS
+from nightwright import org_write as W
+from nightwright import report as R
+from nightwright.org_write import IDEA_KINDS
 
 from zoneinfo import ZoneInfo
 
@@ -126,7 +126,7 @@ def test_legend_shown_only_with_glyphs(tmp_path):
 
 
 def test_next_has_no_legend(tmp_path):
-    """`wt next` has no footer line; adding one would reshape a view whose point is `next`."""
+    """`nw next` has no footer line; adding one would reshape a view whose point is `next`."""
     out = _render(R.next_ideas, _seeded(tmp_path))
     assert R._kind_legend() not in out
 

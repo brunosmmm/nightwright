@@ -5,11 +5,11 @@ ROOT = Path(__file__).resolve().parent.parent
 GUIDES = ROOT / "docs" / "product" / "guides"
 
 REQUIRED_PHRASES = {
-    "getting-started.md": ["uv tool install", "wt topics --unmapped", "wt idea"],
-    "track-time.md": ["wt report --week", "wt snapshot", "passive"],
-    "idea-to-ship.md": ["wt spec new", "wt spec generate", "wt next"],
-    "outbound.md": ["wt projects add", "wt spec export", "pull-status"],
-    "multi-project.md": ["wt projects --json", "fan"],
+    "getting-started.md": ["uv tool install", "nw topics --unmapped", "nw idea"],
+    "track-time.md": ["nw report --week", "nw snapshot", "passive"],
+    "idea-to-ship.md": ["nw spec new", "nw spec generate", "nw next"],
+    "outbound.md": ["nw projects add", "nw spec export", "pull-status"],
+    "multi-project.md": ["nw projects --json", "fan"],
 }
 
 

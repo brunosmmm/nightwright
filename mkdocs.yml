@@ -1,6 +1,6 @@
-site_name: wt
+site_name: nightwright
 site_description: Ideas and mini-spec workflow, with passive time tracking
-site_url: https://brunosmmm.github.io/wt/
+site_url: https://brunosmmm.github.io/nightwright/
 docs_dir: docs/product
 site_dir: site
 
@@ -75,7 +75,7 @@ nav:
       - concepts/index.md
       - Storage architecture: concepts/architecture.md
       - Lifecycle & DoD: concepts/lifecycle.md
-      - Default portable (wt-native): concepts/portable-default.md
+      - Default portable (nw-native): concepts/portable-default.md
       - Workflow architecture: concepts/workflows.md
       - Time model & retention: concepts/time-and-retention.md
   - Reference:

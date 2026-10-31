@@ -13,12 +13,12 @@ from click.testing import CliRunner
 
 from test_agentic_e2e import (SPEC_ACCEPTED, added, impl_done, make_cfg, make_repo, run_cli,
                               script, write_review)
-from wt.agentic import lease as L
-from wt.agentic import personas as PS
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.agentic.runner import RunResult
-from wt.cli import cli
+from nightwright.agentic import lease as L
+from nightwright.agentic import personas as PS
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.agentic.runner import RunResult
+from nightwright.cli import cli
 
 PROFILE = {"slots": 2, "loop_max": 3, "campaign_cap_usd": 10.0, "run_timeout_s": 60,
            "personas": {"implementer": {"max_budget_usd": 4.0},
@@ -318,7 +318,7 @@ def test_apply_triage_malformed_stays_then_escalates(opened):
 
 def test_apply_gate_result_routes(opened):
     cfg, cid, ctx = opened
-    from wt.agentic.gates import GateResult, GateRun
+    from nightwright.agentic.gates import GateResult, GateRun
     good = GateRun(1, True, (GateResult("test", True, True, 0, False, 0.1, "gates/001-test.log", ""),),
                    "2026-10-25T00:00:00", 0.1)
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
@@ -334,7 +334,7 @@ def test_apply_gate_result_routes(opened):
 
 def test_apply_close_outcomes(opened):
     cfg, cid, ctx = opened
-    from wt.agentic.close import CloseOutcome
+    from nightwright.agentic.close import CloseOutcome
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="CLOSING"))
     synthetic = {"name": "spec-dod", "required": True, "ok": False, "tail": "status: accepted"}
     oc = CloseOutcome("TRIAGING", synthetic_gate=synthetic,
@@ -360,9 +360,9 @@ def test_apply_close_outcomes(opened):
 def _merge_with_idea(opened, *, spec_status="done", backlink=True):
     """`opened` campaign set to CLOSING, its spec in the main checkout naming a bare idea
     (`backlink=False`: the spec has no `source_idea`; the caller links the idea)."""
-    from wt import org_write as OW
-    from wt.agentic.close import CloseOutcome
-    from wt.org import load_tasks
+    from nightwright import org_write as OW
+    from nightwright.agentic.close import CloseOutcome
+    from nightwright.org import load_tasks
     cfg, cid, ctx = opened
     OW.add_idea(cfg, "bookkeeping idea")
     iid = [t for t in load_tasks(cfg) if t.is_idea][0].properties["ID"]
@@ -383,7 +383,7 @@ def _merge_with_idea(opened, *, spec_status="done", backlink=True):
 
 
 def _idea_state(cfg, iid):
-    from wt import org_write as OW
+    from nightwright import org_write as OW
     return OW.resolve_selector(cfg, iid).state
 
 
@@ -526,7 +526,7 @@ def test_tick_refuses_while_lease_held(tmp_path, monkeypatch):
     finally:
         lease.release()
     r = run_cli(cfg, monkeypatch, ["queue", "tick", "--json"])
-    assert r.exit_code == 0 and json.loads(r.output)["schema"] == "wt.queue.tick.v1"
+    assert r.exit_code == 0 and json.loads(r.output)["schema"] == "nw.queue.tick.v1"
 
 
 # ---- SPEC-0180: backlog admission ----------------------------------------------------------------
@@ -861,9 +861,9 @@ def test_prepare_run_gives_the_triager_its_input(opened):
 
 # ---- SPEC-0207: follow-up ideas ---------------------------------------------------------------
 
-from wt import org as ORG                                          # noqa: E402
-from wt.agentic import close as CL                                 # noqa: E402
-from wt.agentic import followups as FU                             # noqa: E402
+from nightwright import org as ORG                                          # noqa: E402
+from nightwright.agentic import close as CL                                 # noqa: E402
+from nightwright.agentic import followups as FU                             # noqa: E402
 
 
 def _ideas(cfg):
@@ -962,7 +962,7 @@ def test_close_files_followups_and_state_close_keeps_them(opened, monkeypatch): 
                                 "items": fu["filed"], "unfiled_items": [],
                                 "waived": fu["waived"]}
     payload = json.loads(json.dumps(Q.TickReport(steps=[row], idle=False).payload()))
-    emitted = payload["steps"][0]["followups"]                      # survives wt.queue.tick.v1
+    emitted = payload["steps"][0]["followups"]                      # survives nw.queue.tick.v1
     assert emitted["items"][0]["title"] == "advisory one" and emitted["items"][0]["severity"] == "major"
     assert emitted["waived"] == [{"severity": "nit", "title": "waived nit", "waive_reason": "style"}]
     assert [e["title"] for e in S.read_ledger(cfg, cid, types=["followup"])] == [
@@ -1006,7 +1006,7 @@ def test_close_row_reports_capped_and_distinct_ids_over_two_groups(opened, monke
     other = FU.OW.add_idea(cfg, FU.group_title("SPEC-0001-20261025-bbbb", "SPEC-0001", 1),
                            kind="improvement")[2]
     key = FU.make_entry("SPEC-0001", _adv("minor", "elsewhere", files=["e.py"]), "advisory")["key"]
-    FU.EX.set_summary(cfg, other, f"- [ ] wtfu:{key[:12]} minor x: y")
+    FU.EX.set_summary(cfg, other, f"- [ ] nwfu:{key[:12]} minor x: y")
     carry = [FU.make_entry("SPEC-0001", _adv("minor", "elsewhere", files=["e.py"]), "advisory")]
     st = _closing(cfg, cid, [_adv("major", "kept"), _adv("minor", "cut one"),
                              _adv("minor", "cut two", files=["b.py"])], carry=carry)
@@ -1129,7 +1129,7 @@ def test_record_run_maps_category_and_folds_trigger():
 
 def test_review_brief_must_fix_carries_category_and_trigger():
     """SPEC-0202 on SPEC-0203's triage: brief entries carry `category` and the folded trigger."""
-    from wt.agentic.profiles import resolve_profile
+    from nightwright.agentic.profiles import resolve_profile
     prof = resolve_profile({}, "balanced")
     one = {"adversarial_reviewer": {"verdict": "pass", "findings": ADV_FINDINGS, "fix_brief": ""}}
     tri = Q.triage_reviews(one, prof)
@@ -1149,7 +1149,7 @@ def test_review_brief_must_fix_carries_category_and_trigger():
 def test_cap_sum_includes_the_adversarial_reviewer():
     """balanced lists conformance (1.5) + test (1.0) + adversarial (1.5) = 4.0: at 7.5 spent the
     first alone fits the $10 cap but the full set does not."""
-    from wt.agentic.profiles import resolve_profile
+    from nightwright.agentic.profiles import resolve_profile
     profile = resolve_profile({}, "balanced")
     assert profile["reviewers"][-1] == "adversarial_reviewer"
     fits = _state("REVIEWING", cost={"total_usd": 5.5, "cap_usd": 10.0, "by_persona": {}})
@@ -1169,7 +1169,7 @@ def test_cap_sum_includes_the_adversarial_reviewer():
     (6.5, "park"),             # 8.5 > 8.0: ordinary cost_cap
 ])
 def test_resolve_within_close_allowance(total, expect):         # SPEC-0303
-    from wt.agentic.profiles import resolve_profile
+    from nightwright.agentic.profiles import resolve_profile
     profile = resolve_profile({}, "balanced")
     st = _state("CLOSING", closing={"attempts": 0, "resolve": {"target": "main"}},
                 cost={"total_usd": total, "cap_usd": 4.0, "by_persona": {}})
@@ -1182,7 +1182,7 @@ def test_resolve_within_close_allowance(total, expect):         # SPEC-0303
 
 
 def test_allowance_default_and_config():                        # SPEC-0303
-    from wt.agentic.profiles import persona_settings, resolve_profile
+    from nightwright.agentic.profiles import persona_settings, resolve_profile
     profile = resolve_profile({}, "balanced")
     budget = float(persona_settings(profile, "conflict_resolver")["max_budget_usd"])
     assert Q._resolver_allowance(None, profile) == budget * Q.MAX_RESOLVE_ATTEMPTS
@@ -1196,7 +1196,7 @@ def test_allowance_default_and_config():                        # SPEC-0303
     assert Q.plan_step(st, profile, cfg).reason == "cost_cap"
     cfg = {"merge": {"resolver_allowance_usd": 5}}
     assert Q.plan_step(st, profile, cfg).kind == "resolve"
-    from wt.agentic import project as P
+    from nightwright.agentic import project as P
     with pytest.raises(ValueError, match="resolver_allowance_usd"):
         P.validate({"schema": P.SCHEMA, "merge": {"resolver_allowance_usd": -1}})
     with pytest.raises(ValueError, match="resolver_allowance_usd"):
@@ -1226,7 +1226,7 @@ REV_FINDINGS = [{"severity": "major", "section": "Design", "title": "gap in step
 
 def _revised(tmp_path, entries):
     """A repo whose spec has a `revise` review for older text (the revision was applied)."""
-    from wt.agentic import spec_review as SR
+    from nightwright.agentic import spec_review as SR
     repo = make_repo(tmp_path, review=False)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, entries))
     spec = repo / "docs" / "specs" / "0001-trivial.md"
@@ -1235,8 +1235,8 @@ def _revised(tmp_path, entries):
 
 
 def test_plan_and_apply_add_after_revision(tmp_path, monkeypatch):
-    from wt.agentic import schemas as SC
-    from wt.agentic import spec_review as SR
+    from nightwright.agentic import schemas as SC
+    from nightwright.agentic import spec_review as SR
     repo, cfg, sha = _revised(tmp_path, [])
     plan = Q.plan_add(cfg, "SPEC-0001")
     assert plan["review"] == "after_revision"
@@ -1253,8 +1253,8 @@ def test_plan_and_apply_add_after_revision(tmp_path, monkeypatch):
 
 
 def test_queue_add_revise_pending_opens_into_spec_writing(tmp_path, monkeypatch):   # SPEC-0279
-    from wt.agentic import schemas as SC
-    from wt.agentic import spec_review as SR
+    from nightwright.agentic import schemas as SC
+    from nightwright.agentic import spec_review as SR
     repo = make_repo(tmp_path, review=False)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
     spec = repo / "docs" / "specs" / "0001-trivial.md"
@@ -1280,14 +1280,14 @@ def test_queue_add_revise_pending_opens_into_spec_writing(tmp_path, monkeypatch)
     Q.tick(cfg)                                          # one tick: open
     st = S.read_state(cfg, cid)
     assert st["state"] == "SPEC_WRITING" and st["pending_brief"]["source"] == "spec_review_revise"
-    from wt.agentic.profiles import resolve_profile
+    from nightwright.agentic.profiles import resolve_profile
     assert Q.plan_step(st, resolve_profile({}, "balanced")).kind == "write_spec"
 
 
 @pytest.mark.parametrize("amended", [True, False])
 def test_revise_review_sizing_picks_the_matrix_profile(tmp_path, amended):   # SPEC-0308
-    from wt.agentic import schemas as SC
-    from wt.agentic import spec_review as SR
+    from nightwright.agentic import schemas as SC
+    from nightwright.agentic import spec_review as SR
     repo = make_repo(tmp_path, review=False)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
     spec = repo / "docs" / "specs" / "0001-trivial.md"
@@ -1449,11 +1449,11 @@ def test_overdue_threshold_and_setting(tmp_path):
 
 # ---- SPEC-0237: the project's profile layer ---------------------------------------------------
 
-PROFILE_SCHEMA = "schema: wt.profile.v1\n"
+PROFILE_SCHEMA = "schema: nw.profile.v1\n"
 
 
 def _project_profile(root, text, name="balanced"):
-    d = root / ".wt" / "profiles"
+    d = root / ".nw" / "profiles"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{name}.yaml").write_text(PROFILE_SCHEMA + text, encoding="utf-8")
     return d / f"{name}.yaml"
@@ -1478,7 +1478,7 @@ def test_ctx_profile_uses_the_campaigns_project_layer(tmp_path):
 
 
 def test_ctx_profile_ignores_a_worktree_copy_and_sees_edits_on_the_next_ctx(tmp_path):
-    root, wt = tmp_path / "main", tmp_path / "wt"
+    root, wt = tmp_path / "main", tmp_path / "nw"
     root.mkdir()
     wt.mkdir()
     cfg = {"agentic": {"profiles": {}}}
@@ -1574,7 +1574,7 @@ def test_park_extra_merges_and_count_false_skips_counter(opened):
 
 @pytest.fixture
 def pending_escalation(opened, monkeypatch):
-    from wt.agentic import escalations as ESC
+    from nightwright.agentic import escalations as ESC
     monkeypatch.setattr(ESC, "_run_notify", lambda argv: type("R", (), {"returncode": 0})())
     cfg, cid, ctx = opened
     lease = L.acquire(cfg, [cid])
@@ -1595,7 +1595,7 @@ def _set(cfg, cid, **kw):
 
 
 def test_apply_pending_escalation_parks_as_human_decision(pending_escalation):
-    from wt.agentic.gates import GateResult, GateRun
+    from nightwright.agentic.gates import GateResult, GateRun
     cfg, cid, ctx, rec, ESC = pending_escalation
     _set(cfg, cid, state="GATING")
     good = GateRun(1, True, (GateResult("test", True, True, 0, False, 0.1, "gates/001-test.log", ""),),
@@ -1623,7 +1623,7 @@ def test_apply_step_park_with_pending_escalation_keeps_the_step_reason(pending_e
 
 def test_apply_step_that_merges_withdraws_the_pending_escalation(pending_escalation):
     cfg, cid, ctx, rec, ESC = pending_escalation
-    from wt.agentic.close import CloseOutcome
+    from nightwright.agentic.close import CloseOutcome
     _set(cfg, cid, state="CLOSING")
     oc = CloseOutcome("MERGED", close={"mode": "merge", "merged_sha": "abc", "pr_url": None,
                                         "gates_seq": 3, "target_sha": "def"},
@@ -1635,7 +1635,7 @@ def test_apply_step_that_merges_withdraws_the_pending_escalation(pending_escalat
 
 
 def test_plan_and_apply_add_record_profile_sources(tmp_path):                    # SPEC-0238
-    from wt.agentic import schemas as SC
+    from nightwright.agentic import schemas as SC
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
     cfg["agentic"]["profiles"]["balanced"] = {"slots": 3}
@@ -1709,7 +1709,7 @@ def test_merge_reconcile_ambiguous_is_a_minor_finding(opened):
 def test_merge_reconcile_never_edits_the_main_checkout(opened):
     """An idea linked by hand to a spec without `source_idea`: the close advances the idea but
     must not write the back-link into the (tracked) spec, or the next close parks main_dirty."""
-    from wt import org_write as OW
+    from nightwright import org_write as OW
     cfg, cid, ctx = opened
     iid, oc = _merge_with_idea(opened, backlink=False)
     OW.set_property(cfg, OW.resolve_selector(cfg, iid), "SPEC", "SPEC-0001")
@@ -1730,7 +1730,7 @@ def test_merge_reconcile_never_edits_the_main_checkout(opened):
 
 def test_merge_reconcile_link_only_idea_emits_an_unchanged_state_event(opened):
     """An `accepted` spec naming an idea already SPECCED: only the `:SPEC:` is written."""
-    from wt import org_write as OW
+    from nightwright import org_write as OW
     cfg, cid, ctx = opened
     iid, oc = _merge_with_idea(opened, spec_status="accepted")
     OW.set_state_by_selector(cfg, iid, "SPECCED")
@@ -1743,8 +1743,8 @@ def test_merge_reconcile_link_only_idea_emits_an_unchanged_state_event(opened):
 
 def test_merge_reconcile_partial_write_is_ledgered(opened, monkeypatch):
     """The link lands, the state write raises: a minor finding and an event for the link."""
-    from wt import explore as EX
-    from wt import org_write as OW
+    from nightwright import explore as EX
+    from nightwright import org_write as OW
     cfg, cid, ctx = opened
     iid, oc = _merge_with_idea(opened)
 
@@ -1798,7 +1798,7 @@ def test_broken_profile_parks_config_invalid_and_recovers(tmp_path, monkeypatch)
     S.write_state(cfg, cid, st)
     pfile = Path(cfg["config_dir"]) / "profiles" / "p.yaml"
     pfile.parent.mkdir(parents=True, exist_ok=True)
-    good = "schema: wt.profile.v1\nextends: balanced\nslots: 2\n"
+    good = "schema: nw.profile.v1\nextends: balanced\nslots: 2\n"
     pfile.write_text(good)
     assert Q.resolve_profile(cfg, "p")["slots"] == 2                 # the good file loads
     pfile.write_text("slots: [unclosed\n")
@@ -1826,7 +1826,7 @@ def test_broken_profile_parks_config_invalid_and_recovers(tmp_path, monkeypatch)
 
 def test_merge_reconcile_mismatch_is_a_minor_finding(opened):
     """SPEC-0267: a reused source_idea id is reported at close, never linked."""
-    from wt import org_write as OW
+    from nightwright import org_write as OW
     cfg, cid, ctx = opened
     iid, oc = _merge_with_idea(opened)
     OW.set_property(cfg, OW.resolve_selector(cfg, iid), "CREATED", "[2999-01-01 Fri 09:00]")
@@ -1863,7 +1863,7 @@ PR_URL = "https://example.test/pull/7"
 def _hand_off_with_idea(opened, *, backlink=True):
     """`_merge_with_idea` for an accepted spec, closing HANDED_OFF with a PR. The fixture idea is
     created today and the spec `created` tomorrow, so the SPEC-0267 identity check passes."""
-    from wt.agentic.close import CloseOutcome
+    from nightwright.agentic.close import CloseOutcome
     iid, _merged = _merge_with_idea(opened, spec_status="accepted", backlink=backlink)
     oc = CloseOutcome("HANDED_OFF", close={"mode": "pr", "merged_sha": None, "pr_url": PR_URL,
                                             "gates_seq": 3, "target_sha": "def"},
@@ -1872,7 +1872,7 @@ def _hand_off_with_idea(opened, *, backlink=True):
 
 
 def _idea_prop(cfg, iid, name):
-    from wt import org_write as OW
+    from nightwright import org_write as OW
     return (OW.resolve_selector(cfg, iid).properties.get(name) or "").strip()
 
 
@@ -1881,7 +1881,7 @@ def _bookkeeping(cfg, cid):
 
 
 def test_handed_off_marks_idea_pending(opened):
-    from wt.agentic import schemas as SC
+    from nightwright.agentic import schemas as SC
     cfg, cid, ctx = opened
     iid, oc = _hand_off_with_idea(opened)
     row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
@@ -1894,7 +1894,7 @@ def test_handed_off_marks_idea_pending(opened):
 
 
 def test_handed_off_bookkeeping_failure_is_minor(opened, monkeypatch):
-    from wt import org_write as OW
+    from nightwright import org_write as OW
     cfg, cid, ctx = opened
     iid, oc = _hand_off_with_idea(opened)
     real = OW.set_property
@@ -1935,7 +1935,7 @@ def test_merged_does_not_write_handed_off(opened):
 
 
 def test_requeue_clears_handed_off(opened):
-    from wt import org_write as OW
+    from nightwright import org_write as OW
     cfg, cid, ctx = opened
     iid, oc = _hand_off_with_idea(opened)
     _apply(ctx, cfg, cid, "close", close_outcome=oc)
@@ -1958,8 +1958,8 @@ def test_idea_campaign_handed_off_is_not_marked(opened):
 
 
 def test_handed_off_skips_a_terminal_claimant(opened, monkeypatch):
-    import wt.specs as SPM
-    from wt import explore as EX
+    import nightwright.specs as SPM
+    from nightwright import explore as EX
     cfg, cid, ctx = opened
     iid, oc = _hand_off_with_idea(opened)
     orig = SPM.reconcile_ideas
@@ -1977,7 +1977,7 @@ def test_handed_off_skips_a_terminal_claimant(opened, monkeypatch):
 
 
 def test_requeue_clear_failure_is_a_ledger_note(opened, monkeypatch):
-    from wt import org_write as OW
+    from nightwright import org_write as OW
     cfg, cid, ctx = opened
     iid, oc = _hand_off_with_idea(opened)
     _apply(ctx, cfg, cid, "close", close_outcome=oc)
@@ -2004,7 +2004,7 @@ def _requeue_plan(cfg, cid):
 
 
 def test_render_idea_handed_off_event():
-    from wt import render as R
+    from nightwright import render as R
     ev = {"seq": 4, "ts": "2026-10-27T10:00:00Z", "type": "idea_handed_off", "by": "queue",
           "spec_id": "SPEC-0001", "idea_id": "IDEA-9", "pr_url": PR_URL}
     out = R.campaign_event(ev).plain
@@ -2018,7 +2018,7 @@ def test_plan_add_batch_orders_and_dedupes(tmp_path):                   # SPEC-0
     add_spec(cfg, repo, 2, deps=["SPEC-0001"])
     plan = Q.plan_add_batch(cfg, ["SPEC-0002", "SPEC-0001", " SPEC-0002 "])
     assert [i["id"] for i in plan["items"]] == ["SPEC-0001", "SPEC-0002"]
-    assert plan["schema"] == "wt.queue.add.batch.v1" and plan["ok"] == 2
+    assert plan["schema"] == "nw.queue.add.batch.v1" and plan["ok"] == 2
     assert plan["items"][1]["would_block"] == []        # SPEC-0001 is in the batch
     with pytest.raises(ValueError, match="1 of 1 items cannot be queued"):
         Q.apply_add_batch(cfg, {"items": [{"id": "X", "kind": "spec", "error": "e"}]})
@@ -2026,11 +2026,11 @@ def test_plan_add_batch_orders_and_dedupes(tmp_path):                   # SPEC-0
 
 def test_on_fail_warn_goes_to_reviewing(opened, tmp_path):
     """SPEC-0289: `on_fail: warn` is `required: false` end to end."""
-    from wt.agentic import gates as G
-    from wt.agentic import project as P
+    from nightwright.agentic import gates as G
+    from nightwright.agentic import project as P
     cfg, cid, ctx = opened
     p = tmp_path / "project.yaml"
-    p.write_text("schema: wt.project.v1\ngates:\n  - {name: soft, cmd: 'exit 1', on_fail: warn}\n")
+    p.write_text("schema: nw.project.v1\ngates:\n  - {name: soft, cmd: 'exit 1', on_fail: warn}\n")
     S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
     run = G.run_all(P.load_project_config(p), S.read_state(cfg, cid), cfg, seq=1)
     assert run.ok and not run.results[0].ok
@@ -2040,7 +2040,7 @@ def test_on_fail_warn_goes_to_reviewing(opened, tmp_path):
 
 def test_stop_during_gate_retry_not_triaged(opened, monkeypatch):
     """SPEC-0289 x SPEC-0229: a stop landing in a retry is an interrupted run, not a failure."""
-    from wt.agentic import gates as G
+    from nightwright.agentic import gates as G
     cfg, cid, ctx = opened
     real = G.run_gate
 
@@ -2111,7 +2111,7 @@ def test_gate_timeout_park_detail_uses_timed_out_gates_limit():
 
 
 def _gate_run(seq, *results):
-    from wt.agentic.gates import GateResult, GateRun
+    from nightwright.agentic.gates import GateResult, GateRun
     rs = tuple(GateResult(n, req, ok, None if to else (0 if ok else 1), to, 0.1,
                           f"gates/{seq:03d}-{n}.log", "") for n, req, ok, to in results)
     return GateRun(seq, all(r.ok or not r.required for r in rs), rs, "2026-10-25T00:00:00", 0.1)
@@ -2277,7 +2277,7 @@ def test_gate_starts_counts_flights_and_close_regates(opened):
     assert Q._gates_in_flight(ctx, pool) == (0, False)
     # the deferral note is journaled once per campaign per timeout_regates value
     calls = []
-    import wt.agentic.queue as QQ
+    import nightwright.agentic.queue as QQ
     orig = QQ.journal
     QQ.journal = lambda cfg_, kind, **kw: calls.append((kind, kw))
     try:
@@ -2398,7 +2398,7 @@ def test_e2e_gate_timeout_regates_then_parks_and_resume_regates(tmp_path, monkey
     """The manual verification of SPEC-0311: a gate that always times out is re-gated twice
     (never triaged, `loops` stays 0), parks `gate_timeout`, and a resume re-gates twice more."""
     repo = make_repo(tmp_path, test_gate="sleep 3")
-    yml = repo / ".wt" / "project.yaml"
+    yml = repo / ".nw" / "project.yaml"
     yml.write_text(yml.read_text().replace("name: test, cmd: 'sh gates/test.sh', timeout_s: 30",
                                            "name: test, cmd: 'sh gates/test.sh', timeout_s: 1"))
     subprocess.run(["git", "-C", str(repo), "commit", "-qam", "short timeout"], check=True)

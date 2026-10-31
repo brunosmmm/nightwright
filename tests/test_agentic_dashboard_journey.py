@@ -1,4 +1,4 @@
-"""SPEC-0326: `wt queue watch` redesign — the journey track, the why line, waiting_for, readable
+"""SPEC-0326: `nw queue watch` redesign — the journey track, the why line, waiting_for, readable
 event sentences, the adaptive card density and the fixed-budget bottom sections."""
 import datetime as dt
 import io
@@ -7,9 +7,9 @@ from rich.console import Console
 
 from test_agentic_dashboard import _campaign, _ev, _fixture
 from test_agentic_e2e import impl_done, make_cfg, make_repo, run_cli, script
-from wt.agentic import cli_queue as CQ
-from wt.agentic import journey as JY
-from wt.agentic import queue as Q
+from nightwright.agentic import cli_queue as CQ
+from nightwright.agentic import journey as JY
+from nightwright.agentic import queue as Q
 
 TS = "2026-10-31T10:00:00-04:00"
 
@@ -160,7 +160,7 @@ def test_event_sentences():
         ({"type": "cost", "persona": "gate_triager", "delta_usd": 0.0928554, "total_usd": 2.516},
          "gate_triager cost $0.09, total $2.52"),
         ({"type": "commit", "sha": "63c7cff020e1c43ca0a95bd48149726ddb2665a2",
-          "message": "wt(IDEA-508-x): implementer run 004 — fix it\n\nCo-Authored-By: x"},
+          "message": "nw(IDEA-508-x): implementer run 004 — fix it\n\nCo-Authored-By: x"},
          "commit 63c7cff implementer run 004 — fix it"),
         (_gate(False, ("pytest", 2)), "gates #1 failed: pytest (2 failed)"),
         ({"type": "gate_waiting", "slots": 2, "held": [{"campaign": "IDEA-511-a-b"}]},

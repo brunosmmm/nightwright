@@ -9,11 +9,11 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt import org_write as W
-from wt import specs as S
-from wt.cli import cli
-from wt.org import invalidate_tasks_cache, load_tasks
+from nightwright import explore as EX
+from nightwright import org_write as W
+from nightwright import specs as S
+from nightwright.cli import cli
+from nightwright.org import invalidate_tasks_cache, load_tasks
 
 ROOT = Path(__file__).resolve().parent.parent
 TERMINAL = ["PROMOTED", "EXPORTED", "SHIPPED", "DROPPED", "RESEARCHED"]
@@ -148,7 +148,7 @@ def test_open_live_ideas_promote_as_before(tmp_path, state):
 def test_cli_refuses_and_writes_nothing(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     _closed_idea(cfg, "SHIPPED")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["spec", "new", "--from-idea", "IDEA-001", "--internal"])
     assert r.exit_code != 0
     assert "refusing to re-promote" in r.output
@@ -159,7 +159,7 @@ def test_cli_success_line_names_heading(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "the right [bracketed] idea")
     EX.set_summary(cfg, "IDEA-001", "ready")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["spec", "new", "--from-idea", "IDEA-001", "--internal"])
     assert r.exit_code == 0, r.output
     flat = " ".join(r.output.split())

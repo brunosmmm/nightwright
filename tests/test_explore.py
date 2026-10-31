@@ -7,12 +7,12 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt import org_write as W
-from wt import specs as S
-from wt.cli import cli
-from wt.org import load_tasks
-from wt.workflow import next_step_for_idea
+from nightwright import explore as EX
+from nightwright import org_write as W
+from nightwright import specs as S
+from nightwright.cli import cli
+from nightwright.org import load_tasks
+from nightwright.workflow import next_step_for_idea
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -43,11 +43,11 @@ def _cfg(tmp_path):
 
 def test_explore_summary_log_show_and_next(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["idea", "needs", "exploration"])
     assert r.exit_code == 0
     idea = load_tasks(cfg)[0]
-    assert next_step_for_idea(cfg, idea) == "wt idea log IDEA-001"
+    assert next_step_for_idea(cfg, idea) == "nw idea log IDEA-001"
 
     assert CliRunner().invoke(cli, ["idea", "log", "IDEA-001",
                                     "--note", "looked at code"]).exit_code == 0
@@ -56,7 +56,7 @@ def test_explore_summary_log_show_and_next(tmp_path, monkeypatch):
     idea = [t for t in load_tasks(cfg) if t.properties.get("ID") == "IDEA-001"][0]
     assert idea.state == "INCUBATE"
     assert "We need an explore stage" in EX.idea_summary_text(cfg, idea)
-    assert next_step_for_idea(cfg, idea) == "wt spec new --from-idea IDEA-001"
+    assert next_step_for_idea(cfg, idea) == "nw spec new --from-idea IDEA-001"
 
     show = CliRunner().invoke(cli, ["idea", "show", "IDEA-001"])
     assert show.exit_code == 0
@@ -69,15 +69,15 @@ def test_explore_summary_log_show_and_next(tmp_path, monkeypatch):
 def test_summary_normalizes_markdown_to_org(tmp_path):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "md body")
-    EX.set_summary(cfg, "IDEA-001", "Try `wt idea` — this is **important**")
+    EX.set_summary(cfg, "IDEA-001", "Try `nw idea` — this is **important**")
     t = load_tasks(cfg)[0]
     raw = open(t.file).read()
-    assert "~wt idea~" in raw
+    assert "~nw idea~" in raw
     assert "*important*" in raw
-    assert "`wt idea`" not in raw
+    assert "`nw idea`" not in raw
     assert "**important**" not in raw
     body = EX.idea_summary_text(cfg, t)
-    assert "~wt idea~" in body
+    assert "~nw idea~" in body
 
 
 def test_promote_context_converts_org_to_markdown(tmp_path):
@@ -96,7 +96,7 @@ def test_summary_preserves_code_and_fences_on_disk(tmp_path, monkeypatch):
     """SPEC-0164: identifiers in verbatim/code survive the write path byte-for-byte, and a
     fenced block lands as a comma-escaped org src block that does not break the idea tree."""
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     W.add_idea(cfg, "code idea")
     body = ("Resolves =Path(__file__)= here.\n"
             "```python\ndef __init__(self):\n* not a headline\n```\n")
@@ -172,7 +172,7 @@ def test_inactive_stamp_helper(tmp_path):
 
 def test_explore_alias_still_logs(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     W.add_idea(cfg, "alias")
     r = CliRunner().invoke(cli, ["idea", "explore", "IDEA-001", "--note", "via alias"])
     assert r.exit_code == 0, r.output
@@ -181,9 +181,9 @@ def test_explore_alias_still_logs(tmp_path, monkeypatch):
 
 def test_explore_subcommand_does_not_capture_idea_named_explore(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     W.add_idea(cfg, "seed")
-    from wt.org import filter_tasks
+    from nightwright.org import filter_tasks
     before = len(filter_tasks(load_tasks(cfg), is_idea=True))
     r = CliRunner().invoke(cli, ["idea", "explore", "IDEA-001", "--note", "x"])
     assert r.exit_code == 0

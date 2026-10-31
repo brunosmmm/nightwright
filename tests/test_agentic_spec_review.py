@@ -1,4 +1,4 @@
-"""SPEC-0188: `wt spec review` (fake runner), the sidecar, the `wt queue add` review gate, the
+"""SPEC-0188: `nw spec review` (fake runner), the sidecar, the `nw queue add` review gate, the
 spec_reviewer persona/profile defaults, and the linter's placeholder rule."""
 import json
 import subprocess
@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 
 from test_agentic_e2e import make_cfg, make_repo, run_cli, script, write_review
-from wt.agentic import personas as PS
-from wt.agentic import profiles as PR
-from wt.agentic import spec_review as SR
-from wt.agentic.runner import build_argv
+from nightwright.agentic import personas as PS
+from nightwright.agentic import profiles as PR
+from nightwright.agentic import spec_review as SR
+from nightwright.agentic.runner import build_argv
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -45,7 +45,7 @@ def test_review_writes_valid_sidecar(tmp_path, monkeypatch):
     side = SR.load_review(cfg, "SPEC-0001", SR.spec_sha256(_spec(repo)))
     assert not (repo / "docs" / "specs" / "reviews").exists()
     assert out.pop("profile") == "balanced" and out == side        # SPEC-0219: not stored
-    assert side["schema"] == "wt.spec.review.v1" and side["spec_id"] == "SPEC-0001"
+    assert side["schema"] == "nw.spec.review.v1" and side["spec_id"] == "SPEC-0001"
     assert side["verdict"] == "approve" and side["cost_usd"] == 0.42
     assert side["spec_sha256"] == SR.spec_sha256(_spec(repo)) and side["model"] == "sonnet"
     assert side["findings"][0]["title"] == "wording" and side["suggested_splits"] == []
@@ -54,14 +54,14 @@ def test_review_writes_valid_sidecar(tmp_path, monkeypatch):
 
 def test_review_uses_the_project_profile_layer(tmp_path, monkeypatch):           # SPEC-0237
     repo, cfg = _setup(tmp_path, [_review_entry()])
-    prof = repo / ".wt" / "profiles"
+    prof = repo / ".nw" / "profiles"
     prof.mkdir(parents=True, exist_ok=True)
     (prof / "balanced.yaml").write_text(
-        "schema: wt.profile.v1\npersonas: {spec_reviewer: {model: opus}}\n")
+        "schema: nw.profile.v1\npersonas: {spec_reviewer: {model: opus}}\n")
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
     assert r.exit_code == 0, r.output
     assert json.loads(r.stdout)["model"] == "opus"
-    (prof / "balanced.yaml").write_text("schema: wt.profile.v1\nbogus: 1\n")
+    (prof / "balanced.yaml").write_text("schema: nw.profile.v1\nbogus: 1\n")
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json",
                                    "--force"])                         # SPEC-0230: 2nd round
     assert r.exit_code != 0 and "balanced.yaml: bogus: unknown key" in r.output
@@ -132,8 +132,8 @@ def test_review_run_is_restricted_and_prompt_carries_inputs(tmp_path, monkeypatc
     req = seen[0]
     assert req.read_only and req.allowed_tools == () and req.cwd == repo
     assert "--restricted" in build_argv(req)
-    assert "WT_CAMPAIGN" not in req.env and req.env["WT_SPEC_ID"] == "SPEC-0001"
-    assert req.env["WT_PERSONA_RUN"] == "1"                           # SPEC-0272
+    assert "NW_CAMPAIGN" not in req.env and req.env["NW_SPEC_ID"] == "SPEC-0001"
+    assert req.env["NW_PERSONA_RUN"] == "1"                           # SPEC-0272
     assert "Ship `feature.txt`." in req.prompt and "{{" not in req.prompt
     assert "queue" not in req.system_append
     assert req.run_dir.parent.name == "spec-reviews"
@@ -147,7 +147,7 @@ def _add(cfg, monkeypatch, *extra):
 
 def test_queue_add_refuses_without_approving_review(tmp_path, monkeypatch):
     repo, cfg = _setup(tmp_path, [])
-    want = "SPEC-0001 has no spec review; run wt spec review SPEC-0001"
+    want = "SPEC-0001 has no spec review; run nw spec review SPEC-0001"
     r = _add(cfg, monkeypatch)                                        # no review at all
     assert r.exit_code != 0 and want in r.output
     write_review(cfg, _spec(repo), "SPEC-0001", verdict="revise")     # SPEC-0279: amended first
@@ -239,7 +239,7 @@ def test_review_stores_size_tone_rationale(tmp_path, monkeypatch):
     out = json.loads(r.stdout)
     side = SR.load_review(cfg, "SPEC-0001", SR.spec_sha256(_spec(repo)))
     assert (side["size"], side["tone"], side["rationale"]) == ("m", "high-end", SIZED["rationale"])
-    assert side["schema"] == "wt.spec.review.v1"
+    assert side["schema"] == "nw.spec.review.v1"
     assert out.pop("profile") == "balanced" and out == side      # would-pick, not stored
     assert "profile" not in side
 
@@ -305,7 +305,7 @@ def test_revision_brief_shape_and_render():
 
 @pytest.mark.parametrize("by_path", [False, True])
 def test_spec_review_second_round_needs_force(tmp_path, monkeypatch, by_path):
-    from wt.agentic.runner import FakeRunner
+    from nightwright.agentic.runner import FakeRunner
     repo, cfg = _setup(tmp_path, [_review_entry(), _review_entry()])
     ran = []
     inner = FakeRunner(script(tmp_path, [_review_entry(), _review_entry()], "spy.json"))
@@ -333,7 +333,7 @@ def test_spec_review_second_round_needs_force(tmp_path, monkeypatch, by_path):
 
 
 def _spy(monkeypatch, tmp_path):
-    from wt.agentic.runner import FakeRunner
+    from nightwright.agentic.runner import FakeRunner
     ran = []
     inner = FakeRunner(script(tmp_path, [_review_entry(), _review_entry()], "spy.json"))
 
@@ -378,9 +378,9 @@ def test_spec_review_still_blocks_after_review_from_removed_worktree(tmp_path, m
 def test_review_accepts_a_matrix_cell_naming_a_project_only_profile(tmp_path, monkeypatch):
     repo, cfg = _setup(tmp_path, [_review_entry()])                  # SPEC-0237
     cfg.setdefault("agentic", {})["profile_matrix"] = {"high-end": {"m": "careful"}}
-    prof = repo / ".wt" / "profiles"
+    prof = repo / ".nw" / "profiles"
     prof.mkdir(parents=True, exist_ok=True)
-    (prof / "careful.yaml").write_text("schema: wt.profile.v1\nextends: balanced\n")
+    (prof / "careful.yaml").write_text("schema: nw.profile.v1\nextends: balanced\n")
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
     assert r.exit_code == 0, r.output
     assert json.loads(r.stdout)["profile"] == "careful"
@@ -388,10 +388,10 @@ def test_review_accepts_a_matrix_cell_naming_a_project_only_profile(tmp_path, mo
 
 def test_spec_review_run_json_records_profile(tmp_path, monkeypatch):            # SPEC-0238
     repo, cfg = _setup(tmp_path, [_review_entry()])
-    prof = repo / ".wt" / "profiles"
+    prof = repo / ".nw" / "profiles"
     prof.mkdir(parents=True, exist_ok=True)
     (prof / "balanced.yaml").write_text(
-        "schema: wt.profile.v1\npersonas: {spec_reviewer: {model: opus}}\n")
+        "schema: nw.profile.v1\npersonas: {spec_reviewer: {model: opus}}\n")
     r = run_cli(cfg, monkeypatch, ["spec", "review", "SPEC-0001", "--json"])
     assert r.exit_code == 0, r.output
     (run_json,) = (Path(cfg["data_dir"])).rglob("spec-reviews/*/run.json")

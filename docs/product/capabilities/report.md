@@ -11,17 +11,17 @@ before Claude deletes transcripts.
 
 | Command | Role |
 |---------|------|
-| `wt` | Dashboard: today + this week (`--split` diagnostic) |
-| `wt report` | Per-topic hours; `--week`, `--by AXIS`, `--last N`, `--md` |
-| `wt topics` | Base topics + hours + facets; `--unmapped` |
-| `wt map` | Attach facets: `wt map RAW project=Name` |
-| `wt override` | Time-scoped reclassification for one session span |
-| `wt review` | Segment timeline, unclassified inbox; `--fix` |
-| `wt snapshot` | Archive past days to `history.jsonl` |
-| `wt export` | CSV/JSON dataset of date/topic/hours/facets |
-| `wt digest` | Hours joined to org tasks by JIRA key |
+| `nw` | Dashboard: today + this week (`--split` diagnostic) |
+| `nw report` | Per-topic hours; `--week`, `--by AXIS`, `--last N`, `--md` |
+| `nw topics` | Base topics + hours + facets; `--unmapped` |
+| `nw map` | Attach facets: `nw map RAW project=Name` |
+| `nw override` | Time-scoped reclassification for one session span |
+| `nw review` | Segment timeline, unclassified inbox; `--fix` |
+| `nw snapshot` | Archive past days to `history.jsonl` |
+| `nw export` | CSV/JSON dataset of date/topic/hours/facets |
+| `nw digest` | Hours joined to org tasks by JIRA key |
 
-![Bare wt dashboard](../assets/captures/cli-wt-dashboard.svg)
+![Bare nightwright dashboard](../assets/captures/cli-nw-dashboard.svg)
 
 ![Weekly report](../assets/captures/cli-report-week.svg)
 

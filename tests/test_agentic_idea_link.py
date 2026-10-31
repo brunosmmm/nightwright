@@ -3,12 +3,12 @@ the link it still owns, and the schema accepts the new events. Uses the SPEC-017
 harness (temp repo as project, fake runner, temp org)."""
 import pytest
 
-from wt import org as ORG
-from wt import org_write as OW
-from wt.agentic import queue as Q
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
-from wt.agentic.close import CloseOutcome
+from nightwright import org as ORG
+from nightwright import org_write as OW
+from nightwright.agentic import queue as Q
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
+from nightwright.agentic.close import CloseOutcome
 
 from test_agentic_e2e import (_git_env, added, impl_done, make_cfg, make_repo,  # noqa: F401
                               run_cli, script)

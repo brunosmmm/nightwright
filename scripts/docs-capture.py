@@ -50,7 +50,7 @@ TZ = ZoneInfo("America/New_York")
 
 # Wave A/B captures (SPEC-0154) in addition to the ideas-suite set from SPEC-0149/0152.
 WAVE_AB = (
-    "cli-wt-dashboard.svg",
+    "cli-nw-dashboard.svg",
     "cli-report-week.svg",
     "cli-topics-unmapped.svg",
     "cli-map.svg",
@@ -67,7 +67,7 @@ WAVE_C = (
 
 
 def _demo_cfg(tmp: Path) -> dict:
-    from wt.config import DEFAULT_CONFIG
+    from nightwright.config import DEFAULT_CONFIG
 
     org = tmp / "org"
     org.mkdir()
@@ -115,7 +115,7 @@ def _demo_cfg(tmp: Path) -> dict:
             # Stable display paths for SVG captures (no /tmp noise in the desk detail pane).
             "Acme": {
                 "repo_path": "/home/demo/work/acme",
-                "scheme": "wt-native",
+                "scheme": "nw-native",
             },
             "Partner": {
                 "repo_path": "/home/demo/work/partner",
@@ -138,7 +138,7 @@ def _day(offset: int) -> str:
 
 
 def _write_history(cfg: dict) -> None:
-    from wt.history import history_path
+    from nightwright.history import history_path
 
     rows = [
         {"day": _day(1), "topics": {"acme": 12600.0, "partner-notes": 4320.0},
@@ -192,7 +192,7 @@ def _write_transcripts(cfg: dict) -> None:
 
 
 def _seed_tasks(cfg: dict) -> None:
-    from wt import org_write as W
+    from nightwright import org_write as W
 
     Path(cfg["org_capture_file"]).write_text(
         "#+TODO: TODO INPROGRESS | DONE\n\n", encoding="utf-8",
@@ -208,9 +208,9 @@ def _seed_tasks(cfg: dict) -> None:
 
 
 def _seed_ideas(cfg: dict) -> str:
-    from wt import explore as EX
-    from wt import org_write as W
-    from wt.org import load_tasks
+    from nightwright import explore as EX
+    from nightwright import org_write as W
+    from nightwright.org import load_tasks
 
     for title, _state, project, priority, kind, epic in DEMO_IDEAS:
         W.add_idea(cfg, title, project=project, priority=priority, kind=kind,
@@ -304,8 +304,8 @@ def _make_console(width: int = 100, height: int = 40):
 
 
 def _patch_consoles(rec) -> None:
-    import wt.console as C
-    import wt.report as R
+    import nightwright.console as C
+    import nightwright.report as R
 
     C.console = rec
     R.console = rec
@@ -318,9 +318,9 @@ def _save(rec, path: Path, title: str, theme) -> Path:
 
 def capture_time_ops(cfg: dict, out: Path) -> list[Path]:
     """Wave A/B: dashboard, report, topics, map, review, agenda, tasks."""
-    import wt.console as C
-    import wt.report as R
-    from wt.rules import set_facets
+    import nightwright.console as C
+    import nightwright.report as R
+    from nightwright.rules import set_facets
 
     written: list[Path] = []
 
@@ -330,18 +330,18 @@ def capture_time_ops(cfg: dict, out: Path) -> list[Path]:
     R.report(cfg)
     rec.rule("[bold cyan]this week[/]")
     R.report(cfg, week="now")
-    rec.print("[dim]› wt report --week · wt review --day --fix · wt refresh-meetings[/]")
-    written.append(_save(rec, out / "cli-wt-dashboard.svg", "wt", theme))
+    rec.print("[dim]› nw report --week · nw review --day --fix · nw refresh-meetings[/]")
+    written.append(_save(rec, out / "cli-nw-dashboard.svg", "nw", theme))
 
     rec, theme = _make_console(width=100, height=45)
     _patch_consoles(rec)
     R.report(cfg, week="now")
-    written.append(_save(rec, out / "cli-report-week.svg", "wt report --week", theme))
+    written.append(_save(rec, out / "cli-report-week.svg", "nw report --week", theme))
 
     rec, theme = _make_console(width=100, height=35)
     _patch_consoles(rec)
     R.topics(cfg, unmapped=True)
-    written.append(_save(rec, out / "cli-topics-unmapped.svg", "wt topics --unmapped", theme))
+    written.append(_save(rec, out / "cli-topics-unmapped.svg", "nw topics --unmapped", theme))
 
     rec, theme = _make_console(width=80, height=12)
     _patch_consoles(rec)
@@ -350,31 +350,31 @@ def capture_time_ops(cfg: dict, out: Path) -> list[Path]:
         f"[cyan]{k}[/]=[green]{v}[/]" for k, v in (("bucket", "Acme"), ("area", "docs"))
     )
     C.console.print(f"[green]✓[/] [white]acme[/] → {shown}")
-    written.append(_save(rec, out / "cli-map.svg", "wt map acme", theme))
+    written.append(_save(rec, out / "cli-map.svg", "nw map acme", theme))
 
     rec, theme = _make_console(width=100, height=40)
     _patch_consoles(rec)
     R.review(cfg, week="now")
-    written.append(_save(rec, out / "cli-review-week.svg", "wt review --week", theme))
+    written.append(_save(rec, out / "cli-review-week.svg", "nw review --week", theme))
 
     rec, theme = _make_console(width=100, height=35)
     _patch_consoles(rec)
     R.agenda(cfg, day="now")
-    written.append(_save(rec, out / "cli-agenda.svg", "wt agenda", theme))
+    written.append(_save(rec, out / "cli-agenda.svg", "nw agenda", theme))
 
     rec, theme = _make_console(width=100, height=30)
     _patch_consoles(rec)
     R.tasks(cfg)
-    written.append(_save(rec, out / "cli-tasks.svg", "wt tasks", theme))
+    written.append(_save(rec, out / "cli-tasks.svg", "nw tasks", theme))
 
     return written
 
 
 def capture_wave_c(cfg: dict, out: Path) -> list[Path]:
     """Wave C: projects list + export schemes (SPEC-0158)."""
-    import wt.console as C
-    from wt.export_schemes import available as available_schemes
-    from wt.rules import known_projects, load_mappings
+    import nightwright.console as C
+    from nightwright.export_schemes import available as available_schemes
+    from nightwright.rules import known_projects, load_mappings
 
     written: list[Path] = []
 
@@ -395,7 +395,7 @@ def capture_wave_c(cfg: dict, out: Path) -> list[Path]:
         C.console.print(
             f"[white]{p}[/]  [dim]({counts.get(p, 0)} topic(s), {flag})[/]"
         )
-    written.append(_save(rec, out / "cli-projects.svg", "wt projects", theme))
+    written.append(_save(rec, out / "cli-projects.svg", "nw projects", theme))
 
     rec, theme = _make_console(width=100, height=28)
     _patch_consoles(rec)
@@ -405,45 +405,45 @@ def capture_wave_c(cfg: dict, out: Path) -> list[Path]:
         C.console.print(f"[bold]{s.name}[/]{tag}  [dim]{s.description}[/]")
         C.console.print(f"  required: {', '.join(s.required_fields) or '(none)'}")
         C.console.print(f"  emit: {', '.join(s.artifacts)}")
-    written.append(_save(rec, out / "cli-spec-schemes.svg", "wt spec schemes", theme))
+    written.append(_save(rec, out / "cli-spec-schemes.svg", "nw spec schemes", theme))
 
     return written
 
 
 def capture_cli(cfg: dict, out: Path, show_id: str) -> list[Path]:
-    import wt.explore as EX
-    import wt.report as R
-    from wt.org_write import resolve_selector
+    import nightwright.explore as EX
+    import nightwright.report as R
+    from nightwright.org_write import resolve_selector
 
     written: list[Path] = []
 
     rec, theme = _make_console()
     _patch_consoles(rec)
     R.ideas(cfg)
-    written.append(_save(rec, out / "cli-ideas.svg", "wt ideas", theme))
+    written.append(_save(rec, out / "cli-ideas.svg", "nw ideas", theme))
 
     rec, theme = _make_console()
     _patch_consoles(rec)
     R.next_ideas(cfg)
-    written.append(_save(rec, out / "cli-next.svg", "wt next", theme))
+    written.append(_save(rec, out / "cli-next.svg", "nw next", theme))
 
     rec, theme = _make_console(width=100, height=55)
     _patch_consoles(rec)
     task = resolve_selector(cfg, show_id)
     EX.print_idea_show(cfg, task, plain=False, console=rec)
-    written.append(_save(rec, out / "cli-idea-show.svg", "wt idea show", theme))
+    written.append(_save(rec, out / "cli-idea-show.svg", "nw idea show", theme))
 
     rec, theme = _make_console(width=100, height=45)
     _patch_consoles(rec)
     payload = R.hub_payload(cfg)
     rec.print_json(json.dumps(payload))
-    written.append(_save(rec, out / "cli-hub.svg", "wt hub --json", theme))
+    written.append(_save(rec, out / "cli-hub.svg", "nw hub --json", theme))
 
     rec, theme = _make_console()
     _patch_consoles(rec)
     try:
         R.ideas(cfg, tree=True)
-        written.append(_save(rec, out / "cli-ideas-tree.svg", "wt ideas --tree", theme))
+        written.append(_save(rec, out / "cli-ideas-tree.svg", "nw ideas --tree", theme))
     except TypeError:
         pass
 
@@ -451,7 +451,7 @@ def capture_cli(cfg: dict, out: Path, show_id: str) -> list[Path]:
 
 
 def capture_tui(cfg: dict, out: Path, show_id: str) -> list[Path]:
-    from wt.tui import textual_available
+    from nightwright.tui import textual_available
 
     if not textual_available():
         print("skip tui-desk.svg (textual extra not installed)", file=sys.stderr)
@@ -459,7 +459,7 @@ def capture_tui(cfg: dict, out: Path, show_id: str) -> list[Path]:
 
     from textual.widgets import DataTable
 
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     async def _run() -> str:
         app = IdeaDesk(cfg)
@@ -477,7 +477,7 @@ def capture_tui(cfg: dict, out: Path, show_id: str) -> list[Path]:
             app.query_one("#list", DataTable).move_cursor(row=index)
             app.show_detail(index)
             await pilot.pause()
-            return app.export_screenshot(title="wt tui")
+            return app.export_screenshot(title="nw tui")
 
     import asyncio
 
@@ -488,16 +488,16 @@ def capture_tui(cfg: dict, out: Path, show_id: str) -> list[Path]:
 
 
 def capture_agentic(out: Path) -> list[Path]:
-    """The agentic loop's `wt queue watch --once` frame from a deterministic demo queue:
+    """The agentic loop's `nw queue watch --once` frame from a deterministic demo queue:
     two active campaigns, one waiting, one parked, a backlog and recent deliveries."""
     import datetime as dt
     import json as _json
 
-    from wt.agentic import cli_queue as CQ
-    from wt.agentic import queue as Q
-    from wt.agentic import store as S
+    from nightwright.agentic import cli_queue as CQ
+    from nightwright.agentic import queue as Q
+    from nightwright.agentic import store as S
 
-    with tempfile.TemporaryDirectory(prefix="wt-docs-agentic-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="nw-docs-agentic-") as tmp:
         tmp = Path(tmp)
         repo = tmp / "acme"
         specs = repo / "docs" / "specs"
@@ -526,8 +526,8 @@ def capture_agentic(out: Path) -> list[Path]:
             S.create_campaign(cfg, {
                 "id": cid, "kind": "implement", "spec_id": sid, "project": "Acme",
                 "profile": "balanced", "state": state, "created_at": iso(created),
-                "repo": {"root": str(repo), "base": "main", "branch": f"wt/{cid}",
-                         "worktree": str(tmp / "wt" / cid)},
+                "repo": {"root": str(repo), "base": "main", "branch": f"nw/{cid}",
+                         "worktree": str(tmp / "nw" / cid)},
                 "spec": {"rel_path": f"docs/specs/{sid[5:]}-x.md", "internal": True},
                 "counters": {"loops": extra.pop("loops", 0), "runs": extra.pop("runs", 1)},
                 "cost": {"total_usd": cost, "cap_usd": 10.0}, **extra})
@@ -545,7 +545,7 @@ def capture_agentic(out: Path) -> list[Path]:
                  last_verdict={"persona": "gate_triager", "run": "002-gate_triager",
                                "verdict": {"disposition": "fix",
                                            "summary": "test_digest_groups fails: totals not summed per project"}})
-        from wt.agentic import schemas as SC
+        from nightwright.agentic import schemas as SC
 
         def ev(cid, etype, minutes_ago, **payload):
             S.append_event(cfg, cid, etype, SC.with_defaults(etype, payload))
@@ -591,7 +591,7 @@ def capture_agentic(out: Path) -> list[Path]:
         payload["lease"] = {"held": True, "pid": 48213, "heartbeat_age_s": 3.2, "stale": False}
         rec, theme = _make_console(width=132, height=60)
         rec.print(CQ._dashboard(payload, 132))
-        return [_save(rec, out / "cli-queue-watch.svg", "wt queue watch", theme)]
+        return [_save(rec, out / "cli-queue-watch.svg", "nw queue watch", theme)]
 
 def export_org_examples(cfg: dict, examples: Path) -> list[Path]:
     examples.mkdir(parents=True, exist_ok=True)
@@ -635,7 +635,7 @@ def main(argv: list[str] | None = None) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     _enable_capture_color()
 
-    with tempfile.TemporaryDirectory(prefix="wt-docs-capture-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="nw-docs-capture-") as tmp:
         cfg = _demo_cfg(Path(tmp))
         show_id = _seed(cfg)
         written = []

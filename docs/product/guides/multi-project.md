@@ -6,13 +6,13 @@ When work spans **more than one** tracked repo, do not collapse everything under
 ## Map first
 
 ```bash
-wt projects --json
+nw projects --json
 ```
 
 ![projects](../assets/captures/cli-projects.svg)
 
-Confirm which names are internal (this wt checkout) vs outbound (`repo_path` set). Unknown
-paths → [Outbound](outbound.md) registration (`wt projects add …` dry-run, then `--yes`).
+Confirm which names are internal (this nightwright checkout) vs outbound (`repo_path` set). Unknown
+paths → [Outbound](outbound.md) registration (`nw projects add …` dry-run, then `--yes`).
 
 ## Epic fan-out with `seed-children`
 
@@ -21,7 +21,7 @@ paths → [Outbound](outbound.md) registration (`wt projects add …` dry-run, t
 3. After the epic is `accepted`:
 
    ```bash
-   wt spec seed-children SPEC-NNNN
+   nw spec seed-children SPEC-NNNN
    ```
 
    That seeds `INCUBATE` child ideas stamped with `:EPIC:` + `:PROJECT:` from each bullet.
@@ -29,12 +29,12 @@ paths → [Outbound](outbound.md) registration (`wt projects add …` dry-run, t
 5. Explore and implement **per child** — never one Summary that pretends one research root
    covers every repo.
 
-`wt next` / `wt hub --json` show the fan-out as separate rows on purpose.
+`nw next` / `nw hub --json` show the fan-out as separate rows on purpose.
 
 ## Soft rules
 
 - Naming ≥2 projects in a chat → show the project map before locking Summary.
-- Incomplete epics: extend with `/wt-rework` + `seed-children`, not only ad-hoc tasks.
+- Incomplete epics: extend with `/nw-rework` + `seed-children`, not only ad-hoc tasks.
 - Each outbound child still needs **export → implement → pull-status/sweep → SHIPPED**
   ([Outbound](outbound.md)).
 

@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from wt.agentic import runner as R
-from wt.agentic import runproc as RP
-from wt.agentic.personas import IMPLEMENTER_SCHEMA
+from nightwright.agentic import runner as R
+from nightwright.agentic import runproc as RP
+from nightwright.agentic.personas import IMPLEMENTER_SCHEMA
 from waits import join, until  # noqa: F401  (until is re-exported to the other agentic tests)
 
 FAKE = Path(__file__).parent / "fixtures" / "fake_claude.py"
@@ -25,14 +25,14 @@ def fake_claude(tmp_path, monkeypatch):
     bindir.mkdir()
     (bindir / "claude").symlink_to(FAKE)
     monkeypatch.setenv("PATH", f"{bindir}:/usr/bin:/bin")
-    monkeypatch.setenv("WT_RUNPROC_GRACE_S", "1")
+    monkeypatch.setenv("NW_RUNPROC_GRACE_S", "1")
     monkeypatch.setattr(RP, "GRACE_S", 1.0)
 
 
 def mkreq(tmp_path, name="001-implementer", timeout_s=60, **env):
-    (tmp_path / "wt").mkdir(exist_ok=True)
+    (tmp_path / "nw").mkdir(exist_ok=True)
     return R.RunRequest(
-        persona="implementer", prompt="do it", system_append="", cwd=tmp_path / "wt",
+        persona="implementer", prompt="do it", system_append="", cwd=tmp_path / "nw",
         model="m", effort=None, max_budget_usd=1.0, timeout_s=timeout_s,
         permission_mode="acceptEdits", read_only=False, allowed_tools=(), add_dirs=(),
         json_schema=IMPLEMENTER_SCHEMA, env=env, run_dir=tmp_path / "c" / "runs" / name)
@@ -99,7 +99,7 @@ def test_claim_taken_wrapper_exits(tmp_path):
     req = mkreq(tmp_path)
     req.run_dir.mkdir(parents=True)
     (req.run_dir / "proc.json").write_text(json.dumps({"orphaned": True}))
-    r = subprocess.run([sys.executable, "-m", "wt.agentic.runproc", str(req.run_dir)],
+    r = subprocess.run([sys.executable, "-m", "nightwright.agentic.runproc", str(req.run_dir)],
                        capture_output=True, text=True, timeout=20)
     assert r.returncode != 0 and not (req.cwd / "child.pid").exists()
     assert json.loads((req.run_dir / "proc.json").read_text()) == {"orphaned": True}
@@ -255,11 +255,11 @@ def test_spawn_timeout_failed_launch(tmp_path, monkeypatch):
     real_popen = subprocess.Popen
 
     def slow_wrapper(argv, **kw):                 # the wrapper hangs before it can claim
-        if "wt.agentic.runproc" in argv:
+        if "nightwright.agentic.runproc" in argv:
             argv = [sys.executable, "-c", "import time, sys; print('hung-wrapper-marker', flush=True);"
                     "time.sleep(float(sys.argv[1]));"
                     "import runpy; sys.argv = ['x', sys.argv[2]];"
-                    "runpy.run_module('wt.agentic.runproc', run_name='__main__')",
+                    "runpy.run_module('nightwright.agentic.runproc', run_name='__main__')",
                     "3", argv[-1]]
         return real_popen(argv, **kw)
 
@@ -280,7 +280,7 @@ def test_wrapper_dying_before_claim_returns_promptly(tmp_path, monkeypatch):
     real_popen = subprocess.Popen
 
     def dead_wrapper(argv, **kw):
-        if "wt.agentic.runproc" in argv:
+        if "nightwright.agentic.runproc" in argv:
             argv = [sys.executable, "-c", "raise SystemExit('boom')"]
         return real_popen(argv, **kw)
 
@@ -329,7 +329,7 @@ def test_wrapper_log_and_unknown_keys(tmp_path):
     RP.write_json_atomic(req.run_dir / "request.json", {**_orig(req, "t"), "future": 1})
     RP.write_json_atomic(req.run_dir / "launch.json", {
         "argv": ["claude", "-p"], "cwd": str(req.cwd), "env": {}, "future": [1]})
-    assert subprocess.run([sys.executable, "-m", "wt.agentic.runproc", str(req.run_dir)],
+    assert subprocess.run([sys.executable, "-m", "nightwright.agentic.runproc", str(req.run_dir)],
                           timeout=20).returncode == 0
     assert json.loads((req.run_dir / "exit.json").read_text())["exit_code"] == 0
     # a broken launch.json leaves a traceback in wrapper.log and returns promptly
@@ -339,7 +339,7 @@ def test_wrapper_log_and_unknown_keys(tmp_path):
     (bad.run_dir / "request.json").write_text("{}")
     (bad.run_dir / "launch.json").write_text("{not json")
     with open(bad.run_dir / "wrapper.log", "w") as log:
-        subprocess.run([sys.executable, "-m", "wt.agentic.runproc", str(bad.run_dir)],
+        subprocess.run([sys.executable, "-m", "nightwright.agentic.runproc", str(bad.run_dir)],
                        stdout=log, stderr=log, timeout=20)
     assert "Traceback" in (bad.run_dir / "wrapper.log").read_text()
     t0 = time.monotonic()
@@ -385,7 +385,7 @@ def test_wrapper_failure_after_popen_kills_child(tmp_path, monkeypatch):
                                                      "cwd": str(tmp_path)}))
     (run_dir / "request.json").write_text(json.dumps({"timeout_s": 60}))
     (run_dir / "prompt.md").write_text("")
-    monkeypatch.setenv("WT_RUNPROC_GRACE_S", "0.5")
+    monkeypatch.setenv("NW_RUNPROC_GRACE_S", "0.5")
     monkeypatch.setattr(RP, "GRACE_S", 0.5)
     real_write, seen = RP.write_json_atomic, {}
 

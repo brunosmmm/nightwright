@@ -1,13 +1,13 @@
-"""wt hub --json triage (SPEC-0052)."""
+"""nw hub --json triage (SPEC-0052)."""
 import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 
-from wt import org_write as W
-from wt import specs as S
-from wt.cli import cli
+from nightwright import org_write as W
+from nightwright import specs as S
+from nightwright.cli import cli
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -43,7 +43,7 @@ def _cfg(tmp_path):
 
 
 def _patch(monkeypatch, cfg):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
 
 
 def test_hub_requires_json(tmp_path, monkeypatch):
@@ -81,7 +81,7 @@ def test_hub_json_envelope(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["hub", "--json"])
     assert r.exit_code == 0, r.output
     data = json.loads(r.output)
-    assert data["schema"] == "wt.hub.v1"
+    assert data["schema"] == "nw.hub.v1"
     assert {i["id"] for i in data["ideas"]} == {"IDEA-001"}
     assert {s["id"] for s in data["internal"]} == {"SPEC-0001"}
     assert data["internal"][0]["status"] == "draft"
@@ -151,7 +151,7 @@ def test_hub_help_documents_json():
 # ---- SPEC-0292: agentic slice + idea_row.campaign ---------------------------------
 
 def _campaign(cfg, cid, project, state, *, idea=None, link=None, cost=1.5, cap=10.0, park=None):
-    from wt.agentic import store
+    from nightwright.agentic import store
     st = {"id": cid, "kind": "idea" if idea else "implement", "state": state,
           "spec_id": None if idea else "SPEC-0001", "project": project, "priority": 3,
           "cost": {"total_usd": cost, "cap_usd": cap}, "park": park}
@@ -195,7 +195,7 @@ def test_hub_agentic_slice(tmp_path, monkeypatch):
 
 def test_hub_agentic_spec_id_falls_back_to_written_spec(tmp_path, monkeypatch):
     """An idea campaign that wrote a spec carries the id in `spec.id`, not `spec_id`."""
-    from wt.agentic import store
+    from nightwright.agentic import store
     cfg = _cfg(tmp_path)
     store.create_campaign(cfg, {"id": "C-9", "kind": "idea", "state": "IMPLEMENTING",
                                 "spec_id": None, "spec": {"id": "SPEC-0042"},
@@ -205,7 +205,7 @@ def test_hub_agentic_spec_id_falls_back_to_written_spec(tmp_path, monkeypatch):
 
 
 def test_hub_agentic_error_isolated(tmp_path, monkeypatch):
-    from wt.agentic import store
+    from nightwright.agentic import store
 
     def boom(*a, **k):
         raise RuntimeError("campaigns unreadable")
@@ -218,8 +218,8 @@ def test_hub_agentic_error_isolated(tmp_path, monkeypatch):
 
 
 def test_idea_row_campaign_field(tmp_path):
-    from wt import report as RP
-    from wt.org import load_tasks
+    from nightwright import report as RP
+    from nightwright.org import load_tasks
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "plain")
     W.add_idea(cfg, "running")

@@ -5,14 +5,14 @@ import pytest
 
 
 class CodeRepo:
-    """A throwaway git repo shaped like a wt checkout (SPEC-0231 follower code watch)."""
+    """A throwaway git repo shaped like a nightwright checkout (SPEC-0231 follower code watch)."""
 
     def __init__(self, root):
         self.root = root
         self._git("init", "-q")
         self._git("config", "user.email", "t@example.com")
         self._git("config", "user.name", "t")
-        self.commit({"src/wt/x.py": "x = 1\n", "skills/wt-conduct/SKILL.md": "a\n",
+        self.commit({"src/nightwright/x.py": "x = 1\n", "skills/nw-conduct/SKILL.md": "a\n",
                      "docs/a.md": "a\n"})
 
     def _git(self, *args):
@@ -41,8 +41,8 @@ def code_repo(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _no_persona_run(monkeypatch):
-    """SPEC-0272: pytest run by a campaign agent inherits WT_PERSONA_RUN=1; behave as on a
+    """SPEC-0272: pytest run by a campaign agent inherits NW_PERSONA_RUN=1; behave as on a
     human shell. Tests that exercise the guard opt in with monkeypatch.setenv. Likewise
-    SPEC-0291's WT_RUNNER_LOG, should pytest run under a detached runner."""
-    monkeypatch.delenv("WT_PERSONA_RUN", raising=False)
-    monkeypatch.delenv("WT_RUNNER_LOG", raising=False)
+    SPEC-0291's NW_RUNNER_LOG, should pytest run under a detached runner."""
+    monkeypatch.delenv("NW_PERSONA_RUN", raising=False)
+    monkeypatch.delenv("NW_RUNNER_LOG", raising=False)

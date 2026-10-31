@@ -1,7 +1,7 @@
 """Claude transcript ingestion against a synthetic fixture (SPEC-0001)."""
 import os
 
-from wt import ingest
+from nightwright import ingest
 
 FIXROOT = os.path.join(os.path.dirname(__file__), "fixtures", "claude_root")
 

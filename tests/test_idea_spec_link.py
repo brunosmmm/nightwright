@@ -1,4 +1,4 @@
-"""SPEC-0281: `wt idea spec-link IDEA SPEC` — set/replace an idea's :SPEC:, identity-checked.
+"""SPEC-0281: `nw idea spec-link IDEA SPEC` — set/replace an idea's :SPEC:, identity-checked.
 
 Fixtures come from tests/test_reconcile.py (tmp org + specs dir). The identity rule is SPEC-0267's
 `_pick_idea`; these tests pin that the manual link shares it, that `--yes` needs a matching
@@ -10,9 +10,9 @@ import pathlib
 import pytest
 from click.testing import CliRunner
 
-from wt import specs as S
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright import specs as S
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 from test_reconcile import (_bare_idea, _bytes, _cfg, _second_file_idea, _spec, _spec_prop,
                             _stamp_idea, _state_of)
@@ -23,7 +23,7 @@ from test_reconcile import (_bare_idea, _bytes, _cfg, _second_file_idea, _spec, 
 @pytest.fixture
 def run(monkeypatch):
     def _run(cfg, *args):
-        monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+        monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
         return CliRunner().invoke(cli, ["idea", "spec-link", *args])
     return _run
 
@@ -181,7 +181,7 @@ def test_drift_between_plan_and_apply(tmp_path):
     _spec(cfg, "SPEC-0001", "accepted", source_idea=None)
     _spec(cfg, "SPEC-0002", "accepted", source_idea=None)
     plan = S.plan_spec_link(cfg, idea, "SPEC-0001")
-    from wt import org_write as W
+    from nightwright import org_write as W
     W.set_property(cfg, W.resolve_selector(cfg, idea), "SPEC", "SPEC-0002")
     before = _bytes(cfg)
     with pytest.raises(ValueError, match="changed since the plan"):

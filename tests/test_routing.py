@@ -11,10 +11,10 @@ import pytest
 from click.testing import CliRunner
 from zoneinfo import ZoneInfo
 
-from wt import org_write as W
-from wt import specs as S
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright import org_write as W
+from nightwright import specs as S
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REAL_SPECS = ROOT / "docs" / "specs"
@@ -142,7 +142,7 @@ def test_promote_idea_already_promoted_requires_force(tmp_path):
 def test_cli_spec_new_from_idea_routes_outbound(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, outbox_targets={"AI-workstreams": {"repo_path": "/tmp/ai-repo"}})
     _seed_idea(cfg, "adversarial reviewer", project="AI-workstreams")
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
 
     r = CliRunner().invoke(cli, ["spec", "new", "--from-idea", "adversarial reviewer"])
@@ -155,7 +155,7 @@ def test_cli_spec_new_from_idea_routes_outbound(tmp_path, monkeypatch):
 def test_cli_spec_new_from_idea_routes_internal(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     _seed_idea(cfg, "instant review agent")
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
 
     r = CliRunner().invoke(cli, ["spec", "new", "--from-idea", "instant review agent"])
@@ -167,7 +167,7 @@ def test_cli_spec_new_from_idea_routes_internal(tmp_path, monkeypatch):
 def test_cli_spec_new_internal_flag(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, outbox_targets={"AI-workstreams": {"repo_path": "/tmp/ai-repo"}})
     _seed_idea(cfg, "adversarial reviewer", project="AI-workstreams")
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
 
     r = CliRunner().invoke(cli, ["spec", "new", "--from-idea", "adversarial reviewer",
@@ -180,7 +180,7 @@ def test_cli_spec_new_internal_flag(tmp_path, monkeypatch):
 def test_cli_spec_new_unconfigured_project_errors(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)  # no outbox_targets
     _seed_idea(cfg, "adversarial reviewer", project="AI-workstreams")
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
 
     r = CliRunner().invoke(cli, ["spec", "new", "--from-idea", "adversarial reviewer"])

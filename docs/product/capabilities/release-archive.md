@@ -6,9 +6,9 @@ installs (SPEC-0133).
 ## Commands
 
 ```bash
-wt release-archive
-wt release-archive -o /tmp/wt.tgz --project Meta-Tools
-wt release-archive --no-all          # omit done/archived ideas from the slice
+nw release-archive
+nw release-archive -o /tmp/nightwright.tgz --project Meta-Tools
+nw release-archive --no-all          # omit done/archived ideas from the slice
 ```
 
 Default output path is beside the repo: `../work-tracking-YYYYMMDD-<sha>.tar.gz`.

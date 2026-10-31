@@ -4,8 +4,8 @@ import datetime as dt
 
 import pytest
 
-from wt.agentic import events as E
-from wt.agentic import store
+from nightwright.agentic import events as E
+from nightwright.agentic import store
 from test_agentic_events import _cfg, _campaign, _ev, _set_state
 
 T0 = dt.datetime(2026, 10, 25, 12, 0, 0).astimezone()
@@ -196,7 +196,7 @@ def test_ready_not_admitted_after_grace_with_free_slot(tmp_path):
 
 def test_ready_not_admitted_silent_when_slots_full(tmp_path):
     cfg = _cfg(tmp_path)
-    from wt.agentic.queue import slots_for
+    from nightwright.agentic.queue import slots_for
     for i in range(slots_for(cfg)):
         c = _campaign(cfg, f"SPEC-09{20 + i}-20261025-aaaa", state="IMPLEMENTING")
         _set_state(cfg, c, updated_at=iso(0))
@@ -217,7 +217,7 @@ def test_new_types_validate_and_summary_line(tmp_path):
 
 
 def test_ping_digest_lists_waiting_and_runner(tmp_path):
-    from wt.agentic import lease as L
+    from nightwright.agentic import lease as L
     from test_agentic_watchdog_gaps import _waiting
     cfg = _cfg(tmp_path)
     real = dt.datetime.now().astimezone().replace(microsecond=0)

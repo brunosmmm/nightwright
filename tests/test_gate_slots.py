@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from wt.agentic import gate_slots as GS
-from wt.agentic import events as E
-from wt.agentic import gates as G
-from wt.agentic import store as S
+from nightwright.agentic import gate_slots as GS
+from nightwright.agentic import events as E
+from nightwright.agentic import gates as G
+from nightwright.agentic import store as S
 
 from test_agentic_gates import CID, _cfg, _gate, _state
 from waits import join, until
@@ -24,7 +24,7 @@ from waits import join, until
 HOLDER = textwrap.dedent("""
     import sys, time
     from pathlib import Path
-    from wt.agentic import gate_slots as GS
+    from nightwright.agentic import gate_slots as GS
     cfg = {"data_dir": sys.argv[1], "agentic": {"gates": {"slots": int(sys.argv[2])}}}
     cid, release = sys.argv[3], Path(sys.argv[4])
     with GS.acquire(cfg, cid, poll_s=0.05) as hold:

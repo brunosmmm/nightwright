@@ -10,14 +10,14 @@ Agent or human “what’s in flight?” without opening three lists. Never writ
 ## Commands
 
 ```bash
-wt hub --json                     # wt.hub.v1 (+ today tasks by default)
-wt hub --json --project P         # filter ideas + today
-wt hub --json --tasks-slice open  # capped open actionable tasks
-wt hub --json --tasks-slice none  # ideas/specs only
-wt hub --json --state TODO        # filter by state
+nw hub --json                     # nw.hub.v1 (+ today tasks by default)
+nw hub --json --project P         # filter ideas + today
+nw hub --json --tasks-slice open  # capped open actionable tasks
+nw hub --json --tasks-slice none  # ideas/specs only
+nw hub --json --state TODO        # filter by state
 ```
 
 ![hub --json](../assets/captures/cli-hub.svg)
 
 `--json` is required in v1. Pair with [Ideas & next](ideas.md), [Skills](skills.md)
-(`/wt-orient`), and the [Daily](../guides/daily-ops.md) / [Weekly](../guides/weekly-ops.md) ops guides.
+(`/nw-orient`), and the [Daily](../guides/daily-ops.md) / [Weekly](../guides/weekly-ops.md) ops guides.

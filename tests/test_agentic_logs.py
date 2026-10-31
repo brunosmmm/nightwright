@@ -1,15 +1,15 @@
 """SPEC-0192: every log the agentic layer saves is JSON/JSONL with a declared schema — the
 ledger (validated on append), `run.json` beside each persona run, a `.json` sidecar beside each
-raw gate log, and the runner's own `runner.jsonl` (+ `wt queue runner-log`)."""
+raw gate log, and the runner's own `runner.jsonl` (+ `nw queue runner-log`)."""
 import json
 
 import pytest
 
 from test_agentic_e2e import (added, impl_done, make_cfg, make_repo, review, run_cli, script,
                               tr_review, triage)
-from wt.agentic import queue as Q
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
+from nightwright.agentic import queue as Q
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
 
 
 def _run_to_idle(tmp_path, monkeypatch, entries):
@@ -48,7 +48,7 @@ def test_every_saved_record_matches_its_schema(tmp_path, monkeypatch):
         side = json.loads(log.with_suffix(".json").read_text())
         assert SC.record_problems(side, SC.GATE_KEYS, SC.GATE_SCHEMA) == []
         assert side["log"] == log.name and side["cmd"]
-        assert not log.read_text().startswith("# ")              # no wt text in raw output
+        assert not log.read_text().startswith("# ")              # no nightwright text in raw output
 
     journal = Q.read_journal(cfg)
     assert [p for rec in journal for p in SC.runner_problems(rec)] == []
@@ -93,8 +93,8 @@ def test_append_event_rejects_unknown_type_and_missing_keys(tmp_path):
 def test_pre_schema_records_still_read_as_v1():
     old = {"ts": "t", "seq": 1, "campaign": "c", "type": "note", "by": "human", "text": "x"}
     assert SC.ledger_problems(old) == []
-    assert SC.ledger_problems({**old, "schema": "wt.ledger.event.v9"}) == [
-        "unknown schema 'wt.ledger.event.v9'"]
+    assert SC.ledger_problems({**old, "schema": "nw.ledger.event.v9"}) == [
+        "unknown schema 'nw.ledger.event.v9'"]
 
 
 def test_runner_crash_is_journaled(tmp_path, monkeypatch):
@@ -117,7 +117,7 @@ def test_runner_log_cli(tmp_path, monkeypatch):
     cfg, cid = _run_to_idle(tmp_path, monkeypatch, [impl_done(), review()])
     r = run_cli(cfg, monkeypatch, ["queue", "runner-log", "--json"])
     d = json.loads(r.output)
-    assert d["schema"] == "wt.runner.log.v1" and d["records"][-1]["kind"] == "stop"
+    assert d["schema"] == "nw.runner.log.v1" and d["records"][-1]["kind"] == "stop"
     r = run_cli(cfg, monkeypatch, ["queue", "runner-log", "--tail", "0"])
     assert r.exit_code == 0 and "start" in r.output and "stop" in r.output and cid in r.output
     r = run_cli(cfg, monkeypatch, ["queue", "runner-log", "--tail", "1", "--json"])
@@ -196,7 +196,7 @@ def test_adversarial_finding_with_category_is_a_valid_ledger_record(tmp_path, mo
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []),
                    profile={"reviewers": ["adversarial_reviewer"]})
-    from wt.agentic.runner import FakeRunner
+    from nightwright.agentic.runner import FakeRunner
     cid = added(cfg, monkeypatch)
     entries = [impl_done(), adv, impl_done(content="better\n"), ok]
     runner = FakeRunner(script(tmp_path, entries, "adv.json"))

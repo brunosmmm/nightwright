@@ -4,12 +4,12 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt import org_write as W
-from wt import report as R
-from wt.cli import cli
-from wt.org import load_tasks
-from wt.workflow import next_step_for_idea
+from nightwright import explore as EX
+from nightwright import org_write as W
+from nightwright import report as R
+from nightwright.cli import cli
+from nightwright.org import load_tasks
+from nightwright.workflow import next_step_for_idea
 
 
 def _cfg(tmp_path):
@@ -34,7 +34,7 @@ def _cfg(tmp_path):
 
 
 def _patch(monkeypatch, cfg):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
 
 
 def test_add_idea_kind_writes_property(tmp_path):
@@ -106,7 +106,7 @@ def test_next_step_unchanged_by_kind(tmp_path):
     W.set_idea_kind(cfg, "IDEA-001", "bug")
     t = load_tasks(cfg)[0]
     after = next_step_for_idea(cfg, t)
-    assert before == after == "wt idea log IDEA-001"
+    assert before == after == "nw idea log IDEA-001"
 
 
 def test_cli_capture_kind_and_filter(tmp_path, monkeypatch):

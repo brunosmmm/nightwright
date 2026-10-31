@@ -9,14 +9,14 @@ in by its child specs as they land.
 
 ## Project configuration
 
-`<repo>/.wt/project.yaml` is committed with the project and declares what the loop needs
+`<repo>/.nw/project.yaml` is committed with the project and declares what the loop needs
 to know about it (SPEC-0170):
 
 - `gates`: ordered shell commands (`name`, `cmd`, `cwd`, `timeout_s`, `required`) run
   inside the campaign worktree; `required` gates block, optional ones only report.
 - `merge`: `policy` (`merge` | `pr` | `draft-pr`), `base`, `remote`, `push_after_merge`,
   `delete_branch`, `post_cmds`, `pr.labels` / `reviewers` / `title_prefix`.
-- `worktrees`: `root` (default `<repo>/../.wt-worktrees/<project>`), `setup` commands,
+- `worktrees`: `root` (default `<repo>/../.nw-worktrees/<project>`), `setup` commands,
   `cleanup` (`on_merge` | `on_close` | `never`).
 - `agents`: `context_files` read first by every persona, `permission_mode`,
   `allowed_tools`, `commit_trailer`.
@@ -24,21 +24,21 @@ to know about it (SPEC-0170):
 Unknown keys fail; every problem is reported by key path. Gate commands may use the
 placeholders `{spec_id}`, `{campaign}`, `{worktree}`, `{base}`.
 
-wt finds the file through the project registry (`wt projects --json`): an outbound
-project's `repo_path`, or this wt checkout for `Meta-Tools`. Never from the current
+nightwright finds the file through the project registry (`nw projects --json`): an outbound
+project's `repo_path`, or this nightwright checkout for `Meta-Tools`. Never from the current
 directory alone.
 
 ```bash
-wt projects config Meta-Tools          # resolved document, defaults filled
-wt projects config --json              # wt.project.config.v1 (project from cwd)
-wt projects init acme                  # print a starter; --yes writes it, --force overwrites
+nw projects config Meta-Tools          # resolved document, defaults filled
+nw projects config --json              # nw.project.config.v1 (project from cwd)
+nw projects init acme                  # print a starter; --yes writes it, --force overwrites
 ```
 
 ## Campaigns and the ledger
 
 A campaign is one spec's trip through the loop. Each lives under
 `<data_dir>/agentic/campaigns/<id>/` as an atomically written `state.json` (schema
-`wt.campaign.v1`: state, counters, cost, last gate, park reason) plus an append-only
+`nw.campaign.v1`: state, counters, cost, last gate, park reason) plus an append-only
 `ledger.jsonl` with one event per line (`open`, `transition`, `run.start`/`run.end`,
 `commit`, `gate`, `finding`, `cost`, `note`, `park`, `resume`, `close`, plus the backlog
 `backlog` and `priority` events of SPEC-0180), each carrying a
@@ -46,33 +46,33 @@ monotonic `seq`. Writers hold the campaign's `flock`, so the loop and a human co
 touch the same campaign safely. Campaign ids are `<SPEC-ID>-<YYYYMMDD>-<hex>`.
 
 ```bash
-wt campaign list                 # open campaigns (--all for terminal ones)
-wt campaign show CAMPAIGN        # state + last events (--json → wt.campaign.v1)
-wt campaign log CAMPAIGN --tail 20   # the ledger (--json → wt.campaign.log.v1)
-wt campaign note CAMPAIGN "text" # append a note; inside a persona run $WT_CAMPAIGN is set
+nw campaign list                 # open campaigns (--all for terminal ones)
+nw campaign show CAMPAIGN        # state + last events (--json → nw.campaign.v1)
+nw campaign log CAMPAIGN --tail 20   # the ledger (--json → nw.campaign.log.v1)
+nw campaign note CAMPAIGN "text" # append a note; inside a persona run $NW_CAMPAIGN is set
 ```
 
-A single `wt queue run` holds the runner lease (`queue.lock` + `queue.lease.json` with a
+A single `nw queue run` holds the runner lease (`queue.lock` + `queue.lease.json` with a
 heartbeat); a second runner is refused and names the holder. A heartbeat older than
 `agentic.lease_ttl_s` is reported as `stale`, never taken over (SPEC-0171).
 
 ### Outbound projects
 
 An outbound spec (`ACME-0001`, authored in the outbox) is queued like any other once it has
-been exported: `wt spec export ACME-0001`, then `wt queue add ACME-0001`. When its campaign
-reaches `MERGED` the close step runs `wt spec pull-status` for it: the outbox copy takes the
+been exported: `nw spec export ACME-0001`, then `nw queue add ACME-0001`. When its campaign
+reaches `MERGED` the close step runs `nw spec pull-status` for it: the outbox copy takes the
 merged file's `status` and the linked `EXPORTED` idea becomes `SHIPPED`, with an
 `outbound_pulled` event in the ledger. A pull failure is a minor `bookkeeping` finding and
-never undoes the merge. A `HANDED_OFF` campaign pulls nothing; the PR sweep (`wt queue
+never undoes the merge. A `HANDED_OFF` campaign pulls nothing; the PR sweep (`nw queue
 sweep-prs`) runs the pull when it records the merge, which needs the target checkout to have
-pulled the merged file (otherwise a finding says to pull and rerun `wt spec pull-status`).
+pulled the merged file (otherwise a finding says to pull and rerun `nw spec pull-status`).
 
 ## Profiles
 
 Models, effort, budgets, loop limits and slots are workflow profiles (SPEC-0171, SPEC-0237).
 Builtin profiles `balanced` (default: Sonnet implementer and triager, $10 cap, 3 loops,
 2 slots), `frugal` and `thorough` ship as YAML files in the package
-(`src/wt/agentic/profile_defs/<name>.yaml`).
+(`src/nightwright/agentic/profile_defs/<name>.yaml`).
 
 ### Profile files and layers
 
@@ -81,7 +81,7 @@ Four layers define profiles; a higher layer wins, key by key:
 1. builtin files (package data);
 2. user files, `<config_dir>/profiles/*.yaml`;
 3. the `agentic.profiles` deltas in `config.yaml`;
-4. project files, `<repo>/.wt/profiles/*.yaml`, read from the project's **main checkout** (a
+4. project files, `<repo>/.nw/profiles/*.yaml`, read from the project's **main checkout** (a
    campaign cannot change its own profile by editing its branch). `slots` are a property of the
    whole queue, so they ignore the project layer.
 
@@ -92,8 +92,8 @@ new name merges over `balanced`, as before. Files are re-read on every tick, so 
 without restarting the runner.
 
 ```yaml
-# <repo>/.wt/profiles/careful.yaml
-schema: wt.profile.v1            # required in files
+# <repo>/.nw/profiles/careful.yaml
+schema: nw.profile.v1            # required in files
 extends: balanced                # optional; a delta over the effective `balanced`
 description: "opus implements, one more loop"
 loop_max: 4
@@ -108,7 +108,7 @@ Keys: `slots`, `loop_max`, `run_timeout_s` (integers >= 1), `campaign_cap_usd`, 
 (`default|acceptEdits|bypassPermissions|dontAsk|plan`) and `read_only`. Every source is
 validated: an unknown key, persona, model, effort or permission mode, or a wrong type, fails
 with `<file>: <key.path>: <problem>`, and only the profile that file defines breaks. A campaign
-of that profile parks `open_failed` with that message; `wt queue add` and `wt spec review` fail
+of that profile parks `open_failed` with that message; `nw queue add` and `nw spec review` fail
 with it. The resolved profile lists its `sources`, lowest layer first.
 
 The `config.yaml` block holds the same deltas:
@@ -125,24 +125,24 @@ agentic:
 
 ## Gates
 
-Gates are the project's own proof commands from `.wt/project.yaml` — tests, lint, anything
+Gates are the project's own proof commands from `.nw/project.yaml` — tests, lint, anything
 with an exit code (SPEC-0173). The loop runs them in the campaign worktree, **in order and
 all of them every time**, so triage and humans see every failure at once rather than the
 first one. Each gate has a `timeout_s`; a timeout kills the gate's whole process group.
-A campaign branch may raise a gate's `timeout_s` in its own `.wt/project.yaml` (up to the
-wt-level `gate_budget_s`), never lower it, and the raise is recorded as a `gate-limits` finding;
+A campaign branch may raise a gate's `timeout_s` in its own `.nw/project.yaml` (up to the
+nightwright-level `gate_budget_s`), never lower it, and the raise is recorded as a `gate-limits` finding;
 nothing else in a gate is read from the branch (SPEC-0316).
 `required: true` gates block the campaign; optional gates are recorded but never block.
 
 Every gate writes one log under the campaign directory, `gates/NNN-<name>.log`, starting
 with a header line that names the command and its working directory; the last 60 lines
-travel with the result into the ledger (`gate` event) and into `wt campaign show`. Gate
-commands see `WT_CAMPAIGN`, `WT_SPEC_ID`, `WT_WORKTREE`, `WT_BASE`, `WT_DATA_DIR` and
-`WT_CONFIG_DIR`, and may use `{spec_id}`, `{campaign}`, `{worktree}`, `{base}` placeholders.
+travel with the result into the ledger (`gate` event) and into `nw campaign show`. Gate
+commands see `NW_CAMPAIGN`, `NW_SPEC_ID`, `NW_WORKTREE`, `NW_BASE`, `NW_DATA_DIR` and
+`NW_CONFIG_DIR`, and may use `{spec_id}`, `{campaign}`, `{worktree}`, `{base}` placeholders.
 
-`wt queue gates CAMPAIGN` runs the gates on a campaign's worktree right now — for example
+`nw queue gates CAMPAIGN` runs the gates on a campaign's worktree right now — for example
 on a parked item — and logs a `gate` event. It never changes the campaign's state or its
-`last_gate`, so a debug run cannot steer the queue. `--json` emits `wt.campaign.gate.v1`.
+`last_gate`, so a debug run cannot steer the queue. `--json` emits `nw.campaign.gate.v1`.
 
 ## Personas
 
@@ -154,10 +154,10 @@ do not commit, finish with the JSON verdict). The runner passes a `--json-schema
 verdict is structured, a `--max-budget-usd`, a wall-clock timeout, the profile's model and
 effort, and an explicit permission mode (`bypassPermissions` scoped to the worktree for the
 implementer; `--restricted` for read-only personas). Cost, usage and session id come back in
-the result and go to the ledger. Identical inputs give a byte-identical prompt; `wt campaign
+the result and go to the ledger. Identical inputs give a byte-identical prompt; `nw campaign
 prompt CAMPAIGN PERSONA` prints it without running anything.
 
-For tests and dry runs, `agentic.runner: fake` (or `WT_AGENTIC_RUNNER=fake`) replays a JSON
+For tests and dry runs, `agentic.runner: fake` (or `NW_AGENTIC_RUNNER=fake`) replays a JSON
 script of scripted edits and canned verdicts instead of calling `claude`.
 
 ## Reviews
@@ -284,9 +284,9 @@ agentic:
 `verdicts[*].score`), `findings` / `must_fix` (counts of the surviving findings), `waived`
 (the findings the review triager waived, each with its `reason`; empty otherwise) and `advisory` (the non-blocking findings of the current
 review: `{id, personas, severity, title, detail, files, ac, category}`).
-`counters.review_retries_by_persona` appears only after the first retry. `wt campaign show`
+`counters.review_retries_by_persona` appears only after the first retry. `nw campaign show`
 prints a `review:` line (score, verdict, advisory count and how many are `major`) and
-`wt queue list --json` rows carry `review_score`.
+`nw queue list --json` rows carry `review_score`.
 
 ### Review triager (SPEC-0206)
 
@@ -316,18 +316,18 @@ never causes `review_escalated`) or `skipped` (the cost cap could not fit its bu
 ### Follow-up ideas (SPEC-0207, grouped by SPEC-0239)
 
 What a change merges with is not forgotten. At the start of the close step a deterministic filer
-(`wt.agentic.followups`) lists the `major`/`minor` findings (`nit` too with
+(`nightwright.agentic.followups`) lists the `major`/`minor` findings (`nit` too with
 `review.followups_nits`) that were advisory or waived in **one grouped idea per campaign**
 (`kind: improvement`, the campaign's project, the spec's `parent` epic when it has one);
 `review.followups: false` files nothing. It never blocks a merge: a failure is a `note` event and
 the findings are reported `unfiled`.
 
-- **The grouped idea.** Its heading carries the marker `wtfug:<campaign id>` and the count
-  (`wtfug:<cid> [SPEC-NNNN] review follow-ups (<n> findings)`); its Summary is a checklist with one
-  line per finding (`- [ ] wtfu:<key12> <severity> persona/slot: title - detail (files: …)`),
+- **The grouped idea.** Its heading carries the marker `nwfug:<campaign id>` and the count
+  (`nwfug:<cid> [SPEC-NNNN] review follow-ups (<n> findings)`); its Summary is a checklist with one
+  line per finding (`- [ ] nwfu:<key12> <severity> persona/slot: title - detail (files: …)`),
   ordered by severity, `advisory` before `waived`, then title. Ticked (`- [X]`) lines still count.
 - **Key.** `key = sha1(spec id | normalized title | sorted files)`; the first 12 hex characters
-  are the `wtfu:<key12>` token of the checklist line. The key ignores persona and severity, so a
+  are the `nwfu:<key12>` token of the checklist line. The key ignores persona and severity, so a
   finding whose severity or reporters change keeps its key; a reworded title or other cited files
   is a new finding (accepted: a spurious follow-up is cheaper than a lost one).
 - **Listed once.** A finding already listed in another **open** grouped idea of the same spec
@@ -336,34 +336,34 @@ the findings are reported `unfiled`.
 - **Cap.** `review.followups_max` (integer >= 0, default 10, `0` = no cap) bounds the lines per
   campaign. The findings past the cap are reported as `capped` (no `followup` event, so a re-run
   with a raised cap can still list them) and an overflow line
-  `- +K more findings not listed (wt campaign show <cid>)` ends the Summary.
+  `- +K more findings not listed (nw campaign show <cid>)` ends the Summary.
 - **Carry-over.** On every `fix` outcome `_merge_carry` merges the review's advisory and waived
   findings into `state.review_carry` (de-duplicated by key) and drops every key that is blocking
   in that review, so advisory findings of earlier loops are still filed at the close step.
 - **Idempotent and crash-safe.** A key with a `followup` ledger event is skipped (and still
-  reported). Otherwise the group is looked up by its `wtfug:` marker in the ideas file and its
+  reported). Otherwise the group is looked up by its `nwfug:` marker in the ideas file and its
   archive and **adopted**: the filer writes add_idea, Summary, title, then the events, and a
   re-run appends only the missing lines and recounts the title, so a crash anywhere leaves no
   second idea and no second line.
 - **Ledger and reports.** Each listed finding is a `followup` event
   (`persona, severity, title, key, idea_id, origin`), whose `idea_id` is the group. `state.close.followups`
-  holds `{filed, unfiled, waived, capped, idea_id}`; `wt campaign show` prints
+  holds `{filed, unfiled, waived, capped, idea_id}`; `nw campaign show` prints
   `follow-ups IDEA-NNN (<n> listed, <k> capped)`, the follow-up lines (`IDEA-NNN severity
-  title`), the `[capped]`, unfiled and waived findings. The close row of `wt.queue.tick.v1`
+  title`), the `[capped]`, unfiled and waived findings. The close row of `nw.queue.tick.v1`
   carries a `followups` key (`filed`, `unfiled` and `capped` counts, `idea_id`, the distinct
   `ids`, plus the `items`, `unfiled_items` and `waived` lists).
-- **Migration.** `wt ideas group-followups [--yes] [--json]` folds the open single `wtfu:` ideas
-  that SPEC-0207 used to file into one `wtfug:legacy-<SPEC-NNNN>` idea per spec and closes each
+- **Migration.** `nw ideas group-followups [--yes] [--json]` folds the open single `nwfu:` ideas
+  that SPEC-0207 used to file into one `nwfug:legacy-<SPEC-NNNN>` idea per spec and closes each
   single as `DROPPED` with `FOLDED_INTO` the group. Without `--yes` it only prints the plan
-  (`wt.ideas.group_followups.v1`, `written: false`); a re-run is a no-op.
+  (`nw.ideas.group_followups.v1`, `written: false`); a re-run is a no-op.
 
 ## Closing
 
-Closing is the step that guards the base branch, and for wt itself the live editable install
+Closing is the step that guards the base branch, and for nightwright itself the live editable install
 (SPEC-0175). It is plain Python over the git wrapper and the gate executor, and it never
 forces anything:
 
-1. The spec in the worktree must verify (`wt spec verify` checks) **and** be `status: done`;
+1. The spec in the worktree must verify (`nw spec verify` checks) **and** be `status: done`;
    otherwise the campaign goes back to triage with a synthetic `spec-dod` gate naming what is
    missing.
 2. Anything uncommitted in the worktree is snapshotted into a commit.
@@ -386,7 +386,7 @@ forces anything:
    parks (`gh_failed`).
 7. Cleanup per `worktrees.cleanup`; a merged branch is deleted, a PR branch kept.
 
-Idea states are not touched here; `/wt-conduct` runs `wt spec reconcile --apply` after merges.
+Idea states are not touched here; `/nw-conduct` runs `nw spec reconcile --apply` after merges.
 
 ## Queue
 
@@ -395,22 +395,22 @@ commits and one verdict. One process runs the loop at a time (the lease), two or
 campaigns advance concurrently (the profile's `slots`).
 
 A spec is admitted only with an approving review for its current text (SPEC-0188):
-`wt spec review SPEC-0170` runs the read-only `spec_reviewer` persona and stores the verdict in
+`nw spec review SPEC-0170` runs the read-only `spec_reviewer` persona and stores the verdict in
 `docs/specs/reviews/SPEC-0170.json`, keyed by the spec file's sha256 — editing the spec
-invalidates it. `wt queue add --force` skips the check and records `review: forced`.
+invalidates it. `nw queue add --force` skips the check and records `review: forced`.
 
 ```bash
-wt spec review SPEC-0170          # approve | revise | split, with findings
-wt spec review SPEC-0170 --show   # read the stored review; runs nothing (SPEC-0242)
-wt spec reviews --verdict revise  # the latest review of every spec
-wt queue add SPEC-0170            # plan only (dry-run)
-wt queue add SPEC-0170 --yes      # create the campaign in QUEUED
-wt queue list                     # Active (slots) and Backlog (admission order) tables
-wt queue backlog                  # only the backlog: priority, what each item waits on
-wt queue add SPEC-0171 --priority 1 --yes   # 1 (first) .. 5; default 3
-wt queue prioritize CAMPAIGN 2 --yes        # re-prioritize a QUEUED / PARKED item
-wt queue watch                    # the same, live
-wt queue run                      # the loop; wt queue tick = one iteration
+nw spec review SPEC-0170          # approve | revise | split, with findings
+nw spec review SPEC-0170 --show   # read the stored review; runs nothing (SPEC-0242)
+nw spec reviews --verdict revise  # the latest review of every spec
+nw queue add SPEC-0170            # plan only (dry-run)
+nw queue add SPEC-0170 --yes      # create the campaign in QUEUED
+nw queue list                     # Active (slots) and Backlog (admission order) tables
+nw queue backlog                  # only the backlog: priority, what each item waits on
+nw queue add SPEC-0171 --priority 1 --yes   # 1 (first) .. 5; default 3
+nw queue prioritize CAMPAIGN 2 --yes        # re-prioritize a QUEUED / PARKED item
+nw queue watch                    # the same, live
+nw queue run                      # the loop; nw queue tick = one iteration
 ```
 
 State machine:
@@ -444,20 +444,20 @@ queued with a `blocked_by` reason (`spec status is draft`, `waiting on SPEC-0181
 `SPEC-0181 not found`, `spec file missing`) — so a chain can be queued in one go and opens
 link by link as each spec lands on the base. Each admission records a transition with reason
 `admitted`; an item becoming blocked or unblocked records one `backlog` ledger event (none
-per unchanged tick), and `wt queue prioritize` records a `priority{from,to}` event.
+per unchanged tick), and `nw queue prioritize` records a `priority{from,to}` event.
 
 Park reasons: `cost_cap` (checked pessimistically before every spawn), `loop_exhausted`,
 `implementer_blocked` (blocked twice in a row), `triage_escalated`, `review_escalated`,
 `open_failed`,
 `rebase_conflict`, `main_dirty`, `main_not_on_base`, `base_moving`, `gh_failed`, `human`.
-A parked item keeps its worktree; `wt queue resume ID [--to STATE] [--note …]
-[--raise-cap USD] [--reset-loops] --yes` continues it, `wt queue abandon ID --yes` ends it.
-With a loop running, `wt queue park` applies after the current step is recorded.
+A parked item keeps its worktree; `nw queue resume ID [--to STATE] [--note …]
+[--raise-cap USD] [--reset-loops] --yes` continues it, `nw queue abandon ID --yes` ends it.
+With a loop running, `nw queue park` applies after the current step is recorded.
 
 Every transition, run (with cost), gate run, finding, park and close is in the campaign's
-ledger (`wt campaign log ID`). `--json` shapes: `wt.queue.v1`, `wt.queue.add.v1`,
-`wt.queue.backlog.v1`, `wt.queue.prioritize.v1`, `wt.queue.tick.v1`, `wt.queue.park.v1`,
-`wt.queue.resume.v1`, `wt.queue.abandon.v1`.
+ledger (`nw campaign log ID`). `--json` shapes: `nw.queue.v1`, `nw.queue.add.v1`,
+`nw.queue.backlog.v1`, `nw.queue.prioritize.v1`, `nw.queue.tick.v1`, `nw.queue.park.v1`,
+`nw.queue.resume.v1`, `nw.queue.abandon.v1`.
 
 ## Gate slots
 
@@ -465,17 +465,17 @@ Gate runs share a host-wide pool of `agentic.gates.slots` slots (default 2, an i
 16; SPEC-0309). A gate run takes one slot for all its gates, so concurrent parallel-pytest gates
 never oversubscribe the CPU. A campaign waiting for a slot is not reported `campaign_silent` or
 `state_stuck`, and the wait does not count against its gate budget. A wait over 30 s writes a
-`gate_waiting` event, and the gate result records `slot_wait_s`. `wt queue gate-slots [--json]`
+`gate_waiting` event, and the gate result records `slot_wait_s`. `nw queue gate-slots [--json]`
 shows the holders and the waiters.
 
 ## Events and watchdog
 
-`wt queue events` is the queue's alert stream (SPEC-0181): `<data_dir>/agentic/events.jsonl`,
-one `wt.event.v1` JSON record per line — `admitted`, `parked`, `resumed`, `merged`,
+`nw queue events` is the queue's alert stream (SPEC-0181): `<data_dir>/agentic/events.jsonl`,
+one `nw.event.v1` JSON record per line — `admitted`, `parked`, `resumed`, `merged`,
 `handed_off`, `abandoned`, `run_failed` (with `transient: true` for account limits and API
 overload), `cost_warning`, `backlog`, and mailbox `message`s to the conductor. Events are
 projected from the campaign ledgers exactly once, so the stream works with any loop version.
-`wt queue events --follow --for conductor` streams new events forever with a per-reader cursor
+`nw queue events --follow --for conductor` streams new events forever with a per-reader cursor
 (a restarted follower resumes after the last delivered event) and runs a **watchdog** outside
 the loop: `runner_dead` (work pending, no runner), `lease_stale` (runner hung, no run in
 flight), `run_overdue` (a persona run past its timeout), `campaign_silent` (no activity for a
@@ -501,29 +501,29 @@ event fires.
 
 ## Mailbox
 
-`wt mailbox send|follow|list|thread` (SPEC-0183): per-recipient JSONL inboxes for
-`conductor`, `human` and `steward:<Project>`, `wt.message.v1` envelopes with `kind`
+`nw mailbox send|follow|list|thread` (SPEC-0183): per-recipient JSONL inboxes for
+`conductor`, `human` and `steward:<Project>`, `nw.message.v1` envelopes with `kind`
 (question / answer / request / info), `campaign` and `re` threading. Messages to the
 conductor also appear in its event stream, so one Monitor wakes it for both.
 
 ## Conductor
 
-`/wt-conduct` (SPEC-0182) turns a session into the **conductor**: it arms Claude Code's
-Monitor on `wt queue events --follow --for conductor` and is woken by every event — a park,
+`/nw-conduct` (SPEC-0182) turns a session into the **conductor**: it arms Claude Code's
+Monitor on `nw queue events --follow --for conductor` and is woken by every event — a park,
 a merge, a dead or hung runner, an overdue run, a steward's message — and resolves it from a
 decision table (resume, raise the cap once, ask the project's steward, restart the loop,
 reconcile ideas after a merge), escalating to the human only for design questions and the
-human's own checkout. `wt queue conduct-status` is its one-call situation report. The
+human's own checkout. `nw queue conduct-status` is its one-call situation report. The
 follower's reader lock means only one conductor can be armed.
 
 ## Stewards
 
-`/wt-steward` (SPEC-0184) turns a project session into `steward:<Project>`: a Monitor on
-`wt mailbox follow --to steward:<Project>` wakes it for the conductor's questions about that
+`/nw-steward` (SPEC-0184) turns a project session into `steward:<Project>`: a Monitor on
+`nw mailbox follow --to steward:<Project>` wakes it for the conductor's questions about that
 project's campaigns; it answers with a concrete action, and routes the human's queue requests
 for the project to the conductor. One steward per project (reader lock); stewards advise and
 never implement in campaign worktrees.
 
-wt dogfoods itself: the repo's own `.wt/project.yaml` declares `uv run pytest -q -x` and
+nightwright dogfoods itself: the repo's own `.nw/project.yaml` declares `uv run pytest -q -x` and
 `python3 tools/spec_lint.py` as required gates, merge policy `merge` into `main`, and
-`uv sync --extra tui` as worktree setup. `wt projects config Meta-Tools` shows it.
+`uv sync --extra tui` as worktree setup. `nw projects config Meta-Tools` shows it.

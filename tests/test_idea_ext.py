@@ -6,11 +6,11 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import idea_ext as IX
-from wt import org_write as W
-from wt.cli import cli
-from wt.extension_schema import extension_schema_for, normalize_extension_schema
-from wt.org import filter_tasks, load_tasks
+from nightwright import idea_ext as IX
+from nightwright import org_write as W
+from nightwright.cli import cli
+from nightwright.extension_schema import extension_schema_for, normalize_extension_schema
+from nightwright.org import filter_tasks, load_tasks
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -46,7 +46,7 @@ def _idea(cfg):
 
 
 def _patch(monkeypatch, cfg):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
 
 
 EXAMPLE_SCHEMA = {

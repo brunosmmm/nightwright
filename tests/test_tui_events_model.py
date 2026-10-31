@@ -7,8 +7,8 @@ import time
 import pytest
 
 from test_agentic_events import _campaign, _cfg
-from wt.agentic import events as E
-from wt.tui import agentic_model as AM
+from nightwright.agentic import events as E
+from nightwright.tui import agentic_model as AM
 
 
 def _append(cfg, type_, campaign=None, **data):

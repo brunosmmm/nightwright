@@ -9,10 +9,10 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt import org_write as W
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright import explore as EX
+from nightwright import org_write as W
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -36,7 +36,7 @@ def _cfg(tmp_path):
 
 def _seed(tmp_path, monkeypatch, *, questions=("first?", "second?", "third?")):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "an idea with questions"]).exit_code == 0
     for q in questions:
@@ -270,7 +270,7 @@ def test_cli_tags_set_and_clear(tmp_path, monkeypatch):
 
 
 def test_cli_tags_feed_the_existing_tag_filter(tmp_path, monkeypatch):
-    """SPEC-0089's `wt ideas --tag` must see tags written by the new mutator."""
+    """SPEC-0089's `nw ideas --tag` must see tags written by the new mutator."""
     cfg = _seed(tmp_path, monkeypatch)
     run = CliRunner().invoke
     assert run(cli, ["idea", "tags", "IDEA-001", "--set", "tui"]).exit_code == 0

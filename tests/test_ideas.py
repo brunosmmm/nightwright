@@ -1,17 +1,17 @@
 """Idea capture & model (SPEC-0012): config defaults, Task.is_idea, filter_tasks(is_idea=...),
-add_idea file-creation + capture, `wt tasks` exclusion, `wt ideas` listing/filters, CLI."""
+add_idea file-creation + capture, `nw tasks` exclusion, `nw ideas` listing/filters, CLI."""
 import os
 from zoneinfo import ZoneInfo
 
 import pytest
 from click.testing import CliRunner
 
-from wt import config as C
-from wt import org_write as W
-from wt import report as R
-from wt.cli import cli
-from wt.console import console
-from wt.org import filter_tasks, load_tasks
+from nightwright import config as C
+from nightwright import org_write as W
+from nightwright import report as R
+from nightwright.cli import cli
+from nightwright.console import console
+from nightwright.org import filter_tasks, load_tasks
 
 
 def _cfg(tmp_path, ideas="ai/ideas.org"):
@@ -226,7 +226,7 @@ def test_archive_idea_preserves_summary_and_log(tmp_path):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "rich idea", state="INCUBATE")
     task = _find(cfg, "rich idea")
-    from wt import explore as EX
+    from nightwright import explore as EX
     EX.set_summary(cfg, task.properties.get("ID") or task.id, "some real understanding")
     EX.append_log(cfg, task.properties.get("ID") or task.id, "a finding worth keeping")
 
@@ -314,9 +314,9 @@ def test_promoted_and_dropped_are_idea_done_states(tmp_path):
     assert dropped.is_idea and dropped.is_done
 
 
-# ---- wt tasks excludes ideas --------------------------------------------------
+# ---- nw tasks excludes ideas --------------------------------------------------
 
-def test_wt_tasks_excludes_ideas(tmp_path):
+def test_nw_tasks_excludes_ideas(tmp_path):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "an idea should not show")
     W.add_task(cfg, "a regular task should show")
@@ -328,9 +328,9 @@ def test_wt_tasks_excludes_ideas(tmp_path):
     assert "a regular task should show" in out_all
 
 
-# ---- wt ideas ------------------------------------------------------------------
+# ---- nw ideas ------------------------------------------------------------------
 
-def test_wt_ideas_lists_open_by_default(tmp_path):
+def test_nw_ideas_lists_open_by_default(tmp_path):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "open idea")
     W.add_idea(cfg, "promoted idea", state="PROMOTED")
@@ -339,7 +339,7 @@ def test_wt_ideas_lists_open_by_default(tmp_path):
     assert "promoted idea" not in out
 
 
-def test_wt_ideas_all_includes_done_states(tmp_path):
+def test_nw_ideas_all_includes_done_states(tmp_path):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "open idea")
     W.add_idea(cfg, "promoted idea", state="PROMOTED")
@@ -348,7 +348,7 @@ def test_wt_ideas_all_includes_done_states(tmp_path):
     assert "promoted idea" in out
 
 
-def test_wt_ideas_state_filter(tmp_path):
+def test_nw_ideas_state_filter(tmp_path):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "an incubating idea", state="INCUBATE")
     W.add_idea(cfg, "a fresh idea")
@@ -359,7 +359,7 @@ def test_wt_ideas_state_filter(tmp_path):
 
 # ---- SPEC-0089: --tag / --project parity ----------------------------------------------
 
-def test_wt_ideas_tag_and_project_filters(tmp_path):
+def test_nw_ideas_tag_and_project_filters(tmp_path):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "alpha tagged", tags=("workflow",), project="Meta-Tools")
     W.add_idea(cfg, "beta other", tags=("other",), project="Example")
@@ -372,7 +372,7 @@ def test_wt_ideas_tag_and_project_filters(tmp_path):
     assert rows == []
 
 
-def test_wt_ideas_query_composes_with_project(tmp_path):
+def test_nw_ideas_query_composes_with_project(tmp_path):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "needle in meta", project="Meta-Tools")
     W.add_idea(cfg, "needle in example", project="Example")
@@ -387,7 +387,7 @@ def test_cli_ideas_unknown_project_warns(tmp_path, monkeypatch):
     cfg["config_dir"] = str(tmp_path / "config")
     (tmp_path / "config").mkdir(exist_ok=True)
     W.add_idea(cfg, "has meta", project="Meta-Tools")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["ideas", "--project", "NoSuchProject", "--json"])
     assert r.exit_code == 0, r.output
     combined = (r.output or "") + (r.stderr or "")
@@ -396,11 +396,11 @@ def test_cli_ideas_unknown_project_warns(tmp_path, monkeypatch):
     text = r.stdout or r.output
     start = text.find("{")
     data = json.loads(text[start:])
-    assert data["schema"] == "wt.ideas.v1"
+    assert data["schema"] == "nw.ideas.v1"
     assert data["ideas"] == []
 
 
-def test_wt_ideas_truncates_long_headlines(tmp_path):
+def test_nw_ideas_truncates_long_headlines(tmp_path):
     """List is a triage UI: long essay headlines must not fold into multi-line rows.
 
     SPEC-0075: the clip is the terminal's leftover width, not a hard 40 — so a wide terminal
@@ -427,7 +427,7 @@ def test_wt_ideas_truncates_long_headlines(tmp_path):
     assert max(len(ln) for ln in narrow.splitlines()) <= 100
 
 
-def test_wt_ideas_empty_is_friendly(tmp_path):
+def test_nw_ideas_empty_is_friendly(tmp_path):
     cfg = _cfg(tmp_path)
     out = _render(R.ideas, cfg)
     assert "no matching ideas" in out
@@ -437,7 +437,7 @@ def test_wt_ideas_empty_is_friendly(tmp_path):
 
 def test_cli_idea_and_ideas(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["idea", "investigate", "self-assessing", "AI", "usage"])
     assert r.exit_code == 0, r.output
@@ -458,7 +458,7 @@ def test_cli_idea_and_ideas(tmp_path, monkeypatch):
 
 def test_cli_idea_invalid_state(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     W.add_idea(cfg, "seed")   # create the ideas file
     r = CliRunner().invoke(cli, ["idea", "bad", "--state", "NOPE"])
@@ -480,7 +480,7 @@ def test_ideas_listing_shows_project_and_refs(tmp_path):
     rows = R.collect_idea_rows(cfg)
     assert rows[0].get("project") == "AI-workstreams"
     # key/epic live on the Task; JSON consumers use idea_row + org fields
-    from wt.org import load_tasks
+    from nightwright.org import load_tasks
     idea = next(t for t in load_tasks(cfg) if t.is_idea)
     assert idea.topic_key == "DEMO-100"
     assert idea.epic == "SPEC-0011"
@@ -558,7 +558,7 @@ def test_reindex_ideas_backfills_only_idless_ideas_and_is_idempotent(tmp_path):
     assert ids2 == ids
 
 
-def test_wt_ideas_shows_id_column(tmp_path):
+def test_nw_ideas_shows_id_column(tmp_path):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "an idea with an id")
     out = _render(R.ideas, cfg)
@@ -567,7 +567,7 @@ def test_wt_ideas_shows_id_column(tmp_path):
 
 def test_cli_idea_echoes_assigned_id(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["idea", "some", "new", "idea"])
     assert r.exit_code == 0, r.output
@@ -576,7 +576,7 @@ def test_cli_idea_echoes_assigned_id(tmp_path, monkeypatch):
 
 def test_cli_ideas_reindex_backfills_and_lists(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     W.add_idea(cfg, "seed idea")
     with open(cfg["org_ideas_file"], "a") as f:
@@ -600,9 +600,9 @@ def test_cli_ideas_reindex_backfills_and_lists(tmp_path, monkeypatch):
 
 def test_idea_row_and_next_show_handed_off(tmp_path):
     """SPEC-0280: a SPECCED idea with `:HANDED_OFF:` shows in the row, the show payload, the
-    `wt ideas` state cell, and `next_step_for_idea` says the PR is open."""
-    from wt import explore as EX
-    from wt import workflow as WF
+    `nw ideas` state cell, and `next_step_for_idea` says the PR is open."""
+    from nightwright import explore as EX
+    from nightwright import workflow as WF
     cfg = _cfg(tmp_path)
     (tmp_path / "specs").mkdir()
     (tmp_path / "specs" / "0001-x.md").write_text(
@@ -616,8 +616,8 @@ def test_idea_row_and_next_show_handed_off(tmp_path):
     task = _find(cfg, "pending a pr")
     row = R.idea_row(cfg, task)
     assert row["handed_off"] == "https://x/pull/3"
-    assert row["next"] == ("PR open (https://x/pull/3); after it merges: wt spec reconcile "
-                           "--apply; if it was closed: wt queue add SPEC-0001")
+    assert row["next"] == ("PR open (https://x/pull/3); after it merges: nw spec reconcile "
+                           "--apply; if it was closed: nw queue add SPEC-0001")
     assert WF.next_step_for_idea(cfg, task) == row["next"]
     assert EX.idea_show_payload(cfg, task)["handed_off"] == "https://x/pull/3"
     out = _render(R.ideas, cfg)

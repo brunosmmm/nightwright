@@ -1,12 +1,12 @@
-"""SPEC-0117: wt spec verify mechanical DoD audit."""
+"""SPEC-0117: nw spec verify mechanical DoD audit."""
 import json
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
-from wt.cli import cli
-from wt.verify import verify_spec
+from nightwright.cli import cli
+from nightwright.verify import verify_spec
 
 
 def _write_spec(specs_dir: Path, num: str, body: str, **fm):
@@ -47,7 +47,7 @@ x
 (none)
 """, status="done")
     report = verify_spec(cfg, "SPEC-9001")
-    assert report["schema"] == "wt.spec.verify.v1"
+    assert report["schema"] == "nw.spec.verify.v1"
     assert report["ok"] is True
     assert report["judgment"]
     assert all(c["status"] != "fail" for c in report["checks"])
@@ -100,7 +100,7 @@ t
 
 def test_verify_outbound_refused(cfg_specs):
     cfg, _ = cfg_specs
-    with pytest.raises(ValueError, match="outbound|/wt-verify"):
+    with pytest.raises(ValueError, match="outbound|/nw-verify"):
         verify_spec(cfg, "EXAMPLE-0001")
 
 
@@ -112,13 +112,13 @@ def test_cli_verify_json_and_strict(cfg_specs, monkeypatch):
 t
 """, status="done")
 
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     runner = CliRunner()
 
     r = runner.invoke(cli, ["spec", "verify", "SPEC-9006", "--json"])
     assert r.exit_code == 0, r.output
     data = json.loads(r.output)
-    assert data["schema"] == "wt.spec.verify.v1"
+    assert data["schema"] == "nw.spec.verify.v1"
     assert data["ok"] is False
 
     r2 = runner.invoke(cli, ["spec", "verify", "SPEC-9006", "--strict"])

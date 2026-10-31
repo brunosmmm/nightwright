@@ -1,5 +1,5 @@
 """SPEC-0176 end-to-end: the whole loop offline. A temp repo is both the project and (for the
-internal case) the `wt_checkout`; gates are `sh` scripts; personas are the FakeRunner; `gh`
+internal case) the `nw_checkout`; gates are `sh` scripts; personas are the FakeRunner; `gh`
 is a fake script on PATH. Nothing touches the real data dir, the real `claude` or `gh`."""
 import json
 import os
@@ -14,14 +14,14 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.agentic.runner import FakeRunner
-from wt.cli import cli
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.agentic.runner import FakeRunner
+from nightwright.cli import cli
 
 ENV = {
-    "GIT_AUTHOR_NAME": "wt test", "GIT_AUTHOR_EMAIL": "wt@test",
-    "GIT_COMMITTER_NAME": "wt test", "GIT_COMMITTER_EMAIL": "wt@test",
+    "GIT_AUTHOR_NAME": "nightwright test", "GIT_AUTHOR_EMAIL": "nightwright@test",
+    "GIT_COMMITTER_NAME": "nightwright test", "GIT_COMMITTER_EMAIL": "nightwright@test",
     "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
 }
 
@@ -56,7 +56,7 @@ Ship `feature.txt`.
 
 SPEC_DONE = SPEC_ACCEPTED.replace("status: accepted", "status: done").replace("- [ ]", "- [x]")
 
-PROJECT_YAML = """schema: wt.project.v1
+PROJECT_YAML = """schema: nw.project.v1
 base: main
 gates:
   - {{name: test, cmd: 'sh gates/test.sh', timeout_s: 30, required: true}}
@@ -68,7 +68,7 @@ merge:
 worktrees:
   setup: ["touch .setup-ran"]
 agents:
-  commit_trailer: "Co-Authored-By: wt test <wt@test>"
+  commit_trailer: "Co-Authored-By: nightwright test <nightwright@test>"
 """
 
 
@@ -76,8 +76,8 @@ agents:
 def _git_env(monkeypatch):
     for k, v in ENV.items():
         monkeypatch.setenv(k, v)
-    monkeypatch.delenv("WT_AGENTIC_RUNNER", raising=False)
-    monkeypatch.delenv("WT_AGENTIC_FAKE_SCRIPT", raising=False)
+    monkeypatch.delenv("NW_AGENTIC_RUNNER", raising=False)
+    monkeypatch.delenv("NW_AGENTIC_FAKE_SCRIPT", raising=False)
 
 
 def _git(repo, *args):
@@ -94,8 +94,8 @@ def _write(repo, rel, text):
 
 def write_review(cfg, spec_path, spec_id, verdict="approve", *, sha=None, findings=None,
                  reviewed_at="2026-10-25T00:00:00+00:00", **extra):
-    """SPEC-0188/0210: the stored review `wt queue add` demands, keyed by the spec's sha."""
-    from wt.agentic import spec_review as SR
+    """SPEC-0188/0210: the stored review `nw queue add` demands, keyed by the spec's sha."""
+    from nightwright.agentic import spec_review as SR
     return SR.save_review(cfg, {
         "schema": SR.SCHEMA, "spec_id": spec_id, "verdict": verdict,
         "spec_sha256": sha or SR.spec_sha256(spec_path),
@@ -106,18 +106,18 @@ def write_review(cfg, spec_path, spec_id, verdict="approve", *, sha=None, findin
 def make_repo(tmp_path, *, spec_id="SPEC-0001", policy="merge", lint_required="true",
               test_gate="test -f feature.txt", lint_gate="true", with_origin=False, extra_fm="",
               spec_rel="docs/specs/0001-trivial.md", review=True):
-    """A git repo that doubles as a wt checkout (src/wt + pyproject) with an accepted spec."""
+    """A git repo that doubles as a nightwright checkout (src/nightwright + pyproject) with an accepted spec."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
-    (repo / "src" / "wt").mkdir(parents=True)
-    _write(repo, "pyproject.toml", "[project]\nname='wt'\n")
+    (repo / "src" / "nightwright").mkdir(parents=True)
+    _write(repo, "pyproject.toml", "[project]\nname='nw'\n")
     spec_path = _write(repo, spec_rel, SPEC_ACCEPTED.format(id=spec_id, extra=extra_fm))
     if review:
         write_review({"data_dir": str(tmp_path / "data")}, spec_path, spec_id)
     _write(repo, "gates/test.sh", f"{test_gate}\n")
     _write(repo, "gates/lint.sh", f"{lint_gate}\n")
-    _write(repo, ".wt/project.yaml", PROJECT_YAML.format(policy=policy,
+    _write(repo, ".nw/project.yaml", PROJECT_YAML.format(policy=policy,
                                                           lint_required=lint_required))
     _write(repo, ".gitignore", ".setup-ran\n")
     _git(repo, "add", "-A")
@@ -210,7 +210,7 @@ def make_cfg(tmp_path, repo, script_path, *, profile=None, outbox=None):
         "data_dir": str(tmp_path / "data"), "config_dir": str(tmp_path / "cfg"),
         "org_capture_file": str(org / "inbox.org"), "org_ideas_file": str(org / "ideas.org"),
         "specs_dir": str(repo / "docs" / "specs"),
-        "wt_checkout": str(repo),
+        "nw_checkout": str(repo),
         "outbox_dir": str(tmp_path / "outbox"),
         "outbox_targets": outbox or {},
         "agentic": {"runner": "fake", "fake_script": str(script_path), "default_profile": "balanced",
@@ -221,7 +221,7 @@ def make_cfg(tmp_path, repo, script_path, *, profile=None, outbox=None):
 
 
 def run_cli(cfg, monkeypatch, args):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     return CliRunner().invoke(cli, args)
 
 
@@ -229,7 +229,7 @@ def added(cfg, monkeypatch, spec_id="SPEC-0001", *extra):
     r = run_cli(cfg, monkeypatch, ["queue", "add", spec_id, "--yes", "--json", *extra])
     assert r.exit_code == 0, r.output
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.add.v1" and d["written"] is True
+    assert d["schema"] == "nw.queue.add.v1" and d["written"] is True
     return d["campaign"]
 
 
@@ -249,7 +249,7 @@ def test_e2e_internal_merges(tmp_path, monkeypatch):
     r = run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle", "--json-lines"])
     assert r.exit_code == 0, r.output
     ticks = [json.loads(line) for line in r.output.splitlines() if line.startswith("{")]
-    assert ticks and ticks[0]["schema"] == "wt.queue.tick.v1"
+    assert ticks and ticks[0]["schema"] == "nw.queue.tick.v1"
 
     st = S.read_state(cfg, cid)
     assert st["state"] == "MERGED", st
@@ -270,11 +270,11 @@ def test_e2e_internal_merges(tmp_path, monkeypatch):
     assert trans == [("QUEUED", "OPENING"), ("OPENING", "IMPLEMENTING"), ("IMPLEMENTING", "GATING"),
                      ("GATING", "REVIEWING"), ("REVIEWING", "CLOSING"), ("CLOSING", "MERGED")]
     # the runner committed with the trailer; the setup command ran in the worktree
-    assert "Co-Authored-By: wt test" in _git(repo, "log", "-1", "--format=%B")
-    assert "wt(" in _git(repo, "log", "-1", "--format=%s")
+    assert "Co-Authored-By: nightwright test" in _git(repo, "log", "-1", "--format=%B")
+    assert "nw(" in _git(repo, "log", "-1", "--format=%s")
     r = run_cli(cfg, monkeypatch, ["queue", "list", "--json"])
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.v1" and d["items"] == [] and d["lease"]["held"] is False
+    assert d["schema"] == "nw.queue.v1" and d["items"] == [] and d["lease"]["held"] is False
 
 
 def test_e2e_dependent_spec_admitted_only_after_dependency_merges(tmp_path, monkeypatch):
@@ -572,7 +572,7 @@ def test_park_immediate_when_no_loop_then_abandon(tmp_path, monkeypatch):
     assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
     r = run_cli(cfg, monkeypatch, ["queue", "park", cid, "--reason", "looking", "--yes", "--json"])
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.park.v1" and d["mode"] == "immediate" and d["written"]
+    assert d["schema"] == "nw.queue.park.v1" and d["mode"] == "immediate" and d["written"]
     st = S.read_state(cfg, cid)
     assert st["state"] == "PARKED" and st["park"]["reason"] == "human"
     assert st["park"]["resume_to"] == "IMPLEMENTING"
@@ -580,7 +580,7 @@ def test_park_immediate_when_no_loop_then_abandon(tmp_path, monkeypatch):
     assert wt_path.is_dir()
     r = run_cli(cfg, monkeypatch, ["queue", "abandon", cid, "--yes", "--json"])
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.abandon.v1" and d["remove_worktree"] is True
+    assert d["schema"] == "nw.queue.abandon.v1" and d["remove_worktree"] is True
     assert S.read_state(cfg, cid)["state"] == "ABANDONED"
     assert not wt_path.exists()
     assert _git(repo, "branch", "--list", st["repo"]["branch"])          # branch kept
@@ -595,8 +595,8 @@ def test_park_deferred_while_loop_running(tmp_path, monkeypatch):
     """With a loop holding the lease, `park --yes` only requests the park. Requested between
     ticks ⇒ the next tick parks without running a step; requested mid-step ⇒ the step is
     recorded first, then the park applies."""
-    from wt.agentic import lease as L
-    from wt.agentic.runner import select_runner
+    from nightwright.agentic import lease as L
+    from nightwright.agentic.runner import select_runner
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), impl_done()]))
     cid = added(cfg, monkeypatch)
@@ -656,11 +656,11 @@ def test_sigterm_mid_run_leaves_state_and_releases_lease(tmp_path, monkeypatch):
     run_cli(cfg, monkeypatch, ["queue", "tick"])
     assert S.read_state(cfg, cid)["state"] == "IMPLEMENTING"
     (tmp_path / "cfg" / "config.yaml").write_text(json.dumps({
-        "wt_checkout": str(repo), "specs_dir": cfg["specs_dir"], "outbox_dir": cfg["outbox_dir"],
+        "nw_checkout": str(repo), "specs_dir": cfg["specs_dir"], "outbox_dir": cfg["outbox_dir"],
         "org_files": cfg["org_files"], "org_ideas_file": cfg["org_ideas_file"],
         "org_capture_file": cfg["org_capture_file"], "agentic": cfg["agentic"]}))
-    env = {**os.environ, "WT_CONFIG_DIR": str(tmp_path / "cfg"), "WT_DATA_DIR": cfg["data_dir"]}
-    proc = subprocess.Popen([sys.executable, "-m", "wt.cli", "queue", "run", "--poll-interval", "0.1"],
+    env = {**os.environ, "NW_CONFIG_DIR": str(tmp_path / "cfg"), "NW_DATA_DIR": cfg["data_dir"]}
+    proc = subprocess.Popen([sys.executable, "-m", "nightwright.cli", "queue", "run", "--poll-interval", "0.1"],
                             env=env, start_new_session=True, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True)
     try:
@@ -683,7 +683,7 @@ def test_sigterm_mid_run_leaves_state_and_releases_lease(tmp_path, monkeypatch):
     ends = S.read_ledger(cfg, cid, types=["run.end"])
     assert len(ends) == 1 and ends[0]["interrupted"] is True
     assert st["counters"]["runs"] == 1 and st["cost"]["total_usd"] == 0.5
-    from wt.agentic import lease as L
+    from nightwright.agentic import lease as L
     assert L.lease_status(cfg)["held"] is False
 
 
@@ -696,7 +696,7 @@ def _both(tmp_path, monkeypatch, scripts, **profile):
     """cfg + campaign with the conformance and test reviewers (both in the balanced default,
     with SPEC-0202's adversarial reviewer) and a per-persona scripted runner."""
     from test_agentic_reviewers import PersonaRunner
-    from wt.agentic.profiles import resolve_profile
+    from nightwright.agentic.profiles import resolve_profile
     assert set(BOTH) <= set(resolve_profile({}, "balanced")["reviewers"])
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []), profile=dict(reviewers=BOTH, **profile))
@@ -860,7 +860,7 @@ def test_e2e_cap_too_small_skips_the_triager(tmp_path, monkeypatch):            
 # ---- SPEC-0207: follow-up ideas, end to end ---------------------------------------------------
 
 def _fu_ideas(cfg):
-    from wt import org as ORG
+    from nightwright import org as ORG
     ORG.invalidate_tasks_cache()
     return [t for t in ORG.load_tasks(cfg) if t.is_idea]
 
@@ -884,10 +884,10 @@ def test_e2e_followups_advisory_findings_become_ideas(tmp_path, monkeypatch):   
     st = S.read_state(cfg, cid)
     assert st["state"] == "MERGED", st
     [group] = _fu_ideas(cfg)                                 # ONE idea; the nit is not listed
-    assert group.heading == f"wtfug:{cid} [SPEC-0001] review follow-ups (2 findings)"
+    assert group.heading == f"nwfug:{cid} [SPEC-0001] review follow-ups (2 findings)"
     assert group.properties["KIND"] == "improvement" and group.epic == "SPEC-0169"
     assert group.project == st["project"]
-    from wt import explore as EX
+    from nightwright import explore as EX
     summary = EX.read_idea_enrichment(cfg, group)["summary"].splitlines()
     assert [ln.split()[4] for ln in summary] == ["major", "minor"]
     assert st["close"]["followups"]["idea_id"] == group.properties["ID"]
@@ -910,7 +910,7 @@ def test_e2e_followups_fixed_finding_is_not_filed_but_earlier_advisory_is(tmp_pa
     cfg, cid, st = _triage_run(tmp_path, monkeypatch, entries)                   # AC7 (c)
     assert st["state"] == "MERGED" and st["counters"]["loops"] == 1, st
     [group] = _fu_ideas(cfg)
-    from wt import explore as EX
+    from nightwright import explore as EX
     body = EX.read_idea_enrichment(cfg, group)["summary"]
     assert "(1 finding)" in group.heading and "naming" in body and "wrong text" not in body
     assert [f["title"] for f in st["close"]["followups"]["filed"]] == ["naming"]

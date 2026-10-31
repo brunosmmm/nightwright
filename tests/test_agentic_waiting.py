@@ -7,10 +7,10 @@ from rich.console import Console
 
 from test_agentic_e2e import (_git, _write, added, impl_done, make_cfg, make_repo, run_cli, script,
                               write_review)
-from wt.agentic import cli_queue as CQ
-from wt.agentic import events as E
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright.agentic import cli_queue as CQ
+from nightwright.agentic import events as E
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 
 @pytest.fixture

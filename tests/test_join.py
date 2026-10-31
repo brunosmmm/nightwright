@@ -5,10 +5,10 @@ from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 
-from wt import report as R
-from wt.cli import cli
-from wt.console import console
-from wt.org import join_time, load_tasks
+from nightwright import report as R
+from nightwright.cli import cli
+from nightwright.console import console
+from nightwright.org import join_time, load_tasks
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "org")
 
@@ -47,7 +47,7 @@ def test_join_embedded_key_in_repo_branch_topic():
 
 def test_key_mapping_to_multiple_tasks():
     # two tasks sharing one key -> key_to_tasks has both; hours summed once per topic
-    from wt.org import Task
+    from nightwright.org import Task
     t1 = Task(id="a", heading="DEMO-1 one", state="TODO", is_done=False, tags=frozenset(),
               priority=None, topic_key="DEMO-1", project="p")
     t2 = Task(id="b", heading="DEMO-1 two", state="TODO", is_done=False, tags=frozenset(),
@@ -82,7 +82,7 @@ def test_digest_by_project(monkeypatch):
 
 
 def test_cli_digest_runs(monkeypatch):
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", _cfg)
     monkeypatch.setattr(R, "_scope_topic_secs", lambda cfg, days: {"DEMO-504": 3600.0})
     r = CliRunner().invoke(cli, ["digest", "-w", "2026-07-15"])
@@ -90,11 +90,11 @@ def test_cli_digest_runs(monkeypatch):
     assert "DEMO-504" in r.output
 
 
-# ---- SPEC-0063: labeled supplemental clock panel in wt digest --------------------------
+# ---- SPEC-0063: labeled supplemental clock panel in nw digest --------------------------
 
 def test_digest_shows_supplemental_clocked_hours(monkeypatch, tmp_path):
     from zoneinfo import ZoneInfo as _ZI
-    from wt import org_write as W
+    from nightwright import org_write as W
 
     org = tmp_path / "org"
     org.mkdir()

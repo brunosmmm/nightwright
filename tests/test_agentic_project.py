@@ -1,4 +1,4 @@
-"""SPEC-0170: `.wt/project.yaml` loader + `wt projects config|init`."""
+"""SPEC-0170: `.nw/project.yaml` loader + `nw projects config|init`."""
 import json
 import subprocess
 from pathlib import Path
@@ -7,11 +7,11 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from wt.agentic import project as P
-from wt.cli import cli
+from nightwright.agentic import project as P
+from nightwright.cli import cli
 
 VALID = """\
-schema: wt.project.v1
+schema: nw.project.v1
 base: main
 gates:
   - name: pytest
@@ -27,13 +27,13 @@ agents:
 """
 
 
-def _checkout(tmp_path, name="wt-checkout", text=VALID):
+def _checkout(tmp_path, name="nw-checkout", text=VALID):
     root = tmp_path / name
-    (root / "src" / "wt").mkdir(parents=True)
-    (root / "pyproject.toml").write_text("[project]\nname = 'wt'\n")
+    (root / "src" / "nightwright").mkdir(parents=True)
+    (root / "pyproject.toml").write_text("[project]\nname = 'nw'\n")
     if text is not None:
-        (root / ".wt").mkdir()
-        (root / ".wt" / "project.yaml").write_text(text)
+        (root / ".nw").mkdir()
+        (root / ".nw" / "project.yaml").write_text(text)
     return root
 
 
@@ -64,16 +64,16 @@ def test_valid_loads_with_defaults(tmp_path):
 
 
 @pytest.mark.parametrize("text,needle", [
-    ("schema: wt.project.v2\n", "schema:"),
-    ("schema: wt.project.v1\nbogus: 1\n", "project config.bogus: unknown key"),
-    ("schema: wt.project.v1\ngates:\n  - name: x\n", "gates[0].cmd"),
-    ("schema: wt.project.v1\ngates:\n  - name: x\n    cmd: y\n    timeout_s: 0\n", "gates[0].timeout_s"),
-    ("schema: wt.project.v1\ngates:\n  - {name: x, cmd: y}\n  - {name: x, cmd: z}\n", "duplicate gate name"),
-    ("schema: wt.project.v1\nmerge:\n  policy: rebase\n", "merge.policy"),
-    ("schema: wt.project.v1\nmerge:\n  nope: 1\n", "merge.nope"),
-    ("schema: wt.project.v1\nworktrees:\n  cleanup: sometimes\n", "worktrees.cleanup"),
-    ("schema: wt.project.v1\nagents:\n  permission_mode: yolo\n", "agents.permission_mode"),
-    ("schema: wt.project.v1\nagents:\n  allowed_tools: Bash\n", "agents.allowed_tools"),
+    ("schema: nw.project.v2\n", "schema:"),
+    ("schema: nw.project.v1\nbogus: 1\n", "project config.bogus: unknown key"),
+    ("schema: nw.project.v1\ngates:\n  - name: x\n", "gates[0].cmd"),
+    ("schema: nw.project.v1\ngates:\n  - name: x\n    cmd: y\n    timeout_s: 0\n", "gates[0].timeout_s"),
+    ("schema: nw.project.v1\ngates:\n  - {name: x, cmd: y}\n  - {name: x, cmd: z}\n", "duplicate gate name"),
+    ("schema: nw.project.v1\nmerge:\n  policy: rebase\n", "merge.policy"),
+    ("schema: nw.project.v1\nmerge:\n  nope: 1\n", "merge.nope"),
+    ("schema: nw.project.v1\nworktrees:\n  cleanup: sometimes\n", "worktrees.cleanup"),
+    ("schema: nw.project.v1\nagents:\n  permission_mode: yolo\n", "agents.permission_mode"),
+    ("schema: nw.project.v1\nagents:\n  allowed_tools: Bash\n", "agents.allowed_tools"),
 ])
 def test_invalid_reports_key_path(tmp_path, text, needle):
     p = tmp_path / "project.yaml"
@@ -102,44 +102,44 @@ def test_missing_and_bad_yaml(tmp_path):
 
 # ---- resolution -------------------------------------------------------------------------
 
-def test_meta_tools_resolves_via_wt_checkout(tmp_path):
+def test_meta_tools_resolves_via_nw_checkout(tmp_path):
     root = _checkout(tmp_path)
-    doc = P.project_config(_cfg(tmp_path, wt_checkout=str(root)), "Meta-Tools")
-    assert doc["_root"] == str(root) and doc["_path"].endswith(".wt/project.yaml")
+    doc = P.project_config(_cfg(tmp_path, nw_checkout=str(root)), "Meta-Tools")
+    assert doc["_root"] == str(root) and doc["_path"].endswith(".nw/project.yaml")
 
 
 def test_outbound_resolves_via_repo_path(tmp_path):
     repo = tmp_path / "acme"
-    (repo / ".wt").mkdir(parents=True)
-    (repo / ".wt" / "project.yaml").write_text(VALID)
+    (repo / ".nw").mkdir(parents=True)
+    (repo / ".nw" / "project.yaml").write_text(VALID)
     cfg = _cfg(tmp_path, outbox_targets={"acme": {"repo_path": str(repo)}})
     assert P.project_config(cfg, "acme")["_root"] == str(repo.resolve())
 
 
 def test_missing_file_hints_init(tmp_path):
     root = _checkout(tmp_path, text=None)
-    with pytest.raises(ValueError, match="wt projects init Meta-Tools"):
-        P.project_config(_cfg(tmp_path, wt_checkout=str(root)), "Meta-Tools")
+    with pytest.raises(ValueError, match="nw projects init Meta-Tools"):
+        P.project_config(_cfg(tmp_path, nw_checkout=str(root)), "Meta-Tools")
 
 
 def test_unresolvable_project_carries_registry_note(tmp_path):
-    with pytest.raises(ValueError, match="wt projects add nowhere"):
+    with pytest.raises(ValueError, match="nw projects add nowhere"):
         P.project_config(_cfg(tmp_path), "nowhere")
 
 
 def test_project_name_mismatch_errors(tmp_path):
     root = _checkout(tmp_path, text=VALID.replace("base: main", "project: other\nbase: main"))
     with pytest.raises(ValueError, match="does not match"):
-        P.project_config(_cfg(tmp_path, wt_checkout=str(root)), "Meta-Tools")
+        P.project_config(_cfg(tmp_path, nw_checkout=str(root)), "Meta-Tools")
 
 
 # ---- helpers ---------------------------------------------------------------------------
 
 def test_worktree_root_default_and_overrides(tmp_path):
-    repo = tmp_path / "work" / "wt"
+    repo = tmp_path / "work" / "nw"
     repo.mkdir(parents=True)
     assert P.worktree_root({"worktrees": {"root": None}}, repo, "Meta-Tools") == \
-        tmp_path / "work" / ".wt-worktrees" / "Meta-Tools"
+        tmp_path / "work" / ".nw-worktrees" / "Meta-Tools"
     assert P.worktree_root({"worktrees": {"root": "/abs/wts"}}, repo, "x") == Path("/abs/wts")
     assert P.worktree_root({"worktrees": {"root": "../wts"}}, repo, "x") == \
         (tmp_path / "work" / "wts").resolve()
@@ -167,12 +167,12 @@ def test_find_project_for_cwd(tmp_path):
 
 def test_cli_config_json_and_human(tmp_path, monkeypatch):
     root = _checkout(tmp_path)
-    cfg = _cfg(tmp_path, wt_checkout=str(root))
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    cfg = _cfg(tmp_path, nw_checkout=str(root))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["projects", "config", "Meta-Tools", "--json"])
     assert r.exit_code == 0, r.output
     payload = json.loads(r.output)
-    assert payload["schema"] == "wt.project.config.v1"
+    assert payload["schema"] == "nw.project.config.v1"
     assert payload["project"] == "Meta-Tools" and payload["root"] == str(root)
     assert payload["config"]["gates"][0]["timeout_s"] == 1200
     assert "_root" not in payload["config"]
@@ -183,10 +183,10 @@ def test_cli_config_json_and_human(tmp_path, monkeypatch):
 
 def test_cli_config_errors(tmp_path, monkeypatch):
     root = _checkout(tmp_path, text=None)
-    cfg = _cfg(tmp_path, wt_checkout=str(root))
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    cfg = _cfg(tmp_path, nw_checkout=str(root))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["projects", "config", "Meta-Tools"])
-    assert r.exit_code != 0 and "wt projects init" in r.output
+    assert r.exit_code != 0 and "nw projects init" in r.output
     monkeypatch.chdir(tmp_path)
     r = CliRunner().invoke(cli, ["projects", "config"])
     assert r.exit_code != 0 and "no project given" in r.output
@@ -194,12 +194,12 @@ def test_cli_config_errors(tmp_path, monkeypatch):
 
 def test_cli_init_dry_run_then_write_then_refuse(tmp_path, monkeypatch):
     root = _checkout(tmp_path, text=None)
-    cfg = _cfg(tmp_path, wt_checkout=str(root))
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
-    path = root / ".wt" / "project.yaml"
+    cfg = _cfg(tmp_path, nw_checkout=str(root))
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    path = root / ".nw" / "project.yaml"
     r = CliRunner().invoke(cli, ["projects", "init", "Meta-Tools"])
     assert r.exit_code == 0, r.output
-    assert "not written" in r.output and "schema: wt.project.v1" in r.output
+    assert "not written" in r.output and "schema: nw.project.v1" in r.output
     assert not path.exists()
     r = CliRunner().invoke(cli, ["projects", "init", "Meta-Tools", "--yes"])
     assert r.exit_code == 0, r.output
@@ -269,12 +269,12 @@ def test_docs_only_paths_rejects_bad(bad, where):
 
 
 def test_this_repos_project_yaml_declares_the_docs_only_allowlist():
-    doc = P.load_project_config(Path(__file__).resolve().parent.parent / ".wt" / "project.yaml")
+    doc = P.load_project_config(Path(__file__).resolve().parent.parent / ".nw" / "project.yaml")
     assert doc["merge"]["docs_only_paths"] == ["docs/design/", "docs/WORKFLOW.md"]
 
 
 def test_this_repos_pytest_gate_opts_into_result_parsing():
-    doc = P.load_project_config(Path(__file__).resolve().parent.parent / ".wt" / "project.yaml")
+    doc = P.load_project_config(Path(__file__).resolve().parent.parent / ".nw" / "project.yaml")
     gate = next(g for g in doc["gates"] if g["name"] == "pytest")
     assert gate["results"] == {"format": "pytest"}
 
@@ -282,7 +282,7 @@ def test_this_repos_pytest_gate_opts_into_result_parsing():
 # ---- SPEC-0284: gate `results:` ---------------------------------------------------------
 
 def _results_doc(results):
-    return ("schema: wt.project.v1\ngates:\n  - name: g\n    cmd: y\n    results: "
+    return ("schema: nw.project.v1\ngates:\n  - name: g\n    cmd: y\n    results: "
             + results + "\n")
 
 
@@ -314,7 +314,7 @@ def test_gate_results_invalid(tmp_path, results, needle):
 
 def _gate_doc(tmp_path, body):
     p = tmp_path / "project.yaml"
-    p.write_text("schema: wt.project.v1\ngates:\n  - name: g\n    cmd: x\n" + body)
+    p.write_text("schema: nw.project.v1\ngates:\n  - name: g\n    cmd: x\n" + body)
     return p
 
 
@@ -364,6 +364,6 @@ def test_on_fail_warn_normalises_required(tmp_path):
 
 def test_repo_pytest_gate_retries():
     root = Path(__file__).resolve().parent.parent
-    doc = P.load_project_config(root / ".wt" / "project.yaml")
+    doc = P.load_project_config(root / ".nw" / "project.yaml")
     (g,) = [g for g in doc["gates"] if g["name"] == "pytest"]
     assert g["retries"] == 2

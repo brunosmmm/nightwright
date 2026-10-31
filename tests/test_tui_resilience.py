@@ -16,9 +16,9 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import org as O
-from wt import tui as T
-from wt.cli import cli
+from nightwright import org as O
+from nightwright import tui as T
+from nightwright.cli import cli
 
 needs_textual = pytest.mark.skipif(not T.textual_available(),
                                    reason="optional tui extra not installed")
@@ -115,7 +115,7 @@ def test_signature_changes_on_new_file(tmp_path):
 def _seed(tmp_path, monkeypatch):
     cfg, _org = _cfg(tmp_path)
     (Path(cfg["data_dir"])).mkdir(exist_ok=True)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "first idea"]).exit_code == 0
     assert run(cli, ["idea", "second idea"]).exit_code == 0
@@ -126,7 +126,7 @@ def _seed(tmp_path, monkeypatch):
 def test_detail_pane_self_heals_after_external_line_shift(tmp_path, monkeypatch):
     """A cached Task's line number goes stale when a new headline is inserted earlier in the
     same file by an external writer — the drift class this spec fixes."""
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -162,7 +162,7 @@ def test_detail_pane_self_heals_after_external_line_shift(tmp_path, monkeypatch)
 
 @needs_textual
 def test_poll_picks_up_external_new_idea_without_keypress(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -186,7 +186,7 @@ def test_poll_picks_up_external_new_idea_without_keypress(tmp_path, monkeypatch)
 @needs_textual
 def test_poll_is_a_noop_when_nothing_changed(tmp_path, monkeypatch):
     """No signature change -> no reload -> no hint noise."""
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -206,7 +206,7 @@ def test_poll_is_a_noop_when_nothing_changed(tmp_path, monkeypatch):
 def test_action_summary_prefill_reflects_external_change(tmp_path, monkeypatch):
     """The action_summary pre-fill bug (SPEC-0128 Q4): swallowed the drift error into a blank
     prefill instead of showing current content."""
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     CliRunner().invoke(cli, ["idea", "summary", "IDEA-002", "--set", "current summary text"])
@@ -223,7 +223,7 @@ def test_action_summary_prefill_reflects_external_change(tmp_path, monkeypatch):
 
             current = ""
             try:
-                from wt.tui import model as M
+                from nightwright.tui import model as M
                 current = M.load_detail(app.cfg, app._resolve_fresh("IDEA-002")).summary
             except (ValueError, OSError):
                 current = ""
@@ -238,8 +238,8 @@ def test_action_summary_prefill_reflects_external_change(tmp_path, monkeypatch):
 def test_poll_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
     """A slow load_rows (simulated) must not prevent other async work from running
     concurrently -- proving the reparse actually happens off the event-loop thread."""
-    from wt.tui import model as M
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui import model as M
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     real_load_rows = M.load_rows
@@ -274,8 +274,8 @@ def test_poll_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
 def test_concurrent_poll_ticks_only_run_one_reload(tmp_path, monkeypatch):
     """The in-flight guard prevents a second poll tick from starting a second load_rows
     before the first one's result has been applied."""
-    from wt.tui import model as M
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui import model as M
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     real_load_rows = M.load_rows
@@ -307,8 +307,8 @@ def test_concurrent_poll_ticks_only_run_one_reload(tmp_path, monkeypatch):
 @needs_textual
 def test_manual_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
     """SPEC-0134: r / mutate / search reload uses the same off-thread path as the poll."""
-    from wt.tui import model as M
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui import model as M
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     real_load_rows = M.load_rows
@@ -340,8 +340,8 @@ def test_manual_reload_does_not_block_the_event_loop(tmp_path, monkeypatch):
 @needs_textual
 def test_overlapping_reload_async_coalesces(tmp_path, monkeypatch):
     """SPEC-0134: in-flight guard coalesces overlapping _reload_async calls."""
-    from wt.tui import model as M
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui import model as M
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     real_load_rows = M.load_rows

@@ -1,7 +1,7 @@
 """SPEC-0215: the spec_writer persona and the SPEC_WRITING step (write and revise). Uses the
 SPEC-0176 end-to-end harness (temp repo as project, FakeRunner) and SPEC-0209's idea helpers.
 The fixture repo carries the real linter, schema and TEMPLATE/SCHEMA text, a LEDGER.md and a
-`merge.regenerate` entry, so a written spec is checked by the same tooling as in wt itself."""
+`merge.regenerate` entry, so a written spec is checked by the same tooling as in nightwright itself."""
 import json
 import re
 import shutil
@@ -14,24 +14,24 @@ import pytest
 
 from test_agentic_e2e import _git, _write, make_cfg, make_repo, script
 from test_agentic_idea_campaign import add_idea_campaign, capture, idea
-from wt import org_write as OW
-from wt import spec_numbers as SN
-from wt.agentic import personas as PS
-from wt.agentic import profiles as PR
-from wt.agentic import queue as Q
-from wt.agentic import schemas as SC
-from wt.agentic import spec_write as SW
-from wt.agentic import store as S
-from wt.agentic.gitops import GitError
-from wt.agentic.runner import FakeRunner
-from wt import specmeta
+from nightwright import org_write as OW
+from nightwright import spec_numbers as SN
+from nightwright.agentic import personas as PS
+from nightwright.agentic import profiles as PR
+from nightwright.agentic import queue as Q
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import spec_write as SW
+from nightwright.agentic import store as S
+from nightwright.agentic.gitops import GitError
+from nightwright.agentic.runner import FakeRunner
+from nightwright import specmeta
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import spec_lint as L  # noqa: E402
 
 REGEN = f"{sys.executable} tools/spec_lint.py --write-ledger"
-NUM = {False: 2, True: 101}          # the number wt allocates: SPEC-0001 exists / SPEC-0100 (epic)
+NUM = {False: 2, True: 101}          # the number nightwright allocates: SPEC-0001 exists / SPEC-0100 (epic)
 
 
 # ---- fixtures and builders ---------------------------------------------------------------------
@@ -46,13 +46,13 @@ def make_project(tmp_path, *, regenerate=REGEN, with_epic=False):
                                                               status="accepted", kind="epic"))
         _write(repo, "docs/specs/0099-sibling.md", _spec_md(
             99, None, title="Sibling child", status="accepted", epic="SPEC-0100"))
-    yaml = (repo / ".wt" / "project.yaml").read_text()
+    yaml = (repo / ".nw" / "project.yaml").read_text()
     if regenerate:
         yaml = yaml.replace("  remote: origin\n", "  remote: origin\n  regenerate:\n"
                             f"    - {{path: docs/LEDGER.md, cmd: '{regenerate}'}}\n")
     yaml = yaml.replace('setup: ["touch .setup-ran"]',
                         'setup: ["touch .setup-ran", "touch setup-out.txt"]')
-    _write(repo, ".wt/project.yaml", yaml)
+    _write(repo, ".nw/project.yaml", yaml)
     subprocess.run([sys.executable, "tools/spec_lint.py", "--write-ledger"], cwd=repo, check=True,
                    capture_output=True)
     _git(repo, "add", "-A")
@@ -83,7 +83,7 @@ def _spec_md(number, iid, *, title="Add a thing", status="proposed", kind="featu
 
 def spec_written(number, iid, *, mode="write", slug="add-a-thing", path=None, extra_files=None,
                  deletes=(), verdict=None, no_edit=False, **spec_kw):
-    """FakeRunner entry for the spec writer: writes the spec at wt's path (or `path`)."""
+    """FakeRunner entry for the spec writer: writes the spec at nightwright's path (or `path`)."""
     real = f"docs/specs/{number:04d}-{slug}.md"
     path = path or real
     edits = [] if no_edit else [{"path": path, "write": _spec_md(number, iid, **spec_kw)}]
@@ -100,7 +100,7 @@ def start(tmp_path, monkeypatch, entries, *, epic=None, profile=None, **proj):
     idea id."""
     repo = make_project(tmp_path, with_epic=bool(epic), **proj)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []), profile=profile)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     iid = capture(cfg, epic=epic)
     cid = add_idea_campaign(cfg, monkeypatch, iid)
     Q.tick(cfg)
@@ -706,7 +706,7 @@ def test_git_error_in_commit_parks_and_a_resume_writes(tmp_path, monkeypatch):
     Q.tick(cfg)
     in_review(cfg, cid)
     assert S.read_state(cfg, cid)["spec_id"] == "SPEC-0002"
-    assert _git(wt, "show", "-s", "--format=%s", "HEAD").startswith("wt(")
+    assert _git(wt, "show", "-s", "--format=%s", "HEAD").startswith("nw(")
     assert [e["type"] for e in S.read_ledger(cfg, cid) if e["type"] == "run.end"] \
         .__len__() == 2                                  # the failed attempt was still recorded
 
@@ -769,7 +769,7 @@ def test_empty_brief_in_revise_mode_wins_over_the_cap():
 # ---- AC7/9/10: resumes -------------------------------------------------------------------------------
 
 def test_resume_spec_write_failed_with_note_refreshes_idea_and_resets_retries(tmp_path, monkeypatch):
-    from wt import explore as EX
+    from nightwright import explore as EX
     bad = lambda i: spec_written(2, i, status="accepted")        # noqa: E731
     cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [bad(i), bad(i),
                                                                   spec_written(2, i)])
@@ -886,14 +886,14 @@ def test_write_mode_prompt_and_request(tmp_path, monkeypatch):
     profile = PR.resolve_profile(cfg, "balanced")
     req = PS.build_request(cfg, profile, {}, S.read_state(cfg, cid), "spec_writer",
                            run_dir=tmp_path / "r", extra={"spec_id": "SPEC-0002"})
-    assert req.system_append.startswith("## wt spec writer invariants")
+    assert req.system_append.startswith("## nw spec writer invariants")
     assert f"campaign {cid}" in req.system_append and not req.read_only
 
 
 def test_two_campaigns_in_one_tick_get_different_numbers(tmp_path, monkeypatch):
     repo = make_project(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []), profile={"slots": 2})
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     cids = []
     for text in ("First thing", "Second thing"):
         iid = capture(cfg, text)
@@ -1021,7 +1021,7 @@ def test_amend_body_and_updated_only_is_valid(tmp_path, monkeypatch):
 
 
 def test_amend_success_goes_to_implementing(tmp_path, monkeypatch):
-    from wt.agentic import spec_review as SR
+    from nightwright.agentic import spec_review as SR
     cfg, repo, cid = amend_fx(tmp_path, monkeypatch, [amended()])
     Q.tick(cfg)
     st = S.read_state(cfg, cid)

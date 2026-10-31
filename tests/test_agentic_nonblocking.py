@@ -16,10 +16,10 @@ from test_agentic_e2e import (_git, _write, added, impl_done, make_cfg, make_rep
                               script, write_review)
 from test_agentic_reexec import _code_repo, _commit
 from waits import join, until
-from wt.agentic import lease as L
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.agentic.runner import select_runner
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.agentic.runner import select_runner
 
 
 class HeldRunner:
@@ -207,7 +207,7 @@ def test_reexec_drains_inflight_before_exec(tmp_path, monkeypatch):
     def tick(*args, **kw):
         report = real_tick(*args, **kw)
         if report.started:                                   # code lands mid-run
-            _commit(root, "src/wt/x.py", "A = 9\n", "code")
+            _commit(root, "src/nightwright/x.py", "A = 9\n", "code")
         return report
 
     seen = []
@@ -218,7 +218,7 @@ def test_reexec_drains_inflight_before_exec(tmp_path, monkeypatch):
             "state": st["state"],
             "run_ends": len(S.read_ledger(cfg, a, types=["run.end"])),
             "steps_alive": [t.name for t in threading.enumerate()
-                            if t.name.startswith("wt-step")],
+                            if t.name.startswith("nw-step")],
             "journal": [(r["kind"], r.get("drain"), r.get("reason")) for r in Q.read_journal(cfg)],
             "handover": env.get(L.HANDOVER_ENV)})
 
@@ -250,7 +250,7 @@ def test_heartbeat_spans_many_ticks(tmp_path, monkeypatch):
             if L.is_held(cfg):
                 samples.append(L.lease_status(cfg))
                 beaters.update(t.ident for t in threading.enumerate()
-                               if t.name == "wt-lease-heartbeat")
+                               if t.name == "nw-lease-heartbeat")
             time.sleep(0.2)
 
     side = threading.Thread(target=sample, daemon=True)
@@ -266,7 +266,7 @@ def test_heartbeat_spans_many_ticks(tmp_path, monkeypatch):
     assert not any(s["stale"] for s in samples), [s["heartbeat_age_s"] for s in samples]
     assert max(s["heartbeat_age_s"] for s in samples) < 2
     assert len(beaters) == 1                                  # one thread for the whole loop
-    assert not any(t.name == "wt-lease-heartbeat" for t in threading.enumerate())
+    assert not any(t.name == "nw-lease-heartbeat" for t in threading.enumerate())
 
 
 def test_sigterm_mid_flight_after_several_ticks(tmp_path, monkeypatch):
@@ -278,11 +278,11 @@ def test_sigterm_mid_flight_after_several_ticks(tmp_path, monkeypatch):
     Q.tick(cfg)
     assert _state(cfg, cid) == "IMPLEMENTING"
     (tmp_path / "cfg" / "config.yaml").write_text(json.dumps({
-        "wt_checkout": str(repo), "specs_dir": cfg["specs_dir"], "outbox_dir": cfg["outbox_dir"],
+        "nw_checkout": str(repo), "specs_dir": cfg["specs_dir"], "outbox_dir": cfg["outbox_dir"],
         "org_files": cfg["org_files"], "org_ideas_file": cfg["org_ideas_file"],
         "org_capture_file": cfg["org_capture_file"], "agentic": cfg["agentic"]}))
-    env = {**os.environ, "WT_CONFIG_DIR": str(tmp_path / "cfg"), "WT_DATA_DIR": cfg["data_dir"]}
-    proc = subprocess.Popen([sys.executable, "-m", "wt.cli", "queue", "run", "--poll-interval",
+    env = {**os.environ, "NW_CONFIG_DIR": str(tmp_path / "cfg"), "NW_DATA_DIR": cfg["data_dir"]}
+    proc = subprocess.Popen([sys.executable, "-m", "nightwright.cli", "queue", "run", "--poll-interval",
                              "0.05", "--no-reexec"], env=env, start_new_session=True,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:

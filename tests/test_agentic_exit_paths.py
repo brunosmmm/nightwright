@@ -18,13 +18,13 @@ from test_agentic_e2e import added, impl_done, make_cfg, make_repo, review, scri
 from test_agentic_nonblocking import _second_spec
 from test_agentic_runproc import pid_alive, until
 from waits import join
-from wt.agentic import cli_queue
-from wt.agentic import gates as G
-from wt.agentic import lease as L
-from wt.agentic import queue as Q
-from wt.agentic import runner as R
-from wt.agentic import runproc as RP
-from wt.agentic import store as S
+from nightwright.agentic import cli_queue
+from nightwright.agentic import gates as G
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
+from nightwright.agentic import runner as R
+from nightwright.agentic import runproc as RP
+from nightwright.agentic import store as S
 
 
 def gate_script(tmp, name="g1"):
@@ -153,7 +153,7 @@ def test_fakerunner_drain_converges_and_admits(tmp_path, monkeypatch):
     cfg["agentic"]["profiles"]["balanced"]["slots"] = 2
     b = None
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if state["changed"] else (since, [])))
+        ("newsha", ["src/nightwright/x.py"]) if state["changed"] else (since, [])))
     calls = []
     monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(time.monotonic()))
     seen = {}
@@ -220,7 +220,7 @@ def test_stop_with_run_in_wait_detaches_and_leaves_it_alive(world):
         if RP_child(world):
             holder["stop"].set()
 
-    import wt.agentic.runproc as RP
+    import nightwright.agentic.runproc as RP
 
     def RP_child(w):
         return RP.read_json(S.runs_dir(w.cfg, w.cid) / "001-implementer" / "child.json")
@@ -267,7 +267,7 @@ def test_until_idle_unchanged(tmp_path, monkeypatch):
 def test_max_ticks_during_draining_has_restart_pending(tmp_path, monkeypatch):
     repo, cfg, a = gate_world(tmp_path, monkeypatch)
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if pid_file(tmp_path) else (since, [])))
+        ("newsha", ["src/nightwright/x.py"]) if pid_file(tmp_path) else (since, [])))
     monkeypatch.setattr(Q, "_EXEC", lambda *a: pytest.fail("exec despite max_ticks"))
     ticks = []
 
@@ -287,7 +287,7 @@ def test_until_idle_during_draining_has_restart_pending(tmp_path, monkeypatch):
     the tick after the detection reports idle by fiat; the exit path is what is under test."""
     repo, cfg, a = gate_world(tmp_path, monkeypatch)
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if pid_file(tmp_path) else (since, [])))
+        ("newsha", ["src/nightwright/x.py"]) if pid_file(tmp_path) else (since, [])))
     monkeypatch.setattr(Q, "_EXEC", lambda *a: pytest.fail("exec despite until_idle"))
     real_tick = Q.tick
 
@@ -312,7 +312,7 @@ def test_draining_does_not_exec_while_the_user_config_is_invalid(tmp_path, monke
     user = Path(cfg["config_dir"]) / "config.yaml"
     user.write_text("agentic: {}\n")
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if pid_file(tmp_path) else (since, [])))
+        ("newsha", ["src/nightwright/x.py"]) if pid_file(tmp_path) else (since, [])))
     calls, seen = [], {"idle_ticks": 0}
     monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(1))
 
@@ -355,7 +355,7 @@ def test_draining_wait_does_not_busy_spin_with_empty_pool_and_blocked_exec(tmp_p
     user = Path(cfg["config_dir"]) / "config.yaml"
     user.write_text("agentic: {}\n")
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if pid_file(tmp_path) else (since, [])))
+        ("newsha", ["src/nightwright/x.py"]) if pid_file(tmp_path) else (since, [])))
     monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: None)
     polls = {"n": 0}
     real_any_done = Q.StepPool.any_done
@@ -472,7 +472,7 @@ def test_bound_expiry_lists_in_process_flights(tmp_path, monkeypatch):
     monkeypatch.setattr(Q, "_STOP_BOUND_S", 0.3)
     cfg = {"data_dir": str(tmp_path / "d"), "agentic": {}}
     pool, release = _in_process_pool()
-    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    lease = L.acquire(cfg, ["nw", "queue", "run"])
     stop = threading.Event()
     stop.set()
     try:
@@ -700,9 +700,9 @@ def test_bound_expiry_through_run(tmp_path, monkeypatch, how):
 
 def _cli_queue_run(tmp_path, monkeypatch, run):
     from click.testing import CliRunner
-    from wt.cli import cli
+    from nightwright.cli import cli
     exits = []
-    monkeypatch.setattr("wt.cli.load_config", lambda: {"data_dir": str(tmp_path)})
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: {"data_dir": str(tmp_path)})
     monkeypatch.setattr(Q, "run", run)
     monkeypatch.setattr(Q, "leftover_threads", lambda: [object()])
     monkeypatch.setattr(cli_queue.os, "_exit", lambda code: exits.append(code))
@@ -734,11 +734,11 @@ def test_cli_value_error_without_leftover_threads_is_a_click_exception(tmp_path,
 
     monkeypatch.setattr(Q, "leftover_threads", lambda: [])
     exits = []
-    monkeypatch.setattr("wt.cli.load_config", lambda: {"data_dir": str(tmp_path)})
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: {"data_dir": str(tmp_path)})
     monkeypatch.setattr(Q, "run", boom)
     monkeypatch.setattr(cli_queue.os, "_exit", lambda code: exits.append(code))
     from click.testing import CliRunner
-    from wt.cli import cli
+    from nightwright.cli import cli
     res = CliRunner().invoke(cli, ["queue", "run", "--once"])
     assert exits == [] and res.exit_code == 1
     assert "bad json" in res.output and "Traceback" not in res.output
@@ -757,7 +757,7 @@ def test_draining_starts_no_gate_for_a_harvested_campaign(tmp_path, monkeypatch)
     runner = Det(cfg)
     state, seen, calls = {"changed": False}, {"after": 0}, []
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if state["changed"] else (since, [])))
+        ("newsha", ["src/nightwright/x.py"]) if state["changed"] else (since, [])))
     monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(1))
 
     def on_tick(report):
@@ -791,7 +791,7 @@ def test_draining_tick_admits_while_a_gate_blocks_exec(tmp_path, monkeypatch):
     runner.release.set()
     seen, calls = {}, []
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if "changed" in seen else (since, [])))
+        ("newsha", ["src/nightwright/x.py"]) if "changed" in seen else (since, [])))
     monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(1))
 
     def on_tick(report):
@@ -825,7 +825,7 @@ def test_admission_blocked_journaled_once_per_change(tmp_path, monkeypatch):
     runner.release.set()
     seen, calls = {"n": 0}, []
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if "changed" in seen else (since, [])))
+        ("newsha", ["src/nightwright/x.py"]) if "changed" in seen else (since, [])))
     monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(1))
 
     def hold(spec):                        # a CLOSING holder, made before the next tick
@@ -876,7 +876,7 @@ def test_admission_blocked_journaled_again_when_the_condition_recurs(tmp_path, m
     runner.release.set()
     seen, calls = {"n": 0}, []
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if "changed" in seen else (since, [])))
+        ("newsha", ["src/nightwright/x.py"]) if "changed" in seen else (since, [])))
     monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(1))
 
     def set_state(cid, state):
@@ -941,7 +941,7 @@ def test_signal_during_draining_clears_restart(tmp_path, monkeypatch):
     `restart_pending`."""
     repo, cfg, a = gate_world(tmp_path, monkeypatch)
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if pid_file(tmp_path) else (since, [])))
+        ("newsha", ["src/nightwright/x.py"]) if pid_file(tmp_path) else (since, [])))
     monkeypatch.setattr(Q, "_EXEC", lambda *a: pytest.fail("exec despite a signal"))
     run_with_stop(cfg, lambda: bool(journal(cfg, "draining")), reexec=True, code_root=repo)
     stop, = journal(cfg, "stop")
@@ -1060,7 +1060,7 @@ def test_draining_ticks_admit_exec_promptly_and_new_process_adopts(world, monkey
     seen, calls = {}, []
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
         (since, []) if "changed" not in seen else
-        ("sha2", ["src/wt/y.py"]) if "second" in seen else ("sha1", ["src/wt/x.py"])))
+        ("sha2", ["src/nightwright/y.py"]) if "second" in seen else ("sha1", ["src/nightwright/x.py"])))
     steps = [0]                     # promptness in loop steps (ticks, drain polls), not seconds
     real_tick = Q.tick
 
@@ -1112,7 +1112,7 @@ def test_draining_ticks_admit_exec_promptly_and_new_process_adopts(world, monkey
     stop, = journal(cfg, "stop")
     b_run = S.read_ledger(cfg, b, types=["run.start"])[0]["run_id"]
     assert stop["reason"] == "code_changed" and stop["to_sha"] == "sha2"
-    assert stop["paths"] == ["src/wt/y.py"]
+    assert stop["paths"] == ["src/nightwright/y.py"]
     assert stop["detached"] == [{"campaign": b, "run_ids": [b_run]}]
     assert len(S.read_ledger(cfg, a, types=["gate"])) == 1            # no gate after detection
     drain_ticks = [r for r in journal(cfg, "tick") if r.get("drain")]
@@ -1172,10 +1172,10 @@ def test_crash_with_gate_wait_spawning_and_finished_flight(world, monkeypatch, r
     go, real_popen, seen = world.tmp / "go", subprocess.Popen, {}
     code = ("import os, sys, time, runpy\nwhile not os.path.exists(sys.argv[1]): time.sleep(0.05)\n"
             "sys.argv = ['x', sys.argv[2]]\n"
-            "runpy.run_module('wt.agentic.runproc', run_name='__main__')")
+            "runpy.run_module('nightwright.agentic.runproc', run_name='__main__')")
 
     def paused(argv, **kw):                                     # C's wrapper start is held
-        if "wt.agentic.runproc" in argv and c in argv[-1]:
+        if "nightwright.agentic.runproc" in argv and c in argv[-1]:
             proc = real_popen([sys.executable, "-c", code, str(go), argv[-1]], **kw)
             seen["c_pid"] = proc.pid
             return proc
@@ -1284,7 +1284,7 @@ def test_bound_expiry_abandons_collect_and_next_runner_commits_once(world, monke
                               capture_output=True, check=True).stdout.strip()
         subjects = subprocess.run(["git", "log", "--format=%s"], cwd=wt_of(world, a), text=True,
                                   capture_output=True, check=True).stdout.splitlines()
-        assert len([x for x in subjects if x.startswith(f"wt({a}): implementer run")]) == 1
+        assert len([x for x in subjects if x.startswith(f"nw({a}): implementer run")]) == 1
         commits = S.read_ledger(cfg, a, types=["commit"])
         assert [c["sha"] for c in commits] == [head]            # recorded once
     finally:
@@ -1305,7 +1305,7 @@ def test_fakerunner_step_in_flight_is_waited_for_and_never_detached(tmp_path, mo
     a = added(cfg, monkeypatch)
     state, seen, calls = {"changed": False}, {}, []
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if state["changed"] else (since, [])))
+        ("newsha", ["src/nightwright/x.py"]) if state["changed"] else (since, [])))
 
     def fake_exec(exe, argv, env):
         calls.append(1)
@@ -1354,7 +1354,7 @@ def test_close_step_is_not_started_while_draining(tmp_path, monkeypatch):
     runner.release.set()
     state, seen, calls, closes = {"changed": False}, {"closing": 0}, [], []
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
-        ("newsha", ["src/wt/x.py"]) if state["changed"] else (since, [])))
+        ("newsha", ["src/nightwright/x.py"]) if state["changed"] else (since, [])))
     monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: calls.append(1))
     real_prepare = Q.CL.prepare_close
     monkeypatch.setattr(Q.CL, "prepare_close", lambda *a_, **k: (closes.append(1),

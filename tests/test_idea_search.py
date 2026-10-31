@@ -1,14 +1,14 @@
-"""Related-idea search via `wt ideas --query` (SPEC-0086)."""
+"""Related-idea search via `nw ideas --query` (SPEC-0086)."""
 import json
 from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt import org_write as W
-from wt import report as R
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright import explore as EX
+from nightwright import org_write as W
+from nightwright import report as R
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 
 def _cfg(tmp_path):
@@ -33,7 +33,7 @@ def _cfg(tmp_path):
 
 
 def _patch(monkeypatch, cfg):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
 
 
 def test_tokenize_and_score_weights():
@@ -116,7 +116,7 @@ def test_cli_json_search_schema(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["ideas", "--query", "specref", "--json"])
     assert r.exit_code == 0, r.output
     data = json.loads(r.output)
-    assert data["schema"] == "wt.ideas.search.v1"
+    assert data["schema"] == "nw.ideas.search.v1"
     assert data["query"] == "specref"
     assert data["ideas"]
     hit = data["ideas"][0]
@@ -125,7 +125,7 @@ def test_cli_json_search_schema(tmp_path, monkeypatch):
 
     r2 = CliRunner().invoke(cli, ["ideas", "--json"])
     assert r2.exit_code == 0, r2.output
-    assert json.loads(r2.output)["schema"] == "wt.ideas.v1"
+    assert json.loads(r2.output)["schema"] == "nw.ideas.v1"
 
 
 def test_cli_empty_query_errors(tmp_path, monkeypatch):

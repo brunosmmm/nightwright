@@ -6,11 +6,11 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt.agentic import personas as PS
-from wt.agentic import store as S
-from wt.agentic.profiles import resolve_profile
-from wt.cli import cli
-from wt.agentic import schemas as SC
+from nightwright.agentic import personas as PS
+from nightwright.agentic import store as S
+from nightwright.agentic.profiles import resolve_profile
+from nightwright.cli import cli
+from nightwright.agentic import schemas as SC
 
 def _ev(cfg, cid, etype, payload=None, **kw):
     """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
@@ -45,7 +45,7 @@ def _state(tmp_path, **over):
     st = {
         "id": "SPEC-0001-20261026-ab12", "kind": "implement", "spec_id": "SPEC-0001",
         "project": "Meta-Tools", "profile": "balanced", "state": "IMPLEMENTING",
-        "repo": {"root": str(tmp_path / "repo"), "base": "main", "branch": "wt/x",
+        "repo": {"root": str(tmp_path / "repo"), "base": "main", "branch": "nw/x",
                  "worktree": str(wt)},
         "spec": {"rel_path": "docs/specs/0001-x.md", "internal": True},
         "counters": {"loops": 1, "runs": 2},
@@ -68,7 +68,7 @@ def _project_cfg():
                       {"name": "lint", "cmd": "python3 tools/spec_lint.py"}],
             "agents": {"context_files": ["AGENTS.md", "docs/specs/SCHEMA.md"],
                        "permission_mode": "bypassPermissions",
-                       "allowed_tools": ["Bash(uv run wt *)"]}}
+                       "allowed_tools": ["Bash(uv run nw *)"]}}
 
 
 # ---- prompt ------------------------------------------------------------------------------
@@ -152,11 +152,11 @@ def test_implementer_prompt_targeted_tests(tmp_path):
     assert ("The gate's full-suite run counts as the no-regressions check, so skipping your own "
             "full run does not block `status: done`") in p
     assert "say in the `### Test record` that the full suite was left to gating" in p
-    # cheap gates: generic instruction, spec-lint only as the "for wt itself" example
+    # cheap gates: generic instruction, spec-lint only as the "for nightwright itself" example
     assert "The cheap gates among the project's gate commands" in p
-    assert "(listed in the repo's `.wt/project.yaml` and allowed for you; for wt itself: spec-lint)" in p
+    assert "(listed in the repo's `.nw/project.yaml` and allowed for you; for nightwright itself: spec-lint)" in p
     step5 = p.split("5. ")[1].split(" 6. ")[0]
-    assert step5.count("spec-lint") == 1 and "for wt itself: spec-lint" in step5
+    assert step5.count("spec-lint") == 1 and "for nightwright itself: spec-lint" in step5
 
 
 def test_render_leaves_unknown_braces_alone():
@@ -171,16 +171,16 @@ def test_build_request_implementer(tmp_path):
                            run_dir=tmp_path / "runs" / "001-implementer")
     assert req.model == "sonnet" and req.effort == "high" and req.max_budget_usd == 4.0
     assert req.permission_mode == "bypassPermissions" and not req.read_only
-    assert req.allowed_tools == ("Bash(uv run wt *)", "Bash(uv run pytest -q -x*)",
+    assert req.allowed_tools == ("Bash(uv run nw *)", "Bash(uv run pytest -q -x*)",
                                  "Bash(python3 tools/spec_lint.py*)")
     assert req.cwd == Path(st["repo"]["worktree"]) and req.add_dirs == (req.cwd,)
     assert req.timeout_s == 1800 and req.json_schema is PS.IMPLEMENTER_SCHEMA
     tmp = str(S.campaign_dir(cfg, st["id"]) / "tmp" / "run-001-implementer")    # SPEC-0253
-    assert req.env == {"WT_CAMPAIGN": st["id"], "WT_DATA_DIR": cfg["data_dir"],
-                       "WT_CONFIG_DIR": cfg["config_dir"], "WT_SPEC_ID": "SPEC-0001",
-                       "WT_WORKTREE": st["repo"]["worktree"], "WT_BASE": "main",
-                       "WT_PERSONA_RUN": "1", "TMPDIR": tmp, "TEMP": tmp, "TMP": tmp}
-    assert req.system_append.startswith("## wt queue invariants")
+    assert req.env == {"NW_CAMPAIGN": st["id"], "NW_DATA_DIR": cfg["data_dir"],
+                       "NW_CONFIG_DIR": cfg["config_dir"], "NW_SPEC_ID": "SPEC-0001",
+                       "NW_WORKTREE": st["repo"]["worktree"], "NW_BASE": "main",
+                       "NW_PERSONA_RUN": "1", "TMPDIR": tmp, "TEMP": tmp, "TMP": tmp}
+    assert req.system_append.startswith("## nw queue invariants")
     assert req.prompt.endswith(req.system_append + "\n")
 
 
@@ -188,7 +188,7 @@ def test_build_request_sets_persona_flag(tmp_path):
     cfg, st = _cfg(tmp_path), _state(tmp_path)
     req = PS.build_request(cfg, resolve_profile(cfg), _project_cfg(), st, "implementer",
                            run_dir=tmp_path / "runs" / "001-implementer")
-    assert req.env["WT_PERSONA_RUN"] == "1"
+    assert req.env["NW_PERSONA_RUN"] == "1"
 
 
 def test_build_request_project_allowlist_override(tmp_path):
@@ -223,7 +223,7 @@ def _git_repo_with_change(tmp_path):
     git("init", "-q", "-b", "main")
     git("add", "-A")
     git("commit", "-q", "--allow-empty", "-m", "base")
-    git("checkout", "-q", "-b", "wt/x")
+    git("checkout", "-q", "-b", "nw/x")
     (wt / "src").mkdir()
     (wt / "src" / "a.py").write_text("print('hi')\n")
     (wt / "tests").mkdir()
@@ -255,7 +255,7 @@ def test_build_request_conformance_reviewer(tmp_path):
 
 
 def test_conformance_reviewer_schema_and_diff_truncation(tmp_path):
-    from wt.agentic.runner import _conforms
+    from nightwright.agentic.runner import _conforms
     ok = {"verdict": "pass", "score": 90, "findings": [{"severity": "nit", "title": "t",
                                             "suggested_fix": "rename it"}],
           "ac_assessment": [{"ac": "a", "met": True, "evidence": "e"}], "fix_brief": ""}
@@ -269,7 +269,7 @@ def test_conformance_reviewer_schema_and_diff_truncation(tmp_path):
     assert not _conforms({k: v for k, v in ok.items() if k != "score"},
                          PS.CONFORMANCE_REVIEWER_SCHEMA)
     assert PS.PERSONAS["conformance_reviewer"].read_only
-    from wt.agentic import gitops
+    from nightwright.agentic import gitops
     _git_repo_with_change(tmp_path)
     cut = gitops.diff_text(tmp_path / "worktree", "main", max_lines=3)
     assert cut.splitlines()[:3] == gitops.diff_text(tmp_path / "worktree", "main").splitlines()[:3]
@@ -290,7 +290,7 @@ def test_cli_campaign_prompt(tmp_path, monkeypatch):
     S.create_campaign(cfg, st)
     _ev(cfg, st["id"], "run.end", {"persona": "implementer", "run_id": "001",
                                              "verdict": {"status": "partial", "summary": "half"}})
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["campaign", "prompt", st["id"], "implementer"])
     assert r.exit_code == 0, r.output
     assert "Use {braces} freely." in r.output and "implementer run 001: partial — half" in r.output
@@ -304,14 +304,14 @@ def test_cli_campaign_prompt(tmp_path, monkeypatch):
 def test_cli_campaign_prompt_resolves_the_projects_profile_layer(tmp_path, monkeypatch):
     cfg, st = _cfg(tmp_path), _state(tmp_path)
     S.create_campaign(cfg, st)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
-    d = tmp_path / "repo" / ".wt" / "profiles"
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    d = tmp_path / "repo" / ".nw" / "profiles"
     d.mkdir(parents=True)
     f = d / "balanced.yaml"
-    f.write_text("schema: wt.profile.v1\nslots: 0\n", encoding="utf-8")
+    f.write_text("schema: nw.profile.v1\nslots: 0\n", encoding="utf-8")
     r = CliRunner().invoke(cli, ["campaign", "prompt", st["id"], "implementer"])
     assert r.exit_code != 0 and f"{f}: slots" in r.output
-    f.write_text("schema: wt.profile.v1\nslots: 3\n", encoding="utf-8")
+    f.write_text("schema: nw.profile.v1\nslots: 3\n", encoding="utf-8")
     assert CliRunner().invoke(cli, ["campaign", "prompt", st["id"], "implementer"]).exit_code == 0
 
 
@@ -349,7 +349,7 @@ def test_test_reviewer_registered_and_template():
 
 
 def test_test_reviewer_schema_keys_and_conformance():
-    from wt.agentic.runner import _conforms
+    from nightwright.agentic.runner import _conforms
     S_ = PS.TEST_REVIEWER_SCHEMA
     assert set(S_["required"]) == {"verdict", "score", "findings", "coverage_assessment",
                                    "fix_brief"}
@@ -585,7 +585,7 @@ def test_review_triager_registered_and_template():
 
 
 def test_review_triager_schema_keys():
-    from wt.agentic.runner import _conforms
+    from nightwright.agentic.runner import _conforms
     S_ = PS.REVIEW_TRIAGER_SCHEMA
     assert S_["required"] == ["waive", "note"] and set(S_["properties"]) == {"waive", "note"}
     assert S_["properties"]["waive"]["items"]["required"] == ["id", "reason"]
@@ -656,7 +656,7 @@ def test_adversarial_schema_shape():
 
 
 def test_adversarial_verdict_ok_needs_a_known_category():
-    from wt.agentic.runner import _conforms
+    from nightwright.agentic.runner import _conforms
     S_ = PS.ADVERSARIAL_REVIEWER_SCHEMA
     assert _conforms(_adv_ok(trigger="when x", lines=["a.py:3"], files=["a.py"]), S_)
     assert _conforms(_adv_ok(category="path_traversal"), S_)
@@ -811,11 +811,11 @@ def test_conflict_resolver_build_request_follows_implementer_rules(tmp_path):
                            run_dir=tmp_path / "runs" / "001-conflict_resolver")
     assert req.model == "sonnet" and req.effort == "high" and req.max_budget_usd == 2.0
     assert req.permission_mode == "bypassPermissions" and not req.read_only
-    assert req.allowed_tools == ("Bash(uv run wt *)", "Bash(uv run pytest -q -x*)",
+    assert req.allowed_tools == ("Bash(uv run nw *)", "Bash(uv run pytest -q -x*)",
                                  "Bash(python3 tools/spec_lint.py*)")
-    assert req.env["WT_REBASE_TARGET"] == "abc123"
+    assert req.env["NW_REBASE_TARGET"] == "abc123"
     assert req.json_schema is PS.CONFLICT_RESOLVER_SCHEMA
-    assert req.system_append.startswith("## wt queue invariants")
+    assert req.system_append.startswith("## nw queue invariants")
     assert "rebase abc123" in req.system_append and "{{" not in req.prompt
     assert req.prompt.endswith(req.system_append + "\n")
 
@@ -833,7 +833,7 @@ def test_build_request_carries_profile_and_sources(tmp_path):                   
 
 def test_run_request_defaults_and_run_record(tmp_path):                          # SPEC-0238
     import json
-    from wt.agentic import runner as RU
+    from nightwright.agentic import runner as RU
     run_dir = tmp_path / "camp" / "runs" / "001-implementer"
     run_dir.mkdir(parents=True)
     kw = dict(persona="implementer", prompt="p", system_append="s", cwd=tmp_path, model="sonnet",
@@ -913,7 +913,7 @@ def test_finding_schema_requires_suggested_fix(schema):
 
 
 def test_spec_reviewer_verdict_needs_a_suggested_fix_per_finding():
-    from wt.agentic.runner import _conforms
+    from nightwright.agentic.runner import _conforms
     ok = {"verdict": "revise", "size": "s", "tone": "high-end", "rationale": "r",
           "findings": [{"severity": "nit", "title": "t", "suggested_fix": "do it"}]}
     assert _conforms(ok, PS.SPEC_REVIEWER_SCHEMA)
@@ -953,7 +953,7 @@ def test_render_pending_brief_shows_the_fix_lines():
 
 
 def test_finding_detail_folds_trigger_then_the_fix():
-    from wt.agentic import queue as Q
+    from nightwright.agentic import queue as Q
     f = {"detail": "d", "trigger": "t", "suggested_fix": "fix", "acceptance": "ok"}
     assert Q.finding_detail(f) == "d\ntrigger: t\nFix: fix\nDone when: ok"
     assert Q.finding_detail({"trigger": "t", "suggested_fix": "fix"}) == "trigger: t\nFix: fix"

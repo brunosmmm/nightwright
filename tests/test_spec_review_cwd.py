@@ -1,4 +1,4 @@
-"""SPEC-0227: `wt spec review SPEC-ID` reviews the copy in the current checkout (main or a linked
+"""SPEC-0227: `nw spec review SPEC-ID` reviews the copy in the current checkout (main or a linked
 worktree) of the registered specs repository; elsewhere, the registered checkout's copy."""
 import json
 import subprocess
@@ -8,8 +8,8 @@ import pytest
 
 from test_agentic_e2e import SPEC_ACCEPTED, _git, make_cfg, make_repo, run_cli, script
 from test_spec_review_store import APPROVE, Spy, _entry
-from wt.agentic import spec_review as SR
-from wt.agentic.runner import FakeRunner
+from nightwright.agentic import spec_review as SR
+from nightwright.agentic.runner import FakeRunner
 
 SPEC_REL = "docs/specs/0001-trivial.md"
 
@@ -128,7 +128,7 @@ def test_outbound_id_unaffected(tmp_path, monkeypatch):
     box.mkdir(parents=True)
     out_spec = box / "PROJ-0001-thing.md"
     out_spec.write_text(SPEC_ACCEPTED.format(id="PROJ-0001", extra=""))
-    from wt import specs as SP
+    from nightwright import specs as SP
     wt2 = _worktree(tmp_path, repo)
     monkeypatch.chdir(wt2)
     assert SP.resolve_spec_path_for_cwd(cfg, "PROJ-0001") == (out_spec, "outbox")
@@ -139,7 +139,7 @@ def test_outbound_id_unaffected(tmp_path, monkeypatch):
 def test_specs_dir_in_tmp_repo_rule_is_relative_to_that_repo(tmp_path, monkeypatch):
     repo, cfg, spy = _setup(tmp_path, monkeypatch)
     wt2 = _worktree(tmp_path, repo)
-    from wt import specs as SP
+    from nightwright import specs as SP
     path, origin = SP.resolve_spec_path_for_cwd(cfg, "SPEC-0001", cwd=wt2 / "docs")
     assert path == wt2.resolve() / SPEC_REL and origin == "worktree rev"
 

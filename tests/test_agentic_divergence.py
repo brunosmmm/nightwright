@@ -5,10 +5,10 @@ import types
 
 import pytest
 
-from wt.agentic import divergence as DV
-from wt.agentic import queue as Q
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
+from nightwright.agentic import divergence as DV
+from nightwright.agentic import queue as Q
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
 
 from test_agentic_e2e import (added, impl_done, make_cfg, make_repo, review, run_cli, script,
                               triage)
@@ -346,7 +346,7 @@ def _spec0251_ledger(*, enospc=True):
          pytest_fail(), finding("gate failed: tests error", persona="gate_triager",
                                 severity="minor"), fix("triage_fix"),
          *r3, fix("triage_fix"),
-         finding("wt tui --tab events CLI choice is not tested", persona="test_reviewer",
+         finding("nw tui --tab events CLI choice is not tested", persona="test_reviewer",
                  severity="major"),
          *minors("log line wording", "extra blank line", "stale comment"), fix("review_fix"),
          finding("Event text is put into the DataTable as a raw str", severity="major",

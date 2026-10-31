@@ -7,12 +7,12 @@ from test_agentic_e2e import (SPEC_ACCEPTED, added, fake_gh, impl_done, make_cfg
                               run_cli, script, write_review)
 from test_agentic_queue import _apply, _merge_with_idea, opened  # noqa: F401 — fixture
 
-from wt import org_write as OW
-from wt.agentic import queue as Q
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
-from wt.org import load_tasks
-from wt.specmeta import split_frontmatter
+from nightwright import org_write as OW
+from nightwright.agentic import queue as Q
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
+from nightwright.org import load_tasks
+from nightwright.specmeta import split_frontmatter
 
 REL = "docs/specs/ACME-0001-trivial.md"
 EXTRA = "target_project: acme\n"
@@ -138,7 +138,7 @@ def test_outbound_done_but_idea_not_advanced_is_a_finding(tmp_path, monkeypatch)
 
     def boom(*a, **kw):
         raise ValueError("cannot move the idea")
-    monkeypatch.setattr("wt.export.OW.set_state", boom)
+    monkeypatch.setattr("nightwright.export.OW.set_state", boom)
     _run(cfg, monkeypatch)
     assert S.read_state(cfg, cid)["state"] == "MERGED" and _status(outbox) == "done"
     assert _idea_state(cfg, iid) == "EXPORTED"
@@ -147,7 +147,7 @@ def test_outbound_done_but_idea_not_advanced_is_a_finding(tmp_path, monkeypatch)
     (f,) = [e for e in S.read_ledger(cfg, cid, types=["finding"])
             if e["title"].startswith("outbound pull did not ship idea")]
     assert f["severity"] == "minor" and iid in f["title"]
-    assert f["detail"] == "run `wt spec pull-status ACME-0001`"
+    assert f["detail"] == "run `nw spec pull-status ACME-0001`"
 
 
 def test_outbound_pull_uses_frozen_target_path(tmp_path, monkeypatch):            # AC 8
@@ -165,7 +165,7 @@ def test_outbound_pull_without_frozen_path_falls_back_to_repo_root(tmp_path, mon
     repo, cfg, outbox, iid = _outbound(tmp_path, monkeypatch, frozen=False)
     path = repo / REL
     path.write_text(path.read_text().replace("status: accepted", "status: done"))
-    from wt import export as EX
+    from nightwright import export as EX
     seen, events = [], []
     real = EX.pull_status
     monkeypatch.setattr(EX, "pull_status", lambda c, i, **kw: (seen.append(kw), real(c, i, **kw))[1])
@@ -177,7 +177,7 @@ def test_outbound_pull_without_frozen_path_falls_back_to_repo_root(tmp_path, mon
 
 def test_outbound_pull_with_frozen_path_passes_no_to(tmp_path, monkeypatch):
     repo, cfg, outbox, iid = _outbound(tmp_path, monkeypatch)
-    from wt import export as EX
+    from nightwright import export as EX
     seen, events = [], []
     real = EX.pull_status
     monkeypatch.setattr(EX, "pull_status", lambda c, i, **kw: (seen.append(kw), real(c, i, **kw))[1])

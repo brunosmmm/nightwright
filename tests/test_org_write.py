@@ -8,9 +8,9 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import org_write as W
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright import org_write as W
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "org")
 
@@ -111,7 +111,7 @@ def test_mark_done_uses_first_done_keyword(tmp_path):
 
 def test_cli_state(tmp_path, monkeypatch):
     cfg, _ = _setup(tmp_path)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["state", "DEMO-506", "DONE"])
     assert r.exit_code == 0, r.output

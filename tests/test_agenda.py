@@ -1,15 +1,15 @@
-"""`wt agenda` date views (SPEC-0007): SCHEDULED/DEADLINE bucketing over a scope + overdue."""
+"""`nw agenda` date views (SPEC-0007): SCHEDULED/DEADLINE bucketing over a scope + overdue."""
 import os
 
 from click.testing import CliRunner
 
-from wt import report as R
-from wt.cli import cli
-from wt.console import console
-from wt.dates import week_days
+from nightwright import report as R
+from nightwright.cli import cli
+from nightwright.console import console
+from nightwright.dates import week_days
 import datetime as dt
 from zoneinfo import ZoneInfo
-from wt.org import load_tasks
+from nightwright.org import load_tasks
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "org")
 
@@ -67,7 +67,7 @@ def test_render_and_empty_scope():
 
 
 def test_cli_agenda_runs(monkeypatch):
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", _cfg)
     r = CliRunner().invoke(cli, ["agenda", "-w", "2026-07-15"])
     assert r.exit_code == 0, r.output
@@ -148,7 +148,7 @@ def test_agenda_ideas_flag_includes_union(tmp_path):
 
 def test_cli_agenda_ideas_flag(tmp_path, monkeypatch):
     cfg = _mixed_cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["agenda", "-w", "2026-07-15", "--ideas"])
     assert r.exit_code == 0, r.output
     assert "Dated idea in week" in r.output

@@ -5,9 +5,9 @@ import pytest
 
 from test_agentic_dashboard import _campaign, _fixture, _iso, _park_fixture
 from test_agentic_e2e import make_cfg, make_repo, run_cli, script, impl_done
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.tui import agentic_model as AM
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.tui import agentic_model as AM
 
 
 def _by(rows):
@@ -193,7 +193,7 @@ def test_queue_action_raises_plan_errors_and_writes_nothing(tmp_path):
 
 
 def test_summary_text_for_each_action():
-    from wt.tui.queue_tab import QueueView
+    from nightwright.tui.queue_tab import QueueView
     s = QueueView._summary
     assert s("park", "C", {"mode": "immediate", "note": "why"}) == "park C (immediate): why"
     assert s("park", "C", {"mode": "deferred", "note": "later"}) == "park C (deferred): later"
@@ -213,7 +213,7 @@ def test_plans_carry_the_keys_the_summary_reads(tmp_path):
                             ("prioritize", ids["ready"], {"priority": 1}),
                             ("abandon", ids["ready"], {})):
         plan = AM.plan_queue_action(cfg, action, cid, **kw)
-        from wt.tui.queue_tab import QueueView
+        from nightwright.tui.queue_tab import QueueView
         assert QueueView._summary(action, cid, plan).startswith(
             {"prioritize": "priority"}.get(action, action))
 

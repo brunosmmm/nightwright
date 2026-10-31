@@ -1,13 +1,13 @@
-"""`wt tasks` list & filter (SPEC-0006): default actionable view, filter composition, --all,
+"""`nw tasks` list & filter (SPEC-0006): default actionable view, filter composition, --all,
 --key, and CLI wiring."""
 import os
 
 from click.testing import CliRunner
 
-from wt import report as R
-from wt.cli import cli
-from wt.console import console
-from wt.org import load_tasks
+from nightwright import report as R
+from nightwright.cli import cli
+from nightwright.console import console
+from nightwright.org import load_tasks
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "org")
 
@@ -75,7 +75,7 @@ def test_empty_result_is_friendly():
 
 
 def test_cli_tasks_runs(monkeypatch):
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", _cfg)
     r = CliRunner().invoke(cli, ["tasks", "--state", "INPROGRESS"])
     assert r.exit_code == 0, r.output
@@ -84,12 +84,12 @@ def test_cli_tasks_runs(monkeypatch):
 
 def test_cli_tasks_json(monkeypatch):
     import json
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", _cfg)
     r = CliRunner().invoke(cli, ["tasks", "--json"])
     assert r.exit_code == 0, r.output
     data = json.loads(r.output)
-    assert data["schema"] == "wt.tasks.v1"
+    assert data["schema"] == "nw.tasks.v1"
     assert any("DEMO-504" in (t.get("heading") or "") or t.get("topic_key") == "DEMO-504"
                for t in data["tasks"])
     r2 = CliRunner().invoke(cli, ["tasks", "--json", "--state", "INPROGRESS"])

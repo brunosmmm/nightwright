@@ -1,6 +1,6 @@
 """Read-only hub triage tab (SPEC-0104).
 
-The tab is a view over the same `hub_payload` (`wt.hub.v1`) agents consume — SPEC-0052's
+The tab is a view over the same `hub_payload` (`nw.hub.v1`) agents consume — SPEC-0052's
 "hub is not a write surface" still stands, so the only interaction is drilling an *idea* row
 into the ideas desk, or being shown a CLI hint for a spec row.
 """
@@ -12,9 +12,9 @@ import pytest
 from click.testing import CliRunner
 
 from waits import pilot_until
-from wt import tui as T
-from wt.cli import cli
-from wt.tui import model as M
+from nightwright import tui as T
+from nightwright.cli import cli
+from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -44,7 +44,7 @@ def _cfg(tmp_path):
 
 def _seed(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "a hub idea"]).exit_code == 0
     assert run(cli, ["idea", "questions", "IDEA-001", "--add", "open one?"]).exit_code == 0
@@ -81,7 +81,7 @@ def test_spec_rows_carry_a_cli_hint_not_an_action(tmp_path, monkeypatch):
     cfg = _seed(tmp_path, monkeypatch)
     lines, _ = M.load_hub(cfg)
     internal = [ln for ln in lines if ln.section == "internal specs"]
-    assert internal and internal[0].hint.startswith("wt spec generate SPEC-0001")
+    assert internal and internal[0].hint.startswith("nw spec generate SPEC-0001")
 
 
 def test_idea_rows_surface_the_spec_0103_fields(tmp_path, monkeypatch):
@@ -109,14 +109,14 @@ def test_load_hub_does_not_write(tmp_path, monkeypatch):
 
 
 def test_hub_json_for_agents_is_unchanged(tmp_path, monkeypatch):
-    """AC: the tab is additive; `wt hub --json` still answers exactly as before."""
+    """AC: the tab is additive; `nw hub --json` still answers exactly as before."""
     import json
 
     _seed(tmp_path, monkeypatch)
     r = CliRunner().invoke(cli, ["hub", "--json"])
     assert r.exit_code == 0
     payload = json.loads(r.output)
-    assert payload["schema"] == "wt.hub.v1"
+    assert payload["schema"] == "nw.hub.v1"
     assert {"ideas", "internal", "outbound", "stale_ideas"} <= set(payload)
 
 
@@ -126,7 +126,7 @@ def test_hub_json_for_agents_is_unchanged(tmp_path, monkeypatch):
 def test_hub_tab_renders_and_drills_into_an_idea(tmp_path, monkeypatch):
     from test_tui_desk import _grid
 
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -159,7 +159,7 @@ def test_hub_loads_when_activated_without_the_h_binding(tmp_path, monkeypatch):
     a mouse click, Textual's own tab navigation — reached a pane that had never been populated.
     This drives the tab the way a click does, on a **fresh** app that has never seen `h`.
     """
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -184,7 +184,7 @@ def test_hub_loads_when_activated_without_the_h_binding(tmp_path, monkeypatch):
 @needs_textual
 def test_both_routes_agree(tmp_path, monkeypatch):
     """`h` and direct activation must produce the same populated hub."""
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -209,7 +209,7 @@ def test_both_routes_agree(tmp_path, monkeypatch):
 
 @needs_textual
 def test_returning_to_ideas_by_any_route_restores_focus(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -230,7 +230,7 @@ def test_returning_to_ideas_by_any_route_restores_focus(tmp_path, monkeypatch):
 @needs_textual
 def test_hub_reflects_changes_made_since_launch(tmp_path, monkeypatch):
     """Reload on every activation: the desk mutates the very things the hub summarises."""
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -255,7 +255,7 @@ def test_hub_reflects_changes_made_since_launch(tmp_path, monkeypatch):
 def test_external_change_poll_during_teardown_is_a_no_op(tmp_path, monkeypatch):
     """The 1.5 s external-change poll can fire while the app tears its DOM down (seen when a
     loaded host stretched a test past the interval): it must return, not raise NoMatches."""
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -271,7 +271,7 @@ def test_external_change_poll_during_teardown_is_a_no_op(tmp_path, monkeypatch):
 
 @needs_textual
 def test_hub_toggles_back_to_ideas(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -291,7 +291,7 @@ def test_hub_toggles_back_to_ideas(tmp_path, monkeypatch):
 
 @needs_textual
 def test_browsing_the_hub_writes_nothing(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -312,8 +312,8 @@ def test_browsing_the_hub_writes_nothing(tmp_path, monkeypatch):
 
 def test_hub_tab_has_no_promote_or_export_call():
     """AC: no promote/export mutation from the tab — hints are strings, not calls."""
-    app_src = (ROOT / "src" / "wt" / "tui" / "app.py").read_text()
-    model_src = (ROOT / "src" / "wt" / "tui" / "model.py").read_text()
+    app_src = (ROOT / "src" / "nightwright" / "tui" / "app.py").read_text()
+    model_src = (ROOT / "src" / "nightwright" / "tui" / "model.py").read_text()
     for banned in ("promote_idea", "scaffold_outbound", "generate_from_spec", "export_spec",
                    "seed_ideas_from_epic"):
         assert banned not in app_src, f"{banned} reachable from the desk"

@@ -1,4 +1,4 @@
-"""wt sheet plan/record (SPEC-0125): pure local JSON sync-diff over the idea corpus."""
+"""nw sheet plan/record (SPEC-0125): pure local JSON sync-diff over the idea corpus."""
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,12 +7,12 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import idea_ext as IX
-from wt import org_write as W
-from wt import sheet_schemes as SS
-from wt import sheet_sync as SHS
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright import idea_ext as IX
+from nightwright import org_write as W
+from nightwright import sheet_schemes as SS
+from nightwright import sheet_sync as SHS
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 MANIFEST_TOML = """
 kind = "sheet"
@@ -23,17 +23,17 @@ id_column = "ID"
 [[columns]]
 header = "ID"
 source = "id"
-owner = "wt"
+owner = "nw"
 
 [[columns]]
 header = "Feature"
 source = "title"
-owner = "wt"
+owner = "nw"
 
 [[columns]]
 header = "Status"
 source = "status"
-owner = "wt"
+owner = "nw"
 
 [[columns]]
 header = "Costumer"
@@ -53,7 +53,7 @@ def _cfg(tmp_path, monkeypatch, **overrides):
     schemes_dir = config_dir / "schemes"
     schemes_dir.mkdir()
     (schemes_dir / "example.toml").write_text(MANIFEST_TOML)
-    monkeypatch.setenv("WT_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("NW_CONFIG_DIR", str(config_dir))
 
     base = {
         "org_files": [str(org)],
@@ -112,7 +112,7 @@ def test_plan_push_skips_unchanged_and_flags_stale(tmp_path, monkeypatch):
 
     task = _idea_by_id(cfg, "IDEA-001")
     ext = IX.read_idea_extension(cfg, task, "Example")
-    from wt.sheet_schemes import resolve_sheet_manifest
+    from nightwright.sheet_schemes import resolve_sheet_manifest
     _, manifest = resolve_sheet_manifest(cfg, "Example")
     h = SHS.content_hash(manifest, task, ext)
     IX.set_idea_extension(cfg, "IDEA-001", "sheet_row", "EXAMPLE-0009")
@@ -120,7 +120,7 @@ def test_plan_push_skips_unchanged_and_flags_stale(tmp_path, monkeypatch):
 
     assert SHS.plan_push(cfg, "Example") == []
 
-    from wt import explore as EX
+    from nightwright import explore as EX
     EX.retitle_idea(cfg, "IDEA-001", "synced idea (renamed)")
 
     push = SHS.plan_push(cfg, "Example")
@@ -187,7 +187,7 @@ def test_record_adopted_creates_new_idea(tmp_path, monkeypatch):
 
 
 def _patch(monkeypatch, cfg):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
 
 
 def test_cli_sheet_plan_and_record(tmp_path, monkeypatch):
@@ -230,17 +230,17 @@ id_column = "ID"
 [[columns]]
 header = "ID"
 source = "id"
-owner = "wt"
+owner = "nw"
 
 [[columns]]
 header = "Feature"
 source = "title"
-owner = "wt"
+owner = "nw"
 
 [[columns]]
 header = "Status"
 source = "status"
-owner = "wt"
+owner = "nw"
 [columns.value_map]
 IDEA = "New"
 INCUBATE = "New"
@@ -266,7 +266,7 @@ def test_content_hash_uses_mapped_value_not_raw():
     task_a = SimpleNamespace(heading="idea", state="IDEA")
     task_b = SimpleNamespace(heading="idea", state="INCUBATE")
     # IDEA and INCUBATE both map to "New" -- their hashes must be identical, proving the
-    # hash is computed over the mapped value, not the raw wt state.
+    # hash is computed over the mapped value, not the raw nw state.
     assert SHS.content_hash(manifest, task_a, {}) == SHS.content_hash(manifest, task_b, {})
 
 

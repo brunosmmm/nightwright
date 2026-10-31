@@ -1,9 +1,9 @@
-"""Entity association on capture (SPEC-0018): --project/--epic/--key on `wt idea`/`wt add`,
+"""Entity association on capture (SPEC-0018): --project/--epic/--key on `nw idea`/`nw add`,
 Task.epic + :PROJECT: override, known_projects/known_epics, permissive validation, promotion
-parent-threading, `wt projects` CLI.
+parent-threading, `nw projects` CLI.
 
 All specs scaffolding happens in a tmp specs dir (never docs/specs/) — see cfg["specs_dir"].
-Mappings live under a tmp cfg["config_dir"] — never the real ~/.config/wt/mappings.yaml."""
+Mappings live under a tmp cfg["config_dir"] — never the real ~/.config/nightwright/mappings.yaml."""
 import importlib.util
 import pathlib
 import shutil
@@ -12,11 +12,11 @@ from zoneinfo import ZoneInfo
 import yaml
 from click.testing import CliRunner
 
-from wt import org_write as W
-from wt import rules as RU
-from wt import specs as S
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright import org_write as W
+from nightwright import rules as RU
+from nightwright import specs as S
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REAL_SPECS = ROOT / "docs" / "specs"
@@ -194,7 +194,7 @@ def test_scaffold_from_idea_unresolvable_epic_warns_and_omits_parent(tmp_path, c
 def test_cli_idea_with_associations(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, mappings={"repoA": "Logging"})
     _write_epic(pathlib.Path(cfg["specs_dir"]), "0011", "SPEC-0011")
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["idea", "adaptive logging", "--project", "Logging",
                                 "--epic", "SPEC-0011", "--key", "DEMO-100"])
@@ -205,7 +205,7 @@ def test_cli_idea_with_associations(tmp_path, monkeypatch):
 
 def test_cli_add_with_unknown_project_still_succeeds(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, mappings={"repoA": "Logging"})
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["add", "wire the dashboard", "--project", "Demo-ATS"])
     assert r.exit_code == 0, r.output
@@ -215,7 +215,7 @@ def test_cli_add_with_unknown_project_still_succeeds(tmp_path, monkeypatch):
 
 def test_cli_projects_lists_known_buckets(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, mappings={"repoA": "Logging", "repoB": "Demo-ATS"})
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["projects"])
     assert r.exit_code == 0, r.output
@@ -225,7 +225,7 @@ def test_cli_projects_lists_known_buckets(tmp_path, monkeypatch):
 
 def test_cli_projects_empty(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["projects"])
     assert r.exit_code == 0, r.output
@@ -236,8 +236,8 @@ def test_cli_projects_empty(tmp_path, monkeypatch):
 # ---- digest --by project groups associated captures --------------------------
 
 def test_digest_by_project_groups_captured_project(tmp_path, monkeypatch):
-    from wt import report as R
-    from wt.console import console
+    from nightwright import report as R
+    from nightwright.console import console
     cfg = _cfg(tmp_path, mappings={"repoA": "Logging"})
     W.add_task(cfg, "DEMO-100 wire it up", project="Demo-ATS")
     monkeypatch.setattr(R, "_scope_topic_secs", lambda c, days: {"DEMO-100": 3600.0})

@@ -1,13 +1,13 @@
-"""Pretty wt idea show via Rich + Pygments (SPEC-0035)."""
+"""Pretty nw idea show via Rich + Pygments (SPEC-0035)."""
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 from rich.console import Console
 
-from wt import explore as EX
-from wt import org_write as W
-from wt.cli import cli
+from nightwright import explore as EX
+from nightwright import org_write as W
+from nightwright.cli import cli
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -40,7 +40,7 @@ def test_idea_show_use_pretty_gates():
 def test_print_idea_show_plain_matches_format(tmp_path, monkeypatch, capsys):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "pretty target")
-    from wt.org_write import resolve_selector
+    from nightwright.org_write import resolve_selector
     task = resolve_selector(cfg, "IDEA-001")
     EX.append_log(cfg, "IDEA-001", note="finding with ~code~")
     expected = EX.format_idea_show(cfg, resolve_selector(cfg, "IDEA-001"))
@@ -60,7 +60,7 @@ def test_print_idea_show_pretty_uses_cfg_theme(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     cfg["idea_show_theme"] = "friendly"
     W.add_idea(cfg, "pretty target")
-    from wt.org_write import resolve_selector
+    from nightwright.org_write import resolve_selector
     task = resolve_selector(cfg, "IDEA-001")
 
     captured = {}
@@ -81,7 +81,7 @@ def test_print_idea_show_pretty_uses_cfg_theme(tmp_path, monkeypatch):
 def test_print_idea_show_pretty_defaults_to_nord(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)  # no idea_show_theme key
     W.add_idea(cfg, "pretty target")
-    from wt.org_write import resolve_selector
+    from nightwright.org_write import resolve_selector
     task = resolve_selector(cfg, "IDEA-001")
 
     captured = {}
@@ -102,7 +102,7 @@ def test_print_idea_show_pretty_defaults_to_nord(tmp_path, monkeypatch):
 def test_cli_idea_show_plain_and_json(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "cli show")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
 
     r_plain = CliRunner().invoke(cli, ["idea", "show", "IDEA-001", "--plain"])
     assert r_plain.exit_code == 0, r_plain.output
@@ -111,7 +111,7 @@ def test_cli_idea_show_plain_and_json(tmp_path, monkeypatch):
 
     r_json = CliRunner().invoke(cli, ["idea", "show", "IDEA-001", "--json"])
     assert r_json.exit_code == 0, r_json.output
-    assert '"schema": "wt.idea.v1"' in r_json.output
+    assert '"schema": "nw.idea.v1"' in r_json.output
 
 
 def test_cli_idea_show_help_mentions_plain():

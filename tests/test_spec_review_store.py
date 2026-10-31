@@ -1,5 +1,5 @@
 """SPEC-0210: the data-dir review store, any-repo reviews, the standalone review journal and the
-legacy-sidecar fallback of the `wt queue add` gate."""
+legacy-sidecar fallback of the `nw queue add` gate."""
 import datetime as dt
 import json
 import subprocess
@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from test_agentic_e2e import SPEC_ACCEPTED, make_cfg, make_repo, run_cli, script, write_review
-from wt.agentic import spec_review as SR
+from nightwright.agentic import spec_review as SR
 
 SIZED = {"size": "m", "tone": "high-end", "rationale": "r"}            # SPEC-0219
 APPROVE = {"verdict": "approve", **SIZED, "findings": [{"severity": "nit", "section": "Context",
@@ -167,7 +167,7 @@ def test_journal_start_end_distinct_run_ids_and_failure_ends(tmp_path, monkeypat
     assert [r["kind"] for r in recs] == ["start", "end", "start", "end"]
     assert recs[0]["run_id"] == recs[1]["run_id"] and recs[2]["run_id"] == recs[3]["run_id"]
     assert recs[0]["run_id"] != recs[2]["run_id"]
-    assert all(r["schema"] == "wt.spec.review.run.v1" and r["spec_id"] == "SPEC-0001"
+    assert all(r["schema"] == "nw.spec.review.run.v1" and r["spec_id"] == "SPEC-0001"
                for r in recs)
     assert recs[1]["verdict"] == "approve" and recs[1]["counts"] == {"nit": 1}
     assert recs[1]["error"] is None and recs[1]["cost_usd"] == 0.42
@@ -251,7 +251,7 @@ def test_review_context_keys_and_payload_rejects_must_fix(tmp_path):
     with pytest.raises(ValueError, match="must_fix"):
         SR.review_payload("SPEC-0001", "abc", model="m", cost_usd=0.1, verdict=MUST_FIX, root=repo)
     p = SR.review_payload("SPEC-0001", "abc", model="m", cost_usd=0.1, verdict=APPROVE, root=repo)
-    assert p["schema"] == "wt.spec.review.v1" and p["repo_root"] == str(repo)
+    assert p["schema"] == "nw.spec.review.v1" and p["repo_root"] == str(repo)
 
 
 # ---- SPEC-0230: the latest review governs admission ----------------------------------------------
@@ -284,7 +284,7 @@ def test_check_admissible_cases(tmp_path):
     repo, cfg = _setup(tmp_path, [])
     spec = _spec(repo)
     sha = SR.spec_sha256(spec)
-    with pytest.raises(ValueError, match="SPEC-0001 has no spec review; run wt spec review"):
+    with pytest.raises(ValueError, match="SPEC-0001 has no spec review; run nw spec review"):
         SR.check_admissible(cfg, spec, "SPEC-0001")
     _store(cfg, spec, "split", 1, sha=OLD)                       # split, earlier sha
     with pytest.raises(ValueError, match=r"recommends a split \(aaaaaaaaaaaa\); split the spec"):
@@ -301,7 +301,7 @@ def test_check_admissible_cases(tmp_path):
         SR.check_admissible(cfg, spec, "SPEC-0001")
     _store(cfg, spec, "approve", 5, sha=OLD)                     # approve for an earlier sha
     with pytest.raises(ValueError, match=r"edited after its approving review \(aaaaaaaaaaaa\); "
-                                         r"run wt spec review SPEC-0001 --force"):
+                                         r"run nw spec review SPEC-0001 --force"):
         SR.check_admissible(cfg, spec, "SPEC-0001")
     _store(cfg, spec, "approve", 6)                              # approve for the current sha
     got = SR.check_admissible(cfg, spec, "SPEC-0001")

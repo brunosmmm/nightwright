@@ -1,30 +1,30 @@
 """SPEC-0231: code-change detection shared by the runner and the followers."""
-from wt.agentic import codewatch as CW
-from wt.agentic import queue as Q
+from nightwright.agentic import codewatch as CW
+from nightwright.agentic import queue as Q
 
 
 def test_queue_reexports_helpers():
     assert Q.code_checkout is CW.code_checkout
     assert Q.code_changes is CW.code_changes
     assert Q._git_out is CW._git_out
-    assert Q._CODE_PATHS == CW._CODE_PATHS == ("src/wt", "pyproject.toml")
+    assert Q._CODE_PATHS == CW._CODE_PATHS == ("src/nightwright", "pyproject.toml")
 
 
 def test_code_changes_paths_argument(code_repo):
     base = code_repo.head()
-    code_repo.commit({"skills/wt-conduct/SKILL.md": "b\n"})
+    code_repo.commit({"skills/nw-conduct/SKILL.md": "b\n"})
     head, changed = CW.code_changes(code_repo.root, base)
     assert changed == []                           # the runner's paths ignore skills
     head2, changed = CW.code_changes(code_repo.root, base, CW.FOLLOWER_PATHS)
-    assert head2 == head and changed == ["skills/wt-conduct/SKILL.md"]
+    assert head2 == head and changed == ["skills/nw-conduct/SKILL.md"]
 
 
 def test_watcher_quiet_without_change_and_before_interval(code_repo):
     w = CW.Watcher(code_repo.root, 10, now=100.0)
     assert w.poll(101.0) is None
-    code_repo.commit({"src/wt/x.py": "x = 2\n"})
+    code_repo.commit({"src/nightwright/x.py": "x = 2\n"})
     assert w.poll(105.0) is None                   # interval not elapsed yet
-    assert w.poll(111.0)["paths"] == ["src/wt/x.py"]
+    assert w.poll(111.0)["paths"] == ["src/nightwright/x.py"]
 
 
 def test_watcher_no_head_change(code_repo):
@@ -38,26 +38,26 @@ def test_watcher_docs_only_moves_baseline(code_repo):
     assert w.poll(11.0) is None
     docs_head = code_repo.head()
     assert w.sha == docs_head
-    code_repo.commit({"src/wt/x.py": "x = 3\n"})
+    code_repo.commit({"src/nightwright/x.py": "x = 3\n"})
     got = w.poll(22.0)
     assert got["from_sha"] == docs_head and got["to_sha"] == code_repo.head()
-    assert got["paths"] == ["src/wt/x.py"]
+    assert got["paths"] == ["src/nightwright/x.py"]
 
 
 def test_watcher_src_commit_has_empty_skills_changed(code_repo):
     w = CW.Watcher(code_repo.root, 10, now=0.0)
     before = code_repo.head()
-    code_repo.commit({"src/wt/x.py": "x = 2\n"})
+    code_repo.commit({"src/nightwright/x.py": "x = 2\n"})
     got = w.poll(11.0)
     assert got == {"from_sha": before, "to_sha": code_repo.head(),
-                   "paths": ["src/wt/x.py"], "skills_changed": []}
+                   "paths": ["src/nightwright/x.py"], "skills_changed": []}
 
 
 def test_watcher_skill_commit_names_skill_dirs(code_repo):
     w = CW.Watcher(code_repo.root, 10, now=0.0)
-    code_repo.commit({"skills/wt-conduct/SKILL.md": "b\n", "skills/wt-steward/SKILL.md": "c\n"})
+    code_repo.commit({"skills/nw-conduct/SKILL.md": "b\n", "skills/nw-steward/SKILL.md": "c\n"})
     got = w.poll(11.0)
-    assert got["skills_changed"] == ["wt-conduct", "wt-steward"]
+    assert got["skills_changed"] == ["nw-conduct", "nw-steward"]
 
 
 def test_watcher_pyproject_counts(code_repo):
@@ -78,7 +78,7 @@ def test_watcher_reports_diff_failure_once(code_repo, monkeypatch):
     baseline moves, so the same failing diff is never retried forever."""
     w = CW.Watcher(code_repo.root, 10, now=0.0)
     base = w.sha
-    code_repo.commit({"src/wt/x.py": "x = 2\n"})
+    code_repo.commit({"src/nightwright/x.py": "x = 2\n"})
     monkeypatch.setattr(CW, "_changed_paths", lambda *a: None)
     got = w.poll(11.0)
     assert got == {"from_sha": base, "to_sha": code_repo.head(), "paths": [],
@@ -96,7 +96,7 @@ def test_code_changes_failed_diff_is_unknown_paths(code_repo, monkeypatch):
 
 
 def test_code_changed_line_carries_diff_failed():
-    from wt.agentic import events as E
+    from nightwright.agentic import events as E
     import json
     change = {"from_sha": "a" * 40, "to_sha": "b" * 40, "paths": [], "skills_changed": [],
               "diff_failed": True}

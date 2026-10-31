@@ -9,11 +9,11 @@ import pytest
 from test_agentic_e2e import _git, _write, added, make_cfg, script, write_review
 from test_agentic_spec_writer import (ledger, make_project, parked, resume, spec_written,
                                       _spec_md, wtree)
-from wt.agentic import close as CL
-from wt.agentic import queue as Q
-from wt.agentic import schemas as SC
-from wt.agentic import spec_write as SW
-from wt.agentic import store as S
+from nightwright.agentic import close as CL
+from nightwright.agentic import queue as Q
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import spec_write as SW
+from nightwright.agentic import store as S
 
 ORIG = "docs/specs/0005-big-thing.md"
 TITLES = ["Part 1", "Part 2", "Part 3"]
@@ -330,7 +330,7 @@ def test_finalize_split_supersedes_original(tmp_path, monkeypatch):
     assert "SPEC-0005" in (wt / "docs/LEDGER.md").read_text()
     assert _git(wt, "rev-list", "--count", f"{head}..HEAD") == "1"
     assert _git(wt, "show", "-s", "--format=%s", "HEAD").startswith(
-        f"wt({cid}): split SPEC-0005 into SPEC-0101, SPEC-0102, SPEC-0103")
+        f"nw({cid}): split SPEC-0005 into SPEC-0101, SPEC-0102, SPEC-0103")
     (ev,) = ledger(cfg, cid, "split_finalized")
     assert ev["original"] == "SPEC-0005" and ev["parts"] == ["SPEC-0101", "SPEC-0102", "SPEC-0103"]
     assert SC.ledger_problems(ev) == []

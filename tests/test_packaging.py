@@ -16,4 +16,4 @@ def test_wheel_contains_the_builtin_profile_files(tmp_path):
     [wheel] = out.glob("*.whl")
     names = set(zipfile.ZipFile(wheel).namelist())
     for profile in ("balanced", "frugal", "thorough"):
-        assert f"wt/agentic/profile_defs/{profile}.yaml" in names
+        assert f"nightwright/agentic/profile_defs/{profile}.yaml" in names

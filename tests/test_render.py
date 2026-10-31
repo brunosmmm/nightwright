@@ -1,4 +1,4 @@
-"""SPEC-0185: `wt.render` — styled renderers keep the plain words of the existing helpers;
+"""SPEC-0185: `nightwright.render` — styled renderers keep the plain words of the existing helpers;
 warnings go to stderr; code blocks are byte-identical when piped."""
 import io
 
@@ -6,10 +6,10 @@ import pytest
 from rich.console import Console
 from rich.syntax import Syntax
 
-from wt import render as R
-from wt.agentic import events as E
-from wt.agentic import mailbox as M
-from wt.agentic import queue as Q
+from nightwright import render as R
+from nightwright.agentic import events as E
+from nightwright.agentic import mailbox as M
+from nightwright.agentic import queue as Q
 
 CAMPAIGN_EVENTS = [
     {"seq": 3, "ts": "2026-10-25T13:47:00-04:00", "campaign": "c", "type": "transition",

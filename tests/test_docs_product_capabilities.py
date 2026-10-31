@@ -5,18 +5,18 @@ ROOT = Path(__file__).resolve().parent.parent
 CAPS = ROOT / "docs" / "product" / "capabilities"
 
 REQUIRED = {
-    "report.md": ["wt report", "wt topics", "wt snapshot"],
-    "ideas.md": ["wt ideas", "wt next", "wt idea"],
-    "tui.md": ["wt tui", "tui"],
-    "hub.md": ["wt hub", "--json"],
-    "projects.md": ["wt projects", "wt spec export"],
-    "sheet.md": ["wt sheet", "plan"],
+    "report.md": ["nw report", "nw topics", "nw snapshot"],
+    "ideas.md": ["nw ideas", "nw next", "nw idea"],
+    "tui.md": ["nw tui", "tui"],
+    "hub.md": ["nw hub", "--json"],
+    "projects.md": ["nw projects", "nw spec export"],
+    "sheet.md": ["nw sheet", "plan"],
     "clock.md": ["clock-in", "supplemental"],
-    "completion.md": ["wt completion", "fish"],
-    "release-archive.md": ["wt release-archive"],
-    "tasks-agenda.md": ["wt tasks", "wt agenda", "wt add"],
-    "meetings.md": ["wt refresh-meetings"],
-    "skills.md": ["wt skills install", "/wt-orient"],
+    "completion.md": ["nw completion", "fish"],
+    "release-archive.md": ["nw release-archive"],
+    "tasks-agenda.md": ["nw tasks", "nw agenda", "nw add"],
+    "meetings.md": ["nw refresh-meetings"],
+    "skills.md": ["nw skills install", "/nw-orient"],
 }
 
 

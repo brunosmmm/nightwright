@@ -1,10 +1,10 @@
-"""SPEC-0242: `wt spec review --show` and `wt spec reviews` read stored reviews without running."""
+"""SPEC-0242: `nw spec review --show` and `nw spec reviews` read stored reviews without running."""
 import json
 import subprocess
 
 from test_agentic_e2e import make_cfg, make_repo, run_cli, script, write_review
 from test_spec_review_store import _second_repo
-from wt.agentic import spec_review as SR
+from nightwright.agentic import spec_review as SR
 
 FINDINGS = [{"severity": "must_fix", "section": "Design", "title": "gap", "detail": "d"},
             {"severity": "major", "section": "Context", "title": "vague", "detail": "e"}]
@@ -70,7 +70,7 @@ def test_show_json_prefers_current_sha(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     out = json.loads(r.stdout)
     sha = SR.spec_sha256(spec)
-    assert out["schema"] == "wt.spec.review.show.v1" and out["current_sha"] == sha
+    assert out["schema"] == "nw.spec.review.show.v1" and out["current_sha"] == sha
     assert out["matches_current"] is True and out["review"]["verdict"] == "approve"
     assert out["admission"] == {"ok": True, "kind": "approved", "message": None}
     assert out["profile"]["profile"] and out["stored"] == 2
@@ -85,7 +85,7 @@ def test_show_errors_and_path_scope(tmp_path, monkeypatch):
     repo, cfg, spec = _setup(tmp_path)
     r = _show(cfg, monkeypatch)
     assert r.exit_code == 1
-    assert "SPEC-0001 has no stored review; run wt spec review SPEC-0001" in r.output
+    assert "SPEC-0001 has no stored review; run nw spec review SPEC-0001" in r.output
     r = _show(cfg, monkeypatch, "--force")
     assert r.exit_code == 2 and "--force" in r.output
     other, ospec = _second_repo(tmp_path)
@@ -118,14 +118,14 @@ def test_reviews_list_filter_json_and_unresolvable(tmp_path, monkeypatch):
     r = run_cli(cfg, monkeypatch, ["spec", "reviews", "--json"])
     assert r.exit_code == 0, r.output
     out = json.loads(r.stdout)
-    assert out["schema"] == "wt.spec.reviews.v1"
+    assert out["schema"] == "nw.spec.reviews.v1"
     rows = {x["spec_id"]: x for x in out["reviews"]}
     assert set(rows) == {"SPEC-0001", "SPEC-0999"}
     assert rows["SPEC-0001"]["matches_current"] is True
     assert rows["SPEC-0001"]["counts"] == {"must_fix": 1, "major": 1}
     assert rows["SPEC-0001"]["size"] == "m" and rows["SPEC-0001"]["tone"] == "high-end"
     assert rows["SPEC-0999"]["matches_current"] is None and rows["SPEC-0999"]["verdict"] == "approve"
-    monkeypatch.setattr("wt.cli.console._width", 120)       # the reviewer column needs the room (restores to None, not the computed width)
+    monkeypatch.setattr("nightwright.cli.console._width", 120)       # the reviewer column needs the room (restores to None, not the computed width)
     r = run_cli(cfg, monkeypatch, ["spec", "reviews"])
     assert r.exit_code == 0 and "must_fix" in r.output and "2026-10-26 00:00" in r.output
     assert "yes" in r.output and "?" in r.output and "edited" not in r.output
@@ -196,7 +196,7 @@ def test_reviews_tolerates_malformed_stored_reviews(tmp_path, monkeypatch):
 
 def test_reviews_compares_against_the_cwd_checkout(tmp_path, monkeypatch):
     repo, cfg, spec = _setup(tmp_path)
-    wt = tmp_path / "wt-copy"
+    wt = tmp_path / "nw-copy"
     subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "-b", "feat", str(wt)],
                    check=True)
     wspec = wt / "docs" / "specs" / "0001-trivial.md"

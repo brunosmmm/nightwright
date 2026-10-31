@@ -1,4 +1,4 @@
-"""SPEC-0199: `wt campaign runs|run` — persona runs without reading run files."""
+"""SPEC-0199: `nw campaign runs|run` — persona runs without reading run files."""
 import json
 import shutil
 from pathlib import Path
@@ -7,10 +7,10 @@ import pytest
 
 from test_agentic_e2e import (_git_env, added, impl_done, make_cfg, make_repo, review, run_cli,
                               script)
-from wt.agentic import events as EV
-from wt.agentic import runs as RN
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
+from nightwright.agentic import events as EV
+from nightwright.agentic import runs as RN
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
 
 LIST_KEYS = {"campaign", "run_id", "persona", "model", "effort", "max_budget_usd", "timeout_s",
              "permission_mode", "started_at", "duration_s", "exit_code", "timed_out",
@@ -23,7 +23,7 @@ LIST_KEYS = {"campaign", "run_id", "persona", "model", "effort", "max_budget_usd
 def merged(tmp_path, monkeypatch):
     """An e2e campaign (implementer + conformance reviewer) driven to MERGED."""
     monkeypatch.setenv("COLUMNS", "250")
-    monkeypatch.setattr("wt.console.console._width", 250)   # COLUMNS is read once, at import
+    monkeypatch.setattr("nightwright.console.console._width", 250)   # COLUMNS is read once, at import
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done(), review()]))
     cid = added(cfg, monkeypatch)
@@ -60,7 +60,7 @@ def by_id(cfg, cid):
 def test_runs_json_lists_e2e_runs(merged):
     cfg, cid, mp = merged
     d = cli_json(cfg, mp, "runs", cid)
-    assert d["schema"] == "wt.campaign.runs.v1" and d["campaign"] == cid
+    assert d["schema"] == "nw.campaign.runs.v1" and d["campaign"] == cid
     rows = d["runs"]
     assert [r["run_id"] for r in rows] == ["001-implementer", "002-conformance_reviewer"]
     for r in rows:
@@ -178,7 +178,7 @@ def test_run_detail(merged):
     prefix = cli_json(cfg, mp, "run", cid, "001")
     assert full == prefix
     assert set(full) == {"schema", "campaign", "run"}
-    assert full["schema"] == "wt.campaign.run.v1" and full["campaign"] == cid
+    assert full["schema"] == "nw.campaign.run.v1" and full["campaign"] == cid
     run = full["run"]
     assert run["run_id"] == "001-implementer"
     assert run["stderr_tail"] == [f"line {i}" for i in range(60, 100)]
@@ -249,5 +249,5 @@ def test_empty_campaign_prints_no_runs(tmp_path, monkeypatch):
 
 
 def test_conduct_skill_names_runs():
-    skill = Path(__file__).resolve().parent.parent / "skills" / "wt-conduct" / "SKILL.md"
-    assert "wt campaign runs" in skill.read_text(encoding="utf-8")
+    skill = Path(__file__).resolve().parent.parent / "skills" / "nw-conduct" / "SKILL.md"
+    assert "nw campaign runs" in skill.read_text(encoding="utf-8")

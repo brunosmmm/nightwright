@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from wt.agentic import mailbox as MB
-from wt.tui import agentic_model as AM
+from nightwright.agentic import mailbox as MB
+from nightwright.tui import agentic_model as AM
 
 
 def _cfg(tmp_path):

@@ -1,8 +1,8 @@
 """Prefix facet inheritance (SPEC-0027): resolve_facets exact > first-colon parent."""
 from pathlib import Path
 
-from wt.rules import load_mappings, resolve_facets
-from wt.report import _regroup
+from nightwright.rules import load_mappings, resolve_facets
+from nightwright.report import _regroup
 
 
 def _cfg(tmp_path):

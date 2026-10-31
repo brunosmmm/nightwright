@@ -9,11 +9,11 @@ import pytest
 from test_agentic_e2e import make_cfg, make_repo
 from test_agentic_events import _campaign
 from test_tui_queue_tab import SIZE, _desk, _run, press, settle
-from wt import tui as T
-from wt.agentic import events as EV
-from wt.agentic import mailbox as MB
-from wt.tui import agentic_model as AM
-from wt.tui import events_tab as ET
+from nightwright import tui as T
+from nightwright.agentic import events as EV
+from nightwright.agentic import mailbox as MB
+from nightwright.tui import agentic_model as AM
+from nightwright.tui import events_tab as ET
 from waits import pilot_until
 
 needs_textual = pytest.mark.skipif(not T.textual_available(),

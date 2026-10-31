@@ -1,4 +1,4 @@
-"""SPEC-0209: `wt queue add IDEA-NNN` — idea campaigns that open into SPEC_WRITING, the
+"""SPEC-0209: `nw queue add IDEA-NNN` — idea campaigns that open into SPEC_WRITING, the
 no-spec-yet tolerance of the queue views, and the unlink on abandon. Uses the SPEC-0176
 end-to-end harness (temp repo as project, fake runner, temp org)."""
 import json
@@ -6,13 +6,13 @@ import threading
 
 import pytest
 
-from wt import org as ORG
-from wt import org_write as OW
-from wt import render as R
-from wt import spec_numbers as SN
-from wt.agentic import events as E
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright import org as ORG
+from nightwright import org_write as OW
+from nightwright import render as R
+from nightwright import spec_numbers as SN
+from nightwright.agentic import events as E
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 from test_agentic_e2e import (_git_env, make_cfg, make_repo, run_cli,  # noqa: F401
                              script)
@@ -22,7 +22,7 @@ from test_agentic_e2e import (_git_env, make_cfg, make_repo, run_cli,  # noqa: F
 def env(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     return cfg, repo
 
 
@@ -68,7 +68,7 @@ def test_add_idea_dry_run_then_write(env, monkeypatch):
                                    "balanced", "--json"])
     assert r.exit_code == 0, r.output
     plan = json.loads(r.output)
-    assert plan["schema"] == "wt.queue.add.v1" and plan["written"] is False
+    assert plan["schema"] == "nw.queue.add.v1" and plan["written"] is False
     for k in ("kind", "idea_id", "project", "profile", "priority", "campaign", "branch",
               "worktree"):
         assert k in plan
@@ -83,7 +83,7 @@ def test_add_idea_dry_run_then_write(env, monkeypatch):
     assert st["spec"] == {"id": None, "rel_path": None, "internal": True}
     assert st["idea"]["id"] == iid and st["idea"]["heading"] == "Add a thing"
     assert st["idea"]["epic"] == "SPEC-0169" and st["idea"]["state_before"] == "IDEA"
-    assert st["repo"]["branch"] == f"wt/{cid}"
+    assert st["repo"]["branch"] == f"nw/{cid}"
     assert idea(cfg, iid).properties["CAMPAIGN"] == cid
 
 
@@ -107,7 +107,7 @@ def test_add_idea_refusals(env, monkeypatch):
     OW.set_property(cfg, idea(cfg, specced), "SPEC", "SPEC-0100")
     OW.set_state(cfg, idea(cfg, specced), "SPECCED")
     out = refused(specced)
-    assert "queue that spec instead: wt queue add SPEC-0100" in out
+    assert "queue that spec instead: nw queue add SPEC-0100" in out
     assert "only open ideas" not in out
 
     badproj = capture(cfg, "no such project", project="NoSuchProject")
@@ -287,7 +287,7 @@ def test_specless_tolerance(env, monkeypatch, state):
     E.sync(cfg)
     E.watchdog_checks(cfg)
     E.ping_digest(cfg)
-    from wt.specs import reconcile_ideas
+    from nightwright.specs import reconcile_ideas
     reconcile_ideas(cfg)
 
 
@@ -362,9 +362,9 @@ def test_abandon_waiting_campaign(env, monkeypatch):
 # ---- SPEC-0237: idea campaigns see the project's profile layer -----------------------------
 
 def _project_profile(repo, name, text):
-    d = repo / ".wt" / "profiles"
+    d = repo / ".nw" / "profiles"
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{name}.yaml").write_text("schema: wt.profile.v1\n" + text, encoding="utf-8")
+    (d / f"{name}.yaml").write_text("schema: nw.profile.v1\n" + text, encoding="utf-8")
 
 
 def test_idea_campaign_records_the_project_profile_cap(env, monkeypatch):

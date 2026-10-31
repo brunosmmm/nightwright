@@ -1,11 +1,11 @@
-"""SPEC-0233: the conductor surfaces (`wt queue conduct-status`, `wt queue events`, the ping
+"""SPEC-0233: the conductor surfaces (`nw queue conduct-status`, `nw queue events`, the ping
 digest) show a parked merge campaign as `merge:<branch>`, never as a null spec id."""
 import json
 
 from test_agentic_queue_merge import (branch_wt, queue_merge, run_cli, run_until_idle, world,  # noqa: F401
                                       _git_env)  # noqa: F401
-from wt.agentic import events as E
-from wt.agentic import store as S
+from nightwright.agentic import events as E
+from nightwright.agentic import store as S
 
 
 def parked_merge(world, monkeypatch):
@@ -22,7 +22,7 @@ def parked_merge(world, monkeypatch):
 
 def test_conduct_status_parked_table_shows_the_merge_label(world, monkeypatch):
     cfg, cid = parked_merge(world, monkeypatch)
-    monkeypatch.setattr("wt.console.console._width", 200)
+    monkeypatch.setattr("nightwright.console.console._width", 200)
     r = run_cli(cfg, monkeypatch, ["queue", "conduct-status", "--json"])
     st = json.loads(r.output)
     assert st["parked"][0]["label"] == "merge:fix/typo"

@@ -5,9 +5,9 @@ import os
 
 import pytest
 
-from wt.config import load_config
-from wt.org import join_time, load_tasks
-from wt.topics import KEY_RE
+from nightwright.config import load_config
+from nightwright.org import join_time, load_tasks
+from nightwright.topics import KEY_RE
 
 ORG = os.path.expanduser("~/work/org")
 pytestmark = pytest.mark.skipif(not os.path.isdir(ORG), reason="no ~/work/org on this machine")
@@ -15,7 +15,7 @@ pytestmark = pytest.mark.skipif(not os.path.isdir(ORG), reason="no ~/work/org on
 
 def test_parses_real_tree_without_crashing():
     # Parses end-to-end and holds an environment-independent invariant (the tree's task
-    # counts are user data — e.g. `wt`'s own wipe can empty it — so we don't assert on them).
+    # counts are user data — e.g. `nw`'s own wipe can empty it — so we don't assert on them).
     tasks = load_tasks(load_config())
     assert isinstance(tasks, list)
     # done-resolution is coherent: anything marked done must carry a TODO state keyword
@@ -32,8 +32,8 @@ def test_headline_jira_key_becomes_topic_key():
 
 
 def test_join_invariant_on_real_tracked_data():
-    from wt.aggregate import assemble
-    from wt.report import _scope_topic_secs
+    from nightwright.aggregate import assemble
+    from nightwright.report import _scope_topic_secs
     cfg = load_config()
     data, _ = assemble(cfg)
     if not data:
@@ -44,7 +44,7 @@ def test_join_invariant_on_real_tracked_data():
     jira_topics = [tp for tp in topic_secs if KEY_RE.fullmatch(tp)]
     if not jira_topics:
         pytest.skip("no bare JIRA-key topics tracked")
-    from wt.org import Task
+    from nightwright.org import Task
     key = jira_topics[0]
     t = Task(id="x", heading=f"{key} synthetic", state="TODO", is_done=False,
              tags=frozenset(), priority=None, topic_key=key, project="p")

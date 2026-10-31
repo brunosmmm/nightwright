@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from waits import join
-from wt.agentic import store as S
-from wt.agentic import schemas as SC
+from nightwright.agentic import store as S
+from nightwright.agentic import schemas as SC
 
 def _ev(cfg, cid, etype, payload=None, **kw):
     """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
@@ -41,7 +41,7 @@ def test_create_reads_back_and_refuses_duplicate(tmp_path):
     d = S.create_campaign(cfg, _state("C1"))
     assert (d / "state.json").is_file()
     st = S.read_state(cfg, "C1")
-    assert st["schema"] == "wt.campaign.v1" and st["state"] == "QUEUED" and st["updated_at"]
+    assert st["schema"] == "nw.campaign.v1" and st["state"] == "QUEUED" and st["updated_at"]
     events = S.read_ledger(cfg, "C1")
     assert [e["type"] for e in events] == ["open"] and events[0]["seq"] == 1
     assert events[0]["spec_id"] == "SPEC-0170" and events[0]["by"] == "human"
@@ -66,7 +66,7 @@ def test_write_state_is_atomic(tmp_path, monkeypatch):
         S.write_state(cfg, "C1", {**before, "state": "OPENING"})
     monkeypatch.undo()
     assert S.read_state(cfg, "C1")["state"] == "QUEUED"          # old content intact
-    assert not list(S.campaign_dir(cfg, "C1").glob(".wt-export-*"))  # temp cleaned up
+    assert not list(S.campaign_dir(cfg, "C1").glob(".nw-export-*"))  # temp cleaned up
     S.write_state(cfg, "C1", {**before, "state": "OPENING"})
     assert S.read_state(cfg, "C1")["state"] == "OPENING"
 

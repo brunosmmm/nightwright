@@ -1,14 +1,14 @@
-"""SPEC-0177: the committed `.wt/project.yaml` for wt itself loads under the SPEC-0170 loader
+"""SPEC-0177: the committed `.nw/project.yaml` for nightwright itself loads under the SPEC-0170 loader
 and declares the repo's two DoD gates with merge-to-main."""
 from pathlib import Path
 
-from wt.agentic import project as P
+from nightwright.agentic import project as P
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_dogfood_project_config_loads_and_names_the_gates():
-    doc = P.load_project_config(ROOT / ".wt" / "project.yaml")
+    doc = P.load_project_config(ROOT / ".nw" / "project.yaml")
     assert doc["project"] == "Meta-Tools"
     assert doc["base"] == "main"
     gates = {g["name"]: g for g in doc["gates"]}
@@ -27,8 +27,8 @@ def test_dogfood_project_config_loads_and_names_the_gates():
 
 
 def test_dogfood_project_config_resolves_through_the_registry(tmp_path):
-    cfg = {"wt_checkout": str(ROOT), "outbox_targets": {}, "config_dir": str(tmp_path),
+    cfg = {"nw_checkout": str(ROOT), "outbox_targets": {}, "config_dir": str(tmp_path),
            "data_dir": str(tmp_path)}
     doc = P.project_config(cfg, "Meta-Tools")
-    assert Path(doc["_path"]) == ROOT / ".wt" / "project.yaml"
+    assert Path(doc["_path"]) == ROOT / ".nw" / "project.yaml"
     assert Path(doc["_root"]) == ROOT

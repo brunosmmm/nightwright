@@ -8,16 +8,16 @@ import textwrap
 
 from test_agentic_e2e import (_git, _write, added, impl_done, make_cfg, make_repo, review,
                               run_cli, script)
-from wt.agentic import lease as L
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 
 def _code_repo(tmp_path):
     root = tmp_path / "wtcode"
-    (root / "src" / "wt").mkdir(parents=True)
+    (root / "src" / "nightwright").mkdir(parents=True)
     _git(root.parent, "init", "-q", "-b", "main", str(root))
-    _write(root, "src/wt/x.py", "A = 1\n")
+    _write(root, "src/nightwright/x.py", "A = 1\n")
     _write(root, "docs/notes.md", "n\n")
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "init")
@@ -37,8 +37,8 @@ def test_code_changes_ignores_docs_and_reports_code(tmp_path):
     assert Q.code_changes(root, start) == (start, [])
     docs = _commit(root, "docs/notes.md", "m\n", "docs")
     assert Q.code_changes(root, start) == (docs, [])
-    code = _commit(root, "src/wt/x.py", "A = 2\n", "code")
-    assert Q.code_changes(root, start) == (code, ["src/wt/x.py"])
+    code = _commit(root, "src/nightwright/x.py", "A = 2\n", "code")
+    assert Q.code_changes(root, start) == (code, ["src/nightwright/x.py"])
 
 
 def _loop_with_commits(tmp_path, monkeypatch, commits):
@@ -67,17 +67,17 @@ def _loop_with_commits(tmp_path, monkeypatch, commits):
 
 def test_loop_reexecs_on_code_change_and_keeps_the_lease(tmp_path, monkeypatch):
     cfg, root, calls = _loop_with_commits(tmp_path, monkeypatch,
-                                          [("docs/notes.md", "x\n"), ("src/wt/x.py", "A = 3\n")])
+                                          [("docs/notes.md", "x\n"), ("src/nightwright/x.py", "A = 3\n")])
     assert len(calls) == 1
     exe, argv, env = calls[0]
     assert exe == sys.executable and argv[0] == sys.executable
     assert L.HANDOVER_ENV in env
     stop = Q.read_journal(cfg)[-1]
     assert stop["kind"] == "stop" and stop["reason"] == "code_changed" and stop["ticks"] == 2
-    assert stop["paths"] == ["src/wt/x.py"] and stop["to_sha"] == _git(root, "rev-parse", "HEAD")
+    assert stop["paths"] == ["src/nightwright/x.py"] and stop["to_sha"] == _git(root, "rev-parse", "HEAD")
     assert L.is_held(cfg)                       # handed over, not released
     os.environ[L.HANDOVER_ENV] = env[L.HANDOVER_ENV]
-    lease = L.acquire(cfg, ["wt", "queue", "run"])   # the re-executed image adopts it
+    lease = L.acquire(cfg, ["nw", "queue", "run"])   # the re-executed image adopts it
     try:
         assert L.read_lease(cfg)["pid"] == os.getpid() and "restarted_at" in L.read_lease(cfg)
         assert L.HANDOVER_ENV not in os.environ
@@ -97,9 +97,9 @@ def test_docs_only_commits_do_not_restart(tmp_path, monkeypatch):
 def test_diff_failure_counts_as_code_change(tmp_path, monkeypatch):
     """SPEC-0262: HEAD moved and `git diff` failed: the runner drains and re-execs (paths
     unknown) instead of moving `code_sha` past the merge and running stale code."""
-    from wt.agentic import codewatch as CW
+    from nightwright.agentic import codewatch as CW
     monkeypatch.setattr(CW, "_changed_paths", lambda *a: None)
-    cfg, root, calls = _loop_with_commits(tmp_path, monkeypatch, [("src/wt/x.py", "A = 4\n")])
+    cfg, root, calls = _loop_with_commits(tmp_path, monkeypatch, [("src/nightwright/x.py", "A = 4\n")])
     head = _git(root, "rev-parse", "HEAD")
     draining, = [r for r in Q.read_journal(cfg) if r["kind"] == "draining"]
     assert draining["diff_failed"] is True and draining["to_sha"] == head
@@ -118,7 +118,7 @@ def test_reexec_off_by_default(tmp_path, monkeypatch):
     real_tick = Q.tick
     n = iter(range(100))
     monkeypatch.setattr(Q, "tick", lambda *a, **k: (
-        _commit(root, "src/wt/x.py", f"B = {next(n)}\n", "c"), real_tick(*a, **k))[1])
+        _commit(root, "src/nightwright/x.py", f"B = {next(n)}\n", "c"), real_tick(*a, **k))[1])
     Q.run(cfg, max_ticks=2, poll_interval_s=0, code_root=root)
     assert calls == [] and Q.read_journal(cfg)[0].get("code_sha") is None
 
@@ -133,7 +133,7 @@ def test_real_execve_adopts_the_lease(tmp_path):
     prog = tmp_path / "prog.py"
     prog.write_text(textwrap.dedent(f"""
         import json, os, sys
-        from wt.agentic import lease as L
+        from nightwright.agentic import lease as L
         cfg = json.load(open({str(cfg_path)!r}))
         if sys.argv[1] == "first":
             lease = L.acquire(cfg, ["first"])
@@ -161,7 +161,7 @@ def test_real_execve_adopts_the_lease(tmp_path):
 # ---- config_invalid -----------------------------------------------------------------------------
 
 def _break_config(repo):
-    p = repo / ".wt" / "project.yaml"
+    p = repo / ".nw" / "project.yaml"
     good = p.read_text()
     p.write_text(good + "bogus_key: 1\n")
     return lambda: p.write_text(good)

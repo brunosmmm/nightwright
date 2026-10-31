@@ -7,10 +7,10 @@ import json
 
 import pytest
 
-from wt.agentic import events as E
-from wt.agentic import lease as L
-from wt.agentic import queue as Q
-from wt.agentic import store
+from nightwright.agentic import events as E
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store
 from test_agentic_events import _campaign, _cfg, _set_state
 
 T0 = dt.datetime.now().astimezone().replace(microsecond=0)

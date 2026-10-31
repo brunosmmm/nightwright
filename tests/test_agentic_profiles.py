@@ -1,8 +1,8 @@
 """SPEC-0171: workflow profiles — builtins in code, user deltas deep-merged over them."""
 import pytest
 
-from wt.agentic import profiles as P
-from wt.config import DEFAULT_CONFIG
+from nightwright.agentic import profiles as P
+from nightwright.config import DEFAULT_CONFIG
 
 PERSONA_KEYS = {"model", "effort", "max_budget_usd", "permission_mode", "read_only"}
 PROFILE_KEYS = {"slots", "loop_max", "campaign_cap_usd", "run_timeout_s", "personas"}
@@ -132,7 +132,7 @@ def test_reviewers_rejects_bad_entries(reviewers, needle):
 
 
 def test_reviewers_rejects_non_read_only_and_missing_settings(monkeypatch):
-    from wt.agentic import personas as PS
+    from nightwright.agentic import personas as PS
     monkeypatch.setitem(PS.PERSONAS, "extra", PS.PERSONAS["conformance_reviewer"])
     monkeypatch.setattr(PS, "REVIEWER_PERSONAS", ("conformance_reviewer", "extra"))
     cfg = {"agentic": {"profiles": {"balanced": {"reviewers": ["extra"]}}}}
@@ -144,7 +144,7 @@ def test_reviewers_rejects_non_read_only_and_missing_settings(monkeypatch):
 
 
 def test_reviewers_user_delta_replaces_the_list(monkeypatch):
-    from wt.agentic import personas as PS
+    from nightwright.agentic import personas as PS
     monkeypatch.setitem(PS.PERSONAS, "extra", PS.PERSONAS["conformance_reviewer"])
     monkeypatch.setattr(PS, "REVIEWER_PERSONAS", ("conformance_reviewer", "extra"))
     extra = {"model": "sonnet", "effort": "low", "max_budget_usd": 1.0, "read_only": True}
@@ -290,8 +290,8 @@ def test_docs_describe_the_followup_filer():                                    
     from pathlib import Path
     doc = (Path(__file__).resolve().parent.parent / "docs/product/capabilities/agentic.md"
            ).read_text(encoding="utf-8")
-    for needle in ("wtfu:", "followups_nits", "review_carry", "`followup` event", "adopted",
-                   "unfiled", "wtfug:", "review.followups_max", "wt ideas group-followups"):
+    for needle in ("nwfu:", "followups_nits", "review_carry", "`followup` event", "adopted",
+                   "unfiled", "nwfug:", "review.followups_max", "nw ideas group-followups"):
         assert needle in doc
 
 
@@ -333,7 +333,7 @@ def test_capability_page_lists_reviewers_and_categories():
     from pathlib import Path
     text = (Path(__file__).resolve().parent.parent / "docs" / "product" / "capabilities"
             / "agentic.md").read_text()
-    from wt.agentic import personas as PS
+    from nightwright.agentic import personas as PS
     for needle in ("adversarial_reviewer", "conformance_reviewer", *PS.ADVERSARIAL_CATEGORIES):
         assert needle in text, needle
 
@@ -448,7 +448,7 @@ import re
 from pathlib import Path
 
 DEFS = Path(P.__file__).resolve().parent / "profile_defs"
-SCHEMA = "schema: wt.profile.v1\n"
+SCHEMA = "schema: nw.profile.v1\n"
 
 
 def _layers(tmp_path):
@@ -457,7 +457,7 @@ def _layers(tmp_path):
     user = tmp_path / "cfg" / "profiles"
     proj = tmp_path / "proj"
     user.mkdir(parents=True, exist_ok=True)
-    (proj / ".wt" / "profiles").mkdir(parents=True, exist_ok=True)
+    (proj / ".nw" / "profiles").mkdir(parents=True, exist_ok=True)
     return cfg, user, proj
 
 
@@ -468,14 +468,14 @@ def _put(directory, name, text, suffix=".yaml"):
 
 
 def _pdir(proj):
-    return proj / ".wt" / "profiles"
+    return proj / ".nw" / "profiles"
 
 
 def test_builtin_files_match_the_golden_snapshot():
     golden = json.loads((Path(__file__).parent / "data" / "builtin_profiles_v1.json").read_text())
     assert P.builtin_profiles() == golden
     for name in golden:
-        assert (DEFS / f"{name}.yaml").read_text().startswith("schema: wt.profile.v1\n")
+        assert (DEFS / f"{name}.yaml").read_text().startswith("schema: nw.profile.v1\n")
     got = P.builtin_profiles()
     got["balanced"]["personas"]["implementer"]["model"] = "x"          # copies, not shared
     assert P.builtin_profiles()["balanced"]["personas"]["implementer"]["model"] == "sonnet"
@@ -634,7 +634,7 @@ def _bad(tmp_path, text, name="bad", suffix=".yaml"):
     (SCHEMA + "extends: balanced\nreview: {pass_score: 101}\n", "review.pass_score"),
     (SCHEMA + "extends: balanced\nreview: {weights: {nit: -1}}\n", "review.weights.nit"),
     ("extends: balanced\nslots: 1\n", "schema"),
-    ("schema: wt.profile.v9\nextends: balanced\n", "schema"),
+    ("schema: nw.profile.v9\nextends: balanced\n", "schema"),
     ("- a\n- b\n", "<root>"),
 ])
 def test_validation_rejects_with_origin_and_key_path(tmp_path, text, path):
@@ -713,7 +713,7 @@ def test_config_delta_is_validated_too():
     with pytest.raises(ValueError, match=r"config\.yaml:agentic\.profiles\.balanced: "
                                          r"personas\.implementer\.modle: unknown key"):
         P.resolve_profile(cfg, "balanced")
-    cfg = {"agentic": {"profiles": {"balanced": {"schema": "wt.profile.v1", "slots": 4}}}}
+    cfg = {"agentic": {"profiles": {"balanced": {"schema": "nw.profile.v1", "slots": 4}}}}
     assert P.resolve_profile(cfg, "balanced")["slots"] == 4         # schema allowed, not required
     assert P.validate_profile_doc({"model": 1}, origin="o", in_file=False) == ["o: model: unknown key"]
 
@@ -822,8 +822,8 @@ def test_short_origin_forms(tmp_path, monkeypatch):
     assert P.short_origin(cfg, "config.yaml:agentic.profiles.x") == "config.yaml"
     assert P.short_origin(cfg, str(user / "a.yaml")) == str(user / "a.yaml")        # not under $HOME
     home = Path.home()
-    homey = {"config_dir": str(home / ".config" / "wt")}
-    assert P.short_origin(homey, str(home / ".config" / "wt" / "profiles" / "a.yaml")) \
-        == "~/.config/wt/profiles/a.yaml"
+    homey = {"config_dir": str(home / ".config" / "nightwright")}
+    assert P.short_origin(homey, str(home / ".config" / "nightwright" / "profiles" / "a.yaml")) \
+        == "~/.config/nightwright/profiles/a.yaml"
     assert P.short_origin(cfg, str(_pdir(proj) / "a.yaml"), project="Proj") \
-        == "Proj:.wt/profiles/a.yaml"
+        == "Proj:.nw/profiles/a.yaml"

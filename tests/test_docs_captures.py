@@ -15,7 +15,7 @@ REQUIRED_SVGS = (
     "cli-ideas-tree.svg",
     "tui-desk.svg",
     # Wave A/B time + ops (SPEC-0154)
-    "cli-wt-dashboard.svg",
+    "cli-nw-dashboard.svg",
     "cli-report-week.svg",
     "cli-topics-unmapped.svg",
     "cli-map.svg",
@@ -70,7 +70,7 @@ def test_docs_capture_script_mentions_wave_ab_outputs():
     assert "cli-hub.svg" in script
     assert "ideas-demo.org" in script
     for name in (
-        "cli-wt-dashboard.svg",
+        "cli-nw-dashboard.svg",
         "cli-report-week.svg",
         "cli-topics-unmapped.svg",
         "cli-map.svg",
@@ -88,7 +88,7 @@ CONCEPTS = ROOT / "docs" / "product" / "concepts"
 
 def test_home_embeds_time_and_ideas_svgs():
     text = HOME.read_text(encoding="utf-8")
-    assert "cli-wt-dashboard.svg" in text
+    assert "cli-nw-dashboard.svg" in text
     assert "cli-ideas.svg" in text
     assert "tui-desk.svg" in text
     assert "guides/daily-ops.md" in text
@@ -99,7 +99,7 @@ def test_getting_started_has_three_forks():
     text = (GUIDES / "getting-started.md").read_text(encoding="utf-8").lower()
     assert "path a" in text and "path b" in text and "path c" in text
     raw = (GUIDES / "getting-started.md").read_text(encoding="utf-8")
-    assert "cli-wt-dashboard.svg" in raw
+    assert "cli-nw-dashboard.svg" in raw
     assert "cli-ideas.svg" in raw
     assert "cli-hub.svg" in raw
 
@@ -107,12 +107,12 @@ def test_getting_started_has_three_forks():
 def test_daily_and_weekly_ops_guides_embed_wave_ab():
     daily = (GUIDES / "daily-ops.md").read_text(encoding="utf-8")
     weekly = (GUIDES / "weekly-ops.md").read_text(encoding="utf-8")
-    for name in ("cli-agenda.svg", "cli-tasks.svg", "cli-wt-dashboard.svg"):
+    for name in ("cli-agenda.svg", "cli-tasks.svg", "cli-nw-dashboard.svg"):
         assert name in daily, name
     for name in ("cli-report-week.svg", "cli-topics-unmapped.svg", "cli-review-week.svg"):
         assert name in weekly, name
     wave = (
-        "cli-wt-dashboard.svg", "cli-report-week.svg", "cli-topics-unmapped.svg",
+        "cli-nw-dashboard.svg", "cli-report-week.svg", "cli-topics-unmapped.svg",
         "cli-map.svg", "cli-review-week.svg", "cli-agenda.svg", "cli-tasks.svg",
     )
     combined = daily + weekly
@@ -134,21 +134,21 @@ def test_architecture_and_lifecycle_concept_pages():
 def test_agent_surface_guide_schemas_and_skills():
     text = (GUIDES / "agent-surface.md").read_text(encoding="utf-8")
     for schema in (
-        "wt.hub.v1",
-        "wt.ideas.v1",
-        "wt.next.v1",
-        "wt.idea.v1",
-        "wt.tasks.v1",
-        "wt.spec.verify.v1",
+        "nw.hub.v1",
+        "nw.ideas.v1",
+        "nw.next.v1",
+        "nw.idea.v1",
+        "nw.tasks.v1",
+        "nw.spec.verify.v1",
     ):
         assert schema in text, schema
     for skill in (
-        "/wt-orient",
-        "/wt-explore",
-        "/wt-new-work",
-        "/wt-generate",
-        "/wt-export",
-        "/wt-verify",
+        "/nw-orient",
+        "/nw-explore",
+        "/nw-new-work",
+        "/nw-generate",
+        "/nw-export",
+        "/nw-verify",
     ):
         assert skill in text, skill
     idx = (GUIDES / "index.md").read_text(encoding="utf-8")

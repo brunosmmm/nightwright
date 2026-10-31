@@ -5,8 +5,8 @@ from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 
-from wt import org_write as W
-from wt.cli import cli
+from nightwright import org_write as W
+from nightwright.cli import cli
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -37,7 +37,7 @@ def _cfg(tmp_path):
 
 
 def _patch(monkeypatch, cfg):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
 
 
 def test_ideas_json_envelope(tmp_path, monkeypatch):
@@ -48,7 +48,7 @@ def test_ideas_json_envelope(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["ideas", "--json"])
     assert r.exit_code == 0, r.output
     data = json.loads(r.output)
-    assert data["schema"] == "wt.ideas.v1"
+    assert data["schema"] == "nw.ideas.v1"
     assert len(data["ideas"]) == 1
     row = data["ideas"][0]
     assert row["id"] == "IDEA-001"
@@ -69,7 +69,7 @@ def test_next_json_envelope(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["next", "--json"])
     assert r.exit_code == 0, r.output
     data = json.loads(r.output)
-    assert data["schema"] == "wt.next.v1"
+    assert data["schema"] == "nw.next.v1"
     assert data["ideas"][0]["id"] == "IDEA-001"
     assert "next" in data["ideas"][0]
     assert "Next" not in r.output
@@ -78,7 +78,7 @@ def test_next_json_envelope(tmp_path, monkeypatch):
 def test_idea_show_json_envelope(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "show json", state="INCUBATE", project="Meta-Tools")
-    from wt import explore as EX
+    from nightwright import explore as EX
     EX.set_summary(cfg, "IDEA-001", "a summary")
     EX.set_questions(cfg, "IDEA-001", "- q1")
     EX.append_log(cfg, "IDEA-001", "a finding")
@@ -87,7 +87,7 @@ def test_idea_show_json_envelope(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["idea", "show", "IDEA-001", "--json"])
     assert r.exit_code == 0, r.output
     data = json.loads(r.output)
-    assert data["schema"] == "wt.idea.v1"
+    assert data["schema"] == "nw.idea.v1"
     assert data["id"] == "IDEA-001"
     assert data["project"] == "Meta-Tools"
     assert data["summary"] == "a summary"
@@ -97,7 +97,7 @@ def test_idea_show_json_envelope(tmp_path, monkeypatch):
     assert data["research"]["source"] == "internal"
     assert data["research"]["root"]
     from pathlib import Path
-    assert (Path(data["research"]["root"]) / "src" / "wt").is_dir()
+    assert (Path(data["research"]["root"]) / "src" / "nightwright").is_dir()
 
 
 def test_ideas_default_still_rich(tmp_path, monkeypatch):

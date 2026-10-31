@@ -37,8 +37,8 @@ respect. This is the contract the sub-specs fill in.>
 checklist current as children are created and completed (the ledger also rolls it up).>
 
 Multi-project fan-out (SPEC-0095/0097): annotate a bullet with `(project: Name)` so
-`wt spec seed-children` stamps the right `:PROJECT:` (omit → epic `target_project`). Name must
-be a known project (`wt projects --json`).
+`nw spec seed-children` stamps the right `:PROJECT:` (omit → epic `target_project`). Name must
+be a known project (`nw projects --json`).
 
 - [ ] Child A (project: Meta-Tools) — <one-line scope>
 - [ ] Child B (project: Example) — <one-line scope> (depends_on A)

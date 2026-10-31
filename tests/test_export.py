@@ -13,11 +13,11 @@ import subprocess
 from click.testing import CliRunner
 from zoneinfo import ZoneInfo
 
-from wt import export as E
-from wt import org_write as W
-from wt import specs as S
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright import export as E
+from nightwright import org_write as W
+from nightwright import specs as S
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REAL_SPECS = ROOT / "docs" / "specs"
@@ -109,7 +109,7 @@ def test_scaffold_outbound_requires_title_or_idea(tmp_path):
 
 def test_scaffold_outbound_quotes_title_with_colon_and_index_loads(tmp_path):
     """Titles with `:` must not break yaml.safe_load / write_outbox_index (SPEC-0038)."""
-    from wt.specmeta import split_frontmatter
+    from nightwright.specmeta import split_frontmatter
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "filters for session triage", tags=("session-triage",))
     path, outbound_id = S.scaffold_outbound(
@@ -150,7 +150,7 @@ def test_scaffold_outbound_from_idea_prefills_and_links_back(tmp_path):
 def test_scaffold_outbound_from_idea_mirrors_target_properties(tmp_path):
     """SPEC-0066: the source idea gets TARGET_REPO/TARGET_SPEC_PATH mirrored, read-only display,
     matching the outbound spec's own frozen frontmatter (SPEC-0065)."""
-    from wt.specmeta import split_frontmatter
+    from nightwright.specmeta import split_frontmatter
     cfg = _cfg(tmp_path, outbox_targets={
         "acme": {"repo_path": str(tmp_path / "target-repo"), "spec_dir": "docs/specs"},
     })
@@ -216,7 +216,7 @@ def test_export_spec_writes_portable_spec_contract_and_provenance(tmp_path):
 
     spec_text = dest_spec.read_text()
     assert f"id: {outbound_id}" in spec_text
-    assert "target_project" not in spec_text          # trimmed: wt-internal routing field
+    assert "target_project" not in spec_text          # trimmed: nightwright-internal routing field
     assert "source_outbound_id" in spec_text
     assert "Adversarial reviewer" in spec_text
     assert "## Context" in spec_text
@@ -224,8 +224,8 @@ def test_export_spec_writes_portable_spec_contract_and_provenance(tmp_path):
     contract_text = dest_contract.read_text()
     assert outbound_id in contract_text
     assert "consumption" in contract_text.lower() or "consuming" in contract_text.lower()
-    assert "/wt-implement-spec" in contract_text
-    assert "wt spec generate" in contract_text.lower()  # forbid generate on outbound
+    assert "/nw-implement-spec" in contract_text
+    assert "nw spec generate" in contract_text.lower()  # forbid generate on outbound
 
     provenance = pathlib.Path(cfg["outbox_dir"]) / "acme" / "PROVENANCE.md"
     assert provenance.exists()
@@ -289,7 +289,7 @@ def test_export_advances_source_idea_to_exported(tmp_path):
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "hand off externally")
     path, outbound_id = S.scaffold_outbound(cfg, "acme", from_idea="hand off externally")
-    # Fill enough for wt-native validate (scaffold template placeholders are enough).
+    # Fill enough for nw-native validate (scaffold template placeholders are enough).
     target = tmp_path / "target-repo"
     E.export_spec(cfg, outbound_id, to=str(target))
     idea = _find(cfg, "hand off externally")
@@ -299,7 +299,7 @@ def test_export_advances_source_idea_to_exported(tmp_path):
 
 def test_export_preserves_dest_status_on_reexport(tmp_path):
     """SPEC-0041: re-export with same body hash keeps foreign agent's portable status."""
-    from wt.specmeta import split_frontmatter
+    from nightwright.specmeta import split_frontmatter
     cfg = _cfg(tmp_path)
     _, outbound_id = S.scaffold_outbound(cfg, "acme", title="Adversarial reviewer")
     target = tmp_path / "target-repo"
@@ -333,7 +333,7 @@ def test_pull_status_done_advances_exported_idea_to_shipped(tmp_path):
 
 def test_pull_status_mirrors_portable_into_outbox(tmp_path):
     """SPEC-0041: pull-status copies dest status onto the outbox copy."""
-    from wt.specmeta import split_frontmatter
+    from nightwright.specmeta import split_frontmatter
     cfg = _cfg(tmp_path, outbox_targets={
         "acme": {"repo_path": str(tmp_path / "target-repo"), "spec_dir": "docs/specs"},
     })
@@ -398,7 +398,7 @@ def test_portable_dest_path_to_override_wins_over_frozen_field(tmp_path):
 
 
 def test_default_config_includes_exported_keyword():
-    from wt.config import DEFAULT_CONFIG
+    from nightwright.config import DEFAULT_CONFIG
     kw = DEFAULT_CONFIG["org_idea_keywords"]
     assert "EXPORTED" in kw
     assert "SHIPPED" in kw
@@ -423,7 +423,7 @@ def test_internal_spec_lint_unaffected_by_outbox(tmp_path):
 
 def test_cli_spec_new_target_outbound(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["spec", "new", "--target", "acme",
                                 "--title", "Adversarial reviewer"])
@@ -433,7 +433,7 @@ def test_cli_spec_new_target_outbound(tmp_path, monkeypatch):
 
 def test_cli_spec_new_requires_from_idea_without_target(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["spec", "new"])
     assert r.exit_code != 0
@@ -441,7 +441,7 @@ def test_cli_spec_new_requires_from_idea_without_target(tmp_path, monkeypatch):
 
 def test_cli_spec_export(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r1 = CliRunner().invoke(cli, ["spec", "new", "--target", "acme",
                                  "--title", "Adversarial reviewer"])
@@ -459,7 +459,7 @@ def test_cli_spec_export(tmp_path, monkeypatch):
 
 
 def test_outbox_defaults_to_data_dir_not_repo():
-    """SPEC-0021: the outbox lives under the wt data dir (user data), never the wt repo/cwd."""
+    """SPEC-0021: the outbox lives under the nightwright data dir (user data), never the nightwright repo/cwd."""
     d = S.outbox_dir({"data_dir": "/some/data"})
     assert d == pathlib.Path("/some/data/outbox")
     assert "docs" not in d.parts and d.parts[-1] == "outbox"
@@ -478,7 +478,7 @@ def test_pull_clock_reconciles_markdown_log_onto_linked_idea(tmp_path):
     text = dest_spec.read_text()
     text = text.replace(
         "## Clock Log\n\n<Supplemental wall-time record for implementation sessions "
-        "(SPEC-0060/0062). For internal\nwork, prefer `wt idea clock-in`/`wt idea clock-out` "
+        "(SPEC-0060/0062). For internal\nwork, prefer `nw idea clock-in`/`nw idea clock-out` "
         "on the linked idea instead — this section\nis mainly for outbound/foreign-repo "
         "implementation, where no org access exists. One\nCLOCK-IN/CLOCK-OUT pair per "
         "session:>\n\nCLOCK-IN: [timestamp]\nCLOCK-OUT: [timestamp]",
@@ -513,7 +513,7 @@ def test_pull_clock_reconciles_unbracketed_timestamps(tmp_path):
     text = dest_spec.read_text()
     text = text.replace(
         "## Clock Log\n\n<Supplemental wall-time record for implementation sessions "
-        "(SPEC-0060/0062). For internal\nwork, prefer `wt idea clock-in`/`wt idea clock-out` "
+        "(SPEC-0060/0062). For internal\nwork, prefer `nw idea clock-in`/`nw idea clock-out` "
         "on the linked idea instead — this section\nis mainly for outbound/foreign-repo "
         "implementation, where no org access exists. One\nCLOCK-IN/CLOCK-OUT pair per "
         "session:>\n\nCLOCK-IN: [timestamp]\nCLOCK-OUT: [timestamp]",
@@ -545,7 +545,7 @@ def test_pull_clock_warns_on_unparsed_clock_lines(tmp_path, capsys):
     text = dest_spec.read_text()
     text = text.replace(
         "## Clock Log\n\n<Supplemental wall-time record for implementation sessions "
-        "(SPEC-0060/0062). For internal\nwork, prefer `wt idea clock-in`/`wt idea clock-out` "
+        "(SPEC-0060/0062). For internal\nwork, prefer `nw idea clock-in`/`nw idea clock-out` "
         "on the linked idea instead — this section\nis mainly for outbound/foreign-repo "
         "implementation, where no org access exists. One\nCLOCK-IN/CLOCK-OUT pair per "
         "session:>\n\nCLOCK-IN: [timestamp]\nCLOCK-OUT: [timestamp]",
@@ -644,7 +644,7 @@ def test_cli_spec_sweep(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, outbox_targets={
         "acme": {"repo_path": str(tmp_path / "target-repo"), "spec_dir": "docs/specs"},
     })
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     W.add_idea(cfg, "cli sweep idea")
     _p, ob = S.scaffold_outbound(cfg, "acme", from_idea="IDEA-001", title="CLI sweep")
@@ -657,7 +657,7 @@ def test_cli_spec_sweep(tmp_path, monkeypatch):
 
 def test_cli_spec_sweep_nothing_pending(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["spec", "sweep"])
     assert r.exit_code == 0, r.output
@@ -685,7 +685,7 @@ def test_pull_status_falls_back_to_git_history_when_missing_at_configured_path(t
     """The EXAMPLE-0026 scenario (SPEC-0130): the portable spec was committed and then removed
     from the working tree (deliberately, or because it only exists on an unmerged branch
     elsewhere) -- pull_status should still find its last committed content via git history."""
-    from wt.specmeta import split_frontmatter
+    from nightwright.specmeta import split_frontmatter
 
     repo = tmp_path / "target-repo"
     _init_repo(repo)
@@ -736,7 +736,7 @@ def test_pull_clock_falls_back_to_git_history(tmp_path):
 def test_pull_status_extra_search_paths_hit_before_git(tmp_path):
     """outbox_targets[project].extra_search_paths is checked (and preferred, no git needed)
     before falling back to git plumbing."""
-    from wt.specmeta import split_frontmatter
+    from nightwright.specmeta import split_frontmatter
 
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()

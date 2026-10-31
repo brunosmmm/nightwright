@@ -1,6 +1,6 @@
 # Track time
 
-wt’s primary time signal is **passive**: Claude Code and Cursor transcripts (plus Outlook
+nightwright’s primary time signal is **passive**: Claude Code and Cursor transcripts (plus Outlook
 meetings). You do not start a timer for that. Org `clock-in` / `clock-out` is
 **supplemental** wall-time on an idea while you build a slice — see [Clock](../capabilities/clock.md).
 
@@ -9,25 +9,25 @@ meetings). You do not start a timer for that. Org `clock-in` / `clock-out` is
 1. **See what landed**
 
    ```bash
-   wt                      # dashboard
-   wt report --week        # this week by topic
-   wt report --week --by project
+   nw                               # dashboard
+   nw report --week        # this week by topic
+   nw report --week --by project
    ```
 
 2. **Name the unknowns**
 
    ```bash
-   wt topics --unmapped
-   wt map <raw-topic> project=Name area=…
+   nw topics --unmapped
+   nw map <raw-topic> project=Name area=…
    ```
 
-   Facets (`project=`, `area=`, …) are how reports group. Bare `wt map topic value` sets
+   Facets (`project=`, `area=`, …) are how reports group. Bare `nw map topic value` sets
    `bucket=`.
 
 3. **Sanity-check segments**
 
    ```bash
-   wt review --week        # timeline + unclassified; --fix maps interactively
+   nw review --week        # timeline + unclassified; --fix maps interactively
    ```
 
 4. **Keep history**
@@ -35,13 +35,13 @@ meetings). You do not start a timer for that. Org `clock-in` / `clock-out` is
    Claude Code deletes old transcripts. Archive before they vanish:
 
    ```bash
-   wt snapshot             # through yesterday by default
+   nw snapshot             # through yesterday by default
    ```
 
 5. **Meetings (optional)**
 
    ```bash
-   wt refresh-meetings --week
+   nw refresh-meetings --week
    ```
 
 ## Date scopes
@@ -49,17 +49,17 @@ meetings). You do not start a timer for that. Org `clock-in` / `clock-out` is
 Same pattern on `report`, `review`, `agenda`, `digest`, `refresh-meetings`:
 
 ```bash
-wt report                 # today
-wt report --week          # this week
-wt report 2026-06-01      # that day
-wt report -w 2026-06-01   # week containing that date
-wt report --last 7
+nw report                 # today
+nw report --week          # this week
+nw report 2026-06-01      # that day
+nw report -w 2026-06-01   # week containing that date
+nw report --last 7
 ```
 
 ## Export / share
 
 ```bash
-wt export --week --format csv -o week.csv
+nw export --week --format csv -o week.csv
 ```
 
 ## What “hours” mean

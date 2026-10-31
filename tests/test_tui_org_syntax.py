@@ -12,9 +12,9 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import tui as T
-from wt.cli import cli
-from wt.tui import model as M
+from nightwright import tui as T
+from nightwright.cli import cli
+from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -62,7 +62,7 @@ def _styled(text):
 
 @needs_textual
 def test_code_and_verbatim_are_styled():
-    from wt.tui.app import lex_org
+    from nightwright.tui.app import lex_org
 
     styled = dict(_styled(lex_org("prose with ~code~ and =verb= inside")))
     assert styled.get("~code~")
@@ -75,10 +75,10 @@ def test_emphasis_mid_prose_is_not_styled_by_orglexer():
 
     Pygments' OrgLexer does not mark `*bold*` / `/italic/` inside a prose line — only at
     headline level, and headlines are hand-built structure the desk deliberately never lexes.
-    The delivered win is `~code~` / `=verbatim=` / links, which is what `wt` prose is full of
+    The delivered win is `~code~` / `=verbatim=` / links, which is what `nw` prose is full of
     (SPEC-0030 normalises Markdown backticks to tildes).
     """
-    from wt.tui.app import lex_org
+    from nightwright.tui.app import lex_org
 
     assert _styled(lex_org("prose with *bold* inside")) == []
     assert _styled(lex_org("prose with /italic/ inside")) == []
@@ -86,7 +86,7 @@ def test_emphasis_mid_prose_is_not_styled_by_orglexer():
 
 @needs_textual
 def test_lexing_empty_prose_is_safe():
-    from wt.tui.app import lex_org
+    from nightwright.tui.app import lex_org
 
     assert lex_org("").plain == ""
 
@@ -94,7 +94,7 @@ def test_lexing_empty_prose_is_safe():
 @needs_textual
 def test_lexed_prose_keeps_its_text_verbatim():
     """Styling must not rewrite content — the org source is what the user typed."""
-    from wt.tui.app import lex_org
+    from nightwright.tui.app import lex_org
 
     src = "Wire ~append_log~ and [[IDEA-131]] with *emphasis* and a :tag:"
     assert lex_org(src).plain.rstrip("\n") == src
@@ -104,7 +104,7 @@ def test_lexed_prose_keeps_its_text_verbatim():
 
 @needs_textual
 def test_structure_survives_lexing():
-    from wt.tui.app import _render_detail
+    from nightwright.tui.app import _render_detail
 
     plain = _render_detail(_detail(), width=70).plain
     assert "Summary " in plain and "─" in plain      # section rule
@@ -116,7 +116,7 @@ def test_structure_survives_lexing():
 
 @needs_textual
 def test_clock_and_meta_lines_are_not_lexed():
-    from wt.tui.app import _render_detail
+    from nightwright.tui.app import _render_detail
 
     d = _detail(clock_open=True, clocked_hours=1.5)
     plain = _render_detail(d, width=70).plain
@@ -128,7 +128,7 @@ def test_clock_and_meta_lines_are_not_lexed():
 @needs_textual
 def test_org_prose_with_markup_characters_is_not_eaten():
     """`[#A]` / `[[links]]` / `[2026-07-30 Thu]` must survive — they look like Rich markup."""
-    from wt.tui.app import _render_detail
+    from nightwright.tui.app import _render_detail
 
     d = _detail(summary="see [#A] and [bold]not bold[/bold]",
                 open_questions=["[#B] which [[IDEA-042]] first?"],
@@ -145,7 +145,7 @@ def test_org_prose_with_markup_characters_is_not_eaten():
 @pytest.mark.parametrize("theme", ["ansi_dark", "ansi_light"])
 def test_no_hex_colours_anywhere(theme):
     """SPEC-0083/0084 were reverted for a hex palette invisible on a dark terminal."""
-    from wt.tui.app import _render_detail
+    from nightwright.tui.app import _render_detail
 
     for style in {str(s.style) for s in _render_detail(_detail(), width=70, theme=theme).spans}:
         assert not HEX_RE.search(style), f"hardcoded colour {style!r} under {theme}"
@@ -154,7 +154,7 @@ def test_no_hex_colours_anywhere(theme):
 def test_the_desk_names_no_hex_theme():
     """Checks *usage* (a string literal), not mentions — the module comments name nord and
     monokai deliberately, to record why they were rejected."""
-    app_src = (ROOT / "src" / "wt" / "tui" / "app.py").read_text()
+    app_src = (ROOT / "src" / "nightwright" / "tui" / "app.py").read_text()
     for banned in ("nord", "monokai", "idea_show_theme"):
         for literal in (f'"{banned}"', f"'{banned}'"):
             assert literal not in app_src, f"{literal} is used as a theme in the desk"
@@ -163,7 +163,7 @@ def test_the_desk_names_no_hex_theme():
 
 @needs_textual
 def test_theme_follows_the_apps_light_dark_state(tmp_path):
-    from wt.tui.app import ANSI_DARK, ANSI_LIGHT, IdeaDesk
+    from nightwright.tui.app import ANSI_DARK, ANSI_LIGHT, IdeaDesk
 
     cfg = _cfg(tmp_path)
 
@@ -189,10 +189,10 @@ def test_theme_follows_the_apps_light_dark_state(tmp_path):
 @needs_textual
 def test_search_marks_compose_on_top_of_lexed_prose(tmp_path, monkeypatch):
     """The reason this design was viable at all: lexing returns a Text, so marks still apply."""
-    from wt.tui.app import IdeaDesk, _render_detail
+    from nightwright.tui.app import IdeaDesk, _render_detail
 
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     app = IdeaDesk(cfg)
     app.query = "append_log"
 
@@ -207,10 +207,10 @@ def test_search_marks_compose_on_top_of_lexed_prose(tmp_path, monkeypatch):
 
 # --- the classic CLI is untouched -------------------------------------------------------------
 
-def test_wt_idea_show_is_unchanged(tmp_path, monkeypatch):
-    """SPEC-0107 is a desk-only change; `wt idea show` keeps its own renderer."""
+def test_nw_idea_show_is_unchanged(tmp_path, monkeypatch):
+    """SPEC-0107 is a desk-only change; `nw idea show` keeps its own renderer."""
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "an idea"]).exit_code == 0
     assert run(cli, ["idea", "summary", "IDEA-001", "--set", "with ~code~"]).exit_code == 0
@@ -218,7 +218,7 @@ def test_wt_idea_show_is_unchanged(tmp_path, monkeypatch):
     assert r.exit_code == 0
     assert "with ~code~" in r.output
 
-    from wt.explore import format_idea_show
-    from wt.org import load_tasks
+    from nightwright.explore import format_idea_show
+    from nightwright.org import load_tasks
     task = [t for t in load_tasks(cfg) if t.is_idea][0]
     assert isinstance(format_idea_show(cfg, task), str)   # still plain text, not a Text

@@ -1,4 +1,4 @@
-"""SPEC-0236: `wt campaign export` — flat campaign / run / finding tables."""
+"""SPEC-0236: `nw campaign export` — flat campaign / run / finding tables."""
 import csv
 import datetime as dt
 import io
@@ -11,12 +11,12 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from wt.agentic import campaign_export as CE
-from wt.agentic import runs as RN
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
-from wt.agentic.cli_campaign import _export_dir
-from wt.cli import cli
+from nightwright.agentic import campaign_export as CE
+from nightwright.agentic import runs as RN
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
+from nightwright.agentic.cli_campaign import _export_dir
+from nightwright.cli import cli
 
 TZ = ZoneInfo("America/New_York")
 T0 = dt.datetime(2026, 10, 20, 9, 0, 0, tzinfo=TZ)
@@ -319,7 +319,7 @@ def test_sizing_ac_count_loop_max(cfg):
 
 def test_campaign_opened_from_a_revise_review_exports_its_sizing(tmp_path, monkeypatch):  # SPEC-0308
     from test_agentic_e2e import make_cfg, make_repo, script, write_review
-    from wt.agentic import queue as Q
+    from nightwright.agentic import queue as Q
     repo = make_repo(tmp_path, review=False)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
     write_review(cfg, repo / "docs" / "specs" / "0001-trivial.md", "SPEC-0001", "revise",
@@ -489,7 +489,7 @@ def test_signals_unknown_size_and_order():
 
 @pytest.fixture
 def invoke(cfg, monkeypatch):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
 
     def run(*args):
         return CliRunner().invoke(cli, ["campaign", "export", *args])
@@ -511,7 +511,7 @@ def test_default_dir_and_same_second(cfg, invoke, monkeypatch):
         def astimezone(self, tz=None):
             return self
 
-    monkeypatch.setattr("wt.agentic.cli_campaign.dt", types.SimpleNamespace(datetime=Frozen))
+    monkeypatch.setattr("nightwright.agentic.cli_campaign.dt", types.SimpleNamespace(datetime=Frozen))
     r1 = invoke("--json")
     assert r1.exit_code == 0, r1.output
     m1 = json.loads(r1.output)
@@ -524,7 +524,7 @@ def test_default_dir_and_same_second(cfg, invoke, monkeypatch):
         "campaigns.jsonl", "findings.jsonl", "manifest.json", "runs.jsonl"]
     assert len(read_jsonl(d / "campaigns.jsonl")) == 1
     on_disk = json.loads((d / "manifest.json").read_text())
-    assert on_disk["schema"] == "wt.campaign.export.v1" and on_disk["format"] == "jsonl"
+    assert on_disk["schema"] == "nw.campaign.export.v1" and on_disk["format"] == "jsonl"
     assert on_disk["tables"]["campaigns"] == {
         "file": "campaigns.jsonl", "rows": 1, "columns": [[n, t] for n, t in CE.CAMPAIGN_COLUMNS]}
     assert on_disk["tables"]["runs"]["rows"] == 4
@@ -532,9 +532,9 @@ def test_default_dir_and_same_second(cfg, invoke, monkeypatch):
     assert on_disk["filters"] == {"project": None, "since": None, "terminal_only": False}
     assert any("loop_max" in n for n in on_disk["notes"])
     assert any("final cost cap" in n for n in on_disk["notes"])
-    assert on_disk["wt_version"] and on_disk["generated_at"]
+    assert on_disk["nw_version"] and on_disk["generated_at"]
     assert {k: v for k, v in m1.items() if k != "out"} == on_disk
-    assert m1["schema"] == "wt.campaign.export.v1" and m1["notes"] == on_disk["notes"]
+    assert m1["schema"] == "nw.campaign.export.v1" and m1["notes"] == on_disk["notes"]
     assert any("loop_max" in n for n in m1["notes"])
     assert any("final cost cap" in n for n in m1["notes"])
     assert m1["tables"]["findings"]["rows"] == 3
@@ -812,7 +812,7 @@ def test_failed_write_cleanup_cannot_mask_the_error(cfg, invoke, tmp_path, monke
 def test_export_conductor_columns_appended(cfg, tmp_path):
     """SPEC-0299: two columns are the conductor's share and the total with it (SPEC-0303
     appended four more after them)."""
-    from wt.agentic import conductor_cost as CC
+    from nightwright.agentic import conductor_cost as CC
     names = [n for n, _ in CE.CAMPAIGN_COLUMNS]
     assert names[-6:-4] == ["conductor_usd", "cost_with_conductor_usd"]
     make(cfg, "C1", [(10, "transition", tr("CLOSING", "MERGED"))], created=0,

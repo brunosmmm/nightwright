@@ -5,11 +5,11 @@ from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 
-from wt import idea_export as IE
-from wt import org_write as W
-from wt import release_archive as RA
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright import idea_export as IE
+from nightwright import org_write as W
+from nightwright import release_archive as RA
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -87,7 +87,7 @@ def test_export_round_trip_load(tmp_path):
 
 def test_cli_ideas_export(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     W.add_idea(cfg, "cli export", project="Meta-Tools")
     out = tmp_path / "e.org"
     r = CliRunner().invoke(cli, ["ideas", "export", "--project", "Meta-Tools", "--all",
@@ -98,7 +98,7 @@ def test_cli_ideas_export(tmp_path, monkeypatch):
 
 def test_cli_ideas_list_still_works(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     W.add_idea(cfg, "still list")
     r = CliRunner().invoke(cli, ["ideas", "--json"])
     assert r.exit_code == 0, r.output
@@ -116,8 +116,8 @@ def test_release_archive_members(tmp_path, monkeypatch):
     assert path == str(out)
     names = tarfile.open(out).getnames()
     assert any(n.endswith("ideas/ideas.org") for n in names)
-    assert any("/src/wt/" in n or n.endswith("src/wt") for n in names) or any(
-        "src/wt" in n for n in names)
+    assert any("/src/nightwright/" in n or n.endswith("src/nightwright") for n in names) or any(
+        "src/nightwright" in n for n in names)
     assert not any(".venv" in n for n in names)
     assert not any("example-console" in n for n in names)
     # Read the ideas slice from the tarball

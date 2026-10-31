@@ -13,11 +13,11 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import org_write as W
-from wt import tui as T
-from wt.cli import cli
-from wt.org import load_tasks
-from wt.tui import model as M
+from nightwright import org_write as W
+from nightwright import tui as T
+from nightwright.cli import cli
+from nightwright.org import load_tasks
+from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -50,7 +50,7 @@ def _cfg(tmp_path):
 
 def _seed(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     assert CliRunner().invoke(cli, ["idea", "an unassociated idea"]).exit_code == 0
     return cfg
 
@@ -169,7 +169,7 @@ def test_project_resolves_research_context(tmp_path, monkeypatch):
 def test_capture_passes_the_project_to_add_idea_not_a_second_write(tmp_path, monkeypatch):
     """The project reaches `add_idea` as a kwarg, so the idea is *written* associated — there is
     never a moment where it exists without its project."""
-    import wt.org_write as OW
+    import nightwright.org_write as OW
 
     cfg = _seed(tmp_path, monkeypatch)
     seen = {}
@@ -224,14 +224,14 @@ def test_known_project_choices_degrades_instead_of_crashing(tmp_path):
 
 
 def test_desk_owns_no_project_write_rule():
-    app_src = (ROOT / "src" / "wt" / "tui" / "app.py").read_text()
+    app_src = (ROOT / "src" / "nightwright" / "tui" / "app.py").read_text()
     assert "set_property" not in app_src
     assert "set_idea_project" not in app_src      # goes through apply_mutation
 
 
 @needs_textual
 def test_capture_flow_offers_a_project_and_can_decline(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -265,7 +265,7 @@ def test_capture_flow_offers_a_project_and_can_decline(tmp_path, monkeypatch):
 
 @needs_textual
 def test_metadata_chooser_sets_and_clears_project(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -302,7 +302,7 @@ def test_metadata_chooser_sets_and_clears_project(tmp_path, monkeypatch):
 
 @needs_textual
 def test_desk_opened_with_a_project_preselects_it(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 

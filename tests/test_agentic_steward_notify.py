@@ -8,10 +8,10 @@ import pytest
 
 from test_agentic_e2e import (_git, _git_env, added, impl_done, make_cfg, make_repo,  # noqa: F401
                               run_cli, script)
-from wt.agentic import events as E
-from wt.agentic import mailbox as M
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright.agentic import events as E
+from nightwright.agentic import mailbox as M
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 PR = "https://gh/p/1"
 READER = "mailbox:steward:Meta-Tools"
@@ -85,7 +85,7 @@ def test_park_and_abandon_notify_reparks_do_not(tmp_path):
     with E.reader_lock(cfg, READER):
         st = Q._park(cfg, S.read_state(cfg, cid), "human", "needs a decision on X", "IMPLEMENTING")
         Q._park(cfg, st, "human", "still X", "IMPLEMENTING", count=False)   # PARKED -> PARKED
-        Q._transition(cfg, S.read_state(cfg, cid), "ABANDONED", "abandoned", by="wt")
+        Q._transition(cfg, S.read_state(cfg, cid), "ABANDONED", "abandoned", by="nw")
     texts = [m["text"] for m in _inbox(cfg)]
     assert len(texts) == 2
     assert "PARKED (human)" in texts[0] and "needs a decision on X" in texts[0]
@@ -121,11 +121,11 @@ def test_send_failure_keeps_the_transition(tmp_path, monkeypatch):
 # ---- Fix 2: a second-project merge reconciles its idea --------------------------------------
 
 def _second_project(tmp_path, monkeypatch, idea_state):
-    from wt import explore as EX
-    from wt import org_write as OW
-    from wt.org import load_tasks
-    wt_repo = make_repo(tmp_path)                    # wt's own store: its SPEC-0001 is accepted
-    cfg = make_cfg(tmp_path, wt_repo, script(tmp_path, []))
+    from nightwright import explore as EX
+    from nightwright import org_write as OW
+    from nightwright.org import load_tasks
+    nw_repo = make_repo(tmp_path)                    # nightwright's own store: its SPEC-0001 is accepted
+    cfg = make_cfg(tmp_path, nw_repo, script(tmp_path, []))
     cfg["org_idea_keywords"] = ["IDEA", "INCUBATE", "SPECCED", "|", "PROMOTED", "SHIPPED",
                                 "DROPPED"]
     OW.add_idea(cfg, "second project idea")
@@ -150,13 +150,13 @@ def _second_project(tmp_path, monkeypatch, idea_state):
                             "repo": {"root": str(proj), "base": "main", "head": sha},
                             "close": {"mode": "pr", "merged_sha": None, "pr_url": PR},
                             "cost": {"total_usd": 0.0, "cap_usd": 10.0}})
-    return cfg, cid, iid, sha, wt_repo, proj
+    return cfg, cid, iid, sha, nw_repo, proj
 
 
 @pytest.mark.parametrize("idea_state", ["SPECCED", "PROMOTED"])
 def test_second_project_merge_ships_its_idea(tmp_path, monkeypatch, idea_state):
-    from wt import org_write as OW
-    cfg, cid, iid, sha, wt_repo, proj = _second_project(tmp_path, monkeypatch, idea_state)
+    from nightwright import org_write as OW
+    cfg, cid, iid, sha, nw_repo, proj = _second_project(tmp_path, monkeypatch, idea_state)
     specs = Path(cfg["specs_dir"])
     before = {p.name: p.read_bytes() for p in specs.iterdir()}
     proj_before = (proj / "docs/specs/0001-proj.md").read_bytes()
@@ -166,20 +166,20 @@ def test_second_project_merge_ships_its_idea(tmp_path, monkeypatch, idea_state):
     assert (ev["spec_id"], ev["idea_id"], ev["from"], ev["to"]) == ("SPEC-0001", iid, idea_state,
                                                                     "SHIPPED")
     assert OW.resolve_selector(cfg, iid).state == "SHIPPED"
-    assert {p.name: p.read_bytes() for p in specs.iterdir()} == before      # wt's store untouched
+    assert {p.name: p.read_bytes() for p in specs.iterdir()} == before      # nightwright's store untouched
     assert (proj / "docs/specs/0001-proj.md").read_bytes() == proj_before
     assert not [f for f in S.read_ledger(cfg, cid, types=["finding"]) if "not this repo" in f["title"]]
 
 
 def test_second_project_merged_sha_not_local_falls_back_to_head(tmp_path, monkeypatch):
-    from wt import org_write as OW
+    from nightwright import org_write as OW
     cfg, cid, iid, sha, _w, _p = _second_project(tmp_path, monkeypatch, "SPECCED")
     Q.sweep_handed_off(cfg, apply=True, view=_view("f" * 40))     # merged on GitHub, not fetched
     assert OW.resolve_selector(cfg, iid).state == "SHIPPED"
 
 
 def test_second_project_hand_off_waits(tmp_path, monkeypatch):
-    from wt import org_write as OW
+    from nightwright import org_write as OW
     cfg, cid, iid, _sha, _w, _p = _second_project(tmp_path, monkeypatch, "SPECCED")
     st = S.read_state(cfg, cid)
     events = []

@@ -1,4 +1,4 @@
-"""SPEC-0077: the `updated` column on `wt ideas` and freshness ordering.
+"""SPEC-0077: the `updated` column on `nw ideas` and freshness ordering.
 
 Closes the third ask of IDEA-092: SPEC-0075 widened the headline, SPEC-0076 produced the stamps,
 and this makes them visible and makes them decide the order.
@@ -10,10 +10,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from wt import explore as E
-from wt import org_write as W
-from wt import report as R
-from wt.console import console
+from nightwright import explore as E
+from nightwright import org_write as W
+from nightwright import report as R
+from nightwright.console import console
 
 TZ = ZoneInfo("America/New_York")
 NOW = dt.datetime(2026, 7, 27, 12, 0)
@@ -195,7 +195,7 @@ def test_done_ideas_stay_below_open_with_all(tmp_path):
 
 
 def test_next_ordering_unchanged(tmp_path):
-    """`wt next` keeps `_task_sort_key`; only the ideas listing is freshness-ordered."""
+    """`nw next` keeps `_task_sort_key`; only the ideas listing is freshness-ordered."""
     cfg = _cfg(tmp_path)
     _three(cfg)
     tasks = R.collect_next_tasks(cfg)
@@ -211,7 +211,7 @@ def test_json_order_matches_table(tmp_path, capsys):
     R.ideas(cfg, as_json=True)
     payload = json.loads(capsys.readouterr().out)
     assert [r["id"] for r in payload["ideas"]] == table_ids
-    assert payload["schema"] == "wt.ideas.v1"
+    assert payload["schema"] == "nw.ideas.v1"
     for row in payload["ideas"]:                      # no schema change
         assert {"id", "state", "heading", "tags", "kind", "next"} <= set(row)
 

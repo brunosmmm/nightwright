@@ -1,11 +1,11 @@
 """Org ↔ Markdown body helpers (SPEC-0030)."""
 import pytest
 
-from wt.org_markup import from_org_body, strip_drawers, to_org_body
+from nightwright.org_markup import from_org_body, strip_drawers, to_org_body
 
 
 def test_to_org_backticks_and_bold():
-    assert to_org_body("use `wt-native` here") == "use ~wt-native~ here"
+    assert to_org_body("use `nw-native` here") == "use ~nw-native~ here"
     assert to_org_body("This is **not** inventing") == "This is *not* inventing"
     assert to_org_body("also __bold__ ok") == "also *bold* ok"
 
@@ -18,7 +18,7 @@ def test_to_org_strips_atx_and_converts_fences():
 
 
 def test_to_org_idempotent_on_org():
-    org = "use ~wt-native~ and *not* inventing\n"
+    org = "use ~nw-native~ and *not* inventing\n"
     assert to_org_body(org) == org
 
 
@@ -51,7 +51,7 @@ TO_ORG = [
     # documented CommonMark-faithful remainder: a bare dunder word still bolds
     ("plain __init__.py file", "plain *init*.py file"),
     # happy paths carried forward from SPEC-0030
-    ("use `wt-native` here", "use ~wt-native~ here"),
+    ("use `nw-native` here", "use ~nw-native~ here"),
     ("This is **not** inventing", "This is *not* inventing"),
     ("also __bold__ ok", "also *bold* ok"),
     ("**see `x`**", "*see ~x~*"),

@@ -1,14 +1,14 @@
-"""Next-step workflow hints (SPEC-0023): next_step_for_idea + wt next / wt ideas column."""
+"""Next-step workflow hints (SPEC-0023): next_step_for_idea + nw next / nw ideas column."""
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 from click.testing import CliRunner
 
-from wt import org_write as W
-from wt.cli import cli
-from wt.org import Task
-from wt.workflow import next_step_for_idea
+from nightwright import org_write as W
+from nightwright.cli import cli
+from nightwright.org import Task
+from nightwright.workflow import next_step_for_idea
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -66,12 +66,12 @@ def _write_spec(specs_dir, spec_id, status, num=None):
 
 def test_next_idea_no_spec(tmp_path):
     cfg = _cfg(tmp_path)
-    assert next_step_for_idea(cfg, _idea()) == "wt idea log IDEA-001"
+    assert next_step_for_idea(cfg, _idea()) == "nw idea log IDEA-001"
 
 
 def test_next_incubate_no_spec(tmp_path):
     cfg = _cfg(tmp_path)
-    assert next_step_for_idea(cfg, _idea(state="INCUBATE")) == "wt idea log IDEA-001"
+    assert next_step_for_idea(cfg, _idea(state="INCUBATE")) == "nw idea log IDEA-001"
 
 
 def test_next_specced_draft(tmp_path):
@@ -85,12 +85,12 @@ def test_next_specced_accepted(tmp_path):
     cfg = _cfg(tmp_path)
     _write_spec(cfg["specs_dir"], "SPEC-0099", "accepted", num="0099")
     idea = _idea(state="SPECCED", properties={"ID": "IDEA-001", "SPEC": "SPEC-0099"})
-    assert next_step_for_idea(cfg, idea) == "wt spec generate SPEC-0099"
+    assert next_step_for_idea(cfg, idea) == "nw spec generate SPEC-0099"
 
 
 def test_next_promoted(tmp_path):
     cfg = _cfg(tmp_path)
-    assert next_step_for_idea(cfg, _idea(state="PROMOTED", is_done=True)) == "wt tasks"
+    assert next_step_for_idea(cfg, _idea(state="PROMOTED", is_done=True)) == "nw tasks"
 
 
 def test_next_dropped_empty(tmp_path):
@@ -114,11 +114,11 @@ def test_next_outbound_export(tmp_path):
         encoding="utf-8",
     )
     idea = _idea(state="SPECCED", properties={"ID": "IDEA-001", "SPEC": "ACME-0001"})
-    assert next_step_for_idea(cfg, idea) == "wt spec export ACME-0001"
+    assert next_step_for_idea(cfg, idea) == "nw spec export ACME-0001"
 
 
 def test_next_outbound_exported_implement(tmp_path):
-    """SPEC-0041: exported + accepted → implement in target, not wt tasks."""
+    """SPEC-0041: exported + accepted → implement in target, not nw tasks."""
     cfg = _cfg(tmp_path)
     proj = Path(cfg["outbox_dir"]) / "acme"
     proj.mkdir()
@@ -147,7 +147,7 @@ def test_next_outbound_exported_pull_status(tmp_path):
     )
     (proj / "PROVENANCE.md").write_text("exported ACME-0001\n", encoding="utf-8")
     idea = _idea(state="SPECCED", properties={"ID": "IDEA-001", "SPEC": "ACME-0001"})
-    assert next_step_for_idea(cfg, idea) == "wt spec pull-status/pull-clock ACME-0001"
+    assert next_step_for_idea(cfg, idea) == "nw spec pull-status/pull-clock ACME-0001"
 
 
 def test_next_outbound_exported_done_quiet(tmp_path):
@@ -195,12 +195,12 @@ def _write_outbound_epic(cfg, *, exported=False, breakdown_open=True, children=N
 
 
 def test_next_incomplete_outbound_epic_exported(tmp_path):
-    """Motivating bug: accepted+exported epic with open Breakdown → /wt-rework, not wt tasks."""
+    """Motivating bug: accepted+exported epic with open Breakdown → /nw-rework, not nw tasks."""
     cfg = _cfg(tmp_path)
     _write_outbound_epic(cfg, exported=True, breakdown_open=True, children=[])
     idea = _idea(state="PROMOTED", is_done=True,
                  properties={"ID": "IDEA-001", "SPEC": "DEMO-0001"})
-    assert next_step_for_idea(cfg, idea) == "/wt-rework IDEA-001"
+    assert next_step_for_idea(cfg, idea) == "/nw-rework IDEA-001"
 
 
 def test_next_incomplete_outbound_epic_specced(tmp_path):
@@ -208,7 +208,7 @@ def test_next_incomplete_outbound_epic_specced(tmp_path):
     _write_outbound_epic(cfg, exported=True, breakdown_open=True, children=[])
     idea = _idea(state="SPECCED",
                  properties={"ID": "IDEA-001", "SPEC": "DEMO-0001"})
-    assert next_step_for_idea(cfg, idea) == "/wt-rework IDEA-001"
+    assert next_step_for_idea(cfg, idea) == "/nw-rework IDEA-001"
 
 
 def test_next_complete_outbound_epic_exported(tmp_path):
@@ -222,7 +222,7 @@ def test_next_complete_outbound_epic_exported(tmp_path):
     )
     idea = _idea(state="PROMOTED", is_done=True,
                  properties={"ID": "IDEA-001", "SPEC": "DEMO-0001"})
-    assert next_step_for_idea(cfg, idea) == "wt tasks"
+    assert next_step_for_idea(cfg, idea) == "nw tasks"
 
 
 def test_next_incomplete_internal_epic_open_child(tmp_path):
@@ -241,7 +241,7 @@ def test_next_incomplete_internal_epic_open_child(tmp_path):
     )
     idea = _idea(state="SPECCED",
                  properties={"ID": "IDEA-002", "SPEC": "SPEC-0098"})
-    assert next_step_for_idea(cfg, idea) == "/wt-rework IDEA-002"
+    assert next_step_for_idea(cfg, idea) == "/nw-rework IDEA-002"
 
 
 def test_next_complete_internal_epic(tmp_path):
@@ -259,7 +259,7 @@ def test_next_complete_internal_epic(tmp_path):
     )
     idea = _idea(state="PROMOTED", is_done=True,
                  properties={"ID": "IDEA-003", "SPEC": "SPEC-0096"})
-    assert next_step_for_idea(cfg, idea) == "wt tasks"
+    assert next_step_for_idea(cfg, idea) == "nw tasks"
 
 
 # ---- CLI ------------------------------------------------------------------------------
@@ -280,27 +280,27 @@ def test_cli_idea_help_mentions_capture_and_log():
 
 
 def test_cli_next_shows_hint_and_ideas_does_not(tmp_path, monkeypatch):
-    """SPEC-0075: the next-step hint lives on `wt next`; `wt ideas` dropped the column to give
-    the headline that width back (the hint is still in `wt ideas --json`)."""
-    from wt.console import console
+    """SPEC-0075: the next-step hint lives on `nw next`; `nw ideas` dropped the column to give
+    the headline that width back (the hint is still in `nw ideas --json`)."""
+    from nightwright.console import console
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "parked thought for next")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     prev_w, prev_h = console._width, console._height
     console._width, console._height = 320, 80
     try:
         r_next = CliRunner().invoke(cli, ["next"])
         assert r_next.exit_code == 0, r_next.output
-        assert "wt idea log" in r_next.output
+        assert "nw idea log" in r_next.output
         assert "Next" in r_next.output
 
         r_ideas = CliRunner().invoke(cli, ["ideas"])
         assert r_ideas.exit_code == 0, r_ideas.output
-        assert "wt idea log" not in r_ideas.output      # no next column any more
+        assert "nw idea log" not in r_ideas.output      # no next column any more
         assert "parked thought for next" in r_ideas.output
 
         r_json = CliRunner().invoke(cli, ["ideas", "--json"])
         assert r_json.exit_code == 0, r_json.output
-        assert "wt idea log" in r_json.output           # …but the hint stays in JSON
+        assert "nw idea log" in r_json.output           # …but the hint stays in JSON
     finally:
         console._width, console._height = prev_w, prev_h

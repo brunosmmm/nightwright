@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Point wt's XDG config at this release tree's bundled ideas/ slice (SPEC-0136).
-# Optional — run deliberately after extracting a wt release-archive tarball.
+# Point nightwright's XDG config at this release tree's bundled ideas/ slice (SPEC-0136).
+# Optional — run deliberately after extracting a nightwright release-archive tarball.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,12 +10,12 @@ SPECS_DIR="${ROOT}/docs/specs"
 
 if [[ ! -f "${IDEAS_ORG}" ]]; then
   echo "error: missing ${IDEAS_ORG}" >&2
-  echo "  extract a release-archive (wt release-archive) first, then run this from that tree." >&2
+  echo "  extract a release-archive (nw release-archive) first, then run this from that tree." >&2
   exit 1
 fi
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
-CONFIG_DIR="${CONFIG_HOME}/wt"
+CONFIG_DIR="${CONFIG_HOME}/nightwright"
 CONFIG="${CONFIG_DIR}/config.yaml"
 mkdir -p "${CONFIG_DIR}"
 
@@ -27,19 +27,19 @@ fi
 
 # Merge org_* / specs_dir when PyYAML is available; otherwise write a minimal stub
 # (prior config already backed up).
-export WT_INSTALL_CONFIG="${CONFIG}"
-export WT_INSTALL_IDEAS_DIR="${IDEAS_DIR}"
-export WT_INSTALL_IDEAS_ORG="${IDEAS_ORG}"
-export WT_INSTALL_SPECS_DIR="${SPECS_DIR}"
+export NW_INSTALL_CONFIG="${CONFIG}"
+export NW_INSTALL_IDEAS_DIR="${IDEAS_DIR}"
+export NW_INSTALL_IDEAS_ORG="${IDEAS_ORG}"
+export NW_INSTALL_SPECS_DIR="${SPECS_DIR}"
 
 if python3 - <<'PY'
 import os, sys
 from pathlib import Path
 
-cfg_path = Path(os.environ["WT_INSTALL_CONFIG"])
-ideas_dir = os.environ["WT_INSTALL_IDEAS_DIR"]
-ideas_org = os.environ["WT_INSTALL_IDEAS_ORG"]
-specs_dir = os.environ["WT_INSTALL_SPECS_DIR"]
+cfg_path = Path(os.environ["NW_INSTALL_CONFIG"])
+ideas_dir = os.environ["NW_INSTALL_IDEAS_DIR"]
+ideas_org = os.environ["NW_INSTALL_IDEAS_ORG"]
+specs_dir = os.environ["NW_INSTALL_SPECS_DIR"]
 
 try:
     import yaml
@@ -66,7 +66,7 @@ then
 else
   cat > "${CONFIG}" <<EOF
 # Written by scripts/install-bundled-config.sh (SPEC-0136).
-# Points wt at this release tree's bundled Meta-Tools idea slice.
+# Points nightwright at this release tree's bundled Meta-Tools idea slice.
 org_files:
   - ${IDEAS_DIR}
 org_ideas_file: ${IDEAS_ORG}
@@ -79,6 +79,6 @@ echo
 echo "next:"
 echo "  cd ${ROOT}"
 echo "  uv sync"
-echo "  uv run wt ideas --all"
+echo "  uv run nw ideas --all"
 echo
 echo "config: ${CONFIG}"

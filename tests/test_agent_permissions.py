@@ -1,11 +1,11 @@
-"""SPEC-0320: `wt skills install` merges the conductor/steward allow rules into the Claude Code
+"""SPEC-0320: `nw skills install` merges the conductor/steward allow rules into the Claude Code
 user settings. ALL tests use a tmp settings path — never the real ~/.claude/settings.json."""
 import json
 
 from click.testing import CliRunner
 
-from wt import agent_permissions as AP
-from wt.cli import cli
+from nightwright import agent_permissions as AP
+from nightwright.cli import cli
 
 
 def _read(p):
@@ -14,8 +14,8 @@ def _read(p):
 
 def test_rules_cover_the_conductor_command_groups_and_addressed_forms():
     for group in ("queue", "mailbox", "campaign", "escalations", "idea", "spec"):
-        assert f"Bash(wt {group} *)" in AP.ALLOW_RULES
-        assert f"Bash(WT_MAILBOX_ADDR=* wt {group} *)" in AP.ALLOW_RULES
+        assert f"Bash(nw {group} *)" in AP.ALLOW_RULES
+        assert f"Bash(NW_MAILBOX_ADDR=* nw {group} *)" in AP.ALLOW_RULES
     assert len(set(AP.ALLOW_RULES)) == len(AP.ALLOW_RULES)
     assert not any(r.startswith(("Bash(gh", "Bash(git")) for r in AP.ALLOW_RULES)
 

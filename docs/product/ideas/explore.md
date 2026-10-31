@@ -21,28 +21,28 @@ flowchart TB
 
 | Section | Command | Write here |
 |---|---|---|
-| **Summary** | `wt idea summary IDEA-042 --set "…"` | The current best understanding, rewritten as it improves. This is the gate for writing a spec |
-| **Open questions** | `wt idea questions IDEA-042 --add "…"`, `--resolve 1` | Decisions still to be made. Resolve them by recording the answer in the Summary or the Log |
-| **Log** | `wt idea log IDEA-042 --note "…"` | Dated, append-only findings: code you read, experiments, numbers, dead ends |
+| **Summary** | `nw idea summary IDEA-042 --set "…"` | The current best understanding, rewritten as it improves. This is the gate for writing a spec |
+| **Open questions** | `nw idea questions IDEA-042 --add "…"`, `--resolve 1` | Decisions still to be made. Resolve them by recording the answer in the Summary or the Log |
+| **Log** | `nw idea log IDEA-042 --note "…"` | Dated, append-only findings: code you read, experiments, numbers, dead ends |
 
 ```bash
-wt idea show IDEA-042      # read all three
-wt idea mark-explored IDEA-042   # record that an exploration pass happened
+nw idea show IDEA-042      # read all three
+nw idea mark-explored IDEA-042   # record that an exploration pass happened
 ```
 
 ## The exploration loop
 
 ```mermaid
 flowchart LR
-    A["Read the idea<br/><code>wt idea show</code>"] --> B["Investigate<br/>code · data · prior ideas"]
-    B --> C["Record findings<br/><code>wt idea log</code>"]
+    A["Read the idea<br/><code>nw idea show</code>"] --> B["Investigate<br/>code · data · prior ideas"]
+    B --> C["Record findings<br/><code>nw idea log</code>"]
     C --> D["Update the Summary<br/>resolve / add questions"]
     D --> E{"Ready for a spec?"}
     E -- no --> B
     E -- yes --> F(["Write the spec"])
 ```
 
-In an agent session, `/wt-explore IDEA-042` runs this loop: it investigates, logs what it
+In an agent session, `/nw-explore IDEA-042` runs this loop: it investigates, logs what it
 found, and sharpens the Summary and questions. It never promotes the idea; that's a
 deliberate, separate step.
 
@@ -63,8 +63,8 @@ If exploring shows the idea isn't worth building, close it with a reason, so the
 stays findable:
 
 ```bash
-wt idea close IDEA-042 --as researched --reason "solved by existing --by-project flag"
-wt idea close IDEA-043 --as drop --reason "duplicate" --folded-into IDEA-012
+nw idea close IDEA-042 --as researched --reason "solved by existing --by-project flag"
+nw idea close IDEA-043 --as drop --reason "duplicate" --folded-into IDEA-012
 ```
 
 **Next:** [Write a spec the loop can build](spec.md).

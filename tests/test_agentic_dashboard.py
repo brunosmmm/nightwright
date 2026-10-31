@@ -1,4 +1,4 @@
-"""SPEC-0185: `wt queue watch` dashboard — `queue.dashboard_payload` sections, activity and
+"""SPEC-0185: `nw queue watch` dashboard — `queue.dashboard_payload` sections, activity and
 totals, and the rendered frame (`--once`, `--json`, `--project`, widths)."""
 import datetime as dt
 import json
@@ -7,10 +7,10 @@ from rich.console import Console
 
 from test_agentic_e2e import (SPEC_ACCEPTED, _git, _write, impl_done, make_cfg, make_repo, write_review,
                               run_cli, script)
-from wt.agentic import cli_queue as CQ
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.agentic import schemas as SC
+from nightwright.agentic import cli_queue as CQ
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.agentic import schemas as SC
 
 def _ev(cfg, cid, etype, payload=None, **kw):
     """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
@@ -42,8 +42,8 @@ def _campaign(cfg, repo, cid, state, *, spec_id="SPEC-0001", rel="docs/specs/000
     S.create_campaign(cfg, {
         "id": cid, "kind": "implement", "spec_id": spec_id, "project": project,
         "profile": "balanced", "state": state, "created_at": _iso(created_min),
-        "repo": {"root": str(repo), "base": "main", "branch": f"wt/{cid}",
-                 "worktree": f"/tmp/wt/{cid}"},
+        "repo": {"root": str(repo), "base": "main", "branch": f"nw/{cid}",
+                 "worktree": f"/tmp/nw/{cid}"},
         "spec": {"rel_path": rel, "internal": True},
         "counters": {"loops": 1, "runs": 1}, "cost": {"total_usd": 1.25, "cap_usd": 10.0},
         **extra})
@@ -90,7 +90,7 @@ def _fixture(tmp_path):
 def test_payload_sections_activity_and_totals(tmp_path):
     repo, cfg, ids = _fixture(tmp_path)
     p = Q.dashboard_payload(cfg)
-    assert p["schema"] == "wt.queue.dashboard.v1"
+    assert p["schema"] == "nw.queue.dashboard.v1"
     active = {it["campaign"]: it for it in p["active"]}
     assert set(active) == {ids["impl"], ids["gating"]}
     a = active[ids["impl"]]["activity"]
@@ -147,7 +147,7 @@ def test_frame_renders_every_section_at_both_widths(tmp_path):
     p = Q.dashboard_payload(cfg)
     for width in (80, 160):
         out = _render(p, width)
-        for header in ("wt queue", "Active (2)", "Conductor handling (1)", "Backlog (2)",
+        for header in ("nw queue", "Active (2)", "Conductor handling (1)", "Backlog (2)",
                        "Recently delivered (2"):
             assert header in out, (width, header, out)
         for cid in (ids["impl"], ids["gating"], ids["parked"], ids["merged"]):
@@ -172,7 +172,7 @@ def test_cli_once_json_and_project(tmp_path, monkeypatch):
     assert "Active (2)" in r.output and ids["merged"] in r.output
     r = run_cli(cfg, monkeypatch, ["queue", "watch", "--json", "--recent", "1"])
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.dashboard.v1" and len(d["delivered"]) == 1
+    assert d["schema"] == "nw.queue.dashboard.v1" and len(d["delivered"]) == 1
     r = run_cli(cfg, monkeypatch, ["queue", "watch", "--json", "--project", "nobody"])
     assert json.loads(r.output)["active"] == []
 

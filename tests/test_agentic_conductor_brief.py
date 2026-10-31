@@ -1,4 +1,4 @@
-"""SPEC-0301: `wt queue conductor-brief` — contents, caps, the text bound, compaction signal."""
+"""SPEC-0301: `nw queue conductor-brief` — contents, caps, the text bound, compaction signal."""
 import datetime as dt
 import json
 
@@ -6,13 +6,13 @@ import pytest
 
 from test_agentic_conductor_cost import line, write_transcript
 from test_agentic_decisions import (UTC, cfg, clock, decide, mk, park, resume, run)  # noqa: F401
-from wt.agentic import brief as BR
-from wt.agentic import conductor_cost as CC
-from wt.agentic import decisions as D
-from wt.agentic import escalations as ESC
-from wt.agentic import mailbox as M
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright.agentic import brief as BR
+from nightwright.agentic import conductor_cost as CC
+from nightwright.agentic import decisions as D
+from nightwright.agentic import escalations as ESC
+from nightwright.agentic import mailbox as M
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 
 def brief(cfg):
@@ -46,7 +46,7 @@ def test_brief_contents_and_caps(cfg, clock):
     assert p["decided"] is True and p["overdue"] is False and p["owner"] == "conductor"
     assert next(x for x in b["parked"] if x["campaign"] == "P21")["last_decision"] is None
     assert b["standing"]["memory_paths"] == [] and b["standing"]["standing_rules"] == []
-    assert b["standing"]["skill"].endswith("wt-conduct/SKILL.md")
+    assert b["standing"]["skill"].endswith("nw-conduct/SKILL.md")
     assert "+3 more" in BR.render_text(b)
 
 
@@ -233,7 +233,7 @@ def test_cli_decision_decisions_brief(cfg, clock, run):
     assert r.exit_code == 0, r.output
     assert "runner:" in r.output and "C1" in r.output and "last: none" in r.output
     r = run("decision", "C1", "--kind", "resume", "--rule", "parked.loop_exhausted",
-            "--action", "wt queue resume C1", "transient failures")
+            "--action", "nw queue resume C1", "transient failures")
     assert r.exit_code == 0 and "decision #1 resume" in r.output
     b = json.loads(run("conductor-brief", "--json").output)
     assert b["schema"] == BR.SCHEMA and b["parked"][0]["decided"] is True

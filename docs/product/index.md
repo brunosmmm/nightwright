@@ -1,9 +1,9 @@
-# wt
+# nightwright
 
-**wt turns ideas into shipped code.** You capture ideas and explore them until they're
+**nightwright turns ideas into shipped code.** You capture ideas and explore them until they're
 clear. You then write them up as short specs with testable acceptance criteria, and hand
 those specs to an **agentic loop** that implements, tests, reviews and merges them, coming
-back to you only when it needs a decision. Along the way, wt sees the passive time you spend
+back to you only when it needs a decision. Along the way, nightwright sees the passive time you spend
 on each topic.
 
 ```mermaid
@@ -60,19 +60,19 @@ flowchart LR
 
 | | |
 |---|---|
-| **Ideas you own** | Plain-text org files with stable ids (`IDEA-042`), a lifecycle, and next-step hints (`wt next`) |
-| **Specs that mean something** | Short governing specs: acceptance criteria and a test plan, reviewed before build, verified after (`wt spec verify`, `/wt-verify`) |
+| **Ideas you own** | Plain-text org files with stable ids (`IDEA-042`), a lifecycle, and next-step hints (`nw next`) |
+| **Specs that mean something** | Short governing specs: acceptance criteria and a test plan, reviewed before build, verified after (`nw spec verify`, `/nw-verify`) |
 | **An unattended build loop** | Queue → implement → your gates → conformance review → rebase, re-gate, merge, with every step in a ledger |
 | **Agents in the right places** | Headless personas for judgment, plain code for everything else, and a conductor session that handles the alerts |
-| **Passive time** | Hours per topic and project, with no timer. `wt idea clock-in` / `clock-out` adds supplemental wall-time when you want it ([Clock](capabilities/clock.md)) |
+| **Passive time** | Hours per topic and project, with no timer. `nw idea clock-in` / `clock-out` adds supplemental wall-time when you want it ([Clock](capabilities/clock.md)) |
 
-You meet wt as a command-line tool (`wt ideas`, `wt queue watch`, `wt report`), as the
-interactive ideas **desk** (`wt tui`), and as agent skills (`/wt-explore`, `/wt-new-work`,
-`/wt-conduct`, …).
+You meet nightwright as a command-line tool (`nw ideas`, `nw queue watch`, `nw report`), as the
+interactive ideas **desk** (`nw tui`), and as agent skills (`/nw-explore`, `/nw-new-work`,
+`/nw-conduct`, …).
 
 === "The loop at work"
 
-    ![wt queue watch](assets/captures/cli-queue-watch.svg)
+    ![nw queue watch](assets/captures/cli-queue-watch.svg)
 
 === "Your ideas"
 
@@ -84,7 +84,7 @@ interactive ideas **desk** (`wt tui`), and as agent skills (`/wt-explore`, `/wt-
 
 === "Your time"
 
-    ![Bare wt: today + this week](assets/captures/cli-wt-dashboard.svg)
+    ![Bare nw: today + this week](assets/captures/cli-nw-dashboard.svg)
 
 ## Find your way
 
@@ -97,5 +97,5 @@ interactive ideas **desk** (`wt tui`), and as agent skills (`/wt-explore`, `/wt-
 | Build by hand, without the loop | [Idea → ship (by hand)](guides/idea-to-ship.md) |
 | Hand work to another repo | [Outbound](guides/outbound.md) |
 | See your hours | [Track time](guides/track-time.md) |
-| Run a day or a week with wt | [Daily ops](guides/daily-ops.md) · [Weekly ops](guides/weekly-ops.md) |
+| Run a day or a week with nightwright | [Daily ops](guides/daily-ops.md) · [Weekly ops](guides/weekly-ops.md) |
 | Look up a command | [Reference](reference/index.md) |

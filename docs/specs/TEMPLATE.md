@@ -56,7 +56,7 @@ policy/doc spec write "N/A — <reason>". Cover:>
 ## Clock Log
 
 <Supplemental wall-time record for implementation sessions (SPEC-0060/0062). For internal
-work, prefer `wt idea clock-in`/`wt idea clock-out` on the linked idea instead — this section
+work, prefer `nw idea clock-in`/`nw idea clock-out` on the linked idea instead — this section
 is mainly for outbound/foreign-repo implementation, where no org access exists. One
 CLOCK-IN/CLOCK-OUT pair per session:>
 

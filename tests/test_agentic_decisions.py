@@ -1,16 +1,16 @@
-"""SPEC-0301: the conductor decision log, `wt queue decision` / `decisions`, park coverage."""
+"""SPEC-0301: the conductor decision log, `nw queue decision` / `decisions`, park coverage."""
 import datetime as dt
 import json
 
 import pytest
 from click.testing import CliRunner
 
-from wt.agentic import decisions as D
-from wt.agentic import events as E
-from wt.agentic import queue as Q
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
-from wt.cli import cli
+from nightwright.agentic import decisions as D
+from nightwright.agentic import events as E
+from nightwright.agentic import queue as Q
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
+from nightwright.cli import cli
 
 UTC = dt.timezone.utc
 
@@ -75,7 +75,7 @@ def view(cfg, cid):
 
 @pytest.fixture
 def run(cfg, monkeypatch):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     return lambda *args: CliRunner().invoke(cli, ["queue", *args])
 
 
@@ -265,11 +265,11 @@ def test_cli_decisions_text_does_not_read_rationale_as_markup(cfg, clock, run):
     mk(cfg, "C1")
     park(cfg, "C1")
     r = run("decision", "C1", "--kind", "resume", "--rule", "parked.loop_exhausted",
-            "see [/wt-conduct] row and [x] more")
+            "see [/nw-conduct] row and [x] more")
     assert r.exit_code == 0, r.output
     r = run("decisions")
     assert r.exit_code == 0, r.output
-    assert "see [/wt-conduct] row and [x] more" in r.output
+    assert "see [/nw-conduct] row and [x] more" in r.output
     r = run("decisions", "--parks", "--since", "2026-10-30")
     assert r.exit_code == 0 and "1/1 parks decided (100%)" in r.output
 

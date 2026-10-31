@@ -9,10 +9,10 @@ import pathlib
 from click.testing import CliRunner
 from zoneinfo import ZoneInfo
 
-from wt import org_write as W
-from wt import specs as S
-from wt.cli import cli
-from wt.org import join_time, load_tasks
+from nightwright import org_write as W
+from nightwright import specs as S
+from nightwright.cli import cli
+from nightwright.org import join_time, load_tasks
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REAL_SPECS = ROOT / "docs" / "specs"
@@ -226,7 +226,7 @@ def test_generate_custom_file_target(tmp_path):
 def test_cli_spec_generate(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     (pathlib.Path(cfg["specs_dir"]) / "0100-sample-epic.md").write_text(EPIC_SPEC)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
 
     r = CliRunner().invoke(cli, ["spec", "generate", "SPEC-0100"])
@@ -240,7 +240,7 @@ def test_cli_spec_generate(tmp_path, monkeypatch):
 
 def test_cli_spec_generate_unknown_spec(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["spec", "generate", "SPEC-9999"])
     assert r.exit_code != 0
@@ -260,7 +260,7 @@ def test_generate_refuses_outbound_id(tmp_path):
 
 def test_cli_spec_generate_refuses_outbound(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["spec", "generate", "EXAMPLE-0001"])
     assert r.exit_code != 0

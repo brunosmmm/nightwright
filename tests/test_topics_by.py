@@ -1,10 +1,10 @@
-"""wt topics --by facet axis (SPEC-0028)."""
+"""nw topics --by facet axis (SPEC-0028)."""
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 
-from wt.cli import cli
+from nightwright.cli import cli
 
 
 def _cfg(tmp_path):
@@ -27,15 +27,15 @@ def _cfg(tmp_path):
 
 
 def _patch(monkeypatch, cfg, day_topic, history=None):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
-    monkeypatch.setattr("wt.config.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.config.load_config", lambda: cfg)
     monkeypatch.setattr(
-        "wt.report.build",
+        "nightwright.report.build",
         lambda *a, **k: (day_topic, {}, {}, {}),
     )
-    monkeypatch.setattr("wt.report.read_history", lambda _cfg: history or [])
+    monkeypatch.setattr("nightwright.report.read_history", lambda _cfg: history or [])
     # Skip RepoResolver entirely — topics only needs build's day_topic
-    monkeypatch.setattr("wt.report.RepoResolver", lambda _cfg: object())
+    monkeypatch.setattr("nightwright.report.RepoResolver", lambda _cfg: object())
 
 
 def test_topics_by_merges_inherited_hours(tmp_path, monkeypatch):

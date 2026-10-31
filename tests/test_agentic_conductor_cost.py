@@ -1,4 +1,4 @@
-"""SPEC-0299: conductor session registry, transcript usage, `wt queue conductor-cost`."""
+"""SPEC-0299: conductor session registry, transcript usage, `nw queue conductor-cost`."""
 import datetime as dt
 import io
 import json
@@ -7,11 +7,11 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt.agentic import conductor_cost as CC
-from wt.agentic import events as E
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
-from wt.cli import cli
+from nightwright.agentic import conductor_cost as CC
+from nightwright.agentic import events as E
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
+from nightwright.cli import cli
 
 TZ = ZoneInfo("America/New_York")
 PRICE = {"input": 10.0, "output": 0.0, "cache_read": 1.0, "cache_write_5m": 0.0,
@@ -177,7 +177,7 @@ def test_unpriced_model_reported(cfg):
     assert rep["by_day"][0]["usd"] == 2.0
     assert rep["merges"] == 0 and rep["usd_per_merge"] is None
     assert rep["idle_usd"] == 2.0
-    assert "(partial: 1 unpriced turns)" in __import__("wt.agentic.cli_conductor",
+    assert "(partial: 1 unpriced turns)" in __import__("nightwright.agentic.cli_conductor",
                                                        fromlist=["x"]).summary_line(rep)
 
 
@@ -198,7 +198,7 @@ def test_cost_report_split_and_per_merge(cfg):
     import datetime as dt
     rep = CC.cost_report(cfg, since=dt.date(2026, 10, 20), until=dt.date(2026, 10, 20),
                          session_ids=["s"])
-    assert rep["schema"] == "wt.conductor.cost.v1"
+    assert rep["schema"] == "nw.conductor.cost.v1"
     assert rep["totals"]["turns"] == 6 and rep["totals"]["usd"] == 6.0
     assert rep["totals"]["usd_complete"] is True
     assert rep["idle_usd"] == 3.0
@@ -267,7 +267,7 @@ def test_subagents_only_with_flag(cfg):
 # ---- CLI -----------------------------------------------------------------------------------
 
 def test_cli_conductor_cost_json_and_text(cfg, monkeypatch):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     campaign(cfg, "A", "2026-10-20T14:00:00+00:00", "2026-10-20T16:00:00+00:00")
     write_transcript(cfg, "s", [turn("t1", utc(20, 14, 30)), turn("t2", utc(20, 17))])
     CC.record_session(cfg, "conductor", {}, source="manual", session_id="s")
@@ -285,7 +285,7 @@ def test_cli_conductor_cost_json_and_text(cfg, monkeypatch):
 
 
 def test_conductor_session_add_list(cfg, monkeypatch):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["queue", "conductor-session", "list"])
     assert r.exit_code == 0 and "no sessions" in r.output
     r = CliRunner().invoke(cli, ["queue", "conductor-session", "add", "ghost"])
@@ -340,7 +340,7 @@ def test_window_edges_are_start_inclusive_end_exclusive(cfg):
 
 
 def test_session_option_overrides_registry(cfg, monkeypatch):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     write_transcript(cfg, "A", [turn("a1", utc(20, 14))])
     write_transcript(cfg, "B", [turn("b1", utc(20, 14)), turn("b2", utc(20, 15)),
                                 turn("b3", utc(20, 16), 300_000)])
@@ -392,7 +392,7 @@ def test_session_ids_with_path_or_glob_chars_never_match(cfg):
 
 
 def test_conductor_session_list_text_rows(cfg, monkeypatch):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     CC.record_session(cfg, "conductor", {"CLAUDE_PID": "77"}, session_id="sess-one")
     r = CliRunner().invoke(cli, ["queue", "conductor-session", "list"])
     assert r.exit_code == 0, r.output

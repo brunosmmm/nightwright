@@ -6,15 +6,15 @@ how clearly the spec says what "done" means. This section is about that half of 
 
 ```mermaid
 flowchart LR
-    T(("a thought")) --> C["<b>Capture</b><br/>seconds, no friction<br/><code>wt idea …</code>"]
-    C --> X["<b>Explore</b><br/>Summary · open questions · log<br/><code>/wt-explore</code>"]
+    T(("a thought")) --> C["<b>Capture</b><br/>seconds, no friction<br/><code>nw idea …</code>"]
+    C --> X["<b>Explore</b><br/>Summary · open questions · log<br/><code>/nw-explore</code>"]
     X --> D{"Ready?"}
     D -- "not yet" --> X
     D -- "no — drop or<br/>park as researched" --> Z(["closed"])
-    D -- "yes" --> S["<b>Write the spec</b><br/>decision · ACs · test plan<br/><code>/wt-new-work</code>"]
-    S --> R["<b>Review</b><br/><code>wt spec review</code>"]
+    D -- "yes" --> S["<b>Write the spec</b><br/>decision · ACs · test plan<br/><code>/nw-new-work</code>"]
+    S --> R["<b>Review</b><br/><code>nw spec review</code>"]
     R -- revise --> S
-    R -- approve --> Q["<b>Queue it</b><br/><code>wt queue add</code>"]
+    R -- approve --> Q["<b>Queue it</b><br/><code>nw queue add</code>"]
     Q --> L(["the agentic loop"])
 ```
 
@@ -28,15 +28,15 @@ flowchart LR
 ## The life of an idea
 
 Ideas live in an org file (plain text you own), each with a stable `IDEA-NNN` id. Their
-state tells you, and `wt next`, what to do next.
+state tells you, and `nw next`, what to do next.
 
 ```mermaid
 stateDiagram-v2
     direction LR
-    [*] --> IDEA: wt idea "…"
+    [*] --> IDEA: nw idea "…"
     IDEA --> INCUBATE: start exploring
     INCUBATE --> INCUBATE: log · summary · questions
-    INCUBATE --> SPECCED: wt spec new / /wt-new-work
+    INCUBATE --> SPECCED: nw spec new / /nw-new-work
     IDEA --> SPECCED: (small, obvious ideas)
     SPECCED --> PROMOTED: spec done, or tasks generated
     SPECCED --> EXPORTED: outbound: handed to another repo
@@ -50,10 +50,10 @@ stateDiagram-v2
     DROPPED --> [*]
 ```
 
-`wt next` reads these states and prints the next command for every open idea. It's the
+`nw next` reads these states and prints the next command for every open idea. It's the
 quickest way to see what's waiting on you.
 
-![wt next](../assets/captures/cli-next.svg)
+![nw next](../assets/captures/cli-next.svg)
 
 ## Why the ideas half matters for the loop
 
@@ -66,7 +66,7 @@ quickest way to see what's waiting on you.
   an *epic* with child specs, each small enough for one campaign.
 
 !!! info "In progress: put the idea itself in the queue"
-    Specs SPEC-0208–0217 add `wt queue add IDEA-NNN`. A campaign will then write the spec
+    Specs SPEC-0208–0217 add `nw queue add IDEA-NNN`. A campaign will then write the spec
     from your explored idea, review and revise it, accept it, and build it, all on one
     branch. Exploring the idea well becomes even more important, because it's the only
     input that campaign gets.

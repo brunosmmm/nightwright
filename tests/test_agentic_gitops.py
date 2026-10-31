@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from wt.agentic import gitops as G
+from nightwright.agentic import gitops as G
 
 ENV = {
-    "GIT_AUTHOR_NAME": "wt test", "GIT_AUTHOR_EMAIL": "wt@test",
-    "GIT_COMMITTER_NAME": "wt test", "GIT_COMMITTER_EMAIL": "wt@test",
+    "GIT_AUTHOR_NAME": "nightwright test", "GIT_AUTHOR_EMAIL": "nightwright@test",
+    "GIT_COMMITTER_NAME": "nightwright test", "GIT_COMMITTER_EMAIL": "nightwright@test",
     "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
 }
 
@@ -44,7 +44,7 @@ def repo(tmp_path):
 
 @pytest.fixture
 def wt(repo, tmp_path):
-    return G.worktree_add(repo, tmp_path / "wts" / "c1", "wt/c1", "main")
+    return G.worktree_add(repo, tmp_path / "wts" / "c1", "nw/c1", "main")
 
 
 def test_read_only_helpers(repo):
@@ -60,28 +60,28 @@ def test_read_only_helpers(repo):
 
 
 def test_worktree_add_and_remove(repo, tmp_path):
-    path = G.worktree_add(repo, tmp_path / "wts" / "a", "wt/a", "main")
+    path = G.worktree_add(repo, tmp_path / "wts" / "a", "nw/a", "main")
     assert path.is_dir() and (path / "README.md").exists()
-    assert G.current_branch(path) == "wt/a"
+    assert G.current_branch(path) == "nw/a"
     with pytest.raises(G.GitError, match="already exists"):
-        G.worktree_add(repo, tmp_path / "wts" / "a", "wt/other", "main")
-    with pytest.raises(G.GitError, match="branch wt/a already exists"):
-        G.worktree_add(repo, tmp_path / "wts" / "b", "wt/a", "main")
+        G.worktree_add(repo, tmp_path / "wts" / "a", "nw/other", "main")
+    with pytest.raises(G.GitError, match="branch nw/a already exists"):
+        G.worktree_add(repo, tmp_path / "wts" / "b", "nw/a", "main")
     G.worktree_remove(repo, path)
     assert not path.exists()
     assert "wts/a" not in _git(repo, "worktree", "list")
-    G.branch_delete(repo, "wt/a")
-    assert "wt/a" not in _git(repo, "branch", "--list", "wt/a")
+    G.branch_delete(repo, "nw/a")
+    assert "nw/a" not in _git(repo, "branch", "--list", "nw/a")
 
 
 def test_commit_all_none_when_clean_and_sha_with_trailer(wt):
     assert G.commit_all(wt, "nothing") is None
     (wt / "f.txt").write_text("1\n")
-    msg = "wt(c1): implementer run 001 — add f\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+    msg = "nw(c1): implementer run 001 — add f\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
     sha = G.commit_all(wt, msg)
     assert sha == _git(wt, "rev-parse", "HEAD")
     assert _git(wt, "log", "-1", "--format=%B").strip() == msg
-    assert _git(wt, "log", "-1", "--format=%an") == "wt test"
+    assert _git(wt, "log", "-1", "--format=%an") == "nightwright test"
 
 
 def test_diff_stat_and_ahead_behind(repo, wt):
@@ -122,13 +122,13 @@ def test_rebase_conflict_aborts_and_restores_tree(repo, wt):
 def test_ff_merge_succeeds_when_ahead_and_refuses_when_diverged(repo, wt):
     (wt / "f.txt").write_text("1\n")
     sha = G.commit_all(wt, "feature")
-    assert G.ff_merge(repo, "wt/c1") == sha
+    assert G.ff_merge(repo, "nw/c1") == sha
     assert _git(repo, "rev-parse", "HEAD") == sha
     (wt / "f.txt").write_text("2\n")
     G.commit_all(wt, "feature 2")
     main_sha = _write_commit(repo, "other.txt", "x\n", "main diverges")
     with pytest.raises(G.GitError) as exc:
-        G.ff_merge(repo, "wt/c1")
+        G.ff_merge(repo, "nw/c1")
     assert exc.value.code != 0 and "ff-only" in " ".join(exc.value.cmd)
     assert _git(repo, "rev-parse", "HEAD") == main_sha
 
@@ -140,10 +140,10 @@ def test_fetch_and_push_against_bare_remote(repo, wt, tmp_path):
     _git(repo, "push", "-q", "origin", "main")
     (wt / "f.txt").write_text("1\n")
     sha = G.commit_all(wt, "feature")
-    G.push_branch(wt, "origin", "wt/c1")
-    assert _git(bare, "rev-parse", "refs/heads/wt/c1") == sha
-    assert _git(wt, "rev-parse", "--abbrev-ref", "wt/c1@{upstream}") == "origin/wt/c1"
-    G.fetch(repo, "origin", "wt/c1")
+    G.push_branch(wt, "origin", "nw/c1")
+    assert _git(bare, "rev-parse", "refs/heads/nw/c1") == sha
+    assert _git(wt, "rev-parse", "--abbrev-ref", "nw/c1@{upstream}") == "origin/nw/c1"
+    G.fetch(repo, "origin", "nw/c1")
     assert _git(repo, "rev-parse", "FETCH_HEAD") == sha
 
 
@@ -162,21 +162,21 @@ def test_gh_pr_create_uses_path_gh_and_returns_url(wt, tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", f"{d}{os.pathsep}{os.environ['PATH']}")
     body = tmp_path / "body.md"
     body.write_text("# PR\n")
-    url = G.gh_pr_create(wt, base="main", head="wt/c1", title="SPEC-1: t", body_file=body,
-                         draft=True, labels=("wt-agentic", "x"))
+    url = G.gh_pr_create(wt, base="main", head="nw/c1", title="SPEC-1: t", body_file=body,
+                         draft=True, labels=("nw-agentic", "x"))
     assert url == "https://github.com/x/y/pull/7"
     argv = log.read_text().split("\n")
-    assert argv[:9] == ["pr", "create", "--base", "main", "--head", "wt/c1", "--title",
+    assert argv[:9] == ["pr", "create", "--base", "main", "--head", "nw/c1", "--title",
                         "SPEC-1: t", "--body-file"]
     assert argv[9] == str(body)
-    assert "--draft" in argv and argv[argv.index("--label") + 1] == "wt-agentic"
+    assert "--draft" in argv and argv[argv.index("--label") + 1] == "nw-agentic"
 
 
 def test_gh_pr_create_failure_raises_with_tail(wt, tmp_path, monkeypatch):
     d, _ = _fake_gh(tmp_path, "echo 'auth required' >&2", code=4)
     monkeypatch.setenv("PATH", f"{d}{os.pathsep}{os.environ['PATH']}")
     with pytest.raises(G.GitError) as exc:
-        G.gh_pr_create(wt, base="main", head="wt/c1", title="t", body_file=tmp_path / "b.md")
+        G.gh_pr_create(wt, base="main", head="nw/c1", title="t", body_file=tmp_path / "b.md")
     assert exc.value.code == 4 and "auth required" in exc.value.tail
 
 
@@ -200,7 +200,7 @@ REGEN = {"gen.txt": "echo regenerated > gen.txt"}
 @pytest.fixture
 def conflicting(repo, tmp_path):
     _write_commit(repo, "gen.txt", "orig\n", "gen")
-    w = G.worktree_add(repo, tmp_path / "wts" / "rg", "wt/rg", "main")
+    w = G.worktree_add(repo, tmp_path / "wts" / "rg", "nw/rg", "main")
     _write_commit(w, "gen.txt", "branch\n", "branch gen")
     _write_commit(repo, "gen.txt", "main\n", "main gen")
     return repo, w
@@ -275,6 +275,6 @@ def test_docs_only_violations_exact_and_prefix_only():
     assert G.docs_only_violations(["docs/design/a.py", "docs/design/sub/b.scss",
                                    "docs/WORKFLOW.md"], allow) == []
     paths = ["docs/designer.md", "docs/WORKFLOW.md.bak", "docs/design", "docs/specs/x.md",
-             "docs/LEDGER.md", "README.md", "skills/x/SKILL.md", "src/wt/agentic/personas/x.md"]
+             "docs/LEDGER.md", "README.md", "skills/x/SKILL.md", "src/nightwright/agentic/personas/x.md"]
     assert G.docs_only_violations(paths, allow) == paths
     assert G.docs_only_violations(["a"], []) == ["a"]

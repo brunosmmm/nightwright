@@ -1,4 +1,4 @@
-"""SPEC-0233: `wt queue merge` — a branch merge runs as a `kind: merge` campaign (QUEUED →
+"""SPEC-0233: `nw queue merge` — a branch merge runs as a `kind: merge` campaign (QUEUED →
 OPENING → CLOSING → MERGED), no persona, through the normal close. Offline: temp git repos,
 sh gates, the fake runner (never used: a merge campaign spawns nothing)."""
 import json
@@ -9,19 +9,19 @@ import pytest
 
 from test_agentic_e2e import (ENV, _git, _write, added, impl_done, make_cfg, make_repo, review,
                               run_cli, script, write_review)
-from wt.agentic import close as CL
-from wt.agentic import followups as FU
-from wt.agentic import queue as Q
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
+from nightwright.agentic import close as CL
+from nightwright.agentic import followups as FU
+from nightwright.agentic import queue as Q
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
 
 
 @pytest.fixture(autouse=True)
 def _git_env(monkeypatch):
     for k, v in ENV.items():
         monkeypatch.setenv(k, v)
-    monkeypatch.delenv("WT_AGENTIC_RUNNER", raising=False)
-    monkeypatch.delenv("WT_AGENTIC_FAKE_SCRIPT", raising=False)
+    monkeypatch.delenv("NW_AGENTIC_RUNNER", raising=False)
+    monkeypatch.delenv("NW_AGENTIC_FAKE_SCRIPT", raising=False)
 
 
 def branch_wt(tmp_path, repo, branch="fix/typo", *, files=None, adopt=True):
@@ -118,13 +118,13 @@ def test_plan_refuses_a_spec_campaigns_own_branch(world, monkeypatch):
     spec = repo / "docs/specs/0001-trivial.md"
     write_review(cfg, spec, "SPEC-0001")
     cid = added(cfg, monkeypatch)
-    _git(repo, "branch", f"wt/{cid}", "main")        # what the open step would create
-    _git(repo, "worktree", "add", "-q", str(tmp / "other"), f"wt/{cid}")
+    _git(repo, "branch", f"nw/{cid}", "main")        # what the open step would create
+    _git(repo, "worktree", "add", "-q", str(tmp / "other"), f"nw/{cid}")
     _write(tmp / "other", "y.txt", "y\n")
     _git(tmp / "other", "add", "-A")
     _git(tmp / "other", "commit", "-q", "-m", "y")
     with pytest.raises(ValueError, match="already has an active campaign"):
-        plan(cfg, f"wt/{cid}")
+        plan(cfg, f"nw/{cid}")
 
 
 def test_plan_worktree_must_match(world):
@@ -213,7 +213,7 @@ def test_regenerate_failed_park_resumes_to_closing(world):               # SPEC-
 def test_docs_only_plan_does_not_count_a_declared_regenerate_path(world):    # SPEC-0255
     repo, cfg, tmp = world
     allow_docs(repo)
-    f = repo / ".wt" / "project.yaml"
+    f = repo / ".nw" / "project.yaml"
     f.write_text(f.read_text().replace("merge:\n", "merge:\n  regenerate:\n"
                                        "    - {path: docs/LEDGER.md, cmd: 'true'}\n", 1))
     _git(repo, "commit", "-q", "-am", "declare regenerate")
@@ -252,7 +252,7 @@ def test_abandon_never_removes_an_adopted_worktree(world, keep):
     assert _git(repo, "rev-parse", "--verify", "fix/typo")
 
 
-def test_abandon_removes_a_worktree_wt_created(world):
+def test_abandon_removes_a_worktree_nw_created(world):
     repo, cfg, tmp = world
     branch_wt(tmp, repo, adopt=False)
     st = Q.apply_merge(cfg, plan(cfg))
@@ -273,7 +273,7 @@ def queue_merge(cfg, monkeypatch, branch="fix/typo", *extra):
                                    "--json", *extra])
     assert r.exit_code == 0, r.output
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.merge.v1" and d["written"] is True
+    assert d["schema"] == "nw.queue.merge.v1" and d["written"] is True
     return d["campaign"]
 
 
@@ -457,7 +457,7 @@ def test_e2e_merge_and_spec_campaign_close_one_at_a_time(tmp_path, monkeypatch):
 def test_visibility_label_everywhere(world, monkeypatch):
     repo, cfg, tmp = world
     branch_wt(tmp, repo)
-    monkeypatch.setattr("wt.console.console._width", 200)         # no wrapped cells
+    monkeypatch.setattr("nightwright.console.console._width", 200)         # no wrapped cells
     cid = queue_merge(cfg, monkeypatch, "fix/typo", "--note", "typo")
     r = run_cli(cfg, monkeypatch, ["queue", "list", "--json"])
     item = json.loads(r.output)["items"][0]
@@ -478,7 +478,7 @@ def test_visibility_label_everywhere(world, monkeypatch):
     assert dash["backlog"][0]["merge_branch"] == "fix/typo"
     assert dash["backlog"][0]["spec_title"] == "typo"
     from rich.console import Console
-    from wt.agentic import cli_queue as CQ
+    from nightwright.agentic import cli_queue as CQ
     con = Console(record=True, width=160)
     con.print(CQ._dash_backlog(dash["backlog"]))
     assert "merge:fix/typo" in con.export_text() and "None" not in con.export_text()
@@ -489,7 +489,7 @@ def test_visibility_label_everywhere(world, monkeypatch):
 def _setup_cmds(repo, *cmds):
     """Replace the project's `worktrees.setup` and commit it, so a branch cut from main has it."""
     import re
-    p = repo / ".wt" / "project.yaml"
+    p = repo / ".nw" / "project.yaml"
     text = re.sub(r"worktrees:\n  setup: \[.*\]\n",
                   "worktrees:\n  setup: " + json.dumps(list(cmds)) + "\n", p.read_text())
     p.write_text(text)
@@ -624,7 +624,7 @@ def test_close_parks_when_the_policy_changed_to_pr(world, monkeypatch):
     r = run_cli(cfg, monkeypatch, ["queue", "tick", "--json"])
     assert r.exit_code == 0, r.output
     assert S.read_state(cfg, cid)["state"] == "CLOSING"
-    yml = repo / ".wt" / "project.yaml"
+    yml = repo / ".nw" / "project.yaml"
     yml.write_text(yml.read_text().replace("policy: merge", "policy: pr"))
     tip = _git(wt, "rev-parse", "HEAD")
     run_until_idle(cfg, monkeypatch)
@@ -696,7 +696,7 @@ ALLOW = ["docs/design/", "docs/WORKFLOW.md"]
 
 def allow_docs(repo, paths=ALLOW):
     """Commit an allowlist into the project config on main (the main checkout stays clean)."""
-    f = repo / ".wt" / "project.yaml"
+    f = repo / ".nw" / "project.yaml"
     f.write_text(f.read_text().replace("merge:\n", f"merge:\n  docs_only_paths: {json.dumps(paths)}\n", 1))
     _git(repo, "commit", "-q", "-am", "allow docs-only paths")
 
@@ -705,14 +705,14 @@ def test_docs_only_is_refused_without_an_allowlist(world):
     repo, cfg, tmp = world
     branch_wt(tmp, repo, files={"docs/WORKFLOW.md": "x\n"})
     with pytest.raises(ValueError, match=r"--docs-only is disabled for Meta-Tools: set "
-                                          r"merge\.docs_only_paths in \.wt/project\.yaml"):
+                                          r"merge\.docs_only_paths in \.nw/project\.yaml"):
         plan(cfg, docs_only=True)
     assert "docs_only" not in plan(cfg)                         # the flag is opt-in
 
 
 @pytest.mark.parametrize("bad", [
     "docs/specs/x.md", "docs/LEDGER.md", "README.md", "skills/x/SKILL.md",
-    "src/wt/agentic/personas/x.md", "docs/designer.md"])
+    "src/nightwright/agentic/personas/x.md", "docs/designer.md"])
 def test_docs_only_refuses_paths_outside_the_allowlist(world, bad):
     repo, cfg, tmp = world
     allow_docs(repo)
@@ -771,7 +771,7 @@ def test_cli_docs_only_dry_run_json_and_text(world, monkeypatch):
     r = run_cli(cfg, monkeypatch, ["queue", "merge", "fix/typo", "--project", "Meta-Tools",
                                    "--docs-only", "--json"])
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.merge.v1" and d["docs_only"] is True
+    assert d["schema"] == "nw.queue.merge.v1" and d["docs_only"] is True
     assert d["docs_only_paths"] == ALLOW and d["written"] is False
     assert d["gates"].startswith("none (docs-only; 1 paths")
 
@@ -809,12 +809,12 @@ def test_e2e_docs_only_ignores_code_that_landed_on_base_while_queued(tmp_path, m
     allow_docs(repo)
     branch_wt(tmp_path, repo, files={"docs/design/a.md": "design\n"})
     cid = queue_merge(cfg, monkeypatch, "fix/typo", "--docs-only")
-    _write(repo, "src/wt/landed.py", "x = 1\n")                 # code lands on main meanwhile
+    _write(repo, "src/nightwright/landed.py", "x = 1\n")                 # code lands on main meanwhile
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "code on main")
     run_until_idle(cfg, monkeypatch)
     assert S.read_state(cfg, cid)["state"] == "MERGED"
-    assert (repo / "docs" / "design" / "a.md").exists() and (repo / "src/wt/landed.py").exists()
+    assert (repo / "docs" / "design" / "a.md").exists() and (repo / "src/nightwright/landed.py").exists()
 
 
 def test_e2e_docs_only_amended_with_code_parks_then_recovers_through_the_gates(tmp_path,
@@ -831,7 +831,7 @@ def test_e2e_docs_only_amended_with_code_parks_then_recovers_through_the_gates(t
     st = S.read_state(cfg, cid)
     assert st["state"] == "PARKED" and st["park"]["reason"] == "not_docs_only", st
     assert st["park"]["resume_to"] == "QUEUED" and "src/x.py" in st["park"]["detail"]
-    assert f"wt queue abandon {cid} --yes" in st["park"]["detail"]
+    assert f"nw queue abandon {cid} --yes" in st["park"]["detail"]
     assert "without --docs-only" in st["park"]["detail"]
     assert not (repo / "src" / "x.py").exists()                  # nothing merged
     assert "gate" not in [e["type"] for e in S.read_ledger(cfg, cid)]

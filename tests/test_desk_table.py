@@ -1,7 +1,7 @@
 """Desk table overhaul (SPEC-0110): shared planner, auto-drop, filters, sort, wide mode.
 
 Two invariants carry the design: the desk and the CLI share **one** column planner, and the
-in-app filters produce **the same ids** as the equivalent `wt ideas` invocation. If either
+in-app filters produce **the same ids** as the equivalent `nw ideas` invocation. If either
 drifts, the desk is quietly lying about the corpus.
 """
 import asyncio
@@ -12,10 +12,10 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import report as R
-from wt import tui as T
-from wt.cli import cli
-from wt.tui import model as M
+from nightwright import report as R
+from nightwright import tui as T
+from nightwright.cli import cli
+from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -47,7 +47,7 @@ def _cfg(tmp_path):
 
 def _seed(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "alpha example thing", "--project", "Example"]).exit_code == 0
     assert run(cli, ["idea", "beta meta thing", "--project", "Meta-Tools",
@@ -111,7 +111,7 @@ def test_q_is_registered_in_the_shared_column_table():
 
 @needs_textual
 def test_auto_drop_sheds_columns_narrow_and_keeps_all_wide():
-    from wt.tui.app import DESK_COLUMNS, DROP_ORDER, HEADING_FLOOR, plan_desk_columns
+    from nightwright.tui.app import DESK_COLUMNS, DROP_ORDER, HEADING_FLOOR, plan_desk_columns
 
     prows = [{"id": "  IDEA-143", "state": "INCUBATE", "pri": "B", "q": "3",
               "kind": "🐛", "project": "Meta-Tools", "updated": "12m"}]
@@ -131,7 +131,7 @@ def test_auto_drop_sheds_columns_narrow_and_keeps_all_wide():
 @needs_textual
 def test_id_and_updated_are_never_dropped():
     """`id` is how you refer to a row; `updated` drives the default sort."""
-    from wt.tui.app import plan_desk_columns
+    from nightwright.tui.app import plan_desk_columns
 
     prows = [{k: "x" for k in ("id", "state", "pri", "q", "kind", "project", "updated")}]
     for width in (20, 30, 40, 60, 100):
@@ -208,7 +208,7 @@ def test_cli_shows_q_only_when_some_idea_has_open_questions(tmp_path, monkeypatc
 
 @needs_textual
 def test_filter_bar_applies_and_clears(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -240,7 +240,7 @@ def test_filter_bar_applies_and_clears(tmp_path, monkeypatch):
 
 @needs_textual
 def test_sort_hotkeys_cycle_and_reverse(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -270,7 +270,7 @@ def test_sort_hotkeys_cycle_and_reverse(tmp_path, monkeypatch):
 
 @needs_textual
 def test_wide_mode_hides_detail_and_replans_columns(tmp_path, monkeypatch):
-    from wt.tui.app import DESK_COLUMNS, IdeaDesk
+    from nightwright.tui.app import DESK_COLUMNS, IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -303,7 +303,7 @@ def test_project_column_is_visible_in_the_desk(tmp_path, monkeypatch):
     """The reported gap: you could not see which project an idea belonged to."""
     from test_tui_desk import _grid
 
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 

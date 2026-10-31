@@ -3,7 +3,7 @@ import datetime as dt
 
 import pytest
 
-from wt.agentic import autopark as AP
+from nightwright.agentic import autopark as AP
 
 NOW = dt.datetime(2026, 10, 30, 12, 0, 0, tzinfo=dt.timezone.utc)
 SETT = dict(AP.DEFAULTS)

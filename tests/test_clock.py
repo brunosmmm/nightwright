@@ -6,9 +6,9 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import org_write as W
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright import org_write as W
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 
 def _cfg(tmp_path):
@@ -112,7 +112,7 @@ def test_multiple_clock_cycles_accumulate_in_same_drawer(tmp_path):
 
 def test_cli_clock_in_and_out(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     W.add_idea(cfg, "cli clock")
     r_in = CliRunner().invoke(cli, ["idea", "clock-in", "IDEA-001"])
     assert r_in.exit_code == 0, r_in.output
@@ -135,7 +135,7 @@ def test_default_task_clock_is_empty_tuple(tmp_path):
 # --- Markdown Clock Log parser + add_clock_entry (SPEC-0063) ---------------------------
 
 def test_parse_clock_log_pairs_complete_entries():
-    from wt.explore import parse_clock_log
+    from nightwright.explore import parse_clock_log
     text = (
         "CLOCK-IN: [2026-07-25T09:00:00]\n"
         "CLOCK-OUT: [2026-07-25T09:30:00]\n"
@@ -150,7 +150,7 @@ def test_parse_clock_log_pairs_complete_entries():
 
 
 def test_parse_clock_log_skips_unmatched_trailing_clock_in():
-    from wt.explore import parse_clock_log
+    from nightwright.explore import parse_clock_log
     text = (
         "CLOCK-IN: [2026-07-25T09:00:00]\n"
         "CLOCK-OUT: [2026-07-25T09:30:00]\n"
@@ -164,7 +164,7 @@ def test_parse_clock_log_accepts_unbracketed_timestamps():
     """Bug found against a real portable spec (DEMO-0001): agents in practice also
     write plain, unbracketed timestamps — the parser silently returned zero pairs for these
     before this fix, though the guidance's own example shows brackets."""
-    from wt.explore import parse_clock_log
+    from nightwright.explore import parse_clock_log
     text = (
         "CLOCK-IN: 2026-07-26 12:01\n"
         "CLOCK-OUT: 2026-07-26 12:07\n"
@@ -179,7 +179,7 @@ def test_parse_clock_log_accepts_unbracketed_timestamps():
 
 
 def test_parse_clock_log_mixed_bracketed_and_unbracketed():
-    from wt.explore import parse_clock_log
+    from nightwright.explore import parse_clock_log
     text = (
         "CLOCK-IN: [2026-07-25T09:00:00]\n"
         "CLOCK-OUT: 2026-07-25 09:30:00\n"
@@ -191,11 +191,11 @@ def test_parse_clock_log_mixed_bracketed_and_unbracketed():
 
 def test_parse_clock_log_accepts_org_weekday_timestamps():
     """Bug found against a real portable spec (EXAMPLE-0026/IDEA-212): agents following
-    /wt-implement-spec's `CLOCK-IN: [timestamp]` guidance wrote org-mode-style timestamps
+    /nw-implement-spec's `CLOCK-IN: [timestamp]` guidance wrote org-mode-style timestamps
     with a weekday abbreviation, which `datetime.fromisoformat` rejects outright — the
-    parser raised, and `wt spec sweep` silently swallowed it as `+0 clock` instead of
+    parser raised, and `nw spec sweep` silently swallowed it as `+0 clock` instead of
     surfacing the failure."""
-    from wt.explore import parse_clock_log
+    from nightwright.explore import parse_clock_log
     text = (
         "CLOCK-IN: [2026-08-05 Wed 19:30]\n"
         "CLOCK-OUT: [2026-08-05 Wed 19:33]\n"
@@ -210,7 +210,7 @@ def test_parse_clock_log_skips_unfilled_placeholder():
     literal example `CLOCK-IN: [timestamp]` / `CLOCK-OUT: [timestamp]` was sometimes left
     verbatim, unfilled, in the Clock Log section — that's an unused template, not real clock
     data, and must not raise or be counted as a pair."""
-    from wt.explore import parse_clock_log
+    from nightwright.explore import parse_clock_log
     text = (
         "CLOCK-IN: [timestamp]\n"
         "CLOCK-OUT: [timestamp]\n"

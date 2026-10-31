@@ -1,20 +1,20 @@
-"""SPEC-0273: `wt queue park|resume|abandon|prioritize` record the real actor (`--by`, else
-$WT_MAILBOX_ADDR, else human) on every ledger event they write."""
+"""SPEC-0273: `nw queue park|resume|abandon|prioritize` record the real actor (`--by`, else
+$NW_MAILBOX_ADDR, else human) on every ledger event they write."""
 import json
 
 import pytest
 
 from test_agentic_e2e import added, impl_done, make_cfg, make_repo, run_cli, script
 from test_agentic_nonblocking import HeldRunner, _settle
-from wt.agentic import events as E
-from wt.agentic import lease as L
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright.agentic import events as E
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 
 @pytest.fixture(autouse=True)
 def _no_addr(monkeypatch):
-    monkeypatch.delenv("WT_MAILBOX_ADDR", raising=False)
+    monkeypatch.delenv("NW_MAILBOX_ADDR", raising=False)
 
 
 def _world(tmp_path, monkeypatch):
@@ -64,14 +64,14 @@ def test_park_resume_abandon_record_by(tmp_path, monkeypatch):
 
 def test_prioritize_records_by_from_env(tmp_path, monkeypatch):
     cfg, cid = _world(tmp_path, monkeypatch)
-    monkeypatch.setenv("WT_MAILBOX_ADDR", "conductor")
+    monkeypatch.setenv("NW_MAILBOX_ADDR", "conductor")
     n = len(S.read_ledger(cfg, cid))
     r = run_cli(cfg, monkeypatch, ["queue", "prioritize", cid, "2", "--yes", "--json"])
     assert r.exit_code == 0, r.output
     assert json.loads(r.output)["by"] == "conductor"
     new = _since(cfg, cid, n)
     assert new and {e["by"] for e in new} == {"conductor"}, new
-    monkeypatch.setenv("WT_MAILBOX_ADDR", "steward:Meta-Tools")
+    monkeypatch.setenv("NW_MAILBOX_ADDR", "steward:Meta-Tools")
     n = len(S.read_ledger(cfg, cid))
     run_cli(cfg, monkeypatch, ["queue", "prioritize", cid, "3", "--yes"])
     assert {e["by"] for e in _since(cfg, cid, n)} == {"steward:Meta-Tools"}
@@ -97,7 +97,7 @@ def test_invalid_by_refused(tmp_path, monkeypatch, cmd):
     r = run_cli(cfg, monkeypatch, argv + ["--by", "nobody"])
     assert r.exit_code == 1 and "unknown address" in r.output, r.output
     assert S.read_ledger(cfg, cid) == before
-    monkeypatch.setenv("WT_MAILBOX_ADDR", "steward:NoSuchProject")
+    monkeypatch.setenv("NW_MAILBOX_ADDR", "steward:NoSuchProject")
     r = run_cli(cfg, monkeypatch, argv)
     assert r.exit_code == 1 and "unknown steward project" in r.output, r.output
     assert S.read_ledger(cfg, cid) == before
@@ -139,7 +139,7 @@ def test_deferred_park_keeps_requester(tmp_path, monkeypatch):
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
     runner = HeldRunner(cfg, "SPEC-0001")
     pool = Q.StepPool()
-    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    lease = L.acquire(cfg, ["nw", "queue", "run"])
     try:
         cid = added(cfg, monkeypatch)
         Q.tick(cfg, runner=runner, pool=pool)
@@ -166,7 +166,7 @@ def test_deferred_park_keeps_requester(tmp_path, monkeypatch):
 
 
 def test_queue_add_records_by(tmp_path, monkeypatch):
-    """SPEC-0320: `wt queue add --by conductor` attributes the campaign's opening events to
+    """SPEC-0320: `nw queue add --by conductor` attributes the campaign's opening events to
     the conductor (a plain, unprefixed command that the allow rules match)."""
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
@@ -177,7 +177,7 @@ def test_queue_add_records_by(tmp_path, monkeypatch):
 def test_queue_add_by_defaults_to_env_then_human(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, [impl_done()]))
-    monkeypatch.setenv("WT_MAILBOX_ADDR", "steward:Meta-Tools")
+    monkeypatch.setenv("NW_MAILBOX_ADDR", "steward:Meta-Tools")
     cid = added(cfg, monkeypatch)
     assert {e["by"] for e in S.read_ledger(cfg, cid)} == {"steward:Meta-Tools"}
 

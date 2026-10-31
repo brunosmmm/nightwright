@@ -7,10 +7,10 @@ import threading
 import pytest
 
 from test_agentic_queue import _rr, opened  # noqa: F401  (fixture)
-from wt.agentic import escalations as ESC
-from wt.agentic import lease as L
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright.agentic import escalations as ESC
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 PROFILE = {"slots": 2, "loop_max": 3, "campaign_cap_usd": 10.0, "run_timeout_s": 60,
            "personas": {"conformance_reviewer": {"max_budget_usd": 1.5}}}

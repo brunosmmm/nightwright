@@ -13,10 +13,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from wt import explore as E
-from wt import org_write as W
-from wt import report as R
-from wt.org import load_tasks
+from nightwright import explore as E
+from nightwright import org_write as W
+from nightwright import report as R
+from nightwright.org import load_tasks
 
 OLD = "[2019-01-01 Tue 00:00]"
 
@@ -186,7 +186,7 @@ def test_rotation_preserves_stamps(tmp_path):
 
 def test_stamping_adds_no_extra_write(tmp_path, monkeypatch):
     """The stamp must ride the mutator's existing write, not trigger a second read-modify-write
-    (which would also double the backup churn on every `wt idea log`)."""
+    (which would also double the backup churn on every `nw idea log`)."""
     cfg = _cfg(tmp_path)
     W.add_idea(cfg, "stamp me")
 

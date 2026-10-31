@@ -5,11 +5,11 @@ import pytest
 
 from test_agentic_dashboard import _fixture
 from test_tui_queue_tab import SIZE, _desk, _run, press, settle, spy_titles
-from wt import tui as T
-from wt.agentic import events as EV
-from wt.agentic import mailbox as MB
-from wt.tui import agentic_model as AM
-from wt.tui import mailbox_tab as MT
+from nightwright import tui as T
+from nightwright.agentic import events as EV
+from nightwright.agentic import mailbox as MB
+from nightwright.tui import agentic_model as AM
+from nightwright.tui import mailbox_tab as MT
 from waits import pilot_until
 
 needs_textual = pytest.mark.skipif(not T.textual_available(),
@@ -295,7 +295,7 @@ def test_new_message_end_to_end_selects_the_target_inbox_and_maps_the_campaign(t
 
 
 def S_spec(cfg, cid):
-    from wt.agentic import store
+    from nightwright.agentic import store
     return store.read_state(cfg, cid).get("spec_id") or ""
 
 
@@ -544,7 +544,7 @@ def test_timer_pauses_when_the_tab_is_left(tmp_path, monkeypatch):
 # --- enter (AC7) ----------------------------------------------------------------------------
 
 def test_enter_opens_the_campaign_screen_or_focuses_the_pane(tmp_path):
-    from wt.tui.campaign_screen import CampaignScreen
+    from nightwright.tui.campaign_screen import CampaignScreen
     repo, cfg, ids = _fixture(tmp_path)
     ask(cfg, frm="conductor", to="human", kind="info", text="no campaign here")
     ask(cfg, frm="conductor", to="human", kind="info", text="with campaign",

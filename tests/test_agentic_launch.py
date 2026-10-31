@@ -1,4 +1,4 @@
-"""SPEC-0319: `wt queue conductor-launch` / `steward-launch`."""
+"""SPEC-0319: `nw queue conductor-launch` / `steward-launch`."""
 import json
 import os
 import shlex
@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from wt import rules
-from wt.agentic import conductor_cost as CC
-from wt.agentic import launch as L
-from wt.agentic import runner as R
-from wt.cli import cli
+from nightwright import rules
+from nightwright.agentic import conductor_cost as CC
+from nightwright.agentic import launch as L
+from nightwright.agentic import runner as R
+from nightwright.cli import cli
 
 PRICE = {"input": 3.0, "output": 15.0}
 KEYS = ("CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS,BASH_MAX_OUTPUT_LENGTH,"
@@ -21,7 +21,7 @@ KEYS = ("CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS,BASH_MAX_OUTPUT_LENGTH,"
 @pytest.fixture
 def cfg(tmp_path):
     (tmp_path / "data").mkdir()
-    (tmp_path / "wt").mkdir()
+    (tmp_path / "nw").mkdir()
     (tmp_path / "foo").mkdir()
     return {"data_dir": str(tmp_path / "data"), "config_dir": str(tmp_path / "config"),
             "_root": str(tmp_path / "projects"),
@@ -32,11 +32,11 @@ def cfg(tmp_path):
 def projects(monkeypatch, tmp_path):
     def payload(cfg):
         return {"projects": [
-            {"name": "Meta-Tools", "research": {"root": str(tmp_path / "wt")}},
+            {"name": "Meta-Tools", "research": {"root": str(tmp_path / "nw")}},
             {"name": "Foo", "research": {"root": str(tmp_path / "foo")}},
             {"name": "Rootless", "research": {"root": None}}]}
     monkeypatch.setattr(rules, "projects_payload", payload)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg_holder[0])
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg_holder[0])
 
 
 cfg_holder = [None]
@@ -46,7 +46,7 @@ cfg_holder = [None]
 def _wire(cfg, monkeypatch, tmp_path):
     cfg_holder[0] = cfg
     monkeypatch.delenv("CLAUDE_CODE_EFFORT_LEVEL", raising=False)
-    monkeypatch.delenv("WT_LAUNCH_KEYS", raising=False)
+    monkeypatch.delenv("NW_LAUNCH_KEYS", raising=False)
     monkeypatch.chdir(tmp_path)
 
 
@@ -81,18 +81,18 @@ def test_default_plan_argv_and_env(cfg, tmp_path):
     sid = plan["session_id"]
     assert plan["argv"] == ["claude", "-n", "conductor", "--session-id", sid, "--model",
                             "claude-sonnet-5-5", "--effort", "medium", "--autocompact",
-                            "150000", "Run the /wt-orient skill, then the /wt-conduct skill."]
+                            "150000", "Run the /nw-orient skill, then the /nw-conduct skill."]
     assert plan["prompt"] == L.CONDUCTOR_PROMPT
     assert plan["env"] == {"CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS": "120000",
                            "BASH_MAX_OUTPUT_LENGTH": "15000",
                            "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS": "10000",
-                           "WT_LAUNCH_KEYS": KEYS}
-    assert plan["cwd"] == str(tmp_path / "wt")
+                           "NW_LAUNCH_KEYS": KEYS}
+    assert plan["cwd"] == str(tmp_path / "nw")
     r = invoke("conductor-launch", "--dry-run")
     assert r.exit_code == 0, r.output
-    assert f"cwd: {tmp_path / 'wt'}" in r.output and "env:" in r.output
+    assert f"cwd: {tmp_path / 'nw'}" in r.output and "env:" in r.output
     assert "unset: CLAUDE_CODE_EFFORT_LEVEL" in r.output
-    assert f"WT_LAUNCH_KEYS={KEYS}" in r.output
+    assert f"NW_LAUNCH_KEYS={KEYS}" in r.output
     argv_line = next(l for l in r.output.splitlines() if l.startswith("claude "))
     argv = shlex.split(argv_line)
     assert argv[:3] == ["claude", "-n", "conductor"] and argv[3] == "--session-id"
@@ -105,7 +105,7 @@ def test_default_plan_argv_and_env(cfg, tmp_path):
 def test_steward_plan_cwd_name_prompt(cfg, tmp_path):
     plan = L.build_plan(cfg, "steward", "Foo")
     assert plan["name"] == "steward:Foo" and plan["cwd"] == str(tmp_path / "foo")
-    assert plan["argv"][-1] == "Run the /wt-orient skill, then the /wt-steward skill for project Foo."
+    assert plan["argv"][-1] == "Run the /nw-orient skill, then the /nw-steward skill for project Foo."
     assert plan["argv"][2] == "steward:Foo"
     r = invoke("steward-launch", "Foo", "--dry-run")
     assert r.exit_code == 0 and "project Foo." in r.output
@@ -175,7 +175,7 @@ def test_ambient_effort_env_removed(cfg, ex, monkeypatch):
     assert r.exit_code == 0, r.output
     env = ex.calls[0][2]
     assert "CLAUDE_CODE_EFFORT_LEVEL" not in env and env["KEEP_ME"] == "1"
-    assert env["WT_LAUNCH_KEYS"] == KEYS
+    assert env["NW_LAUNCH_KEYS"] == KEYS
 
 
 def _req(tmp_path, env):
@@ -191,11 +191,11 @@ def test_runner_child_env_drops_launch_keys(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "high")        # kept outside a launched session
     assert R._child_env(req) == {**os.environ, "EXTRA": "1"}      # not a launched session
     assert R._child_env(req)["CLAUDE_CODE_EFFORT_LEVEL"] == "high"
-    monkeypatch.setenv("WT_LAUNCH_KEYS", KEYS)
+    monkeypatch.setenv("NW_LAUNCH_KEYS", KEYS)
     for k in KEYS.split(","):
         monkeypatch.setenv(k, "9")
     env = R._child_env(req)
-    for k in (*KEYS.split(","), "WT_LAUNCH_KEYS", "CLAUDE_CODE_EFFORT_LEVEL"):
+    for k in (*KEYS.split(","), "NW_LAUNCH_KEYS", "CLAUDE_CODE_EFFORT_LEVEL"):
         assert k not in env
     assert env["UNRELATED"] == "u" and env["EXTRA"] == "1"
     env = R._child_env(_req(tmp_path, {"BASH_MAX_OUTPUT_LENGTH": "1234"}))   # explicit req.env wins
@@ -220,17 +220,17 @@ def test_runproc_wrapper_child_env(tmp_path, monkeypatch, launched):
            "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS": "10000"}
     env.pop("BASH_MAX_OUTPUT_LENGTH", None)
     if launched:
-        env["WT_LAUNCH_KEYS"] = KEYS
+        env["NW_LAUNCH_KEYS"] = KEYS
     else:
-        env.pop("WT_LAUNCH_KEYS", None)
-    subprocess.run([sys.executable, "-m", "wt.agentic.runproc", str(run_dir)], env=env,
+        env.pop("NW_LAUNCH_KEYS", None)
+    subprocess.run([sys.executable, "-m", "nightwright.agentic.runproc", str(run_dir)], env=env,
                    check=True, timeout=60)
     got = json.loads((run_dir / "result.json").read_text())
     assert got["UNRELATED"] == "u" and got["EXTRA"] == "1"
     assert got["BASH_MAX_OUTPUT_LENGTH"] == "1234"               # req.env wins
     if launched:
         for k in ("CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS", "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS",
-                  "WT_LAUNCH_KEYS", "CLAUDE_CODE_EFFORT_LEVEL"):
+                  "NW_LAUNCH_KEYS", "CLAUDE_CODE_EFFORT_LEVEL"):
             assert k not in got
     else:
         assert got["CLAUDE_CODE_EFFORT_LEVEL"] == "high"
@@ -244,7 +244,7 @@ def test_launch_registers_once_before_exec(cfg, ex):
     sid = argv[argv.index("--session-id") + 1]
     assert [(x["session_id"], x["source"], x["reader"], x["cwd"]) for x in ex.registered] == [
         (sid, "launch", "conductor", cwd)]
-    assert cwd == str(Path(cfg["data_dir"]).parent / "wt")
+    assert cwd == str(Path(cfg["data_dir"]).parent / "nw")
     assert len(sessions_lines(cfg)) == 1
     # resume (transcript exists) adds nothing; neither does the follower's registration
     d = Path(cfg["_root"]) / "-slug"
@@ -333,8 +333,8 @@ def test_json_requires_dry_run(cfg, ex):
 
 def test_skills_mention_launcher():
     root = Path(__file__).resolve().parent.parent / "skills"
-    assert "wt queue conductor-launch" in (root / "wt-conduct" / "SKILL.md").read_text()
-    assert "wt queue steward-launch" in (root / "wt-steward" / "SKILL.md").read_text()
+    assert "nw queue conductor-launch" in (root / "nw-conduct" / "SKILL.md").read_text()
+    assert "nw queue steward-launch" in (root / "nw-steward" / "SKILL.md").read_text()
 
 
 def test_steward_bad_override_falls_back_to_default(cfg):

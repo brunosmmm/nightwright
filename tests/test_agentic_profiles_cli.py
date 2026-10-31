@@ -1,4 +1,4 @@
-"""SPEC-0238: `wt profiles list|show|check` over a temp config dir and project root."""
+"""SPEC-0238: `nw profiles list|show|check` over a temp config dir and project root."""
 import json
 import os
 from pathlib import Path
@@ -6,10 +6,10 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from wt.agentic import profiles as P
-from wt.cli import cli
+from nightwright.agentic import profiles as P
+from nightwright.cli import cli
 
-SCHEMA = "schema: wt.profile.v1\n"
+SCHEMA = "schema: nw.profile.v1\n"
 DEFS = Path(P.__file__).resolve().parent / "profile_defs"
 
 
@@ -20,11 +20,11 @@ def env(tmp_path, monkeypatch):
     user = tmp_path / "cfg" / "profiles"
     proj = tmp_path / "proj"
     user.mkdir(parents=True)
-    (proj / ".wt" / "profiles").mkdir(parents=True)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
-    monkeypatch.setattr("wt.console.console._width", 400)   # COLUMNS is read once, at import
-    monkeypatch.setattr("wt.agentic.project.project_root", lambda c, name: proj.resolve())
-    monkeypatch.setattr("wt.agentic.project.find_project_for_cwd", lambda c, cwd=None: None)
+    (proj / ".nw" / "profiles").mkdir(parents=True)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.console.console._width", 400)   # COLUMNS is read once, at import
+    monkeypatch.setattr("nightwright.agentic.project.project_root", lambda c, name: proj.resolve())
+    monkeypatch.setattr("nightwright.agentic.project.find_project_for_cwd", lambda c, cwd=None: None)
     return cfg, user, proj
 
 
@@ -48,7 +48,7 @@ def test_list_table_and_json_with_a_broken_profile(env):
     r = _run("list", "--json")
     assert r.exit_code == 0, r.output
     d = json.loads(r.output)
-    assert d["schema"] == "wt.profiles.v1" and d["project"] is None and d["default"] == "balanced"
+    assert d["schema"] == "nw.profiles.v1" and d["project"] is None and d["default"] == "balanced"
     by = {p["name"]: p for p in d["profiles"]}
     assert set(by) == {"balanced", "broken", "frugal", "thorough"}
     bal = by["balanced"]
@@ -76,7 +76,7 @@ def test_show_text_and_json(env):
     assert "sources (lowest first): builtin → config.yaml" in r.output
     r = _run("show", "balanced", "--json")
     d = json.loads(r.output)
-    assert d["schema"] == "wt.profile.show.v1" and d["name"] == "balanced" and d["project"] is None
+    assert d["schema"] == "nw.profile.show.v1" and d["name"] == "balanced" and d["project"] is None
     assert d["profile"]["slots"] == 6 and d["profile"]["name"] == "balanced"
     assert d["provenance"]["slots"] == "config.yaml:agentic.profiles.balanced"
     assert d["provenance"]["loop_max"] == "builtin:balanced.yaml"
@@ -100,7 +100,7 @@ def test_check_exit_codes_and_json(env):
     assert r.exit_code == 0, r.output
     assert "✓ balanced" in r.output and "✓ thorough" in r.output
     assert json.loads(_run("check", "--json").output) == {
-        "schema": "wt.profiles.check.v1", "ok": True,
+        "schema": "nw.profiles.check.v1", "ok": True,
         "results": [{"name": n, "ok": True, "error": None}
                     for n in ("balanced", "frugal", "thorough")]}
     _put(user, "broken", SCHEMA + "personas: {implementer: {model: gpt}}\n")
@@ -126,8 +126,8 @@ def test_check_resolves_the_default_even_when_unknown(env):
 
 def test_project_selected_by_flag(env):
     cfg, user, proj = env
-    _put(proj / ".wt" / "profiles", "projonly", (DEFS / "frugal.yaml").read_text())
-    _put(proj / ".wt" / "profiles", "balanced", SCHEMA + "slots: 9\n")
+    _put(proj / ".nw" / "profiles", "projonly", (DEFS / "frugal.yaml").read_text())
+    _put(proj / ".nw" / "profiles", "balanced", SCHEMA + "slots: 9\n")
     r = _run("list", "--json")                              # no project: no project layer
     assert "projonly" not in {p["name"] for p in json.loads(r.output)["profiles"]}
     r = _run("list", "--project", "Proj", "--json")
@@ -136,16 +136,16 @@ def test_project_selected_by_flag(env):
     by = {p["name"]: p for p in d["profiles"]}
     assert by["projonly"]["scope"] == "project" and by["balanced"]["slots"] == 9
     r = _run("show", "balanced", "--project", "Proj")
-    assert r.exit_code == 0 and "Proj:.wt/profiles/balanced.yaml" in r.output
+    assert r.exit_code == 0 and "Proj:.nw/profiles/balanced.yaml" in r.output
     d = json.loads(_run("show", "balanced", "--project", "Proj", "--json").output)
-    assert d["provenance"]["slots"] == str(proj / ".wt" / "profiles" / "balanced.yaml")
+    assert d["provenance"]["slots"] == str(proj / ".nw" / "profiles" / "balanced.yaml")
     assert _run("check", "--project", "Proj").exit_code == 0
 
 
 def test_project_selected_by_cwd(env, monkeypatch):
     cfg, user, proj = env
-    _put(proj / ".wt" / "profiles", "projonly", (DEFS / "frugal.yaml").read_text())
-    monkeypatch.setattr("wt.agentic.project.find_project_for_cwd", lambda c, cwd=None: "Proj")
+    _put(proj / ".nw" / "profiles", "projonly", (DEFS / "frugal.yaml").read_text())
+    monkeypatch.setattr("nightwright.agentic.project.find_project_for_cwd", lambda c, cwd=None: "Proj")
     r = _run("list", "--json")
     d = json.loads(r.output)
     assert d["project"] == "Proj" and "projonly" in {p["name"] for p in d["profiles"]}
@@ -155,6 +155,6 @@ def test_project_selected_by_cwd(env, monkeypatch):
 def test_unknown_project_flag_is_an_error(env, monkeypatch):
     def boom(c, name):
         raise ValueError(f"cannot resolve a repo for project {name!r}: nope")
-    monkeypatch.setattr("wt.agentic.project.project_root", boom)
+    monkeypatch.setattr("nightwright.agentic.project.project_root", boom)
     r = _run("list", "--project", "Nope")
     assert r.exit_code == 1 and "cannot resolve a repo for project 'Nope'" in r.output

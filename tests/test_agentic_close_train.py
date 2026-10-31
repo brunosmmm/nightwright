@@ -6,9 +6,9 @@ import time
 
 from test_agentic_close_inflight import Env, _held_closing, mk  # noqa: F401  (fixture)
 from test_agentic_e2e import _git, run_cli
-from wt.agentic import events as E
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright.agentic import events as E
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 
 def _c(cid, root, entered_at=None, state="CLOSING", **closing):

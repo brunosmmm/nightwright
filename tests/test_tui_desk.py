@@ -1,6 +1,6 @@
 """Read-only ideas desk (SPEC-0100): view models on any install, pilot smoke with the extra.
 
-The `wt.tui.model` half imports no Textual, so the desk's data layer is covered on a base
+The `nightwright.tui.model` half imports no Textual, so the desk's data layer is covered on a base
 install. The widget half is skipped without the `tui` extra.
 """
 import asyncio
@@ -12,10 +12,10 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import tui as T
-from wt.cli import cli
-from wt.org import load_tasks
-from wt.tui import model as M
+from nightwright import tui as T
+from nightwright.cli import cli
+from nightwright.org import load_tasks
+from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -47,7 +47,7 @@ def _seed(tmp_path, monkeypatch):
     """Two ideas: one enriched + active, one DROPPED (non-active)."""
     cfg = _cfg(tmp_path)
     (Path(cfg["data_dir"])).mkdir(exist_ok=True)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "desk needs panes"]).exit_code == 0
     assert run(cli, ["idea", "second thing entirely"]).exit_code == 0
@@ -113,7 +113,7 @@ def test_load_rows_dedupes_duplicate_ids_across_org_files(tmp_path, monkeypatch)
     hist.write_text(body.replace("same id in two files", "historical copy"), encoding="utf-8")
     cfg["org_files"] = [str(org)]
     cfg["org_ideas_file"] = str(ideas)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     rows = M.load_rows(cfg, all_done=True)
     ids = [r.id for r, _ in rows]
     assert ids.count("IDEA-001") == 1
@@ -122,8 +122,8 @@ def test_load_rows_dedupes_duplicate_ids_across_org_files(tmp_path, monkeypatch)
 
 
 def test_rows_agree_with_the_classic_collector(tmp_path, monkeypatch):
-    """Parity guard: the desk must never disagree with `wt ideas` on order or membership."""
-    from wt import report as R
+    """Parity guard: the desk must never disagree with `nw ideas` on order or membership."""
+    from nightwright import report as R
 
     cfg = _seed(tmp_path, monkeypatch)
     for all_done in (False, True):
@@ -196,7 +196,7 @@ def test_detail_markup_escapes_org_prose(tmp_path, monkeypatch):
     """Org text is full of `[#A]` / `[[links]]` / `[2026-07-30 Thu]`; Rich must not eat them."""
     from rich.console import Console
 
-    from wt.tui.app import _render_detail
+    from nightwright.tui.app import _render_detail
 
     d = M.DeskDetail(id="IDEA-009", state="IDEA", heading="ship [[IDEA-042]] first",
                      summary="see [#A] and [bold]not bold[/bold]",
@@ -265,7 +265,7 @@ def _grid(app) -> list[str]:
 
 @needs_textual
 def test_desk_lists_ideas_selects_and_shows_detail(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -305,7 +305,7 @@ def test_list_pane_carries_headings_and_grows_them_with_width(tmp_path, monkeypa
     So the comparison is between a narrow pane and a genuinely wide one, and the invariant that
     matters at every width is that the heading is never squeezed below its floor.
     """
-    from wt.tui.app import HEADING_FLOOR, IdeaDesk
+    from nightwright.tui.app import HEADING_FLOOR, IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -330,7 +330,7 @@ def test_list_pane_carries_headings_and_grows_them_with_width(tmp_path, monkeypa
 
 @needs_textual
 def test_desk_search_filters_then_escape_clears(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -357,7 +357,7 @@ def test_desk_search_filters_then_escape_clears(tmp_path, monkeypatch):
 
 @needs_textual
 def test_desk_moves_selection_and_repaints_detail(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -380,11 +380,11 @@ def test_desk_never_shells_out_and_owns_no_write_rules():
 
     SPEC-0100's original form asserted the app module named *no* mutator at all; SPEC-0102
     deliberately supersedes that half, so what remains is the permanent rule — the desk must
-    never spawn `wt`, and must not reach into org files itself. Every write goes through
-    `wt.tui.model.apply_mutation` → `explore` / `org_write`.
+    never spawn `nw`, and must not reach into org files itself. Every write goes through
+    `nightwright.tui.model.apply_mutation` → `explore` / `org_write`.
     """
-    app_src = (ROOT / "src" / "wt" / "tui" / "app.py").read_text()
-    model_src = (ROOT / "src" / "wt" / "tui" / "model.py").read_text()
+    app_src = (ROOT / "src" / "nightwright" / "tui" / "app.py").read_text()
+    model_src = (ROOT / "src" / "nightwright" / "tui" / "model.py").read_text()
     for banned in ("subprocess", "os.system", "popen", "_atomic_backup_write",
                    "open(task.file", "splitlines(keepends=True)"):
         assert banned not in app_src, f"{banned} leaked into the desk UI"
@@ -397,7 +397,7 @@ def test_desk_never_shells_out_and_owns_no_write_rules():
 
 def test_cli_passes_filters_and_flags_through(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     seen = {}
     monkeypatch.setattr(T, "run", lambda cfg, **kw: seen.update(kw))
     r = CliRunner().invoke(cli, ["tui", "--all", "--project", "Example", "--priority", "A",

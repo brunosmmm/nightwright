@@ -8,16 +8,16 @@ A good spec is short, decided and checkable.
 
 ```mermaid
 flowchart LR
-    I["Explored idea<br/>IDEA-042"] -- "wt spec new --from-idea IDEA-042" --> D["Draft spec<br/>docs/specs/NNNN-….md<br/>prefilled from the idea"]
-    D -- "/wt-new-work<br/>fill decision · design · ACs · test plan" --> A["Accepted spec<br/>lint-clean"]
-    A -- "wt spec review" --> R{"Reviewer"}
+    I["Explored idea<br/>IDEA-042"] -- "nw spec new --from-idea IDEA-042" --> D["Draft spec<br/>docs/specs/NNNN-….md<br/>prefilled from the idea"]
+    D -- "/nw-new-work<br/>fill decision · design · ACs · test plan" --> A["Accepted spec<br/>lint-clean"]
+    A -- "nw spec review" --> R{"Reviewer"}
     R -- "revise / split" --> A
-    R -- approve --> Q["wt queue add SPEC-NNNN --yes"]
+    R -- approve --> Q["nw queue add SPEC-NNNN --yes"]
 ```
 
-`wt spec new --from-idea` scaffolds the spec from the template, prefills Context from the
+`nw spec new --from-idea` scaffolds the spec from the template, prefills Context from the
 idea, links the two (the spec's `source_idea`, the idea's `:SPEC:`), and moves the idea to
-SPECCED. `/wt-new-work` guides an agent through finishing it and getting it to `accepted`.
+SPECCED. `/nw-new-work` guides an agent through finishing it and getting it to `accepted`.
 
 ## Anatomy of a good spec
 
@@ -44,9 +44,9 @@ flowchart TB
 
 | Weak | Strong |
 |---|---|
-| "The dashboard shows reviews nicely." | "`wt queue list` shows `SPEC_REVIEW r2` for a campaign in its second review round." |
+| "The dashboard shows reviews nicely." | "`nw queue list` shows `SPEC_REVIEW r2` for a campaign in its second review round." |
 | "Handle errors." | "An empty title exits non-zero with the message `empty title`, and writes nothing." |
-| "Fast enough." | "`wt ideas` on 2,000 ideas returns in under 1 s (test with the fixture in `tests/…`)." |
+| "Fast enough." | "`nw ideas` on 2,000 ideas returns in under 1 s (test with the fixture in `tests/…`)." |
 
 ## One campaign, or an epic?
 
@@ -56,21 +56,21 @@ deliberately:
 
 ```mermaid
 flowchart TB
-    E["Epic spec<br/><code>wt spec new --from-idea … --epic</code><br/>architecture + breakdown"] --> C1["Child spec A<br/>parent: SPEC-E"]
+    E["Epic spec<br/><code>nw spec new --from-idea … --epic</code><br/>architecture + breakdown"] --> C1["Child spec A<br/>parent: SPEC-E"]
     E --> C2["Child spec B<br/>depends_on: A"]
     E --> C3["Child spec C<br/>depends_on: B"]
     C1 & C2 & C3 --> Q[("queue — admitted in<br/>dependency order")]
 ```
 
 `depends_on` matters: the queue admits a spec only once everything it depends on is done on
-main. `wt spec seed-children` turns an epic's breakdown into ideas, and `/wt-rework` extends
+main. `nw spec seed-children` turns an epic's breakdown into ideas, and `/nw-rework` extends
 an incomplete epic or supersedes a design that turned out wrong.
 
 ## Review, then queue
 
 ```bash
-wt spec review SPEC-0042        # read-only reviewer persona: approve | revise | split
-wt queue add SPEC-0042 --yes    # needs an approving review of the current text
+nw spec review SPEC-0042        # read-only reviewer persona: approve | revise | split
+nw queue add SPEC-0042 --yes    # needs an approving review of the current text
 ```
 
 The reviewer checks four things:
@@ -87,7 +87,7 @@ round, stop and narrow or rework it (see
 ## Changing your mind
 
 Never silently rewrite an accepted spec. Write a new one that `supersedes` it, and mark the
-old one `superseded`. `/wt-rework` does this. The ledger of specs then stays a faithful
+old one `superseded`. `/nw-rework` does this. The ledger of specs then stays a faithful
 history of what was decided and why.
 
 **Next:** [How the agentic loop works](../loop/index.md).

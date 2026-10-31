@@ -16,13 +16,13 @@ from test_agentic_e2e import (SPEC_DONE, _git, fake_gh, impl_done, make_cfg, mak
                               review, run_cli, script)
 from test_agentic_nonblocking import _second_spec
 from test_agentic_reexec import _code_repo, _commit
-from wt.agentic import close as CL
-from wt.agentic import events as E
-from wt.agentic import gitops as git
-from wt.agentic import lease as L
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.agentic.runner import FakeRunner
+from nightwright.agentic import close as CL
+from nightwright.agentic import events as E
+from nightwright.agentic import gitops as git
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.agentic.runner import FakeRunner
 
 SPECS = {"SPEC-0001": ("docs/specs/0001-trivial.md", "feature-a.txt"),
          "SPEC-0002": ("docs/specs/0002-second.md", "feature-b.txt")}
@@ -451,7 +451,7 @@ def test_legacy_closing_without_key(mk, monkeypatch):
 
 
 def test_single_shot_tick_redoes_moved_base(mk, monkeypatch):
-    """No pool: one `wt queue tick` loops the close until merged (the old in-call loop)."""
+    """No pool: one `nw queue tick` loops the close until merged (the old in-call loop)."""
     env = mk()
     a = env.add()
     env.to_closing(a)
@@ -629,7 +629,7 @@ def test_reexec_drains_inflight_close(tmp_path, monkeypatch):
     def tick(*args, **kw):
         report = real_tick(*args, **kw)
         if any(s["action"] == "close" for s in report.started):   # code lands mid-close
-            _commit(root, "src/wt/x.py", "A = 9\n", "code")
+            _commit(root, "src/nightwright/x.py", "A = 9\n", "code")
         return report
 
     real_journal = Q.journal
@@ -644,7 +644,7 @@ def test_reexec_drains_inflight_close(tmp_path, monkeypatch):
     def fake_exec(exe, argv, envv):
         seen.append({
             "state": S.read_state(env.cfg, a)["state"],
-            "alive": [t.name for t in threading.enumerate() if t.name.startswith("wt-step")],
+            "alive": [t.name for t in threading.enumerate() if t.name.startswith("nw-step")],
             "journal": [(r["kind"], r.get("drain"), r.get("reason"))
                         for r in Q.read_journal(env.cfg)],
             "handover": envv.get(L.HANDOVER_ENV)})

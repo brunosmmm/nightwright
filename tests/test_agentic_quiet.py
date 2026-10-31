@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from wt.agentic import codewatch as CW
-from wt.agentic import events as E
-from wt.agentic import quiet as QT
-from wt.agentic import store
-from wt.cli import cli
+from nightwright.agentic import codewatch as CW
+from nightwright.agentic import events as E
+from nightwright.agentic import quiet as QT
+from nightwright.agentic import store
+from nightwright.cli import cli
 
 HOLD = ["admitted", "resumed", "waiting", "abandoned", "cost_warning", "escalation",
         "escalation_withdrawn", "rebase_resolved", "run_failed", "merged", "handed_off"]
@@ -792,7 +792,7 @@ class _FakeWatcher:
         pass
 
     def poll(self, now):
-        return {"from_sha": "a", "to_sha": "b", "paths": ["src/wt/x.py"], "skills_changed": []}
+        return {"from_sha": "a", "to_sha": "b", "paths": ["src/nightwright/x.py"], "skills_changed": []}
 
 
 def test_deliveries_and_wakeups_report(tmp_path, monkeypatch):
@@ -813,7 +813,7 @@ def test_deliveries_and_wakeups_report(tmp_path, monkeypatch):
     assert types.count("message") == 6 and types.count("conductor_digest") == 1
     assert types[-1] == "code_changed"
     rep = QT.wakeups_report(cfg)
-    assert rep["schema"] == "wt.conductor.wakeups.v1"
+    assert rep["schema"] == "nw.conductor.wakeups.v1"
     assert (rep["delivered"], rep["held"], rep["digests"], rep["merges"]) == (8, 10, 1, 2)
     assert rep["wakeups_per_merge"] == 4.0
     assert rep["by_type"]["code_changed"] == {"wake": 1, "hold": 0}
@@ -837,7 +837,7 @@ def test_cli_events_all_flag(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(E, "follow", lambda cfg, reader, **kw: seen.append(kw["quiet"]))
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = lambda *args: CliRunner().invoke(cli, ["queue", "events", "--follow", *args])
     assert run("--for", "conductor").exit_code == 0
     assert run("--for", "conductor", "--all").exit_code == 0
@@ -852,7 +852,7 @@ def test_cli_events_all_flag(tmp_path, monkeypatch):
 
 def test_cli_events_campaign_filter(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     for cid in ("a", "b"):
         E.append(cfg, "run_failed", campaign=cid, by="t",
                  data={"persona": "x", "run_id": "r", "transient": True, "error": "429"})
@@ -863,13 +863,13 @@ def test_cli_events_campaign_filter(tmp_path, monkeypatch):
 
 def test_cli_wakeups_json(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     QT.record_delivery(cfg, "conductor", {"id": 1, "type": "message", "campaign": None}, "wake")
     QT.record_delivery(cfg, "conductor", {"id": 2, "type": "admitted", "campaign": "a"}, "hold")
     r = CliRunner().invoke(cli, ["queue", "wakeups", "--json"])
     assert r.exit_code == 0, r.output
     out = json.loads(r.output)
-    assert out["schema"] == "wt.conductor.wakeups.v1"
+    assert out["schema"] == "nw.conductor.wakeups.v1"
     assert (out["delivered"], out["held"], out["merges"]) == (1, 1, 0)
     assert out["wakeups_per_merge"] is None               # a window with no merges
     E.append(cfg, "merged", campaign="m", data={"merged_sha": "s"})
@@ -881,7 +881,7 @@ def test_cli_wakeups_json(tmp_path, monkeypatch):
 
 def test_wakeups_rejects_malformed_days(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     for args in (["--since", "2026-10-3"], ["--until", "tomorrow"], ["--since", "2026-13-01"]):
         r = CliRunner().invoke(cli, ["queue", "wakeups", "--json", *args])
         assert r.exit_code != 0 and "YYYY-MM-DD" in r.output
@@ -1052,7 +1052,7 @@ def test_wakeups_report_counts_spec_phase_as_held(tmp_path):
 # synthetic). The audit of the table found none: every informational type is in `QT.RULES`.
 INFORMATIONAL_EXEMPT: dict[str, str] = {}
 
-_CONDUCT_SKILL = Path(__file__).resolve().parent.parent / "skills" / "wt-conduct" / "SKILL.md"
+_CONDUCT_SKILL = Path(__file__).resolve().parent.parent / "skills" / "nw-conduct" / "SKILL.md"
 
 
 def uncovered_informational_types(table_text: str) -> set[str]:

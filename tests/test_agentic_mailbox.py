@@ -8,9 +8,9 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from wt.agentic import events as E
-from wt.agentic import mailbox as M
-from wt.agentic.cli_mailbox import mailbox_group
+from nightwright.agentic import events as E
+from nightwright.agentic import mailbox as M
+from nightwright.agentic.cli_mailbox import mailbox_group
 
 
 def _cfg(tmp_path):
@@ -37,7 +37,7 @@ def test_send_envelope_and_defaults(tmp_path):
     cfg = _cfg(tmp_path)
     q = M.send(cfg, to="steward:Demo", frm="conductor", text="why?", kind="question",
                campaign="C1")
-    assert q["schema"] == "wt.message.v1" and q["id"] == "steward:Demo:1" and q["seq"] == 1
+    assert q["schema"] == "nw.message.v1" and q["id"] == "steward:Demo:1" and q["seq"] == 1
     assert q["needs_reply"] is True and q["campaign"] == "C1"
     i = M.send(cfg, to="steward:Demo", frm="conductor", text="fyi")
     assert i["needs_reply"] is False and i["seq"] == 2
@@ -112,7 +112,7 @@ def test_follow_exits_with_code_changed(tmp_path, code_repo):
         if calls["n"] == 1:
             # a message and a code commit land together: the message must still come first
             calls["m3"] = M.send(cfg, to="conductor", frm="human", text="late")
-            code_repo.commit({"skills/wt-steward/SKILL.md": "new\n"})
+            code_repo.commit({"skills/nw-steward/SKILL.md": "new\n"})
         return False
 
     assert M.follow(cfg, "conductor", out=out, stop=stop, **kw) == 3
@@ -120,10 +120,10 @@ def test_follow_exits_with_code_changed(tmp_path, code_repo):
     assert [x.get("text") for x in lines[:3]] == ["a", "b", "late"]
     cc = lines[3]
     assert cc["data"]["from_sha"] == start and cc["data"]["to_sha"] == code_repo.head()
-    assert cc["data"]["paths"] == ["skills/wt-steward/SKILL.md"]
+    assert cc["data"]["paths"] == ["skills/nw-steward/SKILL.md"]
     assert cc["type"] == "code_changed" and cc["id"] is None and cc["by"] == "follower"
     assert cc["data"]["reader"] == "mailbox:conductor"
-    assert cc["data"]["skills_changed"] == ["wt-steward"]
+    assert cc["data"]["skills_changed"] == ["nw-steward"]
     assert E.cursor_get(cfg, "mailbox:conductor") == calls["m3"]["seq"]
     # restart: only the new message, none repeated
     M.send(cfg, to="conductor", frm="human", text="c")
@@ -141,7 +141,7 @@ def test_follow_auto_root_and_config_key(tmp_path, code_repo, monkeypatch):
         def stop():
             calls["n"] += 1
             if calls["n"] == 1:
-                code_repo.commit({"src/wt/x.py": f"x = {code_repo.head()}\n"})
+                code_repo.commit({"src/nightwright/x.py": f"x = {code_repo.head()}\n"})
             return calls["n"] >= 5
 
         M.follow(cfg, "human", out=out, poll_s=0.01, stop=stop)
@@ -162,7 +162,7 @@ def test_follow_code_root_none_keeps_running(tmp_path, code_repo):
     def stop():
         calls["n"] += 1
         if calls["n"] == 1:
-            code_repo.commit({"src/wt/x.py": "x = 2\n"})
+            code_repo.commit({"src/nightwright/x.py": "x = 2\n"})
         return calls["n"] >= 4
 
     assert M.follow(cfg, "human", out=out, poll_s=0, code_root=None, code_check_s=0.01,
@@ -193,15 +193,15 @@ def test_cli_send_list_thread(tmp_path):
     cfg = _cfg(tmp_path)
     r = _invoke(cfg, ["mailbox", "send", "--to", "steward:Demo", "--kind", "question",
                       "hello", "there"])
-    assert r.exit_code != 0 and "WT_MAILBOX_ADDR" in r.output
+    assert r.exit_code != 0 and "NW_MAILBOX_ADDR" in r.output
     r = _invoke(cfg, ["mailbox", "send", "--to", "steward:Demo", "--kind", "question",
-                      "--json", "hello", "there"], env={"WT_MAILBOX_ADDR": "conductor"})
+                      "--json", "hello", "there"], env={"NW_MAILBOX_ADDR": "conductor"})
     assert r.exit_code == 0, r.output
     rec = json.loads(r.output)
     assert rec["text"] == "hello there" and rec["from"] == "conductor"
     r = _invoke(cfg, ["mailbox", "list", "--to", "steward:Demo", "--unanswered", "--json"])
     payload = json.loads(r.output)
-    assert payload["schema"] == "wt.mailbox.list.v1" and len(payload["messages"]) == 1
+    assert payload["schema"] == "nw.mailbox.list.v1" and len(payload["messages"]) == 1
     r = _invoke(cfg, ["mailbox", "send", "--to", "conductor", "--from", "steward:Demo",
                       "--kind", "answer", "--re", rec["id"], "ok"])
     assert r.exit_code == 0, r.output

@@ -45,7 +45,7 @@
     
     </defs>
 
-    <rect fill="#0c0c0c" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="992" height="72.4" rx="8"/><text class="terminal-4167553256-title" fill="#d9d9d9" text-anchor="middle" x="496" y="27">wt&#160;map&#160;acme</text>
+    <rect fill="#0c0c0c" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="992" height="72.4" rx="8"/><text class="terminal-4167553256-title" fill="#d9d9d9" text-anchor="middle" x="496" y="27">nw&#160;map&#160;acme</text>
             <g transform="translate(26,22)">
             <circle cx="0" cy="0" r="7" fill="#ff5f57"/>
             <circle cx="22" cy="0" r="7" fill="#febc2e"/>

@@ -12,10 +12,10 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import report as R
-from wt import tui as T
-from wt.cli import cli
-from wt.tui import model as M
+from nightwright import report as R
+from nightwright import tui as T
+from nightwright.cli import cli
+from nightwright.tui import model as M
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -42,7 +42,7 @@ def _cfg(tmp_path):
 
 def _seed(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "Textual packaging is intuitive"]).exit_code == 0
     assert run(cli, ["idea", "summary", "IDEA-001", "--set",
@@ -67,7 +67,7 @@ def test_search_tokens_delegates_to_the_searcher():
 
 def test_the_desk_defines_no_tokeniser_of_its_own():
     """The UI must route through `search_tokens`, never re-derive tokens or re-rank."""
-    app_src = (ROOT / "src" / "wt" / "tui" / "app.py").read_text()
+    app_src = (ROOT / "src" / "nightwright" / "tui" / "app.py").read_text()
     assert "search_tokens" in app_src
     for banned in ("tokenize_idea_query", "score_idea_match", "idea_match_snippet",
                    "_QUERY_SPLIT_RE", ".lower().split"):
@@ -78,7 +78,7 @@ def test_the_desk_defines_no_tokeniser_of_its_own():
 
 @needs_textual
 def test_marks_cover_exactly_the_token_occurrences(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     app = IdeaDesk(cfg)
@@ -89,7 +89,7 @@ def test_marks_cover_exactly_the_token_occurrences(tmp_path, monkeypatch):
 
 @needs_textual
 def test_marks_are_case_insensitive(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     app = IdeaDesk(cfg)
@@ -102,7 +102,7 @@ def test_marks_are_case_insensitive(tmp_path, monkeypatch):
 def test_a_token_inside_a_longer_word_is_marked(tmp_path, monkeypatch):
     """SPEC-0086 matches substrings, so `tui` inside `intuitive` is *why* the idea matched.
     Marking less than the search used would misrepresent the result set."""
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     app = IdeaDesk(cfg)
@@ -115,7 +115,7 @@ def test_a_token_inside_a_longer_word_is_marked(tmp_path, monkeypatch):
 
 @needs_textual
 def test_every_token_of_a_multi_token_query_is_marked(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     app = IdeaDesk(cfg)
@@ -126,7 +126,7 @@ def test_every_token_of_a_multi_token_query_is_marked(tmp_path, monkeypatch):
 
 @needs_textual
 def test_no_query_means_no_marks(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     app = IdeaDesk(cfg)
@@ -137,7 +137,7 @@ def test_no_query_means_no_marks(tmp_path, monkeypatch):
 @needs_textual
 def test_marks_agree_with_what_the_matcher_matched(tmp_path, monkeypatch):
     """Fidelity: anything marked must be a real reason `score_idea_match` accepted the idea."""
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
     app = IdeaDesk(cfg)
@@ -159,7 +159,7 @@ def test_detail_body_is_marked_without_corrupting_markup(tmp_path, monkeypatch):
     Since SPEC-0107 `_render_detail` returns a `Text` directly (structure hand-built, prose
     lexed), so the mark step needs no markup round-trip at all.
     """
-    from wt.tui.app import IdeaDesk, _render_detail
+    from nightwright.tui.app import IdeaDesk, _render_detail
 
     cfg = _seed(tmp_path, monkeypatch)
     app = IdeaDesk(cfg)
@@ -179,7 +179,7 @@ def test_detail_body_is_marked_without_corrupting_markup(tmp_path, monkeypatch):
 
 @needs_textual
 def test_list_cells_gain_and_lose_marks_with_the_query(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -212,7 +212,7 @@ def test_the_mark_is_visibly_different_on_screen(tmp_path, monkeypatch):
     `reverse` is emitted by Rich's SVG as the text taking the *background* colour, so a match
     and its surrounding prose cannot share a style class.
     """
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 

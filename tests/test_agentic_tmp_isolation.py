@@ -10,13 +10,13 @@ from types import SimpleNamespace
 import pytest
 
 from test_agentic_e2e import added, impl_done, make_cfg, make_repo, script, write_review
-from wt.agentic import events as E
-from wt.agentic import gates as G
-from wt.agentic import personas as PS
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.agentic.profiles import resolve_profile
-from wt.agentic.runner import RunResult
+from nightwright.agentic import events as E
+from nightwright.agentic import gates as G
+from nightwright.agentic import personas as PS
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.agentic.profiles import resolve_profile
+from nightwright.agentic.runner import RunResult
 
 CID = "SPEC-0900-20261026-aaaa"
 _GATE = {"ok": True, "started_at": "2026-10-26T10:00:00+00:00", "duration_s": 1.0, "results": []}
@@ -61,7 +61,7 @@ def test_gate_env_sets_tmpdir_under_campaign_dir(tmp_path):
 
 def test_run_all_gives_gate_its_tmpdir_and_removes_it(tmp_path):
     cfg = _cfg(tmp_path)
-    wt = tmp_path / "wt"
+    wt = tmp_path / "nw"
     wt.mkdir()
     cid = _campaign(cfg, worktree=wt)
     state = S.read_state(cfg, cid)
@@ -77,7 +77,7 @@ def test_run_all_gives_gate_its_tmpdir_and_removes_it(tmp_path):
 
 def test_run_all_removes_tmpdir_when_a_gate_raises(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    wt = tmp_path / "wt"
+    wt = tmp_path / "nw"
     wt.mkdir()
     cid = _campaign(cfg, worktree=wt)
     seen = {}
@@ -94,10 +94,10 @@ def test_run_all_removes_tmpdir_when_a_gate_raises(tmp_path, monkeypatch):
 
 
 def test_concurrent_gate_runs_with_the_same_seq_get_distinct_tmpdirs(tmp_path):
-    """`next_gate_seq` can hand the same seq to a runner gate and a human `wt gate run`; the
+    """`next_gate_seq` can hand the same seq to a runner gate and a human `nightwright gate run`; the
     second `run_all` must move on instead of sharing (and wiping) the first one's TMPDIR."""
     cfg = _cfg(tmp_path)
-    wt = tmp_path / "wt"
+    wt = tmp_path / "nw"
     wt.mkdir()
     cid = _campaign(cfg, worktree=wt)
     sibling = S.child_tmp(cfg, cid, "gate-001", create=True)       # a live run holding seq 1
@@ -446,5 +446,5 @@ def test_pressure_pauses_admission_but_not_in_flight_campaigns(tmp_path, monkeyp
 # ---- docs ----------------------------------------------------------------------------------
 
 def test_conduct_skill_has_temp_pressure_row():
-    skill = Path(__file__).resolve().parents[1] / "skills" / "wt-conduct" / "SKILL.md"
+    skill = Path(__file__).resolve().parents[1] / "skills" / "nw-conduct" / "SKILL.md"
     assert any(("|" + l.split("|", 2)[-1]).startswith("| `temp_pressure`") for l in skill.read_text().splitlines())

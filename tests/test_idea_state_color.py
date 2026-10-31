@@ -11,9 +11,9 @@ import pytest
 from rich.console import Console
 from rich.style import Style
 
-from wt import org_write as W
-from wt import report as R
-from wt.console import console
+from nightwright import org_write as W
+from nightwright import report as R
+from nightwright.console import console
 
 TZ = ZoneInfo("America/New_York")
 
@@ -96,12 +96,12 @@ def test_terminal_states_are_mutually_distinct():
 
 
 def test_idea_is_not_dim():
-    """`dim` is wt's established 'done' marker; the newest state must not wear it."""
+    """`dim` is nightwright's established 'done' marker; the newest state must not wear it."""
     assert "dim" not in R._idea_state_style(_T("IDEA"))
 
 
 def test_yellow_is_not_reused():
-    """`_state_style` gives yellow to BLOCKED/TRIAGE in `wt tasks`; one colour, one meaning."""
+    """`_state_style` gives yellow to BLOCKED/TRIAGE in `nw tasks`; one colour, one meaning."""
     assert not any("yellow" in s for s in R._IDEA_STATE_STYLES.values())
 
 
@@ -142,7 +142,7 @@ def test_next_table_uses_the_same_palette(tmp_path):
 # ---- collateral the spec forbids --------------------------------------------------
 
 def test_tasks_and_agenda_still_use_the_shared_helper():
-    """`wt tasks` / `wt agenda` / the review timeline must keep `_state_style`; restyling them
+    """`nw tasks` / `nw agenda` / the review timeline must keep `_state_style`; restyling them
     is the collateral this spec exists to avoid."""
     import inspect
 

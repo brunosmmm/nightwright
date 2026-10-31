@@ -6,8 +6,8 @@ import pytest
 
 from test_agentic_dashboard import _campaign, _fixture, ev_at
 from test_agentic_e2e import run_cli
-from wt.agentic import events as E
-from wt.agentic import queue as Q
+from nightwright.agentic import events as E
+from nightwright.agentic import queue as Q
 
 BAD = ["soon", True, False, -5, None, [1], {"a": 1}, "nan", "inf", float("nan"), 10**400]
 
@@ -61,7 +61,7 @@ def test_bad_park_decide_s_uses_the_default_everywhere(tmp_path, monkeypatch, ba
     (item,) = [i for i in Q.queue_payload(cfg)["items"] if i["campaign"] == cid]
     assert item["park"]["owner"] == "conductor" and item["park"]["overdue"] is True
     d = Q.dashboard_payload(cfg)
-    assert d["schema"] == "wt.queue.dashboard.v1"
+    assert d["schema"] == "nw.queue.dashboard.v1"
     assert E.watchdog_checks(cfg) is not None
     for args in (["queue", "list"], ["queue", "list", "--json"], ["queue", "watch", "--once"]):
         r = run_cli(cfg, monkeypatch, args)

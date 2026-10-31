@@ -7,10 +7,10 @@ Optional Textual **ideas desk** for humans. Agents stay on CLI + `--json`.
 ```bash
 uv sync --extra tui                 # checkout
 uv tool install --editable '.[tui]'   # PATH entry from this checkout
-wt tui
+nw tui
 ```
 
-Without the extra, `wt tui` prints an install hint and exits 1.
+Without the extra, `nw tui` prints an install hint and exits 1.
 
 ## What it does
 
@@ -21,7 +21,7 @@ clock (`i`), open detail. Project chooser uses known projects from config + payl
 Demo desk (hard-refresh if this still looks empty — browsers cache the SVG). Fixture has
 eight ideas with project/epic/priority, open clock, and a filled Summary / Questions / Log:
 
-![wt tui ideas desk](../assets/captures/tui-desk.svg?v=4)
+![nw tui ideas desk](../assets/captures/tui-desk.svg?v=4)
 
-See `wt tui --help` for keys and flags. Triage without a TTY: [Hub](hub.md) /
+See `nw tui --help` for keys and flags. Triage without a TTY: [Hub](hub.md) /
 [Ideas & next](ideas.md).

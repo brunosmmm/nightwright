@@ -1,4 +1,4 @@
-"""SPEC-0176: `wt queue add|list|park|resume|abandon` — refusals, dry-run defaults, `--json`
+"""SPEC-0176: `nw queue add|list|park|resume|abandon` — refusals, dry-run defaults, `--json`
 envelopes. Repos come from the e2e harness; nothing runs a persona here."""
 import json
 import subprocess
@@ -7,9 +7,9 @@ import pytest
 
 from test_agentic_e2e import (SPEC_ACCEPTED, added, impl_done, make_cfg, make_repo, run_cli, script,
                               write_review)
-from wt import org_write as OW
-from wt.agentic import queue as Q
-from wt.agentic import store as S
+from nightwright import org_write as OW
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
 
 
 def _cfg(tmp_path, **kw):
@@ -24,10 +24,10 @@ def test_add_dry_run_writes_nothing_and_json_envelope(tmp_path, monkeypatch):
     assert not S.list_campaigns(cfg)
     r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--json"])
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.add.v1" and d["written"] is False
+    assert d["schema"] == "nw.queue.add.v1" and d["written"] is False
     assert d["project"] == "Meta-Tools" and d["profile"] == "balanced" and d["base"] == "main"
-    assert d["spec_rel_path"] == "docs/specs/0001-trivial.md" and d["branch"].startswith("wt/SPEC-0001-")
-    assert d["worktree"].endswith(f"/.wt-worktrees/Meta-Tools/{d['campaign']}")
+    assert d["spec_rel_path"] == "docs/specs/0001-trivial.md" and d["branch"].startswith("nw/SPEC-0001-")
+    assert d["worktree"].endswith(f"/.nw-worktrees/Meta-Tools/{d['campaign']}")
     assert d["merge_policy"] == "merge" and d["cap_usd"] == 10.0
 
 
@@ -73,7 +73,7 @@ def test_list_json_shape_and_filters(tmp_path, monkeypatch):
     cid = added(cfg, monkeypatch)
     r = run_cli(cfg, monkeypatch, ["queue", "list", "--json"])
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.v1"
+    assert d["schema"] == "nw.queue.v1"
     assert set(d["lease"]) >= {"held", "pid", "heartbeat_age_s", "ttl_s", "stale"}
     assert d["slots"] == {"total": 2, "busy": 0}
     item = d["items"][0]
@@ -106,7 +106,7 @@ def test_park_resume_abandon_dry_runs_and_errors(tmp_path, monkeypatch):
     # resume: dry-run, bad --to, note + reset
     r = run_cli(cfg, monkeypatch, ["queue", "resume", cid, "--json"])
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.resume.v1" and d["to"] == "QUEUED" and d["written"] is False
+    assert d["schema"] == "nw.queue.resume.v1" and d["to"] == "QUEUED" and d["written"] is False
     assert S.read_state(cfg, cid)["state"] == "PARKED"
     r = run_cli(cfg, monkeypatch, ["queue", "resume", cid, "--to", "MERGED", "--yes"])
     assert r.exit_code != 0
@@ -125,7 +125,7 @@ def test_park_resume_abandon_dry_runs_and_errors(tmp_path, monkeypatch):
     run_cli(cfg, monkeypatch, ["queue", "park", cid, "--reason", "drop", "--yes"])
     r = run_cli(cfg, monkeypatch, ["queue", "abandon", cid, "--keep-worktree", "--json"])
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.abandon.v1" and d["written"] is False and d["remove_worktree"] is False
+    assert d["schema"] == "nw.queue.abandon.v1" and d["written"] is False and d["remove_worktree"] is False
     r = run_cli(cfg, monkeypatch, ["queue", "abandon", cid, "--yes"])
     assert r.exit_code == 0 and S.read_state(cfg, cid)["state"] == "ABANDONED"
     assert S.read_ledger(cfg, cid, types=["close"])[-1]["mode"] == "abandoned"
@@ -170,7 +170,7 @@ def test_prioritize_dry_run_apply_ledger_and_errors(tmp_path, monkeypatch):
     assert S.read_state(cfg, cid)["priority"] == 3
     r = run_cli(cfg, monkeypatch, ["queue", "prioritize", cid, "1", "--json"])
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.prioritize.v1" and d["written"] is False
+    assert d["schema"] == "nw.queue.prioritize.v1" and d["written"] is False
     assert (d["from"], d["to"]) == (3, 1) and S.read_state(cfg, cid)["priority"] == 3
     r = run_cli(cfg, monkeypatch, ["queue", "prioritize", cid, "1", "--yes"])
     assert r.exit_code == 0, r.output
@@ -201,7 +201,7 @@ def test_backlog_json_order_and_list_sections(tmp_path, monkeypatch):
     second = added(cfg, monkeypatch, "SPEC-0002", "--priority", "1")
     r = run_cli(cfg, monkeypatch, ["queue", "backlog", "--json"])
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.backlog.v1"
+    assert d["schema"] == "nw.queue.backlog.v1"
     assert [i["campaign"] for i in d["items"]] == [second, first]
     top = d["items"][0]
     assert set(top) == {"campaign", "spec_id", "project", "priority", "position", "ready",
@@ -248,12 +248,12 @@ def test_add_picks_profile_from_sized_review(tmp_path, monkeypatch):
 
 
 def test_add_records_sizing_on_state_and_open_event(tmp_path, monkeypatch):
-    from wt.agentic import schemas as SC
+    from nightwright.agentic import schemas as SC
     repo, cfg = _sized(tmp_path)
     cid = added(cfg, monkeypatch)
     st = S.read_state(cfg, cid)
     assert st["profile"] == "frugal"
-    from wt.agentic import spec_review as SR
+    from nightwright.agentic import spec_review as SR
     sha = SR.spec_sha256(repo / "docs/specs/0001-trivial.md")
     assert st["sizing"] == {"size": "s", "tone": "cost-effective", "rationale": SIZED["rationale"],
                             "source": "review", "reason": "size s, tone cost-effective → frugal",
@@ -292,8 +292,8 @@ def test_matrix_config_override_reaches_add(tmp_path, monkeypatch):
 
 
 def test_queue_list_json_and_table_show_sizing(tmp_path, monkeypatch):
-    from wt.agentic import cli_queue as CQ
-    from wt.agentic import queue as Q
+    from nightwright.agentic import cli_queue as CQ
+    from nightwright.agentic import queue as Q
     repo, cfg = _sized(tmp_path)
     sized = added(cfg, monkeypatch)
     S.create_campaign(cfg, {"id": "SPEC-0002-old", "spec_id": "SPEC-0002", "project": "Meta-Tools",
@@ -379,8 +379,8 @@ def test_list_marks_overdue_and_colours_parks_by_owner(tmp_path, monkeypatch):
     from io import StringIO
     from rich.console import Console
     from test_agentic_dashboard import _campaign, ev_at
-    from wt.agentic import cli_queue as CQ
-    from wt.agentic import queue as Q
+    from nightwright.agentic import cli_queue as CQ
+    from nightwright.agentic import queue as Q
     repo, cfg = _cfg(tmp_path)
     parks = (("old", "rebase_conflict", 600, False), ("young", "base_moving", 60, False),
              ("decided", "rebase_conflict", 600, True), ("dirty", "main_dirty", 600, False))
@@ -447,7 +447,7 @@ def test_batch_topological_order(tmp_path, monkeypatch):
     b = add_spec(cfg, repo, 2, deps=["SPEC-0003"])
     add_spec(cfg, repo, 3)
     r, d = batch(cfg, monkeypatch, b, "SPEC-0003", "SPEC-0001")
-    assert r.exit_code == 0 and d["schema"] == "wt.queue.add.batch.v1", r.output
+    assert r.exit_code == 0 and d["schema"] == "nw.queue.add.batch.v1", r.output
     assert [i["id"] for i in d["items"]] == ["SPEC-0003", "SPEC-0002", "SPEC-0001"]
     assert [i["position"] for i in d["items"]] == [1, 2, 3] and d["ok"] == 3
     assert not S.list_campaigns(cfg)
@@ -632,7 +632,7 @@ def test_single_id_output_unchanged(tmp_path, monkeypatch):
     repo, cfg = _cfg(tmp_path)
     r = run_cli(cfg, monkeypatch, ["queue", "add", "SPEC-0001", "--json"])
     d = json.loads(r.output)
-    assert d["schema"] == "wt.queue.add.v1" and "items" not in d
+    assert d["schema"] == "nw.queue.add.v1" and "items" not in d
     assert {"campaign", "spec_id", "project", "profile", "priority", "base", "worktree",
             "branch", "cap_usd", "written"} <= set(d)
 
@@ -746,7 +746,7 @@ def test_batch_epic_idea_without_usable_id_is_skipped(tmp_path, monkeypatch):
 
 def test_batch_outbound_dependencies_resolve_in_the_target_repo(tmp_path, monkeypatch):
     repo, cfg = _cfg(tmp_path)
-    add_spec(cfg, repo, 3, status="done")                          # wt's own SPEC-0003
+    add_spec(cfg, repo, 3, status="done")                          # nightwright's own SPEC-0003
     target = tmp_path / "target" / "docs" / "specs"
     target.mkdir(parents=True)
     (target / "0002-x.md").write_text(
@@ -761,7 +761,7 @@ def test_batch_outbound_dependencies_resolve_in_the_target_repo(tmp_path, monkey
     allv, edges = Q._batch_deps(cfg, ["ACME-0002", "SPEC-0003"])
     assert allv["ACME-0002"] == ["SPEC-0003"] and edges["ACME-0002"] == []   # no false edge
     assert Q._dangling(cfg, "ACME-0002", ["SPEC-0003"], {"ACME-0002", "SPEC-0003"}) == [
-        "SPEC-0003 is draft and not queued"]                      # the target's status, not wt's
+        "SPEC-0003 is draft and not queued"]                      # the target's status, not nightwright's
 
 
 def test_batch_write_time_race_exits_1_through_the_cli(tmp_path, monkeypatch):
@@ -917,7 +917,7 @@ def test_queue_run_detach_once_usage_error(tmp_path, monkeypatch):
 
 
 def test_queue_stop_dry_run_no_signal(tmp_path, monkeypatch):
-    from wt.agentic import lease as L
+    from nightwright.agentic import lease as L
     repo, cfg = _cfg(tmp_path)
     real_stop = Q.stop_runner
 
@@ -925,7 +925,7 @@ def test_queue_stop_dry_run_no_signal(tmp_path, monkeypatch):
         raise AssertionError("a dry run must not call stop_runner")
 
     monkeypatch.setattr(Q, "stop_runner", no_stop)
-    with L.acquire(cfg, ["wt", "queue", "run"]):
+    with L.acquire(cfg, ["nw", "queue", "run"]):
         r = run_cli(cfg, monkeypatch, ["queue", "stop"])
         assert r.exit_code == 0 and "not written" in r.output and "SIGTERM" in r.output, r.output
         assert r.exception is None and L.is_held(cfg)
@@ -937,14 +937,14 @@ def test_queue_stop_dry_run_no_signal(tmp_path, monkeypatch):
 def test_queue_stop_json_schema(tmp_path, monkeypatch):
     import os
 
-    from wt.agentic import lease as L
+    from nightwright.agentic import lease as L
     repo, cfg = _cfg(tmp_path)
-    monkeypatch.delenv("WT_MAILBOX_ADDR", raising=False)
+    monkeypatch.delenv("NW_MAILBOX_ADDR", raising=False)
     r = run_cli(cfg, monkeypatch, ["queue", "stop", "--yes", "--json"])
     d = json.loads(r.output)
-    assert r.exit_code == 0 and d["schema"] == "wt.queue.stop.v1" and d["written"] is True
+    assert r.exit_code == 0 and d["schema"] == "nw.queue.stop.v1" and d["written"] is True
     assert d["held"] is False and d["result"] == {"stopped": False, "reason": "no runner"}
-    with L.acquire(cfg, ["wt", "queue", "run"]) as lease:
+    with L.acquire(cfg, ["nw", "queue", "run"]) as lease:
         lease.update_info(busy={"kind": "close", "campaign": "C-1", "since": S.now_iso(),
                                 "budget_s": 600})
         d = json.loads(run_cli(cfg, monkeypatch, ["queue", "stop", "--json", "--wait-guard"]).output)
@@ -954,8 +954,8 @@ def test_queue_stop_json_schema(tmp_path, monkeypatch):
         r = run_cli(cfg, monkeypatch, ["queue", "stop", "--yes"])
         assert r.exit_code == 1 and "close guard: close of C-1" in r.output, r.output
         r = run_cli(cfg, monkeypatch, ["queue", "stop", "--yes", "--json"])
-        d = json.loads(r.output)                # a refusal is still wt.queue.stop.v1 JSON
-        assert r.exit_code == 1 and d["schema"] == "wt.queue.stop.v1" and d["result"] is None
+        d = json.loads(r.output)                # a refusal is still nw.queue.stop.v1 JSON
+        assert r.exit_code == 1 and d["schema"] == "nw.queue.stop.v1" and d["result"] is None
         assert d["error"].startswith("close guard: close of C-1") and L.is_held(cfg)
 
 
@@ -964,7 +964,7 @@ def test_queue_stop_dry_run_shows_the_same_refusals(tmp_path, monkeypatch):
     --wait-guard), a one-shot tick, another host."""
     import os
 
-    from wt.agentic import lease as L
+    from nightwright.agentic import lease as L
     repo, cfg = _cfg(tmp_path)
     monkeypatch.setattr(Q, "stop_runner", lambda *a, **k: pytest.fail("a dry run"))
 
@@ -973,7 +973,7 @@ def test_queue_stop_dry_run_shows_the_same_refusals(tmp_path, monkeypatch):
         assert r.exit_code == 0, r.output
         return json.loads(r.output)
 
-    with L.acquire(cfg, ["wt", "queue", "run"]) as lease:
+    with L.acquire(cfg, ["nw", "queue", "run"]) as lease:
         assert plan()["refusal"] is None
         lease.update_info(busy={"kind": "open", "campaign": "C-1", "since": S.now_iso(),
                                 "budget_s": 600})
@@ -983,9 +983,9 @@ def test_queue_stop_dry_run_shows_the_same_refusals(tmp_path, monkeypatch):
         assert "refuse: close guard" in r.output.replace("\n", ""), r.output
         lease.update_info(busy=None, host="elsewhere.example")
         assert "not this host" in plan()["refusal"]
-    with L.acquire(cfg, ["wt", "queue", "tick"]):
+    with L.acquire(cfg, ["nw", "queue", "tick"]):
         d = plan()
-        assert d["pid"] == os.getpid() and "one-shot `wt queue tick`" in d["refusal"]
+        assert d["pid"] == os.getpid() and "one-shot `nw queue tick`" in d["refusal"]
 
 
 def test_queue_stop_reports_a_runner_that_started_after_the_plan(tmp_path, monkeypatch):
@@ -1007,7 +1007,7 @@ def test_queue_run_detach_cli_wiring(tmp_path, monkeypatch):
     """SPEC-0291: the command's argv, default log, `--log` and output; ValueError ⇒ exit 1."""
     import sys
     repo, cfg = _cfg(tmp_path)
-    exe = tmp_path / "bin" / "wt"
+    exe = tmp_path / "bin" / "nw"
     exe.parent.mkdir()
     exe.write_text("#!/bin/sh\n")
     exe.chmod(0o755)
@@ -1031,7 +1031,7 @@ def test_queue_run_detach_cli_wiring(tmp_path, monkeypatch):
     assert r.exit_code == 0 and calls[0][1] == "x.log", r.output
 
     def refuse(*a, **k):
-        raise ValueError("queue held by pid 77 (heartbeat 1s ago); stop it with wt queue stop")
+        raise ValueError("queue held by pid 77 (heartbeat 1s ago); stop it with nw queue stop")
 
     monkeypatch.setattr(Q, "detach_runner", refuse)
     r = run_cli(cfg, monkeypatch, args)

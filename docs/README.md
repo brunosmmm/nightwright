@@ -1,6 +1,6 @@
-# `wt` documentation & decision system
+# `nw` documentation & decision system
 
-This directory is the source of truth for **how `wt` is designed and why**. It drives
+This directory is the source of truth for **how `nw` is designed and why**. It drives
 new feature development *and* records past decisions so they don't have to be
 re-derived from the code.
 

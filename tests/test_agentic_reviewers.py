@@ -9,10 +9,10 @@ import pytest
 
 from test_agentic_e2e import (impl_done, make_cfg, make_repo, added, review as review_entry,
                               script)
-from wt.agentic import personas as PS
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.agentic.runner import FakeRunner, RunResult
+from nightwright.agentic import personas as PS
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.agentic.runner import FakeRunner, RunResult
 
 A, B = "conformance_reviewer", "second_reviewer"
 B_SETTINGS = {"model": "sonnet", "effort": "low", "max_budget_usd": 1.0,

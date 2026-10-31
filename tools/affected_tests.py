@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Affected-test selection for wt's fix-loop gates (SPEC-0328).
+"""Affected-test selection for nightwright's fix-loop gates (SPEC-0328).
 
 Static test impact analysis, no coverage database: the changed files of the branch
 (`git diff --name-only <merge-base(base, HEAD)>` plus uncommitted and untracked files) are
-mapped to test modules through a static AST import graph over `src/wt` and `tests`:
+mapped to test modules through a static AST import graph over `src/nightwright` and `tests`:
 
 - a changed test module selects itself;
 - a changed src module selects its *nearest* tests: the test modules importing it directly,
@@ -34,14 +34,14 @@ import sys
 from pathlib import Path
 
 SRC_ROOT = "src"
-SRC_PKG = "wt"
+SRC_PKG = "nightwright"
 TESTS_DIR = "tests"
 MAX_FRACTION = 0.40
 
 # Path prefixes (or exact paths) whose change makes a static selection unsafe.
-FULL_TRIGGERS = ("pyproject.toml", "uv.lock", "tools/", ".wt/", "tests/waits.py")
-# CLI wiring modules (see `_hub`); `wt.agentic.cli` also covers `wt.agentic.cli_*`.
-HUBS = ("wt.cli", "wt.agentic.cli")
+FULL_TRIGGERS = ("pyproject.toml", "uv.lock", "tools/", ".nw/", "tests/waits.py")
+# CLI wiring modules (see `_hub`); `nightwright.agentic.cli` also covers `nightwright.agentic.cli_*`.
+HUBS = ("nightwright.cli", "nightwright.agentic.cli")
 
 
 class Selection:
@@ -88,7 +88,7 @@ def _module_name(rel):
 
 
 def _scan(repo):
-    """{module: rel_path} for every module under src/wt and tests."""
+    """{module: rel_path} for every module under src/nightwright and tests."""
     mods = {}
     for top in (Path(SRC_ROOT) / SRC_PKG, Path(TESTS_DIR)):
         root = Path(repo) / top
@@ -177,7 +177,7 @@ def _full_trigger(rel):
 def _hub(name):
     """CLI wiring modules: they import nearly every module, and ~half the test files import
     them for `CliRunner`, so a change reaching a hub does not spread to the hub's importers."""
-    return name in HUBS or any(name.startswith(h + "_") for h in HUBS if h != "wt.cli")
+    return name in HUBS or any(name.startswith(h + "_") for h in HUBS if h != "nightwright.cli")
 
 
 def nearest_tests(name, mods, reverse, depth=0):
@@ -252,8 +252,8 @@ def select(repo, changed, max_fraction=MAX_FRACTION, depth=0):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--base", default=os.environ.get("WT_BASE") or "main",
-                    help="base ref (default: $WT_BASE, else main)")
+    ap.add_argument("--base", default=os.environ.get("NW_BASE") or "main",
+                    help="base ref (default: $NW_BASE, else main)")
     ap.add_argument("--repo", default=".")
     ap.add_argument("--max-fraction", type=float, default=MAX_FRACTION)
     ap.add_argument("--include", action="append", default=[], metavar="PATH",

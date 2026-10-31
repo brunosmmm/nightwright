@@ -10,9 +10,9 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright import explore as EX
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -37,7 +37,7 @@ def _cfg(tmp_path):
 def _seed(tmp_path, monkeypatch, *, body=None, indent=""):
     """Two normalized questions, optionally with hand-written prose under the first."""
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "body probe"]).exit_code == 0
     assert run(cli, ["idea", "questions", "IDEA-001", "--add", "first question?"]).exit_code == 0
@@ -112,7 +112,7 @@ def test_body_survives_a_second_round_trip(tmp_path, monkeypatch):
 
 def test_multi_line_body_is_kept(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "multiline"]).exit_code == 0
     assert run(cli, ["idea", "questions", "IDEA-001", "--add", "q?"]).exit_code == 0
@@ -130,7 +130,7 @@ def test_multi_line_body_is_kept(tmp_path, monkeypatch):
 def test_legacy_bare_lines_still_become_questions(tmp_path, monkeypatch):
     """SPEC-0054's migration is deliberate; SPEC-0111 must not break it."""
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "legacy probe"]).exit_code == 0
     assert run(cli, ["idea", "questions", "IDEA-001", "--set", "bare one\nbare two"]).exit_code == 0
@@ -172,7 +172,7 @@ def test_normalize_does_not_promote_a_body(tmp_path, monkeypatch):
 
 def test_normalize_is_still_idempotent_on_legacy(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "legacy"]).exit_code == 0
     assert run(cli, ["idea", "questions", "IDEA-001", "--set", "one\ntwo"]).exit_code == 0

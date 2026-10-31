@@ -5,8 +5,8 @@ import copy
 
 import pytest
 
-from wt.agentic import queue as Q
-from wt.agentic.profiles import builtin_profiles
+from nightwright.agentic import queue as Q
+from nightwright.agentic.profiles import builtin_profiles
 
 A, B = "conformance_reviewer", "test_reviewer"
 BAL = {"review": {"pass_score": 80, "weights": {"must_fix": 100, "major": 15, "minor": 4,
@@ -218,7 +218,7 @@ def test_single_reviewer_brief_keeps_the_0187_shape():
 
 import json
 
-from wt.agentic import profiles as P
+from nightwright.agentic import profiles as P
 
 ON = {"review": {"pass_score": 80, "weights": BAL["review"]["weights"], "triager": True}}
 
@@ -351,11 +351,11 @@ import subprocess
 import threading
 from zoneinfo import ZoneInfo
 
-from wt import org as ORG
-from wt import explore as EX
-from wt import org_write as OW
-from wt.agentic import followups as FU
-from wt.agentic import store as S
+from nightwright import org as ORG
+from nightwright import explore as EX
+from nightwright import org_write as OW
+from nightwright.agentic import followups as FU
+from nightwright.agentic import store as S
 
 SPEC = "SPEC-0207"
 CID = "SPEC-0207-20261025-aaaa"
@@ -428,7 +428,7 @@ def seed_group(cfg, token, keys, spec=SPEC, close=False):
     """An existing grouped idea (another campaign's, or `legacy-<SPEC>`) listing `keys`."""
     _, _, idea_id = OW.add_idea(cfg, FU.group_title(token, spec, len(keys)),
                                 kind="improvement")
-    EX.set_summary(cfg, idea_id, "\n".join(f"- [ ] wtfu:{k} minor x: y" for k in keys))
+    EX.set_summary(cfg, idea_id, "\n".join(f"- [ ] nwfu:{k} minor x: y" for k in keys))
     if close:
         EX.close_idea(cfg, idea_id, "drop", reason="done")
     return idea_id
@@ -446,23 +446,23 @@ def test_key_ignores_severity_and_persona_but_not_title_or_files():
 
 
 def test_group_title_and_checklist_line_shapes_and_bounds():                        # AC2
-    assert FU.group_title("c1", SPEC, 3) == f"wtfug:c1 [{SPEC}] review follow-ups (3 findings)"
+    assert FU.group_title("c1", SPEC, 3) == f"nwfug:c1 [{SPEC}] review follow-ups (3 findings)"
     assert FU.group_title("c1", SPEC, 1).endswith("(1 finding)")
     assert FU.group_title("c1", SPEC, 0).endswith("(0 findings)")
-    assert FU.MARKER not in FU.GROUP_MARKER                  # find_marker("wtfu:…") never hits one
+    assert FU.MARKER not in FU.GROUP_MARKER                  # find_marker("nwfu:…") never hits one
     nasty = adv("minor", ("T:itle [x] — *bold*\n" + "y" * 300)[:300],
                 detail="line1\nline2\t[z] :tag: " + "d" * 400,
                 files=[f"src/dir{i}/file:{i}.py" for i in range(20)], ac="AC [1]: ok")
     entry = FU.make_entry(SPEC, nasty, "advisory")
     line = FU.checklist_line(SPEC, entry)
-    assert line.startswith(f"- [ ] wtfu:{entry['key'][:12]} minor {A}/AC 1 ok: ")
+    assert line.startswith(f"- [ ] nwfu:{entry['key'][:12]} minor {A}/AC 1 ok: ")
     assert f"[{SPEC}]" not in line and len(line) < 560 and "\n" not in line
     assert "+15 more" in line and line.count("—") == 1
     for bad in ("[x]", "[z]", "*bold*", ":tag:"):
         assert bad not in line.split(": ", 1)[1]
     assert len(line.split(": ", 1)[1].split(" — ")[0]) <= 120
     assert FU.summary_keys(line) == [entry["key"][:12]]
-    assert FU.summary_keys(f"- [X] wtfu:{entry['key'][:12]} ticked\n- +3 more findings\nfree") == [
+    assert FU.summary_keys(f"- [X] nwfu:{entry['key'][:12]} ticked\n- +3 more findings\nfree") == [
         entry["key"][:12]]                                   # a ticked line still counts
 
 
@@ -480,7 +480,7 @@ def test_filer_files_one_group_with_project_epic_kind_and_ordered_lines(tmp_path
     assert [(w["title"], w["waive_reason"]) for w in summary["waived"]] == [
         ("aaa waived", "not worth it"), ("waived nit", "style")]
     t = group_of(cfg)
-    assert t.heading == f"wtfug:{CID} [{SPEC}] review follow-ups (4 findings)"
+    assert t.heading == f"nwfug:{CID} [{SPEC}] review follow-ups (4 findings)"
     assert t.project == "Meta-Tools" and t.epic == "SPEC-0169"
     assert t.properties["KIND"] == "improvement" and t.properties["ID"].startswith("IDEA-")
     lines = body(cfg, t).splitlines()
@@ -523,7 +523,7 @@ def test_cap_lists_the_most_severe_and_writes_an_overflow_line(tmp_path):       
     summary = file_now(cfg, st, capped_profile(2))
     t = group_of(cfg)
     lines = body(cfg, t).splitlines()
-    assert len(lines) == 3 and lines[2] == f"- +3 more findings not listed (wt campaign show {CID})"
+    assert len(lines) == 3 and lines[2] == f"- +3 more findings not listed (nw campaign show {CID})"
     assert [f["title"] for f in summary["filed"]] == ["big", "m0"]
     assert [(c["severity"], c["title"]) for c in summary["capped"]] == [
         ("minor", "m1"), ("minor", "m2"), ("minor", "m3")]
@@ -551,7 +551,7 @@ def test_open_group_keys_reads_open_groups_of_the_spec_only(tmp_path):          
     legacy = seed_group(cfg, f"legacy-{SPEC}", ["cccccccccccc"])
     seed_group(cfg, "SPEC-0207-20261025-cccc", ["dddddddddddd"], close=True)
     seed_group(cfg, "SPEC-0001-20261025-dddd", ["eeeeeeeeeeee"], spec="SPEC-0001")
-    OW.add_idea(cfg, f"wtfu:ffffffffffff [{SPEC}] a single, not a group", kind="improvement")
+    OW.add_idea(cfg, f"nwfu:ffffffffffff [{SPEC}] a single, not a group", kind="improvement")
     got = FU.open_group_keys(cfg, SPEC)
     assert got == {"aaaaaaaaaaaa": other, "bbbbbbbbbbbb": other, "cccccccccccc": legacy}
     assert FU.open_group_keys(cfg, SPEC, exclude=other) == {"cccccccccccc": legacy}
@@ -688,7 +688,7 @@ def test_a_ticked_line_still_counts_and_dedups(tmp_path):                       
     second = file_now(cfg, st)
     assert len(second["filed"]) == 2 and len(ideas(cfg)) == 1
     t = group_of(cfg)
-    assert body(cfg, t).count("wtfu:") == 2 and "- [X]" in body(cfg, t)
+    assert body(cfg, t).count("nwfu:") == 2 and "- [X]" in body(cfg, t)
     assert "(2 findings)" in t.heading
 
 
@@ -703,13 +703,13 @@ def test_an_archived_own_group_is_not_adopted(tmp_path):                        
     t = next(x for x in ideas(cfg) if x.properties["ID"] == first["idea_id"])
     OW.archive_idea(cfg, t)
     archived = open(OW.ideas_archive_path(cfg)).read()
-    assert f"wtfug:{CID}" not in open(cfg["org_ideas_file"]).read()
+    assert f"nwfug:{CID}" not in open(cfg["org_ideas_file"]).read()
     second = file_now(cfg, st)
     assert second["idea_id"] and second["idea_id"] != first["idea_id"]
     assert [f["idea_id"] for f in second["filed"]] == [second["idea_id"]]
     assert open(OW.ideas_archive_path(cfg)).read() == archived
     assert [x.properties["ID"] for x in ideas(cfg)
-            if f"wtfug:{CID}" in x.heading and x.file == cfg["org_ideas_file"]] == [
+            if f"nwfug:{CID}" in x.heading and x.file == cfg["org_ideas_file"]] == [
         second["idea_id"]]
 
 
@@ -808,10 +808,10 @@ def test_non_oserror_from_the_org_layer_never_escapes(tmp_path, monkeypatch):
 def test_group_without_an_id_is_not_adopted_and_not_duplicated(tmp_path):
     cfg = fu_cfg(tmp_path)
     with open(cfg["org_ideas_file"], "w") as fh:
-        fh.write(f"* IDEA wtfug:{CID} [{SPEC}] review follow-ups (0 findings)\n")
+        fh.write(f"* IDEA nwfug:{CID} [{SPEC}] review follow-ups (0 findings)\n")
     events, summary = FU.file_followups(cfg, fu_state(tmp_path, [adv("minor", "one")]), BAL)
     assert summary["filed"] == [] and "has no :ID:" in summary["unfiled"][0]["error"]
-    assert open(cfg["org_ideas_file"]).read().count(f"wtfug:{CID}") == 1
+    assert open(cfg["org_ideas_file"]).read().count(f"nwfug:{CID}") == 1
 
 
 def test_headline_without_the_marker_adds_a_note_but_still_records(tmp_path, monkeypatch):
@@ -831,12 +831,12 @@ def test_headline_without_the_marker_adds_a_note_but_still_records(tmp_path, mon
 
 def test_group_marker_round_trips_through_the_real_add_task_path(tmp_path):
     cfg = fu_cfg(tmp_path)
-    marker = f"wtfug:{CID}"
+    marker = f"nwfug:{CID}"
     assert FU.find_marker(cfg, marker) is None             # no ideas file yet
     _, headline, idea_id = OW.add_idea(cfg, FU.group_title(CID, SPEC, 0), kind="improvement")
     assert marker in headline and FU.find_marker(cfg, marker) == idea_id
-    assert FU.find_marker(cfg, "wtfu:000000000000") is None
-    assert FU.find_marker(cfg, f"wtfu:{CID}") is None       # a group is never a single
+    assert FU.find_marker(cfg, "nwfu:000000000000") is None
+    assert FU.find_marker(cfg, f"nwfu:{CID}") is None       # a group is never a single
 
 
 # carry-over ------------------------------------------------------------------------------------

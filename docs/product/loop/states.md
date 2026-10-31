@@ -1,7 +1,7 @@
 # The state machine
 
 Every campaign is always in exactly one state. The runner moves it between states. The
-rules are plain code (`wt.agentic.queue.plan_step` and friends), so the same inputs always
+rules are plain code (`nightwright.agentic.queue.plan_step` and friends), so the same inputs always
 give the same move. The judgment calls (what code to write, whether a failure is real) happen
 *inside* a state, in a persona run. The decision about which state comes next is
 deterministic.
@@ -11,7 +11,7 @@ deterministic.
 ```mermaid
 stateDiagram-v2
     direction TB
-    [*] --> QUEUED: wt queue add
+    [*] --> QUEUED: nw queue add
     QUEUED --> OPENING: admitted<br/>(slot free, deps done)
     OPENING --> IMPLEMENTING: worktree ready
     IMPLEMENTING --> GATING: implementer done
@@ -42,13 +42,13 @@ stateDiagram-v2
     direction TB
     state "any active state<br/>OPENING · IMPLEMENTING · GATING<br/>TRIAGING · REVIEWING · CLOSING" as ACTIVE
     ACTIVE --> PARKED: a bound is hit, a persona escalates,<br/>or a human parks it
-    PARKED --> ACTIVE: wt queue resume<br/>(slot free)
-    PARKED --> WAITING: wt queue resume<br/>(no slot free)
+    PARKED --> ACTIVE: nw queue resume<br/>(slot free)
+    PARKED --> WAITING: nw queue resume<br/>(no slot free)
     WAITING --> ACTIVE: a slot frees up<br/>(first in line)
     PARKED --> QUEUED: resumed before it opened
-    QUEUED --> ABANDONED: wt queue abandon
-    PARKED --> ABANDONED: wt queue abandon
-    WAITING --> ABANDONED: wt queue abandon
+    QUEUED --> ABANDONED: nw queue abandon
+    PARKED --> ABANDONED: nw queue abandon
+    WAITING --> ABANDONED: nw queue abandon
     ABANDONED --> [*]
 ```
 
@@ -97,7 +97,7 @@ flowchart LR
 | `TRIAGING` | active | The **gate triager** reads the failure and decides: fix, retry, waive or escalate | It decides |
 | `REVIEWING` | active | The **conformance reviewer** checks the change against the spec's acceptance criteria | Pass, or a list of fixes |
 | `CLOSING` | active | Rebase on main, re-run gates, check the spec wasn't changed and its Definition of Done holds, then merge or open a PR | Merged, handed off, back to TRIAGING (a check failed), or parked |
-| `PARKED` | parked | Stopped with a **reason**, waiting for a decision | `wt queue resume` (to the right state) or `abandon` |
+| `PARKED` | parked | Stopped with a **reason**, waiting for a decision | `nw queue resume` (to the right state) or `abandon` |
 | `MERGED` | done | Fast-forwarded into main. An outbound spec then has its status pulled back into the outbox, ledgered as an `outbound_pulled` event | — |
 | `HANDED_OFF` | done | A PR is open for a human to merge. An outbound spec is pulled when the PR sweep records the merge | — |
 | `ABANDONED` | done | Given up; worktree removed | — |
@@ -112,7 +112,7 @@ Each trip back to IMPLEMENTING (a triage `fix`, or a review asking for fixes) ad
 **[Convergence and escalation](convergence.md)**.
 
 !!! info "In progress: specs written inside the campaign"
-    Specs SPEC-0208–0217 add `wt queue add IDEA-NNN`. A campaign then starts from an *idea*,
+    Specs SPEC-0208–0217 add `nw queue add IDEA-NNN`. A campaign then starts from an *idea*,
     with two extra states before IMPLEMENTING: **SPEC_WRITING** (a spec-writer persona
     writes, or revises, the spec) and **SPEC_REVIEW** (the spec reviewer reviews it, and an
     approving review accepts it in the loop). Until that lands, specs are written with the

@@ -1,11 +1,11 @@
-"""wt projects --json agent map (SPEC-0095)."""
+"""nw projects --json agent map (SPEC-0095)."""
 import json
 from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 
-from wt.cli import cli
-from wt.rules import projects_payload
+from nightwright.cli import cli
+from nightwright.rules import projects_payload
 
 
 def _cfg(tmp_path, *, with_outbox=True):
@@ -22,7 +22,7 @@ def _cfg(tmp_path, *, with_outbox=True):
     outbox = {}
     if with_outbox:
         outbox = {
-            "Example": {"repo_path": str(repo), "spec_dir": "docs/specs", "scheme": "wt-native"},
+            "Example": {"repo_path": str(repo), "spec_dir": "docs/specs", "scheme": "nw-native"},
             "PFW-Intelligence": {"repo_path": str(tmp_path / "pfw"), "spec_dir": "docs/specs"},
         }
         (tmp_path / "pfw").mkdir()
@@ -42,7 +42,7 @@ def _cfg(tmp_path, *, with_outbox=True):
 def test_projects_payload_union_and_research(tmp_path):
     cfg = _cfg(tmp_path)
     payload = projects_payload(cfg)
-    assert payload["schema"] == "wt.projects.v1"
+    assert payload["schema"] == "nw.projects.v1"
     by_name = {p["name"]: p for p in payload["projects"]}
     assert "Meta-Tools" in by_name
     assert by_name["Example"]["outbound"] is True
@@ -57,10 +57,10 @@ def test_projects_payload_union_and_research(tmp_path):
 
 def test_cli_projects_json(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["projects", "--json"])
     assert r.exit_code == 0, r.output
     data = json.loads(r.output)
-    assert data["schema"] == "wt.projects.v1"
+    assert data["schema"] == "nw.projects.v1"
     assert {p["name"] for p in data["projects"]} >= {"Example", "Logging", "Meta-Tools",
                                                        "PFW-Intelligence"}

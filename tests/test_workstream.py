@@ -4,11 +4,11 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt import org_write as W
-from wt import report as R
-from wt.cli import cli
-from wt.org import filter_tasks, load_tasks
+from nightwright import explore as EX
+from nightwright import org_write as W
+from nightwright import report as R
+from nightwright.cli import cli
+from nightwright.org import filter_tasks, load_tasks
 
 
 def _cfg(tmp_path, workstreams=("ops", "platform")):
@@ -34,11 +34,11 @@ def _cfg(tmp_path, workstreams=("ops", "platform")):
 
 
 def _patch(monkeypatch, cfg):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
 
 
 def test_default_config_workstreams_empty():
-    from wt.config import DEFAULT_CONFIG
+    from nightwright.config import DEFAULT_CONFIG
     assert DEFAULT_CONFIG["workstreams"] == []
 
 

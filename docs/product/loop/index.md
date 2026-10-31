@@ -14,14 +14,14 @@ flowchart TB
 
     subgraph SES["Sessions — Claude Code"]
         direction LR
-        C["🎛️ Conductor · /wt-conduct<br/>wakes on events, decides queue actions"]
-        ST["🧭 Steward · /wt-steward<br/>knows one project (optional)"]
+        C["🎛️ Conductor · /nw-conduct<br/>wakes on events, decides queue actions"]
+        ST["🧭 Steward · /nw-steward<br/>knows one project (optional)"]
         C <-- "mailbox" --> ST
     end
 
-    subgraph CORE["wt — deterministic core"]
+    subgraph CORE["nightwright — deterministic core"]
         direction LR
-        Q[("📋 Queue<br/>backlog · waiting · slots")] --> R["⚙️ Runner · wt queue run<br/>one tick at a time"]
+        Q[("📋 Queue<br/>backlog · waiting · slots")] --> R["⚙️ Runner · nw queue run<br/>one tick at a time"]
         R --> LG[("📒 Ledger<br/>every step, every dollar")] --> EV[("🔔 Events<br/>parks · merges · failures")]
     end
 
@@ -33,7 +33,7 @@ flowchart TB
 
     MAIN[("🌿 main")]
 
-    H -- "wt queue add" --> Q
+    H -- "nw queue add" --> Q
     R -- "runs" --> P
     R -- "runs" --> G
     R -- "rebase · re-gate · merge" --> MAIN
@@ -45,10 +45,10 @@ flowchart TB
 | Part | What it is | What it does |
 |---|---|---|
 | **Queue** | Campaign state files under `<data_dir>/agentic/` | Holds the backlog (not started), what's waiting for a slot, what's active, what's parked |
-| **Runner** | One `wt queue run` process holding a lease | Each *tick*: admit work into free slots, run the next step of every active campaign, record everything |
+| **Runner** | One `nw queue run` process holding a lease | Each *tick*: admit work into free slots, run the next step of every active campaign, record everything |
 | **Campaign** | One spec's trip through the loop | Has its own branch and worktree, a state, counters, a cost, and an append-only ledger |
 | **Personas** | Fresh headless `claude -p` runs | Do the judgment work: implement, triage a failing gate, review. Each run starts with fresh context and a budget |
-| **Gates** | Shell commands from `.wt/project.yaml` | Your tests and linters, run deterministically in the worktree. Gates are where code meets reality |
+| **Gates** | Shell commands from `.nw/project.yaml` | Your tests and linters, run deterministically in the worktree. Gates are where code meets reality |
 | **Event stream** | A projection of every ledger | Turns "campaign parked", "merged", "runner dead" into alerts |
 | **Conductor** | A long-lived Claude Code session | Wakes on events and decides from a fixed decision table. It never implements anything |
 | **Steward** | A project session (optional) | Answers project questions the conductor asks over the mailbox |
@@ -61,18 +61,18 @@ sequenceDiagram
     autonumber
     actor You
     participant Q as Queue / Runner
-    participant WT as Worktree
+    participant NIGHTWRIGHT as Worktree
     participant I as Implementer
     participant G as Gates
     participant Rv as Reviewer
     participant M as main
 
-    You->>Q: wt queue add SPEC-0042 --yes
+    You->>Q: nw queue add SPEC-0042 --yes
     Q->>Q: backlog → admitted when a slot is free
-    Q->>WT: create branch + worktree, run setup
+    Q->>NIGHTWRIGHT: create branch + worktree, run setup
     loop until gates pass and review passes (bounded)
         Q->>I: implement (spec + last findings)
-        I->>WT: edit, commit
+        I->>NIGHTWRIGHT: edit, commit
         Q->>G: run gates in the worktree
         alt a gate fails
             Q->>Q: triager decides: fix / retry / waive / escalate
@@ -86,10 +86,10 @@ sequenceDiagram
 ```
 
 Everything in that diagram is written to the campaign's ledger as it happens: every state
-transition, persona run, gate result, finding and dollar. `wt campaign log <id>` replays it,
-and `wt queue watch` shows it live.
+transition, persona run, gate result, finding and dollar. `nw campaign log <id>` replays it,
+and `nw queue watch` shows it live.
 
-![wt queue watch](../assets/captures/cli-queue-watch.svg)
+![nw queue watch](../assets/captures/cli-queue-watch.svg)
 
 ## Where to go next
 

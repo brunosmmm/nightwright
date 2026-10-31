@@ -12,11 +12,11 @@ from test_agentic_e2e import (_git, _write, added, impl_done, make_cfg, make_rep
                               script, write_review)
 from test_agentic_nonblocking import _second_spec
 from test_agentic_reexec import _code_repo, _commit
-from wt.agentic import events as E
-from wt.agentic import lease as L
-from wt.agentic import queue as Q
-from wt.agentic import store as S
-from wt.agentic.runner import select_runner
+from nightwright.agentic import events as E
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
+from nightwright.agentic import store as S
+from nightwright.agentic.runner import select_runner
 
 
 class GatedRunner:
@@ -108,7 +108,7 @@ def test_drain_writes_and_clears_lease_draining(tmp_path, monkeypatch):
     def tick(*args, **kw):
         report = real_tick(*args, **kw)
         if len(report.started) == 2:                         # code lands mid-run
-            _commit(root, "src/wt/x.py", "A = 9\n", "code")
+            _commit(root, "src/nightwright/x.py", "A = 9\n", "code")
         return report
 
     seen = {"exec": None}
@@ -238,7 +238,7 @@ def test_ready_not_admitted_fires_during_drain(tmp_path, monkeypatch):
         report = real_tick(*args, **kw)
         if report.started:                                   # "A merged", and code landed
             dep.write_text(dep.read_text().replace("status: accepted", "status: done"))
-            _commit(root, "src/wt/x.py", "A = 9\n", "code")
+            _commit(root, "src/nightwright/x.py", "A = 9\n", "code")
         return report
 
     seen = {}

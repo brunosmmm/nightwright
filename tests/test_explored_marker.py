@@ -1,6 +1,6 @@
 """SPEC-0081: `:EXPLORED:` / `:EXPLORED_AT:` — recording that an idea was actually explored.
 
-The bug: `/wt-seed` writes explore-quality content and captures as INCUBATE, so a seeded idea was
+The bug: `/nw-seed` writes explore-quality content and captures as INCUBATE, so a seeded idea was
 indistinguishable on disk from an explored one. The fix only works if the marker is written
 *exclusively* by the explicit command — seeding performs the same summary/questions/log writes, so
 any implicit bump would immediately re-create the ambiguity. Hence the per-mutator matrix below.
@@ -11,10 +11,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from wt import explore as E
-from wt import org_write as W
-from wt import report as R
-from wt.console import console
+from nightwright import explore as E
+from nightwright import org_write as W
+from nightwright import report as R
+from nightwright.console import console
 
 TZ = ZoneInfo("America/New_York")
 
@@ -220,7 +220,7 @@ def test_tables_gain_no_column(tmp_path):
 
 def test_next_step_hint_unchanged_by_the_marker(tmp_path):
     """The promote gate is deliberately NOT changing in this spec."""
-    from wt.workflow import next_step_for_idea
+    from nightwright.workflow import next_step_for_idea
 
     cfg = _cfg(tmp_path)
     idea = _seed(cfg)
@@ -234,8 +234,8 @@ def test_skill_documents_explored():
     """Doc drift is the failure mode this family of bugs keeps hitting (cf. IDEA-098)."""
     import pathlib
 
-    text = pathlib.Path("skills/wt-explore/SKILL.md").read_text(encoding="utf-8")
-    assert "wt idea mark-explored" in text
+    text = pathlib.Path("skills/nw-explore/SKILL.md").read_text(encoding="utf-8")
+    assert "nw idea mark-explored" in text
 
 
 # ---- CLI --------------------------------------------------------------------------
@@ -243,8 +243,8 @@ def test_skill_documents_explored():
 def test_cli_explored(tmp_path, monkeypatch):
     from click.testing import CliRunner
 
-    import wt.cli as cli_mod
-    from wt.cli import cli
+    import nightwright.cli as cli_mod
+    from nightwright.cli import cli
 
     cfg = _cfg(tmp_path)
     _seed(cfg)
@@ -259,8 +259,8 @@ def test_cli_explored(tmp_path, monkeypatch):
 def test_cli_explored_on_missing_idea_errors(tmp_path, monkeypatch):
     from click.testing import CliRunner
 
-    import wt.cli as cli_mod
-    from wt.cli import cli
+    import nightwright.cli as cli_mod
+    from nightwright.cli import cli
 
     cfg = _cfg(tmp_path)
     _seed(cfg)

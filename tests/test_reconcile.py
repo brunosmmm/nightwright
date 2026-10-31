@@ -1,4 +1,4 @@
-"""SPEC-0078: `wt spec reconcile` — sync idea state with the linked spec's status.
+"""SPEC-0078: `nw spec reconcile` — sync idea state with the linked spec's status.
 
 The core contract is the status→state table, so it is enumerated rather than sampled. Writes are
 opt-in (`--apply`) because advancing to PROMOTED/DROPPED archives the subtree (SPEC-0073).
@@ -11,10 +11,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from wt import org_write as W
-from wt import report as R
-from wt import specs as S
-from wt.org import load_tasks
+from nightwright import org_write as W
+from nightwright import report as R
+from nightwright import specs as S
+from nightwright.org import load_tasks
 
 TZ = ZoneInfo("America/New_York")
 
@@ -150,7 +150,7 @@ def test_idea_ahead_of_spec_is_flagged_not_rewound(tmp_path):
 @pytest.mark.parametrize("state,status", [
     ("EXPORTED", "accepted"),        # export advances the idea; outbox status lags (SPEC-0041)
     ("EXPORTED", "in-progress"),
-    ("PROMOTED", "accepted"),        # `wt spec generate` runs off an accepted spec
+    ("PROMOTED", "accepted"),        # `nw spec generate` runs off an accepted spec
     ("PROMOTED", "done"),
 ])
 def test_legitimate_terminal_states_are_not_flagged(tmp_path, state, status):
@@ -268,7 +268,7 @@ def test_hub_exposes_stale_ideas(tmp_path):
 
 
 def test_next_shows_the_drift_line(tmp_path):
-    from wt.console import console
+    from nightwright.console import console
 
     cfg = _cfg(tmp_path)
     _spec(cfg, "SPEC-0001", "done", source_idea="IDEA-001")
@@ -282,7 +282,7 @@ def test_next_shows_the_drift_line(tmp_path):
         out = cap.get()
     finally:
         console._width, console._height = prev_w, prev_h
-    assert "out of sync" in out and "wt spec reconcile" in out
+    assert "out of sync" in out and "nw spec reconcile" in out
 
 
 def test_stale_count_is_zero_when_clean(tmp_path):
@@ -391,12 +391,12 @@ def test_backlink_write_skips_file_without_frontmatter(tmp_path):
 # ---- SPEC-0080: open questions on a landed spec -----------------------------------
 
 def _with_questions(cfg, idea_id, *questions):
-    from wt import explore as E
+    from nightwright import explore as E
     E.set_questions(cfg, idea_id, "\n".join(questions))
 
 
 def test_questions_open_reported_when_spec_done(tmp_path):
-    from wt import explore as E
+    from nightwright import explore as E
 
     cfg = _cfg(tmp_path)
     _spec(cfg, "SPEC-0001", "done", source_idea="IDEA-001")
@@ -418,7 +418,7 @@ def test_questions_open_not_reported_when_spec_unfinished(tmp_path):
 
 
 def test_questions_open_not_reported_when_all_resolved(tmp_path):
-    from wt import explore as E
+    from nightwright import explore as E
 
     cfg = _cfg(tmp_path)
     _spec(cfg, "SPEC-0001", "done", source_idea="IDEA-001")
@@ -432,7 +432,7 @@ def test_questions_open_not_reported_when_all_resolved(tmp_path):
 def test_apply_never_touches_questions(tmp_path):
     """The one thing this spec must not do: resolution is not derivable, so --apply may advance
     state but must leave every question exactly as it was."""
-    from wt import explore as E
+    from nightwright import explore as E
 
     cfg = _cfg(tmp_path)
     _spec(cfg, "SPEC-0001", "done", source_idea="IDEA-001")
@@ -468,7 +468,7 @@ def test_skill_documents_resolving_questions():
     """Doc drift is the original defect here, so the doc is asserted."""
     import pathlib
 
-    text = pathlib.Path("skills/wt-new-work/SKILL.md").read_text(encoding="utf-8")
+    text = pathlib.Path("skills/nw-new-work/SKILL.md").read_text(encoding="utf-8")
     assert "--resolve" in text
     assert "questions" in text.lower()
 
@@ -634,11 +634,11 @@ def test_stale_idea_count_exact(tmp_path):
 def test_cli_reconcile_prints_link_row(tmp_path, monkeypatch):
     from click.testing import CliRunner
 
-    from wt.cli import cli
+    from nightwright.cli import cli
     cfg = _cfg(tmp_path)
     idea_id = _bare_idea(cfg, "cli visible")
     _spec(cfg, "SPEC-0001", "done", source_idea=idea_id)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     out = CliRunner().invoke(cli, ["spec", "reconcile"])
     assert out.exit_code == 0, out.output
     assert idea_id in out.output and "set :SPEC: SPEC-0001" in out.output
@@ -677,7 +677,7 @@ def test_link_skipped_on_drift_does_not_advance(tmp_path, monkeypatch):
 def test_link_property_is_written_before_the_state_advance(tmp_path, monkeypatch):
     """PROMOTED archives the subtree, so `:SPEC:` must land first. The archive file is loaded
     too, so the end state alone cannot tell the orders apart: record the writes."""
-    from wt import explore as EX
+    from nightwright import explore as EX
     cfg = _cfg(tmp_path)
     idea_id = _bare_idea(cfg, "ordered", state="INCUBATE")
     _spec(cfg, "SPEC-0001", "done", source_idea=idea_id)
@@ -744,7 +744,7 @@ def test_link_skipped_on_drift_is_reported_as_a_conflict(tmp_path, monkeypatch):
 def test_cli_reconcile_marks_flag_rows_and_summary(tmp_path, monkeypatch):
     from click.testing import CliRunner
 
-    from wt.cli import cli
+    from nightwright.cli import cli
     cfg = _cfg(tmp_path)
     amb = _bare_idea(cfg, "claimed twice")
     conflict = _idea(cfg, "linked elsewhere", state="SPECCED", spec_id="SPEC-0004")
@@ -754,7 +754,7 @@ def test_cli_reconcile_marks_flag_rows_and_summary(tmp_path, monkeypatch):
     _spec(cfg, "SPEC-0003", "accepted", source_idea=conflict)
     _spec(cfg, "SPEC-0004", "accepted", source_idea=conflict)
     _spec(cfg, "SPEC-0005", "done", source_idea=good)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     out = CliRunner().invoke(cli, ["spec", "reconcile"]).output
     rows = {line.split()[1]: line for line in out.splitlines() if line.startswith("!") or
             line.startswith("→")}
@@ -1002,12 +1002,12 @@ def test_scoped_run_only_reports_in_scope_mismatch(tmp_path):
 def test_cli_reconcile_renders_flag_mismatch(tmp_path, monkeypatch):
     from click.testing import CliRunner
 
-    from wt.cli import cli
+    from nightwright.cli import cli
     cfg = _cfg(tmp_path)
     idea_id = _bare_idea(cfg, "reused cli")
     _stamp_idea(cfg, idea_id, "[2026-10-25 Sun 09:00]")
     _spec(cfg, "SPEC-0001", "done", source_idea=idea_id, created="2026-10-01")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     out = CliRunner().invoke(cli, ["spec", "reconcile"])
     assert out.exit_code == 0, out.output
     (row,) = [ln for ln in out.output.splitlines() if idea_id in ln]
@@ -1167,7 +1167,7 @@ def test_reconcile_done_clears_handed_off_on_a_duplicate_id(tmp_path):
 # ---- SPEC-0292: source_idea_task --------------------------------------------------
 
 def _fm(cfg_spec_path):
-    from wt.specmeta import split_frontmatter
+    from nightwright.specmeta import split_frontmatter
     return split_frontmatter(pathlib.Path(cfg_spec_path).read_text())[0]
 
 

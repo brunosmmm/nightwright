@@ -5,10 +5,10 @@ import pytest
 
 from test_agentic_dashboard import _campaign, _ev, _iso
 from test_agentic_e2e import impl_done, make_cfg, make_repo, script
-from wt.agentic import schemas as SC
-from wt.agentic import spec_review as SR
-from wt.agentic import store as S
-from wt.tui import agentic_model as AM
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import spec_review as SR
+from nightwright.agentic import store as S
+from nightwright.tui import agentic_model as AM
 
 
 @pytest.fixture
@@ -43,7 +43,7 @@ def test_fresh_campaign_header_has_lines_one_to_three(env):
     assert "project Meta-Tools" in lines[0]
     assert lines[1].startswith("loops 1/") and "runs 1" in lines[1] and "cost $1.25" in lines[1]
     assert lines[1].endswith("/ $10.00")
-    assert lines[2] == "branch wt/SPEC-0001-a  worktree /tmp/wt/SPEC-0001-a (missing)"
+    assert lines[2] == "branch nw/SPEC-0001-a  worktree /tmp/nw/SPEC-0001-a (missing)"
 
 
 def test_sized_parked_header_shows_every_line(env, tmp_path):
@@ -63,7 +63,7 @@ def test_sized_parked_header_shows_every_line(env, tmp_path):
     assert len(lines) == 5
     assert "(~$0.50 est.) / $8.00" in lines[1]
     assert "profile balanced (spec_review)  size m  tone careful" in lines[1]
-    assert lines[2] == f"branch wt/SPEC-0001-b  worktree {wt}"
+    assert lines[2] == f"branch nw/SPEC-0001-b  worktree {wt}"
     assert lines[3] == "parked rate_limited: 429 → resume to GATING"
     assert lines[4] == "follow-ups IDEA-001 · 1 waived · 2 capped"
     # a missing worktree

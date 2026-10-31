@@ -14,9 +14,9 @@ from test_agentic_e2e import (_git, added, impl_done, make_cfg, make_repo, revie
                               script)
 from test_agentic_e2e import _git_env  # noqa: F401 — autouse fixture: git identity
 from test_agentic_mvp_report import PRICE, asst, camp, conductor, crit, deliveries
-from wt.agentic import conductor_cost as CC
-from wt.agentic import quiet
-from wt.agentic import store as S
+from nightwright.agentic import conductor_cost as CC
+from nightwright.agentic import quiet
+from nightwright.agentic import store as S
 
 
 def iso(t):

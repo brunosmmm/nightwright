@@ -5,14 +5,14 @@ import pytest
 from test_agentic_e2e import ENV, _git, _write
 from test_agentic_queue_merge import branch_wt, queue_merge
 from test_agentic_queue import PROFILE, _rr, opened  # noqa: F401  (fixture)
-from wt.agentic import close as CL
-from wt.agentic import decisions as D
-from wt.agentic import escalations as ESC
-from wt.agentic import events as E
-from wt.agentic import lease as L
-from wt.agentic import queue as Q
-from wt.agentic import quiet as QT
-from wt.agentic import store as S
+from nightwright.agentic import close as CL
+from nightwright.agentic import decisions as D
+from nightwright.agentic import escalations as ESC
+from nightwright.agentic import events as E
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
+from nightwright.agentic import quiet as QT
+from nightwright.agentic import store as S
 
 BASE, CAP = "parked.base_moving", "parked.cost_cap"
 LONG_AGO = "2020-01-01T00:00:00+00:00"
@@ -476,8 +476,8 @@ def _closing_world(tmp_path, monkeypatch):
     from test_agentic_e2e import make_cfg, make_repo, run_cli, script
     for k, v in ENV.items():
         monkeypatch.setenv(k, v)
-    monkeypatch.delenv("WT_AGENTIC_RUNNER", raising=False)
-    monkeypatch.delenv("WT_AGENTIC_FAKE_SCRIPT", raising=False)
+    monkeypatch.delenv("NW_AGENTIC_RUNNER", raising=False)
+    monkeypatch.delenv("NW_AGENTIC_FAKE_SCRIPT", raising=False)
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
     branch_wt(tmp_path, repo)

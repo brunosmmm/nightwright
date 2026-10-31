@@ -6,10 +6,10 @@ import pytest
 from test_agentic_dashboard import _campaign, _ev, _fixture
 from test_agentic_e2e import run_cli
 from test_tui_queue_tab import SIZE, _desk, _run, act, press, select, settle, snapshot, view
-from wt import tui as T
-from wt.agentic import events as EV
-from wt.agentic import store as S
-from wt.tui import campaign_screen as CS
+from nightwright import tui as T
+from nightwright.agentic import events as EV
+from nightwright.agentic import store as S
+from nightwright.tui import campaign_screen as CS
 from waits import pilot_until
 
 needs_textual = pytest.mark.skipif(not T.textual_available(),
@@ -234,7 +234,7 @@ def test_campaign_option_opens_the_screen_directly(tmp_path):
     _run(drive())
 
 
-# --- `wt tui --campaign` ----------------------------------------------------------------------
+# --- `nw tui --campaign` ----------------------------------------------------------------------
 
 def test_cli_campaign_resolves_ids_and_rejects_bad_ones(tmp_path, monkeypatch):
     repo, cfg, ids = _fixture(tmp_path)

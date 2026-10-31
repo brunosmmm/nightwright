@@ -1,10 +1,10 @@
 """SPEC-0269: load-tolerant waits for tests. Poll with a generous bound (it costs nothing on
-the green path) instead of a fixed sleep before a positive assertion. `WT_TEST_WAIT_S`
+the green path) instead of a fixed sleep before a positive assertion. `NW_TEST_WAIT_S`
 overrides the default bound."""
 import os
 import time
 
-WAIT_S = float(os.environ.get("WT_TEST_WAIT_S", "60"))
+WAIT_S = float(os.environ.get("NW_TEST_WAIT_S", "60"))
 
 
 def until(cond, timeout=None, interval=0.05):

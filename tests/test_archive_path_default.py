@@ -1,17 +1,17 @@
 """SPEC-0168: the ideas archive defaults to `ideas-archive.org` next to `org_ideas_file`, so a
 config that relocates the ideas file can never archive into someone's real archive.
 
-Goes through the real `load_config()` (tmp HOME / WT_CONFIG_DIR / WT_DATA_DIR) — the bug lived
+Goes through the real `load_config()` (tmp HOME / NW_CONFIG_DIR / NW_DATA_DIR) — the bug lived
 in the DEFAULT_CONFIG merge, which hand-built cfg dicts never exercise."""
 import os
 from pathlib import Path
 
 import pytest
 
-from wt import explore as EX
-from wt import org_write as W
-from wt.config import load_config
-from wt.org import invalidate_tasks_cache, load_tasks
+from nightwright import explore as EX
+from nightwright import org_write as W
+from nightwright.config import load_config
+from nightwright.org import invalidate_tasks_cache, load_tasks
 
 
 @pytest.fixture
@@ -21,8 +21,8 @@ def env(tmp_path, monkeypatch):
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("WT_CONFIG_DIR", str(cfg_dir))
-    monkeypatch.setenv("WT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NW_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setenv("NW_DATA_DIR", str(tmp_path / "data"))
     return home, cfg_dir
 
 

@@ -1,7 +1,7 @@
 """SPEC-0284: gate result parsing (pytest summary line, JUnit XML)."""
 import pytest
 
-from wt.agentic import gate_results as GR
+from nightwright.agentic import gate_results as GR
 
 
 def test_pytest_full_summary_line():

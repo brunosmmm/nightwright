@@ -1,6 +1,6 @@
 """SPEC-0181: the queue event stream — append/validate/ids, projection from campaign ledgers
 (exactly once), watchdog signals (once per condition), cursors and the reader lock, and the
-`wt queue events` / `wt queue conduct-status` CLI."""
+`nw queue events` / `nw queue conduct-status` CLI."""
 import datetime as dt
 import io
 import json
@@ -9,11 +9,11 @@ import threading
 import pytest
 from click.testing import CliRunner
 
-from wt.agentic import events as E
-from wt.agentic import lease as L
-from wt.agentic import store
-from wt.cli import cli
-from wt.agentic import schemas as SC
+from nightwright.agentic import events as E
+from nightwright.agentic import lease as L
+from nightwright.agentic import store
+from nightwright.cli import cli
+from nightwright.agentic import schemas as SC
 
 def _ev(cfg, cid, etype, payload=None, **kw):
     """append_event with the schema's required keys defaulted (SPEC-0192 fixtures)."""
@@ -50,7 +50,7 @@ def test_append_validates_and_assigns_ids(tmp_path):
     a = E.append(cfg, "admitted", campaign="c1")
     b = E.append(cfg, "merged", campaign="c1", data={"merged_sha": "abc"})
     assert (a["id"], b["id"]) == (1, 2)
-    assert a["schema"] == "wt.event.v1"
+    assert a["schema"] == "nw.event.v1"
     assert [e["type"] for e in E.read_since(cfg, 1)] == ["merged"]
 
 
@@ -154,7 +154,7 @@ def test_run_overdue_and_silent(tmp_path):
 
 
 def _marker(cfg, cid, pid):
-    from wt.agentic import gate_slots as GS
+    from nightwright.agentic import gate_slots as GS
     GS.slots_dir(cfg).mkdir(parents=True, exist_ok=True)
     (GS.slots_dir(cfg) / f"waiting-{cid}.json").write_text(
         json.dumps({"campaign": cid, "pid": pid, "since": store.now_iso()}))
@@ -215,7 +215,7 @@ def test_finished_wait_in_a_live_hold_extends_the_limit_with_no_gate_entry(tmp_p
     """The wait is over, the marker is gone and the gate is still running, so there is no `gate`
     entry for this run yet: the live hold's `waited_s` carries the extension."""
     import os
-    from wt.agentic import gate_slots as GS
+    from nightwright.agentic import gate_slots as GS
     cfg = _cfg(tmp_path)
     cid = _campaign(cfg, "SPEC-0906-20261025-ffff", state=state)
     sett = E.settings(cfg)
@@ -242,7 +242,7 @@ def test_finished_wait_in_a_live_hold_is_not_silence(tmp_path, state):
     """The wait is over, the gate runs and the ledger has no new entry: silence starts at the
     later of the newest entry and the hold's start, so the wait is forgiven once, not twice."""
     import os
-    from wt.agentic import gate_slots as GS
+    from nightwright.agentic import gate_slots as GS
     cfg = _cfg(tmp_path)
     cid = _campaign(cfg, "SPEC-0907-20261025-aaab", state=state)
     silent_after = E.settings(cfg)["silent_after_s"]
@@ -344,7 +344,7 @@ def test_follow_exits_with_code_changed_and_resumes(tmp_path, code_repo):
         if calls["n"] == 1:
             # an event and a code commit land together: the event must still come first
             calls["late"] = E.append(cfg, "admitted", campaign="late")
-            code_repo.commit({"skills/wt-conduct/SKILL.md": "new\n"})
+            code_repo.commit({"skills/nw-conduct/SKILL.md": "new\n"})
         return False
 
     assert _code_follow(cfg, code_repo, out, stop=stop) == 3
@@ -356,8 +356,8 @@ def test_follow_exits_with_code_changed_and_resumes(tmp_path, code_repo):
     assert cc["type"] == "code_changed" and cc["by"] == "follower" and cc["schema"] == E.SCHEMA
     assert cc["campaign"] is None and cc["spec_id"] is None and cc["project"] is None
     assert cc["data"]["reader"] == "conductor"
-    assert cc["data"]["skills_changed"] == ["wt-conduct"]
-    assert cc["data"]["paths"] == ["skills/wt-conduct/SKILL.md"]
+    assert cc["data"]["skills_changed"] == ["nw-conduct"]
+    assert cc["data"]["paths"] == ["skills/nw-conduct/SKILL.md"]
     assert cc["data"]["to_sha"] == code_repo.head()
     assert E.cursor_get(cfg, "conductor") == late["id"]
     assert all(e["type"] != "code_changed" for e in E.read_since(cfg, 0))
@@ -376,7 +376,7 @@ def test_follow_code_changed_text_mode(tmp_path, code_repo):
     def stop():
         calls["n"] += 1
         if calls["n"] == 1:
-            code_repo.commit({"src/wt/x.py": "x = 2\n"})
+            code_repo.commit({"src/nightwright/x.py": "x = 2\n"})
         return False
 
     _code_follow(cfg, code_repo, out, stop=stop, as_json=False)
@@ -394,7 +394,7 @@ def test_follow_without_code_watch_keeps_looping(tmp_path, code_repo):
         calls["n"] += 1
         if calls["n"] == 1:
             calls["commits"] += 1
-            code_repo.commit({"src/wt/x.py": f"x = {calls['commits']}\n"})
+            code_repo.commit({"src/nightwright/x.py": f"x = {calls['commits']}\n"})
         return calls["n"] >= 5
 
     assert E.follow(cfg, "conductor", poll_s=0, code_root=None, code_check_s=0.01, out=out,
@@ -414,7 +414,7 @@ def _watch_exits(follow_kw, cfg, code_repo, **kw):
     def stop():
         calls["n"] += 1
         if calls["n"] == 1:
-            code_repo.commit({"src/wt/x.py": f"x = {code_repo.head()}\n"})
+            code_repo.commit({"src/nightwright/x.py": f"x = {code_repo.head()}\n"})
         return calls["n"] >= 6
 
     E.follow(cfg, "conductor", poll_s=0.01, out=out, stop=stop, **follow_kw, **kw)
@@ -462,7 +462,7 @@ def test_summary_line_null_id():
 
 def test_cli_events_follow_no_code_watch(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     seen = []
     monkeypatch.setattr(E, "follow", lambda *a, **kw: seen.append(kw) or 0)
     r = CliRunner().invoke(cli, ["queue", "events", "--follow", "--for", "x"])
@@ -476,7 +476,7 @@ def test_cli_events_follow_no_code_watch(tmp_path, monkeypatch):
 
 def test_cli_events_history_and_conduct_status(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     cid = _campaign(cfg, state="PARKED")
     _set_state(cfg, cid, park={"reason": "cost_cap", "detail": "over",
                                "resume_to": "IMPLEMENTING"})
@@ -485,12 +485,12 @@ def test_cli_events_history_and_conduct_status(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["queue", "events"])
     assert r.exit_code == 0, r.output
     payload = json.loads(r.output)
-    assert payload["schema"] == "wt.events.v1"
+    assert payload["schema"] == "nw.events.v1"
     assert "parked" in [e["type"] for e in payload["events"]]
     r = CliRunner().invoke(cli, ["queue", "conduct-status", "--json"])
     assert r.exit_code == 0, r.output
     st = json.loads(r.output)
-    assert st["schema"] == "wt.conduct.status.v1"
+    assert st["schema"] == "nw.conduct.status.v1"
     assert st["counts"]["parked"] == 1
     assert st["parked"][0]["park"]["reason"] == "cost_cap"
     r = CliRunner().invoke(cli, ["queue", "events", "--follow"])
@@ -579,7 +579,7 @@ def test_park_undecided_not_before_threshold_or_for_human_reason(tmp_path):
 
 
 def test_conductor_park_view_unchanged(tmp_path):                                  # SPEC-0315
-    """`wt queue park` parks `human` (decided by construction), `wt queue escalate` parks
+    """`nw queue park` parks `human` (decided by construction), `nw queue escalate` parks
     `human_decision` (human-owned): neither is ever a `park_undecided`, held `parked` or not."""
     cfg = _cfg(tmp_path)
     held = _campaign(cfg, "SPEC-0916-20261025-aaaa")

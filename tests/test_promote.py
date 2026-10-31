@@ -10,10 +10,10 @@ import shutil
 from click.testing import CliRunner
 from zoneinfo import ZoneInfo
 
-from wt import org_write as W
-from wt import specs as S
-from wt.cli import cli
-from wt.org import load_tasks
+from nightwright import org_write as W
+from nightwright import specs as S
+from nightwright.cli import cli
+from nightwright.org import load_tasks
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REAL_SPECS = ROOT / "docs" / "specs"
@@ -161,7 +161,7 @@ def test_scaffold_from_idea_idempotence_guard(tmp_path):
 def test_cli_spec_new(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     _seed_idea(cfg, "instant review agent")
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["spec", "new", "--from-idea", "instant review agent"])
     assert r.exit_code == 0, r.output
@@ -174,7 +174,7 @@ def test_cli_spec_new(tmp_path, monkeypatch):
 def test_cli_spec_new_rejects_non_idea(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     W.add_task(cfg, "a regular task")
-    import wt.cli as cli_mod
+    import nightwright.cli as cli_mod
     monkeypatch.setattr(cli_mod, "load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["spec", "new", "--from-idea", "a regular task"])
     assert r.exit_code != 0

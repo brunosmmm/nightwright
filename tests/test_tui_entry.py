@@ -1,4 +1,4 @@
-"""Optional Textual packaging + `wt tui` entry (SPEC-0099).
+"""Optional Textual packaging + `nw tui` entry (SPEC-0099).
 
 These tests must pass on a base install (no `tui` extra), so the only thing exercised
 unconditionally is the import guard. The launch path is skipped unless Textual is present.
@@ -10,8 +10,8 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import tui as T
-from wt.cli import cli
+from nightwright import tui as T
+from nightwright.cli import cli
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -40,14 +40,14 @@ def test_textual_is_an_optional_extra_not_a_hard_dep():
 
 
 def test_cli_module_does_not_import_textual_or_the_tui_app():
-    """`wt <anything>` must not pull Textual in — cli.py imports wt.tui lazily."""
+    """`nw <anything>` must not pull Textual in — cli.py imports nightwright.tui lazily."""
     import subprocess
     import sys
 
     code = (
-        "import sys; import wt.cli; "
+        "import sys; import nightwright.cli; "
         "assert 'textual' not in sys.modules, 'textual imported eagerly'; "
-        "assert 'wt.tui' not in sys.modules, 'wt.tui imported eagerly'; "
+        "assert 'nightwright.tui' not in sys.modules, 'nightwright.tui imported eagerly'; "
         "print('clean')"
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
@@ -64,9 +64,9 @@ def test_run_raises_missing_textual_when_extra_absent(tmp_path, monkeypatch):
     assert "uv sync --extra tui" in str(e.value)
 
 
-def test_wt_tui_exits_nonzero_with_install_hint(tmp_path, monkeypatch):
+def test_nw_tui_exits_nonzero_with_install_hint(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     monkeypatch.setattr(T, "textual_available", lambda: False)
     r = CliRunner().invoke(cli, ["tui"])
     assert r.exit_code != 0
@@ -75,13 +75,13 @@ def test_wt_tui_exits_nonzero_with_install_hint(tmp_path, monkeypatch):
 
 
 def test_missing_dependency_guard_does_not_swallow_app_bugs(tmp_path, monkeypatch):
-    """An ImportError raised *inside* wt.tui.app must surface, not read as 'install Textual'."""
+    """An ImportError raised *inside* nightwright.tui.app must surface, not read as 'install Textual'."""
     monkeypatch.setattr(T, "textual_available", lambda: True)
 
     def boom(*a, **kw):
         raise ImportError("no module named 'somewhere_in_app'")
 
-    monkeypatch.setitem(__import__("sys").modules, "wt.tui.app",
+    monkeypatch.setitem(__import__("sys").modules, "nightwright.tui.app",
                         type("M", (), {"run_app": staticmethod(boom)})())
     with pytest.raises(ImportError) as e:
         T.run(_cfg(tmp_path))
@@ -96,7 +96,7 @@ needs_textual = pytest.mark.skipif(not T.textual_available(),
 
 @needs_textual
 def test_app_shell_constructs_and_runs_headless(tmp_path):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     app = IdeaDesk(_cfg(tmp_path))
 
@@ -110,11 +110,11 @@ def test_app_shell_constructs_and_runs_headless(tmp_path):
     asyncio.run(drive())
 
 
-# --- SPEC-0241: `wt tui --tab` ------------------------------------------------------------
+# --- SPEC-0241: `nw tui --tab` ------------------------------------------------------------
 
 def _capture_run(monkeypatch, tmp_path):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     seen = {}
     monkeypatch.setattr(T, "run", lambda c, **kw: seen.update(kw))
     return seen

@@ -1,4 +1,4 @@
-"""SPEC-0146: product reference covers every top-level wt command."""
+"""SPEC-0146: product reference covers every top-level nightwright command."""
 from __future__ import annotations
 
 import re
@@ -12,7 +12,7 @@ README = ROOT / "README.md"
 
 def _live_top_level_commands() -> list[str]:
     proc = subprocess.run(
-        ["uv", "run", "wt", "--help"],
+        ["uv", "run", "nw", "--help"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -23,7 +23,7 @@ def _live_top_level_commands() -> list[str]:
     try:
         start = next(i for i, line in enumerate(lines) if line.strip() == "Commands:")
     except StopIteration as exc:
-        raise AssertionError("wt --help missing Commands: section") from exc
+        raise AssertionError("nw --help missing Commands: section") from exc
     names: list[str] = []
     for line in lines[start + 1 :]:
         if not line.strip():
@@ -31,7 +31,7 @@ def _live_top_level_commands() -> list[str]:
         m = re.match(r"\s{2}(\S+)\s+", line)
         if m:
             names.append(m.group(1))
-    assert names, "parsed zero commands from wt --help"
+    assert names, "parsed zero commands from nw --help"
     return names
 
 

@@ -5,10 +5,10 @@ from zoneinfo import ZoneInfo
 
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt import org_write as W
-from wt import rules as R
-from wt.cli import cli
+from nightwright import explore as EX
+from nightwright import org_write as W
+from nightwright import rules as R
+from nightwright.cli import cli
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -44,7 +44,7 @@ def test_resolve_outbox_targets():
             "PFW-Intelligence": {
                 "repo_path": "~/work/demo-project",
                 "spec_dir": "docs/specs",
-                "scheme": "wt-native",
+                "scheme": "nw-native",
             },
         },
     }
@@ -53,14 +53,14 @@ def test_resolve_outbox_targets():
     assert ctx["root"].endswith("work/demo-project")
     assert "~" not in ctx["root"]
     assert ctx["spec_dir"] == "docs/specs"
-    assert ctx["scheme"] == "wt-native"
+    assert ctx["scheme"] == "nw-native"
 
 
 def test_resolve_meta_tools_internal():
     ctx = R.resolve_research_context({}, "Meta-Tools")
     assert ctx["source"] == "internal"
     assert ctx["root"] is not None
-    assert (Path(ctx["root"]) / "src" / "wt").is_dir()
+    assert (Path(ctx["root"]) / "src" / "nightwright").is_dir()
     assert (Path(ctx["root"]) / "pyproject.toml").is_file()
 
 
@@ -86,7 +86,7 @@ def test_idea_show_json_includes_research(tmp_path, monkeypatch):
         "PFW-Intelligence": {"repo_path": str(target), "spec_dir": "docs/specs"},
     })
     W.add_idea(cfg, "alerts epic", state="INCUBATE", project="PFW-Intelligence")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
 
     r = CliRunner().invoke(cli, ["idea", "show", "IDEA-001", "--json"])
     assert r.exit_code == 0, r.output
@@ -101,13 +101,13 @@ def test_idea_show_plain_research_line(tmp_path):
         "Example": {"repo_path": "/tmp/example-ats"},
     })
     W.add_idea(cfg, "plain research", state="INCUBATE", project="Example")
-    from wt.org import load_tasks
+    from nightwright.org import load_tasks
     task = next(t for t in load_tasks(cfg) if t.properties.get("ID") == "IDEA-001")
     text = EX.format_idea_show(cfg, task)
     assert "research: /tmp/example-ats (outbox_targets)" in text
 
 
-def test_discover_wt_checkout_matches_repo():
-    root = R.discover_wt_checkout()
+def test_discover_nw_checkout_matches_repo():
+    root = R.discover_nw_checkout()
     assert root is not None
-    assert Path(root) == ROOT.resolve() or (Path(root) / "src" / "wt").is_dir()
+    assert Path(root) == ROOT.resolve() or (Path(root) / "src" / "nightwright").is_dir()

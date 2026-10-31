@@ -11,9 +11,9 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import report as R
-from wt.cli import cli
-from wt.tui import model as M
+from nightwright import report as R
+from nightwright.cli import cli
+from nightwright.tui import model as M
 
 
 def _cfg(tmp_path):
@@ -43,7 +43,7 @@ def _cfg(tmp_path):
 def _seed(tmp_path, monkeypatch, *, with_epic=True):
     """Two ideas under an outbound epic, one loose — all OPEN, so the default view applies."""
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     args = ["--project", "Alpha"] + (["--epic", "EXAMPLE-0007"] if with_epic else [])
     assert run(cli, ["idea", "first under epic"] + args).exit_code == 0
@@ -177,7 +177,7 @@ def test_cli_tree_renders_the_epic_as_a_label(tmp_path, monkeypatch):
 def test_derived_parentage_still_nests(tmp_path, monkeypatch):
     """SPEC-0114's derived idea→idea nesting must not regress now that `:EPIC:` takes priority."""
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     for text in ("the parent", "the child"):
         assert run(cli, ["idea", text, "--project", "Alpha"]).exit_code == 0
@@ -185,7 +185,7 @@ def test_derived_parentage_still_nests(tmp_path, monkeypatch):
         (Path(cfg["specs_dir"]) / f"{num:04d}-x.md").write_text(
             f"---\nid: SPEC-{num:04d}\ntitle: \"s\"\nstatus: accepted\nowner: b\n"
             f"created: 2026-08-01\nupdated: 2026-08-01\n{extra}---\n\n## Context\n\nx\n")
-    from wt.org_write import resolve_selector, set_property
+    from nightwright.org_write import resolve_selector, set_property
     for idea, spec in (("IDEA-001", "SPEC-0001"), ("IDEA-002", "SPEC-0002")):
         set_property(cfg, resolve_selector(cfg, idea), "SPEC", spec)
 
@@ -200,7 +200,7 @@ def test_derived_parentage_still_nests(tmp_path, monkeypatch):
 def test_stored_epic_wins_over_derived_parentage(tmp_path, monkeypatch):
     """`:EPIC:` is stored and explicit; derived parentage is a fallback."""
     cfg = _seed(tmp_path, monkeypatch)
-    from wt.org_write import resolve_selector, set_property
+    from nightwright.org_write import resolve_selector, set_property
     set_property(cfg, resolve_selector(cfg, "IDEA-001"), "SPEC", "SPEC-0002")
     tree = R.build_idea_tree(cfg, R.collect_idea_tasks(cfg))
     alpha = [g for g in tree if g["project"] == "Alpha"][0]

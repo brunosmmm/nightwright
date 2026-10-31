@@ -23,7 +23,7 @@ with open("child.pid", "w") as f:
 if os.environ.get("FAKE_CLAUDE_RECORD"):
     with open(os.environ["FAKE_CLAUDE_RECORD"], "w") as f:
         json.dump({"argv": sys.argv, "stdin": stdin, "cwd": os.getcwd(),
-                   "env": {k: v for k, v in os.environ.items() if k.startswith("WT_")}}, f)
+                   "env": {k: v for k, v in os.environ.items() if k.startswith("NW_")}}, f)
 if os.environ.get("FAKE_CLAUDE_STUBBORN"):
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
 if os.environ.get("FAKE_CLAUDE_TERM_EXIT"):

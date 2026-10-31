@@ -1,9 +1,9 @@
 """Clock + open-question count in shared JSON, and the desk's metadata/clock actions
 (SPEC-0103).
 
-Epic Q3 ruled these signals belong in `wt.idea.v1` / row envelopes rather than a TUI-only
+Epic Q3 ruled these signals belong in `nw.idea.v1` / row envelopes rather than a TUI-only
 `Task` read, so agents get them without ever launching the desk. Fields are **additive** — the
-schema string stays `wt.idea.v1`.
+schema string stays `nw.idea.v1`.
 """
 import asyncio
 import json
@@ -13,12 +13,12 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import explore as EX
-from wt import report as R
-from wt import tui as T
-from wt.cli import cli
-from wt.org import load_tasks
-from wt.tui import model as M
+from nightwright import explore as EX
+from nightwright import report as R
+from nightwright import tui as T
+from nightwright.cli import cli
+from nightwright.org import load_tasks
+from nightwright.tui import model as M
 
 needs_textual = pytest.mark.skipif(not T.textual_available(),
                                    reason="optional tui extra not installed")
@@ -44,7 +44,7 @@ def _cfg(tmp_path):
 
 def _seed(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "clocked idea"]).exit_code == 0
     assert run(cli, ["idea", "questions", "IDEA-001", "--add", "still open?"]).exit_code == 0
@@ -58,14 +58,14 @@ def _idea(cfg, idea_id="IDEA-001"):
     return [t for t in load_tasks(cfg) if t.properties.get("ID") == idea_id][0]
 
 
-# --- wt.idea.v1 -------------------------------------------------------------------------
+# --- nw.idea.v1 -------------------------------------------------------------------------
 
 def test_idea_show_json_carries_clock_and_open_question_count(tmp_path, monkeypatch):
     cfg = _seed(tmp_path, monkeypatch)
     r = CliRunner().invoke(cli, ["idea", "show", "IDEA-001", "--json"])
     assert r.exit_code == 0
     payload = json.loads(r.output)
-    assert payload["schema"] == "wt.idea.v1"          # additive: no version bump
+    assert payload["schema"] == "nw.idea.v1"          # additive: no version bump
     assert payload["open_questions"] == 2
     assert payload["clock_open"] is False
     assert payload["clocked_hours"] == 0.0
@@ -90,7 +90,7 @@ def test_clock_open_flips_with_clock_in_and_out(tmp_path, monkeypatch):
 def test_clocked_hours_sums_only_closed_intervals(tmp_path, monkeypatch):
     import datetime as dt
 
-    from wt import org_write as W
+    from nightwright import org_write as W
 
     cfg = _seed(tmp_path, monkeypatch)
     base = dt.datetime(2026, 7, 30, 9, 0)
@@ -129,7 +129,7 @@ def test_row_and_payload_agree_on_open_question_count(tmp_path, monkeypatch):
 
 
 def test_next_and_hub_rows_inherit_the_fields(tmp_path, monkeypatch):
-    """`wt next` / `wt hub` share `idea_row`, so they get the fields for free."""
+    """`nw next` / `nw hub` share `idea_row`, so they get the fields for free."""
     cfg = _seed(tmp_path, monkeypatch)
     for argv, key in ((["next", "--json"], "ideas"), (["hub", "--json"], "ideas")):
         r = CliRunner().invoke(cli, argv)
@@ -185,7 +185,7 @@ def test_desk_rows_expose_clock_and_open_questions(tmp_path, monkeypatch):
 
 @needs_textual
 def test_clock_toggle_binding_is_bidirectional(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -205,7 +205,7 @@ def test_clock_toggle_binding_is_bidirectional(tmp_path, monkeypatch):
 
 @needs_textual
 def test_metadata_screen_sets_a_value(tmp_path, monkeypatch):
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 
@@ -231,7 +231,7 @@ def test_metadata_screen_sets_a_value(tmp_path, monkeypatch):
 def test_desk_shows_open_question_count_and_clock_marker(tmp_path, monkeypatch):
     from test_tui_desk import _grid
 
-    from wt.tui.app import IdeaDesk
+    from nightwright.tui.app import IdeaDesk
 
     cfg = _seed(tmp_path, monkeypatch)
 

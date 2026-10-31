@@ -1,5 +1,5 @@
 """Org backup retention (SPEC-0271): per-basename keep-last + one-per-day selection, prune on
-every backup write (that file only, best-effort), `wt backups prune` dry run / --yes, and the
+every backup write (that file only, best-effort), `nw backups prune` dry run / --yes, and the
 `org_backups` config fallback."""
 import datetime as dt
 import json
@@ -10,10 +10,10 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import org_write as W
-from wt.cli import cli
-from wt.config import load_config
-from wt.org import load_tasks
+from nightwright import org_write as W
+from nightwright.cli import cli
+from nightwright.config import load_config
+from nightwright.org import load_tasks
 
 
 def _name(base, when):
@@ -105,7 +105,7 @@ def test_prune_failure_does_not_fail_write(tmp_path, monkeypatch):
     W.set_property(cfg, _task(cfg), "FOO", "bar")
     assert ":FOO: bar" in ideas.read_text()
     assert len(list(bdir.glob("ideas.org.*.bak"))) >= 60      # nothing deleted
-    assert not list(ideas.parent.glob(".wt-org-*"))          # no temp file left: atomic replace
+    assert not list(ideas.parent.glob(".nw-org-*"))          # no temp file left: atomic replace
 
 
 def test_prune_listdir_failure_does_not_fail_write(tmp_path, monkeypatch):
@@ -139,12 +139,12 @@ def test_non_oserror_prune_does_not_fail_write(tmp_path, monkeypatch):
 
 
 def _cli(monkeypatch, data_dir, config_dir):
-    """Run `wt` against a real load_config() of tmp dirs (patched in directly so a leaked
-    `wt.cli.load_config` patch from another test can't redirect it)."""
-    monkeypatch.setenv("WT_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("WT_CONFIG_DIR", str(config_dir))
+    """Run `nw` against a real load_config() of tmp dirs (patched in directly so a leaked
+    `nightwright.cli.load_config` patch from another test can't redirect it)."""
+    monkeypatch.setenv("NW_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("NW_CONFIG_DIR", str(config_dir))
     cfg = load_config()
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     return lambda args: CliRunner().invoke(cli, args)
 
 
@@ -278,7 +278,7 @@ def test_persona_run_cannot_prune_backups(tmp_path, monkeypatch):
     _seed(bdir, "ideas.org", 3, day=dt.date.today() - dt.timedelta(days=100))
     run = _cli(monkeypatch, data_dir, config_dir)
     before = sorted(os.listdir(bdir))
-    monkeypatch.setenv("WT_PERSONA_RUN", "1")
+    monkeypatch.setenv("NW_PERSONA_RUN", "1")
     locked = []
     real_lock = W.org_write_lock
 
@@ -374,7 +374,7 @@ def test_persona_run_refuses_before_backup_copy(tmp_path, monkeypatch):
     """`_atomic_backup_write` itself refuses before it copies (the `org_writer` wrapper would
     otherwise mask a misplaced refusal)."""
     cfg, ideas, bdir = _ideas_setup(tmp_path)
-    monkeypatch.setenv("WT_PERSONA_RUN", "1")
+    monkeypatch.setenv("NW_PERSONA_RUN", "1")
     with pytest.raises(W.PersonaOrgWriteRefused):
         W._atomic_backup_write(cfg, str(ideas), "changed\n")
     assert os.listdir(bdir) == []

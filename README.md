@@ -1,6 +1,6 @@
-# wt
+# nightwright
 
-**wt** is two things sharing one CLI:
+**nightwright** is two things sharing one CLI:
 
 1. **Passive time tracking** — hours per topic from Claude Code / Cursor transcripts and
    Outlook meetings (no timer for that signal).
@@ -10,7 +10,7 @@
 Org `clock-in` / `clock-out` is **supplemental** wall-time on an idea while you build —
 it does not replace passive tracking.
 
-> **Retention:** Claude Code deletes old transcripts. Run `wt snapshot` regularly (and
+> **Retention:** Claude Code deletes old transcripts. Run `nw snapshot` regularly (and
 > prefer a longer `cleanupPeriodDays`). Details:
 > [`docs/product/concepts/time-and-retention.md`](docs/product/concepts/time-and-retention.md).
 
@@ -36,27 +36,27 @@ Requires [uv](https://docs.astral.sh/uv/). From this checkout:
 
 ```bash
 uv sync
-uv run wt --help               # must list idea / report / projects (not a static-site tool)
+uv run nw --help               # must list idea / report / projects (not a static-site tool)
 uv tool install --editable .   # PATH entry
-uv tool install --editable '.[tui]'   # optional desk: wt tui
+uv tool install --editable '.[tui]'   # optional desk: nw tui
 uv run pytest
 ```
 
 Install **editable**: skills, internal specs and the Meta-Tools research root live in this
 checkout, and a `git pull` takes effect without reinstalling. For a non-editable install, set
-`wt_checkout: /path/to/wt` in `config.yaml` (SPEC-0166).
+`nw_checkout: /path/to/nightwright` in `config.yaml` (SPEC-0166).
 
-Config/data live under XDG (`~/.config/wt/`, `~/.local/share/wt/`), not in the repo.
+Config/data live under XDG (`~/.config/nightwright/`, `~/.local/share/nightwright/`), not in the repo.
 
 ```bash
-wt                             # dashboard
-wt topics --unmapped
-wt report --week
-wt idea "…" --project Meta-Tools
-wt skills install              # agent playbooks → /wt-orient, …
+nw                                      # dashboard
+nw topics --unmapped
+nw report --week
+nw idea "…" --project Meta-Tools
+nw skills install              # agent playbooks → /nw-orient, …
 ```
 
-Shell completion: `wt completion install --shell fish` (or bash/zsh).
+Shell completion: `nw completion install --shell fish` (or bash/zsh).
 
 Agentic loop (accepted specs → implemented, gated, merged by headless personas):
 [`docs/product/capabilities/agentic.md`](docs/product/capabilities/agentic.md).

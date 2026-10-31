@@ -1,12 +1,12 @@
-"""SPEC-0198: `wt queue followers` and the stewards in `wt queue conduct-status`."""
+"""SPEC-0198: `nw queue followers` and the stewards in `nw queue conduct-status`."""
 import json
 import os
 
 from click.testing import CliRunner
 
-from wt.agentic import events as E
-from wt.agentic import mailbox as M
-from wt.cli import cli
+from nightwright.agentic import events as E
+from nightwright.agentic import mailbox as M
+from nightwright.cli import cli
 
 
 def _cfg(tmp_path):
@@ -52,12 +52,12 @@ def test_followers_empty(tmp_path):
 
 def test_cli_followers_and_conduct_status(tmp_path, monkeypatch):
     cfg = _setup(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     with E.reader_lock(cfg, "conductor"), E.reader_lock(cfg, "mailbox:steward:P"):
         r = CliRunner().invoke(cli, ["queue", "followers", "--json"])
         assert r.exit_code == 0, r.output
         out = json.loads(r.output)
-        assert out["schema"] == "wt.queue.followers.v1"
+        assert out["schema"] == "nw.queue.followers.v1"
         by = {f["reader"]: f for f in out["followers"]}
         assert by["conductor"]["pid"] == os.getpid() and by["conductor"]["held"]
         assert by["mailbox:human"]["pid"] is None and by["mailbox:human"]["held"] is False

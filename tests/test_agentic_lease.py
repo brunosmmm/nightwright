@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from wt.agentic import lease as L
+from nightwright.agentic import lease as L
 
 
 def _cfg(tmp_path):
@@ -19,10 +19,10 @@ def test_acquire_release_and_status(tmp_path):
                                    "heartbeat_at": None, "heartbeat_age_s": None,
                                    "ttl_s": 120, "stale": False, "draining": None,
                                    **{k: None for k in L.LOOP_KEYS}}
-    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    lease = L.acquire(cfg, ["nw", "queue", "run"])
     st = L.lease_status(cfg)
     assert st["held"] and st["pid"] == os.getpid() and st["ttl_s"] == 120 and not st["stale"]
-    assert L.read_lease(cfg)["argv"] == ["wt", "queue", "run"]
+    assert L.read_lease(cfg)["argv"] == ["nw", "queue", "run"]
     lease.release()
     assert L.lease_status(cfg)["held"] is False
     assert L.read_lease(cfg) is None
@@ -137,7 +137,7 @@ def test_heartbeat_races_info_updates(tmp_path):
 
 def test_lease_status_exposes_loop_state(tmp_path):
     cfg = _cfg(tmp_path)
-    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    lease = L.acquire(cfg, ["nw", "queue", "run"])
     st = L.lease_status(cfg)
     assert all(st[k] is None for k in (*L.LOOP_KEYS, "draining"))      # a legacy lease: no keys
     busy = {"kind": "close", "campaign": "c1", "since": "t", "budget_s": 1800}
@@ -156,7 +156,7 @@ def test_lease_status_exposes_loop_state(tmp_path):
 def test_lease_status_exposes_progress_keys(tmp_path):
     cfg = _cfg(tmp_path)
     assert {"progress_at", "last_tick_s"} <= set(L.LOOP_KEYS)
-    lease = L.acquire(cfg, ["wt", "queue", "run"])
+    lease = L.acquire(cfg, ["nw", "queue", "run"])
     st = L.lease_status(cfg)
     assert st["progress_at"] is None and st["last_tick_s"] is None        # unwritten
     lease.update_info(progress_at="t2", last_tick_s=4.5)

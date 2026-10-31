@@ -10,9 +10,9 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from wt import report as R
-from wt.cli import cli
-from wt.tui import model as M
+from nightwright import report as R
+from nightwright.cli import cli
+from nightwright.tui import model as M
 
 
 def _cfg(tmp_path):
@@ -40,7 +40,7 @@ def _cfg(tmp_path):
 def _seed(tmp_path, monkeypatch):
     """Three ideas with deliberately different project/state/kind/priority/question counts."""
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = CliRunner().invoke
     assert run(cli, ["idea", "zeta", "--project", "Zulu", "--kind", "bug"]).exit_code == 0
     assert run(cli, ["idea", "alpha", "--project", "Alpha"]).exit_code == 0
@@ -140,7 +140,7 @@ def test_project_sorts_alphabetically_with_blanks_last(tmp_path, monkeypatch):
 
 def test_questions_sorts_most_open_first(tmp_path, monkeypatch):
     cfg = _seed(tmp_path, monkeypatch)
-    from wt.explore import open_question_count
+    from nightwright.explore import open_question_count
 
     counts = [open_question_count(cfg, t) for t in R.collect_idea_tasks(cfg, sort="questions")]
     assert counts == sorted(counts, reverse=True)
@@ -149,13 +149,13 @@ def test_questions_sorts_most_open_first(tmp_path, monkeypatch):
 def test_kind_and_id_sort(tmp_path, monkeypatch):
     cfg = _seed(tmp_path, monkeypatch)
     assert _ids(cfg, sort="id") == sorted(_ids(cfg, sort="id"))
-    from wt.org_write import idea_kind
+    from nightwright.org_write import idea_kind
     kinds = [idea_kind(t) for t in R.collect_idea_tasks(cfg, sort="kind")]
     assert kinds == sorted(kinds)
 
 
 def test_created_sorts_newest_first(tmp_path, monkeypatch):
-    from wt.org_write import parse_inactive_stamp
+    from nightwright.org_write import parse_inactive_stamp
 
     cfg = _seed(tmp_path, monkeypatch)
     stamps = [parse_inactive_stamp(t.properties.get("CREATED"))
