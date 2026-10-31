@@ -2646,7 +2646,7 @@ def _mark_handed_off(cfg, state: dict, events: list, spec_id: str, finding) -> N
     from .. import org_write
     pr_url = (state.get("close") or {}).get("pr_url") or ""
     try:
-        task = SP._sole_claimant(_ideas(cfg), spec_id, project=state.get("project"))
+        task = SP._sole_claimant(_ideas(cfg), spec_id, project=state.get("project"), cfg=cfg)
         if task is None or task.state not in ("IDEA", "INCUBATE", "SPECCED"):
             finding("info", "no idea to mark handed off", f"no single open idea claims {spec_id}")
             return
@@ -2665,7 +2665,7 @@ def _clear_handed_off_on_requeue(cfg, spec_id: str, campaign: str, by: str,
     closed unmerged). Best-effort: a failure is a ledger `note`, never a refusal."""
     from .. import org_write
     try:
-        task = SP._sole_claimant(_ideas(cfg), spec_id, project=project)
+        task = SP._sole_claimant(_ideas(cfg), spec_id, project=project, cfg=cfg)
         if task is not None and (task.properties.get("HANDED_OFF") or "").strip():
             org_write.clear_property(cfg, task, "HANDED_OFF")
     except Exception as e:                  # noqa: BLE001 — queueing must not depend on the idea

@@ -833,12 +833,22 @@ def _implied_state(status, state, *, outbound=False):
     return None                          # unknown status: report nothing, invent nothing
 
 
-def _sole_claimant(ideas, spec_id, project=None):
+def _sole_claimant(ideas, spec_id, project=None, cfg=None):
     """The single idea whose `:SPEC:` is `spec_id`, or None when 0 or >1 claim it. Spec ids are
-    per project (SPEC-0327): with `project`, only that project's ideas count."""
-    from .spec_scope import idea_project
-    claims = [t for t in ideas if (t.properties.get("SPEC") or "").strip() == spec_id
-              and (project is None or idea_project(t) == project)]
+    per project (SPEC-0327): with `project`, only that project's ideas count. Outbound `PROJ-NNNN`
+    ids are unique across the outbox, so they are exempt. For `INTERNAL_PROJECT` (with `cfg`) an
+    idea also counts when wt's spec names it as `source_idea` (`spec_scope.owns_idea`)."""
+    from .rules import INTERNAL_PROJECT
+    from .spec_scope import idea_project, owns_idea
+    from .workflow import _is_outbound_id
+    if _is_outbound_id(spec_id):
+        project = None
+
+    def mine(t):
+        if project is None or idea_project(t) == project:
+            return True
+        return project == INTERNAL_PROJECT and cfg is not None and owns_idea(cfg, t)
+    claims = [t for t in ideas if (t.properties.get("SPEC") or "").strip() == spec_id and mine(t)]
     return claims[0] if len(claims) == 1 else None
 
 
@@ -979,7 +989,7 @@ def plan_spec_link(cfg, idea_id, spec_id):
     / `replace` / `unchanged`, plus `pin = (file, heading)` when the id is carried by several
     ideas."""
     from .org import filter_tasks, load_tasks
-    from .spec_scope import idea_project, is_internal_idea
+    from .spec_scope import idea_project, owns_idea
     from .workflow import _is_outbound_id, _load_spec_fm
 
     idea_id = W._normalize_selector(idea_id)
@@ -991,7 +1001,7 @@ def plan_spec_link(cfg, idea_id, spec_id):
     if not cands:
         raise ValueError(f"no idea with id {idea_id}")
     if not _is_outbound_id(spec_id):            # SPEC-0327: a bare id is wt's, so is its idea
-        internal = [t for t in cands if is_internal_idea(t)]
+        internal = [t for t in cands if owns_idea(cfg, t, spec_id)]
         if not internal:
             raise ValueError(f"{idea_id} belongs to {idea_project(cands[0])}; its spec ids are "
                              "not in wt's store. The queue links it when its campaign merges")
@@ -1070,7 +1080,7 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     from .workflow import _is_outbound_id, _load_spec_fm
 
     from .rules import INTERNAL_PROJECT
-    from .spec_scope import idea_project, is_internal_idea
+    from .spec_scope import idea_project, is_internal_idea, owns_idea
 
     scope = None if spec_ids is None else set(spec_ids)
     every_idea = filter_tasks(load_tasks(cfg), is_idea=True)
@@ -1080,7 +1090,7 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     all_ideas = []
     for t in every_idea:
         sid = (t.properties.get("SPEC") or "").strip()
-        if not is_internal_idea(t) and not (sid and _is_outbound_id(sid)):
+        if not owns_idea(cfg, t) and not (sid and _is_outbound_id(sid)):
             if sid and (scope is None or sid in scope):
                 plan.append((t.properties.get("ID") or t.id, sid, "flag-foreign",
                              f"idea belongs to {idea_project(t)}; its spec lives in that repo"))
@@ -1191,8 +1201,9 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
                              f"spec is done but {n_open} question(s) still open"))
 
         if not str(fm.get("source_idea") or "").strip():
-            sole = _sole_claimant(ideas, spec_id,
-                                  project=None if _is_outbound_id(spec_id) else INTERNAL_PROJECT)
+            sole = _sole_claimant(ideas, spec_id, project=INTERNAL_PROJECT, cfg=cfg)
+            if sole is not None and not _is_outbound_id(spec_id) and not is_internal_idea(sole):
+                sole = None             # the write pass refuses a foreign idea: same guard here
             plan.append((idea_id, spec_id, "flag-no-backlink",
                          "spec has no source_idea" if sole
                          else "spec has no source_idea (ambiguous: >1 idea claims it)"))

@@ -20,6 +20,25 @@ def is_internal_idea(task) -> bool:
     return idea_project(task) == INTERNAL_PROJECT
 
 
+def owns_idea(cfg, task, spec_id=None) -> bool:
+    """Does the idea belong to wt's store (matches its bare `SPEC-NNNN` ids)? True when the idea
+    is internal, or when wt's spec at `spec_id` (default: the idea's own `:SPEC:`) already names
+    it as `source_idea`: an explicit claim, e.g. an idea promoted `--internal` from another
+    project's `:PROJECT:`. Anything else is foreign (SPEC-0327 rule 1)."""
+    if is_internal_idea(task):
+        return True
+    from .workflow import _is_outbound_id, _load_spec_fm
+    sid = (spec_id or task.properties.get("SPEC") or "").strip()
+    idea_id = (task.properties.get("ID") or "").strip()
+    if not sid or not idea_id or _is_outbound_id(sid):
+        return False
+    try:
+        fm = _load_spec_fm(cfg, sid)
+    except (ValueError, KeyError, OSError):
+        return False
+    return str((fm or {}).get("source_idea") or "").strip() == idea_id
+
+
 def is_bare_spec_id(spec_id) -> bool:
     return str(spec_id or "").strip().upper().startswith("SPEC-")
 

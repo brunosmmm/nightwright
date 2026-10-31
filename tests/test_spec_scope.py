@@ -130,6 +130,81 @@ def test_write_source_idea_refuses_foreign_and_newer_idea(tmp_path):
     assert {p: Path(p).read_bytes() for p in (old, new)} == snap
 
 
+def test_outbound_id_hand_off_ignores_project_scoping(tmp_path):
+    """Outbound PROJ-NNNN ids are exempt: an idea promoted `--target` has no :PROJECT:, yet the
+    campaign (project = the target) must still mark / clear it."""
+    cfg = _cfg(tmp_path)
+    iid = _idea(cfg, "outbound idea", state="SPECCED", spec_id="PROJ-0001")
+    events, findings = [], []
+    Q._mark_handed_off(cfg, {"project": PROJ, "close": {"pr_url": "https://x/pr/2"}}, events,
+                       "PROJ-0001", lambda *a, **k: findings.append(a))
+    assert [e[1]["idea_id"] for e in events] == [iid] and not findings
+    held = lambda: W.resolve_selector(cfg, iid).properties.get("HANDED_OFF")  # noqa: E731
+    assert held() == "https://x/pr/2"
+    Q._clear_handed_off_on_requeue(cfg, "PROJ-0001", "cid", "t", project=PROJ)
+    assert held() is None
+
+
+def _promoted_internal(cfg, text):
+    """A foreign-:PROJECT: idea promoted `--internal`: wt's SPEC-0001 names it as source_idea."""
+    iid = _foreign(cfg, text)
+    path = _spec(cfg, "SPEC-0001", "done", source_idea=iid)
+    return iid, path
+
+
+def test_foreign_project_idea_promoted_internal_still_reconciles(tmp_path):
+    cfg = _cfg(tmp_path)
+    iid, path = _promoted_internal(cfg, "home-lab idea promoted internal")
+    before = Path(path).read_bytes()
+    for apply in (False, True):
+        plan = S.reconcile_ideas(cfg, apply=apply)
+        assert (iid, "advance") in _actions(plan)
+        assert "flag-foreign" not in {a for _i, _s, a, _d in plan}
+    assert _state_of(cfg, iid) in ("PROMOTED", "SHIPPED")
+    assert Path(path).read_bytes() == before
+
+
+def test_hand_off_marks_foreign_project_idea_promoted_internal(tmp_path):
+    cfg = _cfg(tmp_path)
+    iid, _path = _promoted_internal(cfg, "home-lab idea promoted internal")
+    W.set_state_by_selector(cfg, iid, "SPECCED")
+    events = []
+    Q._mark_handed_off(cfg, {"project": "Meta-Tools", "close": {"pr_url": "u"}}, events,
+                       "SPEC-0001", lambda *a, **k: None)
+    assert [e[1]["idea_id"] for e in events] == [iid]
+
+
+def test_foreign_idea_hitting_unclaiming_wt_spec_is_flagged_without_write(tmp_path):
+    cfg = _cfg(tmp_path)
+    mine = _idea(cfg, "internal idea", state="SPECCED", spec_id="SPEC-0009")
+    other = _foreign(cfg, "foreign idea")
+    path = _spec(cfg, "SPEC-0001", "done", source_idea=mine)    # claims another idea, not `other`
+    before = Path(path).read_bytes()
+    for apply in (False, True):
+        plan = S.reconcile_ideas(cfg, apply=apply)
+        assert (other, "flag-foreign") in _actions(plan)
+        assert not any(i == other and a != "flag-foreign" for i, _s, a, _d in plan)
+        assert Path(path).read_bytes() == before
+    assert _state_of(cfg, other) == "SPECCED"
+
+
+def test_plan_spec_link_accepts_promoted_internal_foreign_idea(tmp_path):
+    cfg = _cfg(tmp_path)
+    iid = _foreign(cfg, "home-lab idea", spec_id="SPEC-0009")
+    _spec(cfg, "SPEC-0001", "accepted", source_idea=iid)
+    assert S.plan_spec_link(cfg, iid, "SPEC-0001")["idea_id"] == iid
+
+
+def test_dry_run_matches_apply_for_foreign_backlink(tmp_path):
+    cfg = _cfg(tmp_path)
+    _spec(cfg, "SPEC-0001", "accepted", source_idea=None)
+    other = _foreign(cfg, "foreign idea")
+    dry = S.reconcile_ideas(cfg, apply=False)
+    applied = S.reconcile_ideas(cfg, apply=True)
+    assert sorted(dry) == sorted(applied)
+    assert "flag-no-backlink" not in {a for _i, _s, a, _d in dry}
+
+
 def test_plan_spec_link_refuses_foreign_idea(tmp_path):
     cfg = _cfg(tmp_path)
     _spec(cfg, "SPEC-0001", "accepted", source_idea=None)

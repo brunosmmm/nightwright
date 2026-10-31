@@ -305,10 +305,25 @@ is repaired by hand once (the steward already reverted the observed edit).
 - Definition of done, "manual steps performed": the manual verification was **not** performed here
   (the persona sandbox blocks `wt idea reconcile`); it is deferred to Rollout step 3 for the steward,
   as the Test record says. The guarded DoD line itself is left as accepted.
+- Loop 4 (steward answer; supersedes Decision rule 1 / the `is_internal_idea` wording in Design):
+  an idea matches wt's store when its `:PROJECT:` is empty/`Meta-Tools` **or** wt's spec at its bare
+  `:SPEC:` id already names it as `source_idea` (an explicit claim, e.g. `idea promote --internal`
+  from a home-lab idea). Only otherwise is it foreign (`flag-foreign`, no write). This is
+  `spec_scope.owns_idea(cfg, task, spec_id=None)`; `reconcile_ideas`, `plan_spec_link` and
+  `_sole_claimant(…, cfg=)` (for `INTERNAL_PROJECT`) use it. `_write_source_idea` still uses
+  `is_internal_idea` (it only stamps specs with no `source_idea`, so nothing is ever claimed
+  there), and the plan pass now drops a non-internal sole claimant from the backlink rows too, so
+  dry run and `--apply` agree. Outbound `PROJ-NNNN` ids are exempt from project scoping inside
+  `_sole_claimant`, so `_mark_handed_off` / `_clear_handed_off_on_requeue` find an outbound idea
+  that has no `:PROJECT:`.
 - Loop 3 tests: `tests/test_spec_scope.py` gained `verify_spec` coverage for the `WT_CAMPAIGN` case
   and the cwd case (main checkout and linked worktree), a wt spec naming a foreign idea
   (`flag-foreign`, nothing written), and a refused `_write_source_idea` becoming `flag-mismatch`
   while the backlink pass continues.
+- Loop 4 tests: outbound `PROJ-0001` hand-off mark/clear on an idea with no `:PROJECT:`; a
+  foreign-`:PROJECT:` idea promoted `--internal` reconciles/advances, is hand-off marked and passes
+  `plan_spec_link`; a foreign idea whose bare id hits an unclaiming wt spec is `flag-foreign` with
+  no write; dry run equals `--apply` for a foreign backlink.
 
 ## Rollout / migration
 
