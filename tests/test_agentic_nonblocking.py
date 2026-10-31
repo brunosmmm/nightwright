@@ -250,7 +250,8 @@ def test_heartbeat_spans_many_ticks(tmp_path, monkeypatch):
             if L.is_held(cfg):
                 samples.append(L.lease_status(cfg))
                 beaters.update(t.ident for t in threading.enumerate()
-                               if t.name == "nw-lease-heartbeat")
+                               if t.name == "nw-lease-heartbeat"
+                               and t.ident is not None and t.is_alive())  # skip a not-yet-started thread
             time.sleep(0.2)
 
     side = threading.Thread(target=sample, daemon=True)
