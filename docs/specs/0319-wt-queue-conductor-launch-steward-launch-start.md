@@ -308,7 +308,13 @@ rate this is a small fraction of the turns removed by the lower context; it is m
   tests/test_agentic_conductor_cost.py`: 167 passed (49 in the new `test_agentic_launch.py`,
   covering every named automated test of the plan).
 - `python3 tools/spec_lint.py` exits 0 after `--write-ledger`.
-- The full `uv run pytest` run is left to gating.
+- The full `uv run pytest` run is left to gating. The gate's one failure,
+  `tests/test_agentic_adopt.py::test_stop_after_detach_leaves_runs`, was a race in the test
+  (it tripped the stop on `child.json` before the fake child had written `child.pid`); it now
+  waits for both, like its siblings, and passed 6 of 6 reruns. Other tests in that file
+  (`test_adopt_orphan_group_waited_and_killed`, `test_fanout_detach_precondition`) also fail
+  intermittently under load, and did so with `runner.py` reverted to `main`, so that flakiness
+  predates this spec.
 - Manual verification: step 2 (the dry-run argv and env) is covered by the CLI tests against
   the table. Steps 3 to 5 (an interactive session staying under the window, `--resume` of a
   live session, the `conductor-cost` check a day later) need a real `claude` session and

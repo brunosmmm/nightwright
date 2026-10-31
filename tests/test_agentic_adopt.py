@@ -497,8 +497,10 @@ def test_stop_after_detach_leaves_runs(world, monkeypatch):
     monkeypatch.setattr(Q, "tick", tick)
 
     def on_tick(report):
-        if RP.read_json(S.runs_dir(world.cfg, world.cid) / "001-implementer" / "child.json"):
-            state["changed"] = True
+        wt = Path(S.read_state(world.cfg, world.cid)["repo"]["worktree"])
+        if (wt / "child.pid").exists() and RP.read_json(
+                S.runs_dir(world.cfg, world.cid) / "001-implementer" / "child.json"):
+            state["changed"] = True                # the child is fully up before the stop
 
     Q.run(world.cfg, poll_interval_s=0.05, reexec=True, code_root=root, on_tick=on_tick,
           runner=world.runner, max_ticks=200)
