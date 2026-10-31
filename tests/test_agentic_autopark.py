@@ -37,6 +37,15 @@ def test_decide_base_moving_limit_and_other_rule_counts():
     assert auto.n == 0 and _secs(auto) == 60
 
 
+def test_base_moving_backoff_is_clamped_to_six_hours():
+    auto = AP.decide(_state(counts={"parked.base_moving": 2}), [],
+                     {**SETT, "base_moving_backoff_s": 20000, "max_per_campaign": 5}, NOW)
+    assert _secs(auto) == AP.MAX_RESET_WAIT_S == 6 * 3600
+    auto = AP.decide(_state(counts={"parked.base_moving": 12}), [],
+                     {**SETT, "max_per_campaign": 20}, NOW)
+    assert _secs(auto) == 6 * 3600
+
+
 def test_phantom_usd():
     ledger = [_end(1, 3.0),                                    # before the resume
               {"type": "resume", "seq": 2},

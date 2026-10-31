@@ -373,6 +373,13 @@ its own decisions in the same vocabulary as the conductor.
   unrelated timestamp not being read as a reset time. Targeted run of
   `tests/test_agentic_queue_autopark.py`, `test_agentic_autopark.py`, `test_agentic_quiet.py`,
   `test_agentic_conductor_brief.py`, `test_skills.py`: all pass; the full suite is left to gating.
+- Review loop 4: added `test_post_merge_base_moving_from_finish_close_is_never_auto` (drives the
+  real tick into the 'merged != gated HEAD' park; dropping `no_auto` in `close.py` fails it),
+  `test_base_moving_backoff_is_clamped_to_six_hours`, `test_only_tick_parks_are_auto_decided`
+  (human / conductor parks), `test_missing_auto_rule_is_handed_back_when_enabled` and
+  `test_auto_resume_never_lowers_a_cap_raised_meanwhile`. Targeted run of
+  `tests/test_agentic_queue_autopark.py`, `test_agentic_autopark.py`, `test_agentic_close.py`,
+  `test_agentic_queue_merge.py`, `test_agentic_quiet.py`: 217 passed; the full suite is left to gating.
 - Manual verification (`wt queue decisions --since 1d`, `wt queue wakeups`) is, by the plan's own
   wording, a post-merge check on the live queue, so it has **not** been performed yet and is the
   first thing to check after merge. The "manual steps performed" part of the Definition of done
@@ -420,6 +427,10 @@ its own decisions in the same vocabulary as the conductor.
   re-check is the `auto_rule` guard inside `apply_resume`'s item lock (and `_auto_give_up`'s own
   lock), which refuses a resume whose park changed. This is the "re-reads under the item lock" of
   Decision 4, with the check folded into the resume itself.
+
+- Review loop 4: step 0a hands back (`auto_resume_failed`) an enabled-mode `park.auto` that has no
+  `rule` instead of raising, and a queue auto-resume only raises `cost.cap_usd` when the park-time
+  `raise_cap` is above the current cap, so a cap raised by another path is never lowered.
 
 ## Rollout / migration
 

@@ -377,10 +377,53 @@ def test_decide_failure_never_blocks_the_park(opened, monkeypatch):
     assert any("autopark.decide failed" in n["text"] for n in S.read_ledger(cfg, cid, types=["note"]))
 
 
-def test_post_merge_base_moving_is_not_auto(opened):
+def test_park_auto_ok_false_is_not_auto(opened):
     cfg, cid, ctx = opened
     Q._park(cfg, S.read_state(cfg, cid), "base_moving", "d", "CLOSING", auto_ok=False)
     assert "auto" not in S.read_state(cfg, cid)["park"]
+
+
+@pytest.mark.parametrize("by", ["human", "conductor"])
+def test_only_tick_parks_are_auto_decided(opened, by):
+    cfg, cid, ctx = opened
+    Q._park(cfg, S.read_state(cfg, cid), "base_moving", "d", "CLOSING", by=by)
+    assert "auto" not in S.read_state(cfg, cid)["park"]
+    assert S.read_ledger(cfg, cid, types=["park"])[-1].get("auto") is None
+    Q._record_auto_waits(cfg)
+    assert D.read(cfg, campaign=cid) == []
+
+
+def test_missing_auto_rule_is_handed_back_when_enabled(opened):
+    cfg, cid, ctx = opened
+    _park(cfg, cid)
+    st = S.read_state(cfg, cid)
+    st["park"]["auto"].pop("rule")
+    S.write_state(cfg, cid, st)
+    Q._record_auto_waits(cfg)                                    # must not raise
+    _due(cfg, cid)
+    report, resumed = _step0a(cfg)                               # must not raise
+    now = S.read_state(cfg, cid)
+    assert now["state"] == "PARKED" and "auto" not in now["park"] and not resumed
+    assert D.read(cfg, campaign=cid)[-1]["rule"] == "auto_resume_failed"
+    assert len(S.read_ledger(cfg, cid, types=["auto_resume_failed"])) == 1
+
+
+def test_auto_resume_never_lowers_a_cap_raised_meanwhile(opened):
+    cfg, cid, ctx = opened
+    st = S.read_state(cfg, cid)
+    st["cost"].update(total_usd=8.0, cap_usd=10.0)
+    S.write_state(cfg, cid, st)
+    st = _park(cfg, cid, reason="cost_cap", resume_to="IMPLEMENTING")
+    st["park"]["auto"] = {"rule": CAP, "resume_at": LONG_AGO, "raise_cap": 18.0, "n": 0,
+                          "rationale": "phantom"}
+    S.write_state(cfg, cid, st)
+    Q._record_auto_waits(cfg)
+    st = S.read_state(cfg, cid)
+    st["cost"]["cap_usd"] = 25.0                                 # raised by some other path
+    S.write_state(cfg, cid, st)
+    _step0a(cfg)
+    now = S.read_state(cfg, cid)
+    assert now["state"] == "IMPLEMENTING" and now["cost"]["cap_usd"] == 25.0
 
 
 def test_disable_hands_back_pending_auto(opened):
@@ -428,9 +471,8 @@ def test_auto_park_projects_auto_and_is_held(opened):
     assert QT.classify(cfg, {"type": ev[0], "data": ev[1]}, None) == "hold"
 
 
-def test_close_park_inside_tick_is_decided_and_recorded(tmp_path, monkeypatch):
-    """The real close → finish_close → `_park` path: the park happens during the tick, so only
-    the end-of-tick `_record_auto_waits` can have written the `wait` record by then."""
+def _closing_world(tmp_path, monkeypatch):
+    """A merge campaign in CLOSING in a real temp repo: (cfg, repo, cid, run_cli)."""
     from test_agentic_e2e import make_cfg, make_repo, run_cli, script
     for k, v in ENV.items():
         monkeypatch.setenv(k, v)
@@ -443,6 +485,13 @@ def test_close_park_inside_tick_is_decided_and_recorded(tmp_path, monkeypatch):
     r = run_cli(cfg, monkeypatch, ["queue", "tick"])            # admit + open
     assert r.exit_code == 0, r.output
     assert S.read_state(cfg, cid)["state"] == "CLOSING"
+    return cfg, repo, cid, run_cli
+
+
+def test_close_park_inside_tick_is_decided_and_recorded(tmp_path, monkeypatch):
+    """The real close → finish_close → `_park` path: the park happens during the tick, so only
+    the end-of-tick `_record_auto_waits` can have written the `wait` record by then."""
+    cfg, repo, cid, run_cli = _closing_world(tmp_path, monkeypatch)
     moves = {"n": 0}
 
     def move_base():
@@ -461,3 +510,23 @@ def test_close_park_inside_tick_is_decided_and_recorded(tmp_path, monkeypatch):
     assert st["park"]["auto"]["rule"] == BASE
     recs = D.read(cfg, campaign=cid)
     assert [(r["by"], r["kind"], r["rule"]) for r in recs] == [("queue", "wait", BASE)]
+
+
+def test_post_merge_base_moving_from_finish_close_is_never_auto(tmp_path, monkeypatch):
+    """The 'merged != gated HEAD' park comes out of the real close with `no_auto`, and the tick
+    (`_apply`) keeps it away from the queue: the merge already happened, a blind retry is not a
+    mechanical decision."""
+    cfg, repo, cid, run_cli = _closing_world(tmp_path, monkeypatch)
+    monkeypatch.setattr(CL.git, "ff_merge", lambda root, branch: "f" * 40)
+    r = run_cli(cfg, monkeypatch, ["queue", "tick"])
+    assert r.exit_code == 0, r.output
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "base_moving"
+    assert "!= gated HEAD" in st["park"]["detail"]
+    assert "auto" not in st["park"]
+    assert S.read_ledger(cfg, cid, types=["park"])[-1].get("auto") is None
+    assert D.read(cfg, campaign=cid) == []                      # no `wait` record either
+    assert not S.read_ledger(cfg, cid, types=["auto_resume_failed"])
+    r = run_cli(cfg, monkeypatch, ["queue", "tick"])            # and no tick resumes it
+    assert r.exit_code == 0, r.output
+    assert S.read_state(cfg, cid)["state"] == "PARKED"

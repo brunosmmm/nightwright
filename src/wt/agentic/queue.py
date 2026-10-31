@@ -3625,7 +3625,11 @@ def _auto_resume_step(cfg, flying, *, busy_count, slots, report) -> list:
                           "auto-resume disabled")
         return []
     resumed = []
-    for st in pending:
+    for st in list(pending):
+        if not st["park"]["auto"].get("rule"):        # corrupt: nothing to record or resume
+            _auto_give_up(cfg, st["id"], "auto_resume_failed", "park.auto has no rule")
+            pending.remove(st)
+            continue
         _auto_wait_recorded(cfg, st["id"], st["park"]["auto"])
     for st in AP.due(pending, dt.datetime.now().astimezone()):
         cid, auto = st["id"], st["park"]["auto"]
@@ -3649,7 +3653,12 @@ def _auto_resume_step(cfg, flying, *, busy_count, slots, report) -> list:
             try:
                 # no `note`: it would become a persistent pseudo-human brief note; the ledger
                 # event carries the bookkeeping text instead
-                plan = plan_resume(cfg, cid, by="queue", raise_cap=cur_auto.get("raise_cap"),
+                # the cap was computed at park time: never lower one raised since
+                raise_cap = cur_auto.get("raise_cap")
+                if raise_cap is not None and \
+                        float(raise_cap) <= float((cur.get("cost") or {}).get("cap_usd") or 0.0):
+                    raise_cap = None
+                plan = plan_resume(cfg, cid, by="queue", raise_cap=raise_cap,
                                    auto_rule=rule, event_note=note)
             except ValueError as e:
                 error = str(e)
