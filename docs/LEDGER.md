@@ -227,7 +227,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) | Agentic MVP: a cheap, durable, quiet conductor on a second project | epic | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | draft | — | 2026-10-30 |
-| [SPEC-0315](./specs/0315-quiet-follower-echoes-the-conductor-s-own-parks.md) | Quiet follower holds a parked event the conductor itself caused (by=conductor) | feature | proposed | — | 2026-10-31 |
+| [SPEC-0315](./specs/0315-quiet-follower-echoes-the-conductor-s-own-parks.md) | Quiet follower holds a parked event the conductor itself caused (by=conductor) | feature | accepted | — | 2026-10-31 |
 
 ## Done
 

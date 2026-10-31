@@ -1,9 +1,10 @@
 ---
 id: SPEC-0315
 title: "Quiet follower holds a parked event the conductor itself caused (by=conductor)"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-31
+updated: 2026-10-31
 source_idea: IDEA-436
 kind: feature
 tags: [agentic, conductor, events, cost]
