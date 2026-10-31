@@ -190,6 +190,7 @@ the event payload, as evidence for tuning.
 ### Test record (2026-10-30)
 
 - `uv run pytest tests/test_agentic_loop_state.py tests/test_agentic_lease.py tests/test_agentic_watchdog_gaps.py tests/test_skills.py tests/test_agentic_quiet.py tests/test_agentic_events.py` — 224 passed, including every new test named above.
+- Review loop: added `test_runner_journal_silent_episode_key_follows_progress_at` (asserts the episode key names `progress_at` when newest, then a second event after an unsynced progress advance); it fails if `last_progress_at` is dropped from the key (checked by removing it) and passes with it (`tests/test_agentic_watchdog_gaps.py`: 25 passed).
 - The full suite was left to gating. The manual live-runner check was not performed in this run; `test_run_stamps_last_tick_s` and the two `Q.tick` mark tests cover the same stamps against the real lease code path.
 
 ### As shipped (2026-10-30)

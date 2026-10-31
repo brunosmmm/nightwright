@@ -297,6 +297,21 @@ def test_runner_journal_silent_rearms_when_progress_advances(tmp_path, held):
     assert again["data"]["last_progress_at"] == iso(100)
 
 
+def test_runner_journal_silent_episode_key_follows_progress_at(tmp_path, held):
+    """No sync sees the fresh stretch in between, so only the key itself can tell the two
+    episodes apart: it must name `progress_at` when that is the newest stamp."""
+    cfg = _cfg(tmp_path)
+    lease = held(cfg, poll_interval_s=20, tick_at=iso(0), progress_at=iso(50))
+    (key,) = [k for k, type_, _cid, _d in E.watchdog_checks(cfg, at(130))
+              if type_ == "runner_journal_silent"]
+    assert key == f"runner_journal_silent:{lease.info['pid']}:{iso(50)}"
+    (first,) = _of(E.sync(cfg, now=at(130)), "runner_journal_silent")
+    assert first["data"]["last_progress_at"] == iso(50)
+    lease.update_info(progress_at=iso(140))              # fresh again; no sync looks at it
+    (again,) = _of(E.sync(cfg, now=at(220)), "runner_journal_silent")
+    assert again["data"]["last_progress_at"] == iso(140)
+
+
 def test_runner_journal_silent_without_progress_at_is_unchanged(tmp_path, held):
     cfg = _cfg(tmp_path)
     sett = E.settings(cfg)
