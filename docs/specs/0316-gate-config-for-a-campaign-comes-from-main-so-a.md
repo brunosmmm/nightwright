@@ -1,9 +1,10 @@
 ---
 id: SPEC-0316
 title: "A campaign's gate timeouts are the max of main's and its own branch's `.wt/project.yaml`"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-31
+updated: 2026-10-31
 kind: feature
 source_idea: IDEA-438
 tags: [agentic, gates, project-config, close]
