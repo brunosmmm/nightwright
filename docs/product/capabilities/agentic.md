@@ -479,7 +479,9 @@ as alive while it marks progress inside a tick (`progress_at`, SPEC-0313), so a 
 several runs in flight is not a stall; the event carries `last_progress_at` and `last_tick_s`
 (duration of the last completed tick). The runner publishes its loop state in the lease
 (`tick_at`, `progress_at`, `last_tick_s`, `poll_interval_s`, `in_flight`, `slot_freed_at`,
-`busy`) for these. Each watchdog condition fires once until it
+`busy`) for these. `campaign_silent` skips a `CLOSING` campaign waiting in the close train
+behind a live head (SPEC-0314), and the quiet stream holds one that still arrives while its
+head is alive in the runner. Each watchdog condition fires once until it
 clears. The follower also appends a `conductor_ping` every `ping_interval_s` (default 600,
 SPEC-0212) with a digest of blocked, stuck, parked (and whether the conductor decided),
 waiting and ready-not-admitted items, so slow problems reach the conductor even when no

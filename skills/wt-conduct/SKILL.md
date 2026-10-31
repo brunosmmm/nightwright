@@ -81,7 +81,7 @@ run, handle it — that is the point.
    not know always wakes you. The held types are mirrored in `quiet.RULES`:
 
    - **Always held:** `admitted`, `resumed`, `waiting`, `abandoned`, `cost_warning`, `escalation`, `escalation_withdrawn`, `rebase_resolved`, `run_failed`, `merged`, `handed_off`, `spec_written`, `spec_reviewed`, `spec_accepted`
-   - **Held while a fact says so:** `backlog` (only an ordinary dependency wait), `backlog_blocked_long` (only an ordinary dependency wait whose dependencies each have a live campaign), `conductor_ping` (nothing new to act on), `runner_draining` (within its wait window), `campaign_silent`, `state_stuck` (its gate or close is still running in the runner), `parked` (a park the queue decided itself, with auto set in its data: SPEC-0302; every other parked wakes you)
+   - **Held while a fact says so:** `backlog` (only an ordinary dependency wait), `backlog_blocked_long` (only an ordinary dependency wait whose dependencies each have a live campaign), `conductor_ping` (nothing new to act on), `runner_draining` (within its wait window), `campaign_silent`, `state_stuck` (its gate or close is still running in the runner, or it waits in the close train behind a head that is), `parked` (a park the queue decided itself, with auto set in its data: SPEC-0302; every other parked wakes you)
 
    Everything else wakes you at once. An event that was held and later needs action (a park
    after a failed run, a drain past its window) arrives as its own line.

@@ -227,7 +227,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) | Agentic MVP: a cheap, durable, quiet conductor on a second project | epic | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0303](./specs/0303-fewer-rebase-conflict-parks.md) | Fewer `rebase_conflict` parks: base churn is not a conflict, the resolver is not blocked by the cap, and conflict pressure is exported | feature | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | draft | — | 2026-10-30 |
-| [SPEC-0314](./specs/0314-quiet-follower-delivers-campaign-silent-for-a.md) | A CLOSING campaign waiting in the close train behind a live head is not `campaign_silent`, and the quiet follower holds it | feature | accepted | M10: agentic MVP | 2026-10-30 |
 
 ## Done
 
@@ -522,6 +521,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0311](./specs/0311-gate-timeouts-under-machine-load-are-triaged-as.md) | Gate timeouts under machine load are re-gated, not triaged as code fixes | feature | done | — | 2026-10-30 |
 | [SPEC-0312](./specs/0312-flaky-under-load-tests-test-agentic-adopt-py-test.md) | Make test_fanout_detach_precondition load-tolerant (no wall-clock races with real subprocesses) | feature | done | — | 2026-10-30 |
 | [SPEC-0313](./specs/0313-runner-journal-silent-false-alarm-fires-at-61s-of.md) | runner_journal_silent: count in-tick progress, so a busy tick with runs in flight is not a stall | feature | done | M9: agentic workflow | 2026-10-30 |
+| [SPEC-0314](./specs/0314-quiet-follower-delivers-campaign-silent-for-a.md) | A CLOSING campaign waiting in the close train behind a live head is not `campaign_silent`, and the quiet follower holds it | feature | done | M10: agentic MVP | 2026-10-30 |
 
 ## Superseded / rejected
 

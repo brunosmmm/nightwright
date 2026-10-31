@@ -185,3 +185,19 @@ def test_handover_drops_busy(tmp_path, monkeypatch):
         assert st["tick_at"] == "t1" and st["in_flight"] == ["c1"] and st["busy"] is None
     finally:
         adopted.release()
+
+
+def test_in_flight_survives_handover(tmp_path, monkeypatch):
+    """SPEC-0314: a re-exec keeps the runner's `in_flight` list, so a close running across it
+    stays named by the lease."""
+    cfg = _cfg(tmp_path)
+    lease = L.acquire(cfg, ["t"])
+    lease.update_info(in_flight=["c1"])
+    env = lease.handover()
+    monkeypatch.setenv(L.HANDOVER_ENV, env[L.HANDOVER_ENV])
+    adopted = L.acquire(cfg, ["t"])
+    try:
+        st = L.lease_status(cfg)
+        assert st["in_flight"] == ["c1"] and st["busy"] is None
+    finally:
+        adopted.release()

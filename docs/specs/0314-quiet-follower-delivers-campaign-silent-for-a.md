@@ -1,7 +1,7 @@
 ---
 id: SPEC-0314
 title: "A CLOSING campaign waiting in the close train behind a live head is not `campaign_silent`, and the quiet follower holds it"
-status: accepted
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -142,27 +142,27 @@ holds `campaign_silent` and `state_stuck` for a waiter whose head is held by `_s
 
 ## Acceptance criteria
 
-- [ ] `events.waits_in_close_train` exists and is true exactly for a `CLOSING` campaign whose
+- [x] `events.waits_in_close_train` exists and is true exactly for a `CLOSING` campaign whose
       `closing.queued_behind` is a different `CLOSING` campaign id; false for a head, a
       non-`CLOSING` campaign, a missing/empty `queued_behind`, a self reference, and a head that
       is `MERGED` or absent.
-- [ ] `stuck_items` uses the predicate and its output is unchanged for the SPEC-0260 / SPEC-0287
+- [x] `stuck_items` uses the predicate and its output is unchanged for the SPEC-0260 / SPEC-0287
       fixtures.
-- [ ] `watchdog_checks` raises no `campaign_silent` for a `CLOSING` waiter behind a `CLOSING`
+- [x] `watchdog_checks` raises no `campaign_silent` for a `CLOSING` waiter behind a `CLOSING`
       head whose ledger tail is older than `silent_after_s`, and still raises it for the head
       itself when its tail is that old.
-- [ ] `watchdog_checks` raises `campaign_silent` for a `CLOSING` campaign whose
+- [x] `watchdog_checks` raises `campaign_silent` for a `CLOSING` campaign whose
       `queued_behind` is stale (head `MERGED`, absent, or itself) and whose tail is old.
-- [ ] A `CLOSING` campaign with a recent `closing.head_since` and an old ledger tail raises no
+- [x] A `CLOSING` campaign with a recent `closing.head_since` and an old ledger tail raises no
       `campaign_silent`; one with an old `head_since` and an old tail does.
-- [ ] `quiet.classify` returns `hold` for `campaign_silent` and `state_stuck` of a waiter whose
+- [x] `quiet.classify` returns `hold` for `campaign_silent` and `state_stuck` of a waiter whose
       head is in the lease `in_flight`, or is the lease's fresh `busy` campaign; and `wake` when
       the head is not in `in_flight`, the lease is not held, the busy step is past its budget, or
       the campaign is not a waiter (including the existing own-campaign cases).
-- [ ] No other event type's classification changes (`RULES` untouched).
-- [ ] The `conduct` skill line and `docs/product/capabilities/agentic.md` carry the new sentence;
+- [x] No other event type's classification changes (`RULES` untouched).
+- [x] The `conduct` skill line and `docs/product/capabilities/agentic.md` carry the new sentence;
       `tests/test_skills.py` passes.
-- [ ] `in_flight` in the lease still names a campaign whose close is running after a handover
+- [x] `in_flight` in the lease still names a campaign whose close is running after a handover
       (`lease.acquire` adopts the descriptor) and the follower holds its `campaign_silent`.
 
 ## Test plan
@@ -196,6 +196,25 @@ holds `campaign_silent` and `state_stuck` for a waiter whose head is held by `_s
   `tests/test_agentic_quiet.py::test_silent_held_while_in_flight` and
   `tests/test_agentic_events.py` (the watchdog `campaign_silent` case at line 148).
 
+### Test record (2026-10-30)
+
+- `uv run pytest -q tests/test_agentic_close_train.py tests/test_agentic_quiet.py
+  tests/test_agentic_lease.py tests/test_agentic_events.py tests/test_skills.py`: 197 passed,
+  including the new tests named above and the SPEC-0260 / SPEC-0287 regression tests.
+- `uv run pytest -q -x tests -k "agentic or conduct or skills"`: 2374 passed, 2 skipped. The rest
+  of the suite is left to gating.
+- Manual verification: no live runner with two real `CLOSING` specs was available in the
+  worktree; the same scenario (head and waiter `CLOSING`, waiter's tail older than
+  `silent_after_s`) is asserted through `watchdog_checks` / `stuck_items` and the follower's
+  `classify` in the automated tests.
+
+### As shipped
+
+As designed. `quiet._silent_hold` delegates to a small helper `_alive(lease, cid, ctx)` (the
+former in-flight / fresh-`busy` checks) and applies it to the campaign and then to its head
+from `Ctx.closing_waiters`.
+
+
 ## Rollout / migration
 
 None. The change is read-side (watchdog, follower, skill text, docs). A running follower exits on
@@ -204,11 +223,11 @@ rewritten.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

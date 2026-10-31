@@ -35,9 +35,9 @@ def _cfg(tmp_path, quiet=None):
     return cfg
 
 
-def _ctx(cfg, lease=None, now=None):
+def _ctx(cfg, lease=None, now=None, closing_waiters=None):
     return QT.Ctx(cfg, "conductor", lease=lease if lease is not None else {"held": False},
-                  now=now)
+                  now=now, closing_waiters=closing_waiters)
 
 
 def _ev(type_, campaign=None, project=None, **data):
@@ -373,6 +373,46 @@ def test_silent_held_while_in_flight(tmp_path):
         other = {"held": True, "busy": {"kind": "close", "campaign": "c9",
                                         "since": now.isoformat(), "budget_s": 3600}}
         assert QT.classify(cfg, ev, _ctx(cfg, other)) == "wake"
+
+
+def test_silent_held_for_train_waiter_behind_live_head(tmp_path):
+    cfg = _cfg(tmp_path)
+    now = dt.datetime.now().astimezone()
+    waiters = {"w": "h"}
+    for type_ in ("campaign_silent", "state_stuck"):
+        ev = _ev(type_, campaign="w", state="CLOSING", silent_s=1000, stuck_s=1000)
+
+        def verdict(lease):
+            return QT.classify(cfg, ev, _ctx(cfg, lease, closing_waiters=waiters))
+
+        assert verdict({"held": True, "in_flight": ["h"]}) == "hold"
+        assert verdict({"held": True, "busy": {"kind": "close", "campaign": "h",
+                                               "since": now.isoformat(), "budget_s": 3600}}) == "hold"
+        assert verdict({"held": True, "in_flight": ["other"]}) == "wake"
+        assert verdict({"held": False, "in_flight": ["h"]}) == "wake"
+        assert verdict({"held": True, "busy": {
+            "kind": "close", "campaign": "h", "budget_s": 60,
+            "since": (now - dt.timedelta(seconds=600)).isoformat()}}) == "wake"
+        assert verdict({"held": True, "in_flight": ["w"]}) == "hold"       # own campaign
+
+
+def test_silent_not_held_for_waiter_without_train_entry(tmp_path):
+    cfg = _cfg(tmp_path)
+    lease = {"held": True, "in_flight": ["h"]}
+    ev = _ev("campaign_silent", campaign="w", state="CLOSING", silent_s=1000)
+    assert QT.classify(cfg, ev, _ctx(cfg, lease, closing_waiters={})) == "wake"
+    assert QT.classify(cfg, ev, _ctx(cfg, lease, closing_waiters={"x": "h"})) == "wake"
+
+
+def test_closing_waiters_built_from_store(tmp_path):
+    cfg = _cfg(tmp_path)
+    for cid, state, closing in (
+            ("h", "CLOSING", {"attempts": 0}), ("w", "CLOSING", {"queued_behind": "h"}),
+            ("m", "MERGED", None), ("stale", "CLOSING", {"queued_behind": "m"}),
+            ("gone", "CLOSING", {"queued_behind": "nope"})):
+        store.create_campaign(cfg, {"id": cid, "spec_id": "SPEC-0001", "project": "p",
+                                    "state": state, "closing": closing})
+    assert QT.Ctx(cfg, "conductor", lease={"held": False}).closing_waiters == {"w": "h"}
 
 
 def test_settings_validate(tmp_path):

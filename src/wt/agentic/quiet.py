@@ -126,11 +126,13 @@ class Ctx:
     """Facts for one poll, read lazily: the runner lease and the digest file (whose
     `last_ping_fp` is the last delivered ping's fingerprint)."""
 
-    def __init__(self, cfg, reader, *, lease=None, digest=None, now=None, live_specs=None):
+    def __init__(self, cfg, reader, *, lease=None, digest=None, now=None, live_specs=None,
+                 closing_waiters=None):
         self.cfg, self.reader = cfg, reader
         self.now = now or dt.datetime.now().astimezone()
         self._lease = lease
         self._live_specs = live_specs
+        self._closing_waiters = closing_waiters
         self.digest = digest if digest is not None else Digest.load(cfg, reader)
 
     @property
@@ -149,6 +151,18 @@ class Ctx:
                 if c.get("project") and c.get("spec_id"))
         return self._live_specs
 
+    @property
+    def closing_waiters(self) -> dict:
+        """Campaign id -> head id for every campaign waiting in the close train behind a live
+        CLOSING head (SPEC-0314)."""
+        if self._closing_waiters is None:
+            rows = store.list_campaigns(self.cfg)
+            ids = {r["id"] for r in rows if r.get("state") == "CLOSING"}
+            self._closing_waiters = {
+                r["id"]: r["closing"]["queued_behind"] for r in rows
+                if E.waits_in_close_train(r, ids)}
+        return self._closing_waiters
+
 
 def _drain_bound(cfg, data) -> float:
     """Seconds a drain may last before it needs action: its slowest wait plus the grace."""
@@ -163,9 +177,17 @@ def _drain_hold(cfg, data) -> bool:
 
 
 def _silent_hold(ev, ctx) -> bool:
-    """A gate or close process for the campaign is alive in the runner."""
+    """A gate or close process for the campaign is alive in the runner, or it waits in the
+    close train behind a head for which that holds (SPEC-0314)."""
     lease, cid = ctx.lease, ev.get("campaign")
     if not lease.get("held") or not cid:
+        return False
+    return _alive(lease, cid, ctx) or _alive(lease, ctx.closing_waiters.get(cid), ctx)
+
+
+def _alive(lease, cid, ctx) -> bool:
+    """The campaign has a step in the runner's pool, or is its fresh `busy` campaign."""
+    if not cid:
         return False
     if cid in (lease.get("in_flight") or ()):
         return True

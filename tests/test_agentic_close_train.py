@@ -196,6 +196,61 @@ def test_stuck_items_ignores_train_waiter_and_uses_head_since(mk):
     assert stuck == ["SPEC-0001-20261026-0003", "SPEC-0001-20261026-0004"]
 
 
+def _silent_env(mk):
+    env = mk()
+    sett = E.settings(env.cfg)
+    now = dt.datetime.now().astimezone() + dt.timedelta(seconds=2 * sett["silent_after_s"])
+    return env, now, S.now_iso(now - dt.timedelta(seconds=10)), \
+        S.now_iso(now - dt.timedelta(seconds=2 * sett["silent_after_s"]))
+
+
+def _closing(env, cid, state="CLOSING", closing=None):
+    S.create_campaign(env.cfg, {"id": cid, "spec_id": "SPEC-0001", "project": "p",
+                                "state": state, "closing": closing})
+    S.append_event(env.cfg, cid, "transition", {"from": "GATING", "to": state,
+                                                "reason": "gates_passed"})
+
+
+def _silent(env, now):
+    return sorted(c for _k, t, c, _d in E.watchdog_checks(env.cfg, now) if t == "campaign_silent")
+
+
+def test_waits_in_close_train_predicate():
+    live = {"h"}
+    wait = lambda st: E.waits_in_close_train(st, live)  # noqa: E731
+    assert wait({"id": "w", "state": "CLOSING", "closing": {"queued_behind": "h"}})
+    assert not wait({"id": "h", "state": "CLOSING", "closing": {"attempts": 0}})
+    assert not wait({"id": "w", "state": "GATING", "closing": {"queued_behind": "h"}})
+    assert not wait({"id": "w", "state": "CLOSING", "closing": {"queued_behind": ""}})
+    assert not wait({"id": "w", "state": "CLOSING", "closing": None})
+    assert not wait({"id": "w", "state": "CLOSING", "closing": {"queued_behind": "w"}})
+    assert not wait({"id": "w", "state": "CLOSING", "closing": {"queued_behind": "merged"}})
+
+
+def test_watchdog_silent_skips_train_waiter(mk):
+    env, now, _recent, _old = _silent_env(mk)
+    head, waiter = "SPEC-0001-20261026-0001", "SPEC-0001-20261026-0002"
+    _closing(env, head, closing={"attempts": 0})
+    _closing(env, waiter, closing={"attempts": 0, "queued_behind": head})
+    assert _silent(env, now) == [head]
+    # a stale `queued_behind` (head merged, absent, or itself) leaves the normal clock
+    merged, gone, selfref = (f"SPEC-0001-20261026-000{n}" for n in (3, 4, 5))
+    _closing(env, merged, "MERGED")
+    for cid, behind in (("SPEC-0001-20261026-0006", merged), ("SPEC-0001-20261026-0007", gone),
+                        (selfref, selfref)):
+        _closing(env, cid, closing={"attempts": 0, "queued_behind": behind})
+    assert _silent(env, now) == sorted([head, selfref, "SPEC-0001-20261026-0006",
+                                        "SPEC-0001-20261026-0007"])
+
+
+def test_watchdog_silent_uses_head_since(mk):
+    env, now, recent, old = _silent_env(mk)
+    fresh, stale = "SPEC-0001-20261026-0001", "SPEC-0001-20261026-0002"
+    _closing(env, fresh, closing={"attempts": 0, "head_since": recent})
+    _closing(env, stale, closing={"attempts": 0, "head_since": old})
+    assert _silent(env, now) == [stale]
+
+
 def test_stale_queued_behind_is_reported_stuck(mk):
     """SPEC-0287: `queued_behind` hides a waiter only while its head is CLOSING. A head that
     is MERGED, missing or the waiter itself leaves the normal CLOSING clock in charge."""

@@ -459,6 +459,15 @@ def _latest_age(cfg, cid, types, now) -> float | None:
     return _age_s(last[0].get("ts"), now) if last else None
 
 
+def waits_in_close_train(st: dict, closing_ids: set) -> bool:
+    """SPEC-0314: a CLOSING campaign queued behind a different, live CLOSING head (SPEC-0260;
+    SPEC-0287: a stale `queued_behind` does not count)."""
+    if st.get("state") != "CLOSING":
+        return False
+    head = (st.get("closing") or {}).get("queued_behind")
+    return bool(head) and head != st.get("id") and head in closing_ids
+
+
 def stuck_items(cfg, now, sett) -> list[dict]:
     """Active campaigns with no progress for longer than `stuck_after_s` (SPEC-0270). Persona
     states measure idle time (since the latest `run.end`, never while a run is in flight);
@@ -489,9 +498,8 @@ def stuck_items(cfg, now, sett) -> list[dict]:
                     + sett["overdue_grace_s"]:
                 continue
             closing = (st.get("closing") or {}) if state == "CLOSING" else {}
-            head = closing.get("queued_behind")
             # SPEC-0260: waiting in the close train; SPEC-0287: only behind a live CLOSING head
-            if head and head != cid and head in closing_ids:
+            if waits_in_close_train(st, closing_ids):
                 continue
             ages = [since_state, _age_s(closing.get("head_since"), now),
                     _latest_age(cfg, cid, ["gate"], now)]
@@ -718,6 +726,7 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
     rows = store.list_campaigns(cfg)
     active = [r for r in rows if r.get("state") in ACTIVE_STATES]
     queued = [r for r in rows if r.get("state") == "QUEUED"]
+    closing_ids = {r["id"] for r in rows if r.get("state") == "CLOSING"}
     lease = L.lease_status(cfg, now=now)
     out = []
     running = {}
@@ -766,8 +775,14 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
                             {"persona": run.get("persona"), "run_id": run.get("run_id"),
                              "age_s": round(age), "timeout_s": run.get("timeout_s")}))
             continue
+        if waits_in_close_train(r, closing_ids):                              # SPEC-0314
+            continue
         tail = store.read_ledger(cfg, cid, tail=1)
         silent = _age_s(tail[-1].get("ts"), now) if tail else _age_s(r.get("updated_at"), now)
+        if r.get("state") == "CLOSING":              # a campaign that just became head
+            head_age = _age_s((r.get("closing") or {}).get("head_since"), now)
+            if head_age is not None:
+                silent = head_age if silent is None else min(silent, head_age)
         if silent is not None and silent > sett["silent_after_s"]:
             out.append((f"campaign_silent:{cid}:{r.get('state')}", "campaign_silent", cid,
                         {"state": r.get("state"), "silent_s": round(silent)}))
