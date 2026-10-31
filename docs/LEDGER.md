@@ -236,7 +236,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | accepted | — | 2026-10-31 |
-| [SPEC-0323](./specs/0323-flaky-under-load-tests-test-agentic-adopt-py-test.md) | Make test_adopt_orphan_group_waited_and_killed load-tolerant (timeout anchored to the run's started_at, not to test progress) | feature | proposed | — | 2026-10-31 |
+| [SPEC-0323](./specs/0323-flaky-under-load-tests-test-agentic-adopt-py-test.md) | Make test_adopt_orphan_group_waited_and_killed load-tolerant (timeout anchored to the run's started_at, not to test progress) | feature | accepted | — | 2026-10-31 |
 | [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) | Worker-owned async jobs | feature | accepted | — | 2026-10-31 |
 | [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) | Remote persona runs with bundle write-back | feature | accepted | — | 2026-10-31 |
 | [SPEC-0334](./specs/0334-pull-workers-against-a-coordinator-job-api.md) | Pull workers against a coordinator job API | feature | accepted | — | 2026-10-31 |

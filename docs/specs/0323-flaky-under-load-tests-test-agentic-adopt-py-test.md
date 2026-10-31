@@ -1,9 +1,10 @@
 ---
 id: SPEC-0323
 title: "Make test_adopt_orphan_group_waited_and_killed load-tolerant (timeout anchored to the run's started_at, not to test progress)"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-31
+updated: 2026-10-31
 kind: feature
 source_idea: IDEA-511
 tags: [tests, flaky, agentic]
