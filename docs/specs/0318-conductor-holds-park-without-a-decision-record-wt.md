@@ -66,7 +66,9 @@ command is cheaper and more reliable than a skill reminder.
    rationale), `--rule ID` (a `RULE_RE` rule id from the `/wt-conduct` table) and `--kind K`
    (a `decisions.KINDS` value, default `wait`). When the resolved actor is not `human`,
    `--decision` and `--rule` are required: without them the command exits 1 (in the dry run as
-   well) and writes nothing. A human may pass them and gets the record too.
+   well) and writes nothing. A human actor may not pass `--decision`, `--rule` or `--kind`: the
+   command exits 1 and says a human's park needs no record (decision records are
+   `by: conductor|queue|steward:<P>`, `decisions.BY_RE`).
 2. **The record is written after the park, from a request stored on the park.** The park
    carries `park.decision_request = {kind, rule, rationale, by}`, written by the same `_park`
    call under the campaign lock, so the request is atomic with the park. The decision record
@@ -90,7 +92,10 @@ command is cheaper and more reliable than a skill reminder.
    `--rule ID` and `--kind K` (default `resume` / `abandon`): given together, the record is
    written first and the command then continues, so one command both decides and acts. A park
    with `park.auto` (the queue's own, [SPEC-0302](./0302-routine-parks-decided-by-the-queue.md))
-   is exempt: its resume is `by: queue` and writes its own record. A human actor is exempt.
+   is exempt: its resume is `by: queue` and writes its own record. A human actor is exempt
+   from the requirement and may not pass `--decision`, `--rule` or `--kind`: the command exits 1
+   and says a human's resume or abandon needs no record (decision records are
+   `by: conductor|queue|steward:<P>`).
 5. **Skill.** `skills/wt-conduct/SKILL.md` gets: the conductor always passes `--by conductor`
    (or has `WT_MAILBOX_ADDR=conductor` set) for park, resume and abandon; the park/resume
    commands in the decision table carry `--decision "…" --rule <id>`; after `wt queue escalate`
@@ -154,15 +159,19 @@ command is cheaper and more reliable than a skill reminder.
 
 - [ ] `wt queue park <id> --by conductor --reason R` without `--decision` and `--rule` exits 1,
       with and without `--yes`, and writes no ledger event, no state change and no
-      `decisions.jsonl` line. The same command as `human` still works with neither.
+      `decisions.jsonl` line. The same command as `human` still works with neither, and
+      `human` passing `--decision`, `--rule` or `--kind` (park, resume or abandon) exits 1 with
+      no write: no `decisions.jsonl` record has `by: human`.
 - [ ] `wt queue park <id> --by conductor --reason R --decision "why" --rule message.request
       --yes` (immediate mode) parks the campaign and appends one `wt.conductor.decision.v1`
-      record (`by: conductor`, `kind: wait`, that rule and rationale) whose ts is at or after the
-      `park` event's ts, plus the ledger `note` carrying `decision`. `decisions.park_coverage`
+      record (`by: conductor`, `kind: wait`, that rule and rationale) whose ledger `note`
+      (carrying `decision`, with `decision.seq` = the record's seq) has a higher ledger `seq`
+      than the `park` event, and whose ts is at or after the `park` event's ts. `decisions.park_coverage`
       reports that park covered, and `mvp_report.e4` counts it as decided (not `missing`, not
       `late`).
 - [ ] With a loop holding the lease (deferred mode) the record is written only after the tick
-      applies the park, never before it, and is covered the same way.
+      applies the park, never before it (the decision's ledger `note` has a higher ledger `seq`
+      than the `park` event, not only a ts at or after it), and is covered the same way.
 - [ ] A bad `--rule` or `--kind` is refused in the dry run and writes nothing.
 - [ ] If the process stops between the park and the record, `park.decision_request` is still on
       the park, and the next tick writes the record and clears the request. A request on a
@@ -187,10 +196,17 @@ command is cheaper and more reliable than a skill reminder.
     `--rule`, bad rule, bad kind; with and without `--yes`): exit 1, ledger, state and
     `decisions.jsonl` unchanged.
   - `test_human_park_unchanged`: `human` actor, no options, parks as before, no record.
-  - `test_conductor_park_writes_record_after_park`: the record exists, `ts >= park.ts`,
-    `park_coverage` covers it, `park.decision_request` is cleared.
+    Parametrized refusal cases (park, resume, abandon as `human` with `--decision`, `--rule` or
+    `--kind`): exit 1, a message that a human needs no record, ledger, state and
+    `decisions.jsonl` unchanged.
+  - `test_conductor_park_writes_record_after_park`: the record exists; the decision's ledger
+    `note` (`decision.seq` = the record's seq) has a higher ledger `seq` than the `park` event,
+    and `ts >= park.ts`; `park_coverage` covers it; `park.decision_request` is cleared. Order is
+    asserted by ledger `seq` because `store.now_iso` has one-second resolution, so a ts-only
+    check cannot tell a record written just before the park from one written after it.
   - `test_deferred_park_records_after_tick_applies_it`: lease held, `park_requested` carries the
-    request, no record yet; after the tick applies the park the record exists and covers it.
+    request, no record yet; after the tick applies the park the record exists and covers it, and
+    its ledger `note` has a higher `seq` than the `park` event (same seq-based order check).
   - `test_crash_between_park_and_record_is_repaired`: patch `decisions.record` to raise once;
     `park.decision_request` stays; the next `settle_decision_requests` writes the record. A
     campaign resumed meanwhile has its request dropped and no record written.
@@ -205,7 +221,8 @@ command is cheaper and more reliable than a skill reminder.
 - **Sabotage checks:** make `_require_decision` return without checking, so
   `test_resume_abandon_need_covering_decision` must fail; skip `settle_decision_requests` in the
   tick, so `test_crash_between_park_and_record_is_repaired` must fail; write the record before
-  the park, so `test_conductor_park_writes_record_after_park` must fail.
+  the park, so `test_conductor_park_writes_record_after_park` must fail; the sabotage is
+  detected by the ledger `seq` comparison, which holds even when both land in the same second.
 - **Manual verification:** on a scratch queue, `wt queue park <id> --by conductor --reason
   "test" --yes` is refused; with `--decision "test hold" --rule message.request --yes` it parks
   and `wt queue decisions --parks` shows the park covered. `wt queue resume <id> --by conductor
