@@ -493,6 +493,14 @@ def test_conduct_skill_has_conductor_digest_row():
     assert "ping_items" in row and ".wt/project.yaml" in row
 
 
+def test_conduct_skill_says_ping_only_digest_is_not_delivered():
+    """SPEC-0317"""
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    phrase = "holding only pings without `ping_items` is not delivered"
+    assert phrase in _conduct_row("conductor_digest")
+    assert phrase in conduct.split("**Quiet stream", 1)[1].split("**Always held", 1)[0]
+
+
 def test_conduct_skill_park_rows_look_up_run_failed():
     for name in ("run_failed", "parked` `loop_exhausted"):
         row = _conduct_row(name)

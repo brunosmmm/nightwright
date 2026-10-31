@@ -502,6 +502,111 @@ def test_digest_never_empty(tmp_path):
     assert [e["type"] for e in _lines(out)] == ["message"]
 
 
+def _delivery_actions(cfg):
+    return [r["action"] for r in QT.read_deliveries(cfg, "conductor")]
+
+
+def _hold_pings(cfg, clock, n=2):
+    for _ in range(n):
+        E.append(cfg, "conductor_ping", by="watchdog", data=_ping())
+    _follow(cfg, io.StringIO(), clock=clock)            # held, interval not reached
+
+
+def test_digest_worth_printing():
+    def digest(*events):
+        d = QT.Digest(Path("unused"))
+        for i, (type_, items) in enumerate(events, 1):
+            ev = _ev(type_)
+            ev["id"] = i
+            if type_ == "conductor_ping":
+                ev["data"] = {"stuck": [{"campaign": c} for c in items]}
+            d.add(ev)
+        return d
+    assert not digest().worth_printing
+    assert not digest(("conductor_ping", ())).worth_printing
+    assert not digest(("conductor_ping", ()), ("conductor_ping", ())).worth_printing
+    assert digest(("conductor_ping", ("a",))).worth_printing
+    assert digest(("conductor_ping", ()), ("admitted", ())).worth_printing
+    assert digest(("admitted", ())).worth_printing
+
+
+def test_digest_skipped_when_only_empty_pings(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    E.cursor_set(cfg, "conductor", 0)
+    _hold_pings(cfg, clock)
+    clock.advance(1801)
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    assert out.getvalue() == ""
+    dg = QT.Digest.load(cfg, "conductor")
+    assert dg.pending["first_id"] is None and dg.last_printed_last_id == 2
+    assert "digest" not in _delivery_actions(cfg)
+    assert _delivery_actions(cfg).count("hold") == 2
+    rep = QT.wakeups_report(cfg)
+    assert rep["digests"] == 0 and rep["delivered"] == 0 and rep["held"] == 2
+
+
+def test_digest_printed_when_pings_and_other_event(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    E.cursor_set(cfg, "conductor", 0)
+    _hold_pings(cfg, clock)
+    E.append(cfg, "admitted", campaign="a")
+    clock.advance(1801)
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    (digest,) = _lines(out)
+    assert digest["data"]["held"] == {"conductor_ping": 2, "admitted": 1}
+    assert digest["data"]["pings_held"] == 2 and digest["data"]["ping_items"] == []
+    assert "digest" in _delivery_actions(cfg)
+
+
+def test_digest_printed_when_ping_items_nonempty(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    E.cursor_set(cfg, "conductor", 0)
+    for _ in range(2):                                  # the second one is held
+        E.append(cfg, "conductor_ping", by="watchdog", data=_ping(stuck=["a"]))
+    _follow(cfg, io.StringIO(), clock=clock)
+    clock.advance(1801)
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    (digest,) = _lines(out)
+    assert digest["data"]["ping_items"] == [["stuck", "a"]]
+    assert digest["data"]["pings_held"] == 1
+
+
+def test_digest_restarts_after_skipped_digest(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    E.cursor_set(cfg, "conductor", 0)
+    _hold_pings(cfg, clock)
+    clock.advance(1801)
+    _follow(cfg, io.StringIO(), clock=clock)            # discarded
+    ev = E.append(cfg, "admitted", campaign="a")
+    clock.t = dt.datetime.fromisoformat(ev["ts"])       # the new digest starts at its event
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    assert out.getvalue() == ""
+    assert QT.Digest.load(cfg, "conductor").pending["since"] == ev["ts"]
+    clock.advance(1799)
+    _follow(cfg, out, clock=clock)
+    assert out.getvalue() == ""
+    clock.advance(2)
+    _follow(cfg, out, clock=clock)
+    (digest,) = _lines(out)
+    assert digest["data"]["held"] == {"admitted": 1}
+
+
+def test_skipped_digest_pings_not_readded(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    E.cursor_set(cfg, "conductor", 0)
+    _hold_pings(cfg, clock)
+    clock.advance(1801)
+    _follow(cfg, io.StringIO(), clock=clock)
+    dg = QT.Digest.load(cfg, "conductor")
+    for ev in E.read_since(cfg, 0, types=["conductor_ping"]):
+        assert dg.add(ev) is False
+    assert dg.empty
+
+
 def test_digest_survives_rearm(tmp_path):
     cfg, clock = _cfg(tmp_path), Clock()
     E.cursor_set(cfg, "conductor", 0)

@@ -299,6 +299,13 @@ class Digest:
     def empty(self) -> bool:
         return self.pending["first_id"] is None
 
+    @property
+    def worth_printing(self) -> bool:
+        """SPEC-0317: a digest holding only `conductor_ping` events with no `ping_items` has
+        nothing to act on; `follow` discards it instead of printing it."""
+        held, p = self.pending["held"], self.pending
+        return bool(p["ping_items"]) or any(t != "conductor_ping" for t in held)
+
     def add(self, ev, ctx=None) -> bool:
         """Fold one held event in. False (a no-op) when its id is not past what the digest has
         seen or printed: a re-read after a crash between the digest and cursor writes."""

@@ -1062,7 +1062,8 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
     `agentic.conductor.quiet` for the reader, see `quiet.enabled_for`): events `quiet.classify` holds go into the reader's pending digest instead of
     being printed, and one `conductor_digest` line is printed when the oldest held event is
     older than `digest_interval_s`. A hold saves the digest *before* the cursor advances
-    (`Digest.add` ignores a re-read); a due digest is cleared and saved before it is printed.
+    (`Digest.add` ignores a re-read); a due digest is cleared and saved before it is printed,
+    or only cleared when it holds nothing but empty pings (`Digest.worth_printing`, SPEC-0317).
     `printed` and `max_events` count delivered lines only. `now` is a clock callable."""
     from . import quiet as QT
     out = out or sys.stdout
@@ -1120,16 +1121,21 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
                 if max_events and printed >= max_events:
                     return printed
             if quiet and ctx.digest.due(clock(), interval):
-                line = ctx.digest.line(as_json=as_json)
-                ctx.digest.clear()
-                ctx.digest.save()
-                out.write(line)
-                out.flush()
-                QT.record_delivery(cfg, reader, {"id": None, "type": "conductor_digest",
-                                                 "campaign": None}, "digest")
-                printed += 1
-                if max_events and printed >= max_events:
-                    return printed
+                if not ctx.digest.worth_printing:
+                    # SPEC-0317: only empty pings were held: no line, no delivery record
+                    ctx.digest.clear()
+                    ctx.digest.save()
+                else:
+                    line = ctx.digest.line(as_json=as_json)
+                    ctx.digest.clear()
+                    ctx.digest.save()
+                    out.write(line)
+                    out.flush()
+                    QT.record_delivery(cfg, reader, {"id": None, "type": "conductor_digest",
+                                                     "campaign": None}, "digest")
+                    printed += 1
+                    if max_events and printed >= max_events:
+                        return printed
             change = watcher.poll(time.monotonic())
             if change:
                 out.write(code_changed_line(reader, change, as_json=as_json))

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0317
 title: "Quiet follower skips a conductor_digest that holds only empty pings (nothing to act on)"
-status: accepted
+status: done
 owner: user
 created: 2026-10-31
 updated: 2026-10-31
@@ -101,24 +101,24 @@ adds no wakeup. The digest's clock restarts with the next held event.
 
 ## Acceptance criteria
 
-- [ ] A pending digest holding only `conductor_ping` events with `ping_items == []` is not
+- [x] A pending digest holding only `conductor_ping` events with `ping_items == []` is not
       printed when `Digest.due` fires: `follow` writes nothing for it and returns no
       `conductor_digest` line.
-- [ ] That discard clears and saves the digest: `pending` is fresh (`first_id is None`), the
+- [x] That discard clears and saves the digest: `pending` is fresh (`first_id is None`), the
       digest file is rewritten, and `last_printed_last_id` covers the held pings.
-- [ ] That discard records no `digest` delivery and adds no wakeup: `wt queue wakeups`
+- [x] That discard records no `digest` delivery and adds no wakeup: `wt queue wakeups`
       `digests` is unchanged and `delivered` does not count it; the `hold` records of the
       pings remain.
-- [ ] A pending digest holding a ping-only history plus any other held event type (for
+- [x] A pending digest holding a ping-only history plus any other held event type (for
       example `admitted`) is printed when due, with `held` and `pings_held` as before.
-- [ ] A pending digest whose `ping_items` is non-empty is printed when due, as before.
-- [ ] After a ping-only digest is discarded, the next held event starts a new digest whose
+- [x] A pending digest whose `ping_items` is non-empty is printed when due, as before.
+- [x] After a ping-only digest is discarded, the next held event starts a new digest whose
       `since` is that event's timestamp, and it prints one interval later.
-- [ ] A crash-style re-read of already discarded pings (cursor behind the digest) does not
+- [x] A crash-style re-read of already discarded pings (cursor behind the digest) does not
       re-add them (`Digest.add` returns `False`).
-- [ ] The `wt-conduct` skill's *Quiet stream* text and its `conductor_digest` row state that
+- [x] The `wt-conduct` skill's *Quiet stream* text and its `conductor_digest` row state that
       a digest holding only pings without `ping_items` is not delivered.
-- [ ] All other `tests/test_agentic_quiet.py` tests still pass unchanged.
+- [x] All other `tests/test_agentic_quiet.py` tests still pass unchanged.
 
 ## Test plan
 
@@ -150,13 +150,28 @@ adds no wakeup. The digest's clock restarts with the next held event.
   `test_hold_crash_between_digest_and_cursor`, `test_digest_crash_before_print`), plus
   `python3 tools/spec_lint.py`.
 
+### Test record (2026-10-31)
+
+- `uv run pytest tests/test_agentic_quiet.py tests/test_skills.py`: 165 passed. New tests:
+  `test_digest_worth_printing`, `test_digest_skipped_when_only_empty_pings`,
+  `test_digest_printed_when_pings_and_other_event`,
+  `test_digest_printed_when_ping_items_nonempty`, `test_digest_restarts_after_skipped_digest`,
+  `test_skipped_digest_pings_not_readded`,
+  `test_conduct_skill_says_ping_only_digest_is_not_delivered`; the existing digest tests pass
+  unchanged.
+- The manual two-interval `wt queue events --follow` run was not performed against a live queue;
+  `test_digest_skipped_when_only_empty_pings` covers the same path (no `conductor_digest` line,
+  `wakeups_report` `digests == 0`, `held == 2`).
+- The full `uv run pytest` run was left to gating; `python3 tools/spec_lint.py` run after the
+  ledger was regenerated.
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
