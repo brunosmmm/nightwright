@@ -1,9 +1,10 @@
 ---
 id: SPEC-0317
 title: "Quiet follower skips a conductor_digest that holds only empty pings (nothing to act on)"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-31
+updated: 2026-10-31
 milestone: "M10: agentic MVP"
 kind: feature
 source_idea: IDEA-485
