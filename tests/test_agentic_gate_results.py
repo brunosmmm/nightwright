@@ -20,6 +20,20 @@ def test_pytest_quiet_summary_line_with_duration_suffix():
     assert (s["failed"], s["passed"]) == (0, 2)
 
 
+def test_pytest_xdist_summary_line():
+    """SPEC-0309: `-n 4` keeps the final summary line in the serial format; the per-worker
+    banner and progress lines around it must not be taken for counts."""
+    log = ("created: 4/4 workers\n4 workers [4077 items]\n"
+           "...s......................................................... [  1%]\n"
+           "FAILED tests/a.py::test_x - assert 0\n"
+           "=========== 1 failed, 4076 passed, 3 skipped in 301.22s (0:05:01) ===========\n")
+    s = GR.parse_pytest(log)
+    assert (s["failed"], s["passed"], s["skipped"], s["errors"]) == (1, 4076, 3, 0)
+    assert s["failing"] == ["tests/a.py::test_x"]
+    s = GR.parse_pytest("4077 passed, 3 skipped in 301.22s (0:05:01)\n")      # the `-q` form
+    assert (s["failed"], s["passed"], s["skipped"]) == (0, 4077, 3)
+
+
 @pytest.mark.parametrize("line,n", [("=== 1 error in 0.1s ===", 1),
                                     ("=== 2 errors in 0.1s ===", 2),
                                     ("1 passed, 2 errors in 0.1s", 2)])

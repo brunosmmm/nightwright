@@ -1,7 +1,7 @@
 ---
 id: SPEC-0309
 title: "Faster gates: parallel pytest under a host-wide gate-slot pool"
-status: in-progress
+status: done
 owner: user
 created: 2026-10-30
 updated: 2026-10-30
@@ -196,27 +196,27 @@ def waiting(cfg, campaign_id, now=None) -> dict | None   # live waiter marker, e
 
 ## Acceptance criteria
 
-- [ ] `pytest-xdist` is in the `dev` extra, `.wt/project.yaml`'s pytest gate uses `-n 4` with a
+- [x] `pytest-xdist` is in the `dev` extra, `.wt/project.yaml`'s pytest gate uses `-n 4` with a
       serial `retry_cmd`, and the full suite passes under `uv run pytest -q -n 4`.
-- [ ] Parallel-safety evidence: three consecutive full `-n 4` runs on an idle host all pass, with
+- [x] Parallel-safety evidence: three consecutive full `-n 4` runs on an idle host all pass, with
       no test failing in one run and passing in another. The three outcomes are recorded in *As
       shipped*, with any test that needed fixing or `xdist_group`.
-- [ ] On an idle host the full `-n 4` suite takes at most 50% of the wall time of the serial run
+- [x] On an idle host the full `-n 4` suite takes at most 50% of the wall time of the serial run
       on the same tree. Both durations and the ratio are recorded in *As shipped*.
-- [ ] `gate_slots.acquire` never lets more than `agentic.gates.slots` holders in at once across
+- [x] `gate_slots.acquire` never lets more than `agentic.gates.slots` holders in at once across
       processes; a holder killed with SIGKILL frees its slot; a waiter returns promptly on stop
       without starting a gate and removes its waiter marker. A `slots` value that is not an int
       from 1 to 16 falls back to 2.
-- [ ] `gates.run_all` holds one slot for the whole run, and its `deadline` and per-gate timeouts
+- [x] `gates.run_all` holds one slot for the whole run, and its `deadline` and per-gate timeouts
       count from the moment the slot is held. The gate payload has `slot_wait_s` (0.0 without a
       wait), and exactly one `gate_waiting` entry is appended once a wait exceeds 30 s.
-- [ ] `quiet.RULES` classifies `gate_waiting` as `hold` and the `/wt-conduct` skill's *Quiet
+- [x] `quiet.RULES` classifies `gate_waiting` as `hold` and the `/wt-conduct` skill's *Quiet
       stream* list names it (the existing rules-versus-skill comparison test passes).
-- [ ] A GATING or CLOSING campaign with a live `waiting-<campaign>.json` marker raises no
+- [x] A GATING or CLOSING campaign with a live `waiting-<campaign>.json` marker raises no
       `campaign_silent` and no `state_stuck`, a marker with a dead pid does not suppress them, a
       long wait plus a long gate does not raise `state_stuck` before `gate_budget_s` of actual
       gate time, and no `run_overdue` is raised for a gate-slot wait.
-- [ ] `wt queue gate-slots` prints holders and waiters as text and with `--json`.
+- [x] `wt queue gate-slots` prints holders and waiters as text and with `--json`.
 
 ## Test plan
 
@@ -257,6 +257,52 @@ def waiting(cfg, campaign_id, now=None) -> dict | None   # live waiter marker, e
   serial once, so neither mode regresses). A project with no `agentic.gates` config behaves as
   before, apart from the pool defaulting to 2, which bounds only concurrent gate runs.
 
+### Test record (2026-10-30)
+
+- Targeted (also `test_cli_gate_slots`, `test_agentic_events`, `test_agentic_quiet`, `test_skills`: 203 passed): `uv run pytest -q -n 0 tests/test_gate_slots.py tests/test_agentic_gate_results.py`,
+  28 passed (includes the new slot-held-across-gates, short-wait, `slot_wait_s` round-trip and
+  xdist-summary `parse_pytest` tests).
+- Manual step 1 and 2 (below, in *As shipped*): one serial and three `-n 4` full runs on this tree,
+  all passed.
+- Manual steps 3 (two real campaigns with `slots: 1`) and 4 (GATING minutes over the first five
+  merges) need real campaigns and merges after this ships, so they cannot precede this merge;
+  they are the post-ship comparison of Rollout step 3 and are not recorded here. The same
+  behaviour is covered by the automated pool, `run_all` and detector tests above.
+- Full suite under gating is left to the gate; the runs above stand in for the serial and
+  `-n 4` regression guard.
+
+### As shipped
+
+**Parallel pytest, measured** (this tree, 4081 passed, 3 skipped each run; 8 cores; the host was
+not idle: other campaigns kept the load average at 2-7, which penalises the parallel runs more
+than the serial one):
+
+| run | command | result | duration |
+|---|---|---|---|
+| serial | `uv run pytest -q` | 4081 passed, 3 skipped | 1003.70 s (0:16:43) |
+| -n 4 #1 | `uv run pytest -q -x -n 4` | 4081 passed, 3 skipped, 25 warnings | 326.34 s (0:05:26) |
+| -n 4 #2 | `uv run pytest -q -x -n 4` | 4081 passed, 3 skipped, 25 warnings | 345.90 s (0:05:45) |
+| -n 4 #3 | `uv run pytest -q -x -n 4` | 4081 passed, 3 skipped, 25 warnings | 285.18 s (0:04:45) |
+
+Ratio `-n 4` / serial: 0.33, 0.34, 0.28 (limit 0.5). No test failed in one run and passed in
+another. **No test needed a fix or an `xdist_group`**; the gate command carries no
+`--dist loadgroup`. The 25 warnings are `DeprecationWarning: ... multi-threaded, use of fork()`
+from `test_org_write_race.py`, `test_spec_numbers.py` and `test_tui_real_terminal.py`; they only
+show under xdist (its workers are threaded) and do not fail anything. `gate_results.parse_pytest`
+reads the xdist summary line unchanged; `test_pytest_xdist_summary_line` pins it.
+
+**Added beyond Design**
+- `gate_slots.holding(cfg, campaign_id)` and a `waited_s` field in the slot file. While a gate runs,
+  the finished wait is readable from the live hold, because the `gate` ledger entry (with
+  `slot_wait_s`) lands only after `run_all` returns.
+- Silence and stuck offsets taken from the live hold: `stuck_items` adds the hold's `waited_s` to
+  its limit, and `campaign_silent` offsets the silence by it too, so a long wait followed by a long
+  gate raises neither alarm.
+- A `gate` entry's `slot_wait_s` counts toward `stuck_items` only when the entry belongs to the
+  current state (its age is within the time in state), so an earlier state's wait is not reused.
+- `acquire(..., on_wait=)`: a callback `on_wait(occupancy, waited_s)` called once when a wait passes
+  `WAIT_EVENT_S`; `run_all` uses it to append the single `gate_waiting` entry.
+
 ## Rollout / migration
 
 1. Merge the pool and detector code first, with `.wt/project.yaml` unchanged. The pool defaults
@@ -275,12 +321,12 @@ def waiting(cfg, campaign_id, now=None) -> dict | None   # live waiter marker, e
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed and
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed and
       the measurements are in *As shipped*.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

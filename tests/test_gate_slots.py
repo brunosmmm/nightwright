@@ -161,6 +161,52 @@ def test_run_all_without_a_wait_records_zero(world):
     assert GS.occupancy(cfg)["held"] == []                  # released after the run
 
 
+def test_run_all_holds_one_slot_across_every_gate(world, monkeypatch):
+    cfg, st, _ = world
+    during = []
+    real = G.run_gate_with_retries
+
+    def spy(*a, **kw):                  # what the pool shows as each gate is about to start
+        during.append([h["campaign"] for h in GS.occupancy(cfg)["held"]])
+        return real(*a, **kw)
+
+    monkeypatch.setattr(G, "run_gate_with_retries", spy)
+    run = G.run_all({"gates": [_gate("a", "true"), _gate("b", "true"), _gate("c", "true")]},
+                    st, cfg, seq=1)
+    assert run.ok and len(run.results) == 3
+    assert during == [[CID]] * 3                        # one hold, there for every gate
+    assert GS.occupancy(cfg)["held"] == []
+
+
+def test_a_short_wait_appends_no_gate_waiting(world, monkeypatch):
+    cfg, st, _ = world
+    monkeypatch.setattr(GS, "POLL_S", 0.05)             # WAIT_EVENT_S stays at 30 s
+    with GS.acquire(cfg, "other", poll_s=0.05):
+        box = {}
+        t = threading.Thread(target=lambda: box.update(
+            run=G.run_all({"gates": [_gate("a", "true")]}, st, cfg, seq=1)))
+        t.start()
+        assert until(lambda: GS.waiting(cfg, CID) is not None)
+    join(t)
+    assert box["run"].ok and box["run"].slot_wait_s > 0
+    assert not [e for e in S.read_ledger(cfg, CID) if e["type"] == "gate_waiting"]
+
+
+def test_run_and_log_stores_slot_wait_s_on_the_gate_entry(world, monkeypatch):
+    cfg, st, _ = world
+    monkeypatch.setattr(GS, "POLL_S", 0.05)
+    with GS.acquire(cfg, "other", poll_s=0.05):
+        box = {}
+        t = threading.Thread(target=lambda: box.update(
+            run=G.run_and_log(cfg, st, {"gates": [_gate("a", "true")]})))
+        t.start()
+        assert until(lambda: GS.waiting(cfg, CID) is not None)
+    join(t)
+    entries = [e for e in S.read_ledger(cfg, CID) if e["type"] == "gate"]
+    assert len(entries) == 1
+    assert entries[0]["slot_wait_s"] == box["run"].slot_wait_s > 0
+
+
 def test_run_all_waits_for_the_slot_and_counts_budget_from_the_hold(world, monkeypatch):
     cfg, st, _ = world
     monkeypatch.setattr(GS, "WAIT_EVENT_S", 0.05)
