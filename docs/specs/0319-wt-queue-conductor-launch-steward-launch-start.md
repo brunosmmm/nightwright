@@ -315,6 +315,17 @@ rate this is a small fraction of the turns removed by the lower context; it is m
   (`test_adopt_orphan_group_waited_and_killed`, `test_fanout_detach_precondition`) also fail
   intermittently under load, and did so with `runner.py` reverted to `main`, so that flakiness
   predates this spec.
+- Test hardening: `test_adopt_orphan_group_waited_and_killed` failed under load because the
+  orphan timeout is `started_at + timeout_s` measured from the run's start, so its fixed
+  `timeout_s = 3` expired before the "group lives" checks. It now sets `timeout_s = 600`, and
+  after the checks moves `started_at` 700 s into the past (the adopter re-reads it each tick)
+  to make the kill due. No production code changed. It passed 10 of 10 alone and in the whole
+  `tests/test_agentic_adopt.py` file under `-n 4`. A full `-n 4` run did not finish in 590 s
+  because the host load average was about 39 (other campaigns), so the full suite stays with
+  gating. Under that load other tests of the file that wait on a 60 s bound
+  (`test_fanout_detach_precondition`, `test_adopt_review_*`) timed out intermittently; they pass
+  alone, and their cause is host load rather than the orphan-timeout pattern, so they were not
+  changed.
 - Manual verification: step 2 (the dry-run argv and env) is covered by the CLI tests against
   the table. Steps 3 to 5 (an interactive session staying under the window, `--resume` of a
   live session, the `conductor-cost` check a day later) need a real `claude` session and
