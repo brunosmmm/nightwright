@@ -302,3 +302,19 @@ command is cheaper and more reliable than a skill reminder.
   events (`by: conductor`, `steward:Meta-Tools`) and separately assert the decision record's
   ledger note, which `decisions.record` authors as `agent:<by>`. A grep of `tests/` found no
   other non-human park/resume/abandon without a record.
+- Landed directly on main at the human's request (2026-10-31), not via the queue (the
+  campaign was parked after four gate runs failed on load flakes). The gate failures
+  ("two agentic tick/lifecycle tests", `test_adopt_orphan_group_waited_and_killed` and
+  `test_stop_after_detach_leaves_runs`, plus a varying set of others) were checked: both pass
+  alone on plain main and on the merged branch, and the gate logs show a different failing set
+  each run, so they are host-load flakes, not this spec; SPEC-0319 (landed together) hardens
+  both tests. Landing run: targeted files (decisions, autopark, mvp_report, skills,
+  `test_agentic_queue*.py` incl. `test_agentic_queue_park_decision.py`,
+  `test_agentic_dashboard*.py`): pass; full `uv run pytest -q -n 2`: 4417 passed, 1 unrelated
+  load failure (`test_packaging.py::test_wheel_contains_the_builtin_profile_files`, passes alone).
+  Review polish left: the spec-review minors (a deferred record has no named point in the tick
+  beyond "end of tick"; the skill update covers the park/resume rows, not every bare `wt queue`
+  row). The nit on the inline settle after `park --yes` was already addressed (it settles only
+  its own campaign). No code change on landing.
+  Rollout note: from this merge a bare `wt queue park|resume|abandon --by conductor` is refused
+  until the conductor re-reads `/wt-conduct`.

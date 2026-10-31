@@ -337,6 +337,13 @@ rate this is a small fraction of the turns removed by the lower context; it is m
   `CLAUDE_CODE_EFFORT_LEVEL=high` in the non-launched equality check. `uv run pytest
   tests/test_agentic_launch.py tests/test_agentic_runner.py`: 70 passed. Full suite left to gating.
 
+- Landing run (2026-10-31, merged with SPEC-0318 on main `f7c8d20`): `uv run pytest -n 2` over
+  `tests/test_agentic_launch.py` (62), runner, runproc, conductor_cost, adopt, decisions,
+  autopark, mvp_report, skills, `test_agentic_queue*.py`, `test_agentic_dashboard*.py`: 785
+  passed. Full `uv run pytest -q -n 2`: 4417 passed, 3 skipped, 1 failed
+  (`tests/test_packaging.py::test_wheel_contains_the_builtin_profile_files`, `uv build` exit 2
+  under load; passes alone, unrelated to this spec).
+
 ### As shipped (2026-10-31)
 
 - As designed. `launch.py` holds `settings`, `build_plan`, `check_price`, `exec_env`,
@@ -351,6 +358,24 @@ rate this is a small fraction of the turns removed by the lower context; it is m
   builds the real `claude -p` env as `child_env(launch["env"])`. `ClaudeRunner` itself writes
   only `req.env` into `launch.json`, so the production path is covered by the wrapper (a review
   found the first version filtered only the fake path).
+
+- Landed directly on main at the human's request (2026-10-31), not via the queue (the
+  campaign was parked after review scored 43 with 9 minor/nit findings and 0 major open).
+  Fixed while landing: a failing `os.execvpe` (for example a broken `claude` wrapper) is now a
+  `ClickException` ("cannot start claude ...; start fresh") instead of a raw traceback; its
+  already-written launch record stays, and `--resume` then refuses it with the existing
+  "no transcript" message. Tests added for gaps against the criteria: inclusive bounds
+  (AC3: autocompact 100k/1M, idle 100000, bash/file read 1000, 1000001 rejected), a bad
+  `steward` override falling back (AC3), exec argv and env exactly equal to the plan and
+  `exec_env(plan)` (AC8), the registration-failure and exec-failure paths. The reviewer's
+  "launch limits leak into real campaign runners" finding was checked and is fixed (the
+  detached wrapper `runproc` builds the real `claude -p` env through `child_env`;
+  `test_runproc_wrapper_child_env` runs the real wrapper). Review polish left: the registered
+  `cwd` is the plan's cwd (chdir runs before registration), not the invocation directory;
+  numeric strings (`"5000"`, `"120k"`) are accepted for the integer settings; resume reader
+  isolation (conductor vs steward records) is not tested directly (it relies on
+  `conductor_cost.sessions` filtering by reader); dry-run tests do not patch `os.execvpe`;
+  no guard against two concurrent `conductor-launch` sessions.
 
 ## Rollout / migration
 
