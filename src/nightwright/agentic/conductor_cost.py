@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import fcntl
 import json
+import math
 import os
 import statistics
 from pathlib import Path
@@ -37,7 +38,11 @@ def sessions(cfg, reader="conductor") -> list[dict]:
     if not path.is_file():
         return []
     out = []
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    for raw in text.splitlines():
         try:
             rec = json.loads(raw)
         except ValueError:
@@ -168,23 +173,36 @@ def placement_live(rec) -> bool:
 def _safe_id(session_id) -> bool:
     """A session id is a file stem: no path separators or glob metacharacters."""
     sid = str(session_id or "")
-    return bool(sid) and not any(c in sid for c in "/\\*?[]")
+    return bool(sid) and sid not in (".", "..") and not any(c in sid for c in "/\\*?[]")
+
+
+def _project_dirs(cfg) -> list[Path]:
+    """The direct children of the transcripts root that are directories, sorted."""
+    root = cfg.get("_root")
+    if not root:
+        return []
+    try:
+        return sorted(p for p in Path(root).iterdir() if p.is_dir())
+    except OSError:
+        return []
 
 
 def find_transcript(cfg, session_id) -> Path | None:
-    root = cfg.get("_root")
-    if not root:
-        return None
+    """`<root>/<project>/<session_id>.jsonl` by exact lookup (no glob: the id is never a pattern)."""
     if not _safe_id(session_id):
         return None
-    return next(iter(sorted(Path(root).glob(f"*/{session_id}.jsonl"))), None)
+    return next((f for d in _project_dirs(cfg) if (f := d / f"{session_id}.jsonl").is_file()), None)
 
 
 def subagent_transcripts(cfg, session_id) -> list[Path]:
-    root = cfg.get("_root")
-    if not root or not _safe_id(session_id):
+    if not _safe_id(session_id):
         return []
-    return sorted(Path(root).glob(f"*/{session_id}/subagents/**/*.jsonl"))
+    out = []
+    for d in _project_dirs(cfg):
+        sub = d / str(session_id) / "subagents"
+        if sub.is_dir():
+            out.extend(sub.glob("**/*.jsonl"))
+    return sorted(out)
 
 
 def _parse_ts(value):
@@ -215,15 +233,24 @@ def usage_kinds(usage: dict) -> dict:
     return turn
 
 
+def _lines(path, *needles):
+    """The lines of a transcript that contain one of `needles`, read one at a time (a transcript
+    is hundreds of MB; the tool results and user lines are never turns). An `OSError` mid-read
+    ends the stream, so the caller keeps what it had."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                if any(n in raw for n in needles):
+                    yield raw
+    except OSError:
+        return
+
+
 def read_turns(path) -> list[dict]:
     """API turns of one transcript, one per `message.id` (the last line seen wins; one message
     is split over a line per content block). `context` is the prompt size of the turn."""
     by_id: dict[str, dict] = {}
-    try:
-        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-    for raw in lines:
+    for raw in _lines(path, '"assistant"'):
         try:
             rec = json.loads(raw)
         except ValueError:
@@ -249,12 +276,22 @@ def _valid_price(entry) -> bool:
     config makes the model unpriced rather than breaking every report and export."""
     return isinstance(entry, dict) and all(
         isinstance(entry[k], (int, float)) and not isinstance(entry[k], bool)
+        and math.isfinite(entry[k]) and entry[k] >= 0
         for k in KINDS if entry.get(k) is not None)
+
+
+def _conductor_cfg(cfg) -> dict:
+    """`agentic.conductor` when each level is a dict, else `{}`."""
+    agentic = cfg.get("agentic") if isinstance(cfg, dict) else None
+    cond = agentic.get("conductor") if isinstance(agentic, dict) else None
+    return cond if isinstance(cond, dict) else {}
 
 
 def price_for(cfg, model) -> dict | None:
     """The price entry for `model`: longest matching prefix of `agentic.conductor.prices`."""
-    prices = (((cfg.get("agentic") or {}).get("conductor") or {}).get("prices")) or {}
+    prices = _conductor_cfg(cfg).get("prices")
+    if not isinstance(prices, dict):
+        return None
     keys = [k for k in prices if _valid_price(prices[k]) and str(model or "").startswith(str(k))]
     return prices[max(keys, key=len)] if keys else None
 
@@ -273,9 +310,13 @@ def _kind_usd(turn, price) -> dict:
 # ---- live windows --------------------------------------------------------------------------
 
 def live_windows(cfg, *, now=None) -> list[dict]:
-    """One row per campaign: `{campaign, spec_id, start, end, outcome, persona_usd}`. A campaign
-    is live from its `open` event (or `created_at`) until its terminal transition (`end` None
-    while it is still live); the same window `campaign_export.campaign_row` uses."""
+    """One row per campaign: `{campaign, spec_id, start, end, live_end, outcome, persona_usd}`. A
+    campaign is live from its `open` event (or `created_at`) until its terminal transition (`end`
+    None while there is none); the same window `campaign_export.campaign_row` uses. `live_end` is
+    what `_live_at` reads: `end` when there is one; for a campaign in a terminal state with no
+    terminal transition (a legacy or hand-repaired one) `max(start, min(updated_at, last
+    transition))`, so it stops absorbing spend instead of staying live forever (`end` stays None,
+    so it is still not counted as ended or merged); None for a campaign still running."""
     out = []
     for s in store.list_campaigns(cfg, include_terminal=True):
         cid = s["id"]
@@ -285,7 +326,14 @@ def live_windows(cfg, *, now=None) -> list[dict]:
         term = next((e for e in reversed(events) if e.get("type") == "transition"
                      and e.get("to") in store.TERMINAL_STATES), None)
         end = _parse_ts(term.get("ts")) if term else None
+        live_end = end
+        if end is None and s.get("state") in store.TERMINAL_STATES:
+            last = next((_parse_ts(e.get("ts")) for e in reversed(events)
+                         if e.get("type") == "transition"), None)
+            bounds = [t for t in (_parse_ts(s.get("updated_at")), last) if t is not None]
+            live_end = max(start, min(bounds)) if bounds and start else start
         out.append({"campaign": cid, "spec_id": s.get("spec_id"), "start": start, "end": end,
+                    "live_end": live_end,
                     "outcome": term.get("to") if term else None,
                     "persona_usd": ((s.get("cost") or {}).get("total_usd")) or 0.0})
     return out
@@ -293,7 +341,7 @@ def live_windows(cfg, *, now=None) -> list[dict]:
 
 def _live_at(windows, t) -> list[dict]:
     return [w for w in windows if w["start"] is not None and w["start"] <= t
-            and (w["end"] is None or t < w["end"])]
+            and (w["live_end"] is None or t < w["live_end"])]
 
 
 def _turns_of(cfg, paths, seen=None) -> list[dict]:
@@ -331,12 +379,8 @@ def transcript_marks(path, replayed=()):
     Turns whose id is in `replayed` (a resumed session's copy of earlier history) are not
     counted, nor are the marks in that replayed stretch (before the first new turn, which a
     resumed transcript may open with a copied `compact_boundary`)."""
-    try:
-        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
     out, seen = [], {}
-    for raw in lines:
+    for raw in _lines(path, '"assistant"', "compact_boundary"):
         try:
             rec = json.loads(raw)
         except ValueError:

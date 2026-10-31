@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 
@@ -339,7 +340,11 @@ def export_tables(cfg, *, project=None, since=None, terminal_only=False, now=Non
     states.sort(key=lambda s: (s.get("created_at") or "", s.get("id") or ""))
     tables: dict[str, list] = {"campaigns": [], "runs": [], "findings": []}
     from . import conductor_cost        # SPEC-0299: campaign id -> conductor USD, or None
-    shares = conductor_cost.attribute(cfg, now)
+    try:
+        shares = conductor_cost.attribute(cfg, now)
+    except Exception as e:      # measurement is an extra column set; it must not fail an export
+        shares = None
+        print(f"conductor columns skipped: {type(e).__name__}", file=sys.stderr)
     for s in states:
         events = store.read_ledger(cfg, s["id"])
         crow = campaign_row(cfg, s, events, now)

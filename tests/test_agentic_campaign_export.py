@@ -876,3 +876,76 @@ def test_export_conflict_pressure_columns(cfg):                    # SPEC-0303
     assert (quiet["rebase_regenerated"], quiet["resolver_dispatches"], quiet["rebase_resolved"],
             quiet["resolver_overcap_usd"]) == (0, 0, 0, 0.0)
     assert [n for n, _ in CE.CAMPAIGN_COLUMNS][:42] == list(row)[:42]
+
+
+# ---- SPEC-0321: conductor measurement hardening --------------------------------------------
+
+def test_live_window_agrees_with_campaign_row_for_terminal_without_transition(cfg):
+    from wt.agentic import conductor_cost as CC
+    make(cfg, "C-NT", [(10, "transition", tr("QUEUED", "OPENING"))], state="ABANDONED")
+    r = row_of(cfg, "C-NT")
+    assert r["ended_at"] is None and r["wall_s"] is None          # not measured to `now`
+    (w,) = CC.live_windows(cfg, now=NOW)
+    assert w["end"] is None and w["live_end"] is not None
+    assert w["live_end"] == dt.datetime.fromisoformat(ts(10))     # the last transition
+
+
+def _conductor_setup(cfg, tmp_path, *, tokens=100_000, model="claude-x", sid="sid"):
+    from wt.agentic import conductor_cost as CC
+    make(cfg, "C1", [(10, "transition", tr("CLOSING", "MERGED"))], created=0,
+         state="MERGED", cost={"total_usd": 2.5, "cap_usd": None, "by_persona": {}})
+    cfg["_root"] = str(tmp_path / "projects")
+    cfg["agentic"]["conductor"] = {"prices": {"claude-x": {"input": 10.0}}}
+    (tmp_path / "projects" / "-s").mkdir(parents=True)
+    stamp = (T0 + dt.timedelta(minutes=5)).astimezone(dt.timezone.utc).isoformat()
+    (tmp_path / "projects" / "-s" / f"{sid}.jsonl").write_text(json.dumps(
+        {"type": "assistant", "timestamp": stamp, "message": {
+            "id": "m", "model": model, "usage": {"input_tokens": tokens}}}) + "\n")
+    CC.record_session(cfg, "conductor", {}, source="manual", session_id=sid)
+
+
+def test_export_conductor_usd_with_unpriced_turn_in_window(cfg, tmp_path):
+    _conductor_setup(cfg, tmp_path)
+    stamp = (T0 + dt.timedelta(minutes=6)).astimezone(dt.timezone.utc).isoformat()
+    with open(tmp_path / "projects" / "-s" / "sid.jsonl", "a") as f:
+        f.write(json.dumps({"type": "assistant", "timestamp": stamp, "message": {
+            "id": "u", "model": "other-y", "usage": {"input_tokens": 500_000}}}) + "\n")
+    (row,) = CE.export_tables(cfg, now=NOW)["campaigns"]
+    assert row["conductor_usd"] == 1.0                            # the priced turn only
+    assert row["cost_with_conductor_usd"] == 3.5
+
+
+def test_export_survives_attribute_raising(cfg, tmp_path, monkeypatch, capsys):
+    from wt.agentic import conductor_cost as CC
+    _conductor_setup(cfg, tmp_path)
+    real = CC.attribute
+
+    def boom(*a, **k):
+        raise RuntimeError("disk on fire")
+    monkeypatch.setattr(CC, "attribute", boom)
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    out = tmp_path / "out"
+    r = CliRunner().invoke(cli, ["campaign", "export", "--out", str(out)])
+    assert r.exit_code == 0, r.output
+    assert (r.output + capsys.readouterr().err).count(
+        "conductor columns skipped: RuntimeError") == 1
+    (row,) = read_jsonl(next(out.rglob("campaigns.jsonl")))
+    assert row["conductor_usd"] is None and row["cost_with_conductor_usd"] is None
+    monkeypatch.setattr(CC, "attribute", real)
+    (row,) = CE.export_tables(cfg, now=NOW)["campaigns"]
+    assert row["conductor_usd"] == 1.0
+
+
+def test_export_tolerates_malformed_conductor_config_and_bad_registry_byte(
+        cfg, tmp_path, capsys):
+    from wt.agentic import conductor_cost as CC
+    _conductor_setup(cfg, tmp_path)
+    cfg["agentic"]["conductor"] = [1]
+    (row,) = CE.export_tables(cfg, now=NOW)["campaigns"]
+    assert row["conductor_usd"] is None and row["cost_with_conductor_usd"] is None
+    cfg["agentic"]["conductor"] = {"prices": {"claude-x": {"input": 10.0}}}
+    reg = CC.conductor_dir(cfg) / "sessions.jsonl"
+    reg.write_bytes(b"\xff\xfe\n" + reg.read_bytes())
+    (row,) = CE.export_tables(cfg, now=NOW)["campaigns"]
+    assert row["conductor_usd"] == 1.0 and row["cost_with_conductor_usd"] == 3.5
+    assert capsys.readouterr().err == ""

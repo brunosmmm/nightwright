@@ -202,7 +202,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) Agentic MVP: a cheap, durable, quiet conductor on a second project — done
   - [ ] [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) Remote workers: run gates, persona runs and campaigns on other machines — accepted
   - [x] [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) Per-gate path sensitivity for the close re-gate — done
-- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · done · (13/14 done)
+- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · done · (14/14 done)
   - [x] [SPEC-0299](./specs/0299-conductor-cost-measurement.md) Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export — done
   - [x] [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups — done
   - [x] [SPEC-0301](./specs/0301-conductor-state-handoff-and-decision-log.md) Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule — done
@@ -214,7 +214,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0309](./specs/0309-faster-gates-parallel-pytest-affected-tests-only.md) Faster gates: parallel pytest under a host-wide gate-slot pool — done
   - [x] [SPEC-0318](./specs/0318-conductor-holds-park-without-a-decision-record-wt.md) A park, resume or abandon by the conductor carries its decision record: `wt queue park|resume|abandon` require `--decision` and `--rule` for a non-human actor — done
   - [x] [SPEC-0319](./specs/0319-wt-queue-conductor-launch-steward-launch-start.md) `wt queue conductor-launch` / `steward-launch`: start the conductor and stewards with forced context limits, a pinned model and a pre-registered session id — done
-  - [ ] [SPEC-0321](./specs/0321-wtfug-spec-0299-20261030-a7a2-spec-0299-review.md) Conductor cost measurement hardening: terminal campaigns without a transition, malformed config and transcripts, honest manual-check record, test gaps — accepted
+  - [x] [SPEC-0321](./specs/0321-wtfug-spec-0299-20261030-a7a2-spec-0299-review.md) Conductor cost measurement hardening: terminal campaigns without a transition, malformed config and transcripts, honest manual-check record, test gaps — done
   - [x] [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote — done
   - [x] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — done
 - **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (12/16 done)
@@ -256,7 +256,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | accepted | — | 2026-10-31 |
-| [SPEC-0321](./specs/0321-wtfug-spec-0299-20261030-a7a2-spec-0299-review.md) | Conductor cost measurement hardening: terminal campaigns without a transition, malformed config and transcripts, honest manual-check record, test gaps | feature | accepted | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0334](./specs/0334-pull-workers-against-a-coordinator-job-api.md) | Pull workers against a coordinator job API | feature | accepted | — | 2026-10-31 |
 | [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) | Federation over a networked mailbox | feature | accepted | — | 2026-10-31 |
 | [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | accepted | — | 2026-11-01 |
@@ -570,6 +569,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0318](./specs/0318-conductor-holds-park-without-a-decision-record-wt.md) | A park, resume or abandon by the conductor carries its decision record: `wt queue park|resume|abandon` require `--decision` and `--rule` for a non-human actor | feature | done | — | 2026-10-31 |
 | [SPEC-0319](./specs/0319-wt-queue-conductor-launch-steward-launch-start.md) | `wt queue conductor-launch` / `steward-launch`: start the conductor and stewards with forced context limits, a pinned model and a pre-registered session id | feature | done | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0320](./specs/0320-skills-install-provisions-agent-allow-rules.md) | `wt skills install` provisions the conductor and steward allow rules for wt commands | feature | done | M10: agentic MVP | 2026-10-31 |
+| [SPEC-0321](./specs/0321-wtfug-spec-0299-20261030-a7a2-spec-0299-review.md) | Conductor cost measurement hardening: terminal campaigns without a transition, malformed config and transcripts, honest manual-check record, test gaps | feature | done | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0322](./specs/0322-flaky-under-load-tests-test-agentic-resolver-py.md) | Make test_interrupted_resolver_not_counted load-tolerant (stop only once the resolver run is in flight) | feature | done | — | 2026-10-31 |
 | [SPEC-0323](./specs/0323-flaky-under-load-tests-test-agentic-adopt-py-test.md) | Make test_adopt_orphan_group_waited_and_killed load-tolerant (timeout anchored to the run's started_at, not to test progress) | feature | done | — | 2026-10-31 |
 | [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) | Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote | feature | done | M10: agentic MVP | 2026-10-31 |

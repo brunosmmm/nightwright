@@ -232,6 +232,8 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
   `wt queue conductor-cost --since 2026-10-25 --until 2026-10-30` with list prices
   configured. Total turns are about 2,386, cache reads about 1.09B and USD about $263. Note
   the figures in *As shipped*.
+  The dollar half runs once `agentic.conductor.prices` is set (rollout step 2); until then only
+  the token half is recorded.
 - **Regression guard:** full `uv run pytest`. `tests/test_agentic_followers.py` is
   unchanged. In `tests/test_agentic_campaign_export.py`, only `test_columns_and_key_order`
   and `test_column_types_pinned` change, and only by appending `"conductor_usd"` /
@@ -289,6 +291,9 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
   tokens, matching the baseline (about 2,386 turns and 1.09B at the time it was measured; the
   session kept running). The dollar half (about $263) needs `agentic.conductor.prices` in the
   user's config, which is rollout step 2, so it was not run here.
+- Pending: the dollar half. When prices are set, run `wt queue conductor-cost --since
+  2026-10-25 --until 2026-10-30` and record turns, cache reads and USD here; SPEC-0321 does not
+  run it.
 
 ## Rollout / migration
 
@@ -300,7 +305,8 @@ a new `src/wt/agentic/cli_conductor.py` whose `attach(queue_group)` is registere
 ## Definition of done
 
 - [x] Acceptance criteria all met.
-- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed
+  (token half only; the dollar half is pending rollout step 2).
 - [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated (status + date).
