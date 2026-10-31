@@ -578,6 +578,20 @@ def test_park_undecided_not_before_threshold_or_for_human_reason(tmp_path):
     assert _undecided(cfg) == []
 
 
+def test_conductor_park_view_unchanged(tmp_path):                                  # SPEC-0315
+    """`wt queue park` parks `human` (decided by construction), `wt queue escalate` parks
+    `human_decision` (human-owned): neither is ever a `park_undecided`, held `parked` or not."""
+    cfg = _cfg(tmp_path)
+    held = _campaign(cfg, "SPEC-0916-20261025-aaaa")
+    asked = _campaign(cfg, "SPEC-0917-20261025-aaaa")
+    _park_at(cfg, held, "human", 4000)
+    _park_at(cfg, asked, "human_decision", 4000)
+    by = {p["campaign"]: p for p in E.ping_digest(cfg)["parked"]}
+    assert by[held]["owner"] == "conductor" and by[held]["decided"] is True
+    assert by[asked]["owner"] == "human" and by[asked]["overdue"] is False
+    assert _undecided(cfg) == []
+
+
 def test_ping_digest_owner_overdue_and_counts(tmp_path):
     cfg = _cfg(tmp_path)
     a = _campaign(cfg, "SPEC-0914-20261025-aaaa")

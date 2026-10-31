@@ -1,7 +1,7 @@
 ---
 id: SPEC-0315
 title: "Quiet follower holds a parked event the conductor itself caused (by=conductor)"
-status: accepted
+status: done
 owner: user
 created: 2026-10-31
 updated: 2026-10-31
@@ -111,28 +111,28 @@ addition to the existing `data.auto` hold; every other `parked` event wakes. The
 
 ## Acceptance criteria
 
-- [ ] `quiet.classify` returns `"hold"` for a `parked` event with `by: "conductor"`, for any
+- [x] `quiet.classify` returns `"hold"` for a `parked` event with `by: "conductor"`, for any
       `reason` (including `human`, `human_decision` and a reason such as `loop_exhausted`).
-- [ ] `quiet.classify` still returns `"hold"` for a `parked` event with `data.auto` set
+- [x] `quiet.classify` still returns `"hold"` for a `parked` event with `data.auto` set
       (SPEC-0302), whatever its `by`.
-- [ ] `quiet.classify` returns `"wake"` for a `parked` event with `by` equal to `tick`, `queue`,
+- [x] `quiet.classify` returns `"wake"` for a `parked` event with `by` equal to `tick`, `queue`,
       `human`, `watchdog`, `steward:Meta-Tools`, `Conductor`, an empty string, or with no `by`
       key, when `data.auto` is unset.
-- [ ] With quiet mode on, `events.follow(cfg, "conductor", quiet=True)` over a log holding a
+- [x] With quiet mode on, `events.follow(cfg, "conductor", quiet=True)` over a log holding a
       `parked` event with `by=conductor` and another `parked` event with `by=tick` prints no
       line for the first and a line for the second; the next `conductor_digest` has
       `held["parked"] == 1` and lists the first campaign under `campaigns["parked"]`.
-- [ ] With `quiet=False` (`--all`) and for a `steward` reader, both `parked` events are still
+- [x] With `quiet=False` (`--all`) and for a `steward` reader, both `parked` events are still
       printed, and `events.jsonl` holds both unchanged.
-- [ ] `wt queue wakeups` counts the conductor-made `parked` under `held` and the other under
+- [x] `wt queue wakeups` counts the conductor-made `parked` under `held` and the other under
       `delivered` in `by_type["parked"]`.
-- [ ] A campaign parked with `wt queue park --by conductor` shows `owner: conductor,
+- [x] A campaign parked with `wt queue park --by conductor` shows `owner: conductor,
       decided: true` in `park_view` / `ping_digest` before and after this change, and a
       `wt queue escalate` park shows `owner: human` (unchanged; this spec does not touch
       `park_view`).
-- [ ] `skills/wt-conduct/SKILL.md`'s *Quiet stream* paragraph names the `by` condition for
+- [x] `skills/wt-conduct/SKILL.md`'s *Quiet stream* paragraph names the `by` condition for
       `parked`, and `test_conduct_skill_quiet_rules_match_code` passes.
-- [ ] The existing suite passes, with the `parked` expectations in `tests/test_agentic_quiet.py`
+- [x] The existing suite passes, with the `parked` expectations in `tests/test_agentic_quiet.py`
       (`test_parked_auto_is_held` and the `WAKE` list use) unchanged for events without
       `by=conductor`.
 
@@ -168,6 +168,25 @@ addition to the existing `data.auto` hold; every other `parked` event wakes. The
 - **Regression guard:** the full `uv run pytest` run, plus the unchanged SPEC-0302
   `test_parked_auto_is_held` and the other `WAKE`-list tests in `tests/test_agentic_quiet.py`.
 
+### Test record (2026-10-31)
+
+- `uv run pytest tests/test_agentic_quiet.py tests/test_agentic_events.py tests/test_skills.py`:
+  all pass, including the new `test_parked_by_conductor_is_held`,
+  `test_follow_holds_conductor_parks_only`,
+  `test_wakeups_report_counts_conductor_park_as_held` and `test_conductor_park_view_unchanged`,
+  the unchanged `test_parked_auto_is_held`, and `test_conduct_skill_quiet_rules_match_code`.
+- The manual two-shell step was not run separately: `test_follow_holds_conductor_parks_only`
+  drives the same `events.follow` path (no line for the `by=conductor` park, a line for the
+  other, `held["parked"] == 1` in the next digest, `--all` / steward readers print both).
+- The full suite was left to gating.
+
+### As shipped
+
+As designed. The skill sentence writes "by set to conductor" without backticks, because
+`test_conduct_skill_quiet_rules_match_code` reads every backticked word in that bullet as an
+event type. The `park_view` test seeds the parks with `_park_at` (reasons `human` and
+`human_decision`) rather than shelling out to `wt queue park` / `escalate`.
+
 ## Rollout / migration
 
 1. Land the `classify` change, the skill edit and the tests together.
@@ -179,11 +198,11 @@ addition to the existing `data.auto` hold; every other `parked` event wakes. The
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

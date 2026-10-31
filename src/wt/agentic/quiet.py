@@ -229,8 +229,10 @@ def classify(cfg, ev, ctx) -> str:
     if t == "backlog_blocked_long":
         return "hold" if dependency_wait(
             data.get("blocked_by"), ctx.live_specs, ev.get("project")) else "wake"
-    if t == "parked":                       # SPEC-0302: a park the queue decided itself
-        return "hold" if data.get("auto") else "wake"
+    if t == "parked":                       # SPEC-0302: a park the queue decided itself;
+        # SPEC-0315: a park the conductor itself made (`wt queue park` -> reason human, decided;
+        # `wt queue escalate` -> human_decision, human-owned): it already knows
+        return "hold" if data.get("auto") or ev.get("by") == "conductor" else "wake"
     return "wake"
 
 

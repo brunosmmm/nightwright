@@ -40,9 +40,12 @@ def _ctx(cfg, lease=None, now=None, closing_waiters=None):
                   now=now, closing_waiters=closing_waiters)
 
 
-def _ev(type_, campaign=None, project=None, **data):
-    return {"id": 1, "ts": "2026-10-30T10:00:00+00:00", "type": type_, "campaign": campaign,
-            "project": project, "data": data}
+def _ev(type_, campaign=None, project=None, by=None, **data):
+    ev = {"id": 1, "ts": "2026-10-30T10:00:00+00:00", "type": type_, "campaign": campaign,
+          "project": project, "data": data}
+    if by is not None:
+        ev["by"] = by
+    return ev
 
 
 def _ping(*, stuck=(), blocked=(), runner=None, parked=()):
@@ -981,3 +984,63 @@ def test_parked_auto_is_held(tmp_path):
     assert QT.classify(cfg, _ev("parked", reason="cost_cap"), c) == "wake"
     assert QT.classify(cfg, _ev("auto_resume_failed", rule="parked.base_moving", error="x"),
                        c) == "wake"
+
+
+def test_parked_by_conductor_is_held(tmp_path):
+    """SPEC-0315: a park the conductor itself made is held, whatever its reason; the rule reads
+    only the literal `by`."""
+    cfg = _cfg(tmp_path)
+    c = _ctx(cfg)
+    assert QT.RULES["parked"] == "cond"
+    auto = {"rule": "parked.base_moving", "resume_at": "2026-10-30T10:01:00+00:00"}
+    for reason in ("human", "human_decision", "loop_exhausted"):
+        assert QT.classify(cfg, _ev("parked", reason=reason, by="conductor"), c) == "hold"
+    assert QT.classify(cfg, _ev("parked", reason="base_moving", by="conductor", auto=auto),
+                       c) == "hold"
+    assert QT.classify(cfg, _ev("parked", reason="base_moving", by="tick", auto=auto), c) == "hold"
+    for by in ("tick", "queue", "human", "watchdog", "steward:Meta-Tools", "Conductor", "",
+               None):
+        assert QT.classify(cfg, _ev("parked", reason="human", by=by), c) == "wake", by
+    ev = _ev("parked", reason="human")
+    assert "by" not in ev and QT.classify(cfg, ev, c) == "wake"
+
+
+def _append_parks(cfg):
+    E.cursor_set(cfg, "conductor", 0)
+    for cid, by in (("a", "conductor"), ("b", "tick")):
+        E.append(cfg, "parked", campaign=cid, project="Meta-Tools", by=by,
+                 data={"reason": "human", "detail": "hold for test", "resume_to": "GATING"})
+
+
+def test_follow_holds_conductor_parks_only(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    _append_parks(cfg)
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    assert [e["campaign"] for e in _lines(out) if e["type"] == "parked"] == ["b"]
+    clock.advance(1801)
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock)
+    (digest,) = [e for e in _lines(out) if e["type"] == "conductor_digest"]
+    assert digest["data"]["held"]["parked"] == 1
+    assert digest["data"]["campaigns"]["parked"] == ["a"]
+    # --all and a steward reader still see both; events.jsonl keeps both
+    out = io.StringIO()
+    E.cursor_set(cfg, "conductor", 0)
+    E.follow(cfg, "conductor", poll_s=0, out=out, code_root=None, quiet=False, now=clock,
+             stop=lambda: True)
+    assert [e["campaign"] for e in _lines(out) if e["type"] == "parked"] == ["a", "b"]
+    out = io.StringIO()
+    E.cursor_set(cfg, "steward", 0)
+    E.follow(cfg, "steward", poll_s=0, out=out, code_root=None,
+             quiet=QT.enabled_for(cfg, "steward"), now=clock, stop=lambda: True)
+    assert [e["campaign"] for e in _lines(out) if e["type"] == "parked"] == ["a", "b"]
+    assert [(e["campaign"], e["by"]) for e in E.read_since(cfg, 0) if e["type"] == "parked"] \
+        == [("a", "conductor"), ("b", "tick")]
+
+
+def test_wakeups_report_counts_conductor_park_as_held(tmp_path):
+    cfg, clock = _cfg(tmp_path), Clock()
+    _append_parks(cfg)
+    _follow(cfg, io.StringIO(), clock=clock)
+    assert QT.wakeups_report(cfg)["by_type"]["parked"] == {"wake": 1, "hold": 1}
