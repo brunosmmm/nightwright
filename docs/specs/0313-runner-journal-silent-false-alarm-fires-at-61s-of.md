@@ -84,8 +84,12 @@ the event payload, as evidence for tuning.
   `_PROGRESS_MIN_INTERVAL_S` (1.0 s, `time.monotonic()` based), so a 6-campaign tick adds a
   handful of small lease writes, not one per statement.
 - `_tick` calls `ctx.progress()` at its start, right after `_harvest`, at the head of each
-  iteration of the waiting loop, the admission loop and the per-campaign loop (`for st in busy`),
-  and before each serial open/close dispatch. Steps already inside `_busy` are unchanged.
+  iteration of the tmp-sweep loop (`for st in store.list_campaigns(cfg)` →
+  `store.sweep_campaign_tmp`), the readiness loop (`for st in queued`), the parked-recovery loop
+  (step 0), the WAITING loop (step 0b), the admission loop and the per-campaign loop
+  (`for st in busy`), after `_submit`, and before each serial open/close dispatch; the 1 s
+  throttle keeps the per-item calls cheap. Every loop in `_tick` that iterates over the store or
+  the queued campaigns is a mark point. Steps already inside `_busy` are unchanged.
 - `run()` measures each `tick()` with `time.monotonic()` and passes
   `last_tick_s=round(duration, 1)` into the existing `slots.check(lease, tick_at=…)` call (one
   write, as today). The first `progress_at` of a run is stamped by the first tick.
@@ -128,7 +132,8 @@ the event payload, as evidence for tuning.
 - [ ] `lease_status(cfg)` returns `progress_at` and `last_tick_s` (None when unwritten) and
       `LOOP_KEYS` contains both.
 - [ ] While a tick processes several busy campaigns, the lease's `progress_at` advances during the
-      tick (not only at its end), and is written at most once per `_PROGRESS_MIN_INTERVAL_S`.
+      tick (not only at its end), including while sweeping and refreshing readiness for many
+      queued campaigns, and is written at most once per `_PROGRESS_MIN_INTERVAL_S`.
 - [ ] `ctx.progress()` without a lease does nothing and does not raise.
 - [ ] After each completed tick the lease carries `last_tick_s` equal to that tick's measured
       duration (rounded to 0.1 s) in the same `update_info` call that stamps `tick_at`.
@@ -163,6 +168,10 @@ the event payload, as evidence for tuning.
     and `store.now_iso` / `time.monotonic` monkeypatched to advance 5 s per call; after one
     `Q.tick(..., lease=lease)` the recorded `progress_at` values are strictly increasing, more
     than one was written, and none closer together than the throttle.
+  - `test_tick_marks_progress_in_sweep_and_readiness_loops`: many queued and terminal campaigns
+    with `store.sweep_campaign_tmp` and `backlog_readiness` monkeypatched to advance the fake
+    clock 5 s per call; the recorded `progress_at` values advance during those loops, so no gap
+    between consecutive stamps exceeds the threshold.
   - `test_ctx_progress_is_noop_without_lease`.
   - `test_run_stamps_last_tick_s`: `Q.run(cfg, once=True, …)` with a slowed tick (monkeypatched
     clock) leaves `last_tick_s` in the lease info alongside `tick_at`.
