@@ -23,9 +23,9 @@ def test_xdg_home_gets_nightwright_appended(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "dat"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cch"))
-    assert paths.config_dir() == str(tmp_path / "cfg" / "nw")
-    assert paths.data_dir() == str(tmp_path / "dat" / "nw")
-    assert paths.cache_dir() == str(tmp_path / "cch" / "nw")
+    assert paths.config_dir() == str(tmp_path / "cfg" / "nightwright")
+    assert paths.data_dir() == str(tmp_path / "dat" / "nightwright")
+    assert paths.cache_dir() == str(tmp_path / "cch" / "nightwright")
 
 
 def test_nw_dir_is_used_verbatim_and_wins(monkeypatch, tmp_path):
