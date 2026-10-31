@@ -293,3 +293,12 @@ command is cheaper and more reliable than a skill reminder.
   `test_fanout_detach_precondition`); they pass alone. The tick step is a no-op unless a PARKED
   campaign carries a `decision_request`, and the tick now wraps it so it can never raise
   (`decision_record_failed` is journaled instead).
+- Gate triage (loop 3): one failure of the gate run was real. `tests/test_agentic_queue_by.py`
+  ran bare `--by conductor` / `steward:` park, resume and abandon, which this spec now refuses.
+  Fixed in the tests only: `test_park_resume_abandon_record_by` (park and the steward abandon
+  pass `--decision/--rule`; the resume is covered by the park's record), `test_resume_withdrawal_records_by`,
+  `test_abandon_withdrawal_records_by` and `test_deferred_park_keeps_requester` pass
+  `--decision "…" --rule message.request`. The actor assertions now cover the park/transition
+  events (`by: conductor`, `steward:Meta-Tools`) and separately assert the decision record's
+  ledger note, which `decisions.record` authors as `agent:<by>`. A grep of `tests/` found no
+  other non-human park/resume/abandon without a record.

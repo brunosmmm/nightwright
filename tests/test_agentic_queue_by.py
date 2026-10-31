@@ -31,11 +31,14 @@ def test_park_resume_abandon_record_by(tmp_path, monkeypatch):
     cfg, cid = _world(tmp_path, monkeypatch)
     n = len(S.read_ledger(cfg, cid))
     r = run_cli(cfg, monkeypatch, ["queue", "park", cid, "--reason", "x", "--by", "conductor",
-                                   "--yes", "--json"])
+                                   "--decision", "test hold", "--rule", "message.request", "--yes", "--json"])
     assert r.exit_code == 0, r.output
     assert json.loads(r.output)["by"] == "conductor"
     new = _since(cfg, cid, n)
-    assert new and {e["by"] for e in new} == {"conductor"}, new
+    # the decision record's ledger note (SPEC-0318) is authored `agent:conductor`
+    acts = [e for e in new if "decision" not in e]
+    assert acts and {e["by"] for e in acts} == {"conductor"}, new
+    assert any("decision" in e and e["by"] == "agent:conductor" for e in new), new
     assert S.read_state(cfg, cid)["state"] == "PARKED"
 
     n = len(S.read_ledger(cfg, cid))
@@ -48,11 +51,14 @@ def test_park_resume_abandon_record_by(tmp_path, monkeypatch):
     run_cli(cfg, monkeypatch, ["queue", "park", cid, "--reason", "y", "--yes"])
     n = len(S.read_ledger(cfg, cid))
     r = run_cli(cfg, monkeypatch, ["queue", "abandon", cid, "--by", "steward:Meta-Tools",
-                                   "--yes", "--json"])
+                                   "--decision", "drop it", "--rule", "message.request",
+                                   "--kind", "abandon", "--yes", "--json"])
     assert r.exit_code == 0, r.output
     assert json.loads(r.output)["by"] == "steward:Meta-Tools"
     new = _since(cfg, cid, n)
-    assert new and {e["by"] for e in new} == {"steward:Meta-Tools"}, new
+    acts = [e for e in new if "decision" not in e]
+    assert acts and {e["by"] for e in acts} == {"steward:Meta-Tools"}, new
+    assert any("decision" in e and e["by"] == "agent:steward:Meta-Tools" for e in new), new
     assert S.read_state(cfg, cid)["state"] == "ABANDONED"
 
 
@@ -105,7 +111,8 @@ def test_resume_withdrawal_records_by(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     assert S.read_state(cfg, cid)["park"]["reason"] == "human_decision"
     n = len(S.read_ledger(cfg, cid))
-    r = run_cli(cfg, monkeypatch, ["queue", "resume", cid, "--by", "conductor", "--yes"])
+    r = run_cli(cfg, monkeypatch, ["queue", "resume", cid, "--by", "conductor",
+                                   "--decision", "answered", "--rule", "message.request", "--yes"])
     assert r.exit_code == 0, r.output
     notes = [e for e in _since(cfg, cid, n) if e["type"] == "note"]
     [w] = [e for e in notes if "withdrawn" in e["text"]]
@@ -120,7 +127,8 @@ def test_abandon_withdrawal_records_by(tmp_path, monkeypatch):
     run_cli(cfg, monkeypatch, ["queue", "escalate", cid, "--question", "ship?",
                                "--from", "conductor", "--yes"])
     n = len(S.read_ledger(cfg, cid))
-    r = run_cli(cfg, monkeypatch, ["queue", "abandon", cid, "--by", "conductor", "--yes"])
+    r = run_cli(cfg, monkeypatch, ["queue", "abandon", cid, "--by", "conductor",
+                                   "--decision", "drop it", "--rule", "message.request", "--yes"])
     assert r.exit_code == 0, r.output
     [w] = [e for e in _since(cfg, cid, n) if e["type"] == "note" and "withdrawn" in e["text"]]
     assert w["by"] == "conductor" and "campaign abandoned by conductor" in w["text"]
@@ -137,7 +145,7 @@ def test_deferred_park_keeps_requester(tmp_path, monkeypatch):
         Q.tick(cfg, runner=runner, pool=pool)
         Q.tick(cfg, runner=runner, pool=pool)                 # implementer in flight
         r = run_cli(cfg, monkeypatch, ["queue", "park", cid, "--reason", "later", "--by",
-                                       "conductor", "--yes", "--json"])
+                                       "conductor", "--decision", "test hold", "--rule", "message.request", "--yes", "--json"])
         assert r.exit_code == 0, r.output
         assert json.loads(r.output)["mode"] == "deferred"
         st = S.read_state(cfg, cid)
