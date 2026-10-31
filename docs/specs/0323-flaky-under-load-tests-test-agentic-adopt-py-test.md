@@ -1,7 +1,7 @@
 ---
 id: SPEC-0323
 title: "Make test_adopt_orphan_group_waited_and_killed load-tolerant (timeout anchored to the run's started_at, not to test progress)"
-status: accepted
+status: done
 owner: user
 created: 2026-10-31
 updated: 2026-10-31
@@ -115,18 +115,18 @@ this one test is fixed the same way (a condition or a `waits` deadline, never a 
 
 ## Acceptance criteria
 
-- [ ] The test writes `timeout_s == int(waits.WAIT_S * 4)` into `request.json` before adoption and no
+- [x] The test writes `timeout_s == int(waits.WAIT_S * 4)` into `request.json` before adoption and no
       longer uses the literal `3`.
-- [ ] The "group lives" phase has no `time.sleep`; it asserts `pid_alive(pid)`, no `run.end`, and a
+- [x] The "group lives" phase has no `time.sleep`; it asserts `pid_alive(pid)`, no `run.end`, and a
       single `run.start` after four ticks.
-- [ ] The timeout is made due by rewriting `request.json`'s `started_at` to older than `timeout_s`, and
+- [x] The timeout is made due by rewriting `request.json`'s `started_at` to older than `timeout_s`, and
       the test then asserts a `run.end` via `tick_until` (deadline `waits.WAIT_S`), a synthesized
       `exit.json` with `killed_by == "timeout"`, the child dead, and exactly one `run.end`.
-- [ ] No file under `src/` changes; the diff is confined to `tests/test_agentic_adopt.py`
+- [x] No file under `src/` changes; the diff is confined to `tests/test_agentic_adopt.py`
       (plus this spec and the regenerated ledger).
-- [ ] The reproduction before the change and the 20-run result after it are recorded in the spec under
+- [x] The reproduction before the change and the 20-run result after it are recorded in the spec under
       `As shipped`; the test passes 20 consecutive runs under saturating CPU load.
-- [ ] `uv run pytest` passes in full and `python3 tools/spec_lint.py` exits 0.
+- [x] `uv run pytest` passes in full and `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -150,6 +150,26 @@ this one test is fixed the same way (a condition or a `waits` deadline, never a 
 - **Regression guard**: `uv run pytest` (full suite) passes; `python3 tools/spec_lint.py` exits 0;
   `git diff --stat` shows only `tests/test_agentic_adopt.py` besides the spec and ledger.
 
+### Test record (2026-10-31)
+
+- Reproduction before the change (16 busy-loop `sh` generators on an 8-core host, ambient load avg ~40
+  from other work): `test_adopt_orphan_group_waited_and_killed` failed 5 of 8 runs, every time at
+  `assert pid_alive(pid) and not run_ends(world)` (the "group lives" phase): the 3 s timeout, anchored
+  to `started_at`, had already killed the group. Root cause as stated in Context confirmed.
+- After the change, same load: 20 consecutive passes (0 failures / 20).
+- `uv run pytest tests/test_agentic_adopt.py tests/test_test_waits.py -q`: 42 passed (under ambient
+  load avg ~45). Idle-ish single runs of the test: ~5 s wall including `uv`/collection startup.
+- `python3 tools/spec_lint.py` exit 0 after `--write-ledger`. Full suite left to gating.
+
+### As shipped
+
+Exactly Design §1–§5, all in `tests/test_agentic_adopt.py` (plus a module-level `import datetime as dt`;
+the other test's local `import datetime as dt` is unchanged and harmless). `timeout_s` is
+`int(waits.WAIT_S * 4)` before adoption; the `time.sleep(0.2)` is gone from the loop; the timeout is
+made due by rewriting `started_at` to `now - (timeout_s + 1)` (ISO, `timespec="seconds"`, as
+`_now_iso`), then `tick_until(world, new, lambda: run_ends(world))` with its default `waits.WAIT_S`
+deadline. No deviation from the Design; no `src/` change.
+
 ## Rollout / migration
 
 1. Reproduce under load (manual step 1) and note the result.
@@ -161,11 +181,11 @@ No data migration; test-only change.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed and noted.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed and noted.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

@@ -1,6 +1,7 @@
 """SPEC-0225: detached persona runs, adopted across runner restarts. A real `ClaudeRunner` runs
 the fake `claude` of tests/fixtures/fake_claude.py through the wrapper; a "dead runner" is a
 StepPool that is discarded while its runs keep going."""
+import datetime as dt
 import json
 import os
 import subprocess
@@ -934,10 +935,7 @@ def test_adopt_orphan_group_waited_and_killed(world):
     os.kill(RP.read_json(run_dir / "proc.json")["wrapper_pid"], 9)
     assert until(lambda: RP.run_status(run_dir) == "orphan_group")
     req = json.loads((run_dir / "request.json").read_text())
-    # the deadline is `started_at + timeout_s` (the run's start, not the adoption): a short fixed
-    # timeout would expire under load before the "nothing happens" checks; keep it far away
-    # first, then move `started_at` into the past (re-read on every tick) to make it due
-    req["timeout_s"] = 600
+    req["timeout_s"] = int(waits.WAIT_S * 4)     # the deadline is `started_at + timeout_s`: far out
     (run_dir / "request.json").write_text(json.dumps(req))
     new = Q.StepPool()
     world.pools.append(new)
@@ -945,14 +943,12 @@ def test_adopt_orphan_group_waited_and_killed(world):
     assert adopt_journal(world)[-1]["runs"][0]["status"] == "orphan_group"
     for _ in range(4):                                           # the group lives: nothing happens
         Q.tick(world.cfg, runner=world.runner, pool=new)
-        time.sleep(0.2)
     assert pid_alive(pid) and not run_ends(world)
     assert len(S.read_ledger(world.cfg, world.cid, types=["run.start"])) == 1
-    import datetime as dt
-    req["started_at"] = (dt.datetime.now().astimezone() - dt.timedelta(seconds=700)).isoformat(
-        timespec="seconds")
-    (run_dir / "request.json").write_text(json.dumps(req))       # now past its timeout
-    assert tick_until(world, new, lambda: run_ends(world), n=150)
+    req["started_at"] = (dt.datetime.now().astimezone()      # now make the timeout due, on purpose
+                         - dt.timedelta(seconds=req["timeout_s"] + 1)).isoformat(timespec="seconds")
+    (run_dir / "request.json").write_text(json.dumps(req))
+    assert tick_until(world, new, lambda: run_ends(world))
     ex = json.loads((run_dir / "exit.json").read_text())
     assert ex["synthesized"] and ex["killed_by"] == "timeout"
     assert not pid_alive(pid)
