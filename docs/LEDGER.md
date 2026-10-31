@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (99/103 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (100/103 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -199,9 +199,9 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) Queue a split campaign's child specs on merge, in dependency order — accepted
   - [x] [SPEC-0295](./specs/0295-spec-review-findings-carry-a-required-structured.md) Review findings carry a required, structured suggested_fix — done
   - [x] [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) Outbound projects end to end: a merged campaign pulls the portable spec's status back — done
-  - [ ] [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) Agentic MVP: a cheap, durable, quiet conductor on a second project — accepted
+  - [x] [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) Agentic MVP: a cheap, durable, quiet conductor on a second project — done
   - [ ] [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) Remote workers: run gates, persona runs and campaigns on other machines — draft
-- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · accepted · (12/12 done)
+- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · done · (12/12 done)
   - [x] [SPEC-0299](./specs/0299-conductor-cost-measurement.md) Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export — done
   - [x] [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups — done
   - [x] [SPEC-0301](./specs/0301-conductor-state-handoff-and-decision-log.md) Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule — done
@@ -228,7 +228,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
-| [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) | Agentic MVP: a cheap, durable, quiet conductor on a second project | epic | accepted | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | draft | — | 2026-10-30 |
 
 ## Done
@@ -512,6 +511,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0292](./specs/0292-idea-linkage-campaign-extension-and-a-hub-agentic.md) | Idea linkage: `:CAMPAIGN:` for spec campaigns, cleared on terminal states, and a hub agentic slice | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0295](./specs/0295-spec-review-findings-carry-a-required-structured.md) | Review findings carry a required, structured suggested_fix | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) | Outbound projects end to end: a merged campaign pulls the portable spec's status back | feature | done | — | 2026-10-30 |
+| [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) | Agentic MVP: a cheap, durable, quiet conductor on a second project | epic | done | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0299](./specs/0299-conductor-cost-measurement.md) | Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export | feature | done | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) | Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups | feature | done | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0301](./specs/0301-conductor-state-handoff-and-decision-log.md) | Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule | feature | done | M10: agentic MVP | 2026-10-30 |
