@@ -201,7 +201,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) Outbound projects end to end: a merged campaign pulls the portable spec's status back — done
   - [x] [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) Agentic MVP: a cheap, durable, quiet conductor on a second project — done
   - [ ] [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) Remote workers: run gates, persona runs and campaigns on other machines — accepted
-- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · done · (12/13 done)
+- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · done · (13/13 done)
   - [x] [SPEC-0299](./specs/0299-conductor-cost-measurement.md) Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export — done
   - [x] [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups — done
   - [x] [SPEC-0301](./specs/0301-conductor-state-handoff-and-decision-log.md) Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule — done
@@ -214,7 +214,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0318](./specs/0318-conductor-holds-park-without-a-decision-record-wt.md) A park, resume or abandon by the conductor carries its decision record: `wt queue park|resume|abandon` require `--decision` and `--rule` for a non-human actor — done
   - [x] [SPEC-0319](./specs/0319-wt-queue-conductor-launch-steward-launch-start.md) `wt queue conductor-launch` / `steward-launch`: start the conductor and stewards with forced context limits, a pinned model and a pre-registered session id — done
   - [x] [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote — done
-  - [ ] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — accepted
+  - [x] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — done
 - **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (1/8 done)
   - [x] [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) Remote gates over SSH on one worker host — superseded
   - [ ] [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) Worker-owned async jobs — accepted
@@ -237,7 +237,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | accepted | — | 2026-10-31 |
-| [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) | Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs | feature | accepted | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) | Worker-owned async jobs | feature | accepted | — | 2026-10-31 |
 | [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) | Remote persona runs with bundle write-back | feature | accepted | — | 2026-10-31 |
 | [SPEC-0334](./specs/0334-pull-workers-against-a-coordinator-job-api.md) | Pull workers against a coordinator job API | feature | accepted | — | 2026-10-31 |
@@ -552,6 +551,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0323](./specs/0323-flaky-under-load-tests-test-agentic-adopt-py-test.md) | Make test_adopt_orphan_group_waited_and_killed load-tolerant (timeout anchored to the run's started_at, not to test progress) | feature | done | — | 2026-10-31 |
 | [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) | Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote | feature | done | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0326](./specs/0326-queue-watch-redesign-fixed-sections-adaptive-cards.md) | queue watch redesign: fixed sections, adaptive cards, journey track, why line, readable events | feature | done | M9: agentic workflow | 2026-10-31 |
+| [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) | Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs | feature | done | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0328](./specs/0328-tiered-gates-affected-test-selection.md) | Tiered gates (when: loop | close | always) + static affected-test selection for fix loops | feature | done | M9: agentic workflow | 2026-10-31 |
 | [SPEC-0329](./specs/0329-deflake-load-dependent-tests.md) | Deflake the load-dependent tests: condition waits, deterministic sync, and two real races in production code | feature | done | M9: agentic workflow | 2026-10-31 |
 | [SPEC-0330](./specs/0330-rename-to-nightwright.md) | Rename wt to nightwright (CLI nw): hard cut, legacy-readable stored data, migrate-from-wt, cutover runbook | feature | done | M9: agentic workflow | 2026-10-31 |

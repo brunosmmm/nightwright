@@ -426,6 +426,42 @@ def test_merge_reconcile_skipped_for_another_repo(opened, tmp_path):
     assert _idea_state(cfg, iid) == "IDEA" and not list(S.read_ledger(cfg, cid, types=["idea_reconciled"]))
 
 
+def test_second_project_close_leaves_wt_checkout_clean(opened, tmp_path):
+    """SPEC-0327: a second project's campaign whose spec id (SPEC-0001) equals a wt spec id merges
+    without touching wt's checkout, and its idea is reconciled through the project repo."""
+    from nightwright import org_write as OW
+    cfg, cid, ctx = opened
+    cfg["org_idea_keywords"] = [*cfg["org_idea_keywords"], "SHIPPED"]
+    wt_repo = Path(S.read_state(cfg, cid)["repo"]["root"])
+    iid, oc = _merge_with_idea(opened, backlink=False)
+    p2 = tmp_path / "p2"
+    p2.mkdir()
+    proj = make_repo(p2, review=False, policy="pr")
+    tomorrow = dt.date.today() + dt.timedelta(days=1)
+    spec = proj / "docs" / "specs" / "0001-trivial.md"
+    spec.write_text(spec.read_text().replace("status: accepted", "status: done").replace(
+        "created: 2026-10-25", f"created: {tomorrow:%Y-%m-%d}\nsource_idea: {iid}"))
+    subprocess.run(["git", "-C", str(proj), "commit", "-qam", "done"], check=True)
+    head = subprocess.run(["git", "-C", str(proj), "rev-parse", "HEAD"], capture_output=True,
+                          text=True, check=True).stdout.strip()
+    OW.set_property(cfg, OW.resolve_selector(cfg, iid), "PROJECT", "comfort-assistant")
+    OW.set_property(cfg, OW.resolve_selector(cfg, iid), "SPEC", "SPEC-0001")
+    st = S.read_state(cfg, cid)
+    S.write_state(cfg, cid, dict(st, project="comfort-assistant",
+                                 repo=dict(st["repo"], root=str(proj))))
+    oc.close["merged_sha"] = head
+    wt_spec = Path(cfg["specs_dir"]) / "0001-trivial.md"
+    porcelain = lambda: subprocess.run(["git", "status", "--porcelain"], cwd=wt_repo,  # noqa: E731
+                                       capture_output=True, text=True, check=True).stdout
+    before, before_spec = porcelain(), wt_spec.read_bytes()
+    row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
+    assert st["state"] == "MERGED"
+    assert porcelain() == before and wt_spec.read_bytes() == before_spec
+    (ev,) = S.read_ledger(cfg, cid, types=["idea_reconciled"])
+    assert (ev["spec_id"], ev["idea_id"], ev["to"]) == ("SPEC-0001", iid, "SHIPPED")
+    assert _idea_state(cfg, iid) == "SHIPPED"
+
+
 @pytest.mark.parametrize("root", [None, ""])
 def test_merge_reconcile_skipped_without_a_repo_root(opened, monkeypatch, root):
     """An unknown repo root is not the cwd: even when the queue runs from above the specs dir."""

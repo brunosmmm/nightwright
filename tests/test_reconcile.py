@@ -356,7 +356,7 @@ def test_backlink_write_preserves_frontmatter_formatting(tmp_path):
                 'title: "fixture"\n'
                 'status: accepted\n'
                 'owner: t\n'
-                'created: 2026-01-01\n'
+                f'created: {dt.datetime.now(TZ).strftime("%Y-%m-%d")}\n'   # SPEC-0327: idea may not postdate it
                 'milestone: "M1: packaging"\n'
                 'tags: [infra, packaging]\n'
                 'depends_on: [SPEC-0000]\n'

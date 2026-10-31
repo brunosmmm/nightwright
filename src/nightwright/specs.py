@@ -536,6 +536,10 @@ def resolve_spec_path_for_cwd(cfg, spec_id, cwd=None):
         raise ValueError("spec id is required")
     if _is_outbound_spec_id(spec_id):
         return resolve_spec_path(cfg, spec_id), "outbox"
+    from .spec_scope import foreign_scope_path          # SPEC-0327: a project's id is not wt's
+    scoped = foreign_scope_path(cfg, spec_id, cwd=cwd)
+    if scoped:
+        return scoped
     reg_dir = _specs_dir(cfg)
     reg = _git_checkout(reg_dir) if Path(reg_dir).is_dir() else None
     cwd = Path(cwd) if cwd is not None else Path.cwd()
@@ -829,9 +833,12 @@ def _implied_state(status, state, *, outbound=False):
     return None                          # unknown status: report nothing, invent nothing
 
 
-def _sole_claimant(ideas, spec_id):
-    """The single idea whose `:SPEC:` is `spec_id`, or None when 0 or >1 claim it."""
-    claims = [t for t in ideas if (t.properties.get("SPEC") or "").strip() == spec_id]
+def _sole_claimant(ideas, spec_id, project=None):
+    """The single idea whose `:SPEC:` is `spec_id`, or None when 0 or >1 claim it. Spec ids are
+    per project (SPEC-0327): with `project`, only that project's ideas count."""
+    from .spec_scope import idea_project
+    claims = [t for t in ideas if (t.properties.get("SPEC") or "").strip() == spec_id
+              and (project is None or idea_project(t) == project)]
     return claims[0] if len(claims) == 1 else None
 
 
@@ -972,7 +979,8 @@ def plan_spec_link(cfg, idea_id, spec_id):
     / `replace` / `unchanged`, plus `pin = (file, heading)` when the id is carried by several
     ideas."""
     from .org import filter_tasks, load_tasks
-    from .workflow import _load_spec_fm
+    from .spec_scope import idea_project, is_internal_idea
+    from .workflow import _is_outbound_id, _load_spec_fm
 
     idea_id = W._normalize_selector(idea_id)
     fm = _load_spec_fm(cfg, spec_id)
@@ -982,6 +990,12 @@ def plan_spec_link(cfg, idea_id, spec_id):
              if (t.properties.get("ID") or "").strip() == idea_id]
     if not cands:
         raise ValueError(f"no idea with id {idea_id}")
+    if not _is_outbound_id(spec_id):            # SPEC-0327: a bare id is wt's, so is its idea
+        internal = [t for t in cands if is_internal_idea(t)]
+        if not internal:
+            raise ValueError(f"{idea_id} belongs to {idea_project(cands[0])}; its spec ids are "
+                             "not in wt's store. The queue links it when its campaign merges")
+        cands = internal
     task, bad = _pick_idea(cands, _as_date(fm.get("created")))
     if bad is not None:
         raise ValueError(f"{bad[0]}: {bad[1]}")
@@ -1055,10 +1069,24 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     from .org import filter_tasks, load_tasks
     from .workflow import _is_outbound_id, _load_spec_fm
 
+    from .rules import INTERNAL_PROJECT
+    from .spec_scope import idea_project, is_internal_idea
+
     scope = None if spec_ids is None else set(spec_ids)
-    all_ideas = filter_tasks(load_tasks(cfg), is_idea=True)
-    ideas = [t for t in all_ideas if (t.properties.get("SPEC") or "").strip()]
+    every_idea = filter_tasks(load_tasks(cfg), is_idea=True)
     plan = []                       # uniform (idea_id, spec_id, action, detail) rows
+    # SPEC-0327: a foreign idea's bare SPEC-NNNN lives in its own repo, never in wt's store. It is
+    # reported, not walked; outbound PROJ-NNNN ids are unique across the outbox and stay in.
+    all_ideas = []
+    for t in every_idea:
+        sid = (t.properties.get("SPEC") or "").strip()
+        if not is_internal_idea(t) and not (sid and _is_outbound_id(sid)):
+            if sid and (scope is None or sid in scope):
+                plan.append((t.properties.get("ID") or t.id, sid, "flag-foreign",
+                             f"idea belongs to {idea_project(t)}; its spec lives in that repo"))
+            continue
+        all_ideas.append(t)
+    ideas = [t for t in all_ideas if (t.properties.get("SPEC") or "").strip()]
     links = []                      # (idea_id, spec_id, pin) for the write pass
     advances = []                   # (idea_id, spec_id, target_state, pin) for the write pass
     backlink_writes = []            # (spec_id, idea_id) for the write pass
@@ -1077,6 +1105,11 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     for idea_id, specs in sorted(claims.items()):
         cands = by_id.get(idea_id)
         if not cands:                   # dangling source_idea: spec_lint's business
+            foreign = [t for t in every_idea if (t.properties.get("ID") or "").strip() == idea_id]
+            if foreign:                 # SPEC-0327: a wt spec naming another project's idea
+                plan.extend((idea_id, sid, "flag-foreign",
+                             f"{sid} names {idea_id}, which belongs to {idea_project(foreign[0])}")
+                            for sid, _s, _c in specs if scope is None or sid in scope)
             continue
         live = [(sid, created) for sid, status, created in specs if status not in _NOT_LIVE]
         in_scope = [sid for sid, _status, _c in specs if scope is None or sid in scope]
@@ -1158,7 +1191,8 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
                              f"spec is done but {n_open} question(s) still open"))
 
         if not str(fm.get("source_idea") or "").strip():
-            sole = _sole_claimant(ideas, spec_id)
+            sole = _sole_claimant(ideas, spec_id,
+                                  project=None if _is_outbound_id(spec_id) else INTERNAL_PROJECT)
             plan.append((idea_id, spec_id, "flag-no-backlink",
                          "spec has no source_idea" if sole
                          else "spec has no source_idea (ambiguous: >1 idea claims it)"))
@@ -1214,7 +1248,10 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
         EX.set_state(cfg, task, target)
     if backlinks:
         for spec_id, idea_id in backlink_writes:
-            _write_source_idea(cfg, spec_id, idea_id)
+            try:
+                _write_source_idea(cfg, spec_id, idea_id)
+            except ValueError as e:         # SPEC-0327: refused (foreign / newer idea): report it
+                plan.append((idea_id, spec_id, "flag-mismatch", str(e)))
     return plan
 
 
@@ -1226,7 +1263,9 @@ def _write_source_idea(cfg, spec_id, idea_id):
     re-dumping the parsed YAML: a round-trip through `yaml.safe_dump` rewrites the whole block
     (flow-style `tags: [a, b]` becomes a bullet list, double quotes become single), producing a
     huge diff on a file this command was only meant to annotate."""
-    from .workflow import _resolve_spec_path
+    from .org import filter_tasks, invalidate_tasks_cache, load_tasks
+    from .spec_scope import idea_project, is_internal_idea
+    from .workflow import _is_outbound_id, _resolve_spec_path
 
     path = _resolve_spec_path(cfg, spec_id)
     if path is None:
@@ -1236,6 +1275,21 @@ def _write_source_idea(cfg, spec_id, idea_id):
     fm, _body = split_frontmatter(text)
     if str((fm or {}).get("source_idea") or "").strip():
         return None
+    if not _is_outbound_id(spec_id):
+        # SPEC-0327: a bare id is wt's own spec, so only an internal idea created on or before it
+        # may be stamped on it (SPEC-0267 identity rule, across rotated org files)
+        invalidate_tasks_cache()
+        want = str(idea_id).strip().upper()
+        cands = [t for t in filter_tasks(load_tasks(cfg), is_idea=True)
+                 if (t.properties.get("ID") or t.id or "").strip().upper() == want]
+        task, bad = _pick_idea(cands, _as_date((fm or {}).get("created"))) if cands else (None, None)
+        if not cands:
+            raise ValueError(f"{idea_id}: idea not found; {spec_id} not linked")
+        if bad is not None:
+            raise ValueError(f"{idea_id} cannot be {spec_id}'s source_idea: {bad[0]}: {bad[1]}")
+        if not is_internal_idea(task):
+            raise ValueError(f"{idea_id} belongs to {idea_project(task)}; {spec_id} is wt's own "
+                             "spec and is left unchanged")
 
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":

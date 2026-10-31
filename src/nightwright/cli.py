@@ -1855,9 +1855,10 @@ def spec_status_cmd(cfg, spec_id, new_status, as_json):
     import json as _json
     import sys
 
-    from .specs import resolve_spec_path, set_spec_status, spec_status
+    from .spec_scope import resolve_in_scope             # SPEC-0327
+    from .specs import set_spec_status, spec_status
     try:
-        path = resolve_spec_path(cfg, spec_id)
+        path = resolve_in_scope(cfg, spec_id)
         old = None
         if new_status:
             old, _ = set_spec_status(path, new_status)
@@ -2167,6 +2168,7 @@ def spec_reconcile_cmd(cfg, do_apply):
              "flag-conflict": ("yellow", "!"),
              "flag-ambiguous": ("yellow", "!"),
              "flag-mismatch": ("yellow", "≠"),       # SPEC-0267: reused id, report-only
+             "flag-foreign": ("yellow", "↗"),        # SPEC-0327: another project's idea, report-only
              "questions-open": ("yellow", "?"),      # SPEC-0080: report-only, never written
              "missing": ("red", "✗"),
              "unchanged": ("dim", "·")}

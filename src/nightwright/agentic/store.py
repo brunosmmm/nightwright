@@ -368,7 +368,8 @@ def list_campaigns(cfg, *, include_terminal=False, project=None, spec_id=None,
     return out
 
 
-def active_campaign_for_spec(cfg, spec_id) -> dict | None:
-    """The one non-terminal campaign for `spec_id`, or None."""
-    hits = list_campaigns(cfg, spec_id=spec_id)
+def active_campaign_for_spec(cfg, spec_id, project=None) -> dict | None:
+    """The one non-terminal campaign for `spec_id`, or None. Spec ids are per project
+    (SPEC-0327): with `project`, only that project's campaigns count."""
+    hits = list_campaigns(cfg, spec_id=spec_id, project=project)
     return hits[0] if hits else None

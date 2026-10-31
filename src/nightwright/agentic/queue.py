@@ -32,6 +32,7 @@ from pathlib import Path
 import yaml
 
 from .. import specs as SP
+from ..rules import INTERNAL_PROJECT
 from ..specmeta import split_frontmatter
 from . import autopark as AP
 from . import close as CL
@@ -2465,6 +2466,8 @@ def _reconcile_closed(cfg, state: dict, events: list, outcome: str) -> None:
                 finding("minor", "idea reconcile mismatch", f"{idea_id}: {detail}")
             elif action == "flag-no-backlink":
                 finding("info", "idea reconcile: spec has no source_idea", f"{idea_id}: {detail}")
+            elif action == "flag-foreign":      # SPEC-0327
+                finding("minor", "idea reconcile: foreign idea", f"{idea_id}: {detail}")
         # an idea campaign's PR only adds the spec (never `done`), so reconcile would never clear it
         if outcome == "HANDED_OFF" and state.get("kind") != "idea":
             _mark_handed_off(cfg, state, events, spec_id, finding)
@@ -2643,7 +2646,7 @@ def _mark_handed_off(cfg, state: dict, events: list, spec_id: str, finding) -> N
     from .. import org_write
     pr_url = (state.get("close") or {}).get("pr_url") or ""
     try:
-        task = SP._sole_claimant(_ideas(cfg), spec_id)
+        task = SP._sole_claimant(_ideas(cfg), spec_id, project=state.get("project"))
         if task is None or task.state not in ("IDEA", "INCUBATE", "SPECCED"):
             finding("info", "no idea to mark handed off", f"no single open idea claims {spec_id}")
             return
@@ -2656,12 +2659,13 @@ def _mark_handed_off(cfg, state: dict, events: list, spec_id: str, finding) -> N
         finding("minor", "idea hand-off mark failed", str(e) or type(e).__name__)
 
 
-def _clear_handed_off_on_requeue(cfg, spec_id: str, campaign: str, by: str) -> None:
+def _clear_handed_off_on_requeue(cfg, spec_id: str, campaign: str, by: str,
+                                 project: str | None = None) -> None:
     """SPEC-0280: a new campaign for the spec ends the old "PR open" mark (the PR may have been
     closed unmerged). Best-effort: a failure is a ledger `note`, never a refusal."""
     from .. import org_write
     try:
-        task = SP._sole_claimant(_ideas(cfg), spec_id)
+        task = SP._sole_claimant(_ideas(cfg), spec_id, project=project)
         if task is not None and (task.properties.get("HANDED_OFF") or "").strip():
             org_write.clear_property(cfg, task, "HANDED_OFF")
     except Exception as e:                  # noqa: BLE001 — queueing must not depend on the idea
@@ -5910,7 +5914,15 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         raise ValueError("spec id is required")
     priority = check_priority(priority)
     outbound = SP._is_outbound_spec_id(spec_id)
-    path = SP.resolve_spec_path(cfg, spec_id)
+    if project and project != INTERNAL_PROJECT and not outbound:
+        # SPEC-0327: a second project's bare id lives in that project's repo, not wt's store
+        try:
+            path = SP._find_spec(Path(P.project_config(cfg, project)["_root"]) / "docs" / "specs",
+                                 spec_id)
+        except ValueError as e:
+            raise ValueError(f"{spec_id} not found in project {project}: {e}")
+    else:
+        path = SP.resolve_spec_path(cfg, spec_id)
     fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
     fm = fm or {}
     status = str(fm.get("status") or "")
@@ -5935,7 +5947,7 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         rel = str(spec_path.relative_to(root.resolve()))
     except ValueError:
         raise ValueError(f"{spec_id}: spec file {spec_path} is not inside the project repo {root}")
-    active = store.active_campaign_for_spec(cfg, spec_id)
+    active = store.active_campaign_for_spec(cfg, spec_id, project)
     if active:
         raise ValueError(f"{spec_id} already has an active campaign {active['id']} "
                          f"({active.get('state')}); abandon it first")
@@ -6028,7 +6040,7 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
                              "findings": revision["findings"]}
         state["pending_brief"]["source"] = "spec_review_revise"
     with store.add_lock(cfg):                                          # SPEC-0209
-        active = store.active_campaign_for_spec(cfg, plan["spec_id"])
+        active = store.active_campaign_for_spec(cfg, plan["spec_id"], plan.get("project"))
         if active:
             raise ValueError(f"{plan['spec_id']} already has an active campaign {active['id']}")
         store.create_campaign(cfg, state, by=by)
@@ -6040,7 +6052,8 @@ def apply_add(cfg, plan: dict, *, by="human") -> dict:
                            {k: v for k, v in revision.items() if k != "pending"}, by=by)
     elif revision:
         store.append_event(cfg, plan["campaign"], "admitted_after_revision", revision, by=by)
-    _clear_handed_off_on_requeue(cfg, plan["spec_id"], plan["campaign"], by)
+    _clear_handed_off_on_requeue(cfg, plan["spec_id"], plan["campaign"], by,
+                                 project=plan.get("project"))
     _link_spec_idea(cfg, state, plan.get("spec_fm"), by)
     return state
 
@@ -6380,7 +6393,7 @@ def expand_epic(cfg, epic_id) -> tuple[list[str], list[dict]]:
         if status != "accepted":
             skipped.append({"id": sid, "reason": f"status {status or 'missing'}"})
             continue
-        active = store.active_campaign_for_spec(cfg, sid)
+        active = store.active_campaign_for_spec(cfg, sid, INTERNAL_PROJECT)   # wt's own store
         if active:
             skipped.append({"id": sid, "reason": f"already queued ({active['id']})"})
         else:
@@ -6462,7 +6475,8 @@ def _dangling(cfg, spec_id, deps, in_batch) -> list[str]:
             status = str((fm or {}).get("status") or "")
         except (OSError, ValueError):
             status = None
-        if status in DEPENDENCY_SATISFIED or (same and store.active_campaign_for_spec(cfg, dep)):
+        if status in DEPENDENCY_SATISFIED or (same and store.active_campaign_for_spec(
+                cfg, dep, None if SP._is_outbound_spec_id(dep) else INTERNAL_PROJECT)):
             continue
         out.append(f"{dep} not found" if status is None
                    else f"{dep} is {status or 'without status'} and not queued")
