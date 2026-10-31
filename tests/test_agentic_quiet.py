@@ -902,6 +902,13 @@ def test_spec_phase_events_are_held(tmp_path):
             assert QT.classify(cfg, _ev(t, "c", **data), ctx) == "hold"
 
 
+def test_gate_waiting_is_held(tmp_path):
+    cfg = _cfg(tmp_path)
+    assert QT.RULES["gate_waiting"] == "hold"
+    data = {"slots": 2, "held": [{"slot": 0}], "waited_s": 31.0}
+    assert QT.classify(cfg, _ev("gate_waiting", "c", **data), _ctx(cfg)) == "hold"
+
+
 def test_follow_holds_spec_phase_events(tmp_path):
     cfg, clock = _cfg(tmp_path), Clock()
     _spec_phase_log(cfg)

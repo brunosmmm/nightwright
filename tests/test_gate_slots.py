@@ -118,6 +118,47 @@ def test_waiter_returns_on_stop_without_a_slot_and_leaves_no_marker(cfg):
     assert not (GS.slots_dir(one) / "waiting-w.json").exists()
 
 
+def test_a_failing_on_wait_does_not_abort_the_wait(cfg, monkeypatch):
+    one = {**cfg, "agentic": {"gates": {"slots": 1}}}
+    monkeypatch.setattr(GS, "WAIT_EVENT_S", 0.0)
+    calls = []
+
+    def boom(occ, waited):
+        calls.append(waited)
+        raise RuntimeError("ledger write failed")
+
+    got = {}
+
+    def waiter():
+        with GS.acquire(one, "w", poll_s=0.05, on_wait=boom) as hold:
+            got["hold"] = hold
+
+    with GS.acquire(one, "holder", poll_s=0.05):
+        t = threading.Thread(target=waiter)
+        t.start()
+        assert until(lambda: calls)
+        assert GS.waiting(one, "w") is not None          # still waiting after the callback raised
+    join(t)
+    assert len(calls) == 1
+    assert got["hold"].slot == 0 and not got["hold"].interrupted
+    assert GS.waiting(one, "w") is None
+
+
+def test_holding_ignores_a_dead_pid_slot_file(cfg):
+    d = GS.slots_dir(cfg)
+    d.mkdir(parents=True)
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    (d / "slot-0.lock").write_text(json.dumps({"campaign": "x", "pid": dead.pid,
+                                               "since": "2026-10-30T10:00:00-04:00",
+                                               "waited_s": 2800.0}))
+    assert GS.holding(cfg, "x") is None
+    (d / "slot-0.lock").write_text(json.dumps({"campaign": "x", "pid": os.getpid(),
+                                               "since": "2026-10-30T10:00:00-04:00",
+                                               "waited_s": 2800.0}))
+    assert GS.holding(cfg, "x")["waited_s"] == 2800.0
+
+
 def test_dead_pid_marker_is_ignored(cfg):
     d = GS.slots_dir(cfg)
     d.mkdir(parents=True)

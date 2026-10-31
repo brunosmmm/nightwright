@@ -268,6 +268,9 @@ def waiting(cfg, campaign_id, now=None) -> dict | None   # live waiter marker, e
   merges) need real campaigns and merges after this ships, so they cannot precede this merge;
   they are the post-ship comparison of Rollout step 3 and are not recorded here. The same
   behaviour is covered by the automated pool, `run_all` and detector tests above.
+- Review fixes (loop 3): `tests/test_agentic_events.py`, `test_agentic_quiet.py` (`gate_waiting`
+  is `hold`), `test_gate_slots.py` (dead-pid `holding()`, raising `on_wait`) and `test_skills.py`:
+  192 passed. Full suite left to gating.
 - Full suite under gating is left to the gate; the runs above stand in for the serial and
   `-n 4` regression guard.
 
@@ -285,8 +288,12 @@ than the serial one):
 | -n 4 #3 | `uv run pytest -q -x -n 4` | 4081 passed, 3 skipped, 25 warnings | 285.18 s (0:04:45) |
 
 Ratio `-n 4` / serial: 0.33, 0.34, 0.28 (limit 0.5). No test failed in one run and passed in
-another. **No test needed a fix or an `xdist_group`**; the gate command carries no
-`--dist loadgroup`. The 25 warnings are `DeprecationWarning: ... multi-threaded, use of fork()`
+another. **Three tests were changed for parallel safety**, none needed an `xdist_group`, and
+the gate command carries no `--dist loadgroup`: `test_agentic_campaign_runs.py::merged` (fixture),
+`test_agentic_profiles_cli.py::env` (fixture) and
+`test_spec_review_show.py::test_reviews_list_filter_json_and_unresolvable`. The cause is the same:
+the console width is fixed when `wt.console` is imported, so setting `COLUMNS` alone does not
+reach an xdist worker that imported it earlier. The fix sets `console._width` directly. The 25 warnings are `DeprecationWarning: ... multi-threaded, use of fork()`
 from `test_org_write_race.py`, `test_spec_numbers.py` and `test_tui_real_terminal.py`; they only
 show under xdist (its workers are threaded) and do not fail anything. `gate_results.parse_pytest`
 reads the xdist summary line unchanged; `test_pytest_xdist_summary_line` pins it.
@@ -298,8 +305,15 @@ reads the xdist summary line unchanged; `test_pytest_xdist_summary_line` pins it
 - Silence and stuck offsets taken from the live hold: `stuck_items` adds the hold's `waited_s` to
   its limit, and `campaign_silent` offsets the silence by it too, so a long wait followed by a long
   gate raises neither alarm.
-- A `gate` entry's `slot_wait_s` counts toward `stuck_items` only when the entry belongs to the
-  current state (its age is within the time in state), so an earlier state's wait is not reused.
+- **Deviation from Design: a recorded `slot_wait_s` does not extend the stuck limit.** Design says
+  `stuck_items` adds the newest `gate` entry's `slot_wait_s` to `limit`. That double-counts: the
+  entry's ts is written after the gate ends, so the stuck clock (the minimum of the time in state,
+  `head_since` and the newest `gate` entry's age) taken from it already excludes the wait. Only the
+  live hold's `waited_s` extends the limit, for the gate still in flight. A test pins that a
+  recorded 3000 s wait leaves the limit at `gate_budget_s` of gate time.
+- `campaign_silent` takes silence as the smaller of the newest ledger entry's age and the live
+  hold's age (`since`), not the tail's age minus `waited_s`: a `gate_waiting` entry lands mid-wait,
+  so subtracting the whole wait removed its first 30 s twice.
 - `acquire(..., on_wait=)`: a callback `on_wait(occupancy, waited_s)` called once when a wait passes
   `WAIT_EVENT_S`; `run_all` uses it to append the single `gate_waiting` entry.
 

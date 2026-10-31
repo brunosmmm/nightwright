@@ -513,15 +513,11 @@ def stuck_items(cfg, now, sett) -> list[dict]:
             clock = min(a for a in ages if a is not None)
             limit = max(limit, sett["gate_budget_s"])
             # SPEC-0309: a finished slot wait is not stuck time. While the gate runs the wait
-            # sits in the live hold (the `gate` entry only lands after `run_all` returns); the
-            # newest `gate` entry is the fallback, and only when it belongs to this state.
+            # sits in the live hold (the `gate` entry only lands after `run_all` returns). Once
+            # that entry exists it is in `ages`, and its ts is past the wait, so the wait needs
+            # no further forgiveness.
             hold = gate_slots.holding(cfg, cid)
             waited = hold.get("waited_s") if hold else None
-            if hold is None:
-                last_gate = store.read_ledger(cfg, cid, types=["gate"])[-1:]
-                g_age = _age_s(last_gate[0].get("ts"), now) if last_gate else None
-                if g_age is not None and g_age <= since_state:
-                    waited = last_gate[0].get("slot_wait_s")
             if isinstance(waited, (int, float)) and not isinstance(waited, bool) and waited > 0:
                 limit += waited
         else:
@@ -804,12 +800,14 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
             head_age = _age_s((r.get("closing") or {}).get("head_since"), now)
             if head_age is not None:
                 silent = head_age if silent is None else min(silent, head_age)
-        # SPEC-0309: a finished slot wait is not silence; the gate writes no ledger entry
-        # until `run_all` returns, so the live hold carries the wait it already served.
+        # SPEC-0309: a finished slot wait is not silence; the gate writes no ledger entry until
+        # `run_all` returns, so silence starts at the later of the newest entry and the moment
+        # the live hold began (a `gate_waiting` entry lands mid-wait, so the wait is not
+        # subtracted from the tail's age).
         hold = gate_slots.holding(cfg, cid) if silent is not None else None
-        waited = hold.get("waited_s") if hold else None
-        if isinstance(waited, (int, float)) and not isinstance(waited, bool) and waited > 0:
-            silent -= waited
+        held_s = _age_s(hold.get("since"), now) if hold else None
+        if held_s is not None:
+            silent = min(silent, held_s)
         if silent is not None and silent > sett["silent_after_s"]:
             out.append((f"campaign_silent:{cid}:{r.get('state')}", "campaign_silent", cid,
                         {"state": r.get("state"), "silent_s": round(silent)}))

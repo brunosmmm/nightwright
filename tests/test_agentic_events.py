@@ -190,20 +190,21 @@ def test_gate_slot_wait_marker_silences_silent_and_stuck(tmp_path, state):
 
 
 @pytest.mark.parametrize("state", ["GATING", "CLOSING"])
-def test_gate_slot_wait_extends_the_stuck_limit_and_never_raises_run_overdue(tmp_path, state):
+def test_recorded_gate_wait_is_not_forgiven_twice_and_run_overdue_never_fires(tmp_path, state):
+    """The `gate` entry lands after the wait, so the stuck clock taken from it already excludes
+    the wait: its `slot_wait_s` does not extend the limit a second time."""
     cfg = _cfg(tmp_path)
     cid = _campaign(cfg, "SPEC-0904-20261025-dddd", state=state)
     sett = E.settings(cfg)
     limit = max(sett["stuck_after_s"], sett["gate_budget_s"])
-    _ev(cfg, cid, "gate", {"gate_seq": 1, "ok": True, "slot_wait_s": 1500.0})
+    _ev(cfg, cid, "gate", {"gate_seq": 1, "ok": True, "slot_wait_s": 3000.0})
     now = dt.datetime.now().astimezone()
-    # state age and gate age past the plain limit, but inside limit + the recorded wait
     st = store.read_state(cfg, cid)
-    st["updated_at"] = (now - dt.timedelta(seconds=limit + 100)).isoformat()
+    st["updated_at"] = (now - dt.timedelta(seconds=limit + 5000)).isoformat()
     store.write_state(cfg, cid, st)
-    at = now + dt.timedelta(seconds=limit + 100)
+    at = now + dt.timedelta(seconds=limit - 100)
     assert E.stuck_items(cfg, at, sett) == []
-    at = now + dt.timedelta(seconds=limit + 1600)
+    at = now + dt.timedelta(seconds=limit + 100)         # not limit + 3000
     assert [i["campaign"] for i in E.stuck_items(cfg, at, sett)] == [cid]
     # gate runs write no `run.start`: nothing for `run_overdue` to measure
     assert "run_overdue" not in {t for _k, t, _c, _d in E.watchdog_checks(cfg, now=at)}
@@ -229,12 +230,17 @@ def test_finished_wait_in_a_live_hold_extends_the_limit_with_no_gate_entry(tmp_p
     assert E.stuck_items(cfg, at, sett) == []                         # 2800 s of wait forgiven
     late = now + dt.timedelta(seconds=limit + 3000)
     assert [i["campaign"] for i in E.stuck_items(cfg, late, sett)] == [cid]   # but not forever
+    dead = _dead_pid()
+    (GS.slots_dir(cfg) / "slot-0.lock").write_text(json.dumps(
+        {"campaign": cid, "pid": dead, "since": store.now_iso(), "waited_s": 2800.0}))
+    assert GS.holding(cfg, cid) is None                               # a dead holder: no hold
+    assert [i["campaign"] for i in E.stuck_items(cfg, at, sett)] == [cid]
 
 
 @pytest.mark.parametrize("state", ["GATING", "CLOSING"])
 def test_finished_wait_in_a_live_hold_is_not_silence(tmp_path, state):
-    """The wait is over, the gate runs and the ledger has no new entry: the silence is counted
-    without the wait the live hold served, and only that much."""
+    """The wait is over, the gate runs and the ledger has no new entry: silence starts at the
+    later of the newest entry and the hold's start, so the wait is forgiven once, not twice."""
     import os
     from wt.agentic import gate_slots as GS
     cfg = _cfg(tmp_path)
@@ -246,17 +252,20 @@ def test_finished_wait_in_a_live_hold_is_not_silence(tmp_path, state):
         return "campaign_silent" in {t for _k, t, c, _d in E.watchdog_checks(cfg, now=later)
                                       if c == cid}
 
-    def hold(waited):
+    def hold(held_s, pid=None):
         GS.slots_dir(cfg).mkdir(parents=True, exist_ok=True)
+        since = (later - dt.timedelta(seconds=held_s)).isoformat()
         (GS.slots_dir(cfg) / "slot-0.lock").write_text(json.dumps(
-            {"campaign": cid, "pid": os.getpid(), "since": store.now_iso(), "waited_s": waited}))
+            {"campaign": cid, "pid": pid or os.getpid(), "since": since, "waited_s": 900.0}))
 
-    assert silent()                       # no hold: silent
-    hold(100.0)
-    assert silent()                       # a short wait does not cover the silence
-    hold(900.0)
-    assert GS.waiting(cfg, cid) is None   # the marker is gone
-    assert not silent()                   # the wait does
+    assert silent()                                   # no hold: silent
+    hold(silent_after + 100)
+    assert silent()                                   # held (gate running) longer than the limit
+    hold(100)
+    assert GS.waiting(cfg, cid) is None               # the marker is gone
+    assert not silent()                               # the gate has run only 100 s
+    hold(silent_after + 100, pid=_dead_pid())
+    assert silent()                                   # a dead holder forgives nothing
 
 
 @pytest.mark.parametrize("state", ["GATING", "CLOSING"])
