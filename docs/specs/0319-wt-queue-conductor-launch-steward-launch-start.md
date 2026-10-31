@@ -62,19 +62,22 @@ the right place is a launcher, not more prose in a skill.
 - Supervising or auto-restarting the session. A human (or a later spec) runs the launcher
   again; dependence on the conductor session stays by design.
 - Shipping a price table (SPEC-0299 Decision 3 stands).
-- Capping sub-agents the conductor dispatches. The limits apply to the launched session;
-  sub-agents inherit the environment but are not measured by this spec.
-- Stream-json capture and a viewer (IDEA-427). `--in herdr` is only a placement hook.
+- Capping sub-agents or campaign runners the conductor dispatches. The limits apply to the
+  launched session only: children do not inherit them (see *Child processes*), so wt's
+  per-campaign model and `--effort` choice is unchanged.
+- Stream-json capture and a viewer (IDEA-427), and `--in herdr` placement; both are left to
+  IDEA-427, since the herdr command shape is not verified here.
 
 ## Decision
 
-1. Add `wt queue conductor-launch [--dry-run] [--resume] [--in herdr]` and `wt queue
-   steward-launch PROJECT [--dry-run] [--resume] [--in herdr]`, attached from a new module
+1. Add `wt queue conductor-launch [--dry-run] [--resume]` and `wt queue
+   steward-launch PROJECT [--dry-run] [--resume]`, attached from a new module
    beside the other `wt queue conductor-*` commands.
 2. Each builds one `claude` invocation: `claude -n <name> --session-id <uuid> --model <M>
    --effort <E> --autocompact <W> <prompt>` with an environment that adds
    `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS`, `BASH_MAX_OUTPUT_LENGTH`,
-   `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS` and `CLAUDE_CODE_EFFORT_LEVEL`. The values come
+   `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS` and `WT_LAUNCH_KEYS`, and with an ambient
+   `CLAUDE_CODE_EFFORT_LEVEL` removed so `--effort` wins. The values come
    from `agentic.conductor.launch.*`, with code-held defaults: model `claude-sonnet-5-5`,
    effort `medium`, autocompact `150k`, idle compaction `120000`, bash output `15000`,
    file read `10000`.
@@ -82,8 +85,10 @@ the right place is a launcher, not more prose in a skill.
    written to `sessions.jsonl` with `source: "launch"` before the process starts.
 4. The launcher refuses to start a model that has no price entry, and tells the user which
    config key to set.
-5. By default the launcher replaces itself with `claude` (`os.execvpe`), so the session is
-   the user's interactive terminal session. `--in herdr` instead opens it in a herdr tab.
+5. The launcher replaces itself with `claude` (`os.execvpe`), so the session is the user's
+   interactive terminal session.
+6. Campaign runners spawned from a launched session do not inherit the launch limits:
+   `runner._child_env` drops every key the launcher recorded in `WT_LAUNCH_KEYS`.
 
 ## Design
 
@@ -120,17 +125,35 @@ touches nothing:
 - `argv`: `["claude", "-n", name, "--session-id" | "--resume", sid, "--model", M, "--effort",
   E, "--autocompact", W, prompt]`. Under `--resume` the id is passed with `--resume` and not
   `--session-id`.
-- `env`: only the keys wt sets, never the whole ambient environment:
+- `env`: only the keys wt adds, never the whole ambient environment:
   `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS`, `BASH_MAX_OUTPUT_LENGTH`,
-  `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`, and `CLAUDE_CODE_EFFORT_LEVEL` (set to the same
-  effort, because an ambient `CLAUDE_CODE_EFFORT_LEVEL` would otherwise override
-  `--effort` and silently defeat the pin). The flag form of autocompact is used, so
-  `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is not set.
-- `prompt`: for the conductor, `/wt-orient` then, once oriented, `/wt-conduct`; for a
-  steward, `/wt-orient` then `/wt-steward <PROJECT>`. Fixed constants in `launch.py`,
-  identical for a fresh and a resumed session (a resumed session must re-arm its Monitor
-  anyway, and `/wt-conduct` already starts from `wt queue conductor-brief`).
+  `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`, and `WT_LAUNCH_KEYS` (the comma-separated names
+  of the first three, in that order). `CLAUDE_CODE_EFFORT_LEVEL` is not set; instead the
+  exec environment is `os.environ` with `CLAUDE_CODE_EFFORT_LEVEL` removed, overlaid with
+  `plan["env"]`, so `--effort` wins and nothing pins children. The flag form of autocompact
+  is used, so `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is not set. The plan also carries
+  `env_remove: ["CLAUDE_CODE_EFFORT_LEVEL"]` so `--dry-run` shows the removal (as an
+  `unset:` line).
+- `prompt`: plain prose that does not start with `/` (a leading `/wt-orient` would be read
+  as that slash command with the rest as its arguments), so the model invokes both skills in
+  order. Constants in `launch.py`:
+  `CONDUCTOR_PROMPT = "Run the /wt-orient skill, then the /wt-conduct skill."` and
+  `STEWARD_PROMPT = "Run the /wt-orient skill, then the /wt-steward skill for project {project}."`
+  (`{project}` filled with `PROJECT`). They are identical for a fresh and a resumed session
+  (a resumed session must re-arm its Monitor anyway, and `/wt-conduct` already starts from
+  `wt queue conductor-brief`).
 - `price`: `conductor_cost.price_for(cfg, model)`.
+
+**Child processes.** `runner._child_env` (`src/wt/agentic/runner.py`) currently returns
+`{**os.environ, **req.env}` and the runner passes `--effort req.effort`. Any `wt` command the
+conductor runs from its Bash tool therefore inherits the launched session's environment, and
+the launch limits would leak into every campaign runner (and an effort variable would
+override wt's per-campaign `--effort`). To prevent that, the launcher sets
+`WT_LAUNCH_KEYS=<comma-separated keys it set>`. `_child_env` drops every key listed in
+`WT_LAUNCH_KEYS` (and `WT_LAUNCH_KEYS` itself) from `os.environ` before overlaying
+`req.env`, so campaign runners spawned from a launched session get Claude Code's defaults
+and their own `--effort`. Outside a launched session `WT_LAUNCH_KEYS` is unset and
+`_child_env` behaves as before; a key that `req.env` sets explicitly is still honoured.
 
 **Session registration.** `register(cfg, plan)` calls
 `conductor_cost.record_session(cfg, reader, {}, source="launch", session_id=sid)` with
@@ -156,23 +179,16 @@ the plan anyway so the user can see what would start, and then exits 1 with the 
 message.
 
 **`--dry-run`.** Prints plain text: a `cwd:` line, an
-`env:` block of `KEY=value` lines in sorted order, and the argv shell-quoted (`shlex.join`)
+`env:` block of `KEY=value` lines in sorted order (plus `unset: KEY` lines for `env_remove`), and the argv shell-quoted (`shlex.join`)
 on one line, followed by `session: <uuid> (new|resumed)`. It never writes `sessions.jsonl`
 and never starts a process. The session id shown for a new launch is not reserved: a real
 run generates its own. `--dry-run --json` emits the plan dict. (`--json` is accepted only
 together with `--dry-run`.)
 
-**Start.** Without `--in`, `run` registers, then `os.chdir(plan["cwd"])` and
-`os.execvpe("claude", argv, {**os.environ, **plan["env"]})`. A missing `claude` executable
+**Start.** `run` registers, then `os.chdir(plan["cwd"])` and
+`os.execvpe("claude", argv, env)` where `env` is `os.environ` without the `env_remove` keys,
+overlaid with `plan["env"]`. A missing `claude` executable
 is a `ClickException` raised before registration (`shutil.which("claude")`).
-
-**`--in herdr`.** After the same checks, registers, then runs `herdr tab create --cwd
-<cwd> --label <name> --env K=V …` (one `--env` per planned key) and runs the shell-quoted
-argv in the new tab's pane with `herdr pane run <pane-id> <argv…>`; the pane id is taken
-from the JSON that `herdr tab create` prints. A missing `herdr` executable, a non-zero exit
-from either command, or output with no pane id is a `ClickException`; the registration
-already written is harmless (an unused registered id attributes no turns). Only the value
-`herdr` is accepted for `--in`.
 
 **Skills.** `skills/wt-conduct/SKILL.md` and `skills/wt-steward/SKILL.md` get one line
 each that names the launcher as the way to start the session with the context limits
@@ -203,20 +219,25 @@ rate this is a small fraction of the turns removed by the lower context; it is m
 
 - [ ] `wt queue conductor-launch --dry-run` prints a `cwd:` line, an `env:` block and a
       single argv line containing, in order, `claude -n conductor --session-id <uuid>
-      --model claude-sonnet-5-5 --effort medium --autocompact 150000` and the prompt, with
+      --model claude-sonnet-5-5 --effort medium --autocompact 150000` and exactly
+      `CONDUCTOR_PROMPT` (`Run the /wt-orient skill, then the /wt-conduct skill.`), with
       env `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=120000`, `BASH_MAX_OUTPUT_LENGTH=15000`,
-      `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS=10000` and `CLAUDE_CODE_EFFORT_LEVEL=medium`,
-      when a price for `claude-sonnet-5-5` is configured. It writes nothing and starts no
+      `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS=10000` and
+      `WT_LAUNCH_KEYS=CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS,BASH_MAX_OUTPUT_LENGTH,CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`,
+      and no `CLAUDE_CODE_EFFORT_LEVEL`, when a price for `claude-sonnet-5-5` is configured. It writes nothing and starts no
       process.
 - [ ] `steward-launch Foo --dry-run` names the session `steward:Foo`, uses the repo root
-      of `Foo` as `cwd`, and the prompt runs `/wt-orient` then `/wt-steward Foo`. An unknown
+      of `Foo` as `cwd`, and the prompt is exactly `STEWARD_PROMPT` with `Foo`
+      (`Run the /wt-orient skill, then the /wt-steward skill for project Foo.`). An unknown
       project fails and lists the known ones.
 - [ ] Every setting under `agentic.conductor.launch.*` (and the `steward` per-key override)
       changes the planned argv or env; each bad value in the settings table falls back to its
       default; `autocompact` accepts `auto`, `150000` and `150k` and rejects values outside
       100k to 1M.
-- [ ] An ambient `CLAUDE_CODE_EFFORT_LEVEL=high` does not change the plan's
-      `CLAUDE_CODE_EFFORT_LEVEL`, which equals the configured effort.
+- [ ] An ambient `CLAUDE_CODE_EFFORT_LEVEL=high` is absent from the exec env, and a runner
+      child env built inside a launched session (`WT_LAUNCH_KEYS` set) holds none of the
+      launch keys, none of `WT_LAUNCH_KEYS` itself, and no ambient
+      `CLAUDE_CODE_EFFORT_LEVEL`; outside a launched session `_child_env` is unchanged.
 - [ ] A real launch appends exactly one `sessions.jsonl` record, `source: "launch"`, with the
       planned session id and reader `conductor` (`steward:<P>` for a steward), before the
       process is exec'd; launching twice with `--resume` appends no second record; the
@@ -230,9 +251,6 @@ rate this is a small fraction of the turns removed by the lower context; it is m
 - [ ] A real launch (without `--in`) changes directory to the plan's `cwd` and calls
       `os.execvpe` with the planned argv and an environment that is `os.environ` overlaid
       with the plan's env; a missing `claude` binary fails before any registration.
-- [ ] `--in herdr` creates a tab with the planned cwd, label and one `--env` per planned key,
-      runs the argv in the returned pane, and fails with a clear message when `herdr` is
-      missing, fails, or returns no pane id; any other `--in` value is rejected.
 - [ ] `--json` without `--dry-run` is rejected, and `--dry-run --json` emits the plan dict.
 - [ ] `skills/wt-conduct/SKILL.md` and `skills/wt-steward/SKILL.md` mention the launcher;
       `python3 tools/spec_lint.py` and the skill sync tests pass.
@@ -241,18 +259,23 @@ rate this is a small fraction of the turns removed by the lower context; it is m
 
 - **Automated tests** in `tests/test_agentic_launch.py`, using a temp config with a temp
   data dir, a fake projects registry (`rules.projects_payload` monkeypatched, or a temp
-  mapping) and `agentic.conductor.prices` set for `claude-sonnet-5-5`. `os.execvpe` and
-  `subprocess.run` are monkeypatched; no real `claude` or `herdr` runs. `shutil.which` is
+  mapping) and `agentic.conductor.prices` set for `claude-sonnet-5-5`. `os.execvpe` is
+  monkeypatched; no real `claude` runs. `shutil.which` is
   patched where a binary must exist.
-  - `test_default_plan_argv_and_env`: asserts the exact argv, env and prompt of the
-    conductor plan from the defaults (acceptance 1).
+  - `test_default_plan_argv_and_env`: asserts the exact argv, env (including
+    `WT_LAUNCH_KEYS`, no `CLAUDE_CODE_EFFORT_LEVEL`) and `CONDUCTOR_PROMPT` of the conductor
+    plan from the defaults (acceptance 1).
   - `test_steward_plan_cwd_name_prompt` and `test_steward_unknown_project_lists_known`
     (acceptance 2).
   - `test_settings_overrides_and_bad_values`: parametrised over every key in the settings
     table, including bool, string, negative, NaN, and `autocompact` of `99k`, `2m`, `auto`,
     `150k`, `150000`; checks the `steward` per-key override (acceptance 3).
-  - `test_ambient_effort_env_does_not_win`: sets `CLAUDE_CODE_EFFORT_LEVEL=high` in the
-    process env and asserts the plan env (acceptance 4).
+  - `test_ambient_effort_env_removed`: sets `CLAUDE_CODE_EFFORT_LEVEL=high` in the process
+    env and asserts the env passed to the fake `execvpe` lacks it (acceptance 4).
+  - `test_runner_child_env_drops_launch_keys`: with `WT_LAUNCH_KEYS` and the launch keys in
+    `os.environ`, `runner._child_env(req)` holds none of them (nor `WT_LAUNCH_KEYS`, nor
+    `CLAUDE_CODE_EFFORT_LEVEL`), keeps unrelated keys and `req.env`; with `WT_LAUNCH_KEYS`
+    unset it equals `{**os.environ, **req.env}` (acceptance 4).
   - `test_launch_registers_once_before_exec`: the fake `execvpe` asserts that
     `sessions.jsonl` already holds the record with `source: "launch"` and the argv session
     id; a second `--resume` launch and a `record_session(..., source="follower")` of the
@@ -264,11 +287,8 @@ rate this is a small fraction of the turns removed by the lower context; it is m
     `cfg["_root"]/-slug/<sid>.jsonl` (acceptance 7).
   - `test_exec_chdir_and_env_overlay` and `test_missing_claude_binary_fails_before_register`
     (acceptance 8).
-  - `test_in_herdr_calls_tab_create_then_pane_run` with a fake `subprocess.run` that returns
-    a canned `tab create` JSON, plus the failure cases: missing binary, non-zero exit, no
-    pane id, and `--in tmux` rejected (acceptance 9).
-  - `test_json_requires_dry_run` (acceptance 10).
-  - `test_skills_mention_launcher`: greps the two SKILL.md files (acceptance 11).
+  - `test_json_requires_dry_run` (acceptance 9).
+  - `test_skills_mention_launcher`: greps the two SKILL.md files (acceptance 10).
 - **Manual verification:**
   1. Set the price: in the user config, `agentic.conductor.prices.claude-sonnet-5-5`.
   2. `wt queue conductor-launch --dry-run`; check the argv and env against the table.
