@@ -135,8 +135,8 @@ def test_rendering(env, monkeypatch, width):
     cid = _idea(cfg, repo, "IDEA-078-render", "SPEC_REVIEW")
     _review(cfg, cid, 1, "revise")
     out = _text(CQ._active_panel(Q.dashboard_payload(cfg)["active"][0]), width)
-    assert "from IDEA-078" in out and "spec review" in out and "r2 · reviewing" in out
-    assert "spec_writing" in out and "spec_review" in out
+    # SPEC-0326: the track replaces the stepper; the campaign id leads the card title
+    assert "IDEA-078-render" in out and "spec review ●" in out and "r2 · reviewing" in out
     assert "SPEC_REVIEW r2" in _text(CQ._queue_table(Q.queue_payload(cfg), width), width)
     r = run_cli(cfg, monkeypatch, ["queue", "list"])
     assert r.exit_code == 0 and "SPEC_REVIEW r2" in r.output.replace("\n", " ")
@@ -158,7 +158,7 @@ def test_active_panel_no_spec_writing(env):
     cid = _idea(cfg, repo, "IDEA-078-nospec", "SPEC_WRITING", spec=False)
     out = _text(CQ._active_panel(_item(cfg, cid)), 160)
     assert "writing…" in out and "spec review" in out
-    assert "● spec_writing" in out
+    assert "spec ●" in out                                          # SPEC-0326 track
 
 
 def test_spec_campaign_phases_unchanged(env):
@@ -170,4 +170,4 @@ def test_spec_campaign_phases_unchanged(env):
     assert "spec_review" not in str(CQ._stepper("IMPLEMENTING", 1, it["phases"]))
     out = _text(CQ._active_panel(it), 160)
     assert "spec_writing" not in out and "spec_review" not in out
-    assert "● implementing" in out and "✓ opening" in out
+    assert "impl ●" in out                                          # SPEC-0326 track

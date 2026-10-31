@@ -26,6 +26,7 @@ from ..config import load_config
 from ..console import console
 from ..report import _dump_json
 from . import gates as G
+from . import journey as JY
 from . import lease as L
 from . import mailbox as M
 from . import project as P
@@ -310,7 +311,7 @@ def _chip(label: str, n, style: str) -> Text:
                          (f" {label}", style if n else "dim"))
 
 
-def _dash_header(p: dict) -> Panel:
+def _dash_header(p: dict, width=None) -> Panel:
     lease, slots, tot = p["lease"], p["slots"], p["totals"]
     if lease.get("held"):
         runner = Text.assemble(("● ", "red" if lease.get("stale") else "green"),
@@ -322,8 +323,18 @@ def _dash_header(p: dict) -> Panel:
         runner = Text.assemble(("○ ", "red"), ("no loop running", "bold red"),
                                ("  (wt queue run)", "dim"))
     busy, total = slots.get("busy", 0), slots.get("total", 0) or 1
-    slot_txt = Text.assemble(("slots ", "dim"), _bar(busy / total, width=max(total * 3, 6),
-                                                    style="cyan"), f" {busy}/{slots.get('total')}")
+    slot_txt = Text.assemble(("campaigns ", "dim"), _bar(busy / total, width=max(total * 3, 6),
+                                                        style="cyan"), f" {busy}/{slots.get('total')}")
+    over = slots.get("over", max(0, busy - total))
+    if over:                        # SPEC-0326: the limit was lowered under running campaigns
+        slot_txt.append(f" over by {over}, no admissions until ≤{slots.get('total')}",
+                        style="yellow")
+    gs = p.get("gate_slots")
+    if gs:
+        slot_txt.append("  gates ", style="dim")
+        slot_txt.append(f"{len(gs.get('held') or [])}/{gs.get('total')}")
+        if gs.get("waiting"):
+            slot_txt.append(f" +{len(gs['waiting'])} waiting", style="yellow")
     chips = Text(" ").join([
         _chip("active", tot["active"], "cyan"), _chip("waiting", tot.get("waiting", 0), "bright_blue"),
         _owner_chip("needs you", tot.get("needs_you", 0), "yellow"), _conductor_chip(tot),
@@ -336,8 +347,13 @@ def _dash_header(p: dict) -> Panel:
     grid.add_column(justify="right", no_wrap=True)
     slot_txt.append_text(Text.assemble(("  today ", "dim"),
                                        (f"${tot['spend_today_usd']:.2f}", "bold")))
-    grid.add_row(runner, slot_txt)
-    rows = [grid, chips]
+    chips.no_wrap, chips.overflow = True, "ellipsis"
+    if width is not None and len(runner) + len(slot_txt) + 2 > width - 4:
+        slot_txt.no_wrap, slot_txt.overflow = True, "ellipsis"
+        rows = [runner, slot_txt, chips]          # narrow: one line each, never folded
+    else:
+        grid.add_row(runner, slot_txt)
+        rows = [grid, chips]
     by_project = tot.get("by_project") or {}
     if len(by_project) > 1 or p.get("project"):
         line = Text(" ")
@@ -349,6 +365,7 @@ def _dash_header(p: dict) -> Panel:
                                          "delivered")
                     if c.get(k)]
             line.append(" ▸ " + (" · ".join(bits) or "idle"), style="dim")
+        line.no_wrap, line.overflow = True, "ellipsis"
         rows.append(line)
     body = Group(*rows)
     when = (p.get("generated_at") or "")[11:19]
@@ -454,65 +471,220 @@ def _reviews_text(chips) -> Text:
     return t
 
 
-def _active_panel(it: dict) -> Panel:
-    grid = Table.grid(padding=(0, 1))
-    grid.add_column(style="dim", no_wrap=True, justify="right")
-    grid.add_column(overflow="fold")
-    idea = it.get("idea")
-    grid.add_row("spec", _idea_spec_cell(it) if idea else
-                 _spec_cell(it.get("label") or it["spec_id"] or it.get("idea_id"),
-                            it.get("spec_title")))
+_TRACK_GLYPH = {True: ("✓", "green"), False: ("✗", "red"), None: ("", "")}
+
+
+def _track_text(it: dict, width=None) -> Text:
+    """SPEC-0326: `spec ✓ → impl ✓ → gates ✗ 2 failed → triage retry → gates ●`. With `width`,
+    the oldest visits are dropped (counted in the `+N …` prefix) until the current one fits."""
+    visits = list(it.get("track") or [])
+    elided = int(it.get("track_elided") or 0)
+    while True:
+        t = _track_line(visits, elided, it.get("state"))
+        if width is None or len(t) <= width or len(visits) <= 1:
+            return t
+        visits, elided = visits[1:], elided + 1
+
+
+def _track_line(visits: list, elided: int, state) -> Text:
+    t = Text()
+    if elided:
+        t.append(f"+{elided} … ", style="dim")
+    for i, v in enumerate(visits):
+        if i:
+            t.append(" → ", style="grey50")
+        label = JY.short(v.get("state"))
+        last = i == len(visits) - 1
+        if last and v.get("state") == state:
+            t.append(f"{label} ●", style=f"bold {R.state_style(state) or 'cyan'}")
+            continue
+        glyph, style = _TRACK_GLYPH.get(v.get("ok"), ("", ""))
+        out = v.get("outcome")
+        t.append(label, style="" if v.get("ok") is not None else "dim")
+        if glyph:
+            t.append(f" {glyph}", style=style)
+        if out and out != "ok":
+            t.append(f" {out}", style=style or "dim")
+    if not visits:
+        t.append(JY.short(state) + " ●", style=f"bold {R.state_style(state) or 'cyan'}")
+    return t
+
+
+def _waiting_now(w: dict) -> Text:
+    t = Text.assemble(("⏳ ", "bold yellow"), (JY.waiting_text(w), "yellow"))
+    waited = w.get("waited_s")
+    if waited is not None:
+        t.append(f" · {_dur(waited)}", style="dim")
+    return t
+
+
+def _now_text(it: dict) -> Text:
+    """The `now` line: the running persona, a wait (gate slot, close train), the gates, idle."""
+    a, state = it.get("activity") or {}, it["state"]
+    if it.get("waiting_for"):
+        return _waiting_now(it["waiting_for"])
+    if a.get("kind") == "gates" and it.get("gate_hold"):
+        h = it["gate_hold"]
+        what = "running gates" if state == "GATING" else "closing: re-gate, rebase, merge"
+        return Text.assemble(("⚙ ", "bold blue"), what,
+                             (f" · slot {h.get('slot')} · {_dur(h.get('held_s'))}", "dim"))
+    return _activity_text(a, state)
+
+
+def _card_title(it: dict, width=None) -> Text:
+    """`campaign · spec title · STATE 12m · loop N/M · project` (SPEC-0326). With `width`, the
+    spec title is cut so the state, loop and project still fit."""
+    state = it["state"]
+    head = Text(it["campaign"], style="bold")
     if it.get("kind") == "split":                                      # SPEC-0290
-        grid.add_row("kind", Text("split", style="cyan"))
-    where = R.project_text(it.get("project"))
-    where.append(f" · {_size_tone(it)} → {it.get('profile')}", style="dim")
-    where.append_text(_source_marker(it))
-    where.append(f" · {it.get('branch') or 'no branch yet'}", style="dim")
-    grid.add_row("project", where)
-    grid.add_row("phase", _stepper(it["state"], it.get("phase_index"), it.get("phases")))
-    review = _spec_review_text(it) if idea else None
-    if review:
-        grid.add_row("spec review", review)
-    grid.add_row("now", _activity_text(it.get("activity"), it["state"]))
+        head.append(" · kind split", style="cyan")
+    tail = Text(" · ", style="grey50")
+    tail.append(state, style=f"bold {R.state_style(state)}")
+    if it.get("state_age_s") is not None:
+        tail.append(f" {_ago(it['state_age_s'])}", style="dim")
+    if it.get("park_requested"):
+        tail.append(" · park requested", style="yellow")
+    tail.append(f" · loop {it.get('loops')}", style="bold")
+    tail.append(" · ", style="grey50")
+    tail.append_text(R.project_text(it.get("project")))
+    spec = (_idea_spec_cell(it) if it.get("idea") else
+            _spec_cell(it.get("label") or it.get("spec_id") or it.get("idea_id"),
+                       it.get("spec_title")))
+    room = 40 if width is None else max(9, width - len(head) - len(tail) - 3)
+    if len(spec) > room:
+        spec.truncate(room - 1)
+        spec.append("…", style="dim")
+    return Text.assemble(head, (" · ", "grey50"), spec, tail)
+
+
+def _cost_text(it: dict) -> Text:
+    """`$2.85/$15 ━━━━━━ ~$4.00 est. · m/high-end → balanced (flag) · 8 runs · 2h`."""
     cap = it.get("cap_usd")
     cost = Text(f"${it['cost_usd']:.2f}", style="bold")
+    if cap:
+        cost.append(f"/{JY._money(cap)} ", style="dim")
+        cost.append_text(_bar(it["cost_usd"] / float(cap), width=6))
     est = (it.get("cost") or {}).get("estimated_usd") or 0.0
     if est > 0:
-        cost.append(f" (~${est:.2f} est.)", style="dim")
-    if cap:
-        cost.append(f" / ${float(cap):.2f} ", style="dim")
-        cost.append_text(_bar(it["cost_usd"] / float(cap)))
-    cost.append(f"   loops {it['loops']} · runs {it['runs']} · age {_dur(it.get('age_s'))}",
-                style="dim")
-    grid.add_row("cost", cost)
-    grid.add_row("gates", _gate_text(it.get("last_gate")))
-    grid.add_row("verdict", _verdict_text(it.get("last_verdict")))
+        cost.append(f" ~${est:.2f} est.", style="dim")
+    cost.append(f" · {_size_tone(it)} → {it.get('profile')}", style="dim")
+    cost.append_text(_source_marker(it))
+    runs = it.get("runs")
+    cost.append(f" · {runs} run{'' if runs == 1 else 's'} · {_ago(it.get('age_s'))}", style="dim")
+    return cost
+
+
+def _active_panel(it: dict, *, last_n: int = 2, width=None) -> Panel:
+    """SPEC-0326 full card: track, why, now, cost, review chips (when present), the last events
+    as sentences; the title carries campaign · spec · STATE time · loop N/M · project.
+    `width` is the card's width (for cutting the title and the track to fit)."""
+    review = _spec_review_text(it) if it.get("idea") and it["state"] in Q._SPEC_PHASES else None
+    labels = ["track", "why", "now", "cost", "last"] + (["spec review"] if review else []) + (
+        ["reviews"] if it.get("reviews") else [])
+    label_w = max(len(x) for x in labels)
+    inner = None if width is None else width - 4 - label_w - 1
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(style="dim", no_wrap=True, justify="right", min_width=label_w)
+    grid.add_column(overflow="ellipsis", no_wrap=True)
+    grid.add_row("track", _track_text(it, inner))
+    grid.add_row("why", Text(it.get("why") or "", style="italic"))
+    if review:
+        grid.add_row("spec review", review)
+    grid.add_row("now", _now_text(it))
+    grid.add_row("cost", _cost_text(it))
     if it.get("reviews"):
         grid.add_row("reviews", _reviews_text(it["reviews"]))
-    events = it.get("recent_events") or []
-    if events:
-        grid.add_row("events", Group(*[R.campaign_event(ev) for ev in events]))
-    state = it["state"]
-    if it.get("park_requested"):
-        state += " · park requested"
-    title = Text.assemble((it["campaign"], "bold"), "  ", R.project_text(it.get("project")), "  ",
-                          (state, R.state_style(it["state"])))
-    if idea and idea.get("id"):
-        title.append(f" · from {idea['id']}", style="dim")
-    return Panel(grid, title=title,
+    lines = [ln["text"] for ln in (it.get("recent_lines") or [])][-last_n:]
+    if lines:
+        grid.add_row("last", Group(*[Text(x, style="dim", no_wrap=True, overflow="ellipsis")
+                                     for x in lines]))
+    return Panel(grid, title=_card_title(it, None if width is None else width - 6),
                  title_align="left", border_style=R.state_style(it["state"]) or "cyan",
                  box=box.ROUNDED)
 
 
-def _needs_you_table(items: list) -> Table:
-    t = R.section_table(f"Needs you ({len(items)})", border_style="yellow")
+def _card_compact(it: dict, width=None) -> Group:
+    """SPEC-0326 compact card (3 lines): title, track, why (a gate-slot wait shows as ⏳)."""
+    why = Text("  ")
+    w = it.get("waiting_for")
+    if w and w.get("kind") == "gate_slot":
+        why.append("⏳ " + JY.waiting_text(w) + " · ", style="yellow")
+    why.append(it.get("why") or "", style="italic")
+    lines = [Text.assemble(("▌", R.state_style(it["state"]) or "cyan"),
+                           _card_title(it, None if width is None else width - 1)),
+             Text("  ") + _track_text(it, None if width is None else width - 2), why]
+    for ln in lines:
+        ln.no_wrap, ln.overflow = True, "ellipsis"
+    return Group(*lines)
+
+
+def _run_glyph(it: dict) -> Text:
+    if it.get("waiting_for"):
+        return Text("⏳", style="yellow")
+    kind = (it.get("activity") or {}).get("kind")
+    if kind == "run" or (kind == "gates" and it.get("gate_hold")):
+        return Text("▶", style="cyan")
+    return Text("·", style="dim")
+
+
+def _cards_rows(items: list, limit=None) -> Table:
+    """SPEC-0326 row style: `campaign  STATE ⏳/▶  loop N/M  $cost  why`, one line each."""
+    t = Table(box=None, pad_edge=False, expand=True, show_header=False, padding=(0, 1))
+    t.add_column(no_wrap=True, style="bold")
+    t.add_column(no_wrap=True)
+    t.add_column(no_wrap=True)
+    t.add_column(no_wrap=True, style="dim")
+    t.add_column(no_wrap=True, justify="right")
+    t.add_column(no_wrap=True, overflow="ellipsis", ratio=1)
+    shown = items if limit is None or len(items) <= limit else items[:max(0, limit - 1)]
+    for it in shown:
+        state = Text(it["state"], style=R.state_style(it["state"]))
+        if it.get("state_age_s") is not None:
+            state.append(f" {_ago(it['state_age_s'])}", style="dim")
+        why = Text()
+        w = it.get("waiting_for")
+        if w and w.get("kind") == "gate_slot":
+            why.append("gate slot · ", style="yellow")
+        why.append(it.get("why") or "")
+        t.add_row(it["campaign"], state, _run_glyph(it), f"loop {it.get('loops')}",
+                  f"${it['cost_usd']:.2f}", why)
+    if len(shown) < len(items):
+        t.add_row(Text(f"+{len(items) - len(shown)} more", style="dim"), "", "", "", "", "")
+    return t
+
+
+# SPEC-0326: the bottom sections' fixed row budgets; each truncates with a `+N more` row
+SECTION_ROWS = {"needs_you": 4, "conductor": 4, "waiting": 3, "spec_reviews": 3, "backlog": 4,
+                "delivered": 5}
+
+
+def _more_row(t: Table, more: int) -> None:
+    """Append `+N more` under the campaign (or spec) column of a truncated section."""
+    if more <= 0:
+        return
+    cells = [""] * len(t.columns)
+    names = [str(c.header) for c in t.columns]
+    at = next((i for i, n in enumerate(names) if n in ("campaign", "spec")), 0)
+    cells[at] = Text(f"+{more} more", style="dim")
+    t.add_row(*cells)
+
+
+def _cap(items: list, limit):
+    if limit is None or len(items) <= limit:
+        return items, 0
+    return items[:limit], len(items) - limit
+
+
+def _needs_you_table(items: list, limit=None) -> Table:
+    t = R.section_table(f"Needs you ({len(items)})", border_style="yellow", show_edge=False)
     t.add_column("campaign", no_wrap=True, style="bold")
     t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
     t.add_column("reason", style="yellow", no_wrap=True)
-    t.add_column("detail", overflow="fold", ratio=3)
+    t.add_column("detail", no_wrap=True, overflow="ellipsis", ratio=3)
     t.add_column("resume to", no_wrap=True)
     t.add_column("for", justify="right", no_wrap=True)
+    items, more = _cap(items, limit)
     for it in items:
         park = it.get("park") or {}
         reason = park.get("reason") or "?"
@@ -521,6 +693,7 @@ def _needs_you_table(items: list) -> Table:
                   Text(str(park.get("detail") or ""), style="dim"),
                   Text(str(park.get("resume_to") or ""), style=R.state_style(park.get("resume_to"))),
                   _ago(it.get("park_age_s")))
+    _more_row(t, more)
     return t
 
 
@@ -553,25 +726,27 @@ def _note_age(ts):
     return max(0, int((dt.datetime.now().astimezone() - t).total_seconds()))
 
 
-def _conductor_table(items: list) -> Table:
-    t = R.section_table(f"Conductor handling ({len(items)})", border_style="grey50")
+def _conductor_table(items: list, limit=None) -> Table:
+    t = R.section_table(f"Conductor handling ({len(items)})", border_style="grey50", show_edge=False)
     t.add_column("campaign", no_wrap=True, style="dim")
     t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8, style="dim")
     t.add_column("reason", no_wrap=True, style="dim")
-    t.add_column("decision", overflow="fold", ratio=3)
+    t.add_column("decision", no_wrap=True, overflow="ellipsis", ratio=3)
     t.add_column("for", justify="right", no_wrap=True, style="dim")
+    items, more = _cap(items, limit)
     for it in items:
         park = it.get("park") or {}
         reason = park.get("reason") or "park requested"
         t.add_row(_campaign_cell(it), R.project_text(it.get("project")),
                   _title_cell(it.get("spec_title")), reason, _decision_cell(it),
                   _ago(it.get("park_age_s")))
+    _more_row(t, more)
     return t
 
 
-def _dash_waiting(items: list) -> Table:
-    t = R.section_table(f"Waiting for a slot ({len(items)})", border_style="bright_blue")
+def _dash_waiting(items: list, limit=None) -> Table:
+    t = R.section_table(f"Waiting for a slot ({len(items)})", border_style="bright_blue", show_edge=False)
     t.add_column("campaign", no_wrap=True)
     t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
@@ -580,21 +755,23 @@ def _dash_waiting(items: list) -> Table:
     t.add_column("pri", justify="right")
     t.add_column("cost", justify="right", no_wrap=True)
     t.add_column("for", justify="right", no_wrap=True)
+    items, more = _cap(items, limit)
     for it in items:
         t.add_row(_campaign_cell(it), R.project_text(it.get("project")), _title_cell(it.get("spec_title")),
                   _size_tone(it), Text(str(it.get("resume_to") or "?"), style=R.state_style(it.get("resume_to"))),
                   str(it.get("priority")), f"${it['cost_usd']:.2f}", _ago(it.get("waiting_s")))
+    _more_row(t, more)
     return t
 
 
-def _dash_spec_reviews(items: list, generated_at=None) -> Table:
+def _dash_spec_reviews(items: list, generated_at=None, limit=None) -> Table:
     """SPEC-0217: standalone `wt spec review` runs (SPEC-0210 journal)."""
     import datetime as dt
     try:
         now = dt.datetime.fromisoformat(generated_at) if generated_at else None
     except ValueError:
         now = None
-    t = R.section_table(f"Spec reviews ({len(items)})", border_style="cyan")
+    t = R.section_table(f"Spec reviews ({len(items)})", border_style="cyan", show_edge=False)
     t.add_column("spec", no_wrap=True)
     t.add_column("status", no_wrap=True)
     t.add_column("findings", no_wrap=True, overflow="ellipsis")
@@ -602,6 +779,7 @@ def _dash_spec_reviews(items: list, generated_at=None) -> Table:
     t.add_column("when", justify="right", no_wrap=True)
     style = {"approve": "green", "revise": "yellow", "split": "yellow", "failed": "red",
              "running": "cyan"}
+    items, more = _cap(items, limit)
     for r in items:
         status = r["status"]
         counts = r.get("counts")
@@ -615,22 +793,24 @@ def _dash_spec_reviews(items: list, generated_at=None) -> Table:
             when = _ago(Q._age(r.get("ended_at"), now))
         t.add_row(str(r.get("spec_id") or "—"), Text(status, style=style.get(status, "")), findings,
                   "—" if cost is None else f"${float(cost):.2f}", when)
+    _more_row(t, more)
     return t
 
 
-def _dash_backlog(items: list):
+def _dash_backlog(items: list, limit=None):
     if not items:
         return Group(Text("Backlog (0)", style="bold"),
                      Text("  empty — wt queue add SPEC-NNNN --yes", style="dim"))
-    t = R.section_table(f"Backlog ({len(items)})")
+    t = R.section_table(f"Backlog ({len(items)})", show_edge=False)
     t.add_column("#", justify="right", style="dim")
     t.add_column("campaign", no_wrap=True)
     t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
     t.add_column("size", no_wrap=True)
     t.add_column("pri", justify="right")
-    t.add_column("status", overflow="fold", ratio=2, min_width=14)
+    t.add_column("status", no_wrap=True, overflow="ellipsis", ratio=2, min_width=14)
     t.add_column("waiting", justify="right", no_wrap=True)
+    items, more = _cap(items, limit)
     for b in items:
         status = (Text("● ready", style="green") if b.get("ready")
                   else Text.assemble(("◌ waiting on ", "yellow"),
@@ -640,62 +820,133 @@ def _dash_backlog(items: list):
                   _title_cell(b.get("spec_title")), _size_tone(b),
                   Text(str(pri), style="bold" if pri is not None and pri <= 2 else "dim"),
                   status, _ago(b.get("age_s")))
+    _more_row(t, more)
     return t
 
 
-def _dash_delivered(items: list, hours: int, width: int = 120):
+def _dash_delivered(items: list, hours: int, width: int = 120, limit=None):
     wide = width >= 110
-    t = R.section_table(f"Recently delivered ({len(items)}, last {hours}h)")
-    t.add_column("ago", justify="right", no_wrap=True, style="dim")
+    narrow = width < 90                   # SPEC-0326: beside the backlog, no project column
+    t = R.section_table(f"Recently delivered ({len(items)}, last {hours}h)", show_edge=False)
+    t.add_column("ago", justify="right", no_wrap=True, style="dim", min_width=3)
     t.add_column("campaign", no_wrap=True)
-    t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
+    if not narrow:
+        t.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
     t.add_column("title", no_wrap=True, overflow="ellipsis", ratio=1, min_width=8)
     t.add_column("outcome", no_wrap=True)
     if wide:
         t.add_column("ref", no_wrap=True, overflow="ellipsis")
-    t.add_column("cost", justify="right", no_wrap=True)
+    t.add_column("cost", justify="right", no_wrap=True, min_width=5)
     if wide:
         t.add_column("took", justify="right", no_wrap=True)
     glyph = {"MERGED": "✓ merged", "HANDED_OFF": "↗ handed off", "ABANDONED": "✗ abandoned"}
+    total = len(items)
+    items, more = _cap(items, limit)
     for d in items:
         ref = d.get("pr_url") or ((d.get("merged_sha") or "")[:7])
         outcome = Text(glyph.get(d["state"], d["state"]), style=R.state_style(d["state"]))
-        cells = [_ago(d.get("finished_age_s")), d["campaign"], R.project_text(d.get("project")),
+        cells = [_ago(d.get("finished_age_s")), d["campaign"]] + (
+            [] if narrow else [R.project_text(d.get("project"))]) + [
                  _title_cell(d.get("spec_title")),
                  outcome] + ([ref] if wide else []) + [f"${d['cost_usd']:.2f}"]
         t.add_row(*cells + ([_dur(d.get("duration_s"))] if wide else []))
-    if not items:
+    _more_row(t, more)
+    if not total:
         return Group(t, Text("  nothing in this window", style="dim"))
     return t
 
 
-def _dashboard(p: dict, width: int = 120, recent_hours: int = 24) -> Group:
-    """The `wt queue watch` frame for a `wt.queue.dashboard.v1` payload."""
-    parts = [_dash_header(p)]
-    active = [_active_panel(it) for it in p["active"]]
-    parts.append(Text.assemble((f"Active ({len(active)})", "bold")))
-    if not active:
-        parts.append(Text("  No active campaigns", style="dim"))
-    elif width >= 140 and len(active) > 1:
-        grid = Table.grid(expand=True, padding=(0, 1))
+SIDE_BY_SIDE = 150           # SPEC-0326: Backlog | Recently delivered from this width
+DEFAULT_HEIGHT = 50          # SPEC-0326: the `--once` frame's height without a terminal
+DENSITIES = ("full", "compact", "row")
+
+
+def _lines(renderable, width: int) -> int:
+    """How many terminal lines `renderable` takes at `width`."""
+    import io
+    from rich.console import Console
+    c = Console(width=width, file=io.StringIO(), force_terminal=False, color_system=None)
+    return len(c.render_lines(renderable, c.options.update(width=width), pad=False))
+
+
+def card_columns(width: int, n: int) -> int:
+    """1 column; 2 when width >= 140; 3 when width >= 210 (never more than the cards)."""
+    return max(1, min(n, 3 if width >= 210 else 2 if width >= 140 else 1))
+
+
+def _card_grid(items: list, width: int, density: str):
+    cols = card_columns(width, len(items))
+    cw = (width - (cols - 1)) // cols
+    cards = [_active_panel(it, width=cw) if density == "full" else _card_compact(it, cw)
+             for it in items]
+    if cols == 1:
+        return Group(*cards)
+    grid = Table.grid(expand=True, padding=(0, 1))
+    for _ in range(cols):
         grid.add_column(ratio=1)
-        grid.add_column(ratio=1)
-        for i in range(0, len(active), 2):
-            grid.add_row(*(active[i:i + 2] + ([Text("")] if i + 1 >= len(active) else [])))
+    for i in range(0, len(cards), cols):
+        row = cards[i:i + cols]
+        grid.add_row(*(row + [Text("")] * (cols - len(row))))
+    return grid
+
+
+def active_region(items: list, width: int, budget=None) -> tuple:
+    """`(density, renderable)`: the densest card style that fits every active campaign in
+    `budget` lines — full, then compact, then one row each (truncated with `+N more` when even
+    the rows do not fit). `budget=None` (no height limit) is always full."""
+    if not items:
+        return "full", Text("  No active campaigns", style="dim")
+    for density in DENSITIES[:2]:
+        r = _card_grid(items, width, density)
+        if budget is None or _lines(r, width) <= budget:
+            return density, r
+    return "row", _cards_rows(items, None if budget is None else max(1, budget))
+
+
+def _bottom_sections(p: dict, width: int, recent_hours: int) -> list:
+    """SPEC-0326: the fixed-budget sections under the cards; Backlog and Recently delivered
+    side by side when width >= 120."""
+    parts = []
+    if p.get("needs_you"):
+        parts.append(_needs_you_table(p["needs_you"], SECTION_ROWS["needs_you"]))
+    if p.get("conductor_handling"):
+        parts.append(_conductor_table(p["conductor_handling"], SECTION_ROWS["conductor"]))
+    if p.get("spec_reviews"):
+        parts.append(_dash_spec_reviews(p["spec_reviews"], p.get("generated_at"),
+                                        SECTION_ROWS["spec_reviews"]))
+    if p.get("waiting"):
+        parts.append(_dash_waiting(p["waiting"], SECTION_ROWS["waiting"]))
+    if width >= SIDE_BY_SIDE:
+        half = (width - 2) * 2 // 5             # the backlog has more columns: 3:2
+        grid = Table.grid(expand=True, padding=(0, 2))
+        grid.add_column(ratio=3)
+        grid.add_column(ratio=2)
+        grid.add_row(_dash_backlog(p["backlog"], SECTION_ROWS["backlog"]),
+                     _dash_delivered(p["delivered"], recent_hours, half,
+                                     SECTION_ROWS["delivered"]))
         parts.append(grid)
     else:
-        parts.extend(active)
-    if p.get("needs_you"):
-        parts.append(_needs_you_table(p["needs_you"]))
-    if p.get("conductor_handling"):
-        parts.append(_conductor_table(p["conductor_handling"]))
-    if p.get("spec_reviews"):
-        parts.append(_dash_spec_reviews(p["spec_reviews"], p.get("generated_at")))
-    if p.get("waiting"):
-        parts.append(_dash_waiting(p["waiting"]))
-    parts.append(_dash_backlog(p["backlog"]))
-    parts.append(_dash_delivered(p["delivered"], recent_hours, width))
-    return Group(*parts)
+        parts.append(_dash_backlog(p["backlog"], SECTION_ROWS["backlog"]))
+        parts.append(_dash_delivered(p["delivered"], recent_hours, width,
+                                     SECTION_ROWS["delivered"]))
+    return parts
+
+
+def _dashboard(p: dict, width: int = 120, recent_hours: int = 24, height=None) -> Group:
+    """The `wt queue watch` frame for a `wt.queue.dashboard.v1` payload. With `height`, the
+    header and the bottom sections keep their fixed budget and the active cards get the rest
+    (SPEC-0326), so nothing is pushed off the screen."""
+    head = _dash_header(p, width)
+    bottom = _bottom_sections(p, width, recent_hours)
+    budget = None
+    if height is not None:
+        budget = int(height) - _lines(head, width) - _lines(Group(*bottom), width) - 1
+    items = p["active"]
+    density, region = active_region(items, width, budget)
+    title = Text.assemble((f"Active ({len(items)})", "bold"))
+    if items and density != "full":
+        title.append(f"  {density} view", style="dim")
+    return Group(head, title, region, *bottom)
 
 
 def _journal_lines(rec: dict) -> Group:
@@ -1075,11 +1326,17 @@ def attach(queue_group):
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.dashboard.v1 JSON once")
     @click.option("--iterations", type=int, default=0, hidden=True,
                   help="stop after N refreshes (0 = until Ctrl-C)")
+    @click.option("--height", type=int, default=None, hidden=True,
+                  help="frame height in lines (default: the terminal's; --once off a "
+                       "terminal: 50)")
     @click.pass_obj
-    def queue_watch(cfg, interval, project, recent, recent_hours, once, as_json, iterations):
-        """Live dashboard: the runner, active campaigns (what each is doing now, gates, verdict,
-        per-reviewer review chips, cost), what needs attention, the backlog and recently
-        delivered work (Ctrl-C to stop).
+    def queue_watch(cfg, interval, project, recent, recent_hours, once, as_json, iterations,
+                    height):
+        """Live dashboard: the runner, active campaigns (their journey track, why they are
+        where they are, what each is doing or waiting for now, cost, review chips, the last
+        events), what needs attention, the backlog and recently delivered work (Ctrl-C to
+        stop). The bottom sections keep a fixed size; the cards shrink (full, compact, one row)
+        to fit the terminal height (SPEC-0326).
 
         Review chips: `▶ 3m` running, `✓ 92` pass with score, `✗ 2mf/1mj` fix with
         must_fix/major counts, `! failed` no valid verdict, `·` not run."""
@@ -1090,21 +1347,25 @@ def attach(queue_group):
         if as_json:
             _dump_json(payload())
             return
+        def frame():
+            h = height or (console.height if console.is_terminal else DEFAULT_HEIGHT)
+            return _dashboard(payload(), console.width, recent_hours, h)
+
         if once:
-            console.print(_dashboard(payload(), console.width, recent_hours))
+            console.print(frame())
             return
         from rich.live import Live
         n = 0
         # the alternate screen redraws in place (no scroll-back ghosts) and restores the
         # terminal on exit; `--once` is the frame to keep
-        with Live(_dashboard(payload(), console.width, recent_hours), console=console,
-                  refresh_per_second=4, screen=console.is_terminal) as live:
+        with Live(frame(), console=console, refresh_per_second=4,
+                  screen=console.is_terminal) as live:
             while True:
                 n += 1
                 if iterations and n >= iterations:
                     break
                 time.sleep(interval)
-                live.update(_dashboard(payload(), console.width, recent_hours))
+                live.update(frame())
 
     @queue_group.command("tick")
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.tick.v1 JSON")

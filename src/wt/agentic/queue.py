@@ -5691,15 +5691,27 @@ def _spec_review_rows(cfg, now, recent_hours) -> list[dict]:
     return [r for _, r in running] + [r for _, r in done]
 
 
+def _gate_occupancy(cfg) -> dict | None:
+    """SPEC-0326: the host-wide gate-slot snapshot for the dashboard, None when unreadable."""
+    from . import gate_slots
+    try:
+        return gate_slots.occupancy(cfg)
+    except (OSError, ValueError):
+        return None
+
+
 def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None) -> dict:
     """`wt.queue.dashboard.v1`: everything `wt queue watch` shows — the runner, the active
     campaigns with what each is doing now, what needs attention, the backlog, and what was
     recently delivered."""
     import datetime as dt
+    from . import journey as JY
     now = now or dt.datetime.now().astimezone()
     states = {s.get("id"): s for s in store.list_campaigns(cfg, include_terminal=True,
                                                             project=project)}
     base = queue_payload(cfg, include_terminal=True, project=project, now=now)
+    occupancy = _gate_occupancy(cfg)                  # SPEC-0326: who holds / waits for gates
+    slots = {**base["slots"], "over": max(0, base["slots"]["busy"] - base["slots"]["total"])}
     active, needs_you, conductor, waiting, backlog, delivered = [], [], [], [], [], []
     spend_today = 0.0
     reviewers_cache: dict = {}
@@ -5727,9 +5739,11 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                     "finished_age_s": age})
             continue
         if state == "WAITING":
+            wf = JY.waiting_for(st, [], busy=slots["busy"], total=slots["total"], now=now)
             waiting.append({**it, "spec_title": title,
                             "resume_to": (st.get("waiting") or {}).get("resume_to"),
-                            "waiting_s": _age((st.get("waiting") or {}).get("since"), now)})
+                            "waiting_s": _age((st.get("waiting") or {}).get("since"), now),
+                            "waiting_for": wf, "why": JY.why(st, [], wf)})
             continue
         if state == "QUEUED":
             backlog.append({"position": 0, "priority": it["priority"], "ready": True,
@@ -5740,6 +5754,11 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                             "spec_title": title, "project": it["project"], "age_s": it["age_s"],
                             "size": it["size"], "tone": it["tone"], "profile": it["profile"],
                             "profile_source": it["profile_source"]})
+            b = backlog[-1]
+            b["waiting_for"] = JY.waiting_for({"state": "QUEUED",
+                                               "backlog": {"blocked_by": b["blocked_by"]}}, [])
+            b["why"] = JY.why({"state": "QUEUED"}, [], b["waiting_for"]) if b["waiting_for"] \
+                else "ready: admitted at the next free slot"
             continue
         ledger = store.read_ledger(cfg, it["campaign"])
         if state == "PARKED" or it["park_requested"]:
@@ -5754,7 +5773,8 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                                      "ts": req.get("at"), "by": req.get("by") or "human"},
                         "parked_at": parked_at}
             row = {**it, "spec_title": title, "park": park or None,
-                   "park_age_s": _age(parked_at, now), "last_verdict": _verdict_summary(st)}
+                   "park_age_s": _age(parked_at, now), "last_verdict": _verdict_summary(st),
+                   "why": JY.why(st, ledger, loops=it["loops"])}
             (needs_you if park.get("owner") == "human" else conductor).append(row)
             if state == "PARKED":
                 continue
@@ -5769,12 +5789,25 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
         phases = phases_for(st)
         if state != "REVIEWING" and all(c["status"] == "not_run" for c in reviews):
             reviews = []
+        visits, elided = JY.track(ledger, state)
+        wf = JY.waiting_for(st, ledger, occupancy, now=now)
+        hold = next((h for h in (occupancy or {}).get("held") or []
+                     if h.get("campaign") == it["campaign"]), None)
         active.append({**it, "spec_title": title,
                        "phases": list(phases),
                        "phase_index": phases.index(state) if state in phases else None,
                        "activity": _activity(st, ledger, now), "reviews": reviews,
                        "last_gate": _gate_summary(st), "last_verdict": _verdict_summary(st),
-                       "recent_events": ledger[-3:]})
+                       "recent_events": ledger[-3:],
+                       # SPEC-0326: the journey, the why sentence and what it waits on
+                       "track": visits, "track_elided": elided, "waiting_for": wf,
+                       "why": JY.why(st, ledger, wf, loops=it["loops"]),
+                       "gate_hold": ({"slot": hold.get("slot"), "since": hold.get("since"),
+                                      "held_s": _age(hold.get("since"), now)} if hold else None),
+                       "recent_lines": JY.recent_lines(ledger, 3),
+                       "state_age_s": _age(next((e.get("ts") for e in reversed(ledger)
+                                                 if e.get("type") == "transition"
+                                                 and e.get("to") == state), None), now)})
     conductor.sort(key=lambda c: (not (c["park"] or {}).get("overdue"),
                                   -(c.get("park_age_s") or 0)))
     needs_you.sort(key=lambda c: -(c.get("park_age_s") or 0))
@@ -5796,7 +5829,11 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
             c[key] += 1
     return {
         "schema": "wt.queue.dashboard.v1", "generated_at": now.isoformat(timespec="seconds"),
-        "project": project, "lease": base["lease"], "slots": base["slots"],
+        "project": project, "lease": base["lease"], "slots": slots,
+        "gate_slots": ({"total": occupancy.get("slots"),
+                        "held": [h.get("campaign") for h in occupancy.get("held") or []],
+                        "waiting": [w.get("campaign") for w in occupancy.get("waiting") or []]}
+                       if occupancy is not None else None),
         "totals": {"active": len(active), "attention": len(attention), "waiting": len(waiting),
                    "needs_you": len(needs_you), "conductor_handling": len(conductor),
                    "conductor_overdue": sum(1 for c in conductor if c["park"].get("overdue")),

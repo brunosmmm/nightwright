@@ -530,6 +530,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0317](./specs/0317-conductor-digest-is-delivered-every-30-min-on-an.md) | Quiet follower skips a conductor_digest that holds only empty pings (nothing to act on) | feature | done | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0320](./specs/0320-skills-install-provisions-agent-allow-rules.md) | `wt skills install` provisions the conductor and steward allow rules for wt commands | feature | done | M10: agentic MVP | 2026-10-31 |
 | [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) | Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote | feature | done | M10: agentic MVP | 2026-10-31 |
+| [SPEC-0326](./specs/0326-queue-watch-redesign-fixed-sections-adaptive-cards.md) | queue watch redesign: fixed sections, adaptive cards, journey track, why line, readable events | feature | done | M9: agentic workflow | 2026-10-31 |
 
 ## Superseded / rejected
 
