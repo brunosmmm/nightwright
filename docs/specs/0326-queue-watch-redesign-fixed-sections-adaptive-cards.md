@@ -201,4 +201,41 @@ spec_review / spec_accepted, close, open, human_decision, idea_reconciled. Unkno
 
 Built directly on main at the human's request (2026-10-31), no queue campaign.
 
-AS_SHIPPED_PLACEHOLDER
+- New module `src/wt/agentic/journey.py` (track, why, waiting_for, event sentences);
+  `queue.dashboard_payload` gains the additive fields above and `_gate_occupancy`; the
+  renderer in `src/wt/agentic/cli_queue.py` is rebuilt as described (`_active_panel`,
+  `_card_compact`, `_cards_rows`, `active_region`, `_bottom_sections`, `SECTION_ROWS`,
+  `_more_row`; `_stepper` stays for callers but no longer renders in the cards).
+- Side-by-side Backlog | Recently delivered starts at 150 columns, not 120 (see Design).
+- Slots `5/3` finding: `balanced.slots` was lowered 6 → 3 by a config reload at 10:00:08
+  while six campaigns were active; nothing evicts a running campaign, so busy > total is
+  real and drains. The header now says `over by N, no admissions until ≤T` and shows the
+  separate host gate-slot pool (`gates 2/2 +2 waiting`).
+- Tests: `tests/test_agentic_dashboard_journey.py` (17 tests) plus the updated expectations in
+  `tests/test_agentic_dashboard_spec_phase.py` (track instead of stepper, no `from IDEA-…`
+  suffix); the rest of the dashboard and TUI tests pass unchanged. Full suite: see the
+  landing commit.
+
+Manual: `COLUMNS=160 uv run wt queue watch --once --height 50` on live data (the agent shell
+has no tty, so the width was set to a typical terminal's), five campaigns in GATING /
+IMPLEMENTING with fix loops and gate-slot waits; the 42-line frame fits in 50 lines with every
+bottom section showing:
+
+```
+╭─ wt queue ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ● runner pid 84847  heartbeat 20s ago                          campaigns ━━━━━━━━━ 5/3 over by 2, no admissions until ≤3  gates 2/2 +2 waiting  today $58.94 │
+│  5  active  0  waiting needs you 0 conductor 7  1  ready  0  blocked  5  delivered                                                                           │
+│  Meta-Tools ▸ 5 active · 7 conductor · 1 backlog · 4 delivered   comfort-assistant ▸ 1 delivered                                                             │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 11:10:36 ─╯
+Active (5)  compact view
+▌IDEA-409-20261031-6d59 · SPEC-0324 Quiet … · GATING 7m · loop 0/3 · Meta-Tools ▌IDEA-408-20261031-4948 · SPEC-0321 … · IMPLEMENTING 1m · loop 1/3 · Meta-Tools
+  +4 … impl ✓ → gates ✗ 2 failed → triage retry → gates ●                         +5 … gates ✗ 2 failed → triage retry → gates ✗ 1 failed → triage fix → impl ●
+  ⏳ waiting for a gate slot (2/2 held: IDEA-508, IDEA-512) · re-running gates…   back to implementing: triage says the gate failure is real
+▌IDEA-512-20261031-55f0 · SPEC-0322 Make t… · GATING 1h · loop 0/3 · Meta-Tools ▌IDEA-509-20261031-f563 · SPEC-0319 `wt q… · GATING 13m · loop 2/3 · Meta-Tools
+  +2 … spec ✓ → spec review ✓ accepted → impl ✓ → gates ●                         +9 … triage fix → impl ✓ → gates ✗ 2 failed → triage retry → gates ●
+  gating the implementation                                                       ⏳ waiting for a gate slot (2/2 held: IDEA-508, IDEA-512) · re-running gates:…
+▌IDEA-508-20261031-c3c1 · SPEC-0318 A par… · GATING 27m · loop 2/3 · Meta-Tools
+  +9 … triage fix → impl ✓ → gates ✗ 3 failed → triage retry → gates ●
+  re-running gates: triage says the failures are flaky
+Conductor handling (7)
+```
