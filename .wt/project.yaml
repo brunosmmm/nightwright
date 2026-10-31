@@ -12,7 +12,24 @@ gates:
     cmd: python3 tools/spec_lint.py --write-ledger >/dev/null && python3 tools/spec_lint.py
     timeout_s: 120
     required: true
+  # SPEC-0328: tiered gates. The fix loop (GATING after implement / each fix) runs only the
+  # tests the branch affects (static import graph, tools/affected_tests.py; it falls back to the
+  # full suite when selection is unsafe) plus a ~1 s config smoke set; the full suite runs once,
+  # in the close re-gate on the rebased tree.
+  - name: pytest-affected
+    when: loop
+    cmd: >-
+      python3 tools/affected_tests.py
+      --include tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py
+      --run uv run pytest -q -x -n 2
+    retry_cmd: uv run pytest -q -n 0 {failing}
+    results: {format: pytest}
+    # the fallback is the full suite, so the full suite's limit
+    timeout_s: 2400
+    required: true
+    retries: 2
   - name: pytest
+    when: close
     # SPEC-0309: 4 xdist workers (8 cores / 2 gate slots); the targeted rerun stays serial.
     cmd: uv run pytest -q -x -n 4
     retry_cmd: uv run pytest -q -n 0 {failing}
