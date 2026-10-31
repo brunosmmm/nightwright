@@ -34,11 +34,12 @@ any decision (the conductor's act of parking was the decision), which is exactly
 [SPEC-0298](./0298-agentic-mvp-cheap-durable-quiet-conductor.md) exists to remove (wakeups per
 merge, conductor cost as an MVP metric).
 
-The echo is also safe to remove. Two backstops already cover a conductor-made park that is
-left without a follow-up: `park_undecided` (SPEC-0222, "you left a park without a decision note
-for 5 min") wakes the conductor when a conductor-owned park has no decision note after
-`park_decide_s`, and the periodic `conductor_ping` fingerprint lists conductor-owned parks with
-`decided: false`. Neither depends on the `parked` event being delivered.
+The echo is also safe to remove. Every park the conductor can make is one that needs no
+follow-up from it: `wt queue park` always parks with reason `human`, which `park_view` treats as
+decided by construction (SPEC-0222: a deliberate hold is its own decision), and `wt queue
+escalate` parks `human_decision`, which is owned by the human and followed through the
+`escalation` / `escalation_answered` events. So the park event tells the conductor nothing it
+must act on.
 
 ## Goals / Non-goals
 
@@ -54,8 +55,8 @@ for 5 min") wakes the conductor when a conductor-owned park has no decision note
 **Non-goals**
 - Changing what `events.sync` appends or what any other reader (`--all`, TUI, steward
   followers) sees: the held event stays in `events.jsonl` and in `wt queue events` history.
-- Changing `park_undecided`, the `conductor_ping` parked fingerprint, `park_owner` or
-  `park_view`: those are the backstop that makes the hold safe.
+- Changing `park_undecided`, the `conductor_ping` parked fingerprint, `park_owner`,
+  `PARK_OWNERS` or `park_view`: the hold does not depend on them, and they stay as they are.
 - Holding parks made by other actors (a human parking from the CLI, a steward) or holding
   `resumed`/`escalation` variants beyond what `RULES` already holds.
 - Distinguishing a conductor park from a conductor sub-agent's park: both act as
@@ -72,8 +73,8 @@ addition to the existing `data.auto` hold; every other `parked` event wakes. The
 1. `src/wt/agentic/quiet.py`, `classify`, `parked` branch: replace
    `return "hold" if data.get("auto") else "wake"` with a hold when `data.get("auto")` or
    `ev.get("by") == "conductor"`, and extend the comment to cite SPEC-0315 ("a park the
-   conductor itself made: it already knows; `park_undecided` and the ping fingerprint catch a
-   park it leaves undecided"). Compare against the literal `"conductor"`, the canonical address
+   conductor itself made (`wt queue park` → reason human, decided; `wt queue escalate` →
+   human_decision, human-owned): it already knows"). Compare against the literal `"conductor"`, the canonical address
    `mailbox.validate_address` returns, with no case folding or prefix matching, so
    `steward:conductor`-like or `Conductor` values do not match. A missing `by` (older events,
    synthetic test events) does not match and wakes.
@@ -84,9 +85,8 @@ addition to the existing `data.auto` hold; every other `parked` event wakes. The
    bullet: extend the `parked` item to read "a park the queue decided itself, with auto set in
    its data: SPEC-0302, or a park you made yourself, with `by` set to `conductor`: SPEC-0315;
    every other parked wakes you". The type names in the bullet do not change, so
-   `test_conduct_skill_quiet_rules_match_code` is unaffected. Add one sentence to the
-   `park_undecided` row: a park you made yourself arrives only through this event if you leave
-   it without a decision note.
+   `test_conduct_skill_quiet_rules_match_code` is unaffected. The
+   `park_undecided` row is not edited.
 4. No migration. `classify` reads `by` on every poll. A running conductor follower picks up the
    change when `wt queue events --follow` restarts (the `code_changed` re-arm of
    [SPEC-0229](./0229-runner-exit-paths-and-draining-ticks-with-detached-runs.md) /
@@ -125,9 +125,10 @@ addition to the existing `data.auto` hold; every other `parked` event wakes. The
       printed, and `events.jsonl` holds both unchanged.
 - [ ] `wt queue wakeups` counts the conductor-made `parked` under `held` and the other under
       `delivered` in `by_type["parked"]`.
-- [ ] A campaign parked by the conductor with `wt queue park --by conductor` and left without a
-      decision note still produces a `park_undecided` event after `park_decide_s` (the backstop
-      is unchanged), and that event wakes the conductor.
+- [ ] A campaign parked with `wt queue park --by conductor` shows `owner: conductor,
+      decided: true` in `park_view` / `ping_digest` before and after this change, and a
+      `wt queue escalate` park shows `owner: human` (unchanged; this spec does not touch
+      `park_view`).
 - [ ] `skills/wt-conduct/SKILL.md`'s *Quiet stream* paragraph names the `by` condition for
       `parked`, and `test_conduct_skill_quiet_rules_match_code` passes.
 - [ ] The existing suite passes, with the `parked` expectations in `tests/test_agentic_quiet.py`
@@ -150,10 +151,11 @@ addition to the existing `data.auto` hold; every other `parked` event wakes. The
     second run with `quiet=False` and a `steward` reader prints both.
   - `test_wakeups_report_counts_conductor_park_as_held`: after the follow above,
     `QT.wakeups_report(cfg)["by_type"]["parked"] == {"wake": 1, "hold": 1}`.
-  - `test_conductor_park_left_undecided_still_wakes` (in the file that tests
-    `park_undecided`, `tests/test_agentic_events.py` or its equivalent): a campaign parked by
-    the conductor with no note, past `park_decide_s`, yields `park_undecided` from the
-    watchdog sweep, and `classify` returns `"wake"` for it.
+  - `test_conductor_park_view_unchanged` (in `tests/test_agentic_events.py`, next to
+    `test_park_undecided_not_before_threshold_or_for_human_reason`): a campaign parked via
+    `wt queue park --by conductor` yields `park_view` / `ping_digest` values
+    `owner == "conductor"` and `decided is True`, and a campaign parked via `wt queue escalate`
+    yields `owner == "human"`. Neither produces a `park_undecided` event past `park_decide_s`.
   - The existing `test_conduct_skill_quiet_rules_match_code` in `tests/test_skills.py` must
     pass unchanged, and `test_decision_table_informational_rows_covered_by_rules` stays green.
 - **Manual verification:** in a scratch data dir with a queued campaign, run
@@ -185,4 +187,5 @@ addition to the existing `data.auto` hold; every other `parked` event wakes. The
 ## Open questions
 
 - None. A conductor sub-agent that parks a campaign acts as `conductor` and is held the same
-  way (see Non-goals); `park_undecided` covers the case where nothing follows.
+  way (see Non-goals); a conductor park is `human` (decided) or `human_decision` (human-owned),
+  so nothing needs to follow.
