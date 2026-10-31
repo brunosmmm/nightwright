@@ -1,9 +1,10 @@
 ---
 id: SPEC-0319
 title: "`wt queue conductor-launch` / `steward-launch`: start the conductor and stewards with forced context limits, a pinned model and a pre-registered session id"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-31
+updated: 2026-10-31
 milestone: "M10: agentic MVP"
 kind: feature
 parent: SPEC-0298
