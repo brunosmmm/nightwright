@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+import waits
 from test_agentic_e2e import (_git, added, impl_done, make_cfg, make_repo, review, run_cli,
                               script)
 from test_agentic_e2e import _git_env  # noqa: F401 — autouse fixture: git identity
@@ -33,12 +34,16 @@ def test_cost_wakeups_brief_and_scorecard_agree(tmp_path, monkeypatch):
     (repo / "gates" / "lint.sh").write_text("true # edited\n")
     assert run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"]).exit_code == 0
     assert S.read_state(cfg, c1)["park"]["reason"] == "main_dirty"
+    # ledger timestamps have second resolution: let the clock tick past the open event so the
+    # campaign's live window (open -> terminal transition, end exclusive) is never empty
+    parked_at = S.now_iso()
     r = run_cli(cfg, monkeypatch, ["queue", "decision", c1, "--kind", "wait", "--rule",
                                    "parked.main_dirty", "main is dirty; the human cleans it"])
     assert r.exit_code == 0, r.output
     brief = run_cli(cfg, monkeypatch, ["queue", "conductor-brief"]).output
     assert c1 in brief and "decided=true" in brief and "wait/parked.main_dirty" in brief
     _git(repo, "checkout", "--", "gates/lint.sh")
+    assert waits.until(lambda: S.now_iso() != parked_at)
     assert run_cli(cfg, monkeypatch, ["queue", "resume", c1, "--yes"]).exit_code == 0
     assert run_cli(cfg, monkeypatch, ["queue", "run", "--until-idle"]).exit_code == 0
     assert S.read_state(cfg, c1)["state"] == "MERGED"
