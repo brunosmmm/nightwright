@@ -29,14 +29,15 @@ def campaign_group():
 
 def register(cli, projects_group):
     """Attach the agentic commands to the root `cli` and the existing `projects` group."""
-    from . import (cli_campaign, cli_conduct, cli_conductor, cli_gate_slots, cli_profiles,
-                   cli_projects, cli_queue)
+    from . import (cli_campaign, cli_conduct, cli_conductor, cli_gate_slots, cli_launch,
+                   cli_profiles, cli_projects, cli_queue)
 
     cli_projects.attach(projects_group)
     cli_campaign.attach(campaign_group)
     cli_queue.attach(queue_group)
     cli_conduct.attach(queue_group)
     cli_conductor.attach(queue_group)
+    cli_launch.attach(queue_group)
     cli_gate_slots.attach(queue_group)
     cli.add_command(queue_group)
     cli.add_command(campaign_group)

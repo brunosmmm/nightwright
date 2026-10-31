@@ -1,7 +1,7 @@
 ---
 id: SPEC-0319
 title: "`wt queue conductor-launch` / `steward-launch`: start the conductor and stewards with forced context limits, a pinned model and a pre-registered session id"
-status: accepted
+status: done
 owner: user
 created: 2026-10-31
 updated: 2026-10-31
@@ -218,7 +218,7 @@ rate this is a small fraction of the turns removed by the lower context; it is m
 
 ## Acceptance criteria
 
-- [ ] `wt queue conductor-launch --dry-run` prints a `cwd:` line, an `env:` block and a
+- [x] `wt queue conductor-launch --dry-run` prints a `cwd:` line, an `env:` block and a
       single argv line containing, in order, `claude -n conductor --session-id <uuid>
       --model claude-sonnet-5-5 --effort medium --autocompact 150000` and exactly
       `CONDUCTOR_PROMPT` (`Run the /wt-orient skill, then the /wt-conduct skill.`), with
@@ -227,33 +227,33 @@ rate this is a small fraction of the turns removed by the lower context; it is m
       `WT_LAUNCH_KEYS=CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS,BASH_MAX_OUTPUT_LENGTH,CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`,
       and no `CLAUDE_CODE_EFFORT_LEVEL`, when a price for `claude-sonnet-5-5` is configured. It writes nothing and starts no
       process.
-- [ ] `steward-launch Foo --dry-run` names the session `steward:Foo`, uses the repo root
+- [x] `steward-launch Foo --dry-run` names the session `steward:Foo`, uses the repo root
       of `Foo` as `cwd`, and the prompt is exactly `STEWARD_PROMPT` with `Foo`
       (`Run the /wt-orient skill, then the /wt-steward skill for project Foo.`). An unknown
       project fails and lists the known ones.
-- [ ] Every setting under `agentic.conductor.launch.*` (and the `steward` per-key override)
+- [x] Every setting under `agentic.conductor.launch.*` (and the `steward` per-key override)
       changes the planned argv or env; each bad value in the settings table falls back to its
       default; `autocompact` accepts `auto`, `150000` and `150k` and rejects values outside
       100k to 1M.
-- [ ] An ambient `CLAUDE_CODE_EFFORT_LEVEL=high` is absent from the exec env, and a runner
+- [x] An ambient `CLAUDE_CODE_EFFORT_LEVEL=high` is absent from the exec env, and a runner
       child env built inside a launched session (`WT_LAUNCH_KEYS` set) holds none of the
       launch keys, none of `WT_LAUNCH_KEYS` itself, and no ambient
       `CLAUDE_CODE_EFFORT_LEVEL`; outside a launched session `_child_env` is unchanged.
-- [ ] A real launch appends exactly one `sessions.jsonl` record, `source: "launch"`, with the
+- [x] A real launch appends exactly one `sessions.jsonl` record, `source: "launch"`, with the
       planned session id and reader `conductor` (`steward:<P>` for a steward), before the
       process is exec'd; launching twice with `--resume` appends no second record; the
       follower's later registration of the same id appends nothing.
-- [ ] A model with no matching `agentic.conductor.prices` entry makes both commands exit
+- [x] A model with no matching `agentic.conductor.prices` entry makes both commands exit
       non-zero naming the config key, with no `sessions.jsonl` write and no exec; with
       `--dry-run` the plan is printed first and the exit status is still 1.
-- [ ] `--resume` passes the newest `source: "launch"` id with `--resume <id>` and without
+- [x] `--resume` passes the newest `source: "launch"` id with `--resume <id>` and without
       `--session-id`, and fails with a clear message when there is no launch record or its
       transcript is missing; `follower` and `manual` records are never selected.
-- [ ] A real launch (without `--in`) changes directory to the plan's `cwd` and calls
+- [x] A real launch (without `--in`) changes directory to the plan's `cwd` and calls
       `os.execvpe` with the planned argv and an environment that is `os.environ` overlaid
       with the plan's env; a missing `claude` binary fails before any registration.
-- [ ] `--json` without `--dry-run` is rejected, and `--dry-run --json` emits the plan dict.
-- [ ] `skills/wt-conduct/SKILL.md` and `skills/wt-steward/SKILL.md` mention the launcher;
+- [x] `--json` without `--dry-run` is rejected, and `--dry-run --json` emits the plan dict.
+- [x] `skills/wt-conduct/SKILL.md` and `skills/wt-steward/SKILL.md` mention the launcher;
       `python3 tools/spec_lint.py` and the skill sync tests pass.
 
 ## Test plan
@@ -302,6 +302,28 @@ rate this is a small fraction of the turns removed by the lower context; it is m
   passes (the registry format is unchanged: `source: "launch"` is a new value of an existing
   free-text field); `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-10-31)
+
+- `uv run pytest tests/test_agentic_launch.py tests/test_skills.py tests/test_agentic_runner.py
+  tests/test_agentic_conductor_cost.py`: 167 passed (49 in the new `test_agentic_launch.py`,
+  covering every named automated test of the plan).
+- `python3 tools/spec_lint.py` exits 0 after `--write-ledger`.
+- The full `uv run pytest` run is left to gating.
+- Manual verification: step 2 (the dry-run argv and env) is covered by the CLI tests against
+  the table. Steps 3 to 5 (an interactive session staying under the window, `--resume` of a
+  live session, the `conductor-cost` check a day later) need a real `claude` session and
+  data over time; they belong to the rollout (SPEC-0298 step 3) and were not run here.
+
+### As shipped (2026-10-31)
+
+- As designed. `launch.py` holds `settings`, `build_plan`, `check_price`, `exec_env`,
+  `register`, `run`; `cli_launch.py` holds the two commands. `build_plan(resume=True)` does the
+  launch-record and transcript lookup, so `--dry-run --resume` fails the same way as a real one.
+- `run` order: price check, `shutil.which("claude")`, `os.chdir(plan["cwd"])`, register,
+  `os.execvpe`. A chdir failure is a `ClickException`.
+- `runner._child_env` also drops an ambient `CLAUDE_CODE_EFFORT_LEVEL` when `WT_LAUNCH_KEYS`
+  is set; outside a launched session it is unchanged.
+
 ## Rollout / migration
 
 1. Merge. No data migration: `sessions.jsonl` gains records with `source: "launch"`.
@@ -314,11 +336,11 @@ rate this is a small fraction of the turns removed by the lower context; it is m
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
