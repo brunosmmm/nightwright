@@ -61,15 +61,36 @@ def _split_keywords(keywords):
     return list(keywords), []
 
 
+def _own_org_files(cfg):
+    """The files wt itself rewrites (by atomic rename): the ideas, capture and ideas-archive
+    files, those that exist."""
+    paths = [cfg.get("org_ideas_file"), cfg.get("org_capture_file"),
+             cfg.get("org_ideas_archive_file")]
+    if cfg.get("org_ideas_file") and not cfg.get("org_ideas_archive_file"):
+        paths.append(os.path.join(os.path.dirname(os.path.expanduser(cfg["org_ideas_file"])),
+                                  "ideas-archive.org"))
+    return [q for q in (os.path.expanduser(str(x)) for x in paths if x) if os.path.isfile(q)]
+
+
 def _iter_org_paths(cfg):
     """Expand cfg['org_files'] (files / dirs / globs) into a de-duped, stable list of .org
-    paths. Dirs expand to **/*.org; anything under ~/.emacs.d is skipped."""
+    paths. Dirs expand to **/*.org; anything under ~/.emacs.d is skipped.
+
+    A directory scan racing an atomic rename in that directory can miss the renamed file (seen
+    on btrfs: ~2% of scans while another process rewrites `ideas.org`), so wt's own files under
+    a configured directory are added by name, never left to the scan."""
     seen = {}
+    own = _own_org_files(cfg)
     for entry in cfg.get("org_files", []) or []:
         p = os.path.expanduser(str(entry))
         candidates = []
         if os.path.isdir(p):
-            candidates = [str(x) for x in sorted(Path(p).rglob("*.org"))]
+            found = [str(x) for x in Path(p).rglob("*.org")]
+            real = {os.path.realpath(x) for x in found}
+            root = os.path.realpath(p) + os.sep
+            found += [q for q in own if q.endswith(".org") and os.path.realpath(q) not in real
+                      and os.path.realpath(q).startswith(root)]
+            candidates = sorted(found, key=Path)
         elif os.path.isfile(p):
             candidates = [p]
         else:                                       # treat as a glob pattern

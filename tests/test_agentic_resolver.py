@@ -480,16 +480,20 @@ def test_unmerged_no_rebase_commits_nothing(tmp_path, monkeypatch, name):
 
 
 def test_interrupted_resolver_not_counted(tmp_path, monkeypatch):
-    w = basic(tmp_path, monkeypatch, resolver(sleep_s=0.4), resolver())
+    w = basic(tmp_path, monkeypatch, resolver(), resolver())
     w.open_and_conflict()
     pre = w.dispatched()["closing"]["resolve"]["pre_head"]
     stop = threading.Event()
-    timer = threading.Timer(0.15, stop.set)
-    timer.start()
-    try:
-        w.tick(stop=stop)
-    finally:
-        timer.cancel()
+    real_run = w.runner.run
+
+    def run(req, **kw):                 # the signal lands while the resolver run is in flight
+        if req.persona == "conflict_resolver":
+            stop.set()
+        return real_run(req, **kw)
+
+    monkeypatch.setattr(w.runner, "run", run)
+    w.tick(stop=stop)
+    monkeypatch.setattr(w.runner, "run", real_run)
     st = w.st()
     assert st["state"] == "CLOSING" and st["closing"]["resolve"]["pre_head"] == pre
     assert not st["closing"].get("resolve_attempts")

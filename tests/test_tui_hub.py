@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
+from waits import pilot_until
 from wt import tui as T
 from wt.cli import cli
 from wt.tui import model as M
@@ -238,16 +239,32 @@ def test_hub_reflects_changes_made_since_launch(tmp_path, monkeypatch):
         async with app.run_test(size=(110, 26)) as pilot:
             await pilot.pause()
             await pilot.press("h")
-            await pilot.pause()
+            assert await pilot_until(pilot, lambda: app.query_one("#hub").row_count > 0)
             before = app.query_one("#hub").row_count
 
             await pilot.press("h")                     # back to ideas
             await pilot.pause()
             M.capture_idea(cfg, "a brand new idea")    # world changes underneath
             await pilot.press("h")
-            await pilot.pause()
-            await pilot.pause()
-            assert app.query_one("#hub").row_count == before + 1
+            assert await pilot_until(pilot, lambda: app.query_one("#hub").row_count == before + 1)
+
+    asyncio.run(drive())
+
+
+@needs_textual
+def test_external_change_poll_during_teardown_is_a_no_op(tmp_path, monkeypatch):
+    """The 1.5 s external-change poll can fire while the app tears its DOM down (seen when a
+    loaded host stretched a test past the interval): it must return, not raise NoMatches."""
+    from wt.tui.app import IdeaDesk
+
+    cfg = _seed(tmp_path, monkeypatch)
+
+    async def drive():
+        app = IdeaDesk(cfg)
+        async with app.run_test(size=(110, 26)) as pilot:
+            assert await pilot_until(pilot, lambda: app._pairs)
+        M.capture_idea(cfg, "changed underneath")              # the poll sees a new signature
+        await app._check_external_changes()                    # ... after the DOM is gone
 
     asyncio.run(drive())
 

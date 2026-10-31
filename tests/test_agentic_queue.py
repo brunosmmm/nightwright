@@ -2296,6 +2296,8 @@ def test_tick_defers_gate_steps_around_exclusive_regate(opened, monkeypatch):
     exclusive A and the later C are not submitted and their state and ledger stay untouched, while
     D's implementer still is; once B is done only A starts, and C after it."""
     import threading
+
+    from waits import until
     cfg, d_id, _ctx = opened                      # the opened campaign is D (IMPLEMENTING)
     base = S.read_state(cfg, d_id)
     ids = {"D": d_id}
@@ -2338,26 +2340,27 @@ def test_tick_defers_gate_steps_around_exclusive_regate(opened, monkeypatch):
     try:
         clone("B")
         Q.tick(cfg, pool=pool)
-        assert started == ["B"]
+        assert until(lambda: started == ["B"])       # a step records itself on its worker thread
         clone("A", gate_exclusive={"entered_at": "2026-10-30T10:00:00"})
         clone("C")
         S.write_state(cfg, d_id, base)            # D implements: a non-gate step
         before = snapshot("A", "C")
         Q.tick(cfg, pool=pool)
-        assert started == ["B", "D:implement"]    # (d) D goes ahead; (a)(b) no gate for A or C
+        # (d) D goes ahead; (a)(b) no gate for A or C
+        assert until(lambda: started == ["B", "D:implement"])
         assert set(pool.flights) == {ids["B"], ids["D"]}
         Q.tick(cfg, pool=pool)
         assert started == ["B", "D:implement"] and snapshot("A", "C") == before
         finish("B")
         Q.tick(cfg, pool=pool)                    # (c) B harvested: only the exclusive A starts
-        assert gate_starts() == ["B", "A"] and ids["C"] not in pool.flights
+        assert until(lambda: gate_starts() == ["B", "A"]) and ids["C"] not in pool.flights
         assert S.read_state(cfg, ids["B"])["state"] == "REVIEWING"
         assert snapshot("C") == {"C": before["C"]}
         Q.tick(cfg, pool=pool)                    # A in flight and exclusive: C still waits
         assert gate_starts() == ["B", "A"]
         finish("A")
         Q.tick(cfg, pool=pool)
-        assert gate_starts() == ["B", "A", "C"]
+        assert until(lambda: gate_starts() == ["B", "A", "C"])
     finally:
         for e in gates.values():
             e.set()

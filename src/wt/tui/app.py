@@ -583,13 +583,18 @@ class IdeaDesk(App):
         something actually changed. The reparse itself runs off the event-loop thread
         (SPEC-0129/0134) via `_reload_async`. On a change, reload and — only if the idea
         currently shown in the detail pane itself changed — leave a small non-blocking hint."""
+        from textual.css.query import NoMatches
+
         from ..org import org_files_mtime_signature
         sig = org_files_mtime_signature(self.cfg)
         if sig == self._org_signature or self._reload_in_flight:
             return
-        watched_id = self.selected_id
-        old = next((r for r, _ in self._pairs if r.id == watched_id), None)
-        await self._reload_async(keep_id=watched_id)
+        try:
+            watched_id = self.selected_id
+            old = next((r for r, _ in self._pairs if r.id == watched_id), None)
+            await self._reload_async(keep_id=watched_id)
+        except NoMatches:       # the timer fired while the app tears its DOM down: nothing to do
+            return
         new = next((r for r, _ in self._pairs if r.id == watched_id), None)
         if old and new and (old.heading != new.heading or old.state != new.state):
             self.set_hint(f"↻ {new.id} changed externally")

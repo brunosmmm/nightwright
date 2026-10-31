@@ -61,13 +61,28 @@ def _throwaway_org(tmp_path):
     return conf
 
 
-def _render(conf_dir, keys, *, settle=6.0, per_key=1.6):
-    """Spawn `wt tui` under a pty and return the composited screen as lines."""
+def left_pane(lines):
+    """The tree/list pane: each line cut at the pane divider (the detail pane is on the right)."""
+    col = next((line.index("│") for line in lines if "│" in line), None)
+    return [line[:col] if col is not None else line for line in lines]
+
+
+def _loaded(lines):
+    """The desk has painted its ideas (keys typed before that may be lost)."""
+    return any("IDEA-001" in line for line in left_pane(lines))
+
+
+def _render(conf_dir, steps):
+    """Spawn `wt tui` under a pty, wait for the desk to load, then for each `(key, ready)` type
+    `key` and pump until `ready(lines)` holds (SPEC-0269: a condition, never a fixed settle).
+    Returns the composited screen as lines and per-cell colours."""
     import fcntl
     import pty
     import select
     import struct
     import termios
+
+    import waits
 
     pid, fd = pty.fork()
     if pid == 0:                                            # child
@@ -78,19 +93,36 @@ def _render(conf_dir, keys, *, settle=6.0, per_key=1.6):
 
     screen = pyte.Screen(COLS, ROWS)
     stream = pyte.ByteStream(screen)
+    closed = []
 
-    def pump(seconds):
-        end = time.time() + seconds
-        while time.time() < end:
-            r, _, _ = select.select([fd], [], [], 0.1)
-            if r:
-                try:
-                    data = os.read(fd, 1 << 20)
-                except OSError:
-                    return
-                if not data:
-                    return
-                stream.feed(data)
+    def read_once(timeout):
+        """Feed what the app wrote within `timeout`; False when nothing came."""
+        if closed:
+            return False
+        r, _, _ = select.select([fd], [], [], timeout)
+        if not r:
+            return False
+        try:
+            data = os.read(fd, 1 << 20)
+        except OSError:
+            data = b""
+        if not data:
+            closed.append(True)
+            return False
+        stream.feed(data)
+        return True
+
+    def lines():
+        return [line.rstrip() for line in screen.display]
+
+    def pump_until(ready, what):
+        end = time.monotonic() + waits.WAIT_S
+        while not ready(lines()):
+            if closed or time.monotonic() >= end:
+                raise AssertionError(f"the tui never showed {what}:\n" + "\n".join(lines()))
+            read_once(0.1)
+        while read_once(0.3):           # then let the repaint in progress finish
+            pass
 
     def cells():
         """Per-cell (char, fg) so a test can assert on **colour**, not just text."""
@@ -98,18 +130,18 @@ def _render(conf_dir, keys, *, settle=6.0, per_key=1.6):
                 for y in range(ROWS)]
 
     try:
-        pump(settle)
-        for key in keys:
+        pump_until(_loaded, "the ideas")
+        for key, ready in steps:
             named = {"ENTER": b"\r", "ESC": b"\x1b", "SPACE": b" ", "TAB": b"\t"}
             if len(key) > 1 and key not in named:
                 raise AssertionError(f"unknown key name {key!r} — it would be typed literally")
             os.write(fd, named.get(key, key.encode()))
-            pump(per_key)
-        return [line.rstrip() for line in screen.display], cells()
+            pump_until(ready, f"the effect of {key!r}")
+        return lines(), cells()
     finally:
         try:
             os.write(fd, b"q")
-            pump(0.6)
+            read_once(0.6)
             os.close(fd)
         except OSError:
             pass
@@ -117,6 +149,12 @@ def _render(conf_dir, keys, *, settle=6.0, per_key=1.6):
             os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:
             pass
+
+
+def _tree(lines):
+    """Tree mode is up: the project group and a disclosure marker in the left pane."""
+    left = "\n".join(left_pane(lines))
+    return "Alpha" in left and ("▼" in left or "▶" in left) and "IDEA-001" in left
 
 
 def test_tree_mode_renders_real_nesting_in_a_real_terminal(tmp_path):
@@ -133,7 +171,7 @@ def test_tree_mode_renders_real_nesting_in_a_real_terminal(tmp_path):
     assert "IDEA-001" in flat, f"desk did not render any ideas:\n{flat}"
     assert "▼" not in flat and "▶" not in flat, "flat view should have no disclosure markers"
 
-    lines, _cells = _render(conf, ["g"])
+    lines, _cells = _render(conf, [("g", _tree)])
     screen = "\n".join(lines)
     assert "Alpha" in screen, f"no project group:\n{screen}"
     assert "▼" in screen or "▶" in screen, f"no disclosure markers — not a tree:\n{screen}"
@@ -142,7 +180,7 @@ def test_tree_mode_renders_real_nesting_in_a_real_terminal(tmp_path):
     def column_of(needle):
         """Column where `needle` starts. Textual draws nesting with guide glyphs (`├──`), not
         leading whitespace, so `lstrip()` would report 0 for every depth."""
-        for line in lines:
+        for line in left_pane(lines):
             if needle in line:
                 return line.index(needle)
         return None
@@ -154,7 +192,8 @@ def test_tree_mode_renders_real_nesting_in_a_real_terminal(tmp_path):
         f"epic not indented under its project ({epic_indent} vs {project_indent}):\n{screen}")
 
     # expand the epic: cursor starts on the first idea, so Enter toggles it
-    expanded = "\n".join(_render(conf, ["g", "ENTER"])[0])
+    expanded = "\n".join(_render(conf, [("g", _tree), (
+        "ENTER", lambda ls: "IDEA-002" in "\n".join(left_pane(ls)))])[0])
     assert "IDEA-002" in expanded, f"expanding the epic revealed no child:\n{expanded}"
 
 
@@ -175,7 +214,10 @@ def test_tree_is_not_monochrome(tmp_path):
                    "* DROPPED a dead one\n  :PROPERTIES:\n  :ID: IDEA-005\n"
                    "  :PROJECT: Alpha\n  :UPDATED: [2026-07-31 Fri 09:00]\n  :END:\n")
 
-    tree_lines, tree_cells = _render(conf, ["a", "g"])
+    tree_lines, tree_cells = _render(conf, [
+        ("a", lambda ls: "IDEA-005" in "\n".join(left_pane(ls))),     # the dropped one shows
+        ("g", lambda ls: _tree(ls) and all(w in "\n".join(left_pane(ls))
+                                           for w in ("INCUBATE", "DROPPED", "1q")))])
 
     def pane_width(lines):
         """Column of the pane divider. Everything right of it is the *detail* pane, which

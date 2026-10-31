@@ -136,6 +136,24 @@ def test_concurrent_processes_lose_nothing_and_never_reuse_an_id(tmp_path):
     assert all(t.properties.get("KIND") == "bug" for t in load_tasks(cfg) if t.is_idea)
 
 
+def test_a_directory_scan_that_misses_the_ideas_file_still_loads_it(tmp_path, monkeypatch):
+    """A directory scan racing another process's atomic rewrite of `ideas.org` can miss the file
+    (btrfs, ~2% of scans): the concurrent-writers test then failed with 'no task matched'. wt's
+    own files under a configured directory are listed by name, not left to the scan."""
+    from wt import org as ORG
+    cfg = _cfg(tmp_path)
+    W.add_idea(cfg, "an idea")
+    W.add_task(cfg, "a captured task", state="TODO")
+    real_rglob = pathlib.Path.rglob
+    monkeypatch.setattr(pathlib.Path, "rglob", lambda self, pat: [
+        x for x in real_rglob(self, pat) if x.name not in ("ideas.org", "inbox.org")])
+    ORG.invalidate_tasks_cache()
+    headings = {t.heading for t in load_tasks(cfg)}
+    assert {"an idea", "a captured task"} <= headings
+    paths = ORG._iter_org_paths(cfg)
+    assert len(paths) == len(set(paths)) == 2
+
+
 def _decorated(fn: ast.FunctionDef) -> bool:
     return any((isinstance(d, ast.Name) and d.id == "org_writer") for d in fn.decorator_list)
 

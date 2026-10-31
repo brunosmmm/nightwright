@@ -1061,14 +1061,29 @@ def test_draining_ticks_admit_exec_promptly_and_new_process_adopts(world, monkey
     monkeypatch.setattr(Q, "code_changes", lambda r, since: (
         (since, []) if "changed" not in seen else
         ("sha2", ["src/wt/y.py"]) if "second" in seen else ("sha1", ["src/wt/x.py"])))
-    monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: (calls.append(time.monotonic()),
+    steps = [0]                     # promptness in loop steps (ticks, drain polls), not seconds
+    real_tick = Q.tick
+
+    def tick(*a, **kw):
+        steps[0] += 1
+        return real_tick(*a, **kw)
+
+    monkeypatch.setattr(Q, "tick", tick)
+    real_wait = Q.StepPool.wait_any
+
+    def wait_any(self, *a, **kw):           # each 0.2 s drain poll is a step too
+        steps[0] += 1
+        return real_wait(self, *a, **kw)
+
+    monkeypatch.setattr(Q.StepPool, "wait_any", wait_any)
+    monkeypatch.setattr(Q, "_EXEC", lambda exe, argv, env: (calls.append(steps[0]),
                                                            seen.update(env=env)))
     real_apply = Q._apply
 
     def apply(ctx, st, res):
         out = real_apply(ctx, st, res)
         if res.step.kind == "gate":
-            seen["harvest"] = time.monotonic()
+            seen["harvest"] = steps[0]
         return out
 
     monkeypatch.setattr(Q, "_apply", apply)
@@ -1092,7 +1107,7 @@ def test_draining_ticks_admit_exec_promptly_and_new_process_adopts(world, monkey
           runner=world.runner, max_ticks=100)
     b = seen["b"]
     assert calls and "harvest" in seen
-    assert calls[0] - seen["harvest"] < 0.5             # exec at the first 0.2 s check
+    assert calls[0] == seen["harvest"]      # exec at the check that harvested: no tick, no wait
     assert seen["waiting_on"] == [a]                    # the gate blocks; B's run in `wait` does not
     stop, = journal(cfg, "stop")
     b_run = S.read_ledger(cfg, b, types=["run.start"])[0]["run_id"]

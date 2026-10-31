@@ -5266,7 +5266,8 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                 ticks += 1
                 lease.heartbeat()
                 # SPEC-0228: stamp before `emit`, so a slow `on_tick` never delays it
-                slots.check(lease, tick_at=store.now_iso(), last_tick_s=round(tick_s, 1))
+                slots.check(lease, tick_at=store.now_iso(), last_tick_s=round(tick_s, 1),
+                            ticks=ticks)
                 emit(report)
                 if report.blocked and not report.admitted:
                     holders = report.blocked["holders"]

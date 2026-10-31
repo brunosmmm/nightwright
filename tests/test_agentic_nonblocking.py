@@ -15,7 +15,7 @@ import pytest
 from test_agentic_e2e import (_git, _write, added, impl_done, make_cfg, make_repo, review,
                               script, write_review)
 from test_agentic_reexec import _code_repo, _commit
-from waits import join
+from waits import join, until
 from wt.agentic import lease as L
 from wt.agentic import queue as Q
 from wt.agentic import store as S
@@ -271,7 +271,9 @@ def test_heartbeat_spans_many_ticks(tmp_path, monkeypatch):
 
 def test_sigterm_mid_flight_after_several_ticks(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
-    cfg = make_cfg(tmp_path, repo, script(tmp_path, [dict(impl_done(), sleep_s=4)]))
+    rel = tmp_path / "impl.release"          # the run stays in flight until the test releases it
+    hold = f"for i in $(seq 1200); do [ -e {rel} ] && break; sleep 0.05; done"
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [dict(impl_done(), pre_shell=[hold])]))
     cid = added(cfg, monkeypatch)
     Q.tick(cfg)
     assert _state(cfg, cid) == "IMPLEMENTING"
@@ -288,10 +290,17 @@ def test_sigterm_mid_flight_after_several_ticks(tmp_path, monkeypatch):
         while not _starts(cfg, cid):
             assert time.time() < deadline, proc.communicate(timeout=5)[1]
             time.sleep(0.1)
-        time.sleep(1.5)                                       # the loop keeps ticking
+        # the loop keeps ticking while the run is in flight (the lease counts its ticks)
+        assert until(lambda: ((L.read_lease(cfg) or {}).get("ticks") or 0) > 3
+                     or proc.poll() is not None)
+        assert proc.poll() is None, proc.communicate(timeout=5)[1]
         proc.send_signal(signal.SIGTERM)
+        # the loop saw the signal and drains (lease `draining`) with the run still in flight
+        assert until(lambda: (L.read_lease(cfg) or {}).get("draining") or proc.poll() is not None)
+        rel.write_text("")
         out, err = proc.communicate(timeout=30)
     finally:
+        rel.write_text("")
         if proc.poll() is None:
             proc.kill()
     assert proc.returncode == 0, err
