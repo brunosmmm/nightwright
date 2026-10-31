@@ -255,7 +255,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | accepted | — | 2026-10-31 |
-| [SPEC-0322](./specs/0322-flaky-under-load-tests-test-agentic-resolver-py.md) | Make test_interrupted_resolver_not_counted load-tolerant (stop only once the resolver run is in flight) | feature | proposed | — | 2026-10-31 |
+| [SPEC-0322](./specs/0322-flaky-under-load-tests-test-agentic-resolver-py.md) | Make test_interrupted_resolver_not_counted load-tolerant (stop only once the resolver run is in flight) | feature | accepted | — | 2026-10-31 |
 | [SPEC-0334](./specs/0334-pull-workers-against-a-coordinator-job-api.md) | Pull workers against a coordinator job API | feature | accepted | — | 2026-10-31 |
 | [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) | Federation over a networked mailbox | feature | accepted | — | 2026-10-31 |
 | [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | accepted | — | 2026-11-01 |

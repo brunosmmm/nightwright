@@ -1,9 +1,10 @@
 ---
 id: SPEC-0322
 title: "Make test_interrupted_resolver_not_counted load-tolerant (stop only once the resolver run is in flight)"
-status: proposed
+status: accepted
 owner: user
 created: 2026-10-31
+updated: 2026-10-31
 kind: feature
 source_idea: IDEA-512
 tags: [tests, flaky, agentic]
