@@ -29,6 +29,7 @@ from . import gates as G
 from . import lease as L
 from . import mailbox as M
 from . import project as P
+from . import decisions as DEC
 from . import queue as Q
 from . import store
 
@@ -39,6 +40,26 @@ def _actor(cfg, by) -> str:
     """SPEC-0273: who a human-command acts as — `--by`, else $WT_MAILBOX_ADDR, else human.
     ValueError on a bad address (callers run it inside their ValueError → ClickException)."""
     return M.validate_address(cfg, by or os.environ.get("WT_MAILBOX_ADDR") or "human")
+
+
+def _decision_request(by, decision, rule, kind, *, default_kind, required):
+    """SPEC-0318: the decision record a park / resume / abandon carries, as the validated request
+    (`decisions.validate_request`) or None. A human needs none and may not pass the options
+    (records are `by: conductor|queue|steward:<P>`). `required`: a non-human actor must pass
+    `--decision` and `--rule`; otherwise they come together or not at all. ValueError."""
+    given = decision is not None or rule is not None or kind is not None
+    if not DEC.needs_decision(by):
+        if given:
+            raise ValueError("a human's park, resume or abandon needs no decision record: drop "
+                             "--decision / --rule / --kind (records are by conductor, queue or "
+                             "steward:<P>)")
+        return None
+    if not given and not required:
+        return None
+    if decision is None or rule is None:
+        raise ValueError(f"as {by}, pass both --decision TEXT and --rule ID (the /wt-conduct "
+                         f"table row; --kind K optional)")
+    return DEC.validate_request(kind or default_kind, rule, decision, by)
 
 
 def _age_txt(age) -> str:
@@ -1277,17 +1298,28 @@ def attach(queue_group):
     @queue_group.command("park")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)
     @click.option("--reason", required=True, help="why (recorded on the campaign)")
+    @click.option("--decision", default=None,
+                  help="the decision's rationale (required for conductor / steward)")
+    @click.option("--rule", default=None, help="the /wt-conduct decision-table row id")
+    @click.option("--kind", default=None, help="decision kind (default: wait)")
     @click.option("--by", default=None,
                   help="who acts (default: $WT_MAILBOX_ADDR, then human)")
     @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.park.v1 JSON")
     @click.pass_obj
-    def queue_park(cfg, campaign, reason, by, do_write, as_json):
-        """Park a campaign. With a loop running, the current step finishes first."""
+    def queue_park(cfg, campaign, reason, decision, rule, kind, by, do_write, as_json):
+        """Park a campaign. With a loop running, the current step finishes first. As conductor
+        or steward it needs --decision and --rule: the decision record is written right after
+        the park (SPEC-0318)."""
         try:
-            plan = Q.plan_park(cfg, campaign, reason, by=_actor(cfg, by))
+            actor = _actor(cfg, by)
+            request = _decision_request(actor, decision, rule, kind, default_kind="wait",
+                                        required=True)
+            plan = Q.plan_park(cfg, campaign, reason, by=actor, decision=request)
             if do_write:
                 Q.apply_park(cfg, plan)
+                if plan["mode"] == "immediate":
+                    Q.settle_decision_requests(cfg, plan["campaign"])
         except ValueError as e:
             raise click.ClickException(str(e))
         if as_json:
@@ -1335,16 +1367,26 @@ def attach(queue_group):
     @click.option("--note", default=None, help="a note for the next implementer run")
     @click.option("--raise-cap", type=float, default=None, help="new campaign cost cap in USD")
     @click.option("--reset-loops", is_flag=True, help="reset the loop counters")
+    @click.option("--decision", default=None,
+                  help="the decision's rationale (required for conductor / steward)")
+    @click.option("--rule", default=None, help="the /wt-conduct decision-table row id")
+    @click.option("--kind", default=None, help="decision kind (default: resume)")
     @click.option("--by", default=None,
                   help="who acts (default: $WT_MAILBOX_ADDR, then human)")
     @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.resume.v1 JSON")
     @click.pass_obj
-    def queue_resume(cfg, campaign, to, note, raise_cap, reset_loops, by, do_write, as_json):
-        """Resume a PARKED campaign (optionally with a note, a higher cap, fresh loops)."""
+    def queue_resume(cfg, campaign, to, note, raise_cap, reset_loops, decision, rule, kind, by,
+                     do_write, as_json):
+        """Resume a PARKED campaign (optionally with a note, a higher cap, fresh loops). As
+        conductor or steward a decision record at or after the park must exist, or be given
+        with --decision and --rule (SPEC-0318)."""
         try:
+            actor = _actor(cfg, by)
+            request = _decision_request(actor, decision, rule, kind, default_kind="resume",
+                                        required=False)
             plan = Q.plan_resume(cfg, campaign, to=to, note=note, raise_cap=raise_cap,
-                                 reset_loops=reset_loops, by=_actor(cfg, by))
+                                 reset_loops=reset_loops, by=actor, decision=request)
             if do_write:
                 Q.apply_resume(cfg, plan)
         except ValueError as e:
@@ -1381,16 +1423,25 @@ def attach(queue_group):
     @queue_group.command("abandon")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)
     @click.option("--keep-worktree", is_flag=True, help="leave the worktree on disk")
+    @click.option("--decision", default=None,
+                  help="the decision's rationale (required for conductor / steward)")
+    @click.option("--rule", default=None, help="the /wt-conduct decision-table row id")
+    @click.option("--kind", default=None, help="decision kind (default: abandon)")
     @click.option("--by", default=None,
                   help="who acts (default: $WT_MAILBOX_ADDR, then human)")
     @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
     @click.option("--json", "as_json", is_flag=True, help="emit wt.queue.abandon.v1 JSON")
     @click.pass_obj
-    def queue_abandon(cfg, campaign, keep_worktree, by, do_write, as_json):
-        """Abandon a PARKED or QUEUED campaign (removes its worktree; keeps the branch)."""
+    def queue_abandon(cfg, campaign, keep_worktree, decision, rule, kind, by, do_write, as_json):
+        """Abandon a PARKED or QUEUED campaign (removes its worktree; keeps the branch). As
+        conductor or steward a PARKED campaign needs a decision record at or after its park, or
+        --decision and --rule (SPEC-0318)."""
         try:
-            plan = Q.plan_abandon(cfg, campaign, keep_worktree=keep_worktree,
-                                  by=_actor(cfg, by))
+            actor = _actor(cfg, by)
+            request = _decision_request(actor, decision, rule, kind, default_kind="abandon",
+                                        required=False)
+            plan = Q.plan_abandon(cfg, campaign, keep_worktree=keep_worktree, by=actor,
+                                  decision=request)
             if do_write:
                 Q.apply_abandon(cfg, plan)
         except ValueError as e:

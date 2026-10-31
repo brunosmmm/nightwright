@@ -964,6 +964,10 @@ def _park(cfg, state: dict, reason: str, detail: str, resume_to: str, *, by="tic
         _counters(state)["parks"] += 1
     state["park"] = {"reason": reason, "detail": detail, "since": store.now_iso(),
                      "resume_to": resume_to, **(extra or {})}
+    # SPEC-0318: a deferred park request carries the decision to record once the park applies
+    pending = (state.get("park_requested") or {}).get("decision_request")
+    if isinstance(pending, dict) and "decision_request" not in state["park"]:
+        state["park"]["decision_request"] = pending
     state.pop("park_requested", None)
     extra_events = list(extra_events)
     if reason in ("base_moving", "cost_cap") and by == "tick" and auto_ok:
@@ -980,7 +984,8 @@ def _park(cfg, state: dict, reason: str, detail: str, resume_to: str, *, by="tic
                                                   "the conductor's", "author": "queue"}))
         if auto is not None:
             state["park"]["auto"] = auto.park_data()
-    events = extra_events + [("park", dict(state["park"]))]
+    ev_park = {k: v for k, v in state["park"].items() if k != "decision_request"}
+    events = extra_events + [("park", ev_park)]
     return _transition(cfg, state, "PARKED", reason, by=by, extra_events=events)
 
 
@@ -3638,6 +3643,44 @@ def _record_queue_decision(cfg, cid, kind, rule, rationale, *, action=None) -> b
         return False
 
 
+def settle_decision_requests(cfg, campaign=None) -> int:
+    """SPEC-0318: write the decision record of every PARKED campaign whose park still carries a
+    `decision_request` (the park command's own, or a crash / deferred park left it), then clear
+    the request. `campaign` limits it to one campaign. Never called with an item lock held; a
+    failure is journaled (`decision_record_failed`) and retried on the next call. Returns the
+    number of records written."""
+    done = 0
+    for st in store.list_campaigns(cfg, state="PARKED"):
+        cid = st["id"]
+        req = (st.get("park") or {}).get("decision_request")
+        if (campaign is not None and cid != campaign) or not isinstance(req, dict):
+            continue
+        try:
+            DEC.record(cfg, campaign=cid, kind=req.get("kind"), rule=req.get("rule"),
+                       rationale=req.get("rationale"), by=req.get("by"),
+                       action=f"park: {(st.get('park') or {}).get('detail')}")
+        except (ValueError, OSError) as e:
+            journal(cfg, "decision_record_failed", campaign=cid, rule=req.get("rule"),
+                    error=str(e))
+            continue
+        done += 1
+        with store.item_lock(cfg, cid):
+            cur = store.read_state(cfg, cid)
+            park = cur.get("park")
+            if cur.get("state") == "PARKED" and isinstance(park, dict) \
+                    and park.pop("decision_request", None) is not None:
+                store.write_state(cfg, cid, cur)
+    return done
+
+
+def _drop_decision_request(cfg, st: dict) -> None:
+    """SPEC-0318: a resume or abandon clears the park; a request it still carries is dropped
+    (journaled), never recorded late."""
+    req = (st.get("park") or {}).get("decision_request")
+    if isinstance(req, dict):
+        journal(cfg, "decision_request_dropped", campaign=st["id"], rule=req.get("rule"))
+
+
 def _auto_wait_recorded(cfg, cid, auto: dict) -> bool:
     """True when the campaign's `wait` record exists; writes it when missing (a crash between
     the park and the record, or a failed write, is repaired here)."""
@@ -3963,6 +4006,9 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
                 break
             st = store.read_state(cfg, st["id"])
     _record_auto_waits(cfg)          # SPEC-0302: parks written this tick, outside any item lock
+    # SPEC-0318: after the step results (the deferred-park branch included), so a deferred park
+    # gets its record in the tick that applies it
+    settle_decision_requests(cfg)
 
 
 # ---- adoption of runs left open by an earlier runner (SPEC-0225) -------------------------
@@ -6344,7 +6390,12 @@ def _refuse_pending_escalation(cfg, st: dict) -> None:
                          f"Withdraw it first (wt escalations withdraw) to park differently")
 
 
-def plan_park(cfg, campaign, reason, *, by="human") -> dict:
+def plan_park(cfg, campaign, reason, *, by="human", decision=None) -> dict:
+    """`decision` is the validated request (`decisions.validate_request`) a non-human actor's
+    park carries (SPEC-0318); ValueError when it is needed and missing."""
+    if DEC.needs_decision(by) and not decision:
+        raise ValueError(f"a park by {by} needs its decision record: pass --decision TEXT "
+                         f"--rule ID (and --kind K, default wait)")
     st = store.read_state(cfg, campaign)
     s = st.get("state")
     if s in TERMINAL_STATES or s == "PARKED":
@@ -6352,6 +6403,7 @@ def plan_park(cfg, campaign, reason, *, by="human") -> dict:
     _refuse_pending_escalation(cfg, st)
     running = L.is_held(cfg) and s in ACTIVE_STATES
     return {"campaign": campaign, "state": s, "reason": reason, "by": by,
+            "decision": decision,
             "mode": "deferred" if running else "immediate",
             "note": ("a loop holds the lease: the running step finishes and is recorded, then "
                      "the park applies" if running else "no loop is running: parks now"),
@@ -6369,18 +6421,50 @@ def apply_park(cfg, plan: dict) -> dict:
         if plan["mode"] == "deferred":
             st["park_requested"] = {"reason": "human", "detail": plan["reason"],
                                     "at": store.now_iso(), "by": by}
+            if plan.get("decision"):
+                st["park_requested"]["decision_request"] = plan["decision"]
             store.append_event(cfg, cid, "note", {"text": f"park requested: {plan['reason']}",
                                                   "author": by}, by=by)
             store.write_state(cfg, cid, st)
             return st
-        return _park(cfg, st, "human", plan["reason"], plan["resume_to"], by=by)
+        return _park(cfg, st, "human", plan["reason"], plan["resume_to"], by=by,
+                     extra={"decision_request": plan["decision"]} if plan.get("decision")
+                     else None)
+
+
+def _require_decision(cfg, st: dict, by, decision):
+    """SPEC-0318: a non-human actor resumes or abandons a PARKED campaign only with a decision
+    record at or after the park (or `decision`, the request to write first). Returns the request
+    to write, or None. ValueError when neither exists. The queue's own parks (`park.auto`,
+    `by: queue`) and a human are exempt."""
+    park = st.get("park") or {}
+    if st.get("state") != "PARKED" or not DEC.needs_decision(by) or by == "queue" \
+            or isinstance(park.get("auto"), dict):
+        return None
+    if decision:
+        return decision
+    led = store.read_ledger(cfg, st["id"], types=["park"])
+    parked_at = (led[-1].get("ts") if led else None) or park.get("since")
+    if DEC.covering(cfg, st["id"], parked_at):
+        return None
+    raise ValueError(f"{st['id']} is PARKED and has no decision record since its park "
+                     f"({parked_at}); record it first (wt queue decision {st['id']} \"why\" "
+                     f"--kind K --rule ID) or pass --decision TEXT --rule ID to this command")
+
+
+def _write_decision(cfg, cid, request) -> None:
+    """The record a resume / abandon carries, written before the state change and outside the
+    item lock (`decisions.record` takes the decisions lock first)."""
+    if request:
+        DEC.record(cfg, campaign=cid, **request)
 
 
 def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loops=False,
-                by="human", auto_rule=None, event_note=None) -> dict:
+                by="human", auto_rule=None, event_note=None, decision=None) -> dict:
     st = store.read_state(cfg, campaign)
     if st.get("state") != "PARKED":
         raise ValueError(f"{campaign} is {st.get('state')}, not PARKED")
+    decision = _require_decision(cfg, st, by, decision)
     park = st.get("park") or {}
     target = to or park.get("resume_to") or "IMPLEMENTING"
     if not to and park.get("reason") == "spec_review_unavailable":
@@ -6394,11 +6478,12 @@ def plan_resume(cfg, campaign, *, to=None, note=None, raise_cap=None, reset_loop
             "raise_cap": raise_cap, "reset_loops": bool(reset_loops),
             "park": park, "cap_usd": (st.get("cost") or {}).get("cap_usd"),
             "waits_for_slot": waits, "by": by, "auto_rule": auto_rule,
-            "event_note": event_note}
+            "event_note": event_note, "decision": decision}
 
 
 def apply_resume(cfg, plan: dict, *, busy=None, slots=None) -> dict:
     cid, by = plan["campaign"], plan.get("by") or "human"
+    _write_decision(cfg, cid, plan.get("decision"))
     with store.item_lock(cfg, cid):
         st = store.read_state(cfg, cid)
         if st.get("state") != "PARKED":
@@ -6427,6 +6512,7 @@ def apply_resume(cfg, plan: dict, *, busy=None, slots=None) -> dict:
         if by == "queue" and plan.get("auto_rule"):      # SPEC-0302: bounded automatic resumes
             counts = _counters(st).setdefault("auto_resumes", {})
             counts[plan["auto_rule"]] = int(counts.get(plan["auto_rule"], 0)) + 1
+        _drop_decision_request(cfg, st)
         st["park"] = None
         st.pop("park_requested", None)
         ev = ("resume", {"to": plan["to"], "note": plan.get("note") or plan.get("event_note"),
@@ -6453,11 +6539,12 @@ def _reset_spec_write(cfg, st: dict) -> None:
         st["idea"] = fresh
 
 
-def plan_abandon(cfg, campaign, *, keep_worktree=False, by="human") -> dict:
+def plan_abandon(cfg, campaign, *, keep_worktree=False, by="human", decision=None) -> dict:
     st = store.read_state(cfg, campaign)
     if st.get("state") not in ("PARKED", "QUEUED", "WAITING"):
         raise ValueError(f"{campaign} is {st.get('state')}; only PARKED, QUEUED or WAITING "
                          f"campaigns can be abandoned (park it first)")
+    decision = _require_decision(cfg, st, by, decision)
     repo = st.get("repo") or {}
     wt_path = repo.get("worktree")
     present = bool(wt_path and os.path.isdir(wt_path))
@@ -6466,7 +6553,7 @@ def plan_abandon(cfg, campaign, *, keep_worktree=False, by="human") -> dict:
     return {"campaign": campaign, "from": st.get("state"), "worktree": wt_path,
             "worktree_present": present,
             "remove_worktree": present and not keep_worktree and not adopted,
-            "branch": repo.get("branch"), "by": by}
+            "branch": repo.get("branch"), "by": by, "decision": decision}
 
 
 def _unlink_idea(cfg, st: dict) -> list:
@@ -6502,6 +6589,7 @@ def _unlink_idea(cfg, st: dict) -> list:
 
 def apply_abandon(cfg, plan: dict) -> dict:
     cid, by = plan["campaign"], plan.get("by") or "human"
+    _write_decision(cfg, cid, plan.get("decision"))
     with store.item_lock(cfg, cid):
         st = store.read_state(cfg, cid)
         if st.get("state") not in ("PARKED", "QUEUED", "WAITING"):
@@ -6519,6 +6607,7 @@ def apply_abandon(cfg, plan: dict) -> dict:
                 events.append(("finding", {"persona": "human", "severity": "minor",
                                            "gate": "cleanup", "title": "worktree removal failed",
                                            "detail": e.tail, "files": []}))
+        _drop_decision_request(cfg, st)
         st["park"] = None
         st.pop("waiting", None)
         st.pop("park_requested", None)

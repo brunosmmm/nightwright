@@ -1,7 +1,7 @@
 ---
 id: SPEC-0318
 title: "A park, resume or abandon by the conductor carries its decision record: `wt queue park|resume|abandon` require `--decision` and `--rule` for a non-human actor"
-status: accepted
+status: done
 owner: user
 created: 2026-10-31
 updated: 2026-10-31
@@ -158,34 +158,34 @@ command is cheaper and more reliable than a skill reminder.
 
 ## Acceptance criteria
 
-- [ ] `wt queue park <id> --by conductor --reason R` without `--decision` and `--rule` exits 1,
+- [x] `wt queue park <id> --by conductor --reason R` without `--decision` and `--rule` exits 1,
       with and without `--yes`, and writes no ledger event, no state change and no
       `decisions.jsonl` line. The same command as `human` still works with neither, and
       `human` passing `--decision`, `--rule` or `--kind` (park, resume or abandon) exits 1 with
       no write: no `decisions.jsonl` record has `by: human`.
-- [ ] `wt queue park <id> --by conductor --reason R --decision "why" --rule message.request
+- [x] `wt queue park <id> --by conductor --reason R --decision "why" --rule message.request
       --yes` (immediate mode) parks the campaign and appends one `wt.conductor.decision.v1`
       record (`by: conductor`, `kind: wait`, that rule and rationale) whose ledger `note`
       (carrying `decision`, with `decision.seq` = the record's seq) has a higher ledger `seq`
       than the `park` event, and whose ts is at or after the `park` event's ts. `decisions.park_coverage`
       reports that park covered, and `mvp_report.e4` counts it as decided (not `missing`, not
       `late`).
-- [ ] With a loop holding the lease (deferred mode) the record is written only after the tick
+- [x] With a loop holding the lease (deferred mode) the record is written only after the tick
       applies the park, never before it (the decision's ledger `note` has a higher ledger `seq`
       than the `park` event, not only a ts at or after it), and is covered the same way.
-- [ ] A bad `--rule` or `--kind` is refused in the dry run and writes nothing.
-- [ ] If the process stops between the park and the record, `park.decision_request` is still on
+- [x] A bad `--rule` or `--kind` is refused in the dry run and writes nothing.
+- [x] If the process stops between the park and the record, `park.decision_request` is still on
       the park, and the next tick writes the record and clears the request. A request on a
       campaign that has already left PARKED is dropped without a record.
-- [ ] `wt queue resume` and `wt queue abandon` by `conductor` or `steward:<P>` on a PARKED
+- [x] `wt queue resume` and `wt queue abandon` by `conductor` or `steward:<P>` on a PARKED
       campaign with no decision record at or after the park's ts exit 1 (dry run too) and name
       the fix. With `--decision` and `--rule` they write the record first and then act. With a
       covering record already present they act without the options.
-- [ ] A human resume or abandon and a queue auto-resume (`park.auto`) are unaffected.
-- [ ] An E4 recomputation over a fixture of 5 parks (a conductor hold, a deferred hold, a
+- [x] A human resume or abandon and a queue auto-resume (`park.auto`) are unaffected.
+- [x] An E4 recomputation over a fixture of 5 parks (a conductor hold, a deferred hold, a
       `triage_escalated` resume with `--decision`, an auto park, a human park) reports no
       `missing` and no `late` item for the conductor-made ones.
-- [ ] `skills/wt-conduct/SKILL.md` contains the `--by conductor` rule, the `--decision/--rule`
+- [x] `skills/wt-conduct/SKILL.md` contains the `--by conductor` rule, the `--decision/--rule`
       form for park and resume, the "record the `escalate` decision after the command" rule and
       the "decide before you resume" rule.
 
@@ -245,13 +245,42 @@ command is cheaper and more reliable than a skill reminder.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
 - None. A `steward:<P>` actor is held to the same rule as the conductor; the escape hatch for a
   stuck case is to record the decision with `wt queue decision`, not an opt-out flag.
+
+### Test record (2026-10-31)
+
+- `uv run pytest tests/test_agentic_queue_park_decision.py` (new, 30 cases: refusals, human
+  refusals, record-after-park by ledger `seq` under a frozen clock, deferred park, crash repair,
+  dropped request, resume/abandon covering rule for conductor and steward, `park.auto` and human
+  exemptions, plan JSON, E4 over the 5-park fixture): all pass.
+- `tests/test_skills.py` (incl. the new `test_conduct_skill_park_resume_decision_rules`),
+  `tests/test_agentic_decisions.py`, `tests/test_agentic_queue_autopark.py`,
+  `tests/test_agentic_autopark.py`, `tests/test_agentic_queue_cli.py`, `tests/test_agentic_queue.py`, `tests/test_agentic_mvp_report.py`,
+  the escalation / TUI tests, `tests/test_agentic_campaign_cli.py`, `tests/test_agentic_events.py`,
+  `tests/test_agentic_dashboard.py` (416 + 72 tests): pass.
+- Sabotage: `_require_decision` returning early makes 6 tests of the new file fail.
+- Manual steps of the Test plan were exercised through `CliRunner` against a temp store (same
+  commands, same outputs), not on a live queue. The full `uv run pytest` run is left to gating.
+
+### As shipped (2026-10-31)
+
+- The deferred request is carried onto the park inside `_park` itself (from
+  `park_requested.decision_request`), not through a `Step` field: every path that applies a
+  park request (`_park_row`, the `finish` branches of `_apply`) gets it without a new field.
+  `park` ledger events do not carry `decision_request`.
+- `settle_decision_requests(cfg, campaign=None)` runs at the end of the tick, after the step
+  results and `_record_auto_waits`; `wt queue park --yes` calls it with its own campaign in
+  immediate mode. `apply_resume` / `apply_abandon` journal `decision_request_dropped` when the
+  park they clear still carries a request.
+- `_require_decision` also exempts `by: queue` (the automatic resume), besides `park.auto` and
+  `human`. The CLI validates option shape in `cli_queue._decision_request`; `plan_*` receive the
+  validated request (`decision=`) and `plan_park` raises when a non-human actor has none.

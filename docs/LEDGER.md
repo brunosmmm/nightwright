@@ -201,7 +201,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) Outbound projects end to end: a merged campaign pulls the portable spec's status back — done
   - [ ] [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) Agentic MVP: a cheap, durable, quiet conductor on a second project — accepted
   - [ ] [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) Remote workers: run gates, persona runs and campaigns on other machines — draft
-- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · accepted · (9/10 done)
+- **[SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) — Agentic MVP: a cheap, durable, quiet conductor on a second project** · accepted · (10/10 done)
   - [x] [SPEC-0299](./specs/0299-conductor-cost-measurement.md) Conductor cost measurement: session registry, `wt queue conductor-cost`, conductor share in the export — done
   - [x] [SPEC-0300](./specs/0300-quiet-conductor-follower-digest.md) Quiet conductor: the conductor follower holds informational events, prints a digest, and counts wakeups — done
   - [x] [SPEC-0301](./specs/0301-conductor-state-handoff-and-decision-log.md) Conductor state handoff and decision log: `wt queue decision`, `wt queue conductor-brief`, compaction rule — done
@@ -211,7 +211,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0307](./specs/0307-wt-idea-epic-set-or-clear-epic-on-an-existing.md) wt idea epic: set or clear :EPIC: on an existing idea — done
   - [x] [SPEC-0308](./specs/0308-spec-sizing-is-discarded-on-a-revise-verdict.md) A revise verdict keeps its sizing: select_profile honors size and tone for revise, not only approve — done
   - [x] [SPEC-0309](./specs/0309-faster-gates-parallel-pytest-affected-tests-only.md) Faster gates: parallel pytest under a host-wide gate-slot pool — done
-  - [ ] [SPEC-0318](./specs/0318-conductor-holds-park-without-a-decision-record-wt.md) A park, resume or abandon by the conductor carries its decision record: `wt queue park|resume|abandon` require `--decision` and `--rule` for a non-human actor — accepted
+  - [x] [SPEC-0318](./specs/0318-conductor-holds-park-without-a-decision-record-wt.md) A park, resume or abandon by the conductor carries its decision record: `wt queue park|resume|abandon` require `--decision` and `--rule` for a non-human actor — done
 - **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · draft · (0/0 done)
   - _(no child specs yet)_
 
@@ -228,7 +228,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) | Agentic MVP: a cheap, durable, quiet conductor on a second project | epic | accepted | M10: agentic MVP | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | draft | — | 2026-10-30 |
-| [SPEC-0318](./specs/0318-conductor-holds-park-without-a-decision-record-wt.md) | A park, resume or abandon by the conductor carries its decision record: `wt queue park|resume|abandon` require `--decision` and `--rule` for a non-human actor | feature | accepted | — | 2026-10-31 |
 
 ## Done
 
@@ -529,6 +528,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0315](./specs/0315-quiet-follower-echoes-the-conductor-s-own-parks.md) | Quiet follower holds a parked event the conductor itself caused (by=conductor) | feature | done | — | 2026-10-31 |
 | [SPEC-0316](./specs/0316-gate-config-for-a-campaign-comes-from-main-so-a.md) | A campaign's gate timeouts are the max of main's and its own branch's `.wt/project.yaml` | feature | done | — | 2026-10-31 |
 | [SPEC-0317](./specs/0317-conductor-digest-is-delivered-every-30-min-on-an.md) | Quiet follower skips a conductor_digest that holds only empty pings (nothing to act on) | feature | done | M10: agentic MVP | 2026-10-31 |
+| [SPEC-0318](./specs/0318-conductor-holds-park-without-a-decision-record-wt.md) | A park, resume or abandon by the conductor carries its decision record: `wt queue park|resume|abandon` require `--decision` and `--rule` for a non-human actor | feature | done | — | 2026-10-31 |
 
 ## Superseded / rejected
 

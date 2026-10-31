@@ -80,12 +80,14 @@ def read(cfg, *, campaign=None, since=None) -> list[dict]:
     return out
 
 
-def record(cfg, *, kind, rule, rationale, campaign=None, event_id=None, action=None,
-           by="conductor") -> dict:
-    """Validate, then append one decision. With a campaign the ledger note is appended first;
-    the `decisions.jsonl` line follows only if that succeeded, so a failure leaves at most a plain
-    note. The next `seq` is reserved under the log's flock before the note is written (the note
-    carries it). ValueError on any bad argument, with nothing written."""
+def needs_decision(by) -> bool:
+    """SPEC-0318: a park, resume or abandon by anyone but a human carries a decision record."""
+    return by != "human"
+
+
+def validate_request(kind, rule, rationale, by) -> dict:
+    """The checks of `record` that need no campaign; returns the request dict
+    `{kind, rule, rationale, by}`. ValueError on any bad argument."""
     if kind not in KINDS:
         raise ValueError(f"unknown kind {kind!r}; one of {', '.join(KINDS)}")
     if not isinstance(rule, str) or not RULE_RE.match(rule):
@@ -96,6 +98,27 @@ def record(cfg, *, kind, rule, rationale, campaign=None, event_id=None, action=N
     rationale = (rationale or "").strip()
     if not rationale:
         raise ValueError("a decision needs a rationale")
+    return {"kind": kind, "rule": rule, "rationale": rationale, "by": by}
+
+
+def covering(cfg, campaign, park_ts) -> dict | None:
+    """SPEC-0318: the first record of `campaign` with ts at or after `park_ts` (an ISO stamp);
+    None when there is none (or the park's ts is unparseable)."""
+    start = parse_ts(park_ts)
+    if start is None:
+        return None
+    return next((r for r in read(cfg, campaign=campaign)
+                 if (t := parse_ts(r.get("ts"))) is not None and t >= start), None)
+
+
+def record(cfg, *, kind, rule, rationale, campaign=None, event_id=None, action=None,
+           by="conductor") -> dict:
+    """Validate, then append one decision. With a campaign the ledger note is appended first;
+    the `decisions.jsonl` line follows only if that succeeded, so a failure leaves at most a plain
+    note. The next `seq` is reserved under the log's flock before the note is written (the note
+    carries it). ValueError on any bad argument, with nothing written."""
+    validate_request(kind, rule, rationale, by)
+    rationale = rationale.strip()
     spec_id = None
     if campaign is not None:
         state = store.read_state(cfg, campaign)          # ValueError: no such campaign

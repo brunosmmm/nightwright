@@ -571,3 +571,16 @@ def test_conduct_skill_rebase_conflict_row():                       # SPEC-0303
     assert "verified" not in row and "overtaken" not in row     # that case is `base_moving` now
     assert "base_moving" in row and "MAX_RESOLVE_RUNS" in row
     assert "failed twice" in row and "merge.resolver: false" in row
+
+
+def test_conduct_skill_park_resume_decision_rules():                # SPEC-0318
+    import re
+    conduct = (REPO_SKILLS_DIR / "wt-conduct" / "SKILL.md").read_text(encoding="utf-8")
+    assert "--by conductor" in conduct and "WT_MAILBOX_ADDR=conductor" in conduct
+    assert "--decision" in conduct and "--rule <row id>" in conduct
+    assert "decide before you resume" in conduct.lower()
+    assert "record your `escalate` decision *after* the command" in conduct
+    # every park / resume / abandon command carries its decision record
+    spans = [m for m in re.findall(r"`(wt queue (?:park|resume|abandon) [^`]*)`", conduct)]
+    assert len(spans) >= 8
+    assert not [c for c in spans if "--decision" not in c], spans
