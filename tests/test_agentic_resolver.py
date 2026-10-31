@@ -1,6 +1,7 @@
 """SPEC-0221: the close rebase hands a non-generated conflict to a `conflict_resolver` persona
 run (a step within CLOSING) instead of parking. Offline: FakeRunner entries drive a real git
 conflict in a tmp repo (`pre_shell` / `shell` run git in the campaign worktree)."""
+import ast
 import json
 import subprocess
 import threading
@@ -8,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import waits
 from test_agentic_e2e import (_git, _write, added, fake_gh, impl_done, make_cfg, make_repo,
                               review, run_cli, script, triage)
 from nightwright.agentic import personas as PS
@@ -148,6 +150,26 @@ class World:
 
     def run_ids(self):
         return [e["run_id"] for e in self.ledger("run.start") if e["persona"] == "conflict_resolver"]
+
+
+class _HoldingRunner(FakeRunner):
+    """SPEC-0322: the first `conflict_resolver` run announces it started, then blocks until
+    `stop` is set, so a stop is always delivered while that run is in flight (no wall-clock race).
+    Later resolver runs and every other persona go straight through."""
+
+    def __init__(self, script_path, stop):
+        super().__init__(script_path)
+        self.stop = stop
+        self.started = threading.Event()
+        self._held = False
+
+    def run(self, req, *, hooks=None):
+        if req.persona == "conflict_resolver" and not self._held:
+            self._held = True
+            self.started.set()
+            # `_do_resolve` catches this as a crashed attempt; the test's asserts surface it.
+            assert waits.until(self.stop.is_set), "stop never set (watcher did not run)"
+        return super().run(req, hooks=hooks)
 
 
 def basic(tmp_path, monkeypatch, *resolvers, **kw):
@@ -484,16 +506,17 @@ def test_interrupted_resolver_not_counted(tmp_path, monkeypatch):
     w.open_and_conflict()
     pre = w.dispatched()["closing"]["resolve"]["pre_head"]
     stop = threading.Event()
-    real_run = w.runner.run
-
-    def run(req, **kw):                 # the signal lands while the resolver run is in flight
-        if req.persona == "conflict_resolver":
-            stop.set()
-        return real_run(req, **kw)
-
-    monkeypatch.setattr(w.runner, "run", run)
-    w.tick(stop=stop)
-    monkeypatch.setattr(w.runner, "run", real_run)
+    w.runner = _HoldingRunner(w.script, stop)
+    # SPEC-0322: stop only once the resolver run is in flight; the run holds until `stop` is set.
+    t = threading.Thread(target=lambda: waits.until(
+        lambda: w.runner.started.is_set() or stop.is_set()) and stop.set())
+    t.start()
+    try:
+        w.tick(stop=stop)
+    finally:
+        stop.set()
+        waits.join(t)
+    assert w.runner.started.is_set()
     st = w.st()
     assert st["state"] == "CLOSING" and st["closing"]["resolve"]["pre_head"] == pre
     assert not st["closing"].get("resolve_attempts")
@@ -504,6 +527,20 @@ def test_interrupted_resolver_not_counted(tmp_path, monkeypatch):
     w.drive(lambda s: s["state"] in ("MERGED", "PARKED"))
     assert w.st()["state"] == "MERGED"
     assert len(w.run_ids()) == 2
+
+
+def test_interrupted_resolver_test_has_no_fixed_timer():
+    """SPEC-0322: the fixed-delay race (Timer + sleep_s) must not return to the interrupted test."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    fn, = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+           and n.name == "test_interrupted_resolver_not_counted"]
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Call):
+            callee = n.func
+            name = callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", "")
+            assert name != "Timer", "fixed threading.Timer in the interrupted-resolver test"
+        assert not (isinstance(n, ast.keyword) and n.arg == "sleep_s")
+        assert not (isinstance(n, ast.Constant) and n.value == "sleep_s")
 
 
 def test_resolver_opt_out_still_parks(tmp_path, monkeypatch):
