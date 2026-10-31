@@ -4,7 +4,7 @@ title: "Agentic MVP: a cheap, durable, quiet conductor on a second project"
 status: accepted
 owner: user
 created: 2026-10-30
-updated: 2026-10-30
+updated: 2026-10-31
 milestone: "M10: agentic MVP"
 kind: epic
 parent: SPEC-0169
@@ -146,6 +146,14 @@ The $1.00 target allows a 65% cut. Bringing context from about 457k to 150k cuts
 turn's cache-read cost by about two thirds. Cutting turns per merge from about 26 to 5
 wakeups, each costing a few turns, cuts the turn count by roughly half or more. Either cut
 alone gets close to the target, and both together clear it with margin.
+
+**Amendment (human decision, 2026-10-31).** E4 counts only the parks that start after
+IDEA-508 (SPEC-0318, a conductor-requested park writes its decision record) merges. Parks
+from before that fix are excluded rather than waited out, because the fix is what E4 tests.
+The window and E1–E3, E5 and E6 are unchanged. These exit criteria are now frozen: no
+further amendments before the MVP closes. `wt queue mvp-report` still scores E4 over the
+whole window, so read its "parks without a timely decision" list against the SPEC-0318
+merge time when verifying.
 
 ## Acceptance criteria
 
