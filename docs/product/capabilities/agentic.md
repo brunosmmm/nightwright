@@ -129,6 +129,9 @@ Gates are the project's own proof commands from `.wt/project.yaml` — tests, li
 with an exit code (SPEC-0173). The loop runs them in the campaign worktree, **in order and
 all of them every time**, so triage and humans see every failure at once rather than the
 first one. Each gate has a `timeout_s`; a timeout kills the gate's whole process group.
+A campaign branch may raise a gate's `timeout_s` in its own `.wt/project.yaml` (up to the
+wt-level `gate_budget_s`), never lower it, and the raise is recorded as a `gate-limits` finding;
+nothing else in a gate is read from the branch (SPEC-0316).
 `required: true` gates block the campaign; optional gates are recorded but never block.
 
 Every gate writes one log under the campaign directory, `gates/NNN-<name>.log`, starting

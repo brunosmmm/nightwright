@@ -88,7 +88,8 @@ worktrees:
   setup: [uv sync]         # run once in each new worktree
 ```
 
-Commit this file. It's part of the project, and campaigns read it from main.
+Commit this file. It's part of the project, and campaigns read it from main. (a campaign
+branch may only raise a gate's `timeout_s`, up to `gate_budget_s`).
 
 !!! check "Check"
     `wt projects config Acme` prints the resolved file with the defaults filled in, and no

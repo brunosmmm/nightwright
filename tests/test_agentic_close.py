@@ -642,3 +642,38 @@ def test_split_skips_spec_guard(world):
     assert not [t for t, _ in out.events if t == "spec_drift"]
     st2 = dict(st, kind="implement")
     assert CL._is_spec_less(st) and not CL._is_spec_less(st2)
+
+
+# ---- SPEC-0316: the branch's gate timeouts reach the close-time re-gate -------------------
+
+def _slow_yaml(timeout_s):
+    return ("schema: wt.project.v1\nbase: main\ngates:\n"
+            f"  - {{name: slow, cmd: 'sleep 2', timeout_s: {timeout_s}, required: true}}\n"
+            "merge:\n  policy: merge\n")
+
+
+def _gate_limit_findings(out):
+    return [p for p in _events(out, "finding") if p["gate"] == "gate-limits"]
+
+
+def test_branch_raised_gate_timeout_passes_the_regate_after_a_rebase(world):
+    (world["root"] / ".wt" / "project.yaml").write_text(_slow_yaml(1))
+    _git(world["root"], "commit", "-q", "-am", "slow gate, tight limit")
+    pcfg = P.load_project_config(world["root"] / ".wt" / "project.yaml")
+    _git(world["wt"], "rebase", "-q", "main")                 # branch now carries main's yaml
+    (world["wt"] / ".wt" / "project.yaml").write_text(_slow_yaml(30))
+    _git(world["wt"], "commit", "-q", "-am", "raise the gate timeout")
+    _commit(world["root"], "other.txt", "o\n", "base moves")
+    out = CL.close_campaign(world["cfg"], world["state"], pcfg)
+    assert out.next_state == "MERGED", out
+    (finding,) = _gate_limit_findings(out)
+    assert finding["severity"] == "info" and "slow: 1s -> 30s" in finding["detail"]
+
+
+def test_unraised_gate_timeout_still_times_out_with_no_finding(world):
+    (world["root"] / ".wt" / "project.yaml").write_text(_slow_yaml(1))
+    _git(world["root"], "commit", "-q", "-am", "slow gate, tight limit")
+    pcfg = P.load_project_config(world["root"] / ".wt" / "project.yaml")
+    out = CL.close_campaign(world["cfg"], world["state"], pcfg)
+    assert out.next_state == "TRIAGING" and out.gate_run.results[0].timed_out
+    assert _gate_limit_findings(out) == []

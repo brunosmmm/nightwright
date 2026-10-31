@@ -1,7 +1,7 @@
 ---
 id: SPEC-0316
 title: "A campaign's gate timeouts are the max of main's and its own branch's `.wt/project.yaml`"
-status: accepted
+status: done
 owner: user
 created: 2026-10-31
 updated: 2026-10-31
@@ -123,26 +123,26 @@ cannot make gates easier than main already requires.
 
 ## Acceptance criteria
 
-- [ ] With main `timeout_s: 1` for a gate and a worktree yaml with `timeout_s: 30` for the
+- [x] With main `timeout_s: 1` for a gate and a worktree yaml with `timeout_s: 30` for the
       same gate, the gate run uses 30 (the sidecar `timeout_s` and kill threshold).
-- [ ] With main `timeout_s: 30` and the worktree yaml `timeout_s: 1`, the run uses 30.
-- [ ] With main `timeout_s: 1`, worktree yaml `timeout_s: 10**9` and `gate_budget_s: 30`,
+- [x] With main `timeout_s: 30` and the worktree yaml `timeout_s: 1`, the run uses 30.
+- [x] With main `timeout_s: 1`, worktree yaml `timeout_s: 10**9` and `gate_budget_s: 30`,
       the run uses 30 and the `gate-limits` finding notes the cap (`capped: true` in the
       record, "capped from" in the detail).
-- [ ] With main `timeout_s: 100` and `gate_budget_s: 30`, a branch value of 500 leaves the
+- [x] With main `timeout_s: 100` and `gate_budget_s: 30`, a branch value of 500 leaves the
       run at 100 (main is never reduced) and produces no `gate-limits` finding.
-- [ ] A branch-only gate, or a branch change to `cmd`, `required`, `retries`, `results` or
+- [x] A branch-only gate, or a branch change to `cmd`, `required`, `retries`, `results` or
       `cwd`, has no effect on the run.
-- [ ] A missing, unparsable, schema-invalid or non-UTF-8 worktree yaml leaves main's config
+- [x] A missing, unparsable, schema-invalid or non-UTF-8 worktree yaml leaves main's config
       in force and does not fail or park the run.
-- [ ] `prepare_close` reads the yaml after the rebase: a campaign whose branch raises the
+- [x] `prepare_close` reads the yaml after the rebase: a campaign whose branch raises the
       timeout and which rebases onto a moved base passes its re-gate on the raised value.
-- [ ] `_do_gate` and `prepare_close` each append a `gate-limits` info `finding` event when
+- [x] `_do_gate` and `prepare_close` each append a `gate-limits` info `finding` event when
       (and only when) a limit was raised, naming the gate, main's value and the effective
       value.
-- [ ] `wt queue gates <campaign>` applies the same overlay (its sidecar `timeout_s` is the
+- [x] `wt queue gates <campaign>` applies the same overlay (its sidecar `timeout_s` is the
       raised value).
-- [ ] `gate_limits_overlay` does not mutate the config dict it is given.
+- [x] `gate_limits_overlay` does not mutate the config dict it is given.
 
 ## Test plan
 
@@ -173,6 +173,31 @@ cannot make gates easier than main already requires.
   gate and close tests (without a branch yaml difference) must pass unchanged, proving the
   no-difference path is a no-op.
 
+### Test record (2026-10-31)
+
+- `uv run pytest tests/test_agentic_gate_limits.py tests/test_agentic_close.py
+  tests/test_agentic_gates.py -q`: 112 passed. The new file covers the overlay (raise, equal,
+  lower, branch-only gate, `cmd`/`required`/`retries`/`cwd` ignored, missing / malformed /
+  invalid-schema / non-UTF-8 yaml, no mutation, the three cap cases), `G.run_all` with and
+  without the overlay (sidecar `timeout_s`), `_do_gate` (finding in `res.events_before`, none
+  when nothing is raised), `_gate_timeouts` plus the `gate_timeout` park detail, and
+  `wt queue gates` (sidecar `timeout_s` 30). `test_agentic_close.py` gained the
+  rebase-after-base-moved close that merges on the raised limit, and the control with no finding.
+- Manual verification: not run as a full `wt queue` campaign; the same scenario (`sleep 2`, main
+  `timeout_s: 1`, branch 30) is exercised end to end by the close and `wt queue gates` tests.
+- The full `uv run pytest` suite is left to gating; `python3 tools/spec_lint.py` was run.
+
+### As shipped (2026-10-31)
+
+- Helpers in `project.py`: `gate_limits_overlay` as designed, plus `campaign_gate_config(cfg,
+  project_cfg, worktree)` (reads the `gate_budget_s` cap from `events.settings`) and
+  `gate_limits_finding(raises)` (the shared `gate-limits` finding payload), so each call site
+  is two lines.
+- Call sites: `_do_gate`, `_gate_timeouts` (queue.py), `prepare_close` step 5 (close.py) and
+  `queue_gates` (cli_queue.py). `queue_gates` is a debug run and logs no `gate-limits` finding;
+  its sidecar records the limit. `G.run_all` / `run_and_log` are unchanged.
+- Docs: `docs/product/capabilities/agentic.md` and `docs/product/guides/bootstrap.md`.
+
 ## Rollout / migration
 
 No data migration. Ship the helper and its call sites together; campaigns in flight pick up
@@ -181,11 +206,11 @@ to today.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

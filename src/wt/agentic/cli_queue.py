@@ -864,6 +864,7 @@ def attach(queue_group):
         if not worktree or not os.path.isdir(worktree):
             raise click.ClickException(
                 f"campaign {campaign} has no worktree on disk ({worktree or 'none recorded'})")
+        project_cfg, _ = P.campaign_gate_config(cfg, project_cfg, worktree)     # SPEC-0316
         try:
             run = G.run_and_log(cfg, state, project_cfg, by="human")
         except ValueError as e:

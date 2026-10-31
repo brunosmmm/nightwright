@@ -330,6 +330,52 @@ def config_path(repo_root):
     return Path(repo_root) / CONFIG_RELPATH
 
 
+def gate_limits_overlay(project_cfg, worktree, *, cap_s):
+    """(config, raises) for a campaign's gate runs (SPEC-0316): `project_cfg` (main's) with each
+    gate's `timeout_s` raised to the same-named gate's value in the worktree's own
+    `.wt/project.yaml`, clamped to `cap_s`. Only a raise counts: a branch never lowers a limit,
+    adds a gate or changes anything else in one. An unusable branch file leaves `project_cfg`
+    as is. `raises` holds one record per gate raised; the input dict is never mutated."""
+    try:
+        branch = load_project_config(config_path(worktree))
+    except (ValueError, OSError, UnicodeDecodeError):
+        return project_cfg, []
+    theirs = {g.get("name"): g for g in branch.get("gates") or []}
+    gates, raises = [], []
+    for gate in project_cfg.get("gates") or []:
+        main_t = gate.get("timeout_s", 1200)
+        other = theirs.get(gate.get("name"))
+        want = other.get("timeout_s", 1200) if other else None
+        if want is not None and min(want, cap_s) > main_t:
+            eff = int(min(want, cap_s))
+            gate = {**gate, "timeout_s": eff}
+            raises.append({"gate": gate["name"], "main_timeout_s": main_t,
+                           "branch_timeout_s": want, "effective_timeout_s": eff,
+                           "capped": want > cap_s})
+        gates.append(gate)
+    if not raises:
+        return project_cfg, []
+    return {**project_cfg, "gates": gates}, raises
+
+
+def gate_limits_finding(raises):
+    """The `finding` event payload recording `raises` from `gate_limits_overlay`."""
+    lines = [f"{r['gate']}: {r['main_timeout_s']}s -> {r['effective_timeout_s']}s"
+             + (f" (capped from {r['branch_timeout_s']}s)" if r["capped"] else "")
+             for r in raises]
+    return {"persona": "close", "severity": "info", "gate": "gate-limits",
+            "title": "gate timeouts raised by the branch's .wt/project.yaml",
+            "detail": "\n".join(lines), "files": [".wt/project.yaml"]}
+
+
+def campaign_gate_config(cfg, project_cfg, worktree):
+    """`gate_limits_overlay` capped at the wt-level `gate_budget_s` (which the branch cannot
+    change): the config a campaign's gates run under, plus the raise records."""
+    from .events import settings as events_settings     # lazy: events imports the queue lazily
+    return gate_limits_overlay(project_cfg, worktree,
+                               cap_s=float(events_settings(cfg)["gate_budget_s"]))
+
+
 def project_root(cfg, project):
     """Repo root for `project` via the registry, or ValueError carrying the registry note."""
     from ..rules import resolve_research_context

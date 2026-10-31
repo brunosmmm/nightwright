@@ -389,8 +389,11 @@ def _timed_out_names(run_payload: dict, timeouts: dict | None = None) -> list:
 def _gate_timeouts(ctx, state: dict) -> dict:
     """Configured `timeout_s` of each timed-out gate; {} when the project config is unreadable."""
     try:
-        return {g.get("name"): int(g.get("timeout_s", 1200))
-                for g in ctx.project(state).get("gates") or []}
+        pcfg = ctx.project(state)
+        worktree = (state.get("repo") or {}).get("worktree")
+        if worktree:                        # SPEC-0316: the limit the gates actually ran under
+            pcfg, _ = P.campaign_gate_config(ctx.cfg, pcfg, worktree)
+        return {g.get("name"): int(g.get("timeout_s", 1200)) for g in pcfg.get("gates") or []}
     except (ValueError, OSError):
         return {}
 
@@ -1856,6 +1859,11 @@ def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
     res = StepResult(state["id"], Step("gate"), "GATING")
     try:
         pcfg = ctx.project(state)
+        worktree = (state.get("repo") or {}).get("worktree")
+        if worktree:                        # SPEC-0316: the branch may raise a gate's timeout_s
+            pcfg, raises = P.campaign_gate_config(ctx.cfg, pcfg, worktree)
+            if raises:
+                res.events_before.append(("finding", P.gate_limits_finding(raises)))
         res.gate_run = G.run_all(pcfg, state, ctx.cfg, seq=G.next_gate_seq(ctx.cfg, state["id"]),
                                  stop=ctx.stop)
     except (ValueError, OSError) as e:
