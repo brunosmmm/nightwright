@@ -76,10 +76,12 @@ All changes are in `tests/test_agentic_resolver.py`; nothing under `src/`.
      first entry no longer needs it because the runner holds).
    - `w.open_and_conflict()`; `pre = w.dispatched()["closing"]["resolve"]["pre_head"]` (unchanged).
    - `stop = threading.Event()`; `w.runner = _HoldingRunner(w.script, stop)`; the watcher thread
-     `t = threading.Thread(target=lambda: waits.until(w.runner.started.is_set) and stop.set())`
-     is started.
-   - `try: w.tick(stop=stop) finally: stop.set(); waits.join(t)`. The `stop.set()` in the `finally`
-     releases a held runner if the tick fails early, so a failure never waits out `WAIT_S`.
+     `t = threading.Thread(target=lambda: waits.until(lambda: w.runner.started.is_set() or stop.is_set()) and stop.set())`
+     is started (`t.start()`).
+   - `try: w.tick(stop=stop) finally: stop.set(); waits.join(t)`. The watcher also exits as soon as
+     `stop` is set, so the `finally`'s `stop.set()` ends both the held runner and the watcher at
+     once, and `waits.join(t)` returns immediately on a failing tick. A failure (for example a tick
+     that raises before the resolver run starts) therefore never waits out `WAIT_S`.
    - `assert w.runner.started.is_set()` (the run really started), then all existing assertions
      (`CLOSING` and `pre_head` unchanged, no `resolve_attempts`, no `rebase_resolved`,
      `_assert_restored`, `[e["interrupted"] ... "conflict_resolver"] == [True]`).
@@ -119,8 +121,9 @@ spec is past `draft`) before the fix is trusted.
 - [ ] The first `conflict_resolver` run blocks inside the runner until `stop` is set, so the
       `run.end` for it has `interrupted=True` whatever the machine speed; the retry resolver run is
       not held and the campaign still reaches `MERGED` with two resolver runs.
-- [ ] A failing tick cannot hang the test for `WAIT_S`: the `finally` sets `stop` and joins the
-      watcher with `waits.join`.
+- [ ] A failing tick cannot hang the test for `WAIT_S`: the watcher waits on `started or stop`, the
+      `finally` sets `stop` and joins the watcher with `waits.join`, so with a failure raised inside
+      the `try` before `w.tick` the test fails within about a second (manual step 3).
 - [ ] All assertions the test made before are still made (not counted as an attempt, no
       `rebase_resolved`, `_assert_restored`, interrupted `run.end`, final `MERGED`, two run ids).
 - [ ] `test_interrupted_resolver_test_has_no_fixed_timer` exists and passes.
@@ -145,9 +148,11 @@ spec is past `draft`) before the fix is trusted.
      Record the failure rate and the assertion that fired.
   2. Repeat after the change under the same load: 20 consecutive passes. Kill the load generators
      afterwards. Note both results in the spec's `As shipped` section.
-  3. Failure-path release: temporarily insert `assert False` right after `w.runner = _HoldingRunner(...)`,
-     run the test, confirm it fails in well under `WAIT_S` (the `finally` released the runner), then
-     remove it.
+  3. Failure-path release: temporarily make the tick fail before the resolver starts, by inserting
+     `raise RuntimeError("injected")` as the first statement inside the `try:`, before
+     `w.tick(stop=stop)`, after the watcher thread has been started. Run the test with
+     `WT_TEST_WAIT_S` left at its default and confirm it fails with `RuntimeError: injected` in well
+     under `WAIT_S` (not with `thread still running`). Then remove the line.
 - **Regression guard**: `uv run pytest` (full suite) passes; `python3 tools/spec_lint.py` exits 0;
   `git diff --stat` shows only `tests/test_agentic_resolver.py`, this spec and the regenerated ledger.
 
