@@ -455,6 +455,59 @@ def test_bad_worker_numbers_and_flags_fall_back(world, remote, frames):
     _assert_fell_back(world, remote, run, "protocol", cooldown=True)
 
 
+_EVIL = b"EVIL-PAYLOAD-0338\n"
+
+
+@pytest.mark.parametrize("gate,files", [
+    ("ok", {"../../evil.log": "PAYLOAD"}),        # out of `gates/`
+    ("ok", {"001-opt.log": "PAYLOAD"}),           # another gate's stem
+    ("ok", {"002-ok.log": "PAYLOAD"}),            # the wrong seq
+    ("ok", {"001-ok.log/x": "PAYLOAD"}),          # a path under a gate file
+    ("ok", {"001-ok.log": 5}),                    # a non-string payload
+    ("nope", {"001-nope.log": "PAYLOAD"}),        # a gate the job does not run
+])
+def test_a_gate_frame_naming_a_bad_file_falls_back_and_writes_nothing(world, remote, gate, files):
+    """The worker names the files the coordinator writes under `gates/`: only
+    `<seq>-<gate>(.rN).{log,json}` of one of the job's gates is taken, anything else is a
+    protocol failure that writes nothing (followed by a valid `done`, so a missing check would
+    end the run remotely instead)."""
+    import base64
+    import datetime as dt
+    import gzip
+    payload = base64.b64encode(gzip.compress(_EVIL)).decode()
+    files = {k: (payload if v == "PAYLOAD" else v) for k, v in files.items()}
+    result = {"name": gate, "required": True, "ok": True, "exit_code": 0, "timed_out": False,
+              "duration_s": 0.1, "log": "x", "tail": "", "attempts": []}
+    lines = [_frame_line("started", slot_wait_s=0.0), _frame_line("gate", files=files, result=result),
+             _frame_line("done", ok=True, started_at="x", duration_s=0.1, slot_wait_s=0.0,
+                         changed=[])]
+    remote.register(ssh=_gate_job_variant(
+        remote, "badfile", "; ".join(f"echo '{ln}'" for ln in lines) + "; exec cat >/dev/null"))
+    before = dt.datetime.now().astimezone()
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    _assert_fell_back(world, remote, run, "protocol", cooldown=True)
+    until_ = dt.datetime.fromisoformat(remote.record()["cooldown_until"])
+    assert abs((until_ - before).total_seconds() - 600) < 60     # COOLDOWN_S from now
+    assert not list(world.tmp.rglob("evil.log"))
+    assert not (world.gates_dir.parent.parent / "evil.log").exists()
+    leaked = [p for p in world.tmp.rglob("*") if p.is_file() and _EVIL in p.read_bytes()]
+    assert leaked == []
+
+
+def test_repo_key_is_the_project_and_12_hex_of_the_shared_repo(world):
+    import re
+    from nightwright.agentic import remote_gates as RG
+    other = world.tmp / "wt2"
+    _git(world.repo, "worktree", "add", "-q", "-b", "other", str(other))
+    key = RG.repo_key("My Demo", world.repo)
+    assert re.fullmatch(r"my-demo-[0-9a-f]{12}", key), key
+    assert RG.repo_key("My Demo", other) == key                 # one repo, one cache
+    assert RG.repo_key(None, world.repo).startswith("repo-")
+    (world.tmp / "elsewhere").mkdir()
+    twin = World(world.tmp / "elsewhere")
+    assert RG.repo_key("My Demo", twin.repo) != key             # another repo, another key
+
+
 def _tree(repo):
     status = _git(repo, "status", "--porcelain", "--untracked-files=all")
     return status, {p.name: p.read_text() for p in sorted(repo.iterdir()) if p.is_file()}

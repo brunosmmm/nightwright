@@ -304,6 +304,15 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
   space; a `done` without `changed`, with a non-list or non-string `changed`, and a gate frame
   whose `attempts` is not iterable each fall back as `protocol`. The tree and malformed-frame
   tests were checked to fail with their fix reverted. The full suite is left to the gate.
+- Review fixes (loop 5, tests only): `uv run pytest -q -n 4 tests/test_remote_gates.py`. Added a
+  parametrized test of the guard on worker-named files: a `gate` frame (followed by a valid
+  `done`) with `../../evil.log`, another gate's stem (`001-opt.log` in the `ok` frame), the
+  wrong seq (`002-ok.log`), `001-ok.log/x`, a non-string payload, and a `result.name` the job
+  does not run. Each falls back as `protocol` with a cooldown about now + 600 s, and the payload
+  is written nowhere under the test's tmp dir. With the file-name check removed the first five
+  fail; with the gate-name check removed the last fails. Also added a `repo_key` test
+  (lowercased project, 12 hex, one key for two worktrees of one repo, another for another
+  repo). No production code changed. The full suite is left to the gate.
 - Manual verification (steps 1-6, the second machine) has **not** been run: it needs the
   human's machine. The last criterion stays open and the spec stays `in-progress` until then.
 
