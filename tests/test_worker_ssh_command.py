@@ -1,5 +1,10 @@
 """SPEC-0336: `nw worker ssh-command`, the SSH forced command, execs only the four worker
 subcommands with their literal grammar and refuses everything else (exit 2, nothing run)."""
+import json
+import os
+import subprocess
+import sys
+
 import pytest
 
 from nightwright.agentic import worker as W
@@ -8,10 +13,21 @@ SHA = "a" * 40
 
 
 @pytest.fixture
-def execs(monkeypatch):
+def own(monkeypatch, tmp_path):
+    """The worker's own `nw` (the forced command's argv[0]): an executable tmp `nw`. Only
+    `execvp` is patched, so `ssh_command` and `own_nw` are tested together."""
+    nw = tmp_path / "bin" / "nw"
+    nw.parent.mkdir()
+    nw.write_text("#!/bin/sh\n")
+    nw.chmod(0o755)
+    monkeypatch.setattr(W.sys, "argv", [str(nw), "worker", "ssh-command"])
+    return str(nw)
+
+
+@pytest.fixture
+def execs(monkeypatch, own):
     calls = []
     monkeypatch.setattr(W.os, "execvp", lambda file, argv: calls.append((file, argv)))
-    monkeypatch.setattr(W, "own_nw", lambda: ["/home/nw/.local/bin/nw"])
     return calls
 
 
@@ -24,9 +40,10 @@ def execs(monkeypatch):
     ("nw worker gc", ["gc"]),
     ("nw worker gc --keep-days 0", ["gc", "--keep-days", "0"]),
 ])
-def test_allowed_commands_are_execd(execs, cmd, argv):
+def test_allowed_commands_are_execd(execs, own, cmd, argv):
     W.ssh_command({"SSH_ORIGINAL_COMMAND": cmd})
-    assert execs == [("/home/nw/.local/bin/nw", ["/home/nw/.local/bin/nw", "worker", *argv])]
+    # the worker's own nw, never the client's words[0] (`nw` or `/home/nw/.local/bin/nw`)
+    assert execs == [(own, [own, "worker", *argv])]
 
 
 @pytest.mark.parametrize("cmd", [
@@ -87,3 +104,26 @@ def test_own_nw_ignores_a_non_executable_nw(monkeypatch, tmp_path):
     nw.chmod(0o644)
     monkeypatch.setattr(W.sys, "argv", [str(nw)])
     assert W.own_nw()[1:] == ["-m", "nightwright"]
+
+
+@pytest.mark.parametrize("cmd", ["nw queue run", "nw worker info; id", ""])
+def test_the_cli_command_exits_2_on_a_refusal(tmp_path, cmd):
+    """The click wiring: `nw worker ssh-command` itself exits 2, says `refused:`, runs
+    nothing (a `nw queue run` would print queue output on stdout)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("NW_")}
+    env.update(NW_DATA_DIR=str(tmp_path / "d"), NW_CONFIG_DIR=str(tmp_path / "c"),
+               SSH_ORIGINAL_COMMAND=cmd)
+    p = subprocess.run([sys.executable, "-m", "nightwright", "worker", "ssh-command"], env=env,
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert p.returncode == 2, (p.stdout, p.stderr)
+    assert p.stderr.startswith("refused: ") and p.stdout == ""
+
+
+def test_the_cli_command_execs_an_allowed_command(tmp_path):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("NW_")}
+    env.update(NW_DATA_DIR=str(tmp_path / "d"), NW_CONFIG_DIR=str(tmp_path / "c"),
+               SSH_ORIGINAL_COMMAND="/elsewhere/nw worker info --json")
+    p = subprocess.run([sys.executable, "-m", "nightwright", "worker", "ssh-command"], env=env,
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert p.returncode == 0, p.stderr
+    assert json.loads(p.stdout)["schema"] == "nw.worker.info.v1"

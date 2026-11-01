@@ -37,6 +37,8 @@ ALLOWED = {
     ("agentic/cli_worker.py", "worker_gc"): "worker gc: JSON summary for ssh callers (SPEC-0336)",
     ("agentic/worker.py", "gate_job"): "stderr diagnostic; stdout is the job frame protocol (SPEC-0336)",
     ("agentic/worker.py", "_fail"): "stderr diagnostic outside the frame protocol (SPEC-0336)",
+    ("agentic/worker.py", "_write_fd"): "stderr diagnostic: a stalled frame stdout (SPEC-0336)",
+    ("agentic/worker.py", "_start_gc"): "stderr diagnostic: the finish gc did not start (SPEC-0336)",
     ("agentic/worker.py", "ssh_command"): "forced-command refusal on stderr (SPEC-0336)",
 }
 

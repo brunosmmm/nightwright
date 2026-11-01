@@ -71,8 +71,22 @@ def wenv(tmp_path):
     conf.mkdir()
     env = {k: v for k, v in os.environ.items()
            if not k.startswith("NW_") or k == "NW_TEST_WAIT_S"}
-    env.update(NW_DATA_DIR=str(data), NW_CONFIG_DIR=str(conf))
+    # a job's detached finish gc would race the gc tests' own counts; its own test turns it on
+    env.update(NW_DATA_DIR=str(data), NW_CONFIG_DIR=str(conf), NW_WORKER_FINISH_GC="0")
     return env
+
+
+@pytest.fixture(autouse=True)
+def _no_finish_gc(monkeypatch):
+    """The same for the in-process `gate_job` calls. Their stdin watcher and signal handler
+    call `gates.terminate_all()` on helper threads, and its stop is sticky: wait for those
+    threads, then reset, so no later test in this process sees its gates stopped."""
+    monkeypatch.setenv("NW_WORKER_FINISH_GC", "0")
+    yield
+    assert until(lambda: not [t for t in threading.enumerate()
+                              if "_watch_stdin" in t.name or "terminate_all" in t.name])
+    from nightwright.agentic import gates as G
+    G.reset()
 
 
 def _cfg(env, slots=None):
@@ -339,6 +353,10 @@ def test_base_name_check_agrees_with_git_check_ref_format(name):
     (_set("job_id", "a/b"), "job_id"),
     (_set("job_id", "x\n"), "job_id"),
     (_set("job_id", ""), "job_id"),
+    (_set("job_id", "."), "job_id"),
+    (_set("job_id", ".."), "job_id"),
+    (_set("repo_key", ".."), "repo_key"),
+    (_set("campaign", "..."), "campaign"),
     (_set("repo_key", "../x"), "repo_key"),
     (_set("repo_key", "a/b"), "repo_key"),
     (_set("repo_key", "proj\n"), "repo_key"),
@@ -761,6 +779,97 @@ def test_log_over_16_mib_is_truncated(src, tmp_path, wenv):
     assert log.endswith(b"TAIL-MARKER\n") and b"HEAD-MARKER" not in log
     full = len("HEAD-MARKER\n") + n + len("\nTAIL-MARKER\n")
     assert json.loads(_file(g, "001-big.json"))["truncated_bytes"] == full - W.MAX_LOG_BYTES
+
+
+
+def _unread_job(env, header, bundle, stderr):
+    """A gate-job whose stdout nobody reads (a coordinator hung while still connected)."""
+    proc = subprocess.Popen([sys.executable, "-m", "nightwright", "worker", "gate-job"],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr,
+                            env=env)
+    proc.stdin.write((json.dumps(header) + "\n").encode() + bundle)
+    proc.stdin.flush()
+    return proc
+
+
+def _big_gate_job(src, tmp_path, wenv, job_id, *more):
+    # random base64 does not gzip away: the `gate` frame is MiBs, far over the pipe buffer
+    return _bundle_job(src, tmp_path, [_gate("big", "head -c 3000000 /dev/urandom | base64"),
+                                       *more], job_id=job_id)
+
+
+def _frame_logged(env, job_id, type_):
+    p = _job_dir(env, job_id) / "frames.jsonl"
+    assert until(lambda: p.is_file() and f'"type": "{type_}"' in p.read_text())
+
+
+@pytest.mark.parametrize("how", ["sigterm", "eof"])
+def test_a_frame_write_nobody_reads_still_ends_on_a_signal_or_eof(src, tmp_path, wenv, how):
+    """The main thread (holding the gate slot) never sits in a blocked `write`: with stdout
+    full and unread, SIGTERM or stdin EOF still ends the job, which frees the slot."""
+    pidfile = tmp_path / "sleep.pid"
+    h, data = _big_gate_job(src, tmp_path, wenv, f"unread-{how}", _sleeper(pidfile))
+    with open(tmp_path / "err", "wb") as err:
+        proc = _unread_job(wenv, h, data, err)
+        try:
+            _frame_logged(wenv, h["job_id"], "gate")    # logged, then stuck on the full pipe
+            if how == "sigterm":
+                proc.send_signal(signal.SIGTERM)
+            else:
+                proc.stdin.close()
+            assert until(lambda: proc.poll() is not None), "the job hung on its stdout"
+            assert proc.returncode == 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+    assert not pidfile.exists(), "the next gate ran after the cancel"
+    with GS.acquire(_cfg(wenv), "after", stop=threading.Event()) as hold:
+        assert not hold.interrupted                    # the worker's slot is free again
+
+
+def test_a_stalled_stdout_gives_up_and_cancels_the_rest(src, tmp_path, wenv):
+    """With no signal and no EOF, a frame write with no progress for
+    `NW_WORKER_FRAME_STALL_S` drops stdout and cancels the job's remaining gates."""
+    pidfile = tmp_path / "sleep.pid"
+    h, data = _big_gate_job(src, tmp_path, wenv, "stalled", _sleeper(pidfile))
+    env = {**wenv, W.FRAME_STALL_ENV: "1"}
+    with open(tmp_path / "err", "wb") as err:
+        proc = _unread_job(env, h, data, err)
+        try:
+            assert until(lambda: proc.poll() is not None), "the job hung on its stdout"
+            assert proc.returncode == 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+    assert "stdout stalled" in (tmp_path / "err").read_text()
+    assert not pidfile.exists(), "the next gate ran after the stall"
+    rec = json.loads((_job_dir(wenv, "stalled") / "job.json").read_text())
+    assert rec["state"] == "done"
+
+
+def test_the_finish_gc_runs_detached_and_never_delays_the_exit(src, tmp_path, wenv):
+    """The default gc a job starts as it ends does not hold up its exit: here another repo's
+    lock is held, so gc blocks on it; the job still exits at once, and the gc finishes (the
+    orphan job ref goes) once the lock is free."""
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    assert _run(wenv, h, data)[2] == 0
+    cache = _cache(wenv)
+    _git(cache, "update-ref", "refs/nw/gate-jobs/crashed", src.head)
+    other = _cache(wenv, "other")                       # sorts before `proj`
+    subprocess.run(["git", "init", "-q", "--bare", str(other)], check=True)
+    fd = os.open(other.parent / "other.lock", os.O_RDWR | os.O_CREAT)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        h2 = _header("fin-2", src.head, src.base, [_gate("x", "true")], bundle_bytes=0)
+        job, fin, rc = _run({**wenv, W.FINISH_GC_ENV: "1"}, h2)
+        assert rc == 0 and fin["ok"] is True
+        assert _git(cache, "rev-parse", "refs/nw/gate-jobs/crashed") == src.head
+    finally:
+        os.close(fd)
+    assert until(lambda: "crashed" not in _git(cache, "for-each-ref", "--format=%(refname)")), \
+        "the detached gc never ran"
 
 
 # ---- have / gc / info ------------------------------------------------------------------------

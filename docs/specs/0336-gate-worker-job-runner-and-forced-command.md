@@ -348,6 +348,33 @@ this to tell a transport failure from a gate failure.
   tests/test_rich_output_guard.py tests/test_test_waits.py`, 213 tests) passed in repeat runs
   with `-n 4`, `-n 6` and `-n 8`. `python3 tools/spec_lint.py`: OK. The full suite is left to
   gating.
+- Loop 9 (review fixes): new cases in `tests/test_worker.py`:
+  - With stdout full and unread (a 3 MB random `gate` frame), SIGTERM or stdin EOF still ends
+    the job: exit 0, the next gate never runs, and the worker's slot can then be taken.
+  - With `NW_WORKER_FRAME_STALL_S=1` and no signal and no EOF, the job gives up on stdout
+    ("stdout stalled" on stderr), cancels the next gate and exits 0.
+  - The finish gc runs detached: the job exits 0 while another cache's repo lock is held, and
+    the orphan job ref is gone once the lock is released.
+  - `job_id` `.` and `..`, `repo_key` `..` and `campaign` `...` are `validate` refusals.
+  In `tests/test_worker_ssh_command.py`:
+  - The allowed-command cases now patch only `os.execvp`, with `sys.argv[0]` set to an
+    executable tmp `nw`, and assert the exec argv is that path plus `worker <sub>` for all
+    six forms.
+  - `nw worker ssh-command` run as a subprocess exits 2 with `refused:` and an empty stdout
+    for `nw queue run`, `info; id` and an empty command, and execs `/elsewhere/nw worker info
+    --json`, which prints `nw.worker.info.v1`.
+  With the old `worker.py` restored, all 8 new `test_worker.py` cases fail.
+  Test hygiene: in-process `gate_job` tests could leave `gates.terminate_all()`'s sticky stop
+  set in the pytest process (from a helper thread started by the slot-stage signal or the
+  stdin watcher). Later gate tests in the same xdist worker then saw `interrupted`; this is
+  where the occasional `test_gate_slots`/`test_agentic_gates` failure under `-n 8` came from,
+  and is probably the loop 6 one-off. The test_worker autouse fixture now waits for those
+  threads and calls `gates.reset()`.
+  Targeted set (`tests/test_worker.py tests/test_worker_ssh_command.py tests/test_gate_slots.py
+  tests/test_cli_gate_slots.py tests/test_agentic_gates.py tests/test_rich_output_guard.py
+  tests/test_test_waits.py`, 225 tests): 8 of 8 runs passed after that fix (`-n 4/6/8`).
+  `python3 tools/spec_lint.py`: OK. The full suite is left to gating.
+
 
 ### As shipped (2026-10-31)
 
@@ -440,6 +467,23 @@ this to tell a transport failure from a gate failure.
   repo on its own; a cache that fails (a git error, an OS error) is listed in a new `errors`
   key (`[{repo, error}]`), the repos after it still run, and `nw worker gc` exits 1 after
   printing the JSON when `errors` is not empty.
+- Loop 9, frame writes: a frame goes to stdout's fd in `PIPE_BUF` pieces, and each piece is
+  written only after `select` reports the fd writable. The main thread (which may hold the gate
+  slot) therefore never blocks in `write`. If the fd stays full, the write gives up when
+  `cancel` is set (stdin EOF or a signal), or when there has been no progress for
+  `NW_WORKER_FRAME_STALL_S` (default 300 s). After that, stdout counts as closed. A stall also
+  sets `cancel` and kills the live gates, so the remaining gates do not run, the job ends
+  (exit 0, `job.json` state `done`) and its slot is released. `frames.jsonl` still gets every
+  frame.
+- Loop 9, the finish gc (step 6 "run gc") is started **detached**: `nw worker gc` runs in its
+  own session with no stdio of the job's, pointed at the job's data and config dirs. The job's
+  exit, and so its exit code, no longer waits on other repos' locks or on a
+  `git gc --prune=now`. `NW_WORKER_FINISH_GC=0` turns it off. The worker tests set this,
+  because a background gc would race the counts that the gc tests assert, and one test turns
+  it back on. The tree, scratch and job-ref removal still run synchronously before exit.
+- Loop 9, names: `job_id`, `repo_key`, `campaign` and `spec_id` (and `have --repo`, including
+  under `ssh-command`) must also not consist only of dots. `.` and `..` name the store's own
+  dirs, so a `job_id: ".."` header is now a `validate` refusal rather than a `claim` one.
 
 
 ## Clock Log

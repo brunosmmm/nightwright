@@ -17,6 +17,7 @@ import json
 import math
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -44,11 +45,17 @@ DEFAULT_KEEP_DAYS = 2
 # `gc --keep-days` beyond this is "forever" (a larger count would overflow the float clock)
 MAX_KEEP_DAYS = 100_000
 SLOT_WAIT_ENV = "NW_WORKER_SLOT_WAIT_EVENT_S"
+# a frame write that makes no progress this long means the coordinator stopped reading
+FRAME_STALL_ENV = "NW_WORKER_FRAME_STALL_S"
+DEFAULT_FRAME_STALL_S = 300.0
+# `0` turns off the detached gc a job starts as it ends (tests that count gc's own work)
+FINISH_GC_ENV = "NW_WORKER_FINISH_GC"
 EXIT_ERROR = 3
 EXIT_REFUSED = 2
 
 # `\Z`, not `$`: `$` also matches before a trailing newline, and these grammars are literal
-KEY_RE = re.compile(r"^[A-Za-z0-9._-]+\Z")
+# never only dots: `.`/`..` name the store's own dirs, not a job or a cache
+KEY_RE = re.compile(r"^(?!\.+\Z)[A-Za-z0-9._-]+\Z")
 SHA_RE = re.compile(r"^[0-9a-f]{40,64}\Z")
 DIGITS_RE = re.compile(r"^[0-9]+\Z")
 # a branch name: no leading `-` or `/`; `base_name_ok` adds the rest of git's check-ref-format
@@ -289,11 +296,19 @@ def validate_header(h) -> None:
 
 class _Frames:
     """One JSON frame per line on stdout, plus a copy in `frames.jsonl` once the job is
-    claimed. A closed stdout (the coordinator went away) is remembered, never raised."""
+    claimed. A closed stdout (the coordinator went away) is remembered, never raised.
 
-    def __init__(self, job_id, stream):
+    A frame (a gate's can be ~16 MiB of base64 per file) is written in `PIPE_BUF` pieces, each
+    only once `select` says the fd takes it, so the main thread (which may hold the gate slot)
+    never blocks in `write`. While the fd stays full, `cancel` (stdin EOF, a signal) or
+    `stall_s` with no progress gives up: stdout counts as closed, and a stall also sets
+    `cancel`, ending the job's remaining gates."""
+
+    def __init__(self, job_id, stream, cancel: threading.Event | None = None):
         self.job_id = job_id
         self.stream = stream
+        self.cancel = cancel
+        self.stall_s = _float_env(FRAME_STALL_ENV, DEFAULT_FRAME_STALL_S)
         self.log: Path | None = None
         self.closed = False
         self.sent: set[str] = set()
@@ -312,10 +327,38 @@ class _Frames:
         if self.closed:
             return
         try:
-            self.stream.write(line)
-            self.stream.flush()
+            fd = self.stream.fileno()
+        except (OSError, ValueError, AttributeError):
+            fd = None                           # an in-memory stream: it never blocks
+        try:
+            if fd is None:
+                self.stream.write(line)
+                self.stream.flush()
+            else:
+                self.stream.flush()             # nothing may sit in the buffered writer
+                self._write_fd(fd, line)
         except (OSError, ValueError):
             self.closed = True
+
+    def _write_fd(self, fd: int, data: bytes) -> None:
+        view, last = memoryview(data), time.monotonic()
+        while view:
+            _r, w, _x = select.select([], [fd], [], 0.5)
+            if w:
+                n = os.write(fd, view[:select.PIPE_BUF])
+                view, last = view[n:], time.monotonic()
+                continue
+            if self.cancel is not None and self.cancel.is_set():
+                self.closed = True              # cancelled and nobody reads: stop writing
+                return
+            if time.monotonic() - last >= self.stall_s:
+                print(f"nw worker: stdout stalled {self.stall_s:g}s; dropping the job's frames",
+                      file=sys.stderr)
+                self.closed = True
+                if self.cancel is not None:
+                    self.cancel.set()
+                    G.terminate_all()
+                return
 
 
 def _read_exact(stream, n: int, dest: Path) -> None:
@@ -401,6 +444,14 @@ def gate_files(out: Path, stem: str) -> dict[str, str]:
 
 # ---- gate-job --------------------------------------------------------------------------------
 
+def _float_env(name: str, default: float) -> float:
+    try:
+        v = float(os.environ.get(name, default))
+    except ValueError:
+        return default
+    return v if math.isfinite(v) and v >= 0 else default
+
+
 def _slot_wait_event_s() -> float:
     try:
         v = float(os.environ.get(SLOT_WAIT_ENV, gate_slots.WAIT_EVENT_S))
@@ -473,14 +524,30 @@ def _drop_job_refs(cfg, h: dict, job: Path) -> None:
     (job / "refs.json").unlink(missing_ok=True)
 
 
+def _start_gc(cfg) -> None:
+    """Start a default `nw worker gc` detached (own session, no stdio of ours), so the job's
+    exit (and so its exit code) never waits on other repos' locks or a `git gc --prune=now`."""
+    if os.environ.get(FINISH_GC_ENV, "1") == "0":
+        return
+    env = {**os.environ, "NW_DATA_DIR": str(cfg["data_dir"])}
+    if cfg.get("config_dir"):
+        env["NW_CONFIG_DIR"] = str(cfg["config_dir"])
+    try:
+        subprocess.Popen([sys.executable, "-m", "nightwright", "worker", "gc"], env=env,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    except OSError as e:
+        print(f"nw worker: could not start gc: {e}", file=sys.stderr)
+
+
 def _cleanup(cfg, h: dict, job: Path) -> None:
     """Step 6 after the last frame: the tree and scratch go, the job refs go, `job.json` and
-    `frames.jsonl` stay, then a default gc."""
+    `frames.jsonl` stay, then a default gc, detached."""
     for sub in ("tree", "tmp", "out"):
         shutil.rmtree(job / sub, ignore_errors=True)
     (job / "job.bundle").unlink(missing_ok=True)
     _drop_job_refs(cfg, h, job)
-    gc(cfg)
+    _start_gc(cfg)
 
 
 _STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
@@ -535,10 +602,10 @@ def gate_job(cfg, stdin, stdout) -> int:
     SIGTERM/SIGINT/SIGHUP cancel like stdin EOF: before the slot stage the job ends with an
     `error` frame (`stage: "signal"`); from then on the slot wait or the live gates stop (their
     process groups are killed) and `done` goes out with `interrupted: true`."""
-    frames = _Frames(None, stdout)
+    cancel = threading.Event()
+    frames = _Frames(None, stdout, cancel)
     state = {"stage": "validate"}
     stop = _Stop()
-    cancel = threading.Event()
     h, job, lock_fd, job_rec = None, None, None, None
 
     def on_signal(signum, _frame):
