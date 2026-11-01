@@ -324,6 +324,18 @@ is repaired by hand once (the steward already reverted the observed edit).
   foreign-`:PROJECT:` idea promoted `--internal` reconciles/advances, is hand-off marked and passes
   `plan_spec_link`; a foreign idea whose bare id hits an unclaiming wt spec is `flag-foreign` with
   no write; dry run equals `--apply` for a foreign backlink.
+- Loop 5 (review fixes): the batch dependency layer is project-scoped. `_project_spec_path`
+  (shared with `plan_add`) resolves a non-internal project's bare id in `<root>/docs/specs`;
+  `_spec_source`, `_depends_on`, `_dangling` and `_batch_deps` take the batch `project`
+  (`plan_add_batch` and `apply_add_batch` pass it), so order, cycle refusals and `would_block`
+  follow the project's files and `active_campaign_for_spec` is asked with that project instead of a
+  hardcoded `INTERNAL_PROJECT`. `store.list_campaigns(project=)` treats a state without `project`
+  as `INTERNAL_PROJECT`. `owns_idea` also accepts an idea with no `:SPEC:` that any wt spec names as
+  `source_idea` (an idea with a bare `:SPEC:` still needs wt's spec at that id to claim it).
+  `foreign_scope_path` ignores a terminal `$WT_CAMPAIGN`. Tests in `tests/test_spec_scope.py`:
+  batch add with two projects' SPEC-0001/0002 having different `depends_on`, old state without
+  `project`, `owns_idea` without a link, terminal campaign scope. Targeted queue/reconcile/store/
+  project tests pass; the full suite is left to gating.
 
 ## Rollout / migration
 

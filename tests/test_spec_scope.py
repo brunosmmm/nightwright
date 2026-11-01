@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from test_agentic_e2e import make_cfg, make_repo
+from test_agentic_e2e import make_cfg, make_repo, write_review
 from test_reconcile import TZ, _actions, _bytes, _cfg, _idea, _spec, _state_of
 from nightwright import org_write as W
 from nightwright import specs as S
@@ -270,6 +270,85 @@ def test_plan_add_same_spec_id_two_projects(tmp_path):
         Q.plan_add(cfg, "SPEC-0001", force=True)
     store.write_state(cfg, "c-wt2", dict(store.read_state(cfg, "c-wt2"), state="ABANDONED"))
     assert Q.plan_add(cfg, "SPEC-0001", force=True)["repo_root"] == str(wt_repo.resolve())
+
+
+def _spec_file(root, num, status="accepted", deps=()):
+    d = Path(root) / "docs" / "specs"
+    d.mkdir(parents=True, exist_ok=True)
+    for old in d.glob(f"{num:04d}-*.md"):
+        old.unlink()
+    body = (f"---\nid: SPEC-{num:04d}\ntitle: t{num}\nstatus: {status}\ncreated: 2026-10-31\n"
+            f"depends_on: [{', '.join(deps)}]\n---\n\n## Context\nx\n")
+    (d / f"{num:04d}-s{num}.md").write_text(body)
+
+
+def test_batch_add_follows_the_projects_own_specs(tmp_path):
+    wt_repo = make_repo(tmp_path, review=False)
+    p2 = _project_repo(tmp_path)
+    cfg = make_cfg(tmp_path, wt_repo, tmp_path / "script.json",
+                   outbox={PROJ: {"repo_path": str(p2)}})
+    # wt: 0002 depends on 0001. project: 0001 depends on 0002 (the opposite) and on 0003
+    _spec_file(wt_repo, 1)
+    _spec_file(wt_repo, 2, deps=["SPEC-0001"])
+    _spec_file(p2, 1, deps=["SPEC-0002", "SPEC-0003"])
+    _spec_file(p2, 2)
+    _spec_file(p2, 3, status="draft")
+    for n in (1, 2):
+        path = next((p2 / "docs" / "specs").glob(f"{n:04d}-*.md"))
+        write_review(cfg, path, f"SPEC-{n:04d}")
+    batch = Q.plan_add_batch(cfg, ["SPEC-0001", "SPEC-0002"], project=PROJ)
+    assert [i["id"] for i in batch["items"]] == ["SPEC-0002", "SPEC-0001"]
+    assert [i.get("error") for i in batch["items"]] == [None, None]
+    first = {i["id"]: i for i in batch["items"]}["SPEC-0001"]
+    assert first["would_block"] == ["SPEC-0003 is draft and not queued"]
+    # wt's own batch still follows wt's files
+    wt_batch = Q.plan_add_batch(cfg, ["SPEC-0002", "SPEC-0001"])
+    assert [i["id"] for i in wt_batch["items"]] == ["SPEC-0001", "SPEC-0002"]
+    # an active wt campaign for the same id does not satisfy the project's dependency ...
+    _state_file(cfg, "c-wt3", spec_id="SPEC-0003")
+    b = Q.plan_add_batch(cfg, ["SPEC-0001", "SPEC-0002"], project=PROJ)
+    assert {i["id"]: i for i in b["items"]}["SPEC-0001"]["would_block"] == [
+        "SPEC-0003 is draft and not queued"]
+    # ... the project's own does
+    _state_file(cfg, "c-p3", spec_id="SPEC-0003", project=PROJ)
+    b = Q.plan_add_batch(cfg, ["SPEC-0001", "SPEC-0002"], project=PROJ)
+    assert {i["id"]: i for i in b["items"]}["SPEC-0001"]["would_block"] == []
+    # applying re-reads the project's order too
+    Q.apply_add_batch(cfg, b)
+    assert store.active_campaign_for_spec(cfg, "SPEC-0002", PROJ)
+
+
+def test_list_campaigns_treats_a_state_without_project_as_internal(tmp_path):
+    cfg = _cfg(tmp_path)
+    _state_file(cfg, "c-old")
+    p = store.campaigns_dir(cfg) / "c-old" / "state.json"
+    st = json.loads(p.read_text())
+    del st["project"]
+    p.write_text(json.dumps(st))
+    assert store.active_campaign_for_spec(cfg, "SPEC-0001", "Meta-Tools")["id"] == "c-old"
+    assert store.active_campaign_for_spec(cfg, "SPEC-0001", PROJ) is None
+
+
+def test_owns_idea_accepts_an_idea_named_by_a_wt_spec_without_a_spec_link(tmp_path):
+    cfg = _cfg(tmp_path)
+    W.add_idea(cfg, "home-lab idea")                       # no :SPEC: yet
+    iid = [t for t in load_tasks(cfg) if t.is_idea and t.heading == "home-lab idea"][0] \
+        .properties.get("ID")
+    W.set_property(cfg, W.resolve_selector(cfg, iid), "PROJECT", PROJ)
+    task = W.resolve_selector(cfg, iid)
+    assert SS.owns_idea(cfg, task) is False
+    _spec(cfg, "SPEC-0001", "accepted", source_idea=iid)
+    assert SS.owns_idea(cfg, task) is True
+
+
+def test_foreign_scope_ignores_a_terminal_campaign_in_the_env(scoped, tmp_path, monkeypatch):
+    cfg, _wt_repo, p2 = scoped
+    st, _wtree = _campaign(cfg, p2, tmp_path)
+    monkeypatch.setenv("NW_CAMPAIGN", "cid")
+    monkeypatch.chdir(tmp_path)
+    assert SS.foreign_scope_path(cfg, "SPEC-0001") is not None
+    store.write_state(cfg, "cid", dict(st, state="MERGED"))
+    assert SS.foreign_scope_path(cfg, "SPEC-0001") is None      # a stale NW_CAMPAIGN scopes nothing
 
 
 # ---- resolve_in_scope --------------------------------------------------------------------

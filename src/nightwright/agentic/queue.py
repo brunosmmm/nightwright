@@ -5917,8 +5917,7 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
     if project and project != INTERNAL_PROJECT and not outbound:
         # SPEC-0327: a second project's bare id lives in that project's repo, not wt's store
         try:
-            path = SP._find_spec(Path(P.project_config(cfg, project)["_root"]) / "docs" / "specs",
-                                 spec_id)
+            path = _project_spec_path(cfg, spec_id, project)
         except ValueError as e:
             raise ValueError(f"{spec_id} not found in project {project}: {e}")
     else:
@@ -6336,10 +6335,26 @@ def apply_add_idea(cfg, plan: dict, *, by="human") -> dict:
 
 # ---- batch add (SPEC-0276) -----------------------------------------------------------------------
 
-def _spec_source(cfg, spec_id) -> Path:
+def _project_spec_path(cfg, spec_id, project) -> Path:
+    """SPEC-0327: the file of a bare `spec_id` of `project`: a second project's id lives in its
+    own repo's `docs/specs`, wt's store only holds wt's (and outbound) ids."""
+    if project and project != INTERNAL_PROJECT and not SP._is_outbound_spec_id(spec_id):
+        return SP._find_spec(Path(P.project_config(cfg, project)["_root"]) / "docs" / "specs",
+                             spec_id)
+    return SP.resolve_spec_path(cfg, spec_id)
+
+
+def _dep_project(spec_id, dep, project) -> str | None:
+    """The project a same-namespace dependency of `spec_id` belongs to (None: outbound id)."""
+    if SP._is_outbound_spec_id(dep):
+        return None
+    return project or INTERNAL_PROJECT
+
+
+def _spec_source(cfg, spec_id, project=None) -> Path:
     """The file `backlog_readiness` reads for the spec: the target repo's copy for an exported
-    outbound spec (else its outbox copy), the registered file for an internal one."""
-    path = SP.resolve_spec_path(cfg, spec_id)
+    outbound spec (else its outbox copy), the project's (or wt's) file for a bare one."""
+    path = _project_spec_path(cfg, spec_id, project)
     if SP._is_outbound_spec_id(spec_id):
         fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
         target = (fm or {}).get("target_spec_path") if isinstance(fm, dict) else None
@@ -6348,11 +6363,12 @@ def _spec_source(cfg, spec_id) -> Path:
     return path
 
 
-def _depends_on(cfg, spec_id) -> list[str]:
+def _depends_on(cfg, spec_id, project=None) -> list[str]:
     """`depends_on` of the spec as a list of ids; [] when the spec is unreadable."""
     try:
-        fm, _ = split_frontmatter(_spec_source(cfg, spec_id).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        fm, _ = split_frontmatter(_spec_source(cfg, spec_id, project).read_text(
+            encoding="utf-8"))
+    except (OSError, ValueError, KeyError):
         return []
     deps = (fm.get("depends_on") if isinstance(fm, dict) else None) or []
     return [_canon_id(d) for d in ([deps] if isinstance(deps, str) else deps)]
@@ -6457,13 +6473,13 @@ def _order_specs(spec_ids, deps_of) -> tuple[list[str], dict]:
     return order + [s for s in spec_ids if s in pending], cycles
 
 
-def _dangling(cfg, spec_id, deps, in_batch) -> list[str]:
+def _dangling(cfg, spec_id, deps, in_batch, project=None) -> list[str]:
     """The `depends_on` ids of `spec_id` that would block it forever: not satisfied, not in the
     batch and without an active campaign. Dependencies resolve next to the spec file the
     scheduler reads (`backlog_readiness`), so an outbound spec looks in its target repo."""
     try:
-        spec_dir = _spec_source(cfg, spec_id).parent
-    except (OSError, ValueError):
+        spec_dir = _spec_source(cfg, spec_id, project).parent
+    except (OSError, ValueError, KeyError):
         return []
     out = []
     for dep in deps:
@@ -6476,17 +6492,17 @@ def _dangling(cfg, spec_id, deps, in_batch) -> list[str]:
         except (OSError, ValueError):
             status = None
         if status in DEPENDENCY_SATISFIED or (same and store.active_campaign_for_spec(
-                cfg, dep, None if SP._is_outbound_spec_id(dep) else INTERNAL_PROJECT)):
+                cfg, dep, _dep_project(spec_id, dep, project))):
             continue
         out.append(f"{dep} not found" if status is None
                    else f"{dep} is {status or 'without status'} and not queued")
     return out
 
 
-def _batch_deps(cfg, spec_ids) -> tuple[dict, dict]:
+def _batch_deps(cfg, spec_ids, project=None) -> tuple[dict, dict]:
     """`(all, edges)`: each spec's `depends_on`, and the part of it that can be a spec of the
     batch (same id namespace)."""
-    allv = {i: _depends_on(cfg, i) for i in spec_ids}
+    allv = {i: _depends_on(cfg, i, project) for i in spec_ids}
     return allv, {i: [d for d in ds if _same_namespace(i, d)] for i, ds in allv.items()}
 
 
@@ -6538,7 +6554,7 @@ def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=Fal
             item["error"] = str(e)
         items[i] = item
     spec_ids = [i for i in ids if items[i]["kind"] == "spec"]
-    all_deps, deps_of = _batch_deps(cfg, spec_ids)
+    all_deps, deps_of = _batch_deps(cfg, spec_ids, project)
     order, cycles = _order_specs(spec_ids, deps_of)
     for sid, msg in cycles.items():
         prior = items[sid].get("error")
@@ -6549,7 +6565,8 @@ def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=Fal
     for n, it in enumerate(ordered, 1):
         it["position"] = n
         if "plan" in it and it["kind"] == "spec":
-            it["would_block"] = _dangling(cfg, it["id"], all_deps[it["id"]], set(ids))
+            it["would_block"] = _dangling(cfg, it["id"], all_deps[it["id"]], set(ids),
+                                       project)
     return {"schema": "nw.queue.add.batch.v1", "params": params, "items": ordered,
             "skipped": [], **_batch_totals(ordered)}
 
@@ -6565,7 +6582,8 @@ def apply_add_batch(cfg, batch: dict, *, skip_invalid=False, by="human") -> dict
         raise ValueError(f"{bad} of {len(items)} items cannot be queued; fix them or pass "
                          f"--skip-invalid")
     prm = batch.get("params") or {}
-    _, deps_of = _batch_deps(cfg, [it["id"] for it in items if it["kind"] == "spec"])
+    _, deps_of = _batch_deps(cfg, [it["id"] for it in items if it["kind"] == "spec"],
+                            prm.get("project"))
     for it in items:
         if "error" in it:
             continue

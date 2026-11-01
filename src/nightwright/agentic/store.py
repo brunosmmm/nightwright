@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from ..export import _atomic_write
+from ..rules import INTERNAL_PROJECT
 from . import schemas as SC
 
 TERMINAL_STATES = frozenset({"MERGED", "HANDED_OFF", "ABANDONED"})
@@ -357,7 +358,7 @@ def list_campaigns(cfg, *, include_terminal=False, project=None, spec_id=None,
             continue
         if not include_terminal and st.get("state") in TERMINAL_STATES:
             continue
-        if project and st.get("project") != project:
+        if project and (st.get("project") or INTERNAL_PROJECT) != project:   # old states: wt's own
             continue
         if spec_id and st.get("spec_id") != spec_id:
             continue

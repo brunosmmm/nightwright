@@ -30,7 +30,15 @@ def owns_idea(cfg, task, spec_id=None) -> bool:
     from .workflow import _is_outbound_id, _load_spec_fm
     sid = (spec_id or task.properties.get("SPEC") or "").strip()
     idea_id = (task.properties.get("ID") or "").strip()
-    if not sid or not idea_id or _is_outbound_id(sid):
+    if not idea_id:
+        return False
+    if not sid:           # not linked yet: any wt spec naming the idea is an explicit claim
+        from .specs import _spec_claims
+        try:
+            return idea_id in _spec_claims(cfg)
+        except (ValueError, OSError):
+            return False
+    if _is_outbound_id(sid):
         return False
     try:
         fm = _load_spec_fm(cfg, sid)
@@ -113,7 +121,7 @@ def foreign_scope_path(cfg, spec_id, *, campaign=None, cwd=None):
         except (ValueError, KeyError, OSError):    # unknown campaign / no data dir configured
             state = None
         project = (state or {}).get("project") or INTERNAL_PROJECT
-        if state and project != INTERNAL_PROJECT:
+        if state and project != INTERNAL_PROJECT and state.get("state") not in store.TERMINAL_STATES:
             if str(state.get("spec_id") or "").upper() == spec_id.upper():
                 return campaign_spec_path(cfg, state), f"campaign {cid}"
             repo = state.get("repo") or {}
