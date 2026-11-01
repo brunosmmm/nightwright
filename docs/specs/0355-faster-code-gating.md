@@ -1,7 +1,8 @@
 ---
 id: SPEC-0355
 title: "Faster code gating: narrow affected-test fallbacks, close reuse of a green loop gate, failed-first reruns"
-status: accepted
+status: superseded
+superseded_by: SPEC-0357
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
