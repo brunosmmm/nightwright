@@ -213,6 +213,8 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
     wait_event_s = WAIT_EVENT_S if wait_event_s is None else wait_event_s
     slots_dir(cfg).mkdir(parents=True, exist_ok=True)
     pools = [(None, settings(cfg)["slots"])] if pools is None else list(pools)
+    if not pools:
+        raise ValueError("pools must not be empty")
     for pool, _n in pools:
         pool_dir(cfg, pool)                     # reject a bad name before anything is held
     t0 = time.monotonic()

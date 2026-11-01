@@ -172,6 +172,13 @@ runs on the worker host); each group's help text points to the other.
   tests/test_cli*.py`: 392 passed.
 - `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: clean.
 - The full suite was left to gating.
+- Review-fix loop: added `tests/test_workers_registry.py` cases for a `-oFoo` / `-F/tmp/x` DEST
+  (the leading-`-` guard on its own), the ControlPath bound for short and long data dirs
+  (XDG / `/tmp` fallback, no Control options when nothing fits, symlink refused), hand-edited
+  option-like `ssh`/`nw`, an unparseable `cooldown_until` and naive `now`, `list --json` `held`
+  for a slot in a worker pool, and `list` on a corrupt file; `tests/test_gate_slots.py` for an
+  empty `pools`. `tests/test_workers_registry.py tests/test_gate_slots.py tests/test_cli_gate_slots.py
+  tests/test_worker*.py`: 219 passed.
 - Gate follow-up: `cli_workers.py` human output moved off `click.echo` to Rich (`console.print(Text)`,
   `render.warn`, `err_console`) and `check --json` to `_dump_json`, to satisfy the SPEC-0185 guard.
   `tests/test_rich_output_guard.py tests/test_workers_registry.py tests/test_docs_product_reference.py
@@ -195,6 +202,18 @@ As designed, with these details the Design left open:
 - `nw workers list --json` emits `{"schema": "nw.workers.list.v1", "workers": [...]}`; `check --json`
   emits the plain list of `{name, ok, errors, warnings, info}`.
 - A sha difference is a warning only when the versions are equal and both sides know their sha.
+- Deviation (review fix): the default ControlPath `<agentic_dir>/ssh/%C` can exceed the 107-byte
+  `sun_path` limit once OpenSSH adds its 17-character temp suffix (bound length =
+  `len(dir)+1+40+17`), which made real ssh exit 255. `workers.ssh_dir` therefore returns the first
+  candidate that fits: `<agentic_dir>/ssh/`, else `$XDG_RUNTIME_DIR/nw-ssh-<hash of agentic dir>`,
+  else `/tmp/nw-ssh-<uid>-<hash>`; `ensure_ssh_dir` creates it 0700 and raises `OSError` when it
+  exists as a symlink or someone else's directory (`check` reports that as an error). If nothing
+  fits, `default_ssh_argv` drops ControlMaster/ControlPath/ControlPersist.
+- `_check_record` also rejects a registry entry whose `ssh` fails `DEST_RE` or starts with `-`, or
+  whose `nw` fails `NW_CMD_RE` or starts with `-` (the whole registry is then unreadable), so a hand
+  edit cannot put an option into the ssh argv. `acquire` rejects an empty `pools` list
+  (`ValueError`). `in_cooldown` accepts a naive `now`. The `--nw` help says the forced command
+  accepts only `nw` or a path ending in `/nw`.
 
 ## Clock Log
 

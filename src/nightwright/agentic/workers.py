@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 
@@ -32,23 +34,56 @@ def path(cfg) -> Path:
     return agentic_dir(cfg) / "workers.json"
 
 
-def ssh_dir(cfg) -> Path:
-    return agentic_dir(cfg) / "ssh"
+SOCK_MAX = 107                                  # sockaddr_un.sun_path holds 107 bytes plus the NUL
+CTL_SUFFIX = 1 + 40 + 17                        # "/" + %C (40 hex) + OpenSSH's ".<16 random>" temp name
 
 
-def ensure_ssh_dir(cfg) -> Path:
-    """`<agentic_dir>/ssh/` (ControlPath sockets), mode 0700."""
+def _fits(d) -> bool:
+    return len(os.fsencode(str(d))) + CTL_SUFFIX <= SOCK_MAX
+
+
+def _ssh_dir_candidates(cfg) -> list[Path]:
+    """Where the ControlPath sockets may live, best first: `<agentic_dir>/ssh/`, then (when that
+    path is too long for a Unix socket) a short private dir under `$XDG_RUNTIME_DIR` or `/tmp`,
+    named from a hash of the agentic dir so two data dirs never share sockets."""
+    tag = hashlib.sha1(os.fsencode(str(agentic_dir(cfg)))).hexdigest()[:8]
+    out = [agentic_dir(cfg) / "ssh"]
+    xdg = os.environ.get("XDG_RUNTIME_DIR")
+    if xdg:
+        out.append(Path(xdg) / f"nw-ssh-{tag}")
+    out.append(Path("/tmp") / f"nw-ssh-{os.getuid()}-{tag}")
+    return out
+
+
+def ssh_dir(cfg) -> Path | None:
+    """The directory for ControlPath sockets: the first candidate short enough for a Unix
+    socket, `None` when none is (ssh then runs without connection sharing)."""
+    return next((d for d in _ssh_dir_candidates(cfg) if _fits(d)), None)
+
+
+def ensure_ssh_dir(cfg) -> Path | None:
+    """`ssh_dir(cfg)` created with mode 0700 (and refused with `OSError` if it exists but is
+    a symlink or belongs to someone else, as a shared /tmp path could); `None` when there is
+    no usable directory."""
     d = ssh_dir(cfg)
+    if d is None:
+        return None
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    st = d.lstat()
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+        raise OSError(f"{d} is not a directory owned by this user")
     d.chmod(0o700)
     return d
 
 
 def default_ssh_argv(cfg) -> list[str]:
-    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
-            "-o", "ControlMaster=auto", "-o", f"ControlPath={ssh_dir(cfg)}/%C",
-            "-o", "ControlPersist=120"]
+    argv = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
+    d = ssh_dir(cfg)
+    if d is not None:
+        argv += ["-o", "ControlMaster=auto", "-o", f"ControlPath={d}/%C",
+                 "-o", "ControlPersist=120"]
+    return argv
 
 
 def _check_record(rec) -> None:
@@ -57,8 +92,13 @@ def _check_record(rec) -> None:
     name = rec.get("name")
     if not isinstance(name, str) or not NAME_RE.fullmatch(name):
         raise ValueError(f"worker name {name!r} is invalid")
-    if not isinstance(rec.get("ssh"), str) or not rec["ssh"]:
-        raise ValueError(f"worker {name}: ssh destination missing")
+    ssh = rec.get("ssh")
+    if not isinstance(ssh, str) or not DEST_RE.fullmatch(ssh) or ssh.startswith("-"):
+        raise ValueError(f"worker {name}: ssh destination {ssh!r} is invalid")
+    nw = rec.get("nw")
+    if nw is not None and (not isinstance(nw, str) or not NW_CMD_RE.fullmatch(nw)
+                           or nw.startswith("-")):
+        raise ValueError(f"worker {name}: nw command {nw!r} is invalid")
 
 
 def _parse(text: str) -> list[dict]:
@@ -151,7 +191,10 @@ def _parse_ts(value):
 
 def in_cooldown(rec: dict, now=None) -> bool:
     until = _parse_ts(rec.get("cooldown_until"))
-    return until is not None and until > (now or dt.datetime.now().astimezone())
+    now = now or dt.datetime.now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    return until is not None and until > now
 
 
 def gate_pools(cfg, now=None) -> list[tuple]:
@@ -171,7 +214,11 @@ def check(cfg, rec: dict) -> dict:
     from . import worker as W
     w = normalize(cfg, rec)
     out = {"name": w["name"], "ok": False, "errors": [], "warnings": [], "info": None}
-    ensure_ssh_dir(cfg)
+    try:
+        ensure_ssh_dir(cfg)
+    except OSError as e:
+        out["errors"].append(f"ssh socket directory unusable: {e}")
+        return out
     argv = w["ssh_argv"] + [w["ssh"], w["nw"], "worker", "info", "--json"]
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=CHECK_TIMEOUT_S,

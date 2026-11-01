@@ -22,6 +22,18 @@ FUTURE = "2999-01-01T00:00:00+00:00"
 PAST = "2000-01-01T00:00:00+00:00"
 
 
+@pytest.fixture(autouse=True)
+def _short_runtime_dir(monkeypatch):
+    """A long pytest tmp path makes the ssh socket dir fall back to $XDG_RUNTIME_DIR: keep
+    those dirs out of the real one."""
+    import shutil
+    import tempfile
+    d = tempfile.mkdtemp(prefix="nwr")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", d)
+    yield
+    shutil.rmtree(d, ignore_errors=True)
+
+
 @pytest.fixture
 def cfg(tmp_path):
     return {"data_dir": str(tmp_path / "data"), "agentic": {"gates": {"slots": 3}}}
@@ -108,6 +120,66 @@ def test_ensure_ssh_dir_is_private(cfg):
     assert stat.S_IMODE(d.stat().st_mode) == 0o700
 
 
+def _bound(argv):
+    (cp,) = [a for a in argv if a.startswith("ControlPath=")]
+    return len(os.fsencode(cp.removeprefix("ControlPath="))) - len("%C") + 40 + 17
+
+
+def test_default_control_path_fits_a_unix_socket(monkeypatch):
+    argv = WK.default_ssh_argv({"data_dir": "/tmp/nwd"})
+    assert "ControlPath=/tmp/nwd/agentic/ssh/%C" in argv and _bound(argv) <= WK.SOCK_MAX
+    long_cfg = {"data_dir": "/home/some-long-username/work/nightwright-data-dir/with/more/parts"}
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    argv = WK.default_ssh_argv(long_cfg)
+    assert _bound(argv) <= WK.SOCK_MAX
+    assert f"ControlPath=/tmp/nw-ssh-{os.getuid()}-" in " ".join(argv)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+    assert "ControlPath=/run/user/1000/nw-ssh-" in " ".join(WK.default_ssh_argv(long_cfg))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/x" * 40)     # too long itself: /tmp again
+    assert "ControlPath=/tmp/nw-ssh-" in " ".join(WK.default_ssh_argv(long_cfg))
+
+
+def test_no_control_options_when_nothing_fits(monkeypatch):
+    monkeypatch.setattr(WK, "SOCK_MAX", 10)
+    argv = WK.default_ssh_argv({"data_dir": "/tmp/x"})
+    assert not any(a.startswith("Control") for a in argv)
+    assert WK.ensure_ssh_dir({"data_dir": "/tmp/x"}) is None
+
+
+def test_fallback_ssh_dir_is_private_and_refused_when_foreign(tmp_path, monkeypatch):
+    long_cfg = {"data_dir": str(tmp_path / ("x" * 90))}
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    d = WK.ensure_ssh_dir(long_cfg)                      # /tmp/nw-ssh-<uid>-<hash>, unique per tmp_path
+    try:
+        assert d.parent == Path("/tmp") and stat.S_IMODE(d.stat().st_mode) == 0o700
+        d.rmdir()
+        d.symlink_to(tmp_path)                           # a planted symlink is refused
+        with pytest.raises(OSError):
+            WK.ensure_ssh_dir(long_cfg)
+    finally:
+        d.unlink(missing_ok=True)
+        if d.exists():
+            d.rmdir()
+
+
+@pytest.mark.parametrize("rec", [
+    {"name": "a", "ssh": "-oFoo"}, {"name": "a", "ssh": "h h"},
+    {"name": "a", "ssh": "h", "nw": "-x"}, {"name": "a", "ssh": "h", "nw": "nw; id"}])
+def test_hand_edited_option_like_values_make_the_registry_unreadable(cfg, rec):
+    _seed(cfg, rec)
+    assert WK.load(cfg) == []
+    with pytest.raises(ValueError):
+        WK.read_strict(cfg)
+
+
+def test_unparseable_cooldown_counts_as_not_cooling_and_naive_now_works(cfg):
+    _seed(cfg, {"name": "a", "ssh": "h", "cooldown_until": "not a time"})
+    assert WK.gate_pools(cfg) == [("a", 1), (None, 3)]
+    import datetime as dt
+    assert WK.in_cooldown({"cooldown_until": FUTURE}, dt.datetime.now())
+    assert not WK.in_cooldown({"cooldown_until": PAST}, dt.datetime.now())
+
+
 def test_concurrent_updates_both_persist(cfg):
     names = [f"w{i}" for i in range(12)]
     threads = [threading.Thread(target=WK.update, args=(cfg, lambda recs, n=n: recs.append(_w(n))))
@@ -184,13 +256,29 @@ def test_on_clears_the_cooldown(cfg, invoke):
 
 @pytest.mark.parametrize("args", [
     ["Bad", "--ssh", "h"], ["local", "--ssh", "h"], ["-x", "--ssh", "h"], ["a" * 32, "--ssh", "h"],
-    ["ok", "--ssh", "-oProxyCommand=x"], ["ok", "--ssh", "h h"], ["ok", "--ssh", "h;rm"],
+    ["ok", "--ssh", "-oProxyCommand=x"], ["ok", "--ssh", "-oFoo"], ["ok", "--ssh", "-F/tmp/x"], ["ok", "--ssh", "h h"], ["ok", "--ssh", "h;rm"],
     ["ok", "--ssh", "h", "--slots", "0"], ["ok", "--ssh", "h", "--slots", "17"],
     ["ok", "--ssh", "h", "--nw", "-x"], ["ok", "--ssh", "h", "--nw", "nw; id"]])
 def test_add_refuses_bad_input(cfg, invoke, args):
     res = invoke("add", *args, "--no-check")
     assert res.exit_code != 0
     assert WK.load(cfg) == []
+
+
+def test_list_json_counts_slots_held_in_a_workers_pool(cfg, invoke):
+    from nightwright.agentic import gate_slots as GS
+    assert invoke("add", "box", "--ssh", "me@box", "--no-check").exit_code == 0
+    with GS.acquire(cfg, "camp", pools=[("box", 1)]):
+        rows = json.loads(invoke("list", "--json").output)["workers"]
+    assert rows[0]["name"] == "box" and rows[0]["held"] == 1
+
+
+def test_list_on_a_corrupt_registry_leaves_it_alone(cfg, invoke):
+    WK.path(cfg).parent.mkdir(parents=True, exist_ok=True)
+    WK.path(cfg).write_text("{not json")
+    res = invoke("list")
+    assert res.exit_code != 0
+    assert WK.path(cfg).read_text() == "{not json"
 
 
 def test_add_refuses_a_duplicate_name(cfg, invoke):

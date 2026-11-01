@@ -61,7 +61,8 @@ def _update(cfg, fn):
 @click.option("--slots", type=click.IntRange(WK.MIN_SLOTS, WK.MAX_SLOTS), default=1,
               show_default=True, help="gate slots on the worker")
 @click.option("--nw", "nw_cmd", default="nw", show_default=True,
-              help="first word of the remote command (a forced command ignores it)")
+              help="first word of the remote command: `nw` or a path ending in /nw, as a forced "
+                   "command requires (it runs its own nw whatever is sent)")
 @click.option("--no-check", is_flag=True, help="register without probing the worker")
 @click.pass_obj
 def workers_add(cfg, name, dest, slots, nw_cmd, no_check):

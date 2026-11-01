@@ -203,6 +203,12 @@ def _register(cfg, *names, slots=1):
         for n in names))
 
 
+def test_acquire_refuses_an_empty_pool_list(cfg):
+    with pytest.raises(ValueError):
+        with GS.acquire(cfg, "a", pools=[]):
+            pass
+
+
 def test_acquire_prefers_the_first_pool_then_falls_back_to_local(cfg):
     pools = [("box", 1), (None, 1)]
     with GS.acquire(cfg, "a", poll_s=0.05, pools=pools) as a:
