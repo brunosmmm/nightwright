@@ -52,6 +52,7 @@ DEFAULT_FRAME_STALL_S = 300.0
 FINISH_GC_ENV = "NW_WORKER_FINISH_GC"
 EXIT_ERROR = 3
 EXIT_REFUSED = 2
+SSH_SUBCOMMANDS = ("info", "have", "gate-job", "gc", "submit", "attach", "poll", "cancel", "jobs")
 
 # `\Z`, not `$`: `$` also matches before a trailing newline, and these grammars are literal
 # never only dots: `.`/`..` name the store's own dirs, not a job or a cache
@@ -312,10 +313,16 @@ class _Frames:
         self.log: Path | None = None
         self.closed = False
         self.sent: set[str] = set()
+        self.n = 0                              # SPEC-0340: the last `n` written to the log
+        self.last: dict | None = None
 
     def emit(self, type_, **payload) -> None:
         rec = {"schema": FRAME_SCHEMA, "type": type_, "job_id": self.job_id, "at": now_iso(),
                **payload}
+        if self.log is not None:                # SPEC-0340: a claimed job's frames are numbered
+            self.n += 1
+            rec["n"] = self.n
+        self.last = rec
         line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
         self.sent.add(type_)
         if self.log is not None:
@@ -466,15 +473,18 @@ def _write_job_json(path: Path, rec: dict) -> None:
     os.replace(tmp, path)
 
 
-def _checkout(cfg, h: dict, job: Path, stdin, stop: "_Stop | None" = None) -> None:
+def _checkout(cfg, h: dict, job: Path, stdin, stop: "_Stop | None" = None,
+              bundle: Path | None = None) -> None:
     """Step 3: the bundle into the cache (under the repo lock), then a private clone of it at
     the job's commit with the base branch refs the gates expect. A pending signal (`stop`) is
-    raised between the steps, never inside the lock or a running git."""
+    raised between the steps, never inside the lock or a running git. `bundle` is an already
+    spooled bundle file (SPEC-0340's job process); without it the bundle is read from `stdin`."""
     stop = stop or _Stop()
     key, commit, base = h["repo_key"], h["commit"], h["base"]
     cache = cache_path(cfg, key)
-    bundle = job / "job.bundle"
-    if h["bundle_bytes"]:
+    spooled = bundle is not None
+    bundle = bundle if spooled else job / "job.bundle"
+    if h["bundle_bytes"] and not spooled:
         with stop.reading():
             _read_exact(stdin, h["bundle_bytes"], bundle)
     stop.check()
@@ -540,14 +550,16 @@ def _start_gc(cfg) -> None:
         print(f"nw worker: could not start gc: {e}", file=sys.stderr)
 
 
-def _cleanup(cfg, h: dict, job: Path) -> None:
+def _cleanup(cfg, h: dict, job: Path, start_gc: bool = True) -> None:
     """Step 6 after the last frame: the tree and scratch go, the job refs go, `job.json` and
     `frames.jsonl` stay, then a default gc, detached."""
     for sub in ("tree", "tmp", "out"):
         shutil.rmtree(job / sub, ignore_errors=True)
-    (job / "job.bundle").unlink(missing_ok=True)
+    for name in ("job.bundle", "bundle"):
+        (job / name).unlink(missing_ok=True)
     _drop_job_refs(cfg, h, job)
-    _start_gc(cfg)
+    if start_gc:
+        _start_gc(cfg)
 
 
 _STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
@@ -862,10 +874,20 @@ def gc(cfg, keep_days: int = DEFAULT_KEEP_DAYS, now: float | None = None) -> dic
     The live set each repo's deletions rely on is read under that repo's lock *and* the jobs
     lock: a job is then either fully claimed (its `job.json` names its shas, its refs are
     kept) or has not fetched yet (it fetches after this gc's prune)."""
-    now = time.time() if now is None else now
+    clock = now is None
+    now = time.time() if clock else now
     keep_s = min(max(0, int(keep_days)), MAX_KEEP_DAYS) * 86400
     out = {"jobs_removed": [], "refs_removed": 0, "pruned": [], "errors": []}
+    from . import worker_job as WJ
     with jobs_lock(cfg):
+        # SPEC-0340: a lost async job (hung or dead job process) is reaped first, so its
+        # `job.lock` is free and its dir ages out like a finished one (listed as
+        # `jobs_reaped` only when there was one: SPEC-0336's record is unchanged). Reaping
+        # writes `result.json`, so the clock is read again: `--keep-days 0` removes it now.
+        reaped = WJ.reap_lost(cfg)
+        if reaped:
+            out["jobs_reaped"] = reaped
+            now = time.time() if clock else now
         _live_jobs(cfg, remove_before=now - keep_s, removed=out["jobs_removed"])
     rd = repos_dir(cfg)
     for cache in sorted(rd.glob("*.git")) if rd.is_dir() else []:
@@ -895,7 +917,8 @@ def info(cfg) -> dict:
     probe = wd if wd.is_dir() else Path(cfg["data_dir"])
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
-    return {"schema": INFO_SCHEMA, "protocol": JOB_SCHEMA, "version": __version__,
+    return {"schema": INFO_SCHEMA, "protocol": JOB_SCHEMA, "features": ["async"],
+            "version": __version__,
             "git_sha": sha, "data_dir": str(cfg["data_dir"]),
             "git": _version_out("git", "--version"), "uv": _version_out("uv", "--version"),
             "free_bytes": shutil.disk_usage(probe).free}
@@ -906,7 +929,9 @@ def info(cfg) -> dict:
 def check_ssh_command(original: str | None) -> list[str]:
     """The `nw worker` argv (`[sub, *args]`) `SSH_ORIGINAL_COMMAND` asks for, else raise
     `ValueError(reason)`. The grammar is literal: `info [--json]`;
-    `have --repo <key> <sha>...`; `gate-job`; `gc [--keep-days <n>]`."""
+    `have --repo <key> <sha>...`; `gate-job`; `gc [--keep-days <n>]`; and SPEC-0340's
+    `submit`; `attach <job> [--from <n>]`; `poll <job> [--from <n>] [--renew]`;
+    `cancel <job>`; `jobs [--json]`."""
     if not original or not original.strip():
         raise ValueError("empty command")
     try:
@@ -915,7 +940,7 @@ def check_ssh_command(original: str | None) -> list[str]:
         raise ValueError(f"unparsable command: {e}")
     if len(words) < 3 or not (words[0] == "nw" or words[0].endswith("/nw")) \
             or words[1] != "worker":
-        raise ValueError("only `nw worker <info|have|gate-job|gc>` is allowed")
+        raise ValueError(f"only `nw worker <{'|'.join(SSH_SUBCOMMANDS)}>` is allowed")
     sub, args = words[2], words[3:]
     ok = False
     if sub == "info":
@@ -928,6 +953,21 @@ def check_ssh_command(original: str | None) -> list[str]:
     elif sub == "gc":
         ok = args == [] or (len(args) == 2 and args[0] == "--keep-days"
                             and bool(DIGITS_RE.match(args[1])))
+    elif sub in ("submit",):
+        ok = args == []
+    elif sub == "jobs":
+        ok = args in ([], ["--json"])
+    elif sub == "cancel":
+        ok = len(args) == 1 and bool(KEY_RE.match(args[0]))
+    elif sub in ("attach", "poll"):
+        rest = args[1:]
+        ok = len(args) >= 1 and bool(KEY_RE.match(args[0]))
+        if ok and rest[:1] == ["--from"]:
+            ok = len(rest) >= 2 and bool(DIGITS_RE.match(rest[1]))
+            rest = rest[2:]
+        if ok and sub == "poll" and rest == ["--renew"]:
+            rest = []
+        ok = ok and rest == []
     else:
         raise ValueError(f"subcommand {sub!r} is not allowed")
     if not ok:

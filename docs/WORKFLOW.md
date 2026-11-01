@@ -261,8 +261,18 @@ Setup on the worker (all of it is mandatory):
 
    `restrict` disables port, agent and X11 forwarding and the pty. `nw worker ssh-command`
    reads `SSH_ORIGINAL_COMMAND` and execs only `nw worker info [--json]`,
-   `have --repo <key> <sha>...`, `gate-job` and `gc [--keep-days <n>]`; anything else exits 2
-   with `refused: <reason>` and runs nothing.
+   `have --repo <key> <sha>...`, `gate-job`, `gc [--keep-days <n>]` and the async job
+   commands (SPEC-0340) `submit`, `attach <job> [--from <n>]`,
+   `poll <job> [--from <n>] [--renew]`, `cancel <job>` and `jobs [--json]`; anything else
+   exits 2 with `refused: <reason>` and runs nothing.
+
+**Async jobs (SPEC-0340).** `nw worker submit` takes the same header and bundle as
+`gate-job`, starts a detached job process and returns at once; the job survives the SSH
+connection. `attach <job> --from <n>` replays and follows its numbered frames (exit 0 after
+`done`, 3 after `error`, 4 when the job is `lost`) and renews the job lease while connected;
+a job nobody renews for `agentic.workers.job_lease_s` (default 900 s) cancels itself. A job
+process that stops heartbeating (`job_heartbeat_s`, default 10 s) for `job_lost_after_s`
+(default 60 s), or dies, is `lost`; `cancel` and `gc` kill what is left of it.
 
 Register a worker on the coordinator with the registry commands (SPEC-0337; not to be
 confused with `nw worker`, which runs on the worker host): `nw workers add NAME --ssh me@box
