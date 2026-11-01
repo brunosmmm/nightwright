@@ -141,8 +141,9 @@ def prepare(cfg, name, dest, slots, install_key, admin) -> Plan:
         raise fail("install", f"worker user {user!r} must match {USER_RE.pattern}")
     if admin is not None and (not WK.DEST_RE.fullmatch(admin) or admin.startswith("-")):
         raise fail("admin", f"--admin must match {WK.DEST_RE.pattern} and not start with '-'")
-    if install_key and user == "root":
-        raise fail("key", "refused: the worker account must not be root")
+    if user == "root":
+        raise fail("key" if install_key else "install",
+                   "refused: the worker account must not be root")
     pub = key_path(cfg)
     try:
         pubkey, blob = _read_key(pub)
@@ -255,19 +256,31 @@ def _probe_bin(plan: Plan) -> None:
     if p.returncode == NO_UV:
         raise StepFailed(f"uv not found for {plan.user} on the worker; install uv system-wide")
     if p.returncode != 0:                       # ssh (255) or sudo -u refusing: not uv's fault
-        via = f" through {plan.admin}" if plan.admin else ""
-        raise StepFailed(f"could not run a command as {plan.user} on the worker{via} "
-                         f"(exit {p.returncode}): {_tail(p)}".rstrip(": "))
+        raise _unreachable(plan, p)
     out = _must(on_worker(plan, "uv tool dir --bin"), "uv tool dir --bin").strip()
     if not BIN_RE.fullmatch(out):
         raise StepFailed(f"unexpected uv tool bin dir {out!r}")
     plan.bin = out
 
 
+def _unreachable(plan: Plan, p) -> StepFailed:
+    via = f" through {plan.admin}" if plan.admin else ""
+    return StepFailed(f"could not run a command as {plan.user} on the worker{via} "
+                      f"(exit {p.returncode}): {_tail(p)}".rstrip(": "))
+
+
 def _probe_root(plan: Plan) -> None:
-    out = _must(on_worker(plan, "id -u"), "id -u").strip()
-    if out == "0":
-        raise StepFailed("refused: the worker account has uid 0")
+    """`StepFailed` with `.step`: `install` when no command ran as the worker user at all
+    (ssh, sudo -u), `key` for the uid-0 refusal."""
+    p = on_worker(plan, "id -u")
+    if p.returncode != 0:
+        e = _unreachable(plan, p)
+        e.step = "install"
+        raise e
+    if p.stdout.strip() == "0":
+        e = StepFailed("refused: the worker account has uid 0")
+        e.step = "key"
+        raise e
 
 
 def step_install(plan: Plan) -> tuple[str, str]:
@@ -374,15 +387,17 @@ def step_register(cfg, plan: Plan) -> tuple[str, str]:
     if rec is not None:
         if _record_diff(rec, want, with_nw=True):
             raise StepFailed(CONFLICT.format(name=plan.name))
-        return "skipped (already registered)", plan.name
+        if not plan.install_key:
+            plan.notes.append(f"run nw workers check {plan.name} after installing the key line")
+            return "skipped (already registered)", plan.name
+        # it may have been registered with --no-check: the forced-command proof is due now
+        _register_check(cfg, plan, rec)
+        return "skipped (already registered)", f"{plan.name}, checked"
     new = {"name": plan.name, "ssh": plan.dest, "slots": plan.slots,
            "kinds": list(WK.DEFAULT_KINDS), "nw": want["nw"], "enabled": True,
            "cooldown_until": None, "added_at": now_iso(), "identity": plan.identity}
     if plan.install_key:
-        res = WK.check(cfg, new)
-        if not res["ok"]:
-            raise StepFailed(f"{plan.name} failed its check: " + "; ".join(res["errors"]))
-        plan.notes.extend(f"warning: {w}" for w in res["warnings"])
+        _register_check(cfg, plan, new)
     else:
         plan.notes.append(f"run nw workers check {plan.name} after installing the key line")
 
@@ -397,6 +412,13 @@ def step_register(cfg, plan: Plan) -> tuple[str, str]:
         raise StepFailed(str(e))
     return "done", ("checked and registered" if plan.install_key
                     else "registered with --no-check")
+
+
+def _register_check(cfg, plan: Plan, rec: dict) -> None:
+    res = WK.check(cfg, rec)
+    if not res["ok"]:
+        raise StepFailed(f"{plan.name} failed its check: " + "; ".join(res["errors"]))
+    plan.notes.extend(f"warning: {w}" for w in res["warnings"])
 
 
 def run(cfg, plan: Plan) -> bool:
@@ -421,7 +443,7 @@ def run(cfg, plan: Plan) -> bool:
             try:
                 _probe_root(plan)
             except StepFailed as e:
-                return failed("key", str(e))
+                return failed(e.step, str(e))
         try:
             plan.status[step] = steps[step]()
         except StepFailed as e:

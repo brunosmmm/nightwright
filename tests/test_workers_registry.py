@@ -437,6 +437,14 @@ def test_identity_in_ssh_argv(cfg):
         "-i", "/home/me/.ssh/nw_worker_ed25519", "-o", "IdentitiesOnly=yes"]
 
 
+def test_identity_appended_to_hand_set_ssh_argv(cfg):
+    """A hand-set `ssh_argv` keeps the dedicated key too: `identity` is appended to it."""
+    _seed(cfg, _w("box", ssh_argv=["myssh", "-p", "2222"], identity="/k/worker"))
+    (w,) = WK.load(cfg)
+    assert w["ssh_argv"] == ["myssh", "-p", "2222", "-i", "/k/worker",
+                             "-o", "IdentitiesOnly=yes"]
+
+
 def test_identity_controlpath_is_its_own(cfg):
     """An identity record never shares a ControlMaster with a no-identity (or another
     identity's) record for the same destination: `%C` alone does not hash the key."""

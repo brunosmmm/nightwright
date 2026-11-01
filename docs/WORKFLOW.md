@@ -301,10 +301,13 @@ done, and prints a status table (`done`, `skipped (already ...)`, `would run`, `
 - **key**: the line `command="<bin>/nw worker ssh-command",restrict <worker public key>`.
   Without `--install-key` it is printed. With it, it is appended once to the worker's
   `~/.ssh/authorized_keys` (700/600). A root account (by name or uid 0) is refused, and so is
-  a worker key already authorized by any other line.
+  a worker key already authorized by any other line. (A `root@...` `--ssh` is refused even
+  without `--install-key`.)
 - **register**: `nw workers add NAME --ssh DEST --nw <bin>/nw --identity <private key>`, with
   its check when `--install-key` (the check then goes through the forced command), else
   `--no-check`. A NAME already registered with other settings fails; `nw workers rm` it first.
+  Already registered with the same settings, the step is skipped, but with `--install-key`
+  its check still runs (the worker may have been added with `--no-check` before).
 
 The worker key is **dedicated**: `agentic.workers.key` (in `config.yaml`, default
 `~/.ssh/nw_worker_ed25519.pub`) names its public key, and the private key is the same path
@@ -317,7 +320,8 @@ ControlMaster socket with a hash of the key (`%C-<tag>`), so it never rides a ma
 with another key for the same `user@host`. `IdentitiesOnly` still lets ssh fall back to
 `IdentityFile` entries for that host in your ssh_config, so `nw workers check` on an
 `identity` record also sends a command the forced command must refuse, and fails when it is
-not refused. Bootstrap's own ssh/scp sessions use `-o ControlPath=none`, so they never share
+not refused. A failed check on an `identity` record closes its ControlMaster (`ssh -O
+exit`), so no later connection rides a session some other key opened. Bootstrap's own ssh/scp sessions use `-o ControlPath=none`, so they never share
 the coordinator's ControlMaster sockets.
 
 The job store lives under `<data_dir>/agentic/worker/` (`repos/` object caches, `jobs/`).

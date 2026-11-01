@@ -237,36 +237,48 @@ def check(cfg, rec: dict) -> dict:
     "worker", "info", "--json"]` with a 30 s timeout. Fails on an SSH failure (a timeout
     included), a protocol other than `nw.job.v1` or no `git`; a version or sha different from
     this checkout's is a warning (the gate runs the campaign tree's code, not the worker's).
-    A record with an `identity` must also be bound to the forced command (`_forced_probe`)."""
-    from . import worker as W
+    A record with an `identity` must also be bound to the forced command (`_forced_probe`);
+    when its check fails, the ControlMaster it may have opened is closed (`_close_master`)."""
     w = normalize(cfg, rec)
     out = {"name": w["name"], "ok": False, "errors": [], "warnings": [], "info": None}
+    _check(cfg, w, out)
+    out["ok"] = not out["errors"]
+    if identity_ok(w.get("identity")) and not out["ok"]:
+        # whatever key authenticated a failed check (an ssh_config IdentityFile fallback, an
+        # unrestricted line), later connections (the next check, gate jobs) must not
+        # multiplex onto its master
+        _close_master(w)
+    return out
+
+
+def _check(cfg, w: dict, out: dict) -> None:
+    from . import worker as W
     try:
         ensure_ssh_dir(cfg, TAG_LEN if identity_ok(w.get("identity")) else 0)
     except OSError as e:
         out["errors"].append(f"ssh socket directory unusable: {e}")
-        return out
+        return
     argv = w["ssh_argv"] + [w["ssh"], w["nw"], "worker", "info", "--json"]
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=CHECK_TIMEOUT_S,
                            stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         out["errors"].append(f"ssh timed out after {CHECK_TIMEOUT_S:g}s")
-        return out
+        return
     except OSError as e:
         out["errors"].append(f"ssh failed to start: {e}")
-        return out
+        return
     if p.returncode != 0:
         tail = (p.stderr or "").strip().splitlines()[-1:] or [""]
         out["errors"].append(f"ssh failed (exit {p.returncode}): {tail[0]}".rstrip(": "))
-        return out
+        return
     try:
         info = json.loads(p.stdout)
         if not isinstance(info, dict):
             raise ValueError("not a mapping")
     except ValueError as e:
         out["errors"].append(f"`worker info --json` gave unreadable output: {e}")
-        return out
+        return
     out["info"] = info
     if info.get("protocol") != W.JOB_SCHEMA:
         out["errors"].append(f"protocol is {info.get('protocol')!r}, not {W.JOB_SCHEMA!r}")
@@ -279,12 +291,10 @@ def check(cfg, rec: dict) -> dict:
     elif info.get("git_sha") and mine.get("git_sha") and info["git_sha"] != mine["git_sha"]:
         out["warnings"].append(f"sha {str(info['git_sha'])[:12]} differs from "
                                f"the coordinator's {str(mine['git_sha'])[:12]}")
-    if identity_ok(w.get("identity")) and not out["errors"]:
+    if identity_ok(w.get("identity")):     # even after another error: say which key ran it
         err = _forced_probe(w)
         if err:
             out["errors"].append(err)
-    out["ok"] = not out["errors"]
-    return out
 
 
 FORCED_PROBE = "echo nw-forced-command-probe"
@@ -305,15 +315,17 @@ def _forced_probe(w: dict) -> str | None:
     if p.returncode != 0 and "refused:" in (p.stderr or ""):
         return None
     if p.returncode == 0:
-        # a master that authenticated this way must not outlive the check: later
-        # connections (the next check, gate jobs) would multiplex onto it
-        try:
-            subprocess.run(w["ssh_argv"] + ["-O", "exit", w["ssh"]], capture_output=True,
-                           timeout=CHECK_TIMEOUT_S, stdin=subprocess.DEVNULL)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
         return (f"{w['ssh']} ran an unrestricted command: the dedicated key "
                 f"{w['identity']} is not bound to the forced command (check its "
                 "authorized_keys line, and IdentityFile entries for this host in ssh_config)")
     tail = (p.stderr or "").strip().splitlines()[-1:] or [""]
     return f"forced-command probe failed (exit {p.returncode}): {tail[0]}".rstrip(": ")
+
+
+def _close_master(w: dict) -> None:
+    """`ssh -O exit` the record's ControlMaster, if any; best-effort."""
+    try:
+        subprocess.run(w["ssh_argv"] + ["-O", "exit", w["ssh"]], capture_output=True,
+                       timeout=CHECK_TIMEOUT_S, stdin=subprocess.DEVNULL)
+    except (subprocess.TimeoutExpired, OSError):
+        pass

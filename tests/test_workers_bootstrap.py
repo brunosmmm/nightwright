@@ -99,8 +99,10 @@ def info():
     if {version!r} == "garbage":
         print("not json")
         sys.exit(0)
+    nogit = os.path.exists(os.path.join(os.environ.get("FAKE_STATE", "/nonexistent"), "nogit"))
     print(json.dumps({{"schema": "nw.worker.info.v1", "protocol": "nw.job.v1",
-                      "version": {version!r}, "git": "git version 2.0", "git_sha": None}}))
+                      "version": {version!r}, "git": None if nogit else "git version 2.0",
+                      "git_sha": None}}))
     sys.exit(0)
 if sys.argv[1:3] == ["worker", "info"]:
     info()
@@ -414,9 +416,10 @@ def test_no_install_key(world):
 
 
 def test_refuse_root(world):
-    res = boot(world, "box", "--ssh", "root@x", "--install-key")
-    assert res.exit_code == 1 and "must not be root" in res.output
-    assert world.calls() == []
+    for extra in (["--install-key"], [], ["--dry-run"]):   # root is never a worker account
+        res = boot(world, "box", "--ssh", "root@x", *extra)
+        assert res.exit_code == 1 and "must not be root" in res.output, (extra, res.output)
+        assert world.calls() == [] and WK.read_strict(world.cfg) == []
     world.set("uid", "0")
     ok, plan = plan_run(world)
     assert not ok and st(plan)["key"] == "failed" and "uid 0" in plan.status["key"][1]
@@ -459,6 +462,37 @@ def test_uv_missing(world):
                         "key": "not run", "register": "not run"}
     assert not world.calls("scp") and not world.calls("uv")
     assert WK.read_strict(world.cfg) == []
+
+
+def test_uid_probe_unreachable_is_install(world):
+    """With --install-key the uid probe runs first; a host it cannot reach fails `install`
+    (the step that needs the worker), not `key`."""
+    world.set("unreachable", "1")
+    ok, plan = plan_run(world)
+    assert not ok and st(plan)["install"] == "failed" and st(plan)["key"] == "not run"
+    assert "could not run a command as nw on the worker (exit 255)" in plan.status["install"][1]
+    assert "Host key verification failed" in plan.status["install"][1]
+
+
+def test_install_key_after_no_check_runs_the_check(world):
+    """Registered earlier with --no-check, a later --install-key run whose record matches
+    still runs the dedicated-key check (the forced-command proof), and fails when it fails."""
+    ok, plan = plan_run(world, install_key=False)
+    assert ok and st(plan)["register"] == "done"
+    world.clear()
+    ok, plan = plan_run(world)
+    assert ok and st(plan)["key"] == "done"
+    assert plan.status["register"] == ("skipped (already registered)", "box, checked")
+    assert [c for c in world.calls("ssh") if c["argv"][-1] == WK.FORCED_PROBE]
+    world.set("check_fail", "1")                  # the dedicated-key ssh now fails
+    world.clear()
+    ok, plan = plan_run(world)
+    assert not ok and st(plan)["key"].startswith("skipped") and st(plan)["register"] == "failed"
+    assert "box failed its check" in plan.status["register"][1]
+    (world.state / "check_fail").unlink()
+    world.clear()
+    ok, plan = plan_run(world, install_key=False)       # the hint is printed on a rerun too
+    assert ok and any("run nw workers check box" in n for n in plan.notes)
 
 
 def test_unreachable_is_not_uv_missing(world):
@@ -552,6 +586,32 @@ def test_check_needs_the_forced_command(world):
     assert res["ok"], res["errors"]
     probes = [c for c in world.calls("ssh") if c["argv"][-1] == WK.FORCED_PROBE]
     assert probes and all("IdentitiesOnly=yes" in c["argv"] for c in probes)
+
+
+def test_failed_check_closes_the_master(world):
+    """An identity record whose check fails after `info` answered (no git here) through an
+    unrestricted line still gets the forced-command verdict, and its master is closed."""
+    ok, plan = plan_run(world, install_key=False)
+    assert ok
+    (rec,) = WK.read_strict(world.cfg)
+    world.ak.parent.mkdir()
+    world.ak.write_text(world.pubkey + "\n")
+    world.set("nogit", "1")
+    world.clear()
+    res = WK.check(world.cfg, rec)
+    assert not res["ok"] and "git is missing on the worker" in res["errors"]
+    assert any("not bound to the forced command" in e for e in res["errors"]), res["errors"]
+    closes = [c["argv"] for c in world.calls("ssh") if "-O" in c["argv"]]
+    assert len(closes) == 1 and closes[0][-2:] == ["exit", "nw@box"]
+    world.ak.write_text(world.line() + "\n")            # forced line, but still no git
+    world.clear()
+    res = WK.check(world.cfg, rec)
+    assert res["errors"] == ["git is missing on the worker"]
+    assert [c for c in world.calls("ssh") if "-O" in c["argv"]]   # any failed check closes it
+    (world.state / "nogit").unlink()
+    world.clear()
+    assert WK.check(world.cfg, rec)["ok"]
+    assert not [c for c in world.calls("ssh") if "-O" in c["argv"]]
 
 
 def test_registry_conflict(world):

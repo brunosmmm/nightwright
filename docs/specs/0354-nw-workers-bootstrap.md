@@ -378,6 +378,27 @@ dir>/nw`.
   tests/test_rich_output_guard.py tests/test_worker*.py`: 334 passed.
   `python3 tools/spec_lint.py`: OK. The full suite is left to the gate's close run.
 
+### Test record (2026-11-01, review round 3)
+
+- New and extended cases. `tests/test_workers_registry.py`:
+  `test_identity_appended_to_hand_set_ssh_argv` (a hand-set `ssh_argv` plus `identity` gets
+  `-i <identity> -o IdentitiesOnly=yes` appended). `tests/test_workers_bootstrap.py`:
+  - `test_refuse_root`: `root@x` is refused (exit 1, `must not be root`, zero calls, nothing
+    registered) with `--install-key`, without it, and with `--dry-run`.
+  - `test_uid_probe_unreachable_is_install`: an unreachable host under `--install-key` fails
+    `install` with the ssh error, and `key` is `not run`.
+  - `test_install_key_after_no_check_runs_the_check`: registered with `--no-check`, then an
+    `--install-key` run appends the key, and register is `skipped (already registered)` only
+    after the dedicated-key check (forced-command probe included) passed. A failing check
+    there fails register. A rerun without `--install-key` prints the check hint.
+  - `test_failed_check_closes_the_master`: the worker has no git and the dedicated key sits
+    on an unrestricted line. The check reports both `git is missing` and `not bound to the
+    forced command`, and closes the master with one `-O exit`. A passing check sends no
+    `-O exit`.
+- `uv run pytest -q -n 4 tests/test_workers_bootstrap.py tests/test_workers_registry.py
+  tests/test_rich_output_guard.py tests/test_worker*.py`: 338 passed.
+- `python3 tools/spec_lint.py`: OK. The full suite is left to the gate's close run.
+
 ### As shipped (2026-11-01)
 
 - Code: `src/nightwright/agentic/workers_bootstrap.py` (the steps), `nw workers bootstrap` in
@@ -442,6 +463,23 @@ dir>/nw`.
   carries no git sha. A worker on an older commit with the same `version` is therefore not
   reinstalled. `docs/WORKFLOW.md` says so: bump the version for a change the worker must run,
   or run `uv tool install --force` on the worker.
+### As shipped (2026-11-01, review round 3)
+
+- A `root` user part in `--ssh` is refused in the local pre-checks whether or not
+  `--install-key` is given, as the Design's "never root" says. Without `--install-key` the
+  refusal shows on the `install` row.
+- The pre-install uid probe (with `--install-key`) reports a failure to reach the worker
+  (ssh, `sudo -u`) on the `install` row, with the same `could not run a command as DESTUSER
+  ...` message as the uv probe. Only the uid-0 refusal is on the `key` row.
+- Register with `--install-key` on an identical existing record still runs the check
+  (`WK.check`, forced-command probe included). The worker may have been registered with
+  `--no-check` earlier, so this is where the proof gets collected. A failed check fails
+  register. On pass the step stays `skipped (already registered)`. Without `--install-key`, a
+  skipped register still prints the `run nw workers check NAME` hint.
+- `WK.check` on an `identity` record runs the forced-command probe whenever `info` gave JSON,
+  even after another error such as missing git or a protocol mismatch. Any failed check on
+  an `identity` record then closes the record's ControlMaster (`ssh -O exit`, best-effort),
+  so a master opened by a fallback key never outlives the check.
 
 ## Clock Log
 
