@@ -1,7 +1,7 @@
 ---
 id: SPEC-0365
 title: "herdr watcher auto-start: the conductor follower supervises nw herdr watch"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -110,7 +110,8 @@ New `src/nightwright/agentic/herdr_autowatch.py` (no herdr import):
   `NW_CONFIG_DIR`/`NW_DATA_DIR` like SPEC-0364's typed tail, `PYTHONUNBUFFERED=1`).
 - `Supervisor(cfg, env=, clock=, popen=, holder=)`: `start()` evaluates the gate once (a
   gated supervisor is inert, logs nothing, creates no file); `tick()` never raises; `stop()`
-  SIGTERMs only its own live child. Constants `BACKOFF_MIN_S=5`, `BACKOFF_MAX_S=300`,
+  SIGTERMs only its own live child. A failed step also backs off (5 s doubling); the
+  "5 in a row" error count resets only on a successful spawn. Constants `BACKOFF_MIN_S=5`, `BACKOFF_MAX_S=300`,
   `STABLE_S=300`, `RECHECK_S=5`, `ERRORS_MAX=5`, `LOG_MAX_BYTES=5 MiB` (rotated to `.log.1`
   before a spawn).
 
@@ -140,24 +141,24 @@ lock (the CLI writes the state there, not for `--once`) and the CLI clears it on
 
 ## Acceptance criteria
 
-- [ ] A conductor follower with `HERDR_ENV=1` and `herdr` on PATH starts exactly one
+- [x] A conductor follower with `HERDR_ENV=1` and `herdr` on PATH starts exactly one
       `nw herdr watch` child (mode auto), whose stdout/stderr go to
       `<data_dir>/agentic/conductor/herdr_watch.log`; the follower's stdout carries no watcher
       or supervisor output, and the child holds no fd of the follower's stdout.
-- [ ] `agentic.herdr.auto_watch: false`, `HERDR_ENV` unset, or no `herdr` on PATH: no child,
+- [x] `agentic.herdr.auto_watch: false`, `HERDR_ENV` unset, or no `herdr` on PATH: no child,
       no log, no state file. Steward/other readers never start one.
-- [ ] A live watcher (manual or another follower's) is not doubled and never signalled; when
+- [x] A live watcher (manual or another follower's) is not doubled and never signalled; when
       it goes away the supervisor starts one within the recheck interval.
-- [ ] Normal follower exit SIGTERMs the child, which clears what it pushed.
-- [ ] Follower killed with SIGKILL: the child exits within one push interval and clears.
-- [ ] A crashed child is restarted with backoff (5 s doubling, cap 300 s).
-- [ ] Supervisor failures (spawn error, unwritable log, exceptions) never raise into the
+- [x] Normal follower exit SIGTERMs the child, which clears what it pushed.
+- [x] Follower killed with SIGKILL: the child exits within one push interval and clears.
+- [x] A crashed child is restarted with backoff (5 s doubling, cap 300 s).
+- [x] Supervisor failures (spawn error, unwritable log, exceptions) never raise into the
       follower, never print to it, and turn the supervisor off after 5 in a row.
-- [ ] `nw herdr status [--json]` and `nw queue conduct-status [--json]` show running, pid,
+- [x] `nw herdr status [--json]` and `nw queue conduct-status [--json]` show running, pid,
       mode and log path, robust to a stale pid (start ticks).
-- [ ] The import-isolation test still passes (no `agentic.herdr*` imported by the queue,
+- [x] The import-isolation test still passes (no `agentic.herdr*` imported by the queue,
       runner, runproc, events, mailbox, cli).
-- [ ] `docs/herdr.md` says there is no manual step, how to turn it off, where the log is.
+- [x] `docs/herdr.md` says there is no manual step, how to turn it off, where the log is.
 
 ## Test plan
 
@@ -181,6 +182,61 @@ lock (the CLI writes the state there, not for `--once`) and the CLI clears it on
 - **Regression guard**: `python3 tools/affected_tests.py --run uv run pytest -q` plus
   `tests/test_herdr.py`, `tests/test_agentic_events*.py`, conduct/queue CLI tests.
 
+## As shipped (2026-11-01)
+
+- **Files:** new `src/nightwright/agentic/herdr_autowatch.py` (gate, state file, status,
+  `Supervisor`), `cli_conduct.py` (`_herdr_supervisor` for `--follow --for conductor` via the
+  `stop` hook + `finally: stop()`; `herdr_watch` in `nw.conduct.status.v1` and one text line),
+  `cli_herdr.py` (hidden `--parent PID:TICKS`, state write/clear, `nw herdr status [--json]`),
+  `herdr_watch.py` (`Watcher.run(on_locked=)`), `tests/conftest.py` (autouse: strip ambient
+  `HERDR_*` for every test, so a follower under test can never auto-start a watcher against the
+  human's herdr when pytest runs from a herdr pane), new `tests/test_herdr_autowatch.py`,
+  `docs/herdr.md` ("It starts by itself", how to turn it off, log path),
+  `docs/product/reference/index.md`.
+- **Design as written.** One refinement found by the tests: the error counter resets only on a
+  successful spawn (resetting on any quiet tick meant it never reached 5), and a failed step
+  backs off like a crash.
+- **Real herdr 0.9.5, isolated session only** (`herdr --session nw-test-4df43aa1 server`, the
+  human's `HERDR_*`, `CLAUDE_CODE_SESSION_ID` stripped, `HERDR_SOCKET_PATH` = the test
+  session's socket; a workspace `w1` with pane `w1:p1` given a `claude` agent). A real
+  follower (`python -m nightwright queue events --follow --for conductor`, the worktree's
+  code) ran with `HERDR_ENV=1 HERDR_PANE_ID=w1:p1 HERDR_WORKSPACE_ID=w1` against a fake
+  config/data dir, stdout and stderr to files:
+  - within a second: one `nw herdr watch --parent <follower>:<ticks>` (own session id), state
+    `mode: auto`; `agent get w1:p1` → `display_agent: "claude · conductor"`; the watcher's fds
+    were `/dev/null`, the log twice and `cursors/herdr.lock` (none of the follower's); the
+    follower's stdout and stderr stayed empty.
+  - `nw herdr status [--json]` and `nw queue conduct-status [--json]` showed pid, `auto`,
+    parent and the log path.
+  - `kill -9` the watcher → log `exited -9 after 35s; next start in 5s`, a new watcher 6 s
+    later, display agent back; still exactly one.
+  - a manual `nw herdr watch` meanwhile → `Error: reader 'herdr' is already followed by pid
+    …`, exit 1; the auto watcher untouched.
+  - committing this change in the worktree moved HEAD: the follower printed exactly one line,
+    `code_changed`, exited 0, and the log says `follower exiting; stopped watcher pid …`; the
+    watcher exited, its state file was removed and the display agent was cleared (the upgrade
+    path, SPEC-0231).
+  - a re-armed follower started a new watcher; `kill -9` of the follower → the watcher logged
+    `supervising follower pid … is gone; exiting` and exited 1.8 s later; state file gone,
+    display agent cleared; the follower's stdout empty.
+  - Teardown: `herdr --session nw-test-4df43aa1 server stop`, `herdr session delete
+    nw-test-4df43aa1` (`deleted session`); `herdr session list` shows only `default`;
+    `~/.config/herdr/sessions/` empty; the fake dirs removed. The human's `default` session
+    and live conductor follower were never addressed.
+- **Tests executed:** `tests/test_herdr_autowatch.py` 15 passed (unit: gate, state/stale
+  ticks, backoff 5→300 and reset, wait-for-other-watcher, stop only own child, errors swallowed
+  and off after 5; real processes with the fake herdr: one watcher, fds, crash restart, SIGINT
+  stop + clear, SIGKILL of the follower → watcher exits < 10 s, a manual watcher not doubled
+  nor killed, no watcher when gated / auto off / non-conductor reader). The conftest change
+  makes `tools/affected_tests.py` fall back to the full suite: run by hand with `-n 8`
+  (textual-dependent tab tests ignored, `textual` is not installed here): 4854 passed, 87
+  skipped, 6 failed — 2 `test_tui_queue_model` (no `textual`, pre-existing), 3 load flakes
+  that pass when rerun alone (`test_agentic_outbound_e2e`, `test_agentic_queue` gate timeout,
+  `test_worker_jobs` renew), and `test_rich_output_guard`, fixed after rebasing on main
+  (`parent_gone` allow-listed: its line goes to the watcher's log; `nw herdr status` prints
+  through the Rich console). After the rebase: herdr, autowatch, rich guard, conduct CLI,
+  events, followers, quiet, codewatch: 205 passed, 2 skipped (the opt-in contract tests).
+
 ## Rollout / migration
 
 Merge; the running conductor follower picks it up on its next start (the merge itself moves
@@ -189,11 +245,11 @@ any manually started `nw herdr watch` (or leave it: the supervisor waits for it)
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

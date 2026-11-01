@@ -98,4 +98,5 @@ def herdr_status(cfg, as_json):
         from ..report import _dump_json
         _dump_json(st)
         return
-    click.echo(AW.status_line(st))
+    from ..console import console
+    console.print(AW.status_line(st), highlight=False)
