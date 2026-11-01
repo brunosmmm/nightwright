@@ -375,6 +375,106 @@ def test_transport_failures_fall_back_with_cooldown(world, remote, variant, stag
         assert len(run.results) == 3
 
 
+def test_a_drop_deletes_the_worker_files_the_local_run_does_not_rewrite(world, remote):
+    """The worker's `.r1` files of a gate that failed remotely must go: the local re-run passes
+    on its first try and writes no `.r1` of its own."""
+    world.project["gates"] = [_gate("g", 'case "$NW_DATA_DIR" in *wdata*) exit 1;; esac; '
+                                         'echo ok', retries=1)]
+    remote.register(ssh=remote.variants["drop"])
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert run.worker is None and run.seq == 1 and run.ok
+    (ev,) = world.ledger(["worker_failed"])
+    assert ev["stage"] == "ssh" and remote.record()["cooldown_until"] is not None
+    (sent,) = [f for f in remote.frames() if f["type"] == "gate"]
+    assert "001-g.r1.log" in sent["files"] and "001-g.r1.json" in sent["files"]
+    assert sorted(p.name for p in world.gates_dir.iterdir()) == ["001-g.json", "001-g.log"]
+    for p in world.gates_dir.glob("*.json"):
+        assert json.loads(p.read_text())["cwd"] == str(world.repo)
+
+
+def test_job_timeout_is_the_budget_plus_every_attempt_capped_at_4h():
+    from nightwright.agentic import remote_gates as RG
+    cfg = {"agentic": {"events": {"gate_budget_s": 1000}}}
+    gates = [{"name": "a", "timeout_s": 60}, {"name": "b", "timeout_s": 100, "retries": 2}]
+    assert RG.job_timeout_s(cfg, gates) == 1000 + 60 + 100 * 3
+    assert RG.job_timeout_s({}, [{"name": "c"}]) == 3600 + 1200    # the gate's own defaults
+    huge = [{"name": "d", "timeout_s": 4000, "retries": 3}]
+    assert RG.job_timeout_s(cfg, huge) == RG.MAX_JOB_TIMEOUT_S == 4 * 3600
+
+
+def _frame_line(kind, **kw):
+    from nightwright.agentic import worker as W
+    return json.dumps({"schema": W.FRAME_SCHEMA, "job_id": f"{CID}-gate-001-a0", "type": kind,
+                       **kw})
+
+
+@pytest.mark.parametrize("how", ["signal", "frame"])
+def test_a_worker_side_interruption_falls_back_with_cooldown(world, remote, tmp_path, how):
+    """`done` with `interrupted: true` the coordinator never asked for (the worker host got
+    SIGTERM) is a transport failure: fall back, not a red gate."""
+    if how == "signal":
+        ppid = tmp_path / "gate-job.pid"
+        world.project["gates"][0]["cmd"] = (f'case "$NW_DATA_DIR" in *wdata*) echo $PPID > {ppid}; '
+                                            f'exec sleep 600;; esac; echo ok')
+        t = threading.Thread(target=lambda: until(
+            lambda: ppid.exists() and ppid.read_text().strip())
+            and os.kill(int(ppid.read_text()), 15))
+        t.start()
+    else:
+        lines = [_frame_line("started", slot_wait_s=0.0),
+                 _frame_line("done", ok=False, started_at="x", duration_s=0.1, slot_wait_s=0.0,
+                             interrupted=True)]
+        remote.register(ssh=_gate_job_variant(
+            remote, "cut", "; ".join(f"echo '{ln}'" for ln in lines) + "; exec cat >/dev/null"))
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    if how == "signal":
+        join(t)
+    _assert_fell_back(world, remote, run, "interrupted", cooldown=True)
+
+
+@pytest.mark.parametrize("frames", [
+    [("started", {"slot_wait_s": "abc"})],
+    [("started", {"slot_wait_s": float("inf")})],
+    [("done", {"ok": "yes", "duration_s": 1.0})],
+    [("done", {"ok": False, "duration_s": "x"})],
+    [("done", {"ok": True, "duration_s": 1.0, "interrupted": "no"})],
+    [("done", {"duration_s": 1.0})],
+])
+def test_bad_worker_numbers_and_flags_fall_back(world, remote, frames):
+    body = "; ".join(f"echo '{_frame_line(k, **kw)}'" for k, kw in frames)
+    remote.register(ssh=_gate_job_variant(remote, "badnum", body + "; exec cat >/dev/null"))
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    _assert_fell_back(world, remote, run, "protocol", cooldown=True)
+
+
+def test_a_disabled_worker_is_no_worker(world, remote, invoke):
+    remote.register(enabled=False)
+    (world.repo / "new.txt").write_text("x\n")                 # ineligible, but never asked
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert run.worker is None and run.results[0].cwd == str(world.repo)
+    assert not world.ledger(["finding"]) and not world.ledger(["worker_failed"])
+    (world.repo / "new.txt").unlink()
+    r = invoke("queue", "gates", CID, "--worker", "box")
+    assert r.exit_code != 0 and "unknown or disabled" in r.output
+
+
+def test_a_fallback_run_counts_the_fallback_wait(world, remote):
+    world.cfg["agentic"]["gates"]["slots"] = 1
+    remote.register(ssh=remote.variants["unreachable"])
+    out = {}
+    with GS.acquire(world.cfg, "other"):
+        t = threading.Thread(target=lambda: out.update(run=G.run_all(
+            world.project, world.state, world.cfg, seq=1)))
+        t.start()
+        assert until(lambda: GS.waiting(world.cfg, CID) is not None
+                     and world.ledger(["worker_failed"]))
+        threading.Event().wait(1.5)             # the fallback waits for the local slot
+    join(t)
+    run = out["run"]
+    assert run.worker is None and run.ok and run.seq == 1
+    assert run.slot_wait_s >= 1.5
+
+
 def test_coordinator_timeout_falls_back_with_cooldown(world, remote, monkeypatch):
     from nightwright.agentic import remote_gates as RG
     monkeypatch.setattr(RG, "job_timeout_s", lambda cfg, gates: 1)

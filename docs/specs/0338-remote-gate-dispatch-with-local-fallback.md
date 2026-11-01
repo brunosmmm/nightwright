@@ -282,6 +282,18 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
   stop ending the run as interrupted with no `worker_failed`. Each new test was checked to
   fail with its fix reverted. `uv run pytest -q -n 4` over the gate, gate-slot, worker and
   workers test files: 359 passed. The full suite is left to the gate.
+- Review fixes (loop 3): `uv run pytest -q -n 4 tests/test_remote_gates.py`: 47 passed. Added: a
+  drop after a gate frame carrying the worker's `.r1` files of a gate that failed remotely and
+  passes locally on its first try (no `001-g.r1.*` left, every `.json` with the local cwd); a
+  direct test of `job_timeout_s` (budget + Σ `timeout_s` x (1 + `retries`), the gate's 1200 s
+  default, the 4 h cap); a worker-side interruption (the loopback `gate-job` getting SIGTERM
+  mid-gate, and a fake `done` with `interrupted: true`) falling back with `worker_failed`
+  stage `interrupted`, a cooldown and a local run under seq 1; malformed `slot_wait_s`,
+  `duration_s`, `ok` and `interrupted` values in `started`/`done` falling back as `protocol`;
+  a registry whose only worker is disabled gating locally with no `finding` despite an
+  untracked file, and `--worker` on it erroring; a fallback run's `slot_wait_s` including the
+  fallback's local wait. The deletion, interruption and malformed-value tests were checked to
+  fail with their fix reverted. The full suite is left to the gate.
 - Manual verification (steps 1-6, the second machine) has **not** been run: it needs the
   human's machine. The last criterion stays open and the spec stays `in-progress` until then.
 
@@ -315,6 +327,12 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
 - The `worker_slot_wait_s` bound before `started` restarts when the header and bundle have
   been written, so upload time does not count against the worker's slot wait. The upload
   itself is still bounded by `worker_slot_wait_s` from the start.
+- A `done` frame with `interrupted: true` that no coordinator stop asked for (the worker got
+  SIGTERM/SIGINT/SIGHUP: its host is going away) is a transport failure, `stage:
+  "interrupted"`, with cooldown and the local re-run under the same seq. After a stop it stays
+  an interrupted `GateRun`. Worker-supplied `slot_wait_s`/`duration_s` must be finite,
+  non-negative numbers and `ok`/`interrupted` booleans (`ok` required); anything else is a
+  `protocol` failure.
 - The run-timeout margin (`RUN_TIMEOUT_MARGIN_S`, 120 s) and `job_timeout_s` are module-level
   in `remote_gates.py`, so tests can shrink them.
 

@@ -359,6 +359,26 @@ def _frame(line: bytes, job_id: str) -> dict:
     return rec
 
 
+def _num(frame: dict, key: str) -> float:
+    """A worker-supplied duration (absent: 0). Anything but a finite, non-negative number is a
+    protocol failure, so a bad frame falls back instead of raising out of `run_all`."""
+    v = frame.get(key)
+    if v is None:
+        return 0.0
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+        raise RemoteFailure("protocol", f"`{frame['type']}` frame: bad {key} {v!r}")
+    return float(v)
+
+
+def _flag(frame: dict, key: str, *, required: bool) -> bool:
+    v = frame.get(key)
+    if v is None and not required:
+        return False
+    if not isinstance(v, bool):
+        raise RemoteFailure("protocol", f"`{frame['type']}` frame: bad {key} {v!r}")
+    return v
+
+
 def _take_gate(frame: dict, gates_dir: Path, seq: int, names: set) -> G.GateResult:
     """Write one `gate` frame's files under `gates/` and return its `GateResult` with the
     campaign-relative log and a tail recomputed from the local copy."""
@@ -461,21 +481,23 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                                     cooldown=stage not in ("claim", "validate"))
             if kind == "started":
                 started = True
-                worker_wait = float(frame.get("slot_wait_s") or 0.0)
+                worker_wait = _num(frame, "slot_wait_s")
                 deadline = time.monotonic() + header["timeout_s"] + RUN_TIMEOUT_MARGIN_S
             elif kind == "gate":
                 results.append(_take_gate(frame, gates_dir, seq, names))
             elif kind == "done":
-                try:
-                    duration = float(frame.get("duration_s") or 0.0)
-                except (TypeError, ValueError):
-                    duration = round(time.monotonic() - t0, 3)
+                ok, cut = _flag(frame, "ok", required=True), \
+                    _flag(frame, "interrupted", required=False)
+                duration = _num(frame, "duration_s")
                 if not started:
-                    worker_wait = float(frame.get("slot_wait_s") or 0.0)
-                return Outcome(G.GateRun(seq, bool(frame.get("ok")), tuple(results),
+                    worker_wait = _num(frame, "slot_wait_s")
+                if cut and stop_at is None:
+                    # the worker cut the run short on its own (SIGTERM/SIGINT/SIGHUP: the host
+                    # is going away): a transport failure, never a red gate
+                    raise RemoteFailure("interrupted", "the worker interrupted the run (signal)")
+                return Outcome(G.GateRun(seq, ok, tuple(results),
                                          str(frame.get("started_at") or started_at), duration,
-                                         interrupted=bool(frame.get("interrupted")),
-                                         worker=worker["name"]), worker_wait)
+                                         interrupted=cut, worker=worker["name"]), worker_wait)
             # `accepted` and `slot_wait` are progress only
     except RemoteFailure as f:
         grace = min(grace, 2.0)
