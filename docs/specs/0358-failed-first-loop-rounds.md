@@ -4,6 +4,7 @@ title: "Failed-first loop rounds: rerun the previously failing tests before the 
 status: accepted
 owner: user
 created: 2026-11-01
+updated: 2026-11-01
 kind: feature
 source_idea: IDEA-649
 tags: [agentic, gates, tests]
@@ -83,7 +84,10 @@ project schema is strict: unknown keys fail). Validation follows `_check_gate_re
   (the same rule as `retry_cmd`). `failed_first: true` on a gate without it is a validation
   problem naming `gates[i].failed_first`;
 - it is only valid on a `when: loop` gate. A close gate gets no previous result (see below), so the
-  key would be a silent no-op. Gates with `when: always` are rejected for the same reason.
+  key would be a silent no-op. Gates with `when: always` are rejected for the same reason;
+- a gate name `<other>.ff`, where `<other>` is another gate in the list, is a validation problem
+  naming `gates[i].name` (it would share the prelude's log `<seq>-<other>.ff.log`). The remote
+  worker's `RETRY_STEM_RE` collision check (`worker.py`) is extended to `.ff`.
 
 `failed_first` does not require `retry_cmd`: like the SPEC-0289 targeted rerun, `targeted_cmd` falls
 back to the expanded `cmd` followed by the ids, and `_targeted_ids` refuses that fallback when the
@@ -97,14 +101,25 @@ same-name entry in `campaign_state["last_gate"]["results"]` and passes it as `pr
 so their behavior is byte-for-byte as before. The previous entry qualifies only when it is red
 (`ok` false), neither `interrupted` nor `timed_out`, and carries a pytest `summary`.
 
-The failing ids come from `_targeted_ids`, refactored to take the previous entry's `cmd` and
-`summary` (the existing `GateResult` call site passes its own). The same completeness rule holds:
+`last_gate` is the latest gate run of either tier. After a close run it holds the close gates (e.g.
+`pytest`), so a loop gate finds no same-name entry and runs without a prelude. Carrying close-tier
+failures into the loop is out of scope.
+
+The failing ids come from `_targeted_ids`, refactored to take the previous entry's `summary` and
+the *current round's* expanded command (the existing `GateResult` call site passes its own). It reads
+only `summary` from the previous entry, never its `cmd`, and checks shell operators on that
+current-round expanded `cmd`. The same completeness rule holds:
 1 to `gate_results.MAX_FAILING` ids, and `failed + errors == len(failing)`. An incomplete list means
 no prelude. A pass of a partial list could not stand for anything, and the prelude can only end a
 round red, so an incomplete list is simply skipped.
 
 The prelude is attempt kind `failed-first`. It runs `run_gate` with `cmd_override =
-targeted_cmd(gate, previous["cmd"], ids, placeholders)` and its own log
+targeted_cmd(gate, expand_cmd(gate["cmd"], **placeholders), ids, placeholders)`: the command is
+always built from the current round's expanded `cmd` and placeholders, never from `previous["cmd"]`.
+A reproduced prelude's result carries the prelude's own `cmd` (the targeted command) into
+`last_gate`, so reusing it would append the ids again on every further round (`<cmd> <ids> <ids>`
+on a gate without `retry_cmd`). The SPEC-0289 ladder avoids this the same way, by using the
+same-round `first.cmd`. The prelude has its own log
 `gates/<seq:03>-<name>.ff.log` (so it never overwrites the main run's log or the `.r<n>.log`
 retry logs). Its attempt record uses `_attempt` with `attempt: -1` and `kind: "failed-first"`;
 the main run keeps `attempt: 0`, so the SPEC-0289 numbering and log names stay unchanged. It runs
@@ -184,7 +199,13 @@ three outcomes of the prelude, the `failed-first` attempt kind and the `.ff.log`
       normal run and ladder; the prelude is listed first in `attempts` and its duration is in
       `duration_s`. An interrupted prelude yields an interrupted result and no main run.
 - [ ] No prelude runs without the flag, without a prior red result for that gate name, after a
-      green or interrupted previous result, or with an incomplete id list.
+      green, interrupted or timed-out previous result, or with an incomplete id list. A
+      `last_gate` holding only close-tier results (e.g. a red `pytest`) gives no prelude for
+      `pytest-affected`.
+- [ ] The prelude command is always built from the current round's expanded `cmd`: two reproduced
+      rounds in a row on a gate without `retry_cmd` never repeat the ids.
+- [ ] Validation rejects a gate named `<other gate>.ff`, naming `gates[i].name`, and the worker's
+      collision check covers `.ff`.
 - [ ] The dogfood `.nw/project.yaml` sets `failed_first: true` on `pytest-affected`, and
       `docs/product/capabilities/agentic.md` documents `failed_first`.
 
@@ -202,18 +223,25 @@ three outcomes of the prelude, the `failed-first` attempt kind and the `.ff.log`
   - no prelude without the flag, without a prior red, with a previous result that is green,
     interrupted or timed out, with a different gate name, and with an incomplete id list
     (`failed + errors != len(failing)`, or more than `MAX_FAILING`);
+  - two reproduced rounds in a row on a gate without `retry_cmd`: the second prelude's command is
+    the expanded `cmd` followed by the ids exactly once;
+  - a `last_gate` holding only a red `pytest` close result gives no prelude for `pytest-affected`;
   - `run_all(tier="loop")` hands the previous result to the gate (a `last_gate` in the fixture
     state) and `tier="close"` / `tier=None` does not.
 - **Automated: project config** (`tests/test_agentic_project.py`): `failed_first` accepted on a
   loop pytest gate; rejected when not a boolean, without `results: {format: pytest}`, and on a
-  close or `always` gate.
+  close or `always` gate; a gate named `<other>.ff` next to a gate `<other>` is rejected naming
+  `gates[i].name`, and `<other>.ff` without an `<other>` gate is accepted. The worker's existing
+  retry-stem collision test (`RETRY_STEM_RE`) gains a `.ff` case.
 - **Automated: dogfood config** (`tests/test_agentic_dogfood_config.py`): `.nw/project.yaml`
   validates and `pytest-affected` has `failed_first: true`.
-- **Manual verification:** in a scratch worktree with the dogfood config, make one test fail, run
-  `nw gate run` (loop) to get a red round, then run it again with the test still broken and
-  confirm the second round ends after the prelude (one `failed-first` attempt, seconds of wall
-  time). Fix the test and confirm the following round runs the prelude green and then the normal
-  selection. Record the wall times in *As shipped*.
+- **Manual verification:** on a dogfood campaign (or a scratch campaign with the dogfood config)
+  whose loop gate goes red, let the queue run the next GATING round with the test still broken.
+  Confirm in the ledger's `gate` event that `pytest-affected` has exactly one attempt of kind
+  `failed-first` and a `.ff.log`, and note the round's wall time. After the fix round, confirm the
+  following GATING round shows a green `failed-first` attempt followed by the `full` attempt.
+  Record both wall times in *As shipped*. (`nw gate run` is not usable here: it runs with no tier
+  and never updates `last_gate`, so it never runs a prelude.)
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` plus
   `test_agentic_gate*`, `test_agentic_queue*`, `test_agentic_project`,
   `test_agentic_dogfood_config`; `python3 tools/spec_lint.py` exits 0; the full suite runs at the
