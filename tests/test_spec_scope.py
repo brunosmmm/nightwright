@@ -71,6 +71,8 @@ def test_reconcile_foreign_only_leaves_wt_spec_byte_identical(tmp_path):
     assert Path(path).read_bytes() == before
     assert (other, "flag-foreign") in _actions(plan) and "flag-no-backlink" not in {
         a for _i, _s, a, _d in plan}
+    (detail,) = [d for i, _s, a, d in plan if i == other and a == "flag-foreign"]
+    assert PROJ in detail and "Meta-Tools" in detail          # the row names both projects
     assert _state_of(cfg, other) == "SPECCED"
 
 
@@ -441,3 +443,171 @@ def test_spec_verify_in_campaign_audits_the_campaign_copy(scoped, tmp_path, monk
         V.verify_spec(cfg, "SPEC-0002")
     r = CliRunner().invoke(cli, ["spec", "verify", "SPEC-0002"])
     assert r.exit_code != 0 and "ambiguous in a comfort-assistant campaign" in r.output
+
+
+# ---- review fixes: root fallback, claims parsed once, dry run == apply, presentation ----------
+
+def test_campaign_spec_path_falls_back_to_repo_root_without_a_worktree(scoped, tmp_path):
+    cfg, _wt_repo, p2 = scoped
+    st, wtree = _campaign(cfg, p2, tmp_path, with_worktree=False)
+    assert not wtree.exists()
+    assert SS.campaign_spec_path(cfg, st) == p2 / "docs/specs/0001-trivial.md"
+    assert SS.foreign_scope_path(cfg, "SPEC-0001", campaign="cid")[0] == \
+        p2 / "docs/specs/0001-trivial.md"
+    # another id of the project: the worktree is skipped, the repo root answers
+    assert SS.foreign_scope_path(cfg, "SPEC-0003", campaign="cid")[0].parent == p2 / "docs/specs"
+    missing = dict(st, spec={"rel_path": "docs/specs/0099-nope.md"})
+    with pytest.raises(ValueError, match="not found in its worktree or repo"):
+        SS.campaign_spec_path(cfg, missing)
+    with pytest.raises(ValueError, match="ambiguous in a comfort-assistant campaign") as e:
+        SS.foreign_scope_path(cfg, "SPEC-0099", campaign="cid")
+    assert "Meta-Tools" in str(e.value)                       # names both projects
+
+
+def test_campaign_spec_path_prefers_the_worktree_copy(scoped, tmp_path):
+    cfg, _wt_repo, p2 = scoped
+    st, wtree = _campaign(cfg, p2, tmp_path)
+    assert SS.campaign_spec_path(cfg, st) == wtree / "docs/specs/0001-trivial.md"
+    (wtree / "docs/specs/0001-trivial.md").unlink()           # gone there: the root's copy answers
+    assert SS.campaign_spec_path(cfg, st) == p2 / "docs/specs/0001-trivial.md"
+
+
+def test_wt_campaign_naming_an_internal_or_unknown_campaign_scopes_nothing(
+        scoped, tmp_path, monkeypatch):
+    cfg, wt_repo, p2 = scoped
+    _state_file(cfg, "c-wt")                                  # a Meta-Tools campaign
+    monkeypatch.chdir(wt_repo)
+    for cid in ("c-wt", "no-such-campaign"):
+        monkeypatch.setenv("WT_CAMPAIGN", cid)
+        assert SS.foreign_scope_path(cfg, "SPEC-0001") is None
+        assert SS.resolve_in_scope(cfg, "SPEC-0001") == wt_repo / "docs/specs/0001-trivial.md"
+    # an internal campaign does not hide the cwd: inside a project checkout the project answers
+    monkeypatch.setenv("WT_CAMPAIGN", "c-wt")
+    path, origin = SS.foreign_scope_path(cfg, "SPEC-0001", cwd=p2)
+    assert path == p2.resolve() / "docs/specs/0001-trivial.md" and PROJ in origin
+
+
+def test_foreign_scope_matches_the_campaign_spec_id_case_insensitively(scoped, tmp_path):
+    cfg, _wt_repo, p2 = scoped
+    _st, wtree = _campaign(cfg, p2, tmp_path)
+    path, origin = SS.foreign_scope_path(cfg, "spec-0001", campaign="cid")
+    assert path == wtree / "docs/specs/0001-trivial.md" and "cid" in origin
+
+
+def test_plan_add_missing_bare_id_of_a_second_project_never_reads_wt_store(tmp_path):
+    wt_repo = make_repo(tmp_path, review=False)
+    p2 = _project_repo(tmp_path)
+    cfg = make_cfg(tmp_path, wt_repo, tmp_path / "script.json",
+                   outbox={PROJ: {"repo_path": str(p2)}})
+    (wt_repo / "docs/specs/0099-wt-only.md").write_text(
+        "---\nid: SPEC-0099\ntitle: x\nstatus: accepted\n---\n")
+    assert Q.plan_add(cfg, "SPEC-0099", force=True)["repo_root"] == str(wt_repo.resolve())
+    with pytest.raises(ValueError, match=f"SPEC-0099 not found in project {PROJ}"):
+        Q.plan_add(cfg, "SPEC-0099", project=PROJ, force=True)
+
+
+def test_apply_add_forwards_the_plans_project_to_the_hand_off_clear(tmp_path, monkeypatch):
+    wt_repo = make_repo(tmp_path, review=False)
+    p2 = _project_repo(tmp_path)
+    cfg = make_cfg(tmp_path, wt_repo, tmp_path / "script.json",
+                   outbox={PROJ: {"repo_path": str(p2)}})
+    plan = Q.plan_add(cfg, "SPEC-0001", project=PROJ, force=True)
+    assert plan["project"] == PROJ
+    seen = []
+    monkeypatch.setattr(Q, "_clear_handed_off_on_requeue",
+                        lambda c, spec_id, campaign, by, project=None: seen.append((spec_id, project)))
+    Q.apply_add(cfg, plan)
+    assert seen == [("SPEC-0001", PROJ)]
+
+
+def test_internal_campaign_marks_only_the_internal_idea(tmp_path):
+    cfg = _cfg(tmp_path)
+    _spec(cfg, "SPEC-0001", "accepted", source_idea=None)     # claims neither idea
+    mine = _idea(cfg, "internal idea", state="SPECCED", spec_id="SPEC-0001")
+    other = _foreign(cfg, "foreign idea")
+    for iid in (mine, other):
+        W.set_property(cfg, W.resolve_selector(cfg, iid), "HANDED_OFF", "old")
+    events = []
+    Q._mark_handed_off(cfg, {"project": "Meta-Tools", "close": {"pr_url": "https://x/pr/3"}},
+                       events, "SPEC-0001", lambda *a, **k: None)
+    held = lambda i: W.resolve_selector(cfg, i).properties.get("HANDED_OFF")  # noqa: E731
+    assert [e[1]["idea_id"] for e in events] == [mine]
+    assert held(mine) == "https://x/pr/3" and held(other) == "old"
+    Q._clear_handed_off_on_requeue(cfg, "SPEC-0001", "cid", "t", project="Meta-Tools")
+    assert held(mine) is None and held(other) == "old"
+
+
+def test_reconcile_parses_wts_specs_once_per_pass(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _spec(cfg, "SPEC-0001", "accepted", source_idea=None)
+    for n in range(3):                                        # foreign ideas with no :SPEC: yet
+        W.add_idea(cfg, f"foreign backlog idea {n}")
+        task = [t for t in load_tasks(cfg) if t.is_idea and t.heading == f"foreign backlog idea {n}"][0]
+        W.set_property(cfg, task, "PROJECT", PROJ)
+    calls = []
+    real = S._spec_claims
+    monkeypatch.setattr(S, "_spec_claims", lambda c: calls.append(1) or real(c))
+    S.reconcile_ideas(cfg, apply=True)
+    assert len(calls) == 1
+    calls.clear()
+    S.reconcile_ideas(cfg, apply=False, spec_ids=["SPEC-0001"])
+    assert len(calls) == 1
+
+
+def test_dry_run_matches_apply_when_the_backlink_is_refused_for_a_newer_idea(tmp_path):
+    cfg = _cfg(tmp_path)
+    old = _spec(cfg, "SPEC-0001", "accepted", source_idea=None, created="2026-01-01")
+    newer = _idea(cfg, "created after SPEC-0001", state="SPECCED", spec_id="SPEC-0001")
+    before = Path(old).read_bytes()
+    dry = S.reconcile_ideas(cfg, apply=False)
+    assert (newer, "flag-mismatch") in _actions(dry)
+    applied = S.reconcile_ideas(cfg, apply=True)
+    assert sorted(dry) == sorted(applied)
+    assert [a for i, _s, a, _d in applied if i == newer].count("flag-mismatch") == 1
+    assert Path(old).read_bytes() == before
+
+
+def test_backlink_writes_share_one_idea_load_per_pass(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    for n in (1, 2, 3):
+        _spec(cfg, f"SPEC-000{n}", "accepted", source_idea=None)
+        _idea(cfg, f"idea {n}", state="SPECCED", spec_id=f"SPEC-000{n}")
+    seen = []
+    real = S._write_source_idea
+    monkeypatch.setattr(S, "_write_source_idea",
+                        lambda c, sid, iid, ideas=None: seen.append(ideas is not None)
+                        or real(c, sid, iid, ideas=ideas))
+    S.reconcile_ideas(cfg, apply=True)
+    assert seen == [True, True, True]
+    for n in (1, 2, 3):
+        assert "source_idea: IDEA-" in (Path(cfg["specs_dir"]) / f"000{n}-fixture.md").read_text()
+    # called alone it still loads the org files itself
+    _spec(cfg, "SPEC-0004", "accepted", source_idea=None)
+    solo = _idea(cfg, "idea 4", state="SPECCED", spec_id="SPEC-0004")
+    S._write_source_idea(cfg, "SPEC-0004", solo)
+    assert f"source_idea: {solo}" in (Path(cfg["specs_dir"]) / "0004-fixture.md").read_text()
+
+
+def test_close_hook_reports_a_foreign_idea_as_a_minor_finding(tmp_path):
+    cfg = _cfg(tmp_path)
+    _spec(cfg, "SPEC-0001", "done", source_idea=None)
+    other = _foreign(cfg, "foreign idea")
+    events = []
+    Q._reconcile_closed(cfg, {"id": "cid", "spec_id": "SPEC-0001", "project": "Meta-Tools",
+                              "repo": {"root": str(tmp_path / "repo")}}, events, "MERGED")
+    (fnd,) = [e[1] for e in events if e[0] == "finding" and "foreign" in e[1]["title"]]
+    assert fnd["severity"] == "minor" and fnd["gate"] == "bookkeeping"
+    assert other in fnd["detail"] and PROJ in fnd["detail"] and "Meta-Tools" in fnd["detail"]
+    assert _state_of(cfg, other) == "SPECCED"
+
+
+def test_spec_reconcile_cli_prints_foreign_rows(tmp_path, monkeypatch, capsys):
+    cfg = _cfg(tmp_path)
+    _spec(cfg, "SPEC-0001", "accepted", source_idea=None)
+    other = _foreign(cfg, "foreign idea")
+    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    r = CliRunner().invoke(cli, ["spec", "reconcile"])
+    out = r.output + capsys.readouterr().out
+    assert r.exit_code == 0, out
+    line = next(ln for ln in out.splitlines() if other in ln)
+    assert "↗" in line and PROJ in line and "Meta-Tools" in line

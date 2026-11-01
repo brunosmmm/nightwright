@@ -20,11 +20,12 @@ def is_internal_idea(task) -> bool:
     return idea_project(task) == INTERNAL_PROJECT
 
 
-def owns_idea(cfg, task, spec_id=None) -> bool:
+def owns_idea(cfg, task, spec_id=None, claims=None) -> bool:
     """Does the idea belong to wt's store (matches its bare `SPEC-NNNN` ids)? True when the idea
     is internal, or when wt's spec at `spec_id` (default: the idea's own `:SPEC:`) already names
     it as `source_idea`: an explicit claim, e.g. an idea promoted `--internal` from another
-    project's `:PROJECT:`. Anything else is foreign (SPEC-0327 rule 1)."""
+    project's `:PROJECT:`. Anything else is foreign (SPEC-0327 rule 1). `claims` is a precomputed
+    `specs._spec_claims(cfg)`: callers walking many ideas pass it so wt's specs are parsed once."""
     if is_internal_idea(task):
         return True
     from .workflow import _is_outbound_id, _load_spec_fm
@@ -33,6 +34,8 @@ def owns_idea(cfg, task, spec_id=None) -> bool:
     if not idea_id:
         return False
     if not sid:           # not linked yet: any wt spec naming the idea is an explicit claim
+        if claims is not None:
+            return idea_id in claims
         from .specs import _spec_claims
         try:
             return idea_id in _spec_claims(cfg)
@@ -65,7 +68,8 @@ def campaign_spec_path(cfg, state) -> Path:
                      f"or repo")
 
 
-def _refusal(spec_id, project, why="it would resolve against wt's own specs; use --path"):
+def _refusal(spec_id, project, why=None):
+    why = why or (f"it would resolve against wt's own ({INTERNAL_PROJECT}) specs; use --path")
     return ValueError(f"{spec_id} is ambiguous in a {project} campaign: {why}")
 
 
@@ -139,7 +143,7 @@ def foreign_scope_path(cfg, spec_id, *, campaign=None, cwd=None):
             return SP._find_spec(top / SPEC_DIR_REL, spec_id), f"{project} checkout"
         except ValueError:
             raise _refusal(spec_id, project, f"no such spec in {top / SPEC_DIR_REL}; wt's own "
-                           "specs are not consulted from a project checkout")
+                           f"({INTERNAL_PROJECT}) specs are not consulted from a project checkout")
     return None
 
 

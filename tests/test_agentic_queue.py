@@ -460,6 +460,12 @@ def test_second_project_close_leaves_wt_checkout_clean(opened, tmp_path):
     (ev,) = S.read_ledger(cfg, cid, types=["idea_reconciled"])
     assert (ev["spec_id"], ev["idea_id"], ev["to"]) == ("SPEC-0001", iid, "SHIPPED")
     assert _idea_state(cfg, iid) == "SHIPPED"
+    # the global walk (`wt spec reconcile --apply`) must not stamp the idea onto wt's SPEC-0001
+    # either: that is the write that dirtied the main checkout
+    from wt import specs as SPECS
+    SPECS.reconcile_ideas(cfg, apply=True)
+    assert porcelain() == before and wt_spec.read_bytes() == before_spec
+    assert "source_idea" not in wt_spec.read_text()
 
 
 @pytest.mark.parametrize("root", [None, ""])

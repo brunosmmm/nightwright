@@ -271,6 +271,17 @@ is repaired by hand once (the steward already reverted the observed edit).
   access), so the real-data dry run could not be performed here; its steps are covered by the
   automated equivalents above and remain Rollout step 3 for the steward.
 
+- Loop 6 (review fixes) tests: `tests/test_spec_scope.py` gained the repo-root fallback and
+  worktree-first order of `campaign_spec_path` / `foreign_scope_path` (incl. the ValueError), an
+  internal / unknown `$WT_CAMPAIGN` and the case-insensitive campaign id, `plan_add` for a second
+  project's missing bare id (no fallback to wt's store), `apply_add` forwarding `plan['project']`,
+  an internal campaign marking/clearing only the internal idea, `_spec_claims` called once per
+  `reconcile_ideas` pass, dry run == `--apply` for a backlink refused for a newer idea, one idea
+  load per backlink pass, the close hook's minor `flag-foreign` finding and the `wt spec reconcile`
+  `↗` row; `test_second_project_close_leaves_wt_checkout_clean` also runs the global
+  `reconcile_ideas(apply=True)` and asserts wt's spec and porcelain stay untouched. Targeted
+  reconcile/queue/store/project/spec-CLI files pass; the full suite is left to gating.
+
 
 ### As shipped (2026-10-31)
 
@@ -336,6 +347,16 @@ is repaired by hand once (the steward already reverted the observed edit).
   batch add with two projects' SPEC-0001/0002 having different `depends_on`, old state without
   `project`, `owns_idea` without a link, terminal campaign scope. Targeted queue/reconcile/store/
   project tests pass; the full suite is left to gating.
+
+- Loop 6 (review fixes): `reconcile_ideas` computes `_spec_claims(cfg)` once per pass and hands it
+  to `owns_idea(…, claims=)` / `_sole_claimant(…, claims=)`, so foreign ideas without a `:SPEC:` no
+  longer re-parse wt's spec dir each. The plan pass applies the SPEC-0267 created-date rule to the
+  sole backlink claimant (a newer idea yields the same `flag-mismatch` row a dry run as `--apply`
+  does, and no pending backlink). `_write_source_idea(…, ideas=)` takes the pass's already-loaded
+  ideas (one org load per pass, not per write). `flag-foreign`, the `_write_source_idea` and
+  `plan_spec_link` refusals and the scope `ambiguous` error now name both the idea's/campaign's
+  project and `Meta-Tools`. The unticked-in-spirit DoD line "manual steps performed" cannot be
+  reworded here (guarded spec text); the manual verification stays Rollout step 3 for the steward.
 
 ## Rollout / migration
 
