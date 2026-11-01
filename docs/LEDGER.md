@@ -259,6 +259,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) | nw workers bootstrap | feature | accepted | — | 2026-11-01 |
 | [SPEC-0355](./specs/0355-faster-code-gating.md) | Faster code gating: narrow affected-test fallbacks, close reuse of a green loop gate, failed-first reruns | feature | accepted | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0357](./specs/0357-narrow-affected-tests-py-fallbacks-and-write-the.md) | Narrow affected_tests.py fallbacks and write the NW_GATE_REPORT selection report | feature | accepted | — | 2026-11-01 |
+| [SPEC-0358](./specs/0358-failed-first-loop-rounds.md) | Failed-first loop rounds: rerun the previously failing tests before the rest of a gate | feature | accepted | — | 2026-11-01 |
 
 ## Done
 
