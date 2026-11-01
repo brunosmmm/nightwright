@@ -257,6 +257,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) | Remote workers integration suite for gate and persona workers | feature | accepted | — | 2026-11-01 |
 | [SPEC-0349](./specs/0349-nw-doctor-install-health-check.md) | `nw doctor`: read-only install health check with `nw.doctor.v1` JSON | feature | accepted | — | 2026-11-01 |
 | [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) | nw workers bootstrap | feature | accepted | — | 2026-11-01 |
+| [SPEC-0356](./specs/0356-queue-visibility-cli-lists-graph-unqueued.md) | Queue visibility (CLI): untruncated lists with title/priority/blocked-by, nw queue graph, nw queue unqueued, remote gate line | feature | accepted | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0357](./specs/0357-narrow-affected-tests-py-fallbacks-and-write-the.md) | Narrow affected_tests.py fallbacks and write the NW_GATE_REPORT selection report | feature | accepted | — | 2026-11-01 |
 | [SPEC-0358](./specs/0358-failed-first-loop-rounds.md) | Failed-first loop rounds: rerun the previously failing tests before the rest of a gate | feature | accepted | — | 2026-11-01 |
 | [SPEC-0359](./specs/0359-close-tier-reuse-of-a-green-loop-gate-with-a-full.md) | Close-tier reuse of a green loop gate, with a full-suite sentinel on the base branch | feature | accepted | — | 2026-11-01 |

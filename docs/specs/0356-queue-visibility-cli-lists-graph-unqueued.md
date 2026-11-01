@@ -1,0 +1,380 @@
+---
+id: SPEC-0356
+title: "Queue visibility (CLI): untruncated lists with title/priority/blocked-by, nw queue graph, nw queue unqueued, remote gate line"
+status: accepted
+owner: user
+created: 2026-11-01
+milestone: "M9: agentic workflow"
+kind: feature
+tags: [agentic, queue, ux, visibility]
+depends_on: [SPEC-0351]
+source_idea: IDEA-615
+---
+
+## Context
+
+IDEA-615 (human, 2026-11-01): "near zero visibility on what is happening and how, what is in
+the queue and what depends on what". What exists today:
+
+- `nw campaign list` (`agentic/cli_campaign.py:150`) is a plain rich `Table` with
+  `id, spec, project, state, loops, cost, updated`; no column is `no_wrap`, so on an
+  80-column terminal rich shrinks every column and ids/states come out as `SPEC-035…`,
+  `IMPLEMEN…`. No title, priority, dependencies or park reason. `nw.campaigns.v1`
+  (`_summary`, `cli_campaign.py:25`) has no priority, depends_on, blocked_by or title.
+- `nw queue list` (`_queue_table`, `agentic/cli_queue.py:101`) keeps the campaign id
+  `no_wrap` but ellipsizes project at 18, glues the park reason into the state cell
+  (`PARKED:budget_cap`) and has no title or depends_on. The `nw.queue.v1` items
+  (`queue_payload`, `agentic/queue.py:5512`) carry `priority` and, for QUEUED items only,
+  `backlog.blocked_by` as free-text strings (`"waiting on SPEC-0337 (accepted)"`).
+- `nw queue backlog` shows admission order and "waiting on" text, but never the spec title
+  nor the dependency ids as data.
+- The dependency chain is only visible by reading `blocked_by` item by item. There is no
+  `nw queue graph`.
+- Nothing lists work that is accepted but **not queued**. SPEC-0349 sat `accepted` with no
+  campaign and nobody noticed; `nw hub --json` has the raw parts (internal specs, outbound
+  specs, ideas, `agentic.campaigns`) but never joins them.
+- Remote gate runs (SPEC-0338, IDEA-641) are invisible while they run: which worker, which
+  job, for how long. On the SPEC-0338 branch the finished `gate` ledger event carries
+  `worker`, and `worker_failed` carries `job_id`, but no event marks a remote job as started.
+
+This spec is the **CLI slice** of IDEA-615. The TUI queue panes the idea's log asks for
+(active, backlog with blocked_by, graph, parked with reasons, gate slots/workers, mailbox)
+are a separate later spec; it must reuse the JSON defined here (see *TUI contract*).
+
+## Goals / Non-goals
+
+**Goals**
+- List views (`nw campaign list`, `nw queue list`, `nw queue backlog`) never truncate the
+  campaign id or the state, always show a title, and show priority, blocked-by (waiting-on
+  ids) and park reason; they adapt to terminal width by dropping low-value columns in a
+  documented order. `--json` carries the same fields.
+- `nw queue graph`: the queue as a dependency tree/DAG with state, blocker and cost per node.
+- `nw queue unqueued`: accepted/draft specs and SPECCED/INCUBATE ideas that have no campaign,
+  with the reason they are not queued where it can be derived.
+- `nw campaign show` names the remote gate run (worker, job id, elapsed) when there is one.
+
+**Non-goals**
+- Any change to queue semantics: admission order, readiness, parking, slots, priorities.
+  Every addition is read-only presentation plus additive JSON keys.
+- TUI panes (next spec), `nw queue watch` layout (SPEC-0326/0351 own it; unchanged here).
+- Emitting new ledger events from the remote gate dispatch path (see *Remote gate line*:
+  the event is specified here, emitted by SPEC-0338's code under IDEA-641).
+- An idea "hold" concept: none exists in code today (see Design, `unqueued` reasons).
+
+## Decision
+
+Introduce one row model and one column fitter, shared by every list view and by the future
+TUI:
+
+1. `queue.row_view(cfg, state, backlog_entry=None) -> dict` computes, for one campaign, the
+   display fields (`title`, `priority`, `depends_on`, `blocked_by`, `waiting_on`,
+   `park_reason`, `park_detail`, `cost_usd`, `cap_usd`, ...). `queue_payload`,
+   `campaign_list --json` and `backlog_view` all merge it in, so the three JSON shapes agree.
+2. A new module `agentic/listview.py` with a pure `fit_columns(columns, rows, width)` that
+   drops columns by rank until the table fits; id and state are fixed-width (never cut),
+   title is never dropped (it flexes, ellipsized, min 12 cells), park reason and blocked-by
+   fold into the title cell instead of vanishing.
+3. `nw queue graph` and `nw queue unqueued` are new read-only commands with their own
+   versioned JSON (`nw.queue.graph.v1`, `nw.queue.unqueued.v1`).
+4. `nw campaign show` prints one `remote gate` line from ledger events; in-flight needs a
+   `gate_dispatched` event that SPEC-0338's dispatch must emit (contract below); until then
+   only finished/failed remote runs are shown.
+
+## Design
+
+### Row model (`agentic/queue.py`)
+
+`row_view(cfg, st, backlog_entry=None) -> dict` (pure over `st` plus cached file reads):
+
+| key | source |
+|---|---|
+| `title` | `_spec_title(st)` (existing, mtime-cached; idea heading / merge note fallback); `None` → rendered as `—` |
+| `priority` | `_priority(st)` (existing) |
+| `depends_on` | the spec frontmatter `depends_on` (normalized to a list of str), read through the same mtime cache as the title (the cache becomes `_spec_meta(st) -> {title, depends_on}`); `[]` for idea-without-spec and merge campaigns |
+| `blocked_by` | QUEUED: `backlog_entry["blocked_by"]` (the existing strings, unchanged). WAITING: `["waiting for a slot"]`. Otherwise `[]` |
+| `waiting_on` | ids extracted from `blocked_by` by the pure `waiting_on_ids(blocked_by)`: matches `waiting on <ID> (` and `<ID> not found`; order kept, de-duplicated |
+| `park_reason` / `park_detail` | `st.park.reason` / `.detail` when PARKED, else `None` |
+| `cost_usd` / `cap_usd` | existing cost fields |
+| `remote_gate` | only for GATING campaigns and `campaign show` (one ledger tail read): see *Remote gate line*; `None` otherwise |
+
+`waiting_on_ids` parses strings rather than changing `backlog_readiness`'s return type so
+the readiness function, its injected test doubles and the `backlog` ledger event stay
+byte-identical (no queue-semantics risk).
+
+JSON (all additive; schema names unchanged since no key is removed or retyped):
+- `nw.queue.v1` items: add `title, depends_on, blocked_by, waiting_on, park_reason,
+  park_detail`, plus `remote_gate` (GATING only). `priority, cost_usd, cap_usd, park` exist.
+- `nw.campaigns.v1` entries (`_summary`): add `title, priority, depends_on, blocked_by,
+  waiting_on, park_reason`. `cap_usd`, `cost_usd`, `park` exist. Readiness for QUEUED rows
+  comes from one `backlog_view(cfg)` call per invocation (not per row).
+- `nw.queue.backlog.v1` items: add `title, depends_on, waiting_on, kind, label`.
+
+### Column fitting (`agentic/listview.py`)
+
+```
+Column(key, header, rank, fixed=False, flex=False, min_width=0, fold=None)
+fit_columns(columns, rows, width) -> list[Column]
+```
+
+- Natural width of a column = max(len(header), max cell length). `fixed` columns keep their
+  natural width (`no_wrap`, `min_width` = natural, overflow never ellipsizes): **id** and
+  **state**. `flex` = the **title**: takes what remains, min 12, ellipsized.
+- Drop the lowest-ranked non-fixed, non-flex column while
+  `sum(widths) + separators + title_min > width`. A column with `fold` set is not lost: its
+  text is prefixed into the title cell (`[budget_cap] `, `⧗ SPEC-0337 `), dim.
+- If even id + state + title-min do not fit (very narrow), nothing more is dropped and the
+  title wraps under the id (rich `overflow="fold"` on the title only); id/state are still
+  whole. `width` is `console.width` (honours `COLUMNS`); render functions take `width` so
+  tests are deterministic.
+
+Documented drop order (first dropped first), same for every list table:
+
+| rank (kept longest → first dropped) | column | when dropped |
+|---|---|---|
+| — | campaign id | never |
+| — | state | never (pure state; park reason moved to its own column) |
+| — | title | never (flexes) |
+| 1 | blocked-by (waiting-on ids) | folds into title |
+| 2 | park reason | folds into title |
+| 3 | pri | dropped |
+| 4 | cost (`$1.20/15`) | dropped |
+| 5 | project | dropped (`--project` filter still available) |
+| 6 | loops | dropped |
+| 7 | size / tone / profile | dropped (today's `_WIDE_COLS` rule is subsumed) |
+| 8 | updated / age | dropped first |
+
+Reasoning: the id is what a human copies into the next command and the state is the answer
+to "what is it doing", so they are never cut; the title is what makes an id meaningful;
+"what is it waiting on" and "why is it parked" are the questions the human could not answer
+today, so they survive longest (folded, never lost); cost and project are visible elsewhere
+(`campaign show`, filters); age is the least actionable.
+
+Applied to: `nw campaign list`, `nw queue list` (Active, Needs you, Waiting, Backlog tables)
+and `nw queue backlog`. The Backlog table keeps its `#` (position) column as `fixed`
+(it is admission order, tiny). `nw queue watch` is unchanged.
+
+### `nw queue graph`
+
+`nw queue graph [--project P] [--all] [--json]` — read-only.
+
+- **Nodes:** every non-terminal campaign (plus terminal with `--all`), keyed by its spec id
+  (idea id for idea-without-spec, campaign id for merge). When several campaigns share a key,
+  the newest non-terminal wins. Every id in a node's `depends_on` that has no node becomes a
+  **stub node** with its spec status read from the specs dir (`accepted, no campaign`,
+  `done`, `missing`) — this is how an unqueued dependency becomes visible. Under
+  `--project`, campaigns are filtered but dependency stubs from elsewhere are kept and marked
+  `external: true`, so chains are never cut.
+- **Edges:** `dep → dependent` from `depends_on` only (not `parent`, not `supersedes`).
+- **Render (rich `Tree`):** roots = nodes with no in-graph dependency, sorted by admission
+  key (priority, then age); children = dependents. A node reachable from more than one
+  parent is printed in full under the first and as `↑ SPEC-X (above)` elsewhere, so output is
+  linear in edges. Node line: `SPEC-0338  IMPLEMENTING  <title>  $3.20/15  pri 0` plus, when
+  set, `⧗ waiting on SPEC-0337` (red if a dependency is a stub without campaign),
+  `[parked: budget_cap]`. Done/merged dependencies render dim. Title ellipsized to width.
+- **Cycles:** found with an iterative DFS; members are printed once in a final
+  `Cycles` section and excluded from the tree; never infinite.
+- **JSON `nw.queue.graph.v1`:** `{schema, nodes:[{id, campaign|null, kind, state|null,
+  spec_status|null, title, project, priority, cost_usd, cap_usd, park_reason, blocked_by,
+  waiting_on, depends_on, stub, external}], edges:[{from, to}], roots:[id], cycles:[[id]]}`.
+  The graph builder `queue.graph_view(cfg, project=None, include_terminal=False)` is pure
+  over `list_campaigns` + spec files and is what the TUI graph pane will call.
+
+### `nw queue unqueued`
+
+Decision: a **new command**, not a `backlog` flag — `backlog` lists campaigns in admission
+order (`nw.queue.backlog.v1`); unqueued items have no campaign, no position and a different
+schema, and mixing them would make the backlog JSON ambiguous for the conductor.
+
+`nw queue unqueued [--project P] [--status S ...] [--json]`; schema `nw.queue.unqueued.v1`,
+builder `queue.unqueued_view(cfg, project=None, statuses=None)`.
+
+Candidates:
+- Internal specs (`docs/specs/[0-9]*.md`) with status in `{accepted, proposed, draft}`
+  (default; `--status` narrows), excluding `kind: epic` (queued via `queue add --epic`, its
+  children are listed instead) and `kind: policy` (nothing to implement).
+- Outbound specs (`_outbound_specs`, same statuses, same kind rule), project from the outbox.
+- Ideas in `SPECCED` or `INCUBATE`. A SPECCED idea whose spec is already listed is collapsed
+  into that spec row (`idea_id` set) instead of appearing twice.
+
+A candidate is **unqueued** when no campaign references it (`spec_id` match; for ideas the
+campaign's idea id or the spec's `source_idea`) in a non-terminal state or `MERGED`.
+`MERGED` means delivered, so it is not listed; `ABANDONED`/`HANDED_OFF` campaigns do not
+count as queued (listed, with the reason).
+
+Reasons (a list of `{code, text}`; all that apply, derived in this order):
+
+| code | when | text example |
+|---|---|---|
+| `not-accepted` | spec status draft/proposed | `spec is draft` |
+| `deps-unmet` | `dependency_met` false for a `depends_on` id (existing function) | `waiting on SPEC-0337 (accepted)` |
+| `previous-campaign` | newest terminal campaign is ABANDONED / HANDED_OFF | `campaign SPEC-0349-…-ab12 ABANDONED 2026-10-30` |
+| `no-spec` | INCUBATE idea | `idea has no spec yet` |
+| `ready` | none of the above | `accepted, dependencies met, never queued` |
+
+`ready` rows are the forgotten ones (the SPEC-0349 case): they sort first and render
+green, then `deps-unmet`, `previous-campaign`, `not-accepted`, `no-spec`; within a group by
+id. Each row carries `next`: the command that would act on it
+(`nw queue add SPEC-0349`, `nw queue add IDEA-615` for an idea campaign) — printed, never run.
+
+"HELD" and "parked" from the idea's wording: a parked item is a campaign in PARKED, which
+is non-terminal and therefore already in `nw queue list` (with its reason after this spec),
+so it is not "unqueued". No hold flag exists on specs or ideas in code today, so a held
+reason is not derivable; if one is introduced later it becomes a new reason code here.
+
+Row JSON: `{kind: spec|outbound|idea, id, title, status|state, project, idea_id,
+depends_on, reasons:[{code,text}], next, previous_campaign|null}`. Table columns (fitted as
+above; id/status/title never dropped): `id, status, title, reason, project, next`.
+
+### Remote gate line (`nw campaign show`)
+
+One line after the cost line, only when the campaign's latest gate run was remote or is in
+flight remotely:
+
+```
+  remote gate #7 on worker build-01  job SPEC-0338-…-gate-007-a0  running 3m12s
+  remote gate #6 on worker build-01  job …-gate-006-a0  ok in 4m02s, 18m ago
+  remote gate #5 worker build-01 failed (stage bundle) → ran locally
+```
+
+Sources, newest relevant event wins, from the campaign ledger tail:
+- **in flight:** a `gate_dispatched` event with no later `gate` event of the same
+  `gate_seq` → `running <now - started_at>`.
+- **finished:** a `gate` event with a `worker` key (SPEC-0338) → `ok|failed in duration_s`;
+  job id from the event's `job_id` if present, else derived as
+  `<campaign>-gate-<gate_seq:03d>-a0` and marked derived in JSON.
+- **fell back:** a `worker_failed` event (SPEC-0338: `{worker, stage, error, job_id}`)
+  for the latest seq, followed by a local `gate` event.
+
+No such events → no line (local-only campaigns print exactly what they print today).
+JSON: `nw.campaign.v1` gains `remote_gate: {gate_seq, worker, job_id, job_id_derived,
+status: running|ok|failed|fell_back, started_at, elapsed_s, duration_s} | null`; the same
+object rides on `nw.queue.v1` GATING items.
+
+**Required upstream event (IDEA-641, SPEC-0338 dispatch):** the ledger has no "remote job
+started" record today, so the in-flight case is not derivable. SPEC-0338's
+`remote_gates.run` must append, when the worker's `started` frame arrives:
+
+```
+gate_dispatched {gate_seq, worker, job_id, started_at}   (by="gates", informational,
+                                                          added to EVENT_TYPES, conductor ignores)
+```
+
+and the finished `gate` event should also carry `job_id` when `worker` is set (so retries
+under SPEC-0342 with `-a1`… are named correctly). This spec renders both when present and
+degrades to the finished/fell-back forms without them; it does not emit them.
+
+### TUI contract
+
+The later TUI spec (IDEA-615 log) builds its panes from these builders only, no re-parsing:
+active / waiting / parked / backlog → `queue_payload` items (`row_view` fields, including
+`park_reason`, `blocked_by`, `waiting_on`, `remote_gate`); dependency graph →
+`graph_view`; not-yet-queued → `unqueued_view`; column fitting → `listview.fit_columns`
+(cell widths in a Textual DataTable obey the same drop order). Each pane keeps its CLI
+`--json` twin per SPEC-0098.
+
+## Alternatives considered
+
+- **Let rich shrink columns (status quo) and only add `no_wrap`.** With seven-plus columns
+  `no_wrap` everywhere just overflows the terminal; an explicit ranked drop order is the
+  only way to keep id/state whole at 60 columns.
+- **Return structured blockers from `backlog_readiness`.** Cleaner data, but it changes the
+  readiness contract, its test doubles and the `backlog` ledger event; parsing the stable
+  strings keeps queue semantics untouched. Revisit if a third consumer appears.
+- **`nw queue backlog --unqueued`.** Rejected: different row type and schema (see above).
+- **Graph as an indented list keyed by campaign id.** Rejected: the dependency is between
+  specs, and stub nodes for unqueued dependencies are the most useful thing the graph shows.
+- **Emit `gate_dispatched` in this spec.** It would edit `remote_gates.py`, which lives on the
+  SPEC-0338 branch not yet merged to main; owning the emission there (IDEA-641) avoids a
+  cross-branch conflict. This spec defines the event so both sides agree.
+
+## Acceptance criteria
+
+- [ ] At widths 60, 100 and 160, `nw campaign list`, `nw queue list` and `nw queue backlog`
+      print every campaign id and state whole (no `…` in either), a title cell for every row,
+      and no line longer than the width.
+- [ ] Columns disappear exactly in the documented order as width shrinks; at 160 all
+      columns are present; blocked-by and park reason, when dropped as columns, appear in the
+      title cell.
+- [ ] `nw queue list` no longer appends the park reason to the state cell; it has its own
+      column (or folds into the title).
+- [ ] `nw campaign list --json`, `nw queue list --json` and `nw queue backlog --json` carry
+      `title, priority, depends_on, blocked_by, waiting_on, park_reason, cost_usd, cap_usd`
+      with identical values for the same campaign; every pre-existing key keeps its value.
+- [ ] `waiting_on_ids` returns `["SPEC-0337"]` for `"waiting on SPEC-0337 (accepted)"` and
+      the id for `"PROJ-0012 not found"`, `[]` for status/branch blockers.
+- [ ] `nw queue graph` renders the fixture DAG as a tree with dependents under their
+      dependencies, a shared node printed once in full and once as a reference, cycle members
+      in a `Cycles` section, stub nodes for dependencies without a campaign, and terminates.
+- [ ] `nw queue graph --json` emits `nw.queue.graph.v1` with nodes, edges, roots, cycles;
+      `--project` keeps external dependency stubs marked `external: true`.
+- [ ] `nw queue unqueued` lists an accepted spec with no campaign as `ready` first, lists
+      draft, deps-unmet, previously-abandoned specs and INCUBATE ideas with their reasons,
+      collapses a SPECCED idea into its spec row, and omits epics, policies, specs with a
+      non-terminal or MERGED campaign.
+- [ ] `nw campaign show` prints the remote gate line for fixture ledgers with
+      (a) `gate_dispatched` and no `gate` → running, (b) `gate` with `worker` → finished,
+      (c) `worker_failed` then local `gate` → fell back; and prints no such line for a
+      local-only campaign. `--json` carries `remote_gate` (null when local).
+- [ ] No queue behavior changes: admission, readiness, the `backlog` ledger event and
+      `nw queue watch` output are unchanged (existing tests pass untouched).
+
+## Test plan
+
+- **Automated tests** — new `tests/test_agentic_queue_visibility.py`, fixtures built with
+  `store` helpers in a tmp data dir plus a tmp specs dir (pattern of
+  `tests/test_agentic_queue_cli.py`):
+  - *Width snapshots:* a fixture with long ids (`SPEC-0338-20261031-23a7`), each state
+    incl. PARKED (budget_cap), WAITING and QUEUED blocked on two deps. Render the three list
+    commands through `CliRunner` with `COLUMNS=60|100|160` (and the render functions with
+    `width=`), compare against golden files `tests/data/queue_visibility/<cmd>_<w>.txt`
+    (plain text, no ANSI; regenerate with `NW_UPDATE_SNAPSHOTS=1`), and assert directly:
+    no `…` inside id/state cells, every line `<= width`, the set of headers at each width
+    matches the documented drop order.
+  - *fit_columns unit tests:* drop order, fold behavior, fixed widths, too-narrow fallback.
+  - *JSON parity:* the same campaign's fields equal across the three JSON outputs; a
+    pre-change key snapshot of `nw.queue.v1` items is a subset of the new output.
+  - *waiting_on_ids* table test.
+  - *Graph:* fixture DAG `A ← B ← C`, `A ← D`, `C` also depends on `D` (shared node),
+    `E ⇄ F` (cycle), `B` depends on `X` (accepted spec, no campaign → stub), a dependency in
+    another project (external under `--project`). Assert tree text, reference line,
+    `Cycles` section, JSON nodes/edges/roots/cycles.
+  - *Unqueued:* specs dir with accepted-no-campaign (ready), draft, accepted with unmet
+    dep, accepted with an ABANDONED campaign, accepted with a MERGED campaign (omitted),
+    accepted with a QUEUED campaign (omitted), an epic and a policy (omitted), an outbound
+    accepted spec; ideas fixture with an INCUBATE idea and a SPECCED idea whose spec is
+    listed. Assert order, reason codes, `next` commands and collapse.
+  - *Remote gate line:* the three ledger fixtures (a)/(b)/(c) plus local-only; assert the
+    line text with a frozen `now` and the `remote_gate` JSON.
+- **Manual verification:** in a real data dir run `nw queue list`, `nw campaign list`,
+  `nw queue backlog` in a terminal resized to ~60, ~100, ~160 columns; `nw queue graph`;
+  `nw queue unqueued` (expect any accepted-but-unqueued spec, e.g. the SPEC-0349 case, at
+  the top as `ready`); `nw campaign show` on a campaign gated on a worker. Note results in
+  *As shipped*.
+- **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` covering
+  `tests/test_agentic_queue_cli.py`, `tests/test_agentic_queue.py`,
+  `tests/test_agentic_dashboard*.py`, `tests/test_agentic_watch_height.py`; the full suite
+  runs at the queue's close gate.
+
+## Rollout / migration
+
+1. `row_view`, `waiting_on_ids`, `_spec_meta` cache; JSON additions.
+2. `listview.fit_columns`; switch the three list commands to it.
+3. `graph_view` + `nw queue graph`; `unqueued_view` + `nw queue unqueued`.
+4. Remote gate line + `remote_gate` JSON; log the `gate_dispatched` contract on IDEA-641
+   for the SPEC-0338 dispatch side.
+5. Document the commands and the drop order in `docs/WORKFLOW.md` (queue section).
+
+No data migration: everything is read-only over existing state, ledgers and spec files.
+
+## Definition of done
+
+- [ ] Acceptance criteria all met.
+- [ ] Test plan executed; affected tests pass; manual steps performed and noted.
+- [ ] No regressions (full suite at the close gate).
+- [ ] Spec body updated to match what shipped.
+- [ ] `docs/LEDGER.md` updated (status + date).
+
+## Open questions
+
+- None. (TUI panes: separate spec under IDEA-615. `gate_dispatched` emission: IDEA-641 /
+  SPEC-0338 dispatch path.)
