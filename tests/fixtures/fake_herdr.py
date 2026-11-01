@@ -72,6 +72,9 @@ def parse(rest, flags, *, positional=0):
         else:
             opts.setdefault(name, []).append(True)
         i += 1 + flags[name]
+    for kv in opts.get("--env", []):   # real parser: KEY=VALUE, the value may be empty
+        if "=" not in kv or kv.startswith("="):
+            usage(f"invalid --env {kv!r}: expected KEY=VALUE")
     return pos, opts
 
 
@@ -134,6 +137,7 @@ if group == "tab" and cmd == "create":
     tid, pid = f"{ws}:t{st['n']}", f"{ws}:p{st['n']}"
     st["tabs"][tid] = {"label": (opts.get("--label") or [str(st["n"])])[-1], "panes": [pid],
                        "focus": "--focus" in opts}
+    st["tabs"][tid]["env"] = opts.get("--env", [])
     st["panes"][pid] = {"tab": tid, "cwd": (opts.get("--cwd") or ["/"])[-1],
                         "rect": [0, 0, 120, 40]}
     save(st)

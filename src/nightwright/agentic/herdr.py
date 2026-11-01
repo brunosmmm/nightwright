@@ -186,10 +186,21 @@ RUN_SOURCE = "nw-run"
 AGENT_STATES = ("idle", "working", "blocked", "unknown")
 
 
+# Run tabs type a command into the human's shell; these `--env KEY=VALUE` args (the only way to
+# configure the launched shell) keep it out of their history for any shell: fish saves nothing
+# while `fish_history` is empty, bash/zsh write to /dev/null.
+NO_HISTORY_ENV = ("fish_history=", "HISTFILE=/dev/null")
+
+
+def _no_history_args() -> list[str]:
+    return [a for kv in NO_HISTORY_ENV for a in ("--env", kv)]
+
+
 def tab_create_args(workspace, label, cwd) -> list[str]:
-    """-> `.result.tab.tab_id`, `.result.root_pane.pane_id`; the tab is not focused."""
+    """-> `.result.tab.tab_id`, `.result.root_pane.pane_id`; the tab is not focused; its shell
+    does not record history."""
     return ["tab", "create", "--workspace", str(workspace), "--label", str(label),
-            "--cwd", str(cwd), "--no-focus"]
+            "--cwd", str(cwd), *_no_history_args(), "--no-focus"]
 
 
 def tab_rename_args(tab, label) -> list[str]:
@@ -200,7 +211,8 @@ def pane_split_args(pane, direction, cwd) -> list[str]:
     """-> `.result.pane.pane_id`; focus stays where it was."""
     if direction not in ("right", "down"):
         raise ValueError(direction)
-    return ["pane", "split", str(pane), "--direction", direction, "--cwd", str(cwd), "--no-focus"]
+    return ["pane", "split", str(pane), "--direction", direction, "--cwd", str(cwd),
+            *_no_history_args(), "--no-focus"]
 
 
 def pane_layout_args(pane) -> list[str]:

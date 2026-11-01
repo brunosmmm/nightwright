@@ -591,9 +591,10 @@ def _cmds(calls, group, cmd):
 def test_run_pane_argv_builders_put_the_id_first():
     assert H.tab_create_args("w7", "SPEC-0349 nw doctor", "/x") == [
         "tab", "create", "--workspace", "w7", "--label", "SPEC-0349 nw doctor", "--cwd", "/x",
-        "--no-focus"]
+        "--env", "fish_history=", "--env", "HISTFILE=/dev/null", "--no-focus"]
     assert H.pane_split_args("w7:p3", "down", "/x") == [
-        "pane", "split", "w7:p3", "--direction", "down", "--cwd", "/x", "--no-focus"]
+        "pane", "split", "w7:p3", "--direction", "down", "--cwd", "/x",
+        "--env", "fish_history=", "--env", "HISTFILE=/dev/null", "--no-focus"]
     with pytest.raises(ValueError):
         H.pane_split_args("w7:p3", "left", "/x")
     assert H.pane_layout_args("p") == ["pane", "layout", "--pane", "p"]
@@ -700,7 +701,9 @@ def test_one_running_run_gets_its_own_named_tab(fake, tmp_path):
     calls = fake.calls()
     assert _cmds(calls, "tab", "create") == [["tab", "create", "--workspace", "w7", "--label",
                                               "SPEC-0901 nw doctor", "--cwd",
-                                              os.path.expanduser("~"), "--no-focus"]]
+                                              os.path.expanduser("~"), "--env",
+                                              "fish_history=", "--env", "HISTFILE=/dev/null",
+                                              "--no-focus"]]
     pane = "w7:p1"
     assert ["pane", "rename", pane, f"nw-run:{cid}"] in calls
     (typed,) = _cmds(calls, "pane", "run")
@@ -1325,3 +1328,17 @@ def test_real_herdr_run_tabs_in_isolated_session(tmp_path):
     finally:
         subprocess.run(["herdr", "workspace", "close", ws], env=env, capture_output=True,
                        timeout=10)
+
+
+def test_run_tab_shells_are_created_without_history(fake):
+    """Every shell a run pane lives in is created with history-disabling env (fish: empty
+    fish_history; bash/zsh: HISTFILE=/dev/null); the fake parses --env like herdr (KEY=VALUE,
+    empty value allowed)."""
+    assert H.NO_HISTORY_ENV == ("fish_history=", "HISTFILE=/dev/null")
+    c = H.Client()
+    assert c.call_json(["tab", "create", "--env", "fish_history=", "--env", "A=b"]) is not None
+    assert c.call_json(["tab", "create", "--env", "novalue"]) is None
+    assert "KEY=VALUE" in c.last_error
+    for args in (H.tab_create_args("w1", "L", "/"), H.pane_split_args("w1:p1", "down", "/")):
+        envs = [args[i + 1] for i, a in enumerate(args) if a == "--env"]
+        assert envs == ["fish_history=", "HISTFILE=/dev/null"]

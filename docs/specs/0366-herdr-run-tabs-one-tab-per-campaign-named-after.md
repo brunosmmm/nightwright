@@ -299,6 +299,20 @@ Help texts name tabs instead of the `nw runs` tab.
     server shell shares it); removing them was not permitted in this session, so they remain
     (lines containing the scratch path or `pytest-of-bruno`, plus `echo spacetest-q1` and one
     `clear; env FOO=bar …` probe).
+- **Follow-up fix (run tabs no longer write the human's shell history; 2026-11-01):** the
+  typed `campaign tail` line landed in fish's history because `tab create` starts the human's
+  shell and herdr strips a leading space (no prefix trick). `tab_create_args` (and
+  `pane_split_args`, unused by the watcher today) now pass `--env fish_history= --env
+  HISTFILE=/dev/null` (`herdr.NO_HISTORY_ENV`): an empty `fish_history` makes fish save nothing,
+  `HISTFILE=/dev/null` covers bash/zsh. herdr 0.9.5's parser accepts `--env fish_history=`
+  (empty value) and the shell receives it. The fake herdr parses `--env` as KEY=VALUE (empty
+  value allowed, bare word rejected). Verified on real herdr 0.9.5 in an isolated session
+  (`SHELL=/usr/bin/fish`, `XDG_DATA_HOME` = scratch dir so the human's history was not
+  touched): a tab created without the env then `pane run echo CONTROLMARK-…` -> the line is in
+  the isolated `fish/fish_history`; a tab created with `tab_create_args` then `pane run echo
+  FIXMARK-…` -> output shown, 0 matches in the history file even after both panes closed.
+  Session stopped (`--session … server stop`) and deleted; `default` untouched. Tests:
+  `tests/test_herdr.py` (argv builders, watcher's `tab create` argv, fake `--env` parsing).
 - **Tests executed:** `tests/test_herdr.py` 54 passed + 2 opt-in skipped (the isolated one
   passes on the real herdr, above). `tools/affected_tests.py` falls back to the full suite
   ("no test reaches agentic/cli_herdr.py"), so the related set was run by hand: herdr,
