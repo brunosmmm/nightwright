@@ -20,14 +20,42 @@ flowchart LR
 2. **Start the runner.** There is one `nw queue run` per machine; a lease stops a second one.
    The conductor starts it for you if it isn't running. It picks up merged changes to nightwright
    itself by re-executing between ticks, so you never have to restart it after an upgrade.
-3. **Open a conductor session.** In Claude Code, run `/nw-conduct`. It watches the event
+3. **Open a conductor session.** In Claude Code, run `/nw-conduct`, or let nightwright start
+   the session with `nw queue conductor-launch` (see below). It watches the event
    stream and reacts to every park, merge, failure or stuck run using its decision table.
    It never writes code.
 4. **Optionally, a steward per project.** In a session that knows the project, run
-   `/nw-steward`. The conductor asks it project questions over the mailbox. Everything still
-   works without one.
+   `/nw-steward`, or start one with `nw queue steward-launch <Project>`. The conductor asks it
+   project questions over the mailbox. Everything still works without one.
 5. **Queue work.** `nw queue add SPEC-0042 --yes` (a dry run without `--yes`). The spec must
    be `accepted` and have an approving review (`nw spec review SPEC-0042`).
+
+### Launching the conductor and stewards
+
+`nw queue conductor-launch` and `nw queue steward-launch PROJECT` start the session for you as
+a Claude Code process: a pinned model and effort, forced context limits (`autocompact`, output
+caps), a tool allow/deny list that lets it push `nw/*` branches and open PRs but never push to
+`main` or merge a PR, and a session id that nightwright registers before `claude` starts so
+the conductor's cost can be tracked. `--dry-run` prints the plan (add `--json` for
+machine-readable output) without starting anything, and `--resume` restarts the newest
+launched session. The defaults can be overridden under `agentic.conductor.launch` (a
+`steward:` sub-mapping overrides them for stewards).
+
+!!! warning "Both commands exit 1 until you configure prices"
+    Launching is refused when the model has no price, so that every conductor session's spend
+    can be reported (`nw queue conductor-cost`). nightwright ships no price table: add one to
+    `config.yaml`. Keys are model-name **prefixes** (the longest match wins) and values are
+    dollars per million tokens:
+
+    ```yaml
+    agentic:
+      conductor:
+        prices:
+          claude-: {input: 3, output: 15}
+    ```
+
+    The error reads `no price for model …; set agentic.conductor.prices.<model-prefix>`.
+    Check the numbers against your plan; the same table prices `nw queue conductor-cost`.
 
 ## Watching
 
@@ -91,6 +119,25 @@ nw queue gc                                                        # list leftov
 Every queue write (`add`, `resume`, `park`, `abandon`, `gc`, `prioritize`) is a dry run until you
 add `--yes`. A resumed campaign goes straight back to work if a slot is free, or to **WAITING** (first in
 line) if not.
+
+## Questions for you: escalations
+
+When the conductor meets a decision it must not make, it escalates: the campaign parks as
+`human_decision` and an `ESC-NNNN` record holds the question, the options and a
+recommendation.
+
+```bash
+nw escalations list                          # open escalations (--all for every status, --json)
+nw escalations show ESC-0001                 # question, options, recommendation, facts
+nw escalations answer ESC-0001 --choose 2 --yes        # an option, by number or label
+nw escalations answer ESC-0001 --text "use the old API" --yes
+nw escalations answer ESC-0001 --waive <finding-id> --reason "…" --yes   # override a review finding
+nw escalations withdraw ESC-0001 --reason "…" --yes
+```
+
+`answer` is a dry run without `--yes`. It records the answer and wakes the conductor, which
+applies it; the campaign stays parked until then. `--waive` and `--attest` (with `--reason`)
+override review findings or mark an unmet acceptance criterion as met.
 
 ## Costs and profiles
 

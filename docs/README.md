@@ -19,6 +19,9 @@ docs/
     NNNN-slug.md       ← the specs themselves
   design/
     README.md          ← free-form design notes, research, diagrams
+  product/             ← the published user documentation (mkdocs `docs_dir`: concepts,
+                         capabilities, guides, the agentic loop, reference)
+  examples/            ← example export schemes (`schemes/`)
 ```
 
 Day-to-day idea→shipped work: start at [`WORKFLOW.md`](./WORKFLOW.md). The rest of this

@@ -64,8 +64,9 @@ class NwRootGroup(click.Group):
 @click.option("--split", is_flag=True, help="diagnostic: Claude-generating vs your-turn time")
 @click.pass_context
 def cli(ctx, split):
-    """nightwright — passive work-time tracker. Turns Claude transcripts + meetings into
-    per-topic hours. Run with no command for a today + this-week dashboard."""
+    """nightwright — passive time tracking plus a spec-first agentic pipeline. Turns Claude
+    transcripts + meetings into per-topic hours, and ideas into specs, queued campaigns and
+    shipped work. Run with no command for a today + this-week dashboard."""
     ctx.obj = load_config()
     if ctx.invoked_subcommand is None:
         cfg = ctx.obj

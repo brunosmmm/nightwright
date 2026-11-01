@@ -158,6 +158,12 @@ nw queue add SPEC-0001 --yes          # queue it
 Then, in Claude Code, start the conductor: `/nw-conduct`. It starts the runner
 (`nw queue run`) if it isn't running, and watches every event from then on.
 
+Prefer to have nightwright start the conductor session for you? `nw queue conductor-launch`
+does, but it exits 1 until `config.yaml` has a price for the model, for example
+`agentic: {conductor: {prices: {"claude-": {input: 3, output: 15}}}}` (dollars per million
+tokens, keys are model-name prefixes). See
+[Operating the loop](../loop/operate.md#launching-the-conductor-and-stewards).
+
 !!! check "Check"
     `nw queue list` shows the campaign, and within a minute it moves from QUEUED to OPENING
     to IMPLEMENTING.

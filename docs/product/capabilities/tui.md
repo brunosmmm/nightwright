@@ -12,7 +12,21 @@ nw tui
 
 Without the extra, `nw tui` prints an install hint and exits 1.
 
-## What it does
+## Tabs
+
+`nw tui --tab NAME` opens on a tab; keys `1`..`5` switch between them.
+
+| Tab | Shows |
+|-----|-------|
+| `ideas` | The ideas desk (default) |
+| `hub` | The triage union of ideas, specs and outbound ([Hub](hub.md)) |
+| `queue` | The live agentic queue |
+| `events` | The queue event stream and watchdog conditions |
+| `mailbox` | Conductor/steward/human inboxes and threads; reply as the human |
+
+`nw tui --campaign ID` opens one campaign's timeline, runs, gates and reviews.
+
+## What the ideas tab does
 
 Browse / filter / search ideas, capture, edit metadata (project, state, tags), toggle
 clock (`i`), open detail. Project chooser uses known projects from config + payload

@@ -13,7 +13,11 @@ stateDiagram-v2
     direction TB
     [*] --> QUEUED: nw queue add
     QUEUED --> OPENING: admitted<br/>(slot free, deps done)
-    OPENING --> IMPLEMENTING: worktree ready
+    OPENING --> IMPLEMENTING: worktree ready<br/>(spec queued)
+    OPENING --> SPEC_WRITING: worktree ready<br/>(idea queued)
+    SPEC_WRITING --> SPEC_REVIEW: spec written
+    SPEC_REVIEW --> SPEC_WRITING: review asks for a revision
+    SPEC_REVIEW --> IMPLEMENTING: spec accepted
     IMPLEMENTING --> GATING: implementer done
     GATING --> REVIEWING: required gates pass
     GATING --> TRIAGING: a gate failed
@@ -40,7 +44,7 @@ resumed campaign goes back to work if a slot is free, or waits first in line if 
 ```mermaid
 stateDiagram-v2
     direction TB
-    state "any active state<br/>OPENING · IMPLEMENTING · GATING<br/>TRIAGING · REVIEWING · CLOSING" as ACTIVE
+    state "any active state<br/>OPENING · SPEC_WRITING · SPEC_REVIEW<br/>IMPLEMENTING · GATING · TRIAGING · REVIEWING · CLOSING" as ACTIVE
     ACTIVE --> PARKED: a bound is hit, a persona escalates,<br/>or a human parks it
     PARKED --> ACTIVE: nw queue resume<br/>(slot free)
     PARKED --> WAITING: nw queue resume<br/>(no slot free)
@@ -55,8 +59,8 @@ stateDiagram-v2
 ## Slots: who is "active"
 
 A profile gives the queue a number of **slots** (`balanced`: 2). Only campaigns that are
-open and delivering hold a slot: OPENING, IMPLEMENTING, GATING, TRIAGING, REVIEWING and
-CLOSING. That keeps three groups apart:
+open and delivering hold a slot: OPENING, SPEC_WRITING, SPEC_REVIEW, IMPLEMENTING, GATING,
+TRIAGING, REVIEWING and CLOSING. That keeps three groups apart:
 
 ```mermaid
 flowchart LR
@@ -89,9 +93,11 @@ flowchart LR
 
 | State | Group | What is happening | Leaves when |
 |---|---|---|---|
-| `QUEUED` | backlog | Accepted spec, not started | Admitted into a free slot (dependencies done) |
+| `QUEUED` | backlog | Accepted spec (or idea), not started | Admitted into a free slot (dependencies done) |
 | `WAITING` | waiting | Started before, ready to continue, no slot free | A slot frees up; it resumes where it stopped |
 | `OPENING` | active | Branch and worktree are being created; setup commands run | The worktree is ready |
+| `SPEC_WRITING` | active | Idea campaigns only: the **spec writer** persona writes the spec from the idea, or revises it after a review | It reports the spec written |
+| `SPEC_REVIEW` | active | Idea campaigns only: the **spec reviewer** reviews the spec; an approving review accepts it inside the loop | Approved (to IMPLEMENTING) or a revision is asked (back to SPEC_WRITING) |
 | `IMPLEMENTING` | active | The **implementer** persona writes code against the spec and the last findings | It reports done (or blocked) |
 | `GATING` | active | Your **gates** run in the worktree (tests, lint, …) | All required gates pass, or one fails |
 | `TRIAGING` | active | The **gate triager** reads the failure and decides: fix, retry, waive or escalate | It decides |
@@ -111,9 +117,9 @@ Each trip back to IMPLEMENTING (a triage `fix`, or a review asking for fixes) ad
 `loop_exhausted` instead of trying forever. See
 **[Convergence and escalation](convergence.md)**.
 
-!!! info "In progress: specs written inside the campaign"
-    Specs SPEC-0208–0217 add `nw queue add IDEA-NNN`. A campaign then starts from an *idea*,
-    with two extra states before IMPLEMENTING: **SPEC_WRITING** (a spec-writer persona
-    writes, or revises, the spec) and **SPEC_REVIEW** (the spec reviewer reviews it, and an
-    approving review accepts it in the loop). Until that lands, specs are written with the
-    [ideas-to-specs](../ideas/index.md) workflow and queued once accepted.
+## Campaigns that start from an idea
+
+`nw queue add IDEA-NNN` queues an idea instead of an accepted spec. After OPENING the
+campaign passes through **SPEC_WRITING** and **SPEC_REVIEW** (as many rounds as the profile
+allows) before it reaches IMPLEMENTING. Campaigns queued from an accepted spec skip both
+states. See the [ideas-to-specs](../ideas/index.md) workflow.

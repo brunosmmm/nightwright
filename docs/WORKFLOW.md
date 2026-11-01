@@ -27,7 +27,13 @@ nw ideas --json      agents: structured list (also: nw next --json, nw idea show
 nw spec review SPEC  agentic (SPEC-0188): reviewer persona; `queue add` needs an approving review
 nw queue add SPEC    agentic loop (SPEC-0169/0176): queue an accepted spec; `--yes` writes
 nw queue run / list  the loop (one process, lease) / what is in flight; PARKED = your turn
+nw queue watch       live dashboard: runner, active campaigns, backlog, delivered
 nw campaign log ID   every transition, run, gate, finding and dollar of one campaign
+nw mailbox send|follow|list|thread   conductor <-> steward <-> human messages (SPEC-0183)
+nw escalations list|show|answer|withdraw   questions the conductor escalated to you (SPEC-0232)
+nw profiles list|show|check   workflow profiles and which file set each value (SPEC-0238)
+nw queue conductor-launch / steward-launch PROJECT   start the conductor / a steward session
+                     (needs agentic.conductor.prices in config)
 implement            you or the agent
 /nw-verify           Cursor: post-hoc DoD audit (global) — internal: `nw spec verify`;
                      outbound portable: audit the file in the target repo
@@ -145,7 +151,13 @@ uv sync --extra tui          # from a checkout
 uv tool install --editable '.[tui]'   # from the nightwright checkout (NOT PyPI `nw` — that is a different tool)
 # editable: skills/specs/Meta-Tools resolve from the checkout; non-editable needs nw_checkout: in config
 nw tui                       # without the extra: install hint + exit 1
+nw tui --tab queue           # tabs: ideas, hub, queue, events, mailbox (keys 1..5 switch)
+nw tui --campaign ID         # one campaign's timeline, runs, gates and reviews
 ```
+
+Tabs: **ideas** (browse, search, capture), **hub** (the triage union), **queue** (live
+campaigns), **events** (queue event stream and watchdog conditions) and **mailbox** (inboxes,
+threads, reply as the human).
 
 ## Agent skills (installed once)
 
@@ -168,6 +180,10 @@ nw skills list
 | `nw-rework` | Linked spec wrong → supersede; incomplete epic → scaffold children |
 | `nw-export` | Outbound spec → target repo |
 | `nw-implement-spec` | In the **target** repo: implement an exported portable spec (AC + Test plan + `status`) |
+| `nw-verify` | Post-hoc Definition-of-Done audit (internal `nw spec verify`, or an outbound portable in place) |
+| `nw-conduct` | Become the conductor: watch the queue's event stream and resolve parks and failures |
+| `nw-steward` | Become a project's steward: answer the conductor's questions over the mailbox |
+| `nw-sheet-sync` | Sync ideas against a project's external triage sheet |
 
 **Triage:** `nw hub --json` unions open ideas + active internal specs + outbound outbox
 (`nw.hub.v1`). No MCP server — use skills + CLI `--json` / hub (SPEC-0053).
@@ -247,6 +263,13 @@ Setup on the worker (all of it is mandatory):
    reads `SSH_ORIGINAL_COMMAND` and execs only `nw worker info [--json]`,
    `have --repo <key> <sha>...`, `gate-job` and `gc [--keep-days <n>]`; anything else exits 2
    with `refused: <reason>` and runs nothing.
+
+Register a worker on the coordinator with the registry commands (SPEC-0337; not to be
+confused with `nw worker`, which runs on the worker host): `nw workers add NAME --ssh me@box
+[--slots N] [--nw PATH] [--no-check]` registers it (it runs `check` first unless `--no-check`),
+and `nw workers check [NAME] [--json]` probes over SSH with `nw worker info --json` (exit 1 if
+any probe fails; a version or sha mismatch only warns). `nw workers list|on|off|rm` manage
+the rest.
 
 The job store lives under `<data_dir>/agentic/worker/` (`repos/` object caches, `jobs/`).
 Each job runs `gc` (default `--keep-days 2`) when it ends; `nw worker gc --keep-days 0`

@@ -25,14 +25,14 @@ Claude-generating vs your-turn diagnostic.
 | `ideas` | List / filter / query / tree ideas | [Ideas](../capabilities/ideas.md) |
 | `ingest-meetings` | Filter a raw calendar JSON dump | [Meetings](../capabilities/meetings.md) |
 | `mailbox` | Conductor ↔ steward messages (agentic loop) | [Agentic loop](../capabilities/agentic.md) |
-| `escalations` | Questions escalated to the human: list, show, withdraw (agentic loop) | [Agentic loop](../capabilities/agentic.md) |
+| `escalations` | Questions escalated to the human: `list [--all] [--json]` / `show` / `answer ID (--choose\|--text\|--waive\|--attest) [--yes]` / `withdraw` (agentic loop) | [Agentic loop](../capabilities/agentic.md) |
 | `map` | Assign facets to a base topic | [Report](../capabilities/report.md) |
 | `migrate-from-wt` | One-time move of a pre-rename `wt` install to nightwright's config/data dirs (dry run unless `--yes`, SPEC-0330) | [Bootstrap](../guides/bootstrap.md) |
 | `next` | Next-step hints for open ideas | [Ideas](../capabilities/ideas.md) |
 | `override` | Time-scoped reclassification | [Report](../capabilities/report.md) |
 | `profiles` | Agentic workflow profiles: list / show (with sources) / check | [Agentic loop](../capabilities/agentic.md) |
 | `projects` | List / register outbox + research targets | [Projects](../capabilities/projects.md) |
-| `queue` | Agentic work queue: add / list / run / park / resume | [Agentic loop](../capabilities/agentic.md) |
+| `queue` | Agentic work queue: add / list / watch / run / park / resume, conductor tooling (subcommands below) | [Agentic loop](../capabilities/agentic.md) |
 | `refresh-meetings` | Pull Outlook meetings into meetings.jsonl | [Meetings](../capabilities/meetings.md) |
 | `release-archive` | Pack git HEAD + ideas slice tarball | [Release archive](../capabilities/release-archive.md) |
 | `report` | Per-topic hours | [Report](../capabilities/report.md), [Track time](../guides/track-time.md) |
@@ -44,7 +44,7 @@ Claude-generating vs your-turn diagnostic.
 | `state` | Set a task's TODO state | [Tasks](../capabilities/tasks-agenda.md) |
 | `tasks` | List org tasks | [Tasks](../capabilities/tasks-agenda.md) |
 | `topics` | Discovered base topics + facets | [Report](../capabilities/report.md) |
-| `tui` | Interactive ideas desk (optional `tui` extra) | [Desk](../capabilities/tui.md) |
+| `tui` | Interactive desk (optional `tui` extra): tabs ideas / hub / queue / events / mailbox (`--tab`), campaign screen (`--campaign`) | [Desk](../capabilities/tui.md) |
 | `worker` | Remote gate worker, run on the worker host: `gate-job` / `have` / `gc` / `info` / `ssh-command` (SPEC-0336) | [Agentic loop](../capabilities/agentic.md) |
 | `workers` | Coordinator's worker registry (`<agentic_dir>/workers.json`), distinct from `nw worker` which runs on the worker host: `add NAME --ssh DEST [--slots N] [--nw CMD] [--no-check]` / `list [--json]` / `check [NAME] [--json]` / `on NAME` / `off NAME` / `rm NAME` (SPEC-0337) | [Agentic loop](../capabilities/agentic.md) |
 
@@ -60,12 +60,28 @@ Capture (`nw idea "…"`), `show`, `summary`, `log`, `questions`, `mark-explored
 ### `nw spec …`
 
 `new`, `generate`, `verify`, `status`, `export`, `pull-status`, `pull-clock`, `sweep`, `reconcile`,
-`schemes`, `seed-children`, `fit-log`, `postmortem`. Full list: `nw spec --help`.
+`schemes`, `seed-children`, `fit-log`, `postmortem`, plus the review and numbering helpers:
+`review` (reviewer persona; `--show`, `--profile`, `--path`), `reviews` (latest stored review
+of every spec), `reserve` / `reservations` / `release` (SPEC-number reservations visible
+across branches and worktrees). Full list: `nw spec --help`.
 
-### `nw projects …` / `nw sheet …` / `nw skills …` / `nw completion …` / `nw queue …` / `nw campaign …`
+### `nw projects …`
 
-Subcommands via `nw <group> --help`. `nw projects` adds `config` / `init` for the per-project
-`.nw/project.yaml` ([Agentic loop](../capabilities/agentic.md)).
+`list` (the default), `add`, `rename OLD NEW` (dry run unless `--yes`), and `config` / `init`
+for the per-project `.nw/project.yaml` ([Agentic loop](../capabilities/agentic.md)).
+
+### `nw queue …`
+
+`add` (specs or `IDEA-NNN`), `list`, `watch`, `run`, `tick`, `stop`, `park`, `resume`,
+`abandon`, `prioritize`, `backlog`, `merge`, `gc`, `gates`, `gate-slots`, `sweep-prs`, plus
+the conductor tooling: `events`, `followers`, `wakeups`, `runner-log`, `decision`,
+`decisions`, `escalate`, `conduct-status`, `conductor-brief`, `conductor-cost`,
+`conductor-session`, `conductor-launch`, `steward-launch` and `mvp-report`. Full list:
+`nw queue --help`.
+
+### `nw sheet …` / `nw skills …` / `nw completion …` / `nw campaign …`
+
+Subcommands via `nw <group> --help`.
 
 ## Date scopes
 

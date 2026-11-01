@@ -1,4 +1,4 @@
-"""nightwright — passive work-time tracker.
+"""nightwright — passive time tracking plus a spec-first agentic pipeline.
 
 Turns Claude Code / Cursor transcripts (+ a cached meetings file) into daily/weekly
 per-topic hour reports. Three-layer, idempotent design:

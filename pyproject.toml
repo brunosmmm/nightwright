@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "nightwright"
 version = "0.1.0"
-description = "Passive work-time tracker from Claude Code / Cursor transcripts and Outlook meetings."
+description = "Passive time tracking from Claude Code / Cursor transcripts and Outlook meetings, plus a spec-first agentic pipeline from idea to shipped work."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

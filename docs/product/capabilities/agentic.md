@@ -74,6 +74,31 @@ Builtin profiles `balanced` (default: Sonnet implementer and triager, $10 cap, 3
 2 slots), `frugal` and `thorough` ship as YAML files in the package
 (`src/nightwright/agentic/profile_defs/<name>.yaml`).
 
+### Size x tone matrix (SPEC-0219)
+
+When you do not pass `--profile`, `nw queue add` picks the campaign profile from the spec's
+approving (or revising) review, which records a **size** (`xs`, `s`, `m`, `l`; `xl` is too big
+for one campaign and has no profile: split it) and a **tone** (`cost-effective`, `high-end`,
+`critical`). Precedence: `--profile` flag, then the matrix, then `agentic.default_profile`.
+The builtin matrix:
+
+| Tone | xs | s | m | l |
+|------|----|---|---|---|
+| `cost-effective` | `frugal` | `frugal` | `balanced` | `balanced` |
+| `high-end` | `balanced` | `balanced` | `balanced` | `thorough` |
+| `critical` | `thorough` | `thorough` | `thorough` | `thorough` |
+
+Override cells under `agentic.profile_matrix` in `config.yaml` (deep-merged over the builtin;
+an unknown tone, size or profile, or an `xl` cell, is an error):
+
+```yaml
+agentic:
+  profile_matrix:
+    cost-effective: {l: thorough}
+```
+
+`nw profiles list|show|check` shows what each profile resolves to and which file set each value.
+
 ### Profile files and layers
 
 Four layers define profiles; a higher layer wins, key by key:
@@ -476,6 +501,11 @@ never oversubscribe the CPU. A campaign waiting for a slot is not reported `camp
 `gate_waiting` event, and the gate result records `slot_wait_s`. `nw queue gate-slots [--json]`
 shows the holders and the waiters.
 
+**Remote gate workers (in progress).** A second machine can run gates over SSH (SPEC-0310). The
+coordinator keeps a registry (`nw workers add NAME --ssh me@box [--slots N]`, `list`, `check`,
+`on`, `off`, `rm`; SPEC-0337) and the worker host answers `nw worker` (SPEC-0336). Setup and the
+threat model are in `docs/WORKFLOW.md` (Remote gate worker).
+
 ## Events and watchdog
 
 `nw queue events` is the queue's alert stream (SPEC-0181): `<data_dir>/agentic/events.jsonl`,
@@ -523,6 +553,34 @@ decision table (resume, raise the cap once, ask the project's steward, restart t
 reconcile ideas after a merge), escalating to the human only for design questions and the
 human's own checkout. `nw queue conduct-status` is its one-call situation report. The
 follower's reader lock means only one conductor can be armed.
+
+## Launching the conductor and stewards
+
+`nw queue conductor-launch` and `nw queue steward-launch PROJECT` start the session as a Claude
+Code process with a pinned model and effort, forced context limits and a tool allow/deny list
+(push `nw/*` branches and open PRs; never push `main` or merge a PR). The session id is
+registered before `claude` starts, so its cost is tracked (`nw queue conductor-session`,
+`nw queue conductor-cost`). `--dry-run [--json]` prints the plan; `--resume` restarts the newest
+launched session. Settings live under `agentic.conductor.launch` (a `steward:` sub-mapping
+overrides them for stewards).
+
+Both commands exit 1 when the model has no price. nightwright ships no price table; set one
+(keys are model-name prefixes, longest match wins; values are dollars per million tokens):
+
+```yaml
+agentic:
+  conductor:
+    prices:
+      claude-: {input: 3, output: 15}
+```
+
+## Escalations
+
+`nw escalations list|show|answer|withdraw` (SPEC-0232): when the conductor cannot decide, it
+escalates (`nw queue escalate`) and the campaign parks as `human_decision`. `list` shows the
+open ones (`--all`, `--json`); `answer ESC-NNNN` takes exactly one of `--choose` (option number
+or label), `--text`, or `--waive` / `--attest` with `--reason` (override review findings), and
+is a dry run without `--yes`. The answer wakes the conductor, which applies it.
 
 ## Stewards
 

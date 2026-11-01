@@ -65,8 +65,8 @@ quickest way to see what's waiting on you.
 - **One idea, one buildable slice.** Ideas that turn out to be several pieces of work become
   an *epic* with child specs, each small enough for one campaign.
 
-!!! info "In progress: put the idea itself in the queue"
-    Specs SPEC-0208–0217 add `nw queue add IDEA-NNN`. A campaign will then write the spec
-    from your explored idea, review and revise it, accept it, and build it, all on one
-    branch. Exploring the idea well becomes even more important, because it's the only
-    input that campaign gets.
+!!! info "You can queue the idea itself"
+    `nw queue add IDEA-NNN` queues an explored idea directly. Its campaign writes the spec
+    from the idea (state **SPEC_WRITING**), has it reviewed (**SPEC_REVIEW**), revises and
+    accepts it, and then builds it, all on one branch. Exploring the idea well matters even
+    more here, because it's the only input that campaign gets.

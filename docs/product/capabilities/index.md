@@ -18,5 +18,9 @@ pages are the inventory of what the CLI can do.
 | [Meetings](meetings.md) | `nw refresh-meetings`, `nw ingest-meetings` |
 | [Skills](skills.md) | `nw skills` |
 | [Agentic loop](agentic.md) | `nw queue`, `nw campaign`, `nw projects config` |
+| [Mailbox](agentic.md#mailbox) | `nw mailbox send` / `follow` / `list` / `thread` |
+| [Escalations](agentic.md#escalations) | `nw escalations list` / `show` / `answer` / `withdraw` |
+| [Profiles](agentic.md#profiles) | `nw profiles list` / `show` / `check` |
+| [Remote gate workers](agentic.md#gate-slots) (in progress) | `nw workers`, `nw worker` |
 
 Exact flags: `nw <cmd> --help`. Curated reference index: [Reference](../reference/index.md).
