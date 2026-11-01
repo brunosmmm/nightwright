@@ -32,6 +32,11 @@ SCP = ["scp", "-q", "-o", "BatchMode=yes", "-o", "ControlPath=none"]
 TIMEOUT_S = 120.0
 INSTALL_TIMEOUT_S = 900.0
 CONFLICT = "worker {name} is registered with different settings; nw workers rm {name} first"
+NO_UV = 42                                      # `UV_PROBE`'s exit when uv is missing
+UV_PROBE = f"command -v uv >/dev/null || exit {NO_UV}"
+# with --admin the wheel dir is made by ADMIN; /tmp (not ADMIN's TMPDIR, which pam_tmpdir
+# makes 0700) so DESTUSER can reach it
+ADMIN_MKTEMP = "mktemp -d /tmp/nw-wheel.XXXXXXXX"
 
 
 class StepFailed(Exception):
@@ -246,8 +251,13 @@ def step_admin(plan: Plan) -> tuple[str, str]:
 
 
 def _probe_bin(plan: Plan) -> None:
-    if on_worker(plan, "command -v uv").returncode != 0:
+    p = on_worker(plan, UV_PROBE)
+    if p.returncode == NO_UV:
         raise StepFailed(f"uv not found for {plan.user} on the worker; install uv system-wide")
+    if p.returncode != 0:                       # ssh (255) or sudo -u refusing: not uv's fault
+        via = f" through {plan.admin}" if plan.admin else ""
+        raise StepFailed(f"could not run a command as {plan.user} on the worker{via} "
+                         f"(exit {p.returncode}): {_tail(p)}".rstrip(": "))
     out = _must(on_worker(plan, "uv tool dir --bin"), "uv tool dir --bin").strip()
     if not BIN_RE.fullmatch(out):
         raise StepFailed(f"unexpected uv tool bin dir {out!r}")
@@ -276,7 +286,8 @@ def step_install(plan: Plan) -> tuple[str, str]:
         host = plan.admin or plan.dest
         on_host = (lambda c: _run(admin_argv(plan, c))) if plan.admin else \
             (lambda c: on_worker(plan, c))
-        tmp = _must(on_host("mktemp -d"), "mktemp -d").strip()
+        mktemp = ADMIN_MKTEMP if plan.admin else "mktemp -d"
+        tmp = _must(on_host(mktemp), "mktemp -d").strip()
         if not BIN_RE.fullmatch(tmp):
             raise StepFailed(f"unexpected remote temp dir {tmp!r}")
         remote = shlex.quote(f"{tmp}/{wheel.name}")
@@ -289,8 +300,20 @@ def step_install(plan: Plan) -> tuple[str, str]:
             _must(on_worker(plan, f"uv tool install --force {remote}",
                             timeout=INSTALL_TIMEOUT_S), "uv tool install")
         finally:
-            on_host(f"rm -rf {tmp}")
+            _cleanup(plan, on_host, host, tmp)
     return "done", f"installed {wheel.name} -> {plan.bin}/nw"
+
+
+def _cleanup(plan: Plan, on_host, host: str, tmp: str) -> None:
+    """Remove the remote wheel dir. A failure here is a warning: it must neither turn a
+    finished install into a failure nor replace the real cause of an earlier one."""
+    try:
+        p = on_host(f"rm -rf {tmp}")
+        err = None if p.returncode == 0 else f"exit {p.returncode}: {_tail(p)}".rstrip(": ")
+    except StepFailed as e:
+        err = str(e)
+    if err:
+        plan.notes.append(f"warning: could not remove {host}:{tmp} ({err})")
 
 
 def step_verify(plan: Plan) -> tuple[str, str]:
@@ -419,13 +442,13 @@ def dry_plan(plan: Plan) -> dict[str, list[str]]:
     host = plan.admin or plan.dest
     on_host = (lambda c: j(admin_argv(plan, c))) if plan.admin else \
         (lambda c: worker_shown(plan, c))
-    out["install"] = [worker_shown(plan, "command -v uv"),
+    out["install"] = [worker_shown(plan, UV_PROBE),
                       worker_shown(plan, "uv tool dir --bin"),
                       worker_shown(plan, f"{DRY_BIN}/nw worker info --json"),
                       "# only when nw is missing or another version:",
                       j(["uv", "build", "--wheel", "--out-dir", "<local tmp dir>",
                          str(Path(__file__).resolve().parents[3])]),
-                      on_host("mktemp -d")]
+                      on_host(ADMIN_MKTEMP if plan.admin else "mktemp -d")]
     if plan.admin:
         out["install"].append(on_host(f"chmod 755 {tmp}"))
     out["install"].append(j(SCP + [whl, f"{host}:{tmp}/"]))

@@ -1,7 +1,7 @@
 ---
 id: SPEC-0354
 title: "nw workers bootstrap"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -324,6 +324,60 @@ dir>/nw`.
 - `python3 tools/spec_lint.py`: OK. Full suite left to the gate. The manual step on a real
   worker host is still not performed (same reason as above).
 
+### Test record (2026-11-01, review round 2: real sshd)
+
+- **Manual verification, performed** against a real OpenSSH 10.0 `sshd` on loopback, as the
+  human's own account standing in for `nw` (no separate machine or `nw` user exists here, and
+  sudo needs a password, so `--admin` was not run for real). The setup avoided the human's
+  real `~/.ssh`: a temp host key; `AuthorizedKeysFile` pointing to a temp HOME, seeded with a
+  throwaway "login" key line (unrestricted); `SetEnv HOME=<temp>` so the worker side's `~` and
+  `uv tool dir --bin` (`<temp>/.local/bin`) are in the temp HOME; and `ssh`/`scp` wrappers on
+  PATH adding `-F <temp ssh_config>`. That config held `Host box` (port, temp known_hosts) and
+  `IdentityFile <login key>`, which is the ssh_config fallback case from the review. A fresh
+  `ssh-keygen -t ed25519 -N ''` worker key was set through `agentic.workers.key`. Results:
+  - `nw workers bootstrap box --ssh bruno@box --install-key --dry-run`: every command was
+    printed, and the exit was 0.
+  - Real run: install `done` (a wheel of this checkout, real `uv build`/`scp`/`uv tool
+    install`), verify `done`, key `done`, register `done` ("checked and registered"), exit 0.
+    `authorized_keys` held the login line plus exactly
+    `command="<temp>/.local/bin/nw worker ssh-command",restrict ssh-ed25519 ... nw-worker`,
+    with modes 700/600. `nw workers list --json` shows `identity`.
+  - `nw workers check box`: `ok`.
+  - `ssh -i <worker key> -o IdentitiesOnly=yes bruno@box id`: `refused: only nw worker
+    <...> is allowed`, exit 2. The login key's `ssh bruno@box id` still worked.
+  - Re-run: install `skipped (already 0.1.0)`, verify `done`, key `skipped (already
+    present)`, register `skipped (already registered)`, exit 0, and `authorized_keys` still
+    had 2 lines.
+  - With the forced line removed, the dedicated key is not authorized, so ssh falls back to
+    the config's login key. `nw workers check box` now **fails** (`ran an unrestricted
+    command ... not bound to the forced command`). Before this round's probe it would have
+    passed. This run also found that the unrestricted master opened by that check survived,
+    so the next check still failed after the line was restored. The check now closes such a
+    master with `-O exit`, and with the line restored the check was `ok` again.
+  - A no-identity record `plain` for the same `bruno@box` opened its own master
+    (`<%C>`), next to `box`'s (`<%C>-<tag>`), and `nw workers check box` stayed `ok`, so it
+    did not ride the unrestricted master.
+  - The first real attempt failed at `scp` (exit 255) because the throwaway `sshd_config`
+    had no `Subsystem sftp`, which OpenSSH 9+ `scp` needs. That was a test-harness gap, not
+    bootstrap. After adding it, the run above went through. sshd was then stopped and the
+    temp dir removed.
+- New automated cases (`tests/test_workers_bootstrap.py`): `test_bad_worker_key` (a
+  two-line `.pub`, a malformed line, a key path without `.pub`: exit 1, the message, zero
+  calls); `test_default_key_path`; `test_uv_missing` (`uv not found ...`, later steps `not
+  run`); `test_unreachable_is_not_uv_missing` (ssh 255 gives the ssh error);
+  `test_admin_runas_refused_is_not_uv_missing`; `test_admin_useradd_fails`;
+  `test_verify_info_fails_after_install` (`nw worker info` exits nonzero, or prints
+  non-JSON); `test_key_line_form_refused_in_step` (a bad line built in step 3 is refused
+  before any `authorized_keys` read or write); `test_cleanup_failure_is_a_warning` (after a
+  good install, and after an `scp` failure whose cause is kept);
+  `test_check_needs_the_forced_command`. The fake `ssh` now acts as sshd for the dedicated
+  key: the first line holding the blob decides, and a `command="..."` line runs the forced
+  command with `SSH_ORIGINAL_COMMAND`. The fake `nw worker ssh-command` allows only `info
+  --json`. `tests/test_workers_registry.py`: `test_identity_controlpath_is_its_own`.
+- `uv run pytest -q -n 4 tests/test_workers_bootstrap.py tests/test_workers_registry.py
+  tests/test_rich_output_guard.py tests/test_worker*.py`: 334 passed.
+  `python3 tools/spec_lint.py`: OK. The full suite is left to the gate's close run.
+
 ### As shipped (2026-11-01)
 
 - Code: `src/nightwright/agentic/workers_bootstrap.py` (the steps), `nw workers bootstrap` in
@@ -359,6 +413,36 @@ dir>/nw`.
 - The CLI prints each failed step's message in full after the table (`error: <step>:
   <message>`), because the table can truncate it.
 
+### As shipped (2026-11-01, review round 2)
+
+- The uv probe is `command -v uv >/dev/null || exit 42`. Only exit 42 means "uv not found".
+  Any other nonzero exit (ssh 255 for an unknown host key or a failed auth, or sudo refusing
+  `-u DESTUSER`) fails install with `could not run a command as DESTUSER on the worker
+  [through ADMIN] (exit N): <stderr>`.
+- `--admin` makes the wheel dir with `mktemp -d /tmp/nw-wheel.XXXXXXXX` as ADMIN. Plain
+  `mktemp -d` would use ADMIN's TMPDIR, which pam_tmpdir makes 0700. Without `--admin` it is
+  still `mktemp -d` as DESTUSER.
+- Removing the remote wheel dir is best-effort. A failure there is a `warning: could not
+  remove HOST:DIR (...)` note. It neither fails a finished install nor replaces the cause of
+  an earlier failure.
+- An `identity` record's default ControlPath is `<ssh_dir>/%C-<sha1(identity)[:8]>`, and
+  `ssh_dir` picks a candidate short enough for the 9 extra bytes. `%C` hashes only user, host
+  and port, so this is what keeps the record off a master opened with another key for the
+  same `user@host`. A record without `identity` normalizes exactly as before. The AC's
+  `-i <identity> -o IdentitiesOnly=yes` is still appended.
+- `nw workers check` (`WK.check`) on an `identity` record also sends `echo
+  nw-forced-command-probe` after `info` succeeds. The SPEC-0336 forced command must refuse
+  it (nonzero exit, `refused:` on stderr). If it runs (exit 0), the check fails with
+  `... is not bound to the forced command`, and the master that session opened is closed
+  (`-O exit`) so later connections cannot ride it. The reason: `IdentitiesOnly` still lets
+  ssh fall back to `IdentityFile` entries for the host in the human's ssh_config, so a working
+  `info` does not prove that the dedicated key and its forced line authenticated. Bootstrap's
+  register check gets this too.
+- Version policy: as decided, "already installed" means `__version__` equality, and a wheel
+  carries no git sha. A worker on an older commit with the same `version` is therefore not
+  reinstalled. `docs/WORKFLOW.md` says so: bump the version for a change the worker must run,
+  or run `uv tool install --force` on the worker.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
@@ -381,8 +465,8 @@ Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
 ## Definition of done
 
 - [x] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated (status + date).
 

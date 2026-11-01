@@ -37,10 +37,11 @@ def path(cfg) -> Path:
 
 SOCK_MAX = 107                                  # sockaddr_un.sun_path holds 107 bytes plus the NUL
 CTL_SUFFIX = 1 + 40 + 17                        # "/" + %C (40 hex) + OpenSSH's ".<16 random>" temp name
+TAG_LEN = 1 + 8                                 # "-<8 hex>": an identity record's socket tag (SPEC-0354)
 
 
-def _fits(d) -> bool:
-    return len(os.fsencode(str(d))) + CTL_SUFFIX <= SOCK_MAX
+def _fits(d, extra=0) -> bool:
+    return len(os.fsencode(str(d))) + CTL_SUFFIX + extra <= SOCK_MAX
 
 
 def _ssh_dir_candidates(cfg) -> list[Path]:
@@ -56,17 +57,18 @@ def _ssh_dir_candidates(cfg) -> list[Path]:
     return out
 
 
-def ssh_dir(cfg) -> Path | None:
+def ssh_dir(cfg, extra=0) -> Path | None:
     """The directory for ControlPath sockets: the first candidate short enough for a Unix
-    socket, `None` when none is (ssh then runs without connection sharing)."""
-    return next((d for d in _ssh_dir_candidates(cfg) if _fits(d)), None)
+    socket (with `extra` more bytes in the socket name), `None` when none is (ssh then runs
+    without connection sharing)."""
+    return next((d for d in _ssh_dir_candidates(cfg) if _fits(d, extra)), None)
 
 
-def ensure_ssh_dir(cfg) -> Path | None:
-    """`ssh_dir(cfg)` created with mode 0700 (and refused with `OSError` if it exists but is
-    a symlink or belongs to someone else, as a shared /tmp path could); `None` when there is
-    no usable directory."""
-    d = ssh_dir(cfg)
+def ensure_ssh_dir(cfg, extra=0) -> Path | None:
+    """`ssh_dir(cfg, extra)` created with mode 0700 (and refused with `OSError` if it exists
+    but is a symlink or belongs to someone else, as a shared /tmp path could); `None` when
+    there is no usable directory."""
+    d = ssh_dir(cfg, extra)
     if d is None:
         return None
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -77,12 +79,20 @@ def ensure_ssh_dir(cfg) -> Path | None:
     return d
 
 
-def default_ssh_argv(cfg) -> list[str]:
+def identity_tag(identity: str) -> str:
+    """The ControlPath tag of an `identity` record: `%C` hashes only user, host and port, so
+    without it a record with a dedicated key could ride a master opened earlier with another
+    (unrestricted) key for the same destination."""
+    return hashlib.sha1(os.fsencode(identity)).hexdigest()[:TAG_LEN - 1]
+
+
+def default_ssh_argv(cfg, tag=None) -> list[str]:
     argv = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
-    d = ssh_dir(cfg)
+    d = ssh_dir(cfg, TAG_LEN if tag else 0)
     if d is not None:
-        argv += ["-o", "ControlMaster=auto", "-o", f"ControlPath={d}/%C",
+        argv += ["-o", "ControlMaster=auto",
+                 "-o", f"ControlPath={d}/%C" + (f"-{tag}" if tag else ""),
                  "-o", "ControlPersist=120"]
     return argv
 
@@ -149,15 +159,17 @@ def read_strict(cfg) -> list[dict]:
 def normalize(cfg, rec: dict) -> dict:
     """A raw record with the defaults filled in (`ssh_argv` included, never stored by `add`).
     A record with an `identity` (SPEC-0354) gets `-i <identity> -o IdentitiesOnly=yes`
-    appended, so every connection to that worker offers only its dedicated key."""
+    appended, so every connection to that worker offers its dedicated key first, and its
+    default ControlPath is tagged with that key (`identity_tag`)."""
     slots = rec.get("slots")
     ok = isinstance(slots, int) and not isinstance(slots, bool) and MIN_SLOTS <= slots <= MAX_SLOTS
+    ident = rec.get("identity") if identity_ok(rec.get("identity")) else None
     argv = rec.get("ssh_argv")
     if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
-        argv = default_ssh_argv(cfg)
+        argv = default_ssh_argv(cfg, identity_tag(ident)) if ident else default_ssh_argv(cfg)
     argv = list(argv)
-    if identity_ok(rec.get("identity")):
-        argv += ["-i", rec["identity"], "-o", "IdentitiesOnly=yes"]
+    if ident:
+        argv += ["-i", ident, "-o", "IdentitiesOnly=yes"]
     kinds = rec.get("kinds")
     return {**rec, "slots": slots if ok else MIN_SLOTS,
             "kinds": kinds if isinstance(kinds, list) else list(DEFAULT_KINDS),
@@ -224,12 +236,13 @@ def check(cfg, rec: dict) -> dict:
     """Probe a worker: `{name, ok, errors, warnings, info}`. Runs `ssh_argv + [DEST, nw,
     "worker", "info", "--json"]` with a 30 s timeout. Fails on an SSH failure (a timeout
     included), a protocol other than `nw.job.v1` or no `git`; a version or sha different from
-    this checkout's is a warning (the gate runs the campaign tree's code, not the worker's)."""
+    this checkout's is a warning (the gate runs the campaign tree's code, not the worker's).
+    A record with an `identity` must also be bound to the forced command (`_forced_probe`)."""
     from . import worker as W
     w = normalize(cfg, rec)
     out = {"name": w["name"], "ok": False, "errors": [], "warnings": [], "info": None}
     try:
-        ensure_ssh_dir(cfg)
+        ensure_ssh_dir(cfg, TAG_LEN if identity_ok(w.get("identity")) else 0)
     except OSError as e:
         out["errors"].append(f"ssh socket directory unusable: {e}")
         return out
@@ -266,5 +279,41 @@ def check(cfg, rec: dict) -> dict:
     elif info.get("git_sha") and mine.get("git_sha") and info["git_sha"] != mine["git_sha"]:
         out["warnings"].append(f"sha {str(info['git_sha'])[:12]} differs from "
                                f"the coordinator's {str(mine['git_sha'])[:12]}")
+    if identity_ok(w.get("identity")) and not out["errors"]:
+        err = _forced_probe(w)
+        if err:
+            out["errors"].append(err)
     out["ok"] = not out["errors"]
     return out
+
+
+FORCED_PROBE = "echo nw-forced-command-probe"
+
+
+def _forced_probe(w: dict) -> str | None:
+    """Send a command the SPEC-0336 forced command must refuse; an error string unless it is
+    refused. `IdentitiesOnly` still lets ssh fall back to `IdentityFile` entries of the
+    human's ssh_config, so a working `info` alone does not prove the dedicated key and its
+    forced line are what authenticated."""
+    try:
+        p = subprocess.run(w["ssh_argv"] + [w["ssh"], FORCED_PROBE], capture_output=True,
+                           text=True, timeout=CHECK_TIMEOUT_S, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return f"forced-command probe: ssh timed out after {CHECK_TIMEOUT_S:g}s"
+    except OSError as e:
+        return f"forced-command probe: ssh failed to start: {e}"
+    if p.returncode != 0 and "refused:" in (p.stderr or ""):
+        return None
+    if p.returncode == 0:
+        # a master that authenticated this way must not outlive the check: later
+        # connections (the next check, gate jobs) would multiplex onto it
+        try:
+            subprocess.run(w["ssh_argv"] + ["-O", "exit", w["ssh"]], capture_output=True,
+                           timeout=CHECK_TIMEOUT_S, stdin=subprocess.DEVNULL)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        return (f"{w['ssh']} ran an unrestricted command: the dedicated key "
+                f"{w['identity']} is not bound to the forced command (check its "
+                "authorized_keys line, and IdentityFile entries for this host in ssh_config)")
+    tail = (p.stderr or "").strip().splitlines()[-1:] or [""]
+    return f"forced-command probe failed (exit {p.returncode}): {tail[0]}".rstrip(": ")

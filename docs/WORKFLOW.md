@@ -292,7 +292,11 @@ done, and prints a status table (`done`, `skipped (already ...)`, `would run`, `
 - **install**: needs `uv` for the worker user; `uv tool dir --bin` gives `<bin>`. When
   `<bin>/nw worker info --json` reports another version than this checkout (or fails), a
   wheel built here with `uv build --wheel` is copied over and installed with
-  `uv tool install --force`.
+  `uv tool install --force` (with `--admin`, through a `mktemp -d` dir under `/tmp`).
+  "Same version" means the released `version` in `pyproject.toml` only: a wheel carries no
+  git sha, so a worker on an older commit of the same version is **not** reinstalled. Bump
+  the version for a change the worker must run (the forced command or the job protocol), or
+  run `uv tool install --force` on the worker yourself.
 - **verify**: `<bin>/nw worker info --json` must report this checkout's version.
 - **key**: the line `command="<bin>/nw worker ssh-command",restrict <worker public key>`.
   Without `--install-key` it is printed. With it, it is appended once to the worker's
@@ -308,9 +312,13 @@ without `.pub`. Both must exist (`ssh-keygen -t ed25519 -N '' -f ~/.ssh/nw_worke
 bootstrap never creates it). Never reuse your login key: sshd uses the first matching
 `authorized_keys` line, so a forced line for a key that is already authorized has no effect.
 The record's `identity` (`nw workers add --identity PATH`, an absolute path) makes every
-coordinator connection to that worker add `-i <identity> -o IdentitiesOnly=yes`. Bootstrap's
-own ssh/scp sessions use `-o ControlPath=none`, so they never share the coordinator's
-ControlMaster sockets.
+coordinator connection to that worker add `-i <identity> -o IdentitiesOnly=yes`, and tags its
+ControlMaster socket with a hash of the key (`%C-<tag>`), so it never rides a master opened
+with another key for the same `user@host`. `IdentitiesOnly` still lets ssh fall back to
+`IdentityFile` entries for that host in your ssh_config, so `nw workers check` on an
+`identity` record also sends a command the forced command must refuse, and fails when it is
+not refused. Bootstrap's own ssh/scp sessions use `-o ControlPath=none`, so they never share
+the coordinator's ControlMaster sockets.
 
 The job store lives under `<data_dir>/agentic/worker/` (`repos/` object caches, `jobs/`).
 Each job runs `gc` (default `--keep-days 2`) when it ends; `nw worker gc --keep-days 0`

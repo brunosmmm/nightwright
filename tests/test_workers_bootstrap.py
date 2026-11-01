@@ -1,7 +1,10 @@
 """SPEC-0354: `nw workers bootstrap`. Offline: loopback stand-ins for `ssh`/`scp` (they drop
 the destination and run the command on this host against a temp HOME), a fake `uv` (`build`,
 `tool dir --bin`, `tool install` writing a fake `nw` that reports a set version), and fake
-`sudo`/`id`. Every stand-in records its argv (and `ssh` its stdin, the worker script) in
+`sudo`/`id`. With a dedicated key (`-i`, `IdentitiesOnly=yes`) the fake `ssh` acts as sshd:
+the first `authorized_keys` line holding the key's blob decides, and a `command="..."` line
+runs that forced command with `SSH_ORIGINAL_COMMAND` (the fake `nw worker ssh-command` allows
+only `nw worker info --json`). Every stand-in records its argv (and `ssh` its stdin, the worker script) in
 `<state>/log.jsonl`. The fake `sudo -i` re-joins its command the way real sudo does
 (backslash before every char but alnum, `_`, `-`, `$`) and runs it with `sh -c`."""
 import json
@@ -43,16 +46,36 @@ while args and args[0].startswith("-"):
     a = args.pop(0)
     if a in ("-o", "-i", "-p", "-l"):
         args.pop(0)
+if "-O" in sys.argv:                          # a ControlMaster command: no master here
+    sys.exit(0)
 dest, cmd = args[0], " ".join(args[1:])
-if read("check_fail") and "IdentitiesOnly=yes" in sys.argv:
+if read("unreachable"):
+    print("Host key verification failed.", file=sys.stderr)
     sys.exit(255)
 env = {**os.environ, "HOME": os.path.join(S, "home"),
-       "PATH": os.path.join(S, "fakebin") + ":" + os.environ["PATH"]}
+       "PATH": (os.path.join(S, "nouvbin") if read("no_uv")
+                else os.path.join(S, "fakebin") + ":" + os.environ["PATH"])}
+if "IdentitiesOnly=yes" in sys.argv:          # sshd deciding on the dedicated key
+    if read("check_fail"):
+        sys.exit(255)
+    blob = open(sys.argv[sys.argv.index("-i") + 1] + ".pub").read().split()[1]
+    ak = os.path.join(S, "home", ".ssh", "authorized_keys")
+    lines = open(ak).read().splitlines() if os.path.exists(ak) else []
+    hit = next((ln for ln in lines if blob in ln.split()), None)
+    if hit is None:
+        print("Permission denied (publickey).", file=sys.stderr)
+        sys.exit(255)
+    if hit.startswith('command="'):
+        env["SSH_ORIGINAL_COMMAND"] = cmd
+        cmd = hit[len('command="'):].split('"', 1)[0]
 sys.exit(subprocess.run(["sh", "-c", cmd], env=env, input=STDIN, text=True).returncode)
 """
 
 FAKE_SCP = COMMON + """
 import shutil
+if read("scp_fail"):
+    print("scp: lost connection", file=sys.stderr)
+    sys.exit(1)
 args = [a for a in sys.argv[1:]]
 out = []
 while args:
@@ -68,11 +91,25 @@ for s in srcs:
 """
 
 FAKE_NW = """#!{py}
-import json, sys
-if sys.argv[1:3] == ["worker", "info"]:
+import json, os, shlex, sys
+def info():
+    if {version!r} == "exit":
+        print("nw: broken install", file=sys.stderr)
+        sys.exit(3)
+    if {version!r} == "garbage":
+        print("not json")
+        sys.exit(0)
     print(json.dumps({{"schema": "nw.worker.info.v1", "protocol": "nw.job.v1",
                       "version": {version!r}, "git": "git version 2.0", "git_sha": None}}))
     sys.exit(0)
+if sys.argv[1:3] == ["worker", "info"]:
+    info()
+if sys.argv[1:3] == ["worker", "ssh-command"]:
+    w = shlex.split(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
+    if len(w) == 4 and w[0].endswith("nw") and w[1:] == ["worker", "info", "--json"]:
+        info()
+    print("refused: only `nw worker <...>` is allowed", file=sys.stderr)
+    sys.exit(2)
 sys.exit(2)
 """
 
@@ -103,12 +140,18 @@ while a and a[0].startswith("-"):
         user = a.pop(0)
     elif o == "-i":
         login = True
+if user and read("runas_fail"):
+    print(f"Sorry, user ops is not allowed to execute 'sh -s' as {user} on box.", file=sys.stderr)
+    sys.exit(1)
 if login:            # sudo -i: one string for the login shell's -c, as sudo's parse_args.c
     cmd = " ".join("".join(c if (c.isascii() and c.isalnum()) or c in "_-$" else "\\\\" + c
                            for c in arg) for arg in a)
     sys.exit(subprocess.run(["sh", "-c", cmd]).returncode)
 if a == ["true"]:
     sys.exit(1 if read("sudo_fail") else 0)
+if a[:1] == ["useradd"] and read("useradd_fail"):
+    print("useradd: cannot lock /etc/passwd; try again later.", file=sys.stderr)
+    sys.exit(1)
 if a[:1] == ["useradd"]:
     with open(os.path.join(S, "users"), "a") as f:
         f.write(a[-1] + "\\n")
@@ -148,6 +191,11 @@ class World:
             p = self.fakebin / name
             p.write_text(body)
             p.chmod(0o755)
+        nouv = self.state / "nouvbin"                # the worker PATH when uv is missing
+        nouv.mkdir()
+        for tool in ("sh", "cat", "id", "sudo"):
+            target = self.fakebin / tool if tool in ("id", "sudo") else shutil.which(tool)
+            (nouv / tool).symlink_to(target)
         self.set("bin", str(self.bin))
         keys = root / "keys"
         keys.mkdir()
@@ -377,6 +425,135 @@ def test_refuse_root(world):
     assert WK.read_strict(world.cfg) == []
 
 
+@pytest.mark.parametrize("content,msg", [
+    ("{k}\nssh-ed25519 AAAASECOND x\n", "must hold exactly one line (has 2)"),
+    ("ssh-ed25519 not!base64 x\n", "is not a `<type> <base64> [comment]` public key"),
+    (None, "must name a .pub file"),
+])
+def test_bad_worker_key(world, content, msg):
+    if content is None:
+        world.cfg["agentic"]["workers"]["key"] = str(world.priv)    # the private path
+    else:
+        world.pub.write_text(content.format(k=world.pubkey))
+    res = boot(world, "box", "--ssh", "nw@box", "--install-key")
+    assert res.exit_code == 1 and msg in res.output, res.output
+    assert world.calls() == [] and WK.read_strict(world.cfg) == []
+
+
+def test_default_key_path():
+    want = Path(os.path.expanduser("~/.ssh/nw_worker_ed25519.pub"))
+    assert WB.key_path({}) == want
+    assert WB.key_path({"agentic": {"workers": {"key": ""}}}) == want
+    assert WB.key_path({"agentic": {"workers": {"slots": 1}}}) == want
+    assert WB.key_path({"agentic": {"workers": {"key": "~/k.pub"}}}) \
+        == Path(os.path.expanduser("~/k.pub"))
+
+
+def test_uv_missing(world):
+    world.set("no_uv", "1")
+    ok, plan = plan_run(world, install_key=False)
+    assert not ok
+    assert plan.status["install"] == ("failed", "uv not found for nw on the worker; "
+                                                "install uv system-wide")
+    assert st(plan) == {"admin": "not requested", "install": "failed", "verify": "not run",
+                        "key": "not run", "register": "not run"}
+    assert not world.calls("scp") and not world.calls("uv")
+    assert WK.read_strict(world.cfg) == []
+
+
+def test_unreachable_is_not_uv_missing(world):
+    world.set("unreachable", "1")
+    ok, plan = plan_run(world, install_key=False)
+    assert not ok and st(plan)["install"] == "failed"
+    msg = plan.status["install"][1]
+    assert "uv not found" not in msg
+    assert "exit 255" in msg and "Host key verification failed" in msg
+
+
+def test_admin_runas_refused_is_not_uv_missing(world):
+    world.set("users", "nw\n")
+    world.set("runas_fail", "1")                  # sudo -n true passes, sudo -u nw does not
+    ok, plan = plan_run(world, admin="ops@box", install_key=False)
+    assert not ok and st(plan)["admin"].startswith("skipped") and st(plan)["install"] == "failed"
+    msg = plan.status["install"][1]
+    assert "uv not found" not in msg and "through ops@box" in msg and "not allowed" in msg
+
+
+def test_admin_useradd_fails(world):
+    world.set("useradd_fail", "1")
+    ok, plan = plan_run(world, admin="ops@box")
+    assert not ok and st(plan) == {"admin": "failed", "install": "not run", "verify": "not run",
+                                   "key": "not run", "register": "not run"}
+    assert "useradd failed (exit 1)" in plan.status["admin"][1]
+    assert "cannot lock /etc/passwd" in plan.status["admin"][1]
+    assert not world.calls("uv") and not world.calls("scp") and not world.ak.exists()
+
+
+@pytest.mark.parametrize("mode,msg", [("exit", "worker info --json failed (exit 3)"),
+                                      ("garbage", "gave unreadable output")])
+def test_verify_info_fails_after_install(world, mode, msg):
+    world.set("install_version", mode)
+    res = boot(world, "box", "--ssh", "nw@box", "--install-key")
+    assert res.exit_code == 1 and msg in res.output, res.output
+    ok, plan = plan_run(world)
+    assert not ok and st(plan) == {"admin": "not requested", "install": "done",
+                                   "verify": "failed", "key": "not run", "register": "not run"}
+    assert not world.ak.exists() and WK.read_strict(world.cfg) == []
+
+
+def test_key_line_form_refused_in_step(world, monkeypatch):
+    monkeypatch.setattr(WB, "forced_line", lambda b, pk:
+                        f'command="{b}/nw worker ssh-command",restrict,pty {pk}')
+    ok, plan = plan_run(world)
+    assert not ok and st(plan)["key"] == "failed" and st(plan)["register"] == "not run"
+    assert "not exactly the" in plan.status["key"][1]
+    assert not [c for c in world.calls("ssh") if "authorized_keys" in (c["stdin"] or "")]
+    assert not world.ak.exists() and WK.read_strict(world.cfg) == []
+
+
+@pytest.mark.parametrize("scp_fails", [False, True])
+def test_cleanup_failure_is_a_warning(world, monkeypatch, scp_fails):
+    real = WB._run
+
+    def run(argv, timeout=WB.TIMEOUT_S, cwd=None, input=None):
+        if "rm -rf" in (input or ""):
+            raise WB.StepFailed(f"`ssh` timed out after {timeout:g}s")
+        return real(argv, timeout=timeout, cwd=cwd, input=input)
+    monkeypatch.setattr(WB, "_run", run)
+    if scp_fails:
+        world.set("scp_fail", "1")
+    ok, plan = plan_run(world)
+    assert any(n.startswith("warning: could not remove nw@box:") and "timed out" in n
+               for n in plan.notes), plan.notes
+    if scp_fails:                               # the real cause is kept
+        assert not ok and st(plan)["install"] == "failed"
+        assert plan.status["install"][1].startswith("scp failed (exit 1)")
+    else:                                       # a finished install stays done
+        assert ok and st(plan)["install"] == "done"
+
+
+def test_check_needs_the_forced_command(world):
+    """A dedicated key that reaches an unrestricted shell (a plain authorized_keys line, or
+    an ssh_config IdentityFile fallback) fails the check even though `info` answers."""
+    ok, plan = plan_run(world, install_key=False)
+    assert ok
+    (rec,) = WK.read_strict(world.cfg)
+    world.ak.parent.mkdir()
+    world.ak.write_text(world.pubkey + "\n")
+    res = WK.check(world.cfg, rec)
+    assert not res["ok"] and res["info"] is not None
+    assert any("not bound to the forced command" in e for e in res["errors"]), res["errors"]
+    assert CliRunner().invoke(cli, ["workers", "check", "box"]).exit_code != 0
+    closes = [c["argv"] for c in world.calls("ssh") if "-O" in c["argv"]]
+    assert closes and all(a[-2:] == ["exit", "nw@box"] and "IdentitiesOnly=yes" in a
+                          for a in closes)            # the unrestricted master is closed
+    world.ak.write_text(world.line() + "\n")
+    res = WK.check(world.cfg, rec)
+    assert res["ok"], res["errors"]
+    probes = [c for c in world.calls("ssh") if c["argv"][-1] == WK.FORCED_PROBE]
+    assert probes and all("IdentitiesOnly=yes" in c["argv"] for c in probes)
+
+
 def test_registry_conflict(world):
     WK.update(world.cfg, lambda recs: recs.append(
         {"name": "box", "ssh": "nw@box", "slots": 3, "identity": str(world.priv)}))
@@ -447,7 +624,7 @@ def test_admin_fresh_user_end_to_end(world):
     assert set(st(plan).values()) == {"done"}
     (ua,) = [c["argv"] for c in world.calls("sudo") if "useradd" in c["argv"]]
     assert ua == ["-n", "useradd", "-m", "nw"]
-    admin_cmds = {"sudo -n true", "id -u nw", "sudo -n useradd -m nw", "mktemp -d"}
+    admin_cmds = {"sudo -n true", "id -u nw", "sudo -n useradd -m nw", WB.ADMIN_MKTEMP}
     bootstrap_ssh = [c for c in world.calls("ssh") if "IdentitiesOnly=yes" not in c["argv"]]
     worker_side = []
     for call in bootstrap_ssh:
@@ -462,7 +639,7 @@ def test_admin_fresh_user_end_to_end(world):
                  "uv tool install --force", "authorized_keys", "id -u"):
         assert any(what in c for c in worker_side), what
     (scp,) = world.calls("scp")
-    assert scp["argv"][-1].startswith("ops@box:/")
+    assert scp["argv"][-1].startswith("ops@box:/tmp/nw-wheel.")    # not ADMIN's own TMPDIR
     assert world.ak.read_text().splitlines() == [world.line()]
     assert stat.S_IMODE(world.ak.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(world.ak.stat().st_mode) == 0o600

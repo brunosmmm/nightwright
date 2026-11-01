@@ -216,7 +216,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0319](./specs/0319-wt-queue-conductor-launch-steward-launch-start.md) `wt queue conductor-launch` / `steward-launch`: start the conductor and stewards with forced context limits, a pinned model and a pre-registered session id — done
   - [x] [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote — done
   - [x] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — done
-- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (7/16 done)
+- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (8/16 done)
   - [x] [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) Remote gates over SSH on one worker host — superseded
   - [x] [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) Worker-owned async jobs — superseded
   - [x] [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) Remote persona runs with bundle write-back — superseded
@@ -232,7 +232,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0344](./specs/0344-remote-persona-jobs-with-bundle-write-back.md) Remote persona jobs with bundle write-back — accepted
   - [ ] [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker — accepted
   - [ ] [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) Remote workers integration suite for gate and persona workers — accepted
-  - [ ] [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) nw workers bootstrap — in-progress
+  - [x] [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) nw workers bootstrap — done
 - **[SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) — Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane** · accepted · (0/0 done)
   - _(no child specs yet)_
 - **[SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) — Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer** · accepted · (6/6 done)
@@ -264,7 +264,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | accepted | — | 2026-11-01 |
 | [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) | Remote workers integration suite for gate and persona workers | feature | accepted | — | 2026-11-01 |
 | [SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) | Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane | epic | accepted | M9: agentic workflow | 2026-11-01 |
-| [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) | nw workers bootstrap | feature | in-progress | — | 2026-11-01 |
 | [SPEC-0356](./specs/0356-queue-visibility-cli-lists-graph-unqueued.md) | Queue visibility (CLI): untruncated lists with title/priority/blocked-by, nw queue graph, nw queue unqueued, remote gate line | feature | accepted | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0359](./specs/0359-close-tier-reuse-of-a-green-loop-gate-with-a-full.md) | Close-tier reuse of a green loop gate, with a full-suite sentinel on the base branch | feature | accepted | — | 2026-11-01 |
 | [SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) | Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer | epic | accepted | — | 2026-11-01 |
@@ -589,6 +588,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) | Per-gate path sensitivity for the close re-gate | feature | done | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0351](./specs/0351-queue-watch-fill-terminal-height.md) | queue watch: size the bottom sections to the terminal height | feature | done | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0353](./specs/0353-conductor-launch-steward-launch-allowedtools-do.md) | conductor-launch / steward-launch permission rules cover lease-pinned PR-rebase pushes and the steward rebase set | feature | done | — | 2026-11-01 |
+| [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) | nw workers bootstrap | feature | done | — | 2026-11-01 |
 | [SPEC-0357](./specs/0357-narrow-affected-tests-py-fallbacks-and-write-the.md) | Narrow affected_tests.py fallbacks and write the NW_GATE_REPORT selection report | feature | done | — | 2026-11-01 |
 | [SPEC-0358](./specs/0358-failed-first-loop-rounds.md) | Failed-first loop rounds: rerun the previously failing tests before the rest of a gate | feature | done | — | 2026-11-01 |
 | [SPEC-0362](./specs/0362-stream-json-capture-of-persona-runs-and-nw.md) | Stream-json capture of persona runs and nw campaign tail viewer | feature | done | — | 2026-11-01 |

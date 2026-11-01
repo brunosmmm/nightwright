@@ -432,8 +432,21 @@ def test_config_watch_reports_an_unreadable_registry_once(cfg):
 def test_identity_in_ssh_argv(cfg):
     _seed(cfg, _w("box", identity="/home/me/.ssh/nw_worker_ed25519"))
     (w,) = WK.load(cfg)
-    assert w["ssh_argv"] == WK.default_ssh_argv(cfg) + [
+    tag = WK.identity_tag("/home/me/.ssh/nw_worker_ed25519")
+    assert w["ssh_argv"] == WK.default_ssh_argv(cfg, tag) + [
         "-i", "/home/me/.ssh/nw_worker_ed25519", "-o", "IdentitiesOnly=yes"]
+
+
+def test_identity_controlpath_is_its_own(cfg):
+    """An identity record never shares a ControlMaster with a no-identity (or another
+    identity's) record for the same destination: `%C` alone does not hash the key."""
+    _seed(cfg, _w("a", ssh="nw@box"), _w("b", ssh="nw@box", identity="/k/one"),
+          _w("c", ssh="nw@box", identity="/k/two"))
+    cps = [[x for x in w["ssh_argv"] if x.startswith("ControlPath=")] for w in WK.load(cfg)]
+    assert all(len(c) == 1 for c in cps) and len({c[0] for c in cps}) == 3
+    assert cps[1][0].endswith("/%C-" + WK.identity_tag("/k/one"))
+    d = cps[1][0].removeprefix("ControlPath=").rsplit("/", 1)[0]
+    assert len(os.fsencode(d)) + WK.CTL_SUFFIX + WK.TAG_LEN <= WK.SOCK_MAX
 
 
 def test_no_identity_unchanged(cfg):
