@@ -48,7 +48,7 @@ tactics only. Governing design stays in nightwright (`docs/specs/` / outbox port
 | State | Meaning | Your move |
 |-------|---------|-----------|
 | `IDEA` | parked, not yet incubating | capture; optionally start explore |
-| `INCUBATE` | exploring (durable notes on the idea) | `/nw-explore` / `nw idea log` — **not** promote yet ([SPEC-0024](./specs/0024-formal-explore-stage-nw-explore-skill.md), [SPEC-0031](./specs/0031-rename-idea-explore-to-log-datetime-log-stamps.md)) |
+| `INCUBATE` | exploring (durable notes on the idea) | `/nw-explore` / `nw idea log` — **not** promote yet ([SPEC-0024](./specs/0024-formal-explore-stage-wt-explore-skill.md), [SPEC-0031](./specs/0031-rename-idea-explore-to-log-datetime-log-stamps.md)) |
 | `SPECCED` | a draft/accepted spec exists (`:SPEC:` set) | finish authoring → `accepted`, then generate (internal) or export (outbound); if design wrong or epic incomplete → `/nw-rework` |
 | `PROMOTED` | internal: org tasks exist (`nw spec generate`) | build; track time against tasks; incomplete epic → `/nw-rework` (extend), not bare `nw tasks` |
 | `EXPORTED` | outbound: handed off via `nw spec export` | build in the **target repo** on the portable spec (update `status` + AC); `nw spec pull-status` / `sweep` when portable is `done` → **SHIPPED** |
