@@ -12,7 +12,7 @@ def test_dogfood_project_config_loads_and_names_the_gates():
     assert doc["project"] == "Meta-Tools"
     assert doc["base"] == "main"
     gates = {g["name"]: g for g in doc["gates"]}
-    assert set(gates) == {"pytest", "pytest-affected", "spec-lint"}   # SPEC-0328 tiers
+    assert set(gates) == {"pytest", "pytest-affected", "spec-lint", "docs-tests"}   # SPEC-0328 tiers, SPEC-0350
     assert gates["pytest"]["when"] == "close" and gates["pytest-affected"]["when"] == "loop"
     assert "spec-lint" not in {n for n, g in gates.items() if g.get("when")}   # always
     assert gates["pytest"]["cmd"].startswith("uv run pytest")

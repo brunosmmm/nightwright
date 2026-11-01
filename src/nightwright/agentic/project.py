@@ -10,6 +10,7 @@ Validation is hand-rolled (jsonschema is dev-only), strict like `spec.schema.jso
 one ValueError. Defaults are filled per section after validation."""
 import copy
 import os
+import re
 import subprocess
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from ..legacy import schema_ok
@@ -75,6 +76,7 @@ gates:                         # run in order inside the campaign worktree
     timeout_s: 1200
     required: true
     when: always               # loop (after implement / each fix) | close (the close re-gate) | always
+    # paths: ["src/**"]        # optional globs: skip this gate at close when the branch changes none (SPEC-0350)
 merge:
   policy: pr                   # merge | pr | draft-pr
   base: main
@@ -231,7 +233,7 @@ def validate(doc):
         p = f"gates[{i}]"
         if not _check_mapping(problems, gate, p, ("name", "cmd", "cwd", "timeout_s", "required",
                                                   "results", "retries", "on_fail", "retry_cmd",
-                                                  "when")):
+                                                  "when", "paths")):
             continue
         name = gate.get("name")
         if not _is_str(name):
@@ -253,6 +255,10 @@ def validate(doc):
         _check_gate_retry(problems, gate, p)
         if "when" in gate:
             _check_enum(problems, gate["when"], f"{p}.when", GATE_WHEN)
+        if "paths" in gate:
+            pv = gate["paths"]
+            if not isinstance(pv, list) or not pv or not all(_is_str(x) for x in pv):
+                problems.append(f"{p}.paths: must be a non-empty list of glob strings")
 
     merge = doc.get("merge")
     if merge is not None and _check_mapping(problems, merge, "merge",
@@ -338,6 +344,59 @@ def load_project_config(path):
 def gate_when(gate) -> str:
     """SPEC-0328: a gate's tier; `always` when `when` is absent."""
     return gate.get("when") or "always"
+
+
+def _glob_re(pattern: str):
+    """One gate `paths` glob as a regex over a repo-relative POSIX path (SPEC-0350)."""
+    pat = pattern.lstrip("/")
+    anywhere = "/" not in pat.rstrip("/")        # no slash: matches at any depth (gitignore)
+    if pat.endswith("/"):
+        pat += "**"
+    out, i = [], 0
+    while i < len(pat):
+        c = pat[i]
+        if pat.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pat.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif c == "*":
+            out.append("[^/]*")
+            i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    body = "".join(out)
+    return re.compile(("(?:.*/)?" if anywhere else "") + body + r"\Z")
+
+
+def path_matches(patterns, path: str) -> bool:
+    """True when any glob in `patterns` matches `path`. Syntax: `*` any run inside one path
+    segment, `?` one non-`/` char, `**` any run including `/` (`a/**` is everything under `a/`,
+    `**/x` is `x` at any depth), a trailing `/` means the whole directory, and a pattern with no
+    `/` matches by basename at any depth. Anchored at the repo root otherwise."""
+    return any(_glob_re(p).match(path) for p in patterns)
+
+
+def split_gates_by_paths(gates, changed):
+    """SPEC-0350: `(run, skipped)` for `gates` given the branch's `changed` paths. A gate with no
+    `paths` always runs; so does every gate when `changed` is None (could not be computed) or
+    empty (unknown). A gate is skipped only when none of its `paths` globs match any changed
+    path. `skipped` is `[(gate, patterns)]`."""
+    if not changed:
+        return list(gates), []
+    run, skipped = [], []
+    for g in gates:
+        pats = g.get("paths")
+        if pats and not any(path_matches(pats, c) for c in changed):
+            skipped.append((g, list(pats)))
+        else:
+            run.append(g)
+    return run, skipped
 
 
 def gates_for(project_cfg, tier=None) -> list:

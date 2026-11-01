@@ -38,6 +38,7 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "commit": ("sha", "message"),
     "gate": ("gate_seq", "ok", "started_at", "duration_s", "results"),
     "gate_waiting": ("slots", "held", "waited_s"),                # SPEC-0309
+    "gate.skipped": ("gate", "patterns", "changed_count"),        # SPEC-0350
     "park": ("reason", "detail", "resume_to"),      # + optional `auto` (SPEC-0302)
     "auto_resume_failed": ("rule", "error"),        # SPEC-0302
     "resume": ("to", "note", "cap_usd", "loops_reset"),

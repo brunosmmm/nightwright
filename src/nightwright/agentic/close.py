@@ -407,6 +407,28 @@ def _regenerate_after_rebase(worktree, regen, events, campaign_id, own=True) -> 
     return None
 
 
+def _skip_unaffected_gates(gate_cfg, worktree, target_sha, events):
+    """SPEC-0350: drop close-tier gates whose `paths` globs match none of the paths the rebased
+    branch changes against `target_sha`, recording a `gate.skipped` event for each. Fails closed:
+    when the changed paths cannot be computed (or are empty) every gate runs."""
+    if not any(g.get("paths") for g in gate_cfg.get("gates") or []):
+        return gate_cfg
+    try:
+        changed = git.changed_files(worktree, target_sha, renames=False)
+    except Exception:
+        return gate_cfg
+    close_gates = P.gates_for(gate_cfg, "close")
+    _, skipped = P.split_gates_by_paths(close_gates, changed)
+    if not skipped:
+        return gate_cfg
+    drop = {g["name"] for g, _ in skipped}
+    for g, pats in skipped:
+        events.append(("gate.skipped", {"gate": g["name"], "patterns": pats,
+                                        "changed_count": len(changed),
+                                        "required": g.get("required", True)}))
+    return {**gate_cfg, "gates": [g for g in gate_cfg["gates"] if g["name"] not in drop]}
+
+
 def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
                   stop=None) -> PreparedClose:
     """The worktree phase (SPEC-0220): spec guard, spec DoD, snapshot commit, target capture,
@@ -548,6 +570,7 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
     gate_cfg, raises = P.campaign_gate_config(cfg, project_cfg, worktree)    # SPEC-0316
     if raises:
         events.append(("finding", P.gate_limits_finding(raises)))
+    gate_cfg = _skip_unaffected_gates(gate_cfg, worktree, target_sha, events)       # SPEC-0350
     gate_run = G.run_all(gate_cfg, state, cfg, seq=seq, stop=stop, tier="close")   # SPEC-0328
     seq = gate_run.seq                          # run_all moves on when the seq's tmp dir is taken
     events.append(("gate", G.as_payload(gate_run)))

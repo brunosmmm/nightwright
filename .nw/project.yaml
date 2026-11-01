@@ -32,8 +32,43 @@ gates:
     timeout_s: 2400
     required: true
     retries: 2
+  # SPEC-0350: per-gate path sensitivity. At the close re-gate a gate with `paths` runs only when
+  # the branch changes a path matching one of its globs; spec-lint has none and always runs.
+  # `docs-tests` covers what docs-only changes can break (SPEC-0350 Design lists the evidence);
+  # the full suite is skipped for a branch that touches only README.md / mkdocs.yml / docs/**
+  # (minus the few docs files other tests read, listed below). When unsure, a path is in `pytest`.
+  - name: docs-tests
+    when: close
+    cmd: >-
+      uv run pytest -q -n 2 tests/test_docs_*.py tests/test_spec_lint*.py tests/test_specs.py
+      tests/test_agentic_profiles.py
+    retry_cmd: uv run pytest -q -n 0 {failing}
+    results: {format: pytest}
+    timeout_s: 900
+    required: true
+    retries: 1
+    paths: ["README.md", "mkdocs.yml", "docs/**", "skills/**", "scripts/**", ".github/**"]
   - name: pytest
     when: close
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "tools/**"
+      - "skills/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".nw/**"
+      - "AGENTS.md"
+      - "scripts/**"
+      - ".github/**"
+      # docs files other (non-docs) tests read: spec scaffolding/schema, examples, workflow doc
+      - "docs/specs/SCHEMA.md"
+      - "docs/specs/spec.schema.json"
+      - "docs/specs/TEMPLATE*.md"
+      - "docs/specs/0003-*.md"    # test_completion copies the real 0003/0004 specs
+      - "docs/specs/0004-*.md"
+      - "docs/examples/**"
+      - "docs/WORKFLOW.md"
     # SPEC-0309: 4 xdist workers (8 cores / 2 gate slots); the targeted rerun stays serial.
     cmd: uv run pytest -q -x -n 4
     retry_cmd: uv run pytest -q -n 0 {failing}

@@ -134,6 +134,14 @@ nightwright-level `gate_budget_s`), never lower it, and the raise is recorded as
 nothing else in a gate is read from the branch (SPEC-0316).
 `required: true` gates block the campaign; optional gates are recorded but never block.
 
+A gate may add `paths:`, a list of globs (SPEC-0350). At the close re-gate the gate runs only
+when the branch changes a path that matches one; otherwise it is skipped, counts as satisfied
+and a `gate.skipped` event lands in the campaign ledger. A gate without `paths` always runs, and
+when the changed paths cannot be computed every gate runs. Globs are anchored at the repo root:
+`*` stays within one path segment, `**` crosses `/`, a trailing `/` means a directory, and a
+pattern with no `/` matches that name at any depth. When unsure whether a test reads a file,
+list it under the full-suite gate.
+
 Every gate writes one log under the campaign directory, `gates/NNN-<name>.log`, starting
 with a header line that names the command and its working directory; the last 60 lines
 travel with the result into the ledger (`gate` event) and into `nw campaign show`. Gate
