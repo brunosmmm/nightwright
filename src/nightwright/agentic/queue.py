@@ -3812,7 +3812,9 @@ def _sentinel_busy(pool: StepPool) -> bool:
 def _sentinel_step(ctx: _Ctx, pool: StepPool, busy: list) -> str | None:
     """SPEC-0359 §4: start one due sentinel on a worker thread, only when no campaign waits for
     a gate slot (a live waiter marker, or a GATING campaign whose gate step did not start) and
-    no sentinel is in flight. Returns the project started, if any."""
+    no sentinel is in flight. A project whose run lock is held (a CLI run) is skipped, and one
+    `SN.backoff` holds back (green or cleared red at the same base sha, or a red / failed run
+    there less than `SN.RETRY_S` ago) waits. Returns the project started, if any."""
     cfg = ctx.cfg
     fl = pool.sentinel
     if fl is not None:
@@ -3824,6 +3826,8 @@ def _sentinel_step(ctx: _Ctx, pool: StepPool, busy: list) -> str | None:
             out = fut.result()
             journal(cfg, "sentinel_done", project=project, ok=out.get("ok"),
                     sha=out.get("sha"), interrupted=out.get("interrupted"))
+        except SN.Busy as e:
+            journal(cfg, "sentinel_skipped", project=project, reason=str(e))
         except Exception as e:
             journal(cfg, "sentinel_failed", project=project, error=f"{type(e).__name__}: {e}")
     if ctx.stop.is_set():
@@ -3846,6 +3850,20 @@ def _sentinel_step(ctx: _Ctx, pool: StepPool, busy: list) -> str | None:
             if key not in pool.deferred_noted:              # once per runner, not per tick
                 pool.deferred_noted.add(key)
                 journal(cfg, "sentinel_failed", project=project, error=str(e))
+            continue
+        if SN.running(cfg, project):
+            continue                                        # a CLI run holds the lock
+        try:
+            base_sha = git.rev_parse(pcfg.get("_root") or P.project_root(cfg, project),
+                                     SN._base(pcfg))
+        except (ValueError, OSError):
+            base_sha = None
+        why = SN.backoff(cfg, project, base_sha)
+        if why:
+            key = ("sentinel_backoff", project, why)
+            if key not in pool.deferred_noted:              # once per reason, not per tick
+                pool.deferred_noted.add(key)
+                journal(cfg, "sentinel_deferred", project=project, reason=why)
             continue
         pool.sentinel = (project, pool.submit(lambda: SN.run(cfg, project, project_cfg=pcfg, stop=ctx.stop)))
         journal(cfg, "sentinel_started", project=project)
@@ -4927,6 +4945,9 @@ def _waiting_on(cfg, pool: StepPool) -> list:
             timeout = max((t for _, t in fl.runs if t is not None), default=None)
         out.append({"campaign": cid, "kind": kind, "run_ids": [r for r, _ in fl.runs],
                     "timeout_s": timeout})
+    if _sentinel_busy(pool):                                # SPEC-0359: a full close suite
+        out.append({"campaign": f"sentinel-{pool.sentinel[0]}", "kind": "sentinel",
+                    "run_ids": [], "timeout_s": events_settings(cfg)["gate_budget_s"]})
     return out
 
 
@@ -5018,7 +5039,7 @@ def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
                 _harvest(pool, report)
                 if not pool.flights and bound_at is not None and time.monotonic() >= bound_at:
                     break                                 # a stopped sentinel past the bound
-                if pool.flights:
+                if pool.flights and not _sentinel_busy(pool):   # SPEC-0359: not past it
                     detached = pool.try_detach_all()      # SPEC-0225: persona runs outlive us
                     if detached is not None:
                         report.detached = detached

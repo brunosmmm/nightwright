@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import pytest
 from click.testing import CliRunner
 
+import waits
+
 from test_agentic_close import _commit, _git_env, _pcfg, world  # noqa: F401
 from test_agentic_close_reuse import _declined, rw  # noqa: F401
 from nightwright.agentic import close as CL
@@ -315,4 +317,139 @@ def test_drain_sees_a_running_sentinel():
     gate.set()
     pool.sentinel[1].result()
     assert not Q._sentinel_busy(pool)
+    pool.shutdown()
+
+
+# ---- retry backoff, run lock, setup marker (review loop 2) ---------------------------------
+
+def _wait_done(pool):
+    pool.sentinel[1].result()
+
+
+@pytest.fixture
+def real_sched(sw, monkeypatch):
+    """The runner's sentinel step with the real `SN.run`."""
+    monkeypatch.setattr(P, "project_config", lambda cfg, p: sw["pcfg"])
+    ctx = SimpleNamespace(cfg=sw["cfg"], stop=threading.Event())
+    pool = Q.StepPool()
+    yield sw, ctx, pool
+    pool.shutdown()
+
+
+def test_red_sentinel_not_resubmitted_at_the_same_sha_and_escalates_once(real_sched,
+                                                                         monkeypatch):
+    sw, ctx, pool = real_sched
+    cfg = sw["cfg"]
+    red = _merge_on_main(sw, "broken.txt")
+    _due(cfg)
+    assert Q._sentinel_step(ctx, pool, []) == PROJECT
+    _wait_done(pool)
+    assert Q._sentinel_step(ctx, pool, []) is None, "red at an unmoved base: no rerun"
+    assert Q._sentinel_step(ctx, pool, []) is None
+    assert len(_sentinel_events(cfg)) == 1 and len(ESC.list_all(cfg, "open")) == 1
+    assert "red at" in SN.backoff(cfg, PROJECT, red)
+    # past the retry interval the same sha runs again, red again, but escalates no more
+    monkeypatch.setattr(SN, "RETRY_S", 0)
+    assert Q._sentinel_step(ctx, pool, []) == PROJECT
+    _wait_done(pool)
+    assert len(_sentinel_events(cfg)) == 2 and len(ESC.list_all(cfg, "open")) == 1
+    # a cleared red is not undone at the same sha, whatever the age
+    SN.clear(cfg, PROJECT)
+    assert Q._sentinel_step(ctx, pool, []) is None
+    assert SN.read(cfg, PROJECT)["force_full_close"] is False
+    assert len(_sentinel_events(cfg)) == 2
+    # the base moves (a fix): due again, it runs and goes green
+    git.git(sw["root"], "rm", "-q", "broken.txt")
+    git.git(sw["root"], "commit", "-q", "-m", "fix")
+    assert Q._sentinel_step(ctx, pool, []) == PROJECT
+    _wait_done(pool)
+    assert _sentinel_events(cfg)[-1]["data"]["ok"] is True
+    assert Q._sentinel_step(ctx, pool, []) is None
+    assert len(ESC.list_all(cfg, "open")) == 1
+
+
+def test_green_at_the_same_sha_is_not_rerun_and_orphan_suspects_are_dropped(real_sched):
+    sw, ctx, pool = real_sched
+    cfg, root = sw["cfg"], sw["root"]
+    first = _merge_on_main(sw, "a.txt")
+    SN.record_merge(cfg, PROJECT, "c-a", first, root=root, project_cfg=sw["pcfg"])
+    for i in range(2):                                       # never on main: orphans
+        SN.record_merge(cfg, PROJECT, f"c-o{i}", f"{i + 10:040x}", root=root,
+                        project_cfg=sw["pcfg"])
+    assert Q._sentinel_step(ctx, pool, []) == PROJECT
+    _wait_done(pool)
+    st = SN.read(cfg, PROJECT)
+    assert st["suspects"] == [] and st["reuses_since_green"] == 0 and st["due_since"] is None
+    ev = _sentinel_events(cfg)[-1]["data"]
+    assert ev["suspects"] == [{"campaign": "c-a", "merge_sha": first}]
+    assert [d["campaign"] for d in ev["dropped"]] == ["c-o0", "c-o1"]
+    # even if something keeps it due, a green base sha is not rerun until the base moves
+    _due(cfg)
+    assert Q._sentinel_step(ctx, pool, []) is None
+    assert "already green" in SN.backoff(cfg, PROJECT, first)
+    assert SN.backoff(cfg, PROJECT, "0" * 40) is None
+
+
+def test_exception_backs_off_and_a_failed_setup_is_rerun(real_sched, tmp_path):
+    sw, ctx, pool = real_sched
+    cfg = sw["cfg"]
+    flag, ran = tmp_path / "setup-may-pass", tmp_path / "setup-ran"
+    sw["pcfg"]["worktrees"] = {"setup": [f"test -f {flag}", f"touch {ran}"]}
+    _due(cfg)
+    assert Q._sentinel_step(ctx, pool, []) == PROJECT
+    with pytest.raises(git.GitError):
+        _wait_done(pool)
+    assert Q._sentinel_step(ctx, pool, []) is None, "harvested; a failure backs off"
+    last = SN.last_run(cfg, PROJECT)
+    assert last["ok"] is None and "exited 1" in last["error"]
+    assert "failed at" in SN.backoff(cfg, PROJECT, last["sha"])
+    assert not ran.exists()
+    flag.touch()
+    out = SN.run(cfg, PROJECT, project_cfg=sw["pcfg"])     # the worktree exists: setup reruns
+    assert out["ok"] and ran.exists()
+    ran.unlink()
+    assert SN.run(cfg, PROJECT, project_cfg=sw["pcfg"])["ok"]
+    assert not ran.exists(), "a finished setup is not repeated"
+
+
+def test_concurrent_cli_run_is_refused_while_the_runner_run_holds_the_lock(real_sched,
+                                                                           monkeypatch):
+    sw, ctx, pool = real_sched
+    cfg = sw["cfg"]
+    at_gate, release = threading.Event(), threading.Event()
+
+    def hold(_sha):
+        at_gate.set()
+        assert release.wait(waits.WAIT_S)
+
+    _due(cfg)
+    t = threading.Thread(target=lambda: SN.run(cfg, PROJECT, project_cfg=sw["pcfg"],
+                                               _hooks={"after_reset": hold}))
+    t.start()
+    try:
+        assert at_gate.wait(waits.WAIT_S)
+        assert SN.running(cfg, PROJECT)
+        (SN.worktree_path(cfg, PROJECT) / "suite-output.tmp").write_text("x")
+        r = _cli(cfg, monkeypatch, ["queue", "sentinel", "run", "--project", PROJECT])
+        assert r.exit_code == 1 and "already in progress" in r.output, r.output
+        assert (SN.worktree_path(cfg, PROJECT) / "suite-output.tmp").exists(), "not cleaned"
+        assert Q._sentinel_step(ctx, pool, []) is None, "the runner skips a locked project"
+        assert pool.sentinel is None
+    finally:
+        release.set()
+        waits.join(t)
+    assert not SN.running(cfg, PROJECT)
+    assert len(_sentinel_events(cfg)) == 1
+
+
+def test_drain_waiting_on_lists_a_running_sentinel(sw):
+    pool = Q.StepPool()
+    assert Q._waiting_on(sw["cfg"], pool) == []
+    gate = threading.Event()
+    pool.sentinel = (PROJECT, pool.submit(gate.wait))
+    (w,) = Q._waiting_on(sw["cfg"], pool)
+    assert w["kind"] == "sentinel" and w["campaign"] == f"sentinel-{PROJECT}"
+    assert w["timeout_s"]
+    gate.set()
+    pool.sentinel[1].result()
     pool.shutdown()

@@ -220,10 +220,20 @@ the sentinel is overdue (due for longer than `max_age_s`, or disabled with `afte
 reuses pending). A missing state file is rebuilt from the queue events (a red last sentinel
 keeps `force_full_close`); an unreadable one declines reuse until a sentinel run rewrites it.
 
+Runs of one project are serialized by `<agentic>/sentinel/<project>.lock` (a non-blocking lock
+held for the worktree reset, the gates and the settle); the runner skips a locked project. Each
+finished run is noted in `<project>.last.json`, and the runner does not rerun the sentinel at the
+base sha the last run tested when that run was green or its red was cleared, nor a red or failed
+run there within an hour; a moved base always runs. A red run at the sha the previous red
+`sentinel` event already reported does not escalate again. A green run also drops suspects whose
+merge sha is no longer on the base branch (listed as `dropped` on the event). The worktree's
+`worktrees.setup` is rerun until it has succeeded once (`<project>.setup.json`), and again when
+the setup commands change.
+
 - `nw queue sentinel run --project P` runs the sentinel now (waits for a gate slot; exits 1 when
-  red; `--json` emits `nw.queue.sentinel.v1`).
+  red or when another run of `P` holds the lock; `--json` emits `nw.queue.sentinel.v1`).
 - `nw queue sentinel clear --project P` clears `force_full_close` and `due_since`; the suspects
-  stay.
+  stay, and the runner does not rerun the cleared red sha.
 
 Every gate writes one log under the campaign directory, `gates/NNN-<name>.log`, starting
 with a header line that names the command and its working directory; the last 60 lines

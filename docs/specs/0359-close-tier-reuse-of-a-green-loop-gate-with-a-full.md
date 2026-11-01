@@ -371,6 +371,21 @@ sequencing hint only.
   new `head`/`tree` on the gate payload; the diff adds only those two keys (payload and `gate`
   event). `uv run pytest -q -n 2 tests/test_remote_gates.py tests/test_agentic_gates.py`: 173 passed.
 
+- Review loop 2 fix (sentinel scheduling and serialization): `uv run pytest -q -n 4
+  tests/test_agentic_sentinel.py` (22 tests, +5): a red sentinel is not resubmitted at the same
+  base sha on the next ticks and escalates once, a rerun of the same red sha after the retry
+  interval appends a second `sentinel` event but no second escalation, `sentinel clear` is not
+  undone at that sha, a moved base runs again and goes green; a green sha is not rerun and
+  suspects not on the base are dropped (`dropped` on the event) so the counter reaches 0; a
+  failed `worktrees.setup` backs off, is rerun on the next run and is not repeated after it
+  succeeded; a CLI `sentinel run` is refused (exit 1, "already in progress") while the
+  runner's run holds the lock, the worktree is not cleaned under it and the runner's step skips
+  the project; the drain's `waiting_on` lists a running sentinel. Then the close, close-reuse,
+  gates, project, dogfood-config and `test_agentic_queue*` files (671 passed) and the drain /
+  exec / lease / quiet / escalation / remote-gates / `test_test_waits` files (533 passed,
+  after the new lock test was moved to `waits.join`), and `test_docs_*`, `test_specs`,
+  `test_completion` (75 passed). The full suite was left to the queue's close gate. `python3 tools/spec_lint.py` exits 0.
+
 ### As shipped (2026-11-01)
 
 - Built to Design. New module `agentic/sentinel.py` holds `gate_reuse.json` (lock
@@ -396,6 +411,25 @@ sequencing hint only.
 - `due_since` is also cleared by a green run that leaves suspects that are not still due.
   The runner's drain waits for a running sentinel like a gate flight (a stop ends its gates).
   Sentinel logs go to `<agentic>/sentinel/<project>.logs/NNN-<gate>.log`.
+- Review loop 2 additions, all failing toward fewer redundant runs, none changing what a run
+  settles. (1) `SN.run` holds a non-blocking per-project run lock,
+  `<agentic>/sentinel/<project>.lock`, across the worktree reset, the gates (and the log seq)
+  and the settle; a second run raises `Busy` (the CLI exits 1 with the holder's pid, the runner
+  skips the project and journals `sentinel_skipped` if it lost the race). (2) Each finished run
+  is noted in `<agentic>/sentinel/<project>.last.json` (`sha`, `at`, `ok`, `error`, `cleared`;
+  outside `gate_reuse.json`, whose shape is unchanged). The runner's step (`SN.backoff`) does
+  not start a run at the base sha the last run tested when it was green, or red and cleared by
+  `nw queue sentinel clear`; a red or raised run at that sha is retried after `SN.RETRY_S`
+  (3600 s, a constant rather than a config key, since the project schema is fixed by this spec);
+  a moved base always runs; a deferral is journaled once per reason (`sentinel_deferred`).
+  (3) `settle` skips the escalation when the project's previous `sentinel` event was already
+  red at the same sha (the event is still appended). (4) A green run with the base given also
+  drops suspects whose merge sha is not an ancestor of the base tip (a rewritten base, or a sha
+  git no longer knows): no run on the base can ever settle them, and keeping them would leave
+  the sentinel due and then overdue forever; they are listed as `dropped` on the `sentinel`
+  event. (5) `worktrees.setup` success is marked in `<project>.setup.json` (with the commands),
+  so a failed or changed setup recreates the worktree on the next run. (6) The drain lists a
+  running sentinel in `waiting_on` and does not detach-and-exec while it runs.
 
 ## Risks
 

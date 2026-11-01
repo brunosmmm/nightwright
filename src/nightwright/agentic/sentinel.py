@@ -10,10 +10,16 @@ detached worktree. A green run settles the suspects its tested sha contains; a r
 State file: `{reuses_since_green, last_green_sha, last_green_at, due_since, force_full_close,
 suspects: [{campaign, merge_sha}]}`. Every read-modify-write holds `gate_reuse.json.lock`. A
 missing file is rebuilt from the queue's `sentinel` events and the campaigns' `close` events; an
-unreadable one is left in place and declines reuse (R1) until a sentinel run rewrites it."""
+unreadable one is left in place and declines reuse (R1) until a sentinel run rewrites it.
+
+Runs of one project are serialized by a non-blocking flock on `<agentic>/sentinel/<project>.lock`
+(a second run raises `Busy`). Each finished run is noted in `<project>.last.json` so the runner
+does not resubmit a red or failed run at the same base sha before `RETRY_S`, nor a green one, nor
+one whose red result was cleared by `nw queue sentinel clear`, until the base moves."""
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import json
 import os
 import shutil
@@ -31,12 +37,17 @@ from . import store
 
 STATE_FILE = "gate_reuse.json"
 UNREADABLE = f"{STATE_FILE} unreadable"
+RETRY_S = 3600          # a red / failed run at an unmoved base is retried after this long
 _KEYS = ("reuses_since_green", "last_green_sha", "last_green_at", "due_since",
          "force_full_close", "suspects")
 
 
 class Unreadable(ValueError):
     """`gate_reuse.json` exists but is not valid JSON of the expected shape."""
+
+
+class Busy(ValueError):
+    """Another sentinel run of the project holds its run lock."""
 
 
 def empty_state() -> dict:
@@ -286,13 +297,17 @@ def check_due(cfg, project, *, root=None, project_cfg=None, now=None) -> bool:
 
 
 def clear(cfg, project, *, root=None, project_cfg=None) -> dict:
-    """`nw queue sentinel clear`: `force_full_close` and `due_since` off, suspects kept."""
+    """`nw queue sentinel clear`: `force_full_close` and `due_since` off, suspects kept. A red
+    last run is marked cleared, so the runner does not rerun it until the base moves."""
     scfg = settings(project_cfg)[1]
     with locked(cfg, project):
         st = _load_locked(cfg, project, root=root, scfg=scfg, rebuild_unreadable=True)
         st["force_full_close"] = False
         st["due_since"] = None
         _write(state_path(cfg, project), st)
+        last = last_run(cfg, project)
+        if last is not None and last.get("ok") is not True:
+            _write_last(cfg, project, {**last, "cleared": True})
         return dict(st)
 
 
@@ -314,21 +329,127 @@ def _base(project_cfg) -> str:
     return (project_cfg.get("merge") or {}).get("base") or project_cfg.get("base") or "main"
 
 
+def _side(cfg, project, suffix: str) -> Path:
+    wt = worktree_path(cfg, project)
+    return wt.parent / f"{wt.name}{suffix}"
+
+
+# ---- serialization and the last-run note -----------------------------------------------------
+
+def _holder(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+@contextmanager
+def run_lock(cfg, project):
+    """The per-project run lock (non-blocking flock on `<agentic>/sentinel/<project>.lock`,
+    the holder's pid written into it). Raises Busy when another run holds it."""
+    path = _side(cfg, project, ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pid = _holder(path)
+            raise Busy(f"a sentinel run of {project} is already in progress"
+                       + (f" (pid {pid})" if pid else "") + f"; {path} is locked")
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, f"{os.getpid()}\n".encode())
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def running(cfg, project) -> bool:
+    """A sentinel run of `project` holds the run lock right now (in any process)."""
+    try:
+        with run_lock(cfg, project):
+            return False
+    except Busy:
+        return True
+
+
+def last_run(cfg, project) -> dict | None:
+    """`{sha, at, ok, error, cleared}` of the last finished run (`ok` None after an exception),
+    None when unknown or unreadable."""
+    try:
+        rec = json.loads(_side(cfg, project, ".last.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def _write_last(cfg, project, rec: dict) -> None:
+    path = _side(cfg, project, ".last.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(path, json.dumps(rec, indent=2) + "\n")
+
+
+def _note_run(cfg, project, *, sha, ok, error=None, now=None) -> None:
+    try:
+        _write_last(cfg, project, {"sha": sha, "at": _iso(now), "ok": ok, "error": error,
+                                   "cleared": False})
+    except OSError:
+        pass
+
+
+def backoff(cfg, project, base_sha, *, now=None) -> str | None:
+    """Why the runner must not start a run of `project` at base `base_sha` now, or None. A run
+    is pointless at the sha the last one tested when it was green or its red was cleared; a
+    red or failed one is retried there only after `RETRY_S`. A moved base always runs."""
+    last = last_run(cfg, project)
+    if not last:
+        return None
+    sha = last.get("sha")
+    if sha and base_sha and sha != base_sha:
+        return None
+    at = sha[:10] if sha else "?"
+    if sha and last.get("ok") is True:
+        return f"already green at {at}; waiting for the base to move"
+    if sha and last.get("cleared"):
+        return f"red at {at} was cleared; waiting for the base to move"
+    t = _ts(last.get("at"))
+    if t is not None and _now(now) - t < RETRY_S:
+        what = "red" if last.get("ok") is False else "failed"
+        return (f"{what} at {at}; retry after "
+                f"{_iso(t + RETRY_S)} or when the base moves")
+    return None
+
+
 def _prepare_worktree(root, wt: Path, base: str, project_cfg: dict) -> str:
     """The detached sentinel worktree at the base HEAD (created, with `worktrees.setup`, when
-    missing); returns the tested sha."""
+    missing, when the last setup did not finish, or when the setup commands changed: the
+    `<project>.setup.json` marker is written only after every setup command succeeded);
+    returns the tested sha."""
     sha = git.rev_parse(root, base)
-    if not (wt / ".git").exists():
+    setup = list((project_cfg.get("worktrees") or {}).get("setup") or [])
+    marker = wt.parent / f"{wt.name}.setup.json"
+    want = json.dumps({"setup": setup})
+    try:
+        ready = (wt / ".git").exists() and marker.read_text(encoding="utf-8") == want
+    except OSError:
+        ready = False
+    if not ready:
+        marker.unlink(missing_ok=True)
         if wt.exists():
-            shutil.rmtree(wt)
+            git.git(root, "worktree", "remove", "--force", str(wt), check=False)
+            shutil.rmtree(wt, ignore_errors=True)
         git.git(root, "worktree", "prune", check=False)
         wt.parent.mkdir(parents=True, exist_ok=True)
         git.git(root, "worktree", "add", "-q", "--detach", str(wt), sha)
-        for cmd in (project_cfg.get("worktrees") or {}).get("setup") or []:
+        for cmd in setup:
             r = subprocess.run(cmd, shell=True, cwd=str(wt), capture_output=True, text=True)
             if r.returncode != 0:
                 out = "\n".join(((r.stdout or "") + (r.stderr or "")).splitlines()[-20:])
                 raise git.GitError([cmd], r.returncode, f"{cmd} exited {r.returncode}:\n{out}")
+        _atomic_write(marker, want)
     git.git(wt, "checkout", "-q", "--detach", "-f", sha)
     git.git(wt, "reset", "-q", "--hard", sha)
     git.git(wt, "clean", "-fdq")            # not -x: ignored setup output (.venv) stays
@@ -345,16 +466,32 @@ def _failing(results) -> list[str]:
 
 def run(cfg, project, *, project_cfg=None, stop=None, now=None, _hooks=None) -> dict:
     """Run the project's close gates (no `paths` skip, no reuse) on the base HEAD in the
-    sentinel worktree under a normal gate slot, then settle the state. Returns
+    sentinel worktree under a normal gate slot, then settle the state, all under the project's
+    run lock (Busy when another run holds it). Returns
     `{project, ok, sha, suspects, failing, interrupted, results}`; an interrupted run settles
-    nothing."""
-    hooks = _hooks or {}
+    nothing. A finished run (or one that raised) is noted for `backoff`."""
+    with run_lock(cfg, project):
+        tested = {}
+        try:
+            out = _run_locked(cfg, project, project_cfg=project_cfg, stop=stop, now=now,
+                              hooks=_hooks or {}, tested=tested)
+        except Exception as e:
+            _note_run(cfg, project, sha=tested.get("sha"), ok=None,
+                      error=f"{type(e).__name__}: {e}"[:500], now=now)
+            raise
+        if not out["interrupted"]:
+            _note_run(cfg, project, sha=out["sha"], ok=out["ok"], now=now)
+        return out
+
+
+def _run_locked(cfg, project, *, project_cfg, stop, now, hooks, tested) -> dict:
     pcfg = project_cfg or P.project_config(cfg, project)
     root = pcfg.get("_root")
     if not root:
         root = str(P.project_root(cfg, project))
     wt = worktree_path(cfg, project)
     sha = _prepare_worktree(root, wt, _base(pcfg), pcfg)
+    tested["sha"] = sha
     if "after_reset" in hooks:
         hooks["after_reset"](sha)
     owner = f"sentinel-{E._safe(str(project))}"
@@ -395,20 +532,49 @@ def run(cfg, project, *, project_cfg=None, stop=None, now=None, _hooks=None) -> 
         hooks["before_settle"]()
     failing = [] if out["ok"] else _failing(results)
     settled = settle(cfg, project, sha, out["ok"], failing, root=root, project_cfg=pcfg,
-                     now=now)
+                     now=now, base=_base(pcfg))
     out.update(suspects=settled, failing=failing)
     return out
 
 
-def settle(cfg, project, sha, ok, failing=(), *, root=None, project_cfg=None, now=None) -> list:
+def _orphans(root, base, suspects) -> list:
+    """Suspects whose merge sha is not on the base branch (rewritten away, or unknown to git):
+    no sentinel run on the base can ever contain them. Empty when the base cannot be read."""
+    if not root or not base or not suspects:
+        return []
+    try:
+        tip = git.rev_parse(root, base)
+    except (ValueError, OSError):
+        return []
+    return [s for s in suspects if not _contains(root, tip, s.get("merge_sha"))]
+
+
+def _repeat_red(cfg, project, sha) -> bool:
+    """The project's previous `sentinel` event was already red at `sha`."""
+    try:
+        runs = [e for e in E.read_since(cfg, 0, types=["sentinel"])
+                if e.get("project") == project]
+    except (OSError, ValueError):
+        return False
+    data = (runs[-1].get("data") or {}) if runs else {}
+    return data.get("ok") is False and data.get("sha") == sha
+
+
+def settle(cfg, project, sha, ok, failing=(), *, root=None, project_cfg=None, now=None,
+           base=None) -> list:
     """Record a finished sentinel run at tested sha `sha` (section 5 *Outcome*) and announce
-    it; returns the suspects it settled (those that are `sha` or its ancestors)."""
+    it; returns the suspects it settled (those that are `sha` or its ancestors). With `base`,
+    a green run also drops the suspects that are not on the base branch at all. A red run at
+    the sha the previous red event already reported does not escalate again."""
     scfg = settings(project_cfg)[1]
+    dropped = []
     with locked(cfg, project):
         st = _load_locked(cfg, project, root=root, scfg=scfg, now=now, rebuild_unreadable=True)
         settled = [s for s in st["suspects"] if _contains(root, sha, s.get("merge_sha"))]
         if ok:
             keep = [s for s in st["suspects"] if s not in settled]
+            dropped = _orphans(root, base, keep)
+            keep = [s for s in keep if s not in dropped]
             st.update(suspects=keep, reuses_since_green=len(keep), last_green_sha=sha,
                       last_green_at=_iso(now), force_full_close=False, due_since=None)
             if keep:
@@ -421,11 +587,15 @@ def settle(cfg, project, sha, ok, failing=(), *, root=None, project_cfg=None, no
                          for s in settled]}
     if not ok:
         data["failing"] = list(failing)
+    if dropped:
+        data["dropped"] = [{"campaign": s.get("campaign"), "merge_sha": s.get("merge_sha")}
+                           for s in dropped]
+    repeat = not ok and _repeat_red(cfg, project, sha)
     try:
         E.append(cfg, "sentinel", project=project, by="sentinel", data=data)
     except (ValueError, OSError):
         pass
-    if not ok:
+    if not ok and not repeat:
         _escalate(cfg, project, sha, data["suspects"], list(failing))
     return data["suspects"]
 
