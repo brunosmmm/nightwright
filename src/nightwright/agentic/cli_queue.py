@@ -159,11 +159,12 @@ def _queue_table(payload: dict, width: int | None = None) -> Group:
             state = f"{state}:park?"
         color = {"PARKED": "yellow", "MERGED": "green", "HANDED_OFF": "green",
                  "ABANDONED": "dim"}.get(it["state"])
-        cell = Text(state, style=color or "")
-        if it["state"] == "PARKED" and park.get("owner") != "human":
-            cell.stylize("dim")     # SPEC-0222: the conductor's, not the human's
-            if park.get("overdue"):
-                cell.append(" !", style="red")
+        conductors = it["state"] == "PARKED" and park.get("owner") != "human"
+        if conductors:
+            color = "dim"           # SPEC-0222: the conductor's, not the human's
+        cell = Text().append(state, style=color or "")
+        if conductors and park.get("overdue"):
+            cell.append(" ").append("!", style="red")
         rows.append({"campaign": _campaign_cell(it), "state": cell, "title": _list_title(it),
                      "blocked_by": _blocked_cell(it),
                      "park": Text(str(it.get("park_reason") or ""), style="yellow"),

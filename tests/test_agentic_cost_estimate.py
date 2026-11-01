@@ -182,7 +182,7 @@ def test_queue_watch_shows_estimate_only_when_above_zero(tmp_path, monkeypatch, 
     else:
         item["cost"] = cost
     payload = {**Q.queue_payload(cfg), "items": [item]}
-    table = _rendered(cli_queue._queue_table(payload))
+    table = _rendered(cli_queue._queue_table(payload, width=240))
     panel = _rendered(cli_queue._active_panel(item))
     assert "$4.20" in table and "$4.20" in panel
     assert ("~$4.00 est." in table) is shown

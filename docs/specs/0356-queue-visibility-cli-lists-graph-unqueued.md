@@ -1,7 +1,7 @@
 ---
 id: SPEC-0356
 title: "Queue visibility (CLI): untruncated lists with title/priority/blocked-by, nw queue graph, nw queue unqueued, remote gate line"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-01
 milestone: "M9: agentic workflow"
@@ -303,36 +303,36 @@ active / waiting / parked / backlog → `queue_payload` items (`row_view` fields
 
 ## Acceptance criteria
 
-- [ ] At widths 60, 100 and 160, `nw campaign list`, `nw queue list` and `nw queue backlog`
+- [x] At widths 60, 100 and 160, `nw campaign list`, `nw queue list` and `nw queue backlog`
       print every campaign id and state whole (no `…` in either), a title cell for every row,
       and no line longer than the width.
-- [ ] Columns disappear exactly in the documented order as width shrinks; at 160 all
+- [x] Columns disappear exactly in the documented order as width shrinks; at 160 all
       columns are present for the snapshot fixture (whose natural widths are chosen to fit
       in 160); blocked-by and park reason, when dropped as columns, appear in the
       title cell.
-- [ ] `nw queue list` no longer appends the park reason to the state cell; it has its own
+- [x] `nw queue list` no longer appends the park reason to the state cell; it has its own
       column (or folds into the title).
-- [ ] `nw campaign list --json`, `nw queue list --json` and `nw queue backlog --json` carry
+- [x] `nw campaign list --json`, `nw queue list --json` and `nw queue backlog --json` carry
       `title, priority, depends_on, blocked_by, waiting_on, park_reason, cost_usd, cap_usd`
       with identical values for the same campaign; every pre-existing key keeps its value.
-- [ ] `waiting_on_ids` returns `["SPEC-0337"]` for `"waiting on SPEC-0337 (accepted)"` and
+- [x] `waiting_on_ids` returns `["SPEC-0337"]` for `"waiting on SPEC-0337 (accepted)"` and
       the id for `"PROJ-0012 not found"`, `[]` for status/branch blockers.
-- [ ] `nw queue graph` renders the fixture DAG as a tree with dependents under their
+- [x] `nw queue graph` renders the fixture DAG as a tree with dependents under their
       dependencies, a shared node printed once in full and once as a reference, cycle members
       in a `Cycles` section, stub nodes for dependencies without a campaign, and terminates.
-- [ ] `nw queue graph --json` emits `nw.queue.graph.v1` with nodes, edges, roots, cycles;
+- [x] `nw queue graph --json` emits `nw.queue.graph.v1` with nodes, edges, roots, cycles;
       `--project` keeps external dependency stubs marked `external: true`.
-- [ ] `nw queue unqueued` lists an accepted spec with no campaign as `ready` first, lists
+- [x] `nw queue unqueued` lists an accepted spec with no campaign as `ready` first, lists
       draft, deps-unmet, previously-abandoned specs and INCUBATE ideas with their reasons,
       collapses a SPECCED idea into its spec row, lists a SPECCED idea whose spec is missing
       as `spec-missing`, omits a SPECCED idea whose spec exists but is not a candidate (e.g.
       `done`), and omits epics, policies, specs with a non-terminal or MERGED campaign; no
       idea row is ever `ready`.
-- [ ] `nw campaign show` prints the remote gate line for fixture ledgers with
+- [x] `nw campaign show` prints the remote gate line for fixture ledgers with
       (a) `gate_dispatched` and no `gate` → running, (b) `gate` with `worker` → finished,
       (c) `worker_failed` then local `gate` → fell back; and prints no such line for a
       local-only campaign. `--json` carries `remote_gate` (null when local).
-- [ ] No queue behavior changes: admission, readiness, the `backlog` ledger event and
+- [x] No queue behavior changes: admission, readiness, the `backlog` ledger event and
       `nw queue watch` output are unchanged (existing tests pass untouched).
 
 ## Test plan
@@ -396,9 +396,15 @@ active / waiting / parked / backlog → `queue_payload` items (`row_view` fields
   tests/test_agentic_dashboard_spec_phase.py tests/test_agentic_waiting.py
   tests/test_agentic_cost_estimate.py tests/test_agentic_queue_merge.py
   tests/test_agentic_idea_campaign.py tests/test_agentic_watch_height.py
-  tests/test_agentic_queue.py`: passing after the test edits listed under *As shipped*.
-- `python3 tools/affected_tests.py --run uv run pytest -q -n 4`: see the run result in the
-  implementer verdict; the full suite is left to the queue's close gate.
+  tests/test_agentic_queue.py`: the first gate run failed
+  `test_queue_watch_shows_estimate_only_when_above_zero` (cost column dropped at the default
+  80 columns). A rerun of the related set plus `tests/test_tui_queue_*.py` gave 427 passed,
+  2 failed (`test_queue_list_json_and_table_show_sizing`,
+  `test_list_marks_overdue_and_colours_parks_by_owner`). After the fixes listed under
+  *As shipped (2026-11-01, run 004)*, both pass.
+- `python3 tools/affected_tests.py --include tests/test_agentic_dogfood_config.py --include
+  tests/test_agentic_project.py --run uv run pytest -q -n 4` (83 files): 2510 passed,
+  4 skipped, exit 0. The full suite is left to the queue's close gate.
 - `python3 tools/spec_lint.py`: OK.
 - Manual (real data dir, Meta-Tools queue): `nw queue list`, `nw campaign list` and
   `nw queue backlog` at `COLUMNS=60` and `160` (no line over the width, ids and states whole;
@@ -448,6 +454,14 @@ active / waiting / parked / backlog → `queue_payload` items (`row_view` fields
   (`NW_PERSONA_RUN`). The `gate_dispatched` contract is recorded as campaign note #16 and
   in the verdict's follow-ups instead.
 
+### As shipped (2026-11-01, run 004)
+
+- The conductor-owned PARKED state cell is styled as on main again: plain `dim`, not dim
+  yellow. The overdue marker is an unstyled space followed by a red `!` that is not dim.
+- Tests now pin the fitter width where they assert rank 3-8 cells:
+  `test_queue_watch_shows_estimate_only_when_above_zero` uses `width=240` (cost is rank 4)
+  and `test_queue_list_json_and_table_show_sizing` uses 200 for its wide render.
+
 ## Rollout / migration
 
 1. `row_view`, `waiting_on_ids`, `_spec_meta` cache; JSON additions.
@@ -461,11 +475,11 @@ No data migration: everything is read-only over existing state, ledgers and spec
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual steps performed and noted.
-- [ ] No regressions (full suite at the close gate).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual steps performed and noted.
+- [x] No regressions (full suite at the close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

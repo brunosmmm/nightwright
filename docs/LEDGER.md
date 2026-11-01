@@ -263,7 +263,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | accepted | — | 2026-11-01 |
 | [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) | Remote workers integration suite for gate and persona workers | feature | accepted | — | 2026-11-01 |
 | [SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) | Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane | epic | accepted | M9: agentic workflow | 2026-11-01 |
-| [SPEC-0356](./specs/0356-queue-visibility-cli-lists-graph-unqueued.md) | Queue visibility (CLI): untruncated lists with title/priority/blocked-by, nw queue graph, nw queue unqueued, remote gate line | feature | in-progress | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0359](./specs/0359-close-tier-reuse-of-a-green-loop-gate-with-a-full.md) | Close-tier reuse of a green loop gate, with a full-suite sentinel on the base branch | feature | accepted | — | 2026-11-01 |
 | [SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) | Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer | epic | accepted | — | 2026-11-01 |
 
@@ -589,6 +588,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0351](./specs/0351-queue-watch-fill-terminal-height.md) | queue watch: size the bottom sections to the terminal height | feature | done | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0353](./specs/0353-conductor-launch-steward-launch-allowedtools-do.md) | conductor-launch / steward-launch permission rules cover lease-pinned PR-rebase pushes and the steward rebase set | feature | done | — | 2026-11-01 |
 | [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) | nw workers bootstrap | feature | done | — | 2026-11-01 |
+| [SPEC-0356](./specs/0356-queue-visibility-cli-lists-graph-unqueued.md) | Queue visibility (CLI): untruncated lists with title/priority/blocked-by, nw queue graph, nw queue unqueued, remote gate line | feature | done | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0357](./specs/0357-narrow-affected-tests-py-fallbacks-and-write-the.md) | Narrow affected_tests.py fallbacks and write the NW_GATE_REPORT selection report | feature | done | — | 2026-11-01 |
 | [SPEC-0358](./specs/0358-failed-first-loop-rounds.md) | Failed-first loop rounds: rerun the previously failing tests before the rest of a gate | feature | done | — | 2026-11-01 |
 | [SPEC-0362](./specs/0362-stream-json-capture-of-persona-runs-and-nw.md) | Stream-json capture of persona runs and nw campaign tail viewer | feature | done | — | 2026-11-01 |

@@ -311,7 +311,7 @@ def test_queue_list_json_and_table_show_sizing(tmp_path, monkeypatch):
     for it in payload["items"]:
         it["state"] = "IMPLEMENTING"
     next(it for it in payload["items"] if it["campaign"] == sized)["profile_source"] = "flag"
-    out = _render(CQ._queue_table(payload, 140), 140)
+    out = _render(CQ._queue_table(payload, 200), 200)
     for col in ("size", "tone", "profile"):
         assert col in out
     assert "cost-effective" in out and "(flag)" in out
