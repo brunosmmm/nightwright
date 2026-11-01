@@ -24,6 +24,7 @@ SCHEMA = "nw.workers.v1"
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,30}")
 DEST_RE = re.compile(r"[A-Za-z0-9._@:-]+")
 NW_CMD_RE = re.compile(r"[A-Za-z0-9._/~+-]+")
+IDENTITY_RE = re.compile(r"/[A-Za-z0-9._/+-]+")  # an absolute private-key path (SPEC-0354)
 MIN_SLOTS, MAX_SLOTS = 1, 16
 DEFAULT_KINDS = ["gate"]
 CHECK_TIMEOUT_S = 30.0
@@ -99,6 +100,14 @@ def _check_record(rec) -> None:
     if nw is not None and (not isinstance(nw, str) or not NW_CMD_RE.fullmatch(nw)
                            or nw.startswith("-")):
         raise ValueError(f"worker {name}: nw command {nw!r} is invalid")
+    ident = rec.get("identity")
+    if ident is not None and not identity_ok(ident):
+        raise ValueError(f"worker {name}: identity {ident!r} is invalid")
+
+
+def identity_ok(value) -> bool:
+    """An `identity` (SPEC-0354): an absolute path to a private key, never option-like."""
+    return isinstance(value, str) and bool(IDENTITY_RE.fullmatch(value))
 
 
 def _parse(text: str) -> list[dict]:
@@ -138,12 +147,17 @@ def read_strict(cfg) -> list[dict]:
 
 
 def normalize(cfg, rec: dict) -> dict:
-    """A raw record with the defaults filled in (`ssh_argv` included, never stored by `add`)."""
+    """A raw record with the defaults filled in (`ssh_argv` included, never stored by `add`).
+    A record with an `identity` (SPEC-0354) gets `-i <identity> -o IdentitiesOnly=yes`
+    appended, so every connection to that worker offers only its dedicated key."""
     slots = rec.get("slots")
     ok = isinstance(slots, int) and not isinstance(slots, bool) and MIN_SLOTS <= slots <= MAX_SLOTS
     argv = rec.get("ssh_argv")
     if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
         argv = default_ssh_argv(cfg)
+    argv = list(argv)
+    if identity_ok(rec.get("identity")):
+        argv += ["-i", rec["identity"], "-o", "IdentitiesOnly=yes"]
     kinds = rec.get("kinds")
     return {**rec, "slots": slots if ok else MIN_SLOTS,
             "kinds": kinds if isinstance(kinds, list) else list(DEFAULT_KINDS),

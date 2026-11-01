@@ -1,7 +1,7 @@
 ---
 id: SPEC-0354
 title: "nw workers bootstrap"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -185,43 +185,43 @@ dir>/nw`.
 
 ## Acceptance criteria
 
-- [ ] A fresh run resolves `<bin>` with `uv tool dir --bin`, builds, copies and installs the
+- [x] A fresh run resolves `<bin>` with `uv tool dir --bin`, builds, copies and installs the
       wheel, verifies `<bin>/nw worker info`, and registers the worker with `nw = <bin>/nw`
       and `identity = <worker private key>`. A status table lists every step.
-- [ ] Re-running with nw already at the same version, the key line present and the same
+- [x] Re-running with nw already at the same version, the key line present and the same
       registration skips install, key and register. Nothing is duplicated in
       `authorized_keys`.
-- [ ] A worker reporting a different version is reinstalled. If `nw worker info` still fails
+- [x] A worker reporting a different version is reinstalled. If `nw worker info` still fails
       or reports another version afterwards, verify is `failed`, later steps are not run,
       and the exit status is nonzero.
-- [ ] `--install-key` creates `~/.ssh` (700), appends the exact line
+- [x] `--install-key` creates `~/.ssh` (700), appends the exact line
       `command="<bin>/nw worker ssh-command",restrict <pubkey>` once, sets `authorized_keys`
       to 600, and then runs `add` with check.
-- [ ] `--install-key` refuses when the worker public key is already authorized by a line
+- [x] `--install-key` refuses when the worker public key is already authorized by a line
       that is not the exact forced-command line. The registered worker connects with the
       dedicated key: its normalized `ssh_argv` contains `-i <identity> -o IdentitiesOnly=yes`.
-- [ ] A record without `identity` normalizes to the same `ssh_argv` as before this spec.
+- [x] A record without `identity` normalizes to the same `ssh_argv` as before this spec.
       `nw workers add --identity` rejects a relative path or one starting with `-`.
-- [ ] Without `--install-key` the line is printed, the worker is added with `--no-check`,
+- [x] Without `--install-key` the line is printed, the worker is added with `--no-check`,
       and the next step is printed.
-- [ ] `--install-key` refuses a root account (by name or uid 0) and any line that is not the
+- [x] `--install-key` refuses a root account (by name or uid 0) and any line that is not the
       exact `command="...",restrict <pubkey>` form, without touching the worker.
-- [ ] A remote bin dir that is not an absolute path matching `^/[A-Za-z0-9._/-]+$` fails
+- [x] A remote bin dir that is not an absolute path matching `^/[A-Za-z0-9._/-]+$` fails
       install with no key written.
-- [ ] A missing worker key file stops the run before any remote call, printing the
+- [x] A missing worker key file stops the run before any remote call, printing the
       `ssh-keygen` command.
-- [ ] `--admin` probes `sudo -n true` first. If sudo needs a password, it fails clearly and
+- [x] `--admin` probes `sudo -n true` first. If sudo needs a password, it fails clearly and
       runs nothing else. Otherwise it creates the worker user (`useradd -m`, no group flags)
       when `id -u` says it is missing and skips it when present. A freshly created user then
       completes install, verify, key (files owned by that user, 700/600) and register, with
       every worker-side command run through `ADMIN` as `sudo -n -i -u DESTUSER`.
-- [ ] NAME already registered with a different `ssh`, `slots`, `nw` or `identity` fails
+- [x] NAME already registered with a different `ssh`, `slots`, `nw` or `identity` fails
       register with `worker NAME is registered with different settings; nw workers rm NAME
       first`, and no remote command runs when the conflict is visible locally.
-- [ ] `--dry-run` prints every step and command (with the `<uv tool bin dir>` placeholder)
+- [x] `--dry-run` prints every step and command (with the `<uv tool bin dir>` placeholder)
       and runs none (no ssh, scp, build, or registry write).
-- [ ] Bootstrap's own ssh/scp calls pass `-o ControlPath=none`.
-- [ ] `agentic.workers.key` is documented with the other `agentic.workers` settings.
+- [x] Bootstrap's own ssh/scp calls pass `-o ControlPath=none`.
+- [x] `agentic.workers.key` is documented with the other `agentic.workers` settings.
 
 ## Test plan
 
@@ -274,6 +274,63 @@ dir>/nw`.
 - **Regression guard:** affected tests while iterating. SPEC-0337's existing registry tests
   run unchanged (a record without `identity` behaves as before).
 
+### Test record (2026-11-01)
+
+- `uv run pytest -q -n 0 tests/test_workers_bootstrap.py`: 19 passed. All 16 named cases are
+  there (`test_key_already_authorized_unrestricted`, `test_bad_bin_dir` and
+  `test_missing_worker_key` are parametrized: plain line and other-path forced line; relative
+  and spaced bin dir; missing `.pub` and missing private key).
+- `uv run pytest -q -n 0 tests/test_workers_registry.py tests/test_rich_output_guard.py`: 56
+  passed, including `test_identity_in_ssh_argv`, `test_no_identity_unchanged`,
+  `test_add_identity_validation` (relative, `-o...`, `~/...`, spaced; on `add` and on a
+  hand-edited record) and `test_add_identity_is_stored_and_listed`. SPEC-0337's existing
+  registry tests pass unchanged.
+- `python3 tools/affected_tests.py --run uv run pytest -q -n 4`: 4877 passed, 3 skipped
+  (the selection fell back to almost the whole suite).
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: OK.
+- Manual, partly done. A throwaway key pair was made with `ssh-keygen -t ed25519 -N '' -f
+  $T/nw_worker_ed25519`, with a temp config setting `agentic.workers.key`. Then the real CLI
+  ran `nw workers bootstrap box --ssh nw@box --install-key --dry-run`. It printed every
+  step's exact command with the `<uv tool bin dir>` placeholder, all five steps showed
+  `would run` / `not requested`, the exit was 0, and no data dir was created. `--ssh
+  root@box --install-key --dry-run` was refused before any call. **Not performed:** the
+  real run against a machine with an existing `nw` user, `nw workers check box`, and the
+  check that `ssh -i ~/.ssh/nw_worker_ed25519 -o IdentitiesOnly=yes nw@box id` is refused
+  while the human's own `ssh nw@box id` works. This environment has no worker host or `nw`
+  user. Creating one needs sudo or pulling a container image, and a loopback sshd as the
+  human's own user would write the human's real `~/.ssh/authorized_keys`. A human has to run
+  this step before the spec is `done`.
+- Full suite left to the gate's close run.
+
+### As shipped (2026-11-01)
+
+- Code: `src/nightwright/agentic/workers_bootstrap.py` (the steps), `nw workers bootstrap` in
+  `cli_workers.py`, and the `identity` field in `workers.py` (`IDENTITY_RE`, `identity_ok`,
+  `_check_record`, `normalize`). `nw workers add --identity` was added; `list --json` gains
+  `identity`. Docs are in `docs/WORKFLOW.md` (Remote gate worker -> Bootstrap) and
+  `docs/product/capabilities/agentic.md`.
+- With `--install-key`, the uid-0 probe (`id -u` on the worker) runs **before** install,
+  not inside step 3. It is a read, and install already writes to the worker, so this keeps
+  "refuses a root account without touching the worker" true. A refusal shows on the `key`
+  row, with install, verify and register `not run`. A root account by name is refused in the
+  local pre-checks, before any remote call. The other step-3 checks (line form,
+  already-authorized blob) run in step 3, before its write.
+- `register` writes the record itself, with the same fields and validation as `nw workers
+  add` and `WK.check` when `--install-key`. It does not shell out to `nw workers add`.
+  `--dry-run` prints the equivalent `nw workers add ... --identity ... [--no-check]` line.
+- Every worker-side command is a POSIX script sent as `sh -c '<script>'`. That is
+  `ssh DEST sh -c ...` without `--admin`, and `ssh ADMIN sudo -n -i -u DESTUSER sh -c ...`
+  with it. The admin-side commands (`sudo -n true`, `id -u`, `sudo -n useradd -m`, the
+  wheel's `mktemp -d`/`chmod`/`rm -rf`) run as ADMIN. The key script appends a newline first
+  when `authorized_keys` does not end in one, and re-checks `grep -qxF` before appending.
+- `--ssh` must be `USER@HOST`, with the user matching `[a-z_][a-z0-9_.-]{0,31}`.
+  `agentic.workers.key` must name a `.pub` file with exactly one `<type> <base64> [comment]`
+  line. The private-key path must match the registry's `IDENTITY_RE` (`/[A-Za-z0-9._/+-]+`).
+- `normalize` appends `-i <identity> -o IdentitiesOnly=yes` to a hand-set `ssh_argv` as well
+  as to the default one.
+- The CLI prints each failed step's message in full after the table (`error: <step>:
+  <message>`), because the table can truncate it.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
@@ -295,11 +352,11 @@ Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
+- [x] Acceptance criteria all met.
 - [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
 - [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

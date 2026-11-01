@@ -281,6 +281,37 @@ and `nw workers check [NAME] [--json]` probes over SSH with `nw worker info --js
 any probe fails; a version or sha mismatch only warns). `nw workers list|on|off|rm` manage
 the rest.
 
+**Bootstrap (SPEC-0354).** `nw workers bootstrap NAME --ssh nw@box [--slots N] [--install-key]
+[--admin me@box] [--dry-run]` does steps 2 and 3 and the registration, skipping what is already
+done, and prints a status table (`done`, `skipped (already ...)`, `would run`, `failed`,
+`not requested`, `not run`; exit 1 if a step failed):
+
+- **admin** (only with `--admin`): probes `sudo -n true` on the admin account, then creates the
+  worker user with `sudo -n useradd -m` when `id -u` says it is missing. With `--admin`, every
+  worker-side command below runs through the admin account as `sudo -n -i -u USER`.
+- **install**: needs `uv` for the worker user; `uv tool dir --bin` gives `<bin>`. When
+  `<bin>/nw worker info --json` reports another version than this checkout (or fails), a
+  wheel built here with `uv build --wheel` is copied over and installed with
+  `uv tool install --force`.
+- **verify**: `<bin>/nw worker info --json` must report this checkout's version.
+- **key**: the line `command="<bin>/nw worker ssh-command",restrict <worker public key>`.
+  Without `--install-key` it is printed. With it, it is appended once to the worker's
+  `~/.ssh/authorized_keys` (700/600). A root account (by name or uid 0) is refused, and so is
+  a worker key already authorized by any other line.
+- **register**: `nw workers add NAME --ssh DEST --nw <bin>/nw --identity <private key>`, with
+  its check when `--install-key` (the check then goes through the forced command), else
+  `--no-check`. A NAME already registered with other settings fails; `nw workers rm` it first.
+
+The worker key is **dedicated**: `agentic.workers.key` (in `config.yaml`, default
+`~/.ssh/nw_worker_ed25519.pub`) names its public key, and the private key is the same path
+without `.pub`. Both must exist (`ssh-keygen -t ed25519 -N '' -f ~/.ssh/nw_worker_ed25519`;
+bootstrap never creates it). Never reuse your login key: sshd uses the first matching
+`authorized_keys` line, so a forced line for a key that is already authorized has no effect.
+The record's `identity` (`nw workers add --identity PATH`, an absolute path) makes every
+coordinator connection to that worker add `-i <identity> -o IdentitiesOnly=yes`. Bootstrap's
+own ssh/scp sessions use `-o ControlPath=none`, so they never share the coordinator's
+ControlMaster sockets.
+
 The job store lives under `<data_dir>/agentic/worker/` (`repos/` object caches, `jobs/`).
 Each job runs `gc` (default `--keep-days 2`) when it ends; `nw worker gc --keep-days 0`
 empties everything no live job uses.

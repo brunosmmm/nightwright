@@ -520,8 +520,10 @@ shows the holders and the waiters.
 
 **Remote gate workers (in progress).** A second machine can run gates over SSH (SPEC-0310). The
 coordinator keeps a registry (`nw workers add NAME --ssh me@box [--slots N]`, `list`, `check`,
-`on`, `off`, `rm`; SPEC-0337) and the worker host answers `nw worker` (SPEC-0336). Setup and the
-threat model are in `docs/WORKFLOW.md` (Remote gate worker).
+`on`, `off`, `rm`; SPEC-0337) and the worker host answers `nw worker` (SPEC-0336). `nw workers
+bootstrap NAME --ssh nw@box --install-key` automates the setup (SPEC-0354): it installs a wheel
+of this checkout, the forced-command line for a dedicated worker key (`agentic.workers.key`)
+and the registration. Setup and the threat model are in `docs/WORKFLOW.md` (Remote gate worker).
 
 ## Events and watchdog
 

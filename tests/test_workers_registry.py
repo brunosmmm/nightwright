@@ -425,3 +425,34 @@ def test_config_watch_reports_an_unreadable_registry_once(cfg):
         assert errors() == {}
     finally:
         lease.release()
+
+
+# ---- dedicated worker key (SPEC-0354) -------------------------------------------------------
+
+def test_identity_in_ssh_argv(cfg):
+    _seed(cfg, _w("box", identity="/home/me/.ssh/nw_worker_ed25519"))
+    (w,) = WK.load(cfg)
+    assert w["ssh_argv"] == WK.default_ssh_argv(cfg) + [
+        "-i", "/home/me/.ssh/nw_worker_ed25519", "-o", "IdentitiesOnly=yes"]
+
+
+def test_no_identity_unchanged(cfg):
+    _seed(cfg, _w("box"))
+    (w,) = WK.load(cfg)
+    assert w["ssh_argv"] == WK.default_ssh_argv(cfg) and "identity" not in w
+
+
+@pytest.mark.parametrize("ident", ["rel/key", "-oProxyCommand=x", "~/.ssh/k", "/a b/k"])
+def test_add_identity_validation(cfg, invoke, ident):
+    res = invoke("add", "box", "--ssh", "me@box", "--identity", ident, "--no-check")
+    assert res.exit_code != 0 and WK.load(cfg) == []
+    _seed(cfg, _w("box", identity=ident))               # a hand-edited one is unreadable too
+    with pytest.raises(ValueError):
+        WK.read_strict(cfg)
+
+
+def test_add_identity_is_stored_and_listed(cfg, invoke):
+    res = invoke("add", "box", "--ssh", "me@box", "--identity", "/k/id", "--no-check")
+    assert res.exit_code == 0, res.output
+    assert json.loads(WK.path(cfg).read_text())["workers"][0]["identity"] == "/k/id"
+    assert json.loads(invoke("list", "--json").output)["workers"][0]["identity"] == "/k/id"

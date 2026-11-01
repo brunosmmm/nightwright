@@ -11,6 +11,7 @@ from ..render import err_console, warn
 from ..report import _dump_json
 from . import gate_slots as GS
 from . import workers as WK
+from . import workers_bootstrap as WB
 from .store import now_iso
 
 
@@ -22,6 +23,8 @@ def workers_group():
 
     \b
     nw workers add box --ssh me@box    register a worker (runs `check` first)
+    nw workers bootstrap box --ssh nw@box --install-key
+                                       install nw, the forced key line, register (SPEC-0354)
     nw workers list                    name, destination, slots, enabled, cooldown, held
     nw workers check [NAME]            probe over SSH
     nw workers on|off NAME             enable (clears cooldown) / disable
@@ -63,9 +66,12 @@ def _update(cfg, fn):
 @click.option("--nw", "nw_cmd", default="nw", show_default=True,
               help="first word of the remote command: `nw` or a path ending in /nw, as a forced "
                    "command requires (it runs its own nw whatever is sent)")
+@click.option("--identity", "identity", default=None, metavar="PATH",
+              help="absolute path of the worker's dedicated private key; every connection to "
+                   "the worker then uses only that key (SPEC-0354)")
 @click.option("--no-check", is_flag=True, help="register without probing the worker")
 @click.pass_obj
-def workers_add(cfg, name, dest, slots, nw_cmd, no_check):
+def workers_add(cfg, name, dest, slots, nw_cmd, identity, no_check):
     """Register a worker. Refuses a duplicate name and, unless --no-check, an unreachable one."""
     if not WK.NAME_RE.fullmatch(name) or name == "local":
         raise click.UsageError(f"NAME must match {WK.NAME_RE.pattern} and not be 'local'")
@@ -73,10 +79,15 @@ def workers_add(cfg, name, dest, slots, nw_cmd, no_check):
         raise click.UsageError(f"--ssh must match {WK.DEST_RE.pattern} and not start with '-'")
     if not WK.NW_CMD_RE.fullmatch(nw_cmd) or nw_cmd.startswith("-"):
         raise click.UsageError(f"--nw must match {WK.NW_CMD_RE.pattern}")
+    if identity is not None and not WK.identity_ok(identity):
+        raise click.UsageError(f"--identity must be an absolute path matching "
+                               f"{WK.IDENTITY_RE.pattern}")
     if any(r["name"] == name for r in _load_or_fail(cfg)):
         raise click.ClickException(f"worker {name!r} is already registered (use `rm` first)")
     rec = {"name": name, "ssh": dest, "slots": slots, "kinds": list(WK.DEFAULT_KINDS),
            "nw": nw_cmd, "enabled": True, "cooldown_until": None, "added_at": now_iso()}
+    if identity is not None:
+        rec["identity"] = identity
     if not no_check:
         res = WK.check(cfg, rec)
         for w in res["warnings"]:
@@ -96,6 +107,65 @@ def workers_add(cfg, name, dest, slots, nw_cmd, no_check):
     _say(f"registered {name} ({dest}, {slots} slot{'s' if slots != 1 else ''})")
 
 
+@workers_group.command("bootstrap")
+@click.argument("name")
+@click.option("--ssh", "dest", required=True, metavar="USER@HOST",
+              help="the dedicated worker account, never root, e.g. nw@box")
+@click.option("--slots", type=click.IntRange(WK.MIN_SLOTS, WK.MAX_SLOTS), default=1,
+              show_default=True, help="gate slots on the worker")
+@click.option("--install-key", is_flag=True,
+              help="append the forced-command line for the worker key (agentic.workers.key) "
+                   "to the worker's authorized_keys, then register with a check")
+@click.option("--admin", metavar="USER@HOST", default=None,
+              help="an account with passwordless sudo: creates the worker user when missing, "
+                   "and every worker command runs through it as `sudo -n -i -u USER`")
+@click.option("--dry-run", is_flag=True, help="print every step and command; run nothing")
+@click.pass_obj
+def workers_bootstrap(cfg, name, dest, slots, install_key, admin, dry_run):
+    """Install nightwright on a worker, install its dedicated key's forced-command line and
+    register it (SPEC-0354). Steps already done are skipped; exits 1 if a step failed.
+
+    The worker key is `agentic.workers.key` (default ~/.ssh/nw_worker_ed25519.pub), a key
+    of its own: never the one your ssh login uses."""
+    try:
+        plan = WB.prepare(cfg, name, dest, slots, install_key, admin)
+    except WB.StepFailed as e:
+        status = {s: ("not run", "") for s in WB.STEPS}
+        status[getattr(e, "step", "install")] = ("failed", str(e))
+        _bootstrap_table(name, status)
+        raise SystemExit(1)
+    if dry_run:
+        for step, cmds in WB.dry_plan(plan).items():
+            if cmds:
+                _say(f"{step}:", "bold")
+                for c in cmds:
+                    console.print(Text(f"  {c}"), soft_wrap=True)
+        _bootstrap_table(name, plan.status)
+        return
+    ok = WB.run(cfg, plan)
+    _bootstrap_table(name, plan.status)
+    for line in plan.notes:
+        console.print(Text(line), soft_wrap=True)
+    if not ok:
+        raise SystemExit(1)
+
+
+def _bootstrap_table(name, status) -> None:
+    t = Table(title=f"bootstrap {name}")
+    for col in ("step", "status", "detail"):
+        t.add_column(col)
+    style = {"done": "green", "failed": "bold red", "would run": "cyan"}
+    for step in WB.STEPS:
+        st, detail = status.get(step, ("not run", ""))
+        t.add_row(step, Text(st, style=style.get(st, "dim" if st.startswith("not") else "")),
+                  Text(detail))
+    console.print(t)
+    for step in WB.STEPS:                       # the table may truncate it: in full, unwrapped
+        st, detail = status.get(step, ("not run", ""))
+        if st == "failed":
+            console.print(Text(f"error: {step}: {detail}", style="red"), soft_wrap=True)
+
+
 @workers_group.command("list")
 @click.option("--json", "as_json", is_flag=True, help="emit nw.workers.list.v1 JSON")
 @click.pass_obj
@@ -107,7 +177,8 @@ def workers_list(cfg, as_json):
     rows = [{"name": w["name"], "ssh": w["ssh"], "slots": w["slots"], "kinds": w["kinds"],
              "enabled": w["enabled"], "cooldown_until": w["cooldown_until"]
              if WK.in_cooldown(w) else None,
-             "held": len((occ.get(w["name"]) or {}).get("held") or [])} for w in ws]
+             "held": len((occ.get(w["name"]) or {}).get("held") or []),
+             "identity": w.get("identity")} for w in ws]
     if as_json:
         _dump_json({"schema": "nw.workers.list.v1", "workers": rows})
         return
