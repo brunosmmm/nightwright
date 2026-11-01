@@ -63,3 +63,11 @@ Recently delivered share a lane when side by side (one line grows both).
 
 Shipped as designed: `allocate_rows` plus the measured fill in `_dashboard`; `--once` without
 a terminal keeps the fixed budgets.
+
+## Definition of done
+
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass (textual-dependent TUI tests cannot collect in this env, pre-existing).
+- [x] No regressions (full suite left to the close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
