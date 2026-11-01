@@ -104,7 +104,8 @@ def notification_for(ev) -> tuple[str, str, str] | None:
 
 class Watcher:
     def __init__(self, cfg, client, *, interval_s=INTERVAL_S, conductor_pane=None,
-                 workspace=None, env=None, now=None):
+                 workspace=None, env=None, now=None, run_panes=False, run_pane_linger=None,
+                 clock=None):
         self.cfg = cfg
         self.client = client
         self.interval_s = float(interval_s)
@@ -114,6 +115,13 @@ class Watcher:
         self.now = now or (lambda: dt.datetime.now().astimezone())
         self.pushed: dict = {}                    # (kind, target) -> (token names, display set?)
         self._cost_cache: dict = {}                        # session id -> (monotonic, usd|None)
+        self.run_panes = None                     # SPEC-0364: opt-in; None = SPEC-0363 exactly
+        if run_panes:
+            from . import herdr_runpanes as RPN
+            self.run_panes = RPN.RunPanes(
+                cfg, client, ttl_ms=self.ttl_ms, env=self.env,
+                linger_s=RPN.LINGER_S if run_pane_linger is None else run_pane_linger,
+                **({"clock": clock} if clock else {}))
 
     @property
     def ttl_ms(self) -> int:
@@ -205,6 +213,17 @@ class Watcher:
                 if (r == "conductor" or r.startswith("steward:")) and p.get("pane_id")
                 and CC.placement_live(p)}
 
+    def conductor_workspace(self, live=None) -> str | None:
+        """`--workspace`, else the conductor pane's placement workspace, else its id prefix."""
+        if self.workspace:
+            return self.workspace
+        live = self.placements() if live is None else live
+        cond_pane = self.conductor_pane or (live.get("conductor") or {}).get("pane_id")
+        if not cond_pane:
+            return None
+        by_pane = [p for p in live.values() if p.get("pane_id") == cond_pane]
+        return by_pane[0].get("workspace_id") if by_pane else _pane_workspace(cond_pane)
+
     def targets(self, snap) -> list[tuple[str, str, dict, str | None]]:
         """`[(kind, explicit id, tokens, display_agent)]` for this push (SPEC-0363): a display
         agent on the conductor's and stewards' panes; queue totals on the conductor's
@@ -214,11 +233,7 @@ class Watcher:
         out = []
         cond = live.get("conductor")
         cond_pane = self.conductor_pane or (cond or {}).get("pane_id")
-        cond_ws = self.workspace
-        if not cond_ws and cond_pane:
-            by_pane = [p for p in live.values() if p.get("pane_id") == cond_pane]
-            cond_ws = (by_pane[0].get("workspace_id") if by_pane
-                       else _pane_workspace(cond_pane))
+        cond_ws = self.conductor_workspace(live)
         if cond_ws:
             out.append(("workspace", cond_ws, self.workspace_tokens(snap), None))
         stewards = sorted((r.split(":", 1)[1], p) for r, p in live.items()
@@ -243,13 +258,20 @@ class Watcher:
     def push(self) -> int:
         """One metadata push to every target; returns the number of accepted calls."""
         ok = 0
-        for kind, target, tokens, display in self.targets(self.snapshot()):
+        snap = self.snapshot()
+        for kind, target, tokens, display in self.targets(snap):
             args = H.metadata_args(kind, target, tokens, seq=self.client.next_seq(),
                                    ttl_ms=self.ttl_ms, display_agent=display)
             names, had_display = self.pushed.get((kind, target), (set(), False))
             self.pushed[(kind, target)] = (names | set(tokens), had_display or display is not None)
             ok += bool(self.client.call(args))
+        if self.run_panes is not None:
+            self.run_panes.reconcile(snap["items"], self.run_pane_workspace())
         return ok
+
+    def run_pane_workspace(self) -> str | None:
+        """SPEC-0364: the run tab goes to the conductor's workspace, else the watcher's own."""
+        return self.conductor_workspace() or self.env.get("HERDR_WORKSPACE_ID") or None
 
     def poll_events(self) -> int:
         """Notify for every event after the `herdr` cursor (then advance it); returns how
@@ -295,6 +317,8 @@ class Watcher:
         `once` does one poll + one push and leaves the tokens to their TTL."""
         with E.reader_lock(self.cfg, READER):
             self.start_cursor()
+            if self.run_panes is not None:
+                self._guard(self.run_panes.load)
             if once:
                 self.poll_events()
                 self.push()
@@ -312,3 +336,5 @@ class Watcher:
                     sleep(poll)
             finally:
                 self.clear()
+                if self.run_panes is not None:
+                    self._guard(self.run_panes.close_all)

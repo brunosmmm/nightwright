@@ -1,7 +1,7 @@
 ---
 id: SPEC-0364
 title: "herdr run panes: one pane per active campaign in an nw runs tab, running nw campaign tail, agent state + display agent"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -47,6 +47,10 @@ nw-test-… server`, see As shipped):
   lower `--seq` is accepted (exit 0) but ignored. After `working`, `idle` reads back as `done`
   (herdr's not-yet-seen completion).
 - `pane report-metadata <pane> --source S --seq N --ttl-ms T --display-agent TEXT`.
+- herdr binds a reported agent to the pane's foreground process and releases it (`agent get`
+  → `agent_not_found`) when that process exits; a report made while the shell is still
+  settling can be released again within a second. Re-reporting the same state does not bump
+  `state_change_seq` (no transition).
 - `pane close <pane>`: closing a tab's last pane closes the tab.
 - A named session restarted from its snapshot keeps pane ids and pane labels, with fresh
   shells and no agent state.
@@ -94,7 +98,7 @@ nw-test-… server`, see As shipped):
    closes. `--run-pane-linger SECONDS` changes it. A campaign that becomes active again within
    the linger keeps its pane.
 7. **Agent state** (`pane report-agent <pane> --source nw-run --agent nw-run --state S`, sent
-   when it changes): `working` while a persona run runs; `blocked` when the campaign is
+   every push, because herdr drops it when the tail exits with its run; see Context): `working` while a persona run runs; `blocked` when the campaign is
    `PARKED` (escalations park the campaign); `idle` otherwise (between runs, queued, waiting,
    merged, abandoned, handed off).
 8. **Display agent** on each run pane, every push (`pane report-metadata <pane> --source
@@ -142,8 +146,7 @@ unchanged. New pure argv builders, id first: `tab_create_args(ws, label, cwd)`,
      fewer than `max_panes` exist (evicting the earliest-ended lingering pane first).
      Creation: `tab create` (no owned pane) or `pane split` of the largest owned pane, then
      `pane rename`, `pane run` the tail, state and display.
-  5. Each pane: `report-agent` when the state changed, `report-metadata --display-agent`
-     always. A failed call is followed by `pane get`; `pane_not_found` forgets the pane and
+  5. Each pane: `report-agent` and `report-metadata --display-agent`, every push. A failed call is followed by `pane get`; `pane_not_found` forgets the pane and
      dismisses its campaign (until inactive).
   6. Tab label `nw runs` / `nw runs (+N)` renamed on change.
   7. Save the state file (atomic replace).
@@ -189,30 +192,31 @@ on by default.
 
 ## Acceptance criteria
 
-- [ ] Without `--run-panes` (and no config), `nw herdr watch` makes exactly the SPEC-0363
+- [x] Without `--run-panes` (and no config), `nw herdr watch` makes exactly the SPEC-0363
       calls; its tests pass unchanged.
-- [ ] With run panes and one running run: `tab create --workspace <conductor ws> --label "nw
+- [x] With run panes and one running run: `tab create --workspace <conductor ws> --label "nw
       runs" --no-focus`, `pane rename <root> nw-run:<cid>`, `pane run <root> "env … -m
       nightwright campaign tail <cid> --run <run> --follow"`, `report-agent --state working`,
       `report-metadata --source nw-run --display-agent "nw run · …"`. A second campaign splits
       nw's own pane with `--no-focus`; never a pane nw did not create.
-- [ ] State follows the campaign: running → `working`, parked → `blocked`, queued / waiting /
-      merged / between runs → `idle`, reported only on change.
-- [ ] A campaign that leaves `ACTIVE_STATES` keeps its pane for the linger, then
+- [x] State follows the campaign: running → `working`, parked → `blocked`, queued / waiting /
+      merged / between runs → `idle`, re-reported every push (herdr releases it when the
+      tail exits).
+- [x] A campaign that leaves `ACTIVE_STATES` keeps its pane for the linger, then
       `pane close`; a new run of an active campaign is typed into the same pane.
-- [ ] At most 6 panes; overflow evicts the earliest-ended lingering pane, else waits with the
+- [x] At most 6 panes; overflow evicts the earliest-ended lingering pane, else waits with the
       tab renamed `nw runs (+N)`.
-- [ ] A clean exit closes every owned pane; `--once` leaves them and a later `--once` adopts
+- [x] A clean exit closes every owned pane; `--once` leaves them and a later `--once` adopts
       and closes them. A recorded pane whose label or tab differs, or a state file of another
       socket, is never touched. A pane the human closed is forgotten without error spam.
-- [ ] The fake herdr models every command used (id first, per-command options, the JSON
+- [x] The fake herdr models every command used (id first, per-command options, the JSON
       responses copied from herdr 0.9.5); the opt-in contract test covers them on the real
       herdr in an isolated named session.
-- [ ] Real herdr 0.9.5, isolated session: `nw herdr watch --run-panes --once` against a fake
+- [x] Real herdr 0.9.5, isolated session: `nw herdr watch --run-panes --once` against a fake
       campaign with a real `stream.jsonl` fixture creates the tab and pane, `pane read` shows
       the tail, the state goes working → blocked/idle, and the pane closes after the linger.
       The session is torn down afterwards; the human's session is never touched.
-- [ ] `docs/herdr.md` documents run panes.
+- [x] `docs/herdr.md` documents run panes.
 
 ## Test plan
 
@@ -229,7 +233,8 @@ on by default.
     the tail command, working, display agent with persona, loop and cost/budget.
   - second campaign: split of nw's own pane, `--no-focus`, direction from the layout.
   - state transitions: run ends with the campaign between runs → idle; parked → blocked;
-    a new run → new tail typed in the same pane; no repeat report-agent without a change.
+    a new run → new tail typed in the same pane; the state re-reported each push with a
+    higher seq.
   - linger: closed only after `linger_s` (injected clock); reactivation keeps the pane.
   - overflow: 7 campaigns → 6 panes, tab `nw runs (+1)`; a lingering pane is evicted first.
   - adoption: `--once` twice keeps the same pane; a mismatched label, another tab or another
@@ -237,7 +242,7 @@ on by default.
     its tail typed again; a pane closed by the human is forgotten and not recreated.
   - clean exit closes all; `--once` does not; CLI `--run-panes` / config key.
   - the typed command runs: executing it (without herdr) prints the tail of the fixture run.
-- **Contract test** (`NW_HERDR_CONTRACT_SESSION=<name>` with a running named test session):
+- **Contract test** (`NW_HERDR_CONTRACT_SOCKET=<socket of a running named test session>`):
   every argv used, against the real herdr, read back via `pane get` / `agent get` /
   `tab list`, then closed.
 - **Manual (isolated named session)**: start `herdr --session nw-test-<random> server`, run
@@ -248,6 +253,81 @@ on by default.
 - **Regression guard**: `python3 tools/affected_tests.py --run uv run pytest -q` plus
   `tests/test_herdr.py`, `tests/test_agentic_stream.py`.
 
+## As shipped (2026-11-01)
+
+- **Files:** `src/nightwright/agentic/herdr.py` (`Client.call_json`, a shared `_run` spawn for
+  `call`/`call_json`; argv builders `tab_create_args`, `tab_rename_args`, `pane_split_args`,
+  `pane_layout_args`, `pane_get_args`, `pane_process_info_args`, `pane_rename_args`,
+  `pane_run_args`, `pane_close_args`, `report_agent_args`; `RUN_SOURCE = "nw-run"`),
+  new `src/nightwright/agentic/herdr_runpanes.py` (`RunPanes`: `load`/`_verify` adoption,
+  `reconcile`, `close_all`, `save`; `run_display`, `agent_state`, `status_text`,
+  `tail_command`, `running_runs`, `pane_label`, `state_path`), `herdr_watch.py`
+  (`Watcher(run_panes=, run_pane_linger=, clock=)`, `conductor_workspace()`,
+  `run_pane_workspace()`; push reconciles, `run` loads first and closes on a clean exit),
+  `cli_herdr.py` (`--run-panes/--no-run-panes`, `--run-pane-linger`, config
+  `agentic.herdr.run_panes`), new `tests/fixtures/fake_herdr.py` (stateful model of the
+  herdr 0.9.5 parser and replies, replacing the inline fake), `tests/test_herdr.py`,
+  `docs/herdr.md` (Run panes section), `docs/product/reference/index.md` (herdr row).
+- **Design as written**, with one change found on the real herdr: the agent state is
+  re-reported every push, not only on change. herdr binds a reported agent to the pane's
+  foreground process (the tail) and releases it when that exits, and a report made while the
+  shell settles can be released again; repeating the same state is not a transition. So after
+  a run ends, the state can be missing for up to one push interval (10 s by default).
+- **Deviations from the epic** (recorded in Decision/Alternatives): one pane per campaign, not
+  per run (reviewer groups run in parallel); a `nw runs` tab in the conductor's workspace
+  rather than an `nw` workspace; a display agent instead of run tokens (SPEC-0363).
+- **Judgment calls:** max 6 panes, overflow evicts the earliest-ended lingering pane then
+  waits with `nw runs (+N)`; linger 300 s; `blocked` only for `PARKED` (escalations park the
+  campaign); state kept per herdr socket; an unverifiable pane (herdr unreachable) stays
+  recorded but untouched until a later `pane get` confirms or denies it; a pane the human
+  closed dismisses the campaign until it is inactive again.
+- **Real herdr 0.9.5, isolated session only.** `herdr --session nw-test-0caa2649 server`
+  (headless, `SHELL=/usr/bin/fish` like the human's server), every call with
+  `HERDR_SOCKET_PATH=~/.config/herdr/sessions/nw-test-0caa2649/herdr.sock --session
+  nw-test-0caa2649` and the human's `HERDR_*` removed. Checked each argv by hand first (`tab
+  create`, `pane split <id> --direction right --no-focus`, `pane layout --pane`, `pane rename`,
+  `pane get` / `pane_not_found` exit 1, `pane run`, `pane process-info --pane`, `pane
+  report-agent` incl. a lower `--seq` ignored, `pane report-metadata --source nw-run
+  --display-agent`, `tab rename`, `pane close`, last pane closes the tab, a restarted session
+  keeps pane ids and labels with fresh shells). Then the CLI end to end against a fake data
+  dir (three campaigns with the real `read_tool_schema.jsonl` stream, a conductor placement
+  in `w1`, the watcher's own env saying `w99`):
+  - `nw herdr watch --run-panes --once --run-pane-linger 20` → `tab w1:t5 'nw runs'
+    not-focused 3 panes`; panes `w1:p9 / w1:pA / w1:pB` labelled `nw-run:<cid>`, agent
+    `nw-run working`, display `nw run · SPEC-0901 · implementer · loop 1 · $0.01/$5`; the
+    conductor's tab still only `w1:p1`. Layout (`pane layout`): `pA` 60×40 at x=60,
+    `p9`/`pB` 60×20 stacked (split right, then down). `pane read w1:pB` showed the tail:
+    `→ Read …`, `← 4 lines: 1 alpha`, `■ result: success · cost $0.01 / $5.00 · 3 turns ·
+    3.4s · verdict done`.
+  - runs ended, campaigns set to GATING / PARKED(human_decision) / MERGED, two `--once` →
+    `idle 'nw run · SPEC-0901 · gating'`, `blocked 'nw run · SPEC-0902 · parked:
+    human_decision'`, `idle 'nw run · SPEC-0903 · merged'`.
+  - a new run `002-conformance_reviewer` for SPEC-0901 (REVIEWING) and 20 s later `--once` →
+    the parked and merged panes closed after their linger; `run 002-conformance_reviewer`
+    typed into the same pane `w1:pB` (`pane wait-output` matched), `working`.
+  - `nw herdr watch --run-panes --interval 2` then SIGTERM → exit 0, run pane and `nw runs`
+    tab gone, conductor display agent cleared, state file `sessions: {}`.
+  - session server restarted: the run pane came back as `w1:pC` with its label and a bare
+    shell (`foreground_process_group_id == shell_pid`); `--once` adopted it and typed the tail
+    again (matched), `working`. Then MERGED + `--run-pane-linger 0` → closed.
+  - Contract tests: `NW_HERDR_CONTRACT_SOCKET=<test socket> uv run pytest tests/test_herdr.py
+    -k isolated` (create/split/overflow rename `nw runs (+1)` → back to `nw runs`, layout,
+    labels, `working` → `blocked`, `pane read`, adoption via `pane get` + `process-info`,
+    close, tab gone, its workspace closed) passed; SPEC-0363's `NW_HERDR_CONTRACT=1` test,
+    pointed at the test session's `w1:p1` (given an agent with `report-agent` first, as a
+    Claude pane has), passed too.
+  - Teardown: `herdr --session nw-test-0caa2649 server stop`, `herdr session delete
+    nw-test-0caa2649` (`deleted session`), `~/.config/herdr/sessions/` empty, the human's
+    `default` session still running and never addressed; the fake data dir removed.
+- **Tests executed:** `tests/test_herdr.py` 44 passed + 2 opt-in contract tests skipped (both
+  pass when pointed at an isolated session, above). `tools/affected_tests.py` falls back to
+  the full suite ("no test reaches agentic/cli_herdr.py"), so the related set was run by
+  hand: herdr, stream/tail, campaign/conduct/queue CLI, conductor brief/cost, events, events
+  settings, launch, mailbox, completion, docs product/captures, JSON CLI, spec lint: 659
+  passed, 2 skipped. The queue close gate runs the full suite.
+- **Not done:** nothing ran against the human's herdr session; the human sees run panes on
+  their next `nw herdr watch --run-panes`.
+
 ## Rollout / migration
 
 Opt-in; nothing changes until the human adds `--run-panes`. Restart `nw herdr watch` after the
@@ -255,11 +335,11 @@ upgrade.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; contract test passes on the real herdr.
-- [ ] No regressions (the full suite runs at the queue's close gate).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated; `spec_lint` exits 0.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; contract test passes on the real herdr.
+- [x] No regressions (the full suite runs at the queue's close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated; `spec_lint` exits 0.
 
 ## Open questions
 

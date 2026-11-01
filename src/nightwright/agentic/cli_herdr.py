@@ -14,6 +14,7 @@ def herdr_group():
     \b
     nw herdr watch                    push every 10 s until Ctrl-C (clears what it set)
     nw herdr watch --once             one push; values expire after 3 intervals
+    nw herdr watch --run-panes        plus a pane per active campaign tailing its run
     The conductor/steward panes need no config; see docs/herdr.md for the optional
     workspace-row snippet.
     """
@@ -27,8 +28,13 @@ def herdr_group():
 @click.option("--workspace", default=None, help="herdr workspace id for the queue totals "
               "(default: the conductor pane's workspace)")
 @click.option("--once", is_flag=True, help="one event poll + one push, then exit")
+@click.option("--run-panes/--no-run-panes", "run_panes", default=None,
+              help="one herdr pane per active campaign running `nw campaign tail --follow`, in "
+                   "an 'nw runs' tab (SPEC-0364; default: agentic.herdr.run_panes, off)")
+@click.option("--run-pane-linger", type=click.FloatRange(min=0.0), default=300.0,
+              show_default=True, help="seconds a run pane stays after its campaign stops")
 @click.pass_obj
-def herdr_watch(cfg, interval_s, conductor_pane, workspace, once):
+def herdr_watch(cfg, interval_s, conductor_pane, workspace, once, run_panes, run_pane_linger):
     """Push queue tokens and notifications to herdr. A no-op (exit 0, one line) outside
     herdr or without `herdr` on PATH; only this command ever calls herdr."""
     from . import herdr as H
@@ -37,8 +43,10 @@ def herdr_watch(cfg, interval_s, conductor_pane, workspace, once):
         click.echo(f"nw herdr: {reason}; nothing to do")
         return
     from . import herdr_watch as HW
+    if run_panes is None:
+        run_panes = bool((((cfg or {}).get("agentic") or {}).get("herdr") or {}).get("run_panes"))
     w = HW.Watcher(cfg, H.Client(), interval_s=interval_s, conductor_pane=conductor_pane,
-                   workspace=workspace)
+                   workspace=workspace, run_panes=run_panes, run_pane_linger=run_pane_linger)
 
     def _term(signum, frame):
         raise KeyboardInterrupt

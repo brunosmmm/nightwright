@@ -26,32 +26,7 @@ from nightwright.cli import cli
 import waits
 from test_agentic_events import _campaign, _cfg, _ev, _set_state
 
-FAKE = r'''#!{py}
-import json, os, sys, time
-mode = os.environ.get("FAKE_HERDR_MODE", "ok")
-with open(os.environ["FAKE_HERDR_LOG"], "a") as f:
-    f.write(json.dumps(sys.argv[1:]) + "\n")
-# real herdr 0.9.5 parser: report-metadata's positional id must precede every option, and
-# each kind accepts only its own options (workspaces have no --display-agent)
-if sys.argv[2:3] == ["report-metadata"]:
-    if len(sys.argv) < 4 or sys.argv[3].startswith("-"):
-        sys.stderr.write("unknown option: nw\n")
-        sys.exit(2)
-    flags = {"--source": 1, "--seq": 1, "--ttl-ms": 1, "--token": 1, "--clear-token": 1}
-    if sys.argv[1] == "pane":
-        flags.update({"--display-agent": 1, "--clear-display-agent": 0, "--title": 1,
-                      "--clear-title": 0, "--state-label": 1, "--clear-state-labels": 0,
-                      "--agent": 1, "--applies-to-source": 1})
-    i = 4
-    while i < len(sys.argv):
-        if sys.argv[i] not in flags:
-            sys.stderr.write("unknown option: " + sys.argv[i] + "\n")
-            sys.exit(2)
-        i += 1 + flags[sys.argv[i]]
-if mode == "hang":
-    time.sleep(30)
-sys.exit(1 if mode == "fail" else 0)
-'''
+FAKE_SRC = Path(__file__).parent / "fixtures" / "fake_herdr.py"
 
 
 @pytest.fixture
@@ -62,11 +37,12 @@ def fake(tmp_path, monkeypatch):
     bindir = tmp_path / "fakebin"
     bindir.mkdir()
     exe = bindir / "herdr"
-    exe.write_text(FAKE.replace("{py}", sys.executable))
+    exe.write_text(f"#!{sys.executable}\n" + FAKE_SRC.read_text())
     exe.chmod(0o755)
     log = tmp_path / "herdr.log"
     monkeypatch.setenv("FAKE_HERDR_LOG", str(log))
     monkeypatch.setenv("FAKE_HERDR_MODE", "ok")
+    monkeypatch.setenv("FAKE_HERDR_STATE", str(tmp_path / "herdr-state.json"))
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{Path(sys.executable).parent}")
     monkeypatch.setenv("HERDR_ENV", "1")
     monkeypatch.setenv("HERDR_WORKSPACE_ID", "ws-self")
@@ -570,6 +546,358 @@ def test_fake_rejects_options_before_target_and_breaker_names_the_error(fake):
     assert H.Client().call(H.metadata_args("pane", "p1", {"nw_role": "x"}, seq=1, ttl_ms=1000))
 
 
+# ---- run panes (SPEC-0364) ---------------------------------------------------------------------
+
+from nightwright.agentic import herdr_runpanes as RPN
+from nightwright.agentic import store as S
+
+TOOL_SAMPLE = Path(__file__).parent / "fixtures" / "stream_json" / "read_tool_schema.jsonl"
+
+
+def _fstate(tmp_path):
+    return json.loads((tmp_path / "herdr-state.json").read_text())
+
+
+def _run(cfg, cid, name="001-implementer", *, persona="implementer", budget=5.0,
+         lines=None):
+    """A run dir whose wrapper is this (live) test process: `run_status` == running."""
+    rd = S.runs_dir(cfg, cid) / name
+    rd.mkdir(parents=True)
+    RP.write_json_atomic(rd / "request.json", {"persona": persona, "max_budget_usd": budget,
+                                               "model": "haiku"})
+    src = TOOL_SAMPLE.read_text().splitlines()
+    (rd / "stream.jsonl").write_text("".join(x + "\n" for x in (src if lines is None
+                                                                 else src[:lines])))
+    RP.write_json_atomic(rd / "proc.json", {"wrapper_pid": os.getpid(),
+                                            "wrapper_start_ticks": None})
+    return rd
+
+
+def _end(rd):
+    RP.write_json_atomic(rd / "exit.json", {"exit_code": 0})
+
+
+def _rp_watcher(cfg, now, **kw):
+    return HW.Watcher(cfg, H.Client(), interval_s=10, run_panes=True,
+                      clock=lambda: now[0], **kw)
+
+
+def _cmds(calls, group, cmd):
+    return [c for c in calls if c[:2] == [group, cmd]]
+
+
+def test_run_pane_argv_builders_put_the_id_first():
+    assert H.tab_create_args("w7", "nw runs", "/x") == [
+        "tab", "create", "--workspace", "w7", "--label", "nw runs", "--cwd", "/x", "--no-focus"]
+    assert H.pane_split_args("w7:p3", "down", "/x") == [
+        "pane", "split", "w7:p3", "--direction", "down", "--cwd", "/x", "--no-focus"]
+    with pytest.raises(ValueError):
+        H.pane_split_args("w7:p3", "left", "/x")
+    assert H.pane_layout_args("p") == ["pane", "layout", "--pane", "p"]
+    assert H.pane_process_info_args("p") == ["pane", "process-info", "--pane", "p"]
+    assert H.pane_get_args("p") == ["pane", "get", "p"]
+    assert H.pane_rename_args("p", "nw-run:C") == ["pane", "rename", "p", "nw-run:C"]
+    assert H.pane_run_args("p", "echo hi") == ["pane", "run", "p", "echo hi"]
+    assert H.pane_close_args("p") == ["pane", "close", "p"]
+    assert H.tab_rename_args("w7:t2", "nw runs (+1)") == ["tab", "rename", "w7:t2", "nw runs (+1)"]
+    assert H.report_agent_args("p", "working", seq=5) == [
+        "pane", "report-agent", "p", "--source", "nw-run", "--agent", "nw-run", "--state",
+        "working", "--seq", "5"]
+    with pytest.raises(ValueError):
+        H.report_agent_args("p", "done", seq=1)
+    assert H.metadata_args("pane", "p", {}, seq=1, ttl_ms=10, source="nw-run",
+                           display_agent="x")[:5] == ["pane", "report-metadata", "p", "--source",
+                                                      "nw-run"]
+
+
+def test_fake_models_herdr_parser_and_replies(fake):
+    """The fake rejects options before the id (exit 2) like herdr 0.9.5 and answers with the
+    JSON shapes nightwright reads."""
+    c = H.Client()
+    assert c.call_json(["pane", "get", "w1:p9"]) is None and "pane_not_found" in c.last_error
+    assert not c.call(["pane", "split", "--direction", "right", "w1:p1"])
+    assert "unknown option" in c.last_error
+    res = c.call_json(H.tab_create_args("w1", "nw runs", "/tmp"))
+    assert res["tab"]["tab_id"] == "w1:t1" and res["root_pane"]["pane_id"] == "w1:p1"
+    split = c.call_json(H.pane_split_args("w1:p1", "right", "/tmp"))
+    assert split["pane"]["pane_id"] == "w1:p2" and split["pane"]["tab_id"] == "w1:t1"
+    lay = c.call_json(H.pane_layout_args("w1:p1"))["layout"]
+    assert [(p["pane_id"], p["rect"]["width"]) for p in lay["panes"]] == [("w1:p1", 60),
+                                                                          ("w1:p2", 60)]
+    assert c.call(H.pane_close_args("w1:p1")) and c.call(H.pane_close_args("w1:p2"))
+    assert c.call_json(["tab", "rename", "w1:t1", "x"]) is None        # last pane closed the tab
+
+
+def test_call_json_returns_result_or_none(fake, monkeypatch):
+    c = H.Client()
+    assert c.call_json(["pane", "rename", "nope", "x"]) is None
+    assert c.call_json(H.tab_create_args("w1", "L", "/"))["type"] == "tab_created"
+    assert c.call_json(["notification", "show", "t"]) is None          # exit 0, no JSON
+    monkeypatch.setenv("FAKE_HERDR_MODE", "fail")
+    assert c.call_json(["pane", "get", "w1:p1"]) is None and c.fails == 1
+
+
+def test_run_panes_off_by_default_change_nothing(fake, tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0901-20261101-aaaa")
+    _run(cfg, cid)
+    _place(cfg, "conductor", "pane-cond", "ws-a")
+    w = HW.Watcher(cfg, H.Client(), interval_s=10)
+    assert w.run_panes is None
+    w.run(once=True)
+    assert {(c[0], c[1]) for c in fake.calls()} == {("workspace", "report-metadata"),
+                                                    ("pane", "report-metadata")}
+    assert not RPN.state_path(cfg).exists()
+
+
+def test_one_running_run_gets_a_pane_in_the_conductor_workspace(fake, tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0901-20261101-aaaa")
+    _set_state(cfg, cid, counters={"loops": 3, "runs": 1})
+    _run(cfg, cid)
+    _campaign(cfg, "SPEC-0902-20261101-bbbb", state="QUEUED")          # no run: no pane
+    _place(cfg, "conductor", "w7:p2", "w7")
+    now = [1000.0]
+    _rp_watcher(cfg, now).run(once=True)
+    calls = fake.calls()
+    assert _cmds(calls, "tab", "create") == [["tab", "create", "--workspace", "w7", "--label",
+                                              "nw runs", "--cwd", os.path.expanduser("~"),
+                                              "--no-focus"]]
+    pane = "w7:p1"
+    assert ["pane", "rename", pane, f"nw-run:{cid}"] in calls
+    (typed,) = _cmds(calls, "pane", "run")
+    assert typed[2] == pane and typed[3].startswith("env NW_CONFIG_DIR=")
+    assert f"-m nightwright campaign tail {cid} --run 001-implementer --follow" in typed[3]
+    (agent,) = _cmds(calls, "pane", "report-agent")
+    assert agent[2] == pane and _opt(agent, "--state") == "working"
+    assert _opt(agent, "--source") == "nw-run" and _opt(agent, "--agent") == "nw-run"
+    md = _metadata(calls)[("pane", pane)]
+    assert _opt(md, "--source") == "nw-run" and _opt(md, "--ttl-ms") == "30000"
+    assert _opt(md, "--display-agent").startswith("nw run · SPEC-0901 · implementer · loop 3 · $")
+    assert _opt(md, "--display-agent").endswith("/$5")
+    st = _fstate(tmp_path)
+    assert st["panes"][pane]["label"] == f"nw-run:{cid}" and st["panes"][pane]["agent_status"] == "working"
+    assert not st["tabs"]["w7:t1"]["focus"]
+    saved = json.loads(RPN.state_path(cfg).read_text())["sessions"][""]
+    assert saved["tab"] == "w7:t1" and saved["panes"][cid]["pane_id"] == pane
+
+
+def test_typed_command_runs_the_tail_viewer(tmp_path):
+    """What nw types into the pane really prints the run's transcript (no herdr needed)."""
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0901-20261101-aaaa")
+    rd = _run(cfg, cid)
+    _end(rd)
+    cmd = RPN.tail_command(cfg, cid, "001-implementer")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("NW_", "HERDR_"))}
+    out = subprocess.run(["/bin/sh", "-c", cmd], capture_output=True, text=True, timeout=120,
+                         env={**env, "COLUMNS": "200"})
+    assert out.returncode == 0, out.stderr
+    assert "run 001-implementer · persona implementer" in out.stdout
+    assert "→ Read" in out.stdout and "■ result: success" in out.stdout
+
+
+def test_second_campaign_splits_our_own_pane_by_geometry(fake, tmp_path):
+    cfg = _cfg(tmp_path)
+    for i, cid in enumerate(["SPEC-0901-20261101-aaaa", "SPEC-0902-20261101-bbbb",
+                             "SPEC-0903-20261101-cccc"]):
+        _campaign(cfg, cid)
+        _run(cfg, cid)
+    now = [1000.0]
+    _rp_watcher(cfg, now).run(once=True)                     # no conductor: own workspace
+    calls = fake.calls()
+    assert _cmds(calls, "tab", "create")[0][3] == "ws-self"
+    splits = _cmds(calls, "pane", "split")
+    # 120x40: wide -> right (60x40 each); then 60x40 is not twice as wide -> down
+    assert [(c[2], c[4]) for c in splits] == [("ws-self:p1", "right"), ("ws-self:p1", "down")]
+    assert all("--no-focus" in c for c in splits)
+    st = _fstate(tmp_path)
+    assert sorted(st["tabs"]["ws-self:t1"]["panes"]) == ["ws-self:p1", "ws-self:p2", "ws-self:p3"]
+    assert not any(p.get("focus") for p in st["panes"].values())
+
+
+def test_state_follows_the_campaign_and_linger_closes(fake, tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0901-20261101-aaaa")
+    rd = _run(cfg, cid)
+    now = [1000.0]
+    w = _rp_watcher(cfg, now, run_pane_linger=300)
+    with E.reader_lock(cfg, HW.READER):
+        w.run_panes.load()
+        w.push()
+        pane = "ws-self:p1"
+        w.push()                     # reported every push (herdr drops it when the tail exits)
+        reports = _cmds(fake.calls(), "pane", "report-agent")
+        assert [_opt(r, "--state") for r in reports] == ["working", "working"]
+        assert int(_opt(reports[1], "--seq")) > int(_opt(reports[0], "--seq"))
+        _end(rd)
+        _set_state(cfg, cid, state="GATING")                  # between runs
+        w.push()
+        assert _fstate(tmp_path)["panes"][pane]["agent_status"] == "idle"
+        assert _opt(_cmds(fake.calls(), "pane", "report-metadata")[-1], "--display-agent") == \
+            "nw run · SPEC-0901 · gating"
+        _set_state(cfg, cid, state="REVIEWING")
+        rd2 = _run(cfg, cid, "002-conformance_reviewer", persona="conformance_reviewer")
+        w.push()                                              # the next run: same pane
+        typed = _cmds(fake.calls(), "pane", "run")
+        assert len(typed) == 2 and typed[-1][2] == pane and "--run 002-conformance_reviewer" in typed[-1][3]
+        assert _fstate(tmp_path)["panes"][pane]["agent_status"] == "working"
+        assert not _cmds(fake.calls(), "pane", "split")
+        _end(rd2)
+        _set_state(cfg, cid, state="PARKED", park={"reason": "cost_cap", "resume_to": "REVIEWING"})
+        w.push()
+        assert _fstate(tmp_path)["panes"][pane]["agent_status"] == "blocked"
+        assert _opt(_cmds(fake.calls(), "pane", "report-metadata")[-1], "--display-agent") == \
+            "nw run · SPEC-0901 · parked: cost_cap"
+        now[0] += 299
+        w.push()
+        assert pane in _fstate(tmp_path)["panes"]
+        _set_state(cfg, cid, state="IMPLEMENTING")            # active again within the linger
+        w.push()
+        assert _fstate(tmp_path)["panes"][pane]["agent_status"] == "idle"
+        _set_state(cfg, cid, state="MERGED")                  # terminal: out of queue_payload
+        w.push()
+        assert _opt(_cmds(fake.calls(), "pane", "report-metadata")[-1], "--display-agent") == \
+            "nw run · SPEC-0901 · merged"
+        now[0] += 300
+        w.push()
+    assert _cmds(fake.calls(), "pane", "close") == [["pane", "close", pane]]
+    assert _fstate(tmp_path)["tabs"] == {}                   # herdr closed the tab with it
+    assert json.loads(RPN.state_path(cfg).read_text())["sessions"] == {}
+
+
+def test_overflow_caps_at_six_and_evicts_lingering_first(fake, tmp_path):
+    cfg = _cfg(tmp_path)
+    cids = [f"SPEC-09{i:02d}-20261101-aaaa" for i in range(7)]
+    for cid in cids:
+        _campaign(cfg, cid)
+        _run(cfg, cid)
+    now = [1000.0]
+    w = _rp_watcher(cfg, now)
+    with E.reader_lock(cfg, HW.READER):
+        w.push()
+        st = _fstate(tmp_path)
+        assert len(st["panes"]) == 6
+        assert st["tabs"]["ws-self:t1"]["label"] == "nw runs (+1)"
+        _set_state(cfg, cids[0], state="QUEUED")              # leaves ACTIVE: lingers
+        w.push()
+    st = _fstate(tmp_path)
+    assert len(st["panes"]) == 6 and st["tabs"]["ws-self:t1"]["label"] == "nw runs"
+    labels = {p["label"] for p in st["panes"].values()}
+    assert f"nw-run:{cids[0]}" not in labels and f"nw-run:{cids[6]}" in labels
+
+
+def test_clean_exit_closes_once_adopts(fake, tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0901-20261101-aaaa")
+    _run(cfg, cid)
+    now = [1000.0]
+    _rp_watcher(cfg, now).run(once=True)
+    _rp_watcher(cfg, now).run(once=True)                     # adopts: no second pane
+    calls = fake.calls()
+    assert len(_cmds(calls, "tab", "create")) == 1 and not _cmds(calls, "pane", "split")
+    assert ["pane", "get", "ws-self:p1"] in calls
+    assert not _cmds(calls, "pane", "close")
+    assert len(_cmds(calls, "pane", "report-agent")) == 2    # once per push, adopted too
+    _rp_watcher(cfg, now).run(stop=lambda: True, sleep=lambda s: None)
+    assert _cmds(fake.calls(), "pane", "close") == [["pane", "close", "ws-self:p1"]]
+    assert _fstate(tmp_path)["panes"] == {}
+
+
+def test_adoption_never_touches_what_is_not_ours(fake, tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    c = H.Client()
+    human = c.call_json(H.tab_create_args("ws-self", "human", "/"))["root_pane"]["pane_id"]
+    other = c.call_json(H.pane_split_args(human, "right", "/"))["pane"]["pane_id"]
+    c.call(H.pane_rename_args(other, "nw-run:SPEC-0902-20261101-bbbb"))   # right label, wrong tab
+    RPN.state_path(cfg).parent.mkdir(parents=True, exist_ok=True)
+    RPN.state_path(cfg).write_text(json.dumps({"schema": RPN.SCHEMA, "sessions": {
+        "": {"tab": "ws-self:t99", "panes": {
+            "SPEC-0901-20261101-aaaa": {"pane_id": human, "run": "001"},      # label differs
+            "SPEC-0902-20261101-bbbb": {"pane_id": other, "run": "001"},      # tab differs
+            "SPEC-0903-20261101-cccc": {"pane_id": "ws-self:p77", "run": "001"}}},  # gone
+        "/other.sock": {"tab": "x:t1", "panes": {"C": {"pane_id": human}}}}}))
+    n = len(fake.calls())
+    now = [1000.0]
+    _rp_watcher(cfg, now).run(stop=lambda: True, sleep=lambda s: None)
+    after = fake.calls()[n:]
+    assert {c[0] + " " + c[1] for c in after} <= {"pane get", "workspace report-metadata",
+                                                  "pane report-metadata"}
+    assert all(c[1] != "report-metadata" or c[2] not in (human, other) for c in after)
+    saved = json.loads(RPN.state_path(cfg).read_text())["sessions"]
+    assert "" not in saved and "/other.sock" in saved          # another socket: kept, untouched
+    st = _fstate(tmp_path)
+    assert human in st["panes"] and other in st["panes"]
+
+
+def test_fresh_shell_gets_the_tail_typed_again(fake, tmp_path):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0901-20261101-aaaa")
+    _run(cfg, cid)
+    now = [1000.0]
+    _rp_watcher(cfg, now).run(once=True)
+    st = _fstate(tmp_path)
+    st["fresh_shell"] = ["ws-self:p1"]                      # herdr restored the pane
+    (tmp_path / "herdr-state.json").write_text(json.dumps(st))
+    _rp_watcher(cfg, now).run(once=True)
+    typed = _cmds(fake.calls(), "pane", "run")
+    assert len(typed) == 2 and typed[0] == typed[1]
+    _rp_watcher(cfg, now).run(once=True)                   # its tail runs now: not again
+    assert len(_cmds(fake.calls(), "pane", "run")) == 2
+
+
+def test_pane_closed_by_the_human_is_forgotten_not_recreated(fake, tmp_path, capsys):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0901-20261101-aaaa")
+    _run(cfg, cid)
+    now = [1000.0]
+    w = _rp_watcher(cfg, now)
+    with E.reader_lock(cfg, HW.READER):
+        w.push()
+        assert H.Client().call(H.pane_close_args("ws-self:p1"))        # the human closes it
+        w.push()
+        w.push()
+        assert w.run_panes.panes == {} and cid in w.run_panes.dismissed
+        assert len(_cmds(fake.calls(), "tab", "create")) == 1
+        _set_state(cfg, cid, state="QUEUED")
+        w.push()
+        assert cid not in w.run_panes.dismissed
+    assert not w.client.breaker_open() and "pausing" not in capsys.readouterr().err
+
+
+def test_cli_run_panes_flag_and_config(fake, tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0901-20261101-aaaa")
+    _run(cfg, cid)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+    r = CliRunner().invoke(cli, ["herdr", "watch", "--once"])
+    assert r.exit_code == 0, r.output
+    assert not _cmds(fake.calls(), "tab", "create")
+    r = CliRunner().invoke(cli, ["herdr", "watch", "--once", "--run-panes"])
+    assert r.exit_code == 0, r.output
+    assert len(_cmds(fake.calls(), "tab", "create")) == 1
+    cfg["agentic"]["herdr"] = {"run_panes": True}
+    r = CliRunner().invoke(cli, ["herdr", "watch", "--once", "--no-run-panes"])
+    assert r.exit_code == 0 and len(_cmds(fake.calls(), "pane", "get")) == 0
+    r = CliRunner().invoke(cli, ["herdr", "watch", "--once"])
+    assert r.exit_code == 0 and len(_cmds(fake.calls(), "pane", "get")) == 1   # adopted
+
+
+def test_run_display_strings():
+    assert RPN.run_display("SPEC-0354", persona="implementer", loop="3", cost=1.2, budget=10) == \
+        "nw run · SPEC-0354 · implementer · loop 3 · $1.20/$10"
+    assert RPN.run_display("SPEC-0354", persona="implementer", budget=10) == \
+        "nw run · SPEC-0354 · implementer · budget $10"
+    assert RPN.run_display("SPEC-0354", status=RPN.status_text("HANDED_OFF")) == \
+        "nw run · SPEC-0354 · handed off"
+    long = RPN.run_display("x" * 40, persona="y" * 40, loop="12", cost=100.5, budget=200)
+    assert len(long) == 64 and long.endswith("…")
+    assert RPN.agent_state(True, "PARKED") == "working"
+    assert RPN.agent_state(False, "PARKED") == "blocked"
+    assert [RPN.agent_state(False, s) for s in ("QUEUED", "WAITING", "MERGED", "GATING")] == \
+        ["idle"] * 4
+
+
 def _herdr_json(env, *args):
     out = subprocess.run(["herdr", *args], env=env, capture_output=True, text=True, timeout=10,
                          check=True).stdout
@@ -625,3 +953,91 @@ def test_real_herdr_accepts_our_argv():
 
 
 _REAL_ENV = dict(os.environ)    # captured at import, before the autouse fixture strips HERDR_*
+
+
+@pytest.mark.skipif(not os.environ.get("NW_HERDR_CONTRACT_SOCKET"),
+                    reason="opt-in: NW_HERDR_CONTRACT_SOCKET=<socket of an isolated named herdr "
+                           "session> (herdr --session nw-test-X server)")
+def test_real_herdr_run_panes_in_isolated_session(tmp_path):
+    """SPEC-0364 contract: every run-pane argv against the real herdr, in an ISOLATED named
+    session only (never the human's). Creates its own workspace there, drives `RunPanes`
+    through create / split / overflow rename / states / adoption / close, reads each step back
+    with `pane get`, `agent get`, `pane layout`, `tab list`, `pane read`, closes the workspace."""
+    sock = os.environ["NW_HERDR_CONTRACT_SOCKET"]
+    human = {_REAL_ENV.get("HERDR_SOCKET_PATH"), os.path.expanduser("~/.config/herdr/herdr.sock")}
+    assert sock not in human and "/sessions/" in sock, "refusing: not an isolated named session"
+    env = {k: v for k, v in _REAL_ENV.items() if not k.startswith("HERDR_")}
+    env.update(HERDR_ENV="1", HERDR_SOCKET_PATH=sock)
+    ws = _herdr_json(env, "workspace", "create", "--label", "nw-contract", "--cwd", str(tmp_path),
+                     "--no-focus")["result"]["workspace"]["workspace_id"]
+    env["HERDR_WORKSPACE_ID"] = ws
+    cfg = _cfg(tmp_path)
+    cfg["config_dir"] = str(tmp_path / "config")
+    cids = ["SPEC-0901-20261101-aaaa", "SPEC-0902-20261101-bbbb", "SPEC-0903-20261101-cccc"]
+    rds = {}
+    for cid in cids:
+        _campaign(cfg, cid)
+        rds[cid] = _run(cfg, cid)
+
+    def agent(pane):
+        return _herdr_json(env, "agent", "get", pane)["result"]["agent"]
+
+    def tabs():
+        return {t["tab_id"]: t for t in
+                _herdr_json(env, "tab", "list", "--workspace", ws)["result"]["tabs"]}
+    try:
+        w = HW.Watcher(cfg, H.Client(env=env), interval_s=10, env=env, run_panes=True)
+        w.run_panes.max_panes = 2
+        with E.reader_lock(cfg, HW.READER):
+            w.run_panes.load()
+            w.push()
+            rp = w.run_panes
+            assert len(rp.panes) == 2 and set(rp.panes) <= set(cids), rp.client.last_error
+            first, second = sorted(rp.panes, key=lambda c: rp.panes[c]["created_at"])
+            tab = rp.tab
+            assert tabs()[tab]["label"] == "nw runs (+1)" and not tabs()[tab]["focused"]
+            p1, p2 = rp.panes[first]["pane_id"], rp.panes[second]["pane_id"]
+            got = _herdr_json(env, "pane", "get", p1)["result"]["pane"]
+            assert got["label"] == f"nw-run:{first}" and got["tab_id"] == tab
+            lay = _herdr_json(env, "pane", "layout", "--pane", p1)["result"]["layout"]
+            assert {p["pane_id"] for p in lay["panes"]} == {p1, p2}
+            a = agent(p1)
+            assert a["agent"] == "nw-run" and a["agent_status"] == "working"
+            assert a["display_agent"].startswith(f"nw run · {first[:9]} · implementer")
+            subprocess.run(["herdr", "pane", "wait-output", p1, "--match", "result: success",
+                            "--timeout", "30000"], env=env, check=True, timeout=40,
+                           capture_output=True)
+            text = subprocess.run(["herdr", "pane", "read", p1, "--source", "recent-unwrapped",
+                                   "--lines", "60"], env=env, capture_output=True, text=True,
+                                  timeout=10).stdout
+            assert "→ Read" in text and "run 001-implementer · persona implementer" in text
+            (third,) = set(cids) - {first, second}
+            _end(rds[third])
+            _set_state(cfg, third, state="QUEUED")            # the overflow clears
+            _end(rds[first])
+            _set_state(cfg, first, state="PARKED", park={"reason": "cost_cap"})
+            # herdr releases a reported agent when the pane's foreground process (the tail,
+            # which exits with its run) exits, and a report while the shell is settling can be
+            # released again: the watcher re-reports every push, as its loop would
+            def blocked():
+                w.push()
+                got = subprocess.run(["herdr", "agent", "get", p1], env=env, capture_output=True,
+                                     text=True)
+                return got.returncode == 0 and '"agent_status":"blocked"' in got.stdout
+            assert waits.until(blocked, timeout=30, interval=1.0)
+            assert agent(p1)["agent_status"] == "blocked"
+            assert agent(p1)["display_agent"] == f"nw run · {first[:9]} · parked: cost_cap"
+            assert tabs()[tab]["label"] == "nw runs"
+        w2 = HW.Watcher(cfg, H.Client(env=env), interval_s=10, env=env, run_panes=True)
+        with E.reader_lock(cfg, HW.READER):
+            w2.run_panes.load()                               # pane get + process-info
+            assert set(w2.run_panes.panes) == {first, second}
+            w2.run_panes.close_all()
+        for p in (p1, p2):
+            gone = subprocess.run(["herdr", "pane", "get", p], env=env, capture_output=True,
+                                  text=True, timeout=10)
+            assert gone.returncode == 1 and "pane_not_found" in gone.stderr
+        assert tab not in tabs()                              # closed with its last pane
+    finally:
+        subprocess.run(["herdr", "workspace", "close", ws], env=env, capture_output=True,
+                       timeout=10)
