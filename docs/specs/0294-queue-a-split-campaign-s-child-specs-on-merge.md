@@ -241,6 +241,10 @@ The admission is tied to the id, not to the child's text (see Non-goals). Status
   three more. All restored afterwards.
 - `python3 tools/spec_lint.py` passes and the ledger is regenerated. The full `uv run pytest`
   was left to gating.
+- Review round 1 fix: both call sites now run `_queue_split_children` after `_release_idea_link`.
+  `test_split_children_link_the_idea_the_split_released` (close and sweep routes) checks that
+  the idea's `:CAMPAIGN:` names the first child and no child has an `idea_link_skipped`
+  "held by <split>" event; with the old order the close route fails.
 
 ### As shipped (2026-10-30)
 
@@ -254,6 +258,8 @@ The admission is tied to the id, not to the child's text (see Non-goals). Status
   in `params["split_origin"]`, so `apply_add_batch`'s re-plan accepts the same in-flight origin
   and the batch stays JSON-serializable. `plan_add` returns `split_origin` (the campaign id, or
   `None`) in every plan.
+- Both call sites run the hook after `_release_idea_link`: the children inherit the original's
+  `source_idea`, and the split campaign holds the idea's `:CAMPAIGN:` until it is released.
 - In the close apply the hook runs only when the outcome is `MERGED`, not for `HANDED_OFF`;
   the `HANDED_OFF` -> `MERGED` edge is the sweep's.
 

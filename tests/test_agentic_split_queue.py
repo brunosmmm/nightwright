@@ -3,7 +3,7 @@
 import pytest
 
 from test_agentic_e2e import _write
-from test_agentic_split import ORIG, run_ticks, written  # noqa: F401 — `written` is a fixture helper
+from test_agentic_split import ORIG, part, run_ticks, written  # noqa: F401 — `written` is a fixture helper
 from test_agentic_spec_writer import ledger, parked  # noqa: F401
 from wt.agentic import queue as Q
 from wt.agentic import schemas as SC
@@ -244,3 +244,44 @@ def test_non_split_close_queues_nothing(tmp_path):
     Q._queue_split_children(None, {"kind": "implement"}, events)
     assert events == []
 
+
+
+def idea_parts(first=101):
+    fm = {"source_idea": "IDEA-001"}               # a split child inherits the original's idea
+    return [part(first, 1, fm=fm), part(first + 1, 2, prev=first, fm=fm),
+            part(first + 2, 3, prev=first + 1, fm=fm)]
+
+
+@pytest.mark.parametrize("route", ["close", "sweep"])
+def test_split_children_link_the_idea_the_split_released(tmp_path, monkeypatch, route):
+    """The hook runs after `_release_idea_link`: a child sees no live holder, so the idea ends up
+    linked to the first child campaign (not to nothing, not skipped as 'held by <split>')."""
+    from wt import org as ORG
+    from wt import org_write as OW
+    from test_agentic_split import split_fx
+
+    def link(iid="IDEA-001"):
+        ORG.invalidate_tasks_cache()
+        return Q._idea_task(cfg, iid).properties.get("CAMPAIGN")
+
+    cfg, repo, cid = split_fx(tmp_path, monkeypatch, idea_parts(), idea=True)
+    assert link() == cid                                          # linked at add
+    run_ticks(cfg, cid, 3)                                        # write the three parts
+    if route == "sweep":
+        monkeypatch.setattr(Q, "_queue_split_children", lambda *a, **k: None)
+    st = run_ticks(cfg, cid, 2)
+    if route == "sweep":
+        assert st["state"] == "MERGED" and link() is None
+        handed_off(cfg, cid)
+        OW.set_property(cfg, Q._idea_task(cfg, "IDEA-001"), "CAMPAIGN", cid)   # still held at HANDED_OFF
+        monkeypatch.setattr(Q, "_queue_split_children", REAL_HOOK)
+        sweep(cfg)
+    assert S.read_state(cfg, cid)["state"] == "MERGED"
+    made = children(cfg)
+    first = made["SPEC-0101"][0]
+    assert first["state"] == "QUEUED" and len(ledger(cfg, cid, "idea_unlinked")) >= 1
+    assert link() == first["id"]
+    assert first.get("idea_link") == {"id": "IDEA-001"}
+    for sid in PARTS:
+        assert not [e for e in ledger(cfg, made[sid][0]["id"], "idea_link_skipped")
+                    if f"held by {cid}" in e["reason"]]

@@ -2331,9 +2331,11 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             if res.followups is not None:           # after the assignment replaced the dict
                 state["close"]["followups"] = res.followups
             _reconcile_closed(cfg, state, events, oc.next_state)
-            if oc.next_state == "MERGED":
-                _queue_split_children(cfg, state, events)   # SPEC-0294: the state is not MERGED on disk yet
             _release_idea_link(cfg, state, events)      # SPEC-0292: independent of the reconcile
+            if oc.next_state == "MERGED":
+                # SPEC-0294: after the release, so a child can link the idea this campaign held;
+                # the state is not MERGED on disk yet
+                _queue_split_children(cfg, state, events)
             state["park"] = None
             return finish(oc.next_state, "closed")
         if oc.next_state == "TRIAGING" and state.get("kind") in ("merge", "split"):
@@ -2418,8 +2420,8 @@ def _sweep_write(cfg, cid: str, row: dict, pr: dict | None) -> None:
             close.update(merged_sha=pr["merge_sha"], merged_at=pr["merged_at"], pr_state="MERGED")
             events: list = []
             _reconcile_closed(cfg, st, events, "MERGED")
-            _queue_split_children(cfg, st, events)      # SPEC-0294
             _release_idea_link(cfg, st, events)         # SPEC-0292
+            _queue_split_children(cfg, st, events)      # SPEC-0294: after the release (children link the idea)
             _transition(cfg, st, "MERGED", "pr_merged", by="sweep", extra_events=events)
             return
         if action == "closed":

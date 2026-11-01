@@ -40,17 +40,26 @@ def good_parts(first=101):
     return [part(first, 1), part(first + 1, 2, prev=first), part(first + 2, 3, prev=first + 1)]
 
 
-def split_fx(tmp_path, monkeypatch, entries=(), n=3, *, close=False):
+def split_fx(tmp_path, monkeypatch, entries=(), n=3, *, close=False, idea=False):
     """An accepted SPEC-0005 (parent SPEC-0100, depends on the not-done SPEC-0099) whose review is
-    `split` with `n` parts, queued; one tick admits and opens it into SPEC_WRITING."""
+    `split` with `n` parts, queued; one tick admits and opens it into SPEC_WRITING. `idea`: the
+    original has `source_idea: IDEA-001` (an older idea that the split campaign links, SPEC-0292)."""
     repo = make_project(tmp_path, with_epic=True)
     _write(repo, ORIG, _spec_md(5, None, title="Big thing", status="accepted", epic="SPEC-0100",
-                                fm={"depends_on": "[SPEC-0099]"}))
+                                fm={"depends_on": "[SPEC-0099]",
+                                    **({"source_idea": "IDEA-001"} if idea else {})}))
     _write(repo, "feature.txt", "x\n")
     _lint_ledger(repo)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "an accepted spec")
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    if idea:
+        from wt import org as ORG
+        from wt import org_write as OW
+        _, _, iid = OW.add_idea(cfg, "split me")
+        assert iid == "IDEA-001"
+        ORG.invalidate_tasks_cache()
+        OW.set_property(cfg, Q._idea_task(cfg, iid), "CREATED", "[2026-10-20 Tue 10:00]")
     write_review(cfg, repo / ORIG, "SPEC-0005", "split", suggested_splits=[
         {"title": t, "scope": f"scope of {t}"} for t in TITLES[:n]] if n <= 3 else
         [{"title": f"Part {i}", "scope": "s"} for i in range(1, n + 1)])
