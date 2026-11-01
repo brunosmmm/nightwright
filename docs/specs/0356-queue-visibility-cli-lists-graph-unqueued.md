@@ -9,6 +9,7 @@ kind: feature
 tags: [agentic, queue, ux, visibility]
 depends_on: [SPEC-0351]
 source_idea: IDEA-615
+updated: 2026-11-01
 ---
 
 ## Context
@@ -119,17 +120,18 @@ fit_columns(columns, rows, width) -> list[Column]
 - Natural width of a column = max(len(header), max cell length). `fixed` columns keep their
   natural width (`no_wrap`, `min_width` = natural, overflow never ellipsizes): **id** and
   **state**. `flex` = the **title**: takes what remains, min 12, ellipsized.
-- Drop the lowest-ranked non-fixed, non-flex column while
-  `sum(widths) + separators + title_min > width`. A column with `fold` set is not lost: its
+- While `sum(widths) + separators + title_min > width`, drop (or fold, if `fold` is set)
+  the remaining non-fixed, non-flex column with the **highest** rank number (8 =
+  updated/age goes first, 1 = blocked-by goes last). A column with `fold` set is not lost: its
   text is prefixed into the title cell (`[budget_cap] `, `⧗ SPEC-0337 `), dim.
 - If even id + state + title-min do not fit (very narrow), nothing more is dropped and the
   title wraps under the id (rich `overflow="fold"` on the title only); id/state are still
   whole. `width` is `console.width` (honours `COLUMNS`); render functions take `width` so
   tests are deterministic.
 
-Documented drop order (first dropped first), same for every list table:
+Documented drop order (highest rank number dropped first), same for every list table:
 
-| rank (kept longest → first dropped) | column | when dropped |
+| rank (1 = kept longest, 8 = dropped first) | column | when dropped |
 |---|---|---|
 | — | campaign id | never |
 | — | state | never (pure state; park reason moved to its own column) |
@@ -142,6 +144,13 @@ Documented drop order (first dropped first), same for every list table:
 | 6 | loops | dropped |
 | 7 | size / tone / profile | dropped (today's `_WIDE_COLS` rule is subsumed) |
 | 8 | updated / age | dropped first |
+
+The state cell keeps its existing suffixes (`rN`, `(run)`, `park?`, e.g. `SPEC_WRITING r2`,
+`(detached pid N)`, `:park?` from `cli_queue.py:136-143`) and its natural width includes
+them; only `:reason` moves out (to the park-reason column). `campaign list`'s `spec` column
+is dropped (the title and the campaign id carry it). The Needs-you table keeps `reason` as
+`fixed`, `detail` as `flex` (alongside the title, both ellipsized, each min 12) and
+`resume to` at rank 3 (same rank as pri). The Backlog table's `#` is `fixed` (below).
 
 Reasoning: the id is what a human copies into the next command and the state is the answer
 to "what is it doing", so they are never cut; the title is what makes an id meaningful;
@@ -159,7 +168,8 @@ and `nw queue backlog`. The Backlog table keeps its `#` (position) column as `fi
 
 - **Nodes:** every non-terminal campaign (plus terminal with `--all`), keyed by its spec id
   (idea id for idea-without-spec, campaign id for merge). When several campaigns share a key,
-  the newest non-terminal wins. Every id in a node's `depends_on` that has no node becomes a
+  the newest non-terminal wins; if none is non-terminal (only possible with `--all`), the
+  newest campaign wins, preferring MERGED. Every id in a node's `depends_on` that has no node becomes a
   **stub node** with its spec status read from the specs dir (`accepted, no campaign`,
   `done`, `missing`) — this is how an unqueued dependency becomes visible. Under
   `--project`, campaigns are filtered but dependency stubs from elsewhere are kept and marked
@@ -193,8 +203,11 @@ Candidates:
   (default; `--status` narrows), excluding `kind: epic` (queued via `queue add --epic`, its
   children are listed instead) and `kind: policy` (nothing to implement).
 - Outbound specs (`_outbound_specs`, same statuses, same kind rule), project from the outbox.
-- Ideas in `SPECCED` or `INCUBATE`. A SPECCED idea whose spec is already listed is collapsed
-  into that spec row (`idea_id` set) instead of appearing twice.
+- Ideas in `SPECCED` or `INCUBATE`. A SPECCED idea whose spec exists (any status) is never
+  listed on its own: if the spec is a candidate it collapses into that row (`idea_id` set),
+  otherwise the idea is omitted (the spec's lifecycle owns it). Only a SPECCED idea whose
+  spec cannot be found is listed, with reason `spec-missing`
+  (`idea is SPECCED but its spec was not found`). Consequently no idea row is ever `ready`.
 
 A candidate is **unqueued** when no campaign references it (`spec_id` match; for ideas the
 campaign's idea id or the spec's `source_idea`) in a non-terminal state or `MERGED`.
@@ -208,11 +221,12 @@ Reasons (a list of `{code, text}`; all that apply, derived in this order):
 | `not-accepted` | spec status draft/proposed | `spec is draft` |
 | `deps-unmet` | `dependency_met` false for a `depends_on` id (existing function) | `waiting on SPEC-0337 (accepted)` |
 | `previous-campaign` | newest terminal campaign is ABANDONED / HANDED_OFF | `campaign SPEC-0349-…-ab12 ABANDONED 2026-10-30` |
+| `spec-missing` | SPECCED idea whose spec file is not found (internal or outbound) | `idea is SPECCED but its spec was not found` |
 | `no-spec` | INCUBATE idea | `idea has no spec yet` |
 | `ready` | none of the above | `accepted, dependencies met, never queued` |
 
 `ready` rows are the forgotten ones (the SPEC-0349 case): they sort first and render
-green, then `deps-unmet`, `previous-campaign`, `not-accepted`, `no-spec`; within a group by
+green, then `deps-unmet`, `previous-campaign`, `not-accepted`, `spec-missing`, `no-spec`; within a group by
 id. Each row carries `next`: the command that would act on it
 (`nw queue add SPEC-0349`, `nw queue add IDEA-615` for an idea campaign) — printed, never run.
 
@@ -265,7 +279,7 @@ degrades to the finished/fell-back forms without them; it does not emit them.
 
 ### TUI contract
 
-The later TUI spec (IDEA-615 log) builds its panes from these builders only, no re-parsing:
+The later TUI spec (IDEA-615 log) builds or rewires its panes (including the existing `tui/queue_tab.py`; `tui/mailbox_tab.py` stays as is) from these builders only, no re-parsing:
 active / waiting / parked / backlog → `queue_payload` items (`row_view` fields, including
 `park_reason`, `blocked_by`, `waiting_on`, `remote_gate`); dependency graph →
 `graph_view`; not-yet-queued → `unqueued_view`; column fitting → `listview.fit_columns`
@@ -293,7 +307,8 @@ active / waiting / parked / backlog → `queue_payload` items (`row_view` fields
       print every campaign id and state whole (no `…` in either), a title cell for every row,
       and no line longer than the width.
 - [ ] Columns disappear exactly in the documented order as width shrinks; at 160 all
-      columns are present; blocked-by and park reason, when dropped as columns, appear in the
+      columns are present for the snapshot fixture (whose natural widths are chosen to fit
+      in 160); blocked-by and park reason, when dropped as columns, appear in the
       title cell.
 - [ ] `nw queue list` no longer appends the park reason to the state cell; it has its own
       column (or folds into the title).
@@ -309,8 +324,10 @@ active / waiting / parked / backlog → `queue_payload` items (`row_view` fields
       `--project` keeps external dependency stubs marked `external: true`.
 - [ ] `nw queue unqueued` lists an accepted spec with no campaign as `ready` first, lists
       draft, deps-unmet, previously-abandoned specs and INCUBATE ideas with their reasons,
-      collapses a SPECCED idea into its spec row, and omits epics, policies, specs with a
-      non-terminal or MERGED campaign.
+      collapses a SPECCED idea into its spec row, lists a SPECCED idea whose spec is missing
+      as `spec-missing`, omits a SPECCED idea whose spec exists but is not a candidate (e.g.
+      `done`), and omits epics, policies, specs with a non-terminal or MERGED campaign; no
+      idea row is ever `ready`.
 - [ ] `nw campaign show` prints the remote gate line for fixture ledgers with
       (a) `gate_dispatched` and no `gate` → running, (b) `gate` with `worker` → finished,
       (c) `worker_failed` then local `gate` → fell back; and prints no such line for a
@@ -329,8 +346,9 @@ active / waiting / parked / backlog → `queue_payload` items (`row_view` fields
     `width=`), compare against golden files `tests/data/queue_visibility/<cmd>_<w>.txt`
     (plain text, no ANSI; regenerate with `NW_UPDATE_SNAPSHOTS=1`), and assert directly:
     no `…` inside id/state cells, every line `<= width`, the set of headers at each width
-    matches the documented drop order.
-  - *fit_columns unit tests:* drop order, fold behavior, fixed widths, too-narrow fallback.
+    matches the documented drop order. The fixture's natural widths are chosen so all
+    columns fit in 160.
+  - *fit_columns unit tests:* drop order (rank 8 dropped before rank 1), fold behavior, fixed widths, too-narrow fallback.
   - *JSON parity:* the same campaign's fields equal across the three JSON outputs; a
     pre-change key snapshot of `nw.queue.v1` items is a subset of the new output.
   - *waiting_on_ids* table test.
@@ -341,10 +359,16 @@ active / waiting / parked / backlog → `queue_payload` items (`row_view` fields
   - *Unqueued:* specs dir with accepted-no-campaign (ready), draft, accepted with unmet
     dep, accepted with an ABANDONED campaign, accepted with a MERGED campaign (omitted),
     accepted with a QUEUED campaign (omitted), an epic and a policy (omitted), an outbound
-    accepted spec; ideas fixture with an INCUBATE idea and a SPECCED idea whose spec is
-    listed. Assert order, reason codes, `next` commands and collapse.
+    accepted spec; ideas fixture with an INCUBATE idea, a SPECCED idea whose spec is
+    listed (collapsed), a SPECCED idea whose spec is `done` (omitted) and a SPECCED idea
+    whose spec does not exist (`spec-missing`). Assert order, reason codes, `next` commands,
+    collapse, that the done-spec idea is absent, and that no idea row has reason `ready`.
   - *Remote gate line:* the three ledger fixtures (a)/(b)/(c) plus local-only; assert the
-    line text with a frozen `now` and the `remote_gate` JSON.
+    line text with a frozen `now` and the `remote_gate` JSON. Fixtures (a) and (c) write raw
+    JSONL lines to the campaign ledger (not `store.append_event`), because
+    `gate_dispatched`/`worker_failed` are registered by SPEC-0338 and `events.validate`
+    (`agentic/events.py:225`) rejects unknown types on main. The renderer reads them by
+    `type` string and must not depend on `EVENT_TYPES`.
 - **Manual verification:** in a real data dir run `nw queue list`, `nw campaign list`,
   `nw queue backlog` in a terminal resized to ~60, ~100, ~160 columns; `nw queue graph`;
   `nw queue unqueued` (expect any accepted-but-unqueued spec, e.g. the SPEC-0349 case, at
