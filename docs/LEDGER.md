@@ -572,6 +572,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0339](./specs/0339-conductor-launch-session-scoped-permission-rules.md) | `nw queue conductor-launch` passes session-scoped permission rules (allowedTools / disallowedTools) | feature | done | — | 2026-11-01 |
 | [SPEC-0347](./specs/0347-queue-backlog-resolves-outbound-depends-on.md) | Queue backlog resolves outbound `depends_on` (PROJ-NNNN files, merged-campaign fallback) | feature | done | — | 2026-11-01 |
 | [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) | Per-gate path sensitivity for the close re-gate | feature | done | M9: agentic workflow | 2026-11-01 |
+| [SPEC-0351](./specs/0351-queue-watch-fill-terminal-height.md) | queue watch: size the bottom sections to the terminal height | feature | done | M9: agentic workflow | 2026-11-01 |
 
 ## Superseded / rejected
 

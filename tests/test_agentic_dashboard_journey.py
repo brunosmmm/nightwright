@@ -250,7 +250,7 @@ def test_bottom_sections_truncate_with_more_rows(tmp_path):
         _campaign(cfg, repo, f"SPEC-0001-a{i}", "IMPLEMENTING")
     p = Q.dashboard_payload(cfg, recent=8)
     for width in (100, 160):
-        out = _plain(CQ._dashboard(p, width, 24, height=30), width)
+        out = _plain(CQ._dashboard(p, width, 24, height=30, fill=False), width)
         assert "Backlog (7)" in out and "+3 more" in out           # 4 of 7 shown
         assert "Recently delivered (8" in out                     # 5 of 8 shown
         assert "Conductor handling (6)" in out and "+2 more" in out
@@ -258,7 +258,7 @@ def test_bottom_sections_truncate_with_more_rows(tmp_path):
         lines = out.splitlines()
         assert lines[-1].strip(), "no trailing blank: the delivered rows end the frame"
     # Backlog and Recently delivered sit side by side from 120 columns
-    wide = _plain(CQ._dashboard(p, 160, 24, height=30), 160)
+    wide = _plain(CQ._dashboard(p, 160, 24, height=30, fill=False), 160)
     assert any("Backlog (7)" in ln and "Recently delivered" in ln for ln in wide.splitlines())
 
 

@@ -679,6 +679,29 @@ SECTION_ROWS = {"needs_you": 4, "conductor": 4, "waiting": 3, "spec_reviews": 3,
                 "delivered": 5}
 
 
+def allocate_rows(counts: dict, minimums: dict, spare: int, lanes=None) -> dict:
+    """SPEC-0351: per-section row limits. Each section starts at `min(minimum, count)`; each of
+    `spare` extra lines goes round-robin to a lane (sections sharing screen lines, e.g. side by
+    side) that still has hidden items, growing every such section in it by one. Pure."""
+    limits = {k: min(minimums.get(k, 0), n) for k, n in counts.items()}
+    lanes = [[k for k in lane if k in counts] for lane in (lanes or [[k] for k in counts])]
+    lanes = [ln for ln in lanes if ln]
+    while spare > 0:
+        grew = False
+        for lane in lanes:
+            if spare <= 0:
+                break
+            open_ = [k for k in lane if limits[k] < counts[k]]
+            if open_:
+                for k in open_:
+                    limits[k] += 1
+                spare -= 1
+                grew = True
+        if not grew:
+            break
+    return limits
+
+
 def _more_row(t: Table, more: int) -> None:
     """Append `+N more` under the campaign (or spec) column of a truncated section."""
     if more <= 0:
@@ -924,36 +947,45 @@ def active_region(items: list, width: int, budget=None) -> tuple:
     return "row", _cards_rows(items, None if budget is None else max(1, budget))
 
 
-def _bottom_sections(p: dict, width: int, recent_hours: int) -> list:
-    """SPEC-0326: the fixed-budget sections under the cards; Backlog and Recently delivered
-    side by side when width >= 120."""
+def _bottom_sections(p: dict, width: int, recent_hours: int, extra: int = 0) -> list:
+    """SPEC-0326: the bottom sections, each with a minimum row budget (SECTION_ROWS) plus a
+    share of `extra` spare lines (SPEC-0351); Backlog and Recently delivered side by side when
+    width >= 150."""
+    side = width >= SIDE_BY_SIDE
+    keys = {"needs_you": "needs_you", "conductor": "conductor_handling",
+            "spec_reviews": "spec_reviews", "waiting": "waiting",
+            "backlog": "backlog", "delivered": "delivered"}
+    counts = {k: len(p.get(f) or []) for k, f in keys.items() if p.get(f) or k in ("backlog", "delivered")}
+    lanes = [[k] for k in counts if not (side and k in ("backlog", "delivered"))]
+    if side:
+        lanes.append(["backlog", "delivered"])
+    lim = allocate_rows(counts, SECTION_ROWS, extra, lanes)
     parts = []
     if p.get("needs_you"):
-        parts.append(_needs_you_table(p["needs_you"], SECTION_ROWS["needs_you"]))
+        parts.append(_needs_you_table(p["needs_you"], lim["needs_you"]))
     if p.get("conductor_handling"):
-        parts.append(_conductor_table(p["conductor_handling"], SECTION_ROWS["conductor"]))
+        parts.append(_conductor_table(p["conductor_handling"], lim["conductor"]))
     if p.get("spec_reviews"):
         parts.append(_dash_spec_reviews(p["spec_reviews"], p.get("generated_at"),
-                                        SECTION_ROWS["spec_reviews"]))
+                                        lim["spec_reviews"]))
     if p.get("waiting"):
-        parts.append(_dash_waiting(p["waiting"], SECTION_ROWS["waiting"]))
-    if width >= SIDE_BY_SIDE:
+        parts.append(_dash_waiting(p["waiting"], lim["waiting"]))
+    if side:
         half = (width - 2) * 2 // 5             # the backlog has more columns: 3:2
         grid = Table.grid(expand=True, padding=(0, 2))
         grid.add_column(ratio=3)
         grid.add_column(ratio=2)
-        grid.add_row(_dash_backlog(p["backlog"], SECTION_ROWS["backlog"]),
-                     _dash_delivered(p["delivered"], recent_hours, half,
-                                     SECTION_ROWS["delivered"]))
+        grid.add_row(_dash_backlog(p["backlog"], lim["backlog"]),
+                     _dash_delivered(p["delivered"], recent_hours, half, lim["delivered"]))
         parts.append(grid)
     else:
-        parts.append(_dash_backlog(p["backlog"], SECTION_ROWS["backlog"]))
-        parts.append(_dash_delivered(p["delivered"], recent_hours, width,
-                                     SECTION_ROWS["delivered"]))
+        parts.append(_dash_backlog(p["backlog"], lim["backlog"]))
+        parts.append(_dash_delivered(p["delivered"], recent_hours, width, lim["delivered"]))
     return parts
 
 
-def _dashboard(p: dict, width: int = 120, recent_hours: int = 24, height=None) -> Group:
+def _dashboard(p: dict, width: int = 120, recent_hours: int = 24, height=None,
+               fill: bool = True) -> Group:
     """The `nw queue watch` frame for a `nw.queue.dashboard.v1` payload. With `height`, the
     header and the bottom sections keep their fixed budget and the active cards get the rest
     (SPEC-0326), so nothing is pushed off the screen."""
@@ -964,6 +996,16 @@ def _dashboard(p: dict, width: int = 120, recent_hours: int = 24, height=None) -
         budget = int(height) - _lines(head, width) - _lines(Group(*bottom), width) - 1
     items = p["active"]
     density, region = active_region(items, width, budget)
+    if budget is not None and fill:
+        # SPEC-0351: lines the active region leaves unused go to the truncated sections
+        spare = budget - _lines(region, width)
+        while spare > 0:
+            alt = _bottom_sections(p, width, recent_hours, spare)
+            over = _lines(Group(*alt), width) - _lines(Group(*bottom), width) - spare
+            if over <= 0:
+                bottom = alt
+                break
+            spare -= max(1, over)
     title = Text.assemble((f"Active ({len(items)})", "bold"))
     if items and density != "full":
         title.append(f"  {density} view", style="dim")
@@ -1370,7 +1412,8 @@ def attach(queue_group):
             return
         def frame():
             h = height or (console.height if console.is_terminal else DEFAULT_HEIGHT)
-            return _dashboard(payload(), console.width, recent_hours, h)
+            return _dashboard(payload(), console.width, recent_hours, h,
+                              fill=bool(height) or console.is_terminal)
 
         if once:
             console.print(frame())
