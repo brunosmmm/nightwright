@@ -18,6 +18,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -28,6 +29,8 @@ from pathlib import Path
 
 from . import gate_slots
 from . import gates as G
+from .project import SCHEMA as PROJECT_SCHEMA
+from .project import validate as validate_project
 from .store import agentic_dir, now_iso
 
 JOB_SCHEMA = "nw.job.v1"
@@ -41,11 +44,15 @@ SLOT_WAIT_ENV = "NW_WORKER_SLOT_WAIT_EVENT_S"
 EXIT_ERROR = 3
 EXIT_REFUSED = 2
 
-KEY_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-SHA_RE = re.compile(r"^[0-9a-f]{40,64}$")
-DIGITS_RE = re.compile(r"^[0-9]+$")
+# `\Z`, not `$`: `$` also matches before a trailing newline, and these grammars are literal
+KEY_RE = re.compile(r"^[A-Za-z0-9._-]+\Z")
+SHA_RE = re.compile(r"^[0-9a-f]{40,64}\Z")
+DIGITS_RE = re.compile(r"^[0-9]+\Z")
 # a branch name: no leading `-` or `/`, no `..`; git's own check-ref-format runs at checkout
-BASE_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._/-]*$")
+BASE_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._/-]*\Z")
+# the worker's slot holds/waiters name a remote job `remote:<campaign>`, so they never read as
+# one of the worker host's own local campaigns
+SLOT_CAMPAIGN_PREFIX = "remote:"
 JOB_REFS = "refs/nw/gate-jobs/"
 HAVE_REFS = "refs/nw/have/"
 # git variables a caller's environment could carry that would point our git calls elsewhere
@@ -88,6 +95,20 @@ def repo_lock(cfg, repo_key):
     gc's deletions and pruning all happen under it."""
     repos_dir(cfg).mkdir(parents=True, exist_ok=True)
     fd = os.open(repos_dir(cfg) / f"{repo_key}.lock", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+@contextmanager
+def jobs_lock(cfg):
+    """`worker/jobs.lock`: a claim (mkdir, `job.lock`, `job.json`) is atomic against gc's scans
+    of `jobs/`, so gc never sees a half-claimed job dir as dead."""
+    worker_dir(cfg).mkdir(parents=True, exist_ok=True)
+    fd = os.open(worker_dir(cfg) / "jobs.lock", os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         yield
@@ -160,12 +181,9 @@ def validate_header(h) -> None:
         bad(f"schema {h.get('schema')!r} is not {JOB_SCHEMA}")
     if h.get("kind") != "gate":
         bad(f"kind {h.get('kind')!r} is not 'gate'")
-    for key in ("job_id", "repo_key"):
+    for key in ("job_id", "repo_key", "campaign", "spec_id"):
         if not isinstance(h.get(key), str) or not KEY_RE.match(h[key]):
             bad(f"{key} must match [A-Za-z0-9._-]+")
-    for key in ("campaign", "spec_id"):
-        if not isinstance(h.get(key), str):
-            bad(f"{key} must be a string")
     if not isinstance(h.get("commit"), str) or not SHA_RE.match(h["commit"]):
         bad("commit must be a hex sha")
     base = h.get("base")
@@ -203,6 +221,12 @@ def validate_header(h) -> None:
         if not isinstance(g, dict) or not isinstance(g.get("name"), str) \
                 or not KEY_RE.match(g["name"]) or not isinstance(g.get("cmd"), str):
             bad("each gate needs a name matching [A-Za-z0-9._-]+ and a string cmd")
+    # every other gate field (timeout_s, retries, cwd, results, ...) and unique names, by the
+    # same rules a local `.nw/project.yaml` gate list meets, so nothing fails mid-run
+    try:
+        validate_project({"schema": PROJECT_SCHEMA, "gates": gl})
+    except ValueError as e:
+        bad(f"payload.gates: {e}")
 
 
 # ---- frames ----------------------------------------------------------------------------------
@@ -373,61 +397,100 @@ def _cleanup(cfg, h: dict, job: Path) -> None:
     gc(cfg)
 
 
+_STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+_PRE_SLOT_STAGES = ("validate", "claim", "checkout")
+
+
+def _install_stop_handler(handler) -> dict:
+    """Route SIGTERM/SIGINT/SIGHUP to `handler`; returns the previous handlers, to restore.
+    Outside the main thread (an in-process caller) nothing is installed."""
+    old = {}
+    for sig in _STOP_SIGNALS:
+        try:
+            old[sig] = signal.signal(sig, handler)
+        except (ValueError, OSError):
+            pass
+    return old
+
+
 def gate_job(cfg, stdin, stdout) -> int:
     """`nw worker gate-job`: run one job from `stdin` (binary), frames to `stdout` (binary).
-    Returns the exit code: 0 after `done` (pass, fail or interrupted), 3 after `error`."""
+    Returns the exit code: 0 after `done` (pass, fail or interrupted), 3 after `error`.
+
+    SIGTERM/SIGINT/SIGHUP cancel like stdin EOF: before the slot stage the job ends with an
+    `error` frame (`stage: "signal"`); from then on the slot wait or the live gates stop (their
+    process groups are killed) and `done` goes out with `interrupted: true`."""
     frames = _Frames(None, stdout)
-    stage = "validate"
+    state = {"stage": "validate", "signalled": False}
+    cancel = threading.Event()
     h, job, lock_fd, job_rec = None, None, None, None
+
+    def on_signal(signum, _frame):
+        if state["signalled"]:
+            return
+        state["signalled"] = True
+        cancel.set()
+        if state["stage"] in _PRE_SLOT_STAGES:
+            raise WorkerError("signal", f"stopped by {signal.Signals(signum).name}")
+        # terminate_all takes the gates lock, which the interrupted main thread may hold
+        threading.Thread(target=G.terminate_all, daemon=True).start()
+
+    old_handlers = _install_stop_handler(on_signal)
     try:
-        line = stdin.readline(MAX_HEADER_BYTES)
         try:
-            h = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as e:
-            raise WorkerError("validate", f"the header is not JSON: {e}")
-        if isinstance(h, dict) and isinstance(h.get("job_id"), str) \
-                and KEY_RE.match(h["job_id"]):
-            frames.job_id = h["job_id"]
-        validate_header(h)
+            line = stdin.readline(MAX_HEADER_BYTES)
+            try:
+                h = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as e:
+                raise WorkerError("validate", f"the header is not JSON: {e}")
+            if isinstance(h, dict) and isinstance(h.get("job_id"), str) \
+                    and KEY_RE.match(h["job_id"]):
+                frames.job_id = h["job_id"]
+            validate_header(h)
 
-        stage = "claim"
-        jobs_dir(cfg).mkdir(parents=True, exist_ok=True)
-        job = jobs_dir(cfg) / h["job_id"]
+            state["stage"] = "claim"
+            with jobs_lock(cfg):
+                jobs_dir(cfg).mkdir(parents=True, exist_ok=True)
+                try:
+                    (jobs_dir(cfg) / h["job_id"]).mkdir()
+                except FileExistsError:
+                    raise WorkerError("claim", f"job {h['job_id']} already exists on this worker")
+                job = jobs_dir(cfg) / h["job_id"]
+                lock_fd = os.open(job / "job.lock", os.O_RDWR | os.O_CREAT, 0o644)
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                frames.log = job / "frames.jsonl"
+                payload = h["payload"]
+                job_rec = {"schema": "nw.worker.job.v1", "job_id": h["job_id"],
+                           "kind": h["kind"], "campaign": h["campaign"], "spec_id": h["spec_id"],
+                           "repo_key": h["repo_key"], "commit": h["commit"], "base": h["base"],
+                           "attempt": h.get("attempt"), "seq": payload["seq"],
+                           "tier": payload.get("tier"), "pid": os.getpid(),
+                           "claimed_at": now_iso()}
+                _write_job_json(job / "job.json", job_rec)
+
+            state["stage"] = "checkout"
+            _checkout(cfg, h, job, stdin)
+            threading.Thread(target=_watch_stdin, args=(stdin, cancel), daemon=True).start()
+
+            state["stage"] = "slot"
+            frames.emit("accepted")
+            _run_gates(cfg, h, job, frames, cancel)
+            job_rec.update(state="done", finished_at=now_iso())
+        except WorkerError as e:
+            state["stage"] = "finish"               # a late signal no longer raises
+            return _fail(cfg, h, job, frames, job_rec, e.stage, e.error)
+        except Exception as e:                      # any exception becomes an error frame
+            stage, state["stage"] = state["stage"], "finish"
+            return _fail(cfg, h, job, frames, job_rec, stage, f"{type(e).__name__}: {e}")
         try:
-            job.mkdir()
-        except FileExistsError:
-            job = None
-            raise WorkerError("claim", f"job {h['job_id']} already exists on this worker")
-        lock_fd = os.open(job / "job.lock", os.O_RDWR | os.O_CREAT, 0o644)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        frames.log = job / "frames.jsonl"
-        payload = h["payload"]
-        job_rec = {"schema": "nw.worker.job.v1", "job_id": h["job_id"], "kind": h["kind"],
-                   "campaign": h["campaign"], "spec_id": h["spec_id"],
-                   "repo_key": h["repo_key"], "commit": h["commit"], "base": h["base"],
-                   "attempt": h.get("attempt"), "seq": payload["seq"],
-                   "tier": payload.get("tier"), "pid": os.getpid(), "claimed_at": now_iso()}
-        _write_job_json(job / "job.json", job_rec)
-
-        stage = "checkout"
-        _checkout(cfg, h, job, stdin)
-        cancel = threading.Event()
-        threading.Thread(target=_watch_stdin, args=(stdin, cancel), daemon=True).start()
-
-        stage = "slot"
-        frames.emit("accepted")
-        _run_gates(cfg, h, job, frames, cancel)
-        job_rec.update(state="done", finished_at=now_iso())
-    except WorkerError as e:
-        return _fail(cfg, h, job, frames, job_rec, e.stage, e.error)
-    except Exception as e:                      # any exception becomes an error frame
-        return _fail(cfg, h, job, frames, job_rec, stage, f"{type(e).__name__}: {e}")
-    try:
-        _write_job_json(job / "job.json", job_rec)
-        _cleanup(cfg, h, job)
-    except Exception as e:                      # `done` is out: report, never a second frame
-        print(f"nw worker: cleanup after done failed: {e}", file=sys.stderr)
-    return 0
+            _write_job_json(job / "job.json", job_rec)
+            _cleanup(cfg, h, job)
+        except Exception as e:                      # `done` is out: report, never a second frame
+            print(f"nw worker: cleanup after done failed: {e}", file=sys.stderr)
+        return 0
+    finally:
+        for sig, handler in old_handlers.items():
+            signal.signal(sig, handler)
 
 
 def _fail(cfg, h, job, frames, job_rec, stage, error) -> int:
@@ -456,7 +519,7 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
     def announce(_occ, waited_s):
         frames.emit("slot_wait", waited_s=waited_s)
 
-    with gate_slots.acquire(cfg, h["campaign"], stop=cancel, on_wait=announce,
+    with gate_slots.acquire(cfg, SLOT_CAMPAIGN_PREFIX + h["campaign"], stop=cancel, on_wait=announce,
                             wait_event_s=_slot_wait_event_s()) as hold:
         if hold.interrupted:
             frames.emit("done", ok=False, started_at=now_iso(), duration_s=0.0,
@@ -530,13 +593,10 @@ def _job_live(job: Path) -> tuple[bool, int | None]:
     return False, fd
 
 
-def gc(cfg, keep_days: int = DEFAULT_KEEP_DAYS, now: float | None = None) -> dict:
-    """Delete job dirs (except live ones, whose `job.lock` is held) and `refs/nw/have/*` refs
-    at least `keep_days` old, plus job refs no live job owns; then `git gc --prune=now` each
-    repo whose refs changed, so the objects go too. Shas a live job uses are kept."""
-    now = time.time() if now is None else now
-    keep_s = max(0, int(keep_days)) * 86400
-    out = {"jobs_removed": [], "refs_removed": 0, "pruned": []}
+def _live_jobs(cfg, remove_before: float | None = None, removed: list | None = None):
+    """`(live_ids, live_shas)` of the job dirs whose `job.lock` another process holds, and the
+    commit/base shas their `job.json` names. With `remove_before`, each dead job dir last
+    touched before it is deleted (its name appended to `removed`). Caller holds `jobs_lock`."""
     live_ids, live_shas = set(), set()
     jd = jobs_dir(cfg)
     for job in sorted(jd.iterdir()) if jd.is_dir() else []:
@@ -552,18 +612,36 @@ def gc(cfg, keep_days: int = DEFAULT_KEEP_DAYS, now: float | None = None) -> dic
                 pass
             continue
         try:
-            if now - job.stat().st_mtime >= keep_s:
+            if remove_before is not None and job.stat().st_mtime <= remove_before:
                 shutil.rmtree(job, ignore_errors=True)
-                out["jobs_removed"].append(job.name)
+                removed.append(job.name)
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
+    return live_ids, live_shas
+
+
+def gc(cfg, keep_days: int = DEFAULT_KEEP_DAYS, now: float | None = None) -> dict:
+    """Delete job dirs (except live ones, whose `job.lock` is held) and `refs/nw/have/*` refs
+    at least `keep_days` old, plus job refs no live job owns; then `git gc --prune=now` each
+    repo whose refs changed, so the objects go too. Shas a live job uses are kept.
+
+    The live set each repo's deletions rely on is read under that repo's lock *and* the jobs
+    lock: a job is then either fully claimed (its `job.json` names its shas, its refs are
+    kept) or has not fetched yet (it fetches after this gc's prune)."""
+    now = time.time() if now is None else now
+    keep_s = max(0, int(keep_days)) * 86400
+    out = {"jobs_removed": [], "refs_removed": 0, "pruned": []}
+    with jobs_lock(cfg):
+        _live_jobs(cfg, remove_before=now - keep_s, removed=out["jobs_removed"])
     rd = repos_dir(cfg)
     for cache in sorted(rd.glob("*.git")) if rd.is_dir() else []:
         key = cache.name[:-4]
         if not KEY_RE.match(key):
             continue
         with repo_lock(cfg, key):
+            with jobs_lock(cfg):
+                live_ids, live_shas = _live_jobs(cfg)
             hv = _read_have(cfg, key)
             changed = False
             for ref in _list_refs(cache, HAVE_REFS):

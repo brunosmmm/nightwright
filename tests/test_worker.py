@@ -1,14 +1,17 @@
 """SPEC-0336: `nw worker gate-job` and friends, driven as a subprocess with a header and bundle
 the test builds itself (offline: the "coordinator" is a temp git repo)."""
 import base64
+import fcntl
 import gzip
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -273,6 +276,98 @@ def test_bad_schema_and_nw_base_mismatch_are_refused(src, tmp_path, wenv):
     assert rc == 3 and fin["stage"] == "validate" and "NW_BASE" in fin["error"]
 
 
+def _set(path, value):
+    """A header mutator: set the dotted `path` (list indexes as ints) to `value`."""
+    def mutate(h):
+        keys = path.split(".")
+        node = h
+        for k in keys[:-1]:
+            node = node[int(k)] if isinstance(node, list) else node[k]
+        last = keys[-1]
+        node[int(last) if isinstance(node, list) else last] = value
+    return mutate
+
+
+def _dup_gates(h):
+    h["payload"]["gates"].append(dict(h["payload"]["gates"][0]))
+
+
+@pytest.mark.parametrize("mutate, why", [
+    (_set("job_id", "../x"), "job_id"),
+    (_set("job_id", "a/b"), "job_id"),
+    (_set("job_id", "x\n"), "job_id"),
+    (_set("job_id", ""), "job_id"),
+    (_set("repo_key", "../x"), "repo_key"),
+    (_set("repo_key", "a/b"), "repo_key"),
+    (_set("repo_key", "proj\n"), "repo_key"),
+    (_set("campaign", "a/b"), "campaign"),
+    (_set("spec_id", "../s"), "spec_id"),
+    (_set("kind", "persona"), "kind"),
+    (_set("commit", "zz"), "commit"),
+    (_set("commit", "a" * 40 + "\n"), "commit"),
+    (_set("base.sha", "not-a-sha"), "base"),
+    (_set("base.name", "../main"), "base"),
+    (_set("base.name", "-main"), "base"),
+    (_set("payload.seq", 1000), "payload.seq"),
+    (_set("payload.seq", "1"), "payload.seq"),
+    (_set("payload.gates.0.name", "../../evil"), "name matching"),
+    (_set("payload.gates.0.name", "a/b"), "name matching"),
+    (_set("payload.gates.0.timeout_s", "abc"), "timeout_s"),
+    (_set("payload.gates.0.cwd", 5), "cwd"),
+    (_set("payload.gates.0.retries", 9), "retries"),
+    (_set("payload.gates.0.results", {"format": "tap"}), "results"),
+    (_set("payload.gates.0.surprise", 1), "unknown key"),
+    (_dup_gates, "duplicate gate name"),
+])
+def test_bad_header_fields_are_refused_before_anything_runs(src, tmp_path, wenv, mutate, why):
+    marker = tmp_path / "ran"
+    h, data = _bundle_job(src, tmp_path, [_gate("x", f"touch {marker}"), _gate("y", "true")])
+    mutate(h)
+    job, fin, rc = _run(wenv, h, data)
+    assert rc == 3 and fin["type"] == "error" and fin["stage"] == "validate", job.frames
+    assert why in fin["error"]
+    assert job.types() == ["error"] and not marker.exists()
+    wd = Path(wenv["NW_DATA_DIR"]) / "agentic" / "worker"
+    assert not (wd / "jobs").exists() or not any((wd / "jobs").iterdir())
+    assert not (wd / "x").exists() and not (wd / "repos").exists()
+
+
+def test_stdin_short_of_bundle_bytes_is_a_read_error(src, tmp_path, wenv):
+    marker = tmp_path / "ran"
+    h, data = _bundle_job(src, tmp_path, [_gate("x", f"touch {marker}")])
+    h["bundle_bytes"] = len(data) + 100
+    job = Job(wenv, h, data)
+    job.close()
+    fin = job.final()
+    assert job.proc.wait(timeout=WAIT_S) == 3
+    assert fin["type"] == "error" and fin["stage"] == "read" and "short" in fin["error"]
+    assert job.types() == ["error"] and not marker.exists()
+    jd = _job_dir(wenv, h["job_id"])
+    assert sorted(p.name for p in jd.iterdir()) == ["frames.jsonl", "job.json", "job.lock"]
+    rec = json.loads((jd / "job.json").read_text())
+    assert rec["state"] == "error" and rec["stage"] == "read"
+    # the job let go of its dir: gc removes it
+    r = _nw(wenv, "gc", "--keep-days", "0")
+    assert r.returncode == 0 and h["job_id"] in json.loads(r.stdout)["jobs_removed"]
+    assert not jd.exists()
+
+
+def test_the_workers_own_nw_env_never_reaches_a_gate(src, tmp_path, wenv):
+    env = {**wenv, "NW_CAMPAIGN": "LEAK-C", "NW_SPEC_ID": "LEAK-S", "NW_BASE": "leak"}
+    h, data = _bundle_job(src, tmp_path, [_gate("e", 'echo "$NW_CAMPAIGN $NW_SPEC_ID $NW_BASE"; '
+                                                     'git rev-parse "$NW_BASE"')], env={})
+    job, fin, rc = _run(env, h, data)
+    assert rc == 0 and fin["ok"] is True, job.frames
+    assert _file(job.frames[2], "001-e.log").decode().split() == ["C-1", "SPEC-9999", "main",
+                                                                  src.base]
+    # the header's env wins over its own defaults, still never the worker's
+    h, data = _bundle_job(src, tmp_path, [_gate("e", 'echo "$NW_CAMPAIGN $NW_SPEC_ID"')],
+                          env={"NW_CAMPAIGN": "HDR-C"})
+    job, fin, rc = _run(env, h, data)
+    assert rc == 0 and _file(job.frames[2], "001-e.log").decode().split() == ["HDR-C",
+                                                                              "SPEC-9999"]
+
+
 def test_duplicate_job_id_is_a_claim_error(src, tmp_path, wenv):
     h, data = _bundle_job(src, tmp_path, [_gate("x", "true")], job_id="dup")
     _, fin, rc = _run(wenv, h, data)
@@ -301,18 +396,77 @@ def _wait_log(env, job_id, name, text):
     assert until(lambda: p.is_file() and text in p.read_text(errors="replace"))
 
 
+def _alive(pid):
+    """True while `pid` runs (a zombie counts as gone)."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def _sleeper(pidfile):
+    """A gate whose `sleep 600` child records its pid, so a test can check it was killed."""
+    return _gate("slow", f'sleep 600 & echo $! > "{pidfile}"; echo go; wait', timeout_s=900)
+
+
+def _sleep_pid(pidfile):
+    assert until(lambda: pidfile.is_file() and pidfile.read_text().strip())
+    pid = int(pidfile.read_text())
+    assert _alive(pid)
+    return pid
+
+
 def test_eof_mid_gate_interrupts(src, tmp_path, wenv):
-    h, data = _bundle_job(src, tmp_path, [_gate("slow", "echo go; sleep 600", timeout_s=900),
-                                          _gate("never", "true")], job_id="eof-gate")
+    pidfile = tmp_path / "sleep.pid"
+    h, data = _bundle_job(src, tmp_path, [_sleeper(pidfile), _gate("never", "true")],
+                          job_id="eof-gate")
     job = Job(wenv, h, data)
     job.wait_for("started")
     _wait_log(wenv, "eof-gate", "slow", "go")
+    pid = _sleep_pid(pidfile)
     job.close()
     fin = job.final()
     assert job.proc.wait(timeout=WAIT_S) == 0
     assert fin["type"] == "done" and fin["interrupted"] is True and fin["ok"] is False
     gates = [f["result"] for f in job.frames if f["type"] == "gate"]
     assert [g["name"] for g in gates] == ["slow"] and gates[0]["interrupted"] is True
+    assert until(lambda: not _alive(pid)), f"the gate's sleep {pid} outlived the job"
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+def test_signal_mid_gate_kills_the_gate_and_sends_done(src, tmp_path, wenv, sig):
+    pidfile = tmp_path / "sleep.pid"
+    h, data = _bundle_job(src, tmp_path, [_sleeper(pidfile), _gate("never", "true")])
+    job = Job(wenv, h, data)
+    job.wait_for("started")
+    pid = _sleep_pid(pidfile)
+    job.proc.send_signal(sig)
+    fin = job.final()
+    assert job.proc.wait(timeout=WAIT_S) == 0
+    assert fin["type"] == "done" and fin["interrupted"] is True and fin["ok"] is False
+    assert [f["result"]["name"] for f in job.frames if f["type"] == "gate"] == ["slow"]
+    assert until(lambda: not _alive(pid)), f"the gate's sleep {pid} outlived the job"
+    assert not (_job_dir(wenv, h["job_id"]) / "tree").exists()
+    job.close()
+
+
+def test_signal_before_the_slot_is_an_error_frame(src, tmp_path, wenv):
+    marker = tmp_path / "ran"
+    h, data = _bundle_job(src, tmp_path, [_gate("x", f"touch {marker}")])
+    h["bundle_bytes"] = len(data) + 10          # the job waits for bytes that never come
+    job = Job(wenv, h, data)
+    assert until(lambda: (_job_dir(wenv, h["job_id"]) / "job.json").is_file())
+    job.proc.send_signal(signal.SIGTERM)
+    fin = job.final()
+    assert job.proc.wait(timeout=WAIT_S) == 3
+    assert fin["type"] == "error" and fin["stage"] == "signal" and "SIGTERM" in fin["error"]
+    assert job.types() == ["error"] and not marker.exists()
+    job.close()
 
 
 def _slot_conf(env):
@@ -329,6 +483,10 @@ def test_held_slot_gives_slot_wait_then_started(src, tmp_path, wenv):
         job = Job(env, h, data)
         job.wait_for("slot_wait")
         assert "started" not in job.types()
+        # a remote job waits as `remote:<campaign>`, never as a local campaign of the worker
+        assert [w["campaign"] for w in GS.occupancy(_cfg(env, slots=1))["waiting"]] \
+            == ["remote:C-1"]
+        assert GS.waiting(_cfg(env, slots=1), "C-1") is None
     fin, rc = job.finish()
     assert rc == 0 and fin["ok"] is True
     assert job.types() == ["accepted", "slot_wait", "started", "gate", "done"]
@@ -352,12 +510,17 @@ def test_eof_while_waiting_for_the_slot(src, tmp_path, wenv):
 
 def test_log_over_16_mib_is_truncated(src, tmp_path, wenv):
     n = 17 * 1024 * 1024
-    h, data = _bundle_job(src, tmp_path, [_gate("big", f"yes 0123456789abcdef | head -c {n}")])
+    h, data = _bundle_job(src, tmp_path, [_gate("big", f"echo HEAD-MARKER; yes 0123456789abcdef"
+                                                       f" | head -c {n}; echo; echo TAIL-MARKER")])
     job, fin, rc = _run(wenv, h, data)
     assert rc == 0 and fin["ok"] is True
     g = next(f for f in job.frames if f["type"] == "gate")
-    assert len(_file(g, "001-big.log")) == W.MAX_LOG_BYTES
-    assert json.loads(_file(g, "001-big.json"))["truncated_bytes"] == n - W.MAX_LOG_BYTES
+    log = _file(g, "001-big.log")
+    assert len(log) == W.MAX_LOG_BYTES
+    # the last 16 MiB are kept: the tail survives, the head is cut
+    assert log.endswith(b"TAIL-MARKER\n") and b"HEAD-MARKER" not in log
+    full = len("HEAD-MARKER\n") + n + len("\nTAIL-MARKER\n")
+    assert json.loads(_file(g, "001-big.json"))["truncated_bytes"] == full - W.MAX_LOG_BYTES
 
 
 # ---- have / gc / info ------------------------------------------------------------------------
@@ -394,6 +557,66 @@ def test_gc_during_a_live_job_keeps_its_dir(src, tmp_path, wenv):
     job.close()
     fin = job.final()
     assert job.proc.wait(timeout=WAIT_S) == 0 and fin["interrupted"] is True
+
+
+def test_gc_drops_orphan_job_refs_and_keeps_fresh_have_refs(src, tmp_path, wenv):
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    assert _run(wenv, h, data)[2] == 0
+    cache = _cache(wenv)
+    # a crashed job left its refs behind; no live job owns them
+    _git(cache, "update-ref", "refs/nw/gate-jobs/crashed", src.head)
+    _git(cache, "update-ref", "refs/nw/gate-jobs/crashed-base", src.base)
+    r = _nw(wenv, "gc")                                  # the default --keep-days 2
+    assert r.returncode == 0, r.stderr
+    rec = json.loads(r.stdout)
+    assert rec["refs_removed"] == 2 and rec["pruned"] == ["proj"]
+    assert h["job_id"] not in rec["jobs_removed"] and _job_dir(wenv, h["job_id"]).is_dir()
+    refs = _git(cache, "for-each-ref", "--format=%(refname)").split()
+    assert sorted(refs) == sorted([f"refs/nw/have/{src.head}", f"refs/nw/have/{src.base}"])
+    assert _nw(wenv, "have", "--repo", "proj", src.head).stdout.split() == [src.head]
+    # three days later the have refs (now stale) and the job dir go
+    hj = cache.parent / "proj.have.json"
+    stale = {k: v - 3 * 86400 for k, v in json.loads(hj.read_text()).items()}
+    hj.write_text(json.dumps(stale))
+    old = _job_dir(wenv, h["job_id"]).stat().st_mtime - 3 * 86400
+    os.utime(_job_dir(wenv, h["job_id"]), (old, old))
+    rec = json.loads(_nw(wenv, "gc").stdout)
+    assert rec["refs_removed"] == 2 and rec["jobs_removed"] == [h["job_id"]]
+    assert _git(cache, "for-each-ref", "--format=%(refname)") == ""
+
+
+def test_gc_reads_the_live_jobs_again_under_the_repo_lock(src, tmp_path, wenv, monkeypatch):
+    """A job claimed after gc's first scan of jobs/ (and before its repo phase) keeps its have
+    refs, its job refs and so its objects, even with --keep-days 0."""
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    assert _run(wenv, h, data)[2] == 0
+    cache, cfg = _cache(wenv), _cfg(wenv)
+    real, fds = W._live_jobs, []
+
+    def late_claim(cfg_, *a, **kw):
+        res = real(cfg_, *a, **kw)
+        if not fds:                                     # right after the first scan
+            jd = _job_dir(wenv, "late")
+            jd.mkdir()
+            fds.append(os.open(jd / "job.lock", os.O_RDWR | os.O_CREAT))
+            fcntl.flock(fds[0], fcntl.LOCK_EX)
+            (jd / "job.json").write_text(json.dumps({"commit": src.head,
+                                                     "base": {"sha": src.base}}))
+            _git(cache, "update-ref", "refs/nw/gate-jobs/late", src.head)
+            _git(cache, "update-ref", "refs/nw/gate-jobs/late-base", src.base)
+        return res
+
+    monkeypatch.setattr(W, "_live_jobs", late_claim)
+    try:
+        W.gc(cfg, keep_days=0)
+        refs = set(_git(cache, "for-each-ref", "--format=%(refname)").split())
+        assert {f"refs/nw/have/{src.head}", f"refs/nw/have/{src.base}",
+                "refs/nw/gate-jobs/late", "refs/nw/gate-jobs/late-base"} <= refs
+        assert _git(cache, "cat-file", "-t", src.head) == "commit"
+        assert _job_dir(wenv, "late").is_dir()
+    finally:
+        for fd in fds:
+            os.close(fd)
 
 
 def test_info_json_keys(wenv):

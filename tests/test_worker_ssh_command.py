@@ -52,6 +52,10 @@ def test_allowed_commands_are_execd(execs, cmd, argv):
     "/tmp/evil worker info",
     "nwx worker info",
     "nw worker 'info",
+    # `$` would match before a trailing newline; the grammar is literal
+    f"nw worker have --repo 'proj\n' {SHA}",
+    f"nw worker have --repo proj '{SHA}\n'",
+    "nw worker gc --keep-days '5\n'",
 ])
 def test_refused_commands_run_nothing(execs, capsys, cmd):
     environ = {} if cmd is None else {"SSH_ORIGINAL_COMMAND": cmd}
@@ -62,4 +66,24 @@ def test_refused_commands_run_nothing(execs, capsys, cmd):
 
 def test_own_nw_never_uses_the_client_path(monkeypatch):
     monkeypatch.setattr(W.sys, "argv", ["/usr/bin/pytest"])
+    assert W.own_nw()[1:] == ["-m", "nightwright"]
+
+
+def test_own_nw_execs_the_forced_command_path(monkeypatch, tmp_path):
+    nw = tmp_path / "nw"
+    nw.write_text("#!/bin/sh\n")
+    nw.chmod(0o755)
+    monkeypatch.setattr(W.sys, "argv", [str(nw)])
+    assert W.own_nw() == [str(nw)]
+    calls = []
+    monkeypatch.setattr(W.os, "execvp", lambda file, argv: calls.append((file, argv)))
+    W.ssh_command({"SSH_ORIGINAL_COMMAND": "/elsewhere/nw worker info"})
+    assert calls == [(str(nw), [str(nw), "worker", "info"])]
+
+
+def test_own_nw_ignores_a_non_executable_nw(monkeypatch, tmp_path):
+    nw = tmp_path / "nw"
+    nw.write_text("")
+    nw.chmod(0o644)
+    monkeypatch.setattr(W.sys, "argv", [str(nw)])
     assert W.own_nw()[1:] == ["-m", "nightwright"]

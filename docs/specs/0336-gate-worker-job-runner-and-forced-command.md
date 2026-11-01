@@ -276,6 +276,24 @@ this to tell a transport failure from a gate failure.
   `tests/test_rich_output_guard.py` (`worker_info`, `worker_have`, `worker_gc`, `gate_job`,
   `_fail`, `ssh_command`). `tests/test_rich_output_guard.py`: 3 passed. Full
   `uv run pytest -q -n 4`: 4528 passed, 3 skipped.
+- Loop 4 (review fixes): `uv run pytest -q -n 4 tests/test_worker.py
+  tests/test_worker_ssh_command.py tests/test_gate_slots.py tests/test_cli_gate_slots.py
+  tests/test_agentic_gates.py tests/test_rich_output_guard.py`: 157 passed, three runs in a row.
+  New cases: 25 bad-header refusals (job_id/repo_key/campaign/spec_id outside the charset or
+  with a trailing newline, kind, commit, base, seq, gate names `../../evil` and `a/b`, bad
+  `timeout_s`/`cwd`/`retries`/`results`, an unknown gate key, duplicate gate names), each exit 3,
+  stage `validate`, only an `error` frame, no job dir and no repo cache; stdin short of
+  `bundle_bytes` (stage `read`, exit 3, the job dir keeps only `job.json`/`frames.jsonl`/
+  `job.lock` and gc then removes it); the worker's own `NW_CAMPAIGN`/`NW_SPEC_ID`/`NW_BASE`
+  never reach a gate; EOF mid-gate, SIGTERM and SIGINT mid-gate each kill the gate's
+  `sleep 600` child (checked by pid) and send `done` interrupted; SIGTERM before the slot gives
+  stage `signal`; truncation keeps the tail (an end marker survives, a head marker is cut);
+  gc removes orphan job refs, keeps fresh have refs and the job dir under the default
+  `--keep-days 2`, and removes them once aged three days; gc keeps the refs and objects of a
+  job claimed between its scan of `jobs/` and its repo phase; the slot waiter reads
+  `remote:C-1`; `own_nw()` returns an executable `nw` argv[0] and ssh-command execs it;
+  ssh-command refuses quoted words ending in a newline.
+  `python3 tools/spec_lint.py`: OK. The full suite is left to gating.
 
 ### As shipped (2026-10-31)
 
@@ -308,6 +326,23 @@ this to tell a transport failure from a gate failure.
 - `ssh-command` execs the worker's own `nw` (`sys.argv[0]` when it is an `nw` executable,
   else `python -m nightwright`), never the path the client sent. `nw worker gc` prints a JSON
   summary.
+- Validation (loop 4): `campaign` and `spec_id` must also match `[A-Za-z0-9._-]+`. The gate list
+  is checked with the same rules as a local `.nw/project.yaml` gate list
+  (`project.validate`: types of `timeout_s`, `cwd`, `retries`, `results`, `retry_cmd`, unknown
+  keys, unique names), so a malformed gate is a `validate` refusal before anything runs, and
+  duplicate names (which would share `out/<seq>-<name>.*` files) never reach the run. All the
+  charset and sha regexes end in `\Z`, so a trailing newline no longer matches.
+- Slot identity (deviation from "campaign id = the job's campaign"): the worker takes its slot
+  as `remote:<campaign>`, so a remote job's hold or waiter marker never reads as one of the
+  worker host's own local campaigns in `gate_slots.holding()`/`waiting()`.
+- A `worker/jobs.lock` flock makes a claim (mkdir, `job.lock`, `job.json`) atomic against gc's
+  scans of `jobs/`. gc reads the live jobs again for each repo under that repo's lock plus the
+  jobs lock, so a job claimed after gc's first scan keeps its have refs, job refs and objects
+  even with `--keep-days 0`. Lock order is repo lock, then jobs lock; a job never holds both.
+- SIGTERM, SIGINT and SIGHUP are a cancel. Before the slot stage the job ends with an `error`
+  frame (`stage: "signal"`, exit 3). From the slot stage on, the slot wait or the live gates stop
+  (`terminate_all`, run on a helper thread because the interrupted main thread may hold the
+  gates lock) and `done` goes out with `interrupted: true` (exit 0).
 
 ## Clock Log
 
