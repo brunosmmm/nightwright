@@ -1,9 +1,10 @@
 # nightwright in herdr
 
 [herdr](https://herdr.dev) is a terminal workspace manager for AI coding agents. nightwright can
-show the agentic queue in herdr's sidebar and raise herdr notifications. The integration is
-**opt-in**: nothing calls herdr until you start `nw herdr watch` inside a herdr pane
-([SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md), display
+show the agentic queue in herdr's sidebar and raise herdr notifications. It needs **no manual
+step**: when the conductor runs in a herdr pane, its event follower starts `nw herdr watch` in
+the background and stops it again ([SPEC-0365](./specs/0365-herdr-watcher-auto-start-the-conductor-follower.md);
+[SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md), display
 design [SPEC-0363](./specs/0363-herdr-display-scoped-to-nw-panes-display-agent-on.md), epic
 [SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md)).
 
@@ -32,26 +33,57 @@ the pane that started the queue.
 
 nightwright never edits `~/.config/herdr/config.toml`.
 
-## Start it
+## It starts by itself
 
 1. Start the conductor and the stewards in herdr panes, as usual (`nw queue conductor-launch`,
    `nw queue steward-launch P`, or `/nw-conduct` and `/nw-steward` in a Claude
    session). Their followers (`nw queue events --follow --for conductor`,
    `nw mailbox follow --to steward:P`) record which herdr pane they run in, in
    `<data_dir>/agentic/conductor/herdr_panes.json`. They do not call herdr.
-2. In another herdr pane, run:
+2. The conductor's follower, when it runs inside herdr (`HERDR_ENV=1`) with `herdr` on
+   `PATH`, starts `nw herdr watch` as a background process. Nothing else to do.
 
-   ```bash
-   nw herdr watch                 # push every 10 s until Ctrl-C; Ctrl-C clears what it set
-   nw herdr watch --once          # one push; the values expire after 30 s
-   nw herdr watch --interval 5    # faster pushes (TTL 15 s)
-   nw herdr watch --conductor-pane PANE_ID --workspace WS_ID   # explicit targets
-   ```
+How it behaves:
+
+- **One watcher.** If a watcher already runs (one you started by hand, or another follower's),
+  the follower starts none, never stops yours, and starts one within 5 s after yours exits.
+- **Output** goes only to `<data_dir>/agentic/conductor/herdr_watch.log` (rotated to
+  `herdr_watch.log.1` past 5 MiB), never to the conductor's event stream.
+- **Stops with the follower.** When the follower exits (Ctrl-C, re-arm, `code_changed`) it
+  sends the watcher SIGTERM, which clears the display agents and closes the run panes. If the
+  follower is killed outright, the watcher notices within 2 s and exits the same way.
+- **Restarts.** A watcher that crashes is restarted after 5 s, then 10, 20, … up to 300 s
+  (back to 5 s after a run of 5 minutes).
+- **Upgrades.** When nightwright's code changes the follower exits with `code_changed` and the
+  conductor re-arms it (SPEC-0231); the new follower starts a new watcher on the new code.
+- **Run panes** follow `agentic.herdr.run_panes`, as for a watcher you start yourself.
+- **Status:** `nw herdr status` (`--json`: `nw.herdr.watch.v1`) and `nw queue conduct-status`
+  show whether a watcher runs, its pid, `auto` or `manual`, and the log path.
+
+Turn it off in nightwright's config (`~/.config/nightwright/config.yaml`):
+
+```yaml
+agentic:
+  herdr:
+    auto_watch: false      # the follower never starts a watcher
+    run_panes: true        # optional: run panes (SPEC-0364)
+```
+
+### By hand
+
+You can still run the watcher yourself in a herdr pane (with `auto_watch: false`, or to try
+options); the follower leaves it alone:
+
+```bash
+nw herdr watch                 # push every 10 s until Ctrl-C; Ctrl-C clears what it set
+nw herdr watch --once          # one push; the values expire after 30 s
+nw herdr watch --interval 5    # faster pushes (TTL 15 s)
+nw herdr watch --conductor-pane PANE_ID --workspace WS_ID   # explicit targets
+```
 
 Outside herdr (`HERDR_ENV` is not `1`) or without `herdr` on `PATH`, the command prints one line
-and exits 0. Only one watcher runs at a time; a second one exits with the holder's pid.
-
-The watcher does not restart when nightwright's code changes. Restart it after an upgrade.
+and exits 0. Only one watcher runs at a time; a second one exits with the holder's pid. A
+watcher you start yourself does not restart when nightwright's code changes.
 
 ## What the sidebar shows
 
@@ -93,7 +125,7 @@ Every other event is silent; the sidebar shows it.
 
 ## Run panes (opt-in)
 
-`nw herdr watch --run-panes` (or `agentic.herdr.run_panes: true` in nightwright's config) also
+`agentic.herdr.run_panes: true` in nightwright's config (or `nw herdr watch --run-panes` by hand) also
 opens **one herdr pane per active campaign that has a persona run**, showing the run's live
 transcript (`nw campaign tail --follow`, [SPEC-0364](./specs/0364-herdr-run-panes-one-pane-per-active-campaign-in.md)).
 Without the flag nothing below happens.
@@ -168,9 +200,10 @@ If you pasted it earlier, remove it.
 ## Try it
 
 ```bash
-# in a herdr pane
+nw herdr status                # is the auto-started watcher running? pid, log path
+tail -f ~/.local/share/nightwright/agentic/conductor/herdr_watch.log
+# by hand, in a herdr pane (with auto_watch: false, or the follower's watcher stopped)
 nw herdr watch --once          # values show for ~30 s, then expire
-nw herdr watch                 # live; Ctrl-C clears; kill -9 lets them expire in 30 s
 nw herdr watch --run-panes     # plus a pane per active campaign tailing its run
 # outside herdr
 env -u HERDR_ENV nw herdr watch   # one line, exit 0, no herdr call

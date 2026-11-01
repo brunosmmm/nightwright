@@ -311,11 +311,14 @@ class Watcher:
                 pass
             return None
 
-    def run(self, *, once=False, stop=None, sleep=time.sleep) -> None:
+    def run(self, *, once=False, stop=None, sleep=time.sleep, on_locked=None) -> None:
         """Hold the `herdr` reader lock; poll events every `min(POLL_S, interval)` and push
         tokens every interval until `stop()` (or a signal). A clean exit clears what it pushed;
-        `once` does one poll + one push and leaves the tokens to their TTL."""
+        `once` does one poll + one push and leaves the tokens to their TTL. `on_locked()` runs
+        once the lock is held (SPEC-0365: the CLI records `herdr_watch.json` there)."""
         with E.reader_lock(self.cfg, READER):
+            if on_locked is not None:
+                self._guard(on_locked)
             self.start_cursor()
             if self.run_panes is not None:
                 self._guard(self.run_panes.load)

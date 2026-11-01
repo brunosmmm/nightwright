@@ -46,3 +46,14 @@ def _no_persona_run(monkeypatch):
     SPEC-0291's NW_RUNNER_LOG, should pytest run under a detached runner."""
     monkeypatch.delenv("NW_PERSONA_RUN", raising=False)
     monkeypatch.delenv("NW_RUNNER_LOG", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_herdr_env(monkeypatch):
+    """SPEC-0365: pytest run from a herdr pane inherits HERDR_*; a conductor follower under test
+    would then auto-start a real `nw herdr watch` against the human's herdr. Tests that want a
+    herdr env set it themselves (the contract tests read their socket from a capture taken at
+    import)."""
+    import os
+    for k in [k for k in os.environ if k.startswith("HERDR_")]:
+        monkeypatch.delenv(k)

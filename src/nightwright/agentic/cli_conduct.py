@@ -50,7 +50,27 @@ def conduct_status(cfg, *, recent=10) -> dict:
                    for i in items if i["state"] in Q.ACTIVE_STATES],
         "unanswered_mail": unanswered,
         "recent_events": E.read_since(cfg, 0)[-recent:],
+        "herdr_watch": _herdr_watch_status(cfg),             # SPEC-0365
     }
+
+
+def _herdr_supervisor(cfg):
+    """SPEC-0365: the conductor follower's `nw herdr watch` supervisor, or None (gated off,
+    or anything at all went wrong: the event stream never depends on it)."""
+    try:
+        from . import herdr_autowatch as AW
+        sup = AW.Supervisor(cfg)
+        return sup if sup.start() else None
+    except Exception:
+        return None
+
+
+def _herdr_watch_status(cfg) -> dict | None:
+    try:
+        from . import herdr_autowatch as AW
+        return AW.status(cfg)
+    except Exception:
+        return None
 
 
 def attach(queue_group):
@@ -87,15 +107,20 @@ def attach(queue_group):
         if do_follow:
             if not reader:
                 raise click.UsageError("--follow needs --for READER (e.g. conductor)")
+            sup = _herdr_supervisor(cfg) if reader == "conductor" else None
             try:
                 E.follow(cfg, reader, as_json=not as_text, poll_s=poll_s,
                          types=list(types) or None, from_start=from_start,
                          **({"code_root": None} if no_code_watch else {}),
+                         **({"stop": sup.as_stop_hook()} if sup is not None else {}),
                          quiet=QT.enabled_for(cfg, reader) and not show_all)
             except ValueError as e:
                 raise click.ClickException(str(e))
             except (KeyboardInterrupt, BrokenPipeError):
                 pass
+            finally:
+                if sup is not None:
+                    sup.stop()
             return
         E.sync(cfg)
         evs = E.read_since(cfg, since or 0, types=list(types) or None)
@@ -133,6 +158,9 @@ def attach(queue_group):
                 highlight=False)
         else:
             console.print("stewards: [dim]none armed[/]")
+        if st.get("herdr_watch"):
+            from . import herdr_autowatch as AW
+            console.print(AW.status_line(st["herdr_watch"]), highlight=False)
         if st["parked"]:
             t = Table(title="Parked")
             for col in ("campaign", "spec", "reason", "detail", "cost"):
