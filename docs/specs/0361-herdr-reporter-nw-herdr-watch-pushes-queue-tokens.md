@@ -275,8 +275,22 @@ not an acceptance criterion of this spec because agents may not drive the human'
   status tests, docs tests) pass. `tools/affected_tests.py` fell back to the full suite
   ("no test reaches agentic/cli.py"), so the affected set was run by hand instead; the queue
   close gate runs the full suite.
-- **Manual verification: pending the human** (agents may not drive the human's herdr
-  session). Steps: Test plan, "Manual verification", and `docs/herdr.md` → "Try it".
+- **Fix after first real use (2026-11-01): every `report-metadata` call failed.** The human ran
+  `nw herdr watch --conductor-pane w7:p2` and got only the breaker line. Root cause: herdr
+  0.9.5's parser needs the positional pane/workspace id directly after the subcommand
+  (`pane report-metadata ID --source nw …`). With options first it exits 2 with
+  `unknown option: nw`, even though `--help` lists the id last. The argv builders put it last,
+  and the fake `herdr` accepted any argv, so all 26 tests passed while every real call failed.
+  The missing check was a single real herdr call. Fix: `metadata_args`/`clear_args` emit the id
+  third. The fake now rejects options before the id, as herdr 0.9.5 does. `Client` keeps herdr's
+  stderr as `last_error`, and the breaker line now names the failing command and its error.
+  `test_real_herdr_accepts_our_argv` is an opt-in contract test (`NW_HERDR_CONTRACT=1`, inside
+  a herdr pane) that writes and clears a throwaway token on the real herdr.
+- **Manual verification (2026-11-01, real herdr 0.9.5, user's session):** the contract test
+  passed, and `nw herdr watch --once --conductor-pane w7:p2` exited 0. `herdr api snapshot`
+  then showed `nw_role`/`nw_cost` on the conductor pane, `nw_role`/`nw_spec`/`nw_cost` on both
+  steward panes, and `nw_queue`/`nw_cost` on both workspaces. Still the human's to check: the
+  sidebar rendering with the `docs/herdr.md` config snippet, and the notification sounds.
 
 ## Rollout / migration
 

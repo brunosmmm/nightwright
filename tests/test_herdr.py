@@ -31,6 +31,10 @@ import json, os, sys, time
 mode = os.environ.get("FAKE_HERDR_MODE", "ok")
 with open(os.environ["FAKE_HERDR_LOG"], "a") as f:
     f.write(json.dumps(sys.argv[1:]) + "\n")
+# real herdr 0.9.5 parser: report-metadata's positional id must precede every option
+if sys.argv[2:3] == ["report-metadata"] and (len(sys.argv) < 4 or sys.argv[3].startswith("-")):
+    sys.stderr.write("unknown option: nw\n")
+    sys.exit(2)
 if mode == "hang":
     time.sleep(30)
 sys.exit(1 if mode == "fail" else 0)
@@ -156,11 +160,11 @@ def test_seq_strictly_increasing_and_epoch_seeded():
 
 def test_argv_builders():
     a = H.metadata_args("pane", "p9", {"nw_role": "conductor", "nw_cost": ""}, seq=7, ttl_ms=30000)
-    assert a[:2] == ["pane", "report-metadata"] and a[-1] == "p9"
+    assert a[:3] == ["pane", "report-metadata", "p9"]
     assert _opt(a, "--source") == "nw" and _opt(a, "--seq") == "7" and _opt(a, "--ttl-ms") == "30000"
     assert _tokens(a) == {"nw_role": "conductor", "nw_cost": None}
     c = H.clear_args("workspace", "w1", ["nw_queue", "nw_attn"], seq=8)
-    assert c[0] == "workspace" and c[-1] == "w1" and _tokens(c) == {"nw_queue": None, "nw_attn": None}
+    assert c[:3] == ["workspace", "report-metadata", "w1"] and _tokens(c) == {"nw_queue": None, "nw_attn": None}
     assert H.notify_args("t", "b", "done") == ["notification", "show", "t", "--body", "b",
                                                "--sound", "done"]
     with pytest.raises(ValueError):
@@ -244,7 +248,7 @@ def _place(cfg, reader, pane, ws, pid=None):
 
 
 def _metadata(calls):
-    return {(c[0], c[-1]): c for c in calls if len(c) > 1 and c[1] == "report-metadata"}
+    return {(c[0], c[2]): c for c in calls if len(c) > 2 and c[1] == "report-metadata"}
 
 
 def test_push_tokens_to_explicit_targets(fake, tmp_path):
@@ -369,9 +373,9 @@ def test_clean_exit_clears_once_does_not(fake, tmp_path):
     HW.Watcher(cfg, H.Client(), interval_s=10).run(stop=lambda: True, sleep=lambda s: None)
     tail = fake.calls()[n:]
     clears = [c for c in tail if "--token" not in c and "--clear-token" in c]
-    assert {(c[0], c[-1]) for c in clears} == {("workspace", "ws-self"), ("workspace", "ws-a"),
+    assert {(c[0], c[2]) for c in clears} == {("workspace", "ws-self"), ("workspace", "ws-a"),
                                                ("pane", "pane-cond")}
-    cond = next(c for c in clears if c[-1] == "pane-cond")
+    cond = next(c for c in clears if c[2] == "pane-cond")
     assert set(_tokens(cond)) == set(HW.CONDUCTOR_TOKENS)
 
 
@@ -465,3 +469,33 @@ def test_runproc_wrapper_child_sees_no_herdr(tmp_path):
     got = json.loads((run_dir / "result.json").read_text())
     assert got["EXTRA"] == "1"
     assert not [k for k in got if k.startswith("HERDR_")]
+
+
+def test_fake_rejects_options_before_target_and_breaker_names_the_error(fake):
+    """herdr 0.9.5 rejects `report-metadata --source nw ID` (exit 2); the breaker line must carry
+    herdr's own stderr so a misbehaving call is diagnosable."""
+    err = io.StringIO()
+    c = H.Client(err=err, fail_max=2)
+    bad = ["pane", "report-metadata", "--source", "nw", "p1"]
+    assert c.call(bad) is False and c.call(bad) is False
+    assert "unknown option: nw" in err.getvalue() and "pane report-metadata" in err.getvalue()
+    assert H.Client().call(H.metadata_args("pane", "p1", {"nw_role": "x"}, seq=1, ttl_ms=1000))
+
+
+@pytest.mark.skipif(os.environ.get("NW_HERDR_CONTRACT") != "1",
+                    reason="opt-in: NW_HERDR_CONTRACT=1 inside a real herdr pane")
+def test_real_herdr_accepts_our_argv():
+    """Contract check against the installed herdr (the fakes only model its parser). Writes and
+    clears a throwaway token on the caller's own pane/workspace; 2 s TTL."""
+    env = {k: v for k, v in _REAL_ENV.items()}
+    pane, ws = env.get("HERDR_PANE_ID"), env.get("HERDR_WORKSPACE_ID")
+    assert env.get("HERDR_ENV") == "1" and pane and ws, "run inside a herdr pane"
+    c = H.Client(env=env)
+    s = c.next_seq()
+    for kind, target in (("pane", pane), ("workspace", ws)):
+        assert c.call(H.metadata_args(kind, target, {"nw_contract": "ok"}, seq=s, ttl_ms=2000)), c.last_error
+        assert c.call(H.clear_args(kind, target, ["nw_contract"], seq=s + 1)), c.last_error
+        s += 2
+
+
+_REAL_ENV = dict(os.environ)    # captured at import, before the autouse fixture strips HERDR_*

@@ -44,6 +44,7 @@ class Client:
         self.env = env
         self.fails = 0
         self.open_until = None
+        self.last_error = None               # last failure's stderr / exception, for the breaker line
         self.calls = 0                       # processes spawned (for tests / diagnostics)
         self._seq = 0
 
@@ -69,10 +70,15 @@ class Client:
             try:
                 proc = subprocess.run([exe, *[str(a) for a in args]], timeout=self.timeout_s,
                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                      stderr=subprocess.DEVNULL, env=dict(env))
+                                      stderr=subprocess.PIPE, env=dict(env))
                 ok = proc.returncode == 0
-            except Exception:
+                if not ok:
+                    detail = (proc.stderr or b"").decode(errors="replace").strip()
+                    self.last_error = (f"exit {proc.returncode}: {detail}"[:300]
+                                       if detail else f"exit {proc.returncode}")
+            except Exception as e:
                 ok = False
+                self.last_error = f"{type(e).__name__}: {e}"[:300]
             if ok:
                 self.fails, self.open_until = 0, None
                 return True
@@ -83,7 +89,8 @@ class Client:
                 try:
                     (self.err or sys.stderr).write(
                         f"nw herdr: {self.fail_max} consecutive herdr failures; pausing herdr "
-                        f"calls for {self.cooldown_s:g}s\n")
+                        f"calls for {self.cooldown_s:g}s (last: {' '.join(map(str, args[:2]))}"
+                        f" -> {self.last_error})\n")
                     (self.err or sys.stderr).flush()
                 except Exception:
                     pass
@@ -109,7 +116,9 @@ def metadata_args(kind, target, tokens, *, seq, ttl_ms, source=SOURCE) -> list[s
     """`<kind> report-metadata` for an explicit pane/workspace id; empty values are cleared."""
     if kind not in ("pane", "workspace"):
         raise ValueError(kind)
-    args = [kind, "report-metadata", "--source", source, "--seq", str(int(seq)),
+    # herdr's parser needs the positional id right after the subcommand: with options first
+    # it rejects the call ("unknown option: nw", exit 2) although --help lists the id last.
+    args = [kind, "report-metadata", str(target), "--source", source, "--seq", str(int(seq)),
             "--ttl-ms", str(int(ttl_ms))]
     for name, value in tokens.items():
         if value:
@@ -117,16 +126,16 @@ def metadata_args(kind, target, tokens, *, seq, ttl_ms, source=SOURCE) -> list[s
     for name, value in tokens.items():
         if not value:
             args += ["--clear-token", name]
-    return args + [str(target)]
+    return args
 
 
 def clear_args(kind, target, names, *, seq, source=SOURCE) -> list[str]:
     if kind not in ("pane", "workspace"):
         raise ValueError(kind)
-    args = [kind, "report-metadata", "--source", source, "--seq", str(int(seq))]
+    args = [kind, "report-metadata", str(target), "--source", source, "--seq", str(int(seq))]
     for name in names:
         args += ["--clear-token", name]
-    return args + [str(target)]
+    return args
 
 
 def notify_args(title, body, sound) -> list[str]:
