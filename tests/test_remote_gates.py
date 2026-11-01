@@ -730,7 +730,7 @@ def test_an_unusable_ssh_socket_dir_falls_back_without_cooldown(world, remote, m
     (tmp_path / "elsewhere").mkdir()
     link = tmp_path / "sshdir"
     link.symlink_to(tmp_path / "elsewhere")
-    monkeypatch.setattr(WK, "ssh_dir", lambda cfg: link)
+    monkeypatch.setattr(WK, "ssh_dir", lambda cfg, extra=0: link)
     run = G.run_all(world.project, world.state, world.cfg, seq=1)
     _assert_fell_back(world, remote, run, "ssh", cooldown=False)
     assert "ssh socket directory" in world.ledger(["worker_failed"])[0]["error"]

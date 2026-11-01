@@ -498,6 +498,20 @@ dir>/nw`.
   `-n 4` load, not caused by this change.
 - `python3 tools/spec_lint.py`: OK. The full suite is left to the gate's close run.
 
+### Test record (2026-11-01, gate fix)
+
+- The `pytest-affected` gate failed at `tests/test_remote_gates.py:733`: its stub of
+  `WK.ssh_dir` took only `cfg`, but `ensure_ssh_dir` now calls `ssh_dir(cfg, extra)`. The stub
+  is now `lambda cfg, extra=0: link`; the test's intent (symlinked ControlPath dir, stage
+  `ssh`, no cooldown, no SSH call) is unchanged. No other test stubs `ssh_dir`.
+- `uv run pytest -q -n 0 tests/test_remote_gates.py`: 92 passed.
+- The gate's own command (`python3 tools/affected_tests.py --include
+  tests/test_agentic_dogfood_config.py --include tests/test_agentic_project.py --run uv run
+  pytest -q -x -n 2`): 376 passed. A first run at `-n 4` had one failure,
+  `test_gate_slots.py::test_at_most_slots_hold_across_processes` (a wait under load); this
+  branch does not touch `gate_slots` or that test, and it passed 3 of 3 times alone.
+- Full suite left to the gate's close run.
+
 ### As shipped (2026-11-01, review round 4)
 
 - `_probe_root` tags a `StepFailed` from its own `id -u` call (ssh timing out or failing to
