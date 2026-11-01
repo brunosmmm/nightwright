@@ -132,12 +132,37 @@ def _pid_alive(proc: dict) -> bool:
                                   "wrapper_start_ticks": proc.get("start_ticks")})
 
 
+def _num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
 def _heartbeat_age(job: Path, now: float, proc: dict | None) -> float | None:
+    """Seconds since the job process's last heartbeat (else its start). Measured on
+    `CLOCK_MONOTONIC` (`mono`, shared by every process on the host) when the record has it:
+    that clock neither jumps with an NTP step nor counts a host suspend, so neither turns a
+    healthy job `lost` (and gc would then reap it). The wall clock (`ts`) is the fallback."""
     hb = runproc.read_json(job / "heartbeat.json") or {}
-    ts = hb.get("ts")
-    if not isinstance(ts, (int, float)) and proc:
-        ts = proc.get("started_ts")
-    return round(max(0.0, now - ts), 3) if isinstance(ts, (int, float)) else None
+    src = hb if _num(hb.get("ts")) else (proc or {})
+    key = "ts" if src is hb else "started_ts"
+    mono = src.get("mono") if src is hb else src.get("started_mono")
+    if _num(mono) and src.get("boot") is not None and src.get("boot") == _boot():
+        return round(max(0.0, time.monotonic() - mono), 3)
+    ts = src.get(key)
+    return round(max(0.0, now - ts), 3) if _num(ts) else None
+
+
+_BOOT: list = []
+
+
+def _boot() -> str | None:
+    """This boot's id (`CLOCK_MONOTONIC` restarts with each boot): a `mono` recorded under
+    another boot is never compared."""
+    if not _BOOT:
+        try:
+            _BOOT.append(Path("/proc/sys/kernel/random/boot_id").read_text().strip() or None)
+        except OSError:
+            _BOOT.append(None)
+    return _BOOT[0]
 
 
 def _result_state(res: dict) -> str:
@@ -201,6 +226,22 @@ def _set_job_json(job: Path, **fields) -> None:
     _write_atomic(job / "job.json", rec)
 
 
+def _mirror_locked(job: Path, state: str) -> None:
+    """`_mirror`'s write, under `jobs_lock`. Both files are read again here: `result.json`, if
+    it is there now, wins; and a `done`/`error` the job process wrote itself (under
+    `jobs_lock`, just before its `result.json`) is never overwritten by a derived `lost`."""
+    rec = runproc.read_json(job / "job.json")
+    if rec is None:
+        return
+    res = runproc.read_json(job / "result.json")
+    if res is not None:
+        state = _result_state(res)
+    elif rec.get("state") in ("done", "error"):
+        return
+    if rec.get("state") != state:
+        _set_job_json(job, state=state)
+
+
 def _mirror(cfg, job: Path, state: str, locked: bool) -> None:
     """Write a derived final `state` into an async job's `job.json` when it says otherwise.
     Only under `jobs_lock` (taken here without waiting, else skipped: the next reader does
@@ -209,7 +250,7 @@ def _mirror(cfg, job: Path, state: str, locked: bool) -> None:
     if rec is None or rec.get("state") == state or not _is_async(job, rec):
         return
     if locked:
-        _set_job_json(job, state=state)
+        _mirror_locked(job, state)
         return
     try:
         fd = os.open(W.worker_dir(cfg) / "jobs.lock", os.O_RDWR | os.O_CREAT, 0o644)
@@ -221,8 +262,8 @@ def _mirror(cfg, job: Path, state: str, locked: bool) -> None:
         os.close(fd)
         return
     try:
-        if job.is_dir() and (job / "job.json").exists():
-            _set_job_json(job, state=state)
+        if job.is_dir():
+            _mirror_locked(job, state)
     except OSError:
         pass
     finally:
@@ -234,39 +275,62 @@ def _mirror(cfg, job: Path, state: str, locked: bool) -> None:
 
 class _Reader:
     """Complete lines of `frames.jsonl` whose `n` is above the cursor. A trailing line without
-    its newline (a frame still being written) is held back until the newline appears."""
+    its newline (a frame still being written) is held back until the newline appears.
+
+    The file is read in `CHUNK` pieces from where the last read stopped; the held-back partial
+    line is kept, never read again. A line at or below the cursor is skipped by the `n` at its
+    end (a frame's last key) and never JSON-parsed, and only one line is held at a time: a
+    high cursor costs one pass over the file, not every earlier frame in memory at once."""
+
+    CHUNK = 1 << 20
 
     def __init__(self, path: Path, after: int):
         self.path = path
         self.after = after
-        self.pos = 0
+        self.pos = 0                            # file offset read up to
+        self.buf = b""                          # a line read but not yet complete
         self.final: str | None = None           # `done` / `error` once emitted
 
-    def read(self) -> list[bytes]:
+    def read(self):
+        """Yield the newly complete lines after the cursor (each ending in a newline)."""
         try:
-            with open(self.path, "rb") as f:
-                f.seek(self.pos)
-                data = f.read()
+            f = open(self.path, "rb")
         except FileNotFoundError:
-            return []
-        end = data.rfind(b"\n")
-        if end < 0:
-            return []
-        self.pos += end + 1
-        out = []
-        for raw in data[:end].split(b"\n"):
-            try:
-                rec = json.loads(raw)
-            except ValueError:
-                continue
-            n = rec.get("n") if isinstance(rec, dict) else None
-            if not isinstance(n, int) or isinstance(n, bool) or n <= self.after:
-                continue
-            self.after = n
-            out.append(raw + b"\n")
-            if rec.get("type") in ("done", "error"):
-                self.final = rec["type"]
-        return out
+            return
+        with f:
+            f.seek(self.pos)
+            while True:
+                data = f.read(self.CHUNK)
+                if not data:
+                    return
+                self.pos += len(data)
+                start = 0
+                while True:
+                    nl = data.find(b"\n", start)
+                    if nl < 0:
+                        break
+                    line, self.buf = self.buf + data[start:nl], b""
+                    out = self._take(line)
+                    if out is not None:
+                        yield out
+                    start = nl + 1
+                self.buf += data[start:]
+
+    def _take(self, raw: bytes) -> bytes | None:
+        m = _TAIL_N_RE.search(raw[-64:])
+        if m is not None and int(m.group(1)) <= self.after:
+            return None                         # at or below the cursor: never parsed
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            return None
+        n = rec.get("n") if isinstance(rec, dict) else None
+        if not isinstance(n, int) or isinstance(n, bool) or n <= self.after:
+            return None
+        self.after = n
+        if rec.get("type") in ("done", "error"):
+            self.final = rec["type"]
+        return raw + b"\n"
 
 
 _TAIL_N_RE = re.compile(rb'"n": ?(\d+)\}\s*\Z')
@@ -346,9 +410,10 @@ def _kill_group(child: dict, grace: float, cont: bool = False) -> None:
 
 
 def _take_lock_nb(job: Path, wait_s: float) -> int | None:
-    """`job.lock`'s flock within `wait_s` (an fd), else None. Caller holds `jobs_lock`."""
+    """`job.lock`'s flock within `wait_s` (an fd), else None. Never creates the file: a job
+    that has none is a claim in progress, never lost."""
     try:
-        fd = os.open(job / "job.lock", os.O_RDWR | os.O_CREAT, 0o644)
+        fd = os.open(job / "job.lock", os.O_RDWR)
     except OSError:
         return None
     end = time.monotonic() + wait_s
@@ -363,13 +428,20 @@ def _take_lock_nb(job: Path, wait_s: float) -> int | None:
             time.sleep(0.05)
 
 
-def reap(job: Path) -> bool:
+def reap(cfg, job: Path) -> bool:
     """End a lost job's job process group (`proc.json`, else the pid `submit` spawned,
     `spawn.json`) and every gate group `proc.json` records, then write `result.json` with
     `state: "lost"` (unless the job wrote its own meanwhile). The result is written only while
     holding `job.lock`, which a job process holds from submit to its exit: a job process that
     was merely slow to start is killed first, never outlived by a `lost` it later overwrites.
-    False when the lock stayed held (nothing written). Caller holds `jobs_lock`."""
+    True once the job has a `result.json` (or its dir is gone); False when `job.lock` stayed
+    held (nothing written).
+
+    The caller must NOT hold `jobs_lock`: the kill graces (seconds per group) and the
+    `job.lock` wait run without it, so claims never wait on a reap. `jobs_lock` is taken only
+    for the final write, which re-checks the dir (gc may have removed it) and `result.json`.
+    Holding `job.lock` while waiting for `jobs_lock` cannot deadlock: no one holding
+    `jobs_lock` ever waits for an existing job's `job.lock`."""
     proc = runproc.read_json(job / "proc.json") or {}
     spawn = runproc.read_json(job / "spawn.json") or {}
     grace = _kill_grace_s()
@@ -382,14 +454,17 @@ def reap(job: Path) -> bool:
             _kill_group(gate, grace)
     fd = _take_lock_nb(job, 1.0)
     if fd is None:
+        if not job.is_dir() or (job / "result.json").exists():
+            return True
         print(f"nw worker: {job.name}: job.lock is still held; not recording it lost",
               file=sys.stderr)
         return False
     try:
-        if not (job / "result.json").exists():
-            _write_atomic(job / "result.json", {"state": "lost", "frame": None,
-                                                "reaped_at": now_iso()})
-            _set_job_json(job, state="lost", finished_at=now_iso())
+        with W.jobs_lock(cfg):
+            if job.is_dir() and not (job / "result.json").exists():
+                _write_atomic(job / "result.json", {"state": "lost", "frame": None,
+                                                    "reaped_at": now_iso()})
+                _set_job_json(job, state="lost", finished_at=now_iso())
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
@@ -397,17 +472,18 @@ def reap(job: Path) -> bool:
 
 
 def reap_lost(cfg) -> list[str]:
-    """`gc`'s first step: reap every async job that is `lost` with no `result.json`. Caller
-    holds `jobs_lock`."""
+    """`gc`'s first step: reap every async job that is `lost` with no `result.json`. The scan
+    runs under `jobs_lock`, the kills without it (`reap`). Caller must NOT hold `jobs_lock`."""
     sett = settings(cfg)
-    out = []
+    lost = []
     jd = W.jobs_dir(cfg)
-    for job in sorted(jd.iterdir()) if jd.is_dir() else []:
-        if not job.is_dir() or not _is_async(job) or (job / "result.json").exists():
-            continue
-        if job_state(cfg, job, sett, locked=True)["state"] == "lost" and reap(job):
-            out.append(job.name)
-    return out
+    with W.jobs_lock(cfg):
+        for job in sorted(jd.iterdir()) if jd.is_dir() else []:
+            if not job.is_dir() or not _is_async(job) or (job / "result.json").exists():
+                continue
+            if job_state(cfg, job, sett, locked=True)["state"] == "lost":
+                lost.append(job)
+    return [job.name for job in lost if reap(cfg, job)]
 
 
 # ---- submit ----------------------------------------------------------------------------------
@@ -588,26 +664,30 @@ def poll(cfg, job_id, after: int, renew: bool, stdout) -> int:
 
 def cancel(cfg, job_id, stdout) -> int:
     """`nw worker cancel JOB`: `cancel` file for an accepted/running job, a no-op for a finished
-    one, the kill path for a lost one. All under `jobs_lock`, so the state it acts on is never
-    a half-done claim, and its writes never land in a dir gc is removing."""
+    one, the kill path for a lost one. The state is read (and the `cancel` file written) under
+    `jobs_lock`, so it is never a half-done claim and never lands in a dir gc is removing; the
+    kill path runs after it, without the lock (`reap`). Exit 1 when the job is unknown, is a
+    SPEC-0336 gate-job (its stream owns it), or stayed locked through the kill path."""
     with W.jobs_lock(cfg):
         job = _job_or_none(cfg, job_id)
         if job is None:
             return _unknown(stdout, job_id)
         st = job_state(cfg, job, locked=True)["state"]
+        if st in ("accepted", "running", "lost") and not _is_async(job):
+            print("nw worker: a gate-job is cancelled by closing its stream",
+                  file=sys.stderr)
+            _print(stdout, _status(job_id, st))
+            return EXIT_UNKNOWN
         if st in ("accepted", "running"):
-            if not _is_async(job):
-                print("nw worker: a gate-job is cancelled by closing its stream",
-                      file=sys.stderr)
-                _print(stdout, _status(job_id, st))
-                return EXIT_UNKNOWN
             (job / "cancel").write_text(now_iso() + "\n", encoding="utf-8")
             _print(stdout, _status(job_id, st, cancel="requested"))
             return 0
-        if st == "lost":
-            reap(job)
-        _print(stdout, _status(job_id, st))
-        return 0
+    if st == "lost":
+        ok = reap(cfg, job)
+        _print(stdout, _status(job_id, st, reaped=ok))
+        return 0 if ok else EXIT_UNKNOWN
+    _print(stdout, _status(job_id, st))
+    return 0
 
 
 def jobs(cfg) -> list[dict]:
@@ -652,7 +732,8 @@ def _take_lock(job: Path) -> int | None:
 def _heartbeat(job: Path, every: float, stop: threading.Event) -> None:
     while True:
         try:
-            _write_atomic(job / "heartbeat.json", {"ts": time.time(), "pid": os.getpid()})
+            _write_atomic(job / "heartbeat.json", {"ts": time.time(), "pid": os.getpid(),
+                                                   "mono": time.monotonic(), "boot": _boot()})
         except OSError:
             pass
         if stop.wait(every):
@@ -701,7 +782,8 @@ def run_job(cfg, job: Path, proc: dict) -> int:
     frames.closed = True                        # no stream: the file is the only copy
     frames.log = job / "frames.jsonl"
     frames.n = _last_n(job)
-    _set_job_json(job, state="running", pid=os.getpid(), started_at=now_iso())
+    with W.jobs_lock(cfg):
+        _set_job_json(job, state="running", pid=os.getpid(), started_at=now_iso())
     threading.Thread(target=_heartbeat, args=(job, sett["job_heartbeat_s"], stop),
                      daemon=True).start()
     threading.Thread(target=_watch, args=(job, proc, cancel, stop), daemon=True).start()
@@ -727,7 +809,8 @@ def run_job(cfg, job: Path, proc: dict) -> int:
         else:
             frames.emit("error", **extra)
     try:
-        _set_job_json(job, state=state, finished_at=now_iso(), **extra)
+        with W.jobs_lock(cfg):                  # serialized with a reader's `_mirror`
+            _set_job_json(job, state=state, finished_at=now_iso(), **extra)
         W._cleanup(cfg, h, job, start_gc=False)
     except Exception as e:
         print(f"nw worker job: cleanup failed: {e}", file=sys.stderr)
@@ -753,7 +836,8 @@ def main(argv=None) -> int:
         return W.EXIT_ERROR
     me = os.getpid()
     proc = {"pid": me, "pgid": os.getpgid(0), "start_ticks": runproc.start_ticks(me),
-            "started_ts": time.time(), "started_at": now_iso(), "gates": []}
+            "started_ts": time.time(), "started_mono": time.monotonic(), "boot": _boot(),
+            "started_at": now_iso(), "gates": []}
     if not runproc.claim(job, proc):
         print(f"nw worker job: {job} is already claimed", file=sys.stderr)
         return W.EXIT_ERROR

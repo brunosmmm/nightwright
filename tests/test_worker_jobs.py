@@ -255,8 +255,12 @@ def test_a_job_whose_lease_is_not_renewed_cancels_itself(src, tmp_path, wenv):
     env = _conf(wenv, job_lease_s=2)
     pidfile = tmp_path / "sleep.pid"
     h, data = _bundle_job(src, tmp_path, [_sleeper(pidfile)])
-    assert _submit(env, h, data).returncode == 0
+    # a long first lease, so a slow checkout on a loaded machine cannot spend the 2 s one
+    # before the gate starts; then one 2 s renewal and none after it
+    assert WJ.submit(_cfg(env, job_lease_s=600),
+                     io.BytesIO((json.dumps(h) + "\n").encode() + data), io.BytesIO()) == 0
     pid = _sleep_pid(pidfile)
+    WJ._renew(_job_dir(env, h["job_id"]), 2)
     res = _result(env, h["job_id"])
     assert res["state"] == "done" and res["frame"]["interrupted"] is True
     assert until(lambda: not _alive(pid))
@@ -454,8 +458,8 @@ def test_gate_job_exit_codes_and_repeated_job_id(src, tmp_path, wenv):
     assert fin["stage"] == "claim" and rc == 3
 
 
-@pytest.mark.parametrize("how", ["eof", "sighup"])
-def test_gate_job_eof_and_sighup_still_cancel(src, tmp_path, wenv, how):
+@pytest.mark.parametrize("how", ["eof", "SIGHUP", "SIGTERM", "SIGINT"])
+def test_gate_job_eof_and_signals_still_cancel(src, tmp_path, wenv, how):
     pidfile = tmp_path / "sleep.pid"
     h, data = _bundle_job(src, tmp_path, [_sleeper(pidfile)])
     job = Job(wenv, h, data)
@@ -463,7 +467,7 @@ def test_gate_job_eof_and_sighup_still_cancel(src, tmp_path, wenv, how):
     if how == "eof":
         job.close()
     else:
-        job.proc.send_signal(signal.SIGHUP)
+        job.proc.send_signal(getattr(signal, how))
     fin = job.final()
     assert fin["type"] == "done" and fin["interrupted"] is True
     job.close()
@@ -666,7 +670,9 @@ def test_reap_kills_a_slow_starting_job_process_before_recording_lost(wenv, monk
         assert child.stdout.readline() == b"locked\n"
         # unknown to the kill path (no spawn.json): the lock stays held, nothing is recorded
         out = io.BytesIO()
-        assert WJ.cancel(_cfg(env, job_lost_after_s=2), "j-slow", out) == 0
+        assert WJ.cancel(_cfg(env, job_lost_after_s=2), "j-slow", out) == 1
+        last = json.loads(out.getvalue().splitlines()[-1])
+        assert last["state"] == "lost" and last["reaped"] is False
         assert not (d / "result.json").exists() and child.poll() is None
         (d / "spawn.json").write_text(json.dumps(
             {"pid": child.pid, "pgid": child.pid,
@@ -721,3 +727,190 @@ def test_submit_refuses_a_job_id_that_reads_as_an_option(src):
     rc = WJ.submit({"data_dir": "/nonexistent"}, io.BytesIO((json.dumps(h) + "\n").encode()), out)
     (err,) = [json.loads(ln) for ln in out.getvalue().splitlines()]
     assert rc == 3 and err["stage"] == "validate"
+
+
+# ---- review round 3 --------------------------------------------------------------------------
+
+def test_submit_writes_the_lease_before_it_spawns_the_job_process(src, tmp_path, wenv,
+                                                                  monkeypatch):
+    seen, real = [], WJ._spawn
+
+    def spawn(cfg, job, lock_fd):
+        seen.append(_read(job / "lease.json"))
+        seen.append(time.time())
+        return real(cfg, job, lock_fd)
+    monkeypatch.setattr(WJ, "_spawn", spawn)
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    out = io.BytesIO()
+    assert WJ.submit(_cfg(wenv, job_lease_s=120), io.BytesIO((json.dumps(h) + "\n").encode()
+                                                              + data), out) == 0
+    lease, at_spawn = seen
+    assert lease is not None                                # written before the spawn
+    assert at_spawn - 5 <= lease["lease_until"] - 120 <= at_spawn
+    assert _attach(wenv, h["job_id"]).returncode == 0
+
+
+def test_poll_renew_keeps_the_job_alive_and_plain_poll_does_not_renew(src, tmp_path, wenv):
+    env = _conf(wenv, job_lease_s=3)
+    pidfile = tmp_path / "sleep.pid"
+    h, data = _bundle_job(src, tmp_path, [_sleeper(pidfile)])
+    job = _job_dir(env, h["job_id"])
+    # submitted with a long first lease, so the 3 s one starts with the first renewal
+    assert WJ.submit(_cfg(env, job_lease_s=600),
+                     io.BytesIO((json.dumps(h) + "\n").encode() + data), io.BytesIO()) == 0
+    pid = _sleep_pid(pidfile)
+    t0 = time.time()
+    assert _poll(env, h["job_id"], renew=True)[-1]["state"] == "running"
+    t1 = time.time()
+    until_ = _read(job / "lease.json")["lease_until"]
+    assert t0 + 3 <= until_ <= t1 + 3                       # lease_until = now + job_lease_s
+    # renewing (in-process: no interpreter startup per call) for longer than two leases
+    cfg = _cfg(env, job_lease_s=3)
+    end = time.monotonic() + 7
+    while time.monotonic() < end:
+        before = time.time()
+        WJ.poll(cfg, h["job_id"], 0, True, io.BytesIO())
+        assert before + 3 <= _read(job / "lease.json")["lease_until"] <= time.time() + 3
+        assert not (job / "result.json").exists() and _alive(pid)
+        time.sleep(0.5)
+    # a plain poll leaves lease.json as it is
+    lease = (job / "lease.json").read_bytes()
+    assert _poll(env, h["job_id"])[-1]["state"] == "running"
+    WJ.poll(cfg, h["job_id"], 0, False, io.BytesIO())
+    assert (job / "lease.json").read_bytes() == lease
+    # no renewals: the job cancels itself
+    res = _result(env, h["job_id"])
+    assert res["state"] == "done" and res["frame"]["interrupted"] is True
+    assert until(lambda: not _alive(pid))
+
+
+@pytest.mark.parametrize("sig", ["SIGHUP", "SIGINT", "SIGTERM"])
+def test_a_signal_or_eof_on_attach_never_cancels_the_job(wenv, sig):
+    job = _fake_job(wenv, "j-sig")
+    lease = job / "lease.json"
+    p = LB.start(wenv, "nw worker attach j-sig --from 0", b"")     # stdin at EOF from the start
+    assert until(lambda: lease.exists())                    # it is following (it renewed)
+    p.send_signal(getattr(signal, sig))
+    p.wait(timeout=WAIT_S)
+    assert not (job / "cancel").exists()
+    assert _state_in_process(wenv, "j-sig")["state"] == "running"
+    assert _read(job / "job.json")["state"] == "running"
+
+
+def test_heartbeat_age_is_monotonic_across_a_wall_clock_jump(wenv):
+    """A host suspend or an NTP step moves the wall clock, not `CLOCK_MONOTONIC`: a fresh
+    heartbeat whose wall `ts` reads 1000 s old is still `running`."""
+    job = _fake_job(wenv, "j-mono")
+    (job / "heartbeat.json").write_text(json.dumps(
+        {"ts": time.time() - 1000, "pid": os.getpid(), "mono": time.monotonic(),
+         "boot": WJ._boot()}))
+    assert WJ._boot()                                       # a Linux worker has a boot id
+    st = _state_in_process(wenv, "j-mono", job_lost_after_s=60)
+    assert st["state"] == "running" and st["heartbeat_age_s"] < 5
+    # a stale monotonic heartbeat is lost whatever the wall clock says
+    (job / "heartbeat.json").write_text(json.dumps(
+        {"ts": time.time(), "pid": os.getpid(), "mono": time.monotonic() - 100,
+         "boot": WJ._boot()}))
+    assert _state_in_process(wenv, "j-mono", job_lost_after_s=60)["state"] == "lost"
+    # a heartbeat from another boot falls back to the wall clock
+    (job / "heartbeat.json").write_text(json.dumps(
+        {"ts": time.time(), "pid": os.getpid(), "mono": 1.0, "boot": "another-boot"}))
+    assert _state_in_process(wenv, "j-mono", job_lost_after_s=60)["state"] == "running"
+
+
+def test_a_real_job_heartbeats_on_the_monotonic_clock(src, tmp_path, wenv):
+    pidfile = tmp_path / "sleep.pid"
+    h, data = _bundle_job(src, tmp_path, [_sleeper(pidfile)])
+    assert _submit(wenv, h, data).returncode == 0
+    _sleep_pid(pidfile)
+    job = _job_dir(wenv, h["job_id"])
+    hb = _read(job / "heartbeat.json")
+    proc = _proc(wenv, h["job_id"])
+    assert hb["boot"] == proc["boot"] == WJ._boot()
+    assert isinstance(hb["mono"], float) and isinstance(proc["started_mono"], float)
+    assert LB.run(wenv, f"nw worker cancel {h['job_id']}").returncode == 0
+    assert _result(wenv, h["job_id"])["state"] == "done"
+
+
+def test_cancel_on_a_dead_gate_job_dir_never_writes_into_it(wenv):
+    d = W.jobs_dir(_cfg(wenv)) / "j-gdead"                  # SPEC-0336 dir, its process gone
+    d.mkdir(parents=True)
+    (d / "job.json").write_text(json.dumps({"job_id": "j-gdead", "state": "running"}) + "\n")
+    (d / "job.lock").touch()
+    assert _poll(wenv, "j-gdead")[-1]["state"] == "lost"
+    r = LB.run(wenv, "nw worker cancel j-gdead")
+    assert r.returncode == 1 and _recs(r)[-1]["state"] == "lost"
+    assert not (d / "result.json").exists()
+    assert _read(d / "job.json") == {"job_id": "j-gdead", "state": "running"}
+
+
+def test_the_kill_path_runs_without_jobs_lock(wenv, monkeypatch):
+    """A reap's kill graces never block a claim: while `reap` signals, `jobs_lock` is free."""
+    import fcntl
+    d = _async_dir(wenv, "j-free", spawned_ts=time.time() - 3600)
+    lock_free = []
+
+    def kill_group(child, grace, cont=False):
+        fd = os.open(W.worker_dir(_cfg(wenv)) / "jobs.lock", os.O_RDWR | os.O_CREAT)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_free.append(True)
+        except OSError:
+            lock_free.append(False)
+        finally:
+            os.close(fd)
+    (d / "spawn.json").write_text(json.dumps({"pid": os.getpid(), "pgid": os.getpgid(0),
+                                              "start_ticks": 1}))
+    monkeypatch.setattr(WJ, "_pid_alive", lambda leader: True)
+    monkeypatch.setattr(WJ, "_kill_group", kill_group)
+    out = io.BytesIO()
+    assert WJ.cancel(_cfg(wenv, job_lost_after_s=2), "j-free", out) == 0
+    assert lock_free == [True]
+    assert json.loads(out.getvalue().splitlines()[-1])["reaped"] is True
+    assert _read(d / "result.json")["state"] == "lost"
+    lock_free.clear()
+    d2 = _async_dir(wenv, "j-free2", spawned_ts=time.time() - 3600)
+    (d2 / "spawn.json").write_text((d / "spawn.json").read_text())
+    rec = W.gc(_cfg(wenv, job_lost_after_s=2), keep_days=0)
+    assert rec["jobs_reaped"] == ["j-free2"] and lock_free == [True]
+    assert {"j-free", "j-free2"} <= set(rec["jobs_removed"])
+
+
+def test_a_derived_lost_never_overwrites_the_jobs_own_final_state(wenv):
+    job = _fake_job(wenv, "j-race")
+    proc = _read(job / "proc.json")
+    (job / "proc.json").write_text(json.dumps({**proc, "start_ticks": proc["start_ticks"] + 1}))
+    # the job process wrote its final job.json; its result.json is about to follow
+    (job / "job.json").write_text(json.dumps({"job_id": "j-race", "state": "done",
+                                              "header_digest": "x"}) + "\n")
+    WJ._mirror(_cfg(wenv), job, "lost", locked=False)
+    assert _read(job / "job.json")["state"] == "done"
+    # result.json, once there, is what a mirror writes
+    (job / "job.json").write_text(json.dumps({"job_id": "j-race", "state": "running",
+                                              "header_digest": "x"}) + "\n")
+    (job / "result.json").write_text(json.dumps({"state": "done", "frame": None}))
+    WJ._mirror(_cfg(wenv), job, "lost", locked=True)
+    assert _read(job / "job.json")["state"] == "done"
+
+
+def test_the_reader_skips_frames_below_the_cursor_without_parsing_them(tmp_path, monkeypatch):
+    def frame(n, type_="gate", **kw):                       # as `_Frames.emit`: `n` last
+        return (json.dumps({"schema": W.FRAME_SCHEMA, "type": type_, "job_id": "j", **kw,
+                            "n": n}) + "\n").encode()
+    path = tmp_path / "frames.jsonl"
+    big = "x" * (3 * WJ._Reader.CHUNK)                      # spans several chunks
+    path.write_bytes(b"".join(frame(n, blob=big) for n in range(1, 4))
+                     + frame(4, "done", ok=True)[:-30])
+    parsed, real = [], json.loads
+    monkeypatch.setattr(WJ.json, "loads", lambda raw, *a, **k: (parsed.append(len(raw)),
+                                                                real(raw, *a, **k))[1])
+    r = WJ._Reader(path, 3)
+    assert list(r.read()) == [] and parsed == []            # 1..3 skipped by their tail
+    pos = r.pos
+    with open(path, "ab") as f:
+        f.write(frame(4, "done", ok=True)[-30:])
+    (line,) = list(r.read())
+    assert r.pos - pos == 30                                # the partial line was not re-read
+    assert real(line)["n"] == 4 and r.final == "done" and len(parsed) == 1
+    r0 = WJ._Reader(path, 0)
+    assert [real(ln)["n"] for ln in r0.read()] == [1, 2, 3, 4]

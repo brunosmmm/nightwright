@@ -441,6 +441,75 @@ A `running` job holds `job.lock`, so `gc --keep-days 0` never removes it.
 - **Option-like `JOB`.** `ssh-command` refuses a `JOB` that starts with `-`, and `submit`
   refuses such a `job_id` (`stage: "validate"`), because it could never be named to `attach`.
 
+### Test record (2026-11-01, review round 3)
+
+- `tests/test_worker_jobs.py` now has 71 tests. New for the review findings:
+  - `poll --renew`: the job is submitted with a long first lease, then `poll --renew` (over
+    the loopback) sets `lease_until` within `[t0 + 3, t1 + 3]` for `job_lease_s=3`.
+    Renewing in-process every 0.5 s for 7 s (more than two leases) keeps the job running and
+    its gate alive. A plain `poll`, over the loopback and in-process, leaves `lease.json`
+    byte-for-byte unchanged. With no further renewals the job cancels itself (`done`,
+    `interrupted: true`);
+  - `attach` on SIGHUP, SIGINT and SIGTERM (parametrized), each with stdin at EOF from the
+    start: no `cancel` file, the job stays `running`;
+  - lease before spawn: a wrapped `_spawn` reads `lease.json` at the moment of the spawn,
+    and finds it there with `lease_until = now + job_lease_s`;
+  - gate-job: stdin EOF, SIGHUP, SIGTERM and SIGINT each cancel (parametrized);
+  - a heartbeat whose wall `ts` is 1000 s old but whose monotonic stamp is fresh stays
+    `running`; a stale monotonic stamp is `lost`; a stamp from another boot falls back to the
+    wall clock. A real job writes `mono`/`boot` in `heartbeat.json` and `proc.json`;
+  - `cancel` on a dead SPEC-0336 gate-job dir exits 1 and writes nothing into it;
+  - the kill path runs without `jobs_lock` (checked from inside the kill step) for both
+    `cancel` and `gc`;
+  - `cancel` whose reap stays locked out prints `reaped: false` and exits 1;
+  - a derived `lost` never overwrites the job's own `done` in `job.json`, and a
+    `result.json`, once present, is what a mirror writes;
+  - `_Reader` skips frames at or below the cursor without JSON-parsing them (frames spanning
+    several read chunks), and a held-back partial line is not read again.
+- The lease-expiry test now submits with a long first lease and renews once to 2 s after the
+  gate starts. Before this, a checkout slower than 2 s on a loaded machine cancelled the job
+  before its gate started, which made `_sleep_pid` fail. That was a flake seen once under
+  `-n 4` in this round.
+- The wall-clock bounds (2 s, 3 s) come from the Acceptance criteria and stay as they are.
+  The tests measure from the kill or stop, not from the previous process's startup. The
+  remaining fixed `time.sleep(2.5)` comes before a negative assertion.
+- Affected tests (`test_worker_jobs.py`, `test_worker.py`, `test_worker_ssh_command.py`,
+  `test_test_waits.py`, `-n 4`): 223 passed. The gate command (`affected_tests.py` plus
+  `test_agentic_dogfood_config.py` and `test_agentic_project.py`, `-n 2`): 290 passed.
+  `spec_lint` passes. The full suite was left to gating.
+
+### As shipped (2026-11-01, review round 3)
+
+- **Heartbeat age on `CLOCK_MONOTONIC`.** `heartbeat.json` also carries `mono` (the job
+  process's `time.monotonic()`) and `boot` (`/proc/sys/kernel/random/boot_id`). `proc.json`
+  carries `started_mono` and `boot`. A reader on the same boot measures the age on its own
+  monotonic clock, which every process on the host shares. That clock does not jump with an
+  NTP step and does not count a host suspend, so neither turns a healthy job `lost` (which
+  gc would then reap). Records without these fields, or from another boot, use the wall
+  clock `ts` as before. `heartbeat_age_s` is reported on the same clock.
+- **The kill path runs without `jobs_lock`.** This deviates from the Design's "gc holds
+  `jobs_lock` while it works". gc and `cancel` read the state under `jobs_lock`, then run the
+  signals, the kill graces and the 1 s `job.lock` wait without it. They take `jobs_lock`
+  again only for the final `result.json` write, which re-checks that the dir still exists
+  and has no result. Claims (`submit`, `gate-job`) therefore never wait out the kill graces.
+  The deletion step still runs entirely under `jobs_lock`. The reaper never creates
+  `job.lock`. It holds `job.lock` while waiting for `jobs_lock`, which cannot deadlock: no
+  one holding `jobs_lock` waits for an existing job's `job.lock`.
+- **`cancel` exit codes.** On a `lost` job, `cancel`'s status line carries `reaped: true`
+  or `reaped: false`. When `job.lock` stays held after the signals (nothing recorded), the
+  status is `reaped: false` and the exit code is 1. `cancel` on a SPEC-0336 gate-job dir
+  exits 1 and writes nothing, whether the job is running or its process is dead (`lost`):
+  its stream owns the dir.
+- **`job.json` writes are serialized.** The job process writes its `running` and final
+  `job.json` under `jobs_lock`, and the final write still comes before `result.json`. A
+  reader's mirror re-reads both files under `jobs_lock`. A `result.json`, if present, wins.
+  A `done`/`error` the job process wrote itself is never overwritten by a derived `lost`.
+- **`_Reader` reads in 1 MiB chunks** from where it last stopped, and keeps a held-back
+  partial line in memory instead of reading it again. A line at or below the cursor is
+  skipped by the `n` at its end and never JSON-parsed. `attach` and `poll` stream the lines
+  as they are read, so at most one frame is held at a time.
+- Gate groups are still recorded on the 0.25 s watch tick (see round 1).
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.

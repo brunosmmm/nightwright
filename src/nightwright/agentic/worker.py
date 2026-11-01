@@ -879,15 +879,16 @@ def gc(cfg, keep_days: int = DEFAULT_KEEP_DAYS, now: float | None = None) -> dic
     keep_s = min(max(0, int(keep_days)), MAX_KEEP_DAYS) * 86400
     out = {"jobs_removed": [], "refs_removed": 0, "pruned": [], "errors": []}
     from . import worker_job as WJ
+    # SPEC-0340: a lost async job (hung or dead job process) is reaped first, so its
+    # `job.lock` is free and its dir ages out like a finished one (listed as `jobs_reaped`
+    # only when there was one: SPEC-0336's record is unchanged). `reap_lost` scans under
+    # `jobs_lock` but kills without it, so claims never wait out its kill graces. Reaping
+    # writes `result.json`, so the clock is read again: `--keep-days 0` removes it now.
+    reaped = WJ.reap_lost(cfg)
+    if reaped:
+        out["jobs_reaped"] = reaped
+        now = time.time() if clock else now
     with jobs_lock(cfg):
-        # SPEC-0340: a lost async job (hung or dead job process) is reaped first, so its
-        # `job.lock` is free and its dir ages out like a finished one (listed as
-        # `jobs_reaped` only when there was one: SPEC-0336's record is unchanged). Reaping
-        # writes `result.json`, so the clock is read again: `--keep-days 0` removes it now.
-        reaped = WJ.reap_lost(cfg)
-        if reaped:
-            out["jobs_reaped"] = reaped
-            now = time.time() if clock else now
         _live_jobs(cfg, remove_before=now - keep_s, removed=out["jobs_removed"])
     rd = repos_dir(cfg)
     for cache in sorted(rd.glob("*.git")) if rd.is_dir() else []:
