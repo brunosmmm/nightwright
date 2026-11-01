@@ -331,6 +331,24 @@ this to tell a transport failure from a gate failure.
   `uv run pytest -q -n 4 tests/test_worker.py`: 71 passed. The targeted set (now 184 tests) passed in all 12 repeat runs (`-n 4`, `-n 6`, `-n 8`), with no failure seen; the loop 6 one-off failure was not reproduced.
   `python3 tools/spec_lint.py`: OK. The full suite is left to gating.
 
+- Loop 8 (review fixes): new cases in `tests/test_worker.py`: base names git refuses
+  (`main.lock`, `feature/`, `a//b`, `x/.y`, `main.`, `a/b.lock/c`) are `validate` refusals with
+  no job dir and no cache (the base-name cases now also set `env.NW_BASE`, so the NW_BASE
+  mismatch check no longer refuses them first); `base_name_ok` agrees with
+  `git check-ref-format` on 20 names; a SIGTERM handled right after `_checkout` returns gives
+  `error` stage `signal`, exit 3, and one handled once the stage is `slot` gives `done`
+  interrupted, exit 0; a cache with a garbage `config` sorting before `proj` is listed in
+  `errors`, `nw worker gc --keep-days 0` exits 1, and `proj` is still pruned (refs and objects
+  gone). The budget tests no longer depend on wall-clock margins: in the "no rerun" cases the
+  first run's 1 s sleep alone exceeds the 0.2 s budget, and the slot-hold case waits 4.5 s
+  for the slot against a 4 s budget with two 0.1 s runs (about 3.8 s of slack). With the
+  `src/` changes reverse-applied, the signal, broken-cache and six base-name cases fail.
+  The targeted set (`tests/test_worker.py tests/test_worker_ssh_command.py
+  tests/test_gate_slots.py tests/test_cli_gate_slots.py tests/test_agentic_gates.py
+  tests/test_rich_output_guard.py tests/test_test_waits.py`, 213 tests) passed in repeat runs
+  with `-n 4`, `-n 6` and `-n 8`. `python3 tools/spec_lint.py`: OK. The full suite is left to
+  gating.
+
 ### As shipped (2026-10-31)
 
 - The bundle is read from stdin into `jobs/<id>/job.bundle` **before** the repo lock is taken.
@@ -414,6 +432,15 @@ this to tell a transport failure from a gate failure.
 - Design step 4 says "campaign id = the job's campaign"; the shipped id is
   `"remote:" + the job's campaign`, per the slot identity note above (the Design text is
   frozen at acceptance, so this note is the authority).
+- Loop 8: the base name is checked in full at `validate` (`base_name_ok`: git's
+  check-ref-format rules that the BASE_RE charset can break), so a name git refuses never
+  reaches the fetch. A signal handled after the checkout returns but before the stage turns
+  `slot` is still pre-slot (`error`, stage `signal`, exit 3): the job checks for it right after
+  switching the stage, and only signals received before the switch count. `gc` runs each
+  repo on its own; a cache that fails (a git error, an OS error) is listed in a new `errors`
+  key (`[{repo, error}]`), the repos after it still run, and `nw worker gc` exits 1 after
+  printing the JSON when `errors` is not empty.
+
 
 ## Clock Log
 

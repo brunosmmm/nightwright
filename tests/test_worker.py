@@ -308,8 +308,30 @@ def _set(path, value):
     return mutate
 
 
+def _base_name(name):
+    """Set `base.name` and the header's `env.NW_BASE` together, so the refusal is the name's
+    own and not the NW_BASE mismatch."""
+    def mutate(h):
+        h["base"]["name"] = name
+        if "NW_BASE" in (h.get("env") or {}):
+            h["env"]["NW_BASE"] = name
+    return mutate
+
+
 def _dup_gates(h):
     h["payload"]["gates"].append(dict(h["payload"]["gates"][0]))
+
+
+@pytest.mark.parametrize("name", [
+    "main", "origin/main", "release/1.0", "feat.x/y_z-1", "a.b", "HEAD", "x/y/z",
+    "main.lock", "feature/", "a//b", "x/.y", ".x", "main.", "a/b.lock/c", "a..b", "x/y.",
+    "a/.lock", "a.lock/b", "lock", "a.locked"])
+def test_base_name_check_agrees_with_git_check_ref_format(name):
+    """Within BASE_RE's charset, `base_name_ok` refuses exactly what git refuses, so no name
+    passes `validate` and then fails git's own check at checkout."""
+    git_ok = subprocess.run(["git", "check-ref-format", f"refs/heads/{name}"],
+                            capture_output=True).returncode == 0
+    assert W.base_name_ok(name) is git_ok
 
 
 @pytest.mark.parametrize("mutate, why", [
@@ -326,8 +348,14 @@ def _dup_gates(h):
     (_set("commit", "zz"), "commit"),
     (_set("commit", "a" * 40 + "\n"), "commit"),
     (_set("base.sha", "not-a-sha"), "base"),
-    (_set("base.name", "../main"), "base"),
-    (_set("base.name", "-main"), "base"),
+    (_base_name("../main"), "base must be"),
+    (_base_name("-main"), "base must be"),
+    (_base_name("main.lock"), "base must be"),
+    (_base_name("feature/"), "base must be"),
+    (_base_name("a//b"), "base must be"),
+    (_base_name("x/.y"), "base must be"),
+    (_base_name("main."), "base must be"),
+    (_base_name("a/b.lock/c"), "base must be"),
     (_set("payload.seq", 1000), "payload.seq"),
     (_set("payload.seq", "1"), "payload.seq"),
     (_set("payload.gates.0.name", "../../evil"), "name matching"),
@@ -419,36 +447,40 @@ def _rerun(frame):
 
 
 def test_gate_budget_from_the_payload_bounds_the_retry_ladder(src, tmp_path, wenv):
-    # the first run (~0.6 s) leaves no room for a rerun inside a 0.5 s budget
-    h, data = _bundle_job(src, tmp_path, [_flaky_once(0.6)])
-    h["payload"]["gate_budget_s"] = 0.5
+    # the first run's sleep alone (1 s) exceeds the 0.2 s budget, so no rerun fits whatever the
+    # host's load (load only makes the run longer): no wall-clock margin to lose
+    h, data = _bundle_job(src, tmp_path, [_flaky_once(1)])
+    h["payload"]["gate_budget_s"] = 0.2
     job, fin, rc = _run(wenv, h, data)
     g = job.frames[2]
     assert rc == 0 and fin["ok"] is False and not _rerun(g), g["result"]
     assert set(g["files"]) == {"001-fl.log", "001-fl.json"}
 
 
-@pytest.mark.parametrize("budget, reruns", [(0.5, False), (600, True)])
+@pytest.mark.parametrize("budget, reruns", [(0.2, False), (600, True)])
 def test_gate_budget_falls_back_to_the_workers_own(src, tmp_path, wenv, budget, reruns):
+    # 1 s of sleep alone exceeds 0.2 s (load can only add to it); 600 s leaves ~10 minutes
     (Path(wenv["NW_CONFIG_DIR"]) / "config.yaml").write_text(
         f"agentic:\n  events:\n    gate_budget_s: {budget}\n")
-    h, data = _bundle_job(src, tmp_path, [_flaky_once(0.6)])
+    h, data = _bundle_job(src, tmp_path, [_flaky_once(1)])
     del h["payload"]["gate_budget_s"]
     job, fin, rc = _run(wenv, h, data)
     assert rc == 0 and _rerun(job.frames[2]) is reruns and fin["ok"] is reruns, job.frames
 
 
 def test_gate_budget_runs_from_the_slot_hold(src, tmp_path, wenv):
-    """The budget clock starts once the slot is held: 2.5 s spent waiting for the slot do not
-    count against a 2 s budget, so the rerun still starts."""
-    env = {**_slot_conf(wenv), W.SLOT_WAIT_ENV: "2.5"}
-    h, data = _bundle_job(src, tmp_path, [_flaky_once(0.2)])
-    h["payload"]["gate_budget_s"] = 2
+    """The budget clock starts once the slot is held: 4.5 s spent waiting for the slot do not
+    count against a 4 s budget, so the rerun still starts. The slot wait is a lower bound
+    (the `slot_wait` frame), and two 0.1 s runs leave ~3.8 s of the budget for process start
+    on a loaded host; a clock started at the wait would be over budget before the gate ran."""
+    env = {**_slot_conf(wenv), W.SLOT_WAIT_ENV: "4.5"}
+    h, data = _bundle_job(src, tmp_path, [_flaky_once(0.1)])
+    h["payload"]["gate_budget_s"] = 4
     with GS.acquire(_cfg(env, slots=1), "other"):
         job = Job(env, h, data)
-        assert job.wait_for("slot_wait")["waited_s"] >= 2.5
+        assert job.wait_for("slot_wait")["waited_s"] >= 4.5
     fin, rc = job.finish()
-    assert rc == 0 and fin["slot_wait_s"] >= 2.5, job.frames
+    assert rc == 0 and fin["slot_wait_s"] >= 4.5, job.frames
     assert _rerun(job.frames[3]) and fin["ok"] is True, job.frames[3]["result"]
 
 
@@ -607,6 +639,61 @@ def test_signal_under_the_repo_lock_waits_for_the_git_and_the_lock(src, tmp_path
         os.close(fd)
 
 
+def _signal_after(monkeypatch, name):
+    """Patch `W.<name>` to send this process SIGTERM right after (or, for `_detach_stdin`,
+    before) the real call."""
+    real = getattr(W, name)
+
+    def patched(*a, **kw):
+        if name == "_detach_stdin":
+            os.kill(os.getpid(), signal.SIGTERM)
+            return real(*a, **kw)
+        res = real(*a, **kw)
+        os.kill(os.getpid(), signal.SIGTERM)
+        return res
+
+    monkeypatch.setattr(W, name, patched)
+
+
+def test_signal_between_checkout_and_the_slot_stage_is_an_error_frame(src, tmp_path, wenv,
+                                                                       monkeypatch):
+    """A signal handled after the checkout returns but before the stage turns `slot` is still
+    a pre-slot signal: `error` with stage `signal`, exit 3, never `accepted`."""
+    if threading.current_thread() is not threading.main_thread():
+        pytest.skip("signal handlers need the main thread")
+    h, data = _bundle_job(src, tmp_path, [_gate("x", f"touch {tmp_path / 'ran'}")])
+    _signal_after(monkeypatch, "_checkout")
+    out = io.BytesIO()
+    rc = W.gate_job(_cfg(wenv), io.BytesIO((json.dumps(h) + "\n").encode() + data), out)
+    frames = [json.loads(ln) for ln in out.getvalue().splitlines()]
+    assert rc == 3 and [f["type"] for f in frames] == ["error"], frames
+    assert frames[0]["stage"] == "signal" and "SIGTERM" in frames[0]["error"]
+    assert not (tmp_path / "ran").exists()
+
+
+def test_signal_once_the_slot_stage_began_is_done_interrupted(src, tmp_path, wenv, monkeypatch):
+    """The other side of that line: a signal handled once the stage is `slot` is a cancel, not
+    an error: `accepted`, then `done` interrupted with no gate run, exit 0 (the slot is free
+    here, so `started` may come first and the gate loop sees the cancel)."""
+    if threading.current_thread() is not threading.main_thread():
+        pytest.skip("signal handlers need the main thread")
+    h, data = _bundle_job(src, tmp_path, [_gate("x", f"touch {tmp_path / 'ran'}")])
+    _signal_after(monkeypatch, "_detach_stdin")
+    r, w = os.pipe()
+    os.write(w, (json.dumps(h) + "\n").encode() + data)   # the stream stays open (no EOF)
+    out = io.BytesIO()
+    try:
+        with os.fdopen(r, "rb") as stdin:
+            rc = W.gate_job(_cfg(wenv), stdin, out)
+    finally:
+        os.close(w)
+    frames = [json.loads(ln) for ln in out.getvalue().splitlines()]
+    types = [f["type"] for f in frames]
+    assert rc == 0 and types[0] == "accepted" and types[-1] == "done", frames
+    assert set(types) <= {"accepted", "started", "done"}, frames
+    assert frames[-1]["interrupted"] is True and not (tmp_path / "ran").exists()
+
+
 def test_a_stale_git_ref_lock_in_the_cache_is_cleared(src, tmp_path, wenv):
     """A git killed hard leaves `<ref>.lock`; every cache writer holds the repo lock, so the
     next job clears it instead of failing its have-ref update."""
@@ -726,7 +813,7 @@ def test_gc_with_an_enormous_keep_days_keeps_everything(src, tmp_path, wenv):
     r = _nw(wenv, "gc", "--keep-days", "9" * 400)
     assert r.returncode == 0, r.stderr
     rec = json.loads(r.stdout)
-    assert rec == {"jobs_removed": [], "refs_removed": 0, "pruned": []}
+    assert rec == {"jobs_removed": [], "refs_removed": 0, "pruned": [], "errors": []}
     assert W.gc(_cfg(wenv), keep_days=10 ** 400)["refs_removed"] == 0
     assert _job_dir(wenv, h["job_id"]).is_dir()
 
@@ -850,6 +937,25 @@ def test_cache_fetch_uses_no_flags_newer_than_git_2_29(src, tmp_path, wenv, monk
     fetches = [a for a in seen if "fetch" in a]
     assert len(fetches) == 1
     assert not {"--no-auto-maintenance", "--no-write-fetch-head"} & set(fetches[0])
+
+
+def test_one_broken_cache_does_not_stop_gc_for_the_others(src, tmp_path, wenv):
+    """A cache whose config git cannot read (here: garbage) is listed in `errors`, `nw worker
+    gc` exits 1, and the repos after it are still aged and pruned."""
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    assert _run(wenv, h, data)[2] == 0
+    broken = _cache(wenv, "aaa")                        # sorts before `proj`
+    subprocess.run(["git", "init", "-q", "--bare", str(broken)], check=True)
+    (broken / "config").write_text("[[[ not a git config\n")
+    r = _nw(wenv, "gc", "--keep-days", "0")
+    assert r.returncode == 1, r.stderr
+    rec = json.loads(r.stdout)
+    assert [e["repo"] for e in rec["errors"]] == ["aaa"], rec
+    assert rec["pruned"] == ["proj"] and rec["refs_removed"] == 2
+    assert _nw(wenv, "have", "--repo", "proj", src.head, src.base).stdout.split() == []
+    p = subprocess.run(["git", "-C", str(_cache(wenv)), "cat-file", "-e", src.head],
+                       capture_output=True)
+    assert p.returncode != 0
 
 
 def test_gc_lists_a_repo_as_pruned_only_when_git_gc_succeeds(src, tmp_path, wenv, monkeypatch):

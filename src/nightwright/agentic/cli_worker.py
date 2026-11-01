@@ -64,8 +64,12 @@ def worker_gate_job(cfg):
               show_default=True, help="keep job dirs and cached commits used this recently")
 @click.pass_obj
 def worker_gc(cfg, keep_days):
-    """Delete old job dirs and `refs/nw/have/*` refs, then prune the caches' objects."""
-    click.echo(json.dumps(W.gc(cfg, keep_days)))
+    """Delete old job dirs and `refs/nw/have/*` refs, then prune the caches' objects.
+    Exits 1 when a repo's cache failed (listed in `errors`); the other repos still ran."""
+    rec = W.gc(cfg, keep_days)
+    click.echo(json.dumps(rec))
+    if rec["errors"]:
+        raise SystemExit(1)
 
 
 @worker_group.command("ssh-command")

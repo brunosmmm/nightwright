@@ -51,7 +51,8 @@ EXIT_REFUSED = 2
 KEY_RE = re.compile(r"^[A-Za-z0-9._-]+\Z")
 SHA_RE = re.compile(r"^[0-9a-f]{40,64}\Z")
 DIGITS_RE = re.compile(r"^[0-9]+\Z")
-# a branch name: no leading `-` or `/`, no `..`; git's own check-ref-format runs at checkout
+# a branch name: no leading `-` or `/`; `base_name_ok` adds the rest of git's check-ref-format
+# rules this charset can break, so a name git would refuse is a `validate` refusal
 BASE_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._/-]*\Z")
 # a gate name `<other gate>.r<n>` would share files with that gate's retry `<n>`
 RETRY_STEM_RE = re.compile(r"^(.+)\.r[0-9]+\Z")
@@ -207,6 +208,17 @@ def _list_refs(cache: Path, prefix: str) -> list[str]:
 
 # ---- the header ------------------------------------------------------------------------------
 
+def base_name_ok(name) -> bool:
+    """`refs/heads/<name>` passes `git check-ref-format`: within BASE_RE's charset that means
+    no `..`, no empty component (`a//b`, a trailing `/`), no component starting with `.` or
+    ending in `.lock`, and no trailing `.`."""
+    if not isinstance(name, str) or not BASE_RE.match(name) or ".." in name \
+            or name.endswith("."):
+        return False
+    return all(c and not c.startswith(".") and not c.endswith(".lock")
+               for c in name.split("/"))
+
+
 def validate_header(h) -> None:
     """Raise `WorkerError("validate", ...)` unless `h` is a `nw.job.v1` gate header this worker
     can run. Nothing runs before this passes."""
@@ -225,7 +237,7 @@ def validate_header(h) -> None:
         bad("commit must be a hex sha")
     base = h.get("base")
     if not isinstance(base, dict) or not isinstance(base.get("name"), str) \
-            or not BASE_RE.match(base["name"]) or ".." in base["name"] \
+            or not base_name_ok(base["name"]) \
             or not isinstance(base.get("sha"), str) or not SHA_RE.match(base["sha"]):
         bad("base must be {name: <branch>, sha: <hex sha>}")
     n = h.get("bundle_bytes")
@@ -484,13 +496,14 @@ class _Stop:
 
     def __init__(self):
         self.name: str | None = None
+        self.pending = False                    # received before the slot stage
         self.interruptible = False
 
     def error(self) -> WorkerError:
         return WorkerError("signal", f"stopped by {self.name}")
 
     def check(self) -> None:
-        if self.name:
+        if self.pending:
             raise self.error()
 
     @contextmanager
@@ -534,6 +547,7 @@ def gate_job(cfg, stdin, stdout) -> int:
         stop.name = signal.Signals(signum).name
         cancel.set()
         if state["stage"] in _PRE_SLOT_STAGES:
+            stop.pending = True
             if stop.interruptible:              # blocked on stdin: no lock, no git running
                 stop.interruptible = False
                 raise stop.error()
@@ -579,10 +593,13 @@ def gate_job(cfg, stdin, stdout) -> int:
 
             state["stage"] = "checkout"
             _checkout(cfg, h, job, stdin, stop)
-            threading.Thread(target=_watch_stdin, args=(_detach_stdin(stdin), cancel),
-                             daemon=True).start()
 
             state["stage"] = "slot"
+            # a signal that came in before the line above is still a pre-slot one (`error`,
+            # stage `signal`); from it on, a signal cancels the slot wait (`done` interrupted)
+            stop.check()
+            threading.Thread(target=_watch_stdin, args=(_detach_stdin(stdin), cancel),
+                             daemon=True).start()
             frames.emit("accepted")
             _run_gates(cfg, h, job, frames, cancel)
             job_rec.update(state="done", finished_at=now_iso())
@@ -732,17 +749,55 @@ def _live_jobs(cfg, remove_before: float | None = None, removed: list | None = N
     return live_ids, live_shas
 
 
+def _gc_repo(cfg, key: str, cache: Path, now: float, keep_s: float, out: dict) -> None:
+    """`gc`'s repo phase for one cache: under its repo lock, drop aged have refs and orphan job
+    refs (the live set read again under the jobs lock), then prune the objects."""
+    with repo_lock(cfg, key):
+        _clear_stale_locks(cache)
+        _no_auto_maintenance(cache)
+        with jobs_lock(cfg):
+            live_ids, live_shas = _live_jobs(cfg)
+        hv = _read_have(cfg, key)
+        changed = False
+        for ref in _list_refs(cache, HAVE_REFS):
+            sha = ref[len(HAVE_REFS):]
+            if sha in live_shas:
+                continue
+            if sha not in hv or now - hv[sha] >= keep_s:
+                _git("-C", cache, "update-ref", "-d", ref, check=False)
+                hv.pop(sha, None)
+                changed = True
+                out["refs_removed"] += 1
+        for ref in _list_refs(cache, JOB_REFS):
+            name = ref[len(JOB_REFS):]
+            owner = name[:-len("-base")] if name.endswith("-base") else name
+            if name in live_ids or owner in live_ids:
+                continue
+            _git("-C", cache, "update-ref", "-d", ref, check=False)
+            changed = True
+            out["refs_removed"] += 1
+        have_refs = {r[len(HAVE_REFS):] for r in _list_refs(cache, HAVE_REFS)}
+        if changed or set(hv) - have_refs:
+            _write_have(cfg, key, {s: t for s, t in hv.items() if s in have_refs})
+        if changed:
+            if _git("-C", cache, "gc", "--prune=now", "--quiet",
+                    check=False).returncode == 0:
+                out["pruned"].append(key)
+
+
 def gc(cfg, keep_days: int = DEFAULT_KEEP_DAYS, now: float | None = None) -> dict:
     """Delete job dirs (except live ones, whose `job.lock` is held) and `refs/nw/have/*` refs
     at least `keep_days` old, plus job refs no live job owns; then `git gc --prune=now` each
-    repo whose refs changed, so the objects go too. Shas a live job uses are kept.
+    repo whose refs changed, so the objects go too. Shas a live job uses are kept. A cache
+    that fails (a git error, an unwritable file) is listed in `errors` and the next repo still
+    runs.
 
     The live set each repo's deletions rely on is read under that repo's lock *and* the jobs
     lock: a job is then either fully claimed (its `job.json` names its shas, its refs are
     kept) or has not fetched yet (it fetches after this gc's prune)."""
     now = time.time() if now is None else now
     keep_s = min(max(0, int(keep_days)), MAX_KEEP_DAYS) * 86400
-    out = {"jobs_removed": [], "refs_removed": 0, "pruned": []}
+    out = {"jobs_removed": [], "refs_removed": 0, "pruned": [], "errors": []}
     with jobs_lock(cfg):
         _live_jobs(cfg, remove_before=now - keep_s, removed=out["jobs_removed"])
     rd = repos_dir(cfg)
@@ -750,37 +805,10 @@ def gc(cfg, keep_days: int = DEFAULT_KEEP_DAYS, now: float | None = None) -> dic
         key = cache.name[:-4]
         if not KEY_RE.match(key):
             continue
-        with repo_lock(cfg, key):
-            _clear_stale_locks(cache)
-            _no_auto_maintenance(cache)
-            with jobs_lock(cfg):
-                live_ids, live_shas = _live_jobs(cfg)
-            hv = _read_have(cfg, key)
-            changed = False
-            for ref in _list_refs(cache, HAVE_REFS):
-                sha = ref[len(HAVE_REFS):]
-                if sha in live_shas:
-                    continue
-                if sha not in hv or now - hv[sha] >= keep_s:
-                    _git("-C", cache, "update-ref", "-d", ref, check=False)
-                    hv.pop(sha, None)
-                    changed = True
-                    out["refs_removed"] += 1
-            for ref in _list_refs(cache, JOB_REFS):
-                name = ref[len(JOB_REFS):]
-                owner = name[:-len("-base")] if name.endswith("-base") else name
-                if name in live_ids or owner in live_ids:
-                    continue
-                _git("-C", cache, "update-ref", "-d", ref, check=False)
-                changed = True
-                out["refs_removed"] += 1
-            have_refs = {r[len(HAVE_REFS):] for r in _list_refs(cache, HAVE_REFS)}
-            if changed or set(hv) - have_refs:
-                _write_have(cfg, key, {s: t for s, t in hv.items() if s in have_refs})
-            if changed:
-                if _git("-C", cache, "gc", "--prune=now", "--quiet",
-                        check=False).returncode == 0:
-                    out["pruned"].append(key)
+        try:
+            _gc_repo(cfg, key, cache, now, keep_s, out)
+        except (WorkerError, OSError) as e:     # one broken cache never stops the others
+            out["errors"].append({"repo": key, "error": str(e)})
     return out
 
 
