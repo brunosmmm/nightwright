@@ -30,7 +30,7 @@ def campaign_group():
 def register(cli, projects_group):
     """Attach the agentic commands to the root `cli` and the existing `projects` group."""
     from . import (cli_campaign, cli_conduct, cli_conductor, cli_gate_slots, cli_launch,
-                   cli_profiles, cli_projects, cli_queue)
+                   cli_profiles, cli_projects, cli_queue, cli_worker)
 
     cli_projects.attach(projects_group)
     cli_campaign.attach(campaign_group)
@@ -40,6 +40,7 @@ def register(cli, projects_group):
     cli_launch.attach(queue_group)
     cli_gate_slots.attach(queue_group)
     cli.add_command(queue_group)
+    cli.add_command(cli_worker.worker_group)            # SPEC-0336
     cli.add_command(campaign_group)
     cli.add_command(cli_profiles.profiles_group)
     try:  # SPEC-0183 mailbox (registered when present)

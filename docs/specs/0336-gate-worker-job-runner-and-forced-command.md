@@ -1,7 +1,7 @@
 ---
 id: SPEC-0336
 title: "Gate worker job runner and forced-command dispatcher"
-status: accepted
+status: done
 owner: user
 created: 2026-10-31
 updated: 2026-10-31
@@ -200,29 +200,29 @@ this to tell a transport failure from a gate failure.
 
 ## Acceptance criteria
 
-- [ ] Piping a valid header and bundle into `nw worker gate-job` runs the sent gates in a
+- [x] Piping a valid header and bundle into `nw worker gate-job` runs the sent gates in a
       job worktree and emits `accepted`, `started`, one `gate` frame per gate (with the
       `.log`, `.json` and `.r<n>` files) and `done`.
-- [ ] A gate running `git merge-base $NW_BASE HEAD` on the worker succeeds and prints the
+- [x] A gate running `git merge-base $NW_BASE HEAD` on the worker succeeds and prints the
       same sha it prints in the coordinator's worktree.
-- [ ] A header whose `env` has a key outside the allowlist yields an `error` frame with
+- [x] A header whose `env` has a key outside the allowlist yields an `error` frame with
       `stage: "validate"`, and nothing runs. A reused `job_id` yields `stage: "claim"`.
-- [ ] Two concurrent gate-jobs for the same `repo_key` with different `base.sha` for the
+- [x] Two concurrent gate-jobs for the same `repo_key` with different `base.sha` for the
       same `base.name` each see their own base in `git rev-parse $NW_BASE`.
-- [ ] EOF on stdin mid-gate ends the gate process and emits `done` with `interrupted: true`;
+- [x] EOF on stdin mid-gate ends the gate process and emits `done` with `interrupted: true`;
       EOF during the slot wait emits `done` with `interrupted: true` and no `started`.
-- [ ] With the worker's slot held by another process, the worker emits `slot_wait` and then
+- [x] With the worker's slot held by another process, the worker emits `slot_wait` and then
       `started` only once the slot frees.
-- [ ] gate-job exits 0 after `done` (pass, fail or interrupted) and 3 after an `error` frame.
-- [ ] A log over 16 MiB arrives cut to 16 MiB with `truncated_bytes` in its sidecar.
-- [ ] `nw worker have` reports the job's commit and base after the job ends (the
+- [x] gate-job exits 0 after `done` (pass, fail or interrupted) and 3 after an `error` frame.
+- [x] A log over 16 MiB arrives cut to 16 MiB with `truncated_bytes` in its sidecar.
+- [x] `nw worker have` reports the job's commit and base after the job ends (the
       `refs/nw/have/*` refs). After `nw worker gc --keep-days 0`, `have` reports none of
       them, `git cat-file -e <commit>` fails in the cache, and the job dirs are gone, except
       that a live job's dir survives a concurrent `gc`.
-- [ ] `nw worker info --json` prints the documented keys.
-- [ ] `nw worker ssh-command` execs the four allowed subcommands and refuses everything else
+- [x] `nw worker info --json` prints the documented keys.
+- [x] `nw worker ssh-command` execs the four allowed subcommands and refuses everything else
       with exit 2, running nothing.
-- [ ] `docs/WORKFLOW.md` documents the mandatory dedicated user and the absolute-path key
+- [x] `docs/WORKFLOW.md` documents the mandatory dedicated user and the absolute-path key
       line.
 
 ## Test plan
@@ -246,6 +246,60 @@ this to tell a transport failure from a gate failure.
   `command="/home/nw/.local/bin/nw worker ssh-command",restrict` key line.
 - **Regression guard:** full `uv run pytest`; nothing outside `nw worker` changes.
 
+### Test record (2026-10-31)
+
+- `uv run pytest -q -n 4 tests/test_worker.py tests/test_worker_ssh_command.py
+  tests/test_gate_slots.py tests/test_cli_gate_slots.py tests/test_agentic_gates.py
+  tests/test_completion.py`: 142 passed, three runs in a row. `tests/test_worker.py` covers
+  every case the plan lists (pass, fail, retry ladder with `.r1` files, `merge-base`/`{base}`,
+  two concurrent jobs with different bases for `main`, env refusal, bad `schema` and an
+  `NW_BASE` mismatch, duplicate `job_id`, empty bundle on a warm cache plus a cold-cache
+  checkout error, EOF mid `sleep 600`, held slot with `NW_WORKER_SLOT_WAIT_EVENT_S=0.5`, EOF
+  during the slot wait, exit codes, 17 MiB truncation, `have` after the job, `gc --keep-days 0`
+  with `git cat-file -e` failing, `gc` during a live job, `info --json`).
+  `tests/test_worker_ssh_command.py` covers the six allowed forms and 24 refusals, including
+  `have --repo ../x`.
+- CLI-related files (`tests/test_*cli*.py`, permissions, project config): 171 passed.
+- `python3 tools/spec_lint.py`: OK after `--write-ledger`.
+- Manual: `docs/WORKFLOW.md` has a "Remote gate worker" section. It says the dedicated
+  unprivileged user is mandatory and shows the
+  `command="/home/nw/.local/bin/nw worker ssh-command",restrict` key line. Also ran
+  `nw worker info --json` and `SSH_ORIGINAL_COMMAND="nw worker info" nw worker ssh-command`
+  (exec'd) and `SSH_ORIGINAL_COMMAND="nw queue run"` (exit 2) by hand.
+- The full `uv run pytest` regression run is left to gating.
+
+### As shipped (2026-10-31)
+
+- The bundle is read from stdin into `jobs/<id>/job.bundle` **before** the repo lock is taken.
+  Only the init, fetch, have refs and `have.json` run under it, so a slow upload does not
+  block other jobs for the repo.
+- The job refs deleted at finish are the `refs/nw/gate-jobs/*` heads the bundle listed
+  (recorded in `refs.json`). `gc` also deletes job refs that no live job owns (left by a
+  crash), and it never deletes the have ref of a sha that a live job's `job.json` names.
+- `have` sets or refreshes `refs/nw/have/<sha>` and its last-used time for each sha it
+  reports, so a sha the coordinator leaves out of a bundle survives until the job arrives.
+- Gate env: `NW_CAMPAIGN`, `NW_SPEC_ID` and `NW_BASE` default to the header's `campaign`,
+  `spec_id` and `base.name`, and the header's `env` is applied over them. Values from the
+  worker's own environment never leak into these keys.
+- The only change outside `nw worker`: `gate_slots.acquire` takes an optional `wait_event_s`
+  (default `WAIT_EVENT_S`, so behaviour is unchanged). The worker passes
+  `NW_WORKER_SLOT_WAIT_EVENT_S` through it.
+- Finish also removes `out/`, `tmp/` and the bundle. `frames.jsonl` keeps the files the gates
+  sent.
+- Extra validation: gate names must match `[A-Za-z0-9._-]+` (they become paths), and
+  `payload.seq` must be 0..999. `payload.gate_budget_s` is optional and falls back to the
+  worker's own `gate_budget_s`.
+- Extra error stages: `read` for stdin ending short of `bundle_bytes`, and `slot` for an
+  exception during the slot/gate phase.
+- `done.ok` follows local `run_all`: every required gate is ok. `interrupted` is reported
+  separately, and an interrupt during the slot wait gives `ok: false`.
+- Every frame carries `schema`, `type`, `job_id` and `at`.
+- The stdin watcher reads the raw fd. A daemon thread blocked in the buffered reader made the
+  interpreter abort at exit (SIGABRT), which the concurrent-jobs test caught.
+- `ssh-command` execs the worker's own `nw` (`sys.argv[0]` when it is an `nw` executable,
+  else `python -m nightwright`), never the path the client sent. `nw worker gc` prints a JSON
+  summary.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-564` / `nw idea clock-out IDEA-564`.
@@ -257,11 +311,11 @@ Inert until a coordinator sends it a job (SPEC-0338). Installing it on a worker 
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`).
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

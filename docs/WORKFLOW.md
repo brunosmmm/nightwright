@@ -216,3 +216,38 @@ Fish/bash/zsh scripts are **live** (SPEC-0022) — new subcommands show up witho
 completion files. New closed-set options/arguments still need `shell_complete=…` in
 `cli.py` (e.g. idea `selector` → `complete_idea_id`). See README “Shell completion” and
 `REQUIRED_SHELL_COMPLETE_NAMES` in `src/nightwright/completion.py` (enforced by pytest, SPEC-0039).
+
+## Remote gate worker
+
+A second machine can run gates for the queue over SSH (SPEC-0310). The worker side is
+`nw worker` (SPEC-0336): `gate-job` reads one job (a `nw.job.v1` header line and a git bundle)
+on stdin, runs the gate commands it was sent in a throwaway clone, and streams
+`nw.job.frame.v1` frames back. `info`, `have` and `gc` answer the coordinator and keep the
+worker's object cache bounded.
+
+**Threat model.** A gate is a command, so the worker's SSH key is equivalent to **shell access
+as the worker user**. The forced command limits the SSH surface to `nw worker` subcommands; it
+does not limit what a gate can do.
+
+Setup on the worker (all of it is mandatory):
+
+1. **A dedicated, unprivileged user** (e.g. `nw`) with no sudo, no group memberships that
+   grant access to other users' data, and nothing in its home but nightwright and the job
+   store. Never use your own account.
+2. As that user: `uv tool install <path or git URL of nightwright>` (puts `nw` at
+   `~/.local/bin/nw`), then check `nw worker info --json`.
+3. In that user's `~/.ssh/authorized_keys`, one line per coordinator key, with the
+   **absolute** path to `nw`:
+
+   ```
+   command="/home/nw/.local/bin/nw worker ssh-command",restrict ssh-ed25519 AAAA... coordinator
+   ```
+
+   `restrict` disables port, agent and X11 forwarding and the pty. `nw worker ssh-command`
+   reads `SSH_ORIGINAL_COMMAND` and execs only `nw worker info [--json]`,
+   `have --repo <key> <sha>...`, `gate-job` and `gc [--keep-days <n>]`; anything else exits 2
+   with `refused: <reason>` and runs nothing.
+
+The job store lives under `<data_dir>/agentic/worker/` (`repos/` object caches, `jobs/`).
+Each job runs `gc` (default `--keep-days 2`) when it ends; `nw worker gc --keep-days 0`
+empties everything no live job uses.

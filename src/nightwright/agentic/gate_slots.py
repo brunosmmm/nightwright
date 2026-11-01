@@ -159,13 +159,16 @@ def _drop_marker(marker: Path) -> None:
 
 
 @contextmanager
-def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None) -> Iterator[SlotHold]:
+def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
+            wait_event_s=None) -> Iterator[SlotHold]:
     """Hold one slot for the `with` body. While none is free, poll every `poll_s` with the
     waiter marker published; a stop (`stop` set, or the gates' sticky stop) ends the wait and
     yields a hold with `interrupted=True` and no slot. `on_wait(occupancy, waited_s)` is
-    called once when the wait passes `WAIT_EVENT_S`."""
+    called once when the wait passes `wait_event_s` (default `WAIT_EVENT_S`; SPEC-0336's worker
+    reads it from its environment)."""
     from . import gates as G                    # lazy: gates imports this module
     poll_s = POLL_S if poll_s is None else poll_s
+    wait_event_s = WAIT_EVENT_S if wait_event_s is None else wait_event_s
     slots_dir(cfg).mkdir(parents=True, exist_ok=True)
     n_slots = settings(cfg)["slots"]
     t0 = time.monotonic()
@@ -180,7 +183,7 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None) -> Iterat
                 if G._stop_requested(stop):
                     break
                 waited = time.monotonic() - t0
-                if on_wait is not None and not announced and waited > WAIT_EVENT_S:
+                if on_wait is not None and not announced and waited > wait_event_s:
                     announced = True
                     try:
                         on_wait(occupancy(cfg), round(waited, 1))
