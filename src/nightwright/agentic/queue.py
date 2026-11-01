@@ -820,17 +820,43 @@ def backlog_readiness(cfg, state: dict) -> tuple[bool, list[str]]:
     deps = fm.get("depends_on") or []
     for dep in [deps] if isinstance(deps, str) else deps:
         dep = str(dep)
+        camp = _dep_campaign(cfg, dep, state.get("project"))
+        merged = (camp or {}).get("state") == "MERGED"
         try:
-            dep_fm, _ = split_frontmatter(SP._find_spec(spec_path.parent, dep)
+            dep_fm, _ = split_frontmatter(_find_dep_spec(spec_path.parent, dep)
                                           .read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            blocked.append(f"{dep} not found")
+            if not merged:                      # SPEC-0347: the base may predate the export
+                blocked.append(f"{dep} not found")
             continue
         met, why = dependency_met(spec_path.parent, dep, dep_fm or {},
                                   {str(fm["id"])} if fm.get("id") else set())
-        if not met:
-            blocked.append(f"waiting on {dep} ({why})")
+        if met or merged:                       # SPEC-0347: a merged PR the base lacks yet
+            continue
+        if (camp or {}).get("state") == "HANDED_OFF":
+            why += f"; PR open, campaign {camp.get('id')} handed off"
+        blocked.append(f"waiting on {dep} ({why})")
     return not blocked, blocked
+
+
+def _find_dep_spec(specs_dir, dep) -> Path:
+    """SPEC-0347: the spec file for dependency `dep` under `specs_dir`. Exported outbound specs
+    are filed as `PROJ-NNNN-slug.md` (next to a `.contract.md` sidecar, never the spec), so the
+    exact id prefix wins; else `specs._find_spec`'s `NNNN-*.md`. Raises ValueError."""
+    exact = [p for p in sorted(Path(specs_dir).glob(f"{dep}-*.md"))
+             if not p.name.endswith(".contract.md")]
+    return exact[0] if exact else SP._find_spec(specs_dir, dep)
+
+
+def _dep_campaign(cfg, dep, project) -> dict | None:
+    """SPEC-0347: the newest campaign (terminal included) of the outbound dependency `dep` in
+    `project`, or None (internal ids: their merge fast-forwards the base, so the file is the
+    truth there). An outbound PR merges remotely and the human's checkout may lag, so a `MERGED`
+    campaign counts as done; `HANDED_OFF` (PR open) does not."""
+    if not SP._is_outbound_spec_id(dep) or not (cfg or {}).get("data_dir"):
+        return None
+    hits = store.list_campaigns(cfg, include_terminal=True, project=project, spec_id=dep)
+    return hits[0] if hits else None
 
 
 def dependency_met(specs_dir, dep_id, dep_fm, seen) -> tuple[bool, str]:
@@ -6509,12 +6535,15 @@ def _dangling(cfg, spec_id, deps, in_batch, project=None) -> list[str]:
         if same and dep in in_batch:
             continue
         try:
-            fm, _ = split_frontmatter(SP._find_spec(spec_dir, dep).read_text(encoding="utf-8"))
+            fm, _ = split_frontmatter(_find_dep_spec(spec_dir, dep).read_text(encoding="utf-8"))
             status = str((fm or {}).get("status") or "")
         except (OSError, ValueError):
             status = None
         if status in DEPENDENCY_SATISFIED or (same and store.active_campaign_for_spec(
                 cfg, dep, _dep_project(spec_id, dep, project))):
+            continue
+        if same and (_dep_campaign(cfg, dep, project) or {}).get("state") in (
+                "HANDED_OFF", "MERGED"):            # SPEC-0347: resolves when its PR merges
             continue
         out.append(f"{dep} not found" if status is None
                    else f"{dep} is {status or 'without status'} and not queued")

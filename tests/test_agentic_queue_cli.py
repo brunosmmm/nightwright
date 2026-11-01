@@ -1036,3 +1036,24 @@ def test_queue_run_detach_cli_wiring(tmp_path, monkeypatch):
     monkeypatch.setattr(Q, "detach_runner", refuse)
     r = run_cli(cfg, monkeypatch, args)
     assert r.exit_code == 1 and "queue held by pid 77" in r.output, r.output
+
+
+def test_dangling_outbound_prefixed_file_and_handed_off_dep(tmp_path, monkeypatch):
+    """SPEC-0347: `_dangling` reads `PROJ-NNNN-slug.md` and skips a handed-off dependency."""
+    repo, cfg = _cfg(tmp_path)
+    target = tmp_path / "target" / "docs" / "specs"
+    target.mkdir(parents=True)
+    (target / "ACME-0002-x.md").write_text(
+        "---\nid: ACME-0002\nstatus: accepted\ndepends_on: [ACME-0003, ACME-0004]\n---\n")
+    (target / "ACME-0003-y.md").write_text("---\nid: ACME-0003\nstatus: accepted\n---\n")
+    (target / "ACME-0004-z.md").write_text("---\nid: ACME-0004\nstatus: draft\n---\n")
+    outbox = tmp_path / "data" / "outbox" / "Acme"
+    outbox.mkdir(parents=True)
+    (outbox / "ACME-0002-x.md").write_text(
+        f"---\nid: ACME-0002\nstatus: accepted\n"
+        f"target_spec_path: {target / 'ACME-0002-x.md'}\n---\n")
+    cfg["outbox_dir"] = str(tmp_path / "data" / "outbox")
+    S.create_campaign(cfg, {"id": "ACME-0003-c1", "spec_id": "ACME-0003", "project": "Acme",
+                            "state": "HANDED_OFF", "created_at": "2026-11-01T00:00:00"})
+    assert Q._dangling(cfg, "ACME-0002", ["ACME-0003", "ACME-0004"], {"ACME-0002"}) == [
+        "ACME-0004 is draft and not queued"]

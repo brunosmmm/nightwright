@@ -2468,3 +2468,38 @@ def test_e2e_gate_timeout_regates_then_parks_and_resume_regates(tmp_path, monkey
     assert st["state"] == "PARKED" and st["park"]["reason"] == "gate_timeout"
     assert st["counters"]["loops"] == 0
     assert [e["type"] for e in S.read_ledger(cfg, cid)].count("gate") == 6
+
+
+def test_backlog_readiness_outbound_dependency(tmp_path):
+    """SPEC-0347: an outbound `PROJ-NNNN` dependency resolves to its `PROJ-NNNN-slug.md` file
+    (not the `.contract.md` sidecar); `HANDED_OFF` blocks, `MERGED` or `done` admits."""
+    root = tmp_path / "target"
+    d = root / "docs" / "specs"
+    d.mkdir(parents=True)
+    (d / "ACME-0002-x.md").write_text(
+        "---\nid: ACME-0002\nstatus: accepted\ndepends_on: [ACME-0003, ACME-0099]\n---\n")
+    dep = d / "ACME-0003-y.md"
+    dep.write_text("---\nid: ACME-0003\nstatus: accepted\n---\n")
+    (d / "ACME-0003-y.contract.md").write_text("---\nstatus: done\n---\n")   # never the spec
+    cfg = {"data_dir": str(tmp_path / "data")}
+    st = _q("ACME-0002-x", project="acme", repo={"root": str(root)},
+            spec={"rel_path": "docs/specs/ACME-0002-x.md"})
+    assert Q.backlog_readiness(cfg, st) == (
+        False, ["waiting on ACME-0003 (accepted)", "ACME-0099 not found"])
+    S.create_campaign(cfg, {"id": "ACME-0003-c1", "spec_id": "ACME-0003", "project": "acme",
+                            "state": "HANDED_OFF", "created_at": "2026-11-01T00:00:00"})
+    S.create_campaign(cfg, {"id": "ACME-0003-o", "spec_id": "ACME-0003", "project": "other",
+                            "state": "MERGED", "created_at": "2026-11-02T00:00:00"})
+    assert Q.backlog_readiness(cfg, st) == (False, [
+        "waiting on ACME-0003 (accepted; PR open, campaign ACME-0003-c1 handed off)",
+        "ACME-0099 not found"])
+    S.create_campaign(cfg, {"id": "ACME-0099-c1", "spec_id": "ACME-0099", "project": "acme",
+                            "state": "MERGED", "created_at": "2026-11-01T00:00:00"})
+    st2 = S.read_state(cfg, "ACME-0003-c1")
+    st2["state"] = "MERGED"                                    # its PR merged; the base lags
+    S.write_state(cfg, "ACME-0003-c1", st2)
+    assert Q.backlog_readiness(cfg, st) == (True, [])
+    dep.write_text("---\nid: ACME-0003\nstatus: done\n---\n")
+    assert Q.backlog_readiness({}, _q("ACME-0002-x", repo={"root": str(root)},
+                                      spec={"rel_path": "docs/specs/ACME-0002-x.md"})) == (
+        False, ["ACME-0099 not found"])                         # no campaigns: the file decides
