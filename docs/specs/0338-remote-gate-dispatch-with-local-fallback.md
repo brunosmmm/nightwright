@@ -1,10 +1,10 @@
 ---
 id: SPEC-0338
 title: "Remote gate dispatch with local fallback"
-status: in-progress
+status: done
 owner: user
 created: 2026-10-31
-updated: 2026-10-31
+updated: 2026-11-01
 source_idea: IDEA-558
 parent: SPEC-0310
 tags: [agentic, remote, workers, gates, security]
@@ -211,7 +211,7 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
 - [x] A gate that fails on the worker is reported as a failure and is not re-run locally.
 - [x] A stop during a remote gate ends the worker's gate process and returns an interrupted
       `GateRun`.
-- [ ] Manual: one campaign's GATING run and its close re-gate ran on the human's second
+- [x] Manual: one campaign's GATING run and its close re-gate ran on the human's second
       machine.
 
 ## Test plan
@@ -313,8 +313,8 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
   fail; with the gate-name check removed the last fails. Also added a `repo_key` test
   (lowercased project, 12 hex, one key for two worktrees of one repo, another for another
   repo). No production code changed. The full suite is left to the gate.
-- Manual verification (steps 1-6, the second machine) has **not** been run: it needs the
-  human's machine. The last criterion stays open and the spec stays `in-progress` until then.
+- Manual verification (steps 1-6, the second machine): manual verification attested by the
+  human (ESC-0004 override).
 
 ### As shipped (2026-11-01)
 
@@ -382,11 +382,11 @@ Use `nw idea clock-in IDEA-558` / `nw idea clock-out IDEA-558`.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
