@@ -427,11 +427,15 @@ def test_cancel_a_running_job_then_cancel_a_done_one(src, tmp_path, wenv):
     h, data = _bundle_job(src, tmp_path, [_sleeper(pidfile)])
     assert _submit(wenv, h, data).returncode == 0
     pid = _sleep_pid(pidfile)
+    job_pid = _proc(wenv, h["job_id"])["pid"]
     r = LB.run(wenv, f"nw worker cancel {h['job_id']}")
     assert r.returncode == 0 and _recs(r)[-1]["cancel"] == "requested"
     res = _result(wenv, h["job_id"])
     assert res["state"] == "done" and res["frame"]["interrupted"] is True
     assert until(lambda: not _alive(pid))
+    # the job process itself ends too, and with it its hold on job.lock
+    assert until(lambda: not _alive(job_pid))
+    assert WJ._lock_held(_job_dir(wenv, h["job_id"])) is False
     again = LB.run(wenv, f"nw worker cancel {h['job_id']}")
     assert again.returncode == 0 and _recs(again)[-1]["state"] == "done"
 
@@ -914,3 +918,127 @@ def test_the_reader_skips_frames_below_the_cursor_without_parsing_them(tmp_path,
     assert real(line)["n"] == 4 and r.final == "done" and len(parsed) == 1
     r0 = WJ._Reader(path, 0)
     assert [real(ln)["n"] for ln in r0.read()] == [1, 2, 3, 4]
+
+
+# ---- review round 4: drained resubmits, a dead leader's group, the job's own final state, ---
+# ---- torn frame appends -----------------------------------------------------------------
+
+def test_a_resubmit_takes_the_whole_upload_before_it_answers(src, wenv):
+    big = 4 << 20                                           # far over a pipe's buffer
+    h = _header("j-drain", src.head, src.base, [_gate("x", "true")], bundle_bytes=big)
+    _async_dir(wenv, "j-drain", header_digest=WJ.header_digest(h), spawned_ts=time.time())
+    for hdr, rc, type_ in ((h, 0, "status"), ({**h, "attempt": 1}, 3, "error")):
+        p = LB.start(wenv, "nw worker submit")
+        # header + bundle in full before stdout is read, as a plain client writes them
+        p.stdin.write((json.dumps(hdr) + "\n").encode() + b"\0" * big)    # no EPIPE
+        p.stdin.close()
+        out = p.stdout.read()
+        assert p.wait(timeout=WAIT_S) == rc, p.stderr.read()
+        p.stdout.close()
+        p.stderr.close()
+        (rec,) = [json.loads(ln) for ln in out.splitlines()]
+        assert rec["type"] == type_
+    assert not (_job_dir(wenv, "j-drain") / "bundle").exists()     # nothing new was spooled
+
+
+def _orphaned_group():
+    """A process group whose leader has exited and whose child (`sleep`) lives on, as when
+    the job process is OOM-killed during its checkout's `git fetch`."""
+    import subprocess
+    import sys
+
+    from nightwright.agentic import runproc
+    leader = subprocess.Popen(
+        [sys.executable, "-c", "import subprocess, sys\n"
+         "c = subprocess.Popen(['sleep', '600'])\n"
+         "print(c.pid, flush=True); sys.stdin.read()"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
+    child = int(leader.stdout.readline())
+    rec = {"pid": leader.pid, "pgid": leader.pid, "start_ticks": runproc.start_ticks(leader.pid),
+           "started_ts": time.time(), "gates": []}
+    leader.stdin.close()                                    # the leader exits ...
+    leader.wait(timeout=WAIT_S)
+    leader.stdout.close()
+    assert _alive(child)                                    # ... and its child does not
+    return rec, child
+
+
+@pytest.mark.parametrize("own", ["running", "done"])
+def test_reap_ends_a_dead_leaders_surviving_group(wenv, monkeypatch, own):
+    monkeypatch.setenv(WJ.KILL_GRACE_ENV, "0.5")
+    rec, child = _orphaned_group()
+    try:
+        d = _async_dir(wenv, f"j-orphan-{own}", state=own, spawned_ts=time.time())
+        (d / "proc.json").write_text(json.dumps(rec))
+        # the group still runs: the job is lost (gc would reap it), whatever job.json says
+        assert _state_in_process(wenv, d.name)["state"] == "lost"
+        out = io.BytesIO()
+        assert WJ.cancel(_cfg(wenv), d.name, out) == 0
+        assert json.loads(out.getvalue().splitlines()[-1])["reaped"] is True
+        assert until(lambda: not _alive(child))
+        # a job that wrote its own final job.json before it died keeps that state
+        want = "done" if own == "done" else "lost"
+        assert _read(d / "result.json")["state"] == want
+        assert _read(d / "job.json")["state"] == want
+        assert _state_in_process(wenv, d.name)["state"] == want
+    finally:
+        if _alive(child):
+            os.kill(child, signal.SIGKILL)
+
+
+def test_a_job_that_died_after_its_final_job_json_reads_done(wenv):
+    import subprocess
+
+    from nightwright.agentic import runproc
+    gone = subprocess.Popen(["true"], start_new_session=True)
+    ticks = runproc.start_ticks(gone.pid)
+    gone.wait(timeout=WAIT_S)
+    d = _async_dir(wenv, "j-cleanup-died", state="done", spawned_ts=time.time())
+    (d / "proc.json").write_text(json.dumps({"pid": gone.pid, "pgid": gone.pid,
+                                             "start_ticks": ticks or 1,
+                                             "started_ts": time.time(), "gates": []}))
+    # its pid is dead, nothing of its group is left and job.json says done: no result.json,
+    # but every reader agrees with frames.jsonl's final `done`
+    assert _poll(wenv, "j-cleanup-died")[-1]["state"] == "done"
+    assert _nw_jobs(wenv)["j-cleanup-died"]["state"] == "done"
+    r = LB.run(wenv, "nw worker cancel j-cleanup-died")
+    assert r.returncode == 0 and _recs(r)[-1]["state"] == "done"
+    assert _read(d / "job.json")["state"] == "done"
+    assert "jobs_reaped" not in W.gc(_cfg(wenv), keep_days=30)
+
+
+@pytest.mark.parametrize("cut_fails", [False, True])
+def test_a_failed_frame_append_never_tears_the_next_frame(tmp_path, monkeypatch, cut_fails):
+    import errno
+    log = tmp_path / "frames.jsonl"
+    frames = W._Frames("j", io.BytesIO())
+    frames.log = log
+    frames.emit("accepted")
+    real_write, fail = os.write, []
+
+    def short_then_enospc(fd, data):                        # the disk fills mid-frame
+        if fail:
+            fail.clear()
+            real_write(fd, bytes(data[:len(data) // 2]))
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write(fd, data)
+
+    monkeypatch.setattr(W.os, "write", short_then_enospc)
+    if cut_fails:
+        def no_truncate(fd, size):
+            raise OSError(errno.EIO, "I/O error")
+        monkeypatch.setattr(W.os, "ftruncate", no_truncate)
+    fail.append(True)
+    frames.emit("gate", blob="x" * 100_000)
+    frames.emit("done", ok=True)
+    monkeypatch.undo()
+    got = [json.loads(ln) for ln in WJ._Reader(log, 0).read()]
+    # the torn frame is gone (or a skipped line of its own); `done` arrives whole
+    assert [f["type"] for f in got] == ["accepted", "done"]
+    # a cut-off frame's `n` is reused (no gap); a torn one's never is (no repeat)
+    assert [f["n"] for f in got] == ([1, 3] if cut_fails else [1, 2])
+    assert WJ._last_n(log.parent) == got[-1]["n"]
+    sent = [json.loads(ln) for ln in frames.stream.getvalue().splitlines()]
+    assert [f["type"] for f in sent] == ["accepted", "gate", "done"]
+    # stdout's copy: unnumbered when cut off (its `n` went to `done`), else its own `n`
+    assert sent[1].get("n") == (2 if cut_fails else None)

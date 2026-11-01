@@ -193,10 +193,21 @@ def _live_state(job: Path, sett: dict, now: float) -> tuple[str, float | None]:
             return "accepted", None
         return "lost", None
     if not _pid_alive(proc):
+        own = (runproc.read_json(job / "job.json") or {}).get("state")
+        if own in ("done", "error") and not runproc.group_alive(_leader(proc)):
+            # it died after its final job.json (in its cleanup), with nothing of it left
+            # running: its own final state stands (and `frames.jsonl` ends in that frame)
+            return own, age
         return "lost", age
     if age is not None and age > lost_after:     # alive but no heartbeat: hung
         return "lost", age
     return "running", age
+
+
+def _leader(rec: dict) -> dict:
+    """A job process's own group (`proc.json` / `spawn.json`), as the kill path signals it."""
+    return {"pid": rec.get("pid"), "pgid": rec.get("pgid") or rec.get("pid"),
+            "start_ticks": rec.get("start_ticks")}
 
 
 def job_state(cfg, job: Path, sett: dict | None = None, locked: bool = False) -> dict:
@@ -446,9 +457,11 @@ def reap(cfg, job: Path) -> bool:
     spawn = runproc.read_json(job / "spawn.json") or {}
     grace = _kill_grace_s()
     for leader in (proc, spawn):
-        if leader.get("pid") and _pid_alive(leader):
-            _kill_group({"pid": leader["pid"], "pgid": leader.get("pgid") or leader["pid"],
-                         "start_ticks": leader.get("start_ticks")}, grace, cont=True)
+        # even when the leader is dead: a child left in its group (a `git` of the checkout)
+        # is ended too. `group_alive` checks the leader's start ticks while its pid exists,
+        # and a pgid still in use is never handed out as a new pid, so no other group is hit
+        if leader.get("pid"):
+            _kill_group(_leader(leader), grace, cont=True)
     for gate in proc.get("gates") or []:
         if isinstance(gate, dict):
             _kill_group(gate, grace)
@@ -462,9 +475,14 @@ def reap(cfg, job: Path) -> bool:
     try:
         with W.jobs_lock(cfg):
             if job.is_dir() and not (job / "result.json").exists():
-                _write_atomic(job / "result.json", {"state": "lost", "frame": None,
-                                                    "reaped_at": now_iso()})
-                _set_job_json(job, state="lost", finished_at=now_iso())
+                own = (runproc.read_json(job / "job.json") or {}).get("state")
+                if own in ("done", "error"):    # it died after its final job.json: keep it
+                    _write_atomic(job / "result.json", {"state": own, "frame": None,
+                                                        "reaped_at": now_iso()})
+                else:
+                    _write_atomic(job / "result.json", {"state": "lost", "frame": None,
+                                                        "reaped_at": now_iso()})
+                    _set_job_json(job, state="lost", finished_at=now_iso())
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
@@ -500,6 +518,22 @@ def _unclaim(cfg, job, frames, stage, error) -> int:
     except OSError as e:
         print(f"nw worker: could not remove {job}: {e}", file=sys.stderr)
     return W.EXIT_ERROR
+
+
+def _drain(stdin, n: int) -> None:
+    """Read and drop up to `n` bytes of bundle (until EOF) that no job will use. A submit
+    that answers from the header alone (an idempotent or refused resubmit) still takes the
+    client's whole upload, so a client that writes header + bundle before it reads stdout
+    never sees its write fail (EPIPE) on a channel the worker closed early."""
+    left = n
+    try:
+        while left > 0:
+            chunk = stdin.read(min(left, 1 << 20))
+            if not chunk:
+                return
+            left -= len(chunk)
+    except (OSError, ValueError):
+        return
 
 
 def _spawn(cfg, job: Path, lock_fd: int) -> subprocess.Popen:
@@ -566,6 +600,7 @@ def submit(cfg, stdin, stdout) -> int:
             _write_atomic(job / "job.json", job_rec)
             _write_atomic(job / "header.json", h)
     if existing is not None:                    # read outside jobs_lock: claims never wait
+        _drain(stdin, h["bundle_bytes"])        # the client's upload, so it never hits EPIPE
         if existing.get("header_digest") == digest:     # idempotent: nothing new starts
             _print(stdout, _status(h["job_id"], st["state"], n=_last_n(job),
                                    heartbeat_age_s=st["heartbeat_age_s"]))

@@ -315,6 +315,7 @@ class _Frames:
         self.sent: set[str] = set()
         self.n = 0                              # SPEC-0340: the last `n` written to the log
         self.last: dict | None = None
+        self._torn = False                      # the log may end in a torn, unterminated line
 
     def emit(self, type_, **payload) -> None:
         rec = {"schema": FRAME_SCHEMA, "type": type_, "job_id": self.job_id, "at": now_iso(),
@@ -325,12 +326,10 @@ class _Frames:
         self.last = rec
         line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
         self.sent.add(type_)
-        if self.log is not None:
-            try:
-                with open(self.log, "ab") as f:
-                    f.write(line)
-            except OSError:
-                pass
+        if self.log is not None and self._append(line) is False:
+            self.n -= 1                         # not in the log: the next frame reuses `n`
+            rec.pop("n", None)
+            line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
         if self.closed:
             return
         try:
@@ -346,6 +345,34 @@ class _Frames:
                 self._write_fd(fd, line)
         except (OSError, ValueError):
             self.closed = True
+
+    def _append(self, line: bytes) -> bool | None:
+        """Append one frame line to the log. True when it is there; False when it is not (a
+        failed write, a disk filling up mid-frame, is cut back off, so a torn line never
+        swallows the next frame); None when the cut failed too. The next append then starts
+        on a fresh line, so the torn piece is a line of its own (readers skip it), and its
+        `n` is not reused: a gap, never a repeat."""
+        try:
+            fd = os.open(self.log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        except OSError:
+            return False
+        try:
+            pos = os.lseek(fd, 0, os.SEEK_END)
+            view = memoryview((b"\n" if self._torn else b"") + line)
+            try:
+                while view:
+                    view = view[os.write(fd, view):]
+            except OSError:
+                try:
+                    os.ftruncate(fd, pos)
+                except OSError:
+                    self._torn = True
+                    return None
+                return False
+            self._torn = False
+            return True
+        finally:
+            os.close(fd)
 
     def _write_fd(self, fd: int, data: bytes) -> None:
         view, last = memoryview(data), time.monotonic()

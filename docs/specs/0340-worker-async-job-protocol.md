@@ -510,6 +510,53 @@ A `running` job holds `job.lock`, so `gc --keep-days 0` never removes it.
   as they are read, so at most one frame is held at a time.
 - Gate groups are still recorded on the 0.25 s watch tick (see round 1).
 
+### Test record (2026-11-01, review round 4)
+
+- `tests/test_worker_jobs.py` now has 77 tests. New or tightened for the review findings:
+  - cancel on a running job also waits for the job process (`proc.json` pid) to exit and
+    checks that `job.lock` is then free;
+  - a resubmit of a job whose header announces a 4 MiB bundle, written in full (header and
+    bundle) before stdout is read, as a plain client does: the idempotent one exits 0 and the
+    refused one exits 3, and neither write fails with EPIPE. Nothing new is spooled;
+  - a job process whose leader has exited while a child in its group lives on (a stand-in
+    for a `git fetch` left behind by an OOM kill): the job reads `lost`, `cancel` ends the
+    child and records the result (parametrized on `job.json` `running` and `done`);
+  - a job that wrote its own `done` in `job.json` and then died, with nothing of its group
+    left: `poll`, `jobs` and `cancel` all read `done`, and gc does not reap it. When it is
+    reaped (its group was still alive, or it hung), `result.json` and `job.json` keep `done`;
+  - a frame append that fails halfway (ENOSPC after a short write) is cut back off: the next
+    frame reuses its `n` and arrives whole. When the cut fails too, the next frame starts on a
+    fresh line and keeps its own `n` (a gap, never a repeat). The reader sees `accepted`,
+    `done` in both cases.
+- Affected tests (`affected_tests.py` plus `test_agentic_dogfood_config.py`,
+  `test_agentic_project.py` and `test_test_waits.py`, `-n 4`): 300 passed. `spec_lint`
+  passes. The full suite was left to gating.
+
+### As shipped (2026-11-01, review round 4)
+
+- **A resubmit drains the bundle.** An idempotent or refused `submit` reads and drops the
+  header's `bundle_bytes` (up to EOF) before it answers. A client that writes header and
+  bundle before reading stdout therefore never sees its write fail on a channel the worker
+  closed early.
+- **The kill path signals a dead leader's group.** `reap` no longer requires the
+  `proc.json` / `spawn.json` leader to be alive. `runproc.group_alive` still checks the
+  leader's start ticks while its pid exists, and a pgid that is still in use is never handed
+  out as a new pid, so a surviving child of the job process (a `git` of its checkout) is
+  ended. A recycled pid is still never signalled.
+- **A job's own final state is kept.** One addition to the Job states: a job whose pid is
+  dead, whose `job.json` already says `done` or `error` (written by the job process just
+  before its `result.json`) and whose process group has nothing left running reads as that
+  state, not `lost`. If the group still runs, or the process is alive but hung, it reads
+  `lost` as before, so gc and `cancel` still end it. When the kill path then records the
+  result, `result.json` takes the job's own `done`/`error` (with `frame: null`) and
+  `job.json` is left as it is. Only a job with no final state of its own is recorded `lost`.
+- **A failed frame append is never torn.** `_Frames` appends each line with `os.write`
+  (handling short writes). When the write fails, the bytes already written are truncated
+  away and `n` is rolled back, so the next frame reuses it. When the truncation fails too,
+  the next frame starts with a newline, which keeps the torn piece on a line of its own (it
+  is skipped), and `n` is not rolled back. The stdout copy of a cut-off frame (gate-job)
+  carries no `n`.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
