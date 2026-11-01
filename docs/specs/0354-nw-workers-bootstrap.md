@@ -548,6 +548,34 @@ dir>/nw`.
   shell (`sudo -i`) prints first cannot hide uid 0. A last line that is not a number is
   refused on the `key` row (`could not read the worker account's uid`).
 
+### Test record (2026-11-01, review round 6)
+
+- `tests/test_workers_bootstrap.py`: `test_failed_check_closes_the_master` now also asserts
+  that a check failing only on missing git (probe refused) and one failing with ssh exit 255
+  send no `-O exit`, while the unrestricted probe still sends exactly one. New
+  `test_failed_probe_keeps_the_master` (`timeout`, `exit255`: a probe that times out or whose
+  mux session is refused fails the check with no `-O exit`). New
+  `test_admin_unreachable_is_not_a_password` (ssh 255 to ADMIN gives `could not reach ADMIN
+  (exit 255): ...`, not the sudo-password message, and nothing else runs). With the old
+  `workers.py` restored, all three `master` cases failed.
+- `uv run pytest -q -n 4 tests/test_workers_bootstrap.py tests/test_workers_registry.py
+  tests/test_remote_gates.py`: 201 passed.
+- `python3 tools/spec_lint.py`: OK. The full suite is left to the gate's close run.
+
+### As shipped (2026-11-01, review round 6)
+
+- `WK.check` closes an `identity` record's ControlMaster only when the forced-command probe
+  ran an unrestricted command (exit 0). `_forced_probe` returns `(error, unbound)`. Any other
+  failure (ssh timeout or 255, unreadable `info`, protocol, missing git, a probe that timed
+  out or was refused at the mux) leaves the master up, since gate jobs multiplex on it and
+  `-O exit` would end them. This replaces round 3's "any failed check closes the master".
+  The probe still runs after other errors once `info` gave JSON.
+- `step_admin`: an exit 255 from `ssh ADMIN sudo -n true` fails with `could not reach ADMIN
+  (exit 255): <stderr>` instead of the sudo-password message.
+- Not changed: step 3 still compares the existing forced line exactly, as Design says ("not
+  exactly the built line"), so a forced line whose only difference is the key comment is
+  refused. Remove the old line by hand in that case.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.

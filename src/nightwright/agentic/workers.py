@@ -245,47 +245,48 @@ def check(cfg, rec: dict) -> dict:
     included), a protocol other than `nw.job.v1` or no `git`; a version or sha different from
     this checkout's is a warning (the gate runs the campaign tree's code, not the worker's).
     A record with an `identity` must also be bound to the forced command (`_forced_probe`);
-    when its check fails, the ControlMaster it may have opened is closed (`_close_master`)."""
+    when the probe proves it is not (an unrestricted command ran), the ControlMaster that
+    session rode is closed (`_close_master`). Any other failure leaves the master alone:
+    gate jobs multiplex on it, and `-O exit` would end every one in flight."""
     w = normalize(cfg, rec)
     out = {"name": w["name"], "ok": False, "errors": [], "warnings": [], "info": None}
-    _check(cfg, w, out)
-    out["ok"] = not out["errors"]
-    if identity_ok(w.get("identity")) and not out["ok"]:
-        # whatever key authenticated a failed check (an ssh_config IdentityFile fallback, an
-        # unrestricted line), later connections (the next check, gate jobs) must not
-        # multiplex onto its master
+    if _check(cfg, w, out):
+        # the key that authenticated (an ssh_config IdentityFile fallback, an unrestricted
+        # line) is not the forced one: later connections must not multiplex onto its master
         _close_master(w)
+    out["ok"] = not out["errors"]
     return out
 
 
-def _check(cfg, w: dict, out: dict) -> None:
+def _check(cfg, w: dict, out: dict) -> bool:
+    """Fill `out`; True only when the forced-command probe ran an unrestricted command."""
     from . import worker as W
     try:
         ensure_record_ssh_dir(cfg, w)
     except OSError as e:
         out["errors"].append(f"ssh socket directory unusable: {e}")
-        return
+        return False
     argv = w["ssh_argv"] + [w["ssh"], w["nw"], "worker", "info", "--json"]
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=CHECK_TIMEOUT_S,
                            stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         out["errors"].append(f"ssh timed out after {CHECK_TIMEOUT_S:g}s")
-        return
+        return False
     except OSError as e:
         out["errors"].append(f"ssh failed to start: {e}")
-        return
+        return False
     if p.returncode != 0:
         tail = (p.stderr or "").strip().splitlines()[-1:] or [""]
         out["errors"].append(f"ssh failed (exit {p.returncode}): {tail[0]}".rstrip(": "))
-        return
+        return False
     try:
         info = json.loads(p.stdout)
         if not isinstance(info, dict):
             raise ValueError("not a mapping")
     except ValueError as e:
         out["errors"].append(f"`worker info --json` gave unreadable output: {e}")
-        return
+        return False
     out["info"] = info
     if info.get("protocol") != W.JOB_SCHEMA:
         out["errors"].append(f"protocol is {info.get('protocol')!r}, not {W.JOB_SCHEMA!r}")
@@ -298,35 +299,39 @@ def _check(cfg, w: dict, out: dict) -> None:
     elif info.get("git_sha") and mine.get("git_sha") and info["git_sha"] != mine["git_sha"]:
         out["warnings"].append(f"sha {str(info['git_sha'])[:12]} differs from "
                                f"the coordinator's {str(mine['git_sha'])[:12]}")
-    if identity_ok(w.get("identity")):     # even after another error: say which key ran it
-        err = _forced_probe(w)
-        if err:
-            out["errors"].append(err)
+    if not identity_ok(w.get("identity")):
+        return False
+    err, unbound = _forced_probe(w)        # even after another error: say which key ran it
+    if err:
+        out["errors"].append(err)
+    return unbound
 
 
 FORCED_PROBE = "echo nw-forced-command-probe"
 
 
-def _forced_probe(w: dict) -> str | None:
-    """Send a command the SPEC-0336 forced command must refuse; an error string unless it is
-    refused. `IdentitiesOnly` still lets ssh fall back to `IdentityFile` entries of the
-    human's ssh_config, so a working `info` alone does not prove the dedicated key and its
-    forced line are what authenticated."""
+def _forced_probe(w: dict) -> tuple[str | None, bool]:
+    """Send a command the SPEC-0336 forced command must refuse: `(error, unbound)`. `error`
+    is None when it is refused; `unbound` is True only when the command actually ran (exit
+    0), the one outcome that proves the master is bad. `IdentitiesOnly` still lets ssh fall
+    back to `IdentityFile` entries of the human's ssh_config, so a working `info` alone does
+    not prove the dedicated key and its forced line are what authenticated."""
     try:
         p = subprocess.run(w["ssh_argv"] + [w["ssh"], FORCED_PROBE], capture_output=True,
                            text=True, timeout=CHECK_TIMEOUT_S, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        return f"forced-command probe: ssh timed out after {CHECK_TIMEOUT_S:g}s"
+        return f"forced-command probe: ssh timed out after {CHECK_TIMEOUT_S:g}s", False
     except OSError as e:
-        return f"forced-command probe: ssh failed to start: {e}"
+        return f"forced-command probe: ssh failed to start: {e}", False
     if p.returncode != 0 and "refused:" in (p.stderr or ""):
-        return None
+        return None, False
     if p.returncode == 0:
         return (f"{w['ssh']} ran an unrestricted command: the dedicated key "
                 f"{w['identity']} is not bound to the forced command (check its "
-                "authorized_keys line, and IdentityFile entries for this host in ssh_config)")
+                "authorized_keys line, and IdentityFile entries for this host in ssh_config)",
+                True)
     tail = (p.stderr or "").strip().splitlines()[-1:] or [""]
-    return f"forced-command probe failed (exit {p.returncode}): {tail[0]}".rstrip(": ")
+    return f"forced-command probe failed (exit {p.returncode}): {tail[0]}".rstrip(": "), False
 
 
 def _close_master(w: dict) -> None:

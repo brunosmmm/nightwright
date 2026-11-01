@@ -320,9 +320,12 @@ ControlMaster socket with a hash of the key (`%C-<tag>`), so it never rides a ma
 with another key for the same `user@host`. `IdentitiesOnly` still lets ssh fall back to
 `IdentityFile` entries for that host in your ssh_config, so `nw workers check` on an
 `identity` record also sends a command the forced command must refuse, and fails when it is
-not refused. A failed check on an `identity` record closes its ControlMaster (`ssh -O
-exit`), so no later connection rides a session some other key opened. Bootstrap's own ssh/scp sessions use `-o ControlPath=none`, so they never share
-the coordinator's ControlMaster sockets.
+not refused. When that command runs (the key is not bound to the forced command), the check
+closes the record's ControlMaster (`ssh -O exit`), so no later connection rides a session some
+other key opened. A check that fails for any other reason (a timeout, an ssh error, missing
+git) leaves the master alone, because running gate jobs share it. Bootstrap's own ssh/scp
+sessions use `-o ControlPath=none`, so they never share the coordinator's ControlMaster
+sockets.
 
 The job store lives under `<data_dir>/agentic/worker/` (`repos/` object caches, `jobs/`).
 Each job runs `gc` (default `--keep-days 2`) when it ends; `nw worker gc --keep-days 0`

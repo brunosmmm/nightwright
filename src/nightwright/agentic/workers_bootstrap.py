@@ -242,7 +242,10 @@ def _checkout_root() -> Path:
 # ---- steps ----------------------------------------------------------------------------------
 
 def step_admin(plan: Plan) -> tuple[str, str]:
-    if _run(admin_argv(plan, "sudo -n true")).returncode != 0:
+    p = _run(admin_argv(plan, "sudo -n true"))
+    if p.returncode == 255:                     # ssh itself failed: not a sudo password
+        raise StepFailed(f"could not reach {plan.admin} (exit 255): {_tail(p)}".rstrip(": "))
+    if p.returncode != 0:
         raise StepFailed("sudo on ADMIN needs a password; configure NOPASSWD for useradd "
                          "or create the user yourself")
     if _run(admin_argv(plan, f"id -u {plan.user}")).returncode == 0:

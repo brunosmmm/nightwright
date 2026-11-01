@@ -637,7 +637,8 @@ def test_check_needs_the_forced_command(world):
 
 def test_failed_check_closes_the_master(world):
     """An identity record whose check fails after `info` answered (no git here) through an
-    unrestricted line still gets the forced-command verdict, and its master is closed."""
+    unrestricted line still gets the forced-command verdict, and its master is closed. A
+    check that fails for any other reason leaves the master (and gate jobs on it) alone."""
     ok, plan = plan_run(world, install_key=False)
     assert ok
     (rec,) = WK.read_strict(world.cfg)
@@ -654,11 +655,45 @@ def test_failed_check_closes_the_master(world):
     world.clear()
     res = WK.check(world.cfg, rec)
     assert res["errors"] == ["git is missing on the worker"]
-    assert [c for c in world.calls("ssh") if "-O" in c["argv"]]   # any failed check closes it
+    assert not [c for c in world.calls("ssh") if "-O" in c["argv"]]   # probe refused: kept
+    world.set("check_fail", "1")                        # ssh 255 (e.g. MaxSessions reached)
+    world.clear()
+    res = WK.check(world.cfg, rec)
+    assert not res["ok"] and res["errors"][0].startswith("ssh failed (exit 255)")
+    assert not [c for c in world.calls("ssh") if "-O" in c["argv"]]
+    (world.state / "check_fail").unlink()
     (world.state / "nogit").unlink()
     world.clear()
     assert WK.check(world.cfg, rec)["ok"]
     assert not [c for c in world.calls("ssh") if "-O" in c["argv"]]
+
+
+@pytest.mark.parametrize("how", ["timeout", "exit255"])
+def test_failed_probe_keeps_the_master(world, monkeypatch, how):
+    """A forced-command probe that times out or cannot connect proves nothing about the
+    master: the check fails, and no `-O exit` is sent."""
+    ok, plan = plan_run(world, install_key=False)
+    assert ok
+    (rec,) = WK.read_strict(world.cfg)
+    world.ak.parent.mkdir()
+    world.ak.write_text(world.line() + "\n")
+    real = subprocess.run
+    sent = []
+
+    def run(argv, *a, **kw):
+        sent.append(argv)
+        if argv[-1] == WK.FORCED_PROBE:
+            if how == "timeout":
+                raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+            return subprocess.CompletedProcess(argv, 255, "", "mux_client_request_session: "
+                                               "session request failed\n")
+        return real(argv, *a, **kw)
+    monkeypatch.setattr(WK.subprocess, "run", run)
+    res = WK.check(world.cfg, rec)
+    assert not res["ok"] and res["info"] is not None
+    assert any(e.startswith("forced-command probe") for e in res["errors"]), res["errors"]
+    assert [a for a in sent if a[-1] == WK.FORCED_PROBE]
+    assert not [a for a in sent if "-O" in a]
 
 
 def test_registry_conflict(world):
@@ -706,6 +741,15 @@ def test_check_fails_after_install(world):
     ok, plan = plan_run(world)
     assert not ok and st(plan)["register"] == "failed" and st(plan)["key"].startswith("skipped")
     assert WK.read_strict(world.cfg) == []
+
+
+def test_admin_unreachable_is_not_a_password(world):
+    world.set("unreachable", "1")
+    res = boot(world, "box", "--ssh", "nw@box", "--admin", "ops@box", "--install-key")
+    assert res.exit_code == 1
+    assert "could not reach ops@box (exit 255): Host key verification failed." in res.output
+    assert "needs a password" not in res.output
+    assert [c["argv"][-1] for c in world.calls("ssh")] == ["sudo -n true"]
 
 
 def test_admin_password_needed(world):
