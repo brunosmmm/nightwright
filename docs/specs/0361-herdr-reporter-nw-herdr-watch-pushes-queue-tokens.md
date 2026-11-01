@@ -1,7 +1,8 @@
 ---
 id: SPEC-0361
 title: "herdr reporter: nw herdr watch pushes queue tokens and notifications"
-status: done
+status: superseded
+superseded_by: SPEC-0363
 owner: user
 created: 2026-11-01
 updated: 2026-11-01

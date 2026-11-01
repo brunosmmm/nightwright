@@ -233,8 +233,9 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker — accepted
   - [ ] [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) Remote workers integration suite for gate and persona workers — accepted
   - [ ] [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) nw workers bootstrap — accepted
-- **[SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) — Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer** · accepted · (1/1 done)
-  - [x] [SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md) herdr reporter: nw herdr watch pushes queue tokens and notifications — done
+- **[SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) — Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer** · accepted · (1/2 done)
+  - [x] [SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md) herdr reporter: nw herdr watch pushes queue tokens and notifications — superseded
+  - [ ] [SPEC-0363](./specs/0363-herdr-display-scoped-to-nw-panes-display-agent-on.md) herdr display scoped to nw panes: --display-agent on conductor/steward panes, per-role workspace tokens — accepted
 
 ## Active & planned
 
@@ -264,6 +265,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0358](./specs/0358-failed-first-loop-rounds.md) | Failed-first loop rounds: rerun the previously failing tests before the rest of a gate | feature | accepted | — | 2026-11-01 |
 | [SPEC-0359](./specs/0359-close-tier-reuse-of-a-green-loop-gate-with-a-full.md) | Close-tier reuse of a green loop gate, with a full-suite sentinel on the base branch | feature | accepted | — | 2026-11-01 |
 | [SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) | Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer | epic | accepted | — | 2026-11-01 |
+| [SPEC-0363](./specs/0363-herdr-display-scoped-to-nw-panes-display-agent-on.md) | herdr display scoped to nw panes: --display-agent on conductor/steward panes, per-role workspace tokens | feature | accepted | — | 2026-11-01 |
 
 ## Done
 
@@ -583,7 +585,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) | Per-gate path sensitivity for the close re-gate | feature | done | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0351](./specs/0351-queue-watch-fill-terminal-height.md) | queue watch: size the bottom sections to the terminal height | feature | done | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0353](./specs/0353-conductor-launch-steward-launch-allowedtools-do.md) | conductor-launch / steward-launch permission rules cover lease-pinned PR-rebase pushes and the steward rebase set | feature | done | — | 2026-11-01 |
-| [SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md) | herdr reporter: nw herdr watch pushes queue tokens and notifications | feature | done | — | 2026-11-01 |
 
 ## Superseded / rejected
 
@@ -603,6 +604,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) | Worker-owned async jobs | feature | superseded | — | 2026-11-01 |
 | [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) | Remote persona runs with bundle write-back | feature | superseded | — | 2026-11-01 |
 | [SPEC-0355](./specs/0355-faster-code-gating.md) | Faster code gating: narrow affected-test fallbacks, close reuse of a green loop gate, failed-first reruns | feature | superseded | M9: agentic workflow | 2026-11-01 |
+| [SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md) | herdr reporter: nw herdr watch pushes queue tokens and notifications | feature | superseded | — | 2026-11-01 |
 
 <!-- specs:end -->
 
