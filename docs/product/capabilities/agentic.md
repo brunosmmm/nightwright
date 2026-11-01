@@ -570,14 +570,21 @@ Default permission rules (SPEC-0353; code-held in `launch.py`, a configured `all
 - **Pushes.** `nw/*` and `wt/*` branches may be pushed as plain `git` or `git -C <dir>`, plain or
   `--force-with-lease` / `--force-with-lease=<ref>:<sha>`, refspec `<branch>` or `HEAD:<branch>`.
   Pushes to `main` / `master` in any refspec spelling, bare `--force` / `-f`, `+` refspecs, and any
-  extra refspec or flag after the branch are denied; so is `gh pr merge`.
+  extra refspec or flag after the branch are denied; so is `gh pr merge`. A `:<dst>` after a
+  namespaced ref (`nw/x:release`, `nw/x:heads/main`, a tag), a second remote or token hidden in
+  a `--force-with-lease=` value, and any `git -C <dir>` command whose ` push ` is not the
+  subcommand are denied too.
 - **Steward rebase set.** `steward_allowed_tools` (top level or `steward:`; `[]` removes it) is
   added to the allow list for stewards only: `git fetch|rebase|add|commit|restore` and
   `checkout --ours|--theirs`, plain or with `-C <dir>`. It is merged into `--allowedTools`.
 - **Steward guard.** Explicit denies for shell-executing and destructive git forms (`--exec`,
-  `-x`, `-c`, `--upload-pack`, `reset --hard`, `branch -D`, `clean`, and a push to another ref
-  hidden behind a steward keyword). The `git -C *` denies can also match a non-push command whose
-  arguments contain `push … main …` (e.g. in a commit message); keep such words out of `-m`.
+  `-x`, `-c`, `--upload-pack`, `--git-dir`, `reset --hard`, `branch -D`, `clean`, a push to
+  another ref hidden behind a steward keyword, and subcommands such as `config`, `rm`,
+  `update-ref`, `stash`, `remote`, `worktree` that a `git -C *` rule could otherwise swallow). The
+  `git -C *` denies can also match a non-push command whose arguments contain `push`, `main`,
+  `config`, `remote`, … as separate words (e.g. in a commit message); keep such words out of
+  `-m` or use `-F`. The guard is a denylist: other subcommands reached through `-C *` remain a
+  residual risk.
 
 Permission flags are fixed when a session starts: relaunch running conductors and stewards
 (`nw queue steward-launch PROJECT --resume`) to pick up changed rules.

@@ -30,13 +30,25 @@ _PUSH_DENY = (
     "*+*",
     "--force *", "-f *", "--force", "-f", "* --force", "* --force *", "* -f", "* -f *",
     "* nw/* *", "* wt/* *", "*:nw/* *", "*:wt/* *")
+# Added after review: `nw/x:<dst>` (any destination, incl. partly qualified `heads/main`, tags),
+# `heads/main` spellings, and tokens swallowed by `--force-with-lease=*` before `origin`.
+_PUSH_DENY += ("* nw/*:*", "* wt/*:*", "*:nw/*:*", "*:wt/*:*", "*heads/main*", "*heads/master*",
+               "--force-with-lease=* * origin *")
+# `git -C *` can swallow any subcommand, so ` push ` must be the 4th token (`git -C <dir> push`)
+_PUSH_DENY_C_ONLY = ("* push *",)
 _STEWARD_VERBS = ("fetch *", "rebase *", "rebase --continue", "rebase --abort", "add *",
                   "commit *", "restore *", "checkout --ours *", "checkout --theirs *")
 # `git <x>` and `git * <x>` (the latter covers `git -C <dir> <x>`)
 _GUARD_SUBCOMMANDS = ("reset --hard*", "branch -D*", "branch -d*", "branch --delete*",
                       "clean *", "clean")
 # flags that run shell commands or inject config; `git *<x>` covers any position
-_GUARD_FLAGS = ("--exec*", " -x *", "--upload-pack*", "--receive-pack*")
+_GUARD_FLAGS = ("--exec*", " -x *", "--upload-pack*", "--receive-pack*", "--config-env*",
+                "--git-dir*", "--work-tree*")
+# subcommands that edit config/refs, run commands or destroy data; reachable only by `-C *`
+# swallowing a quoted argument that ends in an allowed tail (`config k "x # add y"`)
+_GUARD_SWALLOWED = ("config", "rm", "update-ref", "symbolic-ref", "worktree", "stash", "remote",
+                    "submodule", "filter-branch", "filter-repo", "gc", "reflog", "bisect",
+                    "difftool", "mergetool", "hook", "maintenance", "replace")
 _GUARD_KEYWORDS = ("fetch", "rebase", "add", "commit", "restore", "checkout")
 
 
@@ -46,7 +58,8 @@ def _push_allow():
 
 
 def _push_deny():
-    return [f"Bash({p} push {x})" for p in _PREFIXES for x in _PUSH_DENY]
+    rules = [f"Bash({p} push {x})" for p in _PREFIXES for x in _PUSH_DENY]
+    return rules + [f"Bash(git -C * {x})" for x in _PUSH_DENY_C_ONLY]
 
 
 def _steward_guard():
@@ -55,6 +68,8 @@ def _steward_guard():
         rules += [f"Bash(git {x})", f"Bash(git * {x})"]
     rules += [f"Bash(git *{x})" for x in _GUARD_FLAGS]
     rules += ["Bash(git -c *)", "Bash(git * -c *)"]
+    for x in _GUARD_SWALLOWED:
+        rules += [f"Bash(git * {x})", f"Bash(git * {x} *)"]
     for kw in _GUARD_KEYWORDS:
         rules += [f"Bash(git * push * {kw})", f"Bash(git * push * {kw} *)"]
     return rules

@@ -262,6 +262,12 @@ SPEC-0339.
   extra live checks (`... HEAD:nw/<b> --force`, `branch -D <scratch> add x` refused) are therefore
   still open, see As shipped.
 - The full suite was left to the queue close gate.
+- Review round 1 (2026-11-01): `uv run pytest -q tests/test_agentic_launch.py`: 175 passed. New:
+  deny cases for `nw/x:heads/main`, `nw/x:release`, tags, escaped-space/second-remote lease values and
+  `git -C … config|rm … "<allowed tail>"` for both roles; the steward swallow/exec test gained `config`,
+  `rm`, `update-ref`; `test_each_guard_family_is_what_stops_the_command` pins, per deny family, that
+  the command matches an allow rule and the named deny rule (including `-c`, `clean`, `branch -d`,
+  `--receive-pack`, `*:nw/* *`, `*:wt/* *`, `* wt/* *`).
 
 ### As shipped
 
@@ -272,6 +278,24 @@ SPEC-0339.
   `git *<x>` (`--exec*`, ` -x *`, `--upload-pack*`, `--receive-pack*`); config injection as
   `git -c *` / `git * -c *`; swallow guard `git * push * <kw>` / `... <kw> *` for six keywords.
   The disallowed list is 81 rules (50 push guard, 30 steward guard, `gh pr merge`).
+- Hardening after review round 1 (deviates from the counts in Design; the Design rules are all still
+  present, extra rules were added): the push guard is now 32 rules per prefix plus `git -C * * push *`
+  (65 total). Added per prefix: `* nw/*:*`, `* wt/*:*`, `*:nw/*:*`, `*:wt/*:*` (a `:<dst>` after a
+  namespaced ref: `nw/x:heads/main`, `nw/x:release`, tags), `*heads/main*`, `*heads/master*` (partly
+  qualified main/master) and `--force-with-lease=* * origin *` (a second token, e.g. another remote or
+  `-o a\ origin nw/x`, hidden in the lease wildcard). `git -C * * push *` requires ` push ` to be the
+  4th token, so `git -C <dir> <other-sub> … "x # push origin nw/y"` is denied (this also stops
+  `-C /w -c … push`). The steward guard gained `git * <sub>` / `git * <sub> *` for `config`, `rm`,
+  `update-ref`, `symbolic-ref`, `worktree`, `stash`, `remote`, `submodule`, `filter-branch`,
+  `filter-repo`, `gc`, `reflog`, `bisect`, `difftool`, `mergetool`, `hook`, `maintenance`, `replace`
+  and the flags `--config-env`, `--git-dir`, `--work-tree`; the disallowed list is now 135 rules (65 push guard + 69 steward guard + 1
+  `gh pr merge`). `git -C * <verb> *` steward allows (`add`, `commit`, …) can still swallow a subcommand not
+  in that list (`merge`, `cherry-pick`, `checkout -f`, `reset --soft/--mixed`, `tag`, …) with a
+  quoted tail; those only touch the local worktree/repo and are accepted as residual risk, as is a
+  `-C` directory containing a space. The guard assumes Claude Code treats `\`/quotes literally (the
+  test matcher does); unconfirmed against the live matcher. New false positives: any `git -C`
+  command with the words `config`, `rm`, `remote`, `stash`, … as separate arguments (a commit message)
+  is denied; use `commit -F`.
 - Known false positive, pinned by test: `git -C * push * main *` also denies a commit whose message
   contains ` push ... main <more>` (e.g. `-m "before push to main now"`). A message that ends in `main"`
   is not denied, since the closing quote stops the anchored `push * main`.
