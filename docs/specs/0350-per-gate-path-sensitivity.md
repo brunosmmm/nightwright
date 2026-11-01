@@ -1,7 +1,8 @@
 ---
 id: SPEC-0350
 title: "Per-gate path sensitivity for the close re-gate"
-status: accepted
+status: done
+updated: 2026-11-01
 owner: user
 created: 2026-11-01
 milestone: "M9: agentic workflow"
@@ -79,11 +80,11 @@ plus the docs files listed above).
 
 ## Acceptance criteria
 
-- [ ] A gate with no `paths` always runs; `paths` is validated (non-empty list of strings).
-- [ ] At close, a gate whose `paths` match no changed path is skipped and a `gate.skipped` event is recorded.
-- [ ] An uncomputable or empty changed-path list runs every gate.
-- [ ] The dogfood config: README-only and mkdocs/docs/product/docs/specs-only branches run spec-lint + docs-tests, not pytest; `src/**`, `tests/**`, `pyproject.toml`, `uv.lock`, `skills/**` run pytest.
-- [ ] `docs/product/capabilities/agentic.md` documents `paths:`.
+- [x] A gate with no `paths` always runs; `paths` is validated (non-empty list of strings).
+- [x] At close, a gate whose `paths` match no changed path is skipped and a `gate.skipped` event is recorded.
+- [x] An uncomputable or empty changed-path list runs every gate.
+- [x] The dogfood config: README-only and mkdocs/docs/product/docs/specs-only branches run spec-lint + docs-tests, not pytest; `src/**`, `tests/**`, `pyproject.toml`, `uv.lock`, `skills/**` run pytest.
+- [x] `docs/product/capabilities/agentic.md` documents `paths:`.
 
 ## Test plan
 
@@ -104,14 +105,20 @@ Additive. Takes effect when `main`'s `.nw/project.yaml` carries `paths`.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated.
 
 ## As shipped
 
-(filled at close)
+Shipped as designed. `tools/affected_tests.py` fell back to the full suite for this change
+(`project.py` is widely imported), so the Test plan ran as an explicit set: `test_docs_*`,
+`test_spec_lint*`, `test_specs`, `test_agentic_profiles`, `test_agentic_close*`,
+`test_agentic_queue_merge`, `test_agentic_logs`, `test_agentic_gitops`, `test_agentic_resolver`,
+`test_agentic_gate_paths`, `test_agentic_dogfood_config`, `test_agentic_project` (572 passed).
+The starter template in `project.py` shows `paths` as a comment (an empty list is invalid). The
+`gate.skipped` event has no dedicated `campaign show` rendering.
 
 ## Open questions
 
