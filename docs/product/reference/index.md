@@ -45,6 +45,7 @@ Claude-generating vs your-turn diagnostic.
 | `tasks` | List org tasks | [Tasks](../capabilities/tasks-agenda.md) |
 | `topics` | Discovered base topics + facets | [Report](../capabilities/report.md) |
 | `tui` | Interactive ideas desk (optional `tui` extra) | [Desk](../capabilities/tui.md) |
+| `worker` | Remote gate worker, run on the worker host: `gate-job` / `have` / `gc` / `info` / `ssh-command` (SPEC-0336) | [Agentic loop](../capabilities/agentic.md) |
 
 ## Nested groups (high level)
 

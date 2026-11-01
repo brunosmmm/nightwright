@@ -267,6 +267,11 @@ this to tell a transport failure from a gate failure.
   `nw worker info --json` and `SSH_ORIGINAL_COMMAND="nw worker info" nw worker ssh-command`
   (exec'd) and `SSH_ORIGINAL_COMMAND="nw queue run"` (exit 2) by hand.
 - The full `uv run pytest` regression run is left to gating.
+- Loop 2 (gate fix): added the `worker` row to `docs/product/reference/index.md`.
+  `tests/test_docs_*.py` + `tests/test_completion.py`: 74 passed. Other tests that walk the
+  CLI (`test_agentic_detach`, `test_agentic_personas`, `test_hub`, `test_agentic_queue_cli`,
+  `test_workflow`, `test_spec_status`, `test_json_cli`, `test_skills`,
+  `test_idea_capture_guard`): 297 passed.
 
 ### As shipped (2026-10-31)
 
