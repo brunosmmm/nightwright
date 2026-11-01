@@ -5753,7 +5753,8 @@ def remote_gate_view(cfg, st: dict, *, now=None, events=None) -> dict | None:
     """SPEC-0356: the campaign's latest remote gate run from its ledger, or None for a local-only
     campaign. Reads events by `type` string (`gate_dispatched` is not in EVENT_TYPES until the
     SPEC-0338 dispatch emits it): a `gate_dispatched` with no later `gate` of its `gate_seq` is
-    running; a `gate` with `worker` finished; a `worker_failed` followed by a local `gate` fell
+    running (a later `worker_failed` ends it: the local fallback is not a remote run); a `gate`
+    with `worker` finished; a `worker_failed` followed by a local `gate` fell
     back. The job id is the event's `job_id`, else derived `<campaign>-gate-<seq:03d>-a0`."""
     import datetime as dt
     cid = st.get("id")
@@ -5770,8 +5771,10 @@ def remote_gate_view(cfg, st: dict, *, now=None, events=None) -> dict | None:
             return jid, False
         return (f"{cid}-gate-{int(seq):03d}-a0", True) if isinstance(seq, int) else (None, True)
 
-    if disp is not None and not any(g.get("gate_seq") == disp.get("gate_seq")
-                                    for g in gates if g.get("seq", 0) > disp.get("seq", 0)):
+    if disp is not None and not any(
+            (e.get("type") == "gate" and e.get("gate_seq") == disp.get("gate_seq"))
+            or e.get("type") == "worker_failed"
+            for e in evs if e.get("seq", 0) > disp.get("seq", 0)):
         if last_gate is None or last_gate.get("seq", 0) < disp.get("seq", 0):
             jid, derived = job(disp, disp.get("gate_seq"))
             started = disp.get("started_at") or disp.get("ts")
@@ -6024,9 +6027,12 @@ def unqueued_view(cfg, project=None, statuses=None) -> dict:
         return False, (group[-1] if group else None)
 
     specs: list = []                                # (kind, fm, project, specs_dir)
-    specs_dir = SP._specs_dir(cfg)
+    try:
+        specs_dir = SP._specs_dir(cfg)
+    except (ValueError, OSError):                   # no internal specs dir: no internal rows
+        specs_dir = None
     all_ids: dict = {}
-    if specs_dir.exists():
+    if specs_dir is not None and specs_dir.exists():
         for path in sorted(specs_dir.glob("[0-9]*.md")):
             try:
                 fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
@@ -6035,9 +6041,13 @@ def unqueued_view(cfg, project=None, statuses=None) -> dict:
             if isinstance(fm, dict) and fm.get("id"):
                 all_ids[str(fm["id"])] = fm
                 specs.append(("spec", fm, INTERNAL_PROJECT, specs_dir))
-    for s in SP._outbound_specs(cfg):
-        fm = s.get("fm") or {}
-        if fm.get("id"):
+    try:
+        outbound = SP._outbound_specs(cfg)
+    except (ValueError, OSError):
+        outbound = []
+    for s in outbound:
+        fm = s.get("fm")
+        if isinstance(fm, dict) and fm.get("id"):
             all_ids[str(fm["id"])] = fm
             specs.append(("outbound", fm, s["project"], s["path"].parent))
     rows, listed = [], {}

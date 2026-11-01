@@ -462,6 +462,32 @@ active / waiting / parked / backlog → `queue_payload` items (`row_view` fields
   `test_queue_watch_shows_estimate_only_when_above_zero` uses `width=240` (cost is rank 4)
   and `test_queue_list_json_and_table_show_sizing` uses 200 for its wide render.
 
+### Test record (2026-11-01, run 006)
+
+- `uv run pytest -q -n 4 tests/test_agentic_queue_visibility.py`: 20 passed. New:
+  `test_narrow_backlog_title_goes_under_the_campaign_id` (the backlog table at width 45: no
+  line over 45, the title wraps under the campaign id in chunks wider than one cell; it fails
+  with the old `kept[0]` host), `test_remote_gate_sequences_after_dispatch` (`gate_dispatched`
+  #7 then its own remote `gate` #7 gives `failed`, not `running`; `gate_dispatched` then
+  `worker_failed` gives no line; then a local `gate` gives `fell_back` #7; a `worker_failed`
+  with no local gate after it gives no line, the SPEC-0358 case) and
+  `test_unqueued_without_internal_specs_dir`.
+- Related suites (`test_agentic_queue_cli`, `test_agentic_campaign_cli`, `test_agentic_queue`,
+  `test_agentic_dashboard`, `test_agentic_waiting`, `test_agentic_watch_height`,
+  `test_agentic_queue_merge`, `test_tui_queue_model`, `test_tui_queue_tab`, plus the file
+  above): 436 passed. The full suite is left to the queue's close gate.
+- `python3 tools/spec_lint.py`: OK.
+
+### As shipped (2026-11-01, run 006)
+
+- The too-narrow fallback writes the title under the `campaign` (or `id`) column, else under
+  the widest kept fixed column (`listview.render(title_host=...)`), never under a small leading
+  column such as the backlog's `#`. The title is cut at that column's width.
+- `remote_gate_view`: a `worker_failed` after the newest `gate_dispatched` ends the in-flight
+  remote run (not `running`); the line then follows the finished / fell-back rules.
+- `unqueued_view`: a missing internal specs dir gives no internal rows; outbound entries whose
+  frontmatter is not a mapping are skipped, and a failing outbox read gives no outbound rows.
+
 ## Rollout / migration
 
 1. `row_view`, `waiting_on_ids`, `_spec_meta` cache; JSON additions.

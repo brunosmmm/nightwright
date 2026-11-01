@@ -108,11 +108,23 @@ def _as_text(cell) -> Text:
     return Text("" if cell is None else str(cell))
 
 
+def _host(kept: list[Column], widths: dict, keys: tuple) -> str | None:
+    """The column the narrow fallback writes the title under."""
+    by_key = {c.key: c for c in kept}
+    for k in keys:
+        if k in by_key:
+            return k
+    fixed = [c for c in kept if c.fixed] or kept
+    return max(fixed, key=lambda c: widths[c.key]).key if fixed else None
+
+
 def render(title: str | None, columns: list[Column], rows: list[dict], width: int, *,
-           title_key: str = "title", title_style: str | None = None) -> Table:
+           title_key: str = "title", title_style: str | None = None,
+           title_host: tuple = ("campaign", "id")) -> Table:
     """A rich Table fitted to `width`: dropped columns vanish, folded ones prefix the title cell;
     when even id + state + title-min do not fit, the title moves under the id (folded at its
-    width) so id and state stay whole."""
+    width) so id and state stay whole. The host is the first kept `title_host` key, else the
+    widest kept fixed column (never a tiny leading one such as the backlog's `#`)."""
     fit = layout(columns, rows, width)
     kept, folded, widths = fit["kept"], fit["folded"], fit["widths"]
     narrow_title = fit["narrow"] and any(c.key == title_key for c in kept)
@@ -129,7 +141,7 @@ def render(title: str | None, columns: list[Column], rows: list[dict], width: in
             table.add_column(c.header, width=w, min_width=w, no_wrap=True,
                              overflow="fold" if c.fixed else "ellipsis",
                              justify=c.justify, style=c.style)
-    id_key = kept[0].key if kept else None
+    id_key = _host(kept, widths, title_host) if narrow_title else None
     for r in rows:
         r = dict(r)
         if folded:

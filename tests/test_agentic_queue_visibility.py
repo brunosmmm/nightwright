@@ -231,6 +231,20 @@ def test_fit_columns_fold_fixed_and_narrow():
     assert "A rather" in tiny.replace("\n", "")
 
 
+def test_narrow_backlog_title_goes_under_the_campaign_id(snap):
+    """Too narrow for id + state + title-min: the title wraps under the campaign id, not under
+    the 1-cell `#` column that the backlog declares first."""
+    cfg, _ = snap
+    out = _render(_tables(cfg)["queue_backlog"](45), 45)
+    lines = out.splitlines()
+    assert max(map(len, lines)) <= 45
+    assert IDS["queued"] in out and "QUEUED" in out
+    assert "Lost-job retry" in out.replace("\n", "")
+    first = next(i for i, ln in enumerate(lines) if IDS["queued"] in ln)
+    chunk = lines[first + 1].strip()
+    assert len(chunk) > 1 and len(lines) < 15, out             # not one character per line
+
+
 def test_waiting_on_ids():
     cases = [(["waiting on SPEC-0337 (accepted)"], ["SPEC-0337"]),
              (["PROJ-0012 not found"], ["PROJ-0012"]),
@@ -511,3 +525,51 @@ def test_remote_gate_line_and_json(gated, monkeypatch):
     items = {i["campaign"]: i for i in Q.queue_payload(cfg)["items"]}
     assert items[ids["running"]]["remote_gate"]["status"] == "running"
     assert items[ids["local"]]["remote_gate"] is None
+
+
+@pytest.fixture
+def gated_more(tmp_path):
+    """The normal SPEC-0338 sequences once `gate_dispatched` is emitted: dispatched then its own
+    remote gate; dispatched then `worker_failed` (local fallback still running); dispatched,
+    `worker_failed`, then the local gate; and a `worker_failed` with no local gate yet."""
+    repo = make_repo(tmp_path)
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
+    ids = {key: _campaign(cfg, repo, f"SPEC-0002-20261101-{key[:4]}", "GATING")
+           for key in ("done", "fail", "back", "pend")}
+    disp = lambda seq, c: ("gate_dispatched", {"gate_seq": seq, "worker": "build-01",   # noqa
+                                               "job_id": f"{c}-gate-{seq:03d}-a0",
+                                               "started_at": T0.isoformat()})
+    fail = ("worker_failed", {"worker": "build-01", "stage": "run", "error": "lost",
+                              "job_id": "j-a0"})
+    _raw(cfg, ids["done"], [disp(7, ids["done"]),
+                            ("gate", {**_gate(7, worker="build-01", ok=False)[1],
+                                      "job_id": f"{ids['done']}-gate-007-a0"})])
+    _raw(cfg, ids["fail"], [_gate(6), disp(7, ids["fail"]), fail])
+    _raw(cfg, ids["back"], [_gate(6), disp(7, ids["back"]), fail, _gate(7)])
+    _raw(cfg, ids["pend"], [_gate(6), fail])
+    return cfg, ids
+
+
+def test_remote_gate_sequences_after_dispatch(gated_more):
+    cfg, ids = gated_more
+    st = lambda k: S.read_state(cfg, ids[k])                              # noqa: E731
+    now = T0 + dt.timedelta(seconds=600)
+    rg = Q.remote_gate_view(cfg, st("done"), now=now)
+    assert rg["status"] == "failed" and rg["gate_seq"] == 7 and rg["job_id_derived"] is False
+    assert rg["job_id"] == f"{ids['done']}-gate-007-a0"
+    assert Q.remote_gate_view(cfg, st("fail"), now=now) is None         # not `running`
+    rg = Q.remote_gate_view(cfg, st("back"), now=now)
+    assert rg["status"] == "fell_back" and rg["gate_seq"] == 7 and rg["stage"] == "run"
+    assert Q.remote_gate_view(cfg, st("pend"), now=now) is None         # the SPEC-0358 case
+
+
+def test_unqueued_without_internal_specs_dir(unq, monkeypatch):
+    cfg, ideas = unq
+    from nightwright import specs as SP
+
+    def boom(_cfg):
+        raise ValueError("no specs dir")
+    monkeypatch.setattr(SP, "_specs_dir", boom)
+    items = Q.unqueued_view(cfg)["items"]
+    assert not any(i["kind"] == "spec" for i in items)
+    assert any(i["id"] == "PROJ-0003" for i in items)
