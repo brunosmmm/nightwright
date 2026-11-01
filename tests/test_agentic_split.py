@@ -54,8 +54,8 @@ def split_fx(tmp_path, monkeypatch, entries=(), n=3, *, close=False, idea=False)
     _git(repo, "commit", "-q", "-m", "an accepted spec")
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
     if idea:
-        from wt import org as ORG
-        from wt import org_write as OW
+        from nightwright import org as ORG
+        from nightwright import org_write as OW
         _, _, iid = OW.add_idea(cfg, "split me")
         assert iid == "IDEA-001"
         ORG.invalidate_tasks_cache()

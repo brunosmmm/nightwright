@@ -5,9 +5,9 @@ import pytest
 from test_agentic_e2e import _write
 from test_agentic_split import ORIG, part, run_ticks, written  # noqa: F401 — `written` is a fixture helper
 from test_agentic_spec_writer import ledger, parked  # noqa: F401
-from wt.agentic import queue as Q
-from wt.agentic import schemas as SC
-from wt.agentic import store as S
+from nightwright.agentic import queue as Q
+from nightwright.agentic import schemas as SC
+from nightwright.agentic import store as S
 
 REAL_HOOK = Q._queue_split_children
 PARTS = ["SPEC-0101", "SPEC-0102", "SPEC-0103"]
@@ -159,7 +159,7 @@ def test_split_queue_refusal_is_finding(tmp_path, monkeypatch):
     cfg, repo, cid = written(tmp_path, monkeypatch)
     run_ticks(cfg, cid, 1)
     # part 2 already has an active campaign
-    blocker = {"schema": "wt.campaign.v1", "id": "SPEC-0102-20261001-aaaa", "kind": "implement",
+    blocker = {"schema": "nw.campaign.v1", "id": "SPEC-0102-20261001-aaaa", "kind": "implement",
                "spec_id": "SPEC-0102", "project": "Meta-Tools", "state": "QUEUED",
                "created_at": "2026-10-01T00:00:00+00:00"}
     S.create_campaign(cfg, blocker)
@@ -256,8 +256,8 @@ def idea_parts(first=101):
 def test_split_children_link_the_idea_the_split_released(tmp_path, monkeypatch, route):
     """The hook runs after `_release_idea_link`: a child sees no live holder, so the idea ends up
     linked to the first child campaign (not to nothing, not skipped as 'held by <split>')."""
-    from wt import org as ORG
-    from wt import org_write as OW
+    from nightwright import org as ORG
+    from nightwright import org_write as OW
     from test_agentic_split import split_fx
 
     def link(iid="IDEA-001"):

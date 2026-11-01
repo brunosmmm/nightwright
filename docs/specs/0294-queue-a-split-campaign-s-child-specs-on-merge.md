@@ -246,6 +246,12 @@ The admission is tied to the id, not to the child's text (see Non-goals). Status
   the idea's `:CAMPAIGN:` names the first child and no child has an `idea_link_skipped`
   "held by <split>" event; with the old order the close route fails.
 
+- Rebase round: the branch was rebased onto main (the `wt` -> `nightwright` package rename and
+  `skills/wt-conduct` -> `skills/nw-conduct`; the skill edit and its test moved to
+  `nw-conduct`). After `uv sync`, `uv run pytest -n 4` over the split queue, split, skills,
+  PR sweep, idea link, queue and queue CLI, and spec review tests — 472 passed. The full suite
+  is left to gating.
+
 ### As shipped (2026-10-30)
 
 - The tests are in `tests/test_agentic_split_queue.py` (reusing the `test_agentic_split.py`

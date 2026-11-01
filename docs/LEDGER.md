@@ -97,7 +97,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0156](./specs/0156-architecture-and-lifecycle-pages.md) Architecture and lifecycle pages — done
   - [x] [SPEC-0157](./specs/0157-agent-surface-guide-schemas-skills-map-json.md) Agent surface guide: schemas, skills map, JSON recipes — done
   - [x] [SPEC-0158](./specs/0158-outbound-multi-project-depth-and-wave-c-captures.md) Outbound/multi-project depth and Wave C captures — done
-- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (101/104 done)
+- **[SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) — Mini agentic workflow: queue, campaigns, headless personas, conductor** · accepted · (102/104 done)
   - [x] [SPEC-0170](./specs/0170-per-project-config-wt-project-yaml-and-wt.md) Per-project config .wt/project.yaml and wt projects config|init — done
   - [x] [SPEC-0171](./specs/0171-workflow-profiles-campaign-store-ledger-locks-and.md) Workflow profiles, campaign store, ledger, locks and wt campaign commands — done
   - [x] [SPEC-0172](./specs/0172-git-worktree-and-branch-operations-for-campaigns.md) Git worktree and branch operations for campaigns (gitops) — done
@@ -196,7 +196,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0291](./specs/0291-wt-queue-run-detach-and-supervision.md) `wt queue run --detach` and `wt queue stop`: start and stop the runner without a shell recipe — done
   - [x] [SPEC-0292](./specs/0292-idea-linkage-campaign-extension-and-a-hub-agentic.md) Idea linkage: `:CAMPAIGN:` for spec campaigns, cleared on terminal states, and a hub agentic slice — done
   - [ ] [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) Gate ladder v2: a cross-campaign flaky-test record the triager sees — accepted
-  - [ ] [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) Queue a split campaign's child specs on merge, in dependency order — accepted
+  - [x] [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) Queue a split campaign's child specs on merge, in dependency order — done
   - [x] [SPEC-0295](./specs/0295-spec-review-findings-carry-a-required-structured.md) Review findings carry a required, structured suggested_fix — done
   - [x] [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) Outbound projects end to end: a merged campaign pulls the portable spec's status back — done
   - [x] [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) Agentic MVP: a cheap, durable, quiet conductor on a second project — done
@@ -253,7 +253,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0148](./specs/0148-example-heavy-docs-svg-captures-and-workflow.md) | Example-heavy docs: SVG captures and workflow architecture | epic | accepted | M8: product documentation | 2026-09-09 |
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
-| [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | accepted | — | 2026-10-31 |
 | [SPEC-0334](./specs/0334-pull-workers-against-a-coordinator-job-api.md) | Pull workers against a coordinator job API | feature | accepted | — | 2026-10-31 |
 | [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) | Federation over a networked mailbox | feature | accepted | — | 2026-10-31 |
@@ -547,6 +546,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0290](./specs/0290-automatic-spec-splitting-from-a-split-review.md) | Automatic spec splitting: a split review turns into child specs written by a split campaign | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0291](./specs/0291-wt-queue-run-detach-and-supervision.md) | `wt queue run --detach` and `wt queue stop`: start and stop the runner without a shell recipe | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0292](./specs/0292-idea-linkage-campaign-extension-and-a-hub-agentic.md) | Idea linkage: `:CAMPAIGN:` for spec campaigns, cleared on terminal states, and a hub agentic slice | feature | done | M9: agentic workflow | 2026-10-30 |
+| [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0295](./specs/0295-spec-review-findings-carry-a-required-structured.md) | Review findings carry a required, structured suggested_fix | feature | done | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0297](./specs/0297-outbound-projects-end-to-end.md) | Outbound projects end to end: a merged campaign pulls the portable spec's status back | feature | done | — | 2026-10-30 |
 | [SPEC-0298](./specs/0298-agentic-mvp-cheap-durable-quiet-conductor.md) | Agentic MVP: a cheap, durable, quiet conductor on a second project | epic | done | M10: agentic MVP | 2026-10-31 |
