@@ -46,6 +46,7 @@ Claude-generating vs your-turn diagnostic.
 | `topics` | Discovered base topics + facets | [Report](../capabilities/report.md) |
 | `tui` | Interactive ideas desk (optional `tui` extra) | [Desk](../capabilities/tui.md) |
 | `worker` | Remote gate worker, run on the worker host: `gate-job` / `have` / `gc` / `info` / `ssh-command` (SPEC-0336) | [Agentic loop](../capabilities/agentic.md) |
+| `workers` | Coordinator's worker registry (`<agentic_dir>/workers.json`), distinct from `nw worker` which runs on the worker host: `add NAME --ssh DEST [--slots N] [--nw CMD] [--no-check]` / `list [--json]` / `check [NAME] [--json]` / `on NAME` / `off NAME` / `rm NAME` (SPEC-0337) | [Agentic loop](../capabilities/agentic.md) |
 
 ## Nested groups (high level)
 
