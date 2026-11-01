@@ -136,7 +136,8 @@ def worker_jobs(cfg, as_json):
 @click.pass_obj
 def worker_gc(cfg, keep_days):
     """Delete old job dirs and `refs/nw/have/*` refs, then prune the caches' objects.
-    Exits 1 when a repo's cache failed (listed in `errors`); the other repos still ran."""
+    Exits 1 when a repo's cache, or the reap of a lost job, failed (listed in `errors`);
+    the rest still ran."""
     rec = W.gc(cfg, keep_days)
     click.echo(json.dumps(rec))
     if rec["errors"]:

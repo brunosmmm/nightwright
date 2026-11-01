@@ -913,9 +913,16 @@ def gc(cfg, keep_days: int = DEFAULT_KEEP_DAYS, now: float | None = None) -> dic
     # only when there was one: SPEC-0336's record is unchanged). `reap_lost` scans under
     # `jobs_lock` but kills without it, so claims never wait out its kill graces. Reaping
     # writes `result.json`, so the clock is read again: `--keep-days 0` removes it now.
-    reaped = WJ.reap_lost(cfg)
+    # A job it cannot reap (an unwritable dir, a full disk: the likeliest reason a job died
+    # without its result) is listed in `errors`, and gc still frees what it can.
+    try:
+        reaped = WJ.reap_lost(cfg, errors=out["errors"])
+    except OSError as e:
+        reaped = []
+        out["errors"].append({"job": None, "error": str(e)})
     if reaped:
         out["jobs_reaped"] = reaped
+    if reaped or out["errors"]:                 # a failed write touches the dir too
         now = time.time() if clock else now
     with jobs_lock(cfg):
         _live_jobs(cfg, remove_before=now - keep_s, removed=out["jobs_removed"])

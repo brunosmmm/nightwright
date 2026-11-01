@@ -1213,3 +1213,146 @@ def test_a_reclaim_that_cannot_remove_the_dir_is_a_claim_error(src, tmp_path, we
     assert rc == 3 and err["type"] == "error" and err["stage"] == "claim"
     assert "could not reclaim" in err["error"] and "n" not in err
     assert d.is_dir() and not (d / "spawn.json").exists()
+
+
+# ---- review round 7: gc on a full disk, a reap never acts on a stale scan, claim writes -----
+
+def test_gc_goes_on_when_a_lost_jobs_reap_cannot_write(wenv, monkeypatch):
+    """A full disk (the likeliest reason a job died without its result) never stops gc: the
+    job whose reap cannot write is listed in `errors`, leaves no temp file, and the other
+    lost jobs are reaped and every dead dir still goes."""
+    import errno
+    old = time.time() - 3600
+    full = _async_dir(wenv, "j-a-full", spawned_ts=old, submitted_ts=old)
+    _async_dir(wenv, "j-b-ok", spawned_ts=old, submitted_ts=old)
+    real_replace = os.replace
+
+    def replace(src, dst, *a, **k):
+        if Path(dst).parent == full:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(src, dst, *a, **k)
+    monkeypatch.setattr(WJ.os, "replace", replace)
+    cfg = _cfg(wenv, job_lost_after_s=2)
+    rec = W.gc(cfg, keep_days=30)
+    assert rec["jobs_reaped"] == ["j-b-ok"]
+    (err,) = rec["errors"]
+    assert err["job"] == "j-a-full" and "No space" in err["error"]
+    assert not list(full.glob(".*.tmp"))                    # the temp file was unlinked
+    assert not (full / "result.json").exists() and full.is_dir()
+    assert _read(_job_dir(wenv, "j-b-ok") / "result.json")["state"] == "lost"
+    rec = W.gc(cfg, keep_days=0)                            # the disk is still full ...
+    assert [e["job"] for e in rec["errors"]] == ["j-a-full"]
+    assert {"j-a-full", "j-b-ok"} <= set(rec["jobs_removed"])   # ... and gc still frees it
+    assert not full.exists()
+
+
+def test_write_atomic_never_leaves_its_temp_file(tmp_path, monkeypatch):
+    import errno
+
+    def fail(*a, **k):
+        raise OSError(errno.EROFS, "Read-only file system")
+    monkeypatch.setattr(WJ.os, "replace", fail)
+    with pytest.raises(OSError):
+        WJ._write_atomic(tmp_path / "x.json", {"a": 1})
+    assert list(tmp_path.iterdir()) == []
+
+
+def _live_sleeper():
+    import subprocess
+
+    from nightwright.agentic import runproc
+    p = subprocess.Popen(["sleep", "600"], start_new_session=True)
+    return p, {"pid": p.pid, "pgid": p.pid, "start_ticks": runproc.start_ticks(p.pid)}
+
+
+def _reclaim(env, job, spawn):
+    """What a same-digest resubmit does to an abandoned dir: rmtree + mkdir + a new claim,
+    whose job process is spawned at once."""
+    shutil.rmtree(job)
+    now = time.time()
+    _async_dir(env, job.name, submitted_ts=now, spawned_ts=now)
+    (job / "spawn.json").write_text(json.dumps(spawn))
+
+
+def test_reap_never_acts_on_a_dir_claimed_again_after_the_scan(wenv, monkeypatch):
+    monkeypatch.setenv(WJ.KILL_GRACE_ENV, "0.2")
+    d = _async_dir(wenv, "j-reclaimed", submitted_ts=time.time() - 3600)  # upload abandoned
+    new, spawn = _live_sleeper()
+    real = WJ.reap
+
+    def reap(cfg, job, *a, **k):        # the client retries between gc's scan and this reap
+        _reclaim(wenv, job, spawn)
+        return real(cfg, job, *a, **k)
+    monkeypatch.setattr(WJ, "reap", reap)
+    try:
+        rec = W.gc(_cfg(wenv, job_lost_after_s=30), keep_days=30)
+        assert "jobs_reaped" not in rec and rec["errors"] == []
+        assert new.poll() is None                           # the new job was never signalled
+        assert not (d / "result.json").exists()
+        assert _read(d / "job.json")["state"] == "accepted"
+    finally:
+        new.kill()
+        new.wait(timeout=WAIT_S)
+
+
+def test_reap_never_records_lost_in_a_dir_claimed_again_during_its_kills(wenv, monkeypatch):
+    monkeypatch.setenv(WJ.KILL_GRACE_ENV, "0.2")
+    old_job, old_spawn = _live_sleeper()
+    d = _async_dir(wenv, "j-mid", spawned_ts=time.time() - 3600)
+    (d / "spawn.json").write_text(json.dumps(old_spawn))
+    new, spawn = _live_sleeper()
+    real = WJ._kill_group
+    hits = []
+
+    def kill_group(child, grace, cont=False):
+        hits.append(child["pid"])
+        real(child, grace, cont)
+        if len(hits) == 1:              # the old leader is dead: the path is claimed again
+            _reclaim(wenv, d, spawn)
+    monkeypatch.setattr(WJ, "_kill_group", kill_group)
+    try:
+        out = io.BytesIO()
+        assert WJ.cancel(_cfg(wenv, job_lost_after_s=30), "j-mid", out) == 1
+        assert json.loads(out.getvalue().splitlines()[-1])["reaped"] is False
+        assert old_job.wait(timeout=WAIT_S) is not None     # the lost job was ended ...
+        assert new.poll() is None and new.pid not in hits   # ... the new one never touched
+        assert not (d / "result.json").exists()             # ... nor recorded lost
+        assert _read(d / "job.json")["state"] == "accepted"
+    finally:
+        for p in (old_job, new):
+            if p.poll() is None:
+                p.kill()
+                p.wait(timeout=WAIT_S)
+
+
+def test_reap_leaves_a_job_that_is_no_longer_lost(wenv, monkeypatch):
+    """A scan's `lost` is derived again under `jobs_lock` before any signal."""
+    d = _async_dir(wenv, "j-revived", spawned_ts=time.time() - 3600)
+    ident = WJ._ident(d)
+    rec = _read(d / "job.json")
+    (d / "job.json").write_text(json.dumps({**rec, "spawned_ts": time.time()}))
+    monkeypatch.setattr(WJ, "_kill_group", lambda *a, **k: pytest.fail("signalled"))
+    assert WJ.reap(_cfg(wenv, job_lost_after_s=30), d, ident) is False
+    assert not (d / "result.json").exists()
+
+
+def test_a_claim_write_that_fails_is_a_claim_error(src, tmp_path, wenv, monkeypatch):
+    import errno
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    real = WJ._write_atomic
+
+    def write(path, rec):
+        if path.name == "header.json":
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(path, rec)
+    monkeypatch.setattr(WJ, "_write_atomic", write)
+    out = io.BytesIO()
+    rc = WJ.submit(_cfg(wenv), io.BytesIO((json.dumps(h) + "\n").encode() + data), out)
+    (err,) = [json.loads(ln) for ln in out.getvalue().splitlines()]
+    assert rc == 3 and err["type"] == "error" and err["stage"] == "claim"
+    assert "No space" in err["error"] and "n" not in err
+    assert not _job_dir(wenv, h["job_id"]).exists()         # un-claimed: the id is free
+    monkeypatch.setattr(WJ, "_write_atomic", real)
+    r = _submit(wenv, h, data)
+    assert r.returncode == 0 and _recs(r)[0]["state"] == "accepted"
+    assert _result(wenv, h["job_id"])["state"] == "done"

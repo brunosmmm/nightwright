@@ -626,6 +626,56 @@ A `running` job holds `job.lock`, so `gc --keep-days 0` never removes it.
   remove it (for example, EACCES on an entry inside), `submit` drains the bundle, prints an
   `error` frame (`stage: "claim"`) and exits 3.
 
+### Test record (2026-11-01, review round 7)
+
+- `tests/test_worker_jobs.py` now has 90 tests. The six new ones each fail against the
+  round-6 code:
+  - gc on a full disk: one lost job's writes fail with ENOSPC. gc lists it in `errors`
+    (`{job, error}`), leaves no temp file in its dir, still reaps the other lost job, and
+    with `--keep-days 0` still removes both dirs;
+  - `_write_atomic` unlinks its temp file when the write or the rename fails;
+  - a same-digest resubmit reclaims an abandoned dir between gc's scan and its reap, and
+    spawns: gc signals nothing, writes no `result.json` and does not list it in
+    `jobs_reaped`;
+  - the reclaim happens while `cancel`'s reap is ending the old job process: the old process
+    is ended, the new one is never signalled, nothing is recorded, and `cancel` prints
+    `reaped: false` and exits 1;
+  - a scanned `lost` that no longer reads `lost` is not signalled or recorded;
+  - a claim write that fails (ENOSPC on `header.json`) gives an `error` frame
+    (`stage: "claim"`, no `n`) and exit 3, removes the dir, and the same header can then be
+    submitted and runs to `done`.
+- Affected tests (`affected_tests.py` plus `test_agentic_dogfood_config.py`,
+  `test_agentic_project.py` and `test_test_waits.py`, `-n 4`): 362 passed. `spec_lint`
+  passes. The full suite was left to gating.
+
+### As shipped (2026-11-01, review round 7)
+
+- **gc keeps going on a full disk.** `reap_lost` catches OSError per job, both in its scan
+  and in each reap, and lists the job in gc's `errors` as `{job, error}`. gc then still
+  deletes the dead dirs and prunes the repos, and exits 1 as for a failed repo. A
+  `job.json` mirror is best effort under `jobs_lock` too (it is a cache of the derived
+  state), so a failing mirror never stops a scan or a `cancel`. `_write_atomic` unlinks its
+  temp file when it fails. A failed write touches the dir, so gc reads its clock again after
+  any reap error, as it does after a reap: `--keep-days 0` still removes that dir.
+- **A reap never acts on a stale scan.** `reap_lost` and `cancel` record an identity for
+  each dir they find lost: its inode plus `job.json`'s `claimed_at` and `submitted_ts`
+  (a reclaim can reuse the inode, never the claim's own timestamps). Before any signal,
+  `reap` takes `jobs_lock`, which every claim holds, and checks that the dir is still that
+  claim, still has no `result.json`, and still reads `lost`. It reads the leaders to signal
+  in that same section. Before writing `result.json` it checks the identity again under
+  `jobs_lock`. On a mismatch it signals or writes nothing and returns False: gc does not
+  list the job, and `cancel` prints `reaped: false` and exits 1. `cancel` on a job whose
+  `result.json` already says `lost` no longer signals again.
+- **A failed claim write is a claim error.** When `mkdir`, the `job.lock` or the
+  `job.json` / `header.json` writes fail (for example ENOSPC), `submit` closes the lock fd,
+  removes the dir, drains the bundle, prints an `error` frame (`stage: "claim"`, no `n`) and
+  exits 3. `cancel` whose `cancel` file write fails prints `cancel: "failed"` with the error
+  and exits 1.
+- Not changed: when a dead leader's group is signalled, `runproc.group_alive` still checks
+  the leader's start ticks only while its pid exists. A pgid whose members have all exited
+  and that a new session leader then takes over could in principle be hit. This needs pid
+  reuse to land exactly on that pgid within one reap, and is left as a follow-up.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.

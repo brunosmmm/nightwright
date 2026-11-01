@@ -13,6 +13,7 @@ while it is connected, `poll` reads once. A hung or dead job process is `lost`; 
 `gc` reap it from outside (TERM, then KILL, each start-ticks-checked)."""
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -76,8 +77,13 @@ def _write_atomic(path: Path, rec: dict) -> None:
     """Write `rec` to `path` via a temp file private to this process and thread (attach, poll
     and the job process may rewrite the same file at once)."""
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(json.dumps(rec, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(json.dumps(rec, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:                       # a full disk: never leave the temp file
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
 
 
 def _kill_grace_s() -> float:
@@ -261,7 +267,8 @@ def _mirror(cfg, job: Path, state: str, locked: bool) -> None:
     if rec is None or rec.get("state") == state or not _is_async(job, rec):
         return
     if locked:
-        _mirror_locked(job, state)
+        with contextlib.suppress(OSError):      # a mirror is best effort (a full disk)
+            _mirror_locked(job, state)
         return
     try:
         fd = os.open(W.worker_dir(cfg) / "jobs.lock", os.O_RDWR | os.O_CREAT, 0o644)
@@ -458,22 +465,56 @@ def _take_lock_nb(job: Path, wait_s: float) -> int | None:
             time.sleep(0.05)
 
 
-def reap(cfg, job: Path) -> bool:
+def _ident(job: Path):
+    """Which claim of a job id a dir holds: a same-digest resubmit can reclaim the path
+    (rmtree + mkdir, which may reuse the inode), never the claim's own `claimed_at` /
+    `submitted_ts`. None when the dir is gone."""
+    try:
+        ino = os.stat(job).st_ino
+    except OSError:
+        return None
+    rec = runproc.read_json(job / "job.json") or {}
+    return (ino, rec.get("claimed_at"), rec.get("submitted_ts"))
+
+
+def reap(cfg, job: Path, ident=None) -> bool:
     """End a lost job's job process group (`proc.json`, else the pid `submit` spawned,
     `spawn.json`) and every gate group `proc.json` records, then write `result.json` with
     `state: "lost"` (unless the job wrote its own meanwhile). The result is written only while
     holding `job.lock`, which a job process holds from submit to its exit: a job process that
     was merely slow to start is killed first, never outlived by a `lost` it later overwrites.
     True once the job has a `result.json` (or its dir is gone); False when `job.lock` stayed
-    held (nothing written).
+    held, or the dir is no longer the lost claim the caller found (nothing signalled or
+    written).
+
+    `ident` is the dir's `_ident` from the caller's scan. The scan may be stale by now: a
+    same-digest resubmit can reclaim the path and spawn a healthy job. So, under `jobs_lock`
+    (which every claim holds), the dir must still be that claim and still read `lost` before
+    any signal; the leaders signalled are read in the same section. The final write checks
+    the claim again.
 
     The caller must NOT hold `jobs_lock`: the kill graces (seconds per group) and the
     `job.lock` wait run without it, so claims never wait on a reap. `jobs_lock` is taken only
-    for the final write, which re-checks the dir (gc may have removed it) and `result.json`.
+    for those checks before the signals and for the final write, which re-checks the dir (gc
+    may have removed it) and `result.json`.
     Holding `job.lock` while waiting for `jobs_lock` cannot deadlock: no one holding
     `jobs_lock` ever waits for an existing job's `job.lock`."""
-    proc = runproc.read_json(job / "proc.json") or {}
-    spawn = runproc.read_json(job / "spawn.json") or {}
+    stale = f"nw worker: {job.name}: the job dir was claimed again; not reaping it"
+    with W.jobs_lock(cfg):
+        now_ident = _ident(job)
+        if now_ident is None:                   # gone (gc removed it): nothing to reap
+            return True
+        if ident is not None and now_ident != ident:
+            print(stale, file=sys.stderr)
+            return False
+        ident = now_ident
+        if (job / "result.json").exists():
+            return True
+        if _live_state(job, settings(cfg), time.time())[0] != "lost":
+            print(f"nw worker: {job.name}: no longer lost; not reaping it", file=sys.stderr)
+            return False
+        proc = runproc.read_json(job / "proc.json") or {}
+        spawn = runproc.read_json(job / "spawn.json") or {}
     grace = _kill_grace_s()
     for leader in (proc, spawn):
         # even when the leader is dead: a child left in its group (a `git` of the checkout)
@@ -493,6 +534,9 @@ def reap(cfg, job: Path) -> bool:
         return False
     try:
         with W.jobs_lock(cfg):
+            if job.is_dir() and _ident(job) != ident:
+                print(stale, file=sys.stderr)
+                return False
             if job.is_dir() and not (job / "result.json").exists():
                 own = (runproc.read_json(job / "job.json") or {}).get("state")
                 if own in ("done", "error"):    # it died after its final job.json: keep it
@@ -508,19 +552,32 @@ def reap(cfg, job: Path) -> bool:
     return True
 
 
-def reap_lost(cfg) -> list[str]:
+def reap_lost(cfg, errors: list | None = None) -> list[str]:
     """`gc`'s first step: reap every async job that is `lost` with no `result.json`. The scan
-    runs under `jobs_lock`, the kills without it (`reap`). Caller must NOT hold `jobs_lock`."""
+    runs under `jobs_lock`, the kills without it (`reap`). Caller must NOT hold `jobs_lock`.
+    A job whose scan or reap fails (an unwritable dir, a full disk) is listed in `errors`
+    (`{job, error}`) and the others still run."""
+    errors = [] if errors is None else errors
     sett = settings(cfg)
     lost = []
     jd = W.jobs_dir(cfg)
     with W.jobs_lock(cfg):
         for job in sorted(jd.iterdir()) if jd.is_dir() else []:
-            if not job.is_dir() or not _is_async(job) or (job / "result.json").exists():
-                continue
-            if job_state(cfg, job, sett, locked=True)["state"] == "lost":
-                lost.append(job)
-    return [job.name for job in lost if reap(cfg, job)]
+            try:
+                if not job.is_dir() or not _is_async(job) or (job / "result.json").exists():
+                    continue
+                if job_state(cfg, job, sett, locked=True)["state"] == "lost":
+                    lost.append((job, _ident(job)))
+            except OSError as e:
+                errors.append({"job": job.name, "error": str(e)})
+    reaped = []
+    for job, ident in lost:
+        try:
+            if reap(cfg, job, ident):
+                reaped.append(job.name)
+        except OSError as e:
+            errors.append({"job": job.name, "error": str(e)})
+    return reaped
 
 
 # ---- submit ----------------------------------------------------------------------------------
@@ -566,6 +623,32 @@ def _spawn(cfg, job: Path, lock_fd: int) -> subprocess.Popen:
             start_new_session=True, pass_fds=(lock_fd,))
 
 
+def _claim(job: Path, h: dict, digest: str) -> tuple[int, dict]:
+    """The claim's writes into the new dir (under `jobs_lock`): `job.lock` (flocked, the fd
+    returned), `job.json`, `header.json`. When one fails, the dir goes again and the error is
+    raised."""
+    lock_fd = None
+    try:
+        lock_fd = os.open(job / "job.lock", os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        payload = h["payload"]
+        job_rec = {"schema": "nw.worker.job.v1", "job_id": h["job_id"], "kind": h["kind"],
+                   "campaign": h["campaign"], "spec_id": h["spec_id"],
+                   "repo_key": h["repo_key"], "commit": h["commit"], "base": h["base"],
+                   "attempt": h.get("attempt"), "seq": payload["seq"],
+                   "tier": payload.get("tier"), "pid": os.getpid(),
+                   "claimed_at": now_iso(), "state": "accepted", "header_digest": digest,
+                   "submitted_ts": time.time()}
+        _write_atomic(job / "job.json", job_rec)
+        _write_atomic(job / "header.json", h)
+    except OSError:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        shutil.rmtree(job, ignore_errors=True)
+        raise
+    return lock_fd, job_rec
+
+
 def submit(cfg, stdin, stdout) -> int:
     """`nw worker submit`: claim, spool, start the job process, print `accepted` and exit 0.
     A resubmit with the same header digest prints the current state; another header is an
@@ -590,7 +673,7 @@ def submit(cfg, stdin, stdout) -> int:
     sett = settings(cfg)
     job = W.jobs_dir(cfg) / h["job_id"]
     existing = None
-    reclaim_error = None
+    reclaim_error = claim_error = None
     with W.jobs_lock(cfg):
         W.jobs_dir(cfg).mkdir(parents=True, exist_ok=True)
         try:
@@ -608,24 +691,18 @@ def submit(cfg, stdin, stdout) -> int:
                         reclaim_error = f"could not reclaim job {h['job_id']}: {e}"
                 else:
                     st = job_state(cfg, job, sett, locked=True)
-        if existing is None:
-            lock_fd = os.open(job / "job.lock", os.O_RDWR | os.O_CREAT, 0o644)
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            frames.log = job / "frames.jsonl"
-            payload = h["payload"]
-            job_rec = {"schema": "nw.worker.job.v1", "job_id": h["job_id"], "kind": h["kind"],
-                       "campaign": h["campaign"], "spec_id": h["spec_id"],
-                       "repo_key": h["repo_key"], "commit": h["commit"], "base": h["base"],
-                       "attempt": h.get("attempt"), "seq": payload["seq"],
-                       "tier": payload.get("tier"), "pid": os.getpid(),
-                       "claimed_at": now_iso(), "state": "accepted", "header_digest": digest,
-                       "submitted_ts": time.time()}
-            _write_atomic(job / "job.json", job_rec)
-            _write_atomic(job / "header.json", h)
-    if existing is not None:                    # read outside jobs_lock: claims never wait
+        except OSError as e:                    # a full disk: nothing claimed
+            claim_error = f"could not claim job {h['job_id']}: {e}"
+        if existing is None and claim_error is None:
+            try:
+                lock_fd, job_rec = _claim(job, h, digest)
+                frames.log = job / "frames.jsonl"
+            except OSError as e:                # a full disk: un-claimed, no traceback
+                claim_error = f"could not claim job {h['job_id']}: {e}"
+    if existing is not None or claim_error is not None:     # outside jobs_lock
         _drain(stdin, h["bundle_bytes"])        # the client's upload, so it never hits EPIPE
-        if reclaim_error is not None:
-            frames.emit("error", stage="claim", error=reclaim_error)
+        if reclaim_error is not None or claim_error is not None:
+            frames.emit("error", stage="claim", error=reclaim_error or claim_error)
             return W.EXIT_ERROR
         if existing.get("header_digest") == digest:     # idempotent: nothing new starts
             _print(stdout, _status(h["job_id"], st["state"], n=_last_n(job),
@@ -748,11 +825,20 @@ def cancel(cfg, job_id, stdout) -> int:
             _print(stdout, _status(job_id, st))
             return EXIT_UNKNOWN
         if st in ("accepted", "running"):
-            (job / "cancel").write_text(now_iso() + "\n", encoding="utf-8")
+            try:
+                (job / "cancel").write_text(now_iso() + "\n", encoding="utf-8")
+            except OSError as e:
+                _print(stdout, _status(job_id, st, cancel="failed", error=str(e)))
+                return EXIT_UNKNOWN
             _print(stdout, _status(job_id, st, cancel="requested"))
             return 0
+        ident = _ident(job)
     if st == "lost":
-        ok = reap(cfg, job)
+        try:
+            ok = reap(cfg, job, ident)
+        except OSError as e:
+            _print(stdout, _status(job_id, st, reaped=False, error=str(e)))
+            return EXIT_UNKNOWN
         _print(stdout, _status(job_id, st, reaped=ok))
         return 0 if ok else EXIT_UNKNOWN
     _print(stdout, _status(job_id, st))
