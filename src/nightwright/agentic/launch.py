@@ -41,9 +41,13 @@ _STEWARD_VERBS = ("fetch *", "rebase *", "rebase --continue", "rebase --abort", 
 # `git <x>` and `git * <x>` (the latter covers `git -C <dir> <x>`)
 _GUARD_SUBCOMMANDS = ("reset --hard*", "branch -D*", "branch -d*", "branch --delete*",
                       "clean *", "clean")
-# flags that run shell commands or inject config; `git *<x>` covers any position
-_GUARD_FLAGS = ("--exec*", " -x *", "--upload-pack*", "--receive-pack*", "--config-env*",
-                "--git-dir*", "--work-tree*")
+# flags that run shell commands or inject config; `git *<x>` covers any position. git accepts any
+# unambiguous abbreviation of a long option (`--exe=`, `--upload=`) and a stuck short-option value
+# (`-x'cmd'`), so these are the shortest unambiguous prefixes that do not hit legitimate flags
+# (`--update`, `--recurse-submodules`, `--continue`), and ` -x*` has no space after the flag.
+_GUARD_FLAGS = ("--ex*", " -x*", "--upl*", "--rece*", "--config-e*", "--git-d*", "--wo*")
+# `-x` combined behind other short flags (`rebase -ix'cmd'`): any dash option followed by an `x`
+_GUARD_REBASE_X = ("rebase -*x*", "rebase * -*x*")
 # subcommands that edit config/refs, run commands or destroy data; reachable only by `-C *`
 # swallowing a quoted argument that ends in an allowed tail (`config k "x # add y"`)
 _GUARD_SWALLOWED = ("config", "rm", "update-ref", "symbolic-ref", "worktree", "stash", "remote",
@@ -67,6 +71,8 @@ def _steward_guard():
     for x in _GUARD_SUBCOMMANDS:
         rules += [f"Bash(git {x})", f"Bash(git * {x})"]
     rules += [f"Bash(git *{x})" for x in _GUARD_FLAGS]
+    rules += [f"Bash(git {x})" for x in _GUARD_REBASE_X]
+    rules += [f"Bash(git * {x})" for x in _GUARD_REBASE_X]
     rules += ["Bash(git -c *)", "Bash(git * -c *)"]
     for x in _GUARD_SWALLOWED:
         rules += [f"Bash(git * {x})", f"Bash(git * {x} *)"]

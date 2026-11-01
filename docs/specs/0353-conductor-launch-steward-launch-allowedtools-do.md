@@ -269,6 +269,10 @@ SPEC-0339.
   the command matches an allow rule and the named deny rule (including `-c`, `clean`, `branch -d`,
   `--receive-pack`, `*:nw/* *`, `*:wt/* *`, `* wt/* *`).
 
+- Review round 2 (2026-11-01): `uv run pytest -q tests/test_agentic_launch.py`: 176 passed (new
+  `test_steward_guard_denies_stuck_and_abbreviated_shell_exec_spellings`); `spec_lint` OK. Full suite left
+  to the close gate.
+
 ### As shipped
 
 - Implemented as designed in `src/nightwright/agentic/launch.py` (`_push_allow`, `_push_deny`,
@@ -302,6 +306,20 @@ SPEC-0339.
 - Test matcher vs Claude Code: no difference observed yet because the live relaunch check is pending;
   a human relaunching a steward should confirm the refused/allowed commands listed in the manual
   verification and amend here if the real matcher differs.
+
+- Hardening after review round 2 (spelling-independence of the shell-exec family): git's parse-options
+  accepts a stuck short value (`-x'cmd'`, `-x\ cmd`) and any unambiguous long-option abbreviation, so
+  `_GUARD_FLAGS` is now `--ex*`, ` -x*` (no trailing space), `--upl*`, `--rece*`, `--config-e*`,
+  `--git-d*`, `--wo*` (shortest prefixes that do not hit `--update`, `--recurse-submodules` or
+  `--continue`; `--up*` / `--rec*` were rejected for those false positives). `-x` behind other short
+  flags (`rebase -ix'cmd'`, `-qx'cmd'`) is denied by `git [* ]rebase -*x*` and `git [* ]rebase * -*x*`
+  (4 rules): a `rebase` with any dash option and an `x` later in the line is denied (new false
+  positive, e.g. `rebase -r origin/next`). The disallowed list is now 139 rules (steward guard 73).
+  Tests: `test_steward_guard_denies_stuck_and_abbreviated_shell_exec_spellings`; the guard-family pins
+  use the new rule names.
+- Residual risk (not guarded): word splitting through a tab, `$IFS` / `${IFS}` or `$(...)` inside the
+  `-C *`-swallowed part of a command, and global options git matches exactly are denied only by their
+  spelled prefix.
 
 ## Rollout / migration
 

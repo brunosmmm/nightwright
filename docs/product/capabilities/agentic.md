@@ -584,7 +584,11 @@ Default permission rules (SPEC-0353; code-held in `launch.py`, a configured `all
   `git -C *` denies can also match a non-push command whose arguments contain `push`, `main`,
   `config`, `remote`, … as separate words (e.g. in a commit message); keep such words out of
   `-m` or use `-F`. The guard is a denylist: other subcommands reached through `-C *` remain a
-  residual risk.
+  residual risk. Because git accepts abbreviated long options and a stuck short-option value, the
+  shell-exec flags are denied by their shortest unambiguous prefix (`--ex*`, `--upl*`, `--rece*`,
+  `--config-e*`, `--git-d*`, `--wo*`), `-x` with nothing after it (`-x'cmd'`), and any dash option
+  of `rebase` followed by an `x` (`-ix'cmd'`), so a `rebase` with a dash option and an `x` later
+  in the line is denied. Word splitting through `$`/`${IFS}` or a tab is not guarded.
 
 Permission flags are fixed when a session starts: relaunch running conductors and stewards
 (`nw queue steward-launch PROJECT --resume`) to pick up changed rules.

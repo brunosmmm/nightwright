@@ -603,6 +603,28 @@ def test_steward_guard_denies_swallowed_and_exec_commands(cfg):
         assert _permitted(cmd, allow, deny), cmd
 
 
+def test_steward_guard_denies_stuck_and_abbreviated_shell_exec_spellings(cfg):
+    """git accepts `-x<cmd>`, `-ix<cmd>` and any unambiguous long-option prefix (SPEC-0353 review)."""
+    allow, deny = _eff(cfg, "steward")
+    for cmd in ("git -C /w rebase -x'sh' origin/main", "git rebase -x'sh' origin/main",
+                "git -C /w rebase -x\\ sh origin/main", "git -C /w rebase -ix'sh' origin/main",
+                "git rebase -ix'sh' origin/main", "git rebase origin/main -qx'sh'",
+                "git rebase --exe=sh origin/main", "git -C /w rebase --ex 'sh' origin/main",
+                "git -C /w fetch --upload='sh;' .", "git -C /w fetch --upload-pac=sh .",
+                "git fetch --upl=sh .", "git -C /w fetch --upload-pack sh .",
+                "git -C /w fetch --rece=sh .", "git -C /w fetch --git-di=/x origin",
+                "git -C /w fetch --work-t=/x origin", "git -C /w fetch --config-env=a=B origin"):
+        assert not _permitted(cmd, allow, deny), cmd
+    for cmd in ("git -C /w rebase origin/main", "git rebase origin/main", "git rebase --continue",
+                "git -C /w rebase --abort", "git -C /w rebase -r origin/main",
+                "git -C /w rebase --onto origin/main HEAD~1", "git -C /w fetch origin",
+                "git -C /w fetch --recurse-submodules origin", "git -C /w fetch --prune origin",
+                "git -C /w add --update", "git -C /w add src/x.py",
+                "git -C /w commit -m msg", "git -C /w commit -F /tmp/m",
+                "git -C /w commit --amend --no-edit", "git -C /w checkout --ours a.py"):
+        assert _permitted(cmd, allow, deny), cmd
+
+
 def test_known_false_positive_commit_message_mentioning_push_main(cfg):
     """The `git -C *` deny rules also match non-push commands whose arguments contain
     `push ... main <more>`; accepted (the steward keeps such words out of `-m`, or uses `-F`).
@@ -638,11 +660,11 @@ def _hits(command, rules):
     ("git push --force-with-lease=a b origin nw/x", "Bash(git push --force-with-lease=* * origin *)"),
     ("git -C /w config k touch push origin nw/y", "Bash(git -C * * push *)"),
     ("git -C /w -c core.sshCommand=sh fetch origin", "Bash(git * -c *)"),
-    ("git -C /w fetch --receive-pack=sh origin", "Bash(git *--receive-pack*)"),
+    ("git -C /w fetch --receive-pack=sh origin", "Bash(git *--rece*)"),
     ("git -C /w fetch origin branch -d x", "Bash(git * branch -d*)"),
     ("git -C /w fetch origin clean", "Bash(git * clean)"),
     ("git -C /w fetch origin clean -fd", "Bash(git * clean *)"),
-    ("git -C /w fetch --git-dir=/x origin", "Bash(git *--git-dir*)"),
+    ("git -C /w fetch --git-dir=/x origin", "Bash(git *--git-d*)"),
     ('git -C /w config core.fsmonitor "x # add y"', "Bash(git * config *)"),
 ])
 def test_each_guard_family_is_what_stops_the_command(cfg, cmd, rule):
