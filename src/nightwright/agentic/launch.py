@@ -18,18 +18,62 @@ from . import conductor_cost as CC
 CONDUCTOR_PROMPT = "Run the /nw-orient skill, then the /nw-conduct skill."
 STEWARD_PROMPT = "Run the /nw-orient skill, then the /nw-steward skill for project {project}."
 
+# Rule generators (SPEC-0353). `*` matches any characters, spaces included, so allow rules that end
+# in a wildcard are guarded by a deny rule for every argument that can follow the ref.
+_PREFIXES = ("git", "git -C *")
+_NAMESPACES = ("nw/*", "wt/*")
+_FORCE_FORMS = ("", "--force-with-lease ", "--force-with-lease=* ")
+_PUSH_DENY = (
+    "* main", "* master", "* main *", "* master *",
+    "*:main", "*:master", "*:main *", "*:master *",
+    "*refs/heads/main", "*refs/heads/master", "*refs/heads/main *", "*refs/heads/master *",
+    "*+*",
+    "--force *", "-f *", "--force", "-f", "* --force", "* --force *", "* -f", "* -f *",
+    "* nw/* *", "* wt/* *", "*:nw/* *", "*:wt/* *")
+_STEWARD_VERBS = ("fetch *", "rebase *", "rebase --continue", "rebase --abort", "add *",
+                  "commit *", "restore *", "checkout --ours *", "checkout --theirs *")
+# `git <x>` and `git * <x>` (the latter covers `git -C <dir> <x>`)
+_GUARD_SUBCOMMANDS = ("reset --hard*", "branch -D*", "branch -d*", "branch --delete*",
+                      "clean *", "clean")
+# flags that run shell commands or inject config; `git *<x>` covers any position
+_GUARD_FLAGS = ("--exec*", " -x *", "--upload-pack*", "--receive-pack*")
+_GUARD_KEYWORDS = ("fetch", "rebase", "add", "commit", "restore", "checkout")
+
+
+def _push_allow():
+    return [f"Bash({p} push {f}origin {r})" for p in _PREFIXES for ns in _NAMESPACES
+            for r in (ns, f"HEAD:{ns}") for f in _FORCE_FORMS]
+
+
+def _push_deny():
+    return [f"Bash({p} push {x})" for p in _PREFIXES for x in _PUSH_DENY]
+
+
+def _steward_guard():
+    rules = []
+    for x in _GUARD_SUBCOMMANDS:
+        rules += [f"Bash(git {x})", f"Bash(git * {x})"]
+    rules += [f"Bash(git *{x})" for x in _GUARD_FLAGS]
+    rules += ["Bash(git -c *)", "Bash(git * -c *)"]
+    for kw in _GUARD_KEYWORDS:
+        rules += [f"Bash(git * push * {kw})", f"Bash(git * push * {kw} *)"]
+    return rules
+
+
+def _dedup(items):
+    return list(dict.fromkeys(items))
+
+
 DEFAULTS = {"model": "claude-sonnet-5-5", "effort": "medium", "autocompact": "150k",
             "idle_compact_min_tokens": 120000, "bash_max_output_length": 15000,
             "file_read_max_output_tokens": 10000,
-            "allowed_tools": [
-                "Bash(git push --force-with-lease origin nw/*)", "Bash(git push origin nw/*)",
-                "Bash(git push --force-with-lease origin wt/*)", "Bash(git push origin wt/*)",
-                "Bash(gh pr create *)", "Bash(gh pr edit *)", "Bash(gh pr comment *)"],
-            "disallowed_tools": [
-                "Bash(git push * main)", "Bash(git push * master)",
-                "Bash(git push * HEAD:main)", "Bash(git push * HEAD:master)",
-                "Bash(git push --force *)", "Bash(git push -f *)", "Bash(gh pr merge *)"]}
+            "allowed_tools": [*_push_allow(), "Bash(gh pr create *)", "Bash(gh pr edit *)",
+                              "Bash(gh pr comment *)"],
+            "steward_allowed_tools": [f"Bash({p} {v})" for p in _PREFIXES for v in _STEWARD_VERBS],
+            "disallowed_tools": [*_push_deny(), *_steward_guard(), "Bash(gh pr merge *)"]}
 TOOL_FLAGS = {"allowed_tools": "--allowedTools", "disallowed_tools": "--disallowedTools"}
+# list-valued settings; `steward_allowed_tools` is merged into `--allowedTools`, never its own flag
+LIST_KEYS = {*TOOL_FLAGS, "steward_allowed_tools"}
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 AUTOCOMPACT_MIN, AUTOCOMPACT_MAX = 100_000, 1_000_000
 # settings key -> env var, in the order NW_LAUNCH_KEYS lists them
@@ -77,7 +121,7 @@ def _good(key, v):
             return "auto"
         n = _tokens(v)
         return n if n is not None and AUTOCOMPACT_MIN <= n <= AUTOCOMPACT_MAX else None
-    if key in TOOL_FLAGS:
+    if key in LIST_KEYS:
         ok = isinstance(v, list) and all(isinstance(x, str) and x.strip() for x in v)
         return [x.strip() for x in v] if ok else None
     n = _tokens(v)
@@ -143,7 +187,11 @@ def build_plan(cfg, role, project=None, *, resume=False, session_id=None) -> dic
               else STEWARD_PROMPT.format(project=project))
     # --allowedTools/--disallowedTools are variadic: each is followed by another option (never
     # the positional prompt) so the prompt is not swallowed as a rule. Empty list: no flag.
-    perms = [x for key, flag in TOOL_FLAGS.items() if sett[key] for x in (flag, *sett[key])]
+    # The steward's effective allow list is allowed_tools + steward_allowed_tools (SPEC-0353).
+    eff = {"allowed_tools": _dedup(sett["allowed_tools"] + (sett["steward_allowed_tools"]
+                                                            if role == "steward" else [])),
+           "disallowed_tools": sett["disallowed_tools"]}
+    perms = [x for key, flag in TOOL_FLAGS.items() if eff[key] for x in (flag, *eff[key])]
     argv = ["claude", "-n", name, "--resume" if resume else "--session-id", sid, *perms,
             "--model", sett["model"], "--effort", sett["effort"],
             "--autocompact", str(sett["autocompact"]), prompt]
@@ -152,8 +200,8 @@ def build_plan(cfg, role, project=None, *, resume=False, session_id=None) -> dic
     return {"role": role, "name": name, "cwd": str(cwd), "session_id": sid, "resumed": resume,
             "argv": argv, "env": env, "env_remove": list(ENV_REMOVE), "prompt": prompt,
             "model": sett["model"],
-            "allowed_tools": list(sett["allowed_tools"]),
-            "disallowed_tools": list(sett["disallowed_tools"]), "price": CC.price_for(cfg, sett["model"])}
+            "allowed_tools": list(eff["allowed_tools"]),
+            "disallowed_tools": list(eff["disallowed_tools"]), "price": CC.price_for(cfg, sett["model"])}
 
 
 def check_price(plan):

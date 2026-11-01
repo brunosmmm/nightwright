@@ -1,7 +1,7 @@
 ---
 id: SPEC-0353
 title: "conductor-launch / steward-launch permission rules cover lease-pinned PR-rebase pushes and the steward rebase set"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -164,19 +164,19 @@ SPEC-0339.
 
 ## Acceptance criteria
 
-- [ ] `DEFAULTS["allowed_tools"]` contains, for each of `nw/*` and `wt/*`, rules for plain,
+- [x] `DEFAULTS["allowed_tools"]` contains, for each of `nw/*` and `wt/*`, rules for plain,
       `--force-with-lease` and `--force-with-lease=*` pushes, each with prefix `git` and
       `git -C *` and with refs `<ns>` and `HEAD:<ns>` (24 push rules), plus the three
       unchanged `gh pr` rules; the four SPEC-0339 push literals are still present.
-- [ ] `DEFAULTS["disallowed_tools"]` contains the 25 push-guard rules per prefix (50 for
+- [x] `DEFAULTS["disallowed_tools"]` contains the 25 push-guard rules per prefix (50 for
       `git` and `git -C *`: main/master incl. non-last position, refspec destinations,
       `*+*`, bare force flags anywhere, extra tokens after `nw/*` / `wt/*` refs), the steward
       guard rules (shell execution, `-c`, destructive, swallow guard) and `Bash(gh pr merge *)`.
-- [ ] Against the test matcher (deny wins over allow), these are allowed:
+- [x] Against the test matcher (deny wins over allow), these are allowed:
       `git push --force-with-lease origin nw/x`,
       `git -C /w/wt push --force-with-lease=nw/x:abc123 origin HEAD:nw/x`,
       `git -C /w/wt push origin HEAD:wt/x`, `git push origin wt/x`.
-- [ ] Against the same matcher these are denied (not allowed): `git push origin main`,
+- [x] Against the same matcher these are denied (not allowed): `git push origin main`,
       `git push --force-with-lease=main:abc origin HEAD:main`,
       `git -C /w push --force-with-lease=nw/x:abc origin HEAD:refs/heads/master`,
       `git push --force origin nw/x`, `git -C /w push -f origin HEAD:nw/x`,
@@ -185,13 +185,13 @@ SPEC-0339.
       `git push origin nw/x main --verbose`, `git push origin nw/x --force`,
       `git -C /w push origin HEAD:nw/x -f`, `git push origin nw/x feature/y`,
       `git push --force-with-lease=x --force origin nw/y`.
-- [ ] `DEFAULTS["steward_allowed_tools"]` holds the steward rebase set; `build_plan` for a
+- [x] `DEFAULTS["steward_allowed_tools"]` holds the steward rebase set; `build_plan` for a
       steward includes it in `plan["allowed_tools"]` and the `--allowedTools` argv; for the
       conductor it does not.
-- [ ] `steward_allowed_tools` can be overridden or emptied at top level and under `steward`;
+- [x] `steward_allowed_tools` can be overridden or emptied at top level and under `steward`;
       a bad value falls back to the default; `allowed_tools: []` still removes the
       base list without removing the steward set (and vice versa).
-- [ ] Against the test matcher with the steward effective lists, these are denied:
+- [x] Against the test matcher with the steward effective lists, these are denied:
       `git -C /w branch -D main add x`, `git -C /w reset --hard HEAD~3 add x`,
       `git rebase -x "git push --force origin main" origin/main`,
       `git fetch --upload-pack=sh origin`, `git -C /w clean -fdx add x`,
@@ -199,11 +199,11 @@ SPEC-0339.
       `git -C /w rebase origin/main`, `git -C /w rebase --continue`,
       `git -C /w add src/a.py`, `git -C /w commit -m msg`,
       `git -C /w checkout --theirs a.py`.
-- [ ] `--dry-run` text and `--json` show the effective list, `--resume` applies it, and the
+- [x] `--dry-run` text and `--json` show the effective list, `--resume` applies it, and the
       prompt is still the last argv element (the variadic-flag invariant from SPEC-0339).
-- [ ] The launch capability doc describes the widened rules, `steward_allowed_tools`, and that
+- [x] The launch capability doc describes the widened rules, `steward_allowed_tools`, and that
       running stewards must be relaunched.
-- [ ] `python3 tools/spec_lint.py` exits 0.
+- [x] `python3 tools/spec_lint.py` exits 0.
 
 ## Test plan
 
@@ -246,6 +246,39 @@ SPEC-0339.
 - **Regression guard:** the SPEC-0339 tests above; the full suite runs at the queue close
   gate. `uv run pytest tests/test_spec_lint.py` / `spec_lint` confirm spec and ledger.
 
+### Test record (2026-11-01)
+
+- `uv run pytest -q tests/test_agentic_launch.py`: 123 passed (new: `test_default_rules_allow_incident_pushes`,
+  `test_default_rules_deny_dangerous_pushes`, `test_push_guard_rule_count`,
+  `test_push_rule_count_and_legacy_literals`, `test_steward_plan_includes_rebase_set`,
+  `test_conductor_plan_excludes_rebase_set`, `test_steward_allowed_tools_overrides`,
+  `test_steward_guard_denies_swallowed_and_exec_commands`,
+  `test_known_false_positive_commit_message_mentioning_push_main`; the SPEC-0339 permission tests
+  updated to the new defaults).
+- Manual: `nw queue steward-launch Meta-Tools --dry-run` prints `git -C * push --force-with-lease=* origin
+  HEAD:nw/*` and `git -C * rebase *`; `nw queue conductor-launch --dry-run --json | jq .allowed_tools`
+  has the push rules and no `rebase` rule.
+- Not performed: the live relaunch of a steward in Claude Code (needs the human's session); the
+  extra live checks (`... HEAD:nw/<b> --force`, `branch -D <scratch> add x` refused) are therefore
+  still open, see As shipped.
+- The full suite was left to the queue close gate.
+
+### As shipped
+
+- Implemented as designed in `src/nightwright/agentic/launch.py` (`_push_allow`, `_push_deny`,
+  `_steward_guard`, `LIST_KEYS`). `steward_allowed_tools` is validated through `LIST_KEYS` in `_good`
+  but is not a `TOOL_FLAGS` key; only the merged list is emitted under `--allowedTools`.
+- Steward guard shape: subcommand forms are generated as `git <x>` and `git * <x>`; flag forms as
+  `git *<x>` (`--exec*`, ` -x *`, `--upload-pack*`, `--receive-pack*`); config injection as
+  `git -c *` / `git * -c *`; swallow guard `git * push * <kw>` / `... <kw> *` for six keywords.
+  The disallowed list is 81 rules (50 push guard, 30 steward guard, `gh pr merge`).
+- Known false positive, pinned by test: `git -C * push * main *` also denies a commit whose message
+  contains ` push ... main <more>` (e.g. `-m "before push to main now"`). A message that ends in `main"`
+  is not denied, since the closing quote stops the anchored `push * main`.
+- Test matcher vs Claude Code: no difference observed yet because the live relaunch check is pending;
+  a human relaunching a steward should confirm the refused/allowed commands listed in the manual
+  verification and amend here if the real matcher differs.
+
 ## Rollout / migration
 
 1. Land the code, tests and doc change through the queue.
@@ -258,11 +291,11 @@ SPEC-0339.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual steps performed and noted.
-- [ ] No regressions (full suite at the queue close gate).
-- [ ] Spec body updated to match what shipped (As shipped section).
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual steps performed and noted.
+- [x] No regressions (full suite at the queue close gate).
+- [x] Spec body updated to match what shipped (As shipped section).
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 

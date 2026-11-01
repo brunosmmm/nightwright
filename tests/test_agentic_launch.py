@@ -1,6 +1,7 @@
 """SPEC-0319: `nw queue conductor-launch` / `steward-launch`."""
 import json
 import os
+import re
 import shlex
 from pathlib import Path
 
@@ -102,7 +103,7 @@ def test_default_plan_argv_and_env(cfg, tmp_path):
     assert argv[argv.index("--model"):][:6] == ["--model", "claude-sonnet-5-5", "--effort", "medium",
                           "--autocompact", "150000"]
     assert argv[-1] == L.CONDUCTOR_PROMPT
-    assert "allowed_tools: Bash(git push --force-with-lease origin nw/*)" in r.output
+    assert "allowed_tools: Bash(git push origin nw/*)" in r.output
     assert "disallowed_tools: Bash(git push * main)" in r.output
     assert sessions_lines(cfg) == []
 
@@ -414,7 +415,9 @@ def test_permission_config_replaces_defaults_and_steward_inherits(cfg):
     cfg["agentic"]["conductor"]["launch"] = {"allowed_tools": ["Bash(ls *)"],
                                              "disallowed_tools": ["Bash(rm *)"]}
     for plan in (L.build_plan(cfg, "conductor"), L.build_plan(cfg, "steward", "Foo")):
-        assert _perm_args(plan["argv"], "--allowedTools") == ["Bash(ls *)"]
+        # a steward additionally gets steward_allowed_tools (SPEC-0353)
+        extra = L.DEFAULTS["steward_allowed_tools"] if plan["name"].startswith("steward") else []
+        assert _perm_args(plan["argv"], "--allowedTools") == ["Bash(ls *)", *extra]
         assert _perm_args(plan["argv"], "--disallowedTools") == ["Bash(rm *)"]
 
 
@@ -439,3 +442,148 @@ def test_resume_applies_permission_rules(cfg):
     assert plan["argv"][3:5] == ["--resume", "old"]
     assert _perm_args(plan["argv"], "--allowedTools") == L.DEFAULTS["allowed_tools"]
     assert _perm_args(plan["argv"], "--disallowedTools") == L.DEFAULTS["disallowed_tools"]
+
+
+# --- SPEC-0353: lease-pinned PR-rebase pushes and the steward rebase set ---
+
+def _permitted(command, allow, deny):
+    """True when `command` matches an allow rule and no deny rule. Approximates Claude Code's
+    `Bash(<pattern>)` matcher for these rule shapes: anchored, `*` matches any characters
+    (spaces included), everything else literal."""
+    def hit(rules):
+        for r in rules:
+            pat = r[len("Bash("):-1]
+            if re.fullmatch(".*".join(re.escape(x) for x in pat.split("*")), command, re.S):
+                return True
+        return False
+    return hit(allow) and not hit(deny)
+
+
+def _eff(cfg, role):
+    plan = L.build_plan(cfg, role, "Foo" if role == "steward" else None)
+    return plan["allowed_tools"], plan["disallowed_tools"]
+
+
+INCIDENT = ("git -C /home/u/.nw-worktrees/Foo/IDEA-1 push "
+            "--force-with-lease=nw/IDEA-1:3f9c2d1e8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d "
+            "origin HEAD:nw/IDEA-1")
+
+
+@pytest.mark.parametrize("role", ["conductor", "steward"])
+@pytest.mark.parametrize("cmd", [
+    "git push --force-with-lease origin nw/x",
+    "git -C /w/wt push --force-with-lease=nw/x:abc123 origin HEAD:nw/x",
+    "git -C /w/wt push origin HEAD:wt/x", "git push origin wt/x", INCIDENT])
+def test_default_rules_allow_incident_pushes(cfg, role, cmd):
+    allow, deny = _eff(cfg, role)
+    assert _permitted(cmd, allow, deny)
+
+
+@pytest.mark.parametrize("cmd", [
+    "git push origin main", "git push --force-with-lease=main:abc origin HEAD:main",
+    "git -C /w push --force-with-lease=nw/x:abc origin HEAD:refs/heads/master",
+    "git push --force origin nw/x", "git -C /w push -f origin HEAD:nw/x", "git push --force",
+    "git push origin feature/x", "gh pr merge 9", "git push origin nw/x +main",
+    "git push origin nw/x main --verbose", "git push origin nw/x --force",
+    "git -C /w push origin HEAD:nw/x -f", "git push origin nw/x feature/y",
+    "git push --force-with-lease=x --force origin nw/y",
+    "git -C /w push origin HEAD:nw/x master", "git push origin nw/x:main",
+    "git push origin nw/x +nw/y"])
+@pytest.mark.parametrize("role", ["conductor", "steward"])
+def test_default_rules_deny_dangerous_pushes(cfg, role, cmd):
+    allow, deny = _eff(cfg, role)
+    assert not _permitted(cmd, allow, deny)
+
+
+def test_push_guard_rule_count():
+    deny = L._push_deny()
+    assert len(deny) == 50 and len(set(deny)) == 50
+    assert sum(r.startswith("Bash(git push ") for r in deny) == 25
+    assert sum(r.startswith("Bash(git -C * push ") for r in deny) == 25
+    assert set(deny) <= set(L.DEFAULTS["disallowed_tools"])
+    assert "Bash(gh pr merge *)" in L.DEFAULTS["disallowed_tools"]
+    d = L.DEFAULTS["disallowed_tools"]
+    assert len(d) == len(set(d))
+
+
+def test_push_rule_count_and_legacy_literals():
+    a = L.DEFAULTS["allowed_tools"]
+    pushes = [x for x in a if " push " in x]
+    assert len(pushes) == 24 and len(set(a)) == len(a)
+    for lit in ("Bash(git push --force-with-lease origin nw/*)", "Bash(git push origin nw/*)",
+                "Bash(git push --force-with-lease origin wt/*)", "Bash(git push origin wt/*)",
+                "Bash(git -C * push --force-with-lease=* origin HEAD:nw/*)"):
+        assert lit in a
+    assert {"Bash(gh pr create *)", "Bash(gh pr edit *)", "Bash(gh pr comment *)"} <= set(a)
+
+
+def test_steward_plan_includes_rebase_set(cfg):
+    plan = L.build_plan(cfg, "steward", "Foo")
+    st = L.DEFAULTS["steward_allowed_tools"]
+    assert len(st) == 18 and "Bash(git -C * rebase --continue)" in st
+    assert plan["allowed_tools"] == L.DEFAULTS["allowed_tools"] + st
+    assert _perm_args(plan["argv"], "--allowedTools") == plan["allowed_tools"]
+    assert plan["argv"][-1].startswith("Run the /nw-orient skill, then the /nw-steward")
+    assert "--steward_allowed_tools" not in plan["argv"]
+    r = invoke("steward-launch", "Foo", "--dry-run", "--json")
+    assert json.loads(r.output)["allowed_tools"] == plan["allowed_tools"]
+
+
+def test_conductor_plan_excludes_rebase_set(cfg):
+    plan = L.build_plan(cfg, "conductor")
+    assert not set(L.DEFAULTS["steward_allowed_tools"]) & set(plan["allowed_tools"])
+    assert not any("rebase" in x for x in plan["allowed_tools"])
+    assert plan["argv"][-1] == L.CONDUCTOR_PROMPT
+    r = invoke("conductor-launch", "--dry-run", "--json")
+    assert not any("rebase" in x for x in json.loads(r.output)["allowed_tools"])
+
+
+def test_steward_allowed_tools_overrides(cfg):
+    base = L.DEFAULTS["allowed_tools"]
+    launch = cfg["agentic"]["conductor"]["launch"] = {"steward_allowed_tools": ["Bash(git add *)"]}
+    assert L.build_plan(cfg, "steward", "Foo")["allowed_tools"] == base + ["Bash(git add *)"]
+    assert L.build_plan(cfg, "conductor")["allowed_tools"] == base
+    launch["steward"] = {"steward_allowed_tools": []}
+    assert L.build_plan(cfg, "steward", "Foo")["allowed_tools"] == base
+    launch.pop("steward")
+    launch["steward_allowed_tools"] = []
+    assert L.build_plan(cfg, "steward", "Foo")["allowed_tools"] == base
+    for bad in ("Bash(ls)", [1], [""], None):
+        launch["steward_allowed_tools"] = bad
+        assert L.settings(cfg, "steward")["steward_allowed_tools"] == L.DEFAULTS["steward_allowed_tools"]
+    # independence: allowed_tools [] keeps the steward set, and vice versa
+    launch.clear()
+    launch["allowed_tools"] = []
+    assert L.build_plan(cfg, "steward", "Foo")["allowed_tools"] == L.DEFAULTS["steward_allowed_tools"]
+    assert "--allowedTools" not in L.build_plan(cfg, "conductor")["argv"]
+    launch.clear()
+    launch["steward_allowed_tools"] = []
+    plan = L.build_plan(cfg, "steward", "Foo")
+    assert plan["allowed_tools"] == base
+    launch["allowed_tools"] = []
+    assert "--allowedTools" not in L.build_plan(cfg, "steward", "Foo")["argv"]
+
+
+def test_steward_guard_denies_swallowed_and_exec_commands(cfg):
+    allow, deny = _eff(cfg, "steward")
+    for cmd in ("git -C /w branch -D main add x", "git -C /w reset --hard HEAD~3 add x",
+                'git rebase -x "git push --force origin main" origin/main',
+                "git fetch --upload-pack=sh origin", "git -C /w clean -fdx add x",
+                "git -C /w push origin feature/y add x", "git -C /w rebase --exec 'sh' origin/main",
+                "git -C /w branch --delete foo add x", "git clean", "git -c core.pager=sh fetch"):
+        assert not _permitted(cmd, allow, deny), cmd
+    for cmd in ("git -C /w rebase origin/main", "git -C /w rebase --continue",
+                "git -C /w add src/a.py", "git -C /w commit -m msg",
+                "git -C /w checkout --theirs a.py", "git -C /w fetch origin",
+                "git rebase --abort", "git -C /w restore --staged a.py"):
+        assert _permitted(cmd, allow, deny), cmd
+
+
+def test_known_false_positive_commit_message_mentioning_push_main(cfg):
+    """The `git -C *` deny rules also match non-push commands whose arguments contain
+    `push ... main <more>`; accepted (the steward keeps such words out of `-m`, or uses `-F`).
+    Pinned so a change notices."""
+    allow, deny = _eff(cfg, "steward")
+    assert not _permitted('git -C /w commit -m "resolve conflict before push to main now"',
+                           allow, deny)
+    assert _permitted('git -C /w commit -m "resolve conflict"', allow, deny)

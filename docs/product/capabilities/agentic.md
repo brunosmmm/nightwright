@@ -564,6 +564,24 @@ registered before `claude` starts, so its cost is tracked (`nw queue conductor-s
 launched session. Settings live under `agentic.conductor.launch` (a `steward:` sub-mapping
 overrides them for stewards).
 
+Default permission rules (SPEC-0353; code-held in `launch.py`, a configured `allowed_tools` /
+`disallowed_tools` list replaces the default wholesale and gets none of the widening):
+
+- **Pushes.** `nw/*` and `wt/*` branches may be pushed as plain `git` or `git -C <dir>`, plain or
+  `--force-with-lease` / `--force-with-lease=<ref>:<sha>`, refspec `<branch>` or `HEAD:<branch>`.
+  Pushes to `main` / `master` in any refspec spelling, bare `--force` / `-f`, `+` refspecs, and any
+  extra refspec or flag after the branch are denied; so is `gh pr merge`.
+- **Steward rebase set.** `steward_allowed_tools` (top level or `steward:`; `[]` removes it) is
+  added to the allow list for stewards only: `git fetch|rebase|add|commit|restore` and
+  `checkout --ours|--theirs`, plain or with `-C <dir>`. It is merged into `--allowedTools`.
+- **Steward guard.** Explicit denies for shell-executing and destructive git forms (`--exec`,
+  `-x`, `-c`, `--upload-pack`, `reset --hard`, `branch -D`, `clean`, and a push to another ref
+  hidden behind a steward keyword). The `git -C *` denies can also match a non-push command whose
+  arguments contain `push … main …` (e.g. in a commit message); keep such words out of `-m`.
+
+Permission flags are fixed when a session starts: relaunch running conductors and stewards
+(`nw queue steward-launch PROJECT --resume`) to pick up changed rules.
+
 Both commands exit 1 when the model has no price. nightwright ships no price table; set one
 (keys are model-name prefixes, longest match wins; values are dollars per million tokens):
 
