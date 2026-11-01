@@ -294,6 +294,16 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
   untracked file, and `--worker` on it erroring; a fallback run's `slot_wait_s` including the
   fallback's local wait. The deletion, interruption and malformed-value tests were checked to
   fail with their fix reverted. The full suite is left to the gate.
+- Review fixes (loop 4): `uv run pytest -q -n 4 tests/test_remote_gates.py tests/test_worker.py
+  tests/test_worker_ssh_command.py tests/test_agentic_dogfood_config.py
+  tests/test_agentic_project.py`: 273 passed (`test_remote_gates.py`: 54). Added: a gate that
+  writes a tracked file and a new file, run with a worker, falls back with `worker_failed` stage
+  `tree` and no cooldown, and leaves the coordinator's worktree (`git status` and file contents)
+  identical to a twin repo gated with no worker at all; a generator whose output is already
+  current stays remote (`changed: []`); `tree_changes` lists a rename once and a path with a
+  space; a `done` without `changed`, with a non-list or non-string `changed`, and a gate frame
+  whose `attempts` is not iterable each fall back as `protocol`. The tree and malformed-frame
+  tests were checked to fail with their fix reverted. The full suite is left to the gate.
 - Manual verification (steps 1-6, the second machine) has **not** been run: it needs the
   human's machine. The last criterion stays open and the spec stays `in-progress` until then.
 
@@ -333,6 +343,20 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
   an interrupted `GateRun`. Worker-supplied `slot_wait_s`/`duration_s` must be finite,
   non-negative numbers and `ok`/`interrupted` booleans (`ok` required); anything else is a
   `protocol` failure.
+- **A gate's writes to the tree re-run the gates locally.** The worker's checkout is
+  throwaway and only logs come back, so a gate that writes the tree (`spec_lint.py
+  --write-ledger` in this repo's own spec-lint gate, a formatter, a code generator) would
+  otherwise pass on the worker while the coordinator commits the unwritten tree. The worker's
+  `done` frame (SPEC-0336's `_run_gates`) now carries `changed`: the paths `git status
+  --porcelain --untracked-files=all` reports in its checkout after the gates (at most 20;
+  `null` when git cannot tell). A non-empty list is a fallback **without** cooldown
+  (`worker_failed` stage `tree`) and the local re-run writes the worktree as it always has; a
+  missing or malformed `changed` is a `protocol` failure (an outdated worker). The dogfood
+  `.nw/project.yaml` keeps spec-lint remote-eligible: a current ledger is rewritten unchanged
+  (no fallback), a stale one sends the run home. docs/WORKFLOW.md says so and that a gate that
+  writes the tree on every run should set `remote: false`.
+- A gate frame whose result builds but whose `attempts`/`flaky` is not iterable is a
+  `protocol` failure, not an exception out of `run_all`.
 - The run-timeout margin (`RUN_TIMEOUT_MARGIN_S`, 120 s) and `job_timeout_s` are module-level
   in `remote_gates.py`, so tests can shrink them.
 

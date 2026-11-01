@@ -9,6 +9,8 @@ gates:
   - name: spec-lint
     # Regenerate the generated ledger block first: it is derived from frontmatter, so an
     # implementer that edited a spec but forgot --write-ledger must not fail the gate for it.
+    # On a remote worker (SPEC-0338) the regenerated ledger would stay in the worker's checkout:
+    # the worker reports the change and the run is re-run locally, which rewrites it here.
     cmd: python3 tools/spec_lint.py --write-ledger >/dev/null && python3 tools/spec_lint.py
     timeout_s: 120
     required: true

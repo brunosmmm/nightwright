@@ -379,6 +379,21 @@ def _flag(frame: dict, key: str, *, required: bool) -> bool:
     return v
 
 
+def _check_changed(frame: dict) -> None:
+    """`done`'s `changed`: the paths the gates wrote in the worker's checkout. Those writes
+    never reach the coordinator's worktree (a regenerated ledger, a formatter's output), so a
+    run that made any is re-run locally, without cooldown: the local run leaves the worktree
+    as it always has. A worker that does not say is a protocol failure."""
+    changed = frame.get("changed")
+    if not isinstance(changed, list) or not all(isinstance(p, str) for p in changed):
+        raise RemoteFailure("protocol", f"`done` frame: bad changed {changed!r} (the worker "
+                                        f"cannot tell what the gates wrote)")
+    if changed:
+        raise RemoteFailure("tree", f"the gates changed {len(changed)} file(s) in the worker's "
+                                    f"checkout ({', '.join(changed[:5])}); re-running locally "
+                                    f"so the worktree gets those writes", cooldown=False)
+
+
 def _take_gate(frame: dict, gates_dir: Path, seq: int, names: set) -> G.GateResult:
     """Write one `gate` frame's files under `gates/` and return its `GateResult` with the
     campaign-relative log and a tail recomputed from the local copy."""
@@ -397,13 +412,13 @@ def _take_gate(frame: dict, gates_dir: Path, seq: int, names: set) -> G.GateResu
         except (ValueError, OSError, EOFError) as e:
             raise RemoteFailure("protocol", f"gate file {name}: {e}")
         (gates_dir / name).write_bytes(raw)
+    log = gates_dir / f"{stem}.log"
     try:
         r = G.GateResult(**{k: result[k] for k in _GATE_FIELDS if k in result})
+        return replace(r, log=f"gates/{stem}.log", tail=G.tail(log),
+                       attempts=tuple(r.attempts or ()), flaky=tuple(r.flaky or ()))
     except TypeError as e:
         raise RemoteFailure("protocol", f"gate result: {e}")
-    log = gates_dir / f"{stem}.log"
-    return replace(r, log=f"gates/{stem}.log", tail=G.tail(log),
-                   attempts=tuple(r.attempts or ()), flaky=tuple(r.flaky or ()))
 
 
 def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop) -> Outcome:
@@ -495,6 +510,8 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                     # the worker cut the run short on its own (SIGTERM/SIGINT/SIGHUP: the host
                     # is going away): a transport failure, never a red gate
                     raise RemoteFailure("interrupted", "the worker interrupted the run (signal)")
+                if not cut:
+                    _check_changed(frame)
                 return Outcome(G.GateRun(seq, ok, tuple(results),
                                          str(frame.get("started_at") or started_at), duration,
                                          interrupted=cut, worker=worker["name"]), worker_wait)

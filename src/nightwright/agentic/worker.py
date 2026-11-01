@@ -758,7 +758,7 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
                             wait_event_s=_slot_wait_event_s()) as hold:
         if hold.interrupted:
             frames.emit("done", ok=False, started_at=now_iso(), duration_s=0.0,
-                        slot_wait_s=hold.waited_s, interrupted=True)
+                        slot_wait_s=hold.waited_s, interrupted=True, changed=[])
             return
         frames.emit("started", slot_wait_s=hold.waited_s)
         started_at = now_iso()
@@ -791,7 +791,32 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
         frames.emit("done", ok=all(r.ok for r in results if r.required),
                     started_at=started_at, duration_s=round(time.monotonic() - t0, 3),
                     slot_wait_s=hold.waited_s,
-                    interrupted=cut or any(r.interrupted for r in results))
+                    interrupted=cut or any(r.interrupted for r in results),
+                    changed=tree_changes(tree))
+
+
+TREE_CHANGES_MAX = 20
+
+
+def tree_changes(tree: Path) -> list[str] | None:
+    """The paths the gates changed in the job's checkout (modified, deleted or new non-ignored
+    files; at most `TREE_CHANGES_MAX`), for `done`'s `changed` (SPEC-0338): the coordinator's
+    worktree never sees these writes, so it re-runs such a run locally. None when git cannot
+    tell."""
+    p = _git("-C", tree, "status", "--porcelain=v1", "-z", "--untracked-files=all", check=False)
+    if p.returncode != 0:
+        return None
+    out, parts = [], p.stdout.split("\0")
+    i = 0
+    while i < len(parts) and len(out) < TREE_CHANGES_MAX:
+        entry = parts[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        out.append(entry[3:])
+        if entry[0] in "RC":                    # a rename's source path follows
+            i += 1
+    return out
 
 
 # ---- have / gc / info ------------------------------------------------------------------------

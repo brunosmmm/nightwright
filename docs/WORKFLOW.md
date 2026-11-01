@@ -297,7 +297,13 @@ the same gates locally under the same seq. A gate that fails on the worker is a 
 is not re-run. A run stays local, with one `finding` per campaign saying why, when the
 worktree has untracked non-ignored files (the bundle carries commits only), the project sets
 `remote_gates: false` in `.nw/project.yaml`, or a gate sets `remote: false` (for gates that
-read ignored files such as `.env`). `agentic.workers.slot_wait_s` (default 300) bounds the
+read ignored files such as `.env`). A gate's writes to the tree (`spec_lint.py
+--write-ledger`, a formatter, a code generator) stay in the worker's throwaway checkout: the
+worker's `done` frame lists the files the gates changed there, and a run that changed any is
+re-run locally under the same seq (`worker_failed` with `stage: "tree"`, no cooldown), so the
+worktree the runner commits is always the one a local run leaves. A gate that writes the tree
+on every run therefore never gains from a worker; give it `remote: false` to skip the wasted
+remote run. `agentic.workers.slot_wait_s` (default 300) bounds the
 wait for the worker's own slot; past it the run falls back locally without a cooldown.
 `nw queue gates <campaign> --worker <name>` forces one worker (its cooldown ignored);
 `--local` never uses one. `nw workers off <name>` returns gates to local at any time.

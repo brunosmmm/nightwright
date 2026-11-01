@@ -439,12 +439,75 @@ def test_a_worker_side_interruption_falls_back_with_cooldown(world, remote, tmp_
     [("done", {"ok": False, "duration_s": "x"})],
     [("done", {"ok": True, "duration_s": 1.0, "interrupted": "no"})],
     [("done", {"duration_s": 1.0})],
+    [("done", {"ok": True, "duration_s": 1.0})],                      # no `changed`
+    [("done", {"ok": True, "duration_s": 1.0, "changed": "a.txt"})],
+    [("done", {"ok": True, "duration_s": 1.0, "changed": [1]})],
+    # a gate frame whose result builds but whose `attempts` is not iterable
+    [("started", {"slot_wait_s": 0.0}),
+     ("gate", {"files": {}, "result": {"name": "ok", "required": True, "ok": True,
+                                       "exit_code": 0, "timed_out": False, "duration_s": 0.1,
+                                       "log": "x", "tail": "", "attempts": 5}})],
 ])
 def test_bad_worker_numbers_and_flags_fall_back(world, remote, frames):
     body = "; ".join(f"echo '{_frame_line(k, **kw)}'" for k, kw in frames)
     remote.register(ssh=_gate_job_variant(remote, "badnum", body + "; exec cat >/dev/null"))
     run = G.run_all(world.project, world.state, world.cfg, seq=1)
     _assert_fell_back(world, remote, run, "protocol", cooldown=True)
+
+
+def _tree(repo):
+    status = _git(repo, "status", "--porcelain", "--untracked-files=all")
+    return status, {p.name: p.read_text() for p in sorted(repo.iterdir()) if p.is_file()}
+
+
+def test_a_gate_that_writes_the_tree_is_rerun_locally(world, remote, tmp_path):
+    """The worker's writes never reach the coordinator's worktree (`--write-ledger`, a
+    formatter): a run whose gates changed its checkout is re-run locally, without cooldown, so
+    the worktree ends as a local run leaves it and no tree passes only on the worker."""
+    gates = [_gate("regen", "printf 'regen\\n' > a.txt; printf 'new\\n' > gen.txt"),
+             _gate("check", "grep -q regen a.txt")]
+    (tmp_path / "twin").mkdir()
+    twin = World(tmp_path / "twin")                     # the reference: no worker at all
+    twin.project["gates"] = gates
+    ref = G.run_all(twin.project, twin.state, twin.cfg, seq=1)
+    assert ref.ok and ref.worker is None
+    world.project["gates"] = gates
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert run.worker is None and run.seq == 1 and run.ok
+    (ev,) = world.ledger(["worker_failed"])
+    assert ev["stage"] == "tree" and ev["cooldown"] is False and "a.txt" in ev["error"]
+    assert remote.record()["cooldown_until"] is None
+    assert remote.frames()[-1]["changed"] == ["a.txt", "gen.txt"]
+    assert _tree(world.repo) == _tree(twin.repo)
+    assert (world.repo / "a.txt").read_text() == "regen\n"
+    assert sorted(p.name for p in world.gates_dir.iterdir()) == sorted(
+        f"001-{n}.{x}" for n in ("regen", "check") for x in ("log", "json"))
+    for p in world.gates_dir.glob("*.json"):
+        assert json.loads(p.read_text())["cwd"] == str(world.repo)
+
+
+def test_a_gate_that_rewrites_the_tree_unchanged_stays_remote(world, remote):
+    """A generator whose output is already current (a fresh ledger) writes nothing new."""
+    world.project["gates"] = [_gate("regen", "printf 'a\\n' > a.txt")]
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert run.worker == "box" and run.ok
+    assert not world.ledger(["worker_failed"])
+    assert remote.frames()[-1]["changed"] == []
+
+
+def test_worker_tree_changes_lists_renames_once(tmp_path):
+    from nightwright.agentic import worker as W
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    _commit(repo, "a.txt", "a\n")
+    assert W.tree_changes(repo) == []
+    _git(repo, "mv", "a.txt", "b.txt")
+    (repo / "c d.txt").write_text("x")
+    assert W.tree_changes(repo) == ["b.txt", "c d.txt"]
+    assert W.tree_changes(tmp_path / "nope") is None
 
 
 def test_a_disabled_worker_is_no_worker(world, remote, invoke):
