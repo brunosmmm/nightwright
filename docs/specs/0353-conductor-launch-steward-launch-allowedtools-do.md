@@ -1,9 +1,10 @@
 ---
 id: SPEC-0353
 title: "conductor-launch / steward-launch permission rules cover lease-pinned PR-rebase pushes and the steward rebase set"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-01
+updated: 2026-11-01
 kind: feature
 source_idea: IDEA-639
 tags: [agentic, conductor, steward, permissions]
