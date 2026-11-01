@@ -1,4 +1,4 @@
-"""`nw campaign list|show|log|note|runs|run` (SPEC-0171, SPEC-0199) and the hidden `prompt` (SPEC-0174). `attach`
+"""`nw campaign list|show|log|note|runs|run|tail` (SPEC-0171, SPEC-0199, SPEC-0362) and the hidden `prompt` (SPEC-0174). `attach`
 is called by `nightwright.agentic.cli.register` with the `campaign` group."""
 from __future__ import annotations
 
@@ -309,6 +309,27 @@ def attach(campaign_group):
             _dump_json({"schema": "nw.campaign.run.v1", "campaign": campaign, "run": rec})
             return
         _print_run(rec)
+
+    @campaign_group.command("tail")
+    @click.argument("campaign", shell_complete=C.complete_campaign_id)
+    @click.option("--run", "run", default=None,
+                  help="run id (001-implementer) or unique prefix; default the newest run")
+    @click.option("--follow", "-f", is_flag=True, help="keep reading until the run ends")
+    @click.option("--raw", is_flag=True, help="print the stream-json lines as they are")
+    @click.pass_obj
+    def campaign_tail(cfg, campaign, run, follow, raw):
+        """A persona run as a readable transcript (SPEC-0362): tool calls with a short result
+        summary, assistant text, running cost vs budget, the final result. Reads
+        runs/<run>/stream.jsonl; a run launched without stream capture shows its result."""
+        from . import tail as TL
+        try:
+            run_dir = TL.resolve(cfg, campaign, run)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        try:
+            sys.exit(TL.tail(cfg, run_dir, follow=follow, raw=raw, out=console))
+        except KeyboardInterrupt:
+            sys.exit(130)
 
     @campaign_group.command("note")
     @click.argument("args", nargs=-1, required=True)

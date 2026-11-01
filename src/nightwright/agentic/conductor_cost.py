@@ -176,6 +176,20 @@ def _int(value) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def usage_kinds(usage: dict) -> dict:
+    """Token counts of one API `usage` object by price kind (`KINDS`) plus `context`."""
+    cc = usage.get("cache_creation")
+    if isinstance(cc, dict):
+        w5, w1 = _int(cc.get("ephemeral_5m_input_tokens")), _int(cc.get("ephemeral_1h_input_tokens"))
+    else:
+        w5, w1 = _int(usage.get("cache_creation_input_tokens")), 0
+    turn = {"input": _int(usage.get("input_tokens")), "output": _int(usage.get("output_tokens")),
+            "cache_read": _int(usage.get("cache_read_input_tokens")),
+            "cache_write_5m": w5, "cache_write_1h": w1}
+    turn["context"] = turn["input"] + turn["cache_read"] + w5 + w1
+    return turn
+
+
 def read_turns(path) -> list[dict]:
     """API turns of one transcript, one per `message.id` (the last line seen wins; one message
     is split over a line per content block). `context` is the prompt size of the turn."""
@@ -198,16 +212,7 @@ def read_turns(path) -> list[dict]:
         ts = _parse_ts(rec.get("timestamp"))
         if ts is None:
             continue
-        cc = usage.get("cache_creation")
-        if isinstance(cc, dict):
-            w5, w1 = _int(cc.get("ephemeral_5m_input_tokens")), _int(cc.get("ephemeral_1h_input_tokens"))
-        else:
-            w5, w1 = _int(usage.get("cache_creation_input_tokens")), 0
-        turn = {"ts": ts, "model": msg.get("model"), "msg_id": msg.get("id"),
-                "input": _int(usage.get("input_tokens")), "output": _int(usage.get("output_tokens")),
-                "cache_read": _int(usage.get("cache_read_input_tokens")),
-                "cache_write_5m": w5, "cache_write_1h": w1}
-        turn["context"] = turn["input"] + turn["cache_read"] + w5 + w1
+        turn = {"ts": ts, "model": msg.get("model"), "msg_id": msg.get("id"), **usage_kinds(usage)}
         by_id[msg.get("id") or f"line-{len(by_id)}-{raw[:40]}"] = turn
     return list(by_id.values())
 

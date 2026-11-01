@@ -65,6 +65,7 @@ nw queue list             # compact table of what's in flight
 nw campaign show C        # one campaign: state, counters, cost, last events
 nw campaign log C --tail 20
 nw campaign runs C        # every persona run: cost, exit, verdict
+nw campaign tail C -f     # one run as a live transcript: tool calls, text, cost vs budget
 nw queue runner-log       # what the runner did, start/stop/crash records
 nw queue followers        # who is watching: conductor, stewards, their lag
 ```
@@ -73,6 +74,15 @@ The dashboard shows, for each active campaign, its phase, what it's doing right 
 example "implementer · sonnet/high · 4m12s / 30m"), its cost against its cap, the last gate
 results and the last verdict. Below that come the started work waiting for a slot, the
 backlog with what each item waits on, and what was recently delivered.
+
+`nw campaign tail C` reads one persona run (the newest by default; `--run 003` picks one) from
+its `runs/<run>/stream.jsonl` capture: each tool call with a one-line summary (`→ Read
+src/x.py`, `→ Bash uv run pytest -q`) and its result (`← 12 lines: …`), the agent's text, a
+running cost estimate against the run's budget (priced with `agentic.conductor.prices`;
+token counts when the model has no price) and the final result. `-f` follows a running run
+until it ends; `--raw` prints the stream-json lines. Runs started before stream capture have no
+stream; for them it says so and shows the result. `agentic.stream_runs: false` turns capture
+off for new runs.
 
 ## When something parks
 

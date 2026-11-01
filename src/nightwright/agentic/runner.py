@@ -150,9 +150,12 @@ def _conforms(value, schema) -> bool:
 
 # ---- argv + parsing -----------------------------------------------------------------------
 
-def build_argv(req: RunRequest) -> list[str]:
-    """`claude -p` command line for a run; the prompt itself goes on stdin."""
-    argv = ["claude", "-p", "--output-format", "json",
+def build_argv(req: RunRequest, stream: bool = True) -> list[str]:
+    """`claude -p` command line for a run; the prompt itself goes on stdin. `stream`
+    (SPEC-0362): `--output-format stream-json --verbose` (the wrapper captures the event
+    stream); else the single-object `--output-format json` of runs before SPEC-0362."""
+    fmt = ["stream-json", "--verbose"] if stream else ["json"]
+    argv = ["claude", "-p", "--output-format", *fmt,
             "--json-schema", json.dumps(req.json_schema, separators=(",", ":")),
             "--model", req.model]
     if req.effort:
@@ -188,12 +191,22 @@ def _loads_lenient(text):
         return None
 
 
+def _last_result_event(text: str):
+    """The last `type: result` object of a stream-json (JSONL) text, or None (SPEC-0362)."""
+    line = RP._result_line(text or "")
+    return json.loads(line) if line is not None else None
+
+
 def parse_result(stdout: str, schema: dict, *, exit_code: int) -> dict:
-    """Fields of a `RunResult` derived from a `--output-format json` stdout.
+    """Fields of a `RunResult` derived from a `--output-format json` stdout, or from a
+    `stream-json` JSONL text (its last `result` event, SPEC-0362).
 
     `verdict` = top-level `structured_output`, else the `result` text parsed as JSON;
     `verdict_ok` = it is an object conforming to `schema`. Unparseable stdout ⇒ error."""
     obj = _loads_lenient(stdout)
+    if (obj is None and isinstance(stdout, str) and "\n" in stdout.strip()) or (
+            isinstance(obj, dict) and obj.get("type") not in (None, "result")):
+        obj = _last_result_event(stdout)    # a stream: never mistake its first event for the result
     if isinstance(obj, list):          # defensive: a stream-json dump — take the result event
         obj = next((e for e in reversed(obj) if isinstance(e, dict) and e.get("type") == "result"),
                    None)
@@ -249,6 +262,8 @@ def write_run_record(req: RunRequest, result: RunResult, started_at: str) -> Run
         "profile": req.profile, "profile_sources": list(req.profile_sources),
         "files": {"prompt": "prompt.md", "raw": "result.json", "stderr": "stderr.log"},
     }
+    if (req.run_dir / "stream.jsonl").is_file():                 # SPEC-0362
+        rec["files"]["stream"] = "stream.jsonl"
     (req.run_dir / "run.json").write_text(json.dumps(rec, indent=2, ensure_ascii=False) + "\n",
                                           encoding="utf-8")
     return result
@@ -303,7 +318,7 @@ def collect(req: RunRequest) -> RunResult:
     run_dir = req.run_dir
     ex = RP.read_json(run_dir / "exit.json")
     started_at = (RP.read_json(run_dir / "request.json") or {}).get("started_at") or _now_iso()
-    stdout, stderr = _read_text(run_dir / "result.json"), _read_text(run_dir / "stderr.log")
+    stdout, stderr = RP.run_output(run_dir), _read_text(run_dir / "stderr.log")
     proc = RP.read_json(run_dir / "proc.json") or {}
     ticks = proc.get("wrapper_start_ticks")
     if proc.get("wrapper_pid") and (ticks is None or RP.start_ticks(int(proc["wrapper_pid"])) == ticks):
@@ -354,8 +369,9 @@ class ClaudeRunner:
 
     detachable = True
 
-    def __init__(self, spawn_timeout_s: float = 30.0):
+    def __init__(self, spawn_timeout_s: float = 30.0, stream: bool = True):
         self.spawn_timeout_s = spawn_timeout_s
+        self.stream = stream                        # SPEC-0362: stream-json capture
 
     def run(self, req: RunRequest, *, hooks: RunHooks | None = None):
         run_dir = req.run_dir
@@ -368,8 +384,11 @@ class ClaudeRunner:
         try:
             if not attach and not (run_dir / "proc.json").exists():
                 RP.write_json_atomic(run_dir / "request.json", _request_doc(req, started_at))
-                RP.write_json_atomic(run_dir / "launch.json", {
-                    "argv": build_argv(req), "cwd": str(req.cwd), "env": dict(req.env)})
+                launch = {"argv": build_argv(req, stream=self.stream), "cwd": str(req.cwd),
+                          "env": dict(req.env)}
+                if self.stream:
+                    launch["stream"] = True         # fixed at launch (SPEC-0360 invariant 9)
+                RP.write_json_atomic(run_dir / "launch.json", launch)
                 with open(run_dir / "wrapper.log", "ab") as log:
                     wrapper = subprocess.Popen(
                         [sys.executable, "-m", "nightwright.agentic.runproc", str(run_dir)],
@@ -472,9 +491,9 @@ class ClaudeRunner:
                 pass
         if not RP.group_alive(child) and not (run_dir / "exit.json").exists():
             stopped = (run_dir / "term.json").exists()
-            parsed = parse_result(_read_text(run_dir / "result.json"), req.json_schema,
-                                  exit_code=0)
-            ok = bool(_loads_lenient(_read_text(run_dir / "result.json"))) and not parsed["is_error"]
+            output = RP.run_output(run_dir)
+            parsed = parse_result(output, req.json_schema, exit_code=0)
+            ok = bool(_loads_lenient(output) or _last_result_event(output)) and not parsed["is_error"]
             RP.write_json_atomic(run_dir / "exit.json", {
                 "exit_code": 0 if ok else -1, "timed_out": term_at is not None,
                 "killed_by": "timeout" if term_at else ("signal" if stopped else None),
@@ -609,4 +628,5 @@ def select_runner(cfg) -> PersonaRunner:
         return FakeRunner(script)
     if kind != "claude":
         raise ValueError(f"unknown agentic.runner {kind!r} (expected claude or fake)")
-    return ClaudeRunner(float(agentic.get("spawn_timeout_s") or 30.0))
+    return ClaudeRunner(float(agentic.get("spawn_timeout_s") or 30.0),
+                        stream=bool(agentic.get("stream_runs", True)))

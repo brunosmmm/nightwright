@@ -1,7 +1,7 @@
 ---
 id: SPEC-0362
 title: "Stream-json capture of persona runs and nw campaign tail viewer"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -184,25 +184,25 @@ kill switch `agentic.stream_runs: false` restores the json mode for new runs. A 
 
 ## Acceptance criteria
 
-- [ ] A new persona run's argv has `--output-format stream-json --verbose` and still
+- [x] A new persona run's argv has `--output-format stream-json --verbose` and still
       `--no-session-persistence`; its `launch.json` has `"stream": true`.
-- [ ] `stream.jsonl` grows while the run is still going (before `exit.json`).
-- [ ] After the run, `result.json` is the final `result` event and `run.json`'s verdict,
+- [x] `stream.jsonl` grows while the run is still going (before `exit.json`).
+- [x] After the run, `result.json` is the final `result` event and `run.json`'s verdict,
       `verdict_ok`, `cost_usd`, `usage`, `session_id`, `is_error`, `result_text` equal those of
       a json-mode run of the same output; `files.stream` is set.
-- [ ] A run dir without `stream` in `launch.json` is collected exactly as before.
-- [ ] A stream run whose wrapper died gets `result.json` from the stream at collection; a
+- [x] A run dir without `stream` in `launch.json` is collected exactly as before.
+- [x] A stream run whose wrapper died gets `result.json` from the stream at collection; a
       stream run killed before its result event is an error run with the stream tail as text,
       not a crash.
-- [ ] `parse_result` accepts JSONL; a truncated last line or garbage lines do not break it.
-- [ ] `agentic.stream_runs: false` gives the json-mode argv and no `stream` flag.
-- [ ] `nw campaign tail C [--run R]` renders tool calls (Read/Edit/Bash with summaries), short
+- [x] `parse_result` accepts JSONL; a truncated last line or garbage lines do not break it.
+- [x] `agentic.stream_runs: false` gives the json-mode argv and no `stream` flag.
+- [x] `nw campaign tail C [--run R]` renders tool calls (Read/Edit/Bash with summaries), short
       result summaries, assistant text, a running cost-vs-budget line (estimated when priced,
       tokens otherwise) and the final result line.
-- [ ] `--follow` prints lines appended after it starts and returns once the run ends; a
+- [x] `--follow` prints lines appended after it starts and returns once the run ends; a
       half-written line is not printed until complete.
-- [ ] On a run without `stream.jsonl` it says so and shows the result summary and stderr tail.
-- [ ] `--raw` echoes the stream lines verbatim.
+- [x] On a run without `stream.jsonl` it says so and shows the result summary and stderr tail.
+- [x] `--raw` echoes the stream lines verbatim.
 
 ## Test plan
 
@@ -247,15 +247,69 @@ codewatch re-exec. A wrapper started by new code for a launch written by an olde
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass; manual check performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass; manual check performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
+
+## As shipped (2026-11-01)
+
+- **Files:** `agentic/runproc.py` (`is_stream`, `_result_line`, `extract_result`,
+  `run_output`; the wrapper writes stdout to `stream.jsonl` for a stream launch and extracts
+  `result.json` before `exit.json`, also in its failure path), `agentic/runner.py`
+  (`build_argv(req, stream=True)`, `ClaudeRunner(stream=)`, `launch.json` `stream: true`,
+  `parse_result` JSONL branch, `collect` / `_orphan_duties` via `RP.run_output`,
+  `files.stream` in `run.json`, `select_runner` reads `agentic.stream_runs`),
+  `agentic/runs.py` (`paths.stream`), `agentic/tail.py` (new: `resolve`, `read_lines`,
+  `Renderer`, `stream_stats`, `tail`), `agentic/cli_campaign.py` (`nw campaign tail`),
+  `agentic/conductor_cost.py` (`usage_kinds` factored out of `read_turns` so the viewer
+  prices turns the same way), `docs/product/loop/operate.md` (Watching),
+  `tests/fixtures/fake_claude.py` (stream mode), `tests/fixtures/stream_json/*.jsonl`.
+- **Validated against real `claude` output**, not only a fake: two real samples were captured
+  with claude 2.1.316 (`claude -p "reply with the word ok" --output-format stream-json
+  --verbose --no-session-persistence --max-turns 1`, and a run with the runner's flag set —
+  `--json-schema`, `--model haiku`, `--max-budget-usd`, `--permission-prompts none`,
+  `--no-session-persistence`, `--allowedTools Read` — that called `Read` and returned its
+  verdict through `StructuredOutput`). Both are test fixtures; the fake `claude` replays the
+  second one in stream mode, so the wrapper, parser and viewer tests run on the real event
+  shapes. Every flag `build_argv` passes was checked in `claude --help`. A sample with
+  `--permission-mode bypassPermissions` was not captured (the agent's sandbox refused to start
+  an unrestricted agent); the permission mode does not change the output format.
+- **Judgment calls / deviations from the Design above:**
+  - `parse_result` also takes the stream path when the text parses as one JSON object whose
+    `type` is not `result` (a stream cut after its first line), so such a run is an error,
+    never a result-less "success".
+  - The viewer treats a run as ended when `runproc.run_status` is finished / vanished /
+    orphaned **or** `run.json` exists (FakeRunner runs have no `proc.json`).
+  - Post hoc, a trailing fragment of an ended run that parses is rendered; otherwise
+    `[incomplete last line]`. A stream that ended without a `result` event prints
+    `■ run ended without a result event` plus the last cost line.
+  - Subagent events (`parent_tool_use_id` set) are prefixed `┆` and do not emit cost lines.
+  - The old-run summary prints the result text tail only when there is no structured verdict.
+- **Tests executed:** `tests/test_agentic_stream.py`, 24 tests, all passing (real-sample
+  shape; argv both modes; kill switch; json-mode launch has no flag/stream; JSONL == single
+  JSON; garbage + truncated line; no result event → error; live growth before `exit.json`
+  then `result.json` == last line; stream vs json run `run.json` equality; pre-change run dir
+  collected as before; old unparseable result; wrapper-died extraction; killed mid-stream;
+  timeout in stream mode; rendering of the real sample with priced and unpriced cost lines;
+  tool summaries and error results; unparseable/incomplete lines; `--raw`; old-run message;
+  follow with a line written in two halves, ending on `exit.json`; follow on an old running
+  run; `stream_stats`; CLI default/`--run`/unknown run/unknown campaign).
+  `tests/test_agentic_runner.py::test_claude_runner_argv_and_stdin` now expects the stream
+  argv. Regression set: `tests/test_agentic_*.py`, `tests/test_docs_*.py`,
+  `tests/test_herdr.py`, `tests/test_completion*.py` — 2832 passed, 2 skipped; plus
+  `test_tui_campaign_model.py` and `test_cli*.py` (15 passed). `tools/affected_tests.py` fell
+  back to the full suite (new test fixtures), so the set was chosen by hand; the queue close
+  gate runs the full suite.
+- **Manual verification:** `nw campaign tail` on a real pre-change run of the live queue
+  (SPEC-0357's `002-implementer`, read-only): prints the header, `no stream.jsonl: this run
+  was launched without stream capture …` and `■ result: success · cost $0.84 / $4.00 · 21
+  turns · 9m42s · verdict done`. A live streamed run will be checked when the queue runner
+  re-execs on this code.
 
 ## Open questions
 
-- None. Decided here: stdout goes to a file and the result is extracted after exit (not a
-  pipe); `result.json` is absent when no result event exists; kill switch
-  `agentic.stream_runs`; cost estimate uses the conductor price table; the viewer follows
-  one run.
+None. Decided here: stdout goes to a file and the result is extracted after exit (not a pipe);
+`result.json` is absent when no result event exists; kill switch `agentic.stream_runs`; cost
+estimate uses the conductor price table; the viewer follows one run.

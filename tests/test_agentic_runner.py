@@ -68,7 +68,7 @@ def test_claude_runner_argv_and_stdin(tmp_path, monkeypatch):
     req = _req(tmp_path)
     R.ClaudeRunner().run(req)
     argv, kw = calls["argv"], calls["kw"]
-    assert argv[:4] == ["claude", "-p", "--output-format", "json"]
+    assert argv[:5] == ["claude", "-p", "--output-format", "stream-json", "--verbose"]  # SPEC-0362
     i = argv.index("--json-schema")
     assert json.loads(argv[i + 1]) == IMPLEMENTER_SCHEMA
     for flag, val in [("--model", "sonnet"), ("--effort", "high"), ("--max-budget-usd", "4"),

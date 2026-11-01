@@ -7,7 +7,11 @@ FAKE_CLAUDE_STDOUT raw stdout instead of a result JSON; FAKE_CLAUDE_RC exit code
 FAKE_CLAUDE_STUBBORN ignore SIGTERM; FAKE_CLAUDE_TERM_EXIT catch SIGTERM and exit with that code; FAKE_CLAUDE_RELEASE path of the release file (default ./release); FAKE_CLAUDE_RECORD path for {argv, stdin, cwd, env};
 FAKE_CLAUDE_EDITS JSON [{path, write}] and FAKE_CLAUDE_EDIT a file to write in the cwd (an implementer's work);
 FAKE_CLAUDE_BY_ARGV JSON [[substring, {ENV: value}]] env overrides for runs whose argv contains
-the substring (different reviewers behave differently). Writes `child.pid`."""
+the substring (different reviewers behave differently). Writes `child.pid`.
+With `--output-format stream-json` in argv (SPEC-0362) and no FAKE_CLAUDE_STDOUT it replays the
+real claude 2.1.316 sample `stream_json/read_tool_schema.jsonl`: every event before the
+`result` one is printed (flushed) before the wait, and the `result` event, with the verdict /
+cost / session id above, after it."""
 import json
 import os
 import signal
@@ -31,6 +35,15 @@ if os.environ.get("FAKE_CLAUDE_TERM_EXIT"):
 if os.environ.get("FAKE_CLAUDE_EDIT"):
     with open(os.environ["FAKE_CLAUDE_EDIT"], "w") as f:
         f.write("edited\n")
+STREAM = "stream-json" in sys.argv
+_SAMPLE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "stream_json",
+                       "read_tool_schema.jsonl")
+if STREAM and os.environ.get("FAKE_CLAUDE_STDOUT") is None:
+    with open(_SAMPLE, encoding="utf-8") as f:
+        _events = [json.loads(line) for line in f if line.strip()]
+    for _ev in _events[:-1]:
+        sys.stdout.write(json.dumps(_ev, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
 if os.environ.get("FAKE_CLAUDE_STDOUT") is not None:      # partial output, before the wait
     sys.stdout.write(os.environ["FAKE_CLAUDE_STDOUT"])
     sys.stdout.flush()
@@ -46,8 +59,14 @@ if os.environ.get("FAKE_CLAUDE_STDOUT") is None:
     verdict = json.loads(os.environ.get("FAKE_CLAUDE_VERDICT") or
                          '{"status": "done", "summary": "implemented"}')
     cost = os.environ.get("FAKE_CLAUDE_COST", "0.05")
-    print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
-                      "result": "done", "session_id": "sess-1", "usage": {},
-                      "total_cost_usd": float(cost) if cost != "none" else None,
-                      "structured_output": verdict}))
+    if STREAM:                                              # the real result event, overridden
+        result = dict(_events[-1], result=json.dumps(verdict), session_id="sess-1",
+                      total_cost_usd=float(cost) if cost != "none" else None,
+                      structured_output=verdict)
+        print(json.dumps(result, separators=(",", ":")))
+    else:
+        print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                          "result": "done", "session_id": "sess-1", "usage": {},
+                          "total_cost_usd": float(cost) if cost != "none" else None,
+                          "structured_output": verdict}))
 sys.exit(int(os.environ.get("FAKE_CLAUDE_RC") or 0))

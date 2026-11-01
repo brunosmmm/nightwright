@@ -18,7 +18,7 @@ RECORD_KEYS = (("campaign", "run_id") + START_KEYS + ("started_at",) + END_KEYS
                + ("runner_started_at", "source", "status", "verdict_status", "transient"))
 STDERR_TAIL_LINES = 40
 _PATH_FILES = (("prompt", "prompt.md"), ("raw", "result.json"), ("stderr", "stderr.log"),
-               ("run_json", "run.json"))
+               ("run_json", "run.json"), ("stream", "stream.jsonl"))     # stream: SPEC-0362
 
 
 def verdict_status(verdict, verdict_ok) -> str:

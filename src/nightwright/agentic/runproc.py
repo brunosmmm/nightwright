@@ -2,7 +2,8 @@
 
 `python -m nightwright.agentic.runproc <run_dir>` is started by `ClaudeRunner` in its own session. It
 claims the run dir (`proc.json`, created `O_EXCL`), starts `claude -p` in a process group of
-its own, streams stdout / stderr into the run dir, enforces the timeout and writes `exit.json`
+its own, streams stdout / stderr into the run dir (stdout to `stream.jsonl` for a stream-json
+launch, SPEC-0362, whose last `result` event is then copied to `result.json`), enforces the timeout and writes `exit.json`
 atomically. Everything it does is recorded in files, so a runner that restarts can adopt the
 run. The helpers below read those files to decide whether a run is alive."""
 from __future__ import annotations
@@ -223,6 +224,67 @@ def kill_group(child: dict | None, *, grace: float = GRACE_S) -> None:
             time.sleep(0.05)
 
 
+# ---- stream capture (SPEC-0362) -------------------------------------------------------------
+
+def is_stream(run_dir) -> bool:
+    """True when the run was launched in stream-json mode (`"stream": true` in `launch.json`).
+    Fixed at launch: a run started before SPEC-0362 has no flag and is read as before."""
+    return bool((read_json(Path(run_dir) / "launch.json") or {}).get("stream"))
+
+
+def _result_line(text: str) -> str | None:
+    """The last line of a stream-json text that is a `type: result` object, verbatim."""
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            return line
+    return None
+
+
+def extract_result(run_dir) -> bool:
+    """Copy the last `result` event of `stream.jsonl` to `result.json` (atomically). False,
+    and no `result.json`, when the stream has none. Never raises on a bad or missing file."""
+    run_dir = Path(run_dir)
+    try:
+        text = (run_dir / "stream.jsonl").read_text(encoding="utf-8", errors="replace")
+        line = _result_line(text)
+        if line is None:
+            return False
+        tmp = run_dir / "result.json.tmp"
+        tmp.write_text(line + "\n", encoding="utf-8")
+        os.replace(tmp, run_dir / "result.json")
+        return True
+    except OSError:
+        return False
+
+
+def _text(path) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def run_output(run_dir) -> str:
+    """The text to parse for a run's result. A json-mode run (no stream flag): `result.json`,
+    as before SPEC-0362. A stream run: `result.json`, extracted from `stream.jsonl` first when
+    it is missing (the wrapper died before writing it); with no result event at all, the
+    whole stream (it parses as an error carrying the stream's tail)."""
+    run_dir = Path(run_dir)
+    if not is_stream(run_dir):
+        return _text(run_dir / "result.json")
+    raw = _text(run_dir / "result.json")
+    if not raw.strip() and extract_result(run_dir):
+        raw = _text(run_dir / "result.json")
+    return raw if raw.strip() else _text(run_dir / "stream.jsonl")
+
+
 # ---- the wrapper process ------------------------------------------------------------------
 
 def main(argv=None) -> int:
@@ -261,12 +323,14 @@ def main(argv=None) -> int:
         req = json.loads((run_dir / "request.json").read_text(encoding="utf-8"))
         timeout_s = float(req.get("timeout_s") or 0) or None
         env = child_env(launch.get("env"))
+        stream = bool(launch.get("stream"))
+        state["stream"] = stream
         if state["term"]:
             finish(-1, killed_by="signal", sig=signal.SIGTERM)
             return 0
         try:
             with open(run_dir / "prompt.md", "rb") as stdin, \
-                    open(run_dir / "result.json", "wb") as out, \
+                    open(run_dir / ("stream.jsonl" if stream else "result.json"), "wb") as out, \
                     open(run_dir / "stderr.log", "wb") as err:
                 child = subprocess.Popen(launch["argv"], stdin=stdin, stdout=out, stderr=err,
                                          cwd=launch.get("cwd"), env=env, process_group=0)
@@ -300,6 +364,8 @@ def main(argv=None) -> int:
             sig = sig or signal.SIGTERM
         elif killed_by is None and sig is not None:
             killed_by = "external"
+        if stream:
+            extract_result(run_dir)
         finish(-1 if rc < 0 else rc, timed_out=timed_out, killed_by=killed_by, sig=sig)
     except BaseException as e:                       # leave a diagnosis, never a silent death
         import traceback
@@ -315,6 +381,8 @@ def main(argv=None) -> int:
                     time.sleep(0.05)
                 _killpg(child.pid, signal.SIGKILL)
                 error += "; child process group killed"
+            if state.get("stream"):
+                extract_result(run_dir)
             finish(-1, error=error)
         return 1
     return 0
