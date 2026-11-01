@@ -428,6 +428,27 @@ def test_refuse_root(world):
     assert WK.read_strict(world.cfg) == []
 
 
+@pytest.mark.parametrize("uid,msg", [
+    ("Welcome to box\n0", "uid 0"),                 # login-shell output before `id -u`
+    ("0\n", "uid 0"), ("00", "uid 0"),
+    ("Welcome to box", "could not read the worker account's uid"),
+    ("", "could not read the worker account's uid"),
+])
+def test_uid_probe_judges_the_last_line(world, uid, msg):
+    world.set("uid", uid)
+    ok, plan = plan_run(world)
+    assert not ok and st(plan)["key"] == "failed" and msg in plan.status["key"][1]
+    assert st(plan)["install"] == "not run" and st(plan)["register"] == "not run"
+    assert not world.ak.exists() and not world.calls("scp") and not world.calls("uv")
+    assert WK.read_strict(world.cfg) == []
+
+
+def test_uid_probe_after_a_banner_passes_a_non_root_uid(world):
+    world.set("uid", f"Welcome to box\n{os.getuid() or 1000}")
+    ok, plan = plan_run(world)
+    assert ok, plan.status
+
+
 @pytest.mark.parametrize("content,msg", [
     ("{k}\nssh-ed25519 AAAASECOND x\n", "must hold exactly one line (has 2)"),
     ("ssh-ed25519 not!base64 x\n", "is not a `<type> <base64> [comment]` public key"),

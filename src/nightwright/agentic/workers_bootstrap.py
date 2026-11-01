@@ -281,7 +281,13 @@ def _probe_root(plan: Plan) -> None:
         e = _unreachable(plan, p)
         e.step = "install"
         raise e
-    if p.stdout.strip() == "0":
+    # only the last line is `id -u`'s: a login shell (`sudo -i`) may print before it
+    uid = (p.stdout.strip().splitlines() or [""])[-1].strip()
+    if not uid.isdigit():
+        e = StepFailed(f"refused: could not read the worker account's uid (got {uid!r})")
+        e.step = "key"
+        raise e
+    if int(uid) == 0:
         e = StepFailed("refused: the worker account has uid 0")
         e.step = "key"
         raise e

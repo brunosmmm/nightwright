@@ -737,6 +737,59 @@ def test_an_unusable_ssh_socket_dir_falls_back_without_cooldown(world, remote, m
     assert not (remote.wdata / "agentic" / "worker" / "jobs").exists()
 
 
+def test_an_identity_worker_gets_its_own_controlpath_dir_created(world, remote, monkeypatch,
+                                                                 request):
+    """SPEC-0354: an `identity` record's socket name is `TAG_LEN` bytes longer, so a 41..49
+    byte first candidate fits a plain record but not it, and its ControlPath goes to the next
+    candidate. The gate path must create and check that dir, not the plain record's: a fake
+    `ssh` fails as OpenSSH's ControlMaster bind does (exit 255) when the dir is missing."""
+    import shutil
+    import tempfile
+    from nightwright.agentic import workers as WK
+    xdg = Path(tempfile.mkdtemp(prefix="nwi", dir="/tmp"))     # short, whatever TMPDIR is
+    request.addfinalizer(lambda: shutil.rmtree(xdg, ignore_errors=True))
+    first = xdg / ("p" * (45 - len(os.fsencode(str(xdg))) - 1))
+    second = xdg / "nw-ssh-second"
+    assert len(os.fsencode(str(first))) == 45
+    monkeypatch.setattr(WK, "_ssh_dir_candidates", lambda cfg: [first, second])
+    assert WK.ssh_dir(world.cfg) == first and WK.ssh_dir(world.cfg, WK.TAG_LEN) == second
+    log = world.tmp / "controlpaths"
+    bindir = world.tmp / "bin"
+    bindir.mkdir()
+    _script(bindir / "ssh", (
+        'for a in "$@"; do case "$a" in ControlPath=*) d=$(dirname "${a#ControlPath=}")\n'
+        f'  echo "$d" >> {log}\n'
+        '  [ -d "$d" ] || { echo "unix_listener: cannot bind: No such file" >&2; exit 255; };;\n'
+        'esac; done\n'
+        'while [ $# -gt 0 ]; do case "$1" in -o|-i) shift 2;; -*) shift;; *) break;; esac; done\n'
+        f'exec {remote.ssh} "$@"'))
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    p = WK.path(world.cfg)
+    p.write_text(json.dumps({"schema": WK.SCHEMA, "workers": [
+        {"name": "box", "ssh": "me@box", "slots": 1, "nw": "nw",
+         "identity": str(world.tmp / "nw_worker_ed25519")}]}))
+    argv = remote.record()["ssh_argv"]
+    assert f"ControlPath={second}/%C-{WK.identity_tag(str(world.tmp / 'nw_worker_ed25519'))}" \
+        in argv
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert run.worker == "box" and run.ok, world.ledger(["worker_failed"])
+    assert set(log.read_text().split()) == {str(second)}
+    st = second.lstat()
+    assert stat.S_ISDIR(st.st_mode) and stat.S_IMODE(st.st_mode) == 0o700
+    assert not first.exists()
+    # the dir it uses is the one checked: a symlink there is refused, with no ssh call
+    (xdg / "elsewhere").mkdir()
+    second.rmdir()
+    second.symlink_to(xdg / "elsewhere")
+    log.unlink()
+    G.reset()
+    run = G.run_all(world.project, world.state, world.cfg, seq=2)
+    assert run.worker is None and run.ok
+    ev = world.ledger(["worker_failed"])[-1]
+    assert ev["stage"] == "ssh" and "ssh socket directory" in ev["error"]
+    assert not log.exists()
+
+
 def test_a_no_cooldown_fallback_waits_for_a_local_slot(world, remote):
     """The worker is not cooled down after a `claim` error, so a fallback acquire over every
     pool would take its free slot again; it must wait for the local one."""

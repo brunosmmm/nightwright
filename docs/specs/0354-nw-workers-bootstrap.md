@@ -521,6 +521,33 @@ dir>/nw`.
   120 s subprocess timeout. The full argv is `ssh -o BatchMode=yes -o ConnectTimeout=10 -o
   ControlPath=none ...`.
 
+### Test record (2026-11-01, review round 5)
+
+- `tests/test_remote_gates.py::test_an_identity_worker_gets_its_own_controlpath_dir_created`:
+  the socket-dir candidates are a 45-byte dir (fits a plain record, not the 9 bytes longer
+  `identity` socket name) and a second one. A fake `ssh` on PATH exits 255, as OpenSSH's
+  ControlMaster bind does, when its `ControlPath` dir is missing. The gate runs remotely,
+  ssh only ever sees the second dir, that dir is created 0700, and the first is never made.
+  A symlink at the second dir falls back at stage `ssh` with no ssh call. With
+  `remote_gates.prepare` restored to `WK.ensure_ssh_dir(cfg)`, this test fails (the run
+  falls back), as the review described.
+- `tests/test_workers_bootstrap.py`: `test_uid_probe_judges_the_last_line` (a banner before
+  `0`, `0`, `00`, a banner alone, empty output: `key` is `failed`, nothing installed, written
+  or registered) and `test_uid_probe_after_a_banner_passes_a_non_root_uid`.
+- `uv run pytest -q -n 4 tests/test_workers_bootstrap.py tests/test_workers_registry.py
+  tests/test_remote_gates.py tests/test_rich_output_guard.py`: 201 passed.
+- `python3 tools/spec_lint.py`: OK. The full suite is left to the gate's close run.
+
+### As shipped (2026-11-01, review round 5)
+
+- `workers.ensure_record_ssh_dir(cfg, w)` creates and checks the ControlPath dir for a
+  normalized record, with `TAG_LEN` extra bytes for an `identity` record. Both `WK.check` and
+  `remote_gates.prepare` (gate jobs) use it, so the dir they create and check is always the
+  one `default_ssh_argv` points that record's ssh at.
+- The pre-install uid probe judges only the last line of `id -u`'s output, so output a login
+  shell (`sudo -i`) prints first cannot hide uid 0. A last line that is not a number is
+  refused on the `key` row (`could not read the worker account's uid`).
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.

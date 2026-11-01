@@ -79,6 +79,13 @@ def ensure_ssh_dir(cfg, extra=0) -> Path | None:
     return d
 
 
+def ensure_record_ssh_dir(cfg, w: dict) -> Path | None:
+    """`ensure_ssh_dir` for the ControlPath of a normalized record `w`: an `identity` record's
+    socket name is `TAG_LEN` bytes longer, so `default_ssh_argv` may pick another candidate
+    for it, and this creates and checks that one (every caller running `w["ssh_argv"]`)."""
+    return ensure_ssh_dir(cfg, TAG_LEN if identity_ok(w.get("identity")) else 0)
+
+
 def identity_tag(identity: str) -> str:
     """The ControlPath tag of an `identity` record: `%C` hashes only user, host and port, so
     without it a record with a dedicated key could ride a master opened earlier with another
@@ -254,7 +261,7 @@ def check(cfg, rec: dict) -> dict:
 def _check(cfg, w: dict, out: dict) -> None:
     from . import worker as W
     try:
-        ensure_ssh_dir(cfg, TAG_LEN if identity_ok(w.get("identity")) else 0)
+        ensure_record_ssh_dir(cfg, w)
     except OSError as e:
         out["errors"].append(f"ssh socket directory unusable: {e}")
         return

@@ -242,7 +242,7 @@ def prepare(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int
         asked.append(mb)
     key = repo_key(campaign_state.get("project") or project_cfg.get("project"), wt)
     try:
-        WK.ensure_ssh_dir(cfg)
+        WK.ensure_record_ssh_dir(cfg, worker)
     except OSError as e:
         # the coordinator's own directory, not the worker's fault: no cooldown
         raise RemoteFailure("ssh", f"ssh socket directory unusable: {e}", cooldown=False)
