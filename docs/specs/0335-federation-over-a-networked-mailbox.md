@@ -8,7 +8,7 @@ updated: 2026-10-31
 source_idea: IDEA-562
 parent: SPEC-0310
 tags: [agentic, remote, federation, mailbox, conductor]
-depends_on: [SPEC-0334, SPEC-0346]
+depends_on: [SPEC-0334]
 ---
 
 ## Context
@@ -49,6 +49,11 @@ own projects, plus a steward, while **one** conductor oversees all machines.
 - Replacing the job API. Federation reuses SPEC-0334's server, auth and bind rules.
 
 ## Decision
+
+**Amendment 2026-11-01:** `depends_on` changed from `[SPEC-0334, SPEC-0346]` to `[SPEC-0334]`.
+Why: the SPEC-0346 ordering was prose only; this spec has its own tests
+(`tests/test_federation.py`) and does not use or edit the integration suite, so it can run
+alongside SPEC-0346 once SPEC-0334 lands.
 
 A project host is a nightwright install that:
 - runs `nw queue run` for its projects;

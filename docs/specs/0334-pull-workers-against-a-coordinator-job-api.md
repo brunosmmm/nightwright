@@ -47,6 +47,10 @@ needs appear:
 
 ## Decision
 
+**Note 2026-11-01:** this spec must NOT edit `tests/test_remote_workers_integration.py`. SPEC-0346
+owns that file (SPEC-0334 runs in parallel with SPEC-0345/0346). Pull-worker tests go in
+this spec's own test files.
+
 Add a small stdlib HTTP API over the existing file-backed job store.
 
 The dispatcher queues a job for a pull worker by writing `<agentic_dir>/job-queue/<job_id>.json`

@@ -8,7 +8,7 @@ updated: 2026-11-01
 source_idea: IDEA-559
 parent: SPEC-0310
 tags: [agentic, remote, workers, lease, reliability]
-depends_on: [SPEC-0340]
+depends_on: [SPEC-0338, SPEC-0340]
 ---
 
 ## Context
@@ -46,6 +46,11 @@ remote gate jobs.
 - Persona jobs (SPEC-0344).
 
 ## Decision
+
+**Amendment 2026-11-01:** `depends_on` changed from `[SPEC-0340]` to `[SPEC-0338, SPEC-0340]`
+because Design, Gate step 1 rewrites `remote_gates.run` (SPEC-0338) and the Test plan uses
+SPEC-0338's loopback transport, so SPEC-0338 is a hard prerequisite. The edge was missing
+because SPEC-0340 depended on SPEC-0338 transitively; SPEC-0340 no longer does.
 
 The coordinator records each remote job in a durable **job record**: the worker, the attempt
 and the last applied `n`. It applies frames strictly in `n` order, so a re-attach after a

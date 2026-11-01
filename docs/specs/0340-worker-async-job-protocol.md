@@ -8,7 +8,7 @@ updated: 2026-11-01
 source_idea: IDEA-559
 parent: SPEC-0310
 tags: [agentic, remote, workers, lease, reliability]
-depends_on: [SPEC-0338]
+depends_on: []
 supersedes: [SPEC-0332]
 ---
 
@@ -47,6 +47,17 @@ coordinator. The parts are:
   The transport stays SSH with the forced command.
 
 ## Decision
+
+**Amendment 2026-11-01:** `depends_on` changed from `[SPEC-0338]` to `[]`. Why: this spec is worker-side only (`nw worker
+...` subcommands) and ships dark; it never calls `remote_gates.run` or the dispatch code, so
+it can be built alongside SPEC-0337/0338. The only real coupling was the Test plan's reuse
+of SPEC-0338's loopback fixture in `tests/test_remote_gates.py`. Resolution: this spec
+carries its own minimal loopback helper, `tests/remote_loopback.py` (a transport script that
+runs `nw worker <subcommand>` locally in place of `ssh`, killable after k frames). It does
+not import from `tests/test_remote_gates.py` and does not edit it, so the two specs do not
+conflict. SPEC-0338 may adopt the helper later; that is not required. The "SPEC-0338's tests
+keep working" statements below apply once SPEC-0338 has landed; until then they apply to
+SPEC-0336's tests only.
 
 Split the synchronous `gate-job` into four worker subcommands:
 - **`submit`** claims the job, spools the bundle, starts a detached job process and returns
@@ -144,8 +155,8 @@ without a renewal is cancelled by its own job process: nobody is listening to it
 
 ## Test plan
 
-- **Automated tests** (`tests/test_worker_jobs.py`, offline). They use SPEC-0338's loopback
-  transport:
+- **Automated tests** (`tests/test_worker_jobs.py`, offline). They use their own loopback
+  helper (`tests/remote_loopback.py`, see the amendment in Decision), not SPEC-0338's:
   - submit, attach to `done`, and the resubmit cases (same header, different header);
   - **drop:** the transport script is killed after k frames, then re-attach from the cursor;
     the frames are in order, with none lost or repeated;
