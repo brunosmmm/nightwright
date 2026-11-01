@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import signal
 import threading
 import time
@@ -910,11 +911,12 @@ def test_the_reader_skips_frames_below_the_cursor_without_parsing_them(tmp_path,
                                                                 real(raw, *a, **k))[1])
     r = WJ._Reader(path, 3)
     assert list(r.read()) == [] and parsed == []            # 1..3 skipped by their tail
-    pos = r.pos
+    tail = len(frame(4, "done", ok=True)) - 30
+    assert r.pos == path.stat().st_size - tail              # stopped at the last newline
     with open(path, "ab") as f:
         f.write(frame(4, "done", ok=True)[-30:])
     (line,) = list(r.read())
-    assert r.pos - pos == 30                                # the partial line was not re-read
+    assert r.pos == path.stat().st_size                     # the partial line was re-read whole
     assert real(line)["n"] == 4 and r.final == "done" and len(parsed) == 1
     r0 = WJ._Reader(path, 0)
     assert [real(ln)["n"] for ln in r0.read()] == [1, 2, 3, 4]
@@ -1040,5 +1042,87 @@ def test_a_failed_frame_append_never_tears_the_next_frame(tmp_path, monkeypatch,
     assert WJ._last_n(log.parent) == got[-1]["n"]
     sent = [json.loads(ln) for ln in frames.stream.getvalue().splitlines()]
     assert [f["type"] for f in sent] == ["accepted", "gate", "done"]
-    # stdout's copy: unnumbered when cut off (its `n` went to `done`), else its own `n`
-    assert sent[1].get("n") == (2 if cut_fails else None)
+    # stdout's copy of a frame not whole in the log is unnumbered
+    assert "n" not in sent[1] and sent[2]["n"] == got[-1]["n"]
+
+
+# ---- review round 5: a reader across a cut-back append, a vanished job dir ----------------
+
+def _nframe(n, type_="gate", **kw):                          # as `_Frames.emit`: `n` last
+    return (json.dumps({"schema": W.FRAME_SCHEMA, "type": type_, "job_id": "j", **kw,
+                        "n": n}) + "\n").encode()
+
+
+@pytest.mark.parametrize("longer", [False, True])
+def test_a_reader_survives_a_cut_back_append(tmp_path, longer):
+    path = tmp_path / "frames.jsonl"
+    path.write_bytes(_nframe(1, "accepted"))
+    r = WJ._Reader(path, 0)
+    assert [json.loads(ln)["n"] for ln in r.read()] == [1]
+    failed = _nframe(2, blob="x" * 5000)
+    with open(path, "ab") as f:                             # half a frame, then the disk fills
+        f.write(failed[:len(failed) // 2])
+    assert list(r.read()) == []                             # the reader saw half of it
+    os.truncate(path, len(_nframe(1, "accepted")))           # `_append` cuts it back off ...
+    new = _nframe(2, "done", ok=True, **({"blob": "y" * 9000} if longer else {}))
+    with open(path, "ab") as f:                             # ... and `n` 2 is written again
+        f.write(new)
+    got = [json.loads(ln) for ln in r.read()]
+    assert [(f["type"], f["n"]) for f in got] == [("done", 2)] and r.final == "done"
+    assert json.dumps(got[0]).encode() + b"\n" == new        # the new frame, nothing stale
+    assert list(r.read()) == []                             # emitted once
+
+
+def test_attach_follows_a_cut_back_append_to_the_rewritten_done(tmp_path, monkeypatch):
+    import errno
+    log = tmp_path / "frames.jsonl"
+    frames = W._Frames("j", io.BytesIO())
+    frames.log = log
+    frames.emit("accepted")
+    r = WJ._Reader(log, 0)
+    assert [json.loads(ln)["type"] for ln in r.read()] == ["accepted"]
+    real_write = os.write
+
+    def short_then_enospc(fd, data):                        # half the gate frame lands ...
+        real_write(fd, bytes(data[:len(data) // 2]))
+        assert list(r.read()) == []                         # ... and the reader sees it
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(W.os, "write", short_then_enospc)
+    frames.emit("gate", blob="x" * 100_000)
+    monkeypatch.undo()
+    frames.emit("done", ok=True)                            # same offset, same `n`
+    got = [json.loads(ln) for ln in r.read()]
+    assert [(f["type"], f["n"]) for f in got] == [("done", 2)] and r.final == "done"
+
+
+def test_attach_and_poll_report_a_removed_job_dir(wenv, monkeypatch):
+    _async_dir(wenv, "j-vanish", spawned_ts=time.time())
+    real_state = WJ.job_state
+
+    def state_then_gone(cfg, job, *a, **k):                 # gc removes it mid-follow
+        st = real_state(cfg, job, *a, **k)
+        shutil.rmtree(job, ignore_errors=True)
+        return st
+
+    monkeypatch.setattr(WJ, "job_state", state_then_gone)
+    out = io.BytesIO()
+    assert WJ.attach(_cfg(wenv), "j-vanish", 0, out) == WJ.EXIT_UNKNOWN
+    rec = json.loads(out.getvalue().splitlines()[-1])
+    assert rec["type"] == "status" and rec["state"] == "unknown" and rec["n"] == 0
+    monkeypatch.undo()
+    _async_dir(wenv, "j-vanish2", spawned_ts=time.time())
+    real_renew = WJ._renew
+
+    def gone_then_renew(job, lease_s):                      # removed just before a renewal
+        shutil.rmtree(job, ignore_errors=True)
+        real_renew(job, lease_s)
+
+    monkeypatch.setattr(WJ, "_renew", gone_then_renew)
+    out = io.BytesIO()
+    assert WJ.attach(_cfg(wenv), "j-vanish2", 0, out) == WJ.EXIT_UNKNOWN
+    assert json.loads(out.getvalue().splitlines()[-1])["state"] == "unknown"
+    _async_dir(wenv, "j-vanish3", spawned_ts=time.time())
+    out = io.BytesIO()
+    assert WJ.poll(_cfg(wenv), "j-vanish3", 0, True, out) == WJ.EXIT_UNKNOWN
+    assert json.loads(out.getvalue().splitlines()[-1])["state"] == "unknown"

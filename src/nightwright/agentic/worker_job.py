@@ -288,18 +288,20 @@ class _Reader:
     """Complete lines of `frames.jsonl` whose `n` is above the cursor. A trailing line without
     its newline (a frame still being written) is held back until the newline appears.
 
-    The file is read in `CHUNK` pieces from where the last read stopped; the held-back partial
-    line is kept, never read again. A line at or below the cursor is skipped by the `n` at its
-    end (a frame's last key) and never JSON-parsed, and only one line is held at a time: a
-    high cursor costs one pass over the file, not every earlier frame in memory at once."""
+    The file is read in `CHUNK` pieces from the end of the last complete line read: `pos` never
+    moves past an unterminated tail, which is read again next time. The job process cuts a
+    failed append back off and writes the next frame at the same offset (`_Frames._append`), so
+    a tail read before the cut may no longer be in the file; a complete line never is cut. A
+    line at or below the cursor is skipped by the `n` at its end (a frame's last key) and never
+    JSON-parsed, and only one line is held at a time: a high cursor costs one pass over the
+    file, not every earlier frame in memory at once."""
 
     CHUNK = 1 << 20
 
     def __init__(self, path: Path, after: int):
         self.path = path
         self.after = after
-        self.pos = 0                            # file offset read up to
-        self.buf = b""                          # a line read but not yet complete
+        self.pos = 0                            # just past the last complete line read
         self.final: str | None = None           # `done` / `error` once emitted
 
     def read(self):
@@ -310,22 +312,23 @@ class _Reader:
             return
         with f:
             f.seek(self.pos)
+            buf = b""                           # this read's line so far (across chunks)
             while True:
                 data = f.read(self.CHUNK)
                 if not data:
-                    return
-                self.pos += len(data)
+                    return                      # an unterminated `buf` is dropped: re-read
                 start = 0
                 while True:
                     nl = data.find(b"\n", start)
                     if nl < 0:
                         break
-                    line, self.buf = self.buf + data[start:nl], b""
+                    line, buf = buf + data[start:nl], b""
+                    self.pos += len(line) + 1
                     out = self._take(line)
                     if out is not None:
                         yield out
                     start = nl + 1
-                self.buf += data[start:]
+                buf += data[start:]
 
     def _take(self, raw: bytes) -> bytes | None:
         m = _TAIL_N_RE.search(raw[-64:])
@@ -647,6 +650,11 @@ def _unknown(stdout, job_id) -> int:
     return EXIT_UNKNOWN
 
 
+def _gone(stdout, job_id, after: int) -> int:
+    _print(stdout, _status(job_id, "unknown", n=after))
+    return EXIT_UNKNOWN
+
+
 def attach(cfg, job_id, after: int, stdout) -> int:
     """`nw worker attach JOB --from N`: the frames after `N`, then follow every 0.5 s. Exit 0
     after `done`, 3 after `error`, 4 with a `lost` status line. The lease is renewed on every
@@ -666,6 +674,8 @@ def attach(cfg, job_id, after: int, stdout) -> int:
         stdout.flush()
         if reader.final:
             return 0 if reader.final == "done" else W.EXIT_ERROR
+        if not job.is_dir():                    # removed under us (gc): nothing more to follow
+            return _gone(stdout, job_id, reader.after)
         if st["state"] == "lost":
             _print(stdout, _status(job_id, "lost", heartbeat_age_s=st["heartbeat_age_s"]))
             return EXIT_LOST
@@ -674,7 +684,12 @@ def attach(cfg, job_id, after: int, stdout) -> int:
             return 0 if st["state"] == "done" else W.EXIT_ERROR
         now = time.monotonic()
         if renewed is None or now - renewed > rewrite_every:
-            _renew(job, lease_s)
+            try:
+                _renew(job, lease_s)
+            except OSError:
+                if not job.is_dir():
+                    return _gone(stdout, job_id, reader.after)
+                raise
             renewed = now
         time.sleep(FOLLOW_TICK_S)
 
@@ -687,7 +702,12 @@ def poll(cfg, job_id, after: int, renew: bool, stdout) -> int:
         return _unknown(stdout, job_id)
     sett = settings(cfg)
     if renew:
-        _renew(job, sett["job_lease_s"])
+        try:
+            _renew(job, sett["job_lease_s"])
+        except OSError:
+            if not job.is_dir():
+                return _unknown(stdout, job_id)
+            raise
     st = job_state(cfg, job, sett)
     reader = _Reader(job / "frames.jsonl", after)
     for line in reader.read():

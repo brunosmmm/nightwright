@@ -557,6 +557,42 @@ A `running` job holds `job.lock`, so `gc --keep-days 0` never removes it.
   is skipped), and `n` is not rolled back. The stdout copy of a cut-off frame (gate-job)
   carries no `n`.
 
+### Test record (2026-11-01, review round 5)
+
+- `tests/test_worker_jobs.py` now has 81 tests. New or changed for the review findings:
+  - a `_Reader` that has read half a frame, after which the file is cut back and a different
+    frame with the same `n` is written (shorter and longer, parametrized), emits the new frame
+    once, byte for byte, with nothing stale glued on;
+  - the same through `_Frames`: the reader reads half of a gate frame while its append is
+    failing with ENOSPC, the append is cut back, and the `done` written at the old offset
+    with the reused `n` reaches the reader;
+  - `attach` on a job dir removed under it (before a tick's check, and just before a lease
+    renewal) prints a `status` line with `state: "unknown"` and exits 1; `poll --renew` does
+    the same;
+  - the stdout copy of a frame whose append failed is unnumbered whether or not the cut
+    worked;
+  - the round-3 reader test now checks that `pos` stops at the last newline and that the
+    partial line is read again whole.
+  The four new tests fail against the round-4 code.
+- Affected tests (`affected_tests.py` plus `test_agentic_dogfood_config.py`,
+  `test_agentic_project.py` and `test_test_waits.py`, `-n 4`): 304 passed. `spec_lint`
+  passes. The full suite was left to gating.
+
+### As shipped (2026-11-01, review round 5)
+
+- **The reader never keeps a partial line across reads.** This replaces round 3's held-back
+  partial line. `_Reader.pos` moves only past complete (newline-terminated) lines, and an
+  unterminated tail is read again on the next read. `_Frames._append` cuts a failed append
+  back to where it started, which is never before the end of a complete line, so `pos` is
+  never past the cut. The rewritten frame at the same offset is then read whole. Reading a
+  tail again costs little: a frame is unterminated only while it is being written, or after
+  a failed cut until the next frame's newline.
+- **A removed job dir ends `attach`.** When gc removes the dir under a following `attach`,
+  or a lease renewal finds it gone, `attach` prints `{"type": "status", "state": "unknown",
+  n}` and exits 1, as for an unknown `JOB`. `poll --renew` does the same.
+- **Unnumbered stdout copy.** A gate-job frame that is not whole in the log (its append
+  failed, whether or not the cut worked) goes to stdout without `n`.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.

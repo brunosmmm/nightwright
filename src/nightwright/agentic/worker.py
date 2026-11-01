@@ -326,8 +326,10 @@ class _Frames:
         self.last = rec
         line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
         self.sent.add(type_)
-        if self.log is not None and self._append(line) is False:
-            self.n -= 1                         # not in the log: the next frame reuses `n`
+        logged = self._append(line) if self.log is not None else True
+        if logged is not True:                  # not whole in the log: stdout's copy is unnumbered
+            if logged is False:
+                self.n -= 1                     # cut back off: the next frame reuses `n`
             rec.pop("n", None)
             line = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
         if self.closed:
