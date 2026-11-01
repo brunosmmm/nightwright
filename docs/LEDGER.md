@@ -224,7 +224,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) Federation over a networked mailbox — accepted
   - [x] [SPEC-0336](./specs/0336-gate-worker-job-runner-and-forced-command.md) Gate worker job runner and forced-command dispatcher — done
   - [x] [SPEC-0337](./specs/0337-worker-registry-and-multi-pool-gate-slots.md) Worker registry and multi-pool gate slots — done
-  - [ ] [SPEC-0338](./specs/0338-remote-gate-dispatch-with-local-fallback.md) Remote gate dispatch with local fallback — accepted
+  - [ ] [SPEC-0338](./specs/0338-remote-gate-dispatch-with-local-fallback.md) Remote gate dispatch with local fallback — in-progress
   - [x] [SPEC-0340](./specs/0340-worker-async-job-protocol.md) Worker-side async job protocol: submit, attach, poll, cancel — done
   - [ ] [SPEC-0341](./specs/0341-coordinator-re-attach-job-records-and-adoption.md) Coordinator re-attach, job records and adoption after a restart — accepted
   - [ ] [SPEC-0342](./specs/0342-lost-job-retry-across-workers-and-escalation.md) Lost-job retry across workers and escalation — accepted
@@ -255,7 +255,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | accepted | — | 2026-10-31 |
 | [SPEC-0334](./specs/0334-pull-workers-against-a-coordinator-job-api.md) | Pull workers against a coordinator job API | feature | accepted | — | 2026-10-31 |
 | [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) | Federation over a networked mailbox | feature | accepted | — | 2026-10-31 |
-| [SPEC-0338](./specs/0338-remote-gate-dispatch-with-local-fallback.md) | Remote gate dispatch with local fallback | feature | accepted | — | 2026-10-31 |
+| [SPEC-0338](./specs/0338-remote-gate-dispatch-with-local-fallback.md) | Remote gate dispatch with local fallback | feature | in-progress | — | 2026-10-31 |
 | [SPEC-0341](./specs/0341-coordinator-re-attach-job-records-and-adoption.md) | Coordinator re-attach, job records and adoption after a restart | feature | accepted | — | 2026-11-01 |
 | [SPEC-0342](./specs/0342-lost-job-retry-across-workers-and-escalation.md) | Lost-job retry across workers and escalation | feature | accepted | — | 2026-11-01 |
 | [SPEC-0343](./specs/0343-worker-bootstrap-and-drain.md) | Worker drain | feature | accepted | — | 2026-11-01 |

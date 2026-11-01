@@ -284,3 +284,20 @@ the rest.
 The job store lives under `<data_dir>/agentic/worker/` (`repos/` object caches, `jobs/`).
 Each job runs `gc` (default `--keep-days 2`) when it ends; `nw worker gc --keep-days 0`
 empties everything no live job uses.
+
+**Dispatch (SPEC-0338).** With a worker registered (`nw workers add`, SPEC-0337), every gate
+run (the loop's GATING run, the close re-gate, `nw queue gates`) takes a slot from the
+workers' pools first and the local pool last. A remote run bundles the commit under test (a
+`git stash create` commit when tracked files are modified, else HEAD) and the base against
+what the worker already has (`nw worker have`), runs `nw worker gate-job` over SSH, and
+writes the returned `gates/<seq>-<name>.{log,json}` files where a local run writes them; the
+`gate` event gains `worker: <name>`. A transport failure (SSH, protocol, an `error` frame,
+a drop, a timeout) appends `worker_failed`, puts the worker in a 600 s cooldown, and re-runs
+the same gates locally under the same seq. A gate that fails on the worker is a result and
+is not re-run. A run stays local, with one `finding` per campaign saying why, when the
+worktree has untracked non-ignored files (the bundle carries commits only), the project sets
+`remote_gates: false` in `.nw/project.yaml`, or a gate sets `remote: false` (for gates that
+read ignored files such as `.env`). `agentic.workers.slot_wait_s` (default 300) bounds the
+wait for the worker's own slot; past it the run falls back locally without a cooldown.
+`nw queue gates <campaign> --worker <name>` forces one worker (its cooldown ignored);
+`--local` never uses one. `nw workers off <name>` returns gates to local at any time.

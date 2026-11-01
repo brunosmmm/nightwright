@@ -69,6 +69,7 @@ class GateRun:
     duration_s: float
     interrupted: bool = False   # SPEC-0229: a gate was ended by a stop, or the run was cut short
     slot_wait_s: float = 0.0    # SPEC-0309: seconds spent waiting for a gate slot (0.0: none)
+    worker: str | None = None   # SPEC-0338: the worker the gates ran on; None: locally
 
 
 def terminate_all() -> None:
@@ -383,15 +384,33 @@ def next_gate_seq(cfg, campaign_id) -> int:
     return (max(seqs) + 1) if seqs else 1
 
 
+def _claim_seq(cfg, cid, seq) -> tuple[int, str]:
+    """SPEC-0253: `next_gate_seq` only sees logs, which appear once the first gate starts, so a
+    concurrent `nightwright gate run` can pick the same seq. Claim `gate-<seq>` atomically and take
+    the next free seq on a collision, so two runs never share (and wipe) one TMPDIR."""
+    while True:
+        owner = f"gate-{seq:03d}"
+        try:
+            store.child_tmp(cfg, cid, owner, exclusive=True)
+            return seq, owner
+        except FileExistsError:
+            seq += 1
+
+
 def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
-            stop: threading.Event | None = None, tier: str | None = None) -> GateRun:
+            stop: threading.Event | None = None, tier: str | None = None,
+            worker: str | None = None, local: bool = False) -> GateRun:
     """Run every gate of `project_cfg` in the campaign's worktree; logs land at
     `gates/<seq:03>-<name>.log` under the campaign dir. `ok` = every *required* gate ok.
     The returned `GateRun.seq` is the seq actually used (higher than `seq` if it was taken).
     SPEC-0309: the whole run holds one host-wide gate slot; the budget, the gates' timeouts and
     `GateRun.duration_s` count from the moment the slot is held.
     SPEC-0328: `tier` (`loop` | `close`) runs only that tier's gates plus `always` ones;
-    None runs every gate."""
+    None runs every gate.
+    SPEC-0338: the seq is claimed before the slot, and the slot comes from the registered
+    workers' pools first (`remote_gates.pools_for`; `worker` names one, `local` uses none). A
+    remote hold runs on the worker; a transport failure re-runs the gates locally under the
+    same seq. Without an enabled worker this is the local run it always was."""
     cid = campaign_state["id"]
     project_cfg = {**project_cfg, "gates": P.gates_for(project_cfg, tier)}
     worktree = (campaign_state.get("repo") or {}).get("worktree")
@@ -403,25 +422,37 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
                            {"slots": occ["slots"], "held": occ["held"], "waited_s": waited_s},
                            by="gates")
 
-    with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce) as hold:
-        if hold.interrupted:                    # SPEC-0229: stopped while waiting, nothing ran (ok=False: never counted green)
-            return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
-                           slot_wait_s=hold.waited_s)
-        run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop)
-    return replace(run, slot_wait_s=hold.waited_s)
+    seq, owner = _claim_seq(cfg, cid, seq)
+    try:                                        # SPEC-0253: only the owner removes its dir
+        pools = None
+        if not local:
+            from . import remote_gates as RG    # lazy: remote_gates imports this module
+            pools = RG.pools_for(cfg, project_cfg, campaign_state, seq=seq, worker=worker)
+        with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce, pools=pools) as hold:
+            if hold.interrupted:                # SPEC-0229: stopped while waiting, nothing ran (ok=False: never counted green)
+                return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
+                               slot_wait_s=hold.waited_s)
+            if hold.pool is None:
+                run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop)
+                return replace(run, slot_wait_s=hold.waited_s)
+            out = RG.run(hold.pool, project_cfg, campaign_state, cfg, seq, owner, stop)
+        waited = round(hold.waited_s + out.worker_wait_s, 1)
+        if out.run is not None:
+            return replace(out.run, slot_wait_s=waited)
+        # SPEC-0338 fallback: the remote slot is released; a local one, under the same claim
+        with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce) as fb:
+            waited = round(waited + fb.waited_s, 1)
+            if fb.interrupted:
+                return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
+                               slot_wait_s=waited)
+            run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop)
+        return replace(run, slot_wait_s=waited)
+    finally:
+        store.clear_child_tmp(cfg, cid, owner)
 
 
 def _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop) -> GateRun:
-    # SPEC-0253: `next_gate_seq` only sees logs, which appear once the first gate starts, so a
-    # concurrent `nightwright gate run` can pick the same seq. Claim `gate-<seq>` atomically and take
-    # the next free seq on a collision, so two runs never share (and wipe) one TMPDIR.
-    while True:
-        owner = f"gate-{seq:03d}"
-        try:
-            store.child_tmp(cfg, cid, owner, exclusive=True)
-            break
-        except FileExistsError:
-            seq += 1
+    """The local run under a held slot and the caller's `gate-<seq>` claim."""
     env = gate_env(cfg, campaign_state, seq)
     ph = placeholders(campaign_state)
     cdir = store.campaign_dir(cfg, cid)
@@ -431,17 +462,14 @@ def _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop) ->
     cut = False
     from .events import settings as events_settings     # lazy: events imports the queue lazily
     deadline = t0 + float(events_settings(cfg)["gate_budget_s"])   # SPEC-0289: retries stay in it
-    try:
-        for gate in project_cfg.get("gates") or []:
-            if stop is not None and stop.is_set():      # SPEC-0229: no next gate after a stop
-                cut = True
-                break
-            rel = f"gates/{seq:03d}-{gate['name']}.log"
-            results.append(run_gate_with_retries(gate, worktree, env, cdir / rel, ph,
-                                                 log_rel=rel, stop=stop,
-                                                 deadline=deadline))
-    finally:                                    # SPEC-0253: only the owner removes its dir
-        store.clear_child_tmp(cfg, cid, owner)
+    for gate in project_cfg.get("gates") or []:
+        if stop is not None and stop.is_set():      # SPEC-0229: no next gate after a stop
+            cut = True
+            break
+        rel = f"gates/{seq:03d}-{gate['name']}.log"
+        results.append(run_gate_with_retries(gate, worktree, env, cdir / rel, ph,
+                                             log_rel=rel, stop=stop,
+                                             deadline=deadline))
     ok = all(r.ok for r in results if r.required)
     return GateRun(seq, ok, tuple(results), started_at, round(time.monotonic() - t0, 3),
                    interrupted=cut or any(r.interrupted for r in results))
@@ -467,17 +495,23 @@ def as_payload(run: GateRun) -> dict:
         if not r.pop("interrupted"):      # SPEC-0229: only recorded when true
             continue
         r["interrupted"] = True
-    return {"gate_seq": run.seq, "ok": run.ok, "started_at": run.started_at,
-            "duration_s": run.duration_s, "slot_wait_s": run.slot_wait_s, "results": results}
+    out = {"gate_seq": run.seq, "ok": run.ok, "started_at": run.started_at,
+           "duration_s": run.duration_s, "slot_wait_s": run.slot_wait_s}
+    if run.worker:                          # SPEC-0338: a local run's payload is unchanged
+        out["worker"] = run.worker
+    out["results"] = results
+    return out
 
 
 def run_and_log(cfg, campaign_state: dict, project_cfg: dict, *, seq=None, by="tick",
-                tier: str | None = None) -> GateRun:
+                tier: str | None = None, worker: str | None = None,
+                local: bool = False) -> GateRun:
     """`run_all` + one `gate` ledger event. Does not touch `state.json`; callers that steer
     the queue (SPEC-0176) update `last_gate` themselves."""
     cid = campaign_state["id"]
     seq = seq if seq is not None else next_gate_seq(cfg, cid)
-    run = run_all(project_cfg, campaign_state, cfg, seq=seq, tier=tier)
+    run = run_all(project_cfg, campaign_state, cfg, seq=seq, tier=tier, worker=worker,
+                  local=local)
     store.append_event(cfg, cid, "gate", as_payload(run), by=by)
     return run
 

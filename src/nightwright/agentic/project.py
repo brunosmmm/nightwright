@@ -30,6 +30,7 @@ PROJECT_DEFAULTS = {
     "project": None,
     "base": "main",
     "gates": [],
+    "remote_gates": True,        # SPEC-0338: false keeps every gate run of the project local
     "merge": {
         "policy": "merge",
         "base": None,            # None ⇒ top-level base
@@ -233,7 +234,7 @@ def validate(doc):
         p = f"gates[{i}]"
         if not _check_mapping(problems, gate, p, ("name", "cmd", "cwd", "timeout_s", "required",
                                                   "results", "retries", "on_fail", "retry_cmd",
-                                                  "when", "paths")):
+                                                  "when", "paths", "remote")):
             continue
         name = gate.get("name")
         if not _is_str(name):
@@ -259,6 +260,8 @@ def validate(doc):
             pv = gate["paths"]
             if not isinstance(pv, list) or not pv or not all(_is_str(x) for x in pv):
                 problems.append(f"{p}.paths: must be a non-empty list of glob strings")
+        _check_bool(problems, gate.get("remote"), f"{p}.remote")      # SPEC-0338
+    _check_bool(problems, doc.get("remote_gates"), "remote_gates")      # SPEC-0338
 
     merge = doc.get("merge")
     if merge is not None and _check_mapping(problems, merge, "merge",
@@ -315,6 +318,7 @@ def _with_defaults(doc):
     out["project"] = doc.get("project")
     out["base"] = doc.get("base", out["base"])
     out["gates"] = [{**GATE_DEFAULTS, **g} for g in doc.get("gates", [])]
+    out["remote_gates"] = doc.get("remote_gates", True) is not False
     for g in out["gates"]:
         if g.get("on_fail") == "warn":          # SPEC-0289: the spelled-out `required: false`
             g["required"] = False

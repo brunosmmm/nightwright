@@ -1,7 +1,7 @@
 ---
 id: SPEC-0338
 title: "Remote gate dispatch with local fallback"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-10-31
 updated: 2026-10-31
@@ -185,31 +185,31 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
 
 ## Acceptance criteria
 
-- [ ] With no `workers.json`, and with an empty one, the `gate` event payload, the `gates/`
+- [x] With no `workers.json`, and with an empty one, the `gate` event payload, the `gates/`
       files and the `GateRun` are identical to before (golden test recorded **before**
       `run_all` is modified, timestamps and durations masked), including for a project with
       an untracked file and `gates.remote: false`, where no `finding` is appended.
-- [ ] With one registered worker, a gate run takes a remote slot and runs on the worker. The
+- [x] With one registered worker, a gate run takes a remote slot and runs on the worker. The
       coordinator's `gates/<seq>-<name>.{log,json}` and `.r<n>` files match what the worker
       wrote; the `gate` event has `worker: <name>` and otherwise a local event's shape;
       `nw queue gates` and `nw campaign show` name the worker, and `nw queue gates --worker
       NAME` / `--local` behave as specified.
-- [ ] A remote gate running `git merge-base $NW_BASE HEAD` prints the same sha as locally.
-- [ ] A tree with modified tracked files gates the `git stash create` commit. A tree with
+- [x] A remote gate running `git merge-base $NW_BASE HEAD` prints the same sha as locally.
+- [x] A tree with modified tracked files gates the `git stash create` commit. A tree with
       untracked non-ignored files, a project with `gates.remote: false`, and a run with a
       `remote: false` gate each gate locally and record one `finding`.
-- [ ] From the second gate run of a campaign on, `have` is non-empty and the bundle is
+- [x] From the second gate run of a campaign on, `have` is non-empty and the bundle is
       smaller than a full one; a run whose HEAD equals the base (empty bundle) and a second
       run with the base ref left out both gate remotely without falling back.
-- [ ] Each transport failure (unreachable host, a failing `have` call, `error` frame,
+- [x] Each transport failure (unreachable host, a failing `have` call, `error` frame,
       malformed frame, drop mid-run, coordinator timeout) yields `worker_failed`, a
       cooldown, and a local run of the same gates under the same seq, with no leftover
       remote files. A `claim` error, a failing bundle step and a worker slot wait past
       `worker_slot_wait_s` fall back without cooldown.
-- [ ] A worker whose slot is held for longer than `timeout_s` + 120 s but less than
+- [x] A worker whose slot is held for longer than `timeout_s` + 120 s but less than
       `worker_slot_wait_s` does not trip the run timeout once it emits `started`.
-- [ ] A gate that fails on the worker is reported as a failure and is not re-run locally.
-- [ ] A stop during a remote gate ends the worker's gate process and returns an interrupted
+- [x] A gate that fails on the worker is reported as a failure and is not re-run locally.
+- [x] A stop during a remote gate ends the worker's gate process and returns an interrupted
       `GateRun`.
 - [ ] Manual: one campaign's GATING run and its close re-gate ran on the human's second
       machine.
@@ -250,6 +250,51 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
      baseline.
 - **Regression guard:** full `uv run pytest`; existing gate, gate-slot and close tests run
   unchanged with no registry.
+
+### Test record (2026-11-01)
+
+- Golden first: `tests/data/remote_gates_golden.json` was recorded with `NW_RECORD_GOLDEN=1`
+  against the unmodified `run_all` (a fake project with an untracked file and
+  `remote_gates: false`, no registry). After the change it still matches for no registry, an
+  empty file and an empty `workers` list, and no `finding` is appended.
+- `uv run pytest -q tests/test_remote_gates.py`: 26 passed. Covered: remote pass/fail, the
+  retry ladder (`.r1` files) with the coordinator's files byte-identical to the worker's
+  `frames.jsonl`, the `merge-base $NW_BASE HEAD` gate, the stash commit of a dirty tree with
+  the stash stack untouched, the three ineligibility cases (one `finding` over two runs,
+  `gates`/`info` outside divergence's sets), a second run's smaller bundle without the base
+  ref, HEAD equal to the base gated twice (`bundle_bytes: 0`), transport failures (host
+  unreachable, `gate-job` exit 255, `have` failing, garbage frames, a drop after the first
+  `gate` frame, coordinator timeout) each with `worker_failed`, a cooldown, a local run under
+  seq 1 and no remote files or `refs/nw/gate-jobs/*` left. Also: duplicate job id, a failing
+  `git bundle create` and a worker slot wait past `slot_wait_s` falling back without
+  cooldown; a worker slot held past `timeout_s` + margin not tripping the run timeout; a stop
+  during the fallback local wait (interrupted, claim cleared); a stop mid-run killing the
+  worker's `sleep 600`; `nw queue gates --worker` on a cooled-down worker, `--local`, an
+  unknown worker, an ineligible `--worker` run; `nw campaign show` naming the worker.
+- `python3 tools/affected_tests.py --run uv run pytest -q -x -n 4`: the selection came out as
+  the whole suite (4762 passed, 3 skipped). `python3 tools/spec_lint.py`: OK.
+- Manual verification (steps 1-6, the second machine) has **not** been run: it needs the
+  human's machine. The last criterion stays open and the spec stays `in-progress` until then.
+
+### As shipped (2026-11-01)
+
+- **`gates.remote` is the top-level `remote_gates: false`.** `gates:` in `.nw/project.yaml`
+  is a list, so it cannot carry a `remote` key. The project opt-out is a top-level boolean
+  `remote_gates` (default true); the per-gate `remote: false` is as designed. The `remote`
+  key is stripped from the gate list sent in the job header, so the worker's validation is
+  unchanged.
+- An unreachable host fails at the `have` call, before `gate-job`, so its `worker_failed`
+  says `stage: "have"`. A `gate-job` connection that ends before `done` says `stage: "ssh"`,
+  malformed frames `protocol`, the coordinator timeout `timeout`, the slot wait `slot_wait`,
+  and an `error` frame carries the worker's stage. `worker_failed` also carries `cooldown`.
+- A worker removed from the registry between the slot and the dispatch falls back without
+  cooldown (`stage: "registry"`). A claimed seq outside 0..999 (the header's range) stays
+  local, with the same one-time `finding`.
+- `worker_failed` is projected into the queue events and held by the quiet conductor
+  (`quiet.RULES`, the nw-conduct skill's held list). docs/WORKFLOW.md ("Remote gate worker")
+  describes dispatch, the opt-outs and `--worker`/`--local`.
+- The run-timeout margin (`RUN_TIMEOUT_MARGIN_S`, 120 s) and `job_timeout_s` are module-level
+  in `remote_gates.py`, so tests can shrink them.
 
 ## Clock Log
 

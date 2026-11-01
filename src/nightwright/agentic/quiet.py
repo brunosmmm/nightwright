@@ -29,6 +29,8 @@ RULES = {
     "spec_written": "hold", "spec_reviewed": "hold", "spec_accepted": "hold",
     # SPEC-0309: a gate waited over 30 s for a host-wide gate slot (informational)
     "gate_waiting": "hold",
+    # SPEC-0338: a remote gate run fell back to local (the fallback already ran the gates)
+    "worker_failed": "hold",
     "backlog": "cond", "backlog_blocked_long": "cond", "conductor_ping": "cond",
     "runner_draining": "cond", "campaign_silent": "cond", "state_stuck": "cond", "parked": "cond",
     "park_undecided": "wake", "runner_dead": "wake", "lease_stale": "wake",

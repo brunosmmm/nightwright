@@ -1,0 +1,259 @@
+{
+  "events": [
+    {
+      "admission": null,
+      "base": "main",
+      "base_sha": null,
+      "branch": "nw/SPEC-0900-20261101-abcd",
+      "by": "human",
+      "campaign": "SPEC-0900-20261101-abcd",
+      "profile": "balanced",
+      "project": "demo",
+      "schema": "nw.ledger.event.v1",
+      "spec_id": "SPEC-0900",
+      "ts": "<X>",
+      "type": "open",
+      "worktree": "<TMP>/repo"
+    },
+    {
+      "by": "test",
+      "campaign": "SPEC-0900-20261101-abcd",
+      "duration_s": "<X>",
+      "gate_seq": 1,
+      "ok": true,
+      "results": [
+        {
+          "cmd": "echo hello; git rev-parse HEAD",
+          "cwd": "<TMP>/repo",
+          "duration_s": "<X>",
+          "exit_code": 0,
+          "log": "gates/001-ok.log",
+          "name": "ok",
+          "ok": true,
+          "required": true,
+          "tail": "hello\n044090052af4839a792db70550a24512ba8ee79f",
+          "timed_out": false
+        },
+        {
+          "cmd": "echo boom >&2; exit 3",
+          "cwd": "<TMP>/repo",
+          "duration_s": "<X>",
+          "exit_code": 3,
+          "log": "gates/001-opt.log",
+          "name": "opt",
+          "ok": false,
+          "required": false,
+          "tail": "boom",
+          "timed_out": false
+        },
+        {
+          "attempts": [
+            {
+              "attempt": 0,
+              "duration_s": "<X>",
+              "exit_code": 1,
+              "failing": [],
+              "interrupted": false,
+              "kind": "full",
+              "log": "gates/001-flaky.log",
+              "ok": false,
+              "timed_out": false
+            },
+            {
+              "attempt": 1,
+              "duration_s": "<X>",
+              "exit_code": 0,
+              "failing": [],
+              "interrupted": false,
+              "kind": "full",
+              "log": "gates/001-flaky.r1.log",
+              "ok": true,
+              "timed_out": false
+            }
+          ],
+          "cmd": "n=$(cat <TMP>/counter 2>/dev/null || echo 0); echo $((n+1)) > <TMP>/counter; echo try $n; [ $n -ge 1 ]",
+          "cwd": "<TMP>/repo",
+          "duration_s": "<X>",
+          "exit_code": 0,
+          "log": "gates/001-flaky.log",
+          "name": "flaky",
+          "ok": true,
+          "required": true,
+          "tail": "try 1",
+          "timed_out": false
+        }
+      ],
+      "schema": "nw.ledger.event.v1",
+      "slot_wait_s": "<X>",
+      "started_at": "<X>",
+      "ts": "<X>",
+      "type": "gate"
+    }
+  ],
+  "files": {
+    "001-flaky.json": {
+      "attempts": [
+        {
+          "attempt": 0,
+          "duration_s": "<X>",
+          "exit_code": 1,
+          "failing": [],
+          "interrupted": false,
+          "kind": "full",
+          "log": "gates/001-flaky.log",
+          "ok": false,
+          "timed_out": false
+        },
+        {
+          "attempt": 1,
+          "duration_s": "<X>",
+          "exit_code": 0,
+          "failing": [],
+          "interrupted": false,
+          "kind": "full",
+          "log": "gates/001-flaky.r1.log",
+          "ok": true,
+          "timed_out": false
+        }
+      ],
+      "cmd": "n=$(cat <TMP>/counter 2>/dev/null || echo 0); echo $((n+1)) > <TMP>/counter; echo try $n; [ $n -ge 1 ]",
+      "cwd": "<TMP>/repo",
+      "duration_s": "<X>",
+      "error": null,
+      "exit_code": 0,
+      "log": "001-flaky.log",
+      "name": "flaky",
+      "ok": true,
+      "required": true,
+      "schema": "nw.gate.v1",
+      "started_at": "<X>",
+      "timed_out": false,
+      "timeout_s": 60
+    },
+    "001-flaky.log": "try 0\n",
+    "001-flaky.r1.json": {
+      "attempt": 1,
+      "cmd": "n=$(cat <TMP>/counter 2>/dev/null || echo 0); echo $((n+1)) > <TMP>/counter; echo try $n; [ $n -ge 1 ]",
+      "cwd": "<TMP>/repo",
+      "duration_s": "<X>",
+      "error": null,
+      "exit_code": 0,
+      "log": "001-flaky.r1.log",
+      "name": "flaky",
+      "ok": true,
+      "required": true,
+      "schema": "nw.gate.v1",
+      "started_at": "<X>",
+      "timed_out": false,
+      "timeout_s": 60
+    },
+    "001-flaky.r1.log": "try 1\n",
+    "001-ok.json": {
+      "cmd": "echo hello; git rev-parse HEAD",
+      "cwd": "<TMP>/repo",
+      "duration_s": "<X>",
+      "error": null,
+      "exit_code": 0,
+      "log": "001-ok.log",
+      "name": "ok",
+      "ok": true,
+      "required": true,
+      "schema": "nw.gate.v1",
+      "started_at": "<X>",
+      "timed_out": false,
+      "timeout_s": 60
+    },
+    "001-ok.log": "hello\n044090052af4839a792db70550a24512ba8ee79f\n",
+    "001-opt.json": {
+      "cmd": "echo boom >&2; exit 3",
+      "cwd": "<TMP>/repo",
+      "duration_s": "<X>",
+      "error": null,
+      "exit_code": 3,
+      "log": "001-opt.log",
+      "name": "opt",
+      "ok": false,
+      "required": false,
+      "schema": "nw.gate.v1",
+      "started_at": "<X>",
+      "timed_out": false,
+      "timeout_s": 60
+    },
+    "001-opt.log": "boom\n"
+  },
+  "gate_run": {
+    "interrupted": false,
+    "n": 3,
+    "ok": true,
+    "seq": 1
+  },
+  "payload": {
+    "duration_s": "<X>",
+    "gate_seq": 1,
+    "ok": true,
+    "results": [
+      {
+        "cmd": "echo hello; git rev-parse HEAD",
+        "cwd": "<TMP>/repo",
+        "duration_s": "<X>",
+        "exit_code": 0,
+        "log": "gates/001-ok.log",
+        "name": "ok",
+        "ok": true,
+        "required": true,
+        "tail": "hello\n044090052af4839a792db70550a24512ba8ee79f",
+        "timed_out": false
+      },
+      {
+        "cmd": "echo boom >&2; exit 3",
+        "cwd": "<TMP>/repo",
+        "duration_s": "<X>",
+        "exit_code": 3,
+        "log": "gates/001-opt.log",
+        "name": "opt",
+        "ok": false,
+        "required": false,
+        "tail": "boom",
+        "timed_out": false
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 0,
+            "duration_s": "<X>",
+            "exit_code": 1,
+            "failing": [],
+            "interrupted": false,
+            "kind": "full",
+            "log": "gates/001-flaky.log",
+            "ok": false,
+            "timed_out": false
+          },
+          {
+            "attempt": 1,
+            "duration_s": "<X>",
+            "exit_code": 0,
+            "failing": [],
+            "interrupted": false,
+            "kind": "full",
+            "log": "gates/001-flaky.r1.log",
+            "ok": true,
+            "timed_out": false
+          }
+        ],
+        "cmd": "n=$(cat <TMP>/counter 2>/dev/null || echo 0); echo $((n+1)) > <TMP>/counter; echo try $n; [ $n -ge 1 ]",
+        "cwd": "<TMP>/repo",
+        "duration_s": "<X>",
+        "exit_code": 0,
+        "log": "gates/001-flaky.log",
+        "name": "flaky",
+        "ok": true,
+        "required": true,
+        "tail": "try 1",
+        "timed_out": false
+      }
+    ],
+    "slot_wait_s": "<X>",
+    "started_at": "<X>"
+  }
+}

@@ -1163,13 +1163,19 @@ def attach(queue_group):
     @queue_group.command("gates")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)
     @click.option("--json", "as_json", is_flag=True, help="emit nw.campaign.gate.v1 JSON")
+    @click.option("--worker", "worker", default=None,
+                  help="run on this registered worker only (its cooldown ignored; a "
+                       "transport failure still falls back to a local run)")
+    @click.option("--local", "local", is_flag=True, help="run locally, never on a worker")
     @click.pass_obj
-    def queue_gates(cfg, campaign, as_json):
+    def queue_gates(cfg, campaign, as_json, worker, local):
         """Run the project's gates on a campaign's worktree now (debugging a parked item).
 
         Logs one `gate` event; never changes the campaign's state or `last_gate`, so a debug
-        run cannot steer the queue.
+        run cannot steer the queue. With workers registered (SPEC-0338) the run may go to one.
         """
+        if worker and local:
+            raise click.ClickException("--worker and --local are mutually exclusive")
         try:
             state = store.read_state(cfg, campaign)
             project_cfg = P.project_config(cfg, state.get("project") or "")
@@ -1181,14 +1187,17 @@ def attach(queue_group):
                 f"campaign {campaign} has no worktree on disk ({worktree or 'none recorded'})")
         project_cfg, _ = P.campaign_gate_config(cfg, project_cfg, worktree)     # SPEC-0316
         try:
-            run = G.run_and_log(cfg, state, project_cfg, by="human")
+            run = G.run_and_log(cfg, state, project_cfg, by="human", worker=worker,
+                                local=local)
         except ValueError as e:
             raise click.ClickException(str(e))
         if as_json:
             _dump_json({"schema": "nw.campaign.gate.v1", "campaign": campaign,
                         **G.as_payload(run)})
             return
-        table = Table(title=f"gates #{run.seq} · {campaign} · {'ok' if run.ok else 'FAILED'}")
+        where = f" · on {run.worker}" if run.worker else ""            # SPEC-0338
+        table = Table(title=f"gates #{run.seq} · {campaign}{where} · "
+                            f"{'ok' if run.ok else 'FAILED'}")
         for col in ("gate", "required", "result", "duration", "log"):
             table.add_column(col)
         for r in run.results:
