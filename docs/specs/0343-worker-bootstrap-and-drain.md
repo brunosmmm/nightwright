@@ -1,6 +1,6 @@
 ---
 id: SPEC-0343
-title: "Worker bootstrap and drain"
+title: "Worker drain"
 status: accepted
 owner: user
 created: 2026-11-01
@@ -13,8 +13,16 @@ depends_on: [SPEC-0341]
 
 ## Context
 
-Adding a worker today means installing nightwright on it by hand and writing the
-forced-command `authorized_keys` line yourself. Taking one out of service means disabling it
+> **Amendment 2026-11-01 (scope narrowed to drain only).** Bootstrap moved to
+> [SPEC-0354](./0354-nw-workers-bootstrap.md) because it needs only SPEC-0337, not the job
+> records of SPEC-0341, and the human wants it ahead of the job chain. We edit this spec in
+> place rather than supersede it: it is `accepted` with no code or tests shipped, its id,
+> parent, dependency and drain design are unchanged, and the epic already uses dated
+> amendments for the same kind of re-split. Only the bootstrap content was removed (it lives
+> on, expanded, in SPEC-0354); a supersede would orphan the drain design under a new id for
+> no gain.
+
+Taking a worker out of service means disabling it
 and hoping no job is running. With jobs that outlive the connection
 ([SPEC-0340](./0340-worker-async-job-protocol.md),
 [SPEC-0341](./0341-coordinator-re-attach-job-records-and-adoption.md)), the second needs a
@@ -28,7 +36,6 @@ parallel with it.
 ## Goals / Non-goals
 
 **Goals**
-- `nw workers bootstrap` installs nightwright on a new worker and registers it.
 - `nw workers drain` takes a worker out of service without losing running jobs.
 
 **Non-goals**
@@ -37,26 +44,11 @@ parallel with it.
 
 ## Decision
 
-Bootstrap installs a wheel of the coordinator's own checkout, so both sides run the same
-code. Drain marks the worker `draining`; the queue disables it once its last remote job
+Drain marks the worker `draining`; the queue disables it once its last remote job
 record is final.
 
 ## Design
 
-- **`nw workers bootstrap NAME --ssh DEST [--slots N]`**
-  1. It builds a wheel of the coordinator's checkout (`uv build --wheel`) and copies it
-     with `scp`.
-  2. It runs `uv tool install --force <wheel>` over a normal (not forced-command) SSH
-     session. This needs the human's own key to the worker account.
-  3. It runs `nw worker info` to check the install.
-  4. It prints the forced-command `authorized_keys` line, built from the key the coordinator
-     uses for workers (`agentic.workers.key`, default `~/.ssh/id_ed25519.pub`).
-  5. With `--install-key` it calls `nw workers add` (with check); without it, it calls
-     `nw workers add --no-check` and prints `run nw workers check NAME after installing the
-     key line`. The `add` runs after the key is installed, so `check` can succeed.
-
-  `--install-key` appends the key line to `~/.ssh/authorized_keys` on the worker, unless the
-  line is already present.
 - **`nw workers drain NAME`** stops new jobs from being placed on the worker
   (`draining: true`, added to the registry schema). Its running jobs finish. `nw workers
   list` shows `draining (k jobs)`. On each tick the queue sets `enabled: false` and clears
@@ -64,32 +56,21 @@ record is final.
 
 ## Alternatives considered
 
-- **Install from a package index.** The coordinator and worker could then differ in version;
-  a wheel of the checkout guarantees the same code.
 - **Disable immediately on drain.** That would orphan running jobs.
 
 ## Acceptance criteria
 
-- [ ] `nw workers bootstrap` builds, copies and installs the wheel, checks `nw worker info`,
-      prints the `authorized_keys` line and registers the worker (`--install-key` adds the
-      line; running it twice does not duplicate it).
-- [ ] Without `--install-key`, the worker is added with `--no-check` and the next step is
-      printed.
 - [ ] `nw workers drain` stops new placements on the worker; running jobs finish; the queue
       then sets `enabled: false` and clears `draining`.
 - [ ] `nw workers list` shows `draining (k jobs)`.
 
 ## Test plan
 
-- **Automated tests** (`tests/test_workers_bootstrap_drain.py`, offline):
-  - **bootstrap:** the ssh/scp/uv calls go through a recording fake `ssh_argv`; assert the
-    sequence, plus that `--install-key` is idempotent and the no-key path uses `--no-check`;
+- **Automated tests** (`tests/test_workers_drain.py`, offline):
   - **drain:** a draining worker gets no new job, its running job finishes, and the worker
     then becomes disabled; `list` output shows the draining count.
 - **Manual verification:**
-  1. `nw workers bootstrap box --ssh user@box --install-key` on a clean machine, then
-     `nw workers check box`.
-  2. Start a gate on `box`, run `nw workers drain box`, and confirm the gate finishes and
+  1. Start a gate on `box`, run `nw workers drain box`, and confirm the gate finishes and
      the worker ends up disabled.
 - **Regression guard:** affected tests while iterating; SPEC-0337's registry tests run
   unchanged.
@@ -100,7 +81,7 @@ Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
 
 ## Rollout / migration
 
-1. New commands only. The registry gains an optional `draining` field; absent means false.
+1. New command only. The registry gains an optional `draining` field; absent means false.
 
 ## Definition of done
 
@@ -113,5 +94,4 @@ Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
 ## Open questions
 
 None. Decided while splitting SPEC-0332:
-- Bootstrap installs a wheel of the coordinator's own checkout.
 - The queue (not the human) disables a drained worker, on a tick.

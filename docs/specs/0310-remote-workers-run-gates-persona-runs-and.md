@@ -250,7 +250,8 @@ Required in every child:
 - [ ] [SPEC-0340](./0340-worker-async-job-protocol.md) Worker-side async job protocol (project: Meta-Tools) — `nw worker submit|attach|poll|cancel|jobs`, `frames.jsonl` with `n`, worker lease and heartbeat, `lost`, `gate-job` kept (depends_on none; runs alongside SPEC-0337/0338)
 - [ ] [SPEC-0341](./0341-coordinator-re-attach-job-records-and-adoption.md) Coordinator re-attach, job records and adoption (project: Meta-Tools) — `remote-jobs/` records, idempotent apply by `n`/`event_uid`, re-attach with backoff, adoption after a restart, stop/abandon cancel, old-worker fallback (depends_on SPEC-0338, SPEC-0340)
 - [ ] [SPEC-0342](./0342-lost-job-retry-across-workers-and-escalation.md) Lost-job retry across workers and escalation (project: Meta-Tools) — retry with `attempt + 1`, `excluded_workers`, several workers, escalation after three losses (depends_on SPEC-0341)
-- [ ] [SPEC-0343](./0343-worker-bootstrap-and-drain.md) Worker bootstrap and drain (project: Meta-Tools) — `nw workers bootstrap`, `nw workers drain` (depends_on SPEC-0341)
+- [ ] [SPEC-0343](./0343-worker-bootstrap-and-drain.md) Worker drain (project: Meta-Tools) — `nw workers drain` only; bootstrap moved to SPEC-0354 (depends_on SPEC-0341)
+- [ ] [SPEC-0354](./0354-nw-workers-bootstrap.md) nw workers bootstrap (project: Meta-Tools) — idempotent install, forced-command key install, `--admin` user creation, `--dry-run`; ships ahead of the job chain (depends_on SPEC-0337)
 - [x] [SPEC-0333](./0333-remote-persona-runs-with-bundle-write-back.md) Remote persona runs with bundle write-back (project: Meta-Tools) — superseded by the three-way split SPEC-0344/0345/0346
 - [ ] [SPEC-0344](./0344-remote-persona-jobs-with-bundle-write-back.md) Remote persona jobs with bundle write-back (project: Meta-Tools) — persona jobs, `request_to_job`, env allowlist, eligibility, ff-only plus stash write-back, progress frames, `nw workers set`, `check --auth` (depends_on SPEC-0342)
 - [ ] [SPEC-0345](./0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker (project: Meta-Tools) — `max_personas`, `rate-limit.json`, `remote_affinity`, `cost_by_worker` (depends_on SPEC-0344)
@@ -273,6 +274,10 @@ only and ships dark, so it has no dependencies and runs alongside SPEC-0337/0338
 its own loopback test helper). SPEC-0341 depends on SPEC-0338 and SPEC-0340. SPEC-0342 and
 SPEC-0343 run in parallel after SPEC-0341. SPEC-0344 stays after SPEC-0342 (shared
 remote-step/give-up module, a merge hotspot). SPEC-0335 depends on SPEC-0334 only.
+
+Amendment 2026-11-01 (bootstrap split out): SPEC-0343 is now drain only. Bootstrap is
+SPEC-0354, which depends only on SPEC-0337 and ships ahead of the job chain (SPEC-0340 to
+SPEC-0342); SPEC-0343 (drain) stays after SPEC-0341.
 
 Own machines come first: an SSH worker on a
 second computer or home server (human 2026-10-30).
