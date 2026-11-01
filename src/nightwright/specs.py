@@ -1115,7 +1115,11 @@ def reconcile_ideas(cfg, *, apply=False, spec_ids=None, backlinks=True):
     by_id = {}                      # SPEC-0267: id -> [ideas]; rotated files can repeat an id
     for t in all_ideas:
         by_id.setdefault((t.properties.get("ID") or "").strip(), []).append(t)
-    dup_ids = {i for i, c in by_id.items() if len(c) > 1}
+    # a twin of another project still makes the id ambiguous to a selector: pin on every carrier
+    carriers = {}
+    for t in every_idea:
+        carriers[(t.properties.get("ID") or "").strip()] = carriers.get((t.properties.get("ID") or "").strip(), 0) + 1
+    dup_ids = {i for i, n in carriers.items() if n > 1}
     for idea_id, specs in sorted(claims.items()):
         cands = by_id.get(idea_id)
         if not cands:                   # dangling source_idea: spec_lint's business
@@ -1316,14 +1320,16 @@ def _write_source_idea(cfg, spec_id, idea_id, ideas=None):
         want = str(idea_id).strip().upper()
         cands = [t for t in ideas
                  if (t.properties.get("ID") or t.id or "").strip().upper() == want]
-        task, bad = _pick_idea(cands, _as_date((fm or {}).get("created"))) if cands else (None, None)
         if not cands:
             raise ValueError(f"{idea_id}: idea not found; {spec_id} not linked")
+        # a foreign id-twin must not decide the pick (the plan pass only weighs owned ideas)
+        internal = [t for t in cands if is_internal_idea(t)]
+        if not internal:
+            raise ValueError(f"{idea_id} belongs to {idea_project(cands[0])}, not {INTERNAL_PROJECT}; "
+                             f"{spec_id} is wt's own spec and is left unchanged")
+        task, bad = _pick_idea(internal, _as_date((fm or {}).get("created")))
         if bad is not None:
             raise ValueError(_backlink_refusal(idea_id, spec_id, bad[0], bad[1]))
-        if not is_internal_idea(task):
-            raise ValueError(f"{idea_id} belongs to {idea_project(task)}, not {INTERNAL_PROJECT}; "
-                             f"{spec_id} is wt's own spec and is left unchanged")
 
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":

@@ -197,6 +197,41 @@ def test_plan_spec_link_accepts_promoted_internal_foreign_idea(tmp_path):
     assert S.plan_spec_link(cfg, iid, "SPEC-0001")["idea_id"] == iid
 
 
+def _foreign_twin(cfg, idea_id, stamp="[2026-10-25 Sun 09:00]"):
+    """A foreign idea carrying the same `:ID:` as an internal one, in a second org file."""
+    path = Path(cfg["org_ideas_file"]).with_name("ideas-20261025.org")
+    path.write_text("#+TODO: IDEA INCUBATE SPECCED | PROMOTED EXPORTED SHIPPED DROPPED RESEARCHED\n"
+                    f"* IDEA foreign twin\n:PROPERTIES:\n:ID: {idea_id}\n:PROJECT: {PROJ}\n"
+                    f":CREATED: {stamp}\n:END:\n")
+
+
+def test_internal_idea_sharing_an_id_with_a_foreign_one_advances_without_raising(tmp_path):
+    cfg = _cfg(tmp_path)
+    mine = _idea(cfg, "internal idea", state="SPECCED", spec_id="SPEC-0005")
+    # no source_idea: the spec claims neither twin, so the foreign one is filtered from the walk
+    _spec(cfg, "SPEC-0005", "done", source_idea=None, created="2026-10-30")
+    W.set_property(cfg, W.resolve_selector(cfg, mine), "CREATED", "[2026-09-01 Tue 09:00]")
+    _foreign_twin(cfg, mine)
+    plan = S.reconcile_ideas(cfg, apply=True)            # an unpinned write would raise 'ambiguous'
+    assert (mine, "advance") in _actions(plan)
+    task = [t for t in load_tasks(cfg) if t.is_idea and t.heading == "internal idea"][0]
+    assert (task.state or "").upper() == "PROMOTED"
+    twin = [t for t in load_tasks(cfg) if t.is_idea and t.heading == "foreign twin"][0]
+    assert (twin.state or "").upper() == "IDEA"
+
+
+def test_foreign_id_twin_does_not_make_dry_run_and_apply_disagree(tmp_path):
+    cfg = _cfg(tmp_path)
+    path = _spec(cfg, "SPEC-0001", "accepted", source_idea=None, created="2026-10-01")
+    mine = _idea(cfg, "internal idea", state="SPECCED", spec_id="SPEC-0001")
+    W.set_property(cfg, W.resolve_selector(cfg, mine), "CREATED", "[2026-09-01 Tue 09:00]")
+    _foreign_twin(cfg, mine, stamp="[2026-10-20 Tue 09:00]")   # newer than the spec: would win _pick_idea
+    dry = S.reconcile_ideas(cfg, apply=False)
+    applied = S.reconcile_ideas(cfg, apply=True)
+    assert sorted(dry) == sorted(applied)
+    assert f"source_idea: {mine}\n" in Path(path).read_text()
+
+
 def test_dry_run_matches_apply_for_foreign_backlink(tmp_path):
     cfg = _cfg(tmp_path)
     _spec(cfg, "SPEC-0001", "accepted", source_idea=None)

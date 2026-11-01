@@ -357,6 +357,15 @@ is repaired by hand once (the steward already reverted the observed edit).
   `plan_spec_link` refusals and the scope `ambiguous` error now name both the idea's/campaign's
   project and `Meta-Tools`. The unticked-in-spirit DoD line "manual steps performed" cannot be
   reworded here (guarded spec text); the manual verification stays Rollout step 3 for the steward.
+- Loop 7 (review fix): `reconcile_ideas` builds `dup_ids` from every idea (foreign carriers
+  included), so an id shared by an internal and a foreign idea stays pinned to `(file, heading)`
+  and the write pass no longer reaches `resolve_selector`'s ambiguous error mid-apply; the claims
+  loop's candidates stay owned-only. `_write_source_idea` picks among internal carriers only (a
+  foreign id-twin cannot win `_pick_idea`), so dry run and `--apply` agree. Tests in
+  `tests/test_spec_scope.py`: an internal idea sharing an `:ID:` with a foreign one advances under
+  `--apply` without raising (fails without the fix), and a newer foreign id-twin does not change the
+  dry-run/apply result. Targeted `test_spec_scope`, `test_reconcile`, `test_idea_spec_link`,
+  `test_agentic_queue` pass; the full suite is left to gating.
 
 ## Rollout / migration
 
