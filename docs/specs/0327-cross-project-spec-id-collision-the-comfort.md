@@ -366,6 +366,12 @@ is repaired by hand once (the steward already reverted the observed edit).
   `--apply` without raising (fails without the fix), and a newer foreign id-twin does not change the
   dry-run/apply result. Targeted `test_spec_scope`, `test_reconcile`, `test_idea_spec_link`,
   `test_agentic_queue` pass; the full suite is left to gating.
+- Loop 8 (review fixes, tests only): `test_second_project_close_leaves_wt_checkout_clean` now commits
+  the fixture's edits first and asserts `git status --porcelain` is `""` before and after the close
+  and the global reconcile; `test_write_source_idea_idea_not_found_raises_and_writes_nothing` covers
+  the "idea not found" `ValueError`. Dry run == `--apply` for ids with internal twins was already
+  true since Loop 7 (`_write_source_idea` and the plan pass both pick with `_pick_idea` among
+  internal carriers only). Targeted `test_spec_scope`, `test_agentic_queue` pass; full suite left to gating.
 
 ## Rollout / migration
 

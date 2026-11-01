@@ -132,6 +132,15 @@ def test_write_source_idea_refuses_foreign_and_newer_idea(tmp_path):
     assert {p: Path(p).read_bytes() for p in (old, new)} == snap
 
 
+def test_write_source_idea_idea_not_found_raises_and_writes_nothing(tmp_path):
+    cfg = _cfg(tmp_path)
+    path = _spec(cfg, "SPEC-0001", "accepted", source_idea=None, created="2026-01-01")
+    before = Path(path).read_bytes()
+    with pytest.raises(ValueError, match="IDEA-999: idea not found; SPEC-0001 not linked"):
+        S._write_source_idea(cfg, "SPEC-0001", "IDEA-999")
+    assert Path(path).read_bytes() == before
+
+
 def test_outbound_id_hand_off_ignores_project_scoping(tmp_path):
     """Outbound PROJ-NNNN ids are exempt: an idea promoted `--target` has no :PROJECT:, yet the
     campaign (project = the target) must still mark / clear it."""

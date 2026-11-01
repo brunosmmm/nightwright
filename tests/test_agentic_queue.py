@@ -453,10 +453,14 @@ def test_second_project_close_leaves_wt_checkout_clean(opened, tmp_path):
     wt_spec = Path(cfg["specs_dir"]) / "0001-trivial.md"
     porcelain = lambda: subprocess.run(["git", "status", "--porcelain"], cwd=wt_repo,  # noqa: E731
                                        capture_output=True, text=True, check=True).stdout
+    # start clean (commit the fixture's own edits), so "left clean" is an absolute claim
+    subprocess.run(["git", "-C", str(wt_repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(wt_repo), "commit", "-qm", "fixture"], check=True)
     before, before_spec = porcelain(), wt_spec.read_bytes()
+    assert before == ""
     row, st = _apply(ctx, cfg, cid, "close", close_outcome=oc)
     assert st["state"] == "MERGED"
-    assert porcelain() == before and wt_spec.read_bytes() == before_spec
+    assert porcelain() == "" and wt_spec.read_bytes() == before_spec
     (ev,) = S.read_ledger(cfg, cid, types=["idea_reconciled"])
     assert (ev["spec_id"], ev["idea_id"], ev["to"]) == ("SPEC-0001", iid, "SHIPPED")
     assert _idea_state(cfg, iid) == "SHIPPED"
@@ -464,7 +468,7 @@ def test_second_project_close_leaves_wt_checkout_clean(opened, tmp_path):
     # either: that is the write that dirtied the main checkout
     from wt import specs as SPECS
     SPECS.reconcile_ideas(cfg, apply=True)
-    assert porcelain() == before and wt_spec.read_bytes() == before_spec
+    assert porcelain() == "" and wt_spec.read_bytes() == before_spec
     assert "source_idea" not in wt_spec.read_text()
 
 
