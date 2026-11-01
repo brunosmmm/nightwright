@@ -4,6 +4,7 @@ title: "Narrow affected_tests.py fallbacks and write the NW_GATE_REPORT selectio
 status: accepted
 owner: user
 created: 2026-11-01
+updated: 2026-11-01
 kind: feature
 source_idea: IDEA-649
 tags: [agentic, gates, tests]
@@ -68,12 +69,16 @@ depend on. Part 3 of the split (close-tier reuse) needs both.
 1. **Narrowed mapping in `tools/affected_tests.py`.** It uses a reference scan (string constants
    and import names) next to the import graph. A changed non-Python file under `tests/`,
    `src/nightwright/`, `.nw/` or `tools/`, or a changed `tools/*.py`, selects the test modules that
-   reference it, plus the nearest tests of src modules that reference it. A src module that no test
+   reference it (and, for package data under `src/nightwright/` only, the nearest tests of src
+   modules that reference it). A src module that no test
    reaches selects the test files named after it (the name rule). The configured smoke set
    (`--include`) is always added. A change that maps to nothing still falls back to the full suite.
    The full-suite triggers shrink to `pyproject.toml`, `uv.lock`, any `conftest.py`,
    `tests/waits.py` and removed modules.
-2. **Rollback.** `--strict` or env `NW_AFFECTED_STRICT=1` restores the SPEC-0328 triggers exactly.
+2. **Rollback.** `--strict` or env `NW_AFFECTED_STRICT=1` restores SPEC-0328 behaviour exactly: the
+   original `FULL_TRIGGERS` (including the `tools/` and `.nw/` prefixes), full on any non-`.py`
+   file under `tests/` or `src/nightwright/`, and full on an unreached src module; neither the
+   reference scan nor the name rule runs.
 3. **Report.** When env `NW_GATE_REPORT` is set, the tool writes the selection report JSON there
    (best effort).
 4. **JSON mode.** `--json` prints the report on stdout instead of the human lines, and `--closure`
@@ -89,25 +94,41 @@ depend on. Part 3 of the split (close-tier reuse) needs both.
 `uv.lock`, `tests/waits.py` and any `conftest.py`. The triggers for removed modules, an unknown base
 and `MAX_FRACTION` stay. `tools/` and `.nw/` are no longer prefix triggers. `--strict` (or env
 `NW_AFFECTED_STRICT=1`) restores the SPEC-0328 triggers exactly, including the `tools/` and `.nw/`
-prefixes. The flag and the env are equivalent; either one turns strict mode on.
+prefixes. The flag and the env are equivalent; either one turns strict mode on. Strict mode
+disables every rule below the trigger list: it also turns off the reference scan and the name rule,
+so a `tools/*.py` change is full again, any non-`.py` file under `tests/` or `src/nightwright/` is
+full, and an unreached src module gives `no test reaches ...` (full).
 
-**Reference index.** `_scan` already parses every module under `src/nightwright` and `tests`. It
-also collects, per module, (a) every `str` `ast.Constant` and (b) every imported top-level name.
-For a changed path `rel`, the *needles* are:
+**Module graph.** `_scan` (`tools/affected_tests.py:90`) today indexes only `src/nightwright` and
+`tests`, and `_module_name` returns `None` for `tools/*.py`. `_scan` also indexes `tools/*.py` under
+the module name `X` (the stem). These modules are never test modules and are not walked by
+`nearest_tests`, but they are part of the import graph for the reference scan and the closure.
+
+**Reference index.** `_scan` parses every indexed module and collects, per module, (a) every `str`
+`ast.Constant`, (b) every imported top-level name, and (c) every `Path`-style expression, i.e. an
+`ast.BinOp` with `Div` whose right operand is a string constant and whose operand chain includes
+`__file__` or `parent`. For a changed path `rel`, the *needles* are:
 - the basename (for example `remote_gates_golden.json`, `project.yaml`, `affected_tests.py`);
 - for `tools/X.py`, also the stem `X` (tests load tools with `importlib`/`sys.path` or
   `subprocess [... "tools/X.py"]`, and an import of `X` counts);
-- the name of the parent directory, when the file sits below the top level of `tests/`,
-  `src/nightwright/` or `.nw/` (for example `data` for `tests/data/*.json`, `personas` for
-  `src/nightwright/agentic/personas/*.md`, `.nw` for `.nw/project.yaml`). This catches
-  `Path(__file__).parent / "data"` and glob-style readers.
+- the name of the file's parent directory (for a file directly under `.nw/`, the needle is `.nw`;
+  for `tests/data/x.json`, `data`; for `src/nightwright/agentic/personas/x.md`, `personas`). This
+  *directory needle* catches `Path(__file__).parent / "data"` and glob-style readers. It is used
+  only for a file whose basename needles find no referencing module, and never as a bare string
+  match (see below).
 
-A module *references* `rel` when one of its string constants contains a needle (for a directory
-needle, the constant is equal to the needle or ends with `/<needle>` or `<needle>/`), or when the
-needle is the stem of a module it imports. A referencing **test** module is selected, and so are the
-test modules importing it (the existing free hops through helpers). A referencing **src** module
-selects its `nearest_tests` (this covers package data read by src code). Matching on basenames
-errs toward selecting more, and `MAX_FRACTION` caps the result.
+A module *references* `rel` when:
+- one of its string constants **contains** a basename needle, or **contains** a dotted module name
+  needle (name rule only);
+- the stem needle is the stem of a module it imports;
+- for the directory needle only: a string constant ends with `<parent>/` or `/<parent>` or contains
+  `/<parent>/`, **or** a `Path` expression (c) `… / "<parent>"` is present. A bare string constant
+  equal to the directory name (a dict or JSON key such as `payload["data"]`) does **not** match.
+
+A referencing **test** module is selected, and so are the test modules importing it (the existing
+free hops through helpers). Src-module expansion (a referencing src module selects its
+`nearest_tests`) applies only to the `src/nightwright/**` non-`.py` row; see the table. Matching on
+basenames errs toward selecting more, and `MAX_FRACTION` caps the result.
 
 **Rules by path class** (applied per changed file, results unioned):
 
@@ -122,12 +143,19 @@ errs toward selecting more, and `MAX_FRACTION` caps the result.
 | `tests/**.py` | unchanged (itself and importers) | n/a |
 | anything else (docs, specs, …) | nothing (unchanged) | n/a |
 
+Src-module expansion (a referencing src module selects its `nearest_tests`) applies only to the
+`src/nightwright/**` non-`.py` row. For `.nw/**`, `tests/**` non-`.py` and `tools/**`, only
+referencing test modules (and the test modules that import them) are selected; a src module that
+mentions `project.yaml` does not pull in its tests, because src code reads whichever project file
+it is given.
+
 **Name rule** (an unreached src module, for example a new `cli_workers.py`). Take the module's leaf
 name, and also the leaf with the prefixes `cli_` / `_` stripped (`cli_workers` gives `cli_workers`
 and `workers`). Select the test files under `tests/` whose stem contains either token as a whole
 `_`-delimited run (`test_agentic_workers.py`, `test_agentic_workers_bootstrap.py`, but not
-`test_coworkers.py`). Also select the test modules whose string constants contain the
-module's dotted name, or a CLI command name equal to the token with `_` replaced by `-`. An empty
+`test_coworkers.py`). Also select the test modules that have a string constant **containing** the
+module's dotted name, or a string constant **equal to** the token with `_` replaced by `-` (a CLI
+command name). An empty
 result is still the full fallback. The reason string says which rule fired:
 `affected: N/M test files (name rule for src/.../cli_workers.py; reference scan for .nw/project.yaml)`.
 
@@ -144,17 +172,22 @@ costing more than SPEC-0328's fallback already did.
 **Report.** When env `NW_GATE_REPORT` is set, `affected_tests.py` writes a JSON report there:
 `{full, reason, tests, include, changed, base_sha, head_sha, head_tree}`. `tests` is the sorted
 selected test file list (the full list when `full` is true is not required: it may be empty with
-`full: true`). `base_sha` is the resolved base commit, `head_sha` and `head_tree` are `HEAD` and
+`full: true`). `base_sha` is the resolved base commit, and is `null` when `--changed` is given or
+the base cannot be resolved (for example `cannot diff against …`, which is a full fallback).
+`head_sha` and `head_tree` are `HEAD` and
 `HEAD^{tree}` of `--repo`, and `include` is the smoke set as passed. Writing is best effort: a
 write error is ignored, and a missing parent directory is created once. The report is written for
 `--run` and for plain selection runs, and does not change the exit code or the printed output.
 
 **JSON mode.** `--json` prints the same object (plus `closure` when `--closure` is given) on stdout
-as a single line and prints nothing else there (diagnostics go to stderr). With `--run` the JSON is
-printed before the command starts. `--changed PATH` (repeatable, repo-relative) replaces
+as a single line and prints nothing else there (diagnostics go to stderr). With `--run`, the JSON
+line is the first line on stdout and the tool itself prints nothing else there (`no affected tests`
+moves to stderr); the child command's own output follows. `--json`, `--closure` and `--changed`
+must precede `--run` (it takes the rest of the command line). `--changed PATH` (repeatable, repo-relative) replaces
 `changed_files(repo, base)` with the given list, so a caller can ask about an arbitrary change set,
 for example `D = git diff --name-only G H` on a checkout of `H`, without needing a branch. The base is then
-not resolved and `base_sha` is `null`.
+not resolved and `base_sha` is `null`. If the base cannot be resolved without `--changed`, the
+report is still produced (`full: true`, the `cannot diff against …` reason, `base_sha: null`).
 
 **Forward closure.** `closure` is the sorted list of repo-relative paths the selected tests read,
 by the same static reasoning the selection uses, computed as a fixed point:
@@ -192,7 +225,21 @@ working unchanged, because the new flags and the env var are additive and strict
       reason names the rule that fired.
 - [ ] `pyproject.toml`, `uv.lock`, `conftest.py`, `tests/waits.py`, a removed module, an unmapped
       data file, an unmatched unreached module, and a selection above `MAX_FRACTION` still give the
-      full suite. `--strict` / `NW_AFFECTED_STRICT=1` reproduce SPEC-0328 selection exactly.
+      full suite. `--strict` / `NW_AFFECTED_STRICT=1` reproduce SPEC-0328 selection exactly: a
+      `tools/*.py` change, a `.nw/project.yaml` change, a non-`.py` file under `tests/` or
+      `src/nightwright/`, and an unreached src module are all full (`no test reaches ...`); the
+      reference scan and the name rule do not run.
+- [ ] A string constant equal to a directory name (a dict key `"data"`) is not a reference for the
+      directory needle; `Path(__file__).parent / "data"` and a constant ending in `/data` are.
+      The directory needle is used only when the basename needles find no referencing module.
+- [ ] Src-module expansion happens only for `src/nightwright/**` non-`.py` changes: a src module
+      containing the constant `"project.yaml"` does not add its tests to a `.nw/project.yaml`
+      selection.
+- [ ] `_scan` indexes `tools/*.py` under the stem name; a test importing `tools/X.py` is selected
+      by a change to `tools/X.py`, and no `tools` module is ever a selected test module.
+- [ ] With `--json --run CMD`, the first stdout line is the JSON object and the tool prints nothing
+      else on stdout (`no affected tests` goes to stderr). `base_sha` is `null` when `--changed`
+      is given or the base cannot be resolved.
 - [ ] The smoke set (`--include`) is added to every non-full selection.
 - [ ] With `NW_GATE_REPORT` set, the tool writes a JSON file with the keys `full`, `reason`,
       `tests`, `include`, `changed`, `base_sha`, `head_sha`, `head_tree`; a write error does not
@@ -203,7 +250,9 @@ working unchanged, because the new flags and the env var are additive and strict
 - [ ] The replay test passes on the real repository tree: the recorded `.nw/project.yaml`,
       `tests/data/remote_gates_golden.json` and new `cli_workers.py` changes give non-full
       selections under `MAX_FRACTION` that include `test_agentic_dogfood_config.py`, the golden
-      test and a `*workers*` test respectively; `pyproject.toml` and `uv.lock` stay full.
+      test and a `*workers*` test respectively; `pyproject.toml` and `uv.lock` stay full. The
+      `tests/data/remote_gates_golden.json` selection contains fewer than 10 test files. The replay
+      never writes into the repository checkout under test.
 - [ ] The close tier is unchanged: `.nw/project.yaml` still defines the full `pytest` close gate,
       and no gate, close or queue module is modified by this spec.
 
@@ -215,24 +264,34 @@ working unchanged, because the new flags and the env var are additive and strict
   - one test per row of the rules table: expected selected files, `full` false (or true for the
     full rows), and the reason names the rule;
   - the needle forms: a basename constant, `Path(...)/"data"`, a `tools` stem import, a subprocess
-    path, a dotted module name and a CLI command name;
+    path, a dotted module name and a CLI command name (matched by equality, not containment);
+  - a test module with only a dict key `"data"` is not selected by a `tests/data/x.json` change,
+    one with `Path(__file__).parent / "data"` is selected when no basename reader exists, and the
+    directory needle is not used when a basename reader exists;
+  - a src module with the constant `"project.yaml"` adds nothing to a `.nw/project.yaml`
+    selection, while a src module reading a package data file adds its `nearest_tests`;
+  - a test importing `tools/tool_x.py` is selected by a change to it (the `tools` stem is indexed);
   - the empty-mapping fallbacks (an unreferenced data file, a name-rule miss) give the full suite,
     and `test_coworkers.py` is not matched by the token `workers`;
   - `--strict` and the env give the SPEC-0328 results (the SPEC-0328 tests keep passing under
-    strict mode); the smoke set is always appended.
+    strict mode), including full for `tools/*.py`, non-`.py` files and an unreached src module;
+    the smoke set is always appended.
 - **Automated: report and JSON** (`tests/test_affected_tests.py`): with `NW_GATE_REPORT` set the
   file has the eight keys and the right `full`/`tests`; an unwritable path is ignored; `--json`
   stdout parses as one object; `--closure` contains the imported helper and a referenced data file
   and is `null` for a full selection; `--changed` selects without a base and gives `base_sha`
-  `null`.
+  `null`; an unresolvable base gives a full report with `base_sha` `null`; `--json --run` (with
+  a trivial child command) has the JSON as the first stdout line and nothing else from the tool.
 - **Automated: replay** (`tests/test_affected_tests_replay.py`, fixture
   `tests/data/affected_fallback_replay.json`). This file holds the recorded 2026-11-01 fallbacks:
   `.nw/project.yaml` (SPEC-0338), `tests/data/remote_gates_golden.json` (SPEC-0338), and a new
   `src/nightwright/agentic/cli_workers.py` (SPEC-0354), plus controls `pyproject.toml` and
-  `uv.lock`. Run against the **real repository tree**, with missing files staged as temporary
-  copies, the three recorded reasons must now give a non-full selection under `MAX_FRACTION`
+  `uv.lock`. Run `select()` (with `--changed`-style explicit paths) against a temporary copy of the
+  real repository tree (for example `git worktree add` or a `shutil.copytree` of the tracked files
+  into `tmp_path`); missing files are created only in that copy, never in the checkout under test.
+  The three recorded reasons must now give a non-full selection under `MAX_FRACTION`
   that includes `test_agentic_dogfood_config.py`, the golden test and a `*workers*` test
-  respectively. The controls stay full.
+  respectively, and the golden-data selection has fewer than 10 test files. The controls stay full.
 - **Manual verification:** `git checkout <SPEC-0338 branch tip>` in a scratch worktree, run
   `python3 tools/affected_tests.py --base <its base>` and record the selection size against the
   old full fallback in *As shipped*; the same for the SPEC-0354 tip; and
@@ -245,8 +304,8 @@ working unchanged, because the new flags and the env var are additive and strict
 ## Risks
 
 - **Basename needles too narrow** (a file opened by a computed name that contains no needle). A
-  data change can then select a set that misses its reader. *Mitigation:* the parent-directory
-  needle catches directory-level readers, `MAX_FRACTION` bounds over-selection, and the close tier
+  data change can then select a set that misses its reader. *Mitigation:* the path-shaped
+  parent-directory needle (used when no basename reader exists) catches directory-level readers, `MAX_FRACTION` bounds over-selection, and the close tier
   still runs the full suite on every merge. `--strict` is the rollback.
 - **Name rule misses** (an unreached module tested only through the CLI under another name). The
   result is empty and falls back to the full suite, or the close tier catches it. A new module with
