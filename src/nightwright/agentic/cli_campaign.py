@@ -316,12 +316,31 @@ def attach(campaign_group):
                   help="run id (001-implementer) or unique prefix; default the newest run")
     @click.option("--follow", "-f", is_flag=True, help="keep reading until the run ends")
     @click.option("--raw", is_flag=True, help="print the stream-json lines as they are")
+    @click.option("--follow-campaign", is_flag=True,
+                  help="follow the campaign across its runs until interrupted (the herdr run "
+                       "pane viewer, SPEC-0366); --run/--follow are ignored")
     @click.pass_obj
-    def campaign_tail(cfg, campaign, run, follow, raw):
+    def campaign_tail(cfg, campaign, run, follow, raw, follow_campaign):
         """A persona run as a readable transcript (SPEC-0362): tool calls with a short result
         summary, assistant text, running cost vs budget, the final result. Reads
         runs/<run>/stream.jsonl; a run launched without stream capture shows its result."""
         from . import tail as TL
+        if follow_campaign:
+            import signal
+
+            def _bye(signum, frame):
+                raise KeyboardInterrupt
+            for sig in (signal.SIGTERM, signal.SIGHUP):
+                try:
+                    signal.signal(sig, _bye)
+                except ValueError:                   # not the main thread (tests)
+                    pass
+            try:
+                sys.exit(TL.follow_campaign(cfg, campaign, raw=raw, out=console))
+            except ValueError as e:
+                raise click.ClickException(str(e))
+            except KeyboardInterrupt:
+                sys.exit(130)
         try:
             run_dir = TL.resolve(cfg, campaign, run)
         except ValueError as e:

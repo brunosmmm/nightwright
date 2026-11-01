@@ -66,6 +66,7 @@ nw campaign show C        # one campaign: state, counters, cost, last events
 nw campaign log C --tail 20
 nw campaign runs C        # every persona run: cost, exit, verdict
 nw campaign tail C -f     # one run as a live transcript: tool calls, text, cost vs budget
+nw campaign tail C --follow-campaign   # every run of C as it comes, until Ctrl-C
 nw queue runner-log       # what the runner did, start/stop/crash records
 nw queue followers        # who is watching: conductor, stewards, their lag
 ```
@@ -80,7 +81,9 @@ its `runs/<run>/stream.jsonl` capture: each tool call with a one-line summary (`
 src/x.py`, `→ Bash uv run pytest -q`) and its result (`← 12 lines: …`), the agent's text, a
 running cost estimate against the run's budget (priced with `agentic.conductor.prices`;
 token counts when the model has no price) and the final result. `-f` follows a running run
-until it ends; `--raw` prints the stream-json lines. Runs started before stream capture have no
+until it ends; `--follow-campaign` follows the campaign across its runs (a footer when a run
+ends, the next run when it starts) until Ctrl-C, as herdr run tabs do; `--raw` prints the
+stream-json lines. Runs started before stream capture have no
 stream; for them it says so and shows the result. `agentic.stream_runs: false` turns capture
 off for new runs.
 

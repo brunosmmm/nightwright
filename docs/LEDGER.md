@@ -233,13 +233,13 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker — accepted
   - [ ] [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) Remote workers integration suite for gate and persona workers — accepted
   - [ ] [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) nw workers bootstrap — accepted
-- **[SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) — Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer** · accepted · (5/6 done)
+- **[SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) — Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer** · accepted · (6/6 done)
   - [x] [SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md) herdr reporter: nw herdr watch pushes queue tokens and notifications — superseded
   - [x] [SPEC-0362](./specs/0362-stream-json-capture-of-persona-runs-and-nw.md) Stream-json capture of persona runs and nw campaign tail viewer — done
   - [x] [SPEC-0363](./specs/0363-herdr-display-scoped-to-nw-panes-display-agent-on.md) herdr display scoped to nw panes: --display-agent on conductor/steward panes, per-role workspace tokens — done
-  - [x] [SPEC-0364](./specs/0364-herdr-run-panes-one-pane-per-active-campaign-in.md) herdr run panes: one pane per active campaign in an nw runs tab, running nw campaign tail, agent state + display agent — done
+  - [x] [SPEC-0364](./specs/0364-herdr-run-panes-one-pane-per-active-campaign-in.md) herdr run panes: one pane per active campaign in an nw runs tab, running nw campaign tail, agent state + display agent — superseded
   - [x] [SPEC-0365](./specs/0365-herdr-watcher-auto-start-the-conductor-follower.md) herdr watcher auto-start: the conductor follower supervises nw herdr watch — done
-  - [ ] [SPEC-0366](./specs/0366-herdr-run-tabs-one-tab-per-campaign-named-after.md) herdr run tabs: one tab per campaign named after the work, supersedes the shared nw runs tab — accepted
+  - [x] [SPEC-0366](./specs/0366-herdr-run-tabs-one-tab-per-campaign-named-after.md) herdr run tabs: one tab per campaign named after the work, supersedes the shared nw runs tab — done
 
 ## Active & planned
 
@@ -268,7 +268,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0358](./specs/0358-failed-first-loop-rounds.md) | Failed-first loop rounds: rerun the previously failing tests before the rest of a gate | feature | accepted | — | 2026-11-01 |
 | [SPEC-0359](./specs/0359-close-tier-reuse-of-a-green-loop-gate-with-a-full.md) | Close-tier reuse of a green loop gate, with a full-suite sentinel on the base branch | feature | accepted | — | 2026-11-01 |
 | [SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) | Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer | epic | accepted | — | 2026-11-01 |
-| [SPEC-0366](./specs/0366-herdr-run-tabs-one-tab-per-campaign-named-after.md) | herdr run tabs: one tab per campaign named after the work, supersedes the shared nw runs tab | feature | accepted | — | 2026-11-01 |
 
 ## Done
 
@@ -591,8 +590,8 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0357](./specs/0357-narrow-affected-tests-py-fallbacks-and-write-the.md) | Narrow affected_tests.py fallbacks and write the NW_GATE_REPORT selection report | feature | done | — | 2026-11-01 |
 | [SPEC-0362](./specs/0362-stream-json-capture-of-persona-runs-and-nw.md) | Stream-json capture of persona runs and nw campaign tail viewer | feature | done | — | 2026-11-01 |
 | [SPEC-0363](./specs/0363-herdr-display-scoped-to-nw-panes-display-agent-on.md) | herdr display scoped to nw panes: --display-agent on conductor/steward panes, per-role workspace tokens | feature | done | — | 2026-11-01 |
-| [SPEC-0364](./specs/0364-herdr-run-panes-one-pane-per-active-campaign-in.md) | herdr run panes: one pane per active campaign in an nw runs tab, running nw campaign tail, agent state + display agent | feature | done | — | 2026-11-01 |
 | [SPEC-0365](./specs/0365-herdr-watcher-auto-start-the-conductor-follower.md) | herdr watcher auto-start: the conductor follower supervises nw herdr watch | feature | done | — | 2026-11-01 |
+| [SPEC-0366](./specs/0366-herdr-run-tabs-one-tab-per-campaign-named-after.md) | herdr run tabs: one tab per campaign named after the work, supersedes the shared nw runs tab | feature | done | — | 2026-11-01 |
 
 ## Superseded / rejected
 
@@ -613,6 +612,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) | Remote persona runs with bundle write-back | feature | superseded | — | 2026-11-01 |
 | [SPEC-0355](./specs/0355-faster-code-gating.md) | Faster code gating: narrow affected-test fallbacks, close reuse of a green loop gate, failed-first reruns | feature | superseded | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md) | herdr reporter: nw herdr watch pushes queue tokens and notifications | feature | superseded | — | 2026-11-01 |
+| [SPEC-0364](./specs/0364-herdr-run-panes-one-pane-per-active-campaign-in.md) | herdr run panes: one pane per active campaign in an nw runs tab, running nw campaign tail, agent state + display agent | feature | superseded | — | 2026-11-01 |
 
 <!-- specs:end -->
 

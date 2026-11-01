@@ -1,7 +1,7 @@
 ---
 id: SPEC-0366
 title: "herdr run tabs: one tab per campaign named after the work, supersedes the shared nw runs tab"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -180,37 +180,37 @@ Help texts name tabs instead of the `nw runs` tab.
 
 ## Acceptance criteria
 
-- [ ] Each campaign with a running run gets its own tab, `tab create --workspace <conductor
+- [x] Each campaign with a running run gets its own tab, `tab create --workspace <conductor
       ws> --label "<SPEC-ID> <short title>" --no-focus`; no `pane split`; two campaigns with
       the same label get distinct tab labels.
-- [ ] `short_title` strips markdown and keeps the first clause, ≤ 24 chars with `…`; no title
+- [x] `short_title` strips markdown and keeps the first clause, ≤ 24 chars with `…`; no title
       → the campaign label alone.
-- [ ] Display agent drops the spec id: `nw run · <persona> · loop N · $c/$b` /
+- [x] Display agent drops the spec id: `nw run · <persona> · loop N · $c/$b` /
       `nw run · <status>`.
-- [ ] The pane gets one typed command, `… campaign tail <cid> --follow-campaign`; a later run
+- [x] The pane gets one typed command, `… campaign tail <cid> --follow-campaign`; a later run
       of the campaign is shown by the same viewer, nothing more is typed; `pane read` shows
       no typed command line.
-- [ ] `--follow-campaign` follows run → footer → next run and exits only on a signal.
-- [ ] Real herdr: `herdr agent list` sampled across a run end and a new run start keeps the
+- [x] `--follow-campaign` follows run → footer → next run and exits only on a signal.
+- [x] Real herdr: `herdr agent list` sampled across a run end and a new run start keeps the
       `nw-run` agent entry for the pane the whole time.
-- [ ] A tab closes `run_pane_linger_s` (default 60, config key, CLI flag) after its campaign's
+- [x] A tab closes `run_pane_linger_s` (default 60, config key, CLI flag) after its campaign's
       last run ended, whatever the campaign state (parked included); a run within the linger
       keeps the tab; a later run opens a new tab. Closing the pane removes the tab.
-- [ ] At most 6 run tabs; overflow evicts the earliest-ended lingering tab, else waits with
+- [x] At most 6 run tabs; overflow evicts the earliest-ended lingering tab, else waits with
       ` (+N)` on nw's newest run tab.
-- [ ] Adoption after a watcher restart: per-pane tab check; mismatched label/tab or another
+- [x] Adoption after a watcher restart: per-pane tab check; mismatched label/tab or another
       socket never touched; a fresh shell gets the viewer typed again.
-- [ ] Migration: a v1 state file's verified panes are closed (the `nw runs` tab disappears)
+- [x] Migration: a v1 state file's verified panes are closed (the `nw runs` tab disappears)
       and their still-running campaigns get their own tabs; unverified ones are not touched.
-- [ ] The fake herdr models the commands used, from real 0.9.5 replies; `docs/herdr.md`
+- [x] The fake herdr models the commands used, from real 0.9.5 replies; `docs/herdr.md`
       describes run tabs.
-- [ ] Isolated real-herdr session (SHELL=fish), torn down afterwards; the human's session only
+- [x] Isolated real-herdr session (SHELL=fish), torn down afterwards; the human's session only
       read after landing.
 
 ## Test plan
 
-- **Automated** (`tests/test_herdr.py`, fake herdr; `tests/test_agentic_stream.py` for the
-  viewer):
+- **Automated** (`tests/test_herdr.py`, fake herdr, which also holds the viewer tests because
+  they share its campaign/run fixtures):
   - `short_title` / `tab_label` / disambiguation; `run_display` without the label.
   - one running run → its tab and label, rename, one `pane run` with `--follow-campaign`,
     working, display; a second campaign → a second `tab create`, no split.
@@ -233,9 +233,78 @@ Help texts name tabs instead of the `nw runs` tab.
   `server stop --session` + `session delete`.
 - **Regression**: `tools/affected_tests.py` plus the related set by hand.
 
-## As shipped
+## As shipped (2026-11-01)
 
-(filled in at done)
+- **Files:** `src/nightwright/agentic/tail.py` (`running_runs` moved here, `follow_campaign`,
+  `CLEAR`), `cli_campaign.py` (`nw campaign tail --follow-campaign`; SIGTERM/SIGHUP → exit
+  130), `herdr_runpanes.py` (rewritten: per-campaign tabs, `short_title` / `title_of` /
+  `tab_label`, `linger_default`, schema v2 with v1 conversion and legacy close, overflow
+  suffix, no splits), `herdr_watch.py` (linger passed through, `None` → config), `cli_herdr.py`
+  (`--run-pane-linger` default from `agentic.herdr.run_pane_linger_s`, help texts),
+  `tests/fixtures/fake_herdr.py` (`tab get` / `tab_not_found` as herdr 0.9.5 answers),
+  `tests/test_herdr.py`, `docs/herdr.md` (Run tabs section), `docs/product/reference/index.md`,
+  `docs/product/loop/operate.md`.
+- **Design as written**, plus: `short_title` cuts on a word boundary when one falls in the
+  second half of the 24 characters (`Some very long title…`); each pane record carries an
+  `order` so the overflow suffix goes to the newest tab even when several are created in one
+  push; the pane builders `pane_split_args` / `pane_layout_args` stay in the client (tested,
+  unused by run tabs).
+- **Strings (as seen in herdr 0.9.5):** tabs `SPEC-0901 nw doctor`, `SPEC-0902 herdr run panes`,
+  `SPEC-0903 Some very long title…`; display agents `nw run · implementer · loop 2 ·
+  $0.01/$2.50`, `nw run · conformance_reviewer · loop 2 · $0.01/$2.50`, `nw run · gating`,
+  `nw run · parked: cost_cap`. Sidebar: `nightwright · SPEC-0349 nw doctor` /
+  `nw run · adversarial_reviewer · loop 2 · $0.89/$2.50`.
+- **Judgment calls:** parked campaigns get the normal linger (shown `blocked` meanwhile); a
+  run, not the queue state, keeps a tab (a MERGED campaign whose run still runs keeps it);
+  human-closed tabs are not reopened until that campaign's running runs have ended; the state
+  is still re-reported every push (cheap, covers a report dropped while the viewer starts).
+- **Real herdr 0.9.5, isolated session only** (`herdr --session nw-test-30b51501 server`,
+  `SHELL=/usr/bin/fish`, the human's `HERDR_*` removed, every call with that session's socket;
+  a fake data dir with three campaigns, `spec_at_open.md` titles, the real
+  `read_tool_schema.jsonl` stream, runs held "running" by `sleep` wrappers, a conductor
+  placement in `w1`):
+  - Probes first: `tab create … --no-focus` → `.result.tab` + `.result.root_pane`; `tab get` /
+    `tab_not_found` exit 1; `pane run` strips a leading space (fish saved `echo spacetest-q1`
+    to history); an escape-sequence clear removes the typed line and the fish greeting from
+    `pane read --source recent`; no herdr option starts a pane with a command.
+  - **Migration:** the previous code (the installed `nw`, SPEC-0364) made `w1:t3 'nw runs'`
+    with `w1:p3`/`w1:p4` (v1 state). The new watcher (`nw herdr watch --run-panes --interval 2
+    --run-pane-linger 20`) logged `closed w1:p3 of the old shared tab (SPEC-0902-…); it gets a
+    tab of its own` (and p4); `tab list` → `w1:t4 'SPEC-0902 herdr run panes'`, `w1:t5
+    'SPEC-0901 nw doctor'`, both not focused, `w1:t3` gone; state file `nw.herdr.run_panes.v2`.
+  - **No typed line:** `pane read w1:p6 --source recent --lines 500` starts with `run
+    001-implementer · persona implementer …`; 0 lines match `campaign tail|NW_DATA_DIR`.
+  - **No flicker:** `herdr agent list` sampled every second for 36 s while run 001 ended
+    (campaign → GATING) and run 002-conformance_reviewer started 11 s later: `w1:p6` present in
+    every sample: `working` → `done 'nw run · gating'` (herdr's not-yet-seen idle) → `working
+    'nw run · conformance_reviewer · …'`. The pane showed `■ run 001-implementer ended ·
+    waiting for the next run · campaign implementing`, `· campaign gating`, `· campaign
+    reviewing`, a rule and run 002's transcript; nothing more was typed.
+  - **Adoption:** watcher `kill -9`, restarted: `w1:p5`/`w1:p6` adopted (same ids, no new
+    tab, no retype), a third campaign got `w1:t6 'SPEC-0903 Some very long title…'`.
+  - **Linger:** runs of SPEC-0902 (→ PARKED cost_cap) and SPEC-0901 (→ GATING) ended at
+    14:46:06; `p5=blocked`, `p6=done` until 14:46:26, both tabs gone at 14:46:28 (20 s + one
+    2 s push). A new SPEC-0901 run then opened a new tab `w1:t7 'SPEC-0901 nw doctor'`.
+  - **Exit:** SIGTERM → exit, run tabs gone, state file `sessions: {}`. Six typed lines in
+    total in fish's history for the whole session: 2 by the old code, 4 by the new (one per
+    tab, none on run switches or adoption).
+  - **Contract test** `NW_HERDR_CONTRACT_SOCKET=<test socket> uv run pytest tests/test_herdr.py
+    -k isolated`: two tabs with labels, `(+1)` on the newest and back, `pane get` label/tab,
+    agent `working`, transcript without the command line, run end → parked → next run with the
+    agent sampled present throughout, adoption without retype, close → tabs gone: passed.
+  - **Teardown:** `herdr --session nw-test-30b51501 server stop`, `herdr session delete
+    nw-test-30b51501` (`deleted session`), `~/.config/herdr/sessions/` empty, the `sleep`
+    helpers killed, the fake data dir removed; the human's `default` session was never
+    addressed. The test session's fish wrote the typed lines to the human's fish history (the
+    server shell shares it); removing them was not permitted in this session, so they remain
+    (lines containing the scratch path or `pytest-of-bruno`, plus `echo spacetest-q1` and one
+    `clear; env FOO=bar …` probe).
+- **Tests executed:** `tests/test_herdr.py` 54 passed + 2 opt-in skipped (the isolated one
+  passes on the real herdr, above). `tools/affected_tests.py` falls back to the full suite
+  ("no test reaches agentic/cli_herdr.py"), so the related set was run by hand: herdr,
+  autowatch, stream/tail, campaign/conduct/queue CLI, conductor brief/cost, events (+settings),
+  launch, mailbox, completion, docs product/captures/front door, JSON CLI, rich output guard,
+  spec lint, test waits: 571 passed, 2 skipped. The queue close gate runs the full suite.
 
 ## Rollout / migration
 
@@ -245,11 +314,11 @@ migration closes it and opens per-campaign tabs.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; contract test passes on the real herdr.
-- [ ] No regressions (the full suite runs at the queue's close gate).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated; `spec_lint` exits 0.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; contract test passes on the real herdr.
+- [x] No regressions (the full suite runs at the queue's close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated; `spec_lint` exits 0.
 
 ## Open questions
 

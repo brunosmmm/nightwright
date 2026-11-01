@@ -115,12 +115,12 @@ class Watcher:
         self.now = now or (lambda: dt.datetime.now().astimezone())
         self.pushed: dict = {}                    # (kind, target) -> (token names, display set?)
         self._cost_cache: dict = {}                        # session id -> (monotonic, usd|None)
-        self.run_panes = None                     # SPEC-0364: opt-in; None = SPEC-0363 exactly
+        self.run_panes = None           # SPEC-0364/0366: opt-in; None = SPEC-0363 exactly
         if run_panes:
             from . import herdr_runpanes as RPN
             self.run_panes = RPN.RunPanes(
                 cfg, client, ttl_ms=self.ttl_ms, env=self.env,
-                linger_s=RPN.LINGER_S if run_pane_linger is None else run_pane_linger,
+                linger_s=run_pane_linger,
                 **({"clock": clock} if clock else {}))
 
     @property
@@ -270,7 +270,7 @@ class Watcher:
         return ok
 
     def run_pane_workspace(self) -> str | None:
-        """SPEC-0364: the run tab goes to the conductor's workspace, else the watcher's own."""
+        """SPEC-0364/0366: run tabs go to the conductor's workspace, else the watcher's own."""
         return self.conductor_workspace() or self.env.get("HERDR_WORKSPACE_ID") or None
 
     def poll_events(self) -> int:

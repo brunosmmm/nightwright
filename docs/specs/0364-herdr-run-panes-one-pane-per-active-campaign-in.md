@@ -1,7 +1,8 @@
 ---
 id: SPEC-0364
 title: "herdr run panes: one pane per active campaign in an nw runs tab, running nw campaign tail, agent state + display agent"
-status: done
+status: superseded
+superseded_by: SPEC-0366
 owner: user
 created: 2026-11-01
 updated: 2026-11-01

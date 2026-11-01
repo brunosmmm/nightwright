@@ -1,10 +1,10 @@
-"""A fake `herdr` 0.9.5 for tests (SPEC-0361/0363/0364). Logs argv as one JSON line to
+"""A fake `herdr` 0.9.5 for tests (SPEC-0361/0363/0364/0366). Logs argv as one JSON line to
 $FAKE_HERDR_LOG; $FAKE_HERDR_MODE = ok | fail | hang.
 
 It models the real parser of every command nightwright uses: the positional id right after the
 subcommand (herdr rejects options before it with `unknown option`, exit 2, although its
 `--help` lists the id last), the options each command takes, and the JSON replies nightwright
-reads, copied from herdr 0.9.5 output (`tab create` -> result.tab + result.root_pane,
+reads, copied from herdr 0.9.5 output (`tab create` -> result.tab + result.root_pane, `tab get`,
 `pane split` -> result.pane, `pane layout`, `pane get`, `pane process-info`). Tabs and panes
 live in $FAKE_HERDR_STATE (JSON); closing a tab's last pane closes the tab, like herdr. Server
 errors are JSON on stderr with exit 1 (`pane_not_found`). Panes listed in the state's
@@ -139,6 +139,12 @@ if group == "tab" and cmd == "create":
     save(st)
     reply("cli:tab:create", {"root_pane": pane_info(st, pid), "tab": tab_info(st, tid),
                              "type": "tab_created"})
+
+if group == "tab" and cmd == "get":
+    (tid,), _ = parse(rest, {}, positional=1)
+    if tid not in st["tabs"]:
+        server_error("tab_not_found", f"tab {tid} not found", "cli:tab:get")
+    reply("cli:tab:get", {"tab": tab_info(st, tid), "type": "tab_info"})
 
 if group == "tab" and cmd == "rename":
     (tid, label), _ = parse(rest, {}, positional=2)

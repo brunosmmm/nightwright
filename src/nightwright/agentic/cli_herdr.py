@@ -16,7 +16,7 @@ def herdr_group():
     agentic.herdr.auto_watch: false turns that off). By hand:
     nw herdr watch                    push every 10 s until Ctrl-C (clears what it set)
     nw herdr watch --once             one push; values expire after 3 intervals
-    nw herdr watch --run-panes        plus a pane per active campaign tailing its run
+    nw herdr watch --run-panes        plus a tab per campaign with a running run (SPEC-0366)
     nw herdr status                   is a watcher running? pid, mode, log path
     The conductor/steward panes need no config; see docs/herdr.md for the optional
     workspace-row snippet.
@@ -32,10 +32,12 @@ def herdr_group():
               "(default: the conductor pane's workspace)")
 @click.option("--once", is_flag=True, help="one event poll + one push, then exit")
 @click.option("--run-panes/--no-run-panes", "run_panes", default=None,
-              help="one herdr pane per active campaign running `nw campaign tail --follow`, in "
-                   "an 'nw runs' tab (SPEC-0364; default: agentic.herdr.run_panes, off)")
-@click.option("--run-pane-linger", type=click.FloatRange(min=0.0), default=300.0,
-              show_default=True, help="seconds a run pane stays after its campaign stops")
+              help="one herdr tab per campaign with a running run, named after the work and "
+                   "showing `nw campaign tail --follow-campaign` (SPEC-0366; default: "
+                   "agentic.herdr.run_panes, off)")
+@click.option("--run-pane-linger", type=click.FloatRange(min=0.0), default=None,
+              help="seconds a run tab stays after the campaign's last run ended (default: "
+                   "agentic.herdr.run_pane_linger_s, else 60)")
 @click.option("--parent", "parent", default=None, hidden=True,
               help="PID:TICKS of the supervising follower (SPEC-0365): exit once it is gone")
 @click.pass_obj

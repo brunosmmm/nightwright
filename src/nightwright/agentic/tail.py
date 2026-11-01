@@ -27,6 +27,9 @@ RESULT_W = 100
 STDERR_LINES = 10
 RESULT_TEXT_LINES = 15
 END_STATES = ("finished", "vanished", "orphaned")
+RUNNING = ("running", "orphan_group")
+RUN_LOOKBACK = 8                     # newest run dirs looked at per campaign
+CLEAR = "\033[H\033[2J\033[3J"       # home, clear screen, clear scrollback
 
 
 # ---- locating a run ------------------------------------------------------------------------
@@ -41,6 +44,19 @@ def resolve(cfg, cid, run=None) -> Path:
     if run is None:
         return dirs[sorted(dirs)[-1]]
     return dirs[RN._resolve(dirs, cid, run)]
+
+
+def running_runs(cfg, cid) -> list[str]:
+    """Run ids of `cid` whose process is alive, newest first (run ids sort by sequence)."""
+    dirs = RN._run_dirs(cfg, cid)
+    out = []
+    for name in sorted(dirs, reverse=True)[:RUN_LOOKBACK]:
+        try:
+            if RP.run_status(dirs[name]) in RUNNING:
+                out.append(name)
+        except OSError:
+            pass
+    return out
 
 
 def read_lines(path, offset: int = 0) -> tuple[list[str], int]:
@@ -409,4 +425,62 @@ def tail(cfg, run_dir, *, follow=False, raw=False, out: Console | None = None,
     if not raw and ended and not r.done:
         out.print(Text("■ run ended without a result event", style="bold red"))
         _print(out, [r.cost_line()] if r.turns else [])
+    return 0
+
+
+def _campaign_state(cfg, cid) -> str:
+    try:
+        st = store.read_state(cfg, cid)
+    except (ValueError, OSError):
+        return "?"
+    text = str(st.get("state") or "?").lower().replace("_", " ")
+    park = st.get("park") or {}
+    if st.get("state") == "PARKED" and park.get("reason"):
+        text += f": {park['reason']}"
+    return text
+
+
+def follow_campaign(cfg, cid, *, raw=False, out: Console | None = None, poll_s: float = 1.0,
+                    sleep=time.sleep, stop=None, clear=True) -> int:
+    """SPEC-0366: the run pane's viewer. Follows campaign `cid` across its runs for as long as
+    it lives (herdr binds the pane's agent state to this process): tails the newest running run,
+    prints a footer when it ends, a line when the campaign's state changes, and tails the next
+    run by itself. Returns only when `stop()` says so (tests); a signal ends the process."""
+    out = out or Console()
+    stop = stop or (lambda: False)
+    if clear and not raw:
+        out.file.write(CLEAR)                  # wipes the command line the shell echoed
+        out.file.flush()
+    store.read_state(cfg, cid)                 # unknown campaign → ValueError
+    shown: set[str] = set()
+    said = None
+    if not running_runs(cfg, cid):
+        dirs = RN._run_dirs(cfg, cid)
+        if dirs:
+            newest = sorted(dirs)[-1]
+            tail(cfg, dirs[newest], raw=raw, out=out)
+            shown.add(newest)
+        if not raw:
+            said = _campaign_state(cfg, cid)
+            out.print(Text(f"■ waiting for the next run · campaign {said}", style="dim"),
+                      highlight=False)
+    while not stop():
+        pick = next((r for r in running_runs(cfg, cid) if r not in shown), None)
+        if pick is not None:
+            if shown and not raw:
+                out.print(Text("─" * 40, style="dim"), highlight=False)
+            shown.add(pick)
+            tail(cfg, RN._run_dirs(cfg, cid)[pick], follow=True, raw=raw, out=out,
+                 sleep=sleep)
+            if not raw:
+                said = _campaign_state(cfg, cid)
+                out.print(Text(f"■ run {pick} ended · waiting for the next run · campaign "
+                               f"{said}", style="bold"), highlight=False)
+            continue
+        if not raw:
+            now = _campaign_state(cfg, cid)
+            if now != said:
+                said = now
+                out.print(Text(f"· campaign {now}", style="dim"), highlight=False)
+        sleep(poll_s)
     return 0

@@ -50,13 +50,13 @@ How it behaves:
 - **Output** goes only to `<data_dir>/agentic/conductor/herdr_watch.log` (rotated to
   `herdr_watch.log.1` past 5 MiB), never to the conductor's event stream.
 - **Stops with the follower.** When the follower exits (Ctrl-C, re-arm, `code_changed`) it
-  sends the watcher SIGTERM, which clears the display agents and closes the run panes. If the
+  sends the watcher SIGTERM, which clears the display agents and closes the run tabs. If the
   follower is killed outright, the watcher notices within 2 s and exits the same way.
 - **Restarts.** A watcher that crashes is restarted after 5 s, then 10, 20, … up to 300 s
   (back to 5 s after a run of 5 minutes).
 - **Upgrades.** When nightwright's code changes the follower exits with `code_changed` and the
   conductor re-arms it (SPEC-0231); the new follower starts a new watcher on the new code.
-- **Run panes** follow `agentic.herdr.run_panes`, as for a watcher you start yourself.
+- **Run tabs** follow `agentic.herdr.run_panes`, as for a watcher you start yourself.
 - **Status:** `nw herdr status` (`--json`: `nw.herdr.watch.v1`) and `nw queue conduct-status`
   show whether a watcher runs, its pid, `auto` or `manual`, and the log path.
 
@@ -66,7 +66,8 @@ Turn it off in nightwright's config (`~/.config/nightwright/config.yaml`):
 agentic:
   herdr:
     auto_watch: false      # the follower never starts a watcher
-    run_panes: true        # optional: run panes (SPEC-0364)
+    run_panes: true        # optional: run tabs (SPEC-0366)
+    run_pane_linger_s: 60  # optional: seconds a run tab stays after its run
 ```
 
 ### By hand
@@ -123,54 +124,59 @@ share one summary of exactly their projects (`A, B: …`).
 
 Every other event is silent; the sidebar shows it.
 
-## Run panes (opt-in)
+## Run tabs (opt-in)
 
 `agentic.herdr.run_panes: true` in nightwright's config (or `nw herdr watch --run-panes` by hand) also
-opens **one herdr pane per active campaign that has a persona run**, showing the run's live
-transcript (`nw campaign tail --follow`, [SPEC-0364](./specs/0364-herdr-run-panes-one-pane-per-active-campaign-in.md)).
-Without the flag nothing below happens.
+opens **one herdr tab per campaign that has a running persona run**, named after the work and
+showing the campaign's live transcript
+([SPEC-0366](./specs/0366-herdr-run-tabs-one-tab-per-campaign-named-after.md), which replaced
+SPEC-0364's shared `nw runs` tab). Without the flag nothing below happens.
 
 ```bash
-nw herdr watch --run-panes                        # live; Ctrl-C closes the run panes
-nw herdr watch --run-panes --run-pane-linger 60   # finished panes close after 60 s (default 300)
+nw herdr watch --run-panes                        # live; Ctrl-C closes the run tabs
+nw herdr watch --run-panes --run-pane-linger 30   # a tab closes 30 s after its run (default 60)
 ```
 
-- **Where**: one tab labelled `nw runs` in the conductor's workspace (the watcher's own
-  workspace when no conductor is placed), created with `--no-focus`. nw never splits, renames
-  or closes a pane it did not create; your panes and tabs are left alone. When the last run
-  pane closes, herdr closes the tab; the next run opens a new one.
-- **Layout**: each new pane splits nw's own largest pane in that tab, to the right when it is
-  at least twice as wide as tall (in cells), else down: columns on a wide screen, then a grid.
-- **One pane per campaign**, not per run: a reviewer group's parallel runs share the
-  campaign's pane, which tails the newest running run; the campaign's next run is typed into
-  the same pane.
-- **At most 6 panes.** A seventh campaign first evicts the earliest-finished lingering pane;
-  if none is lingering it waits, and the tab reads `nw runs (+N)`. `nw campaign tail
-  CAMPAIGN --follow` shows any run in a terminal of your own.
-- **Linger**: when the campaign stops (parked, waiting, queued, merged, abandoned, handed off),
-  its pane stays for 300 s with the final transcript, then closes.
-- **State** (`herdr pane report-agent --source nw-run --agent nw-run`): `working` while a run
-  runs, `blocked` when the campaign is parked (an escalation parks it), `idle` otherwise
-  (between runs, queued, waiting, merged). herdr shows `idle` after `working` as done until
-  you look. herdr drops a reported state when the pane's foreground process exits (the tail
-  exits with its run), so the watcher re-reports each push; after a run ends, the state can
-  be missing for up to one push interval.
-- **Display agent** (no config needed): `nw run · SPEC-0354 · implementer · loop 3 · $1.20/$10`
+- **Where**: one tab per campaign in the conductor's workspace (the watcher's own workspace
+  when no conductor is placed), created with `--no-focus`. nw never splits, renames or closes
+  a pane or tab it did not create.
+- **Name**: `<SPEC-ID> <short title>`, e.g. `SPEC-0349 nw doctor`: the spec's title without
+  markdown, up to its first `:` or `—`, at most 24 characters. Idea campaigns use the idea's
+  heading; a merge request just its label. herdr's sidebar row reads
+  `nightwright · SPEC-0349 nw doctor`.
+- **Display agent** (the row below): `nw run · adversarial_reviewer · loop 2 · $0.89/$2.50`
   while a run runs (the run's cost so far, its real cost once finished, omitted when the model
-  has no configured price; then its `--max-budget-usd`), `nw run · SPEC-0354 · gating` between
-  runs, `nw run · SPEC-0354 · parked: cost_cap` / `… · merged` after it stops.
-- **Ownership**: each run pane is renamed `nw-run:<campaign>`, and the ids are kept in
-  `<data_dir>/agentic/conductor/herdr_run_panes.json` per herdr socket. A restarted watcher (and
-  each `--once`) adopts a recorded pane only when herdr shows that label in the recorded tab;
-  anything else is forgotten, never touched. If herdr restored the pane with a fresh shell, the
-  tail is typed again.
-- **Exit**: Ctrl-C / SIGTERM closes every run pane. `--once` leaves them; the next run of the
-  watcher picks them up. After `kill -9` they stay until the next watcher run closes them.
-- **Closing one yourself** is fine: nw forgets it and opens no new pane for that campaign until
-  it stops and starts again.
+  has no configured price; then its `--max-budget-usd`), then `nw run · gating`,
+  `nw run · parked: cost_cap`, `nw run · merged`, ….
+- **What the pane runs**: `nw campaign tail CAMPAIGN --follow-campaign`, typed once. It clears
+  the screen (so the typed command does not stay), shows the running run, prints
+  `■ run … ended · waiting for the next run · campaign …` when it ends, and shows the next run
+  by itself. It runs until the tab closes, so herdr keeps the pane's agent entry the whole time.
+- **When it closes**: the tab exists while a run of the campaign runs. When none runs, it
+  stays 60 s (`agentic.herdr.run_pane_linger_s`, or `--run-pane-linger`), then closes, whatever
+  the campaign's state; a parked campaign shows `blocked` for that minute. A run that starts
+  within the minute continues in the same tab; a later one opens a new tab.
+- **State** (`herdr pane report-agent --source nw-run --agent nw-run`): `working` while a run
+  runs, `blocked` when the campaign is parked, `idle` otherwise (herdr shows `idle` after
+  `working` as done until you look).
+- **At most 6 run tabs.** Another campaign first evicts the tab whose run ended first; if none
+  is lingering it waits, and nw's newest run tab gets ` (+N)` appended.
+  `nw campaign tail CAMPAIGN --follow-campaign` shows any campaign in a terminal of your own.
+- **Ownership**: each run pane is renamed `nw-run:<campaign>`, and the pane and tab ids are kept
+  in `<data_dir>/agentic/conductor/herdr_run_panes.json` per herdr socket. A restarted watcher
+  (and each `--once`) adopts a recorded pane only when herdr shows that label in the recorded
+  tab; anything else is forgotten, never touched. If herdr restored the pane with a fresh
+  shell, the viewer is typed again. Panes left by the older shared `nw runs` tab are checked
+  the same way, closed, and reopened as tabs of their own.
+- **Exit**: Ctrl-C / SIGTERM closes every run tab. `--once` leaves them; the next run of the
+  watcher picks them up. After `kill -9` they stay until the next watcher run handles them.
+- **Closing one yourself** is fine: nw forgets it and opens no new tab for that campaign until
+  its current run has ended.
 - The pane's shell is herdr's (with herdr's environment), so the typed command names
   nightwright's config and data directories and the watcher's Python explicitly:
-  `env NW_CONFIG_DIR=… NW_DATA_DIR=… …/python -m nightwright campaign tail CAMPAIGN --run RUN --follow`.
+  `env NW_CONFIG_DIR=… NW_DATA_DIR=… …/python -m nightwright campaign tail CAMPAIGN
+  --follow-campaign`. herdr strips a leading space, so your shell's history gets this line once
+  per tab.
 
 ## Optional: a workspace row
 
@@ -204,7 +210,7 @@ nw herdr status                # is the auto-started watcher running? pid, log p
 tail -f ~/.local/share/nightwright/agentic/conductor/herdr_watch.log
 # by hand, in a herdr pane (with auto_watch: false, or the follower's watcher stopped)
 nw herdr watch --once          # values show for ~30 s, then expire
-nw herdr watch --run-panes     # plus a pane per active campaign tailing its run
+nw herdr watch --run-panes     # plus a tab per campaign with a running run
 # outside herdr
 env -u HERDR_ENV nw herdr watch   # one line, exit 0, no herdr call
 ```
