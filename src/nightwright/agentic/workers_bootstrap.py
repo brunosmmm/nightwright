@@ -166,22 +166,38 @@ def _want(plan: Plan) -> dict:
 
 # ---- remote commands ------------------------------------------------------------------------
 
-def worker_argv(plan: Plan, script: str) -> list[str]:
-    """ssh argv running the POSIX `script` on the worker as DESTUSER."""
-    inner = "sh -c " + shlex.quote(script)
+def worker_argv(plan: Plan) -> list[str]:
+    """ssh argv starting `sh -s` on the worker as DESTUSER; the script goes on its stdin
+    (`on_worker`). Never on the command line: `sudo -i` re-joins its command for the target's
+    login shell and leaves `$` unescaped, so that shell would expand the script's `$...`."""
     if plan.admin:
-        return SSH + [plan.admin, f"sudo -n -i -u {plan.user} {inner}"]
-    return SSH + [plan.dest, inner]
+        return SSH + [plan.admin, f"sudo -n -i -u {plan.user} sh -s"]
+    return SSH + [plan.dest, "sh -s"]
+
+
+def on_worker(plan: Plan, script: str, timeout=TIMEOUT_S) -> subprocess.CompletedProcess:
+    """Run the one-line POSIX `script` on the worker as DESTUSER. One line, so `sh -s` has
+    read all of it before any command runs, and nothing it starts can read the script."""
+    if "\n" in script or "\r" in script:
+        raise StepFailed("refused: a worker script must be a single line")
+    return _run(worker_argv(plan), timeout=timeout, input=script + "\n")
+
+
+def worker_shown(plan: Plan, script: str) -> str:
+    """`on_worker(plan, script)` as an equivalent shell command line (for --dry-run)."""
+    return f"printf '%s\\n' {shlex.quote(script)} | {shlex.join(worker_argv(plan))}"
 
 
 def admin_argv(plan: Plan, cmd: str) -> list[str]:
     return SSH + [plan.admin, cmd]
 
 
-def _run(argv, timeout=TIMEOUT_S, cwd=None) -> subprocess.CompletedProcess:
+def _run(argv, timeout=TIMEOUT_S, cwd=None, input=None) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
-                              stdin=subprocess.DEVNULL, cwd=cwd)
+        return subprocess.run(argv, capture_output=True, text=True, errors="replace",
+                              timeout=timeout, cwd=cwd,
+                              **({"stdin": subprocess.DEVNULL} if input is None
+                                 else {"input": input}))
     except subprocess.TimeoutExpired:
         raise StepFailed(f"`{argv[0]}` timed out after {timeout:g}s")
     except OSError as e:
@@ -200,7 +216,7 @@ def _must(p, what) -> str:
 
 def _remote_info(plan: Plan) -> dict | None:
     """`<bin>/nw worker info --json` on the worker; `None` when it fails or is unreadable."""
-    p = _run(worker_argv(plan, f"{plan.bin}/nw worker info --json"))
+    p = on_worker(plan, f"{plan.bin}/nw worker info --json")
     if p.returncode != 0:
         return None
     try:
@@ -230,16 +246,16 @@ def step_admin(plan: Plan) -> tuple[str, str]:
 
 
 def _probe_bin(plan: Plan) -> None:
-    if _run(worker_argv(plan, "command -v uv")).returncode != 0:
+    if on_worker(plan, "command -v uv").returncode != 0:
         raise StepFailed(f"uv not found for {plan.user} on the worker; install uv system-wide")
-    out = _must(_run(worker_argv(plan, "uv tool dir --bin")), "uv tool dir --bin").strip()
+    out = _must(on_worker(plan, "uv tool dir --bin"), "uv tool dir --bin").strip()
     if not BIN_RE.fullmatch(out):
         raise StepFailed(f"unexpected uv tool bin dir {out!r}")
     plan.bin = out
 
 
 def _probe_root(plan: Plan) -> None:
-    out = _must(_run(worker_argv(plan, "id -u")), "id -u").strip()
+    out = _must(on_worker(plan, "id -u"), "id -u").strip()
     if out == "0":
         raise StepFailed("refused: the worker account has uid 0")
 
@@ -258,27 +274,27 @@ def step_install(plan: Plan) -> tuple[str, str]:
         wheel = wheels[0]
         # with --admin the wheel goes to a dir in ADMIN's /tmp that DESTUSER can read
         host = plan.admin or plan.dest
-        on_host = (lambda c: admin_argv(plan, c)) if plan.admin else \
-            (lambda c: worker_argv(plan, c))
-        tmp = _must(_run(on_host("mktemp -d")), "mktemp -d").strip()
+        on_host = (lambda c: _run(admin_argv(plan, c))) if plan.admin else \
+            (lambda c: on_worker(plan, c))
+        tmp = _must(on_host("mktemp -d"), "mktemp -d").strip()
         if not BIN_RE.fullmatch(tmp):
             raise StepFailed(f"unexpected remote temp dir {tmp!r}")
         remote = shlex.quote(f"{tmp}/{wheel.name}")
         try:
             if plan.admin:
-                _must(_run(on_host(f"chmod 755 {tmp}")), "chmod")
+                _must(on_host(f"chmod 755 {tmp}"), "chmod")
             _must(_run(SCP + [str(wheel), f"{host}:{tmp}/"]), "scp")
             if plan.admin:
-                _must(_run(on_host(f"chmod 644 {remote}")), "chmod")
-            _must(_run(worker_argv(plan, f"uv tool install --force {remote}"),
-                       timeout=INSTALL_TIMEOUT_S), "uv tool install")
+                _must(on_host(f"chmod 644 {remote}"), "chmod")
+            _must(on_worker(plan, f"uv tool install --force {remote}",
+                            timeout=INSTALL_TIMEOUT_S), "uv tool install")
         finally:
-            _run(on_host(f"rm -rf {tmp}"))
+            on_host(f"rm -rf {tmp}")
     return "done", f"installed {wheel.name} -> {plan.bin}/nw"
 
 
 def step_verify(plan: Plan) -> tuple[str, str]:
-    p = _run(worker_argv(plan, f"{plan.bin}/nw worker info --json"))
+    p = on_worker(plan, f"{plan.bin}/nw worker info --json")
     _must(p, f"{plan.bin}/nw worker info --json")
     try:
         info = json.loads(p.stdout)
@@ -310,7 +326,7 @@ def step_key(plan: Plan) -> tuple[str, str]:
     if not line_ok(line, plan.pubkey):
         raise StepFailed(f"refused: the key line is not exactly the "
                          f'command="...",restrict <pubkey> form')
-    current = _must(_run(worker_argv(plan, READ_KEYS)), "reading authorized_keys")
+    current = _must(on_worker(plan, READ_KEYS), "reading authorized_keys")
     present = False
     for ln in current.splitlines():
         if ln.strip() == line:
@@ -320,7 +336,7 @@ def step_key(plan: Plan) -> tuple[str, str]:
                              "use a dedicated worker key")
     if present:
         return "skipped (already present)", "~/.ssh/authorized_keys"
-    out = _must(_run(worker_argv(plan, _key_script(line))), "installing the key line")
+    out = _must(on_worker(plan, _key_script(line)), "installing the key line")
     if out.strip() == "present":
         return "skipped (already present)", "~/.ssh/authorized_keys"
     return "done", "appended the forced-command line"
@@ -401,26 +417,27 @@ def dry_plan(plan: Plan) -> dict[str, list[str]]:
                         ("sudo -n true", f"id -u {plan.user}",
                          f"sudo -n useradd -m {plan.user}  # only when missing")]
     host = plan.admin or plan.dest
-    on_host = (lambda c: admin_argv(plan, c)) if plan.admin else (lambda c: worker_argv(plan, c))
-    out["install"] = [j(worker_argv(plan, "command -v uv")),
-                      j(worker_argv(plan, "uv tool dir --bin")),
-                      j(worker_argv(plan, f"{DRY_BIN}/nw worker info --json")),
+    on_host = (lambda c: j(admin_argv(plan, c))) if plan.admin else \
+        (lambda c: worker_shown(plan, c))
+    out["install"] = [worker_shown(plan, "command -v uv"),
+                      worker_shown(plan, "uv tool dir --bin"),
+                      worker_shown(plan, f"{DRY_BIN}/nw worker info --json"),
                       "# only when nw is missing or another version:",
                       j(["uv", "build", "--wheel", "--out-dir", "<local tmp dir>",
                          str(Path(__file__).resolve().parents[3])]),
-                      j(on_host("mktemp -d"))]
+                      on_host("mktemp -d")]
     if plan.admin:
-        out["install"].append(j(on_host(f"chmod 755 {tmp}")))
+        out["install"].append(on_host(f"chmod 755 {tmp}"))
     out["install"].append(j(SCP + [whl, f"{host}:{tmp}/"]))
     if plan.admin:
-        out["install"].append(j(on_host(f"chmod 644 {tmp}/{whl}")))
-    out["install"] += [j(worker_argv(plan, f"uv tool install --force {tmp}/{whl}")),
-                       j(on_host(f"rm -rf {tmp}"))]
-    out["verify"] = [j(worker_argv(plan, f"{DRY_BIN}/nw worker info --json"))]
+        out["install"].append(on_host(f"chmod 644 {tmp}/{whl}"))
+    out["install"] += [worker_shown(plan, f"uv tool install --force {tmp}/{whl}"),
+                       on_host(f"rm -rf {tmp}")]
+    out["verify"] = [worker_shown(plan, f"{DRY_BIN}/nw worker info --json")]
     line = forced_line(DRY_BIN, plan.pubkey)
     if plan.install_key:
-        out["key"] = [j(worker_argv(plan, "id -u")), j(worker_argv(plan, READ_KEYS)),
-                      j(worker_argv(plan, _key_script(line)))]
+        out["key"] = [worker_shown(plan, "id -u"), worker_shown(plan, READ_KEYS),
+                      worker_shown(plan, _key_script(line))]
     else:
         out["key"] = [f"# print: {line}"]
     add = ["nw", "workers", "add", plan.name, "--ssh", plan.dest, "--nw", f"{DRY_BIN}/nw",

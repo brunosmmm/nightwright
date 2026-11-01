@@ -302,6 +302,28 @@ dir>/nw`.
   this step before the spec is `done`.
 - Full suite left to the gate's close run.
 
+### Test record (2026-11-01, review round 1: `--admin` under a real `sudo -i`)
+
+- The fake `sudo` now models `-i` the way sudo's `parse_args.c` does. It backslash-escapes
+  every character except alphanumerics, `_`, `-` and `$`, joins the args, and runs the
+  result with `sh -c`. The fake `ssh` logs its stdin (the worker script) and passes it on.
+  Against the old `sh -c '<script>'` transport, this fake fails `test_admin_fresh_user_end_to_end`
+  (`touch: cannot touch ''`) and `test_admin_existing_user`. That run was done by
+  temporarily restoring the old transport, then reverted.
+- `uv run pytest -q -n 0 tests/test_workers_bootstrap.py tests/test_workers_registry.py
+  tests/test_rich_output_guard.py`: 81 passed. New and extended cases:
+  - `test_key_already_authorized_unrestricted` gains an `--admin` axis (existing user; the
+    refusal is given and `authorized_keys` is byte-for-byte unchanged).
+  - `test_registry_conflict_ssh_identity` covers a different `ssh`, a different `identity`,
+    and a record with no `identity`. Each fails with the conflict message and makes zero
+    remote calls.
+  - `test_check_fails_after_install`: the dedicated-key check fails, so register is
+    `failed`, the exit is 1, and the registry stays empty.
+  - `test_admin_fresh_user_end_to_end` uses a key comment holding `'`, `$HOME`, a backtick
+    and `\`, and still ends all `done` with the exact line in `authorized_keys`.
+- `python3 tools/spec_lint.py`: OK. Full suite left to the gate. The manual step on a real
+  worker host is still not performed (same reason as above).
+
 ### As shipped (2026-11-01)
 
 - Code: `src/nightwright/agentic/workers_bootstrap.py` (the steps), `nw workers bootstrap` in
@@ -318,9 +340,15 @@ dir>/nw`.
 - `register` writes the record itself, with the same fields and validation as `nw workers
   add` and `WK.check` when `--install-key`. It does not shell out to `nw workers add`.
   `--dry-run` prints the equivalent `nw workers add ... --identity ... [--no-check]` line.
-- Every worker-side command is a POSIX script sent as `sh -c '<script>'`. That is
-  `ssh DEST sh -c ...` without `--admin`, and `ssh ADMIN sudo -n -i -u DESTUSER sh -c ...`
-  with it. The admin-side commands (`sudo -n true`, `id -u`, `sudo -n useradd -m`, the
+- Every worker-side command is a one-line POSIX script fed on **stdin** to `sh -s`:
+  `ssh DEST sh -s` without `--admin`, and `ssh ADMIN sudo -n -i -u DESTUSER sh -s` with it.
+  The script is never on a command line, because `sudo -i` re-joins its command into one
+  string for the target's login shell. It backslash-escapes every character except
+  alphanumerics, `_`, `-` and `$`, so that shell would expand the script's `$f`/`$(...)` (and
+  any `$` in the key comment) before the inner `sh` saw it. Scripts are single lines, so
+  `sh -s` has read the whole script before running anything, and no command can consume
+  it. `--dry-run` shows each one as `printf '%s\n' '<script>' | ssh ... sh -s`. Output is
+  decoded with `errors="replace"`. The admin-side commands (`sudo -n true`, `id -u`, `sudo -n useradd -m`, the
   wheel's `mktemp -d`/`chmod`/`rm -rf`) run as ADMIN. The key script appends a newline first
   when `authorized_keys` does not end in one, and re-checks `grep -qxF` before appending.
 - `--ssh` must be `USER@HOST`, with the user matching `[a-z_][a-z0-9_.-]{0,31}`.

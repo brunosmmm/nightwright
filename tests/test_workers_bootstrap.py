@@ -1,7 +1,9 @@
 """SPEC-0354: `nw workers bootstrap`. Offline: loopback stand-ins for `ssh`/`scp` (they drop
 the destination and run the command on this host against a temp HOME), a fake `uv` (`build`,
 `tool dir --bin`, `tool install` writing a fake `nw` that reports a set version), and fake
-`sudo`/`id`. Every stand-in records its argv in `<state>/log.jsonl`."""
+`sudo`/`id`. Every stand-in records its argv (and `ssh` its stdin, the worker script) in
+`<state>/log.jsonl`. The fake `sudo -i` re-joins its command the way real sudo does
+(backslash before every char but alnum, `_`, `-`, `$`) and runs it with `sh -c`."""
 import json
 import os
 import shutil
@@ -24,9 +26,11 @@ PY = sys.executable
 COMMON = f"""#!{PY}
 import json, os, subprocess, sys
 S = os.environ["FAKE_STATE"]
+PROG = os.path.basename(sys.argv[0])
+STDIN = sys.stdin.read() if PROG == "ssh" else None
 def log():
     with open(os.path.join(S, "log.jsonl"), "a") as f:
-        f.write(json.dumps({{"prog": os.path.basename(sys.argv[0]), "argv": sys.argv[1:]}}) + "\\n")
+        f.write(json.dumps({{"prog": PROG, "argv": sys.argv[1:], "stdin": STDIN}}) + "\\n")
 def read(name, default=None):
     p = os.path.join(S, name)
     return open(p).read().strip() if os.path.exists(p) else default
@@ -40,9 +44,11 @@ while args and args[0].startswith("-"):
     if a in ("-o", "-i", "-p", "-l"):
         args.pop(0)
 dest, cmd = args[0], " ".join(args[1:])
+if read("check_fail") and "IdentitiesOnly=yes" in sys.argv:
+    sys.exit(255)
 env = {**os.environ, "HOME": os.path.join(S, "home"),
        "PATH": os.path.join(S, "fakebin") + ":" + os.environ["PATH"]}
-sys.exit(subprocess.run(["sh", "-c", cmd], env=env).returncode)
+sys.exit(subprocess.run(["sh", "-c", cmd], env=env, input=STDIN, text=True).returncode)
 """
 
 FAKE_SCP = COMMON + """
@@ -90,11 +96,17 @@ else:
 
 FAKE_SUDO = COMMON + """
 a = sys.argv[1:]
-user = None
+user, login = None, False
 while a and a[0].startswith("-"):
     o = a.pop(0)
     if o == "-u":
         user = a.pop(0)
+    elif o == "-i":
+        login = True
+if login:            # sudo -i: one string for the login shell's -c, as sudo's parse_args.c
+    cmd = " ".join("".join(c if (c.isascii() and c.isalnum()) or c in "_-$" else "\\\\" + c
+                           for c in arg) for arg in a)
+    sys.exit(subprocess.run(["sh", "-c", cmd]).returncode)
 if a == ["true"]:
     sys.exit(1 if read("sudo_fail") else 0)
 if a[:1] == ["useradd"]:
@@ -172,6 +184,10 @@ class World:
         p.write_text(FAKE_NW.format(py=PY, version=version))
         p.chmod(0o755)
 
+    def set_comment(self, comment):
+        self.pubkey = f"{self.pubkey.split()[0]} {self.blob} {comment}"
+        self.pub.write_text(self.pubkey + "\n")
+
     def line(self):
         return f'command="{self.bin}/nw worker ssh-command",restrict {self.pubkey}'
 
@@ -201,7 +217,8 @@ def st(plan):
 
 
 def ssh_cmds(world):
-    return [c["argv"][-1] for c in world.calls("ssh")]
+    """Each ssh call's remote command, followed by the script it got on stdin (if any)."""
+    return [(c["argv"][-1] + " " + (c["stdin"] or "")).strip() for c in world.calls("ssh")]
 
 
 # ---- tests ----------------------------------------------------------------------------------
@@ -292,19 +309,27 @@ def test_key_line_form(world):
         assert not WB.line_ok(bad, pk), bad
 
 
+@pytest.mark.parametrize("admin", [None, "ops@box"])
 @pytest.mark.parametrize("existing", ["plain", "other-path"])
-def test_key_already_authorized_unrestricted(world, existing):
+def test_key_already_authorized_unrestricted(world, existing, admin):
     world.ak.parent.mkdir()
     line = (world.pubkey if existing == "plain"
             else f'command="/old/bin/nw worker ssh-command",restrict {world.pubkey}')
     world.ak.write_text("ssh-ed25519 AAAAOTHER x\n" + line + "\n")
     before = world.ak.read_bytes()
-    res = boot(world, "box", "--ssh", "nw@box", "--install-key")
+    if admin:
+        world.set("users", "nw\n")                  # the existing user already holds the blob
+    res = boot(world, "box", "--ssh", "nw@box", "--install-key",
+               *(["--admin", admin] if admin else []))
     assert res.exit_code == 1
     assert "key already authorized without the forced command; use a dedicated worker key" \
         in res.output
     assert world.ak.read_bytes() == before
     assert WK.read_strict(world.cfg) == []
+    if admin:
+        reads = [c for c in world.calls("ssh") if c["stdin"] == WB.READ_KEYS + "\n"]
+        assert reads and all(c["argv"][-2:] == ["ops@box", "sudo -n -i -u nw sh -s"]
+                             for c in reads)
 
 
 @pytest.mark.parametrize("bad", ["relative/bin", "/tmp/with space"])
@@ -368,6 +393,37 @@ def test_registry_conflict(world):
     assert WK.read_strict(world.cfg)[0]["nw"] == "/elsewhere/nw"
 
 
+@pytest.mark.parametrize("field", ["ssh", "identity", "no-identity"])
+def test_registry_conflict_ssh_identity(world, field):
+    rec = {"name": "box", "ssh": "nw@box", "slots": 1, "identity": str(world.priv)}
+    if field == "ssh":
+        rec["ssh"] = "nw@other"
+    elif field == "identity":
+        rec["identity"] = "/elsewhere/old_key"
+    else:
+        del rec["identity"]
+    WK.update(world.cfg, lambda recs: recs.append(rec))
+    res = boot(world, "box", "--ssh", "nw@box", "--install-key")
+    assert res.exit_code == 1
+    assert "worker box is registered with different settings; nw workers rm box first" \
+        in res.output
+    assert world.calls() == []
+    assert WK.read_strict(world.cfg) == [rec]
+
+
+def test_check_fails_after_install(world):
+    world.set("check_fail", "1")                  # the coordinator's dedicated-key ssh fails
+    res = boot(world, "box", "--ssh", "nw@box", "--install-key")
+    assert res.exit_code == 1
+    assert "box failed its check" in res.output
+    assert [c for c in world.calls("ssh") if "IdentitiesOnly=yes" in c["argv"]]
+    assert WK.read_strict(world.cfg) == []
+    world.clear()
+    ok, plan = plan_run(world)
+    assert not ok and st(plan)["register"] == "failed" and st(plan)["key"].startswith("skipped")
+    assert WK.read_strict(world.cfg) == []
+
+
 def test_admin_password_needed(world):
     world.set("sudo_fail", "1")
     res = boot(world, "box", "--ssh", "nw@box", "--admin", "ops@box", "--install-key")
@@ -385,21 +441,23 @@ def test_admin_existing_user(world):
 
 
 def test_admin_fresh_user_end_to_end(world):
+    world.set_comment("o'neil $HOME `id` \\x@coord")   # survives sudo -i and both shells
     ok, plan = plan_run(world, admin="ops@box")
     assert ok, plan.status
     assert set(st(plan).values()) == {"done"}
     (ua,) = [c["argv"] for c in world.calls("sudo") if "useradd" in c["argv"]]
     assert ua == ["-n", "useradd", "-m", "nw"]
     admin_cmds = {"sudo -n true", "id -u nw", "sudo -n useradd -m nw", "mktemp -d"}
-    bootstrap_ssh = [c["argv"] for c in world.calls("ssh") if "IdentitiesOnly=yes" not in c["argv"]]
+    bootstrap_ssh = [c for c in world.calls("ssh") if "IdentitiesOnly=yes" not in c["argv"]]
     worker_side = []
-    for argv in bootstrap_ssh:
+    for call in bootstrap_ssh:
+        argv = call["argv"]
         assert argv[-2] == "ops@box"
         cmd = argv[-1]
         if cmd in admin_cmds or cmd.split()[0] in ("chmod", "rm"):
             continue
-        assert cmd.startswith("sudo -n -i -u nw sh -c "), cmd
-        worker_side.append(cmd)
+        assert cmd == "sudo -n -i -u nw sh -s", cmd
+        worker_side.append(call["stdin"])
     for what in ("command -v uv", "uv tool dir --bin", "worker info --json",
                  "uv tool install --force", "authorized_keys", "id -u"):
         assert any(what in c for c in worker_side), what
