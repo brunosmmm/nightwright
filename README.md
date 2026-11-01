@@ -79,9 +79,7 @@ nw campaign show CAMPAIGN               # state + recent ledger events
 nw queue resume CAMPAIGN                # continue a parked campaign
 nw queue merge my-branch --yes          # rebase + re-gate + ff-merge a local branch
 nw profiles list                        # then `show NAME` or `check`
-nw doctor                               # install health check (`--json`, `--fix-hints`)
-nw queue conductor-launch               # Claude Code session running /nw-conduct
-nw queue steward-launch PROJECT         # same, running /nw-steward
+nw queue conductor-launch               # Claude Code /nw-conduct session; `steward-launch PROJECT`
 nw escalations list                     # `answer ID` wakes the conductor; also `nw mailbox`
 nw tui                                  # ideas desk; --tab queue|events|mailbox, --campaign ID
 ```
