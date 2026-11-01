@@ -9,7 +9,10 @@ Pure Python over `gitops` / `gates` / `verify`; it returns the ledger events for
 itself."""
 from __future__ import annotations
 
+import datetime as dt
 import difflib
+import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field, replace
@@ -22,6 +25,7 @@ from ..verify import verify_spec_file
 from . import gates as G
 from . import gitops as git
 from . import project as P
+from . import sentinel as SN
 from . import store
 from .gitops import GitError
 
@@ -429,6 +433,195 @@ def _skip_unaffected_gates(gate_cfg, worktree, target_sha, events):
     return {**gate_cfg, "gates": [g for g in gate_cfg["gates"] if g["name"] not in drop]}
 
 
+# ---- close-tier reuse of a green loop gate (SPEC-0359) ----------------------------------------
+
+AFFECTED_TOOL = "tools/affected_tests.py"     # SPEC-0357: `--json [--closure] --changed`
+AFFECTED_TIMEOUT_S = 60
+REUSE_RULES = ("R1", "R2", "R3", "R4", "R5", "R6", "R7")
+
+
+class _Decline(Exception):
+    def __init__(self, rule: str, detail: str):
+        super().__init__(f"{rule}: {detail}")
+        self.rule, self.detail = rule, detail
+
+
+def _close_full_env() -> bool:
+    return os.environ.get("NW_CLOSE_FULL", "").strip().lower() not in ("", "0", "false", "no")
+
+
+def _affected(worktree, changed, *, closure=False) -> dict:
+    """`tools/affected_tests.py --json [--closure]` for `changed` on the worktree's tree (H).
+    No changed path selects nothing. RuntimeError on a missing tool, a non-zero exit, a
+    timeout or unparseable output."""
+    if not changed:
+        return {"full": False, "tests": [], "reason": "no changed paths", "closure": []}
+    tool = Path(worktree) / AFFECTED_TOOL
+    if not tool.is_file():
+        raise RuntimeError(f"{AFFECTED_TOOL} not found in the worktree")
+    argv = ["python3", str(tool), "--repo", str(worktree), "--json"]
+    argv += ["--closure"] if closure else []
+    argv += [f"--changed={p}" for p in changed]
+    env = {k: v for k, v in os.environ.items() if k != "NW_GATE_REPORT"}
+    what = f"{AFFECTED_TOOL} --json{' --closure' if closure else ''}"
+    try:
+        r = subprocess.run(argv, cwd=str(worktree), capture_output=True, text=True, env=env,
+                           timeout=AFFECTED_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{what} timed out after {AFFECTED_TIMEOUT_S}s")
+    except OSError as e:
+        raise RuntimeError(f"{what} failed to start: {e}")
+    if r.returncode != 0:
+        tail = " | ".join((r.stderr or r.stdout or "").strip().splitlines()[-3:])
+        raise RuntimeError(f"{what} exited {r.returncode}: {tail}"[:500])
+    lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
+    try:
+        rec = json.loads(lines[-1])
+    except (IndexError, ValueError):
+        raise RuntimeError(f"{what} printed no JSON report")
+    if not isinstance(rec, dict) or "full" not in rec:
+        raise RuntimeError(f"{what} printed an unexpected report")
+    return rec
+
+
+def _gated_seconds_ago(started_at, now=None) -> float | None:
+    try:
+        at = dt.datetime.fromisoformat(str(started_at).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+    return (dt.datetime.now().timestamp() if now is None else now) - at
+
+
+def _names(paths, n=5) -> str:
+    paths = sorted(paths)
+    return ", ".join(paths[:n]) + (f" (+{len(paths) - n} more)" if len(paths) > n else "")
+
+
+def _reuse_evidence(cfg, state, project_cfg, gate, *, policy, root, worktree, target_sha, head,
+                    now=None) -> dict:
+    """Rules R1-R7 of SPEC-0359 §3 for one close gate with `reuse_from`, in order: the
+    `gate.reused` payload, or `_Decline(rule, detail)` naming the first rule that fails."""
+    src_name = gate["reuse_from"]
+    close_cfg, _ = SN.settings(project_cfg)
+    # R1 enabled
+    if _is_merge_request(state):
+        raise _Decline("R1", "merge requests have no loop tier")
+    if policy != "merge":
+        raise _Decline("R1", f"merge.policy is {policy!r}; reuse needs merge")
+    if close_cfg.get("force_full"):
+        raise _Decline("R1", "close.force_full is set")
+    if _close_full_env():
+        raise _Decline("R1", "NW_CLOSE_FULL is set")
+    blocker = SN.reuse_blocker(cfg, state.get("project"), root=root, project_cfg=project_cfg,
+                               now=now)
+    if blocker:
+        raise _Decline("R1", blocker)
+    # R2 green source
+    lg = state.get("last_green_loop")
+    if not isinstance(lg, dict) or not lg.get("ok"):
+        raise _Decline("R2", "no green loop run recorded")
+    res = next((r for r in lg.get("results") or []
+                if isinstance(r, dict) and r.get("name") == src_name), None)
+    if res is None or not res.get("ok"):
+        raise _Decline("R2", f"the last green loop run has no green {src_name!r} result")
+    report = res.get("report")
+    if not isinstance(report, dict):
+        raise _Decline("R2", f"the {src_name!r} result has no selection report")
+    g = lg.get("head")
+    if not g or report.get("head_sha") != g:
+        raise _Decline("R2", f"report head_sha {str(report.get('head_sha'))[:10]} is not the "
+                             f"gated head {str(g)[:10]}")
+    if git.git(worktree, "cat-file", "-e", f"{g}^{{commit}}", check=False).returncode != 0:
+        raise _Decline("R2", f"gated head {g[:10]} is not a valid commit")
+    # R3 branch unchanged
+    try:
+        delta = sorted(p for p in git.git(worktree, "diff", "--name-only", "-z", "--no-renames",
+                                          g, head).stdout.split("\0") if p)
+        branch = sorted(git.changed_files(worktree, target_sha, renames=False))
+    except GitError as e:
+        raise _Decline("R3", f"git diff failed: {e.tail}")
+    both = set(delta) & set(branch)
+    if both:
+        raise _Decline("R3", f"branch files differ from the gated tree: {_names(both)}")
+    # R4 main delta mappable
+    nw = [p for p in delta if p.startswith(".nw/")]
+    if nw:
+        raise _Decline("R4", f"the main delta changes gate definitions: {_names(nw)}")
+    try:
+        sel_d = _affected(worktree, delta)
+    except RuntimeError as e:
+        raise _Decline("R4", str(e))
+    if sel_d.get("full"):
+        raise _Decline("R4", f"the main delta selects the full suite: {sel_d.get('reason')}")
+    # R5 selection did not grow
+    try:
+        sel_b = _affected(worktree, branch)
+    except RuntimeError as e:
+        raise _Decline("R5", str(e))
+    if not report.get("full"):
+        if sel_b.get("full"):
+            raise _Decline("R5", f"the branch now selects the full suite: {sel_b.get('reason')}")
+        grown = set(sel_b.get("tests") or []) - set(report.get("tests") or [])
+        if grown:
+            raise _Decline("R5", f"the branch selection grew: {_names(grown)}")
+    # R6 no interaction
+    if delta and branch:
+        for changed, other, what in ((branch, delta, "the branch's tests read main's changes"),
+                                     (delta, branch, "main's tests read the branch's changes")):
+            try:
+                cl = _affected(worktree, changed, closure=True).get("closure")
+            except RuntimeError as e:
+                raise _Decline("R6", str(e))
+            if cl is None:
+                raise _Decline("R6", f"{what}: the selection is full, no closure")
+            hit = set(cl) & set(other)
+            if hit:
+                raise _Decline("R6", f"{what}: {_names(hit)}")
+    # R7 bounded age
+    age = _gated_seconds_ago(lg.get("started_at"), now)
+    if age is None or age >= float(close_cfg["reuse_max_age_s"]):
+        raise _Decline("R7", f"the green loop run is {'of unknown age' if age is None else f'{int(age)}s old'}"
+                             f" (max {close_cfg['reuse_max_age_s']}s)")
+    if len(delta) > int(close_cfg["reuse_max_delta"]):
+        raise _Decline("R7", f"{len(delta)} paths differ (max {close_cfg['reuse_max_delta']})")
+    ev = {"gate": gate["name"], "from_gate": src_name, "from_gate_seq": lg.get("gate_seq"),
+          "gated_head": g, "close_head": head, "target_sha": target_sha,
+          "delta_count": len(delta), "selection_count": len(sel_b.get("tests") or []),
+          "rules": {r: True for r in REUSE_RULES},
+          "full_source": bool(report.get("full"))}
+    if sel_b.get("reason"):
+        ev["selection_reason"] = sel_b["reason"]
+    return ev
+
+
+def _reuse_loop_green(cfg, state, project_cfg, gate_cfg, *, policy, root, worktree, target_sha,
+                      head, events, now=None) -> tuple[dict, list]:
+    """SPEC-0359: drop each close gate with `reuse_from` whose rebase is clean by R1-R7,
+    recording `gate.reused`; record `gate.reuse_declined` (the first failing rule) for the
+    others, which run. Evidence only: `gate_reuse.json` is not touched here (the counter moves
+    when the close merges). Returns the gate config to run and the reused gate names."""
+    reusers = [g for g in gate_cfg.get("gates") or []
+               if g.get("reuse_from") and P.gate_when(g) == "close"]
+    reused = []
+    for g in reusers:
+        try:
+            ev = _reuse_evidence(cfg, state, project_cfg, g, policy=policy, root=root,
+                                 worktree=worktree, target_sha=target_sha, head=head, now=now)
+        except _Decline as d:
+            events.append(("gate.reuse_declined", {"gate": g["name"], "rule": d.rule,
+                                                   "detail": d.detail}))
+            continue
+        except Exception as e:                  # fails closed: the gate runs
+            events.append(("gate.reuse_declined", {"gate": g["name"], "rule": "R1",
+                                                   "detail": f"reuse check failed: {e!r}"}))
+            continue
+        events.append(("gate.reused", ev))
+        reused.append(g["name"])
+    if not reused:
+        return gate_cfg, []
+    return {**gate_cfg, "gates": [g for g in gate_cfg["gates"] if g["name"] not in reused]}, reused
+
+
 def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
                   stop=None) -> PreparedClose:
     """The worktree phase (SPEC-0220): spec guard, spec DoD, snapshot commit, target capture,
@@ -571,7 +764,12 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
     if raises:
         events.append(("finding", P.gate_limits_finding(raises)))
     gate_cfg = _skip_unaffected_gates(gate_cfg, worktree, target_sha, events)       # SPEC-0350
+    gate_cfg, reused = _reuse_loop_green(cfg, state, project_cfg, gate_cfg, policy=policy,
+                                         root=root, worktree=worktree, target_sha=target_sha,
+                                         head=head, events=events)              # SPEC-0359
     gate_run = G.run_all(gate_cfg, state, cfg, seq=seq, stop=stop, tier="close")   # SPEC-0328
+    if reused:
+        gate_run = replace(gate_run, reused=tuple(reused))
     seq = gate_run.seq                          # run_all moves on when the seq's tmp dir is taken
     events.append(("gate", G.as_payload(gate_run)))
     if not gate_run.ok:
@@ -589,6 +787,22 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
     return PreparedClose(target=target, target_sha=target_sha, head=head, gate_run=gate_run,
                          seq=seq, policy=policy, events=events,
                          commits_since_request=moved_since, pre_head=pre_head)
+
+
+def _record_reused_merge(cfg, state, project_cfg, root, merged, events) -> None:
+    """SPEC-0359 §4: the MERGED transition of a close whose gate run reused a gate is the only
+    place `reuses_since_green` grows and a suspect is appended (under the project lock)."""
+    try:
+        rec = SN.record_merge(cfg, state.get("project"), state.get("id"), merged, root=root,
+                              project_cfg=project_cfg)
+    except (OSError, ValueError) as e:
+        rec, err = None, str(e)
+    else:
+        err = SN.UNREADABLE if rec is None else ""
+    if err:
+        events.append(("finding", {"persona": "close", "severity": "minor", "gate": "reuse",
+                                   "title": "reused merge not recorded for the sentinel",
+                                   "detail": err, "files": []}))
 
 
 def finish_close(cfg, state: dict, project_cfg: dict, prepared: PreparedClose, *, attempts=1,
@@ -651,6 +865,9 @@ def finish_close(cfg, state: dict, project_cfg: dict, prepared: PreparedClose, *
         if merge_request:                           # SPEC-0233: make a moved branch visible
             close["head_at_request"] = (state.get("merge") or {}).get("head_at_request")
             close["commits_since_request"] = prepared.commits_since_request
+        if gate_run is not None and gate_run.reused:
+            close["reused"] = list(gate_run.reused)     # SPEC-0359: this merge rests on a reuse
+            _record_reused_merge(cfg, state, project_cfg, root, merged, events)
         events.append(("close", close))
         _cleanup(root, worktree, branch, project_cfg, "merge", events,
                  merge_request=(state.get("merge") or {}) if merge_request else None)

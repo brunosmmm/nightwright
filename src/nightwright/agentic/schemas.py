@@ -39,6 +39,14 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     "gate": ("gate_seq", "ok", "started_at", "duration_s", "results"),
     "gate_waiting": ("slots", "held", "waited_s"),                # SPEC-0309
     "gate.skipped": ("gate", "patterns", "changed_count"),        # SPEC-0350
+    # SPEC-0359: a close gate reused the green loop result, or declined to (+ optional
+    # `selection_reason`, `full_source` on gate.reused)
+    "gate.reused": ("gate", "from_gate", "from_gate_seq", "gated_head", "close_head",
+                    "target_sha", "delta_count", "selection_count", "rules"),
+    "gate.reuse_declined": ("gate", "rule", "detail"),
+    # SPEC-0359: a full-suite sentinel run on the project's base (a queue event, `events.py`);
+    # `failing` is required too when `ok` is false (see `required_keys`)
+    "sentinel": ("project", "ok", "sha", "suspects"),
     "worker_failed": ("worker", "stage", "error", "job_id"),      # SPEC-0338
     "park": ("reason", "detail", "resume_to"),      # + optional `auto` (SPEC-0302)
     "auto_resume_failed": ("rule", "error"),        # SPEC-0302
@@ -90,6 +98,15 @@ RUNNER_KINDS = {"start": ("pid", "argv", "interval_s"),
                 "gate_timeout_deferred": ("campaign", "timeout_regates")}
 
 
+def required_keys(etype: str, payload: dict | None = None) -> tuple[str, ...]:
+    """The required payload keys of `etype` given the payload: `EVENT_KEYS` plus the
+    conditional ones (SPEC-0359: a `sentinel` with `ok` false needs `failing`)."""
+    keys = EVENT_KEYS.get(etype, ())
+    if etype == "sentinel" and (payload or {}).get("ok") is False:
+        keys = (*keys, "failing")
+    return keys
+
+
 def with_defaults(etype: str, payload: dict | None = None) -> dict:
     """`payload` with every required key of `etype` present (missing ones as None) — for
     fixtures and tools that only care about some fields."""
@@ -113,7 +130,7 @@ def ledger_problems(rec) -> list[str]:
     if keys is None:
         out.append(f"unknown event type {etype!r}")
     else:
-        out += [f"{etype}: missing {k!r}" for k in keys if k not in rec]
+        out += [f"{etype}: missing {k!r}" for k in required_keys(etype, rec) if k not in rec]
     return out
 
 

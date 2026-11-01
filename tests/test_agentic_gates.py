@@ -928,3 +928,79 @@ def test_ff_close_tier_last_gate_gives_no_prelude(world, tmp_path):
          **FF_GATE}
     run = G.run_all(_project(g), st, cfg, seq=1, tier="loop")
     assert run.ok and run.results[0].attempts == () and _args(tmp_path) == [""]
+
+
+# ---- SPEC-0359: selection report, head/tree, last_green_loop ---------------------------------
+
+def test_gate_report_env_attach_and_cap(world):
+    cfg, st, wt = world
+    small = "echo '{\"head_sha\": \"abc\", \"tests\": [\"tests/test_a.py\"], \"full\": false}' " \
+            "> \"$NW_GATE_REPORT\""
+    big = f"python3 -c \"import json,os; open(os.environ['NW_GATE_REPORT'],'w').write(" \
+          f"json.dumps({{'tests': ['x' * {G.REPORT_MAX_BYTES}]}}))\""
+    run = G.run_all(_project(_gate("small", small), _gate("big", big), _gate("none", "true"),
+                             _gate("env", "test -n \"$NW_GATE_REPORT\"")), st, cfg, seq=4)
+    small_r, big_r, none_r, env_r = run.results
+    assert env_r.ok, "NW_GATE_REPORT is set for every gate"
+    assert small_r.report == {"head_sha": "abc", "tests": ["tests/test_a.py"], "full": False}
+    assert (S.campaign_dir(cfg, CID) / "gates" / "004-small.report.json").is_file()
+    assert big_r.ok and big_r.report is None            # over the cap: dropped
+    assert none_r.report is None
+    p = G.as_payload(run)
+    assert p["results"][0]["report"]["head_sha"] == "abc"
+    assert "report" not in p["results"][1] and "report" not in p["results"][2]
+
+
+def test_stale_report_file_is_not_read(world):
+    cfg, st, wt = world
+    stale = S.campaign_dir(cfg, CID) / "gates" / "005-g.report.json"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"head_sha": "old"}')
+    run = G.run_all(_project(_gate("g", "true")), st, cfg, seq=5)
+    assert run.results[0].report is None
+
+
+def test_head_and_tree_on_payload(world):
+    import subprocess
+    cfg, st, wt = world
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "--allow-empty", "-m", "x"]):
+        subprocess.run(["git", "-C", str(wt), *args], check=True, env=env, capture_output=True)
+    head = subprocess.run(["git", "-C", str(wt), "rev-parse", "HEAD", "HEAD^{tree}"],
+                          capture_output=True, text=True).stdout.split()
+    run = G.run_all(_project(_gate("a", "true")), st, cfg, seq=1)
+    assert (run.head, run.tree) == tuple(head)
+    p = G.as_payload(run)
+    assert p["head"] == head[0] and p["tree"] == head[1] and "reused" not in p
+    assert G.as_payload(replace(run, reused=("pytest",)))["reused"] == ["pytest"]
+
+
+def test_no_git_no_head_keys(world):
+    cfg, st, wt = world
+    p = G.as_payload(G.run_all(_project(_gate("a", "true")), st, cfg, seq=1))
+    assert "head" not in p and "tree" not in p
+
+
+
+def test_last_green_loop_set_by_green_and_cleared_by_red(tmp_path, monkeypatch):
+    import test_agentic_queue as TQ
+    cfg, cid, ctx = TQ.opened.__wrapped__(tmp_path, monkeypatch)
+    rep = {"head_sha": "h1", "tests": [], "full": False}
+    good = G.GateRun(1, True, (G.GateResult("pytest-affected", True, True, 0, False, 0.1,
+                                            "gates/001-pytest-affected.log", "", report=rep),),
+                     "2026-10-25T00:00:00", 0.1, head="h1", tree="t1")
+    S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
+    row, st = TQ._apply(ctx, cfg, cid, "gate", gate_run=good)
+    assert row["to"] == "REVIEWING"
+    lg = st["last_green_loop"]
+    assert lg == st["last_gate"] and lg["head"] == "h1" and lg["tree"] == "t1"
+    assert lg["results"][0]["report"] == rep
+    bad = replace(good, seq=2, ok=False, results=(replace(good.results[0], ok=False,
+                                                           exit_code=1),))
+    S.write_state(cfg, cid, dict(st, state="GATING"))
+    row, st = TQ._apply(ctx, cfg, cid, "gate", gate_run=bad)
+    assert row["to"] == "TRIAGING" and st["last_green_loop"] is None
+    S.write_state(cfg, cid, dict(st, state="GATING"))
+    row, st = TQ._apply(ctx, cfg, cid, "gate", gate_run=good)
+    assert st["last_green_loop"]["gate_seq"] == 1

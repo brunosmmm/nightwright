@@ -1952,4 +1952,66 @@ def attach(queue_group):
         if failed or plan["errors"]:
             ctx.exit(1)
 
+    @queue_group.group("sentinel")
+    def queue_sentinel():
+        """Full-suite sentinel on a project's base after close-tier reuses (SPEC-0359)."""
+
+    def _sentinel_project(cfg, project):
+        try:
+            pcfg = P.project_config(cfg, project)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        return pcfg
+
+    @queue_sentinel.command("run")
+    @click.option("--project", required=True, shell_complete=C.complete_project)
+    @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.sentinel.v1 JSON")
+    @click.pass_context
+    def queue_sentinel_run(ctx, project, as_json):
+        """Run the project's close gates on its base HEAD now (waits for a gate slot like any
+        gate run) and settle the reuse state. Exits 1 when the sentinel is red."""
+        from . import sentinel as SN
+        cfg = ctx.obj
+        pcfg = _sentinel_project(cfg, project)
+        try:
+            out = SN.run(cfg, project, project_cfg=pcfg)
+            state = SN.read(cfg, project, root=pcfg.get("_root"), project_cfg=pcfg)
+        except (ValueError, OSError) as e:
+            raise click.ClickException(getattr(e, "tail", None) or str(e))
+        if as_json:
+            _dump_json({"schema": "nw.queue.sentinel.v1", **out, "state": state})
+        else:
+            verdict = ("[yellow]interrupted[/]" if out["interrupted"] else
+                       "[green]green[/]" if out["ok"] else "[red]red[/]")
+            console.print(f"sentinel {project} at {out['sha'][:10]}: {verdict}", highlight=False)
+            for r in out["results"]:
+                console.print(f"  {'✓' if r['ok'] else '✗'} {r['name']}  {r['log']}",
+                              highlight=False)
+            if out["suspects"]:
+                console.print("  settled suspects: " + ", ".join(
+                    f"{x['campaign']} ({x['merge_sha'][:10]})" for x in out["suspects"]),
+                    highlight=False)
+            console.print(f"  reuses since green: {state['reuses_since_green']}, "
+                          f"force_full_close: {state['force_full_close']}", highlight=False)
+        if not out["ok"]:
+            ctx.exit(1)
+
+    @queue_sentinel.command("clear")
+    @click.option("--project", required=True, shell_complete=C.complete_project)
+    @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.sentinel.v1 JSON")
+    @click.pass_obj
+    def queue_sentinel_clear(cfg, project, as_json):
+        """Clear `force_full_close` and `due_since` (the suspects stay)."""
+        from . import sentinel as SN
+        pcfg = _sentinel_project(cfg, project)
+        try:
+            state = SN.clear(cfg, project, root=pcfg.get("_root"), project_cfg=pcfg)
+        except (ValueError, OSError) as e:
+            raise click.ClickException(str(e))
+        if as_json:
+            _dump_json({"schema": "nw.queue.sentinel.v1", "project": project, "state": state})
+            return
+        console.print(f"[green]✓[/] {project}: force_full_close cleared "
+                      f"({len(state['suspects'])} suspects kept)", highlight=False)
+
     return queue_group

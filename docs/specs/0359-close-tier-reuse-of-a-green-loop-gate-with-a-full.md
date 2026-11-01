@@ -1,7 +1,7 @@
 ---
 id: SPEC-0359
 title: "Close-tier reuse of a green loop gate, with a full-suite sentinel on the base branch"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -248,34 +248,34 @@ sequencing hint only.
 
 ## Acceptance criteria
 
-- [ ] Gate results carry `report` (parsed JSON under 64 KiB, larger dropped), and `gate` payloads and
+- [x] Gate results carry `report` (parsed JSON under 64 KiB, larger dropped), and `gate` payloads and
       `last_gate` carry `head` and `tree`. `last_green_loop` holds the last green, non-interrupted
       loop payload, and a later red loop run clears it.
-- [ ] A close gate with `reuse_from` is skipped and a `gate.reused` event with all required keys is
+- [x] A close gate with `reuse_from` is skipped and a `gate.reused` event with all required keys is
       recorded only when R1-R7 hold. Each failing rule appends `gate.reuse_declined` naming that
       rule, and the gate runs.
-- [ ] A `G` that is not a valid commit declines with R2; a `git` or `affected_tests.py` error or
+- [x] A `G` that is not a valid commit declines with R2; a `git` or `affected_tests.py` error or
       timeout declines with the rule being evaluated, with the error in `detail`.
-- [ ] `close.force_full`, `NW_CLOSE_FULL=1`, `merge.policy` other than `merge`, a red sentinel, an
+- [x] `close.force_full`, `NW_CLOSE_FULL=1`, `merge.policy` other than `merge`, a red sentinel, an
       overdue sentinel and an unreadable `gate_reuse.json` each force the full close run (a
       `gate.reuse_declined` with rule R1).
-- [ ] `reuses_since_green` and `suspects` change only in `finish_close` on a `MERGED` outcome whose
+- [x] `reuses_since_green` and `suspects` change only in `finish_close` on a `MERGED` outcome whose
       gate run reused a gate, under the project lock; a retried prepare, a parked close and a
       PR-policy close leave them unchanged.
-- [ ] Due and overdue follow section 5 exactly, using `due_since`, `last_green_at` (unknown counts
+- [x] Due and overdue follow section 5 exactly, using `due_since`, `last_green_at` (unknown counts
       as older than `max_age_s`) and the `sentinel` config.
-- [ ] `reuse_from` is validated (it names a loop gate and sits on a close gate), and the `close` and
+- [x] `reuse_from` is validated (it names a loop gate and sits on a close gate), and the `close` and
       `sentinel` project sections are validated with their defaults; unknown keys in them fail.
-- [ ] All three new events (`gate.reused`, `gate.reuse_declined`, `sentinel`) are in
+- [x] All three new events (`gate.reused`, `gate.reuse_declined`, `sentinel`) are in
       `schemas.EVENT_KEYS` with their required keys.
-- [ ] The sentinel runs the close gates on a detached base worktree when due by reuse count or age,
+- [x] The sentinel runs the close gates on a detached base worktree when due by reuse count or age,
       never while a campaign waits for a slot. Green at tested sha X removes only suspects that are
       X or its ancestors, sets the counter to the remaining count and clears the flag. Red sets
       `force_full_close` and escalates naming only suspects that are X or its ancestors.
       `nw queue sentinel run|clear` work.
-- [ ] A missing `gate_reuse.json` is rebuilt from queue events, restoring `force_full_close: true`
+- [x] A missing `gate_reuse.json` is rebuilt from queue events, restoring `force_full_close: true`
       after a last red sentinel (or no sentinel event while reuse events exist).
-- [ ] The dogfood `.nw/project.yaml` sets `reuse_from`. `docs/product/capabilities/agentic.md`
+- [x] The dogfood `.nw/project.yaml` sets `reuse_from`. `docs/product/capabilities/agentic.md`
       documents `reuse_from`, `close.force_full`, `NW_CLOSE_FULL` and `nw queue sentinel run|clear`.
 
 ## Test plan
@@ -324,6 +324,76 @@ sequencing hint only.
   `test_agentic_dogfood_config`; `python3 tools/spec_lint.py` exits 0; the full suite runs at the
   queue's close gate (this change edits `.nw/project.yaml`, so R4 declines reuse for itself).
 
+### Test record (2026-11-01)
+
+- `uv run pytest -q -n 4 tests/test_agentic_close_reuse.py` (new, 29 tests): the clean rebase gives
+  `gate.reused` with every required key and the `pytest` gate does not run; one decline per rule
+  (R1: `close.force_full`, `NW_CLOSE_FULL=1`, PR policy, unreadable state file, overdue sentinel,
+  red sentinel, merge request; R2: no green, stale report, `G` not a commit; R3: fix commit after
+  green, a rebase that changed a branch file; R4: `pyproject.toml`, `.nw/extra.yaml`, missing
+  tool; R5: grown selection; R6: both interaction directions; R7: old, large); a real stub
+  `affected_tests.py` that exits non-zero on `--closure` and one that times out both decline
+  with R6 and the error in `detail`; counter placement: a merged reused close counts once, a
+  retried prepare (base moved) then merge counts once, `main_dirty` and `base_moving` parks and a
+  PR-policy close leave it at 0, eight concurrent `record_merge` calls all land. Passed.
+- `uv run pytest -q -n 4 tests/test_agentic_sentinel.py` (new, 17 tests): due/not-due by count,
+  age and unknown `last_green_at`; `due_since` set when due first holds and cleared on a green
+  with no suspects; overdue by `due_since` and by `enabled: false`; green resets; merge during
+  run (green: the late merge survives with `reuses_since_green == 1`; red: the event and the
+  escalation name only the ancestor of X, the file's suspects stay); red makes the next close
+  decline with R1; deleted with no history is rebuilt (reuse merges, `force_full_close: true`,
+  due); deleted after red declines with R1; corrupt file declines until a sentinel rewrites it;
+  interrupted run settles nothing; no scheduling while a slot waiter or a deferred GATING
+  campaign exists; CLI `run` (red exits 1, `--json`) and `clear`. Passed.
+- `tests/test_agentic_gates.py` (+5: report env/attach/cap, stale report, head/tree, no git,
+  `last_green_loop` set by green and cleared by red through `queue._apply`) and
+  `tests/test_agentic_project.py` (+3: `reuse_from`, `close`/`sentinel` validation and defaults,
+  the three events and `failing` only when not ok in `schemas`/`events`). Passed.
+- Regression guard: `python3 tools/affected_tests.py` selects the full suite for this change
+  (103/219 files), so the guard set ran instead: every `test_agentic_close*`, `test_agentic_gate*`,
+  `test_agentic_queue*`, `test_agentic_events*`, `test_agentic_escalation*`, `test_agentic_remote*`,
+  `test_docs_*`, `test_agentic_project`, `test_agentic_dogfood_config`, `test_specs`: 991 passed;
+  then `test_completion`, `test_agentic_dashboard`, `test_agentic_e2e`, `test_agentic_resolver`,
+  `test_spec_status`, `test_worker_jobs`, `test_idea_capture_guard`, `test_test_waits`: 306 passed.
+  The full suite was left to the queue's close gate. `python3 tools/spec_lint.py` exits 0.
+- Manual: (a)/(b) as a scratch run, since inside the campaign the queue may not create worktrees
+  of this repo and main's config has no `reuse_from` until merge: a `/tmp` repo with
+  `src/nightwright` modules, real tests and this branch's real `tools/affected_tests.py`; the loop
+  report written through `NW_GATE_REPORT`, then `close_campaign` after an unrelated main commit:
+  MERGED in 1.2 s with `gate.reused` (`delta_count 1`, `selection_count 1`), the full pytest gate
+  not run, `reuses_since_green 1` with the merged sha as suspect; then `sentinel.run` on the base
+  ran the real pytest suite green, settled that suspect and reset the counter to 0. The real tool
+  was also called on this worktree (`--json`, `--json --closure`, and `pyproject.toml` -> full),
+  about 3 s per call. The dogfood queue measurements of (a) and `nw queue sentinel run --project
+  Meta-Tools` on main belong to the rollout watch (step 3) after merge. (c) done: the new section
+  "Close-tier reuse and the sentinel (SPEC-0359)" in `docs/product/capabilities/agentic.md`.
+
+### As shipped (2026-11-01)
+
+- Built to Design. New module `agentic/sentinel.py` holds `gate_reuse.json` (lock
+  `gate_reuse.json.lock` via `events._locked`), due/overdue, `record_merge`, the rebuild, the run,
+  `settle` and `clear`; `close._reuse_loop_green` / `_reuse_evidence` evaluate R1-R7;
+  `queue._sentinel_step` schedules it on the runner's pool after the agent steps are submitted
+  (run loop only, not while draining); `nw queue sentinel run|clear` in `cli_queue.py`.
+- R4/R5 call `affected_tests.py --json --changed=...` and R6 calls it with `--closure` (two
+  calls), so a tool error is attributed to the rule whose call failed; with an empty `D` (or `B`)
+  no call is made and R6 holds trivially. A missing tool declines with R4. An unexpected
+  exception in the rule code declines with R1 (`reuse check failed`). A merge request declines
+  with R1.
+- The merged close's `close` ledger event carries `reused: [...]`; the rebuild finds reused
+  merges there. Deviation from section 4 *State loss*: suspects are the reused merges that the
+  last **green** sentinel's sha does not contain (by ancestry; by timestamp when the sha is
+  unknown to git), not "the merges after the last sentinel event". This is what the file would
+  hold, since a red sentinel leaves the suspects unchanged. "Reuse events exist" is read as
+  "reused merges exist", so a rebuilt `force_full_close` always comes with a due sentinel that
+  can clear it.
+- The red-sentinel escalation is a campaign-less escalation record (`nw escalations`, by
+  `conductor`, project set) whose question and facts name the settled suspects; the `sentinel`
+  queue event (ok false) reaches the conductor's event follow as well.
+- `due_since` is also cleared by a green run that leaves suspects that are not still due.
+  The runner's drain waits for a running sentinel like a gate flight (a stop ends its gates).
+  Sentinel logs go to `<agentic>/sentinel/<project>.logs/NNN-<gate>.log`.
+
 ## Risks
 
 - **Dynamic coupling the static graph misses** (a plugin registry, `importlib` by computed name, env
@@ -356,11 +426,11 @@ CLOCK-OUT: n/a
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual steps performed and recorded.
-- [ ] No regressions (queue close gate full suite).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual steps performed and recorded.
+- [x] No regressions (queue close gate full suite).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated.
 
 ## Open questions
 

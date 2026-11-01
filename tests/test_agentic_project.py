@@ -403,3 +403,71 @@ def test_gate_named_other_dot_ff_is_rejected(tmp_path):
     p.write_text("schema: nw.project.v1\ngates:\n  - name: g\n    cmd: x\n"
                  "  - name: h.ff\n    cmd: y\n")
     assert [g["name"] for g in P.load_project_config(p)["gates"]] == ["g", "h.ff"]
+
+
+# ---- SPEC-0359: reuse_from, close, sentinel ---------------------------------------------------
+
+def _doc(gates=None, **sections):
+    gates = gates if gates is not None else [
+        {"name": "aff", "cmd": "true", "when": "loop"},
+        {"name": "full", "cmd": "true", "when": "close", "reuse_from": "aff"}]
+    return {"schema": "nw.project.v1", "project": "x", "gates": gates, **sections}
+
+
+def test_reuse_from_validation():
+    P.validate(_doc())
+    bad = [
+        ([{"name": "aff", "cmd": "true", "when": "loop"},
+          {"name": "full", "cmd": "true", "reuse_from": "aff"}], "only valid on a `when: close`"),
+        ([{"name": "aff", "cmd": "true", "when": "close"},
+          {"name": "full", "cmd": "true", "when": "close", "reuse_from": "aff"}],
+         "is not a `when: loop` gate"),
+        ([{"name": "full", "cmd": "true", "when": "close", "reuse_from": "nope"}],
+         "is not a `when: loop` gate"),
+        ([{"name": "full", "cmd": "true", "when": "close", "reuse_from": 3}],
+         "must be the name"),
+    ]
+    for gates, msg in bad:
+        with pytest.raises(ValueError, match="reuse_from") as e:
+            P.validate(_doc(gates))
+        assert msg in str(e.value)
+
+
+def test_close_and_sentinel_sections_validated_with_defaults(tmp_path):
+    P.validate(_doc(close={"force_full": True, "reuse_max_age_s": 60, "reuse_max_delta": 0},
+                    sentinel={"enabled": False, "after_reuses": 1, "max_age_s": 10}))
+    for sections, key in (({"close": {"force_full": "yes"}}, "close.force_full"),
+                          ({"close": {"reuse_max_delta": -1}}, "close.reuse_max_delta"),
+                          ({"close": {"reuse_max_age_s": 0}}, "close.reuse_max_age_s"),
+                          ({"close": {"bogus": 1}}, "close"),
+                          ({"sentinel": {"after_reuses": 0}}, "sentinel.after_reuses"),
+                          ({"sentinel": {"enabled": 1}}, "sentinel.enabled"),
+                          ({"sentinel": {"max_age_s": "1d"}}, "sentinel.max_age_s"),
+                          ({"sentinel": {"bogus": 1}}, "sentinel")):
+        with pytest.raises(ValueError, match=key.replace(".", r"\.")):
+            P.validate(_doc(**sections))
+    path = tmp_path / "project.yaml"
+    path.write_text(yaml.safe_dump(_doc(sentinel={"after_reuses": 5})))
+    doc = P.load_project_config(path)
+    assert doc["close"] == {"force_full": False, "reuse_max_age_s": 86400, "reuse_max_delta": 200}
+    assert doc["sentinel"] == {"enabled": True, "after_reuses": 5, "max_age_s": 86400}
+
+
+def test_new_events_in_schema_with_required_keys():
+    from nightwright.agentic import events as E
+    from nightwright.agentic import schemas as SC
+    assert SC.EVENT_KEYS["gate.reused"] == (
+        "gate", "from_gate", "from_gate_seq", "gated_head", "close_head", "target_sha",
+        "delta_count", "selection_count", "rules")
+    assert SC.EVENT_KEYS["gate.reuse_declined"] == ("gate", "rule", "detail")
+    assert SC.EVENT_KEYS["sentinel"] == ("project", "ok", "sha", "suspects")
+    assert SC.required_keys("sentinel", {"ok": True}) == ("project", "ok", "sha", "suspects")
+    assert "failing" in SC.required_keys("sentinel", {"ok": False})
+    rec = {"ts": "t", "seq": 1, "campaign": "c", "type": "sentinel", "by": "x",
+           "project": "p", "ok": False, "sha": "s", "suspects": []}
+    assert SC.ledger_problems(rec) == ["sentinel: missing 'failing'"]
+    assert SC.ledger_problems({**rec, "failing": []}) == []
+    assert SC.ledger_problems({**rec, "ok": True}) == []
+    E.validate("sentinel", {"project": "p", "ok": True, "sha": "s", "suspects": []})
+    with pytest.raises(ValueError, match="failing"):
+        E.validate("sentinel", {"project": "p", "ok": False, "sha": "s", "suspects": []})

@@ -73,6 +73,9 @@ gates:
       - "docs/specs/0004-*.md"
       - "docs/examples/**"
       - "docs/WORKFLOW.md"
+    # SPEC-0359: skipped when the rebase is clean (rules R1-R7) and the last green
+    # pytest-affected round stands for it; a full-suite sentinel on main backs reuse up.
+    reuse_from: pytest-affected
     # SPEC-0309: 4 xdist workers (8 cores / 2 gate slots); the targeted rerun stays serial.
     cmd: uv run pytest -q -x -n 4
     retry_cmd: uv run pytest -q -n 0 {failing}

@@ -184,6 +184,47 @@ or not runnable** (pytest exit 4 or 5) falls through to the normal run and ladde
 first in `attempts` and its time in `duration_s`. A gate named `<other>.ff` is rejected (it would
 share the prelude's log).
 
+### Close-tier reuse and the sentinel (SPEC-0359)
+
+Every gate sees `NW_GATE_REPORT` (`gates/NNN-<name>.report.json`); a gate that writes a JSON
+selection report there (`tools/affected_tests.py` does) carries it as `report` on its result
+(dropped at 64 KiB or more). Gate payloads and `last_gate` record the worktree `head` and `tree`
+the run gated, and the campaign keeps `last_green_loop`, the last green loop-tier payload (a red
+loop run clears it).
+
+A close gate may set `reuse_from: <loop gate>` (validated: the gate is `when: close`, the name a
+`when: loop` gate). At the close it is then skipped, and the loop gate's green result stands for
+it, when the rebase is clean by rules R1-R7: **R1** reuse is enabled (`merge.policy: merge`, not
+a merge request, no `close.force_full`, no `NW_CLOSE_FULL=1` in the runner's environment, no red
+or overdue sentinel, a readable `gate_reuse.json`); **R2** the green source result has a report
+whose `head_sha` is the gated head `G`, and `G` is still a commit; **R3** no file the branch
+changes differs between `G` and the rebased head `H`; **R4** main's delta `D` (`git diff G H`)
+touches no `.nw/**` file and does not select the full suite; **R5** the branch's selection
+recomputed on `H` did not grow; **R6** the forward static closure of the branch's tests contains
+no path in `D`, and that of `D`'s tests no branch path; **R7** `G` was gated less than
+`close.reuse_max_age_s` (86400) ago and `D` has at most `close.reuse_max_delta` (200) paths. Any
+error or timeout of `git` or `affected_tests.py --json [--closure]` declines with the rule being
+evaluated. A reuse appends `gate.reused` (with its evidence), a decline `gate.reuse_declined`
+(the first failing rule) and the gate runs. `close.force_full: true` in `.nw/project.yaml`, or
+`NW_CLOSE_FULL=1`, turns reuse off.
+
+A reused close that **merges** is counted in `<agentic>/projects/<project>/gate_reuse.json`
+(`reuses_since_green`, `suspects`); nothing else moves the counter. The **sentinel** is due after
+`sentinel.after_reuses` (3) such merges, or one and no green sentinel within
+`sentinel.max_age_s` (86400 s). When it is due and no campaign waits for a gate slot, the queue
+runner runs the project's close gates (no `paths` skip, no reuse) on the base HEAD in a detached
+worktree `<agentic>/sentinel/<project>`, under a normal gate slot. Green settles the suspects the
+tested sha contains; red sets `force_full_close` (every close of the project runs full), names
+those suspects in a `sentinel` queue event and opens an escalation. Reuse also declines while
+the sentinel is overdue (due for longer than `max_age_s`, or disabled with `after_reuses`
+reuses pending). A missing state file is rebuilt from the queue events (a red last sentinel
+keeps `force_full_close`); an unreadable one declines reuse until a sentinel run rewrites it.
+
+- `nw queue sentinel run --project P` runs the sentinel now (waits for a gate slot; exits 1 when
+  red; `--json` emits `nw.queue.sentinel.v1`).
+- `nw queue sentinel clear --project P` clears `force_full_close` and `due_since`; the suspects
+  stay.
+
 Every gate writes one log under the campaign directory, `gates/NNN-<name>.log`, starting
 with a header line that names the command and its working directory; the last 60 lines
 travel with the result into the ledger (`gate` event) and into `nw campaign show`. Gate

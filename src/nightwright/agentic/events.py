@@ -24,6 +24,7 @@ from ..export import _atomic_write
 from . import codewatch as CW
 from . import gate_slots
 from . import lease as L
+from . import schemas as SC
 from . import store
 
 SCHEMA = "nw.event.v1"
@@ -77,6 +78,8 @@ EVENT_TYPES = {
     "spec_written": ("spec_id",),
     "spec_reviewed": ("spec_id", "verdict", "round"),
     "spec_accepted": ("spec_id",),
+    # SPEC-0359: a full-suite sentinel run on a project's base (keys: `schemas.EVENT_KEYS`)
+    "sentinel": SC.EVENT_KEYS["sentinel"],
     # SPEC-0300: synthetic follower line (never appended to events.jsonl)
     "conductor_digest": ("first_id", "last_id", "held", "merged"),
 }
@@ -226,7 +229,8 @@ def _last_id(path: Path) -> int:
 def validate(type_: str, data: dict) -> None:
     if type_ not in EVENT_TYPES:
         raise ValueError(f"unknown event type {type_!r}")
-    missing = [k for k in EVENT_TYPES[type_] if k not in (data or {})]
+    required = SC.required_keys(type_, data) if type_ == "sentinel" else EVENT_TYPES[type_]
+    missing = [k for k in required if k not in (data or {})]
     if missing:
         raise ValueError(f"event {type_!r} missing data keys: {', '.join(missing)}")
     bad = [k for k in EVENT_OPTIONAL.get(type_, {})

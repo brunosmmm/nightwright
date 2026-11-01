@@ -44,6 +44,17 @@ PROJECT_DEFAULTS = {
         "resolver_allowance_usd": None,  # SPEC-0303: spend over the cap a close may give resolver runs; None ⇒ resolver budget × 2
         "pr": {"labels": [], "reviewers": [], "title_prefix": ""},
     },
+    # SPEC-0359: close-tier reuse of a green loop gate (`reuse_from`) and its sentinel
+    "close": {
+        "force_full": False,     # true: every close gate runs, `reuse_from` is ignored
+        "reuse_max_age_s": 86400,    # R7: the green loop run is younger than this
+        "reuse_max_delta": 200,      # R7: at most this many paths differ between gated and close
+    },
+    "sentinel": {
+        "enabled": True,         # the full close suite on the base HEAD after reuses
+        "after_reuses": 3,       # due after this many reused merges...
+        "max_age_s": 86400,      # ...or one reused merge and no green sentinel this recent
+    },
     "worktrees": {
         "root": None,            # None ⇒ <repo>/../.nw-worktrees/<project>
         "setup": [],
@@ -229,6 +240,46 @@ def _check_failed_first(problems, gate, p):
                         "(the close tier gets no previous result)")
 
 
+def _check_reuse_from(problems, gate, gates, p):
+    """SPEC-0359: `reuse_from` sits on a `when: close` gate and names a `when: loop` gate."""
+    if "reuse_from" not in gate:
+        return
+    src = gate["reuse_from"]
+    if not _is_str(src):
+        problems.append(f"{p}.reuse_from: must be the name of a `when: loop` gate")
+        return
+    if gate_when(gate) != "close":
+        problems.append(f"{p}.reuse_from: only valid on a `when: close` gate")
+    loop = [g for g in gates if isinstance(g, dict) and g.get("name") == src]
+    if not loop or gate_when(loop[0]) != "loop":
+        problems.append(f"{p}.reuse_from: {src!r} is not a `when: loop` gate of this config")
+
+
+def _check_number(problems, value, path, *, minimum=0, integer=True):
+    if value is None:
+        return
+    kinds = (int,) if integer else (int, float)
+    if isinstance(value, bool) or not isinstance(value, kinds) or value < minimum:
+        what = "an integer" if integer else "a number"
+        problems.append(f"{path}: must be {what} >= {minimum} (got {value!r})")
+
+
+def _check_close_sections(problems, doc):
+    """SPEC-0359: the `close` and `sentinel` sections (strict keys, typed values)."""
+    close = doc.get("close")
+    if close is not None and _check_mapping(problems, close, "close",
+                                            tuple(PROJECT_DEFAULTS["close"])):
+        _check_bool(problems, close.get("force_full"), "close.force_full")
+        _check_number(problems, close.get("reuse_max_age_s"), "close.reuse_max_age_s", minimum=1)
+        _check_number(problems, close.get("reuse_max_delta"), "close.reuse_max_delta")
+    sentinel = doc.get("sentinel")
+    if sentinel is not None and _check_mapping(problems, sentinel, "sentinel",
+                                               tuple(PROJECT_DEFAULTS["sentinel"])):
+        _check_bool(problems, sentinel.get("enabled"), "sentinel.enabled")
+        _check_number(problems, sentinel.get("after_reuses"), "sentinel.after_reuses", minimum=1)
+        _check_number(problems, sentinel.get("max_age_s"), "sentinel.max_age_s", minimum=1)
+
+
 def validate(doc):
     """Collect every problem in `doc` and raise one ValueError naming them by key path."""
     problems = []
@@ -253,7 +304,8 @@ def validate(doc):
         p = f"gates[{i}]"
         if not _check_mapping(problems, gate, p, ("name", "cmd", "cwd", "timeout_s", "required",
                                                   "results", "retries", "on_fail", "retry_cmd",
-                                                  "failed_first", "when", "paths", "remote")):
+                                                  "failed_first", "when", "paths", "remote",
+                                                  "reuse_from")):
             continue
         name = gate.get("name")
         if _is_str(name) and name.endswith(".ff") and name[:-3] in all_names:
@@ -284,7 +336,9 @@ def validate(doc):
             if not isinstance(pv, list) or not pv or not all(_is_str(x) for x in pv):
                 problems.append(f"{p}.paths: must be a non-empty list of glob strings")
         _check_bool(problems, gate.get("remote"), f"{p}.remote")      # SPEC-0338
+        _check_reuse_from(problems, gate, gates, p)                     # SPEC-0359
     _check_bool(problems, doc.get("remote_gates"), "remote_gates")      # SPEC-0338
+    _check_close_sections(problems, doc)                                # SPEC-0359
 
     merge = doc.get("merge")
     if merge is not None and _check_mapping(problems, merge, "merge",
@@ -345,7 +399,7 @@ def _with_defaults(doc):
     for g in out["gates"]:
         if g.get("on_fail") == "warn":          # SPEC-0289: the spelled-out `required: false`
             g["required"] = False
-    for section in ("merge", "worktrees", "agents"):
+    for section in ("merge", "close", "sentinel", "worktrees", "agents"):
         out[section].update(doc.get(section) or {})
     out["merge"]["pr"] = {**PROJECT_DEFAULTS["merge"]["pr"], **((doc.get("merge") or {}).get("pr") or {})}
     if out["merge"]["base"] is None:

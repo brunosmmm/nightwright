@@ -40,11 +40,13 @@ from . import close as CL
 from . import decisions as DEC
 from . import divergence as DV
 from . import followups as FU
+from . import gate_slots
 from . import gates as G
 from . import gitops as git
 from . import lease as L
 from . import personas as PS
 from . import project as P
+from . import sentinel as SN
 from . import spec_review as SR
 from . import spec_write as SW
 from . import schemas as SC
@@ -2063,7 +2065,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
                       "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
                       "merge", "admission", "spec_review", "split",   # SPEC-0279: amend flips it
-                      "gate_exclusive"):
+                      "gate_exclusive", "last_green_loop"):
                 if k in state:
                     current[k] = state[k]
             requested = current.get("park_requested")
@@ -2257,6 +2259,8 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         payload = G.as_payload(run)
         events.append(("gate", payload))
         state["last_gate"] = payload
+        # SPEC-0359: the green loop result a clean close may reuse; any red loop run clears it
+        state["last_green_loop"] = payload if (run.ok and not run.interrupted) else None
         state["gate_exclusive"] = None
         if run.ok:
             counters["timeout_regates"] = 0
@@ -3535,6 +3539,7 @@ class StepPool:
         self.forced: dict = {}                     # SPEC-0229: campaign -> run ids force-detached
         self.detach_all = False                    # SPEC-0229: set by the stop / crash sweep
         self.deferred_noted: set = set()           # SPEC-0311: exclusive re-gates already journaled
+        self.sentinel = None                       # SPEC-0359: (project, future) in flight
 
     def hooks(self, run_dir=None, phase: str = "spawning") -> RunHooks:
         return RunHooks(self.lock, run_dir, phase, self)
@@ -3796,6 +3801,56 @@ def _note_gate_deferred(ctx: _Ctx, pool: StepPool, st: dict) -> None:
         return
     pool.deferred_noted.add(key)
     journal(ctx.cfg, "gate_timeout_deferred", campaign=st["id"], timeout_regates=key[1])
+
+
+def _sentinel_busy(pool: StepPool) -> bool:
+    """A sentinel run (SPEC-0359) is in flight on the pool."""
+    fl = getattr(pool, "sentinel", None)
+    return fl is not None and not fl[1].done()
+
+
+def _sentinel_step(ctx: _Ctx, pool: StepPool, busy: list) -> str | None:
+    """SPEC-0359 §4: start one due sentinel on a worker thread, only when no campaign waits for
+    a gate slot (a live waiter marker, or a GATING campaign whose gate step did not start) and
+    no sentinel is in flight. Returns the project started, if any."""
+    cfg = ctx.cfg
+    fl = pool.sentinel
+    if fl is not None:
+        project, fut = fl
+        if not fut.done():
+            return None
+        pool.sentinel = None
+        try:
+            out = fut.result()
+            journal(cfg, "sentinel_done", project=project, ok=out.get("ok"),
+                    sha=out.get("sha"), interrupted=out.get("interrupted"))
+        except Exception as e:
+            journal(cfg, "sentinel_failed", project=project, error=f"{type(e).__name__}: {e}")
+    if ctx.stop.is_set():
+        return None
+    candidates = SN.projects(cfg)
+    if not candidates:
+        return None
+    flying = pool.ids()
+    if any(s.get("state") == "GATING" and s["id"] not in flying for s in busy):
+        return None
+    if gate_slots.occupancy(cfg).get("waiting"):
+        return None
+    for project in candidates:
+        try:
+            pcfg = P.project_config(cfg, project)
+            if not SN.check_due(cfg, project, root=pcfg.get("_root"), project_cfg=pcfg):
+                continue
+        except (ValueError, OSError) as e:
+            key = ("sentinel", project, str(e))
+            if key not in pool.deferred_noted:              # once per runner, not per tick
+                pool.deferred_noted.add(key)
+                journal(cfg, "sentinel_failed", project=project, error=str(e))
+            continue
+        pool.sentinel = (project, pool.submit(lambda: SN.run(cfg, project, project_cfg=pcfg, stop=ctx.stop)))
+        journal(cfg, "sentinel_started", project=project)
+        return project
+    return None
 
 
 def tick(cfg, *, stop: threading.Event | None = None, runner=None, admit=True,
@@ -4254,6 +4309,8 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     # 3. agent steps: submitted; a single-shot tick waits for its own and applies them now
     _submit(ctx, pool, report, pending_agent, groups)
     ctx.progress()
+    if not own and not draining:
+        _sentinel_step(ctx, pool, busy)     # SPEC-0359: the full suite on base, when due
     if own:
         pool.wait_all()
         _harvest(pool, report)
@@ -4948,7 +5005,7 @@ def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
     try:
         with _busy(lease, "drain", budget_s=budget):
             next_refresh = time.monotonic()
-            while pool.flights:
+            while pool.flights or _sentinel_busy(pool):     # SPEC-0359: its gates too
                 if time.monotonic() >= next_refresh:
                     _refresh_backlog(cfg)
                     next_refresh = time.monotonic() + interval
@@ -4959,6 +5016,8 @@ def _drain(cfg, pool: StepPool, lease, *, reason: str = "signal",
                 pool.wait_any(timeout=0.2)
                 before = len(pool.flights)
                 _harvest(pool, report)
+                if not pool.flights and bound_at is not None and time.monotonic() >= bound_at:
+                    break                                 # a stopped sentinel past the bound
                 if pool.flights:
                     detached = pool.try_detach_all()      # SPEC-0225: persona runs outlive us
                     if detached is not None:

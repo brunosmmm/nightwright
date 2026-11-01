@@ -27,6 +27,7 @@ from . import project as P
 from .project import expand_cmd
 
 TAIL_LINES = 60
+REPORT_MAX_BYTES = 64 * 1024    # SPEC-0359: a larger selection report is dropped
 _KILL_GRACE_S = 5
 _LOG_SEQ_RE = re.compile(r"^(\d{3})-")
 # SPEC-0289: pytest exits 4 (usage error: ids not found) and 5 (nothing collected) when a targeted
@@ -58,6 +59,7 @@ class GateResult:
     summary: dict | None = None  # SPEC-0284: parsed counts/failing ids; None without `results:`
     attempts: tuple = ()        # SPEC-0289: one dict per attempt once a retry ran (attempt 0 first)
     flaky: tuple = ()           # SPEC-0289: ids a targeted rerun passed, when the gate ended ok
+    report: dict | None = None  # SPEC-0359: the parsed `NW_GATE_REPORT` (< REPORT_MAX_BYTES)
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,9 @@ class GateRun:
     interrupted: bool = False   # SPEC-0229: a gate was ended by a stop, or the run was cut short
     slot_wait_s: float = 0.0    # SPEC-0309: seconds spent waiting for a gate slot (0.0: none)
     worker: str | None = None   # SPEC-0338: the worker the gates ran on; None: locally
+    head: str | None = None     # SPEC-0359: worktree HEAD when the run started
+    tree: str | None = None     # SPEC-0359: worktree HEAD^{tree} when the run started
+    reused: tuple = ()          # SPEC-0359: close gates a green loop gate stood in for
 
 
 def terminate_all() -> None:
@@ -181,7 +186,9 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
     timeout_s = int(gate.get("timeout_s", 1200))
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    child_env = {**os.environ, **env}
+    report_path = report_path_for(log_path)         # SPEC-0359
+    report_path.unlink(missing_ok=True)             # a leftover never stands for this run
+    child_env = {**os.environ, **env, "NW_GATE_REPORT": str(report_path)}
     started_at = store.now_iso()
     started = time.monotonic()
     started_ns = time.time_ns()     # SPEC-0284: a junit file older than this is a leftover
@@ -226,10 +233,43 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
         summary = gate_results.parse(gate.get("results"), log_path, cwd, started_ns)
     result = GateResult(gate["name"], bool(gate.get("required", True)), ok, exit_code,
                         timed_out, duration, log_rel or str(log_path), tail(log_path),
-                        cmd=cmd, cwd=str(cwd), interrupted=interrupted, summary=summary)
+                        cmd=cmd, cwd=str(cwd), interrupted=interrupted, summary=summary,
+                        report=read_report(report_path))
     _write_sidecar(log_path, result, timeout_s=timeout_s, started_at=started_at, error=error,
                    attempt=attempt)
     return result
+
+
+def report_path_for(log_path) -> Path:
+    """SPEC-0359: `gates/<seq:03>-<name>.report.json` beside the gate's log."""
+    log_path = Path(log_path)
+    return log_path.with_name(f"{log_path.stem}.report.json")
+
+
+def read_report(path) -> dict | None:
+    """The gate's selection report (SPEC-0357 `NW_GATE_REPORT`), parsed; None when absent,
+    unreadable, not a JSON object or `REPORT_MAX_BYTES` or larger (SPEC-0359)."""
+    try:
+        path = Path(path)
+        if path.stat().st_size >= REPORT_MAX_BYTES:
+            return None
+        rec = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def head_tree(worktree) -> tuple[str | None, str | None]:
+    """SPEC-0359: the worktree's `HEAD` and `HEAD^{tree}` (None, None when git cannot say)."""
+    try:
+        r = subprocess.run(["git", "-C", str(worktree), "rev-parse", "HEAD", "HEAD^{tree}"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, None
+    out = r.stdout.split()
+    if r.returncode != 0 or len(out) != 2:
+        return None, None
+    return out[0], out[1]
 
 
 def targeted_cmd(gate: dict, cmd: str, failing, placeholders: dict | None = None) -> str:
@@ -430,7 +470,12 @@ def _rewrite_sidecar(log_path: Path, final: GateResult, error: str | None) -> No
 def next_gate_seq(cfg, campaign_id) -> int:
     """1 + the highest `NNN-` prefix among existing gate logs (so debug runs and loop runs
     never overwrite each other)."""
-    d = store.gates_dir(cfg, campaign_id)
+    return next_gate_seq_in(store.gates_dir(cfg, campaign_id))
+
+
+def next_gate_seq_in(d) -> int:
+    """1 + the highest `NNN-` prefix among the files of directory `d` (1 when none)."""
+    d = Path(d)
     if not d.is_dir():
         return 1
     seqs = [int(m.group(1)) for p in d.iterdir() if (m := _LOG_SEQ_RE.match(p.name))]
@@ -485,14 +530,15 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
             if hold.interrupted:                # SPEC-0229: stopped while waiting, nothing ran (ok=False: never counted green)
                 return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
                                slot_wait_s=hold.waited_s)
+            head, tree = head_tree(worktree)        # SPEC-0359: the tree this run gates
             if hold.pool is None:
                 run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop,
                                     tier)
-                return replace(run, slot_wait_s=hold.waited_s)
+                return replace(run, slot_wait_s=hold.waited_s, head=head, tree=tree)
             out = RG.run(hold.pool, project_cfg, campaign_state, cfg, seq, owner, stop)
         waited = round(hold.waited_s + out.worker_wait_s, 1)
         if out.run is not None:
-            return replace(out.run, slot_wait_s=waited)
+            return replace(out.run, slot_wait_s=waited, head=head, tree=tree)
         # SPEC-0338 fallback: the remote slot is released; a local one, under the same claim
         with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce) as fb:
             waited = round(waited + fb.waited_s, 1)
@@ -501,7 +547,7 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
                                slot_wait_s=waited)
             run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop,
                                 tier)
-        return replace(run, slot_wait_s=waited)
+        return replace(run, slot_wait_s=waited, head=head, tree=tree)
     finally:
         store.clear_child_tmp(cfg, cid, owner)
 
@@ -550,6 +596,8 @@ def as_payload(run: GateRun) -> dict:
     for r in results:
         if r["summary"] is None:          # SPEC-0284: only recorded with `results:`
             del r["summary"]
+        if r["report"] is None:           # SPEC-0359: only recorded when the gate wrote one
+            del r["report"]
         for key in ("attempts", "flaky"):     # SPEC-0289: only recorded when a retry ran
             if not r[key]:
                 del r[key]
@@ -562,6 +610,11 @@ def as_payload(run: GateRun) -> dict:
            "duration_s": run.duration_s, "slot_wait_s": run.slot_wait_s}
     if run.worker:                          # SPEC-0338: a local run's payload is unchanged
         out["worker"] = run.worker
+    for key in ("head", "tree"):            # SPEC-0359: the tree the run gated
+        if getattr(run, key):
+            out[key] = getattr(run, key)
+    if run.reused:                          # SPEC-0359: close gates a loop result stood in for
+        out["reused"] = list(run.reused)
     out["results"] = results
     return out
 
