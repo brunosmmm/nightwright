@@ -381,6 +381,10 @@ def test_project_config_valid_invalid_no_gates_absent_missing(home, tmp_path):
     y.write_text("schema: nw.project.v1\nproject: Foo\n")
     c = D.check_project_config(cfg, "Foo", repo)
     assert c["status"] == "warn" and "loop / close" in c["summary"]
+    y.write_text("schema: nw.project.v1\nproject: Foo\n"
+                 "gates:\n  - {name: lint, cmd: 'true', when: loop}\n")
+    c = D.check_project_config(cfg, "Foo", repo)                        # loop only: still warn
+    assert c["status"] == "warn" and c["summary"] == "no gates for close"
     y.write_text("schema: nw.project.v1\nbogus: 1\n")
     c = D.check_project_config(cfg, "Foo", repo)
     assert c["status"] == "fail" and "bogus" in c["detail"]
@@ -433,6 +437,19 @@ def test_retention(tmp_path):
     assert D.check_retention(hist, settings_path=settings, today=today)["status"] == "ok"
     hist.unlink()
     assert D.check_retention(hist, settings_path=settings, today=today)["status"] == "warn"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads chmod 000 files")
+def test_retention_unreadable_settings_is_plain_warn(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"cleanupPeriodDays": 365}))
+    settings.chmod(0)
+    try:
+        c = D.check_retention(tmp_path / "none.jsonl", settings_path=settings)
+    finally:
+        settings.chmod(0o600)
+    assert c["status"] == "warn" and "does not read" in c["summary"]
+    assert "nightwright bug" not in (c["fix"] or "")
 
 
 # ---- run / CLI -----------------------------------------------------------------------------
@@ -602,6 +619,42 @@ def test_invalid_checkout_with_project_reports_not_raises(home, tmp_path):
     assert meta["status"] == "fail" and meta["summary"] == "research root did not resolve"
 
 
+def test_bad_config_values_do_not_escape_run(home, tmp_path):
+    cfg = _clean(home, tmp_path)
+    cfg["history_file"] = 2026                                          # not a string
+    t = Tools()
+    checks = by_id(D.run(cfg, which=t.which, run_cmd=t.run))
+    assert checks["retention.cleanup_period"]["status"] == "fail"
+    assert checks["legacy.wt_dirs"]["status"] == "ok"                   # the rest still ran
+    cfg["history_file"], cfg["data_dir"] = "history.jsonl", 7
+    checks = by_id(D.run(cfg, which=t.which, run_cmd=t.run))
+    assert checks["data.dir"]["status"] == "fail"
+    assert checks["retention.cleanup_period"]["status"] == "fail"
+
+
+def test_gh_auth_pr_scan_crash_stays_in_its_check(home, tmp_path, monkeypatch):
+    cfg = _clean(home, tmp_path)
+    monkeypatch.setattr(D, "pr_projects", lambda cfg, roots: 1 / 0)
+    t = Tools()
+    checks = by_id(D.run(cfg, which=t.which, run_cmd=t.run))
+    assert checks["tools.gh_auth"]["status"] == "fail"
+    assert "ZeroDivisionError" in checks["tools.gh_auth"]["summary"]
+    assert checks["install.checkout"]["status"] == "ok"
+
+
+def test_project_without_research_root_is_reported_as_skip(home):
+    write_config(home, "outbox_targets:\n  Jerome: {repo_path: ''}\n")
+    r = invoke("--json", "--project", "Jerome")
+    assert r.exit_code in (0, 1) and (r.exception is None or isinstance(r.exception, SystemExit))
+    checks = by_id(json.loads(r.output)["checks"])
+    proj = sorted(i for i in checks if i.startswith("project."))
+    assert proj == ["project.Jerome.config", "project.Jerome.profiles"]
+    assert checks["project.Jerome.config"]["status"] == "skip"
+    assert "no research root" in checks["project.Jerome.config"]["summary"]
+    ids = [c["id"] for c in json.loads(invoke("--json").output)["checks"]]
+    assert "project.Jerome.config" not in ids                   # only reported when asked for
+
+
 def test_unlistable_projects_reported_under_own_id(home, tmp_path, monkeypatch):
     from nightwright import rules
     cfg = write_config(home)
@@ -633,6 +686,22 @@ def test_human_output_groups_fix_hints_and_counts(home, tmp_path):
     assert last.endswith("skip") and " ok · " in last and " warn · " in last
     r = CliRunner().invoke(cli, ["doctor", "--fix-hints"], env={"COLUMNS": "200"})
     assert "fix: set `timezone:" in r.output
+
+
+def test_human_output_detail_only_under_warn_and_fail(home, tmp_path, monkeypatch):
+    write_config(home)
+    fake = [D.check("tools.okay", "ok", "fine", detail="OK-DETAIL"),
+            D.check("tools.warny", "warn", "hmm", detail="WARN-DETAIL", fix="FIX-W"),
+            D.check("tools.faily", "fail", "bad", detail="FAIL-DETAIL", fix="FIX-F"),
+            D.check("tools.skippy", "skip", "n/a", detail="SKIP-DETAIL")]
+    monkeypatch.setattr(D, "run", lambda *a, **k: list(fake))
+    out = CliRunner().invoke(cli, ["doctor"], env={"COLUMNS": "200"}).output
+    assert "WARN-DETAIL" in out and "FAIL-DETAIL" in out
+    assert "OK-DETAIL" not in out and "SKIP-DETAIL" not in out
+    lines = out.splitlines()
+    assert "WARN-DETAIL" in lines[next(i for i, l in enumerate(lines) if "tools.warny" in l) + 1]
+    assert "FIX-W" not in out
+    assert out.strip().splitlines()[-1] == "1 ok · 1 warn · 1 fail · 1 skip"
 
 
 def test_help_lists_options():

@@ -298,6 +298,16 @@ Projects are those in `rules.projects_payload(cfg)` with a resolvable research r
   `project.Meta-Tools.config` fail, `tools.gh_auth` skip, and no traceback. Full suite left to
   the gate.
 
+- Review fix (loop 4): new tests `test_human_output_detail_only_under_warn_and_fail`, the
+  loop-only-gates case in `test_project_config_valid_invalid_no_gates_absent_missing`,
+  `test_project_without_research_root_is_reported_as_skip`,
+  `test_bad_config_values_do_not_escape_run`, `test_gh_auth_pr_scan_crash_stays_in_its_check`
+  and `test_retention_unreadable_settings_is_plain_warn`. The last four fail against the
+  loop-3 `doctor.py` and pass now. `uv run pytest -q -n0 tests/test_doctor.py
+  tests/test_completion.py tests/test_agentic_profiles_cli.py tests/test_specs_dir.py`:
+  83 passed. Manual: `uv run nw doctor --project jerome --json` gives valid JSON, exit 0.
+  Full suite left to the gate.
+
 ### As shipped (2026-11-01)
 
 - Shipped as designed: `src/nightwright/doctor.py` (one `check_*` per row, `run`, `payload`,
@@ -328,6 +338,15 @@ Projects are those in `rules.projects_payload(cfg)` with a resolvable research r
   so `run()` reports the problem instead of a traceback. The `DOCTOR_SCHEMA` id pattern was
   loosened to `<group>.<anything>` so project names with spaces or dots still validate, and
   the human table renders ids as plain `Text`, so Rich markup in a name is never parsed.
+- Loop 4 review: `nw doctor --project NAME` for a registered project with no research root
+  (a mappings bucket, or an outbox target with an empty `repo_path`) now emits
+  `project.<NAME>.config` and `.profiles` as `skip` ("no research root"), so the output
+  says the project was not checked. A plain `nw doctor` still lists only projects that have
+  a root. The PR-policy scan for `tools.gh_auth`, the data dir and the history path are now
+  computed inside the per-check guard, so a bad config value (for example
+  `history_file: 2026`) fails only its own check. An unreadable `~/.claude/settings.json`
+  makes `retention.cleanup_period` a plain warn ("does not read / parse; assuming 30")
+  instead of a crashed check.
 
 ## Docs
 

@@ -541,8 +541,8 @@ def check_retention(history_file, *, settings_path=None, today=None) -> dict:
     if settings_path.is_file():
         try:
             raw = json.loads(settings_path.read_text(encoding="utf-8")).get("cleanupPeriodDays")
-        except (ValueError, AttributeError):
-            raw, note = None, f"{settings_path} does not parse; assuming 30"
+        except (ValueError, AttributeError, OSError):     # OSError: e.g. chmod 000
+            raw, note = None, f"{settings_path} does not read / parse; assuming 30"
         if isinstance(raw, int) and not isinstance(raw, bool):
             days, note = raw, f"cleanupPeriodDays {raw}"
     if days >= RETENTION_SAFE_DAYS:
@@ -593,8 +593,8 @@ def run(cfg, *, project=None, config_error=None, which=None, run_cmd=None,
                             fix="fix mappings.yaml / outbox_targets, then `nw projects`")
             out.append(check("tools.gh_auth", "skip", "projects could not be listed"))
         else:
-            out.append(_safe("tools.gh_auth", check_gh_auth, pr_projects(cfg, roots),
-                             which=which, run_cmd=run_cmd))
+            out.append(_safe("tools.gh_auth", lambda: check_gh_auth(
+                pr_projects(cfg, roots), which=which, run_cmd=run_cmd)))
     out.append(_safe("install.nw_on_path", check_nw_on_path, which=which))
     out.append(_safe("install.checkout", check_checkout, cfg) if cfg is not None
                else _skip_no_config("install.checkout"))
@@ -603,8 +603,9 @@ def run(cfg, *, project=None, config_error=None, which=None, run_cmd=None,
     out.append(_safe("config.parse", check_config_parse, config_error))
     out.append(_safe("config.timezone", check_timezone, cfg))
     out.append(_safe("config.org_ideas_file", check_org_ideas_file, cfg))
-    data_dir = (cfg or {}).get("data_dir") or paths.data_dir()
-    out.append(_safe("data.dir", check_data_dir, data_dir))
+    def data_dir():         # computed inside _safe: a bad config value must not escape run()
+        return (cfg or {}).get("data_dir") or paths.data_dir()
+    out.append(_safe("data.dir", lambda: check_data_dir(data_dir())))
     out.append(_safe("skills.installed", check_skills, cfg, dest=skills_dest) if cfg is not None
                else _skip_no_config("skills.installed"))
     out.append(_safe("completion.installed", check_completion, shell_env))
@@ -620,9 +621,14 @@ def run(cfg, *, project=None, config_error=None, which=None, run_cmd=None,
         out.append(check(f"project.{name}.config", "fail", "research root did not resolve",
                          detail=err, fix="see install.checkout / `nw projects`"))
         out.append(check(f"project.{name}.profiles", "skip", "research root did not resolve"))
+    known = {n for n, _ in roots} | {n for n, _ in root_errors}
+    if project and listing is None and cfg is not None and project not in known:
+        why = "no research root (bucket / outbox target without a repo path); nothing to check"
+        out.append(check(f"project.{project}.config", "skip", why))
+        out.append(check(f"project.{project}.profiles", "skip", why))
     out.append(_safe("legacy.wt_dirs", check_legacy_wt))
-    history = os.path.join(data_dir, (cfg or {}).get("history_file") or "history.jsonl")
-    out.append(_safe("retention.cleanup_period", check_retention, history))
+    out.append(_safe("retention.cleanup_period", lambda: check_retention(os.path.join(
+        data_dir(), (cfg or {}).get("history_file") or "history.jsonl"))))
     return out
 
 
