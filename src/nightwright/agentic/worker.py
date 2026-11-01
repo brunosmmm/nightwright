@@ -180,6 +180,21 @@ def _clear_stale_locks(cache: Path) -> None:
             pass
 
 
+# git's own background maintenance (`gc --auto` / `maintenance run --auto`, which a fetch
+# starts and may detach) would write the cache outside the repo lock, so it is off in every
+# cache: the worker's own `gc` is the only one, and it runs under the lock.
+_NO_AUTO_GC = (("gc.auto", "0"), ("maintenance.auto", "false"))
+
+
+def _no_auto_maintenance(cache: Path) -> None:
+    """Turn off auto gc/maintenance in the cache config (new and existing caches). Caller
+    holds the repo lock."""
+    for key, value in _NO_AUTO_GC:
+        got = _git("-C", cache, "config", "--get", key, check=False).stdout.strip()
+        if got != value:
+            _git("-C", cache, "config", key, value)
+
+
 def _list_refs(cache: Path, prefix: str) -> list[str]:
     p = _git("-C", cache, "for-each-ref", "--format=%(refname)", prefix, check=False)
     return [ln for ln in p.stdout.splitlines() if ln] if p.returncode == 0 else []
@@ -374,12 +389,13 @@ def _checkout(cfg, h: dict, job: Path, stdin, stop: "_Stop | None" = None) -> No
         if not (cache / "HEAD").exists():
             _git("init", "-q", "--bare", cache)
         _clear_stale_locks(cache)
+        _no_auto_maintenance(cache)
         if h["bundle_bytes"]:
             heads = _git("bundle", "list-heads", bundle).stdout.split()
             job_refs = [r for r in heads if r.startswith(JOB_REFS)]
             (job / "refs.json").write_text(json.dumps(job_refs) + "\n", encoding="utf-8")
-            _git("-C", cache, "fetch", "-q", "--no-write-fetch-head", bundle,
-                 f"{JOB_REFS}*:{JOB_REFS}*")
+            _git("-C", cache, "fetch", "-q", "--no-write-fetch-head", "--no-auto-maintenance",
+                 bundle, f"{JOB_REFS}*:{JOB_REFS}*")
             bundle.unlink(missing_ok=True)
         for sha, what in ((commit, "commit"), (base["sha"], "base")):
             if not _has_commit(cache, sha):
@@ -395,6 +411,7 @@ def _checkout(cfg, h: dict, job: Path, stdin, stop: "_Stop | None" = None) -> No
     _git("-C", tree, "update-ref", f"refs/heads/{name}", base["sha"])
     if name.startswith("origin/") and len(name) > len("origin/"):
         _git("-C", tree, "update-ref", f"refs/remotes/{name}", base["sha"])
+    stop.check()
 
 
 def _drop_job_refs(cfg, h: dict, job: Path) -> None:
@@ -700,6 +717,7 @@ def gc(cfg, keep_days: int = DEFAULT_KEEP_DAYS, now: float | None = None) -> dic
             continue
         with repo_lock(cfg, key):
             _clear_stale_locks(cache)
+            _no_auto_maintenance(cache)
             with jobs_lock(cfg):
                 live_ids, live_shas = _live_jobs(cfg)
             hv = _read_have(cfg, key)
@@ -725,8 +743,9 @@ def gc(cfg, keep_days: int = DEFAULT_KEEP_DAYS, now: float | None = None) -> dic
             if changed or set(hv) - have_refs:
                 _write_have(cfg, key, {s: t for s, t in hv.items() if s in have_refs})
             if changed:
-                _git("-C", cache, "gc", "--prune=now", "--quiet", check=False)
-                out["pruned"].append(key)
+                if _git("-C", cache, "gc", "--prune=now", "--quiet",
+                        check=False).returncode == 0:
+                    out["pruned"].append(key)
     return out
 
 

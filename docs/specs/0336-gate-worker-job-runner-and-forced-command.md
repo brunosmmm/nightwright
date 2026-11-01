@@ -303,6 +303,16 @@ this to tell a transport failure from a gate failure.
   then ends with stage `signal`, exit 3, and its cleanup does not hang; stale
   `refs/nw/have/<sha>.lock` and `packed-refs.lock` files in the cache are cleared by the next
   job, which passes. `python3 tools/spec_lint.py`: OK. The full suite is left to gating.
+- Loop 6 (review fix): the same targeted set, now 165 tests, ran 43 times; 42 runs passed. One
+  early run had a single failure that did not show up again in the next 42 runs (with `-n 4`,
+  `-n 6` and `-n 8`), so it was not identified. New cases: a cache set up the way an older
+  cache could be (`gc.autoPackLimit=1`, `gc.auto=6700`, `maintenance.auto=true`, and
+  `fetch`/`transfer.unpackLimit=1` so each fetch keeps its own pack) gets two more
+  `_checkout`s. Afterwards there is no `gc.pid` or `gc.log`, at least two packs are left (no
+  gc repacked them), and the config reads `gc.auto=0` and `maintenance.auto=false`. With the
+  fix reverted, this test fails because auto gc merges the packs into one. A second new case:
+  when `git gc` fails, the repo is not listed in `pruned`. `python3 tools/spec_lint.py`: OK.
+  The full suite is left to gating.
 
 ### As shipped (2026-10-31)
 
@@ -361,6 +371,14 @@ this to tell a transport failure from a gate failure.
   holding it is stale (left by a git killed hard); the checkout, `have` and `gc` delete
   `HEAD.lock`, `config.lock`, `packed-refs.lock`, `shallow.lock` and `refs/**/*.lock` before
   they write.
+- No git auto maintenance in the cache (loop 6): the cache `fetch` passes
+  `--no-auto-maintenance`. The cache config is set to `gc.auto=0` and
+  `maintenance.auto=false` under the repo lock, by the checkout (new and existing caches) and by
+  `gc`. As a result the worker's own `gc` is the only gc that runs in the cache, and it runs
+  under the repo lock that `_clear_stale_locks` depends on. `gc` lists a repo in `pruned` only
+  when `git gc --prune=now` exits 0. A pending signal is also checked after the clone and
+  checkout. Gate stdin is left as it is (inherited), because changing it would mean changing
+  `run_gate`, which is shared with local runs.
 
 ## Clock Log
 

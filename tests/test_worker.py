@@ -3,6 +3,7 @@ the test builds itself (offline: the "coordinator" is a temp git repo)."""
 import base64
 import fcntl
 import gzip
+import io
 import json
 import os
 import queue
@@ -672,6 +673,46 @@ def test_gc_reads_the_live_jobs_again_under_the_repo_lock(src, tmp_path, wenv, m
     finally:
         for fd in fds:
             os.close(fd)
+
+
+def test_cache_fetch_never_starts_gits_own_gc(src, tmp_path, wenv):
+    """git's auto gc/maintenance would write the cache outside the repo lock. With every fetch
+    kept as its own pack and `gc.autoPackLimit=1` (and an older cache's auto settings still on),
+    `_checkout` returns with no gc running or detached, its packs untouched, auto gc off."""
+    cfg = _cfg(wenv)
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    assert _run(wenv, h, data)[2] == 0
+    cache = _cache(wenv)
+    for key, value in (("gc.autoPackLimit", "1"), ("gc.auto", "6700"),
+                       ("maintenance.auto", "true"), ("gc.autoDetach", "true"),
+                       ("fetch.unpackLimit", "1"), ("transfer.unpackLimit", "1")):
+        _git(cache, "config", key, value)
+    for n in range(2):
+        src.commit(f"c{n}.txt", f"{n}\n")
+        src.head = _git(src.root, "rev-parse", "HEAD")
+        h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+        job = _job_dir(wenv, h["job_id"])
+        job.mkdir(parents=True)
+        W._checkout(cfg, h, job, io.BytesIO(data))
+        assert not (cache / "gc.pid").exists() and not (cache / "gc.log").exists()
+    assert len(list((cache / "objects" / "pack").glob("*.pack"))) >= 2   # no gc repacked them
+    assert _git(cache, "config", "--get", "gc.auto") == "0"
+    assert _git(cache, "config", "--get", "maintenance.auto") == "false"
+
+
+def test_gc_lists_a_repo_as_pruned_only_when_git_gc_succeeds(src, tmp_path, wenv, monkeypatch):
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    assert _run(wenv, h, data)[2] == 0
+    real = W._git
+
+    def failing_gc(*args, **kw):
+        if "gc" in args:
+            return subprocess.CompletedProcess(args, 1, "", "boom")
+        return real(*args, **kw)
+
+    monkeypatch.setattr(W, "_git", failing_gc)
+    rec = W.gc(_cfg(wenv), keep_days=0)
+    assert rec["refs_removed"] == 2 and rec["pruned"] == []
 
 
 def test_info_json_keys(wenv):
