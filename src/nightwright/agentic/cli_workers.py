@@ -2,12 +2,12 @@
 `workers.py`; `nw worker` (SPEC-0336) is the other side, run on the worker host."""
 from __future__ import annotations
 
-import json
-
 import click
 from rich.table import Table
+from rich.text import Text
 
 from ..console import console
+from ..render import err_console, warn
 from ..report import _dump_json
 from . import gate_slots as GS
 from . import workers as WK
@@ -27,6 +27,11 @@ def workers_group():
     nw workers on|off NAME             enable (clears cooldown) / disable
     nw workers rm NAME                 unregister (held slots are untouched)
     """
+
+
+def _say(msg: str, style: str = "") -> None:
+    """A plain line on stdout; Text so worker names and ssh output are never read as markup."""
+    console.print(Text(msg, style=style))
 
 
 def _find(records, name):
@@ -74,10 +79,10 @@ def workers_add(cfg, name, dest, slots, nw_cmd, no_check):
     if not no_check:
         res = WK.check(cfg, rec)
         for w in res["warnings"]:
-            click.echo(f"warning: {w}", err=True)
+            warn(f"warning: {w}")
         if not res["ok"]:
             for e in res["errors"]:
-                click.echo(f"error: {e}", err=True)
+                err_console.print(Text(f"error: {e}", style="red"))
             raise click.ClickException(f"{name} failed its check; nothing registered "
                                        "(--no-check to register anyway)")
 
@@ -87,7 +92,7 @@ def workers_add(cfg, name, dest, slots, nw_cmd, no_check):
         records.append(rec)
 
     _update(cfg, add)
-    click.echo(f"registered {name} ({dest}, {slots} slot{'s' if slots != 1 else ''})")
+    _say(f"registered {name} ({dest}, {slots} slot{'s' if slots != 1 else ''})")
 
 
 @workers_group.command("list")
@@ -130,16 +135,17 @@ def workers_check(cfg, name, as_json):
         records = [_find(records, name)]
     results = [WK.check(cfg, r) for r in records]
     if as_json:
-        click.echo(json.dumps(results, indent=2))
+        _dump_json(results)
     else:
         if not results:
-            click.echo("no workers registered")
+            _say("no workers registered", "dim")
         for r in results:
-            click.echo(f"{r['name']}: {'ok' if r['ok'] else 'FAILED'}")
+            _say(f"{r['name']}: {'ok' if r['ok'] else 'FAILED'}",
+                 "green" if r["ok"] else "bold red")
             for e in r["errors"]:
-                click.echo(f"  error: {e}")
+                _say(f"  error: {e}", "red")
             for w in r["warnings"]:
-                click.echo(f"  warning: {w}")
+                _say(f"  warning: {w}", "yellow")
     if not all(r["ok"] for r in results):
         raise SystemExit(1)
 
@@ -154,7 +160,7 @@ def workers_on(cfg, name):
         r["enabled"] = True
         r["cooldown_until"] = None
     _update(cfg, fn)
-    click.echo(f"{name}: enabled")
+    _say(f"{name}: enabled")
 
 
 @workers_group.command("off")
@@ -165,7 +171,7 @@ def workers_off(cfg, name):
     def fn(records):
         _find(records, name)["enabled"] = False
     _update(cfg, fn)
-    click.echo(f"{name}: disabled")
+    _say(f"{name}: disabled")
 
 
 @workers_group.command("rm")
@@ -176,4 +182,4 @@ def workers_rm(cfg, name):
     def fn(records):
         records.remove(_find(records, name))
     _update(cfg, fn)
-    click.echo(f"{name}: removed")
+    _say(f"{name}: removed")

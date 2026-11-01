@@ -172,6 +172,11 @@ runs on the worker host); each group's help text points to the other.
   tests/test_cli*.py`: 392 passed.
 - `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: clean.
 - The full suite was left to gating.
+- Gate follow-up: `cli_workers.py` human output moved off `click.echo` to Rich (`console.print(Text)`,
+  `render.warn`, `err_console`) and `check --json` to `_dump_json`, to satisfy the SPEC-0185 guard.
+  `tests/test_rich_output_guard.py tests/test_workers_registry.py tests/test_docs_product_reference.py
+  tests/test_cli_gate_slots.py`: 40 passed; `tests/test_worker*.py tests/test_cli*.py
+  tests/test_gate_slots.py tests/test_rich*.py tests/test_docs*.py`: 258 passed.
 
 ### As shipped (2026-11-01)
 
