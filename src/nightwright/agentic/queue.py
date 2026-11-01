@@ -33,6 +33,7 @@ import yaml
 
 from .. import specs as SP
 from ..rules import INTERNAL_PROJECT
+from ..spec_scope import idea_project
 from ..specmeta import split_frontmatter
 from . import autopark as AP
 from . import close as CL
@@ -5981,19 +5982,23 @@ _UNQUEUED_ORDER = ("ready", "deps-unmet", "previous-campaign", "not-accepted", "
                    "no-spec")
 
 
-def _spec_reasons(cfg, specs_dir, fm: dict, status: str, prev) -> list[dict]:
+def _spec_reasons(cfg, specs_dir, fm: dict, status: str, prev, project=None) -> list[dict]:
     reasons = []
     if status in ("draft", "proposed"):
         reasons.append({"code": "not-accepted", "text": f"spec is {status}"})
     for dep in _deps_list(fm.get("depends_on")):
+        # SPEC-0347, as in backlog_readiness: an outbound dependency whose campaign is MERGED is
+        # met even when the local spec file lags (or is missing).
+        merged = (_dep_campaign(cfg, dep, project) or {}).get("state") == "MERGED"
         try:
             dep_fm, _ = split_frontmatter(_find_dep_spec(specs_dir, dep).read_text(encoding="utf-8"))
         except (OSError, ValueError, SystemExit):
-            reasons.append({"code": "deps-unmet", "text": f"{dep} not found"})
+            if not merged:
+                reasons.append({"code": "deps-unmet", "text": f"{dep} not found"})
             continue
         met, why = dependency_met(specs_dir, dep, dep_fm or {},
                                   {str(fm["id"])} if fm.get("id") else set())
-        if not met:
+        if not met and not merged:
             reasons.append({"code": "deps-unmet", "text": f"waiting on {dep} ({why})"})
     if prev:
         day = str(prev.get("updated_at") or "")[:10]
@@ -6065,7 +6070,7 @@ def unqueued_view(cfg, project=None, statuses=None) -> dict:
             continue
         row = {"kind": kind, "id": sid, "title": fm.get("title"), "status": status,
                "project": proj, "idea_id": None, "depends_on": _deps_list(fm.get("depends_on")),
-               "reasons": _spec_reasons(cfg, sdir, fm, status, prev),
+               "reasons": _spec_reasons(cfg, sdir, fm, status, prev, proj),
                "next": f"nw queue add {sid}",
                "previous_campaign": (prev or {}).get("id")}
         rows.append(row)
@@ -6075,8 +6080,8 @@ def unqueued_view(cfg, project=None, statuses=None) -> dict:
         if state not in ("SPECCED", "INCUBATE"):
             continue
         iid = (t.properties.get("ID") or "").strip() or t.id
-        iproj = (t.properties.get("PROJECT") or "").strip() or None
-        if project and iproj and iproj != project:
+        iproj = idea_project(t)          # no :PROJECT: = INTERNAL_PROJECT (spec_scope)
+        if project and iproj != project:
             continue
         spec_ref = (t.properties.get("SPEC") or "").strip()
         if state == "SPECCED":

@@ -528,6 +528,42 @@ active / waiting / parked / backlog → `queue_payload` items (`row_view` fields
   `test_queue_watch_shows_estimate_only_when_above_zero` (which renders the `nw queue list`
   table next to the watch panel) pins `width=240` and now says so in a comment.
 
+### Test record (2026-11-01, run 017)
+
+- `uv run pytest -q -n 4 tests/test_agentic_queue_visibility.py`: 30 passed. New:
+  `test_narrow_reclaims_the_title_room_for_another_flex_column` (Needs-you shape at widths
+  42..59: once narrow, the title leaves the table, `detail` gets only what is left, every line
+  fits and the 23-cell campaign id stays whole next to `gate_timeout`; at 40 `detail` is
+  removed instead of squeezing the id), `test_narrow_title_chunks_by_cell_width` (a CJK + emoji
+  title at width 36 comes out whole and in order under the id, each chunk at most the id's
+  cells) and `test_unqueued_outbound_dep_with_merged_campaign_is_met` (outbound dependency with
+  a MERGED campaign: met when the outbox file lags and when it is missing; a missing one with no
+  campaign is `deps-unmet`). `test_unqueued_matches_campaigns_through_the_idea` now asserts that
+  an INCUBATE idea without `:PROJECT:` is absent from `--project jerome` and present under
+  `--project Meta-Tools`. Both narrow tests fail against the run-012 `listview.py` (id wrapped;
+  title glyphs lost).
+- Related suites (`test_agentic_queue_cli`, `test_agentic_campaign_cli`, `test_agentic_queue`,
+  `test_agentic_dashboard`, `test_agentic_waiting`, `test_agentic_watch_height`,
+  `test_agentic_queue_merge`, `test_agentic_cost_estimate`, `test_tui_queue_model`,
+  `test_tui_queue_tab`, `test_spec_scope`, plus the file above): 502 passed. The full suite is left
+  to the queue's close gate.
+- `python3 tools/spec_lint.py`: OK.
+
+### As shipped (2026-11-01, run 017)
+
+- Narrow fallback: `listview.layout(..., title_key)` takes the title out of the table itself
+  (`title_out`) and re-fits any other flex column (Needs-you `detail`) into what the fixed and
+  kept columns leave, without the 12-cell minimum; a flex column with no room left is removed
+  rather than squeezing the fixed id/state.
+- The title under the id is cut by terminal cells (`listview._cell_chunks`): a double-width
+  glyph counts 2 and is never split.
+- `unqueued_view`: an idea without `:PROJECT:` belongs to `INTERNAL_PROJECT`
+  (`spec_scope.idea_project`, as spec resolution attributes it), so `--project P` filters ideas
+  as strictly as specs; idea rows carry that project.
+- `unqueued_view` `deps-unmet` applies the SPEC-0347 rule of `backlog_readiness`: an outbound
+  dependency whose campaign (in the dependent's project) is MERGED is met, even when its spec
+  file lags or is missing.
+
 ## Rollout / migration
 
 1. `row_view`, `waiting_on_ids`, `_spec_meta` cache; JSON additions.

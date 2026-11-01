@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
+from rich.text import Text
 
 from test_agentic_dashboard import _campaign
 from test_agentic_e2e import SPEC_ACCEPTED, make_cfg, make_repo, run_cli, script
@@ -730,13 +731,37 @@ def test_unqueued_matches_campaigns_through_the_idea(unq, monkeypatch):
     assert codes["SPEC-0019"] == ["previous-campaign"]
     assert "HANDED_OFF" in rows["SPEC-0019"]["reasons"][0]["text"]
     assert rows["PROJ-0003"]["next"] == "nw queue add PROJ-0003"
+    assert rows[ideas["incubate"]]["project"] == "Meta-Tools"       # no :PROJECT: = internal
     out = json.loads(run_cli(cfg, monkeypatch, ["queue", "unqueued", "--json", "--project",
                                                 "jerome"]).output)["items"]
-    assert [i["id"] for i in out if i["kind"] != "idea"] == ["PROJ-0003"]
+    assert [i["id"] for i in out] == ["PROJ-0003"]                  # no projectless idea leaks
     out = json.loads(run_cli(cfg, monkeypatch, ["queue", "unqueued", "--json", "--project",
                                                 "Meta-Tools"]).output)["items"]
     ids = {i["id"] for i in out}
     assert "PROJ-0003" not in ids and {"SPEC-0010", "SPEC-0012", "SPEC-0019"} <= ids
+    assert {ideas["incubate"], gone} <= ids
+
+
+def test_unqueued_outbound_dep_with_merged_campaign_is_met(unq):
+    """SPEC-0347 as in backlog_readiness: an outbound dependency whose campaign is MERGED is met
+    even though the outbox file still says `accepted` (or is missing)."""
+    cfg, _ = unq
+    repo = Path(S.read_state(cfg, "SPEC-0001-20261031-0000")["repo"]["root"])
+    out = Path(cfg["outbox_dir"]) / "jerome"
+    for n, deps in ((4, None), (5, "PROJ-0004"), (6, "PROJ-0008"), (7, "PROJ-0009")):
+        extra = f"depends_on: [{deps}]\n" if deps else ""
+        (out / f"PROJ-{n:04d}-t{n}.md").write_text(
+            f"---\nid: PROJ-{n:04d}\ntitle: t{n}\nstatus: accepted\nkind: feature\n{extra}---\n")
+    for dep in ("PROJ-0004", "PROJ-0008"):
+        _campaign(cfg, repo, f"{dep}-20261030-0000", "MERGED", spec_id=dep, rel=None,
+                  project="jerome")
+    rows = {i["id"]: i for i in Q.unqueued_view(cfg, project="jerome")["items"]}
+    codes = {k: [x["code"] for x in v["reasons"]] for k, v in rows.items()}
+    assert "PROJ-0004" not in rows                                   # its own campaign merged
+    assert codes["PROJ-0005"] == ["ready"]                           # file lags: still met
+    assert codes["PROJ-0006"] == ["ready"]                           # file missing, merged
+    assert codes["PROJ-0007"] == ["deps-unmet"]                      # missing, no campaign
+    assert rows["PROJ-0007"]["reasons"][0]["text"] == "PROJ-0009 not found"
 
 
 def test_campaign_show_prints_the_exact_remote_line(gated, monkeypatch):
@@ -749,3 +774,51 @@ def test_campaign_show_prints_the_exact_remote_line(gated, monkeypatch):
     out = run_cli(cfg, monkeypatch, ["campaign", "show", ids["running"]]).output
     assert f"remote gate #7 on worker build-01  job {ids['running']}-gate-007-a0  running " \
         in out, out
+
+
+def test_narrow_reclaims_the_title_room_for_another_flex_column():
+    """Narrow fallback with a second flex column (the Needs-you `detail`): once the title moves
+    under the id, `detail` gets only what is left, so the campaign id is never wrapped."""
+    cid = "SPEC-0341-20261031-c0de"
+    cols = [LV.Column("campaign", "campaign", fixed=True), LV.Column("title", "title", flex=True),
+            LV.Column("reason", "reason", fixed=True), LV.Column("detail", "detail", flex=True),
+            LV.Column("resume", "resume to", rank=3)]
+    rows = [{"campaign": cid, "title": "A parked spec waiting on the human", "reason": "gate_timeout",
+             "detail": "the gate ran out of time twice", "resume": "IMPLEMENTING"}]
+    for width in range(42, 60):
+        fit = LV.layout(cols, rows, width)
+        if not fit["narrow"]:
+            continue
+        assert fit["title_out"] and "title" not in [c.key for c in fit["kept"]]
+        used = sum(fit["widths"][c.key] for c in fit["kept"]) + LV.SEP * (len(fit["kept"]) - 1)
+        assert used <= width, width
+        out = _render(LV.render(None, cols, rows, width), width)
+        lines = out.splitlines()
+        assert max(map(len, lines)) <= width, (width, out)
+        assert any(cid in ln and "gate_timeout" in ln for ln in lines), (width, out)
+    fit = LV.layout(cols, rows, 50)
+    assert fit["narrow"] and fit["widths"]["detail"] == 50 - 23 - 12 - 2 * LV.SEP
+    fit = LV.layout(cols, rows, 40)                     # no room at all: detail goes, id stays
+    assert [c.key for c in fit["kept"]] == ["campaign", "reason"]
+    out = _render(LV.render(None, cols, rows, 40), 40)
+    assert any(cid in ln for ln in out.splitlines()), out
+
+
+def test_narrow_title_chunks_by_cell_width():
+    """Double-width glyphs: the title under the id is cut by terminal cells, not characters."""
+    cid = "SPEC-0341-20261031-c0de"
+    cols = [LV.Column("campaign", "campaign", fixed=True), LV.Column("state", "state", fixed=True),
+            LV.Column("title", "title", flex=True)]
+    title = "队列可见性和依赖关系图以及未排队的规格说明🚀🚀🚀"
+    rows = [{"campaign": cid, "state": "PARKED", "title": title}]
+    out = _render(LV.render(None, cols, rows, 36), 36)
+    lines = out.splitlines()
+    assert max(Text(ln).cell_len for ln in lines) <= 36, out
+    first = next(i for i, ln in enumerate(lines) if cid in ln)
+    chunks = [ln.strip() for ln in lines[first + 1:] if ln.strip()]
+    assert "".join(chunks) == title, out                # whole, in order, no re-folding
+    assert all(Text(c).cell_len <= len(cid) for c in chunks)
+    assert Text(chunks[0]).cell_len >= len(cid) - 1     # filled, not one glyph per line
+    pieces = LV._cell_chunks(Text("ab队c"), 3)
+    assert [p.plain for p in pieces] == ["ab", "队c"]
+    assert [p.plain for p in LV._cell_chunks(Text(""), 4)] == [""]

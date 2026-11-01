@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from rich import box
+from rich.cells import get_character_cell_size
 from rich.table import Table
 from rich.text import Text
 
@@ -55,9 +56,12 @@ def _empty(col: Column, rows: list[dict]) -> bool:
     return all(not "".join(_lines(r.get(col.key))).strip() for r in rows)
 
 
-def layout(columns: list[Column], rows: list[dict], width: int) -> dict:
+def layout(columns: list[Column], rows: list[dict], width: int, title_key: str = "title") -> dict:
     """The fit: `kept` columns in order, `folded` columns (their text goes into the title),
-    `widths` per kept key, `narrow` when even id + state + title-min do not fit."""
+    `widths` per kept key, `narrow` when even id + state + title-min do not fit. When narrow,
+    the `title_key` column leaves the table (render writes it under the id) and any other flex
+    column gets only what is left once the title's room is reclaimed; one with no room left is
+    removed from `kept` rather than squeezing the fixed columns."""
     cols = [c for c in columns if not (c.hide_empty and _empty(c, rows))]
     nat = {c.key: natural_width(c, rows) for c in cols}
     kept, folded = list(cols), []
@@ -82,6 +86,20 @@ def layout(columns: list[Column], rows: list[dict], width: int) -> dict:
     narrow = need(kept) > width
     avail = width - sum(widths.values()) - SEP * (len(kept) - 1)
     order = sorted(flex, key=lambda c: nat[c.key])
+    if narrow and any(c.key == title_key for c in flex):
+        kept = [c for c in kept if c.key != title_key]
+        order = [c for c in order if c.key != title_key]
+        avail = width - sum(widths.values()) - SEP * (len(kept) - 1)
+        for i, c in enumerate(order):   # the rest share what the fixed columns leave
+            w = min(nat[c.key], avail // (len(order) - i))
+            if w < 1:
+                kept.remove(c)
+                avail += SEP
+                continue
+            widths[c.key] = w
+            avail -= w
+        return {"kept": kept, "folded": folded, "widths": widths, "narrow": narrow,
+                "title_out": True}
     for i, c in enumerate(order):
         share = max(TITLE_MIN, avail // (len(flex) - i)) if avail > 0 else TITLE_MIN
         w = min(nat[c.key] + _fold_len(folded, rows), share)
@@ -89,7 +107,8 @@ def layout(columns: list[Column], rows: list[dict], width: int) -> dict:
             w = min(w, avail - sum(min(TITLE_MIN, nat[d.key]) for d in order[i + 1:]))
         widths[c.key] = max(1, w)
         avail -= widths[c.key]
-    return {"kept": kept, "folded": folded, "widths": widths, "narrow": narrow}
+    return {"kept": kept, "folded": folded, "widths": widths, "narrow": narrow,
+            "title_out": False}
 
 
 def _fold_len(folded, rows) -> int:
@@ -129,11 +148,9 @@ def render(title: str | None, columns: list[Column], rows: list[dict], width: in
     when even id + state + title-min do not fit, the title moves under the id (folded at its
     width) so id and state stay whole. The host is the first kept `title_host` key, else the
     widest kept fixed column (never a tiny leading one such as the backlog's `#`)."""
-    fit = layout(columns, rows, width)
+    fit = layout(columns, rows, width, title_key)
     kept, folded, widths = fit["kept"], fit["folded"], fit["widths"]
-    narrow_title = fit["narrow"] and any(c.key == title_key for c in kept)
-    if narrow_title:
-        kept = [c for c in kept if c.key != title_key]
+    narrow_title = fit["title_out"]
     table = Table(title=title, box=box.SIMPLE_HEAD, pad_edge=False, show_edge=False,
                   title_style=title_style, title_justify="left")
     for c in kept:
@@ -158,10 +175,24 @@ def render(title: str | None, columns: list[Column], rows: list[dict], width: in
         if narrow_title and id_key:
             cell = _as_text(r.get(id_key))
             title = _as_text(r.get(title_key))
-            w = widths[id_key]
-            for i in range(0, max(1, len(title.plain)), w):
+            for chunk in _cell_chunks(title, widths[id_key]):
                 cell.append("\n")
-                cell.append_text(title[i:i + w])
+                cell.append_text(chunk)
             r[id_key] = cell
         table.add_row(*(_as_text(r.get(c.key)) for c in kept))
     return table
+
+
+def _cell_chunks(text: Text, width: int) -> list[Text]:
+    """`text` cut into pieces at most `width` terminal cells wide (a double-width glyph is
+    never split and counts 2; one wider than `width` gets a piece of its own)."""
+    plain, pieces, start, used = text.plain, [], 0, 0
+    for i, ch in enumerate(plain):
+        w = get_character_cell_size(ch)
+        if used and used + w > width:
+            pieces.append(text[start:i])
+            start, used = i, 0
+        used += w
+    if start < len(plain) or not pieces:
+        pieces.append(text[start:])
+    return pieces
