@@ -294,6 +294,15 @@ this to tell a transport failure from a gate failure.
   `remote:C-1`; `own_nw()` returns an executable `nw` argv[0] and ssh-command execs it;
   ssh-command refuses quoted words ending in a newline.
   `python3 tools/spec_lint.py`: OK. The full suite is left to gating.
+- Loop 5 (review fixes): `uv run pytest -q -n 4 tests/test_worker.py
+  tests/test_worker_ssh_command.py tests/test_gate_slots.py tests/test_cli_gate_slots.py
+  tests/test_agentic_gates.py tests/test_rich_output_guard.py tests/test_test_waits.py`:
+  163 passed, three runs in a row. The concurrent-jobs test now pins `slots: 2`. New cases: a
+  SIGTERM delivered while the have-ref `update-ref` runs under the repo lock (in-process
+  `gate_job`) lets that git finish (the ref exists, no `.lock` is left), releases the repo lock,
+  then ends with stage `signal`, exit 3, and its cleanup does not hang; stale
+  `refs/nw/have/<sha>.lock` and `packed-refs.lock` files in the cache are cleared by the next
+  job, which passes. `python3 tools/spec_lint.py`: OK. The full suite is left to gating.
 
 ### As shipped (2026-10-31)
 
@@ -343,6 +352,15 @@ this to tell a transport failure from a gate failure.
   frame (`stage: "signal"`, exit 3). From the slot stage on, the slot wait or the live gates stop
   (`terminate_all`, run on a helper thread because the interrupted main thread may hold the
   gates lock) and `done` goes out with `interrupted: true` (exit 0).
+- Pre-slot signals (loop 5): the handler raises at once only while the job is blocked reading
+  stdin (the header or the bundle), where no lock is held and no git runs. Anywhere else before
+  the slot stage it only records the signal, and the job raises it at the next check between
+  steps (after validation, after the claim, after the bundle read, after the cache update, after
+  the checkout). A signal therefore never lands in a lock's release or SIGKILLs a running git.
+  Every git that writes the cache runs under the repo lock, so a git lock file found while
+  holding it is stale (left by a git killed hard); the checkout, `have` and `gc` delete
+  `HEAD.lock`, `config.lock`, `packed-refs.lock`, `shallow.lock` and `refs/**/*.lock` before
+  they write.
 
 ## Clock Log
 

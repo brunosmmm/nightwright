@@ -240,6 +240,8 @@ def test_concurrent_jobs_see_their_own_base(src, tmp_path, wenv):
     head2 = src.commit("d.txt", "d\n")
     sync = tmp_path / "sync"
     sync.mkdir()
+    # both jobs must hold a slot at once (each gate waits for the other): pin two slots
+    (Path(wenv["NW_CONFIG_DIR"]) / "config.yaml").write_text("agentic:\n  gates:\n    slots: 2\n")
     cmd = (f'git rev-parse "$NW_BASE"; touch "{sync}/$NW_CAMPAIGN"; '
            f'while [ "$(ls "{sync}" | wc -l)" -lt 2 ]; do sleep 0.1; done; '
            'git rev-parse "$NW_BASE"')
@@ -467,6 +469,59 @@ def test_signal_before_the_slot_is_an_error_frame(src, tmp_path, wenv):
     assert fin["type"] == "error" and fin["stage"] == "signal" and "SIGTERM" in fin["error"]
     assert job.types() == ["error"] and not marker.exists()
     job.close()
+
+
+def test_signal_under_the_repo_lock_waits_for_the_git_and_the_lock(src, tmp_path, wenv,
+                                                                  monkeypatch):
+    """A pre-slot signal never raises inside the repo lock or a running git: the have-ref
+    update it lands in completes (no stale `.lock`), the lock is released, then the job ends
+    with stage `signal` and its cleanup (which takes the repo lock again) does not hang."""
+    if threading.current_thread() is not threading.main_thread():
+        pytest.skip("signal handlers need the main thread")
+    import io
+    h, data = _bundle_job(src, tmp_path, [_gate("x", f"touch {tmp_path / 'ran'}")])
+    real, sent = W._git, []
+
+    def git(*args, **kw):
+        if "update-ref" in args and not sent and str(args[-2]).startswith(W.HAVE_REFS):
+            sent.append(1)
+            os.kill(os.getpid(), signal.SIGTERM)    # handled while the repo lock is held
+        return real(*args, **kw)
+
+    monkeypatch.setattr(W, "_git", git)
+    old = signal.getsignal(signal.SIGTERM)
+    out = io.BytesIO()
+    rc = W.gate_job(_cfg(wenv), io.BytesIO((json.dumps(h) + "\n").encode() + data), out)
+    assert signal.getsignal(signal.SIGTERM) is old
+    frames = [json.loads(ln) for ln in out.getvalue().splitlines()]
+    assert sent and rc == 3 and [f["type"] for f in frames] == ["error"]
+    assert frames[0]["stage"] == "signal" and "SIGTERM" in frames[0]["error"]
+    cache = _cache(wenv)
+    assert _git(cache, "rev-parse", f"refs/nw/have/{src.head}") == src.head
+    assert not list((cache / "refs").rglob("*.lock"))
+    jd = _job_dir(wenv, h["job_id"])
+    assert not (jd / "tree").exists() and not (tmp_path / "ran").exists()
+    assert _git(cache, "for-each-ref", "--format=%(refname)", "refs/nw/gate-jobs/") == ""
+    fd = os.open(cache.parent / "proj.lock", os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # nobody kept the repo lock
+    finally:
+        os.close(fd)
+
+
+def test_a_stale_git_ref_lock_in_the_cache_is_cleared(src, tmp_path, wenv):
+    """A git killed hard leaves `<ref>.lock`; every cache writer holds the repo lock, so the
+    next job clears it instead of failing its have-ref update."""
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    assert _run(wenv, h, data)[2] == 0
+    cache = _cache(wenv)
+    stale = [cache / "refs" / "nw" / "have" / f"{src.base}.lock", cache / "packed-refs.lock"]
+    for path in stale:
+        path.write_text("")
+    h2, data2 = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    job, fin, rc = _run(wenv, h2, data2)
+    assert rc == 0 and fin["ok"] is True, job.frames
+    assert not any(path.exists() for path in stale)
 
 
 def _slot_conf(env):

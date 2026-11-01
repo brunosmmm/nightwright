@@ -163,6 +163,23 @@ def _set_have(cfg, repo_key, cache: Path, shas) -> None:
     _write_have(cfg, repo_key, have)
 
 
+_GIT_LOCKS = ("HEAD.lock", "config.lock", "packed-refs.lock", "shallow.lock")
+
+
+def _clear_stale_locks(cache: Path) -> None:
+    """Every git that writes the cache runs under the repo lock, so a git lock file found while
+    holding it is stale (left by a git killed hard: SIGKILL, OOM) and would fail every later
+    ref update on it. Caller holds the repo lock."""
+    found = [cache / n for n in _GIT_LOCKS]
+    if (cache / "refs").is_dir():
+        found += list((cache / "refs").rglob("*.lock"))
+    for path in found:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _list_refs(cache: Path, prefix: str) -> list[str]:
     p = _git("-C", cache, "for-each-ref", "--format=%(refname)", prefix, check=False)
     return [ln for ln in p.stdout.splitlines() if ln] if p.returncode == 0 else []
@@ -341,17 +358,22 @@ def _write_job_json(path: Path, rec: dict) -> None:
     os.replace(tmp, path)
 
 
-def _checkout(cfg, h: dict, job: Path, stdin) -> None:
+def _checkout(cfg, h: dict, job: Path, stdin, stop: "_Stop | None" = None) -> None:
     """Step 3: the bundle into the cache (under the repo lock), then a private clone of it at
-    the job's commit with the base branch refs the gates expect."""
+    the job's commit with the base branch refs the gates expect. A pending signal (`stop`) is
+    raised between the steps, never inside the lock or a running git."""
+    stop = stop or _Stop()
     key, commit, base = h["repo_key"], h["commit"], h["base"]
     cache = cache_path(cfg, key)
     bundle = job / "job.bundle"
     if h["bundle_bytes"]:
-        _read_exact(stdin, h["bundle_bytes"], bundle)
+        with stop.reading():
+            _read_exact(stdin, h["bundle_bytes"], bundle)
+    stop.check()
     with repo_lock(cfg, key):
         if not (cache / "HEAD").exists():
             _git("init", "-q", "--bare", cache)
+        _clear_stale_locks(cache)
         if h["bundle_bytes"]:
             heads = _git("bundle", "list-heads", bundle).stdout.split()
             job_refs = [r for r in heads if r.startswith(JOB_REFS)]
@@ -364,6 +386,7 @@ def _checkout(cfg, h: dict, job: Path, stdin) -> None:
                 raise WorkerError("checkout", f"the cache has no {what} {sha} "
                                               "(missing from the bundle and not cached)")
         _set_have(cfg, key, cache, sorted({commit, base["sha"]}))
+    stop.check()
     tree = job / "tree"
     _git("clone", "-q", "--shared", "--no-checkout", cache, tree)
     _git("-C", tree, "checkout", "-q", "--detach", commit)
@@ -401,6 +424,34 @@ _STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 _PRE_SLOT_STAGES = ("validate", "claim", "checkout")
 
 
+class _Stop:
+    """A stop signal received before the slot stage. The handler never raises at an arbitrary
+    point: that could land in a lock's `finally` (the flock leaks and the job's own cleanup
+    deadlocks on it) or inside `subprocess.run` (which SIGKILLs the git, leaving its ref
+    locks). It raises straight away only while the job is blocked reading stdin (`reading`);
+    otherwise the signal waits for the next `check()` between steps."""
+
+    def __init__(self):
+        self.name: str | None = None
+        self.interruptible = False
+
+    def error(self) -> WorkerError:
+        return WorkerError("signal", f"stopped by {self.name}")
+
+    def check(self) -> None:
+        if self.name:
+            raise self.error()
+
+    @contextmanager
+    def reading(self):
+        self.check()
+        self.interruptible = True
+        try:
+            yield
+        finally:
+            self.interruptible = False
+
+
 def _install_stop_handler(handler) -> dict:
     """Route SIGTERM/SIGINT/SIGHUP to `handler`; returns the previous handlers, to restore.
     Outside the main thread (an in-process caller) nothing is installed."""
@@ -421,24 +472,29 @@ def gate_job(cfg, stdin, stdout) -> int:
     `error` frame (`stage: "signal"`); from then on the slot wait or the live gates stop (their
     process groups are killed) and `done` goes out with `interrupted: true`."""
     frames = _Frames(None, stdout)
-    state = {"stage": "validate", "signalled": False}
+    state = {"stage": "validate"}
+    stop = _Stop()
     cancel = threading.Event()
     h, job, lock_fd, job_rec = None, None, None, None
 
     def on_signal(signum, _frame):
-        if state["signalled"]:
+        if stop.name:
             return
-        state["signalled"] = True
+        stop.name = signal.Signals(signum).name
         cancel.set()
         if state["stage"] in _PRE_SLOT_STAGES:
-            raise WorkerError("signal", f"stopped by {signal.Signals(signum).name}")
+            if stop.interruptible:              # blocked on stdin: no lock, no git running
+                stop.interruptible = False
+                raise stop.error()
+            return                              # raised at the next stop.check()
         # terminate_all takes the gates lock, which the interrupted main thread may hold
         threading.Thread(target=G.terminate_all, daemon=True).start()
 
     old_handlers = _install_stop_handler(on_signal)
     try:
         try:
-            line = stdin.readline(MAX_HEADER_BYTES)
+            with stop.reading():
+                line = stdin.readline(MAX_HEADER_BYTES)
             try:
                 h = json.loads(line.decode("utf-8"))
             except (UnicodeDecodeError, ValueError) as e:
@@ -447,6 +503,7 @@ def gate_job(cfg, stdin, stdout) -> int:
                     and KEY_RE.match(h["job_id"]):
                 frames.job_id = h["job_id"]
             validate_header(h)
+            stop.check()
 
             state["stage"] = "claim"
             with jobs_lock(cfg):
@@ -467,9 +524,10 @@ def gate_job(cfg, stdin, stdout) -> int:
                            "tier": payload.get("tier"), "pid": os.getpid(),
                            "claimed_at": now_iso()}
                 _write_job_json(job / "job.json", job_rec)
+            stop.check()
 
             state["stage"] = "checkout"
-            _checkout(cfg, h, job, stdin)
+            _checkout(cfg, h, job, stdin, stop)
             threading.Thread(target=_watch_stdin, args=(stdin, cancel), daemon=True).start()
 
             state["stage"] = "slot"
@@ -573,6 +631,7 @@ def have(cfg, repo_key, shas) -> list[str]:
     if not (cache / "HEAD").exists():
         return []
     with repo_lock(cfg, repo_key):
+        _clear_stale_locks(cache)
         present = [s for s in shas if _has_commit(cache, s)]
         if present:
             _set_have(cfg, repo_key, cache, present)
@@ -640,6 +699,7 @@ def gc(cfg, keep_days: int = DEFAULT_KEEP_DAYS, now: float | None = None) -> dic
         if not KEY_RE.match(key):
             continue
         with repo_lock(cfg, key):
+            _clear_stale_locks(cache)
             with jobs_lock(cfg):
                 live_ids, live_shas = _live_jobs(cfg)
             hv = _read_have(cfg, key)
