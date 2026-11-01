@@ -474,6 +474,32 @@ def test_uid_probe_unreachable_is_install(world):
     assert "Host key verification failed" in plan.status["install"][1]
 
 
+@pytest.mark.parametrize("how", ["timeout", "no_ssh"])
+def test_uid_probe_ssh_error_is_install(world, monkeypatch, how):
+    """An ssh that times out or cannot start during the --install-key uid probe (the first
+    remote call) fails `install` in the status table, not with a traceback."""
+    real = WB._run
+
+    def run(argv, timeout=WB.TIMEOUT_S, cwd=None, input=None):
+        if argv[0] == "ssh" and how == "timeout":       # real TimeoutExpired inside _run
+            return real(["sleep", "5"], timeout=0.05, cwd=cwd, input=input)
+        if argv[0] == "ssh":                            # real OSError inside _run
+            return real([str(world.state / "no-such-ssh"), *argv[1:]], timeout=timeout,
+                        cwd=cwd, input=input)
+        return real(argv, timeout=timeout, cwd=cwd, input=input)
+    monkeypatch.setattr(WB, "_run", run)
+    ok, plan = plan_run(world)
+    assert not ok and st(plan)["install"] == "failed"
+    assert all(st(plan)[s] == "not run" for s in ("verify", "key", "register"))
+    msg = plan.status["install"][1]
+    assert ("timed out after" in msg) if how == "timeout" else ("failed to start" in msg)
+    assert not world.ak.exists() and WK.read_strict(world.cfg) == []
+    res = boot(world, "box", "--ssh", "nw@box", "--install-key")
+    assert res.exit_code == 1, res.output
+    assert not isinstance(res.exception, AttributeError)
+    assert "error: install:" in res.output and "not run" in res.output
+
+
 def test_install_key_after_no_check_runs_the_check(world):
     """Registered earlier with --no-check, a later --install-key run whose record matches
     still runs the dedicated-key check (the forced-command proof), and fails when it fails."""

@@ -27,8 +27,8 @@ BIN_RE = re.compile(r"/[A-Za-z0-9._/-]+")
 USER_RE = re.compile(r"[a-z_][a-z0-9_.-]{0,31}")
 PUBKEY_RE = re.compile(r"([A-Za-z0-9@.-]+) ([A-Za-z0-9+/]+={0,3})( [^\r\n]*)?")
 DRY_BIN = "<uv tool bin dir>"
-SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ControlPath=none"]
-SCP = ["scp", "-q", "-o", "BatchMode=yes", "-o", "ControlPath=none"]
+SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ControlPath=none"]
+SCP = ["scp", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ControlPath=none"]
 TIMEOUT_S = 120.0
 INSTALL_TIMEOUT_S = 900.0
 CONFLICT = "worker {name} is registered with different settings; nw workers rm {name} first"
@@ -271,8 +271,12 @@ def _unreachable(plan: Plan, p) -> StepFailed:
 
 def _probe_root(plan: Plan) -> None:
     """`StepFailed` with `.step`: `install` when no command ran as the worker user at all
-    (ssh, sudo -u), `key` for the uid-0 refusal."""
-    p = on_worker(plan, "id -u")
+    (ssh, sudo -u, or ssh timing out or failing to start), `key` for the uid-0 refusal."""
+    try:
+        p = on_worker(plan, "id -u")
+    except StepFailed as e:
+        e.step = "install"
+        raise
     if p.returncode != 0:
         e = _unreachable(plan, p)
         e.step = "install"
@@ -443,7 +447,7 @@ def run(cfg, plan: Plan) -> bool:
             try:
                 _probe_root(plan)
             except StepFailed as e:
-                return failed(e.step, str(e))
+                return failed(getattr(e, "step", "install"), str(e))
         try:
             plan.status[step] = steps[step]()
         except StepFailed as e:

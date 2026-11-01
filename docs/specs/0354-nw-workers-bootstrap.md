@@ -481,6 +481,32 @@ dir>/nw`.
   an `identity` record then closes the record's ControlMaster (`ssh -O exit`, best-effort),
   so a master opened by a fallback key never outlives the check.
 
+### Test record (2026-11-01, review round 4)
+
+- New case `test_uid_probe_ssh_error_is_install` (`tests/test_workers_bootstrap.py`),
+  parametrized `timeout` (ssh raises a real `TimeoutExpired` inside `_run`) and `no_ssh` (a
+  real `OSError` because the ssh binary is missing). Under `--install-key`, `install` is
+  `failed` with `timed out after` / `failed to start`, verify/key/register are `not run`,
+  nothing is written or registered, and the CLI exits 1 with `error: install: ...` and no
+  traceback. On the previous commit's code, this test failed with the reported
+  `AttributeError: 'StepFailed' object has no attribute 'step'`.
+- `uv run pytest -q -n 4 tests/test_workers_bootstrap.py tests/test_workers_registry.py
+  tests/test_rich_output_guard.py tests/test_worker*.py`: 339 passed, 1 failed. The failure
+  was `test_worker_jobs.py::test_poll_renew_keeps_the_job_alive_and_plain_poll_does_not_renew`
+  (a job reached `done` before the poll saw `running`). That test does not use bootstrap or
+  its ssh argv, and it passed 3 of 3 times when run alone. It is a timing flake under
+  `-n 4` load, not caused by this change.
+- `python3 tools/spec_lint.py`: OK. The full suite is left to the gate's close run.
+
+### As shipped (2026-11-01, review round 4)
+
+- `_probe_root` tags a `StepFailed` from its own `id -u` call (ssh timing out or failing to
+  start) as `install`, and `run()` reads the tag with `getattr(e, "step", "install")`.
+- Bootstrap's `ssh`/`scp` argv also carry `-o ConnectTimeout=10`, as `default_ssh_argv`
+  does, so an unreachable host fails fast with ssh's own message instead of hitting the
+  120 s subprocess timeout. The full argv is `ssh -o BatchMode=yes -o ConnectTimeout=10 -o
+  ControlPath=none ...`.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
