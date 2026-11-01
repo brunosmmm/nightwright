@@ -1,7 +1,7 @@
 ---
 id: SPEC-0363
 title: "herdr display scoped to nw panes: --display-agent on conductor/steward panes, per-role workspace tokens"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -154,26 +154,26 @@ same rules as the totals (`queue_payload` items for counts, campaigns updated to
 
 ## Acceptance criteria
 
-- [ ] Each push sends exactly one `pane report-metadata <pane> … --display-agent TEXT` to the
+- [x] Each push sends exactly one `pane report-metadata <pane> … --display-agent TEXT` to the
       conductor pane and to each live steward pane, with the strings of Design and no
       `--token`. No other pane gets a call (not the watcher's own, not dead placements, not
       other readers).
-- [ ] Workspace calls go only to the conductor's workspace (queue totals) and to steward
+- [x] Workspace calls go only to the conductor's workspace (queue totals) and to steward
       workspaces that differ from it (that project's summary only, `nw_attn` cleared). The
       watcher's own workspace is not a target unless it hosts one of those roles, and no
       workspace gets another project's numbers.
-- [ ] A clean exit sends `--clear-display-agent` to every pane it set and `--clear-token` for
+- [x] A clean exit sends `--clear-display-agent` to every pane it set and `--clear-token` for
       every workspace token it pushed. `--once` leaves them to the TTL.
-- [ ] The fake `herdr` models the real parser (id before options; `--display-agent` /
+- [x] The fake `herdr` models the real parser (id before options; `--display-agent` /
       `--clear-display-agent` accepted on panes and rejected on workspaces).
-- [ ] The opt-in contract test (`NW_HERDR_CONTRACT=1`) sets a display agent and a token on
+- [x] The opt-in contract test (`NW_HERDR_CONTRACT=1`) sets a display agent and a token on
       the caller's own pane / workspace on the real herdr, reads them back with `herdr agent
       get` / `herdr api snapshot`, clears them and reads back their absence. It passes on herdr
       0.9.5.
-- [ ] `docs/herdr.md` documents the display-agent strings and the workspace rules, has no
+- [x] `docs/herdr.md` documents the display-agent strings and the workspace rules, has no
       `rows_by_agent`, and its optional `[ui.sidebar.spaces]` snippet passes `herdr config
       check` in an isolated `XDG_CONFIG_HOME` (the human's config is never touched).
-- [ ] SPEC-0361's other behavior (client, breaker, notifications, gating, `HERDR_*`
+- [x] SPEC-0361's other behavior (client, breaker, notifications, gating, `HERDR_*`
       stripping, placement recording, import isolation) is unchanged, and its tests still pass.
 
 ## Test plan
@@ -209,6 +209,47 @@ same rules as the totals (`queue_payload` items for counts, campaigns updated to
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` plus
   `tests/test_herdr.py`.
 
+## As shipped (2026-11-01)
+
+- **Files:** `src/nightwright/agentic/herdr.py` (`metadata_args(display_agent=)`,
+  `clear_args(clear_display_agent=)`; both raise `ValueError` for a workspace, as herdr has no
+  such option there), `src/nightwright/agentic/herdr_watch.py` (`conductor_display`,
+  `steward_display`, `_money`, `_cut`, `_pane_workspace`; `snapshot()["by_project"]`;
+  `Watcher.project_workspace_tokens`; `targets()` returns `(kind, id, tokens, display)`; `pushed`
+  tracks the display agent so `clear()` sends `--clear-display-agent`; the pane token
+  builders and `CONDUCTOR_TOKENS` / `STEWARD_TOKENS` are gone), `cli_herdr.py` help text,
+  `tests/test_herdr.py`, `docs/herdr.md`.
+- **Design as written.** Judgment calls: the conductor's attention is split into `N need you`
+  (escalations: the human) and `N undecided` (undecided parks: the conductor); the conductor's
+  cost on its pane uses the same money format as the steward (`$5.43`, cents dropped only for
+  whole dollars); workspace `nw_cost` keeps SPEC-0361's two-decimal format; a steward
+  placement that shares the conductor's pane is skipped.
+- **Dry run on the live state** (read-only, a client that refuses calls): `targets()` gave
+  `workspace w7` (conductor's: `4 active · 11 queued · 11 parked`, `$227.03`), `workspace w6`
+  (`comfort-assistant: 0 active · 0 queued · 0 parked`, `$95.09`, its own spend, where
+  SPEC-0361 had shown the whole queue's), pane `w7:p2` `claude · conductor · $5.43`, pane
+  `w7:p1` `claude · steward:Meta-Tools · 4 active · $43.30/$115`, pane `w6:p1`
+  `claude · steward:comfort-assistant · idle`. The watcher's own pane `w7:p7` is not a target.
+- **Real herdr 0.9.5, own pane `w7:p7` / workspace `w7` only:** `--display-agent` with
+  `--ttl-ms 3000` read back via `herdr agent get` as set, and as absent after 4 s (TTL works);
+  the steward example string set and then `--clear-display-agent` read back absent;
+  `workspace report-metadata … --display-agent x` exits 2 (`unknown option: --display-agent`).
+  `--title` / `--state-label` were accepted and read back but are not used (Decision 1).
+  `NW_HERDR_CONTRACT=1 uv run pytest tests/test_herdr.py`: 30 passed, the contract test
+  included (set a display agent + token on the pane and a token on the workspace, read back
+  through `herdr agent get` and `herdr api snapshot`, clear, read back absent).
+- **Config snippet:** the `docs/herdr.md` `[ui.sidebar.spaces]` block, extracted from the doc
+  into a scratch `XDG_CONFIG_HOME/herdr/config.toml`: `herdr config check` → `config: ok`, exit
+  0. With `branch` replaced by `bogus_builtin`: `unknown sidebar token`, exit 1, which shows
+  the check reads the scratch file. `~/.config/herdr/config.toml` was not touched.
+- **Tests executed:** `tests/test_herdr.py` 29 passed + 1 opt-in skipped (30 with
+  `NW_HERDR_CONTRACT=1`). `tools/affected_tests.py` falls back to the full suite ("no test
+  reaches agentic/cli_herdr.py"), so the related set was run by hand: herdr, conductor
+  brief/cost, events, events settings, launch, mailbox, completion, docs, spec/ledger/CLI tests,
+  574 passed. The queue close gate runs the full suite.
+- **Not done by the agent:** `nw herdr watch` against the live panes (it would write to other
+  panes); the human sees the new strings on their next `nw herdr watch`.
+
 ## Rollout / migration
 
 The human restarts `nw herdr watch` after the upgrade. Pane tokens pushed by an older watcher
@@ -217,11 +258,11 @@ should remove it (`docs/herdr.md` says so); nightwright never edits their config
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; contract test passes on the real herdr.
-- [ ] No regressions (the full suite runs at the queue's close gate).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated; `spec_lint` exits 0.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; contract test passes on the real herdr.
+- [x] No regressions (the full suite runs at the queue's close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated; `spec_lint` exits 0.
 
 ## Open questions
 

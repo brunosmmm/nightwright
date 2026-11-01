@@ -9,22 +9,23 @@ import click
 
 @click.group("herdr")
 def herdr_group():
-    """herdr integration (SPEC-0361): queue status in herdr's sidebar + notifications.
+    """herdr integration (SPEC-0361/0363): queue status in herdr's sidebar + notifications.
 
     \b
-    nw herdr watch                    push tokens every 10 s until Ctrl-C (clears them)
+    nw herdr watch                    push every 10 s until Ctrl-C (clears what it set)
     nw herdr watch --once             one push; values expire after 3 intervals
-    See docs/herdr.md for the suggested ~/.config/herdr/config.toml snippet.
+    The conductor/steward panes need no config; see docs/herdr.md for the optional
+    workspace-row snippet.
     """
 
 
 @herdr_group.command("watch")
 @click.option("--interval", "interval_s", type=click.FloatRange(min=1.0), default=10.0,
-              show_default=True, help="seconds between token pushes (TTL = 3x)")
+              show_default=True, help="seconds between pushes (TTL = 3x)")
 @click.option("--conductor-pane", default=None, help="herdr pane id of the conductor "
               "(default: the pane its follower recorded)")
-@click.option("--workspace", default=None, help="herdr workspace id for the queue tokens "
-              "(default: this pane's workspace + the conductor/steward panes' workspaces)")
+@click.option("--workspace", default=None, help="herdr workspace id for the queue totals "
+              "(default: the conductor pane's workspace)")
 @click.option("--once", is_flag=True, help="one event poll + one push, then exit")
 @click.pass_obj
 def herdr_watch(cfg, interval_s, conductor_pane, workspace, once):

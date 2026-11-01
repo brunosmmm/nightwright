@@ -112,14 +112,21 @@ def call(args) -> bool:
 
 # ---- argv builders (pure) -----------------------------------------------------------------
 
-def metadata_args(kind, target, tokens, *, seq, ttl_ms, source=SOURCE) -> list[str]:
-    """`<kind> report-metadata` for an explicit pane/workspace id; empty values are cleared."""
+def metadata_args(kind, target, tokens, *, seq, ttl_ms, source=SOURCE,
+                  display_agent=None) -> list[str]:
+    """`<kind> report-metadata` for an explicit pane/workspace id; empty token values are
+    cleared. `display_agent` (panes only, SPEC-0363) replaces the pane's agent label in herdr's
+    default sidebar rows, with no config."""
     if kind not in ("pane", "workspace"):
         raise ValueError(kind)
+    if display_agent is not None and kind != "pane":
+        raise ValueError("display_agent is a pane option")
     # herdr's parser needs the positional id right after the subcommand: with options first
     # it rejects the call ("unknown option: nw", exit 2) although --help lists the id last.
     args = [kind, "report-metadata", str(target), "--source", source, "--seq", str(int(seq)),
             "--ttl-ms", str(int(ttl_ms))]
+    if display_agent is not None:
+        args += ["--display-agent", str(display_agent)]
     for name, value in tokens.items():
         if value:
             args += ["--token", f"{name}={value}"]
@@ -129,10 +136,14 @@ def metadata_args(kind, target, tokens, *, seq, ttl_ms, source=SOURCE) -> list[s
     return args
 
 
-def clear_args(kind, target, names, *, seq, source=SOURCE) -> list[str]:
+def clear_args(kind, target, names, *, seq, source=SOURCE, clear_display_agent=False) -> list[str]:
     if kind not in ("pane", "workspace"):
         raise ValueError(kind)
+    if clear_display_agent and kind != "pane":
+        raise ValueError("clear_display_agent is a pane option")
     args = [kind, "report-metadata", str(target), "--source", source, "--seq", str(int(seq))]
+    if clear_display_agent:
+        args.append("--clear-display-agent")
     for name in names:
         args += ["--clear-token", name]
     return args

@@ -1,4 +1,4 @@
-"""SPEC-0361: the herdr reporter — best-effort client (timeout, breaker, gating), argv builders,
+"""SPEC-0361 / SPEC-0363: the herdr reporter — best-effort client (timeout, breaker, gating), argv builders,
 `nw herdr watch` tokens / notifications / cleanup against a fake `herdr` on PATH, pane
 placement recorded by the followers, import isolation and `HERDR_*` stripping for persona runs.
 
@@ -31,10 +31,23 @@ import json, os, sys, time
 mode = os.environ.get("FAKE_HERDR_MODE", "ok")
 with open(os.environ["FAKE_HERDR_LOG"], "a") as f:
     f.write(json.dumps(sys.argv[1:]) + "\n")
-# real herdr 0.9.5 parser: report-metadata's positional id must precede every option
-if sys.argv[2:3] == ["report-metadata"] and (len(sys.argv) < 4 or sys.argv[3].startswith("-")):
-    sys.stderr.write("unknown option: nw\n")
-    sys.exit(2)
+# real herdr 0.9.5 parser: report-metadata's positional id must precede every option, and
+# each kind accepts only its own options (workspaces have no --display-agent)
+if sys.argv[2:3] == ["report-metadata"]:
+    if len(sys.argv) < 4 or sys.argv[3].startswith("-"):
+        sys.stderr.write("unknown option: nw\n")
+        sys.exit(2)
+    flags = {"--source": 1, "--seq": 1, "--ttl-ms": 1, "--token": 1, "--clear-token": 1}
+    if sys.argv[1] == "pane":
+        flags.update({"--display-agent": 1, "--clear-display-agent": 0, "--title": 1,
+                      "--clear-title": 0, "--state-label": 1, "--clear-state-labels": 0,
+                      "--agent": 1, "--applies-to-source": 1})
+    i = 4
+    while i < len(sys.argv):
+        if sys.argv[i] not in flags:
+            sys.stderr.write("unknown option: " + sys.argv[i] + "\n")
+            sys.exit(2)
+        i += 1 + flags[sys.argv[i]]
 if mode == "hang":
     time.sleep(30)
 sys.exit(1 if mode == "fail" else 0)
@@ -171,6 +184,15 @@ def test_argv_builders():
         H.notify_args("t", "b", "loud")
     with pytest.raises(ValueError):
         H.metadata_args("tab", "x", {}, seq=1, ttl_ms=1)
+    d = H.metadata_args("pane", "w7:p2", {}, seq=9, ttl_ms=30000, display_agent="claude · x")
+    assert d[:3] == ["pane", "report-metadata", "w7:p2"] and _opt(d, "--display-agent") == "claude · x"
+    assert "--token" not in d and "--clear-token" not in d
+    cd = H.clear_args("pane", "w7:p2", [], seq=10, clear_display_agent=True)
+    assert cd[:3] == ["pane", "report-metadata", "w7:p2"] and "--clear-display-agent" in cd
+    with pytest.raises(ValueError):                     # herdr has no workspace display agent
+        H.metadata_args("workspace", "w1", {}, seq=1, ttl_ms=1, display_agent="x")
+    with pytest.raises(ValueError):
+        H.clear_args("workspace", "w1", [], seq=1, clear_display_agent=True)
 
 
 # ---- placement ------------------------------------------------------------------------------
@@ -251,36 +273,71 @@ def _metadata(calls):
     return {(c[0], c[2]): c for c in calls if len(c) > 2 and c[1] == "report-metadata"}
 
 
-def test_push_tokens_to_explicit_targets(fake, tmp_path):
-    cfg = _cfg(tmp_path)
+def _queue_two_projects(cfg):
+    """Meta-Tools: one implementing (+ queued + parked); Other: one reviewing, its own cost."""
     _queue(cfg)
+    o = _campaign(cfg, "SPEC-0950-20261101-ffff", state="REVIEWING")
+    _set_state(cfg, o, project="Other", cost={"total_usd": 7.5, "cap_usd": 20.0},
+               counters={"loops": 4, "runs": 5})
+
+
+def test_push_targets_only_nw_panes_and_workspaces(fake, tmp_path):
+    cfg = _cfg(tmp_path)
+    _queue_two_projects(cfg)
     _place(cfg, "conductor", "pane-cond", "ws-a")
-    _place(cfg, "steward:Meta-Tools", "pane-stew", "ws-a")
+    _place(cfg, "steward:Meta-Tools", "pane-stew", "ws-a")             # the conductor's workspace
+    _place(cfg, "steward:Other", "pane-other", "ws-b")
     _place(cfg, "steward:Dead", "pane-dead", "ws-dead", pid=_dead_pid())
-    _place(cfg, "mailbox:human", "pane-other", "ws-a")                 # not a reader we report to
-    w = HW.Watcher(cfg, H.Client(), interval_s=10)
-    assert w.push() == 4
+    _place(cfg, "mailbox:human", "pane-mbox", "ws-c")                  # not a reader we report to
+    w = HW.Watcher(cfg, H.Client(), interval_s=10)                     # own env: ws-self/pane-self
+    assert w.push() == 5
     md = _metadata(fake.calls())
-    assert set(md) == {("workspace", "ws-self"), ("workspace", "ws-a"), ("pane", "pane-cond"),
-                       ("pane", "pane-stew")}                          # never pane-self / dead
+    assert set(md) == {("workspace", "ws-a"), ("workspace", "ws-b"), ("pane", "pane-cond"),
+                       ("pane", "pane-stew"), ("pane", "pane-other")}  # never self / dead / mbox
     for args in md.values():
         assert _opt(args, "--source") == "nw" and _opt(args, "--ttl-ms") == "30000"
+    # panes: a display agent only, no tokens
+    for key in [k for k in md if k[0] == "pane"]:
+        assert "--token" not in md[key] and "--clear-token" not in md[key]
+    assert _opt(md[("pane", "pane-cond")], "--display-agent") == "claude · conductor · 1 undecided"
+    stew = _opt(md[("pane", "pane-stew")], "--display-agent")
+    assert stew.startswith("claude · steward:Meta-Tools · SPEC-0901 loop 2") and stew.endswith(" · $1.20/$5")
+    assert _opt(md[("pane", "pane-other")], "--display-agent") == \
+        "claude · steward:Other · SPEC-0950 loop 4 · $7.50/$20"
+    # conductor's workspace: queue totals
     ws = _tokens(md[("workspace", "ws-a")])
-    assert ws["nw_queue"] == "1 active · 1 queued · 1 parked"
-    assert ws["nw_cost"] == "$1.20"
-    assert ws["nw_attn"] == "1 undecided"                              # conductor-owned, no decision
-    cond = _tokens(md[("pane", "pane-cond")])
-    assert cond["nw_role"] == "conductor" and cond["nw_cost"] is None  # no session -> cleared
-    stew = _tokens(md[("pane", "pane-stew")])
-    assert stew == {"nw_role": "steward:Meta-Tools", "nw_spec": "SPEC-0901",
-                    "nw_loop": stew["nw_loop"], "nw_cost": "$1.20/$5.00"}
-    assert stew["nw_loop"].startswith("implementing 2/")
+    assert ws == {"nw_queue": "2 active · 1 queued · 1 parked", "nw_attn": "1 undecided",
+                  "nw_cost": "$8.70"}
+    # the other steward's workspace: its project only, attention cleared
+    other = _tokens(md[("workspace", "ws-b")])
+    assert other == {"nw_queue": "Other: 1 active · 0 queued · 0 parked", "nw_attn": None,
+                     "nw_cost": "$7.50"}
     seqs = [int(_opt(c, "--seq")) for c in fake.calls()]
     w2 = HW.Watcher(cfg, H.Client(), interval_s=10)                     # a restarted watcher
     w2.push()
     seqs2 = [int(_opt(c, "--seq")) for c in fake.calls()[len(seqs):]]
     allseqs = seqs + seqs2
     assert all(b > a for a, b in zip(allseqs, allseqs[1:]))
+
+
+def test_stewards_sharing_a_workspace_get_only_their_projects(fake, tmp_path):
+    cfg = _cfg(tmp_path)
+    _queue_two_projects(cfg)
+    _set_state(cfg, _campaign(cfg, "SPEC-0960-20261101-gggg", state="QUEUED"), project="Third")
+    _place(cfg, "steward:Other", "pane-o", "ws-b")
+    _place(cfg, "steward:Meta-Tools", "pane-m", "ws-b")
+    HW.Watcher(cfg, H.Client(), interval_s=10).push()
+    md = _metadata(fake.calls())
+    assert set(md) == {("workspace", "ws-b"), ("pane", "pane-o"), ("pane", "pane-m")}
+    assert _tokens(md[("workspace", "ws-b")])["nw_queue"] == \
+        "Meta-Tools, Other: 2 active · 1 queued · 1 parked"            # Third is not here
+
+
+def test_no_conductor_no_totals_anywhere(fake, tmp_path):
+    cfg = _cfg(tmp_path)
+    _queue(cfg)
+    HW.Watcher(cfg, H.Client(), interval_s=10).push()
+    assert fake.calls() == []                                          # not even ws-self
 
 
 def test_conductor_pane_and_workspace_overrides(fake, tmp_path):
@@ -290,17 +347,38 @@ def test_conductor_pane_and_workspace_overrides(fake, tmp_path):
     md = _metadata(fake.calls())
     assert set(md) == {("workspace", "ws-X"), ("pane", "pane-X")}
     assert all(_opt(a, "--ttl-ms") == "12000" for a in md.values())
+    n = len(fake.calls())
+    HW.Watcher(cfg, H.Client(), conductor_pane="w9:p3").push()        # no placement for it
+    assert set(_metadata(fake.calls()[n:])) == {("workspace", "w9"), ("pane", "w9:p3")}
+    n = len(fake.calls())
+    HW.Watcher(cfg, H.Client(), conductor_pane="pane-cond").push()    # placement: its workspace
+    assert set(_metadata(fake.calls()[n:])) == {("workspace", "ws-a"), ("pane", "pane-cond")}
 
 
-def test_steward_tokens_idle_and_many():
-    snap = {"items": [], "active_states": {"IMPLEMENTING", "REVIEWING"}}
-    assert HW.Watcher.steward_tokens(snap, "P") == {"nw_role": "steward:P", "nw_spec": "idle",
-                                                    "nw_loop": "", "nw_cost": ""}
+def test_display_strings():
+    snap = {"items": [], "active_states": {"IMPLEMENTING", "REVIEWING"}, "escalations": 0,
+            "undecided": 0}
+    assert HW.steward_display(snap, "P") == "claude · steward:P · idle"
+    assert HW.conductor_display(snap) == "claude · conductor"
+    assert HW.conductor_display({**snap, "escalations": 2}, "$5.24") == \
+        "claude · conductor · $5.24 · 2 need you"
+    assert HW.conductor_display({**snap, "escalations": 1, "undecided": 3}) == \
+        "claude · conductor · 1 need you · 3 undecided"
+    one = {"project": "Meta-Tools", "state": "IMPLEMENTING", "label": "SPEC-0353",
+           "loops": "16/30", "cost_usd": 40.95, "cap_usd": 115.0}
+    assert HW.steward_display({**snap, "items": [one]}, "Meta-Tools") == \
+        "claude · steward:Meta-Tools · SPEC-0353 loop 16 · $40.95/$115"
+    assert HW.steward_display({**snap, "items": [{**one, "cap_usd": None}]}, "Meta-Tools") == \
+        "claude · steward:Meta-Tools · SPEC-0353 loop 16 · $40.95"
     snap["items"] = [{"project": "P", "state": "IMPLEMENTING", "cost_usd": 1, "cap_usd": 5},
                      {"project": "P", "state": "REVIEWING", "cost_usd": 2, "cap_usd": 5},
+                     {"project": "P", "state": "QUEUED", "cost_usd": 4, "cap_usd": 5},
                      {"project": "Q", "state": "REVIEWING", "cost_usd": 9, "cap_usd": 9}]
-    t = HW.Watcher.steward_tokens(snap, "P")
-    assert t["nw_spec"] == "2 active" and t["nw_loop"] == "" and t["nw_cost"] == "$3.00/$10.00"
+    assert HW.steward_display(snap, "P") == "claude · steward:P · 2 active · $3/$10"
+    long = {**one, "project": "A" * 40, "label": "L" * 40}
+    d = HW.steward_display({**snap, "items": [long]}, "A" * 40)
+    assert len(d) == HW.DISPLAY_MAX and d.endswith("…") and ("A" * 23 + "…") in d
+    assert HW._money(0) == "$0" and HW._money(115) == "$115" and HW._money(1.2) == "$1.20"
 
 
 def test_attn_parts():
@@ -367,16 +445,22 @@ def test_notification_policy():
 def test_clean_exit_clears_once_does_not(fake, tmp_path):
     cfg = _cfg(tmp_path)
     _place(cfg, "conductor", "pane-cond", "ws-a")
+    _place(cfg, "steward:Other", "pane-o", "ws-b")
     HW.Watcher(cfg, H.Client(), interval_s=10).run(once=True)
+    assert not [c for c in fake.calls() if "--clear-display-agent" in c]
     assert all("--clear-token" not in c or "--token" in c for c in fake.calls())
     n = len(fake.calls())
     HW.Watcher(cfg, H.Client(), interval_s=10).run(stop=lambda: True, sleep=lambda s: None)
     tail = fake.calls()[n:]
-    clears = [c for c in tail if "--token" not in c and "--clear-token" in c]
-    assert {(c[0], c[2]) for c in clears} == {("workspace", "ws-self"), ("workspace", "ws-a"),
-                                               ("pane", "pane-cond")}
-    cond = next(c for c in clears if c[2] == "pane-cond")
-    assert set(_tokens(cond)) == set(HW.CONDUCTOR_TOKENS)
+    clears = [c for c in tail if "--token" not in c and "--display-agent" not in c
+              and len(c) > 1 and c[1] == "report-metadata"]
+    assert {(c[0], c[2]) for c in clears} == {("workspace", "ws-a"), ("workspace", "ws-b"),
+                                               ("pane", "pane-cond"), ("pane", "pane-o")}
+    for c in clears:
+        if c[0] == "pane":
+            assert "--clear-display-agent" in c and "--clear-token" not in c
+        else:
+            assert set(_tokens(c)) == set(HW.WS_TOKENS) and "--clear-display-agent" not in c
 
 
 def test_one_watcher_at_a_time(fake, tmp_path):
@@ -393,7 +477,7 @@ def test_hanging_herdr_is_bounded_and_trips_breaker(fake, tmp_path, monkeypatch,
     monkeypatch.setenv("FAKE_HERDR_MODE", "hang")
     c = H.Client(timeout_s=0.3)
     t0 = time.monotonic()
-    HW.Watcher(cfg, c, interval_s=10).push()            # 8 targets, breaker after 5
+    HW.Watcher(cfg, c, interval_s=10).push()            # 7 targets, breaker after 5
     assert time.monotonic() - t0 < 5 * 0.3 + 10
     assert c.calls == 5 and c.breaker_open()
     assert "pausing herdr calls" in capsys.readouterr().err
@@ -401,6 +485,7 @@ def test_hanging_herdr_is_bounded_and_trips_breaker(fake, tmp_path, monkeypatch,
 
 def test_watch_loop_pushes_and_stops(fake, tmp_path):
     cfg = _cfg(tmp_path)
+    _place(cfg, "conductor", "pane-cond", "ws-a")
     stop = threading.Event()
     w = HW.Watcher(cfg, H.Client(), interval_s=1)
     t = threading.Thread(target=w.run, kwargs={"stop": stop.is_set})
@@ -410,7 +495,7 @@ def test_watch_loop_pushes_and_stops(fake, tmp_path):
     finally:
         stop.set()
         waits.join(t)
-    assert any("--token" not in c and "--clear-token" in c for c in fake.calls())
+    assert any("--clear-display-agent" in c for c in fake.calls())
 
 
 # ---- CLI -------------------------------------------------------------------------------------
@@ -431,10 +516,13 @@ def test_cli_noop_outside_herdr_and_without_binary(fake, tmp_path, monkeypatch):
 def test_cli_once_with_fake(fake, tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
-    r = CliRunner().invoke(cli, ["herdr", "watch", "--once", "--interval", "5"])
+    r = CliRunner().invoke(cli, ["herdr", "watch", "--once", "--interval", "5",
+                                 "--conductor-pane", "w7:p2"])
     assert r.exit_code == 0, r.output
     md = _metadata(fake.calls())
-    assert ("workspace", "ws-self") in md and _opt(md[("workspace", "ws-self")], "--ttl-ms") == "15000"
+    assert set(md) == {("workspace", "w7"), ("pane", "w7:p2")}
+    assert _opt(md[("workspace", "w7")], "--ttl-ms") == "15000"
+    assert _opt(md[("pane", "w7:p2")], "--display-agent") == "claude · conductor"
 
 
 # ---- isolation and persona env -------------------------------------------------------------
@@ -482,20 +570,58 @@ def test_fake_rejects_options_before_target_and_breaker_names_the_error(fake):
     assert H.Client().call(H.metadata_args("pane", "p1", {"nw_role": "x"}, seq=1, ttl_ms=1000))
 
 
+def _herdr_json(env, *args):
+    out = subprocess.run(["herdr", *args], env=env, capture_output=True, text=True, timeout=10,
+                         check=True).stdout
+    return json.loads(out)
+
+
+def _real_pane(env, pane):
+    return _herdr_json(env, "agent", "get", pane)["result"]["agent"]
+
+
+def _real_snapshot_entry(env, kind, ident):
+    snap = _herdr_json(env, "api", "snapshot")["result"]["snapshot"]
+    key = {"panes": "pane_id", "workspaces": "workspace_id"}[kind]
+    return next(x for x in snap[kind] if x.get(key) == ident)
+
+
 @pytest.mark.skipif(os.environ.get("NW_HERDR_CONTRACT") != "1",
                     reason="opt-in: NW_HERDR_CONTRACT=1 inside a real herdr pane")
 def test_real_herdr_accepts_our_argv():
-    """Contract check against the installed herdr (the fakes only model its parser). Writes and
-    clears a throwaway token on the caller's own pane/workspace; 2 s TTL."""
+    """Contract check against the installed herdr (the fakes only model its parser). Writes only
+    to the caller's own pane and workspace (TTL 60 s), reads the values back with `herdr agent
+    get` / `herdr api snapshot`, clears them and reads back their absence (SPEC-0361/0363)."""
     env = {k: v for k, v in _REAL_ENV.items()}
     pane, ws = env.get("HERDR_PANE_ID"), env.get("HERDR_WORKSPACE_ID")
     assert env.get("HERDR_ENV") == "1" and pane and ws, "run inside a herdr pane"
     c = H.Client(env=env)
-    s = c.next_seq()
-    for kind, target in (("pane", pane), ("workspace", ws)):
-        assert c.call(H.metadata_args(kind, target, {"nw_contract": "ok"}, seq=s, ttl_ms=2000)), c.last_error
-        assert c.call(H.clear_args(kind, target, ["nw_contract"], seq=s + 1)), c.last_error
-        s += 2
+    snap = {"items": [{"project": "Contract", "state": "IMPLEMENTING", "label": "SPEC-0000",
+                       "loops": "3/9", "cost_usd": 1.23, "cap_usd": 5.0}],
+            "active_states": {"IMPLEMENTING"}}
+    display = HW.steward_display(snap, "Contract")
+    assert display == "claude · steward:Contract · SPEC-0000 loop 3 · $1.23/$5"
+    try:
+        assert c.call(H.metadata_args("pane", pane, {"nw_contract": "ok"}, seq=c.next_seq(),
+                                      ttl_ms=60000, display_agent=display)), c.last_error
+        assert c.call(H.metadata_args("workspace", ws, {"nw_contract": "ok-ws"},
+                                      seq=c.next_seq(), ttl_ms=60000)), c.last_error
+        assert _real_pane(env, pane).get("display_agent") == display
+        assert _real_snapshot_entry(env, "panes", pane).get("display_agent") == display
+        assert "ok-ws" in json.dumps(_real_snapshot_entry(env, "workspaces", ws))
+        # herdr has no workspace display agent: the fake's model of the parser is right
+        bad = H.Client(env=env)
+        assert not bad.call(["workspace", "report-metadata", ws, "--source", "nw", "--seq",
+                             str(bad.next_seq()), "--display-agent", "x"])
+        assert "--display-agent" in (bad.last_error or "")
+    finally:
+        assert c.call(H.clear_args("pane", pane, ["nw_contract"], seq=c.next_seq(),
+                                   clear_display_agent=True)), c.last_error
+        assert c.call(H.clear_args("workspace", ws, ["nw_contract"], seq=c.next_seq())), \
+            c.last_error
+    assert "display_agent" not in _real_pane(env, pane)
+    assert "nw_contract" not in json.dumps(_real_snapshot_entry(env, "panes", pane))
+    assert "ok-ws" not in json.dumps(_real_snapshot_entry(env, "workspaces", ws))
 
 
 _REAL_ENV = dict(os.environ)    # captured at import, before the autouse fixture strips HERDR_*

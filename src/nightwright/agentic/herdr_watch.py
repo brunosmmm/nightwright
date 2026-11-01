@@ -1,5 +1,6 @@
-"""`nw herdr watch` (SPEC-0361, epic SPEC-0360): push queue state to herdr as sidebar tokens
-and raise herdr notifications for the events that need the human.
+"""`nw herdr watch` (SPEC-0361, display design SPEC-0363, epic SPEC-0360): push queue state to
+herdr (a display agent on nw's panes, tokens on nw's workspaces) and raise herdr
+notifications for the events that need the human.
 
 The only caller of `agentic/herdr.py`. It reads the same state as `nw queue conduct-status` /
 `nw queue list` and the event stream with its own cursor (`herdr`); it targets explicit pane /
@@ -23,12 +24,64 @@ INTERVAL_S = 10.0
 POLL_S = 2.0
 COST_REFRESH_S = 60.0
 WS_TOKENS = ("nw_queue", "nw_attn", "nw_cost")
-CONDUCTOR_TOKENS = ("nw_role", "nw_attn", "nw_cost")
-STEWARD_TOKENS = ("nw_role", "nw_spec", "nw_loop", "nw_cost")
+AGENT = "claude"                 # the label herdr shows for a Claude pane; kept as the prefix
+SEP = " · "
+DISPLAY_MAX = 64
+PART_MAX = 24
 
 
 def _usd(x) -> str:
     return f"${float(x or 0.0):.2f}"
+
+
+def _money(x) -> str:
+    """`$40.95`; whole dollars drop the cents (`$115`, `$0`)."""
+    v = round(float(x or 0.0), 2)
+    return f"${v:.0f}" if v == int(v) else f"${v:.2f}"
+
+
+def _cut(text, n) -> str:
+    text = str(text)
+    return text if len(text) <= n else text[:n - 1] + "…"
+
+
+def _display(parts) -> str:
+    return _cut(SEP.join([AGENT, *[p for p in parts if p]]), DISPLAY_MAX)
+
+
+def conductor_display(snap, cost="") -> str:
+    """`claude · conductor · $5.24 · 2 need you · 1 undecided` (empty parts omitted)."""
+    return _display(["conductor", cost,
+                     f"{snap['escalations']} need you" if snap.get("escalations") else "",
+                     f"{snap['undecided']} undecided" if snap.get("undecided") else ""])
+
+
+def steward_display(snap, project) -> str:
+    """`claude · steward:P · SPEC-0353 loop 16 · $40.95/$115`, `… · 2 active · $x/$y` or
+    `… · idle`, from P's items in an active state."""
+    mine = [i for i in snap["items"] if i.get("project") == project
+            and i.get("state") in snap["active_states"]]
+    role = f"steward:{_cut(project, PART_MAX)}"
+    if not mine:
+        return _display([role, "idle"])
+    caps = [i.get("cap_usd") for i in mine]
+    spend = _money(sum(float(i.get("cost_usd") or 0) for i in mine))
+    cost = (f"{spend}/{_money(sum(float(c) for c in caps))}"
+            if all(c is not None for c in caps) else spend)
+    if len(mine) == 1:
+        it = mine[0]
+        label = _cut(it.get("label") or it.get("spec_id") or it.get("campaign") or "?", PART_MAX)
+        loop = str(it.get("loops") or "").split("/", 1)[0]
+        what = f"{label} loop {loop}" if loop else label
+    else:
+        what = f"{len(mine)} active"
+    return _display([role, what, cost])
+
+
+def _pane_workspace(pane_id) -> str | None:
+    """herdr 0.9.5 pane ids are workspace-scoped (`w7:p2` lives in `w7`)."""
+    ws, sep, rest = str(pane_id or "").partition(":")
+    return ws if sep and ws and rest else None
 
 
 def notification_for(ev) -> tuple[str, str, str] | None:
@@ -59,7 +112,7 @@ class Watcher:
         self.workspace = workspace
         self.env = os.environ if env is None else env
         self.now = now or (lambda: dt.datetime.now().astimezone())
-        self.pushed: dict[tuple[str, str], set] = {}       # (kind, target) -> token names
+        self.pushed: dict = {}                    # (kind, target) -> (token names, display set?)
         self._cost_cache: dict = {}                        # session id -> (monotonic, usd|None)
 
     @property
@@ -75,14 +128,27 @@ class Watcher:
         items = queue_payload(self.cfg, now=now)["items"]
         counts = (E.ping_digest(self.cfg, now) or {}).get("counts") or {}
         spend = 0.0
+        by_project: dict = {}
+
+        def proj(name):
+            return by_project.setdefault(name, {"active": 0, "queued": 0, "parked": 0,
+                                                "spend_today": 0.0})
         for st in store.list_campaigns(self.cfg, include_terminal=True):
             updated = st.get("updated_at") or st.get("created_at")
             try:
                 if updated and dt.datetime.fromisoformat(updated).astimezone().date() == now.date():
-                    spend += float((st.get("cost") or {}).get("total_usd") or 0.0)
+                    usd = float((st.get("cost") or {}).get("total_usd") or 0.0)
+                    spend += usd
+                    proj(st.get("project"))["spend_today"] += usd
             except (TypeError, ValueError):
                 pass
+        for i in items:
+            key = ("active" if i.get("state") in ACTIVE_STATES else
+                   {"QUEUED": "queued", "PARKED": "parked"}.get(i.get("state")))
+            if key:
+                proj(i.get("project"))[key] += 1
         return {"items": items, "active_states": ACTIVE_STATES, "spend_today": spend,
+                "by_project": by_project,
                 "active": sum(1 for i in items if i.get("state") in ACTIVE_STATES),
                 "queued": sum(1 for i in items if i.get("state") == "QUEUED"),
                 "parked": sum(1 for i in items if i.get("state") == "PARKED"),
@@ -99,9 +165,21 @@ class Watcher:
         return " · ".join(parts)
 
     def workspace_tokens(self, snap) -> dict:
+        """The conductor's workspace: queue totals."""
         return {"nw_queue": f"{snap['active']} active · {snap['queued']} queued · "
                             f"{snap['parked']} parked",
                 "nw_attn": self.attn(snap), "nw_cost": _usd(snap["spend_today"])}
+
+    @staticmethod
+    def project_workspace_tokens(snap, projects) -> dict:
+        """A steward's workspace: only its project(s)' numbers; `nw_attn` is queue-wide, so
+        it is cleared here."""
+        rows = [snap.get("by_project", {}).get(p) or {} for p in projects]
+        tot = {k: sum(r.get(k) or 0 for r in rows) for k in ("active", "queued", "parked")}
+        return {"nw_queue": f"{', '.join(projects)}: {tot['active']} active · "
+                            f"{tot['queued']} queued · {tot['parked']} parked",
+                "nw_attn": "",
+                "nw_cost": _usd(sum(r.get("spend_today") or 0.0 for r in rows))}
 
     def conductor_cost(self, session_id) -> str:
         if not session_id:
@@ -113,31 +191,11 @@ class Watcher:
             today = self.now().date()
             rep = CC.cost_report(self.cfg, since=today, until=today, session_ids=[session_id])
             usd = (rep.get("totals") or {}).get("usd")
-            val = _usd(usd) if usd and not rep.get("unpriced_models") else ""
+            val = _money(usd) if usd and not rep.get("unpriced_models") else ""
         except Exception:
             val = ""
         self._cost_cache[session_id] = (time.monotonic(), val)
         return val
-
-    def conductor_tokens(self, snap, session_id=None) -> dict:
-        return {"nw_role": "conductor", "nw_attn": self.attn(snap),
-                "nw_cost": self.conductor_cost(session_id)}
-
-    @staticmethod
-    def steward_tokens(snap, project) -> dict:
-        mine = [i for i in snap["items"] if i.get("project") == project
-                and i.get("state") in snap["active_states"]]
-        tok = {"nw_role": f"steward:{project}", "nw_spec": "idle", "nw_loop": "", "nw_cost": ""}
-        if len(mine) == 1:
-            it = mine[0]
-            tok["nw_spec"] = str(it.get("label") or it.get("spec_id") or it.get("campaign"))
-            tok["nw_loop"] = f"{str(it.get('state') or '').lower()} {it.get('loops') or ''}".strip()
-            tok["nw_cost"] = f"{_usd(it.get('cost_usd'))}/{_usd(it.get('cap_usd'))}"
-        elif mine:
-            tok["nw_spec"] = f"{len(mine)} active"
-            tok["nw_cost"] = (f"{_usd(sum(float(i.get('cost_usd') or 0) for i in mine))}/"
-                              f"{_usd(sum(float(i.get('cap_usd') or 0) for i in mine))}")
-        return tok
 
     # ---- targets -------------------------------------------------------------------------
 
@@ -147,27 +205,37 @@ class Watcher:
                 if (r == "conductor" or r.startswith("steward:")) and p.get("pane_id")
                 and CC.placement_live(p)}
 
-    def targets(self, snap) -> list[tuple[str, str, dict]]:
-        """`[(kind, explicit id, tokens)]` for this push."""
+    def targets(self, snap) -> list[tuple[str, str, dict, str | None]]:
+        """`[(kind, explicit id, tokens, display_agent)]` for this push (SPEC-0363): a display
+        agent on the conductor's and stewards' panes; queue totals on the conductor's
+        workspace; a project summary on each steward workspace that is not the conductor's.
+        Nothing else, the watcher's own pane/workspace included."""
         live = self.placements()
         out = []
-        if self.workspace:
-            workspaces = [self.workspace]
-        else:
-            workspaces = [self.env.get("HERDR_WORKSPACE_ID")] + [p.get("workspace_id")
-                                                                 for p in live.values()]
-        for ws in dict.fromkeys(w for w in workspaces if w):
-            out.append(("workspace", ws, self.workspace_tokens(snap)))
         cond = live.get("conductor")
-        if self.conductor_pane:
-            out.append(("pane", self.conductor_pane,
-                        self.conductor_tokens(snap, (cond or {}).get("session_id"))))
-        elif cond:
-            out.append(("pane", cond["pane_id"], self.conductor_tokens(snap, cond.get("session_id"))))
-        for reader, p in sorted(live.items()):
-            if reader.startswith("steward:"):
-                out.append(("pane", p["pane_id"],
-                            self.steward_tokens(snap, reader.split(":", 1)[1])))
+        cond_pane = self.conductor_pane or (cond or {}).get("pane_id")
+        cond_ws = self.workspace
+        if not cond_ws and cond_pane:
+            by_pane = [p for p in live.values() if p.get("pane_id") == cond_pane]
+            cond_ws = (by_pane[0].get("workspace_id") if by_pane
+                       else _pane_workspace(cond_pane))
+        if cond_ws:
+            out.append(("workspace", cond_ws, self.workspace_tokens(snap), None))
+        stewards = sorted((r.split(":", 1)[1], p) for r, p in live.items()
+                          if r.startswith("steward:"))
+        groups: dict[str, list[str]] = {}
+        for project, p in stewards:
+            ws = p.get("workspace_id")
+            if ws and ws != cond_ws:
+                groups.setdefault(ws, []).append(project)
+        for ws, projects in groups.items():
+            out.append(("workspace", ws, self.project_workspace_tokens(snap, projects), None))
+        if cond_pane:
+            out.append(("pane", cond_pane, {},
+                        conductor_display(snap, self.conductor_cost((cond or {}).get("session_id")))))
+        for project, p in stewards:
+            if p["pane_id"] != cond_pane:
+                out.append(("pane", p["pane_id"], {}, steward_display(snap, project)))
         return out
 
     # ---- actions -------------------------------------------------------------------------
@@ -175,10 +243,11 @@ class Watcher:
     def push(self) -> int:
         """One metadata push to every target; returns the number of accepted calls."""
         ok = 0
-        for kind, target, tokens in self.targets(self.snapshot()):
+        for kind, target, tokens, display in self.targets(self.snapshot()):
             args = H.metadata_args(kind, target, tokens, seq=self.client.next_seq(),
-                                   ttl_ms=self.ttl_ms)
-            self.pushed.setdefault((kind, target), set()).update(tokens)
+                                   ttl_ms=self.ttl_ms, display_agent=display)
+            names, had_display = self.pushed.get((kind, target), (set(), False))
+            self.pushed[(kind, target)] = (names | set(tokens), had_display or display is not None)
             ok += bool(self.client.call(args))
         return ok
 
@@ -204,9 +273,9 @@ class Watcher:
             E.cursor_set(self.cfg, READER, E._last_id(E.events_path(self.cfg)))
 
     def clear(self) -> None:
-        for (kind, target), names in self.pushed.items():
-            self.client.call(H.clear_args(kind, target, sorted(names),
-                                          seq=self.client.next_seq()))
+        for (kind, target), (names, display) in self.pushed.items():
+            self.client.call(H.clear_args(kind, target, sorted(names), seq=self.client.next_seq(),
+                                          clear_display_agent=display))
         self.pushed.clear()
 
     def _guard(self, fn):
