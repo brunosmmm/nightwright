@@ -316,6 +316,13 @@ working unchanged, because the new flags and the env var are additive and strict
   `--changed` on this tree: their new modules (`remote_gates.py`, `workers_bootstrap.py`) do not
   exist here, which is a removed-module full fallback by design.
 - The full suite was left to the queue's close gate.
+- Review loop 1 follow-ups: `uv run pytest -q tests/test_affected_tests.py tests/test_affected_tests_replay.py`:
+  92 passed. New cases: the SPEC-0328 selections (direct, lazy, helper hop, hub stop, depth, helper and
+  test changes, docs) identical in default and strict mode, removed/hub-only/fraction in both modes, the
+  report written on the `--run` path (narrowed, empty and full selection, stdout and exit code unchanged),
+  reasons for `tests/data` and `tools` rows and a `; `-joined multi-rule reason, removed `tools/*.py`, a mapped
+  plus an unmapped file giving full, the leading-`_` name token, the tests-over-tools stem tie-break, an
+  unreached package-data reader, `--changed` normalization and an empty `--changed` value.
 
 ### As shipped (2026-11-01)
 
@@ -332,6 +339,11 @@ working unchanged, because the new flags and the env var are additive and strict
   the spec asks for). If helpers grow, this is the first selection to cross the cap.
 - Replay: `tests/data/remote_gates_golden.json` and its test do not exist in this checkout, so the
   fixture stages them in the temporary copy (`stage`); the golden selection is 1 test file.
+- `--changed` paths are normalized (`./x`, `a//b`, absolute paths inside `--repo`) and empty values are
+  dropped, so a non-canonical `./uv.lock` still hits the full triggers instead of selecting nothing.
+- A package-data change now handles each referencing src reader on its own: its nearest tests, else the
+  name rule, else a full fallback (`no test reaches <reader> (reads <data>)`). A reader that no test reaches is
+  no longer dropped when another reader has tests.
 
 ## Risks
 

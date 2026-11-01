@@ -459,3 +459,144 @@ def test_json_run_puts_the_json_first_and_prints_nothing_else_on_stdout(repo2):
     r = _cli(repo2, "--json", "--changed", "docs/note.md", "--run", "false")
     assert r.returncode == 0 and len(r.stdout.splitlines()) == 1
     assert "no affected tests" in r.stderr and "no affected tests" not in r.stdout
+
+
+# --- SPEC-0357 review follow-ups: strict parity, --run report, reasons, normalization ----------------
+
+def _commit_new(repo, files):
+    for rel, text in files.items():
+        p = repo / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "new")
+
+
+@pytest.mark.parametrize("strict", [False, True], ids=["default", "strict"])
+@pytest.mark.parametrize("change,depth,expected", [
+    ("src/nightwright/base.py", 0, ["tests/test_base.py"]),                       # direct importers
+    ("src/nightwright/agentic/core.py", 0, ["tests/test_core.py"]),               # lazy import
+    ("src/nightwright/top.py", 0, ["tests/test_top.py", "tests/test_via_helper.py"]),   # helper hop, hub stop
+    ("src/nightwright/base.py", 1, ["tests/test_base.py", "tests/test_core.py", "tests/test_lazy.py",
+                                    "tests/test_mid.py", "tests/test_reader.py"]),     # depth
+    ("tests/helpers.py", 0, ["tests/test_via_helper.py"]),
+    ("tests/test_mid.py", 0, ["tests/test_mid.py"]),
+    ("docs/note.md", 0, []),
+])
+def test_spec_0328_selection_is_identical_in_strict_and_default_mode(repo2, strict, change, depth, expected):
+    _change(repo2, change)
+    sel = _select(repo2, max_fraction=1.0, depth=depth, strict=strict)
+    assert not sel.full and sel.tests == expected, sel.reason
+
+
+@pytest.mark.parametrize("strict", [False, True], ids=["default", "strict"])
+@pytest.mark.parametrize("rel", ["src/nightwright/lonely.py", "src/nightwright/agentic/core.py"])
+def test_removed_and_hub_only_modules_are_full_in_both_modes(repo2, strict, rel):
+    if rel.endswith("core.py"):
+        _git(repo2, "rm", "-q", rel)
+        _git(repo2, "commit", "-qm", "rm")
+    else:
+        _change(repo2, rel)                                        # reached only through the hub
+    assert _select(repo2, max_fraction=1.0, strict=strict).full
+
+
+@pytest.mark.parametrize("strict", [False, True], ids=["default", "strict"])
+def test_fraction_cap_applies_in_both_modes(repo2, strict):
+    _change(repo2, "src/nightwright/base.py")
+    assert _select(repo2, max_fraction=0.01, strict=strict).full
+
+
+def test_reasons_name_the_rule_for_test_data_and_tools(repo2):
+    assert "reference scan for tests/data/golden.json" in _sel2(repo2, "tests/data/golden.json").reason
+    _git(repo2, "reset", "-q", "--hard", "main")
+    assert "reference scan for tools/tool_x.py" in _sel2(repo2, "tools/tool_x.py").reason
+
+
+def test_reason_joins_every_rule_that_fired(repo2):
+    _commit_new(repo2, {"src/nightwright/cli_widgets.py": "W = 1\n"})
+    sel = _sel2(repo2, ".nw/project.yaml")
+    assert not sel.full
+    assert sel.reason.endswith("(reference scan for .nw/project.yaml; "
+                               "name rule for src/nightwright/cli_widgets.py)")
+    assert sel.tests == ["tests/test_agentic_widgets.py", "tests/test_cfg.py"]
+
+
+def test_removed_tools_module_falls_back(repo2):
+    _git(repo2, "rm", "-q", "tools/tool_x.py")
+    _git(repo2, "commit", "-qm", "rm")
+    sel = _select(repo2, max_fraction=1.0)
+    assert sel.full and "removed" in sel.reason
+
+
+def test_one_mapped_plus_one_unmapped_file_is_full(repo2):
+    sel = _sel2(repo2, "tests/data/golden.json", ".nw/unref.yaml")
+    assert sel.full and "no test references .nw/unref.yaml" in sel.reason
+
+
+def test_name_rule_strips_a_leading_underscore(repo2):
+    _commit_new(repo2, {"src/nightwright/_gadget.py": "G = 1\n", "tests/test_gadget_stuff.py": ""})
+    sel = _select(repo2, max_fraction=1.0)
+    assert sel.tests == ["tests/test_gadget_stuff.py"]
+    assert "name rule for src/nightwright/_gadget.py" in sel.reason
+
+
+def test_a_tests_module_wins_over_a_tools_module_of_the_same_stem(repo2):
+    _commit_new(repo2, {"tests/tool_x.py": "S = 1\n"})
+    mods, _ = AT.import_graph(repo2)
+    assert mods["tool_x"] == "tests/tool_x.py"
+    assert "tools/tool_x.py" not in mods.values()
+
+
+def test_package_data_reader_no_test_reaches_is_not_dropped(repo2):
+    # loader (tested) and orph2 (no test reaches it, no name match) both read x.md
+    _commit_new(repo2, {"src/nightwright/orph2.py": 'NAME = "x.md"\n'})
+    sel = _sel2(repo2, "src/nightwright/pkg/data/x.md")
+    assert sel.full and "no test reaches src/nightwright/orph2.py" in sel.reason
+    _git(repo2, "reset", "-q", "--hard", "main")
+    _commit_new(repo2, {"src/nightwright/orph2.py": 'NAME = "x.md"\n', "tests/test_orph2.py": ""})
+    sel = _sel2(repo2, "src/nightwright/pkg/data/x.md")                 # name rule rescues the reader
+    assert not sel.full and sel.tests == ["tests/test_loader.py", "tests/test_orph2.py"]
+
+
+def test_changed_paths_are_normalized(repo2):
+    assert AT.normalize_changed(repo2, ["./pyproject.toml", "a//b.py", "", " ", ".",
+                                        str(repo2 / "uv.lock"), "./x/../y.md"]) == [
+        "a/b.py", "pyproject.toml", "uv.lock", "y.md"]
+    for path in ("./pyproject.toml", str(repo2 / "pyproject.toml"), "./uv.lock"):
+        rep = json.loads(_cli(repo2, "--json", "--changed", path).stdout)
+        assert rep["full"] is True and rep["changed"] in (["pyproject.toml"], ["uv.lock"]), path
+    r = _cli(repo2, "--changed", "./pyproject.toml", "--run", "echo", "RUN")
+    assert r.stdout.strip() == "RUN"                                   # the full suite, not "no affected tests"
+
+
+def test_empty_changed_value_does_not_crash(repo2):
+    r = _cli(repo2, "--json", "--changed", "")
+    assert r.returncode == 0 and json.loads(r.stdout)["changed"] == []
+    sel = AT.select(repo2, [""], max_fraction=1.0)                     # direct callers too
+    assert not sel.full and sel.tests == []
+    assert not AT.select(repo2, [""], strict=True).full
+    r = _cli(repo2, "--json", "--changed", "", "--changed", ".nw/project.yaml")
+    assert json.loads(r.stdout)["tests"] == ["tests/test_cfg.py"]
+
+
+@pytest.mark.parametrize("change,include,full,tests,stdout", [
+    ("tests/test_mid.py", ["tests/test_base.py"], False, ["tests/test_base.py", "tests/test_mid.py"],
+     "RUN tests/test_base.py tests/test_mid.py"),                      # narrowed (+ smoke set)
+    ("docs/note.md", [], False, [], "no affected tests"),              # empty selection
+    ("pyproject.toml", ["tests/test_base.py"], True, [], "RUN"),       # full suite
+])
+def test_report_is_written_on_the_run_path(repo2, tmp_path, monkeypatch, change, include, full, tests,
+                                           stdout):
+    _change(repo2, change)
+    out = tmp_path / "gate" / "report.json"
+    args = [a for i in include for a in ("--include", i)] + ["--run", "echo", "RUN"]
+    base = _cli(repo2, *args)
+    monkeypatch.setenv("NW_GATE_REPORT", str(out))
+    r = _cli(repo2, *args)
+    assert (r.returncode, r.stdout) == (base.returncode, base.stdout)       # report changes nothing
+    assert r.returncode == 0 and r.stdout.strip() == stdout
+    rep = json.loads(out.read_text())
+    assert set(rep) == {"full", "reason", "tests", "include", "changed", "base_sha", "head_sha",
+                        "head_tree"}
+    assert rep["full"] is full and rep["tests"] == tests and rep["include"] == include
+    assert rep["changed"] == [change]

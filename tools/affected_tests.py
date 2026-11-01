@@ -38,7 +38,6 @@ import argparse
 import ast
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -346,6 +345,7 @@ def _name_rule(ix, rel, name):
 
 def select(repo, changed, max_fraction=MAX_FRACTION, depth=0, strict=False):
     """The Selection for `changed` (repo-relative paths) in `repo`."""
+    changed = [rel for rel in changed if rel]
     for rel in changed:
         why = _full_trigger(rel, strict)
         if why:
@@ -371,11 +371,16 @@ def select(repo, changed, max_fraction=MAX_FRACTION, depth=0, strict=False):
         if scan_class:
             refs = _referencing(ix, rel)
             hits = set()
-            for m in refs:
+            for m in sorted(refs):
                 if mods[m].startswith(TESTS_DIR + "/"):
                     hits |= nearest_tests(m, mods, reverse, 0)
                 elif is_src and p.suffix != ".py" and mods[m].startswith(f"{SRC_ROOT}/"):
-                    hits |= nearest_tests(m, mods, reverse, depth)   # package data readers
+                    # package data reader: its nearest tests, else the name rule; a reader no
+                    # test reaches is a full fallback, not silently dropped
+                    reader = nearest_tests(m, mods, reverse, depth) or _name_rule(ix, mods[m], m)
+                    if not reader:
+                        return Selection(True, [], f"no test reaches {mods[m]} (reads {rel})")
+                    hits |= reader
             if not hits:
                 return Selection(True, [], f"no test references {rel}")
             selected |= hits
@@ -452,6 +457,26 @@ def write_report(path, report):
         pass
 
 
+def normalize_changed(repo, paths):
+    """Canonical repo-relative posix paths for `--changed`: `./x`, `a//b` and absolute paths
+    inside `repo` become `x`, `a/b`; empty values are dropped."""
+    out = set()
+    for raw in paths:
+        raw = raw.strip()
+        if not raw:
+            continue
+        p = Path(raw)
+        if p.is_absolute():
+            try:
+                p = p.resolve().relative_to(Path(repo).resolve())
+            except ValueError:
+                pass
+        norm = os.path.normpath(p.as_posix()) if p.parts else ""
+        if norm and norm != ".":
+            out.add(Path(norm).as_posix())
+    return sorted(out)
+
+
 def _strict_env():
     return os.environ.get("NW_AFFECTED_STRICT", "").strip().lower() not in ("", "0", "false", "no")
 
@@ -482,7 +507,7 @@ def main(argv=None):
     base_sha = None
     try:
         if args.changed is not None:
-            changed = sorted(set(args.changed))
+            changed = normalize_changed(repo, args.changed)
         else:
             mb = _merge_base(repo, args.base)
             changed = _changed_since(repo, mb)
