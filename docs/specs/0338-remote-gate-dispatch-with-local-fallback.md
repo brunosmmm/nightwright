@@ -336,6 +336,18 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
   checked to fail against the previous `remote_gates.py`. With the worker, gate, gate-slot and
   registry test files (`uv run pytest -q -n 4` over the ten files): 405 passed. The full suite
   is left to the gate.
+- Review fixes (loop 8, after the rebase onto main): `uv run pytest -q -n 4
+  tests/test_rich_output_guard.py tests/test_remote_gates.py tests/test_worker.py
+  tests/test_worker_ssh_command.py`: 243 passed. Two entries were added to the rich-output
+  guard's allowlist for the herdr files that came with the rebase (`cli_herdr.herdr_watch`,
+  `herdr_watch._guard`; the herdr source is unchanged). New tests: the `remote: false` findings'
+  `detail` (the project key, the opted-out gate's name); an untracked file named
+  `b"\xff\xfe"` staying local with one `finding`; `tree_changes` and a gate writing such a
+  name in the worker's checkout (fallback `tree`, no cooldown); a symlinked ControlPath dir
+  falling back as `ssh` without cooldown before any SSH call; a `claim` fallback (worker not in
+  cooldown) waiting for the held local slot. The first four new tests fail against the previous
+  source; the slot test fails with the fallback acquire given `pools=pools`. The full suite is
+  left to the gate.
 - Manual verification (steps 1-6, the second machine): manual verification attested by the
   human (ESC-0004 override).
 
@@ -408,6 +420,12 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
   or null, `duration_s` a finite non-negative number, `cmd`/`cwd` strings, `summary` an object
   or null, `attempts`/`flaky` lists. Anything else, and a frame line json can only parse by
   recursing out (`RecursionError`), is a `protocol` failure with cooldown.
+- Git's file lists are decoded with `errors="replace"` (`ls-files --others` in eligibility,
+  `status --porcelain -z` in the worker's `tree_changes`): a non-UTF-8 file name is an
+  untracked file (local run, one `finding`) or a tree change (fallback `tree`), never a
+  `UnicodeDecodeError` out of `run_all`. A ControlPath directory the coordinator cannot use
+  (`ensure_ssh_dir` refusing a symlink or another user's dir) is `worker_failed` stage `ssh`
+  **without** cooldown, not stage `have`.
 - **A stop before the job is sent sends nothing.** `run` checks the stop (the caller's event
   and the gates' sticky `terminate_all` flag) before `prepare`, before and after `nw worker
   have`, and before starting `gate-job`. `have` polls the stop while it waits and ends its SSH

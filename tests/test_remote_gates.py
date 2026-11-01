@@ -319,9 +319,25 @@ def test_ineligible_runs_gate_locally_with_one_finding(world, remote, case):
     (f,) = world.ledger(["finding"])
     assert (f["persona"], f["severity"], f["gate"]) == ("gates", "info", "remote-eligibility")
     if case == "untracked":
-        assert f["files"] == ["new.txt"]
+        assert f["files"] == ["new.txt"] and f["detail"] == "new.txt"
+    elif case == "project":
+        assert f["files"] == [] and "remote_gates: false" in f["detail"]
+    else:
+        assert f["files"] == [] and f["detail"] == "ok" and "gate ok" in f["title"]
     from nightwright.agentic import divergence as D
     assert f["persona"] not in D.COUNTED_PERSONAS and f["severity"] not in D.COUNTED_SEVERITIES
+
+
+_NON_UTF8 = b"\xff\xfe"
+
+
+def test_a_non_utf8_untracked_name_stays_local_with_a_finding(world, remote, spy):
+    os.close(os.open(os.fsencode(world.repo) + b"/" + _NON_UTF8, os.O_CREAT | os.O_WRONLY))
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert run.worker is None and run.ok and run.results[0].cwd == str(world.repo)
+    (f,) = world.ledger(["finding"])
+    assert f["gate"] == "remote-eligibility" and f["files"] == ["\ufffd\ufffd"]
+    assert not spy and not world.ledger(["worker_failed"])
 
 
 def test_second_run_bundles_less_and_leaves_the_base_out(world, remote, spy):
@@ -681,6 +697,64 @@ def test_worker_tree_changes_lists_renames_once(tmp_path):
     (repo / "c d.txt").write_text("x")
     assert W.tree_changes(repo) == ["b.txt", "c d.txt"]
     assert W.tree_changes(tmp_path / "nope") is None
+
+
+def test_worker_tree_changes_survives_a_non_utf8_name(tmp_path):
+    from nightwright.agentic import worker as W
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    _commit(repo, "a.txt", "a\n")
+    os.close(os.open(os.fsencode(repo) + b"/" + _NON_UTF8, os.O_CREAT | os.O_WRONLY))
+    assert W.tree_changes(repo) == ["\ufffd\ufffd"]
+
+
+def test_a_gate_writing_a_non_utf8_name_falls_back_as_tree(world, remote):
+    world.project["gates"] = [_gate("gen", "printf x > \"$(printf '\\377\\376')\"")]
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert run.worker is None and run.seq == 1 and run.ok
+    assert run.results[0].cwd == str(world.repo)
+    (ev,) = world.ledger(["worker_failed"])
+    assert ev["stage"] == "tree" and ev["cooldown"] is False
+    assert remote.record()["cooldown_until"] is None
+    assert remote.frames()[-1]["changed"] == ["\ufffd\ufffd"]
+
+
+def test_an_unusable_ssh_socket_dir_falls_back_without_cooldown(world, remote, monkeypatch,
+                                                                tmp_path):
+    """The ControlPath dir is the coordinator's (a symlink, as a shared /tmp path could be):
+    stage `ssh`, no cooldown, and no SSH call at all."""
+    from nightwright.agentic import workers as WK
+    (tmp_path / "elsewhere").mkdir()
+    link = tmp_path / "sshdir"
+    link.symlink_to(tmp_path / "elsewhere")
+    monkeypatch.setattr(WK, "ssh_dir", lambda cfg: link)
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    _assert_fell_back(world, remote, run, "ssh", cooldown=False)
+    assert "ssh socket directory" in world.ledger(["worker_failed"])[0]["error"]
+    assert not (remote.wdata / "agentic" / "worker" / "jobs").exists()
+
+
+def test_a_no_cooldown_fallback_waits_for_a_local_slot(world, remote):
+    """The worker is not cooled down after a `claim` error, so a fallback acquire over every
+    pool would take its free slot again; it must wait for the local one."""
+    world.cfg["agentic"]["gates"]["slots"] = 1
+    (remote.wdata / "agentic" / "worker" / "jobs" / f"{CID}-gate-001-a0").mkdir(parents=True)
+    out = {}
+    with GS.acquire(world.cfg, "other"):
+        t = threading.Thread(target=lambda: out.update(run=G.run_all(
+            world.project, world.state, world.cfg, seq=1)))
+        t.start()
+        assert until(lambda: world.ledger(["worker_failed"])
+                     and GS.waiting(world.cfg, CID) is not None)
+        threading.Event().wait(1.5)
+        assert "run" not in out                 # still waiting for the local slot
+    join(t)
+    run = out["run"]
+    _assert_fell_back(world, remote, run, "claim", cooldown=False)
+    assert run.slot_wait_s >= 1.5
 
 
 def test_a_disabled_worker_is_no_worker(world, remote, invoke):

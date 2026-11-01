@@ -92,7 +92,8 @@ def ineligible(project_cfg: dict, worktree) -> dict | None:
         return {"title": f"gate {opted[0]} sets remote: false; gates run locally",
                 "detail": ", ".join(str(n) for n in opted), "files": []}
     p = subprocess.run(["git", "-C", str(worktree), "ls-files", "--others", "--exclude-standard",
-                        "-z"], capture_output=True, text=True)
+                        "-z"], capture_output=True, encoding="utf-8", errors="replace")
+    # errors="replace": a non-UTF-8 file name is still an untracked file, not an exception
     if p.returncode != 0:
         return {"title": "cannot list the worktree's untracked files; gates run locally",
                 "detail": (p.stderr or "").strip()[-500:], "files": []}
@@ -243,7 +244,8 @@ def prepare(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int
     try:
         WK.ensure_ssh_dir(cfg)
     except OSError as e:
-        raise RemoteFailure("have", f"ssh socket directory unusable: {e}")
+        # the coordinator's own directory, not the worker's fault: no cooldown
+        raise RemoteFailure("ssh", f"ssh socket directory unusable: {e}", cooldown=False)
     _check_stop(stop)
     have = _have(worker, key, asked, stop)
     _check_stop(stop)

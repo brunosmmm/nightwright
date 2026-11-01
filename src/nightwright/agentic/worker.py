@@ -153,9 +153,9 @@ def _git_env() -> dict:
     return env
 
 
-def _git(*args, cwd=None, stage="checkout", check=True) -> subprocess.CompletedProcess:
+def _git(*args, cwd=None, stage="checkout", check=True, errors=None) -> subprocess.CompletedProcess:
     p = subprocess.run(["git", *[str(a) for a in args]], cwd=cwd, env=_git_env(),
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, errors=errors)
     if check and p.returncode != 0:
         raise WorkerError(stage, f"git {' '.join(str(a) for a in args[:2])} failed: "
                                  f"{(p.stderr or p.stdout).strip()[-2000:]}")
@@ -803,7 +803,8 @@ def tree_changes(tree: Path) -> list[str] | None:
     files; at most `TREE_CHANGES_MAX`), for `done`'s `changed` (SPEC-0338): the coordinator's
     worktree never sees these writes, so it re-runs such a run locally. None when git cannot
     tell."""
-    p = _git("-C", tree, "status", "--porcelain=v1", "-z", "--untracked-files=all", check=False)
+    p = _git("-C", tree, "status", "--porcelain=v1", "-z", "--untracked-files=all", check=False,
+             errors="replace")                 # a non-UTF-8 name is still a change
     if p.returncode != 0:
         return None
     out, parts = [], p.stdout.split("\0")
