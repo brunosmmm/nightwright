@@ -48,6 +48,8 @@ ALLOWED = {
     ("agentic/worker_job.py", "_watch"): "stderr diagnostic from the job process (SPEC-0340)",
     ("agentic/worker_job.py", "run_job"): "stderr diagnostic from the job process (SPEC-0340)",
     ("agentic/worker_job.py", "main"): "stderr diagnostic from the job process entry point (SPEC-0340)",
+    ("agentic/cli_herdr.py", "herdr_watch"): "one-line no-op notice for the herdr pane/hook, outside the TTY render path (SPEC-0361)",
+    ("agentic/herdr_watch.py", "_guard"): "stderr diagnostic from the herdr watch loop, outside the TTY render path (SPEC-0361/0363)",
 }
 
 
