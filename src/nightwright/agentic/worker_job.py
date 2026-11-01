@@ -18,6 +18,8 @@ import hashlib
 import json
 import math
 import os
+import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -46,7 +48,9 @@ EXIT_LOST = 4
 
 def settings(cfg) -> dict:
     """`agentic.workers.{job_lease_s, job_heartbeat_s, job_lost_after_s}` over `DEFAULTS`; a
-    value that is not a positive finite number falls back to its default."""
+    value that is not a positive finite number falls back to its default. The heartbeat is
+    capped at a third of `job_lost_after_s`: a slower one would make a healthy job look hung,
+    and the kill path (gc after any job) would then reap it."""
     raw = (cfg.get("agentic") or {}).get("workers")
     raw = raw if isinstance(raw, dict) else {}
     out = {}
@@ -58,6 +62,7 @@ def settings(cfg) -> dict:
             f = None
         ok = f is not None and not isinstance(v, bool) and math.isfinite(f) and f > 0
         out[key] = f if ok else default
+    out["job_heartbeat_s"] = min(out["job_heartbeat_s"], out["job_lost_after_s"] / 3)
     return out
 
 
@@ -91,17 +96,33 @@ def _print(stdout, rec: dict) -> None:
 
 # ---- job state -------------------------------------------------------------------------------
 
-def _is_async(job: Path) -> bool:
-    """A `submit` job dir (it spools `header.json`); a SPEC-0336 `gate-job` dir has none."""
-    return (job / "header.json").exists()
+def _is_async(job: Path, rec: dict | None = None) -> bool:
+    """A `submit` job dir (`header.json`, or a `job.json` with its `header_digest` just before
+    it); a SPEC-0336 `gate-job` dir has neither."""
+    if (job / "header.json").exists():
+        return True
+    rec = runproc.read_json(job / "job.json") if rec is None else rec
+    return bool((rec or {}).get("header_digest"))
 
 
-def _lock_held(job: Path) -> bool:
-    live, fd = W._job_live(job)
-    if fd is not None:
+def _lock_held(job: Path) -> bool | None:
+    """Whether another process holds `job.lock`; None when there is no `job.lock` yet (a claim
+    in progress). A reader never creates the file (it would resurrect a dir gc is removing)."""
+    try:
+        fd = os.open(job / "job.lock", os.O_RDWR)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    else:
         fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
         os.close(fd)
-    return live
+    return False
 
 
 def _pid_alive(proc: dict) -> bool:
@@ -130,14 +151,17 @@ def _live_state(job: Path, sett: dict, now: float) -> tuple[str, float | None]:
     proc = runproc.read_json(job / "proc.json")
     age = _heartbeat_age(job, now, proc)
     if proc is None:
-        rec = runproc.read_json(job / "job.json") or {}
-        if not _is_async(job):                  # a gate-job: its stream owns it
+        rec = runproc.read_json(job / "job.json")
+        held = _lock_held(job)
+        if rec is None or held is None:         # mid-claim (under jobs_lock): not yet anything
+            return "accepted", None
+        if not _is_async(job, rec):             # a gate-job: its stream owns it
             if rec.get("state") in ("done", "error"):
                 return rec["state"], None
-            return ("running" if _lock_held(job) else "lost"), None
+            return ("running" if held else "lost"), None
         since = rec.get("spawned_ts")
         if not isinstance(since, (int, float)):
-            if _lock_held(job):                 # submit is still spooling the bundle
+            if held:                            # submit is still spooling the bundle
                 return "accepted", None
             since = rec.get("submitted_ts")
         if isinstance(since, (int, float)) and now - since <= lost_after:
@@ -150,8 +174,10 @@ def _live_state(job: Path, sett: dict, now: float) -> tuple[str, float | None]:
     return "running", age
 
 
-def job_state(cfg, job: Path, sett: dict | None = None) -> dict:
-    """`{state, heartbeat_age_s}` of a job dir, derived the same way for every reader."""
+def job_state(cfg, job: Path, sett: dict | None = None, locked: bool = False) -> dict:
+    """`{state, heartbeat_age_s}` of a job dir, derived the same way for every reader. A final
+    state (`done`, `error`, `lost`) is mirrored into an async job's `job.json` `state`
+    (`locked`: the caller holds `jobs_lock`; otherwise the mirror is best effort)."""
     sett = sett or settings(cfg)
     now = time.time()
     res = runproc.read_json(job / "result.json")
@@ -161,15 +187,47 @@ def job_state(cfg, job: Path, sett: dict | None = None) -> dict:
             return {"state": state, "heartbeat_age_s": age}
         res = runproc.read_json(job / "result.json")    # it may have ended between the reads
         if res is None:
+            _mirror(cfg, job, "lost", locked)
             return {"state": "lost", "heartbeat_age_s": age}
     proc = runproc.read_json(job / "proc.json")
-    return {"state": _result_state(res), "heartbeat_age_s": _heartbeat_age(job, now, proc)}
+    state = _result_state(res)
+    _mirror(cfg, job, state, locked)
+    return {"state": state, "heartbeat_age_s": _heartbeat_age(job, now, proc)}
 
 
 def _set_job_json(job: Path, **fields) -> None:
     rec = runproc.read_json(job / "job.json") or {}
     rec.update(fields)
     _write_atomic(job / "job.json", rec)
+
+
+def _mirror(cfg, job: Path, state: str, locked: bool) -> None:
+    """Write a derived final `state` into an async job's `job.json` when it says otherwise.
+    Only under `jobs_lock` (taken here without waiting, else skipped: the next reader does
+    it), so a write never lands in a dir gc is removing."""
+    rec = runproc.read_json(job / "job.json")
+    if rec is None or rec.get("state") == state or not _is_async(job, rec):
+        return
+    if locked:
+        _set_job_json(job, state=state)
+        return
+    try:
+        fd = os.open(W.worker_dir(cfg) / "jobs.lock", os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return
+    try:
+        if job.is_dir() and (job / "job.json").exists():
+            _set_job_json(job, state=state)
+    except OSError:
+        pass
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 # ---- frames ----------------------------------------------------------------------------------
@@ -211,10 +269,51 @@ class _Reader:
         return out
 
 
+_TAIL_N_RE = re.compile(rb'"n": ?(\d+)\}\s*\Z')
+
+
 def _last_n(job: Path) -> int:
-    r = _Reader(job / "frames.jsonl", 0)
-    r.read()
-    return r.after
+    """The `n` of the last complete line of `frames.jsonl`, read from the end: the frames
+    before it (gate frames can be MiBs each) are never read. `n` is a frame's last key, so the
+    line's last bytes usually carry it; otherwise that one line is parsed."""
+    try:
+        f = open(job / "frames.jsonl", "rb")
+    except OSError:
+        return 0
+    with f:
+        size = f.seek(0, os.SEEK_END)
+        end = pos = size                        # `end`: just past the last complete line
+        while pos > 0:
+            step = min(1 << 16, pos)
+            pos -= step
+            f.seek(pos)
+            nl = f.read(step).rfind(b"\n")
+            if nl >= 0:
+                end = pos + nl + 1
+                break
+        else:
+            return 0                            # no complete line yet
+        f.seek(max(0, end - 64))
+        m = _TAIL_N_RE.search(f.read(end - max(0, end - 64)))
+        if m:
+            return int(m.group(1))
+        start = pos = end - 1
+        while pos > 0:                          # back to the line's start
+            step = min(1 << 16, pos)
+            pos -= step
+            f.seek(pos)
+            nl = f.read(step).rfind(b"\n")
+            if nl >= 0:
+                start = pos + nl + 1
+                break
+        else:
+            start = 0
+        f.seek(start)
+        try:
+            n = json.loads(f.read(end - start)).get("n")
+        except (ValueError, AttributeError):
+            return 0
+        return n if isinstance(n, int) and not isinstance(n, bool) else 0
 
 
 def _renew(job: Path, lease_s: float) -> None:
@@ -227,8 +326,9 @@ def _renew(job: Path, lease_s: float) -> None:
 def _kill_group(child: dict, grace: float, cont: bool = False) -> None:
     """TERM the group (and CONT it, so a stopped process can take the TERM), wait up to
     `grace`, then KILL. `runproc.group_alive` checks the leader's start ticks first, so a
-    recycled pid is never signalled."""
-    if not child.get("pgid") or not runproc.group_alive(child):
+    recycled pid is never signalled; an entry without start ticks is never signalled at all."""
+    if not child.get("pgid") or child.get("start_ticks") is None \
+            or not runproc.group_alive(child):
         return
     pgid = int(child["pgid"])
     for sig, wait_s in ((signal.SIGTERM, grace), (signal.SIGKILL, 5.0)):
@@ -245,21 +345,55 @@ def _kill_group(child: dict, grace: float, cont: bool = False) -> None:
             time.sleep(0.05)
 
 
-def reap(job: Path) -> None:
-    """End a lost job's job process group and every gate group `proc.json` records, then
-    write `result.json` with `state: "lost"` (unless the job wrote its own meanwhile)."""
+def _take_lock_nb(job: Path, wait_s: float) -> int | None:
+    """`job.lock`'s flock within `wait_s` (an fd), else None. Caller holds `jobs_lock`."""
+    try:
+        fd = os.open(job / "job.lock", os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        return None
+    end = time.monotonic() + wait_s
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.monotonic() >= end:
+                os.close(fd)
+                return None
+            time.sleep(0.05)
+
+
+def reap(job: Path) -> bool:
+    """End a lost job's job process group (`proc.json`, else the pid `submit` spawned,
+    `spawn.json`) and every gate group `proc.json` records, then write `result.json` with
+    `state: "lost"` (unless the job wrote its own meanwhile). The result is written only while
+    holding `job.lock`, which a job process holds from submit to its exit: a job process that
+    was merely slow to start is killed first, never outlived by a `lost` it later overwrites.
+    False when the lock stayed held (nothing written). Caller holds `jobs_lock`."""
     proc = runproc.read_json(job / "proc.json") or {}
+    spawn = runproc.read_json(job / "spawn.json") or {}
     grace = _kill_grace_s()
-    if proc.get("pid") and _pid_alive(proc):
-        _kill_group({"pid": proc["pid"], "pgid": proc.get("pgid") or proc["pid"],
-                     "start_ticks": proc.get("start_ticks")}, grace, cont=True)
+    for leader in (proc, spawn):
+        if leader.get("pid") and _pid_alive(leader):
+            _kill_group({"pid": leader["pid"], "pgid": leader.get("pgid") or leader["pid"],
+                         "start_ticks": leader.get("start_ticks")}, grace, cont=True)
     for gate in proc.get("gates") or []:
         if isinstance(gate, dict):
             _kill_group(gate, grace)
-    if not (job / "result.json").exists():
-        _write_atomic(job / "result.json", {"state": "lost", "frame": None,
-                                            "reaped_at": now_iso()})
-        _set_job_json(job, state="lost", finished_at=now_iso())
+    fd = _take_lock_nb(job, 1.0)
+    if fd is None:
+        print(f"nw worker: {job.name}: job.lock is still held; not recording it lost",
+              file=sys.stderr)
+        return False
+    try:
+        if not (job / "result.json").exists():
+            _write_atomic(job / "result.json", {"state": "lost", "frame": None,
+                                                "reaped_at": now_iso()})
+            _set_job_json(job, state="lost", finished_at=now_iso())
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    return True
 
 
 def reap_lost(cfg) -> list[str]:
@@ -271,36 +405,36 @@ def reap_lost(cfg) -> list[str]:
     for job in sorted(jd.iterdir()) if jd.is_dir() else []:
         if not job.is_dir() or not _is_async(job) or (job / "result.json").exists():
             continue
-        if job_state(cfg, job, sett)["state"] == "lost":
-            reap(job)
+        if job_state(cfg, job, sett, locked=True)["state"] == "lost" and reap(job):
             out.append(job.name)
     return out
 
 
 # ---- submit ----------------------------------------------------------------------------------
 
-def _end_with_error(cfg, h, job, frames, job_rec, stage, error) -> int:
-    """A claimed job that never got a job process: `error` frame, `result.json`, cleanup."""
+def _unclaim(cfg, job, frames, stage, error) -> int:
+    """A claimed job that never got a job process (the bundle upload broke off, or the spawn
+    failed): its dir goes, so the same header can simply be submitted again. The `error`
+    frame goes to stdout only, with no `n` (there is no job to number it)."""
+    frames.log = None
     frames.emit("error", stage=stage, error=error)
     try:
-        job_rec.update(state="error", stage=stage, error=error, finished_at=now_iso())
-        _write_atomic(job / "job.json", job_rec)
-        W._cleanup(cfg, h, job, start_gc=False)
-        _write_atomic(job / "result.json", {"state": "error", "frame": frames.last,
-                                            "finished_at": now_iso()})
-    except Exception as e:
-        print(f"nw worker: cleanup after error failed: {e}", file=sys.stderr)
+        with W.jobs_lock(cfg):
+            shutil.rmtree(job, ignore_errors=True)
+    except OSError as e:
+        print(f"nw worker: could not remove {job}: {e}", file=sys.stderr)
     return W.EXIT_ERROR
 
 
-def _spawn(cfg, job: Path, lock_fd: int) -> None:
+def _spawn(cfg, job: Path, lock_fd: int) -> subprocess.Popen:
     env = {**os.environ, "NW_DATA_DIR": str(cfg["data_dir"]), LOCK_FD_ENV: str(lock_fd)}
     if cfg.get("config_dir"):
         env["NW_CONFIG_DIR"] = str(cfg["config_dir"])
     with open(job / "stderr.log", "ab") as err:
-        subprocess.Popen([sys.executable, "-m", "nightwright.agentic.worker_job", str(job)],
-                         env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=err, start_new_session=True, pass_fds=(lock_fd,))
+        return subprocess.Popen(
+            [sys.executable, "-m", "nightwright.agentic.worker_job", str(job)], env=env,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
+            start_new_session=True, pass_fds=(lock_fd,))
 
 
 def submit(cfg, stdin, stdout) -> int:
@@ -318,39 +452,52 @@ def submit(cfg, stdin, stdout) -> int:
                 and W.KEY_RE.match(h["job_id"]):
             frames.job_id = h["job_id"]
         W.validate_header(h)
+        if h["job_id"].startswith("-"):          # it could never be named to attach/poll
+            raise W.WorkerError("validate", "job_id must not start with '-'")
     except W.WorkerError as e:
         frames.emit("error", stage=e.stage, error=e.error)
         return W.EXIT_ERROR
     digest = header_digest(h)
     sett = settings(cfg)
     job = W.jobs_dir(cfg) / h["job_id"]
+    existing = None
     with W.jobs_lock(cfg):
         W.jobs_dir(cfg).mkdir(parents=True, exist_ok=True)
         try:
             job.mkdir()
         except FileExistsError:
-            rec = runproc.read_json(job / "job.json") or {}
-            if rec.get("header_digest") == digest:          # idempotent: nothing new starts
-                st = job_state(cfg, job, sett)
-                _print(stdout, _status(h["job_id"], st["state"], n=_last_n(job),
-                                       heartbeat_age_s=st["heartbeat_age_s"]))
-                return 0
-            why = "with a different header" if rec.get("header_digest") else "(a gate-job)"
-            frames.emit("error", stage="claim",
-                        error=f"job {h['job_id']} already exists on this worker {why}")
-            return W.EXIT_ERROR
-        lock_fd = os.open(job / "job.lock", os.O_RDWR | os.O_CREAT, 0o644)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        frames.log = job / "frames.jsonl"
-        payload = h["payload"]
-        job_rec = {"schema": "nw.worker.job.v1", "job_id": h["job_id"], "kind": h["kind"],
-                   "campaign": h["campaign"], "spec_id": h["spec_id"],
-                   "repo_key": h["repo_key"], "commit": h["commit"], "base": h["base"],
-                   "attempt": h.get("attempt"), "seq": payload["seq"],
-                   "tier": payload.get("tier"), "pid": os.getpid(), "claimed_at": now_iso(),
-                   "state": "accepted", "header_digest": digest, "submitted_ts": time.time()}
-        _write_atomic(job / "job.json", job_rec)
-        _write_atomic(job / "header.json", h)
+            existing = runproc.read_json(job / "job.json") or {}
+            if existing.get("header_digest") == digest:
+                if "spawned_ts" not in existing and _lock_held(job) is False:
+                    # its upload broke off and its submit died: no job ever ran, claim afresh
+                    shutil.rmtree(job, ignore_errors=True)
+                    job.mkdir()
+                    existing = None
+                else:
+                    st = job_state(cfg, job, sett, locked=True)
+        if existing is None:
+            lock_fd = os.open(job / "job.lock", os.O_RDWR | os.O_CREAT, 0o644)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            frames.log = job / "frames.jsonl"
+            payload = h["payload"]
+            job_rec = {"schema": "nw.worker.job.v1", "job_id": h["job_id"], "kind": h["kind"],
+                       "campaign": h["campaign"], "spec_id": h["spec_id"],
+                       "repo_key": h["repo_key"], "commit": h["commit"], "base": h["base"],
+                       "attempt": h.get("attempt"), "seq": payload["seq"],
+                       "tier": payload.get("tier"), "pid": os.getpid(),
+                       "claimed_at": now_iso(), "state": "accepted", "header_digest": digest,
+                       "submitted_ts": time.time()}
+            _write_atomic(job / "job.json", job_rec)
+            _write_atomic(job / "header.json", h)
+    if existing is not None:                    # read outside jobs_lock: claims never wait
+        if existing.get("header_digest") == digest:     # idempotent: nothing new starts
+            _print(stdout, _status(h["job_id"], st["state"], n=_last_n(job),
+                                   heartbeat_age_s=st["heartbeat_age_s"]))
+            return 0
+        why = "with a different header" if existing.get("header_digest") else "(a gate-job)"
+        frames.emit("error", stage="claim",
+                    error=f"job {h['job_id']} already exists on this worker {why}")
+        return W.EXIT_ERROR
     try:
         try:
             if h["bundle_bytes"]:
@@ -358,14 +505,19 @@ def submit(cfg, stdin, stdout) -> int:
             _renew(job, sett["job_lease_s"])     # the first lease, before the process exists
             job_rec["spawned_ts"] = time.time()
             _write_atomic(job / "job.json", job_rec)
-            _spawn(cfg, job, lock_fd)
+            child = _spawn(cfg, job, lock_fd)
         except W.WorkerError as e:
-            return _end_with_error(cfg, h, job, frames, job_rec, e.stage, e.error)
+            return _unclaim(cfg, job, frames, e.stage, e.error)
         except OSError as e:
-            return _end_with_error(cfg, h, job, frames, job_rec, "spawn",
-                                   f"could not start the job process: {e}")
+            return _unclaim(cfg, job, frames, "spawn", f"could not start the job process: {e}")
     finally:
         os.close(lock_fd)                       # the job process keeps the flock
+    try:                                        # the pid the kill path needs before proc.json
+        _write_atomic(job / "spawn.json", {"pid": child.pid, "pgid": child.pid,
+                                           "start_ticks": runproc.start_ticks(child.pid),
+                                           "spawned_at": now_iso()})
+    except OSError as e:
+        print(f"nw worker: could not record the job process: {e}", file=sys.stderr)
     _print(stdout, _status(h["job_id"], "accepted", n=0))
     return 0
 
@@ -436,23 +588,26 @@ def poll(cfg, job_id, after: int, renew: bool, stdout) -> int:
 
 def cancel(cfg, job_id, stdout) -> int:
     """`nw worker cancel JOB`: `cancel` file for an accepted/running job, a no-op for a finished
-    one, the kill path for a lost one."""
-    job = _job_or_none(cfg, job_id)
-    if job is None:
-        return _unknown(stdout, job_id)
-    st = job_state(cfg, job)["state"]
-    if st in ("accepted", "running"):
-        if not _is_async(job):
-            print("nw worker: a gate-job is cancelled by closing its stream", file=sys.stderr)
-            _print(stdout, _status(job_id, st))
-            return EXIT_UNKNOWN
-        (job / "cancel").write_text(now_iso() + "\n", encoding="utf-8")
-        _print(stdout, _status(job_id, st, cancel="requested"))
+    one, the kill path for a lost one. All under `jobs_lock`, so the state it acts on is never
+    a half-done claim, and its writes never land in a dir gc is removing."""
+    with W.jobs_lock(cfg):
+        job = _job_or_none(cfg, job_id)
+        if job is None:
+            return _unknown(stdout, job_id)
+        st = job_state(cfg, job, locked=True)["state"]
+        if st in ("accepted", "running"):
+            if not _is_async(job):
+                print("nw worker: a gate-job is cancelled by closing its stream",
+                      file=sys.stderr)
+                _print(stdout, _status(job_id, st))
+                return EXIT_UNKNOWN
+            (job / "cancel").write_text(now_iso() + "\n", encoding="utf-8")
+            _print(stdout, _status(job_id, st, cancel="requested"))
+            return 0
+        if st == "lost":
+            reap(job)
+        _print(stdout, _status(job_id, st))
         return 0
-    if st == "lost":
-        reap(job)
-    _print(stdout, _status(job_id, st))
-    return 0
 
 
 def jobs(cfg) -> list[dict]:
@@ -514,8 +669,10 @@ def _watch(job: Path, proc: dict, cancel: threading.Event, stop: threading.Event
         new = [pid for pid in live if pid not in recorded]
         if new:
             for pid in new:                     # a gate runs in a session of its own
-                recorded[pid] = {"pid": pid, "pgid": pid, "start_ticks": runproc.start_ticks(pid)}
-            proc["gates"] = list(recorded.values())
+                # a gate already gone has no start ticks: nothing to record (or ever signal)
+                ticks = runproc.start_ticks(pid)
+                recorded[pid] = {"pid": pid, "pgid": pid, "start_ticks": ticks}
+            proc["gates"] = [g for g in recorded.values() if g["start_ticks"] is not None]
             try:
                 _write_atomic(job / "proc.json", proc)
             except OSError:

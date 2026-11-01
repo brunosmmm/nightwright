@@ -926,6 +926,11 @@ def info(cfg) -> dict:
 
 # ---- ssh-command -----------------------------------------------------------------------------
 
+def _job_arg(word: str) -> bool:
+    """A `JOB` operand: a key that cannot be read as an option (`--help`, `--renew`)."""
+    return bool(KEY_RE.match(word)) and not word.startswith("-")
+
+
 def check_ssh_command(original: str | None) -> list[str]:
     """The `nw worker` argv (`[sub, *args]`) `SSH_ORIGINAL_COMMAND` asks for, else raise
     `ValueError(reason)`. The grammar is literal: `info [--json]`;
@@ -958,10 +963,10 @@ def check_ssh_command(original: str | None) -> list[str]:
     elif sub == "jobs":
         ok = args in ([], ["--json"])
     elif sub == "cancel":
-        ok = len(args) == 1 and bool(KEY_RE.match(args[0]))
+        ok = len(args) == 1 and _job_arg(args[0])
     elif sub in ("attach", "poll"):
         rest = args[1:]
-        ok = len(args) >= 1 and bool(KEY_RE.match(args[0]))
+        ok = len(args) >= 1 and _job_arg(args[0])
         if ok and rest[:1] == ["--from"]:
             ok = len(rest) >= 2 and bool(DIGITS_RE.match(rest[1]))
             rest = rest[2:]

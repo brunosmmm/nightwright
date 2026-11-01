@@ -366,6 +366,81 @@ A `running` job holds `job.lock`, so `gc --keep-days 0` never removes it.
   spec requires. No other SPEC-0336 test changed.
 - `docs/WORKFLOW.md` lists the new forced-command grammar and describes async jobs.
 
+### Test record (2026-11-01, review round 2)
+
+- `tests/test_worker_jobs.py` now has 58 tests. New or tightened for the review findings:
+  - the lease throttle runs `attach` on a fake clock for `job_lease_s` 300, 900, 60 and 2,
+    and asserts that every rewrite comes more than `min(30, job_lease_s/3)` s after the last
+    one and at most one tick later. A version that renews on every tick fails, and so does one
+    that drops the 30 s cap;
+  - the attached 5 s gate (`job_lease_s=2`) also asserts a lower bound on the rewrite gaps
+    (`>= 2/3 - 0.05` s). It attaches in-process, so the 2 s lease is not spent on a second
+    interpreter's startup. That startup gap was the intermittent failure noted above;
+  - accepted to `lost`: `spawned_ts` past `job_lost_after_s` is `lost`; with no `spawned_ts`
+    and a free lock, `submitted_ts` is used; a recent `spawned_ts`, or a held lock, stays
+    `accepted`. `job.json` mirrors `lost`;
+  - SIGKILLed job process: `job.json` reads `lost` after `poll`, and `lease.json` is unchanged
+    over 2.5 s after `attach` exits (with `job_lease_s=6`, a renewing attach would rewrite
+    every 2 s);
+  - the hung job is `lost` within 3 s;
+  - `cancel` on an `error` job prints `error` and exits 0;
+  - the kill path never signals a recycled pid: `proc.json` / `spawn.json` / gate entries with
+    wrong start ticks, or none, leave a live process alone, and `result.json` reads `lost`;
+  - a job process that never claimed `proc.json` but holds `job.lock`: `result.json` is not
+    written while the lock is held; once `spawn.json` names the process, `cancel` kills it
+    first and then records `lost`;
+  - an unknown `JOB` exits 1 for `poll`, `attach` and `cancel`. `cancel` on a running
+    gate-job dir exits 1 and leaves the job running;
+  - readers never create `job.lock`;
+  - a bundle upload cut short exits 3 (`stage: "read"`, no `n`) and leaves the job id free.
+    A dir left by a submit that died mid-upload is claimed again;
+  - `ssh-command` refuses `JOB` values that read as options; `submit` refuses such a
+    `job_id`; `settings()` caps the heartbeat at a third of `job_lost_after_s`.
+- The fixed sleeps before positive assertions are gone. Attach is stopped once its lease
+  renewal is seen, and the partial-line check waits for two lease rewrites (two follow
+  ticks). The remaining `time.sleep(2.5)` comes before a negative assertion (no renewal).
+- Affected tests (`test_worker_jobs.py`, `test_worker.py`, `test_worker_ssh_command.py`,
+  `test_test_waits.py`, `-n 4`): 210 passed. The gate command (`affected_tests.py` plus
+  `test_agentic_dogfood_config.py` and `test_agentic_project.py`, `-n 2`): 277 passed. The
+  timing-sensitive tests (long gate, dead pid, partial line, hung, re-attach) passed on two
+  more repeat runs. `spec_lint` passes. The full suite was
+  left to gating.
+
+### As shipped (2026-11-01, review round 2)
+
+- **`job.json` mirrors final states.** Any reader that derives `done`, `error` or `lost`
+  for a submit job dir writes it into `job.json` `state` when the file says otherwise. The
+  write happens only under `jobs_lock`, so it never lands in a dir gc is removing. A reader
+  takes that lock without waiting and skips the write when the lock is busy; the next reader
+  then makes it. A SPEC-0336 gate-job dir's `job.json` stays owned by its stream.
+- **`result.json` `lost` is written only under `job.lock`.** A job process holds `job.lock`
+  from submit to its exit. `submit` records the spawned pid and its start ticks in a new
+  `spawn.json`, so the kill path can end a job process that never got as far as `proc.json`.
+  The kill path signals the `proc.json` and `spawn.json` leaders and the gate groups, and
+  takes `job.lock` (waiting up to 1 s). Only then does it write `result.json`. If the lock
+  stays held, nothing is recorded, and gc does not list the job in `jobs_reaped`. A slow
+  starter is therefore killed and never overwrites a `lost` with `done`. `cancel` runs under
+  `jobs_lock`, as gc does.
+- **No signal without start ticks.** The kill path never signals an entry whose start ticks
+  are unknown, and the job process does not record a gate that is already gone (no ticks).
+  The kill path therefore needs `/proc`, which a Linux worker has.
+- **Readers never create `job.lock`.** A dir with no `job.lock` or no `job.json` yet is a
+  claim in progress and reads `accepted`. A dir with a `header_digest` in `job.json` counts
+  as a submit dir even before `header.json` exists.
+- **Heartbeat cap.** `job_heartbeat_s` is capped at a third of `job_lost_after_s`. A slower
+  heartbeat would make a healthy job look hung, and gc would then reap it.
+- **A failed upload or spawn un-claims the job.** When the bundle upload breaks off, or the
+  spawn fails, `submit` removes the job dir and prints the `error` frame on stdout only,
+  with no `n`. This replaces the earlier `result.json` `error`, which turned an identical
+  resubmit into an exit 0 with state `error`. It also means only the job process ever numbers
+  a frame. A resubmit with the same digest reclaims a dir that never spawned and whose lock
+  is free (its submit died mid-upload with no cleanup).
+- **Cheaper reads.** `jobs` and the idempotent `submit` take the last `n` from the tail of
+  `frames.jsonl` and never read earlier frames. The idempotent `submit` prints after
+  releasing `jobs_lock`.
+- **Option-like `JOB`.** `ssh-command` refuses a `JOB` that starts with `-`, and `submit`
+  refuses such a `job_id` (`stage: "validate"`), because it could never be named to `attach`.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.

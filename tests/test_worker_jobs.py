@@ -164,6 +164,9 @@ def test_attach_after_a_checkout_error_exits_3(src, tmp_path, wenv):
     assert err["type"] == "error" and err["stage"] == "checkout" and err["n"] == 1
     assert _result(wenv, "j-err")["state"] == "error"
     assert _nw_jobs(wenv)["j-err"]["state"] == "error"
+    c = LB.run(wenv, "nw worker cancel j-err")              # a no-op on a finished job
+    assert c.returncode == 0 and _recs(c)[-1]["state"] == "error"
+    assert _result(wenv, "j-err")["state"] == "error"
 
 
 def test_reattach_after_a_dropped_connection_loses_and_repeats_nothing(src, tmp_path, wenv):
@@ -175,9 +178,11 @@ def test_reattach_after_a_dropped_connection_loses_and_repeats_nothing(src, tmp_
     assert first.dropped
     seen = _recs(first)
     assert [f["n"] for f in seen] == [1, 2, 3]
-    # an attach killed by SIGTERM never cancels the job
+    # an attach killed by SIGTERM never cancels the job (killed once it renewed: it is following)
+    lease = _job_dir(wenv, h["job_id"]) / "lease.json"
+    before = _read(lease)["lease_until"]
     p = LB.start(wenv, f"nw worker attach {h['job_id']} --from 3", b"")
-    time.sleep(0.3)
+    assert until(lambda: (_read(lease) or {}).get("lease_until", before) != before)
     p.terminate()
     p.wait(timeout=WAIT_S)
     assert _state_in_process(wenv, h["job_id"])["state"] == "running"
@@ -195,7 +200,9 @@ def _fake_job(env, job_id):
     job = W.jobs_dir(_cfg(env)) / job_id
     job.mkdir(parents=True)
     (job / "header.json").write_text("{}\n")
-    (job / "job.json").write_text(json.dumps({"job_id": job_id, "state": "running"}) + "\n")
+    (job / "job.json").write_text(json.dumps({"job_id": job_id, "state": "running",
+                                              "header_digest": "x"}) + "\n")
+    (job / "job.lock").touch()
     me = os.getpid()
     from nightwright.agentic import runproc
     (job / "proc.json").write_text(json.dumps(
@@ -211,6 +218,7 @@ def _frame(job_id, n, type_="gate", **kw):
 
 
 def test_a_partial_last_line_is_held_back_until_its_newline(wenv):
+    wenv = _conf(wenv, job_lease_s=1.2)     # attach rewrites the lease every tick (0.4 s < 0.5)
     job = _fake_job(wenv, "j-part")
     second = _frame("j-part", 2, blob="x" * 100_000)
     with open(job / "frames.jsonl", "wb") as f:
@@ -223,7 +231,12 @@ def test_a_partial_last_line_is_held_back_until_its_newline(wenv):
     t = threading.Thread(target=lambda: lines.extend(p.stdout), daemon=True)
     t.start()
     assert until(lambda: len(lines) == 1)
-    time.sleep(0.8)                                       # over one follow tick
+    seen = set()
+
+    def ticks():
+        seen.add((_read(job / "lease.json") or {}).get("lease_until"))
+        return len(seen - {None}) >= 3
+    assert until(ticks)                                   # two more follow ticks went by
     assert len(lines) == 1
     with open(job / "frames.jsonl", "ab") as f:
         f.write(second[50_000:])
@@ -267,32 +280,70 @@ def test_a_long_silent_gate_is_never_cancelled_while_attached(src, tmp_path, wen
                     lapsed.append(rec)
             time.sleep(0.02)
 
+    out = io.BytesIO()
     assert _submit(env, h, data).returncode == 0
     w = threading.Thread(target=watch, daemon=True)
     w.start()
     try:
-        a = _attach(env, h["job_id"])
+        # in-process: the 2 s lease is not spent on a second interpreter's startup
+        rc = WJ.attach(_cfg(env, job_lease_s=2), h["job_id"], 0, out)
     finally:
         stop.set()
         w.join(WAIT_S)
-    assert a.returncode == 0, a.stderr
-    frames = _recs(a)
+    assert rc == 0, (_job_dir(env, h["job_id"]) / "stderr.log").read_text()
+    frames = [json.loads(ln) for ln in out.getvalue().splitlines()]
     assert frames[-1]["type"] == "done"
     assert frames[-1]["ok"] is True and frames[-1]["interrupted"] is False
     assert not lapsed
-    gaps = [b - a for a, b in zip(changes, changes[1:])]
+    attached = changes[1:]                  # changes[0] is submit's lease, seen first
+    gaps = [b - a for a, b in zip(attached, attached[1:])]
     # min(30, 2/3) s apart, give or take a follow tick (plus one for a loaded machine);
     # `not lapsed` above is the hard bound
     assert gaps and max(gaps) <= 2 / 3 + 2 * WJ.FOLLOW_TICK_S, gaps
+    assert min(gaps) >= 2 / 3 - 0.05, gaps                # throttled: never every tick
 
 
-def test_attach_rewrites_the_lease_at_most_every_third_of_it():
-    assert min(WJ.LEASE_REWRITE_MAX_S, WJ.DEFAULTS["job_lease_s"] / 3) == 30.0
+class _Clock:
+    """`worker_job`'s `time` for one attach: `sleep` advances a fake monotonic clock (wall time
+    stays real), and once it reaches `stop_at` the job's `done` frame appears."""
+
+    def __init__(self, job, stop_at):
+        self.job, self.stop_at, self.t = job, stop_at, 0.0
+        self.time = time.time
+
+    def monotonic(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+        if self.t >= self.stop_at and not (self.job / "frames.jsonl").exists():
+            (self.job / "frames.jsonl").write_bytes(_frame(self.job.name, 1, "done", ok=True))
+
+
+@pytest.mark.parametrize("lease_s, every", [(300, 30.0), (900, 30.0), (60, 20.0), (2, 2 / 3)])
+def test_attach_rewrites_the_lease_at_most_every_third_of_it(wenv, monkeypatch, lease_s, every):
+    job = _fake_job(wenv, "j-clk")
+    clock = _Clock(job, stop_at=3 * every + 2)
+    renews, real = [], WJ._renew
+    monkeypatch.setattr(WJ, "time", clock)
+    monkeypatch.setattr(WJ, "_renew", lambda j, s: (renews.append(clock.t), real(j, s)))
+    assert WJ.attach(_cfg(wenv, job_lease_s=lease_s), "j-clk", 0, io.BytesIO()) == 0
+    gaps = [b - a for a, b in zip(renews, renews[1:])]
+    # renewed on the first tick, then once more than `every` passed: one tick late at most
+    assert renews[0] == 0 and len(gaps) == 3, renews
+    assert all(every < g <= every + WJ.FOLLOW_TICK_S for g in gaps), renews
+
+
+def test_settings_defaults_and_the_heartbeat_cap():
     s = WJ.settings({"agentic": {"workers": {"job_lease_s": 2, "job_heartbeat_s": 0.5,
                                              "job_lost_after_s": "bad"}}})
     assert s == {"job_lease_s": 2.0, "job_heartbeat_s": 0.5, "job_lost_after_s": 60.0}
     assert WJ.settings({}) == {"job_lease_s": 900.0, "job_heartbeat_s": 10.0,
                                "job_lost_after_s": 60.0}
+    # a heartbeat as slow as the lost bound would make a healthy job look hung
+    for hb in (60, 120):
+        s = WJ.settings({"agentic": {"workers": {"job_heartbeat_s": hb}}})
+        assert s["job_heartbeat_s"] == 20.0 and s["job_lost_after_s"] == 60.0
 
 
 # ---- lost jobs -------------------------------------------------------------------------------
@@ -308,8 +359,8 @@ def _hung_job(src, tmp_path, env, name):
     proc = _proc(env, name, gates=True)
     os.kill(proc["pid"], signal.SIGSTOP)
     t0 = time.monotonic()
-    assert until(lambda: _state_in_process(env, name, **LOST)["state"] == "lost", timeout=3.5)
-    assert time.monotonic() - t0 <= 3.5
+    assert until(lambda: _state_in_process(env, name, **LOST)["state"] == "lost", timeout=3.0)
+    assert time.monotonic() - t0 <= 3.0
     assert _poll(env, name)[-1]["state"] == "lost"
     return proc, sleep_pid
 
@@ -337,17 +388,17 @@ def test_gc_reaps_a_hung_job(src, tmp_path, wenv):
 
 
 def test_a_dead_job_process_is_lost_and_attach_exits_4(src, tmp_path, wenv):
-    env = _conf(wenv, job_lease_s=60)
+    env = _conf(wenv, job_lease_s=6)        # attach would rewrite the lease every 2 s
     pidfile = tmp_path / "sleep.pid"
     h, data = _bundle_job(src, tmp_path, [_sleeper(pidfile)])
+    job = _job_dir(env, h["job_id"])
     assert _submit(env, h, data).returncode == 0
-    sleep_pid = _sleep_pid(pidfile)
     p = LB.start(env, f"nw worker attach {h['job_id']} --from 0", b"")
     lines = []
     t = threading.Thread(target=lambda: lines.extend(p.stdout), daemon=True)
     t.start()
+    sleep_pid = _sleep_pid(pidfile)
     assert until(lambda: any(json.loads(ln)["type"] == "started" for ln in lines))
-    lease = _read(_job_dir(env, h["job_id"]) / "lease.json")
     os.kill(_proc(env, h["job_id"])["pid"], signal.SIGKILL)
     t0 = time.monotonic()
     assert p.wait(timeout=WAIT_S) == 4
@@ -355,10 +406,11 @@ def test_a_dead_job_process_is_lost_and_attach_exits_4(src, tmp_path, wenv):
     t.join(WAIT_S)
     last = json.loads(lines[-1])
     assert last["type"] == "status" and last["state"] == "lost" and "heartbeat_age_s" in last
-    time.sleep(0.6)
-    assert _read(_job_dir(env, h["job_id"]) / "lease.json")["lease_until"] \
-        <= lease["lease_until"] + 60                    # no renewal after the exit
+    at_exit = _read(job / "lease.json")["lease_until"]
+    time.sleep(2.5)                                     # over one 2 s rewrite interval
+    assert _read(job / "lease.json")["lease_until"] == at_exit     # no renewal after the exit
     assert _poll(env, h["job_id"])[-1]["state"] == "lost"
+    assert _read(job / "job.json")["state"] == "lost"   # job.json mirrors the derived state
     # the orphaned gate is reaped by cancel's kill path
     assert LB.run(env, f"nw worker cancel {h['job_id']}").returncode == 0
     assert until(lambda: not _alive(sleep_pid))
@@ -441,7 +493,9 @@ def test_jobs_lists_every_state_and_gc_keeps_only_the_running_job(src, tmp_path,
     acc = W.jobs_dir(_cfg(env)) / "j-acc"                 # claimed, process not started yet
     acc.mkdir()
     (acc / "header.json").write_text("{}\n")
-    (acc / "job.json").write_text(json.dumps({"spawned_ts": time.time() + 600}) + "\n")
+    (acc / "job.json").write_text(json.dumps({"header_digest": "x",
+                                              "spawned_ts": time.time() + 600}) + "\n")
+    (acc / "job.lock").touch()
     assert until(lambda: _nw_jobs(env)["j-lost"]["state"] == "lost")
     states = {k: v["state"] for k, v in _nw_jobs(env).items()}
     assert states == {"j-done": "done", "j-error": "error", "j-run": "running",
@@ -493,6 +547,8 @@ def test_ssh_command_admits_the_async_subcommands(execs, cmd, argv):
     "nw worker poll j/1", "nw worker poll j-1 --renew --from 2",
     "nw worker cancel", "nw worker cancel j-1 j-2", "nw worker cancel '$(id)'",
     "nw worker jobs --all",
+    "nw worker poll --renew", "nw worker attach --help", "nw worker attach -x --from 0",
+    "nw worker cancel --help",
 ])
 def test_ssh_command_refuses_bad_job_or_cursor(execs, cmd):
     assert W.ssh_command({"SSH_ORIGINAL_COMMAND": cmd}) == 2
@@ -514,3 +570,154 @@ def test_the_worker_cli_has_the_async_commands():
     assert r.exit_code == 0 and "--from" in r.output
     r = CliRunner().invoke(cli_worker.worker_group, ["attach", "j-1", "--from", "-1"])
     assert r.exit_code == 2                                 # --from is a non-negative integer
+
+
+# ---- review round 2: accepted -> lost, the kill path's guards, edge commands ------------------
+
+def _async_dir(env, job_id, lock=True, **job):
+    """A submit job dir with no job process (yet): `header.json`, `job.json`, `job.lock`."""
+    d = W.jobs_dir(_cfg(env)) / job_id
+    d.mkdir(parents=True)
+    (d / "header.json").write_text("{}\n")
+    (d / "job.json").write_text(json.dumps({"job_id": job_id, "state": "accepted",
+                                            "header_digest": "x", **job}) + "\n")
+    if lock:
+        (d / "job.lock").touch()
+    return d
+
+
+def _flock(path):
+    import fcntl
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def test_an_accepted_job_that_never_claims_proc_json_goes_lost(wenv):
+    env = _conf(wenv, job_lost_after_s=30)
+    old = time.time() - 100
+    _async_dir(env, "j-spawned-old", spawned_ts=old, submitted_ts=old)
+    _async_dir(env, "j-spawned-new", spawned_ts=time.time(), submitted_ts=old)
+    _async_dir(env, "j-sub-old", submitted_ts=old)          # no spawned_ts, lock free
+    held = _async_dir(env, "j-sub-held", submitted_ts=old)  # submit still spooling
+    fd = _flock(held / "job.lock")
+    try:
+        assert _poll(env, "j-spawned-old")[-1]["state"] == "lost"
+        assert _poll(env, "j-sub-old")[-1]["state"] == "lost"   # timed from submitted_ts
+        assert _poll(env, "j-spawned-new")[-1]["state"] == "accepted"
+        assert _poll(env, "j-sub-held")[-1]["state"] == "accepted"
+        states = {k: v["state"] for k, v in _nw_jobs(env).items()}
+        assert states == {"j-spawned-old": "lost", "j-sub-old": "lost",
+                          "j-spawned-new": "accepted", "j-sub-held": "accepted"}
+        # job.json mirrors the derived state
+        assert _read(_job_dir(env, "j-spawned-old") / "job.json")["state"] == "lost"
+        assert _read(_job_dir(env, "j-spawned-new") / "job.json")["state"] == "accepted"
+    finally:
+        os.close(fd)
+
+
+def test_a_reader_never_creates_job_lock(wenv):
+    d = _async_dir(wenv, "j-claiming", lock=False, submitted_ts=time.time() - 3600)
+    assert _poll(wenv, "j-claiming")[-1]["state"] == "accepted"     # a claim in progress
+    assert _nw_jobs(wenv)["j-claiming"]["state"] == "accepted"
+    assert not (d / "job.lock").exists()
+
+
+def test_reap_never_signals_a_recycled_pid(wenv, monkeypatch):
+    import subprocess
+
+    from nightwright.agentic import runproc
+    monkeypatch.setenv(WJ.KILL_GRACE_ENV, "0.2")
+    sleeper = subprocess.Popen(["sleep", "600"], start_new_session=True)
+    try:
+        ticks = runproc.start_ticks(sleeper.pid)
+        d = _async_dir(wenv, "j-recycled")
+        me = {"pid": sleeper.pid, "pgid": sleeper.pid}
+        (d / "proc.json").write_text(json.dumps(
+            {**me, "start_ticks": ticks + 1, "started_ts": time.time(),
+             "gates": [{**me, "start_ticks": ticks + 7}, {**me, "start_ticks": None}]}))
+        (d / "spawn.json").write_text(json.dumps({**me, "start_ticks": ticks + 3}))
+        out = io.BytesIO()
+        assert WJ.cancel(_cfg(wenv), "j-recycled", out) == 0
+        assert json.loads(out.getvalue().splitlines()[-1])["state"] == "lost"
+        assert _read(d / "result.json")["state"] == "lost"
+        assert sleeper.poll() is None                       # never signalled
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=WAIT_S)
+
+
+def test_reap_kills_a_slow_starting_job_process_before_recording_lost(wenv, monkeypatch):
+    import subprocess
+    import sys
+
+    from nightwright.agentic import runproc
+    monkeypatch.setenv(WJ.KILL_GRACE_ENV, "0.5")
+    env = _conf(wenv, job_lost_after_s=2)
+    d = _async_dir(env, "j-slow", spawned_ts=time.time() - 10)
+    # the "job process": it holds job.lock (as one handed it by submit does) but never got
+    # as far as proc.json
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import fcntl, os, sys, time\n"
+         f"fd = os.open({str(d / 'job.lock')!r}, os.O_RDWR)\n"
+         "fcntl.flock(fd, fcntl.LOCK_EX); print('locked', flush=True); time.sleep(600)"],
+        stdout=subprocess.PIPE, start_new_session=True)
+    try:
+        assert child.stdout.readline() == b"locked\n"
+        # unknown to the kill path (no spawn.json): the lock stays held, nothing is recorded
+        out = io.BytesIO()
+        assert WJ.cancel(_cfg(env, job_lost_after_s=2), "j-slow", out) == 0
+        assert not (d / "result.json").exists() and child.poll() is None
+        (d / "spawn.json").write_text(json.dumps(
+            {"pid": child.pid, "pgid": child.pid,
+             "start_ticks": runproc.start_ticks(child.pid)}))
+        assert WJ.cancel(_cfg(env, job_lost_after_s=2), "j-slow", out) == 0
+        assert child.wait(timeout=WAIT_S) is not None       # killed first ...
+        assert _read(d / "result.json")["state"] == "lost"  # ... then recorded lost
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=WAIT_S)
+
+
+def test_unknown_job_and_cancel_on_a_running_gate_job_exit_1(src, tmp_path, wenv):
+    for cmd in ("poll nope", "attach nope --from 0", "cancel nope"):
+        r = LB.run(wenv, f"nw worker {cmd}")
+        assert r.returncode == 1 and _recs(r)[-1]["state"] == "unknown", cmd
+    pidfile = tmp_path / "sleep.pid"
+    h, data = _bundle_job(src, tmp_path, [_sleeper(pidfile)])
+    job = Job(wenv, h, data)
+    pid = _sleep_pid(pidfile)
+    r = LB.run(wenv, f"nw worker cancel {h['job_id']}")
+    assert r.returncode == 1 and _recs(r)[-1]["state"] == "running"
+    assert _alive(pid) and not (_job_dir(wenv, h["job_id"]) / "cancel").exists()
+    job.close()                                             # its stream owns it
+    fin = job.final()
+    assert fin["type"] == "done" and fin["interrupted"] is True
+    assert until(lambda: not _alive(pid))
+
+
+def test_a_broken_off_upload_leaves_the_job_id_free(src, tmp_path, wenv):
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    cut = _submit(wenv, h, data[: len(data) // 2])
+    assert cut.returncode == 3
+    (err,) = _recs(cut)
+    assert err["type"] == "error" and err["stage"] == "read" and "n" not in err
+    assert not _job_dir(wenv, h["job_id"]).exists()
+    # a submit that died mid-upload (no cleanup): the never-spawned, unlocked dir is reclaimed
+    d = _async_dir(wenv, h["job_id"], header_digest=WJ.header_digest(h),
+                   submitted_ts=time.time())
+    (d / "bundle").write_bytes(data[:10])
+    again = _submit(wenv, h, data)
+    assert again.returncode == 0, again.stderr
+    assert _recs(again)[0]["state"] == "accepted"
+    a = _attach(wenv, h["job_id"])
+    assert a.returncode == 0 and _recs(a)[-1]["type"] == "done"
+
+
+def test_submit_refuses_a_job_id_that_reads_as_an_option(src):
+    out = io.BytesIO()
+    h = _header("-x", src.head, src.base, [_gate("x", "true")], bundle_bytes=0)
+    rc = WJ.submit({"data_dir": "/nonexistent"}, io.BytesIO((json.dumps(h) + "\n").encode()), out)
+    (err,) = [json.loads(ln) for ln in out.getvalue().splitlines()]
+    assert rc == 3 and err["stage"] == "validate"
