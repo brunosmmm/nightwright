@@ -2557,11 +2557,14 @@ def doctor_cmd(ctx, as_json, project, fix_hints):
     from rich.text import Text
     from . import doctor as D
     from .render import section_table
-    from .rules import projects_payload
+    from .rules import registered_projects
     cfg = ctx.obj
     if project and cfg is not None:
-        names = [p["name"] for p in projects_payload(cfg)["projects"]]
-        if project not in names:
+        try:
+            names = registered_projects(cfg)
+        except Exception:       # a broken mappings.yaml: run() reports it as install.projects
+            names = None
+        if names is not None and project not in names:
             raise click.BadParameter(f"unknown project {project!r}; known: {', '.join(names)}",
                                      param_hint="--project")
     checks = D.run(cfg, project=project, config_error=ctx.meta.get("nw.config_error"))
@@ -2579,7 +2582,7 @@ def doctor_cmd(ctx, as_json, project, fix_hints):
             table.add_column("summary", ratio=1)
             for c in items:
                 glyph, style = _DOCTOR_GLYPHS[c["status"]]
-                table.add_row(Text(glyph, style=style), c["id"], Text(c["summary"]))
+                table.add_row(Text(glyph, style=style), Text(c["id"]), Text(c["summary"]))
                 if c["status"] in ("warn", "fail") and c["detail"]:
                     table.add_row("", "", Text(c["detail"], style="dim"))
                 if fix_hints and c["fix"]:

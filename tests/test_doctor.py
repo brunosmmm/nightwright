@@ -577,6 +577,51 @@ def test_project_option_limits_and_rejects_unknown(home, tmp_path):
     assert r.exit_code == 2 and "unknown project" in r.output
 
 
+def test_invalid_checkout_with_project_reports_not_raises(home, tmp_path):
+    repo = tmp_path / "Foo"
+    (repo / ".nw").mkdir(parents=True)
+    (repo / ".nw" / "project.yaml").write_text(project_yaml("Foo"))
+    write_config(home, f"outbox_targets:\n  Foo: {{repo_path: {repo}}}\n")
+    path = home / ".config/nightwright/config.yaml"
+    not_a_checkout = tmp_path / "typo"
+    not_a_checkout.mkdir()
+    path.write_text(path.read_text().replace(str(tmp_path / "checkout"), str(not_a_checkout)))
+    r = invoke("--project", "Foo", "--json")
+    assert r.exit_code == 1 and (r.exception is None or isinstance(r.exception, SystemExit))
+    assert "Traceback" not in r.output
+    doc = json.loads(r.output)
+    jsonschema.validate(doc, D.DOCTOR_SCHEMA)
+    checks = by_id(doc["checks"])
+    assert checks["install.checkout"]["status"] == "fail"
+    assert checks["tools.gh_auth"]["status"] != "fail"
+    assert checks["project.Foo.config"]["status"] == "ok"            # outbox project still checked
+    assert not [i for i in checks if i.startswith("project.Meta-Tools")]
+    ids = [c["id"] for c in json.loads(invoke("--json").output)["checks"]]
+    assert "project.Foo.config" in ids
+    meta = by_id(json.loads(invoke("--json").output)["checks"])["project.Meta-Tools.config"]
+    assert meta["status"] == "fail" and meta["summary"] == "research root did not resolve"
+
+
+def test_unlistable_projects_reported_under_own_id(home, tmp_path, monkeypatch):
+    from nightwright import rules
+    cfg = write_config(home)
+    def boom(cfg):
+        raise ValueError("mappings.yaml: bad")
+    monkeypatch.setattr(rules, "registered_projects", boom)
+    t = Tools()
+    checks = by_id(D.run(cfg, which=t.which, run_cmd=t.run))
+    assert checks["install.projects"]["status"] == "fail"
+    assert "mappings.yaml: bad" in checks["install.projects"]["detail"]
+    assert checks["tools.gh_auth"]["status"] == "skip"
+    r = invoke("--project", "Foo", "--json")                        # no usage error, no traceback
+    assert r.exit_code == 1 and by_id(json.loads(r.output)["checks"])["install.projects"]
+
+
+def test_schema_accepts_project_names_with_spaces():
+    doc = D.payload([D.check("project.My Proj.config", "ok", "fine")])
+    jsonschema.validate(doc, D.DOCTOR_SCHEMA)
+
+
 def test_human_output_groups_fix_hints_and_counts(home, tmp_path):
     write_config(home, timezone=False)
     r = CliRunner().invoke(cli, ["doctor"], env={"COLUMNS": "200"})

@@ -288,6 +288,16 @@ Projects are those in `rules.projects_payload(cfg)` with a resolvable research r
   tests/test_doctor.py`: 94 passed; `tests/test_docs_readme_front_door.py`: 2 passed. Full suite
   left to the gate.
 
+- Review fix (loop 3): an invalid `nw_checkout:` (or an unloadable project list) no longer
+  crashes `nw doctor --project NAME`. New tests `test_invalid_checkout_with_project_reports_not_raises`,
+  `test_unlistable_projects_reported_under_own_id`, `test_schema_accepts_project_names_with_spaces`.
+  `uv run pytest -q -n0 tests/test_doctor.py tests/test_completion.py tests/test_agentic_profiles_cli.py
+  tests/test_agentic_queue_cli.py tests/test_projects_json.py tests/test_project_registry.py`:
+  142 passed. Manual: a scratch config with `nw_checkout: <empty dir>` plus `uv run nw doctor
+  --project Meta-Tools --json` gives valid JSON, exit 1, `install.checkout` fail,
+  `project.Meta-Tools.config` fail, `tools.gh_auth` skip, and no traceback. Full suite left to
+  the gate.
+
 ### As shipped (2026-11-01)
 
 - Shipped as designed: `src/nightwright/doctor.py` (one `check_*` per row, `run`, `payload`,
@@ -307,6 +317,17 @@ Projects are those in `rules.projects_payload(cfg)` with a resolvable research r
   `completion.installed` warn for bash (the agent's `$SHELL` is bash; the fish file is
   installed, and doctor checks only `$SHELL`). Skips: `jerome` / `pwrctl` have no
   `.nw/project.yaml` (outbox-only).
+- Broken-config resilience (loop 3 review): `project_roots` resolves each project's root
+  separately, so a project whose root raises (Meta-Tools under an invalid `nw_checkout:`)
+  gets `project.<Name>.config: fail` ("research root did not resolve") and
+  `project.<Name>.profiles: skip`, and the other projects are still checked. If the project
+  list itself cannot be built (for example an unparseable mappings.yaml), doctor emits an
+  extra id that is not in the Design table, `install.projects: fail`, and sets
+  `tools.gh_auth` to skip instead of failing it. `--project` validation uses
+  `rules.registered_projects` (it no longer resolves roots) and is skipped when that raises,
+  so `run()` reports the problem instead of a traceback. The `DOCTOR_SCHEMA` id pattern was
+  loosened to `<group>.<anything>` so project names with spaces or dots still validate, and
+  the human table renders ids as plain `Text`, so Rich markup in a name is never parsed.
 
 ## Docs
 

@@ -51,7 +51,7 @@ DOCTOR_SCHEMA = {
                 "type": "object",
                 "required": ["id", "group", "status", "summary", "detail", "fix"],
                 "properties": {
-                    "id": {"type": "string", "pattern": r"^[A-Za-z0-9_-]+(\.[^.\s]+)+$"},
+                    "id": {"type": "string", "pattern": r"^[A-Za-z0-9_-]+\..+$"},
                     "group": {"type": "string", "minLength": 1},
                     "status": {"enum": list(STATUSES)},
                     "summary": {"type": "string"},
@@ -433,15 +433,23 @@ def check_workers(cfg) -> dict:
 
 # ---- projects ------------------------------------------------------------------------------
 
-def project_roots(cfg, only=None) -> list:
-    """`[(name, root)]` for registered projects with a research root (`only` limits to one)."""
-    from .rules import projects_payload
-    out = []
-    for p in projects_payload(cfg)["projects"]:
-        root = (p.get("research") or {}).get("root")
-        if root and (only is None or p["name"] == only):
-            out.append((p["name"], Path(os.path.expanduser(root))))
-    return out
+def project_roots(cfg, only=None) -> tuple:
+    """`([(name, root)], [(name, error)])` for registered projects with a research root (`only`
+    limits to one). A project whose root fails to resolve (Meta-Tools under an invalid
+    `nw_checkout:`) goes to the error list instead of failing the whole listing."""
+    from .rules import registered_projects, resolve_research_context
+    roots, errors = [], []
+    for name in registered_projects(cfg):
+        if only is not None and name != only:
+            continue
+        try:
+            root = (resolve_research_context(cfg, name) or {}).get("root")
+        except Exception as e:
+            errors.append((name, f"{type(e).__name__}: {e}"))
+            continue
+        if root:
+            roots.append((name, Path(os.path.expanduser(root))))
+    return roots, errors
 
 
 def pr_projects(cfg, roots) -> list:
@@ -573,19 +581,25 @@ def run(cfg, *, project=None, config_error=None, which=None, run_cmd=None,
     for name in ("uv", "git", "claude"):
         out.append(_safe(f"tools.{name}", check_tool, name, which=which, run_cmd=run_cmd))
     out.append(_safe("tools.gh", check_gh, which=which, run_cmd=run_cmd))
-    roots = []
+    roots, root_errors, listing = [], [], None
     if cfg is None:
         out.append(_skip_no_config("tools.gh_auth"))
     else:
         try:
-            roots = project_roots(cfg, project)
+            roots, root_errors = project_roots(cfg, project)
+        except Exception as e:      # e.g. an unparseable mappings.yaml
+            listing = check("install.projects", "fail", "could not list projects",
+                            detail=f"{type(e).__name__}: {e}",
+                            fix="fix mappings.yaml / outbox_targets, then `nw projects`")
+            out.append(check("tools.gh_auth", "skip", "projects could not be listed"))
+        else:
             out.append(_safe("tools.gh_auth", check_gh_auth, pr_projects(cfg, roots),
                              which=which, run_cmd=run_cmd))
-        except Exception as e:
-            out.append(check("tools.gh_auth", "fail", "could not list projects", detail=str(e)))
     out.append(_safe("install.nw_on_path", check_nw_on_path, which=which))
     out.append(_safe("install.checkout", check_checkout, cfg) if cfg is not None
                else _skip_no_config("install.checkout"))
+    if listing is not None:
+        out.append(listing)
     out.append(_safe("config.parse", check_config_parse, config_error))
     out.append(_safe("config.timezone", check_timezone, cfg))
     out.append(_safe("config.org_ideas_file", check_org_ideas_file, cfg))
@@ -602,6 +616,10 @@ def run(cfg, *, project=None, config_error=None, which=None, run_cmd=None,
     for name, root in roots:
         out.append(_safe(f"project.{name}.config", check_project_config, cfg, name, root))
         out.append(_safe(f"project.{name}.profiles", check_project_profiles, cfg, name, root))
+    for name, err in root_errors:
+        out.append(check(f"project.{name}.config", "fail", "research root did not resolve",
+                         detail=err, fix="see install.checkout / `nw projects`"))
+        out.append(check(f"project.{name}.profiles", "skip", "research root did not resolve"))
     out.append(_safe("legacy.wt_dirs", check_legacy_wt))
     history = os.path.join(data_dir, (cfg or {}).get("history_file") or "history.jsonl")
     out.append(_safe("retention.cleanup_period", check_retention, history))
