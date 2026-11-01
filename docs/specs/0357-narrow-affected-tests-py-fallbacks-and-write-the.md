@@ -324,6 +324,13 @@ working unchanged, because the new flags and the env var are additive and strict
   plus an unmapped file giving full, the leading-`_` name token, the tests-over-tools stem tie-break, an
   unreached package-data reader, `--changed` normalization and an empty `--changed` value.
 
+- Review loop 2 follow-ups: `uv run pytest -q tests/test_affected_tests.py tests/test_affected_tests_replay.py`:
+  100 passed. New cases: closure negative assertions (files no selected test reads are absent), a data file
+  reached through a src closure module, directory readers and subprocess-run tools in the closure, a tools
+  stem shadowed by a tests module, `nearest_tests` not walking past a tools module, the smoke set running
+  on a docs-only selection, and newline-joined `--changed` values. The real-tree
+  `--json --closure --changed .nw/project.yaml` now gives 78 tests and a 202-path closure.
+
 ### As shipped (2026-11-01)
 
 - `base_sha` is the merge-base commit (`git merge-base BASE HEAD`) the diff is taken against.
@@ -344,6 +351,19 @@ working unchanged, because the new flags and the env var are additive and strict
 - A package-data change now handles each referencing src reader on its own: its nearest tests, else the
   name rule, else a full fallback (`no test reaches <reader> (reads <data>)`). A reader that no test reaches is
   no longer dropped when another reader has tests.
+- The closure is a real fixed point and errs wide: a data file joins it when any closure module names its
+  basename *or* has a path-shaped reference to its parent directory (the directory needle is no longer
+  skipped when some other module names the basename), and tracked `tools/*.py` scripts join when a closure
+  module names them (a subprocess path), bringing their own imports. A same-named `data` directory elsewhere
+  is therefore an accepted over-inclusion. A tools module shadowed by a tests/src module of the same name is
+  added to the closure whenever the shadowing name is.
+- Selection for a changed `tools/X.py` shadowed by `tests/X.py` is unchanged: module names are resolved by
+  name, so the importers of `X` are the same set either way; only the closure needed the shadow entry.
+- `--changed` values holding several newline-joined paths (`$(git diff --name-only ...)`) are split, so a
+  multi-file diff passed as one argument cannot slip past the full-suite triggers. An unknown path still
+  selects nothing (the "anything else" row).
+- With `--include`, a branch that maps to nothing (docs only) now runs the smoke set instead of printing
+  `no affected tests` (pinned by a test).
 
 ## Risks
 

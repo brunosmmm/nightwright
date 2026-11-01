@@ -600,3 +600,74 @@ def test_report_is_written_on_the_run_path(repo2, tmp_path, monkeypatch, change,
                         "head_tree"}
     assert rep["full"] is full and rep["tests"] == tests and rep["include"] == include
     assert rep["changed"] == [change]
+
+
+# --- SPEC-0357 review loop 2: closure precision/width, tools hops, smoke on empty, newline paths ---
+
+def _closure(repo, *changed):
+    return json.loads(_cli(repo, "--json", "--closure", "--changed", *changed).stdout)["closure"]
+
+
+def test_closure_does_not_include_files_the_tests_do_not_read(repo2):
+    clo = _closure(repo2, "tests/data/golden.json")
+    assert {"tests/test_golden.py", "tests/data/golden.json"} <= set(clo)
+    # (a same-named `data` directory elsewhere is a known over-inclusion of the directory needle)
+    for unread in (".nw/project.yaml", "tests/test_cfg.py", "tools/other.py",
+                   "src/nightwright/base.py", "tests/fixtures/a.txt"):
+        assert unread not in clo, unread
+
+
+def test_closure_reaches_a_data_file_through_a_src_closure_module(repo2):
+    clo = _closure(repo2, "tests/test_loader.py")
+    assert {"tests/test_loader.py", "src/nightwright/pkg/loader.py",
+            "src/nightwright/pkg/data/x.md"} <= set(clo)
+    assert ".nw/project.yaml" not in clo and "tests/fixtures/a.txt" not in clo
+
+
+def test_closure_includes_directory_readers_even_when_another_module_names_the_basename(repo2):
+    # test_golden names golden.json, test_dirpath only has Path(__file__).parent / "data"
+    clo = _closure(repo2, "tests/test_dirpath.py")
+    assert {"tests/data/golden.json", "tests/data/other.json"} <= set(clo)
+    assert "tests/fixtures/a.txt" not in clo
+
+
+def test_closure_includes_tools_run_by_subprocess_and_their_imports(repo2):
+    _commit_new(repo2, {"tools/other.py": "import tool_x\n"})
+    clo = _closure(repo2, "tests/test_tool_sub.py")
+    assert {"tools/other.py", "tools/tool_x.py"} <= set(clo)
+    assert "tests/test_tool_import.py" not in clo
+
+
+def test_tools_stem_shadowed_by_a_tests_module_still_maps_importers_and_closure(repo2):
+    _commit_new(repo2, {"tests/tool_x.py": "S = 1\n"})                  # shadows tools/tool_x.py
+    sel = _sel2(repo2, "tools/tool_x.py")
+    assert not sel.full and sel.tests == ["tests/test_tool_import.py"]
+    assert "tools/tool_x.py" in _closure(repo2, "tests/test_tool_import.py")
+
+
+def test_nearest_tests_does_not_walk_past_a_tools_module(repo2):
+    # tools/t.py imports a src module and a test imports t: changing base.py must not select
+    # that test through the tool
+    _commit_new(repo2, {"tools/t.py": "from nightwright import base\n",
+                        "tests/test_via_tool.py": "import t\n"})
+    mods, reverse = AT.import_graph(repo2)
+    assert "t" in reverse["nightwright.base"] and "test_via_tool" in reverse["t"]
+    assert "tests/test_via_tool.py" not in AT.nearest_tests("nightwright.base", mods, reverse, depth=3)
+    sel = AT.select(repo2, ["src/nightwright/base.py"], max_fraction=1.0, depth=3)
+    assert "tests/test_via_tool.py" not in sel.tests and "tests/test_base.py" in sel.tests
+
+
+def test_smoke_set_runs_when_the_branch_maps_to_nothing(repo2):
+    _change(repo2, "docs/note.md")
+    r = _cli(repo2, "--include", "tests/test_base.py", "--run", "echo", "RUN")
+    assert r.returncode == 0 and r.stdout.strip() == "RUN tests/test_base.py"
+    assert "no affected tests" not in r.stdout
+
+
+def test_newline_joined_changed_paths_are_split(repo2):
+    assert AT.normalize_changed(repo2, ["docs/note.md\npyproject.toml\n", "uv.lock"]) == [
+        "docs/note.md", "pyproject.toml", "uv.lock"]
+    rep = json.loads(_cli(repo2, "--json", "--changed", "docs/note.md\npyproject.toml").stdout)
+    assert rep["full"] is True and rep["changed"] == ["docs/note.md", "pyproject.toml"]
+    r = _cli(repo2, "--changed", ".nw/project.yaml\ndocs/note.md", "--run", "echo", "RUN")
+    assert r.stdout.strip() == "RUN tests/test_cfg.py"

@@ -114,9 +114,10 @@ def _module_name(rel):
 
 
 def _scan(repo):
-    """{module: rel_path} for every module under src/nightwright and tests, plus tools/*.py
-    under the stem name. tools modules are never test modules and `nearest_tests` does not walk
-    them; they are part of the import graph for the reference scan and the closure."""
+    """({module: rel_path}, {stem: rel_path}) for every module under src/nightwright and tests,
+    plus tools/*.py under the stem name; the second dict holds the tools modules shadowed by a
+    src/tests module of the same name. tools modules are never test modules and `nearest_tests`
+    does not walk them; they are part of the import graph for the reference scan and the closure."""
     mods = {}
     tools = {}
     for top in (Path(SRC_ROOT) / SRC_PKG, Path(TESTS_DIR), Path(TOOLS_DIR)):
@@ -130,9 +131,13 @@ def _scan(repo):
             name = _module_name(rel)
             if name:
                 (tools if rel.startswith(TOOLS_DIR + "/") else mods)[name] = rel
+    shadowed = {}
     for name, rel in tools.items():
-        mods.setdefault(name, rel)          # a src/tests module of the same name wins
-    return mods
+        if name in mods:
+            shadowed[name] = rel            # a src/tests module of the same name wins
+        else:
+            mods[name] = rel
+    return mods, shadowed
 
 
 def _parse(repo, rel):
@@ -222,7 +227,7 @@ class Index:
 
     def __init__(self, repo, with_refs=True):
         self.repo = repo
-        self.mods = _scan(repo)
+        self.mods, self.shadowed = _scan(repo)
         self.forward = {}
         self.reverse = {m: set() for m in self.mods}
         self.info = {}
@@ -235,6 +240,8 @@ class Index:
                 self.reverse[dep].add(name)
             if with_refs:
                 self.info[name] = _Info(nodes)
+        # a shadowed tools module is reached by the same `import X` as the module that shadows it
+        self.shadow_deps = {n: _imports(repo, rel, n, self.mods) for n, rel in self.shadowed.items()}
 
 
 def import_graph(repo):
@@ -308,20 +315,23 @@ def nearest_tests(name, mods, reverse, depth=0):
     return hits
 
 
-def _referencing(ix, rel):
+def _referencing(ix, rel, wide=False):
     """Modules (names) that reference the file `rel` by needle: a string constant containing its
     basename, or an import of its stem (tools/X.py); when none names the basename, a path-shaped
-    reference to its parent directory."""
+    reference to its parent directory. `wide` (the closure) always adds the directory readers,
+    since a closure may only err toward more paths."""
     p = Path(rel)
     refs = {m for m, info in ix.info.items() if p.name in info.blob}
     if p.suffix == ".py" and p.parts[0] == TOOLS_DIR and len(p.parts) == 2 and p.stem in ix.mods:
+        # by name: when tests/X.py shadows tools/X.py, `import X` after a sys.path insert resolves
+        # to the same module name, so the importers of that name are the importers of the tool
         refs |= ix.reverse.get(p.stem, set())
-    if refs:
+    if refs and not wide:
         return refs
     parent = p.parent.as_posix()
     if parent in (".", *TOP_DIRS, f"{SRC_ROOT}/{SRC_PKG}"):
         return refs                          # no directory-level reference for a top-level file
-    return {m for m, info in ix.info.items() if info.has_dir_ref(p.parent.name)}
+    return refs | {m for m, info in ix.info.items() if info.has_dir_ref(p.parent.name)}
 
 
 def _name_rule(ix, rel, name):
@@ -408,14 +418,16 @@ def select(repo, changed, max_fraction=MAX_FRACTION, depth=0, strict=False):
 
 
 def _tracked_data_files(repo):
-    """Tracked non-Python files under tests/, src/nightwright/, .nw/ and tools/."""
+    """Tracked non-Python files under tests/, src/nightwright/, .nw/ and tools/, plus the
+    tools/*.py scripts (a test may run one by subprocess without importing it)."""
     try:
         files = [f for f in _git(repo, "ls-files").splitlines() if f]
     except RuntimeError:
         files = [p.relative_to(repo).as_posix() for p in Path(repo).rglob("*") if p.is_file()]
     return sorted(f for f in files
-                  if f.startswith(DATA_ROOTS) and not f.endswith((".py", ".pyc"))
-                  and "__pycache__" not in f and (Path(repo) / f).is_file())
+                  if f.startswith(DATA_ROOTS) and "__pycache__" not in f
+                  and (not f.endswith((".py", ".pyc")) or f.startswith(TOOLS_DIR + "/"))
+                  and (Path(repo) / f).is_file())
 
 
 def closure(repo, sel):
@@ -428,16 +440,26 @@ def closure(repo, sel):
     by_rel = {rel: m for m, rel in ix.mods.items()}
     todo = [by_rel[t] for t in sel.tests if t in by_rel]
     seen = set(todo)
+    out = {t for t in sel.tests if (Path(repo) / t).exists()}
+    # candidate files with the modules that read them; a file joins the closure once one of its
+    # readers is in it, and a tools script that joins brings its own imports (fixed point)
+    cands = {f: _referencing(ix, f, wide=True) for f in _tracked_data_files(repo)}
     while todo:
-        for dep in ix.forward.get(todo.pop(), ()):
+        m = todo.pop()
+        deps = set(ix.forward.get(m, ())) | set(ix.shadow_deps.get(m, ()))
+        if m in ix.shadowed:
+            out.add(ix.shadowed[m])
+        for f, readers in cands.items():
+            if m in readers and f not in out:
+                out.add(f)
+                tool = by_rel.get(f)
+                if tool:
+                    deps.add(tool)
+        for dep in deps:
             if dep not in seen:
                 seen.add(dep)
                 todo.append(dep)
-    out = {ix.mods[m] for m in seen} | {t for t in sel.tests if (Path(repo) / t).exists()}
-    for f in _tracked_data_files(repo):
-        if _referencing(ix, f) & seen:
-            out.add(f)
-    return sorted(out)
+    return sorted(out | {ix.mods[m] for m in seen})
 
 
 def _git_out(repo, *args):
@@ -459,10 +481,10 @@ def write_report(path, report):
 
 def normalize_changed(repo, paths):
     """Canonical repo-relative posix paths for `--changed`: `./x`, `a//b` and absolute paths
-    inside `repo` become `x`, `a/b`; empty values are dropped."""
+    inside `repo` become `x`, `a/b`; empty values are dropped, and a value holding several
+    newline-joined paths (`$(git diff --name-only ...)`) is split."""
     out = set()
-    for raw in paths:
-        raw = raw.strip()
+    for raw in (line.strip() for value in paths for line in value.splitlines()):
         if not raw:
             continue
         p = Path(raw)
