@@ -544,11 +544,11 @@ def test_wt_campaign_naming_an_internal_or_unknown_campaign_scopes_nothing(
     _state_file(cfg, "c-wt")                                  # a Meta-Tools campaign
     monkeypatch.chdir(wt_repo)
     for cid in ("c-wt", "no-such-campaign"):
-        monkeypatch.setenv("WT_CAMPAIGN", cid)
+        monkeypatch.setenv("NW_CAMPAIGN", cid)
         assert SS.foreign_scope_path(cfg, "SPEC-0001") is None
         assert SS.resolve_in_scope(cfg, "SPEC-0001") == wt_repo / "docs/specs/0001-trivial.md"
     # an internal campaign does not hide the cwd: inside a project checkout the project answers
-    monkeypatch.setenv("WT_CAMPAIGN", "c-wt")
+    monkeypatch.setenv("NW_CAMPAIGN", "c-wt")
     path, origin = SS.foreign_scope_path(cfg, "SPEC-0001", cwd=p2)
     assert path == p2.resolve() / "docs/specs/0001-trivial.md" and PROJ in origin
 
@@ -671,7 +671,7 @@ def test_spec_reconcile_cli_prints_foreign_rows(tmp_path, monkeypatch, capsys):
     cfg = _cfg(tmp_path)
     _spec(cfg, "SPEC-0001", "accepted", source_idea=None)
     other = _foreign(cfg, "foreign idea")
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["spec", "reconcile"])
     out = r.output + capsys.readouterr().out
     assert r.exit_code == 0, out
