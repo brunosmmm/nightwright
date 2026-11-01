@@ -24,7 +24,10 @@ def owns_idea(cfg, task, spec_id=None, claims=None) -> bool:
     """Does the idea belong to wt's store (matches its bare `SPEC-NNNN` ids)? True when the idea
     is internal, or when wt's spec at `spec_id` (default: the idea's own `:SPEC:`) already names
     it as `source_idea`: an explicit claim, e.g. an idea promoted `--internal` from another
-    project's `:PROJECT:`. Anything else is foreign (SPEC-0327 rule 1). `claims` is a precomputed
+    project's `:PROJECT:`. The claim must also pass the SPEC-0267 identity rule (the idea's
+    `:CREATED:` on or before the spec's `created`): a reused `:ID:` that merely matches wt's
+    `source_idea` string is not that spec's idea. Anything else is foreign (SPEC-0327 rule 1).
+    `claims` is a precomputed
     `specs._spec_claims(cfg)`: callers walking many ideas pass it so wt's specs are parsed once."""
     if is_internal_idea(task):
         return True
@@ -33,21 +36,24 @@ def owns_idea(cfg, task, spec_id=None, claims=None) -> bool:
     idea_id = (task.properties.get("ID") or "").strip()
     if not idea_id:
         return False
+    from .specs import _as_date, _idea_predates_spec, _spec_claims
     if not sid:           # not linked yet: any wt spec naming the idea is an explicit claim
-        if claims is not None:
-            return idea_id in claims
-        from .specs import _spec_claims
-        try:
-            return idea_id in _spec_claims(cfg)
-        except (ValueError, OSError):
-            return False
+        if claims is None:
+            try:
+                claims = _spec_claims(cfg)
+            except (ValueError, OSError):
+                return False
+        return any(_idea_predates_spec(task, created)[0]
+                   for _sid, _status, created in claims.get(idea_id, ()))
     if _is_outbound_id(sid):
         return False
     try:
         fm = _load_spec_fm(cfg, sid)
     except (ValueError, KeyError, OSError):
         return False
-    return str((fm or {}).get("source_idea") or "").strip() == idea_id
+    fm = fm or {}
+    return (str(fm.get("source_idea") or "").strip() == idea_id
+            and _idea_predates_spec(task, _as_date(fm.get("created")))[0])
 
 
 def is_bare_spec_id(spec_id) -> bool:

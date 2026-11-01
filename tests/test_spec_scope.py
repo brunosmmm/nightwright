@@ -206,6 +206,28 @@ def test_plan_spec_link_accepts_promoted_internal_foreign_idea(tmp_path):
     assert S.plan_spec_link(cfg, iid, "SPEC-0001")["idea_id"] == iid
 
 
+def test_reused_id_does_not_make_a_foreign_idea_wts_claimed_idea(tmp_path):
+    """SPEC-0267 on the claim path: wt's old SPEC-0001 names IDEA-00X; a newer foreign idea that
+    reuses the `:ID:` and links a bare SPEC-0001 is not that spec's idea."""
+    cfg = _cfg(tmp_path)
+    iid = _foreign(cfg, "newer idea of another project")      # created today, id reused
+    path = _spec(cfg, "SPEC-0001", "done", source_idea=iid, created="2026-01-01")
+    before = Path(path).read_bytes()
+    task = W.resolve_selector(cfg, iid)
+    assert SS.owns_idea(cfg, task) is False
+    assert S._sole_claimant(load_tasks(cfg), "SPEC-0001", project=SS.INTERNAL_PROJECT,
+                            cfg=cfg) is None
+    for apply in (False, True):
+        plan = S.reconcile_ideas(cfg, apply=apply)
+        assert (iid, "flag-foreign") in _actions(plan)
+        assert not any(i == iid and a != "flag-foreign" for i, _s, a, _d in plan)
+    assert _state_of(cfg, iid) == "SPECCED"
+    assert Path(path).read_bytes() == before
+    # no :SPEC: link: the same rule applies to the claims-only branch
+    W.set_property(cfg, W.resolve_selector(cfg, iid), "SPEC", "")
+    assert SS.owns_idea(cfg, W.resolve_selector(cfg, iid)) is False
+
+
 def _foreign_twin(cfg, idea_id, stamp="[2026-10-25 Sun 09:00]"):
     """A foreign idea carrying the same `:ID:` as an internal one, in a second org file."""
     path = Path(cfg["org_ideas_file"]).with_name("ideas-20261025.org")

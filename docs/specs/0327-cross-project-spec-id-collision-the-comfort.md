@@ -372,6 +372,16 @@ is repaired by hand once (the steward already reverted the observed edit).
   the "idea not found" `ValueError`. Dry run == `--apply` for ids with internal twins was already
   true since Loop 7 (`_write_source_idea` and the plan pass both pick with `_pick_idea` among
   internal carriers only). Targeted `test_spec_scope`, `test_agentic_queue` pass; full suite left to gating.
+- Loop 9 (review fix): `spec_scope.owns_idea` applies the SPEC-0267 identity rule on the claim
+  path: a foreign-`:PROJECT:` idea is wt's only when the claiming spec names it as `source_idea`
+  **and** the idea's `:CREATED:` is on or before that spec's `created` (`specs._idea_predates_spec`),
+  both for the `:SPEC:`-linked branch (spec frontmatter) and the no-`:SPEC:` branch (any claim in
+  `_spec_claims`). A reused `:ID:` created after the spec is therefore foreign: `flag-foreign`,
+  never advanced, and `_sole_claimant(…, project=INTERNAL_PROJECT, cfg=)` skips it. Test:
+  `test_reused_id_does_not_make_a_foreign_idea_wts_claimed_idea` (fails without the fix). The
+  optional `flag-foreign` finding downgrade in `_reconcile_closed` was not done. Targeted
+  `test_spec_scope`, `test_reconcile`, `test_idea_spec_link`, `test_agentic_queue` pass; full suite
+  left to gating.
 
 ## Rollout / migration
 
