@@ -64,9 +64,11 @@ lease-pinned refspec such as `HEAD:refs/heads/main` or `nw/x:main`.
 Keep the SPEC-0339 mechanism (code-held `DEFAULTS`, rules passed as launch flags, a
 configured list replaces the default wholesale). Widen the default `allowed_tools` push rules
 to the `git`/`git -C *` × lease form × refspec form product for `nw/*` and `wt/*`, widen
-`disallowed_tools` to the same two command prefixes and to refspec spellings of `main` /
-`master`, and add a new `steward_allowed_tools` default (rebase / conflict-resolution rules)
-that is appended to `allowed_tools` for the steward role only.
+`disallowed_tools` to the same two command prefixes, to refspec spellings of `main` /
+`master` and to every trailing-argument shape the wildcard allows can swallow, add a
+steward guard of explicit denies (shell-executing and destructive git forms), and add a new
+`steward_allowed_tools` default (rebase / conflict-resolution rules) that is appended to
+`allowed_tools` for the steward role only.
 
 ## Design
 
@@ -84,18 +86,50 @@ SPEC-0339.
   `Bash(git -C * push --force-with-lease=* origin HEAD:nw/*)`. The original four SPEC-0339
   literals are members of the product, so existing behaviour is preserved. The `gh pr create`,
   `gh pr edit`, `gh pr comment` allows are unchanged.
-- **Deny list.** For both prefixes (`git`, `git -C *`): `push * main`, `push * master`,
-  `push *:main`, `push *:master`, `push *refs/heads/main`, `push *refs/heads/master`,
-  `push --force *`, `push -f *`, and the exact `push --force` / `push -f`. `Bash(gh pr merge *)`
-  is kept. Deny rules take precedence over allow rules in Claude Code, so a lease-pinned push
-  to `main` is denied even though the `--force-with-lease=*` allow exists, and
-  `--force-with-lease=…` is not matched by `push --force *` (the flag text differs after
-  `--force`), so legitimate lease pushes stay allowed. The old single-prefix `HEAD:main` /
-  `HEAD:master` rules are subsumed by `*:main` / `*:master` and are dropped from the list.
+- **Deny list (push guard).** Allowed push rules end in a wildcard, so every argument that
+  can follow the ref is guarded by a deny rule. A second helper generates, for both prefixes
+  (`git`, `git -C *`), these `push …` suffixes (25 per prefix, 50 in total), each as
+  `Bash(<prefix> push …)`:
+  - main/master as the last or a non-last token: `* main`, `* master`, `* main *`, `* master *`;
+  - main/master as a refspec destination: `*:main`, `*:master`, `*:main *`, `*:master *`,
+    `*refs/heads/main`, `*refs/heads/master`, `*refs/heads/main *`, `*refs/heads/master *`;
+  - the `+` force refspec: `*+*` (subsumes `+main` / `+master`);
+  - bare force flags anywhere: `--force *`, `-f *`, `--force`, `-f`, `* --force`,
+    `* --force *`, `* -f`, `* -f *`;
+  - extra tokens after a namespaced ref (an extra refspec or flag): `* nw/* *`,
+    `* wt/* *`, `*:nw/* *`, `*:wt/* *`.
+
+  `Bash(gh pr merge *)` is kept. Deny rules take precedence over allow rules in Claude Code,
+  so a lease-pinned push to `main` is denied even though the `--force-with-lease=*` allow
+  exists. Legitimate pushes still pass: `--force-with-lease=…` is not matched by the force
+  rules (they need a space after `--force`), `* nw/* *` needs a literal space before `nw/`
+  and a further token after the ref, and `*:nw/* *` needs a token after `HEAD:nw/<branch>`.
+  The old single-prefix `HEAD:main` / `HEAD:master` rules are subsumed and dropped.
+  Denied by these rules: `git push origin nw/x +main`, `git push origin nw/x main --verbose`,
+  `git push origin nw/x --force`, `git -C /w push origin HEAD:nw/x -f`,
+  `git push origin nw/x feature/y`.
 - **Steward rebase set** (`DEFAULTS["steward_allowed_tools"]`), for `git` and `git -C *`:
   `fetch *`, `rebase *`, `rebase --continue`, `rebase --abort`, `add *`, `commit *`,
-  `restore *`, `checkout --ours *`, `checkout --theirs *`. Nothing here pushes, resets
-  hard, or deletes branches; `reset --hard` and `branch -D` keep prompting.
+  `restore *`, `checkout --ours *`, `checkout --theirs *`. With `*` matching spaces these
+  allow rules are leaky on their own (`git -C * add *` matches `git -C x branch -D main add y`,
+  `git rebase *` matches `git rebase -x '<shell>'`, `git fetch *` matches
+  `--upload-pack=<cmd>`), so the set is only safe together with the steward guard below.
+- **Steward guard** (in `DEFAULTS["disallowed_tools"]`, applied to both roles; the conductor
+  never runs these). Because a prompt is not a safety net in auto mode, destructive and
+  shell-executing git forms are denied explicitly. Each rule exists in two spellings, `git <x>`
+  (subcommand first) and `git * <x>` (anything between, which covers `git -C <dir> <x>`):
+  - shell execution: `* --exec*`, `* -x *`, `*--upload-pack*`, `*--receive-pack*`, and the
+    config-injection flags `-c *` / `* -c *` (lowercase; `-C` is a different, allowed flag);
+  - history/branch destruction: `reset --hard*`, `branch -D*`, `branch -d*`,
+    `branch --delete*`, `clean *`, `clean`;
+  - the swallow guard against `-C *` hiding a push to another ref behind a steward keyword:
+    `git * push * <kw>` and `git * push * <kw> *` for `<kw>` in `fetch`, `rebase`, `add`,
+    `commit`, `restore`, `checkout`.
+
+  Residual risk, recorded rather than hidden: the guard is a denylist, so an exotic shape that
+  is both allowed by a wildcard and absent from the deny families still runs. The shapes
+  enumerated here are the ones reachable through the `-C *` and `--force-with-lease=*`
+  wildcards; a surprise is fixed by adding a deny rule and relaunching.
 - **Settings.** `steward_allowed_tools` is a new list key validated by the same rule as
   `allowed_tools` (non-list or empty/non-string entry falls back to the default; `[]` is
   valid and removes the set) and overridable at top level or in the `steward` sub-mapping.
@@ -106,7 +140,9 @@ SPEC-0339.
 - **Matcher assumption.** `*` matches any characters including spaces and `/`.
   The rule list therefore must not depend on `*` being restricted to one token. Because the
   `-C *` wildcard can swallow extra words, the `git -C *` deny rules are the guard against
-  `git -C x push --force …` and `… HEAD:main`.
+  `git -C x push --force …` and `… HEAD:main`, and the steward guard is the guard against
+  `git -C x branch -D main add y`. The test helper (Test plan) applies the same `*` → `.*`
+  semantics so the tests exercise exactly this swallowing.
 - **Docs.** `docs/product/capabilities/agentic.md` (launch section) lists the new default
   rule families, `steward_allowed_tools`, and the relaunch requirement.
 
@@ -131,9 +167,10 @@ SPEC-0339.
       `--force-with-lease` and `--force-with-lease=*` pushes, each with prefix `git` and
       `git -C *` and with refs `<ns>` and `HEAD:<ns>` (24 push rules), plus the three
       unchanged `gh pr` rules; the four SPEC-0339 push literals are still present.
-- [ ] `DEFAULTS["disallowed_tools"]` contains the main/master/force/`-f` deny family for both
-      `git` and `git -C *` prefixes, the `:main` / `:master` / `refs/heads/main|master`
-      refspec denies, and `Bash(gh pr merge *)`.
+- [ ] `DEFAULTS["disallowed_tools"]` contains the 25 push-guard rules per prefix (50 for
+      `git` and `git -C *`: main/master incl. non-last position, refspec destinations,
+      `*+*`, bare force flags anywhere, extra tokens after `nw/*` / `wt/*` refs), the steward
+      guard rules (shell execution, `-c`, destructive, swallow guard) and `Bash(gh pr merge *)`.
 - [ ] Against the test matcher (deny wins over allow), these are allowed:
       `git push --force-with-lease origin nw/x`,
       `git -C /w/wt push --force-with-lease=nw/x:abc123 origin HEAD:nw/x`,
@@ -142,14 +179,25 @@ SPEC-0339.
       `git push --force-with-lease=main:abc origin HEAD:main`,
       `git -C /w push --force-with-lease=nw/x:abc origin HEAD:refs/heads/master`,
       `git push --force origin nw/x`, `git -C /w push -f origin HEAD:nw/x`,
-      `git push --force`, `git push origin feature/x`, `gh pr merge 9`.
+      `git push --force`, `git push origin feature/x`, `gh pr merge 9`, and the
+      trailing-argument cases `git push origin nw/x +main`,
+      `git push origin nw/x main --verbose`, `git push origin nw/x --force`,
+      `git -C /w push origin HEAD:nw/x -f`, `git push origin nw/x feature/y`,
+      `git push --force-with-lease=x --force origin nw/y`.
 - [ ] `DEFAULTS["steward_allowed_tools"]` holds the steward rebase set; `build_plan` for a
       steward includes it in `plan["allowed_tools"]` and the `--allowedTools` argv; for the
       conductor it does not.
 - [ ] `steward_allowed_tools` can be overridden or emptied at top level and under `steward`;
       a bad value falls back to the default; `allowed_tools: []` still removes the
       base list without removing the steward set (and vice versa).
-- [ ] No rule in the steward set permits `push`, `reset`, `branch -D` or `clean`.
+- [ ] Against the test matcher with the steward effective lists, these are denied:
+      `git -C /w branch -D main add x`, `git -C /w reset --hard HEAD~3 add x`,
+      `git rebase -x "git push --force origin main" origin/main`,
+      `git fetch --upload-pack=sh origin`, `git -C /w clean -fdx add x`,
+      `git -C /w push origin feature/y add x`; and these are allowed:
+      `git -C /w rebase origin/main`, `git -C /w rebase --continue`,
+      `git -C /w add src/a.py`, `git -C /w commit -m msg`,
+      `git -C /w checkout --theirs a.py`.
 - [ ] `--dry-run` text and `--json` show the effective list, `--resume` applies it, and the
       prompt is still the last argv element (the variadic-flag invariant from SPEC-0339).
 - [ ] The launch capability doc describes the widened rules, `steward_allowed_tools`, and that
@@ -167,14 +215,23 @@ SPEC-0339.
   - `test_default_rules_allow_incident_pushes`: the allowed commands from the criteria,
     plus the exact incident command with a real-looking sha.
   - `test_default_rules_deny_dangerous_pushes`: the denied list, including `git -C` forms,
-    refspec spellings of `main`/`master`, bare `--force`/`-f`, and other branches.
+    refspec spellings of `main`/`master`, bare `--force`/`-f`, other branches, and the
+    trailing-argument cases (`git push origin nw/x +main`,
+    `git push origin nw/x main --verbose`, `git push origin nw/x --force`,
+    `git -C /w push origin HEAD:nw/x -f`, `git push origin nw/x feature/y`,
+    `git push --force-with-lease=x --force origin nw/y`).
+  - `test_push_guard_rule_count`: 25 push-guard denies per prefix, no duplicates.
   - `test_push_rule_count_and_legacy_literals`: 24 push rules, SPEC-0339 literals present,
     no duplicates.
   - `test_steward_plan_includes_rebase_set` / `test_conductor_plan_excludes_rebase_set`:
     argv, `plan["allowed_tools"]` and JSON dry-run output; prompt last.
   - `test_steward_allowed_tools_overrides`: top-level, `steward` sub-mapping, `[]`, bad
     value fallback; independence from `allowed_tools: []`.
-  - `test_steward_set_has_no_push_or_destructive_rules`.
+  - `test_steward_guard_denies_swallowed_and_exec_commands` (replaces the rule-string check):
+    builds the steward plan's effective allow/deny lists and runs the commands from the
+    steward acceptance criterion through `_permitted`, asserting the `-C *`-swallowing and
+    `--exec` / `--upload-pack` commands are denied and the legitimate rebase commands stay
+    allowed.
   - Existing `test_default_permission_rules`, `test_plan_has_permission_flags_and_prompt_stays_last`
     and `test_resume_applies_permission_rules` are updated to the new defaults and keep
     passing; run via `python3 tools/affected_tests.py --run uv run pytest -q` plus
