@@ -272,6 +272,10 @@ this to tell a transport failure from a gate failure.
   CLI (`test_agentic_detach`, `test_agentic_personas`, `test_hub`, `test_agentic_queue_cli`,
   `test_workflow`, `test_spec_status`, `test_json_cli`, `test_skills`,
   `test_idea_capture_guard`): 297 passed.
+- Loop 3 (gate fix): allowlisted the `nw worker` machine/protocol raw writes in
+  `tests/test_rich_output_guard.py` (`worker_info`, `worker_have`, `worker_gc`, `gate_job`,
+  `_fail`, `ssh_command`). `tests/test_rich_output_guard.py`: 3 passed. Full
+  `uv run pytest -q -n 4`: 4528 passed, 3 skipped.
 
 ### As shipped (2026-10-31)
 

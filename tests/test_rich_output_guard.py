@@ -32,6 +32,12 @@ ALLOWED = {
     ("agentic/cli_queue.py", "on_tick"): "queue run --json-lines stream",
     ("agentic/cli_campaign.py", "campaign_prompt"): "raw prompt meant to be piped",
     ("agentic/cli_campaign.py", "campaign_export"): "--stdout table for piping (SPEC-0236)",
+    ("agentic/cli_worker.py", "worker_info"): "worker info: plain/JSON for ssh callers (SPEC-0336)",
+    ("agentic/cli_worker.py", "worker_have"): "worker have: one sha per line for ssh callers (SPEC-0336)",
+    ("agentic/cli_worker.py", "worker_gc"): "worker gc: JSON summary for ssh callers (SPEC-0336)",
+    ("agentic/worker.py", "gate_job"): "stderr diagnostic; stdout is the job frame protocol (SPEC-0336)",
+    ("agentic/worker.py", "_fail"): "stderr diagnostic outside the frame protocol (SPEC-0336)",
+    ("agentic/worker.py", "ssh_command"): "forced-command refusal on stderr (SPEC-0336)",
 }
 
 
