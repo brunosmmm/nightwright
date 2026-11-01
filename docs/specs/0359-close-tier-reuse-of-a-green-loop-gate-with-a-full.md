@@ -367,6 +367,9 @@ sequencing hint only.
   about 3 s per call. The dogfood queue measurements of (a) and `nw queue sentinel run --project
   Meta-Tools` on main belong to the rollout watch (step 3) after merge. (c) done: the new section
   "Close-tier reuse and the sentinel (SPEC-0359)" in `docs/product/capabilities/agentic.md`.
+- Gate loop 1 fix: `tests/data/remote_gates_golden.json` re-recorded (`NW_RECORD_GOLDEN=1`) for the
+  new `head`/`tree` on the gate payload; the diff adds only those two keys (payload and `gate`
+  event). `uv run pytest -q -n 2 tests/test_remote_gates.py tests/test_agentic_gates.py`: 173 passed.
 
 ### As shipped (2026-11-01)
 

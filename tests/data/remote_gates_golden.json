@@ -20,6 +20,7 @@
       "campaign": "SPEC-0900-20261101-abcd",
       "duration_s": "<X>",
       "gate_seq": 1,
+      "head": "044090052af4839a792db70550a24512ba8ee79f",
       "ok": true,
       "results": [
         {
@@ -86,6 +87,7 @@
       "schema": "nw.ledger.event.v1",
       "slot_wait_s": "<X>",
       "started_at": "<X>",
+      "tree": "f4b354863caa9cea99b95422c9dab70465757d87",
       "ts": "<X>",
       "type": "gate"
     }
@@ -190,6 +192,7 @@
   "payload": {
     "duration_s": "<X>",
     "gate_seq": 1,
+    "head": "044090052af4839a792db70550a24512ba8ee79f",
     "ok": true,
     "results": [
       {
@@ -254,6 +257,7 @@
       }
     ],
     "slot_wait_s": "<X>",
-    "started_at": "<X>"
+    "started_at": "<X>",
+    "tree": "f4b354863caa9cea99b95422c9dab70465757d87"
   }
 }
