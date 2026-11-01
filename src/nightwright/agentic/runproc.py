@@ -24,12 +24,16 @@ def child_env(extra=None, environ=None) -> dict:
     """The environment of a persona child: `environ` (default `os.environ`) plus `extra`.
     SPEC-0319: inside a launched conductor/steward session the launcher's keys
     (`NW_LAUNCH_KEYS`) and any ambient effort pin are dropped, so a campaign runner gets Claude
-    Code's defaults and its own `--effort`. Keys in `extra` always win."""
+    Code's defaults and its own `--effort`. SPEC-0361: every `HERDR_*` key is dropped, so a
+    herdr hook inside a headless run cannot report against the pane that started the queue.
+    Keys in `extra` always win."""
     env = dict(os.environ if environ is None else environ)
     launch = env.pop("NW_LAUNCH_KEYS", None)
     if launch is not None:
         for key in [k.strip() for k in launch.split(",") if k.strip()] + ["CLAUDE_CODE_EFFORT_LEVEL"]:
             env.pop(key, None)
+    for key in [k for k in env if k.startswith("HERDR_")]:
+        del env[key]
     return {**env, **(extra or {})}
 
 

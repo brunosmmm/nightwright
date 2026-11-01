@@ -1077,6 +1077,11 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
             conductor_cost.record_session(cfg, reader)
         except Exception:
             pass
+        try:    # SPEC-0361: remember the herdr pane this reader lives in (env only)
+            from . import conductor_cost
+            conductor_cost.record_herdr_pane(cfg, reader)
+        except Exception:
+            pass
         watcher = CW.Watcher(CW.code_checkout() if code_root is CW.AUTO else code_root,
                              settings(cfg)["code_check_s"] if code_check_s is None
                              else code_check_s)

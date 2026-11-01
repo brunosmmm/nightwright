@@ -195,7 +195,9 @@ def test_runner_child_env_drops_launch_keys(tmp_path, monkeypatch):
     req = _req(tmp_path, {"EXTRA": "1"})
     monkeypatch.setenv("UNRELATED", "u")
     monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "high")        # kept outside a launched session
-    assert R._child_env(req) == {**os.environ, "EXTRA": "1"}      # not a launched session
+    monkeypatch.setenv("HERDR_PANE_ID", "p")                      # SPEC-0361: always dropped
+    ambient = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
+    assert R._child_env(req) == {**ambient, "EXTRA": "1"}         # not a launched session
     assert R._child_env(req)["CLAUDE_CODE_EFFORT_LEVEL"] == "high"
     monkeypatch.setenv("NW_LAUNCH_KEYS", KEYS)
     for k in KEYS.split(","):

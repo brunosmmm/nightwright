@@ -52,3 +52,5 @@ def register(cli, projects_group):
         cli.add_command(mailbox_group)
     from .cli_escalations import escalations_group      # SPEC-0232
     cli.add_command(escalations_group)
+    from .cli_herdr import herdr_group                  # SPEC-0361
+    cli.add_command(herdr_group)

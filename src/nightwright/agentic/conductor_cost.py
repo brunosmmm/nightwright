@@ -73,6 +73,71 @@ def record_session(cfg, reader, env=os.environ, *, source="follower", session_id
         os.close(fd)
 
 
+# ---- herdr placement (SPEC-0361) -----------------------------------------------------------
+
+def _herdr_panes_path(cfg) -> Path:
+    return conductor_dir(cfg) / "herdr_panes.json"
+
+
+def _start_ticks(pid) -> int | None:
+    try:
+        raw = Path(f"/proc/{int(pid)}/stat").read_text()
+        return int(raw.rsplit(")", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError, TypeError):
+        return None
+
+
+def record_herdr_pane(cfg, reader, env=os.environ) -> dict | None:
+    """When this follower runs inside a herdr pane (`HERDR_ENV=1`), record where:
+    `herdr_panes.json[reader] = {pane_id, workspace_id, tab_id, session_id, pid, start_ticks,
+    ts}` (newest wins). Reads only the env; never calls herdr. Returns the record or None."""
+    if env.get("HERDR_ENV") != "1" or not env.get("HERDR_PANE_ID"):
+        return None
+    pid = os.getpid()
+    rec = {"pane_id": env.get("HERDR_PANE_ID"), "workspace_id": env.get("HERDR_WORKSPACE_ID"),
+           "tab_id": env.get("HERDR_TAB_ID"), "session_id": env.get("CLAUDE_CODE_SESSION_ID"),
+           "pid": pid, "start_ticks": _start_ticks(pid), "ts": store.now_iso()}
+    d = conductor_dir(cfg)
+    d.mkdir(parents=True, exist_ok=True)
+    fd = os.open(d / "sessions.jsonl.lock", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        data = herdr_panes(cfg)
+        data[reader] = rec
+        path = _herdr_panes_path(cfg)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+        return rec
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def herdr_panes(cfg) -> dict:
+    """`{reader: placement}` as recorded (live or not); {} when absent or unreadable."""
+    try:
+        data = json.loads(_herdr_panes_path(cfg).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+
+
+def placement_live(rec) -> bool:
+    """The follower that recorded `rec` still runs (same pid, same /proc start time)."""
+    pid = rec.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    ticks = _start_ticks(pid)
+    return rec.get("start_ticks") is None or ticks is None or ticks == rec.get("start_ticks")
+
+
 # ---- transcripts ---------------------------------------------------------------------------
 
 def _safe_id(session_id) -> bool:

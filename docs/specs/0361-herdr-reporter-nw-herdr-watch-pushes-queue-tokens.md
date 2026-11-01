@@ -1,7 +1,7 @@
 ---
 id: SPEC-0361
 title: "herdr reporter: nw herdr watch pushes queue tokens and notifications"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -166,26 +166,26 @@ note.
 
 ## Acceptance criteria
 
-- [ ] `nw herdr watch` pushes workspace tokens (`nw_queue`, `nw_attn`, `nw_cost`) and
+- [x] `nw herdr watch` pushes workspace tokens (`nw_queue`, `nw_attn`, `nw_cost`) and
       conductor/steward pane tokens to explicit ids from the placement registry (or
       `--conductor-pane` / `--workspace`), every call with `--source nw`, `--ttl-ms` = 3 ×
       interval and a strictly increasing `--seq` (also across a restart).
-- [ ] An escalation, a non-transient `run_failed`, a conductor-owned `parked` and a `merged`
+- [x] An escalation, a non-transient `run_failed`, a conductor-owned `parked` and a `merged`
       event each produce exactly one `notification show` with the sound of invariant 8; other
       events (transient failures, human-owned parks, the rest) produce none; a second run does
       not repeat them; a new cursor does not replay history.
-- [ ] A clean exit clears every token it pushed; `--once` leaves them to expire.
-- [ ] Without `HERDR_ENV=1`, or without `herdr` on `PATH`, `nw herdr watch` exits 0 with one
+- [x] A clean exit clears every token it pushed; `--once` leaves them to expire.
+- [x] Without `HERDR_ENV=1`, or without `herdr` on `PATH`, `nw herdr watch` exits 0 with one
       line and no `herdr` process is spawned (the client refuses too).
-- [ ] The client times a call out at 2 s (default) and never raises; after 5 consecutive
+- [x] The client times a call out at 2 s (default) and never raises; after 5 consecutive
       failures it stops spawning for 60 s and logs one stderr line; a hanging or failing herdr
       only slows the watcher.
-- [ ] Importing `nightwright.cli`, the queue, the runner, `runproc` and the event stream does
+- [x] Importing `nightwright.cli`, the queue, the runner, `runproc` and the event stream does
       not import `nightwright.agentic.herdr` or `herdr_watch`.
-- [ ] Persona children get no `HERDR_*` variable (detached wrapper and in-process runner).
-- [ ] The conductor (`nw queue events --follow`) and steward (`nw mailbox follow`) followers
+- [x] Persona children get no `HERDR_*` variable (detached wrapper and in-process runner).
+- [x] The conductor (`nw queue events --follow`) and steward (`nw mailbox follow`) followers
       record their herdr pane/workspace when `HERDR_ENV=1`; dead placements are ignored.
-- [ ] `docs/herdr.md` documents the integration and the suggested config snippet; nothing
+- [x] `docs/herdr.md` documents the integration and the suggested config snippet; nothing
       writes the human's herdr config.
 
 The manual check in a real herdr session (Test plan) is recorded as pending the human; it is
@@ -236,6 +236,48 @@ not an acceptance criterion of this spec because agents may not drive the human'
   steward panes their tokens, a "done" sound on a merge; Ctrl-C clears the tokens, `kill -9`
   lets them expire within 30 s. Outside herdr, `nw herdr watch` prints one line and exits 0.
 
+## As shipped (2026-11-01)
+
+- **Files:** `src/nightwright/agentic/herdr.py` (client: `unavailable`, `Client.call` /
+  `next_seq` / breaker, module `call`, argv builders), `src/nightwright/agentic/herdr_watch.py`
+  (`Watcher`: `snapshot`, token builders, `targets`, `push`, `poll_events`, `clear`, `run`;
+  `notification_for`), `src/nightwright/agentic/cli_herdr.py` (`nw herdr watch`, registered in
+  `agentic/cli.register`), `conductor_cost.record_herdr_pane` / `herdr_panes` /
+  `placement_live`, the hooks in `events.follow` and `mailbox.follow`, the `HERDR_*` filter in
+  `runproc.child_env`, `docs/herdr.md`, a `herdr` row in `docs/product/reference/index.md`
+  (the reference test requires every top-level command).
+- **Design as written**, with these judgment calls recorded here:
+  - placement lives in `herdr_panes.json`, not in `sessions.jsonl` (the deviation from epic
+    invariant 6 explained under Design);
+  - the workspace targets are the watcher's own `HERDR_WORKSPACE_ID` plus the placements'
+    workspaces (or only `--workspace`); the watcher's own *pane* is never a target;
+  - the watcher does not exit on a code change (documented: restart after an upgrade);
+  - a failure inside one poll or push (e.g. an unreadable campaign) prints one stderr line and
+    the loop carries on;
+  - the `docs/herdr.md` snippet covers `[ui.sidebar.agents.rows_by_agent] claude` and
+    `[ui.sidebar.spaces] rows` (syntax taken from the comments of herdr 0.9.5's embedded
+    default config). The epic's optional `tab_bar_right` command entry is left out: its
+    exact TOML shape could not be confirmed without running herdr, and a wrong snippet is
+    worse than none;
+  - human-owned parks (`main_dirty`, `main_not_on_base`, `human_decision`) are silent, as
+    invariant 8 says; `human_decision` parks already come with an `escalation` event.
+- **Tests executed:** `tests/test_herdr.py`, 26 tests, all passing (client gating / ok / fail /
+  hang / breaker open + probe + re-open / seq; argv builders; placement record + liveness +
+  both followers; token push to explicit ids with ttl and seq across a restart; overrides;
+  steward idle/many; notifications through the real ledger → `events.sync` projection with
+  exactly one per notifiable event and none on restart or for history; clean-exit clear vs
+  `--once`; reader lock; hanging herdr bounded + breaker line; the threaded loop; CLI no-op
+  and fake run; import isolation in a subprocess; `child_env` and the detached `runproc`
+  wrapper with `HERDR_*` set). `tests/test_agentic_launch.py::test_runner_child_env_drops_launch_keys`
+  now compares against the ambient env minus `HERDR_*` (it failed when the suite itself ran
+  inside a herdr pane). Regression set: 460 + 42 + 49 tests (events, ping, mailbox,
+  conductor cost/brief, launch, runner, runproc, mvp report, completion, CLI permission /
+  status tests, docs tests) pass. `tools/affected_tests.py` fell back to the full suite
+  ("no test reaches agentic/cli.py"), so the affected set was run by hand instead; the queue
+  close gate runs the full suite.
+- **Manual verification: pending the human** (agents may not drive the human's herdr
+  session). Steps: Test plan, "Manual verification", and `docs/herdr.md` → "Try it".
+
 ## Rollout / migration
 
 Opt-in: nothing calls herdr until the human runs `nw herdr watch` inside herdr. The
@@ -244,12 +286,12 @@ started with). Followers write `herdr_panes.json` on their next (re)start.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met; manual herdr check recorded as pending the human.
-- [ ] Test plan executed; affected tests pass.
-- [ ] No regressions (the queue close gate runs the full suite).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated; `spec_lint` exits 0.
+- [x] Acceptance criteria all met; manual herdr check recorded as pending the human.
+- [x] Test plan executed; affected tests pass.
+- [x] No regressions (the queue close gate runs the full suite).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated; `spec_lint` exits 0.
 
 ## Open questions
 
-- None.
+None.

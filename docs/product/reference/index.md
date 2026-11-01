@@ -26,6 +26,7 @@ Claude-generating vs your-turn diagnostic.
 | `ingest-meetings` | Filter a raw calendar JSON dump | [Meetings](../capabilities/meetings.md) |
 | `mailbox` | Conductor ↔ steward messages (agentic loop) | [Agentic loop](../capabilities/agentic.md) |
 | `escalations` | Questions escalated to the human: `list [--all] [--json]` / `show` / `answer ID (--choose\|--text\|--waive\|--attest) [--yes]` / `withdraw` (agentic loop) | [Agentic loop](../capabilities/agentic.md) |
+| `herdr` | herdr sidebar tokens + notifications for the queue: `watch [--interval S] [--conductor-pane ID] [--workspace ID] [--once]`; a no-op outside herdr (SPEC-0361, see `docs/herdr.md` in the repo) | [Agentic loop](../capabilities/agentic.md) |
 | `map` | Assign facets to a base topic | [Report](../capabilities/report.md) |
 | `migrate-from-wt` | One-time move of a pre-rename `wt` install to nightwright's config/data dirs (dry run unless `--yes`, SPEC-0330) | [Bootstrap](../guides/bootstrap.md) |
 | `next` | Next-step hints for open ideas | [Ideas](../capabilities/ideas.md) |

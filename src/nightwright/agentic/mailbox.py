@@ -191,6 +191,11 @@ def follow(cfg, addr, *, as_json=True, poll_s=2, out=None, max_events=None, stop
     reader = f"mailbox:{addr}"
     printed = 0
     with E.reader_lock(cfg, reader):
+        try:    # SPEC-0361: remember the herdr pane this inbox's owner lives in (env only)
+            from . import conductor_cost
+            conductor_cost.record_herdr_pane(cfg, addr)
+        except Exception:
+            pass
         watcher = CW.Watcher(CW.code_checkout() if code_root is CW.AUTO else code_root,
                              E.settings(cfg)["code_check_s"] if code_check_s is None
                              else code_check_s)
