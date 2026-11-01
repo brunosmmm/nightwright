@@ -40,6 +40,14 @@ ALLOWED = {
     ("agentic/worker.py", "_write_fd"): "stderr diagnostic: a stalled frame stdout (SPEC-0336)",
     ("agentic/worker.py", "_start_gc"): "stderr diagnostic: the finish gc did not start (SPEC-0336)",
     ("agentic/worker.py", "ssh_command"): "forced-command refusal on stderr (SPEC-0336)",
+    ("agentic/cli_worker.py", "worker_jobs"): "worker jobs: plain/JSON listing for ssh callers (SPEC-0340)",
+    ("agentic/worker_job.py", "reap"): "stderr diagnostic outside the frame protocol (SPEC-0340)",
+    ("agentic/worker_job.py", "_unclaim"): "stderr diagnostic outside the frame protocol (SPEC-0340)",
+    ("agentic/worker_job.py", "submit"): "stderr diagnostic outside the frame protocol (SPEC-0340)",
+    ("agentic/worker_job.py", "cancel"): "stderr diagnostic: a gate-job is not cancelled here (SPEC-0340)",
+    ("agentic/worker_job.py", "_watch"): "stderr diagnostic from the job process (SPEC-0340)",
+    ("agentic/worker_job.py", "run_job"): "stderr diagnostic from the job process (SPEC-0340)",
+    ("agentic/worker_job.py", "main"): "stderr diagnostic from the job process entry point (SPEC-0340)",
 }
 
 
