@@ -1,0 +1,14 @@
+Active (2/2) · no loop running                                                                                                                                  
+campaign                  state          title                                   park         pri   cost       project      loops   size   tone   profile    age
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+SPEC-0341-20261031-c0de   PARKED         Coordinator re-attach and adoption a…   budget_cap     3   $1.25/10   Meta-Tools   1/3     -      -      balanced   4m 
+SPEC-0340-20261031-9b1c   GATING         Failed-first loop gate with a fast p…                  2   $1.25/10   Meta-Tools   1/3     -      -      balanced   4m 
+SPEC-0338-20261031-23a7   IMPLEMENTING   Remote gate dispatch over ssh workers                  1   $1.25/10   Meta-Tools   1/3     -      -      balanced   4m 
+Waiting for a slot (1)                                                                                   
+campaign                  continues at   title                  pri   project      loops   size   waiting
+─────────────────────────────────────────────────────────────────────────────────────────────────────────
+SPEC-0342-20261031-d00d   IMPLEMENTING   nw workers bootstrap     1   Meta-Tools   1/3     -           4m
+Backlog (1)                                                                                                                                 
+#   campaign                  state    title                                          waiting on               pri   project      size   age
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+1   SPEC-0343-20261031-e1e1   QUEUED   Lost-job retry across workers and escalation   ⧗ SPEC-0337, SPEC-0399     2   Meta-Tools   -      4m 

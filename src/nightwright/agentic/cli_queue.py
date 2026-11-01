@@ -28,6 +28,7 @@ from ..report import _dump_json
 from . import gates as G
 from . import journey as JY
 from . import lease as L
+from . import listview as LV
 from . import mailbox as M
 from . import project as P
 from . import decisions as DEC
@@ -67,9 +68,6 @@ def _age_txt(age) -> str:
     return f"{age}s" if age is not None and age < 120 else (f"{age // 60}m" if age else "")
 
 
-_WIDE_COLS = 110        # below this the list table has no room for size / tone / profile columns
-
-
 def _size_tone(it: dict) -> str:
     """`m/high-end`, or `-` for a campaign without sizing (SPEC-0219)."""
     size, tone = it.get("size"), it.get("tone")
@@ -98,10 +96,45 @@ def _exit_leftover() -> None:
     os._exit(70)
 
 
+# ---- list tables (SPEC-0356: one column fitter, ids and states never cut) -----------------------
+
+def _col(key, header, **kw) -> LV.Column:
+    return LV.Column(key, header, rank=kw.pop("rank", LV.RANK.get(key, 0)), **kw)
+
+
+def _list_title(it: dict) -> Text:
+    return Text(str(it.get("title") or "—"))
+
+
+def _blocked_cell(it: dict) -> Text:
+    """`✓ ready`, or `⧗` + what the item waits on: the dependency ids parsed from `blocked_by`
+    (SPEC-0356 `waiting_on`), other blockers (status, branch, idea) verbatim."""
+    blocked = it.get("blocked_by") or []
+    if not blocked:
+        return Text("✓ ready", style="green") if (it.get("backlog") or {}).get("ready") else Text()
+    parts = []
+    for b in blocked:
+        ids = Q.waiting_on_ids([b])
+        parts.extend(i for i in (ids or [b]) if i not in parts)
+    return Text("⧗ " + ", ".join(parts), style="red")
+
+
+def _cost_cell(it: dict) -> str:
+    est = (it.get("cost") or {}).get("estimated_usd") or 0.0
+    return (f"${it['cost_usd']:.2f}" + (f" (~${est:.2f} est.)" if est > 0 else "")
+            + (f"/{it['cap_usd']:.0f}" if it.get("cap_usd") else ""))
+
+
+def _width(width) -> int:
+    return width or console.width
+
+
 def _queue_table(payload: dict, width: int | None = None) -> Group:
-    """The human listing: an Active table (the slots) and a Backlog table (admission order).
-    Dense enough for an 80-column terminal, ids never cut (they are what a human copies into
-    the next command); the park reason rides in the state cell."""
+    """The human listing: an Active table (the slots), Needs you, Waiting and a Backlog table
+    (admission order), each fitted to `width` by `listview` (SPEC-0356): ids and states never
+    cut, a title on every row, low-value columns dropped first; the park reason has its own
+    column (folded into the title when there is no room)."""
+    width = _width(width)
     lease = payload["lease"]
     slots = payload["slots"]
     if lease.get("held"):
@@ -114,110 +147,189 @@ def _queue_table(payload: dict, width: int | None = None) -> Group:
     waiting = [it for it in payload["items"] if it["state"] == "WAITING"]
     backlog = sorted((it for it in payload["items"] if it["state"] == "QUEUED"),
                      key=lambda it: it["backlog"]["position"])
-    table = Table(title=f"Active ({slots['busy']}/{slots['total']}) · {lease_txt}",
-                  box=box.SIMPLE_HEAD, pad_edge=False)
-    table.add_column("campaign", min_width=24, no_wrap=True)
-    table.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
-    table.add_column("state", no_wrap=True)
-    wide = (width or console.width) >= _WIDE_COLS
-    if wide:
-        table.add_column("size", no_wrap=True)
-        table.add_column("tone", no_wrap=True)
-        table.add_column("profile", no_wrap=True)
-    table.add_column("loops")
-    table.add_column("cost")
-    table.add_column("age")
+    rows = []
     for it in active:
-        est = (it.get("cost") or {}).get("estimated_usd") or 0.0
-        cost = (f"${it['cost_usd']:.2f}" + (f" (~${est:.2f} est.)" if est > 0 else "")
-                + (f"/{it['cap_usd']:.0f}" if it.get("cap_usd") else ""))
         park = it.get("park") or {}
         state = it["state"]
         if state in ("SPEC_WRITING", "SPEC_REVIEW") and it.get("spec_round"):
             state = f"{state} r{it['spec_round']}"      # SPEC-0211
         if it.get("run"):
             state = f"{state} ({it['run']})"           # SPEC-0229: run: detached (pid N)
-        if park.get("reason"):
-            state = f"{state}:{park['reason']}"
-        elif it.get("park_requested"):
+        if not park.get("reason") and it.get("park_requested"):
             state = f"{state}:park?"
         color = {"PARKED": "yellow", "MERGED": "green", "HANDED_OFF": "green",
                  "ABANDONED": "dim"}.get(it["state"])
-        suffix = ""
+        cell = Text(state, style=color or "")
         if it["state"] == "PARKED" and park.get("owner") != "human":
-            color = "dim"           # SPEC-0222: the conductor's, not the human's
-            suffix = " [red]![/]" if park.get("overdue") else ""
-        campaign, extra = _campaign_cell(it), []
-        if wide:
-            extra = [it.get("size") or "-", it.get("tone") or "-", _profile_text(it)]
-        elif it.get("size") or it.get("tone"):     # no room for columns: a dim line instead
-            campaign.append("\n" + _size_tone(it) + " → " + str(it.get("profile") or "-"),
-                            style="dim")
-            campaign.append_text(_source_marker(it))
-        table.add_row(campaign, R.project_text(it.get("project")),
-                      f"[{color}]{state}[/]{suffix}" if color else state, *extra,
-                      it["loops"], cost, _age_txt(it.get("updated_age_s")))
-    parts = [table]
+            cell.stylize("dim")     # SPEC-0222: the conductor's, not the human's
+            if park.get("overdue"):
+                cell.append(" !", style="red")
+        rows.append({"campaign": _campaign_cell(it), "state": cell, "title": _list_title(it),
+                     "blocked_by": _blocked_cell(it),
+                     "park": Text(str(it.get("park_reason") or ""), style="yellow"),
+                     "pri": str(it.get("priority")), "cost": _cost_cell(it),
+                     "project": R.project_text(it.get("project")), "loops": str(it["loops"]),
+                     "size": it.get("size") or "-", "tone": it.get("tone") or "-",
+                     "profile": _profile_text(it), "age": _age_txt(it.get("updated_age_s"))})
+    cols = [_col("campaign", "campaign", fixed=True), _col("state", "state", fixed=True),
+            _col("title", "title", flex=True),
+            _col("blocked_by", "blocked by", fold="{} ", hide_empty=True),
+            _col("park", "park", fold="[{}] ", hide_empty=True),
+            _col("pri", "pri", justify="right"), _col("cost", "cost"),
+            _col("project", "project"), _col("loops", "loops"),
+            _col("size", "size", rank=7), _col("tone", "tone", rank=7),
+            _col("profile", "profile", rank=7), _col("age", "age")]
+    parts = [LV.render(f"Active ({slots['busy']}/{slots['total']}) · {lease_txt}", cols, rows,
+                       width)]
     needs_you = [it for it in active if it["state"] == "PARKED"
                  and (it.get("park") or {}).get("owner") == "human"]
     if needs_you:
-        parts.append(_list_needs_you(needs_you))
+        parts.append(_list_needs_you(needs_you, width))
     if waiting:
-        parts.append(_waiting_table(waiting))
-    return Group(*parts, _backlog_table(backlog))
+        parts.append(_waiting_table(waiting, width))
+    return Group(*parts, _backlog_table(backlog, width))
 
 
-def _list_needs_you(items: list) -> Table:
+def _list_needs_you(items: list, width: int | None = None) -> Table:
     """SPEC-0222: parks only the human can resolve."""
-    table = Table(title=f"Needs you ({len(items)})", box=box.SIMPLE_HEAD, pad_edge=False,
-                  title_style="yellow")
-    table.add_column("campaign", min_width=24, no_wrap=True)
-    table.add_column("reason", style="yellow", no_wrap=True)
-    table.add_column("detail", overflow="fold")
-    table.add_column("resume to", no_wrap=True)
+    rows = []
     for it in items:
         park = it.get("park") or {}
-        table.add_row(_campaign_cell(it), str(park.get("reason") or "?"),
-                      Text(str(park.get("detail") or ""), style="dim"),
-                      Text(str(park.get("resume_to") or ""), style=R.state_style(park.get("resume_to"))))
-    return table
+        rows.append({"campaign": _campaign_cell(it), "title": _list_title(it),
+                     "reason": str(park.get("reason") or "?"),
+                     "detail": Text(str(park.get("detail") or ""), style="dim"),
+                     "resume": Text(str(park.get("resume_to") or ""),
+                                    style=R.state_style(park.get("resume_to")))})
+    cols = [_col("campaign", "campaign", fixed=True), _col("title", "title", flex=True),
+            _col("reason", "reason", fixed=True, style="yellow"),
+            _col("detail", "detail", flex=True), _col("resume", "resume to", rank=3)]
+    return LV.render(f"Needs you ({len(items)})", cols, rows, _width(width),
+                     title_style="yellow")
 
 
-def _waiting_table(items: list) -> Table:
+def _waiting_table(items: list, width: int | None = None) -> Table:
     """Started campaigns that need a slot (SPEC-0200): next in line, ahead of the backlog."""
-    table = Table(title=f"Waiting for a slot ({len(items)})", box=box.SIMPLE_HEAD, pad_edge=False)
-    table.add_column("campaign", min_width=24, no_wrap=True)
-    table.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
-    table.add_column("continues at", no_wrap=True)
-    table.add_column("size", no_wrap=True)
-    table.add_column("pri", justify="right")
-    table.add_column("loops")
-    table.add_column("waiting", justify="right")
+    rows = []
     for it in items:
         w = it.get("waiting") or {}
-        table.add_row(_campaign_cell(it), R.project_text(it.get("project")),
-                      Text(str(w.get("resume_to") or "?"), style=R.state_style(w.get("resume_to"))),
-                      _size_tone(it), str(it.get("priority")), it["loops"], _age_txt(it.get("updated_age_s")))
-    return table
+        rows.append({"campaign": _campaign_cell(it),
+                     "state": Text(str(w.get("resume_to") or "?"),
+                                   style=R.state_style(w.get("resume_to"))),
+                     "title": _list_title(it), "pri": str(it.get("priority")),
+                     "project": R.project_text(it.get("project")), "loops": str(it["loops"]),
+                     "size": _size_tone(it), "age": _age_txt(it.get("updated_age_s"))})
+    cols = [_col("campaign", "campaign", fixed=True), _col("state", "continues at", fixed=True),
+            _col("title", "title", flex=True), _col("pri", "pri", justify="right"),
+            _col("project", "project"), _col("loops", "loops"), _col("size", "size"),
+            _col("age", "waiting", justify="right")]
+    return LV.render(f"Waiting for a slot ({len(items)})", cols, rows, _width(width))
 
 
-def _backlog_table(items: list) -> Table:
+def _backlog_table(items: list, width: int | None = None) -> Table:
     """The backlog section: `items` are `nw.queue.v1` queued items (each has `backlog`)."""
-    table = Table(title=f"Backlog ({len(items)})", box=box.SIMPLE_HEAD, pad_edge=False)
-    table.add_column("#", justify="right")
-    table.add_column("campaign", min_width=24, no_wrap=True)
-    table.add_column("project", no_wrap=True, overflow="ellipsis", max_width=18)
-    table.add_column("size", no_wrap=True)
-    table.add_column("pri", justify="right")
-    table.add_column("waiting on")
-    table.add_column("age")
+    rows = []
     for it in items:
         b = it["backlog"]
-        waiting = "[green]ready[/]" if b["ready"] else "; ".join(b["blocked_by"])
-        table.add_row(str(b["position"]), _campaign_cell(it), R.project_text(it.get("project")),
-                      _size_tone(it), str(b["priority"]),
-                      waiting, _age_txt(it.get("age_s")))
-    return table
+        rows.append({"#": str(b["position"]), "campaign": _campaign_cell(it),
+                     "state": "QUEUED", "title": _list_title(it),
+                     "blocked_by": _blocked_cell({**it, "blocked_by": b["blocked_by"]}),
+                     "pri": str(b["priority"]), "project": R.project_text(it.get("project")),
+                     "size": _size_tone(it), "age": _age_txt(it.get("age_s"))})
+    cols = [_col("#", "#", fixed=True, justify="right"), _col("campaign", "campaign", fixed=True),
+            _col("state", "state", fixed=True), _col("title", "title", flex=True),
+            _col("blocked_by", "waiting on", fold="{} ", hide_empty=True),
+            _col("pri", "pri", justify="right"), _col("project", "project"),
+            _col("size", "size"), _col("age", "age")]
+    return LV.render(f"Backlog ({len(items)})", cols, rows, _width(width))
+
+
+def _graph_line(n: dict, nodes: dict, room: int = 10_000) -> Text:
+    """`SPEC-0338  IMPLEMENTING  <title>  $3.20/15  pri 0  ⧗ waiting on SPEC-0337`; the title is
+    ellipsized so the line fits in `room` cells (min 12 for the title)."""
+    title = n.get("title") or ""
+    if title:
+        rest = len(_graph_line({**n, "title": None}, nodes).plain) + 2
+        cap = max(12, room - rest)
+        if len(title) > cap:
+            title = title[:cap - 1] + "…"
+    n = {**n, "title": title}
+    dim = n["stub"] and n.get("spec_status") in ("done", "superseded") or \
+        n.get("state") in ("MERGED", "HANDED_OFF", "ABANDONED")
+    t = Text(n["id"], style="dim" if dim else "bold")
+    status = n.get("state") or n.get("spec_status") or "?"
+    t.append(f"  {status}", style="dim" if dim else R.state_style(n.get("state")) or
+             ("red" if n["stub"] and n.get("spec_status") not in ("done", "superseded") else ""))
+    if n.get("title"):
+        t.append(f"  {n['title']}", style="dim")
+    if n.get("cost_usd") is not None and not n["stub"]:
+        t.append(f"  ${n['cost_usd']:.2f}" + (f"/{n['cap_usd']:.0f}" if n.get("cap_usd") else ""))
+    if n.get("priority") is not None and not n["stub"]:
+        t.append(f"  pri {n['priority']}")
+    if n.get("waiting_on"):
+        red = any(nodes.get(w, {}).get("stub") and not nodes.get(w, {}).get("campaign")
+                  for w in n["waiting_on"])
+        t.append("  ⧗ waiting on " + ", ".join(n["waiting_on"]), style="red" if red else "yellow")
+    if n.get("park_reason"):
+        t.append(f"  [parked: {n['park_reason']}]", style="yellow")
+    if n.get("external"):
+        t.append("  (external)", style="dim")
+    return t
+
+
+def _graph_render(g: dict, width: int) -> Group:
+    """SPEC-0356: roots first; a node with several parents in full under the first, as
+    `↑ ID (above)` elsewhere, so the output is linear in edges. Cycle members print once, apart."""
+    from rich.tree import Tree
+    nodes = {n["id"]: n for n in g["nodes"]}
+    order = {n["id"]: i for i, n in enumerate(g["nodes"])}
+    kids: dict = {}
+    for e in g["edges"]:
+        kids.setdefault(e["from"], []).append(e["to"])
+    in_cycle = {m for c in g["cycles"] for m in c}
+    printed: set = set()
+    tree = Tree(Text(f"Queue graph ({sum(1 for n in g['nodes'] if not n['stub'])} campaigns, "
+                     f"{sum(1 for n in g['nodes'] if n['stub'])} stubs)", style="bold"),
+                guide_style="dim")
+    stack = [(tree, r) for r in reversed(g["roots"])]
+    depth = {id(tree): 0}
+    while stack:
+        parent, nid = stack.pop()
+        if nid in printed:
+            parent.add(Text(f"↑ {nid} (above)", style="dim"))
+            continue
+        printed.add(nid)
+        branch = parent.add(_graph_line(nodes[nid], nodes, width - 4 * depth[id(parent)] - 4))
+        depth[id(branch)] = depth[id(parent)] + 1
+        for child in sorted((k for k in kids.get(nid, []) if k not in in_cycle),
+                            key=lambda k: order[k], reverse=True):
+            stack.append((branch, child))
+    parts = [tree]
+    if g["cycles"]:
+        cyc = Tree(Text("Cycles", style="bold red"), guide_style="dim")
+        for c in g["cycles"]:
+            sub = cyc.add(Text(" ⇄ ".join(c), style="red"))
+            for nid in c:
+                sub.add(_graph_line(nodes[nid], nodes, width - 8))
+        parts.append(cyc)
+    return Group(*parts)
+
+
+def _unqueued_table(items: list, width: int) -> Table:
+    """SPEC-0356: id / status / title never dropped; `ready` rows green."""
+    rows = []
+    for it in items:
+        codes = [r["code"] for r in it["reasons"]]
+        style = "green" if codes == ["ready"] else ""
+        rows.append({"id": Text(it["id"], style=style),
+                     "status": str(it.get("status") or it.get("state") or ""),
+                     "title": Text(str(it.get("title") or "—")),
+                     "reason": Text("; ".join(r["text"] for r in it["reasons"]), style=style),
+                     "project": R.project_text(it.get("project")),
+                     "next": Text(it["next"], style="dim")})
+    cols = [_col("id", "id", fixed=True), _col("status", "status", fixed=True),
+            _col("title", "title", flex=True), _col("reason", "reason", rank=1, fold="{} — "),
+            _col("project", "project", rank=5), _col("next", "next", rank=8)]
+    return LV.render(f"Not queued ({len(items)})", cols, rows, width)
 
 
 # ---- dashboard (nw queue watch, SPEC-0185) ------------------------------------------------------
@@ -1359,9 +1471,41 @@ def attach(queue_group):
             return
         table = _backlog_table([{"campaign": b["campaign"], "spec_id": b["spec_id"] or b.get("idea_id"),
                                  "kind": b.get("kind"), "label": b.get("label"),
-                                 "project": b.get("project"),
+                                 "project": b.get("project"), "title": b.get("title"),
                                  "age_s": b["age_s"], "backlog": b} for b in items])
         console.print(table)
+
+    @queue_group.command("graph")
+    @click.option("--project", shell_complete=C.complete_project, help="filter by project "
+                  "(dependency stubs from elsewhere are kept, marked external)")
+    @click.option("--all", "include_terminal", is_flag=True, help="include terminal campaigns")
+    @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.graph.v1 JSON")
+    @click.pass_obj
+    def queue_graph(cfg, project, include_terminal, as_json):
+        """The queue as a dependency tree (SPEC-0356): dependents under their dependencies, a
+        stub for every dependency without a campaign, cycles listed apart. Read-only."""
+        g = Q.graph_view(cfg, project=project, include_terminal=include_terminal)
+        if as_json:
+            _dump_json(g)
+            return
+        console.print(_graph_render(g, console.width))
+
+    @queue_group.command("unqueued")
+    @click.option("--project", shell_complete=C.complete_project, help="filter by project")
+    @click.option("--status", "statuses", multiple=True,
+                  type=click.Choice(list(Q.UNQUEUED_STATUSES)),
+                  help="spec statuses to list (repeatable; default accepted, proposed, draft)")
+    @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.unqueued.v1 JSON")
+    @click.pass_obj
+    def queue_unqueued(cfg, project, statuses, as_json):
+        """Specs and ideas with no campaign (SPEC-0356), with why each is not queued; `ready`
+        rows (accepted, dependencies met, never queued) first. Prints the queue command, never
+        runs it."""
+        u = Q.unqueued_view(cfg, project=project, statuses=statuses or None)
+        if as_json:
+            _dump_json(u)
+            return
+        console.print(_unqueued_table(u["items"], console.width))
 
     @queue_group.command("prioritize")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)

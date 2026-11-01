@@ -263,7 +263,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | accepted | — | 2026-11-01 |
 | [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) | Remote workers integration suite for gate and persona workers | feature | accepted | — | 2026-11-01 |
 | [SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) | Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane | epic | accepted | M9: agentic workflow | 2026-11-01 |
-| [SPEC-0356](./specs/0356-queue-visibility-cli-lists-graph-unqueued.md) | Queue visibility (CLI): untruncated lists with title/priority/blocked-by, nw queue graph, nw queue unqueued, remote gate line | feature | accepted | M9: agentic workflow | 2026-11-01 |
+| [SPEC-0356](./specs/0356-queue-visibility-cli-lists-graph-unqueued.md) | Queue visibility (CLI): untruncated lists with title/priority/blocked-by, nw queue graph, nw queue unqueued, remote gate line | feature | in-progress | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0359](./specs/0359-close-tier-reuse-of-a-green-loop-gate-with-a-full.md) | Close-tier reuse of a green loop gate, with a full-suite sentinel on the base branch | feature | accepted | — | 2026-11-01 |
 | [SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) | Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer | epic | accepted | — | 2026-11-01 |
 

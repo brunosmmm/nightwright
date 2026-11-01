@@ -1,0 +1,14 @@
+Active (2/2) · no loop running                              
+campaign                  state          title              
+────────────────────────────────────────────────────────────
+SPEC-0341-20261031-c0de   PARKED         [budget_cap] Coord…
+SPEC-0340-20261031-9b1c   GATING         Failed-first loop …
+SPEC-0338-20261031-23a7   IMPLEMENTING   Remote gate dispat…
+Waiting for a slot (1)                                      
+campaign                  continues at   title           pri
+────────────────────────────────────────────────────────────
+SPEC-0342-20261031-d00d   IMPLEMENTING   nw workers b…     1
+Backlog (1)                                                 
+#   campaign                  state    title                
+────────────────────────────────────────────────────────────
+1   SPEC-0343-20261031-e1e1   QUEUED   ⧗ SPEC-0337, SPEC-03…

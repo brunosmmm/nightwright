@@ -204,8 +204,9 @@ def test_backlog_json_order_and_list_sections(tmp_path, monkeypatch):
     assert d["schema"] == "nw.queue.backlog.v1"
     assert [i["campaign"] for i in d["items"]] == [second, first]
     top = d["items"][0]
-    assert set(top) == {"campaign", "spec_id", "project", "priority", "position", "ready",
-                        "blocked_by", "age_s"}
+    assert set(top) >= {"campaign", "spec_id", "project", "priority", "position", "ready",
+                        "blocked_by", "age_s"}             # SPEC-0356 adds row fields
+    assert top["waiting_on"] == ["SPEC-0001", "SPEC-0099"]
     assert top["position"] == 1 and top["priority"] == 1 and top["ready"] is False
     assert top["blocked_by"] == ["waiting on SPEC-0001 (accepted)", "SPEC-0099 not found"]
     assert d["items"][1]["ready"] is True and d["items"][1]["blocked_by"] == []
@@ -316,9 +317,10 @@ def test_queue_list_json_and_table_show_sizing(tmp_path, monkeypatch):
     assert "cost-effective" in out and "(flag)" in out
     old_row = next(line for line in out.splitlines() if "SPEC-0002-old" in line)
     assert " -  " in old_row and "(" not in old_row
-    # narrow table keeps the columns it had; the sizing rides under the campaign id
+    # SPEC-0356: a narrow table drops size / tone / profile (rank 7) and never cuts the ids
     narrow = _render(CQ._queue_table(payload, 80), 80)
-    assert "s/cost-effective → frugal (flag)" in narrow and max(map(len, narrow.splitlines())) <= 80
+    assert "cost-effective" not in narrow and max(map(len, narrow.splitlines())) <= 80
+    assert sized in narrow and "SPEC-0002-old" in narrow
 
 
 def _render(renderable, width):
@@ -358,9 +360,10 @@ def test_list_needs_you_table_and_park_keys(tmp_path, monkeypatch):
                              "resume_to": "GATING"})
     ev_at(cfg, rebase, "park", {"reason": "rebase_conflict"}, ago_s=600)
     r = run_cli(cfg, monkeypatch, ["queue", "list"])
-    assert r.exit_code == 0 and "PARKED:rebase_conflict" in r.output, r.output
-    assert "Needs you" not in r.output
-    assert "PARKED:rebase_conflict !" in r.output, r.output     # 600 s undecided: overdue
+    row = next(line for line in r.output.splitlines() if rebase in line)
+    assert r.exit_code == 0 and "rebase_conflict" in row, r.output    # SPEC-0356: own column
+    assert "PARKED:" not in r.output and "Needs you" not in r.output
+    assert "PARKED !" in row, r.output                          # 600 s undecided: overdue
     dirty = _campaign(cfg, repo, "SPEC-0001-dir", "PARKED",
                       park={"reason": "main_dirty", "detail": "uncommitted files",
                             "resume_to": "CLOSING"})
@@ -398,9 +401,9 @@ def test_list_marks_overdue_and_colours_parks_by_owner(tmp_path, monkeypatch):
     assert "!" in rows["old"] and "\x1b[31m!" in rows["old"]            # red overdue marker
     for k in ("young", "decided", "dirty"):
         assert "!" not in rows[k], rows[k]
-    assert "\x1b[2mPARKED:rebase_conflict" in rows["old"]               # dim: conductor's
-    assert "\x1b[2mPARKED:base_moving" in rows["young"]
-    assert "\x1b[33mPARKED:main_dirty" in rows["dirty"]                 # yellow: the human's
+    assert "\x1b[2mPARKED" in rows["old"] and "rebase_conflict" in rows["old"]   # dim: conductor's
+    assert "\x1b[2mPARKED" in rows["young"] and "base_moving" in rows["young"]
+    assert "\x1b[33mPARKED" in rows["dirty"] and "main_dirty" in rows["dirty"]   # yellow: the human's
 
 
 # ---- SPEC-0276: batch add ---------------------------------------------------------------------

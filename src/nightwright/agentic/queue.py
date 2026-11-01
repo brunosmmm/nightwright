@@ -902,8 +902,10 @@ def backlog_view(cfg, *, readiness=None) -> list[dict]:
                      "blocked_by": blocked_by, "age_s": _age(st.get("created_at"))})
         if st.get("kind") == "idea":
             rows[-1]["idea_id"] = _idea_id_of(st)
-        if st.get("kind") == "merge":                                   # SPEC-0233
-            rows[-1].update(kind="merge", label=campaign_label(st))
+        rv = row_view(cfg, st, rows[-1])                                # SPEC-0356
+        rows[-1].update(kind=st.get("kind") or "spec", label=campaign_label(st),
+                        **{k: rv[k] for k in ("title", "depends_on", "waiting_on",
+                                              "park_reason", "cost_usd", "cap_usd")})
     return rows
 
 
@@ -5613,6 +5615,8 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
         b = backlog.get(r.get("id"))
         if b and r.get("state") == "QUEUED":
             items[-1]["backlog"] = {k: b[k] for k in ("position", "priority", "ready", "blocked_by")}
+        rv = row_view(cfg, r, b, remote=r.get("state") == "GATING", now=now)   # SPEC-0356
+        items[-1].update({k: v for k, v in rv.items() if k not in ("priority", "cost_usd", "cap_usd")})
     return {"schema": "nw.queue.v1", "lease": L.lease_status(cfg),
             "slots": {"total": slots, "busy": busy}, "items": items}
 
@@ -5649,14 +5653,30 @@ def spec_round(state: dict, ledger: list) -> int | None:
 def _spec_title(state: dict) -> str | None:
     """The spec's frontmatter title in the project repo (cached on path + mtime); the idea's
     heading for an idea campaign without a spec (SPEC-0209)."""
+    return _spec_meta(state)["title"]
+
+
+def _deps_list(raw) -> list[str]:
+    """A frontmatter `depends_on` as a list of str (a bare string is one id)."""
+    if not raw:
+        return []
+    return [str(d) for d in ([raw] if isinstance(raw, str) else raw) if d]
+
+
+def _spec_meta(state: dict) -> dict:
+    """SPEC-0356: `{title, depends_on}` of the campaign's spec, read through one mtime cache.
+    A merge campaign's title is its note; an idea without a spec has the idea's heading; neither
+    has dependencies."""
     if state.get("kind") == "merge":
-        return (state.get("merge") or {}).get("note") or "merge request"
+        return {"title": (state.get("merge") or {}).get("note") or "merge request",
+                "depends_on": []}
     if has_no_spec(state):
-        return (state.get("idea") or {}).get("heading")
+        return {"title": (state.get("idea") or {}).get("heading"), "depends_on": []}
+    none = {"title": None, "depends_on": []}
     repo = state.get("repo") or {}
     rel = (state.get("spec") or {}).get("rel_path")
     if not repo.get("root") or not rel:
-        return None
+        return none
     bases = [repo.get("root")]
     if state.get("kind") == "idea":     # SPEC-0211: the worktree first; once merged it is gone
         bases.insert(0, repo.get("worktree"))
@@ -5669,17 +5689,426 @@ def _spec_title(state: dict) -> str | None:
         if mtime is not None:
             break
     else:
-        return None
+        return none
     hit = _TITLE_CACHE.get(str(path))
     if hit and hit[0] == mtime:
         return hit[1]
     try:
         fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        return none
+    fm = fm if isinstance(fm, dict) else {}
+    meta = {"title": str(fm.get("title") or "") or None,
+            "depends_on": _deps_list(fm.get("depends_on"))}
+    _TITLE_CACHE[str(path)] = (mtime, meta)
+    return meta
+
+
+# ---- list views: row model, graph, unqueued (SPEC-0356) -----------------------------------------
+
+_WAITING_ON_RE = re.compile(r"waiting on (\S+) \(|^(\S+) not found$")
+
+
+def waiting_on_ids(blocked_by) -> list[str]:
+    """The ids a backlog item waits on, parsed from `backlog_readiness`'s strings
+    (`waiting on SPEC-0337 (accepted)`, `PROJ-0012 not found`); order kept, de-duplicated.
+    Status / branch / idea blockers carry no id."""
+    out = []
+    for text in blocked_by or []:
+        for m in _WAITING_ON_RE.finditer(str(text)):
+            dep = m.group(1) or m.group(2)
+            if dep and dep not in out and dep not in ("spec", "idea"):
+                out.append(dep)
+    return out
+
+
+def row_view(cfg, st: dict, backlog_entry=None, *, remote=False, now=None) -> dict:
+    """SPEC-0356: the display fields every list view (and the TUI) shares for one campaign.
+    `backlog_entry` is the campaign's `backlog_view` row (QUEUED readiness); `remote` adds the
+    `remote_gate` object (one ledger read; GATING items and `campaign show`)."""
+    meta = _spec_meta(st)
+    state = st.get("state")
+    if state == "QUEUED":
+        blocked = list((backlog_entry or {}).get("blocked_by") or [])
+    elif state == "WAITING":
+        blocked = ["waiting for a slot"]
+    else:
+        blocked = []
+    park = (st.get("park") or {}) if state == "PARKED" else {}
+    cost = st.get("cost") or {}
+    out = {"title": meta["title"], "priority": _priority(st), "depends_on": meta["depends_on"],
+           "blocked_by": blocked, "waiting_on": waiting_on_ids(blocked),
+           "park_reason": park.get("reason"), "park_detail": park.get("detail"),
+           "cost_usd": round(float(cost.get("total_usd") or 0.0), 4),
+           "cap_usd": cost.get("cap_usd")}
+    if remote:
+        out["remote_gate"] = remote_gate_view(cfg, st, now=now)
+    return out
+
+
+_REMOTE_TYPES = ("gate", "gate_dispatched", "worker_failed")
+
+
+def remote_gate_view(cfg, st: dict, *, now=None, events=None) -> dict | None:
+    """SPEC-0356: the campaign's latest remote gate run from its ledger, or None for a local-only
+    campaign. Reads events by `type` string (`gate_dispatched` is not in EVENT_TYPES until the
+    SPEC-0338 dispatch emits it): a `gate_dispatched` with no later `gate` of its `gate_seq` is
+    running; a `gate` with `worker` finished; a `worker_failed` followed by a local `gate` fell
+    back. The job id is the event's `job_id`, else derived `<campaign>-gate-<seq:03d>-a0`."""
+    import datetime as dt
+    cid = st.get("id")
+    evs = events if events is not None else store.read_ledger(cfg, cid, types=list(_REMOTE_TYPES))
+    evs = [e for e in evs if e.get("type") in _REMOTE_TYPES]
+    gates = [e for e in evs if e.get("type") == "gate"]
+    last_gate = gates[-1] if gates else None
+    disp = next((e for e in reversed(evs) if e.get("type") == "gate_dispatched"), None)
+    now = now or dt.datetime.now().astimezone()
+
+    def job(ev, seq):
+        jid = (ev or {}).get("job_id")
+        if jid:
+            return jid, False
+        return (f"{cid}-gate-{int(seq):03d}-a0", True) if isinstance(seq, int) else (None, True)
+
+    if disp is not None and not any(g.get("gate_seq") == disp.get("gate_seq")
+                                    for g in gates if g.get("seq", 0) > disp.get("seq", 0)):
+        if last_gate is None or last_gate.get("seq", 0) < disp.get("seq", 0):
+            jid, derived = job(disp, disp.get("gate_seq"))
+            started = disp.get("started_at") or disp.get("ts")
+            return {"gate_seq": disp.get("gate_seq"), "worker": disp.get("worker"),
+                    "job_id": jid, "job_id_derived": derived, "status": "running",
+                    "started_at": started, "elapsed_s": _age(started, now), "duration_s": None}
+    if last_gate is None:
         return None
-    title = str((fm or {}).get("title") or "") or None
-    _TITLE_CACHE[str(path)] = (mtime, title)
-    return title
+    seq = last_gate.get("gate_seq")
+    base = {"gate_seq": seq, "started_at": last_gate.get("started_at"),
+            "elapsed_s": None, "duration_s": last_gate.get("duration_s")}
+    if last_gate.get("worker"):
+        jid, derived = job(last_gate, seq)
+        return {**base, "worker": last_gate.get("worker"), "job_id": jid,
+                "job_id_derived": derived, "status": "ok" if last_gate.get("ok") else "failed"}
+    prev = [e for e in evs if e.get("seq", 0) < last_gate.get("seq", 0)]
+    gate_before = next((e for e in reversed(prev) if e.get("type") == "gate"), None)
+    failed = next((e for e in reversed(prev) if e.get("type") == "worker_failed"
+                   and (gate_before is None or e.get("seq", 0) > gate_before.get("seq", 0))), None)
+    if failed is None:
+        return None
+    jid, derived = job(failed, seq)
+    return {**base, "worker": failed.get("worker"), "job_id": jid, "job_id_derived": derived,
+            "status": "fell_back", "stage": failed.get("stage")}
+
+
+def _ago(s) -> str:
+    s = int(s or 0)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m{s % 60:02d}s" if s < 600 else f"{s // 60}m"
+    return f"{s // 3600}h{s % 3600 // 60:02d}m"
+
+
+def remote_gate_line(rg: dict | None, *, now=None) -> str | None:
+    """SPEC-0356: the one `nw campaign show` line for `remote_gate_view`'s object."""
+    if not rg:
+        return None
+    head = f"remote gate #{rg.get('gate_seq')}"
+    job = rg.get("job_id") or "?"
+    if rg["status"] == "running":
+        return f"{head} on worker {rg.get('worker')}  job {job}  running {_ago(rg.get('elapsed_s'))}"
+    if rg["status"] == "fell_back":
+        return (f"{head} worker {rg.get('worker')} failed (stage {rg.get('stage') or '?'})"
+                f" → ran locally")
+    dur = rg.get("duration_s")
+    took = _ago(dur) if isinstance(dur, (int, float)) else "?"
+    ago = ""
+    if rg.get("started_at") and isinstance(dur, (int, float)):
+        import datetime as dt
+        try:
+            end = dt.datetime.fromisoformat(rg["started_at"]) + dt.timedelta(seconds=dur)
+            ago = f", {_ago(_age(end.isoformat(), now))} ago"
+        except (TypeError, ValueError):
+            ago = ""
+    return f"{head} on worker {rg.get('worker')}  job {job}  {rg['status']} in {took}{ago}"
+
+
+def _node_key(st: dict) -> str:
+    """The graph node a campaign is: its spec id, the idea id without a spec, the campaign id for
+    a merge request."""
+    if st.get("kind") == "merge":
+        return str(st.get("id"))
+    return str(st.get("spec_id") or _idea_id_of(st) or st.get("id"))
+
+
+def _spec_status_of(cfg, dep: str) -> tuple[str, str | None, str | None]:
+    """(spec_status, title, project) of a dependency with no campaign, from the specs dir (internal)
+    or the outbox (outbound); `missing` when no file is found."""
+    try:
+        if SP._is_outbound_spec_id(dep):
+            for s in SP._outbound_specs(cfg):
+                if str((s.get("fm") or {}).get("id") or "") == dep:
+                    fm = s["fm"]
+                    return str(fm.get("status") or "?"), fm.get("title"), s["project"]
+            return "missing", None, None
+        fm, _ = split_frontmatter(SP._find_spec(SP._specs_dir(cfg), dep).read_text(encoding="utf-8"))
+        fm = fm if isinstance(fm, dict) else {}
+        return str(fm.get("status") or "?"), fm.get("title"), None
+    except (OSError, ValueError, SystemExit):
+        return "missing", None, None
+
+
+def _pick_campaign(sts: list) -> dict:
+    """SPEC-0356: of several campaigns for one key, the newest non-terminal; with only terminal
+    ones (`--all`), the newest, preferring MERGED."""
+    live = [s for s in sts if s.get("state") not in store.TERMINAL_STATES]
+    pool = live or ([s for s in sts if s.get("state") == "MERGED"] or sts)
+    return max(pool, key=lambda s: (s.get("created_at") or "", s.get("id") or ""))
+
+
+def _cycles(nodes: list, deps_of: dict) -> list[list[str]]:
+    """Strongly connected components with more than one member (or a self-loop), by an
+    iterative Tarjan; each sorted, the list sorted. Never recursive, never infinite."""
+    index, low, on, stack, out, counter = {}, {}, set(), [], [], [0]
+    for root in nodes:
+        if root in index:
+            continue
+        work = [(root, iter(deps_of.get(root, ())))]
+        index[root] = low[root] = counter[0]
+        counter[0] += 1
+        stack.append(root)
+        on.add(root)
+        while work:
+            v, it = work[-1]
+            advanced = False
+            for w in it:
+                if w not in deps_of:
+                    continue
+                if w not in index:
+                    index[w] = low[w] = counter[0]
+                    counter[0] += 1
+                    stack.append(w)
+                    on.add(w)
+                    work.append((w, iter(deps_of.get(w, ()))))
+                    advanced = True
+                    break
+                if w in on:
+                    low[v] = min(low[v], index[w])
+            if advanced:
+                continue
+            work.pop()
+            if work:
+                low[work[-1][0]] = min(low[work[-1][0]], low[v])
+            if low[v] == index[v]:
+                comp = []
+                while True:
+                    w = stack.pop()
+                    on.discard(w)
+                    comp.append(w)
+                    if w == v:
+                        break
+                if len(comp) > 1 or v in deps_of.get(v, ()):
+                    out.append(sorted(comp))
+    return sorted(out)
+
+
+def graph_view(cfg, project=None, include_terminal=False) -> dict:
+    """SPEC-0356 `nw.queue.graph.v1`: campaigns as a dependency DAG keyed by spec id. Every
+    `depends_on` id with no node becomes a stub (its spec status read from the specs dir), so an
+    unqueued dependency is visible; under `project`, stubs from elsewhere are kept, `external`.
+    Edges are `dep → dependent` from `depends_on` only. Pure over `list_campaigns` + spec files."""
+    sts = store.list_campaigns(cfg, include_terminal=include_terminal)
+    backlog = {b["campaign"]: b for b in backlog_view(cfg)}
+    by_key: dict = {}
+    for st in sts:
+        by_key.setdefault(_node_key(st), []).append(st)
+    nodes: dict = {}
+    for key, group in by_key.items():
+        st = _pick_campaign(group)
+        if project and st.get("project") != project:
+            continue
+        rv = row_view(cfg, st, backlog.get(st.get("id")))
+        nodes[key] = {"id": key, "campaign": st.get("id"), "kind": st.get("kind") or "spec",
+                      "state": st.get("state"), "spec_status": None, "title": rv["title"],
+                      "project": st.get("project"), "priority": rv["priority"],
+                      "cost_usd": rv["cost_usd"], "cap_usd": rv["cap_usd"],
+                      "park_reason": rv["park_reason"], "blocked_by": rv["blocked_by"],
+                      "waiting_on": rv["waiting_on"], "depends_on": rv["depends_on"],
+                      "stub": False, "external": False,
+                      "_key": admission_key(st)}
+    for key in list(nodes):
+        for dep in nodes[key]["depends_on"]:
+            if dep in nodes:
+                continue
+            other = by_key.get(dep)
+            if other:
+                st = _pick_campaign(other)
+                status, title, proj = None, _spec_title(st), st.get("project")
+                state, camp = st.get("state"), st.get("id")
+            else:
+                status, title, proj = _spec_status_of(cfg, dep)
+                proj = proj or (None if SP._is_outbound_spec_id(dep) else INTERNAL_PROJECT)
+                state, camp = None, None
+                if status not in ("missing", "done", "superseded"):
+                    status = f"{status}, no campaign"
+            nodes[dep] = {"id": dep, "campaign": camp, "kind": "spec", "state": state,
+                          "spec_status": status, "title": title, "project": proj,
+                          "priority": None, "cost_usd": None, "cap_usd": None,
+                          "park_reason": None, "blocked_by": [], "waiting_on": [],
+                          "depends_on": [], "stub": True,
+                          "external": bool(project) and (proj or INTERNAL_PROJECT) != project,
+                          "_key": (99, "", dep)}
+    edges = sorted({(d, k) for k, n in nodes.items() for d in n["depends_on"] if d in nodes})
+    deps_of = {k: [d for d in n["depends_on"] if d in nodes] for k, n in nodes.items()}
+    cycles = _cycles(sorted(nodes), deps_of)
+    in_cycle = {m for c in cycles for m in c}
+    roots = sorted((k for k in nodes if k not in in_cycle
+                    and not [d for d in deps_of[k] if d not in in_cycle]),
+                   key=lambda k: nodes[k]["_key"])
+    out_nodes = []
+    for k in sorted(nodes, key=lambda k: nodes[k]["_key"]):
+        n = dict(nodes[k])
+        n.pop("_key")
+        out_nodes.append(n)
+    return {"schema": "nw.queue.graph.v1", "nodes": out_nodes,
+            "edges": [{"from": a, "to": b} for a, b in edges], "roots": roots,
+            "cycles": cycles}
+
+
+UNQUEUED_STATUSES = ("accepted", "proposed", "draft")
+_UNQUEUED_ORDER = ("ready", "deps-unmet", "previous-campaign", "not-accepted", "spec-missing",
+                   "no-spec")
+
+
+def _spec_reasons(cfg, specs_dir, fm: dict, status: str, prev) -> list[dict]:
+    reasons = []
+    if status in ("draft", "proposed"):
+        reasons.append({"code": "not-accepted", "text": f"spec is {status}"})
+    for dep in _deps_list(fm.get("depends_on")):
+        try:
+            dep_fm, _ = split_frontmatter(_find_dep_spec(specs_dir, dep).read_text(encoding="utf-8"))
+        except (OSError, ValueError, SystemExit):
+            reasons.append({"code": "deps-unmet", "text": f"{dep} not found"})
+            continue
+        met, why = dependency_met(specs_dir, dep, dep_fm or {},
+                                  {str(fm["id"])} if fm.get("id") else set())
+        if not met:
+            reasons.append({"code": "deps-unmet", "text": f"waiting on {dep} ({why})"})
+    if prev:
+        day = str(prev.get("updated_at") or "")[:10]
+        reasons.append({"code": "previous-campaign",
+                        "text": f"campaign {prev.get('id')} {prev.get('state')} {day}".strip()})
+    return reasons or [{"code": "ready", "text": "accepted, dependencies met, never queued"}]
+
+
+def unqueued_view(cfg, project=None, statuses=None) -> dict:
+    """SPEC-0356 `nw.queue.unqueued.v1`: accepted/proposed/draft specs (internal and outbound, no
+    epics or policies) and SPECCED/INCUBATE ideas that no campaign references in a non-terminal
+    state or MERGED, each with the reasons it is not queued and the command that would queue it.
+    A SPECCED idea collapses into its spec's row, is omitted when its spec exists but is not a
+    candidate, and is listed `spec-missing` only when its spec is not found."""
+    statuses = tuple(statuses or UNQUEUED_STATUSES)
+    sts = store.list_campaigns(cfg, include_terminal=True)
+    by_spec: dict = {}
+    by_idea: dict = {}
+    for st in sts:
+        if st.get("spec_id"):
+            by_spec.setdefault(str(st["spec_id"]), []).append(st)
+        if _idea_id_of(st):
+            by_idea.setdefault(str(_idea_id_of(st)), []).append(st)
+
+    def status_of(group):
+        """(queued, previous terminal campaign) for the campaigns of one candidate."""
+        group = sorted(group, key=lambda s: (s.get("created_at") or "", s.get("id") or ""))
+        if any(s.get("state") not in store.TERMINAL_STATES or s.get("state") == "MERGED"
+               for s in group):
+            return True, None
+        return False, (group[-1] if group else None)
+
+    specs: list = []                                # (kind, fm, project, specs_dir)
+    specs_dir = SP._specs_dir(cfg)
+    all_ids: dict = {}
+    if specs_dir.exists():
+        for path in sorted(specs_dir.glob("[0-9]*.md")):
+            try:
+                fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(fm, dict) and fm.get("id"):
+                all_ids[str(fm["id"])] = fm
+                specs.append(("spec", fm, INTERNAL_PROJECT, specs_dir))
+    for s in SP._outbound_specs(cfg):
+        fm = s.get("fm") or {}
+        if fm.get("id"):
+            all_ids[str(fm["id"])] = fm
+            specs.append(("outbound", fm, s["project"], s["path"].parent))
+    rows, listed = [], {}
+    for kind, fm, proj, sdir in specs:
+        sid, status = str(fm["id"]), str(fm.get("status") or "")
+        if status not in statuses or str(fm.get("kind") or "") in ("epic", "policy"):
+            continue
+        if project and proj != project:
+            continue
+        idea = str(fm.get("source_idea") or "") or None
+        group = by_spec.get(sid, []) + (by_idea.get(idea, []) if idea else [])
+        queued, prev = status_of(group)
+        if queued:
+            listed[sid] = None
+            continue
+        row = {"kind": kind, "id": sid, "title": fm.get("title"), "status": status,
+               "project": proj, "idea_id": None, "depends_on": _deps_list(fm.get("depends_on")),
+               "reasons": _spec_reasons(cfg, sdir, fm, status, prev),
+               "next": f"nw queue add {sid}",
+               "previous_campaign": (prev or {}).get("id")}
+        rows.append(row)
+        listed[sid] = row
+    for t in _ideas_or_empty(cfg):
+        state = t.state or ""
+        if state not in ("SPECCED", "INCUBATE"):
+            continue
+        iid = (t.properties.get("ID") or "").strip() or t.id
+        iproj = (t.properties.get("PROJECT") or "").strip() or None
+        if project and iproj and iproj != project:
+            continue
+        spec_ref = (t.properties.get("SPEC") or "").strip()
+        if state == "SPECCED":
+            if spec_ref in listed:
+                if listed[spec_ref] is not None:
+                    listed[spec_ref]["idea_id"] = iid
+                continue
+            if spec_ref in all_ids or (spec_ref and _spec_exists(cfg, spec_ref)):
+                continue
+            reasons = [{"code": "spec-missing", "text": "idea is SPECCED but its spec was not found"}]
+        else:
+            reasons = [{"code": "no-spec", "text": "idea has no spec yet"}]
+        queued, prev = status_of(by_idea.get(iid, []))
+        if queued:
+            continue
+        if prev:
+            reasons.insert(0, {"code": "previous-campaign",
+                               "text": f"campaign {prev.get('id')} {prev.get('state')} "
+                                       f"{str(prev.get('updated_at') or '')[:10]}".strip()})
+        rows.append({"kind": "idea", "id": iid, "title": t.heading, "state": state,
+                     "project": iproj, "idea_id": iid, "depends_on": [], "reasons": reasons,
+                     "next": f"nw queue add {iid}", "previous_campaign": (prev or {}).get("id")})
+
+    def order(r):
+        codes = [x["code"] for x in r["reasons"]]
+        return (min(_UNQUEUED_ORDER.index(c) for c in codes), r["id"])
+    return {"schema": "nw.queue.unqueued.v1", "items": sorted(rows, key=order)}
+
+
+def _spec_exists(cfg, spec_id: str) -> bool:
+    try:
+        SP._find_spec(SP._specs_dir(cfg), spec_id)
+        return True
+    except (OSError, ValueError, SystemExit):
+        return False
+
+
+def _ideas_or_empty(cfg) -> list:
+    try:
+        return list(_ideas(cfg))
+    except (OSError, ValueError):
+        return []
 
 
 def _activity(state: dict, ledger: list, now=None) -> dict:

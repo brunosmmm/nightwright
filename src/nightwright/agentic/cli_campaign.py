@@ -22,10 +22,13 @@ from . import runs as RN
 from . import store
 
 
-def _summary(st: dict) -> dict:
+def _summary(st: dict, cfg=None, backlog=None) -> dict:
+    """`nw.campaigns.v1` entry. With `cfg`, the SPEC-0356 row fields (title, priority,
+    depends_on, blocked_by, waiting_on, park_reason) ride along; `backlog` is one
+    `backlog_view` keyed by campaign (QUEUED readiness), read once per invocation."""
     counters = st.get("counters") or {}
     cost = st.get("cost") or {}
-    return {
+    out = {
         "id": st.get("id"), "spec_id": st.get("spec_id"), "project": st.get("project"),
         "label": Q.campaign_label(st),
         "kind": st.get("kind"), "idea_id": (st.get("idea") or {}).get("id"),
@@ -36,6 +39,37 @@ def _summary(st: dict) -> dict:
         "park": st.get("park"), "created_at": st.get("created_at"),
         "updated_at": st.get("updated_at"),
     }
+    if cfg is not None:
+        rv = Q.row_view(cfg, st, (backlog or {}).get(st.get("id")))
+        out.update({k: rv[k] for k in ("title", "priority", "depends_on", "blocked_by",
+                                       "waiting_on", "park_reason")})
+    return out
+
+
+def _list_table(title: str, items: list[dict], width: int) -> "Table":
+    """SPEC-0356: `nw campaign list` fitted to `width` (ids and states never cut, a title on
+    every row; the `spec` column is gone: the title and the id carry it)."""
+    from .cli_queue import _blocked_cell, _campaign_cell, _col
+    from . import listview as LV
+    rows = []
+    for r in items:
+        cost = f"${r['cost_usd']:.2f}" + (f"/{r['cap_usd']:.0f}" if r["cap_usd"] else "")
+        rows.append({"campaign": _campaign_cell({"campaign": str(r["id"]), "kind": r["kind"],
+                                                 "label": r["label"]}),
+                     "state": Text(str(r["state"]), style=R.state_style(r["state"])),
+                     "title": Text(str(r.get("title") or "—")),
+                     "blocked_by": _blocked_cell(r),
+                     "park": Text(str(r.get("park_reason") or ""), style="yellow"),
+                     "pri": str(r.get("priority")), "cost": cost,
+                     "project": R.project_text(r["project"]), "loops": str(r["loops"]),
+                     "age": str(r["updated_at"] or "")})
+    cols = [_col("campaign", "id", fixed=True), _col("state", "state", fixed=True),
+            _col("title", "title", flex=True),
+            _col("blocked_by", "blocked by", fold="{} ", hide_empty=True),
+            _col("park", "park", fold="[{}] ", hide_empty=True),
+            _col("pri", "pri", justify="right"), _col("cost", "cost"),
+            _col("project", "project"), _col("loops", "loops"), _col("age", "updated")]
+    return LV.render(title, cols, rows, width)
 
 
 _VERDICT_STYLES = {"done": "green", "pass": "green", "approve": "green", "blocked": "red",
@@ -160,19 +194,15 @@ def attach(campaign_group):
         """Campaigns, newest first (non-terminal unless --all)."""
         rows = store.list_campaigns(cfg, include_terminal=include_terminal, project=project,
                                     spec_id=spec_id, state=state)
+        backlog = ({b["campaign"]: b for b in Q.backlog_view(cfg)}
+                   if any(s.get("state") == "QUEUED" for s in rows) else {})
+        items = [_summary(s, cfg, backlog) for s in rows]
         if as_json:
-            _dump_json({"schema": "nw.campaigns.v1", "campaigns": [_summary(s) for s in rows]})
+            _dump_json({"schema": "nw.campaigns.v1", "campaigns": items})
             return
         scope = "all" if include_terminal else "open"
-        table = Table(title=f"Campaigns  ({scope}; {len(rows)} shown)")
-        for col in ("id", "spec", "project", "state", "loops", "cost", "updated"):
-            table.add_column(col)
-        for s in rows:
-            r = _summary(s)
-            cost = f"${r['cost_usd']:.2f}" + (f"/{r['cap_usd']:.0f}" if r["cap_usd"] else "")
-            table.add_row(str(r["id"]), r["label"], str(r["project"] or ""),
-                          str(r["state"]), str(r["loops"]), cost, str(r["updated_at"] or ""))
-        console.print(table)
+        console.print(_list_table(f"Campaigns  ({scope}; {len(rows)} shown)", items,
+                                  console.width))
 
     @campaign_group.command("show")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)
@@ -188,6 +218,7 @@ def attach(campaign_group):
         st["last_events"] = store.read_ledger(cfg, campaign, tail=5)
         wt_path = (st.get("repo") or {}).get("worktree")
         st["worktree_present"] = bool(wt_path and os.path.isdir(wt_path))
+        st["remote_gate"] = Q.remote_gate_view(cfg, st)                # SPEC-0356
         if as_json:
             _dump_json(st)
             return
@@ -198,6 +229,9 @@ def attach(campaign_group):
         cap = f" / ${r['cap_usd']:.2f}" if r["cap_usd"] else ""
         est = f" (~${r['estimated_usd']:.2f} est.)" if r["estimated_usd"] > 0 else ""
         console.print(f"  loops {r['loops']}  runs {r['runs']}  cost ${r['cost_usd']:.2f}{est}{cap}")
+        rg_line = Q.remote_gate_line(st["remote_gate"])
+        if rg_line:
+            console.print(Text("  " + rg_line), highlight=False)
         sizing = st.get("sizing") or {}
         if sizing:                                                     # SPEC-0219
             src = f" ({sizing['source']})" if sizing.get("source") else ""

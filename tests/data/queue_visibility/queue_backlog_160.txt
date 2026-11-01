@@ -1,0 +1,4 @@
+Backlog (1)                                                                                                                                 
+#   campaign                  state    title                                          waiting on               pri   project      size   age
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+1   SPEC-0343-20261031-e1e1   QUEUED   Lost-job retry across workers and escalation   ⧗ SPEC-0337, SPEC-0399     2   Meta-Tools   -      4m 

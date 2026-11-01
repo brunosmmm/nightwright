@@ -140,6 +140,26 @@ nw spec schemes                   # nw-native (default), plain-md
 Exact flags: `nw <cmd> --help`. Bare `nw idea TEXT` captures; `nw idea show|log|…`
 enrich/read; listing is `nw ideas`.
 
+### Seeing the queue (SPEC-0356)
+
+```bash
+nw queue list          # Active / Needs you / Waiting / Backlog: title, pri, park reason, waiting-on
+nw campaign list       # every open campaign, same columns (--all for terminal ones)
+nw queue backlog       # admission order with what each item waits on
+nw queue graph         # dependency tree: dependents under their dependencies, stubs for
+                       # dependencies with no campaign, cycles listed apart (--project, --all)
+nw queue unqueued      # specs/ideas with no campaign and why; `ready` rows (forgotten) first
+nw campaign show ID    # includes a `remote gate #N on worker W  job J  running 3m12s` line
+```
+
+The list tables fit the terminal width (`COLUMNS`): the campaign id and the state are never
+cut, the title flexes (min 12 cells), and other columns drop in this order as the width
+shrinks: updated/age first, then size/tone/profile, loops, project, cost, pri; park reason and
+blocked-by go last and fold into the title cell (`[budget_cap] …`, `⧗ SPEC-0337 …`) instead of
+vanishing. Every view has a `--json` twin (`nw.queue.v1`, `nw.campaigns.v1`,
+`nw.queue.backlog.v1`, `nw.queue.graph.v1`, `nw.queue.unqueued.v1`) carrying `title,
+priority, depends_on, blocked_by, waiting_on, park_reason, cost_usd, cap_usd`.
+
 ## Optional interactive desk (`nw tui`)
 
 `nw tui` is a human-only ideas desk behind the optional `tui` extra (SPEC-0098/0099). The

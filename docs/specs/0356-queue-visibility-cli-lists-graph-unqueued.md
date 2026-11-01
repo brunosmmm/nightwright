@@ -1,7 +1,7 @@
 ---
 id: SPEC-0356
 title: "Queue visibility (CLI): untruncated lists with title/priority/blocked-by, nw queue graph, nw queue unqueued, remote gate line"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-01
 milestone: "M9: agentic workflow"
@@ -378,6 +378,75 @@ active / waiting / parked / backlog → `queue_payload` items (`row_view` fields
   `tests/test_agentic_queue_cli.py`, `tests/test_agentic_queue.py`,
   `tests/test_agentic_dashboard*.py`, `tests/test_agentic_watch_height.py`; the full suite
   runs at the queue's close gate.
+
+### Test record (2026-11-01)
+
+- `uv run pytest -q -n 4 tests/test_agentic_queue_visibility.py`: 17 passed. Covers the width
+  snapshots (golden files `tests/data/queue_visibility/{queue_list,queue_backlog,campaign_list}_{60,100,160}.txt`,
+  plus CliRunner runs of the three list commands at each width: ids/states whole, every line
+  `<= width`, a title cell per row), the drop order checked per table at every width 60..160
+  (step 5), the folds, `fit_columns` units, `waiting_on_ids`, JSON parity across the three
+  JSON outputs (with a pre-change `nw.queue.v1` key snapshot as a subset), the graph fixture
+  (tree, shared-node reference, `Cycles`, stubs, `--project` external, self-loop, `--all`
+  tie-break), the unqueued fixture (order, reason codes, `next`, collapse, done-spec idea
+  omitted, `spec-missing`, no idea row `ready`, `--status`) and the remote gate fixtures
+  (a)/(b)/(c)/local with a frozen `now`, written as raw JSONL.
+- Related suites: `uv run pytest -q -n 4 tests/test_agentic_queue_cli.py
+  tests/test_agentic_campaign_cli.py tests/test_agentic_dashboard.py
+  tests/test_agentic_dashboard_spec_phase.py tests/test_agentic_waiting.py
+  tests/test_agentic_cost_estimate.py tests/test_agentic_queue_merge.py
+  tests/test_agentic_idea_campaign.py tests/test_agentic_watch_height.py
+  tests/test_agentic_queue.py`: passing after the test edits listed under *As shipped*.
+- `python3 tools/affected_tests.py --run uv run pytest -q -n 4`: see the run result in the
+  implementer verdict; the full suite is left to the queue's close gate.
+- `python3 tools/spec_lint.py`: OK.
+- Manual (real data dir, Meta-Tools queue): `nw queue list`, `nw campaign list` and
+  `nw queue backlog` at `COLUMNS=60` and `160` (no line over the width, ids and states whole;
+  at 60 the park reason and waiting-on ids fold into the title, e.g. `⧗ SPEC-0358 Close-…`,
+  `[human] Gate timeo…`); `nw queue list` at 160 shows all columns; `nw queue graph` at
+  100/120 (dependents under `done` dependency stubs, `↑ SPEC-0296 (above)` references);
+  `nw queue unqueued` (40 rows: no accepted spec is unqueued today, SPEC-0349 now has a
+  campaign; IDEA-616 shows `spec-missing` because SPEC-0348 is only on the queued merge
+  branch; IDEA-606 shows its ABANDONED campaign). `nw campaign show` on SPEC-0338 and
+  SPEC-0358 (the campaigns that ran on worker `box`): no remote line, correctly, since
+  SPEC-0338's latest gate (#15) ran locally with no preceding `worker_failed`, and
+  SPEC-0358's `worker_failed` is not yet followed by its local `gate` (the fallback is still
+  running). No in-flight run could be shown: `gate_dispatched` is not emitted yet (IDEA-641).
+
+### As shipped (2026-11-01)
+
+- `listview.render(title, columns, rows, width)` builds the rich table on top of
+  `fit_columns`. Columns that share a rank (size/tone/profile = 7) drop together. A
+  `hide_empty` column (blocked-by, park reason) is left out when no row has a value, so the
+  Active table shows no blocked-by column (active rows never wait) and a table with no parked
+  row has no park column. Folded prefixes are written in the declared column order
+  (blocked-by, then park reason).
+- The too-narrow fallback puts the title as extra lines inside the id cell, cut at the id's
+  width. Id and state stay whole as long as id + state fit in the width; below that, rich
+  has to cut them.
+- Backlog tables (in `nw queue list` and `nw queue backlog`) show `QUEUED` in the state
+  column. The blocked-by cell (`waiting on` header) shows `✓ ready`, or `⧗` followed by the
+  waiting-on ids. Blockers with no id (`spec status is draft`, `branch x missing`) are shown
+  verbatim. The Waiting table's fixed state column is `continues at`. `nw campaign list` keeps
+  the merge `merge:<branch>` label under the id, as `nw queue list` does.
+- Internal specs in `nw queue unqueued` carry `project: Meta-Tools` (`INTERNAL_PROJECT`).
+  `next` is always `nw queue add <ID>` (outbound ids resolve their project).
+- Graph stubs whose dependency has a campaign outside `--project` keep that campaign's id and
+  state, and are marked `external: true`.
+- `remote_gate` on `nw.queue.v1` is present only on GATING items (`null` when local). A
+  fell-back object also carries `stage`.
+- Existing tests whose assertions this spec changes on purpose were updated:
+  `test_backlog_json_order_and_list_sections` (the backlog key set is now a superset;
+  `waiting_on` is asserted), `test_list_needs_you_table_and_park_keys` and
+  `test_list_marks_overdue_and_colours_parks_by_owner` (the park reason has its own column,
+  no `PARKED:reason`), `test_queue_list_json_and_table_show_sizing` (at 80 columns
+  size/tone/profile are dropped, not shown as a dim line under the id; this replaces
+  `_WIDE_COLS`) and `test_multiple_projects_in_flight_are_labelled` (pins a 160-column
+  console, because project, rank 5, drops at 80). Admission, readiness, the `backlog` ledger
+  event and `nw queue watch` code are untouched.
+- Rollout step 4: from a campaign agent the org write to IDEA-641 is refused
+  (`NW_PERSONA_RUN`). The `gate_dispatched` contract is recorded as campaign note #16 and
+  in the verdict's follow-ups instead.
 
 ## Rollout / migration
 

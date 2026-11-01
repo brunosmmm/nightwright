@@ -196,6 +196,7 @@ def test_multiple_projects_in_flight_are_labelled(tmp_path, monkeypatch):
     assert "comfort-assistant" in panel_title
     only = Q.dashboard_payload(cfg, project="comfort-assistant")
     assert [it["campaign"] for it in only["active"]] == [other] and only["backlog"] == []
+    monkeypatch.setattr("nightwright.console.console._width", 160)   # SPEC-0356: project drops when narrow
     for cmd in (["queue", "list"], ["queue", "backlog"]):
         r = run_cli(cfg, monkeypatch, cmd)
         assert r.exit_code == 0 and "project" in r.output and "Meta-Tools" in r.output, r.output

@@ -1,0 +1,4 @@
+Backlog (1)                                                                                         
+#   campaign                  state    title               waiting on               pri   project   
+────────────────────────────────────────────────────────────────────────────────────────────────────
+1   SPEC-0343-20261031-e1e1   QUEUED   Lost-job retry a…   ⧗ SPEC-0337, SPEC-0399     2   Meta-Tools

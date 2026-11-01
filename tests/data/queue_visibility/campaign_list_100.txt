@@ -1,0 +1,8 @@
+Campaigns                                                                                           
+id                        state          title             blocked by               park         pri
+────────────────────────────────────────────────────────────────────────────────────────────────────
+SPEC-0343-20261031-e1e1   QUEUED         Lost-job retry…   ⧗ SPEC-0337, SPEC-0399                  2
+SPEC-0342-20261031-d00d   WAITING        nw workers boo…   ⧗ waiting for a slot                    1
+SPEC-0341-20261031-c0de   PARKED         Coordinator re…                            budget_cap     3
+SPEC-0340-20261031-9b1c   GATING         Failed-first l…                                           2
+SPEC-0338-20261031-23a7   IMPLEMENTING   Remote gate di…                                           1
