@@ -6000,18 +6000,21 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
 
 # ---- admission (nw queue add) --------------------------------------------------------------------
 
-def _split_origin(cfg, spec_id: str, inflight: dict | None = None) -> dict | None:
+def _split_origin(cfg, spec_id: str, inflight: dict | None = None,
+                  project: str | None = None) -> dict | None:
     """SPEC-0294: the split campaign that wrote `spec_id` as one of its parts. With `inflight`
     (a state dict, not MERGED on disk yet) only that state counts: it must be `kind: "split"`
     and list the id, and there is no disk read. Without it, the durable MERGED split campaign
-    that lists the id."""
+    that lists the id. With `project` (SPEC-0327: spec ids are per project) the origin must be
+    a campaign of that project."""
     def lists(st):
         return (st.get("kind") == "split"
                 and any(p.get("spec_id") == spec_id
                         for p in ((st.get("split") or {}).get("parts") or [])))
     if inflight is not None:
-        return inflight if lists(inflight) else None
-    for st in store.list_campaigns(cfg, include_terminal=True, state="MERGED"):
+        same = project is None or (inflight.get("project") or INTERNAL_PROJECT) == project
+        return inflight if same and lists(inflight) else None
+    for st in store.list_campaigns(cfg, include_terminal=True, state="MERGED", project=project):
         if lists(st):
             return st
     return None
@@ -6074,7 +6077,7 @@ def plan_add(cfg, spec_id, *, project=None, profile=None, base=None, force=False
         except ValueError:
             if SR.latest_review(cfg, spec_id, path) is not None:
                 raise
-            origin = _split_origin(cfg, spec_id, split_origin)         # SPEC-0294
+            origin = _split_origin(cfg, spec_id, split_origin, project)  # SPEC-0294
             if origin is None:
                 raise
             review_doc = {"admission": "split_child"}

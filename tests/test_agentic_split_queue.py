@@ -155,6 +155,70 @@ def test_split_child_own_review_wins(tmp_path, monkeypatch):
     assert plan["review"] == "approved" and plan["split_origin"] is None
 
 
+@pytest.mark.parametrize("verdict", ["reject", "approve_stale"])
+def test_split_child_inadmissible_own_review_is_not_rescued(tmp_path, monkeypatch, verdict):
+    """A review of the child keeps the admission in its hands: a `reject` (or a stale approve)
+    is refused, never quietly replaced by `split_child`."""
+    from test_agentic_e2e import write_review
+    cfg, repo, cid = merged(tmp_path, monkeypatch)
+    f = part_files(repo)[0]
+    if verdict == "reject":
+        write_review(cfg, f, "SPEC-0101", "reject")
+    else:
+        write_review(cfg, f, "SPEC-0101", "approve", sha="0" * 64)
+    with pytest.raises(ValueError) as e:
+        Q.plan_add(cfg, "SPEC-0101")
+    assert "no spec review" not in str(e.value)
+
+
+def test_split_child_origin_is_scoped_to_the_project(tmp_path, monkeypatch):
+    """SPEC-0327: spec ids are per project. A MERGED split in Meta-Tools that lists SPEC-0101
+    does not admit another project's unreviewed SPEC-0101; its own child is still admitted."""
+    import subprocess
+    cfg, repo, cid = merged(tmp_path, monkeypatch)
+    other = tmp_path / "other"
+    other.mkdir()
+    src = part_files(repo)[0]
+    _write(other, "docs/specs/0101-part-1.md", src.read_text())
+    _write(other, ".nw/project.yaml", (repo / ".nw" / "project.yaml").read_text())
+    for args in (["init", "-q", "-b", "main"], ["add", "-A"],
+                 ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"]):
+        subprocess.run(["git", "-C", str(other), *args], check=True)
+    cfg["outbox_targets"] = {**(cfg.get("outbox_targets") or {}), "B": {"repo_path": str(other)}}
+    with pytest.raises(ValueError, match="no spec review"):
+        Q.plan_add(cfg, "SPEC-0101", project="B")
+    plan = Q.plan_add(cfg, "SPEC-0101", project="Meta-Tools")
+    assert plan["review"] == "split_child" and plan["split_origin"] == cid
+    # the in-flight origin is project-scoped too
+    st = S.read_state(cfg, cid)
+    assert Q._split_origin(cfg, "SPEC-0101", st, "Meta-Tools") is st
+    assert Q._split_origin(cfg, "SPEC-0101", st, "B") is None
+    assert Q._split_origin(cfg, "SPEC-0101", None, "B") is None
+
+
+def test_split_close_handed_off_does_not_run_the_hook(tmp_path, monkeypatch):
+    """merge.policy: pr ends the close at HANDED_OFF: the PR is not merged, so no child is queued
+    and no `split_queued` is recorded until the sweep sees the merge."""
+    import subprocess
+    from test_agentic_e2e import fake_gh
+    cfg, repo, cid = written(tmp_path, monkeypatch)
+    fake_gh(tmp_path, monkeypatch)
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    yaml = repo / ".nw" / "project.yaml"
+    yaml.write_text(yaml.read_text().replace("policy: merge", "policy: pr"))
+    for args in (["remote", "add", "origin", str(origin)], ["add", "-A"],
+                 ["commit", "-qm", "pr policy"], ["push", "-q", "-u", "origin", "main"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True)
+    calls = []
+    monkeypatch.setattr(Q, "_queue_split_children",
+                        lambda *a, **k: calls.append(1) or REAL_HOOK(*a, **k))
+    st = run_ticks(cfg, cid, 2)
+    assert st["state"] == "HANDED_OFF", st.get("park")
+    assert calls == [] and ledger(cfg, cid, "split_queued") == []
+    assert queued_ids(cfg) == []
+
+
 def test_split_queue_refusal_is_finding(tmp_path, monkeypatch):
     cfg, repo, cid = written(tmp_path, monkeypatch)
     run_ticks(cfg, cid, 1)

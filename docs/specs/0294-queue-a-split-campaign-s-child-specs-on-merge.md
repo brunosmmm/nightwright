@@ -252,6 +252,15 @@ The admission is tied to the id, not to the child's text (see Non-goals). Status
   PR sweep, idea link, queue and queue CLI, and spec review tests — 472 passed. The full suite
   is left to gating.
 
+- Review round 2 fix: the durable `split_child` lookup is scoped to the spec's project
+  (`_split_origin(..., project)` filters `list_campaigns(..., project=...)`; an in-flight origin
+  must carry the same project), because spec ids are per project (SPEC-0327). New tests:
+  `test_split_child_origin_is_scoped_to_the_project`, `test_split_child_inadmissible_own_review_is_not_rescued`
+  (reject, stale approve), `test_split_close_handed_off_does_not_run_the_hook` (a real `merge.policy: pr`
+  close with the real hook). Sabotage (drop the project argument, drop the own-review guard, drop the
+  MERGED guard at the close call site) fails each new test. `tests/test_agentic_split_queue.py` — 19 passed;
+  the full suite is left to gating.
+
 ### As shipped (2026-10-30)
 
 - The tests are in `tests/test_agentic_split_queue.py` (reusing the `test_agentic_split.py`
