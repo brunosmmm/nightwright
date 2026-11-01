@@ -126,9 +126,11 @@ def pools_for(cfg, project_cfg: dict, campaign_state: dict, *, seq: int,
         return None
     worktree = (campaign_state.get("repo") or {}).get("worktree")
     why = ineligible(project_cfg, worktree)
-    if why is None and not 0 <= seq <= 999:     # the job header's seq range (SPEC-0336)
-        why = {"title": f"gate seq {seq} is outside 0..999; gates run locally",
-               "detail": str(seq), "files": []}
+    if why is None:
+        refusal = header_refusal(project_cfg, campaign_state, cfg, seq)
+        if refusal is not None:
+            why = {"title": "the worker would refuse this job; gates run locally",
+                   "detail": refusal, "files": []}
     if why is None:
         return pools
     if worker is not None:
@@ -200,8 +202,6 @@ def prepare(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int
             bundle: Path) -> dict:
     """Steps 1-5: the commit under test, the base, `have`, the bundle (written to `bundle`,
     absent when nothing is left to send) and the job header."""
-    from .events import settings as events_settings
-    cid = campaign_state["id"]
     repo = campaign_state.get("repo") or {}
     wt, base_name = repo["worktree"], repo.get("base") or "main"
     sha = _git(wt, "stash", "create") or _git(wt, "rev-parse", "HEAD")    # stash stack untouched
@@ -234,6 +234,16 @@ def prepare(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int
     finally:
         for ref, _tip in refs:
             _git(wt, "update-ref", "-d", ref, check=False)
+    return _header(project_cfg, campaign_state, cfg, seq, job_id, key, sha, base_sha, have, size)
+
+
+def _header(project_cfg: dict, campaign_state: dict, cfg, seq: int, job_id: str, key: str,
+            sha: str, base_sha: str, have: list, size: int) -> dict:
+    """The `nw.job.v1` header (SPEC-0336). The gate list drops the coordinator-only `remote`
+    key."""
+    from .events import settings as events_settings
+    cid = campaign_state["id"]
+    base_name = (campaign_state.get("repo") or {}).get("base") or "main"
     gl = [{k: v for k, v in g.items() if k != "remote"} for g in project_cfg.get("gates") or []]
     spec_id = campaign_state.get("spec_id")
     return {"schema": W.JOB_SCHEMA, "kind": "gate", "job_id": job_id, "repo_key": key,
@@ -246,11 +256,31 @@ def prepare(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int
                         "gate_budget_s": float(events_settings(cfg)["gate_budget_s"])}}
 
 
+def header_refusal(project_cfg: dict, campaign_state: dict, cfg, seq: int) -> str | None:
+    """Why the worker's `validate_header` would refuse this run's job, checked on a dry header
+    (placeholder shas and cache key) before anything is bundled or sent, else None. Such a
+    refusal comes from the coordinator's own config (a gate name outside [A-Za-z0-9._-]+, a
+    base branch git refuses, a seq outside 0..999) and would repeat on every run, so it keeps
+    the run local instead of costing the worker a cooldown."""
+    zero = "0" * 40
+    try:
+        h = _header(project_cfg, campaign_state, cfg, seq, f"{campaign_state['id']}-gate-"
+                    f"{seq:03d}-a0", "repo-000000000000", zero, zero, [], 0)
+        W.validate_header(h)
+    except W.WorkerError as e:
+        return e.error
+    except (TypeError, ValueError, KeyError, AttributeError) as e:
+        return f"the job header cannot be built: {e}"
+    return None
+
+
 # ---- the gate-job connection -----------------------------------------------------------------
 
-def _writer(fd: int, header: dict, bundle: Path, cancel: threading.Event) -> None:
+def _writer(fd: int, header: dict, bundle: Path, cancel: threading.Event,
+            written: threading.Event) -> None:
     """Header line, then the bundle, on a private dup of SSH's stdin (closed when done, so a
-    close of the original by the main thread gives the worker EOF). stdin stays open."""
+    close of the original by the main thread gives the worker EOF). stdin stays open.
+    `written` is set once the writer is done, sent or not."""
     try:
         data = (json.dumps(header, ensure_ascii=False) + "\n").encode("utf-8")
         _write_all(fd, data, cancel)
@@ -265,6 +295,7 @@ def _writer(fd: int, header: dict, bundle: Path, cancel: threading.Event) -> Non
         pass                                    # the remote went away: the reader sees EOF
     finally:
         os.close(fd)
+        written.set()
 
 
 def _write_all(fd: int, data: bytes, cancel: threading.Event) -> None:
@@ -363,10 +394,11 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                                 stderr=subprocess.PIPE, start_new_session=True)
     except OSError as e:
         raise RemoteFailure("ssh", f"ssh failed to start: {e}")
-    cancel = threading.Event()
+    cancel, written = threading.Event(), threading.Event()
     lines: queue.Queue = queue.Queue()
     err_tail: collections.deque = collections.deque(maxlen=20)
-    for target, args in ((_writer, (os.dup(proc.stdin.fileno()), header, bundle, cancel)),
+    for target, args in ((_writer, (os.dup(proc.stdin.fileno()), header, bundle, cancel,
+                                    written)),
                          (_reader, (proc.stdout, lines)), (_drain, (proc.stderr, err_tail))):
         threading.Thread(target=target, args=args, daemon=True).start()
     names = {g["name"] for g in header["payload"]["gates"]}
@@ -374,7 +406,9 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
     results: list = []
     started, worker_wait = False, 0.0
     t0, started_at = time.monotonic(), store.now_iso()
-    deadline = t0 + slot_wait_s
+    # the wait for `started` is bounded by `slot_wait_s` from the end of the upload (the upload
+    # itself by `slot_wait_s` from the start), so a big bundle does not eat the slot wait
+    deadline, upload_seen = t0 + slot_wait_s, False
     stop_at = None
     grace = END_GRACE_S
 
@@ -392,6 +426,10 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                 _close(proc.stdin)
                 stop_at = time.monotonic() + STOP_GRACE_S
             now = time.monotonic()
+            if not upload_seen and written.is_set():
+                upload_seen = True
+                if not started:
+                    deadline = now + slot_wait_s
             if stop_at is not None and now >= stop_at:
                 grace = 0.0
                 return interrupted()
@@ -417,8 +455,10 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
             kind = frame["type"]
             if kind == "error":
                 stage = str(frame.get("stage") or "error")
+                # `claim` (a duplicate job id) and `validate` (the coordinator's own header)
+                # say nothing about the host
                 raise RemoteFailure(stage, str(frame.get("error") or ""),
-                                    cooldown=stage != "claim")
+                                    cooldown=stage not in ("claim", "validate"))
             if kind == "started":
                 started = True
                 worker_wait = float(frame.get("slot_wait_s") or 0.0)
@@ -438,8 +478,10 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                                          worker=worker["name"]), worker_wait)
             # `accepted` and `slot_wait` are progress only
     except RemoteFailure as f:
-        f.worker_wait_s = worker_wait if started else 0.0
         grace = min(grace, 2.0)
+        if stop_at is not None:                 # a stop asked for this end: no fallback
+            return interrupted()
+        f.worker_wait_s = worker_wait if started else 0.0
         raise
     finally:
         cancel.set()

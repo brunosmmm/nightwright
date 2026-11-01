@@ -273,6 +273,15 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
   unknown worker, an ineligible `--worker` run; `nw campaign show` naming the worker.
 - `python3 tools/affected_tests.py --run uv run pytest -q -x -n 4`: the selection came out as
   the whole suite (4762 passed, 3 skipped). `python3 tools/spec_lint.py`: OK.
+- Review fixes (loop 2): `uv run pytest -q tests/test_remote_gates.py`: 35 passed. Added: an
+  `error` frame with stage `checkout` (worker_failed, cooldown, local run under seq 1); an
+  `error` frame with stage `validate` (fallback without cooldown); gate names the worker
+  refuses (`unit tests`, `lint:ruff`, `py/unit`, `ok` + `ok.r1`) staying local with one
+  `finding`, nothing bundled or sent, no cooldown, and `--worker` erroring; a base name the
+  worker refuses and a seq of 1000 staying local; an `error` frame and a garbage frame after a
+  stop ending the run as interrupted with no `worker_failed`. Each new test was checked to
+  fail with its fix reverted. `uv run pytest -q -n 4` over the gate, gate-slot, worker and
+  workers test files: 359 passed. The full suite is left to the gate.
 - Manual verification (steps 1-6, the second machine) has **not** been run: it needs the
   human's machine. The last criterion stays open and the spec stays `in-progress` until then.
 
@@ -293,6 +302,19 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
 - `worker_failed` is projected into the queue events and held by the quiet conductor
   (`quiet.RULES`, the nw-conduct skill's held list). docs/WORKFLOW.md ("Remote gate worker")
   describes dispatch, the opt-outs and `--worker`/`--local`.
+- **A header the worker would refuse stays local.** Eligibility also builds a dry job header
+  (placeholder shas and cache key) and runs the worker's own `validate_header` on it. A gate
+  name outside `[A-Za-z0-9._-]+`, a gate name that collides with another gate's retry files,
+  a base branch `base_name_ok` refuses, or a seq outside 0..999 is ineligible: one
+  `finding` (title "the worker would refuse this job", detail the refusal), and `--worker`
+  errors. These come from the coordinator's own config and would repeat on every run, so they
+  must not cost the worker a cooldown. As a backstop, an `error` frame with stage `validate`
+  falls back **without** cooldown, like `claim`.
+- Once a stop has closed stdin, an `error` frame or a malformed frame ends the run as
+  interrupted, with no `worker_failed`, no cooldown and no local re-run.
+- The `worker_slot_wait_s` bound before `started` restarts when the header and bundle have
+  been written, so upload time does not count against the worker's slot wait. The upload
+  itself is still bounded by `worker_slot_wait_s` from the start.
 - The run-timeout margin (`RUN_TIMEOUT_MARGIN_S`, 120 s) and `job_timeout_s` are module-level
   in `remote_gates.py`, so tests can shrink them.
 

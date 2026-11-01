@@ -404,6 +404,82 @@ def test_failing_bundle_step_falls_back_without_cooldown(world, remote, monkeypa
     _assert_fell_back(world, remote, run, "bundle", cooldown=False)
 
 
+def _gate_job_variant(remote, name, body):
+    """A fake ssh whose `gate-job` runs `body` (sh) and whose other commands reach the worker."""
+    return _script(remote.w.tmp / f"ssh-{name}", f'case "$*" in *gate-job*) {body};; esac\n'
+                                                f'exec {remote.ssh} "$@"')
+
+
+def _error_frame(stage):
+    from nightwright.agentic import worker as W
+    return json.dumps({"schema": W.FRAME_SCHEMA, "type": "error", "stage": stage,
+                       "error": f"{stage} went wrong"})
+
+
+def test_an_error_frame_falls_back_with_cooldown(world, remote):
+    remote.register(ssh=_gate_job_variant(
+        remote, "err-checkout", f"echo '{_error_frame('checkout')}'; exec cat >/dev/null"))
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    _assert_fell_back(world, remote, run, "checkout", cooldown=True)
+    assert world.ledger(["worker_failed"])[0]["error"] == "checkout went wrong"
+
+
+def test_a_validate_error_frame_falls_back_without_cooldown(world, remote):
+    """The backstop: a header the worker refuses is the coordinator's doing, not the host's."""
+    remote.register(ssh=_gate_job_variant(
+        remote, "err-validate", f"echo '{_error_frame('validate')}'; exec cat >/dev/null"))
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    _assert_fell_back(world, remote, run, "validate", cooldown=False)
+
+
+@pytest.mark.parametrize("names", [["unit tests"], ["lint:ruff"], ["py/unit"], ["ok", "ok.r1"]])
+def test_gates_the_worker_would_refuse_stay_local(world, remote, spy, invoke, names):
+    world.project["gates"] = [_gate(n, "echo hi") for n in names]
+    for seq in (1, 2):
+        run = G.run_all(world.project, world.state, world.cfg, seq=seq)
+        assert run.worker is None and run.ok and run.results[0].cwd == str(world.repo)
+    assert spy == []                                        # nothing bundled, nothing sent
+    assert not world.ledger(["worker_failed"]) and remote.record()["cooldown_until"] is None
+    (f,) = world.ledger(["finding"])
+    assert f["gate"] == "remote-eligibility" and "refuse" in f["title"] and f["detail"]
+    r = invoke("queue", "gates", CID, "--worker", "box")
+    assert r.exit_code != 0 and "not eligible" in r.output
+
+
+def test_a_base_name_the_worker_would_refuse_stays_local(world, remote):
+    from nightwright.agentic import remote_gates as RG
+    assert RG.pools_for(world.cfg, world.project, world.state, seq=1) is not None
+    state = {**world.state, "repo": {**world.state["repo"], "base": "release/.hidden"}}
+    assert RG.header_refusal(world.project, state, world.cfg, 1)
+    assert RG.pools_for(world.cfg, world.project, state, seq=1) is None
+    assert RG.pools_for(world.cfg, world.project, world.state, seq=1000) is None
+    with pytest.raises(ValueError, match="not eligible"):
+        RG.pools_for(world.cfg, world.project, state, seq=1, worker="box")
+    assert len(world.ledger(["finding"])) == 1
+
+
+@pytest.mark.parametrize("reply", ["error", "garbage"])
+def test_an_error_after_a_stop_is_an_interruption(world, remote, tmp_path, reply):
+    """Once a stop closed stdin, whatever the worker answers ends the run as interrupted: no
+    `worker_failed`, no cooldown, no local re-run."""
+    marker = tmp_path / "job-started"
+    line = _error_frame("checkout") if reply == "error" else "garbage"
+    remote.register(ssh=_gate_job_variant(
+        remote, f"stop-{reply}", f"touch {marker}; cat >/dev/null; echo '{line}'"))
+    stop = threading.Event()
+    out = {}
+    t = threading.Thread(target=lambda: out.update(run=G.run_all(
+        world.project, world.state, world.cfg, seq=1, stop=stop)))
+    t.start()
+    assert until(marker.exists)
+    stop.set()
+    join(t)
+    run = out["run"]
+    assert run.interrupted and not run.ok and run.worker == "box" and run.seq == 1
+    assert not world.ledger(["worker_failed"]) and remote.record()["cooldown_until"] is None
+    assert not world.gates_dir.exists() or not list(world.gates_dir.iterdir())
+
+
 def _hold_worker_slots(remote, n=2):
     """Hold the worker host's local gate slots (its default pool of 2) from this process."""
     import contextlib
