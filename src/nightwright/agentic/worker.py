@@ -14,6 +14,7 @@ import base64
 import fcntl
 import gzip
 import json
+import math
 import os
 import re
 import shlex
@@ -40,6 +41,8 @@ ENV_ALLOWLIST = frozenset({"NW_CAMPAIGN", "NW_SPEC_ID", "NW_BASE"})
 MAX_LOG_BYTES = 16 * 1024 * 1024
 MAX_HEADER_BYTES = 4 * 1024 * 1024
 DEFAULT_KEEP_DAYS = 2
+# `gc --keep-days` beyond this is "forever" (a larger count would overflow the float clock)
+MAX_KEEP_DAYS = 100_000
 SLOT_WAIT_ENV = "NW_WORKER_SLOT_WAIT_EVENT_S"
 EXIT_ERROR = 3
 EXIT_REFUSED = 2
@@ -50,6 +53,8 @@ SHA_RE = re.compile(r"^[0-9a-f]{40,64}\Z")
 DIGITS_RE = re.compile(r"^[0-9]+\Z")
 # a branch name: no leading `-` or `/`, no `..`; git's own check-ref-format runs at checkout
 BASE_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._/-]*\Z")
+# a gate name `<other gate>.r<n>` would share files with that gate's retry `<n>`
+RETRY_STEM_RE = re.compile(r"^(.+)\.r[0-9]+\Z")
 # the worker's slot holds/waiters name a remote job `remote:<campaign>`, so they never read as
 # one of the worker host's own local campaigns
 SLOT_CAMPAIGN_PREFIX = "remote:"
@@ -232,8 +237,8 @@ def validate_header(h) -> None:
     extra = sorted(set(env) - ENV_ALLOWLIST)
     if extra:
         bad(f"env keys outside the allowlist {sorted(ENV_ALLOWLIST)}: {extra}")
-    if any(not isinstance(v, str) for v in env.values()):
-        bad("env values must be strings")
+    if any(not isinstance(v, str) or "\x00" in v for v in env.values()):
+        bad("env values must be strings without NUL bytes")
     if "NW_BASE" in env and env["NW_BASE"] != base["name"]:
         bad(f"env NW_BASE {env['NW_BASE']!r} differs from base.name {base['name']!r}")
     payload = h.get("payload")
@@ -244,8 +249,8 @@ def validate_header(h) -> None:
         bad("payload.seq must be an int from 0 to 999")
     budget = payload.get("gate_budget_s")
     if budget is not None and (not isinstance(budget, (int, float)) or isinstance(budget, bool)
-                               or budget <= 0):
-        bad("payload.gate_budget_s must be a positive number")
+                               or not math.isfinite(budget) or budget <= 0):
+        bad("payload.gate_budget_s must be a positive finite number")
     gl = payload.get("gates")
     if not isinstance(gl, list):
         bad("payload.gates must be a list")
@@ -253,6 +258,13 @@ def validate_header(h) -> None:
         if not isinstance(g, dict) or not isinstance(g.get("name"), str) \
                 or not KEY_RE.match(g["name"]) or not isinstance(g.get("cmd"), str):
             bad("each gate needs a name matching [A-Za-z0-9._-]+ and a string cmd")
+        if any(isinstance(v, str) and "\x00" in v for v in g.values()):
+            bad(f"gate {g['name']!r}: values must not contain NUL bytes")
+    names = {g["name"] for g in gl}
+    for name in sorted(names):
+        m = RETRY_STEM_RE.match(name)
+        if m and m.group(1) in names:
+            bad(f"gate name {name!r} collides with the retry files of gate {m.group(1)!r}")
     # every other gate field (timeout_s, retries, cwd, results, ...) and unique names, by the
     # same rules a local `.nw/project.yaml` gate list meets, so nothing fails mid-run
     try:
@@ -305,14 +317,32 @@ def _read_exact(stream, n: int, dest: Path) -> None:
             left -= len(chunk)
 
 
-def _watch_stdin(stream, cancel: threading.Event) -> None:
-    """EOF on stdin before `done` is a cancel: stop waiting and kill the live gates. It reads
-    the raw fd: a daemon thread blocked inside the buffered reader holds its lock, and the
-    interpreter aborts on that lock at exit."""
+def _detach_stdin(stream) -> int | None:
+    """A private dup of the job stream's fd for the watcher. When the stream is the process's
+    fd 0, fd 0 becomes /dev/null: the gates inherit fd 0, and must get EOF on a read (as in a
+    local run) rather than block on, or eat from, the coordinator's open job stream."""
     try:
         fd = stream.fileno()
-        while os.read(fd, 65536):
-            pass
+    except (OSError, ValueError):
+        return None
+    watch = os.dup(fd)
+    if fd == 0:
+        null = os.open(os.devnull, os.O_RDONLY)
+        try:
+            os.dup2(null, 0)
+        finally:
+            os.close(null)
+    return watch
+
+
+def _watch_stdin(fd: int | None, cancel: threading.Event) -> None:
+    """EOF on the job stream before `done` is a cancel: stop waiting and kill the live gates.
+    It reads the raw fd: a daemon thread blocked inside the buffered reader holds its lock, and
+    the interpreter aborts on that lock at exit."""
+    try:
+        if fd is not None:
+            while os.read(fd, 65536):
+                pass
     except (OSError, ValueError):
         pass
     cancel.set()
@@ -394,8 +424,9 @@ def _checkout(cfg, h: dict, job: Path, stdin, stop: "_Stop | None" = None) -> No
             heads = _git("bundle", "list-heads", bundle).stdout.split()
             job_refs = [r for r in heads if r.startswith(JOB_REFS)]
             (job / "refs.json").write_text(json.dumps(job_refs) + "\n", encoding="utf-8")
-            _git("-C", cache, "fetch", "-q", "--no-write-fetch-head", "--no-auto-maintenance",
-                 bundle, f"{JOB_REFS}*:{JOB_REFS}*")
+            # plain flags only (git < 2.29 lacks --no-auto-maintenance/--no-write-fetch-head);
+            # auto gc is off in the cache config (`_no_auto_maintenance`)
+            _git("-C", cache, "fetch", "-q", bundle, f"{JOB_REFS}*:{JOB_REFS}*")
             bundle.unlink(missing_ok=True)
         for sha, what in ((commit, "commit"), (base["sha"], "base")):
             if not _has_commit(cache, sha):
@@ -411,6 +442,9 @@ def _checkout(cfg, h: dict, job: Path, stdin, stop: "_Stop | None" = None) -> No
     _git("-C", tree, "update-ref", f"refs/heads/{name}", base["sha"])
     if name.startswith("origin/") and len(name) > len("origin/"):
         _git("-C", tree, "update-ref", f"refs/remotes/{name}", base["sha"])
+        # `origin/<rest>` now names both refs (same sha); without this every resolve of it
+        # warns "refname is ambiguous" on stderr, which a local checkout never does
+        _git("-C", tree, "config", "core.warnAmbiguousRefs", "false")
     stop.check()
 
 
@@ -545,7 +579,8 @@ def gate_job(cfg, stdin, stdout) -> int:
 
             state["stage"] = "checkout"
             _checkout(cfg, h, job, stdin, stop)
-            threading.Thread(target=_watch_stdin, args=(stdin, cancel), daemon=True).start()
+            threading.Thread(target=_watch_stdin, args=(_detach_stdin(stdin), cancel),
+                             daemon=True).start()
 
             state["stage"] = "slot"
             frames.emit("accepted")
@@ -706,7 +741,7 @@ def gc(cfg, keep_days: int = DEFAULT_KEEP_DAYS, now: float | None = None) -> dic
     lock: a job is then either fully claimed (its `job.json` names its shas, its refs are
     kept) or has not fetched yet (it fetches after this gc's prune)."""
     now = time.time() if now is None else now
-    keep_s = max(0, int(keep_days)) * 86400
+    keep_s = min(max(0, int(keep_days)), MAX_KEEP_DAYS) * 86400
     out = {"jobs_removed": [], "refs_removed": 0, "pruned": []}
     with jobs_lock(cfg):
         _live_jobs(cfg, remove_before=now - keep_s, removed=out["jobs_removed"])

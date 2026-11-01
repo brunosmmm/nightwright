@@ -313,6 +313,23 @@ this to tell a transport failure from a gate failure.
   fix reverted, this test fails because auto gc merges the packs into one. A second new case:
   when `git gc` fails, the repo is not listed in `pruned`. `python3 tools/spec_lint.py`: OK.
   The full suite is left to gating.
+- Loop 7 (review fixes): new cases in `tests/test_worker.py`: an `origin/main` base
+  (`merge-base "$NW_BASE" HEAD`, `{base}` and `refs/remotes/origin/main` all give the
+  coordinator's shas, no ambiguity warning); `NW_WORKTREE`/`NW_DATA_DIR`/`NW_CONFIG_DIR` are the
+  worker's own and `TMPDIR` is `jobs/<id>/tmp`; a gate running `cat` gets EOF at once (`n=0`)
+  while the job stream stays open, and the stream's EOF still cancels the next gate; the retry
+  ladder is bounded by a small `payload.gate_budget_s`, by the worker's own `gate_budget_s`
+  when the payload has none (both directions), and the budget clock starts at the slot hold
+  (2.5 s of slot wait do not count against a 2 s budget); SIGHUP mid-gate joins SIGTERM and
+  SIGINT; `have` on a repo with no cache prints nothing and creates nothing; `have`
+  re-creates a deleted `refs/nw/have/<sha>`, refreshes stale last-used times, and a
+  `gc --keep-days 1` afterwards keeps them; `gc --keep-days` with 400 digits exits 0 and keeps
+  everything; the cache fetch passes neither git 2.29 flag; refusals for `x.r1` beside `x`,
+  `NaN`/`Infinity`/`0` budgets, NUL in an env value and in a gate cmd; `docs/WORKFLOW.md` has
+  the "Remote gate worker" section with the mandatory dedicated user and the key line. With
+  each fix reverted in turn, the origin, slot-hold and stdin tests fail.
+  `uv run pytest -q -n 4 tests/test_worker.py`: 71 passed. The targeted set (now 184 tests) passed in all 12 repeat runs (`-n 4`, `-n 6`, `-n 8`), with no failure seen; the loop 6 one-off failure was not reproduced.
+  `python3 tools/spec_lint.py`: OK. The full suite is left to gating.
 
 ### As shipped (2026-10-31)
 
@@ -371,14 +388,32 @@ this to tell a transport failure from a gate failure.
   holding it is stale (left by a git killed hard); the checkout, `have` and `gc` delete
   `HEAD.lock`, `config.lock`, `packed-refs.lock`, `shallow.lock` and `refs/**/*.lock` before
   they write.
-- No git auto maintenance in the cache (loop 6): the cache `fetch` passes
-  `--no-auto-maintenance`. The cache config is set to `gc.auto=0` and
+- No git auto maintenance in the cache (loop 6): the cache config is set to `gc.auto=0` and
   `maintenance.auto=false` under the repo lock, by the checkout (new and existing caches) and by
   `gc`. As a result the worker's own `gc` is the only gc that runs in the cache, and it runs
   under the repo lock that `_clear_stale_locks` depends on. `gc` lists a repo in `pruned` only
   when `git gc --prune=now` exits 0. A pending signal is also checked after the clone and
-  checkout. Gate stdin is left as it is (inherited), because changing it would mean changing
-  `run_gate`, which is shared with local runs.
+  checkout.
+- Older git (loop 7): the cache `fetch` passes no flag newer than git 2.29 (the loop 6
+  `--no-auto-maintenance`, and `--no-write-fetch-head`, are gone; the config above already
+  stops auto gc, and a `FETCH_HEAD` written under the repo lock is harmless). Nothing the
+  worker runs needs a recent git.
+- Gate stdin (loop 7): once the bundle is read, the watcher reads a private `dup` of the job
+  stream's fd and, when that fd is the process's fd 0, fd 0 is replaced by `/dev/null`. Gates
+  inherit fd 0, so a gate that reads stdin gets EOF at once, as under a local run, instead of
+  blocking on (or eating from) the coordinator's open stream. `run_gate` is unchanged.
+- `origin/<rest>` base (loop 7): the job tree also sets `core.warnAmbiguousRefs=false`, because
+  `origin/<rest>` then names both `refs/heads/origin/<rest>` and `refs/remotes/origin/<rest>`
+  (same sha); without it every resolve of `$NW_BASE` warns on stderr, which a local checkout
+  never does.
+- Validation (loop 7): `payload.gate_budget_s` must be finite (`NaN`/`Infinity`, which
+  `json.loads` accepts, are refused); env values and a gate's string fields must not contain
+  NUL; a gate named `<other gate>.r<n>` is refused, because its files would be that gate's
+  retry `<n>` files. `gc --keep-days` above 100000 days counts as 100000 (a larger value would
+  overflow the float clock).
+- Design step 4 says "campaign id = the job's campaign"; the shipped id is
+  `"remote:" + the job's campaign`, per the slot identity note above (the Design text is
+  frozen at acceptance, so this note is the authority).
 
 ## Clock Log
 

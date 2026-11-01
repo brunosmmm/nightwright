@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -233,6 +234,22 @@ def test_merge_base_and_base_placeholder_match_the_coordinator(src, tmp_path, we
     assert log == [local, src.base, "s=SPEC-9999"]
 
 
+def test_origin_base_name_resolves_like_a_remote_tracking_branch(src, tmp_path, wenv):
+    """A coordinator whose `repo.base` is `origin/main` has only `refs/remotes/origin/main`;
+    the job tree gets that ref too, so `origin/main`, `$NW_BASE` and `{base}` resolve (without
+    an ambiguity warning) to the base sha and merge-base matches the coordinator's."""
+    _git(src.root, "update-ref", "refs/remotes/origin/main", src.base)
+    local = _git(src.root, "merge-base", "origin/main", "HEAD")
+    h, data = _bundle_job(src, tmp_path, [_gate(
+        "mb", 'git merge-base "$NW_BASE" HEAD; git rev-parse {base}; '
+              'git rev-parse --verify refs/remotes/origin/main; echo b=$NW_BASE')],
+        base={"name": "origin/main", "sha": src.base}, env={"NW_BASE": "origin/main"})
+    job, fin, rc = _run(wenv, h, data)
+    assert rc == 0 and fin["ok"] is True, job.frames
+    log = _file(job.frames[2], "001-mb.log").decode()
+    assert log.split() == [local, src.base, src.base, "b=origin/main"], log
+
+
 def test_concurrent_jobs_see_their_own_base(src, tmp_path, wenv):
     base1 = src.base
     _git(src.root, "checkout", "-q", "main")
@@ -321,6 +338,12 @@ def _dup_gates(h):
     (_set("payload.gates.0.results", {"format": "tap"}), "results"),
     (_set("payload.gates.0.surprise", 1), "unknown key"),
     (_dup_gates, "duplicate gate name"),
+    (_set("payload.gates.1.name", "x.r1"), "collides with the retry files"),
+    (_set("payload.gate_budget_s", float("nan")), "gate_budget_s"),
+    (_set("payload.gate_budget_s", float("inf")), "gate_budget_s"),
+    (_set("payload.gate_budget_s", 0), "gate_budget_s"),
+    (_set("env.NW_SPEC_ID", "a\x00b"), "NUL"),
+    (_set("payload.gates.1.cmd", "true\x00"), "NUL"),
 ])
 def test_bad_header_fields_are_refused_before_anything_runs(src, tmp_path, wenv, mutate, why):
     marker = tmp_path / "ran"
@@ -353,6 +376,80 @@ def test_stdin_short_of_bundle_bytes_is_a_read_error(src, tmp_path, wenv):
     r = _nw(wenv, "gc", "--keep-days", "0")
     assert r.returncode == 0 and h["job_id"] in json.loads(r.stdout)["jobs_removed"]
     assert not jd.exists()
+
+
+def test_worker_provides_its_own_dirs_and_a_per_job_tmpdir(src, tmp_path, wenv):
+    h, data = _bundle_job(src, tmp_path, [_gate(
+        "e", 'echo "wt=$NW_WORKTREE"; echo "data=$NW_DATA_DIR"; echo "conf=$NW_CONFIG_DIR"; '
+             'echo "tmp=$TMPDIR"; test -d "$TMPDIR"')])
+    job, fin, rc = _run(wenv, h, data)
+    assert rc == 0 and fin["ok"] is True, job.frames
+    got = dict(ln.split("=", 1) for ln in _file(job.frames[2], "001-e.log").decode().split())
+    jd = _job_dir(wenv, h["job_id"])
+    assert got == {"wt": str(jd / "tree"), "data": wenv["NW_DATA_DIR"],
+                   "conf": wenv["NW_CONFIG_DIR"], "tmp": str(jd / "tmp")}
+
+
+def test_a_gate_reading_stdin_gets_eof_not_the_job_stream(src, tmp_path, wenv):
+    """The job stream stays open until `done`; a gate that reads stdin gets EOF at once (as
+    under a local run), and the stream's EOF still cancels the job afterwards."""
+    h, data = _bundle_job(src, tmp_path, [
+        _gate("rd", "echo n=$(cat | wc -c); echo read-done", timeout_s=30),
+        _gate("slow", "echo go; sleep 600", timeout_s=900)], job_id="stdin-eof")
+    job = Job(wenv, h, data)
+    job.proc.stdin.write(b"junk the gate must never see\n")
+    job.proc.stdin.flush()
+    g = job.wait_for("gate")
+    assert g["result"]["ok"] is True and g["result"]["timed_out"] is False, g["result"]
+    assert _file(g, "001-rd.log").decode().split() == ["n=0", "read-done"]
+    _wait_log(wenv, "stdin-eof", "slow", "go")
+    job.close()
+    fin = job.final()
+    assert job.proc.wait(timeout=WAIT_S) == 0 and fin["interrupted"] is True
+
+
+def _flaky_once(seconds):
+    """A gate that fails its first run (after `seconds`) and passes a rerun."""
+    return _gate("fl", f'sleep {seconds}; if [ -f "$TMPDIR/once" ]; then echo second; '
+                       'else touch "$TMPDIR/once"; echo first; exit 1; fi', retries=1)
+
+
+def _rerun(frame):
+    return len(frame["result"]["attempts"]) == 2 and "001-fl.r1.log" in frame["files"]
+
+
+def test_gate_budget_from_the_payload_bounds_the_retry_ladder(src, tmp_path, wenv):
+    # the first run (~0.6 s) leaves no room for a rerun inside a 0.5 s budget
+    h, data = _bundle_job(src, tmp_path, [_flaky_once(0.6)])
+    h["payload"]["gate_budget_s"] = 0.5
+    job, fin, rc = _run(wenv, h, data)
+    g = job.frames[2]
+    assert rc == 0 and fin["ok"] is False and not _rerun(g), g["result"]
+    assert set(g["files"]) == {"001-fl.log", "001-fl.json"}
+
+
+@pytest.mark.parametrize("budget, reruns", [(0.5, False), (600, True)])
+def test_gate_budget_falls_back_to_the_workers_own(src, tmp_path, wenv, budget, reruns):
+    (Path(wenv["NW_CONFIG_DIR"]) / "config.yaml").write_text(
+        f"agentic:\n  events:\n    gate_budget_s: {budget}\n")
+    h, data = _bundle_job(src, tmp_path, [_flaky_once(0.6)])
+    del h["payload"]["gate_budget_s"]
+    job, fin, rc = _run(wenv, h, data)
+    assert rc == 0 and _rerun(job.frames[2]) is reruns and fin["ok"] is reruns, job.frames
+
+
+def test_gate_budget_runs_from_the_slot_hold(src, tmp_path, wenv):
+    """The budget clock starts once the slot is held: 2.5 s spent waiting for the slot do not
+    count against a 2 s budget, so the rerun still starts."""
+    env = {**_slot_conf(wenv), W.SLOT_WAIT_ENV: "2.5"}
+    h, data = _bundle_job(src, tmp_path, [_flaky_once(0.2)])
+    h["payload"]["gate_budget_s"] = 2
+    with GS.acquire(_cfg(env, slots=1), "other"):
+        job = Job(env, h, data)
+        assert job.wait_for("slot_wait")["waited_s"] >= 2.5
+    fin, rc = job.finish()
+    assert rc == 0 and fin["slot_wait_s"] >= 2.5, job.frames
+    assert _rerun(job.frames[3]) and fin["ok"] is True, job.frames[3]["result"]
 
 
 def test_the_workers_own_nw_env_never_reaches_a_gate(src, tmp_path, wenv):
@@ -441,7 +538,7 @@ def test_eof_mid_gate_interrupts(src, tmp_path, wenv):
     assert until(lambda: not _alive(pid)), f"the gate's sleep {pid} outlived the job"
 
 
-@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
 def test_signal_mid_gate_kills_the_gate_and_sends_done(src, tmp_path, wenv, sig):
     pidfile = tmp_path / "sleep.pid"
     h, data = _bundle_job(src, tmp_path, [_sleeper(pidfile), _gate("never", "true")])
@@ -598,6 +695,42 @@ def test_have_then_gc_removes_refs_objects_and_job_dirs(src, tmp_path, wenv):
     assert not _job_dir(wenv, h["job_id"]).exists()
 
 
+def test_have_without_a_cache_reports_nothing(wenv):
+    r = _nw(wenv, "have", "--repo", "nope", "a" * 40)
+    assert r.returncode == 0 and r.stdout.split() == [], r.stderr
+    assert not _cache(wenv, "nope").exists()
+
+
+def test_have_refreshes_the_ref_and_its_last_used_time(src, tmp_path, wenv):
+    """A sha `have` reports keeps (or gets back) its `refs/nw/have/<sha>` and a fresh
+    last-used time, so a gc in between does not drop what the coordinator left out."""
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    assert _run(wenv, h, data)[2] == 0
+    cache, hj = _cache(wenv), _cache(wenv).parent / "proj.have.json"
+    hj.write_text(json.dumps({k: v - 3 * 86400 for k, v in json.loads(hj.read_text()).items()}))
+    _git(cache, "update-ref", "-d", f"refs/nw/have/{src.base}")   # the object stays (head's parent)
+    r = _nw(wenv, "have", "--repo", "proj", src.head, src.base)
+    assert r.returncode == 0 and r.stdout.split() == [src.head, src.base], r.stderr
+    assert _git(cache, "rev-parse", f"refs/nw/have/{src.base}") == src.base
+    stamps = json.loads(hj.read_text())
+    assert all(time.time() - stamps[s] < 600 for s in (src.head, src.base)), stamps
+    rec = json.loads(_nw(wenv, "gc", "--keep-days", "1").stdout)
+    assert rec["refs_removed"] == 0
+    assert _nw(wenv, "have", "--repo", "proj", src.head, src.base).stdout.split() \
+        == [src.head, src.base]
+
+
+def test_gc_with_an_enormous_keep_days_keeps_everything(src, tmp_path, wenv):
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    assert _run(wenv, h, data)[2] == 0
+    r = _nw(wenv, "gc", "--keep-days", "9" * 400)
+    assert r.returncode == 0, r.stderr
+    rec = json.loads(r.stdout)
+    assert rec == {"jobs_removed": [], "refs_removed": 0, "pruned": []}
+    assert W.gc(_cfg(wenv), keep_days=10 ** 400)["refs_removed"] == 0
+    assert _job_dir(wenv, h["job_id"]).is_dir()
+
+
 def test_gc_during_a_live_job_keeps_its_dir(src, tmp_path, wenv):
     h, data = _bundle_job(src, tmp_path, [_gate("slow", "echo go; sleep 600", timeout_s=900)],
                           job_id="live")
@@ -700,6 +833,25 @@ def test_cache_fetch_never_starts_gits_own_gc(src, tmp_path, wenv):
     assert _git(cache, "config", "--get", "maintenance.auto") == "false"
 
 
+def test_cache_fetch_uses_no_flags_newer_than_git_2_29(src, tmp_path, wenv, monkeypatch):
+    """`--no-auto-maintenance`/`--no-write-fetch-head` are git >= 2.29; the cache config
+    already turns auto gc off, so the fetch passes neither and works on an older git."""
+    real, seen = W._git, []
+
+    def git(*args, **kw):
+        seen.append([str(a) for a in args])
+        return real(*args, **kw)
+
+    monkeypatch.setattr(W, "_git", git)
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    job = _job_dir(wenv, h["job_id"])
+    job.mkdir(parents=True)
+    W._checkout(_cfg(wenv), h, job, io.BytesIO(data))
+    fetches = [a for a in seen if "fetch" in a]
+    assert len(fetches) == 1
+    assert not {"--no-auto-maintenance", "--no-write-fetch-head"} & set(fetches[0])
+
+
 def test_gc_lists_a_repo_as_pruned_only_when_git_gc_succeeds(src, tmp_path, wenv, monkeypatch):
     h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
     assert _run(wenv, h, data)[2] == 0
@@ -723,3 +875,12 @@ def test_info_json_keys(wenv):
                         "free_bytes"}
     assert rec["schema"] == "nw.worker.info.v1" and rec["protocol"] == "nw.job.v1"
     assert rec["data_dir"] == wenv["NW_DATA_DIR"] and isinstance(rec["free_bytes"], int)
+
+
+def test_workflow_docs_make_the_dedicated_user_mandatory_and_show_the_key_line():
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "WORKFLOW.md").read_text()
+    assert "Remote gate worker" in doc
+    section = doc[doc.index("Remote gate worker"):]
+    assert "dedicated" in section and "unprivileged" in section
+    assert "mandatory" in section.lower()
+    assert 'command="/home/nw/.local/bin/nw worker ssh-command",restrict' in section
