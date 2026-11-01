@@ -6679,6 +6679,7 @@ def plan_add_batch(cfg, ids, *, project=None, profile=None, base=None, force=Fal
               "priority": priority}
     if split_origin is not None:       # SPEC-0294: kept in the params for apply's re-plan
         params["split_origin"] = {"id": split_origin.get("id"), "kind": split_origin.get("kind"),
+                                  "project": split_origin.get("project"),
                                   "split": {"parts": [{"spec_id": p.get("spec_id")} for p in
                                                       (split_origin.get("split") or {}).get("parts") or []]}}
     items = {}

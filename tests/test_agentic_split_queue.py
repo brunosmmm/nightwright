@@ -196,6 +196,31 @@ def test_split_child_origin_is_scoped_to_the_project(tmp_path, monkeypatch):
     assert Q._split_origin(cfg, "SPEC-0101", None, "B") is None
 
 
+def test_split_children_of_a_non_internal_project_are_queued(tmp_path, monkeypatch):
+    """The batch keeps a minimal copy of the in-flight origin for apply's re-plan; it must carry
+    the project, or every child of a split in a project other than the internal one is refused
+    at apply time with "no spec review"."""
+    import subprocess
+    cfg, repo, cid = merged(tmp_path, monkeypatch)
+    other = tmp_path / "other"
+    other.mkdir()
+    for src in part_files(repo):
+        _write(other, f"docs/specs/{src.name}", src.read_text())
+    _write(other, ".nw/project.yaml", (repo / ".nw" / "project.yaml").read_text())
+    for args in (["init", "-q", "-b", "main"], ["add", "-A"],
+                 ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"]):
+        subprocess.run(["git", "-C", str(other), *args], check=True)
+    cfg["outbox_targets"] = {**(cfg.get("outbox_targets") or {}), "B": {"repo_path": str(other)}}
+    state = dict(S.read_state(cfg, cid), project="B")
+    batch = Q.plan_add_batch(cfg, PARTS, project="B", split_origin=state)
+    assert batch["params"]["split_origin"]["project"] == "B"
+    Q.apply_add_batch(cfg, batch, skip_invalid=True, by="queue")
+    assert [it["id"] for it in batch["items"] if it.get("written")] == PARTS, \
+        [it.get("error") for it in batch["items"]]
+    assert all(it["plan"]["review"] == "split_child" and it["plan"]["project"] == "B"
+               for it in batch["items"])
+
+
 def test_split_close_handed_off_does_not_run_the_hook(tmp_path, monkeypatch):
     """merge.policy: pr ends the close at HANDED_OFF: the PR is not merged, so no child is queued
     and no `split_queued` is recorded until the sweep sees the merge."""

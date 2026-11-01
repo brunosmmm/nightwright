@@ -261,6 +261,12 @@ The admission is tied to the id, not to the child's text (see Non-goals). Status
   MERGED guard at the close call site) fails each new test. `tests/test_agentic_split_queue.py` — 19 passed;
   the full suite is left to gating.
 
+- Review round 3 fix: `plan_add_batch`'s minimal `params["split_origin"]` now carries `project`, so
+  `apply_add_batch`'s re-plan passes the in-flight project check for a split campaign of a project other
+  than the internal one (before, every child was refused at apply with "no spec review").
+  `test_split_children_of_a_non_internal_project_are_queued` (project B) fails without the line.
+  `tests/test_agentic_split_queue.py` + `tests/test_agentic_queue.py` — 201 passed; full suite left to gating.
+
 ### As shipped (2026-10-30)
 
 - The tests are in `tests/test_agentic_split_queue.py` (reusing the `test_agentic_split.py`
