@@ -215,15 +215,22 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0319](./specs/0319-wt-queue-conductor-launch-steward-launch-start.md) `wt queue conductor-launch` / `steward-launch`: start the conductor and stewards with forced context limits, a pinned model and a pre-registered session id — done
   - [x] [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote — done
   - [x] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — done
-- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (2/8 done)
+- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (4/15 done)
   - [x] [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) Remote gates over SSH on one worker host — superseded
-  - [ ] [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) Worker-owned async jobs — accepted
-  - [ ] [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) Remote persona runs with bundle write-back — accepted
+  - [x] [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) Worker-owned async jobs — superseded
+  - [x] [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) Remote persona runs with bundle write-back — superseded
   - [ ] [SPEC-0334](./specs/0334-pull-workers-against-a-coordinator-job-api.md) Pull workers against a coordinator job API — accepted
   - [ ] [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) Federation over a networked mailbox — accepted
   - [x] [SPEC-0336](./specs/0336-gate-worker-job-runner-and-forced-command.md) Gate worker job runner and forced-command dispatcher — done
   - [ ] [SPEC-0337](./specs/0337-worker-registry-and-multi-pool-gate-slots.md) Worker registry and multi-pool gate slots — accepted
   - [ ] [SPEC-0338](./specs/0338-remote-gate-dispatch-with-local-fallback.md) Remote gate dispatch with local fallback — accepted
+  - [ ] [SPEC-0340](./specs/0340-worker-async-job-protocol.md) Worker-side async job protocol: submit, attach, poll, cancel — accepted
+  - [ ] [SPEC-0341](./specs/0341-coordinator-re-attach-job-records-and-adoption.md) Coordinator re-attach, job records and adoption after a restart — accepted
+  - [ ] [SPEC-0342](./specs/0342-lost-job-retry-across-workers-and-escalation.md) Lost-job retry across workers and escalation — accepted
+  - [ ] [SPEC-0343](./specs/0343-worker-bootstrap-and-drain.md) Worker bootstrap and drain — accepted
+  - [ ] [SPEC-0344](./specs/0344-remote-persona-jobs-with-bundle-write-back.md) Remote persona jobs with bundle write-back — accepted
+  - [ ] [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker — accepted
+  - [ ] [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) Remote workers integration suite for gate and persona workers — accepted
 
 ## Active & planned
 
@@ -237,12 +244,17 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0294](./specs/0294-queue-a-split-campaign-s-child-specs-on-merge.md) | Queue a split campaign's child specs on merge, in dependency order | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | accepted | — | 2026-10-31 |
-| [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) | Worker-owned async jobs | feature | accepted | — | 2026-10-31 |
-| [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) | Remote persona runs with bundle write-back | feature | accepted | — | 2026-10-31 |
 | [SPEC-0334](./specs/0334-pull-workers-against-a-coordinator-job-api.md) | Pull workers against a coordinator job API | feature | accepted | — | 2026-10-31 |
 | [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) | Federation over a networked mailbox | feature | accepted | — | 2026-10-31 |
 | [SPEC-0337](./specs/0337-worker-registry-and-multi-pool-gate-slots.md) | Worker registry and multi-pool gate slots | feature | accepted | — | 2026-10-31 |
 | [SPEC-0338](./specs/0338-remote-gate-dispatch-with-local-fallback.md) | Remote gate dispatch with local fallback | feature | accepted | — | 2026-10-31 |
+| [SPEC-0340](./specs/0340-worker-async-job-protocol.md) | Worker-side async job protocol: submit, attach, poll, cancel | feature | accepted | — | 2026-11-01 |
+| [SPEC-0341](./specs/0341-coordinator-re-attach-job-records-and-adoption.md) | Coordinator re-attach, job records and adoption after a restart | feature | accepted | — | 2026-11-01 |
+| [SPEC-0342](./specs/0342-lost-job-retry-across-workers-and-escalation.md) | Lost-job retry across workers and escalation | feature | accepted | — | 2026-11-01 |
+| [SPEC-0343](./specs/0343-worker-bootstrap-and-drain.md) | Worker bootstrap and drain | feature | accepted | — | 2026-11-01 |
+| [SPEC-0344](./specs/0344-remote-persona-jobs-with-bundle-write-back.md) | Remote persona jobs with bundle write-back | feature | accepted | — | 2026-11-01 |
+| [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | accepted | — | 2026-11-01 |
+| [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) | Remote workers integration suite for gate and persona workers | feature | accepted | — | 2026-11-01 |
 
 ## Done
 
@@ -572,6 +584,8 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0177](./specs/0177-wt-conduct-skill-docs-and-dogfood-bootstrap-for.md) | wt-conduct skill, docs and dogfood bootstrap for wt itself | feature | superseded | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0218](./specs/0218-agentic-workflow-docs-refresh.md) | Agentic workflow docs refresh: a guide, a coherent reference, concepts and front door | feature | superseded | M8: product documentation | 2026-10-25 |
 | [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) | Remote gates over SSH on one worker host | feature | superseded | — | 2026-10-31 |
+| [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) | Worker-owned async jobs | feature | superseded | — | 2026-11-01 |
+| [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) | Remote persona runs with bundle write-back | feature | superseded | — | 2026-11-01 |
 
 <!-- specs:end -->
 

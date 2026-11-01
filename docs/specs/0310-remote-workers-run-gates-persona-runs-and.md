@@ -246,16 +246,27 @@ Required in every child:
 - [ ] [SPEC-0337](./0337-worker-registry-and-multi-pool-gate-slots.md) Worker registry and multi-pool gate slots (project: Meta-Tools) — `workers.json`, `nw workers add|list|check|on|off|rm`, `gate_slots.acquire(pools=...)`, remote holds in `occupancy()`/`holding()` (depends_on SPEC-0336)
 - [ ] [SPEC-0338](./0338-remote-gate-dispatch-with-local-fallback.md) Remote gate dispatch with local fallback (project: Meta-Tools) — thin slice, dispatch part: seq claim, bundle code flow with base ref, remote eligibility and opt-out, local fallback, reporting (depends_on SPEC-0336, SPEC-0337)
 - [x] [SPEC-0331](./0331-remote-gates-over-ssh-on-one-worker-host.md) Remote gates over SSH on one worker host (project: Meta-Tools) — superseded by the three-way split SPEC-0336/0337/0338
-- [ ] [SPEC-0332](./0332-worker-owned-async-jobs.md) Worker-owned async jobs (project: Meta-Tools) — `nw worker submit|attach|poll`, worker lease and heartbeats, idempotent job/event ids, several workers, retry on another worker (depends_on SPEC-0338)
-- [ ] [SPEC-0333](./0333-remote-persona-runs-with-bundle-write-back.md) Remote persona runs with bundle write-back (project: Meta-Tools) — persona jobs via `build_argv` on the worker, campaign affinity, account-wide persona cap, per-worker cost (depends_on SPEC-0332)
-- [ ] [SPEC-0334](./0334-pull-workers-against-a-coordinator-job-api.md) Pull workers against a coordinator job API (project: Meta-Tools) — `nw worker serve` dials out, signed jobs, per-worker credentials, Tailscale/mTLS (depends_on SPEC-0332)
-- [ ] [SPEC-0335](./0335-federation-over-a-networked-mailbox.md) Federation over a networked mailbox (project: Meta-Tools) — remote project runner and steward, one conductor, N project machines (depends_on SPEC-0334)
+- [x] [SPEC-0332](./0332-worker-owned-async-jobs.md) Worker-owned async jobs (project: Meta-Tools) — superseded by the four-way split SPEC-0340/0341/0342/0343
+- [ ] [SPEC-0340](./0340-worker-async-job-protocol.md) Worker-side async job protocol (project: Meta-Tools) — `nw worker submit|attach|poll|cancel|jobs`, `frames.jsonl` with `n`, worker lease and heartbeat, `lost`, `gate-job` kept (depends_on SPEC-0338)
+- [ ] [SPEC-0341](./0341-coordinator-re-attach-job-records-and-adoption.md) Coordinator re-attach, job records and adoption (project: Meta-Tools) — `remote-jobs/` records, idempotent apply by `n`/`event_uid`, re-attach with backoff, adoption after a restart, stop/abandon cancel, old-worker fallback (depends_on SPEC-0340)
+- [ ] [SPEC-0342](./0342-lost-job-retry-across-workers-and-escalation.md) Lost-job retry across workers and escalation (project: Meta-Tools) — retry with `attempt + 1`, `excluded_workers`, several workers, escalation after three losses (depends_on SPEC-0341)
+- [ ] [SPEC-0343](./0343-worker-bootstrap-and-drain.md) Worker bootstrap and drain (project: Meta-Tools) — `nw workers bootstrap`, `nw workers drain` (depends_on SPEC-0341)
+- [x] [SPEC-0333](./0333-remote-persona-runs-with-bundle-write-back.md) Remote persona runs with bundle write-back (project: Meta-Tools) — superseded by the three-way split SPEC-0344/0345/0346
+- [ ] [SPEC-0344](./0344-remote-persona-jobs-with-bundle-write-back.md) Remote persona jobs with bundle write-back (project: Meta-Tools) — persona jobs, `request_to_job`, env allowlist, eligibility, ff-only plus stash write-back, progress frames, `nw workers set`, `check --auth` (depends_on SPEC-0342)
+- [ ] [SPEC-0345](./0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker (project: Meta-Tools) — `max_personas`, `rate-limit.json`, `remote_affinity`, `cost_by_worker` (depends_on SPEC-0344)
+- [ ] [SPEC-0346](./0346-remote-workers-integration-suite.md) Remote workers integration suite (project: Meta-Tools) — `tests/test_remote_workers_integration.py` for gate and persona workers (depends_on SPEC-0345)
+- [ ] [SPEC-0334](./0334-pull-workers-against-a-coordinator-job-api.md) Pull workers against a coordinator job API (project: Meta-Tools) — `nw worker serve` dials out, signed jobs, per-worker credentials, Tailscale/mTLS (depends_on SPEC-0342, SPEC-0344)
+- [ ] [SPEC-0335](./0335-federation-over-a-networked-mailbox.md) Federation over a networked mailbox (project: Meta-Tools) — remote project runner and steward, one conductor, N project machines (depends_on SPEC-0334, SPEC-0346)
 
 Sequencing: the thin slice is SPEC-0336, then SPEC-0337, then SPEC-0338 (the spec review of
 SPEC-0331 asked for this three-way split: worker, registry and pools, dispatch).
 Together they are useful on their own (remote gates, local fallback).
-SPEC-0332 generalizes its lifetime. SPEC-0333 and SPEC-0334 both need only SPEC-0332 and may
-run in parallel. SPEC-0335 needs pull workers. Own machines come first: an SSH worker on a
+SPEC-0340 to SPEC-0343 (the split of SPEC-0332) generalize the job lifetime: the worker
+protocol first, then the coordinator re-attach, then retry and bootstrap/drain in parallel.
+SPEC-0344 to SPEC-0346 (the split of SPEC-0333) add persona runs. SPEC-0334 needs the retry
+path (SPEC-0342) and the persona write-back (SPEC-0344), so it runs in parallel with
+SPEC-0345 and SPEC-0346. SPEC-0335 needs pull workers and the integration suite, so it
+lands last. Own machines come first: an SSH worker on a
 second computer or home server (human 2026-10-30).
 
 ## Acceptance criteria
@@ -324,8 +335,8 @@ second computer or home server (human 2026-10-30).
 1. Record the local gate-time baseline (gate minutes per campaign, campaigns per hour)
    from `nw campaign export` when SPEC-0338 starts.
 2. SPEC-0338: remote gates on one machine, off until `nw workers add` is run.
-3. SPEC-0332: async jobs; remote gates move onto it.
-4. SPEC-0333 remote persona runs, SPEC-0334 pull workers (either order), then SPEC-0335.
+3. SPEC-0340 to SPEC-0343: async jobs; remote gates move onto it.
+4. SPEC-0344 to SPEC-0346 remote persona runs, SPEC-0334 pull workers (parallel with SPEC-0345 and SPEC-0346), then SPEC-0335.
 5. Partial delivery is safe at every step: an unregistered feature is today's behaviour,
    and `nw workers off NAME` returns a worker's work to the local machine.
 

@@ -8,7 +8,7 @@ updated: 2026-10-31
 source_idea: IDEA-561
 parent: SPEC-0310
 tags: [agentic, remote, workers, security, api]
-depends_on: [SPEC-0332]
+depends_on: [SPEC-0342, SPEC-0344]
 ---
 
 ## Context

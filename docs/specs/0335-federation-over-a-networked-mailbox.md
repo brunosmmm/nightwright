@@ -8,7 +8,7 @@ updated: 2026-10-31
 source_idea: IDEA-562
 parent: SPEC-0310
 tags: [agentic, remote, federation, mailbox, conductor]
-depends_on: [SPEC-0334]
+depends_on: [SPEC-0334, SPEC-0346]
 ---
 
 ## Context
