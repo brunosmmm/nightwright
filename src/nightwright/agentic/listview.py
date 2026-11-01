@@ -81,9 +81,13 @@ def layout(columns: list[Column], rows: list[dict], width: int) -> dict:
     flex = [c for c in kept if c.flex]
     narrow = need(kept) > width
     avail = width - sum(widths.values()) - SEP * (len(kept) - 1)
-    for i, c in enumerate(sorted(flex, key=lambda c: nat[c.key])):
+    order = sorted(flex, key=lambda c: nat[c.key])
+    for i, c in enumerate(order):
         share = max(TITLE_MIN, avail // (len(flex) - i)) if avail > 0 else TITLE_MIN
-        widths[c.key] = max(1, min(nat[c.key] + _fold_len(folded, rows), share))
+        w = min(nat[c.key] + _fold_len(folded, rows), share)
+        if not narrow:      # never past what is left (the rest keep their minimum)
+            w = min(w, avail - sum(min(TITLE_MIN, nat[d.key]) for d in order[i + 1:]))
+        widths[c.key] = max(1, w)
         avail -= widths[c.key]
     return {"kept": kept, "folded": folded, "widths": widths, "narrow": narrow}
 

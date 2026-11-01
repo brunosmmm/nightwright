@@ -5692,7 +5692,7 @@ def _spec_meta(state: dict) -> dict:
         return none
     hit = _TITLE_CACHE.get(str(path))
     if hit and hit[0] == mtime:
-        return hit[1]
+        return {"title": hit[1]["title"], "depends_on": list(hit[1]["depends_on"])}
     try:
         fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -5701,7 +5701,7 @@ def _spec_meta(state: dict) -> dict:
     meta = {"title": str(fm.get("title") or "") or None,
             "depends_on": _deps_list(fm.get("depends_on"))}
     _TITLE_CACHE[str(path)] = (mtime, meta)
-    return meta
+    return {"title": meta["title"], "depends_on": list(meta["depends_on"])}   # callers own it
 
 
 # ---- list views: row model, graph, unqueued (SPEC-0356) -----------------------------------------

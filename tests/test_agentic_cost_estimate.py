@@ -182,6 +182,8 @@ def test_queue_watch_shows_estimate_only_when_above_zero(tmp_path, monkeypatch, 
     else:
         item["cost"] = cost
     payload = {**Q.queue_payload(cfg), "items": [item]}
+    # `_queue_table` is the `nw queue list` table (pinned wide: cost is rank 4 in the SPEC-0356
+    # fitter); `_active_panel` is the `nw queue watch` panel.
     table = _rendered(cli_queue._queue_table(payload, width=240))
     panel = _rendered(cli_queue._active_panel(item))
     assert "$4.20" in table and "$4.20" in panel

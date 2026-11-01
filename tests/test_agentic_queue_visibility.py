@@ -107,7 +107,8 @@ def _tables(cfg):
             [{"campaign": b["campaign"], "kind": b.get("kind"), "label": b.get("label"),
               "project": b.get("project"), "title": b.get("title"), "age_s": b["age_s"],
               "backlog": b} for b in backlog], w),
-        "campaign_list": lambda w: CC._list_table("Campaigns", items, w),
+        "campaign_list": lambda w: CC._list_table("Campaigns", items, w,
+                                                  {b["campaign"]: b for b in backlog}),
     }
 
 
@@ -573,3 +574,178 @@ def test_unqueued_without_internal_specs_dir(unq, monkeypatch):
     items = Q.unqueued_view(cfg)["items"]
     assert not any(i["kind"] == "spec" for i in items)
     assert any(i["id"] == "PROJ-0003" for i in items)
+
+
+# ---- review follow-ups (run 012) ---------------------------------------------------------------
+
+def test_flex_title_never_wider_than_what_is_left():
+    """A short title (`—`, natural width = the 5-cell header) with a folded blocked-by: the title
+    gets what is left (11 cells at width 50), not TITLE_MIN, so the table stays within width."""
+    cols = [LV.Column("pos", "#", fixed=True), LV.Column("campaign", "campaign", fixed=True),
+            LV.Column("state", "state", fixed=True), LV.Column("title", "title", flex=True),
+            LV.Column("blocked_by", "waiting on", rank=1, fold="⧗ {} ")]
+    rows = [{"pos": "1", "campaign": "SPEC-0343-20261031-e1e1", "state": "QUEUED", "title": "—",
+             "blocked_by": "SPEC-0337, SPEC-0399"}]
+    fit = LV.layout(cols, rows, 50)
+    assert [c.key for c in fit["folded"]] == ["blocked_by"] and not fit["narrow"]
+    assert fit["widths"]["title"] == 11                 # was TITLE_MIN = 12: 51 cells
+    assert sum(fit["widths"].values()) + LV.SEP * (len(fit["kept"]) - 1) <= 50
+    out = _render(LV.render(None, cols, rows, 50), 50)
+    assert max(map(len, out.splitlines())) <= 50
+    assert any("SPEC-0343-20261031-e1e1" in ln and "QUEUED" in ln for ln in out.splitlines())
+    for width in range(42, 70):          # every width where the title is not moved under the id
+        out = _render(LV.render(None, cols, rows, width), width)
+        assert max(map(len, out.splitlines())) <= width, width
+        assert "SPEC-0343-20261031-e1e1" in out, width
+
+
+def test_spec_meta_hands_out_copies(snap):
+    cfg, _ = snap
+    st = S.read_state(cfg, IDS["queued"])
+    first = Q.row_view(cfg, st)["depends_on"]
+    first.append("SPEC-9999")
+    first.sort(reverse=True)
+    assert Q.row_view(cfg, st)["depends_on"] == ["SPEC-0337", "SPEC-0399"]
+    node = next(n for n in Q.graph_view(cfg)["nodes"] if n["id"] == "SPEC-0342")
+    node["depends_on"].clear()
+    assert Q._spec_meta(st)["depends_on"] == ["SPEC-0337", "SPEC-0399"]
+
+
+def test_campaign_list_marks_a_ready_queued_campaign(snap, monkeypatch):
+    cfg, repo = snap
+    sid, rel = _spec(repo, 344, title="Nothing to wait for")
+    _campaign(cfg, repo, "SPEC-0344-20261031-f00d", "QUEUED", spec_id=sid, rel=rel)
+    _cols(monkeypatch, 160)
+    for args in (["campaign", "list"], ["queue", "list"], ["queue", "backlog"]):
+        out = run_cli(cfg, monkeypatch, args).output
+        row = next(ln for ln in out.splitlines() if "SPEC-0344-20261031-f00d" in ln)
+        assert "✓ ready" in row, (args, out)
+
+
+def _old_summary(st):
+    """`nw.campaigns.v1` entry as it was before SPEC-0356 (main's `_summary`)."""
+    counters, cost = st.get("counters") or {}, st.get("cost") or {}
+    return {"id": st.get("id"), "spec_id": st.get("spec_id"), "project": st.get("project"),
+            "label": Q.campaign_label(st), "kind": st.get("kind"),
+            "idea_id": (st.get("idea") or {}).get("id"), "profile": st.get("profile"),
+            "state": st.get("state"), "loops": counters.get("loops", 0),
+            "runs": counters.get("runs", 0), "cost_usd": cost.get("total_usd", 0.0),
+            "cap_usd": cost.get("cap_usd"), "estimated_usd": cost.get("estimated_usd") or 0.0,
+            "park": st.get("park"), "created_at": st.get("created_at"),
+            "updated_at": st.get("updated_at")}
+
+
+def test_json_pre_existing_values_unchanged(snap, monkeypatch):
+    """Every pre-SPEC-0356 key keeps its value: campaigns against main's `_summary`, queue and
+    backlog against the same builders with the SPEC-0356 row model stubbed out, plus pins."""
+    from collections import defaultdict
+    cfg, _ = snap
+    camp = {c["id"]: c for c in json.loads(run_cli(cfg, monkeypatch, ["campaign", "list",
+                                                                       "--json"]).output)["campaigns"]}
+    for st in S.list_campaigns(cfg):
+        assert _old_summary(st).items() <= camp[st["id"]].items(), st["id"]
+    q = camp[IDS["queued"]]
+    assert (q["label"], q["spec_id"], q["priority"], q["state"], q["project"], q["kind"],
+            q["cost_usd"], q["cap_usd"]) == (q["spec_id"], "SPEC-0342", 2, "QUEUED", "Meta-Tools",
+                                            "implement", 1.25, 10.0)
+    new_items = {i["campaign"]: i for i in Q.queue_payload(cfg)["items"]}
+    new_back = {b["campaign"]: b for b in Q.backlog_view(cfg)}
+    with monkeypatch.context() as m:
+        m.setattr(Q, "row_view", lambda *a, **k: defaultdict(lambda: None))
+        old_items = {i["campaign"]: i for i in Q.queue_payload(cfg)["items"]}
+        old_back = {b["campaign"]: b for b in Q.backlog_view(cfg)}
+    timed = {"age_s", "updated_age_s"}
+    for cid, old in old_items.items():
+        assert {k: v for k, v in old.items() if k not in timed}.items() <= new_items[cid].items()
+        assert PRE_QUEUE_V1_KEYS <= set(old)
+    pre_backlog = ("campaign", "spec_id", "project", "priority", "position", "ready", "blocked_by")
+    for cid, old in old_back.items():
+        assert {k: old[k] for k in pre_backlog} == {k: new_back[cid][k] for k in pre_backlog}
+    b = new_back[IDS["queued"]]
+    assert {k: b[k] for k in pre_backlog} == {
+        "campaign": IDS["queued"], "spec_id": "SPEC-0342", "project": "Meta-Tools", "priority": 2,
+        "position": 1, "ready": False,
+        "blocked_by": ["waiting on SPEC-0337 (accepted)", "SPEC-0399 not found"]}
+    assert b["kind"] == "implement" and b["label"] == "SPEC-0342"      # additive keys
+
+
+def _style_at(t, sub):
+    i = t.plain.index(sub)
+    return {str(s.style) for s in t.spans if s.start <= i < s.end}
+
+
+def test_graph_line_styles_and_width(dag, monkeypatch):
+    cfg, repo = dag
+    g = Q.graph_view(cfg)
+    nodes = {n["id"]: n for n in g["nodes"]}
+    b = CQ._graph_line(nodes["SPEC-0021"], nodes)               # waits on the stub X
+    assert "red" in _style_at(b, "⧗ waiting on")
+    c = CQ._graph_line(nodes["SPEC-0022"], nodes)               # waits on campaigns only
+    assert nodes["SPEC-0022"]["waiting_on"] and "yellow" in _style_at(c, "⧗ waiting on")
+    assert "red" in _style_at(CQ._graph_line(nodes["SPEC-0026"], nodes), "accepted, no campaign")
+    done = {"id": "SPEC-0030", "campaign": None, "state": None, "spec_status": "done",
+            "title": "shipped", "stub": True, "external": False}
+    t = CQ._graph_line(done, nodes)
+    assert str(t.style) == "dim" and "dim" in _style_at(t, "done")
+    merged = {**nodes["SPEC-0023"], "state": "MERGED"}
+    t = CQ._graph_line(merged, nodes)
+    assert str(t.style) == "dim" and "dim" in _style_at(t, "MERGED")
+    assert str(CQ._graph_line(nodes["SPEC-0023"], nodes).style) == "bold"
+    long = {**nodes["SPEC-0021"], "title": "a very long title " * 10}
+    for room in (90, 120, 160):                     # rooms where a 12-cell title fits
+        t = CQ._graph_line(long, nodes, room)
+        assert t.cell_len <= room and "…" in t.plain, room
+    _spec(repo, 29, title="an extremely long dependent title " * 6, deps=("SPEC-0022",))
+    _campaign(cfg, repo, "SPEC-0029-20261031-0000", "QUEUED", spec_id="SPEC-0029",
+              rel="docs/specs/0029-s29.md")
+    for width in (120, 160):
+        _cols(monkeypatch, width)
+        out = run_cli(cfg, monkeypatch, ["queue", "graph"]).output
+        assert "SPEC-0029  QUEUED" in out and "…" in out
+        assert max(map(len, out.splitlines())) <= width, (width, out)
+
+
+def test_unqueued_matches_campaigns_through_the_idea(unq, monkeypatch):
+    """A spec whose `source_idea` has a live idea campaign is queued; an INCUBATE idea with a live
+    idea campaign is queued, with an ABANDONED one it is `previous-campaign` then `no-spec`; a
+    HANDED_OFF spec campaign is `previous-campaign`. Outbound `next` and `--project` too."""
+    cfg, ideas = unq
+    repo = Path(S.read_state(cfg, "SPEC-0001-20261031-0000")["repo"]["root"])
+    live = _idea(cfg, "Live idea", "INCUBATE")
+    gone = _idea(cfg, "Abandoned idea", "INCUBATE")
+    for iid, cid, state in ((live, "IDEA-live-20261031-0000", "IMPLEMENTING"),
+                            (gone, "IDEA-gone-20261030-0000", "ABANDONED")):
+        _campaign(cfg, repo, cid, state, spec_id=None, rel=None, kind="idea",
+                  idea={"id": iid, "heading": "h"})
+    _spec(repo, 18, title="from a live idea", source_idea=live)          # by_idea: omitted
+    sid, rel = _spec(repo, 19, title="handed off")
+    _campaign(cfg, repo, "SPEC-0019-20261030-0000", "HANDED_OFF", spec_id=sid, rel=rel)
+    d = Q.unqueued_view(cfg)
+    rows = {i["id"]: i for i in d["items"]}
+    codes = {k: [x["code"] for x in v["reasons"]] for k, v in rows.items()}
+    assert "SPEC-0018" not in rows and live not in rows
+    assert codes[gone] == ["previous-campaign", "no-spec"]
+    assert rows[gone]["previous_campaign"] == "IDEA-gone-20261030-0000"
+    assert "ABANDONED" in rows[gone]["reasons"][0]["text"]
+    assert codes["SPEC-0019"] == ["previous-campaign"]
+    assert "HANDED_OFF" in rows["SPEC-0019"]["reasons"][0]["text"]
+    assert rows["PROJ-0003"]["next"] == "nw queue add PROJ-0003"
+    out = json.loads(run_cli(cfg, monkeypatch, ["queue", "unqueued", "--json", "--project",
+                                                "jerome"]).output)["items"]
+    assert [i["id"] for i in out if i["kind"] != "idea"] == ["PROJ-0003"]
+    out = json.loads(run_cli(cfg, monkeypatch, ["queue", "unqueued", "--json", "--project",
+                                                "Meta-Tools"]).output)["items"]
+    ids = {i["id"] for i in out}
+    assert "PROJ-0003" not in ids and {"SPEC-0010", "SPEC-0012", "SPEC-0019"} <= ids
+
+
+def test_campaign_show_prints_the_exact_remote_line(gated, monkeypatch):
+    cfg, ids = gated
+    out = run_cli(cfg, monkeypatch, ["campaign", "show", ids["fell"]]).output
+    assert "remote gate #5 worker build-01 failed (stage bundle) → ran locally" in out, out
+    out = run_cli(cfg, monkeypatch, ["campaign", "show", ids["finished"]]).output
+    assert f"remote gate #6 on worker build-01  job {ids['finished']}-gate-006-a0  ok in 4m02s, " \
+        in out, out
+    out = run_cli(cfg, monkeypatch, ["campaign", "show", ids["running"]]).output
+    assert f"remote gate #7 on worker build-01  job {ids['running']}-gate-007-a0  running " \
+        in out, out

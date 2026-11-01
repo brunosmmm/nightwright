@@ -46,9 +46,10 @@ def _summary(st: dict, cfg=None, backlog=None) -> dict:
     return out
 
 
-def _list_table(title: str, items: list[dict], width: int) -> "Table":
+def _list_table(title: str, items: list[dict], width: int, backlog=None) -> "Table":
     """SPEC-0356: `nw campaign list` fitted to `width` (ids and states never cut, a title on
-    every row; the `spec` column is gone: the title and the id carry it)."""
+    every row; the `spec` column is gone: the title and the id carry it). `backlog` (keyed by
+    campaign) gives a ready QUEUED row its `✓ ready`, as in `nw queue list`."""
     from .cli_queue import _blocked_cell, _campaign_cell, _col
     from . import listview as LV
     rows = []
@@ -58,7 +59,7 @@ def _list_table(title: str, items: list[dict], width: int) -> "Table":
                                                  "label": r["label"]}),
                      "state": Text(str(r["state"]), style=R.state_style(r["state"])),
                      "title": Text(str(r.get("title") or "—")),
-                     "blocked_by": _blocked_cell(r),
+                     "blocked_by": _blocked_cell({**r, "backlog": (backlog or {}).get(r["id"])}),
                      "park": Text(str(r.get("park_reason") or ""), style="yellow"),
                      "pri": str(r.get("priority")), "cost": cost,
                      "project": R.project_text(r["project"]), "loops": str(r["loops"]),
@@ -202,7 +203,7 @@ def attach(campaign_group):
             return
         scope = "all" if include_terminal else "open"
         console.print(_list_table(f"Campaigns  ({scope}; {len(rows)} shown)", items,
-                                  console.width))
+                                  console.width, backlog))
 
     @campaign_group.command("show")
     @click.argument("campaign", shell_complete=C.complete_campaign_id)

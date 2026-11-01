@@ -488,6 +488,46 @@ active / waiting / parked / backlog → `queue_payload` items (`row_view` fields
 - `unqueued_view`: a missing internal specs dir gives no internal rows; outbound entries whose
   frontmatter is not a mapping are skipped, and a failing outbox read gives no outbound rows.
 
+### Test record (2026-11-01, run 012)
+
+- `uv run pytest -q -n 4 tests/test_agentic_queue_visibility.py`: 27 passed. New:
+  `test_flex_title_never_wider_than_what_is_left` (a `—` title with a folded blocked-by at
+  width 50 gets 11 cells, not 12; every width 42..69 stays within width with the id whole),
+  `test_spec_meta_hands_out_copies`, `test_campaign_list_marks_a_ready_queued_campaign`
+  (`✓ ready` in all three list commands), `test_json_pre_existing_values_unchanged`
+  (`nw.campaigns.v1` against main's `_summary`; `nw.queue.v1` items and backlog rows against
+  the same builders with `row_view` stubbed out; pinned `label`, `spec_id`, `priority`,
+  `position`, `ready`, `blocked_by`), `test_graph_line_styles_and_width` (red waiting-on for a
+  stub dependency without a campaign, yellow otherwise; dim done stub and MERGED node; titles
+  ellipsized so lines fit 90/120/160 cells; `nw queue graph` with a long title at 120/160),
+  `test_unqueued_matches_campaigns_through_the_idea` (spec omitted through its `source_idea`'s
+  live idea campaign; INCUBATE idea with a live idea campaign omitted, with an ABANDONED one
+  `previous-campaign` then `no-spec`; HANDED_OFF counts as previous; outbound `next`;
+  `--project jerome` / `--project Meta-Tools`) and `test_campaign_show_prints_the_exact_remote_line`.
+- Related suites (`test_agentic_cost_estimate`, `test_agentic_queue_cli`,
+  `test_agentic_campaign_cli`, `test_agentic_queue`, `test_agentic_dashboard`,
+  `test_agentic_waiting`, `test_agentic_watch_height`, `test_agentic_queue_merge`,
+  `test_tui_queue_model`, `test_tui_queue_tab`, plus the file above): 458 passed. The full
+  suite is left to the queue's close gate.
+- `python3 tools/spec_lint.py`: OK.
+
+### As shipped (2026-11-01, run 012)
+
+- `listview.layout` never gives a flex column more than the space left (minus the minimum of
+  the flex columns after it) when the table fits; before, a title narrower than 12 cells with a
+  folded column could take 12 cells and push the table past the width.
+- `_spec_meta` returns a fresh dict and `depends_on` list on every call; the cache keeps its own.
+- `nw campaign list` shows `✓ ready` for a ready QUEUED campaign (`_list_table` takes the
+  invocation's `backlog_view`), as `nw queue list` and `nw queue backlog` do.
+- A graph node line can exceed its room only when the room is smaller than the fixed parts
+  plus a 12-cell title; rich then wraps it, so no output line is wider than the console.
+- The last acceptance criterion's "(existing tests pass untouched)" is met in spirit: admission,
+  readiness, the `backlog` ledger event and `nw queue watch` code are unchanged and their tests
+  pass; the five list-table tests whose presentation assertions this spec changes on purpose
+  are listed under *As shipped (2026-11-01)*, and
+  `test_queue_watch_shows_estimate_only_when_above_zero` (which renders the `nw queue list`
+  table next to the watch panel) pins `width=240` and now says so in a comment.
+
 ## Rollout / migration
 
 1. `row_view`, `waiting_on_ids`, `_spec_meta` cache; JSON additions.
