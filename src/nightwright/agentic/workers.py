@@ -1,0 +1,209 @@
+"""Worker registry (SPEC-0337): the coordinator's list of remote gate workers, kept in
+`<agentic_dir>/workers.json` (`nw.workers.v1`). Registry order is preference order. Every write
+goes through `update`, which takes an exclusive flock on `workers.json.lock`, re-reads the file,
+applies one change and writes atomically, so concurrent writers (the `nw workers` CLI and the
+cooldown update of SPEC-0338) never lose an update. `load` never raises and never writes events:
+a missing, empty or unreadable file means no workers, and the runner's `ConfigWatch` reports an
+unreadable one (`read_strict` is the parse it uses)."""
+from __future__ import annotations
+
+import datetime as dt
+import fcntl
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+
+from ..export import _atomic_write
+from .store import agentic_dir
+
+SCHEMA = "nw.workers.v1"
+NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,30}")
+DEST_RE = re.compile(r"[A-Za-z0-9._@:-]+")
+NW_CMD_RE = re.compile(r"[A-Za-z0-9._/~+-]+")
+MIN_SLOTS, MAX_SLOTS = 1, 16
+DEFAULT_KINDS = ["gate"]
+CHECK_TIMEOUT_S = 30.0
+LOCAL = None                                    # the local pool's name in `gate_pools`/`acquire`
+
+
+def path(cfg) -> Path:
+    return agentic_dir(cfg) / "workers.json"
+
+
+def ssh_dir(cfg) -> Path:
+    return agentic_dir(cfg) / "ssh"
+
+
+def ensure_ssh_dir(cfg) -> Path:
+    """`<agentic_dir>/ssh/` (ControlPath sockets), mode 0700."""
+    d = ssh_dir(cfg)
+    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    d.chmod(0o700)
+    return d
+
+
+def default_ssh_argv(cfg) -> list[str]:
+    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
+            "-o", "ControlMaster=auto", "-o", f"ControlPath={ssh_dir(cfg)}/%C",
+            "-o", "ControlPersist=120"]
+
+
+def _check_record(rec) -> None:
+    if not isinstance(rec, dict):
+        raise ValueError(f"worker entry is not a mapping (got {type(rec).__name__})")
+    name = rec.get("name")
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
+        raise ValueError(f"worker name {name!r} is invalid")
+    if not isinstance(rec.get("ssh"), str) or not rec["ssh"]:
+        raise ValueError(f"worker {name}: ssh destination missing")
+
+
+def _parse(text: str) -> list[dict]:
+    """The raw worker records of a registry file's text; `ValueError` when it is not a valid
+    `nw.workers.v1` document. Empty text means no workers."""
+    if not text.strip():
+        return []
+    doc = json.loads(text)
+    if not isinstance(doc, dict):
+        raise ValueError(f"not a mapping (got {type(doc).__name__})")
+    if doc.get("schema") != SCHEMA:
+        raise ValueError(f"schema is {doc.get('schema')!r}, not {SCHEMA!r}")
+    workers = doc.get("workers")
+    if not isinstance(workers, list):
+        raise ValueError("`workers` is not a list")
+    seen = set()
+    for rec in workers:
+        _check_record(rec)
+        if rec["name"] in seen:
+            raise ValueError(f"worker {rec['name']!r} appears twice")
+        seen.add(rec["name"])
+    return workers
+
+
+def read_file(p) -> list[dict]:
+    """The raw records of the registry file `p`; a missing file is no workers, an unreadable
+    one raises (`ValueError` for bad JSON/schema, `OSError` for a read failure)."""
+    try:
+        text = Path(p).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    return _parse(text)
+
+
+def read_strict(cfg) -> list[dict]:
+    return read_file(path(cfg))
+
+
+def normalize(cfg, rec: dict) -> dict:
+    """A raw record with the defaults filled in (`ssh_argv` included, never stored by `add`)."""
+    slots = rec.get("slots")
+    ok = isinstance(slots, int) and not isinstance(slots, bool) and MIN_SLOTS <= slots <= MAX_SLOTS
+    argv = rec.get("ssh_argv")
+    if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
+        argv = default_ssh_argv(cfg)
+    kinds = rec.get("kinds")
+    return {**rec, "slots": slots if ok else MIN_SLOTS,
+            "kinds": kinds if isinstance(kinds, list) else list(DEFAULT_KINDS),
+            "nw": rec.get("nw") if isinstance(rec.get("nw"), str) and rec["nw"] else "nw",
+            "enabled": rec.get("enabled") is not False, "ssh_argv": list(argv),
+            "cooldown_until": rec.get("cooldown_until")}
+
+
+def load(cfg) -> list[dict]:
+    """The registered workers in registry order, defaults filled in; `[]` when the file is
+    missing, empty or unreadable."""
+    try:
+        return [normalize(cfg, r) for r in read_strict(cfg)]
+    except (OSError, ValueError):
+        return []
+
+
+def update(cfg, fn):
+    """Apply `fn(records)` to the raw record list under the registry lock and write the result
+    atomically. `fn` mutates the list in place; its return value is
+    returned. An exception from `fn`, or an unreadable file (`ValueError`),
+    leaves the file untouched."""
+    p = path(cfg)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(p.with_name(p.name + ".lock"), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        records = read_strict(cfg)
+        result = fn(records)
+        _atomic_write(p, json.dumps({"schema": SCHEMA, "workers": records}, indent=2) + "\n")
+        return result
+    finally:
+        os.close(fd)                            # drops the flock
+
+
+def _parse_ts(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        t = dt.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.astimezone()
+
+
+def in_cooldown(rec: dict, now=None) -> bool:
+    until = _parse_ts(rec.get("cooldown_until"))
+    return until is not None and until > (now or dt.datetime.now().astimezone())
+
+
+def gate_pools(cfg, now=None) -> list[tuple]:
+    """`[(worker, slots), ...]` for enabled gate workers out of cooldown, in registry order,
+    then `[(None, agentic.gates.slots)]`: the `pools` argument of `gate_slots.acquire`."""
+    from . import gate_slots
+    pools = [(w["name"], w["slots"]) for w in load(cfg)
+             if w["enabled"] and "gate" in w["kinds"] and not in_cooldown(w, now)]
+    return pools + [(LOCAL, gate_slots.settings(cfg)["slots"])]
+
+
+def check(cfg, rec: dict) -> dict:
+    """Probe a worker: `{name, ok, errors, warnings, info}`. Runs `ssh_argv + [DEST, nw,
+    "worker", "info", "--json"]` with a 30 s timeout. Fails on an SSH failure (a timeout
+    included), a protocol other than `nw.job.v1` or no `git`; a version or sha different from
+    this checkout's is a warning (the gate runs the campaign tree's code, not the worker's)."""
+    from . import worker as W
+    w = normalize(cfg, rec)
+    out = {"name": w["name"], "ok": False, "errors": [], "warnings": [], "info": None}
+    ensure_ssh_dir(cfg)
+    argv = w["ssh_argv"] + [w["ssh"], w["nw"], "worker", "info", "--json"]
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=CHECK_TIMEOUT_S,
+                           stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        out["errors"].append(f"ssh timed out after {CHECK_TIMEOUT_S:g}s")
+        return out
+    except OSError as e:
+        out["errors"].append(f"ssh failed to start: {e}")
+        return out
+    if p.returncode != 0:
+        tail = (p.stderr or "").strip().splitlines()[-1:] or [""]
+        out["errors"].append(f"ssh failed (exit {p.returncode}): {tail[0]}".rstrip(": "))
+        return out
+    try:
+        info = json.loads(p.stdout)
+        if not isinstance(info, dict):
+            raise ValueError("not a mapping")
+    except ValueError as e:
+        out["errors"].append(f"`worker info --json` gave unreadable output: {e}")
+        return out
+    out["info"] = info
+    if info.get("protocol") != W.JOB_SCHEMA:
+        out["errors"].append(f"protocol is {info.get('protocol')!r}, not {W.JOB_SCHEMA!r}")
+    if not info.get("git"):
+        out["errors"].append("git is missing on the worker")
+    mine = W.info(cfg)
+    if info.get("version") != mine.get("version"):
+        out["warnings"].append(f"version {info.get('version')!r} differs from "
+                               f"the coordinator's {mine.get('version')!r}")
+    elif info.get("git_sha") and mine.get("git_sha") and info["git_sha"] != mine["git_sha"]:
+        out["warnings"].append(f"sha {str(info['git_sha'])[:12]} differs from "
+                               f"the coordinator's {str(mine['git_sha'])[:12]}")
+    out["ok"] = not out["errors"]
+    return out

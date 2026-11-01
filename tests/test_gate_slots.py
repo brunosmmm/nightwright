@@ -181,6 +181,100 @@ def test_lowered_slots_files_drain_and_raised_slots_appear(cfg):
         assert c.slot == 0
 
 
+# ---- pools (SPEC-0337) ----------------------------------------------------------------
+
+def test_occupancy_without_workers_is_exactly_the_local_keys(cfg):
+    assert GS.occupancy(cfg) == {"slots": 2, "held": [], "waiting": []}
+    with GS.acquire(cfg, "a", poll_s=0.05) as hold:
+        assert hold.pool is None
+        occ = GS.occupancy(cfg)
+        assert set(occ) == {"slots", "held", "waiting"}
+        assert [(h["slot"], h["campaign"], h["pid"]) for h in occ["held"]] == [(0, "a", os.getpid())]
+    # an empty registry changes nothing either
+    from nightwright.agentic import workers as WK
+    WK.path(cfg).write_text("")
+    assert set(GS.occupancy(cfg)) == {"slots", "held", "waiting"}
+
+
+def _register(cfg, *names, slots=1):
+    from nightwright.agentic import workers as WK
+    WK.update(cfg, lambda recs: recs.extend(
+        {"name": n, "ssh": f"me@{n}", "slots": slots, "kinds": ["gate"], "enabled": True}
+        for n in names))
+
+
+def test_acquire_prefers_the_first_pool_then_falls_back_to_local(cfg):
+    pools = [("box", 1), (None, 1)]
+    with GS.acquire(cfg, "a", poll_s=0.05, pools=pools) as a:
+        assert (a.pool, a.slot) == ("box", 0)
+        assert (GS.slots_dir(cfg) / "w-box" / "slot-0.lock").exists()
+        with GS.acquire(cfg, "b", poll_s=0.05, pools=pools) as b:      # remote full: local
+            assert (b.pool, b.slot) == (None, 0)
+    with GS.acquire(cfg, "c", poll_s=0.05, pools=pools) as c:          # both free again
+        assert c.pool == "box"
+
+
+def test_acquire_waits_for_whichever_pool_frees_first(cfg):
+    pools = [("box", 1), (None, 1)]
+    got = {}
+    with GS.acquire(cfg, "a", poll_s=0.05, pools=pools), \
+            GS.acquire(cfg, "b", poll_s=0.05, pools=pools):
+        def waiter():
+            with GS.acquire(cfg, "c", poll_s=0.05, pools=pools) as hold:
+                got["pool"] = hold.pool
+        t = threading.Thread(target=waiter)
+        t.start()
+        until(lambda: GS.waiting(cfg, "c") is not None)
+        assert "pool" not in got
+    join(t)
+    assert got["pool"] == "box"                          # `a` (box) released first, then `b`
+    assert GS.waiting(cfg, "c") is None
+
+
+def test_acquire_rejects_a_bad_pool_name(cfg):
+    for bad in ("../x", "A", "", "a/b"):
+        with pytest.raises(ValueError):
+            with GS.acquire(cfg, "a", pools=[(bad, 1)]):
+                pass
+
+
+def test_occupancy_and_holding_report_remote_holds(cfg):
+    _register(cfg, "box", "idle", slots=2)
+    with GS.acquire(cfg, "a", poll_s=0.05, pools=[("box", 2), (None, 2)]) as a:
+        assert a.pool == "box"
+        occ = GS.occupancy(cfg)
+        assert occ["held"] == [] and occ["slots"] == 2        # local keys unchanged
+        assert set(occ["workers"]) == {"box", "idle"}
+        assert occ["workers"]["idle"] == {"slots": 2, "held": []}
+        (h,) = occ["workers"]["box"]["held"]
+        assert occ["workers"]["box"]["slots"] == 2
+        assert (h["slot"], h["campaign"], h["pid"]) == (0, "a", os.getpid())
+        hold = GS.holding(cfg, "a")
+        assert hold["pool"] == "box" and hold["pid"] == os.getpid()
+        from nightwright.agentic import workers as WK     # `rm` does not hide a held slot
+        WK.update(cfg, lambda recs: recs.clear())
+        assert GS.holding(cfg, "a")["pool"] == "box"
+        assert "workers" not in GS.occupancy(cfg)
+    assert GS.holding(cfg, "a") is None
+
+
+def test_waiting_keeps_the_pool_list_it_started_with(cfg):
+    """`rm`/`off` do not reach a waiter: it still gets a slot of the pool it was given."""
+    from nightwright.agentic import workers as WK
+    _register(cfg, "box")
+    got = {}
+    with GS.acquire(cfg, "a", poll_s=0.05, pools=[("box", 1)]):
+        def waiter():
+            with GS.acquire(cfg, "w", poll_s=0.05, pools=[("box", 1)]) as hold:
+                got["pool"] = hold.pool
+        t = threading.Thread(target=waiter)
+        t.start()
+        until(lambda: GS.waiting(cfg, "w") is not None)
+        WK.update(cfg, lambda recs: recs.clear())
+    join(t)
+    assert got["pool"] == "box"
+
+
 # ---- gates.run_all --------------------------------------------------------------------
 
 @pytest.fixture

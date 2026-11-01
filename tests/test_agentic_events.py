@@ -238,6 +238,27 @@ def test_finished_wait_in_a_live_hold_extends_the_limit_with_no_gate_entry(tmp_p
 
 
 @pytest.mark.parametrize("state", ["GATING", "CLOSING"])
+def test_remote_hold_extends_the_limit_like_a_local_one(tmp_path, state):
+    """SPEC-0337: a hold on a worker pool (`gate-slots/w-<W>/`) is seen by the stuck detector,
+    also after the worker left the registry."""
+    import os
+    from nightwright.agentic import gate_slots as GS
+    cfg = _cfg(tmp_path)
+    cid = _campaign(cfg, "SPEC-0907-20261025-abab", state=state)
+    sett = E.settings(cfg)
+    limit = max(sett["stuck_after_s"], sett["gate_budget_s"])
+    at = dt.datetime.now().astimezone() + dt.timedelta(seconds=limit + 100)
+    assert [i["campaign"] for i in E.stuck_items(cfg, at, sett)] == [cid]    # no hold: stuck
+    d = GS.slots_dir(cfg) / "w-box"                      # "box" is not registered
+    d.mkdir(parents=True)
+    (d / "slot-0.lock").write_text(json.dumps(
+        {"campaign": cid, "pid": os.getpid(), "since": store.now_iso(), "waited_s": 2800.0,
+         "pool": "box"}))
+    assert GS.holding(cfg, cid)["pool"] == "box"
+    assert E.stuck_items(cfg, at, sett) == []
+
+
+@pytest.mark.parametrize("state", ["GATING", "CLOSING"])
 def test_finished_wait_in_a_live_hold_is_not_silence(tmp_path, state):
     """The wait is over, the gate runs and the ledger has no new entry: silence starts at the
     later of the newest entry and the hold's start, so the wait is forgiven once, not twice."""

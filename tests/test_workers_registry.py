@@ -1,0 +1,339 @@
+"""SPEC-0337: the worker registry, `nw workers`, `gate_pools`, and the runner's report of an
+unreadable `workers.json`. Offline: the SSH transport is a local script (`ssh_argv`) that runs
+the remote command on this host against a temp data dir."""
+import json
+import os
+import stat
+import sys
+import threading
+from pathlib import Path
+
+import pytest
+from click.testing import CliRunner
+
+from nightwright.agentic import events as E
+from nightwright.agentic import lease as L
+from nightwright.agentic import queue as Q
+from nightwright.agentic import workers as WK
+from nightwright.cli import cli
+from waits import join
+
+FUTURE = "2999-01-01T00:00:00+00:00"
+PAST = "2000-01-01T00:00:00+00:00"
+
+
+@pytest.fixture
+def cfg(tmp_path):
+    return {"data_dir": str(tmp_path / "data"), "agentic": {"gates": {"slots": 3}}}
+
+
+@pytest.fixture
+def invoke(cfg, monkeypatch):
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
+
+    def run(*args):
+        return CliRunner().invoke(cli, ["workers", *args])
+    return run
+
+
+def _script(tmp_path, name, body):
+    p = tmp_path / name
+    p.write_text("#!/bin/sh\n" + body + "\n")
+    p.chmod(p.stat().st_mode | stat.S_IXUSR)
+    return str(p)
+
+
+@pytest.fixture
+def loopback(tmp_path):
+    """`[ssh_argv, nw]`: the ssh stand-in drops the destination and runs the rest locally; the
+    `nw` it runs is the real `nw worker info` against a temp data dir."""
+    ssh = _script(tmp_path, "fake-ssh", 'shift\nexec "$@"')
+    nw = _script(tmp_path, "fake-nw", f'NW_DATA_DIR={tmp_path / "wdata"} NW_CONFIG_DIR='
+                 f'{tmp_path / "wcfg"} exec {sys.executable} -m nightwright "$@"')
+    return [ssh], nw
+
+
+def _seed(cfg, *records):
+    p = WK.path(cfg)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"schema": WK.SCHEMA, "workers": list(records)}))
+
+
+def _w(name, **kw):
+    return {"name": name, "ssh": f"me@{name}", "slots": 1, "kinds": ["gate"], "nw": "nw",
+            "enabled": True, **kw}
+
+
+def _names(cfg):
+    return [w["name"] for w in WK.load(cfg)]
+
+
+# ---- registry -------------------------------------------------------------------------------
+
+def test_missing_or_empty_registry_is_no_workers(cfg):
+    assert WK.load(cfg) == [] and WK.gate_pools(cfg) == [(None, 3)]
+    WK.path(cfg).parent.mkdir(parents=True)
+    WK.path(cfg).write_text("")
+    assert WK.load(cfg) == []
+
+
+@pytest.mark.parametrize("text", ["{not json", "[]", '{"schema": "other", "workers": []}',
+                                  '{"schema": "nw.workers.v1", "workers": {}}',
+                                  '{"schema": "nw.workers.v1", "workers": [{"name": "Bad!"}]}'])
+def test_unreadable_registry_loads_no_workers_and_writes_nothing(cfg, text):
+    WK.path(cfg).parent.mkdir(parents=True)
+    WK.path(cfg).write_text(text)
+    assert WK.load(cfg) == []
+    with pytest.raises(ValueError):
+        WK.read_strict(cfg)
+    with pytest.raises(ValueError):                  # an update never overwrites what it can't read
+        WK.update(cfg, lambda recs: recs.append(_w("a")))
+    assert WK.path(cfg).read_text() == text
+    assert not list(WK.path(cfg).parent.glob("events*"))
+
+
+def test_load_fills_defaults_including_ssh_argv(cfg):
+    _seed(cfg, {"name": "box", "ssh": "me@box"})
+    (w,) = WK.load(cfg)
+    assert w["slots"] == 1 and w["kinds"] == ["gate"] and w["enabled"] and w["nw"] == "nw"
+    assert w["ssh_argv"] == WK.default_ssh_argv(cfg)
+    assert "ConnectTimeout=10" in w["ssh_argv"]
+    assert f"ControlPath={WK.ssh_dir(cfg)}/%C" in w["ssh_argv"]
+    _seed(cfg, {"name": "box", "ssh": "me@box", "ssh_argv": ["x", "-y"]})
+    assert WK.load(cfg)[0]["ssh_argv"] == ["x", "-y"]
+
+
+def test_ensure_ssh_dir_is_private(cfg):
+    d = WK.ensure_ssh_dir(cfg)
+    assert stat.S_IMODE(d.stat().st_mode) == 0o700
+
+
+def test_concurrent_updates_both_persist(cfg):
+    names = [f"w{i}" for i in range(12)]
+    threads = [threading.Thread(target=WK.update, args=(cfg, lambda recs, n=n: recs.append(_w(n))))
+               for n in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        join(t)
+    assert sorted(_names(cfg)) == sorted(names)
+
+
+def test_update_that_raises_leaves_the_file_alone(cfg):
+    _seed(cfg, _w("a"))
+    before = WK.path(cfg).read_text()
+
+    def boom(recs):
+        recs.clear()
+        raise RuntimeError("no")
+    with pytest.raises(RuntimeError):
+        WK.update(cfg, boom)
+    assert WK.path(cfg).read_text() == before
+
+
+# ---- gate_pools -----------------------------------------------------------------------------
+
+def test_gate_pools_filters_and_orders(cfg):
+    _seed(cfg, _w("first", slots=2), _w("off", enabled=False),
+          _w("cooling", cooldown_until=FUTURE), _w("nogate", kinds=["persona"]),
+          _w("cooled", cooldown_until=PAST), _w("last"))
+    assert WK.gate_pools(cfg) == [("first", 2), ("cooled", 1), ("last", 1), (None, 3)]
+
+
+def test_gate_pools_local_only_without_a_registry(cfg):
+    assert WK.gate_pools(cfg) == [(None, 3)]
+    assert WK.gate_pools({"data_dir": cfg["data_dir"]}) == [(None, 2)]
+
+
+# ---- the CLI --------------------------------------------------------------------------------
+
+def test_add_list_off_on_rm_cycle(cfg, invoke):
+    res = invoke("add", "box", "--ssh", "me@box", "--slots", "2", "--no-check")
+    assert res.exit_code == 0, res.output
+    raw = json.loads(WK.path(cfg).read_text())
+    assert raw["schema"] == "nw.workers.v1"
+    (rec,) = raw["workers"]
+    assert rec["name"] == "box" and rec["ssh"] == "me@box" and rec["slots"] == 2
+    assert rec["kinds"] == ["gate"] and rec["enabled"] is True and rec["added_at"]
+    assert "ssh_argv" not in rec                        # the default is applied at load
+    assert invoke("add", "two", "--ssh", "b", "--no-check").exit_code == 0
+    out = json.loads(invoke("list", "--json").output)
+    assert out["schema"] == "nw.workers.list.v1"
+    assert [(w["name"], w["slots"], w["enabled"], w["held"]) for w in out["workers"]] \
+        == [("box", 2, True, 0), ("two", 1, True, 0)]
+    assert "box" in invoke("list").output
+    assert invoke("off", "box").exit_code == 0
+    assert _names(cfg) == ["box", "two"] and not WK.load(cfg)[0]["enabled"]
+    assert WK.gate_pools(cfg) == [("two", 1), (None, 3)]
+    assert invoke("on", "box").exit_code == 0 and WK.load(cfg)[0]["enabled"]
+    assert invoke("rm", "box").exit_code == 0
+    assert _names(cfg) == ["two"]
+    for cmd in ("on", "off", "rm", "check"):
+        assert invoke(cmd, "nope").exit_code != 0
+
+
+def test_on_clears_the_cooldown(cfg, invoke):
+    _seed(cfg, _w("box", cooldown_until=FUTURE))
+    assert WK.gate_pools(cfg) == [(None, 3)]
+    assert invoke("list", "--json").output and \
+        json.loads(invoke("list", "--json").output)["workers"][0]["cooldown_until"] == FUTURE
+    assert invoke("on", "box").exit_code == 0
+    assert WK.load(cfg)[0]["cooldown_until"] is None
+    assert WK.gate_pools(cfg) == [("box", 1), (None, 3)]
+
+
+@pytest.mark.parametrize("args", [
+    ["Bad", "--ssh", "h"], ["local", "--ssh", "h"], ["-x", "--ssh", "h"], ["a" * 32, "--ssh", "h"],
+    ["ok", "--ssh", "-oProxyCommand=x"], ["ok", "--ssh", "h h"], ["ok", "--ssh", "h;rm"],
+    ["ok", "--ssh", "h", "--slots", "0"], ["ok", "--ssh", "h", "--slots", "17"],
+    ["ok", "--ssh", "h", "--nw", "-x"], ["ok", "--ssh", "h", "--nw", "nw; id"]])
+def test_add_refuses_bad_input(cfg, invoke, args):
+    res = invoke("add", *args, "--no-check")
+    assert res.exit_code != 0
+    assert WK.load(cfg) == []
+
+
+def test_add_refuses_a_duplicate_name(cfg, invoke):
+    assert invoke("add", "box", "--ssh", "a", "--no-check").exit_code == 0
+    res = invoke("add", "box", "--ssh", "b", "--no-check")
+    assert res.exit_code != 0 and "already registered" in res.output
+    assert [w["ssh"] for w in WK.load(cfg)] == ["a"]
+
+
+def test_add_checks_the_worker_unless_no_check(cfg, invoke, loopback, monkeypatch, tmp_path):
+    ssh, nw = loopback
+    monkeypatch.setattr(WK, "default_ssh_argv", lambda c: ssh)
+    res = invoke("add", "box", "--ssh", "me@box", "--nw", nw)
+    assert res.exit_code == 0, res.output
+    assert WK.load(cfg)[0]["nw"] == nw
+    fail = _script(tmp_path, "fail-ssh", "exit 255")
+    monkeypatch.setattr(WK, "default_ssh_argv", lambda c: [fail])
+    res = invoke("add", "dead", "--ssh", "me@dead")
+    assert res.exit_code != 0 and "failed its check" in res.output
+    assert _names(cfg) == ["box"]
+    assert invoke("add", "dead", "--ssh", "me@dead", "--no-check").exit_code == 0
+    assert _names(cfg) == ["box", "dead"]
+
+
+def _info_script(tmp_path, name, info):
+    f = tmp_path / f"{name}.json"
+    f.write_text(json.dumps(info))
+    return ["sh", "-c", 'cat "$0"', str(f)]
+
+
+def _good_info(**kw):
+    from nightwright.agentic import worker as W
+    return {**W.info({"data_dir": str(Path("/tmp"))}), **kw}
+
+
+def test_check_loopback_ok(cfg, loopback, invoke):
+    ssh, nw = loopback
+    _seed(cfg, _w("box", nw=nw, ssh_argv=ssh))
+    res = invoke("check", "box", "--json")
+    assert res.exit_code == 0, res.output
+    (r,) = json.loads(res.output)
+    assert r["name"] == "box" and r["ok"] and r["errors"] == [] and r["warnings"] == []
+    assert r["info"]["protocol"] == "nw.job.v1"
+    assert "box: ok" in invoke("check").output
+
+
+def test_check_failures(cfg, tmp_path, invoke):
+    fail = _script(tmp_path, "fail-ssh", "echo 'ssh: connect refused' >&2\nexit 255")
+    cases = {
+        "sshfail": [fail],
+        "proto": _info_script(tmp_path, "proto", _good_info(protocol="nw.job.v2")),
+        "nogit": _info_script(tmp_path, "nogit", _good_info(git=None)),
+        "garbage": ["sh", "-c", "echo not-json"],
+    }
+    _seed(cfg, *[_w(n, ssh_argv=argv) for n, argv in cases.items()])
+    res = invoke("check", "--json")
+    assert res.exit_code == 1
+    got = {r["name"]: r for r in json.loads(res.output)}
+    assert all(not r["ok"] and r["errors"] for r in got.values())
+    assert "connect refused" in got["sshfail"]["errors"][0]
+    assert "protocol" in got["proto"]["errors"][0]
+    assert "git" in got["nogit"]["errors"][0]
+
+
+def test_check_version_mismatch_only_warns(cfg, tmp_path, invoke):
+    _seed(cfg, _w("old", ssh_argv=_info_script(tmp_path, "old", _good_info(version="0.0.1"))))
+    res = invoke("check", "old", "--json")
+    assert res.exit_code == 0
+    (r,) = json.loads(res.output)
+    assert r["ok"] and r["errors"] == [] and "version" in r["warnings"][0]
+    mine = _good_info()
+    if mine.get("git_sha"):                              # a checkout: another sha is a warning too
+        _seed(cfg, _w("old", ssh_argv=_info_script(tmp_path, "sha", {**mine, "git_sha": "0" * 40})))
+        (r,) = json.loads(invoke("check", "old", "--json").output)
+        assert r["ok"] and "sha" in r["warnings"][0]
+
+
+def test_check_without_name_fails_if_any_worker_fails(cfg, tmp_path, invoke):
+    good = _info_script(tmp_path, "good", _good_info())
+    bad = _script(tmp_path, "bad-ssh", "exit 255")
+    _seed(cfg, _w("good", ssh_argv=good), _w("bad", ssh_argv=[bad]))
+    res = invoke("check", "--json")
+    assert res.exit_code == 1
+    assert {r["name"]: r["ok"] for r in json.loads(res.output)} == {"good": True, "bad": False}
+    assert invoke("check", "good").exit_code == 0
+    assert invoke("check", "bad").exit_code == 1
+
+
+def test_check_timeout_is_an_ssh_failure(cfg, tmp_path, invoke, monkeypatch):
+    monkeypatch.setattr(WK, "CHECK_TIMEOUT_S", 0.3)
+    _seed(cfg, _w("slow", ssh_argv=[_script(tmp_path, "slow-ssh", "exec sleep 30")]))
+    res = invoke("check", "slow", "--json")
+    assert res.exit_code == 1
+    (r,) = json.loads(res.output)
+    assert not r["ok"] and "timed out" in r["errors"][0]
+
+
+def test_help_points_at_the_other_group():
+    out = CliRunner().invoke(cli, ["workers", "--help"]).output
+    assert "nw worker" in out
+    assert "nw workers" in CliRunner().invoke(cli, ["worker", "--help"]).output
+
+
+# ---- the runner reports an unreadable registry -----------------------------------------------
+
+def test_config_watch_reports_an_unreadable_registry_once(cfg):
+    lease = L.acquire(cfg, ["nw", "queue", "run"])
+    try:
+        watch = Q.ConfigWatch(cfg, lambda: cfg)
+
+        def conditions():
+            return [c for c in E.watchdog_checks(cfg) if c[1] == "runner_config_invalid"]
+
+        def errors():
+            return (L.read_lease(cfg) or {}).get("config_errors") or {}
+
+        def tick():
+            watch.check(cfg, lease, [])
+
+        tick()                                           # no file: nothing
+        assert errors() == {} and conditions() == []
+        p = WK.path(cfg)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{broken")
+        os.utime(p, ns=(10**18, 10**18))
+        tick()
+        tick()                                           # same version: still one
+        assert list(errors()) == [str(p)] and errors()[str(p)]["scope"] == "workers"
+        (cond,) = conditions()
+        assert cond[0].startswith(f"runner_config_invalid:{p}:")
+        assert cond[3]["scope"] == "workers" and cond[3]["path"] == str(p)
+        E.validate("runner_config_invalid", cond[3])
+        assert WK.load(cfg) == []
+        _seed(cfg, _w("box"))                            # fixed
+        os.utime(p, ns=(2 * 10**18, 2 * 10**18))
+        tick()
+        assert errors() == {} and conditions() == []
+        p.write_text("[]")
+        os.utime(p, ns=(3 * 10**18, 3 * 10**18))
+        tick()
+        assert len(errors()) == 1
+        p.unlink()                                       # removed: cleared too
+        tick()
+        assert errors() == {}
+    finally:
+        lease.release()

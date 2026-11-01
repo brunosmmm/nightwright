@@ -1,10 +1,10 @@
 ---
 id: SPEC-0337
 title: "Worker registry and multi-pool gate slots"
-status: accepted
+status: done
 owner: user
 created: 2026-10-31
-updated: 2026-10-31
+updated: 2026-11-01
 source_idea: IDEA-565
 parent: SPEC-0310
 tags: [agentic, remote, workers, gates]
@@ -121,23 +121,23 @@ runs on the worker host); each group's help text points to the other.
 
 ## Acceptance criteria
 
-- [ ] With no `workers.json`, or an empty one, `acquire` and `occupancy()` behave and return
+- [x] With no `workers.json`, or an empty one, `acquire` and `occupancy()` behave and return
       exactly as before (existing gate-slot tests pass unchanged, plus a golden on
       `occupancy()`).
-- [ ] `nw workers add|list|check|on|off|rm` manage `workers.json` as specified; `add`
+- [x] `nw workers add|list|check|on|off|rm` manage `workers.json` as specified; `add`
       validates the name, the slot count and `DEST`, refuses a duplicate name and a `DEST`
       starting with `-`, and runs `check` unless `--no-check`; `on` clears the cooldown.
-- [ ] `check` fails on SSH failure (including its 30 s timeout), a protocol mismatch or
+- [x] `check` fails on SSH failure (including its 30 s timeout), a protocol mismatch or
       missing git, and only warns on a version mismatch; without NAME it exits 1 if any
       worker fails.
-- [ ] Two concurrent registry updates (threads calling `workers.update`) both persist.
-- [ ] An unreadable registry means `load` returns no workers, and a runner tick publishes one
+- [x] Two concurrent registry updates (threads calling `workers.update`) both persist.
+- [x] An unreadable registry means `load` returns no workers, and a runner tick publishes one
       `config_errors` entry with `scope: "workers"`, which yields exactly one
       `runner_config_invalid` event; fixing the file clears it.
-- [ ] `workers.gate_pools(cfg)` returns enabled gate workers out of cooldown in registry
+- [x] `workers.gate_pools(cfg)` returns enabled gate workers out of cooldown in registry
       order, then `(None, agentic.gates.slots)`; a disabled worker, one in cooldown and one
       without `gate` in `kinds` are excluded; no registry returns local only.
-- [ ] `acquire(pools=[("box", 1), (None, 1)])` takes the free remote slot, takes local when
+- [x] `acquire(pools=[("box", 1), (None, 1)])` takes the free remote slot, takes local when
       the remote pool is full, and returns `SlotHold.pool` accordingly; `occupancy()` and
       `holding()` report remote holds (also for a worker removed while holding), and the
       stuck detector sees them.
@@ -157,6 +157,40 @@ runs on the worker host); each group's help text points to the other.
   `occupancy()` without one.
 - **Regression guard:** full `uv run pytest`.
 
+### Test record (2026-11-01)
+
+- `uv run pytest tests/test_workers_registry.py tests/test_gate_slots.py tests/test_agentic_events.py
+  tests/test_cli_gate_slots.py tests/test_agentic_config_reload.py`: 131 passed. The registry file
+  cases (missing/empty/unreadable, defaults incl. `ssh_argv`, 0700 ssh dir, concurrent `update`,
+  `gate_pools` disabled/cooldown/kinds/order), the CLI cases over a loopback `ssh_argv` script (add
+  / duplicate / `-oProxyCommand=x` refused, failing ssh, protocol / git / version / sha, `check`
+  without NAME, 30 s timeout shortened, `on` clearing cooldown), the `ConfigWatch` tick (one
+  `runner_config_invalid`, cleared when fixed or removed), pool preference / fallback / waiter /
+  remote `occupancy()` / `holding()` after `rm`, and the stuck detector with a remote hold.
+- Related modules: `tests/test_worker*.py tests/test_agentic_dashboard*.py
+  tests/test_agentic_queue_cli.py tests/test_agentic_gates.py tests/test_agentic_loop_state.py
+  tests/test_cli*.py`: 392 passed.
+- `python3 tools/spec_lint.py --write-ledger` then `python3 tools/spec_lint.py`: clean.
+- The full suite was left to gating.
+
+### As shipped (2026-11-01)
+
+As designed, with these details the Design left open:
+- `workers.py` also has `read_file`/`read_strict` (the strict parse `ConfigWatch` uses), `normalize`,
+  `in_cooldown`, `check`, `ensure_ssh_dir`. `cooldown_until` is an ISO timestamp; an unparseable
+  one counts as no cooldown. A registry with a duplicate or invalid worker entry is unreadable as a
+  whole. `update` on an unreadable file raises and leaves it untouched instead of overwriting it.
+- `ConfigWatch._check_workers` reports the registry on the first tick too (the user config is
+  seeded silently because it is already loaded; the registry is not). It does not journal a
+  `config_load_failed` record; the lease entry and the detector event are the report.
+- `add --nw CMD` must match `[A-Za-z0-9._/~+-]+` and not start with `-` (it becomes the first word of
+  a remote shell command line).
+- Hold files of worker pools carry `pool`, so `holding()` returns it. `acquire` rejects a pool name
+  that is not a valid worker name (`ValueError`) before holding anything.
+- `nw workers list --json` emits `{"schema": "nw.workers.list.v1", "workers": [...]}`; `check --json`
+  emits the plain list of `{name, ok, errors, warnings, info}`.
+- A sha difference is a warning only when the versions are equal and both sides know their sha.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-565` / `nw idea clock-out IDEA-565`.
@@ -168,11 +202,11 @@ this ships; nothing uses it until SPEC-0338.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`).
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`).
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

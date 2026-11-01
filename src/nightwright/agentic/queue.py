@@ -48,6 +48,7 @@ from . import spec_review as SR
 from . import spec_write as SW
 from . import schemas as SC
 from . import store
+from . import workers
 from .codewatch import _CODE_PATHS, _git_out, code_changes, code_checkout  # noqa: F401
 from .gitops import GitError
 from .profiles import (SEVERITIES, persona_settings, resolve_profile, review_params,
@@ -4645,6 +4646,8 @@ class ConfigWatch:
         self.user_path = Path(config_dir) / "config.yaml" if config_dir else None
         self.user_key = _stat_key(self.user_path) if self.user_path else None
         self._projects: dict = {}                 # path -> {"key", "doc" (last good or None)}
+        self.workers_path = workers.path(cfg) if cfg.get("data_dir") else None     # SPEC-0337
+        self.workers_key = _UNSEEN
         self._errors: dict = {}
         self._first = True
         self._moved = False
@@ -4669,7 +4672,26 @@ class ConfigWatch:
                     self._moved = False
                     self.user_key = _UNSEEN
         self._check_projects(cfg, lease, campaigns)
+        self._check_workers(lease)
         return cfg
+
+    def _check_workers(self, lease) -> None:
+        """SPEC-0337: publish an unreadable `workers.json` as a `config_errors` entry (scope
+        `workers`, keyed by its mtime), so the detector emits one `runner_config_invalid` per
+        distinct content; clear it once the file reads cleanly or is gone."""
+        if self.workers_path is None:
+            return
+        key = _stat_key(self.workers_path)
+        if key == self.workers_key:
+            return
+        self.workers_key = key
+        path = str(self.workers_path)
+        try:
+            workers.read_file(self.workers_path)
+        except (OSError, ValueError) as e:
+            self._set_error(lease, path, "workers", _err(e), key)
+        else:
+            self._clear_error(lease, path)
 
     def _read_user_file(self) -> None:
         """Raise when the raw file is missing, empty or not a mapping: `load_config` would

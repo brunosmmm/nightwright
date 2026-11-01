@@ -15,6 +15,8 @@ from . import worker as W
 def worker_group():
     """Remote gate worker (SPEC-0336): run gate jobs sent over SSH.
 
+    Runs on the worker host. The coordinator's registry is `nw workers` (SPEC-0337).
+
     \b
     nw worker info --json              protocol, version, tools, free space
     nw worker have --repo KEY SHA...   which commits the object cache holds

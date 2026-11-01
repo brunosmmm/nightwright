@@ -4,12 +4,16 @@ at once on the host, so parallel pytest (`-n 4`) never oversubscribes the CPU. A
 a crashed runner never leaks one (the approach of `lease.py`) — and the file carries
 `{campaign, pid, since, waited_s}` for `occupancy()` and `holding()` (the finished wait, which the
 stuck detector must not count against the gate that follows it). A campaign blocked for a slot publishes
-`waiting-<campaign>.json`, the one on-disk signal the stuck and silent detectors read."""
+`waiting-<campaign>.json`, the one on-disk signal the stuck and silent detectors read.
+
+SPEC-0337: `acquire` can wait on an ordered list of pools. The local pool is `slot-<n>.lock`
+here; worker `W`'s is `w-<W>/slot-<n>.lock`. A pool is named by its worker, `None` for local."""
 from __future__ import annotations
 
 import fcntl
 import json
 import os
+import re
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -22,6 +26,7 @@ from .store import agentic_dir, now_iso
 DEFAULT_SLOTS = 2
 MAX_SLOTS = 16
 POLL_S = 1.0
+_POOL_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,30}")
 WAIT_EVENT_S = 30.0         # a wait longer than this appends one `gate_waiting` ledger entry
 
 
@@ -30,10 +35,20 @@ class SlotHold:
     slot: int | None        # None: no slot held (the wait was cut short by a stop)
     waited_s: float = 0.0
     interrupted: bool = False
+    pool: str | None = None     # the worker whose pool the slot is in; None: local (SPEC-0337)
 
 
 def slots_dir(cfg) -> Path:
     return agentic_dir(cfg) / "gate-slots"
+
+
+def pool_dir(cfg, pool: str | None) -> Path:
+    """Where a pool's slot files live: the slots dir for local, `w-<worker>/` for a worker."""
+    if pool is None:
+        return slots_dir(cfg)
+    if not isinstance(pool, str) or not _POOL_NAME.fullmatch(pool):
+        raise ValueError(f"invalid gate-slot pool name {pool!r}")
+    return slots_dir(cfg) / f"w-{pool}"
 
 
 def settings(cfg) -> dict:
@@ -68,28 +83,33 @@ def _waiter_path(cfg, campaign_id) -> Path:
     return slots_dir(cfg) / f"waiting-{campaign_id}.json"
 
 
-def _try_take(cfg, n_slots: int, campaign_id, t0: float):
-    """Take the first free slot: `(slot, fd, waited_s)`, else None. The hold file records the
-    wait that ended in it (`waited_s`, seconds since `t0`)."""
-    d = slots_dir(cfg)
-    for n in range(n_slots):
-        fd = os.open(d / f"slot-{n}.lock", os.O_RDWR | os.O_CREAT, 0o644)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            os.close(fd)
-            continue
-        waited_s = round(time.monotonic() - t0, 1)
-        info = {"campaign": campaign_id, "pid": os.getpid(), "since": now_iso(),
-                "waited_s": waited_s}
-        try:
-            os.ftruncate(fd, 0)
-            os.write(fd, (json.dumps(info) + "\n").encode("utf-8"))
-        except BaseException:                   # never keep a lock the caller cannot release
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
-            raise
-        return n, fd, waited_s
+def _try_take(cfg, pools: list, campaign_id, t0: float):
+    """Take the first free slot of the first pool that has one: `(slot, fd, waited_s, pool)`,
+    else None. The hold file records the wait that ended in it (`waited_s`, seconds since
+    `t0`)."""
+    for pool, n_slots in pools:
+        d = pool_dir(cfg, pool)
+        d.mkdir(parents=True, exist_ok=True)
+        for n in range(n_slots):
+            fd = os.open(d / f"slot-{n}.lock", os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                os.close(fd)
+                continue
+            waited_s = round(time.monotonic() - t0, 1)
+            info = {"campaign": campaign_id, "pid": os.getpid(), "since": now_iso(),
+                    "waited_s": waited_s}
+            if pool is not None:
+                info["pool"] = pool
+            try:
+                os.ftruncate(fd, 0)
+                os.write(fd, (json.dumps(info) + "\n").encode("utf-8"))
+            except BaseException:               # never keep a lock the caller cannot release
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+                raise
+            return n, fd, waited_s, pool
     return None
 
 
@@ -102,31 +122,47 @@ def _release(fd) -> None:
     os.close(fd)
 
 
+def _probe_held(d: Path) -> list[dict]:
+    """The slots of one pool dir whose flock is held (a probe takes and drops it)."""
+    held = []
+    for p in sorted(d.glob("slot-*.lock"), key=lambda p: int(p.stem.split("-")[1])
+                    if p.stem.split("-")[1].isdigit() else 0):
+        fd = os.open(p, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            info = _read_json(p) or {}
+            held.append({"slot": int(p.stem.split("-")[1]), "campaign": info.get("campaign"),
+                         "pid": info.get("pid"), "since": info.get("since")})
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+    return held
+
+
 def occupancy(cfg) -> dict:
     """`{slots, held: [{slot, campaign, pid, since}], waiting: [{campaign, pid, since}]}`. A
     slot is held when its flock is (a probe takes and drops it); a waiter whose pid is gone is
-    left out."""
+    left out. SPEC-0337: with a worker registered it adds `workers: {W: {slots, held}}`; the
+    other keys are the local pool's, as before."""
+    from . import workers as WK
     d = slots_dir(cfg)
     held, waiting = [], []
     if d.is_dir():
-        for p in sorted(d.glob("slot-*.lock"), key=lambda p: int(p.stem.split("-")[1])
-                        if p.stem.split("-")[1].isdigit() else 0):
-            fd = os.open(p, os.O_RDWR)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                info = _read_json(p) or {}
-                held.append({"slot": int(p.stem.split("-")[1]), "campaign": info.get("campaign"),
-                             "pid": info.get("pid"), "since": info.get("since")})
-            else:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
+        held = _probe_held(d)
         for p in sorted(d.glob("waiting-*.json")):
             rec = _read_json(p)
             if rec and _pid_alive(rec.get("pid")):
                 waiting.append({k: rec.get(k) for k in ("campaign", "pid", "since")})
-    return {"slots": settings(cfg)["slots"], "held": held, "waiting": waiting}
+    out = {"slots": settings(cfg)["slots"], "held": held, "waiting": waiting}
+    registered = WK.load(cfg)
+    if registered:
+        out["workers"] = {w["name"]: {"slots": w["slots"],
+                                      "held": _probe_held(d / f"w-{w['name']}")
+                                      if (d / f"w-{w['name']}").is_dir() else []}
+                          for w in registered}
+    return out
 
 
 def waiting(cfg, campaign_id, now=None) -> dict | None:
@@ -138,12 +174,14 @@ def waiting(cfg, campaign_id, now=None) -> dict | None:
 
 
 def holding(cfg, campaign_id) -> dict | None:
-    """The live hold of `campaign_id` (`{campaign, pid, since, waited_s}`), else None. The
-    finished wait stays readable while the gate runs, after the waiter marker is gone."""
+    """The live hold of `campaign_id` (`{campaign, pid, since, waited_s}`, plus `pool` for a
+    worker's), else None. The finished wait stays readable while the gate runs, after the
+    waiter marker is gone. SPEC-0337: scans the local slots and every `w-*/` dir on disk,
+    registered or not, so a hold on a worker just removed stays visible."""
     d = slots_dir(cfg)
     if not d.is_dir():
         return None
-    for p in sorted(d.glob("slot-*.lock")):
+    for p in sorted(d.glob("slot-*.lock")) + sorted(d.glob("w-*/slot-*.lock")):
         rec = _read_json(p)
         if rec and rec.get("campaign") == campaign_id and _pid_alive(rec.get("pid")):
             return rec
@@ -160,8 +198,12 @@ def _drop_marker(marker: Path) -> None:
 
 @contextmanager
 def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
-            wait_event_s=None) -> Iterator[SlotHold]:
-    """Hold one slot for the `with` body. While none is free, poll every `poll_s` with the
+            wait_event_s=None, pools=None) -> Iterator[SlotHold]:
+    """Hold one slot for the `with` body. `pools` is an ordered list of `(pool_name, n_slots)`
+    (`pool_name` a worker name, `None` for local; default local only): each poll tries them in
+    order and takes the first free slot, so earlier pools are preferred, and the pool list is
+    fixed for the wait. `SlotHold.pool` says which one it got. While none is free, poll every
+    `poll_s` with the
     waiter marker published; a stop (`stop` set, or the gates' sticky stop) ends the wait and
     yields a hold with `interrupted=True` and no slot. `on_wait(occupancy, waited_s)` is
     called once when the wait passes `wait_event_s` (default `WAIT_EVENT_S`; SPEC-0336's worker
@@ -170,9 +212,11 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
     poll_s = POLL_S if poll_s is None else poll_s
     wait_event_s = WAIT_EVENT_S if wait_event_s is None else wait_event_s
     slots_dir(cfg).mkdir(parents=True, exist_ok=True)
-    n_slots = settings(cfg)["slots"]
+    pools = [(None, settings(cfg)["slots"])] if pools is None else list(pools)
+    for pool, _n in pools:
+        pool_dir(cfg, pool)                     # reject a bad name before anything is held
     t0 = time.monotonic()
-    taken = _try_take(cfg, n_slots, campaign_id, t0)
+    taken = _try_take(cfg, pools, campaign_id, t0)
     if taken is None:
         marker = _waiter_path(cfg, campaign_id)
         _atomic_write(marker, json.dumps({"campaign": campaign_id, "pid": os.getpid(),
@@ -193,14 +237,14 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
                     stop.wait(poll_s)
                 else:
                     time.sleep(poll_s)
-                taken = _try_take(cfg, n_slots, campaign_id, t0)
+                taken = _try_take(cfg, pools, campaign_id, t0)
         finally:
             _drop_marker(marker)
     if taken is None:
         yield SlotHold(None, round(time.monotonic() - t0, 1), interrupted=True)
         return
-    slot, fd, waited_s = taken
+    slot, fd, waited_s, pool = taken
     try:
-        yield SlotHold(slot, waited_s)
+        yield SlotHold(slot, waited_s, pool=pool)
     finally:
         _release(fd)
