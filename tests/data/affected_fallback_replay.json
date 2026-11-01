@@ -1,0 +1,34 @@
+{
+  "_doc": "SPEC-0357: the 2026-11-01 loop-gate fallbacks recorded in the SPEC-0338 and SPEC-0354 gate logs, and controls. `stage` files are created only in the temporary copy of the repository when the checkout under test lacks them.",
+  "cases": [
+    {
+      "name": "SPEC-0338 .nw/project.yaml",
+      "changed": [".nw/project.yaml"],
+      "full": false,
+      "must_include": ["tests/test_agentic_dogfood_config.py"]
+    },
+    {
+      "name": "SPEC-0338 tests/data/remote_gates_golden.json",
+      "changed": ["tests/data/remote_gates_golden.json"],
+      "full": false,
+      "must_include": ["tests/test_remote_gates_golden.py"],
+      "max_tests": 9,
+      "stage": {
+        "tests/data/remote_gates_golden.json": "{}\n",
+        "tests/test_remote_gates_golden.py": "from pathlib import Path\n\nGOLDEN = Path(__file__).parent / \"data\" / \"remote_gates_golden.json\"\n\n\ndef test_golden():\n    assert GOLDEN.exists()\n"
+      }
+    },
+    {
+      "name": "SPEC-0354 new src/nightwright/agentic/cli_workers.py",
+      "changed": ["src/nightwright/agentic/cli_workers.py"],
+      "full": false,
+      "must_include_glob": "tests/test_*workers*.py",
+      "stage": {
+        "src/nightwright/agentic/cli_workers.py": "WORKERS = 1\n",
+        "tests/test_agentic_workers_bootstrap.py": "def test_x():\n    pass\n"
+      }
+},
+    {"name": "control pyproject.toml", "changed": ["pyproject.toml"], "full": true},
+    {"name": "control uv.lock", "changed": ["uv.lock"], "full": true}
+  ]
+}

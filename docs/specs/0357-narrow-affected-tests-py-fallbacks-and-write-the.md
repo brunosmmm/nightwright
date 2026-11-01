@@ -1,7 +1,7 @@
 ---
 id: SPEC-0357
 title: "Narrow affected_tests.py fallbacks and write the NW_GATE_REPORT selection report"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -219,41 +219,41 @@ working unchanged, because the new flags and the env var are additive and strict
 
 ## Acceptance criteria
 
-- [ ] `affected_tests.py` selects a targeted, non-full set for a `.nw/project.yaml` change, a
+- [x] `affected_tests.py` selects a targeted, non-full set for a `.nw/project.yaml` change, a
       `tests/data/*.json` change, a `tools/*.py` change, a package-data change under
       `src/nightwright/`, and a src module reached by no test but matched by the name rule. Each
       reason names the rule that fired.
-- [ ] `pyproject.toml`, `uv.lock`, `conftest.py`, `tests/waits.py`, a removed module, an unmapped
+- [x] `pyproject.toml`, `uv.lock`, `conftest.py`, `tests/waits.py`, a removed module, an unmapped
       data file, an unmatched unreached module, and a selection above `MAX_FRACTION` still give the
       full suite. `--strict` / `NW_AFFECTED_STRICT=1` reproduce SPEC-0328 selection exactly: a
       `tools/*.py` change, a `.nw/project.yaml` change, a non-`.py` file under `tests/` or
       `src/nightwright/`, and an unreached src module are all full (`no test reaches ...`); the
       reference scan and the name rule do not run.
-- [ ] A string constant equal to a directory name (a dict key `"data"`) is not a reference for the
+- [x] A string constant equal to a directory name (a dict key `"data"`) is not a reference for the
       directory needle; `Path(__file__).parent / "data"` and a constant ending in `/data` are.
       The directory needle is used only when the basename needles find no referencing module.
-- [ ] Src-module expansion happens only for `src/nightwright/**` non-`.py` changes: a src module
+- [x] Src-module expansion happens only for `src/nightwright/**` non-`.py` changes: a src module
       containing the constant `"project.yaml"` does not add its tests to a `.nw/project.yaml`
       selection.
-- [ ] `_scan` indexes `tools/*.py` under the stem name; a test importing `tools/X.py` is selected
+- [x] `_scan` indexes `tools/*.py` under the stem name; a test importing `tools/X.py` is selected
       by a change to `tools/X.py`, and no `tools` module is ever a selected test module.
-- [ ] With `--json --run CMD`, the first stdout line is the JSON object and the tool prints nothing
+- [x] With `--json --run CMD`, the first stdout line is the JSON object and the tool prints nothing
       else on stdout (`no affected tests` goes to stderr). `base_sha` is `null` when `--changed`
       is given or the base cannot be resolved.
-- [ ] The smoke set (`--include`) is added to every non-full selection.
-- [ ] With `NW_GATE_REPORT` set, the tool writes a JSON file with the keys `full`, `reason`,
+- [x] The smoke set (`--include`) is added to every non-full selection.
+- [x] With `NW_GATE_REPORT` set, the tool writes a JSON file with the keys `full`, `reason`,
       `tests`, `include`, `changed`, `base_sha`, `head_sha`, `head_tree`; a write error does not
       change the exit code or output.
-- [ ] `--json` prints one JSON object on stdout with those keys; `--closure` adds `closure` (a
+- [x] `--json` prints one JSON object on stdout with those keys; `--closure` adds `closure` (a
       sorted path list, `null` when `full`); `--changed PATH` selects for the given paths without
       resolving a base.
-- [ ] The replay test passes on the real repository tree: the recorded `.nw/project.yaml`,
+- [x] The replay test passes on the real repository tree: the recorded `.nw/project.yaml`,
       `tests/data/remote_gates_golden.json` and new `cli_workers.py` changes give non-full
       selections under `MAX_FRACTION` that include `test_agentic_dogfood_config.py`, the golden
       test and a `*workers*` test respectively; `pyproject.toml` and `uv.lock` stay full. The
       `tests/data/remote_gates_golden.json` selection contains fewer than 10 test files. The replay
       never writes into the repository checkout under test.
-- [ ] The close tier is unchanged: `.nw/project.yaml` still defines the full `pytest` close gate,
+- [x] The close tier is unchanged: `.nw/project.yaml` still defines the full `pytest` close gate,
       and no gate, close or queue module is modified by this spec.
 
 ## Test plan
@@ -301,6 +301,38 @@ working unchanged, because the new flags and the env var are additive and strict
   `tests/test_affected_tests.py`, `test_agentic_gate*` and `test_agentic_dogfood_config`;
   `python3 tools/spec_lint.py` exits 0. The full suite runs at the queue's close gate.
 
+### Test record (2026-11-01)
+
+- `uv run pytest -q tests/test_affected_tests.py tests/test_affected_tests_replay.py`: 60 passed
+  (the SPEC-0328 cases keep passing; the old "unsafe change" parametrization now runs under
+  `strict=True`, with new cases for the narrowed rules, needles, report, `--json`, `--closure`,
+  `--changed`, `--json --run`, and the replay of the three recorded fallbacks plus the two controls).
+- `uv run pytest -q -n 2 tests/test_agentic_gate*.py tests/test_agentic_dogfood_config.py`:
+  106 passed. `python3 tools/spec_lint.py` exits 0 (ledger regenerated).
+- Manual: `python3 tools/affected_tests.py --json --closure --changed .nw/project.yaml` on the real
+  tree gives `full: false`, 78/212 test files (reference scan; 20 direct readers plus the tests
+  importing them through helper modules), `base_sha: null`, a 194-path closure; with `--strict` it
+  is `full: true`. The SPEC-0338 / SPEC-0354 branch tips could not be replayed with
+  `--changed` on this tree: their new modules (`remote_gates.py`, `workers_bootstrap.py`) do not
+  exist here, which is a removed-module full fallback by design.
+- The full suite was left to the queue's close gate.
+
+### As shipped (2026-11-01)
+
+- `base_sha` is the merge-base commit (`git merge-base BASE HEAD`) the diff is taken against.
+- The directory needle is skipped for a file directly under a top-level root (`tests/x.json`,
+  `tools/x.sh`, `src/nightwright/x.md`): the only parent name there is the root itself, which
+  every module path mentions. `.nw/project.yaml` keeps `.nw`.
+- Name rule: the token set is the leaf, the leaf without `cli_`, the leaf without leading `_`,
+  and both stripped; the matched tests are the name-matching files only (no free hops).
+- `Index` (one `ast.walk` per module serves imports and the reference data) replaces
+  `import_graph` internally; `import_graph(repo)` keeps its `(mods, reverse)` return.
+- `.nw/project.yaml` selects 78 of 212 test files on the real tree (37 %, under `MAX_FRACTION`
+  0.40): 20 modules name the file and about 58 import them through helper modules (the free hops
+  the spec asks for). If helpers grow, this is the first selection to cross the cap.
+- Replay: `tests/data/remote_gates_golden.json` and its test do not exist in this checkout, so the
+  fixture stages them in the temporary copy (`stage`); the golden selection is 1 test file.
+
 ## Risks
 
 - **Basename needles too narrow** (a file opened by a computed name that contains no needle). A
@@ -330,11 +362,11 @@ CLOCK-OUT: n/a
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual steps performed and recorded.
-- [ ] No regressions (queue close gate full suite).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual steps performed and recorded.
+- [x] No regressions (queue close gate full suite).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated.
 
 ## Open questions
 

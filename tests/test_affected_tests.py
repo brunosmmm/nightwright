@@ -1,8 +1,9 @@
-"""SPEC-0328: `tools/affected_tests.py`, static affected-test selection for loop gates.
+"""SPEC-0328 / SPEC-0357: `tools/affected_tests.py`, static affected-test selection for loop gates.
 
 Every case builds a small temp git repo shaped like nightwright (src/nightwright + tests), branches off main,
 changes files, and checks the selection (or the full-suite fallback)."""
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -151,10 +152,27 @@ def test_docs_only_change_selects_nothing(repo):
 @pytest.mark.parametrize("rel", ["tests/conftest.py", "tests/waits.py", "pyproject.toml",
                                  "uv.lock", "tools/x.py", ".nw/project.yaml", "src/nightwright/data.md",
                                  "tests/sub/conftest.py", "tests/data/fixture.json"])
-def test_unsafe_changes_fall_back_to_the_full_suite(repo, rel):
+def test_unsafe_changes_fall_back_to_the_full_suite_in_strict_mode(repo, rel):
+    # the SPEC-0328 behaviour, restored by --strict (SPEC-0357)
+    _change(repo, "src/nightwright/base.py", rel)
+    sel = _select(repo, max_fraction=1.0, strict=True)
+    assert sel.full and sel.tests == [], sel.reason
+
+
+@pytest.mark.parametrize("rel", ["tests/conftest.py", "tests/waits.py", "pyproject.toml", "uv.lock",
+                                 "tests/sub/conftest.py"])
+def test_unmappable_changes_still_fall_back_to_the_full_suite(repo, rel):
     _change(repo, "src/nightwright/base.py", rel)
     sel = _select(repo, max_fraction=1.0)
     assert sel.full and sel.tests == [], sel.reason
+
+
+@pytest.mark.parametrize("rel", ["tools/x.py", ".nw/project.yaml", "src/nightwright/data.md",
+                                 "tests/data/fixture.json"])
+def test_unreferenced_data_and_tools_fall_back_when_nothing_maps(repo, rel):
+    _change(repo, "src/nightwright/base.py", rel)
+    sel = _select(repo, max_fraction=1.0)
+    assert sel.full and sel.tests == [] and "no test references" in sel.reason, sel.reason
 
 
 def test_src_module_no_test_reaches_falls_back(repo):
@@ -212,3 +230,232 @@ def test_cli_full_suite_runs_the_command_bare_and_empty_runs_nothing(repo):
     _change(repo, "docs/note.md")
     r = _cli(repo, "--run", "false")
     assert r.returncode == 0 and r.stdout.strip() == "no affected tests"
+
+
+# --- SPEC-0357: narrowed fallbacks, reference scan, name rule, report and JSON mode ---------------
+
+EXTRA = {
+    ".nw/project.yaml": "project: x\n",
+    "tests/data/golden.json": "{}\n",
+    "tests/data/other.json": "{}\n",
+    "tests/fixtures/a.txt": "a\n",
+    "tests/test_golden.py": 'from pathlib import Path\nP = Path(__file__).parent / "data" / "golden.json"\n',
+    "tests/test_cfg.py": 'def test():\n    open(".nw/project.yaml")\n',
+    "tests/test_tool_import.py": "import tool_x\n",
+    "tests/test_tool_sub.py": 'import subprocess\nsubprocess.run(["python3", "tools/other.py"])\n',
+    "tools/tool_x.py": "T = 1\n",
+    "tools/other.py": "O = 1\n",
+    "src/nightwright/reader.py": 'from . import base\nNAME = "project.yaml"\n',
+    "tests/test_reader.py": "from nightwright import reader\n",
+    "src/nightwright/pkg/__init__.py": "",
+    "src/nightwright/pkg/data/x.md": "x\n",
+    "src/nightwright/pkg/loader.py": 'from pathlib import Path\nP = Path(__file__).parent / "data" / "x.md"\n',
+    "tests/test_loader.py": "from nightwright.pkg import loader\n",
+    "tests/test_dictkey.py": 'D = {}\nD["data"]\n',
+    "tests/test_dirpath.py": 'from pathlib import Path\nP = Path(__file__).parent / "data"\n',
+    "tests/test_dirstr.py": 'ROOT = "tests/fixtures"\n',
+    "tests/test_agentic_widgets.py": "",
+    "tests/test_cowidgets.py": "",
+    "tests/test_cmd_only.py": 'X = "cli-gizmos"\n',
+    "tests/test_notcmd.py": 'X = "my-gizmos-cmd"\n',
+    "tests/test_dot_ref.py": 'X = "nightwright.cli_dotty"\n',
+}
+
+
+@pytest.fixture
+def repo2(tmp_path):
+    r = tmp_path / "repo2"
+    for rel, text in {**FILES, **EXTRA}.items():
+        p = r / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    _git(r, "init", "-q", "-b", "main")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "init")
+    _git(r, "checkout", "-qb", "feat")
+    return r
+
+
+def _sel2(repo, *rels, **kw):
+    _change(repo, *rels)
+    kw.setdefault("max_fraction", 1.0)
+    return _select(repo, **kw)
+
+
+def test_project_yaml_change_selects_the_tests_that_name_it(repo2):
+    sel = _sel2(repo2, ".nw/project.yaml")
+    assert not sel.full and sel.tests == ["tests/test_cfg.py"]
+    assert "reference scan for .nw/project.yaml" in sel.reason
+
+
+def test_src_module_with_the_project_yaml_constant_adds_no_tests(repo2):
+    sel = _sel2(repo2, ".nw/project.yaml")
+    assert "tests/test_reader.py" not in sel.tests
+
+
+def test_test_data_change_selects_its_reader_not_the_directory_readers(repo2):
+    sel = _sel2(repo2, "tests/data/golden.json")
+    assert not sel.full and sel.tests == ["tests/test_golden.py"]    # test_dirpath: dir needle unused
+
+
+def test_directory_needle_is_path_shaped_and_only_used_without_a_basename_reader(repo2):
+    sel = _sel2(repo2, "tests/data/other.json")
+    assert sel.tests == ["tests/test_dirpath.py", "tests/test_golden.py"]
+    assert "tests/test_dictkey.py" not in sel.tests                  # a dict key "data" is no reference
+    _git(repo2, "reset", "-q", "--hard", "main")
+    sel = _sel2(repo2, "tests/fixtures/a.txt")                       # constant ending in /fixtures
+    assert sel.tests == ["tests/test_dirstr.py"]
+
+
+def test_tools_change_selects_importers_and_subprocess_path_readers(repo2):
+    sel = _sel2(repo2, "tools/tool_x.py")
+    assert sel.tests == ["tests/test_tool_import.py"]                # stem import
+    assert all(t.startswith("tests/") for t in sel.tests)
+    _git(repo2, "reset", "-q", "--hard", "main")
+    assert _sel2(repo2, "tools/other.py").tests == ["tests/test_tool_sub.py"]   # "tools/other.py"
+
+
+def test_tools_modules_are_indexed_under_the_stem_but_are_not_tests(repo2):
+    mods, reverse = AT.import_graph(repo2)
+    assert mods["tool_x"] == "tools/tool_x.py"
+    assert reverse["tool_x"] == {"test_tool_import"}
+    assert "tests/test_tool_import.py" in AT.nearest_tests("tool_x", mods, reverse)
+
+
+def test_package_data_change_selects_the_nearest_tests_of_the_reading_src_module(repo2):
+    sel = _sel2(repo2, "src/nightwright/pkg/data/x.md")
+    assert sel.tests == ["tests/test_loader.py"]
+    assert "reference scan for src/nightwright/pkg/data/x.md" in sel.reason
+
+
+def test_name_rule_for_a_src_module_no_test_reaches(repo2):
+    (repo2 / "src/nightwright/cli_widgets.py").write_text("W = 1\n")
+    _git(repo2, "add", "-A")
+    _git(repo2, "commit", "-qm", "widgets")
+    sel = _select(repo2, max_fraction=1.0)
+    assert not sel.full and sel.tests == ["tests/test_agentic_widgets.py"]   # not test_cowidgets
+    assert "name rule for src/nightwright/cli_widgets.py" in sel.reason
+
+
+def test_name_rule_matches_command_names_by_equality_and_dotted_names_by_containment(repo2):
+    for mod in ("cli_gizmos", "cli_dotty"):
+        (repo2 / f"src/nightwright/{mod}.py").write_text("W = 1\n")
+    _git(repo2, "add", "-A")
+    _git(repo2, "commit", "-qm", "mods")
+    sel = _select(repo2, max_fraction=1.0)
+    assert sel.tests == ["tests/test_cmd_only.py", "tests/test_dot_ref.py"]  # test_notcmd only contains
+
+
+def test_name_rule_miss_falls_back(repo2):
+    (repo2 / "src/nightwright/orphan.py").write_text("Z = 0\n")
+    _git(repo2, "add", "-A")
+    _git(repo2, "commit", "-qm", "orphan")
+    sel = _select(repo2, max_fraction=1.0)
+    assert sel.full and "no test reaches src/nightwright/orphan.py" in sel.reason
+
+
+def test_strict_restores_spec_0328_selection(repo2, monkeypatch):
+    for rel in (".nw/project.yaml", "tools/tool_x.py", "tests/data/golden.json",
+                "src/nightwright/pkg/data/x.md"):
+        _git(repo2, "reset", "-q", "--hard", "main")
+        assert _sel2(repo2, rel, strict=True).full, rel
+    _git(repo2, "reset", "-q", "--hard", "main")
+    (repo2 / "src/nightwright/cli_widgets.py").write_text("W = 1\n")
+    _git(repo2, "add", "-A")
+    _git(repo2, "commit", "-qm", "widgets")
+    sel = _select(repo2, max_fraction=1.0, strict=True)
+    assert sel.full and "no test reaches" in sel.reason
+    _git(repo2, "reset", "-q", "--hard", "main")
+    _change(repo2, ".nw/project.yaml")
+    r = _cli(repo2)
+    assert r.stdout.strip() == "tests/test_cfg.py"
+    monkeypatch.setenv("NW_AFFECTED_STRICT", "1")
+    assert _cli(repo2).stdout.strip() == "tests"
+    monkeypatch.delenv("NW_AFFECTED_STRICT")
+    assert _cli(repo2, "--strict").stdout.strip() == "tests"
+
+
+def test_selection_above_the_fraction_still_falls_back_for_data(repo2):
+    sel = _sel2(repo2, "tests/data/other.json", max_fraction=0.05)
+    assert sel.full and "> 5%" in sel.reason
+
+
+def test_smoke_set_is_added_to_every_narrowed_selection(repo2):
+    _change(repo2, ".nw/project.yaml")
+    r = _cli(repo2, "--include", "tests/test_base.py")
+    assert r.stdout.split() == ["tests/test_base.py", "tests/test_cfg.py"]
+
+
+def test_report_file_has_the_keys_and_does_not_change_output(repo2, tmp_path, monkeypatch):
+    _change(repo2, ".nw/project.yaml")
+    out = tmp_path / "sub" / "report.json"
+    monkeypatch.setenv("NW_GATE_REPORT", str(out))
+    r = _cli(repo2, "--include", "tests/test_base.py")
+    assert r.returncode == 0 and r.stdout.split() == ["tests/test_base.py", "tests/test_cfg.py"]
+    rep = json.loads(out.read_text())
+    assert set(rep) == {"full", "reason", "tests", "include", "changed", "base_sha", "head_sha",
+                        "head_tree"}
+    assert rep["full"] is False and rep["tests"] == ["tests/test_base.py", "tests/test_cfg.py"]
+    assert rep["include"] == ["tests/test_base.py"] and rep["changed"] == [".nw/project.yaml"]
+    assert rep["head_sha"] == _git(repo2, "rev-parse", "HEAD").strip()
+    assert rep["head_tree"] == _git(repo2, "rev-parse", "HEAD^{tree}").strip()
+    assert rep["base_sha"] == _git(repo2, "rev-parse", "main").strip()
+
+
+def test_unwritable_report_path_is_ignored(repo2, tmp_path, monkeypatch):
+    _change(repo2, "tests/test_mid.py")
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    monkeypatch.setenv("NW_GATE_REPORT", str(blocker / "report.json"))   # parent is a file
+    r = _cli(repo2)
+    assert r.returncode == 0 and r.stdout.split() == ["tests/test_mid.py"]
+
+
+def test_report_for_full_selection_has_empty_tests(repo2, tmp_path, monkeypatch):
+    _change(repo2, "pyproject.toml")
+    out = tmp_path / "r.json"
+    monkeypatch.setenv("NW_GATE_REPORT", str(out))
+    _cli(repo2)
+    rep = json.loads(out.read_text())
+    assert rep["full"] is True and rep["tests"] == []
+
+
+def test_json_prints_one_object_and_closure_lists_what_the_tests_read(repo2):
+    _change(repo2, "tests/data/golden.json", "tests/test_tool_import.py")
+    r = _cli(repo2, "--json", "--closure")
+    assert r.returncode == 0 and len(r.stdout.splitlines()) == 1
+    rep = json.loads(r.stdout)
+    assert rep["tests"] == ["tests/test_golden.py", "tests/test_tool_import.py"]
+    assert {"tests/data/golden.json", "tools/tool_x.py"} <= set(rep["closure"])
+    assert rep["closure"] == sorted(rep["closure"])
+    assert "closure" not in json.loads(_cli(repo2, "--json").stdout)
+
+
+def test_closure_follows_imports_transitively_and_is_null_when_full(repo2):
+    r = json.loads(_cli(repo2, "--json", "--closure", "--changed", "tests/test_top.py").stdout)
+    assert {"tests/test_top.py", "src/nightwright/top.py", "src/nightwright/mid.py",
+            "src/nightwright/base.py"} <= set(r["closure"])
+    r = json.loads(_cli(repo2, "--json", "--closure", "--changed", "pyproject.toml").stdout)
+    assert r["full"] is True and r["closure"] is None and r["tests"] == []
+
+
+def test_changed_selects_without_resolving_a_base(repo2):
+    r = _cli(repo2, "--json", "--base", "no-such-ref", "--changed", ".nw/project.yaml")
+    rep = json.loads(r.stdout)
+    assert rep["full"] is False and rep["tests"] == ["tests/test_cfg.py"]
+    assert rep["base_sha"] is None and rep["changed"] == [".nw/project.yaml"]
+
+
+def test_unresolvable_base_gives_a_full_report_with_null_base_sha(repo2):
+    rep = json.loads(_cli(repo2, "--json", "--base", "no-such-ref").stdout)
+    assert rep["full"] is True and "cannot diff against" in rep["reason"] and rep["base_sha"] is None
+
+
+def test_json_run_puts_the_json_first_and_prints_nothing_else_on_stdout(repo2):
+    r = _cli(repo2, "--json", "--changed", ".nw/project.yaml", "--run", "echo", "RUN")
+    lines = r.stdout.splitlines()
+    assert json.loads(lines[0])["tests"] == ["tests/test_cfg.py"]
+    assert lines[1:] == ["RUN tests/test_cfg.py"]
+    r = _cli(repo2, "--json", "--changed", "docs/note.md", "--run", "false")
+    assert r.returncode == 0 and len(r.stdout.splitlines()) == 1
+    assert "no affected tests" in r.stderr and "no affected tests" not in r.stdout
