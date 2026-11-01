@@ -583,12 +583,19 @@ Default permission rules (SPEC-0353; code-held in `launch.py`, a configured `all
   `update-ref`, `stash`, `remote`, `worktree` that a `git -C *` rule could otherwise swallow). The
   `git -C *` denies can also match a non-push command whose arguments contain `push`, `main`,
   `config`, `remote`, … as separate words (e.g. in a commit message); keep such words out of
-  `-m` or use `-F`. The guard is a denylist: other subcommands reached through `-C *` remain a
-  residual risk. Because git accepts abbreviated long options and a stuck short-option value, the
+  `-m` or use `-F`. The steward verbs are also pinned structurally: `git -C <dir> * <verb> *` for
+  `fetch|rebase|add|commit|restore|checkout` is denied, so the verb must be the subcommand right
+  after `-C <dir>` and no other subcommand (`grep -O<cmd>`, `log --output=<file>`,
+  `clone --template=<dir>`, …) can hide behind a steward allow rule. New false positive: a
+  `commit -m` message containing ` add `, ` commit `, ` fetch `, … is denied; use `commit -F`.
+  `grep -O`/`--open-files-in-pager`, `--output` and `--template` are also denied by name. The
+  guard is still a denylist for other shapes (a `-C` directory containing a space, word splitting
+  through `$`/`${IFS}` or a tab). Because git accepts abbreviated long options and a stuck
+  short-option value, the
   shell-exec flags are denied by their shortest unambiguous prefix (`--ex*`, `--upl*`, `--rece*`,
   `--config-e*`, `--git-d*`, `--wo*`), `-x` with nothing after it (`-x'cmd'`), and any dash option
   of `rebase` followed by an `x` (`-ix'cmd'`), so a `rebase` with a dash option and an `x` later
-  in the line is denied. Word splitting through `$`/`${IFS}` or a tab is not guarded.
+  in the line is denied.
 
 Permission flags are fixed when a session starts: relaunch running conductors and stewards
 (`nw queue steward-launch PROJECT --resume`) to pick up changed rules.

@@ -272,6 +272,8 @@ SPEC-0339.
 - Review round 2 (2026-11-01): `uv run pytest -q tests/test_agentic_launch.py`: 176 passed (new
   `test_steward_guard_denies_stuck_and_abbreviated_shell_exec_spellings`); `spec_lint` OK. Full suite left
   to the close gate.
+- Review round 3 (2026-11-01): `uv run pytest -q tests/test_agentic_launch.py`: 214 passed (new
+  swallow-family tests, extra guard-family pins); `spec_lint` OK. Full suite left to the close gate.
 
 ### As shipped
 
@@ -320,6 +322,21 @@ SPEC-0339.
 - Residual risk (not guarded): word splitting through a tab, `$IFS` / `${IFS}` or `$(...)` inside the
   `-C *`-swallowed part of a command, and global options git matches exactly are denied only by their
   spelled prefix.
+
+- Hardening after review round 3 (structural close of the `-C *` swallow hole): `git -C /w grep
+  -O'<cmd>' -e . -- add .` matched `git -C * add *` and no deny rule, so it ran a shell command;
+  `log|diff --output=<file>` overwrote files and `clone --template=` installed a hook. Naming more
+  subcommands cannot close this, so for each keyword in `_GUARD_KEYWORDS` (fetch, rebase, add,
+  commit, restore, checkout) the guard now has `git -C * * <kw> *` and `git -C * * <kw>`, like
+  `git -C * * push *` for push: the allowed verb must be the 3rd token (right after `-C <dir>`);
+  any `git -C <dir> <other-sub> … <kw> …` is denied whatever the other subcommand is.
+  `rebase --continue|--abort`, `checkout --ours|--theirs`, `commit -m msg|-F file` stay allowed.
+  Also denied by name: `git [* ]grep *-O*`, `--open-f*`, `--out*`, `--templ*` (flags). The disallowed
+  list is now 156 rules. New false positive, pinned by test: a `-m` message containing ` add `,
+  ` commit `, ` fetch `, ` rebase `, ` restore ` or ` checkout ` as separate words is denied; use
+  `commit -F`. Tests: `test_steward_c_swallow_of_other_subcommands_is_denied` (every keyword tail),
+  `test_steward_c_swallow_family_keeps_legit_commands_and_pins_false_positive`, extended
+  `test_each_guard_family_is_what_stops_the_command`.
 
 ## Rollout / migration
 

@@ -45,7 +45,10 @@ _GUARD_SUBCOMMANDS = ("reset --hard*", "branch -D*", "branch -d*", "branch --del
 # unambiguous abbreviation of a long option (`--exe=`, `--upload=`) and a stuck short-option value
 # (`-x'cmd'`), so these are the shortest unambiguous prefixes that do not hit legitimate flags
 # (`--update`, `--recurse-submodules`, `--continue`), and ` -x*` has no space after the flag.
-_GUARD_FLAGS = ("--ex*", " -x*", "--upl*", "--rece*", "--config-e*", "--git-d*", "--wo*")
+_GUARD_FLAGS = ("--ex*", " -x*", "--upl*", "--rece*", "--config-e*", "--git-d*", "--wo*",
+                "--open-f*", "--out*", "--templ*")
+# `git grep -O<cmd>` runs <cmd> through the shell (stuck short value, so `-O*` after `grep`)
+_GUARD_GREP_O = ("grep *-O*",)
 # `-x` combined behind other short flags (`rebase -ix'cmd'`): any dash option followed by an `x`
 _GUARD_REBASE_X = ("rebase -*x*", "rebase * -*x*")
 # subcommands that edit config/refs, run commands or destroy data; reachable only by `-C *`
@@ -73,11 +76,17 @@ def _steward_guard():
     rules += [f"Bash(git *{x})" for x in _GUARD_FLAGS]
     rules += [f"Bash(git {x})" for x in _GUARD_REBASE_X]
     rules += [f"Bash(git * {x})" for x in _GUARD_REBASE_X]
+    rules += [f"Bash(git {x})" for x in _GUARD_GREP_O] + [f"Bash(git * {x})" for x in _GUARD_GREP_O]
     rules += ["Bash(git -c *)", "Bash(git * -c *)"]
     for x in _GUARD_SWALLOWED:
         rules += [f"Bash(git * {x})", f"Bash(git * {x} *)"]
     for kw in _GUARD_KEYWORDS:
         rules += [f"Bash(git * push * {kw})", f"Bash(git * push * {kw} *)"]
+    # structural: `git -C <dir> <kw> …` has the verb as the 3rd token; these need it to be the
+    # 4th or later, so `git -C <dir> <other-sub> … <kw> …` (grep -O, log --output=, clone
+    # --template=, whatever the other subcommand is) is denied, as `git -C * * push *` does for push
+    for kw in _GUARD_KEYWORDS:
+        rules += [f"Bash(git -C * * {kw} *)", f"Bash(git -C * * {kw})"]
     return rules
 
 
