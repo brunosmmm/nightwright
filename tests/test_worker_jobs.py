@@ -1,7 +1,9 @@
 """SPEC-0340: worker-owned async jobs (`nw worker submit|attach|poll|cancel|jobs`), offline. Every
 call goes through `tests/remote_loopback.py` (the forced command, run locally in place of
 `ssh`), except where a timing bound is checked in-process."""
+import contextlib
 import hashlib
+import inspect
 import io
 import json
 import os
@@ -1126,3 +1128,88 @@ def test_attach_and_poll_report_a_removed_job_dir(wenv, monkeypatch):
     out = io.BytesIO()
     assert WJ.poll(_cfg(wenv), "j-vanish3", 0, True, out) == WJ.EXIT_UNKNOWN
     assert json.loads(out.getvalue().splitlines()[-1])["state"] == "unknown"
+
+
+# ---- review round 6 --------------------------------------------------------------------------
+
+def _jobs_lock_held(env) -> bool:
+    import fcntl
+    fd = os.open(W.worker_dir(_cfg(env)) / "jobs.lock", os.O_RDWR | os.O_CREAT)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+
+
+def test_a_lease_renewal_runs_under_jobs_lock_and_never_recreates_a_removed_dir(wenv,
+                                                                                monkeypatch):
+    """`poll --renew` and `attach` renew under `jobs_lock`, which gc's deletion holds, and
+    only while the dir exists: a renewal racing gc's rmtree never leaves a `lease.json` stub."""
+    _async_dir(wenv, "j-held", spawned_ts=time.time())
+    held, real_renew = [], WJ._renew
+    monkeypatch.setattr(WJ, "_renew",
+                        lambda job, s: (held.append(_jobs_lock_held(wenv)), real_renew(job, s)))
+    out = io.BytesIO()
+    assert WJ.poll(_cfg(wenv), "j-held", 0, True, out) == 0
+    assert held == [True]
+    monkeypatch.undo()
+    real_lock = W.jobs_lock
+
+    @contextlib.contextmanager
+    def gc_first(cfg):                              # gc removed the dir just before the renewal
+        with real_lock(cfg):
+            if any(f.function == "_renew_live" for f in inspect.stack()):
+                shutil.rmtree(W.jobs_dir(cfg) / victim[0], ignore_errors=True)
+            yield
+    victim = [None]
+    runs = {"poll": lambda cfg, j, out: WJ.poll(cfg, j, 0, True, out),
+            "attach": lambda cfg, j, out: WJ.attach(cfg, j, 0, out)}
+    for name, run in runs.items():
+        d = _async_dir(wenv, f"j-gc-{name}", spawned_ts=time.time())
+        victim[0] = d.name
+        monkeypatch.setattr(W, "jobs_lock", gc_first)
+        out, rc = io.BytesIO(), []
+        t = threading.Thread(target=lambda: rc.append(run(_cfg(wenv), d.name, out)),
+                             daemon=True)
+        t.start()
+        t.join(WAIT_S)
+        monkeypatch.undo()
+        assert rc == [WJ.EXIT_UNKNOWN], name
+        assert json.loads(out.getvalue().splitlines()[-1])["state"] == "unknown"
+        assert not d.exists(), name                 # no stub holding only lease.json
+
+
+def test_a_hand_started_job_process_runs_in_a_session_of_its_own(wenv):
+    """Started by hand, in the caller's process group, the job process re-runs itself in a
+    new session: the group the kill path signals holds nothing of the caller's."""
+    import subprocess
+    import sys
+    d = W.jobs_dir(_cfg(wenv)) / "j-hand"
+    d.mkdir(parents=True)
+    (d / "header.json").write_text("{}\n")              # run_job fails after proc.json
+    p = subprocess.run([sys.executable, "-m", "nightwright.agentic.worker_job", str(d)],
+                       env=wenv, capture_output=True, timeout=WAIT_S)
+    assert p.returncode != 0                            # the child's exit code is passed on
+    proc = _read(d / "proc.json")
+    assert proc["pgid"] == proc["pid"] != os.getpid()
+    assert proc["pgid"] != os.getpgid(0)                # not the caller's (pytest's) group
+    # submit's own spawn (already a session leader) is not run twice: one proc.json claim
+    assert b"already claimed" not in p.stderr
+
+
+def test_a_reclaim_that_cannot_remove_the_dir_is_a_claim_error(src, tmp_path, wenv,
+                                                               monkeypatch):
+    h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+    d = _async_dir(wenv, h["job_id"], header_digest=WJ.header_digest(h),
+                   submitted_ts=time.time())
+    monkeypatch.setattr(WJ.shutil, "rmtree", lambda *a, **k: None)     # EACCES inside it
+    out = io.BytesIO()
+    rc = WJ.submit(_cfg(wenv), io.BytesIO((json.dumps(h) + "\n").encode() + data), out)
+    (err,) = [json.loads(ln) for ln in out.getvalue().splitlines()]
+    assert rc == 3 and err["type"] == "error" and err["stage"] == "claim"
+    assert "could not reclaim" in err["error"] and "n" not in err
+    assert d.is_dir() and not (d / "spawn.json").exists()

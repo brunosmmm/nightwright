@@ -399,6 +399,22 @@ def _renew(job: Path, lease_s: float) -> None:
                                        "renewed_at": now_iso()})
 
 
+def _renew_live(cfg, job: Path, lease_s: float) -> bool:
+    """A client's lease renewal (`attach`, `poll --renew`): under `jobs_lock`, and only while
+    the dir still exists, so a renewal never lands in a dir gc is removing (its rmtree would
+    then leave a stub holding only `lease.json`, read as `accepted`). False when it is gone."""
+    with W.jobs_lock(cfg):
+        if not job.is_dir():
+            return False
+        try:
+            _renew(job, lease_s)
+        except OSError:
+            if not job.is_dir():
+                return False
+            raise
+    return True
+
+
 # ---- the lost-job kill path ------------------------------------------------------------------
 
 def _kill_group(child: dict, grace: float, cont: bool = False) -> None:
@@ -574,6 +590,7 @@ def submit(cfg, stdin, stdout) -> int:
     sett = settings(cfg)
     job = W.jobs_dir(cfg) / h["job_id"]
     existing = None
+    reclaim_error = None
     with W.jobs_lock(cfg):
         W.jobs_dir(cfg).mkdir(parents=True, exist_ok=True)
         try:
@@ -584,8 +601,11 @@ def submit(cfg, stdin, stdout) -> int:
                 if "spawned_ts" not in existing and _lock_held(job) is False:
                     # its upload broke off and its submit died: no job ever ran, claim afresh
                     shutil.rmtree(job, ignore_errors=True)
-                    job.mkdir()
-                    existing = None
+                    try:
+                        job.mkdir()
+                        existing = None
+                    except OSError as e:        # something in it could not be removed
+                        reclaim_error = f"could not reclaim job {h['job_id']}: {e}"
                 else:
                     st = job_state(cfg, job, sett, locked=True)
         if existing is None:
@@ -604,6 +624,9 @@ def submit(cfg, stdin, stdout) -> int:
             _write_atomic(job / "header.json", h)
     if existing is not None:                    # read outside jobs_lock: claims never wait
         _drain(stdin, h["bundle_bytes"])        # the client's upload, so it never hits EPIPE
+        if reclaim_error is not None:
+            frames.emit("error", stage="claim", error=reclaim_error)
+            return W.EXIT_ERROR
         if existing.get("header_digest") == digest:     # idempotent: nothing new starts
             _print(stdout, _status(h["job_id"], st["state"], n=_last_n(job),
                                    heartbeat_age_s=st["heartbeat_age_s"]))
@@ -684,12 +707,8 @@ def attach(cfg, job_id, after: int, stdout) -> int:
             return 0 if st["state"] == "done" else W.EXIT_ERROR
         now = time.monotonic()
         if renewed is None or now - renewed > rewrite_every:
-            try:
-                _renew(job, lease_s)
-            except OSError:
-                if not job.is_dir():
-                    return _gone(stdout, job_id, reader.after)
-                raise
+            if not _renew_live(cfg, job, lease_s):
+                return _gone(stdout, job_id, reader.after)
             renewed = now
         time.sleep(FOLLOW_TICK_S)
 
@@ -701,13 +720,8 @@ def poll(cfg, job_id, after: int, renew: bool, stdout) -> int:
     if job is None:
         return _unknown(stdout, job_id)
     sett = settings(cfg)
-    if renew:
-        try:
-            _renew(job, sett["job_lease_s"])
-        except OSError:
-            if not job.is_dir():
-                return _unknown(stdout, job_id)
-            raise
+    if renew and not _renew_live(cfg, job, sett["job_lease_s"]):
+        return _unknown(stdout, job_id)
     st = job_state(cfg, job, sett)
     reader = _Reader(job / "frames.jsonl", after)
     for line in reader.read():
@@ -876,10 +890,35 @@ def run_job(cfg, job: Path, proc: dict) -> int:
     return 0 if state == "done" else W.EXIT_ERROR
 
 
+def _own_session(argv) -> int:
+    """Run the job process again in a session of its own and wait for it. A job process started
+    by hand (from a shell or a pipeline) shares the caller's process group, which the kill
+    path would `killpg` once the job is lost; in its own session, its group is only its own.
+    A handed-over `job.lock` fd is passed on."""
+    raw = os.environ.get(LOCK_FD_ENV)
+    fds = ()
+    if raw and raw.isdigit():
+        try:
+            os.fstat(int(raw))
+            fds = (int(raw),)
+        except OSError:
+            pass
+    child = subprocess.Popen([sys.executable, "-m", "nightwright.agentic.worker_job", *argv],
+                             start_new_session=True, pass_fds=fds)
+    for fd in fds:
+        os.close(fd)                            # the job process alone holds the flock now
+    try:
+        return child.wait()
+    except KeyboardInterrupt:                   # the job is the worker's: it keeps running
+        return 130
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    job = Path(argv[0])
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    if os.getsid(0) != os.getpid():             # not `submit`'s spawn: started by hand
+        return _own_session(argv)
+    job = Path(argv[0])
     from ..config import load_config
     cfg = load_config()
     lock_fd = _take_lock(job)

@@ -593,6 +593,39 @@ A `running` job holds `job.lock`, so `gc --keep-days 0` never removes it.
 - **Unnumbered stdout copy.** A gate-job frame that is not whole in the log (its append
   failed, whether or not the cut worked) goes to stdout without `n`.
 
+### Test record (2026-11-01, review round 6)
+
+- `tests/test_worker_jobs.py` now has 84 tests. The three new ones each fail against the
+  round-5 code:
+  - a lease renewal (`poll --renew`) runs while `jobs_lock` is held. When gc has removed the
+    dir just before the renewal takes the lock, `poll --renew` and `attach` print `unknown`,
+    exit 1, and leave no dir behind;
+  - a job process started by hand, in pytest's process group, records a `proc.json` whose
+    `pgid` is its own pid, never the caller's group. The exit code is passed on;
+  - a same-digest resubmit whose reclaim cannot remove the old dir gets an `error` frame
+    (`stage: "claim"`, no `n`) and exit 3, not a traceback.
+- Affected tests (`affected_tests.py` plus `test_agentic_dogfood_config.py`,
+  `test_agentic_project.py` and `test_test_waits.py`, `-n 4`): 356 passed. `spec_lint`
+  passes. The full suite was left to gating.
+
+### As shipped (2026-11-01, review round 6)
+
+- **Lease renewals take `jobs_lock`.** `attach` and `poll --renew` rewrite `lease.json` under
+  `jobs_lock`, and only after checking that the dir still exists, as `_mirror`, `cancel` and
+  `reap` already do. A renewal can no longer land in a dir gc is removing and leave a stub
+  holding only `lease.json`, which would read as `accepted` and block the `job_id`. If the
+  dir is gone, the command prints `unknown` and exits 1. `submit`'s first lease is written
+  under the `job.lock` it holds, so gc cannot remove that dir.
+- **A hand-started job process gets a session of its own.** When
+  `python -m nightwright.agentic.worker_job DIR` runs as anything other than a session
+  leader (that is, not `submit`'s spawn), it starts itself again with `start_new_session=True`,
+  passes on a handed-over `job.lock` fd, waits, and exits with the child's code. The
+  `pgid` in `proc.json` is therefore always the job process's own group. The kill path never
+  signals the group of a shell or pipeline that started it.
+- **A failed reclaim is a claim error.** When the reclaim of a never-spawned dir cannot
+  remove it (for example, EACCES on an entry inside), `submit` drains the bundle, prints an
+  `error` frame (`stage: "claim"`) and exits 3.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
