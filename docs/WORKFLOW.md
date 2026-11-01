@@ -304,6 +304,10 @@ re-run locally under the same seq (`worker_failed` with `stage: "tree"`, no cool
 worktree the runner commits is always the one a local run leaves. A gate that writes the tree
 on every run therefore never gains from a worker; give it `remote: false` to skip the wasted
 remote run. `agentic.workers.slot_wait_s` (default 300) bounds the
-wait for the worker's own slot; past it the run falls back locally without a cooldown.
+wait for the worker's own slot, counted from the end of the upload; past it the run falls
+back locally without a cooldown. The upload of the header and bundle has its own bound
+(`slot_wait_s` + one second per 256 KiB of bundle); past it the run falls back with
+`stage: "upload"` and a cooldown, since a link too slow for the bundle fails the same way on
+the next run.
 `nw queue gates <campaign> --worker <name>` forces one worker (its cooldown ignored);
 `--local` never uses one. `nw workers off <name>` returns gates to local at any time.

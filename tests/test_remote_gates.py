@@ -494,6 +494,126 @@ def test_a_gate_frame_naming_a_bad_file_falls_back_and_writes_nothing(world, rem
     assert leaked == []
 
 
+def _fake_gate_job(remote, name, lines):
+    remote.register(ssh=_gate_job_variant(
+        remote, name, "; ".join(f"echo '{ln}'" for ln in lines) + "; exec cat >/dev/null"))
+
+
+def _gate_result(name, ok=True):
+    return {"name": name, "required": True, "ok": ok, "exit_code": 0 if ok else 1,
+            "timed_out": False, "duration_s": 0.1, "log": "x", "tail": "", "attempts": []}
+
+
+def _done(**kw):
+    return _frame_line("done", **{"ok": True, "started_at": "x", "duration_s": 0.1,
+                                  "slot_wait_s": 0.0, "changed": [], **kw})
+
+
+@pytest.mark.parametrize("payload", ["corrupt", "truncated", "oversize"])
+def test_a_bad_gate_file_payload_falls_back(world, remote, monkeypatch, payload):
+    """A corrupt deflate stream (`zlib.error`, not an OSError), a cut one, or one inflating past
+    `MAX_FILE_BYTES` is a protocol failure, never an exception out of `run_all` or an
+    unbounded allocation."""
+    import base64
+    import gzip
+    from nightwright.agentic import remote_gates as RG
+    raw = gzip.compress(os.urandom(4000))
+    if payload == "corrupt":
+        raw = raw[:10] + bytes(b ^ 0xFF for b in raw[10:200]) + raw[200:]
+    elif payload == "truncated":
+        raw = raw[:len(raw) // 2]
+    else:
+        monkeypatch.setattr(RG, "MAX_FILE_BYTES", 1000)
+    data = base64.b64encode(raw).decode()
+    _fake_gate_job(remote, f"bad-{payload}", [
+        _frame_line("started", slot_wait_s=0.0),
+        _frame_line("gate", files={"001-ok.log": data}, result=_gate_result("ok")), _done()])
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    _assert_fell_back(world, remote, run, "protocol", cooldown=True)
+
+
+def test_done_needs_one_result_per_gate(world, remote):
+    _fake_gate_job(remote, "short", [
+        _frame_line("started", slot_wait_s=0.0),
+        _frame_line("gate", files={}, result=_gate_result("ok")), _done()])
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    _assert_fell_back(world, remote, run, "protocol", cooldown=True)
+
+
+def test_the_remote_verdict_is_computed_from_the_results(world, remote):
+    """A `done` saying ok over a failed required gate is still a red run."""
+    world.project["gates"] = [_gate("ok", "echo ok")]
+    _fake_gate_job(remote, "liar", [
+        _frame_line("started", slot_wait_s=0.0),
+        _frame_line("gate", files={}, result=_gate_result("ok", ok=False)), _done(ok=True)])
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert run.worker == "box" and not run.ok and not world.ledger(["worker_failed"])
+
+
+def test_changed_null_falls_back_without_cooldown(world, remote):
+    """The worker could not tell what the gates wrote: re-run locally, the host is fine."""
+    world.project["gates"] = [_gate("ok", "echo ok")]
+    _fake_gate_job(remote, "nullchanged", [
+        _frame_line("started", slot_wait_s=0.0),
+        _frame_line("gate", files={}, result=_gate_result("ok")), _done(changed=None)])
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert run.worker is None and run.ok and run.seq == 1
+    (ev,) = world.ledger(["worker_failed"])
+    assert ev["stage"] == "tree" and not ev["cooldown"]
+    assert remote.record()["cooldown_until"] is None
+
+
+def test_an_io_setup_failure_falls_back_and_ends_ssh(world, remote, monkeypatch):
+    """`os.dup` of SSH's stdin failing (fd exhaustion) is a coordinator-side failure: fall
+    back without cooldown, and the started SSH process is still ended."""
+    import types
+    from nightwright.agentic import remote_gates as RG
+    procs = []
+    real_popen = RG.subprocess.Popen
+
+    def popen(*a, **kw):
+        procs.append(real_popen(*a, **kw))
+        return procs[-1]
+
+    def dup(fd):
+        raise OSError(24, "Too many open files")
+    monkeypatch.setattr(RG, "os", types.SimpleNamespace(**{**vars(os), "dup": dup}))
+    monkeypatch.setattr(RG.subprocess, "Popen", popen)
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    monkeypatch.undo()
+    _assert_fell_back(world, remote, run, "ssh", cooldown=False)
+    assert procs and all(p.poll() is not None for p in procs)
+
+
+def _big_commit(world, mib=2):
+    (world.repo / "big.bin").write_bytes(os.urandom(mib << 20))
+    _git(world.repo, "add", "big.bin")
+    _git(world.repo, "commit", "-q", "-m", "big")
+
+
+def test_an_upload_longer_than_the_slot_wait_stays_remote(world, remote, spy):
+    """The upload has its own bound (`slot_wait_s` + bytes / `UPLOAD_MIN_BPS`): a bundle that
+    takes longer than `slot_wait_s` to send does not fall back as a slot wait."""
+    _big_commit(world)
+    world.cfg["agentic"]["workers"] = {"slot_wait_s": 1}
+    remote.register(ssh=_gate_job_variant(remote, "slowup", f'sleep 2; exec {remote.ssh} "$@"'))
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert spy[0]["header"]["bundle_bytes"] > 2 << 20
+    assert run.worker == "box" and run.ok and not world.ledger(["worker_failed"])
+
+
+def test_an_upload_past_its_bound_falls_back_with_cooldown(world, remote, monkeypatch):
+    """A link too slow for the bundle fails the same way on the next run: `upload`, with a
+    cooldown, so later runs stop paying the wait."""
+    from nightwright.agentic import remote_gates as RG
+    _big_commit(world)
+    monkeypatch.setattr(RG, "UPLOAD_MIN_BPS", 1 << 40)     # the bound is ~`slot_wait_s`
+    world.cfg["agentic"]["workers"] = {"slot_wait_s": 1}
+    remote.register(ssh=_gate_job_variant(remote, "stuckup", "exec sleep 600"))
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    _assert_fell_back(world, remote, run, "upload", cooldown=True)
+
+
 def test_repo_key_is_the_project_and_12_hex_of_the_shared_repo(world):
     import re
     from nightwright.agentic import remote_gates as RG

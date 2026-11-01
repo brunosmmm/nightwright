@@ -313,6 +313,16 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
   fail; with the gate-name check removed the last fails. Also added a `repo_key` test
   (lowercased project, 12 hex, one key for two worktrees of one repo, another for another
   repo). No production code changed. The full suite is left to the gate.
+- Review fixes (loop 6): `uv run pytest -q -n 4 tests/test_remote_gates.py`: 70 passed. Added: a
+  corrupt, a cut and an oversize (`MAX_FILE_BYTES` shrunk) gate-file payload each falling back
+  as `protocol`; a `done` after one of three gates' results falling back as `protocol`; a
+  `done` claiming `ok` over a failed required gate reported red; `changed: null` falling back
+  as `tree` without cooldown; `os.dup` failing falling back as `ssh` without cooldown with SSH
+  ended; a 2 MiB bundle whose upload takes longer than `slot_wait_s` (1 s) gating remotely; an
+  upload past its bound falling back as `upload` with cooldown. All but the cut payload (which
+  already fell back) were checked to fail against the previous `remote_gates.py`. With the
+  worker, gate, gate-slot, registry, project, gitops and queue-merge test files: 490 passed.
+  The full suite is left to the gate.
 - Manual verification (steps 1-6, the second machine): manual verification attested by the
   human (ESC-0004 override).
 
@@ -344,8 +354,20 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
 - Once a stop has closed stdin, an `error` frame or a malformed frame ends the run as
   interrupted, with no `worker_failed`, no cooldown and no local re-run.
 - The `worker_slot_wait_s` bound before `started` restarts when the header and bundle have
-  been written, so upload time does not count against the worker's slot wait. The upload
-  itself is still bounded by `worker_slot_wait_s` from the start.
+  been written, so upload time does not count against the worker's slot wait. The upload has
+  its own bound, `worker_slot_wait_s` + `bundle_bytes` / 256 KiB/s (`UPLOAD_MIN_BPS`); past it
+  the run falls back with `worker_failed` stage `upload` **and** a cooldown (a coordinator
+  timeout): the worker never imported the partial bundle, so without a cooldown every later
+  run would resend it and pay the same wait.
+- A gate file's gzip+base64 payload is inflated with a cap of `MAX_LOG_BYTES` + 1 MiB; a
+  corrupt or cut deflate stream (`zlib.error`) or one past the cap is a `protocol` failure.
+- A failure to set up the `gate-job` I/O (`os.dup` of SSH's stdin, a thread start) is a
+  `worker_failed` stage `ssh` **without** cooldown (it is the coordinator's), and SSH is still
+  ended.
+- `done`'s `changed: null` (git could not tell in the worker's checkout) is a fallback
+  without cooldown, stage `tree`, like a non-empty list. A `done` that is not interrupted must
+  follow exactly one `gate` frame per header gate, in order (else `protocol`), and the run's
+  `ok` is computed from those results as a local run computes it, not taken from the frame.
 - A `done` frame with `interrupted: true` that no coordinator stop asked for (the worker got
   SIGTERM/SIGINT/SIGHUP: its host is going away) is a transport failure, `stage:
   "interrupted"`, with cooldown and the local re-run under the same seq. After a stop it stays

@@ -12,7 +12,6 @@ from __future__ import annotations
 import base64
 import collections
 import datetime as dt
-import gzip
 import hashlib
 import json
 import math
@@ -23,6 +22,7 @@ import signal
 import subprocess
 import threading
 import time
+import zlib
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
@@ -38,6 +38,8 @@ MAX_JOB_TIMEOUT_S = 4 * 3600
 STOP_GRACE_S = 10.0                 # a stop waits this long for `done` before killing SSH
 END_GRACE_S = 10.0                  # after `done` or a failure, the SSH process gets this to exit
 HAVE_TIMEOUT_S = 60.0
+UPLOAD_MIN_BPS = 256 * 1024         # the header + bundle upload may take `slot_wait_s` + bytes/this
+MAX_FILE_BYTES = W.MAX_LOG_BYTES + (1 << 20)   # a gate file's decompressed size, at most
 FINDING_GATE = "remote-eligibility"
 _POLL_S = 0.2
 _CHUNK = 1 << 16
@@ -383,8 +385,12 @@ def _check_changed(frame: dict) -> None:
     """`done`'s `changed`: the paths the gates wrote in the worker's checkout. Those writes
     never reach the coordinator's worktree (a regenerated ledger, a formatter's output), so a
     run that made any is re-run locally, without cooldown: the local run leaves the worktree
-    as it always has. A worker that does not say is a protocol failure."""
+    as it always has. `null` (git could not tell in the worker's checkout) is treated as a
+    change. A worker that does not say is a protocol failure."""
     changed = frame.get("changed")
+    if changed is None and "changed" in frame:
+        raise RemoteFailure("tree", "the worker could not tell what the gates wrote in its "
+                                    "checkout; re-running locally", cooldown=False)
     if not isinstance(changed, list) or not all(isinstance(p, str) for p in changed):
         raise RemoteFailure("protocol", f"`done` frame: bad changed {changed!r} (the worker "
                                         f"cannot tell what the gates wrote)")
@@ -392,6 +398,21 @@ def _check_changed(frame: dict) -> None:
         raise RemoteFailure("tree", f"the gates changed {len(changed)} file(s) in the worker's "
                                     f"checkout ({', '.join(changed[:5])}); re-running locally "
                                     f"so the worktree gets those writes", cooldown=False)
+
+
+def _inflate(name: str, data: str) -> bytes:
+    """A gate file's gzip+base64 payload, decoded. A corrupt payload, or one inflating past
+    `MAX_FILE_BYTES` (the worker cuts a log to `MAX_LOG_BYTES`), is a protocol failure."""
+    try:
+        d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        raw = d.decompress(base64.b64decode(data, validate=True), MAX_FILE_BYTES + 1)
+    except (ValueError, zlib.error) as e:
+        raise RemoteFailure("protocol", f"gate file {name}: {e}")
+    if len(raw) > MAX_FILE_BYTES:
+        raise RemoteFailure("protocol", f"gate file {name}: over {MAX_FILE_BYTES} bytes")
+    if not d.eof:
+        raise RemoteFailure("protocol", f"gate file {name}: truncated gzip stream")
+    return raw
 
 
 def _take_gate(frame: dict, gates_dir: Path, seq: int, names: set) -> G.GateResult:
@@ -407,11 +428,7 @@ def _take_gate(frame: dict, gates_dir: Path, seq: int, names: set) -> G.GateResu
     for name, data in files.items():
         if not isinstance(name, str) or not ok_name.match(name) or not isinstance(data, str):
             raise RemoteFailure("protocol", f"gate frame names a bad file {name!r}")
-        try:
-            raw = gzip.decompress(base64.b64decode(data, validate=True))
-        except (ValueError, OSError, EOFError) as e:
-            raise RemoteFailure("protocol", f"gate file {name}: {e}")
-        (gates_dir / name).write_bytes(raw)
+        (gates_dir / name).write_bytes(_inflate(name, data))
     log = gates_dir / f"{stem}.log"
     try:
         r = G.GateResult(**{k: result[k] for k in _GATE_FIELDS if k in result})
@@ -419,6 +436,26 @@ def _take_gate(frame: dict, gates_dir: Path, seq: int, names: set) -> G.GateResu
                        attempts=tuple(r.attempts or ()), flaky=tuple(r.flaky or ()))
     except TypeError as e:
         raise RemoteFailure("protocol", f"gate result: {e}")
+
+
+def _start_io(proc, header: dict, bundle: Path, cancel: threading.Event,
+              written: threading.Event, lines: queue.Queue, err_tail: collections.deque) -> None:
+    """The writer (on a dup of SSH's stdin), reader and stderr threads. A failure to start them
+    is an `ssh` failure on the coordinator's side (no cooldown); the caller's `finally` ends
+    SSH."""
+    fd = None
+    try:
+        fd = os.dup(proc.stdin.fileno())
+        threading.Thread(target=_writer, args=(fd, header, bundle, cancel, written),
+                         daemon=True).start()
+        fd = None                               # the writer owns it now
+        for target, args in ((_reader, (proc.stdout, lines)), (_drain, (proc.stderr, err_tail))):
+            threading.Thread(target=target, args=args, daemon=True).start()
+    except (OSError, RuntimeError) as e:
+        raise RemoteFailure("ssh", f"cannot start the gate-job I/O: {e}", cooldown=False)
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop) -> Outcome:
@@ -432,18 +469,16 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
     cancel, written = threading.Event(), threading.Event()
     lines: queue.Queue = queue.Queue()
     err_tail: collections.deque = collections.deque(maxlen=20)
-    for target, args in ((_writer, (os.dup(proc.stdin.fileno()), header, bundle, cancel,
-                                    written)),
-                         (_reader, (proc.stdout, lines)), (_drain, (proc.stderr, err_tail))):
-        threading.Thread(target=target, args=args, daemon=True).start()
-    names = {g["name"] for g in header["payload"]["gates"]}
+    order = [g["name"] for g in header["payload"]["gates"]]
+    names = set(order)
     gates_dir = store.gates_dir(cfg, cid)
     results: list = []
     started, worker_wait = False, 0.0
     t0, started_at = time.monotonic(), store.now_iso()
-    # the wait for `started` is bounded by `slot_wait_s` from the end of the upload (the upload
-    # itself by `slot_wait_s` from the start), so a big bundle does not eat the slot wait
-    deadline, upload_seen = t0 + slot_wait_s, False
+    # the upload (header + bundle) gets its own bound, scaled to the bundle; the wait for
+    # `started` is bounded by `slot_wait_s` from the end of the upload
+    upload_s = slot_wait_s + header["bundle_bytes"] / UPLOAD_MIN_BPS
+    deadline, upload_seen = t0 + upload_s, False
     stop_at = None
     grace = END_GRACE_S
 
@@ -455,6 +490,7 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                                  round(time.monotonic() - t0, 3), interrupted=True,
                                  worker=worker["name"]), worker_wait)
     try:
+        _start_io(proc, header, bundle, cancel, written, lines, err_tail)
         while True:
             if stop_at is None and G._stop_requested(stop):     # SPEC-0229: cancel, wait, kill
                 cancel.set()
@@ -469,6 +505,11 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                 grace = 0.0
                 return interrupted()
             if stop_at is None and now >= deadline:
+                if not upload_seen and not started:
+                    # a link too slow for this bundle fails the same way next run: cooldown
+                    raise RemoteFailure("upload", f"the header and {header['bundle_bytes']} B "
+                                                  f"bundle were not sent within {upload_s:g}s"
+                                                  f"{stderr_tail()}")
                 if not started:
                     raise RemoteFailure("slot_wait", f"the worker held no gate slot after "
                                                      f"{slot_wait_s:g}s", cooldown=False)
@@ -512,6 +553,12 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                     raise RemoteFailure("interrupted", "the worker interrupted the run (signal)")
                 if not cut:
                     _check_changed(frame)
+                    if [r.name for r in results] != order:
+                        raise RemoteFailure("protocol", f"`done` after results for "
+                                                        f"{[r.name for r in results]}, not "
+                                                        f"{order}")
+                    # the run's verdict is the received results', as a local run computes it
+                    ok = all(r.ok for r in results if r.required)
                 return Outcome(G.GateRun(seq, ok, tuple(results),
                                          str(frame.get("started_at") or started_at), duration,
                                          interrupted=cut, worker=worker["name"]), worker_wait)
