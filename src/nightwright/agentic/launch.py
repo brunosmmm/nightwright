@@ -20,7 +20,16 @@ STEWARD_PROMPT = "Run the /nw-orient skill, then the /nw-steward skill for proje
 
 DEFAULTS = {"model": "claude-sonnet-5-5", "effort": "medium", "autocompact": "150k",
             "idle_compact_min_tokens": 120000, "bash_max_output_length": 15000,
-            "file_read_max_output_tokens": 10000}
+            "file_read_max_output_tokens": 10000,
+            "allowed_tools": [
+                "Bash(git push --force-with-lease origin nw/*)", "Bash(git push origin nw/*)",
+                "Bash(git push --force-with-lease origin wt/*)", "Bash(git push origin wt/*)",
+                "Bash(gh pr create *)", "Bash(gh pr edit *)", "Bash(gh pr comment *)"],
+            "disallowed_tools": [
+                "Bash(git push * main)", "Bash(git push * master)",
+                "Bash(git push * HEAD:main)", "Bash(git push * HEAD:master)",
+                "Bash(git push --force *)", "Bash(git push -f *)", "Bash(gh pr merge *)"]}
+TOOL_FLAGS = {"allowed_tools": "--allowedTools", "disallowed_tools": "--disallowedTools"}
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 AUTOCOMPACT_MIN, AUTOCOMPACT_MAX = 100_000, 1_000_000
 # settings key -> env var, in the order NW_LAUNCH_KEYS lists them
@@ -68,6 +77,9 @@ def _good(key, v):
             return "auto"
         n = _tokens(v)
         return n if n is not None and AUTOCOMPACT_MIN <= n <= AUTOCOMPACT_MAX else None
+    if key in TOOL_FLAGS:
+        ok = isinstance(v, list) and all(isinstance(x, str) and x.strip() for x in v)
+        return [x.strip() for x in v] if ok else None
     n = _tokens(v)
     floor = 100_000 if key == "idle_compact_min_tokens" else 1000
     return n if n is not None and n >= floor else None
@@ -129,14 +141,19 @@ def build_plan(cfg, role, project=None, *, resume=False, session_id=None) -> dic
         sid = session_id or str(uuid.uuid4())
     prompt = (CONDUCTOR_PROMPT if role == "conductor"
               else STEWARD_PROMPT.format(project=project))
-    argv = ["claude", "-n", name, "--resume" if resume else "--session-id", sid,
+    # --allowedTools/--disallowedTools are variadic: each is followed by another option (never
+    # the positional prompt) so the prompt is not swallowed as a rule. Empty list: no flag.
+    perms = [x for key, flag in TOOL_FLAGS.items() if sett[key] for x in (flag, *sett[key])]
+    argv = ["claude", "-n", name, "--resume" if resume else "--session-id", sid, *perms,
             "--model", sett["model"], "--effort", sett["effort"],
             "--autocompact", str(sett["autocompact"]), prompt]
     env = {var: str(sett[key]) for key, var in ENV_KEYS.items()}
     env[LAUNCH_KEYS_VAR] = ",".join(ENV_KEYS.values())
     return {"role": role, "name": name, "cwd": str(cwd), "session_id": sid, "resumed": resume,
             "argv": argv, "env": env, "env_remove": list(ENV_REMOVE), "prompt": prompt,
-            "model": sett["model"], "price": CC.price_for(cfg, sett["model"])}
+            "model": sett["model"],
+            "allowed_tools": list(sett["allowed_tools"]),
+            "disallowed_tools": list(sett["disallowed_tools"]), "price": CC.price_for(cfg, sett["model"])}
 
 
 def check_price(plan):

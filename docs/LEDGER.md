@@ -555,6 +555,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0329](./specs/0329-deflake-load-dependent-tests.md) | Deflake the load-dependent tests: condition waits, deterministic sync, and two real races in production code | feature | done | M9: agentic workflow | 2026-10-31 |
 | [SPEC-0330](./specs/0330-rename-to-nightwright.md) | Rename wt to nightwright (CLI nw): hard cut, legacy-readable stored data, migrate-from-wt, cutover runbook | feature | done | M9: agentic workflow | 2026-10-31 |
 | [SPEC-0336](./specs/0336-gate-worker-job-runner-and-forced-command.md) | Gate worker job runner and forced-command dispatcher | feature | done | — | 2026-10-31 |
+| [SPEC-0339](./specs/0339-conductor-launch-session-scoped-permission-rules.md) | `nw queue conductor-launch` passes session-scoped permission rules (allowedTools / disallowedTools) | feature | done | — | 2026-11-01 |
 
 ## Superseded / rejected
 

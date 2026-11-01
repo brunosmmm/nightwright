@@ -17,6 +17,8 @@ def _show(plan):
         console.print(f"  {k}={plan['env'][k]}", highlight=False, markup=False)
     for k in plan["env_remove"]:
         console.print(f"unset: {k}", highlight=False, markup=False)
+    for key in ("allowed_tools", "disallowed_tools"):
+        console.print(f"{key}: {', '.join(plan[key]) or '(none)'}", highlight=False, markup=False)
     console.print(shlex.join(plan["argv"]), highlight=False, markup=False, soft_wrap=True)
     console.print(f"session: {plan['session_id']} ({'resumed' if plan['resumed'] else 'new'})",
                   highlight=False, markup=False)

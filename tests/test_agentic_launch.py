@@ -79,9 +79,12 @@ def sessions_lines(cfg):
 def test_default_plan_argv_and_env(cfg, tmp_path):
     plan = L.build_plan(cfg, "conductor")
     sid = plan["session_id"]
-    assert plan["argv"] == ["claude", "-n", "conductor", "--session-id", sid, "--model",
-                            "claude-sonnet-5-5", "--effort", "medium", "--autocompact",
-                            "150000", "Run the /nw-orient skill, then the /nw-conduct skill."]
+    assert plan["argv"] == ["claude", "-n", "conductor", "--session-id", sid,
+                            "--allowedTools", *L.DEFAULTS["allowed_tools"],
+                            "--disallowedTools", *L.DEFAULTS["disallowed_tools"],
+                            "--model", "claude-sonnet-5-5", "--effort", "medium",
+                            "--autocompact", "150000",
+                            "Run the /nw-orient skill, then the /nw-conduct skill."]
     assert plan["prompt"] == L.CONDUCTOR_PROMPT
     assert plan["env"] == {"CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS": "120000",
                            "BASH_MAX_OUTPUT_LENGTH": "15000",
@@ -96,9 +99,11 @@ def test_default_plan_argv_and_env(cfg, tmp_path):
     argv_line = next(l for l in r.output.splitlines() if l.startswith("claude "))
     argv = shlex.split(argv_line)
     assert argv[:3] == ["claude", "-n", "conductor"] and argv[3] == "--session-id"
-    assert argv[5:11] == ["--model", "claude-sonnet-5-5", "--effort", "medium",
+    assert argv[argv.index("--model"):][:6] == ["--model", "claude-sonnet-5-5", "--effort", "medium",
                           "--autocompact", "150000"]
     assert argv[-1] == L.CONDUCTOR_PROMPT
+    assert "allowed_tools: Bash(git push --force-with-lease origin nw/*)" in r.output
+    assert "disallowed_tools: Bash(git push * main)" in r.output
     assert sessions_lines(cfg) == []
 
 
@@ -156,13 +161,13 @@ def test_settings_change_argv_and_env_and_steward_override(cfg):
         "idle_compact_min_tokens": 150000, "bash_max_output_length": 8000,
         "file_read_max_output_tokens": 4000, "steward": {"effort": "low", "bash_max_output_length": 9000}}
     c = L.build_plan(cfg, "conductor")
-    assert c["argv"][5:11] == ["--model", "claude-opus-5-5", "--effort", "high",
+    assert c["argv"][c["argv"].index("--model"):][:6] == ["--model", "claude-opus-5-5", "--effort", "high",
                                "--autocompact", "200000"]
     assert c["env"]["CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS"] == "150000"
     assert c["env"]["BASH_MAX_OUTPUT_LENGTH"] == "8000"
     assert c["env"]["CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"] == "4000"
     s = L.build_plan(cfg, "steward", "Foo")
-    assert s["argv"][5:11] == ["--model", "claude-opus-5-5", "--effort", "low",
+    assert s["argv"][s["argv"].index("--model"):][:6] == ["--model", "claude-opus-5-5", "--effort", "low",
                                "--autocompact", "200000"]
     assert s["env"]["BASH_MAX_OUTPUT_LENGTH"] == "9000"
     assert s["env"]["CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"] == "4000"
@@ -375,3 +380,62 @@ def test_exec_failure_is_click_error(cfg, monkeypatch):
     r = invoke("conductor-launch")
     assert r.exit_code == 1 and "cannot start claude" in r.output
     assert not isinstance(r.exception, OSError)
+
+
+def _perm_args(argv, flag):
+    i = argv.index(flag) + 1
+    out = []
+    while i < len(argv) and not argv[i].startswith("--") and argv[i] != argv[-1]:
+        out.append(argv[i])
+        i += 1
+    return out
+
+
+def test_default_permission_rules():
+    a, d = L.DEFAULTS["allowed_tools"], L.DEFAULTS["disallowed_tools"]
+    assert "Bash(git push origin nw/*)" in a and "Bash(gh pr create *)" in a
+    assert not any(x.startswith("Bash(gh pr view") or "pr list" in x for x in a)
+    assert "Bash(gh pr merge *)" in d and "Bash(git push * main)" in d
+
+
+def test_plan_has_permission_flags_and_prompt_stays_last(cfg):
+    plan = L.build_plan(cfg, "conductor")
+    assert _perm_args(plan["argv"], "--allowedTools") == L.DEFAULTS["allowed_tools"]
+    assert _perm_args(plan["argv"], "--disallowedTools") == L.DEFAULTS["disallowed_tools"]
+    assert plan["argv"][-1] == L.CONDUCTOR_PROMPT
+    assert plan["allowed_tools"] == L.DEFAULTS["allowed_tools"]
+    r = invoke("conductor-launch", "--dry-run", "--json")
+    data = json.loads(r.output)
+    assert data["allowed_tools"] == L.DEFAULTS["allowed_tools"]
+    assert data["disallowed_tools"] == L.DEFAULTS["disallowed_tools"]
+
+
+def test_permission_config_replaces_defaults_and_steward_inherits(cfg):
+    cfg["agentic"]["conductor"]["launch"] = {"allowed_tools": ["Bash(ls *)"],
+                                             "disallowed_tools": ["Bash(rm *)"]}
+    for plan in (L.build_plan(cfg, "conductor"), L.build_plan(cfg, "steward", "Foo")):
+        assert _perm_args(plan["argv"], "--allowedTools") == ["Bash(ls *)"]
+        assert _perm_args(plan["argv"], "--disallowedTools") == ["Bash(rm *)"]
+
+
+def test_empty_permission_lists_add_no_flags(cfg):
+    cfg["agentic"]["conductor"]["launch"] = {"allowed_tools": [], "disallowed_tools": []}
+    plan = L.build_plan(cfg, "conductor")
+    assert "--allowedTools" not in plan["argv"] and "--disallowedTools" not in plan["argv"]
+    cfg["agentic"]["conductor"]["launch"] = {"allowed_tools": []}
+    plan = L.build_plan(cfg, "conductor")
+    assert "--allowedTools" not in plan["argv"] and "--disallowedTools" in plan["argv"]
+
+
+@pytest.mark.parametrize("bad", ["Bash(ls)", [1], [""], None, {"a": 1}])
+def test_bad_permission_values_fall_back(cfg, bad):
+    cfg["agentic"]["conductor"]["launch"] = {"allowed_tools": bad}
+    assert L.settings(cfg)["allowed_tools"] == L.DEFAULTS["allowed_tools"]
+
+
+def test_resume_applies_permission_rules(cfg):
+    _launch_record(cfg, "old")
+    plan = L.build_plan(cfg, "conductor", resume=True)
+    assert plan["argv"][3:5] == ["--resume", "old"]
+    assert _perm_args(plan["argv"], "--allowedTools") == L.DEFAULTS["allowed_tools"]
+    assert _perm_args(plan["argv"], "--disallowedTools") == L.DEFAULTS["disallowed_tools"]
