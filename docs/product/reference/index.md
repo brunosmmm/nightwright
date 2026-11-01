@@ -17,6 +17,7 @@ Claude-generating vs your-turn diagnostic.
 | `backups` | Org-file backup retention: `prune` (dry run unless `--yes`) | [Tasks](../capabilities/tasks-agenda.md), [Ideas](../capabilities/ideas.md) |
 | `campaign` | Campaign state, ledger and notes (agentic loop) | [Agentic loop](../capabilities/agentic.md) |
 | `completion` | Generate / install shell completion | [Completion](../capabilities/completion.md) |
+| `doctor` | Read-only, offline install health check: tools, config, skills, completion, agentic queue, projects; `--fix-hints`, `--json` (`nw.doctor.v1`), `--project NAME`; exit 1 on any fail (SPEC-0349) | [Getting started](../guides/getting-started.md) |
 | `digest` | Hours joined to org tasks by JIRA key | [Report](../capabilities/report.md) |
 | `done` | Mark a task done | [Tasks](../capabilities/tasks-agenda.md) |
 | `export` | Save date/topic/hours/facets dataset | [Report](../capabilities/report.md) |

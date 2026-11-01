@@ -174,18 +174,7 @@ def profiles_check(ctx, project, as_json):
     """Resolve every profile and `agentic.default_profile`; exit 1 when any fails."""
     cfg = ctx.obj
     project, root = _project(cfg, project)
-    layers = PR.load_layers(cfg, project_root=root)
-    names = PR._known(layers)
-    default = _default(cfg)
-    if default not in names:
-        names.append(default)
-    results = []
-    for name in names:
-        try:
-            PR._resolve(layers, name)
-            results.append({"name": name, "ok": True, "error": None})
-        except ValueError as e:
-            results.append({"name": name, "ok": False, "error": str(e)})
+    results = PR.check_all(cfg, project_root=root)
     ok = all(r["ok"] for r in results)
     if as_json:
         _dump_json({"schema": "nw.profiles.check.v1", "ok": ok, "results": results})

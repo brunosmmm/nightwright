@@ -19,6 +19,10 @@ all resolve from this checkout, and a `git pull` takes effect without reinstalli
 non-editable install, set `nw_checkout: /path/to/nightwright` in `config.yaml`; otherwise those
 commands stop with a hint saying so.
 
+Then run `nw doctor` (add `--fix-hints` for the commands that fix each finding). It checks
+the tools, config, skills, completion, the agentic queue and each project's `.nw/project.yaml`
+without writing anything; `--json` prints `nw.doctor.v1`, and it exits 1 when a check fails.
+
 Config and data live under XDG (`~/.config/nightwright/`, `~/.local/share/nightwright/`), not in the repo.
 
 Optional completion:

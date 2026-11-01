@@ -434,6 +434,25 @@ def resolve_profile(cfg, name=None, *, project_root=None):
     return _resolve(load_layers(cfg, project_root=project_root), name)
 
 
+def check_all(cfg, *, project_root=None) -> list:
+    """`[{name, ok, error}]` for every profile visible from `project_root` plus
+    `agentic.default_profile` (appended when no layer defines it), each resolved in turn.
+    `nw profiles check` and `nw doctor` (SPEC-0349) both report these."""
+    layers = load_layers(cfg, project_root=project_root)
+    names = _known(layers)
+    default = _agentic(cfg).get("default_profile") or "balanced"
+    if default not in names:
+        names.append(default)
+    results = []
+    for name in names:
+        try:
+            _resolve(layers, name)
+            results.append({"name": name, "ok": True, "error": None})
+        except ValueError as e:
+            results.append({"name": name, "ok": False, "error": str(e)})
+    return results
+
+
 def builtin_profiles() -> dict:
     """The resolved builtin layer, `{name: profile}` as deep copies, without the `name`,
     `description` and `sources` keys."""

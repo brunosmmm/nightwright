@@ -67,7 +67,15 @@ def cli(ctx, split):
     """nightwright — passive time tracking plus a spec-first agentic pipeline. Turns Claude
     transcripts + meetings into per-topic hours, and ideas into specs, queued campaigns and
     shipped work. Run with no command for a today + this-week dashboard."""
-    ctx.obj = load_config()
+    if ctx.invoked_subcommand == "doctor":
+        # SPEC-0349: doctor reports a broken config.yaml instead of crashing before it starts.
+        try:
+            ctx.obj = load_config()
+        except Exception as e:
+            ctx.obj = None
+            ctx.meta["nw.config_error"] = f"{type(e).__name__}: {e}"
+    else:
+        ctx.obj = load_config()
     if ctx.invoked_subcommand is None:
         cfg = ctx.obj
         console.rule("[bold cyan]today[/]")
@@ -2524,6 +2532,64 @@ def migrate_from_wt_cmd(yes, old_checkout, new_checkout, old_config_dir, old_dat
         console.print("[green]✓[/] nothing to migrate")
     elif not yes:
         console.print("[yellow]dry run[/]: re-run with --yes to apply")
+
+
+_DOCTOR_GLYPHS = {"ok": ("✓", "green"), "warn": ("!", "yellow"), "fail": ("✗", "red"),
+                  "skip": ("-", "dim")}
+
+
+@cli.command("doctor")
+@click.option("--json", "as_json", is_flag=True, help="print nw.doctor.v1 JSON")
+@click.option("--project", shell_complete=C.complete_project,
+              help="limit the project.* checks to this registered project")
+@click.option("--fix-hints", is_flag=True, help="print the fix under every non-ok check")
+@click.pass_context
+def doctor_cmd(ctx, as_json, project, fix_hints):
+    """Check this install (read-only, offline): tools, config, skills, completion, agentic
+    queue, projects. Exit 1 when any check fails (SPEC-0349).
+
+    \b
+    nw doctor                  grouped ok / warn / fail / skip report
+    nw doctor --fix-hints      plus the command that fixes each finding
+    nw doctor --json           nw.doctor.v1 for agents and CI
+    nw doctor --project NAME   only that project's project.* checks
+    """
+    from rich.text import Text
+    from . import doctor as D
+    from .render import section_table
+    from .rules import projects_payload
+    cfg = ctx.obj
+    if project and cfg is not None:
+        names = [p["name"] for p in projects_payload(cfg)["projects"]]
+        if project not in names:
+            raise click.BadParameter(f"unknown project {project!r}; known: {', '.join(names)}",
+                                     param_hint="--project")
+    checks = D.run(cfg, project=project, config_error=ctx.meta.get("nw.config_error"))
+    doc = D.payload(checks)
+    if as_json:
+        R._dump_json(doc)
+    else:
+        groups = {}
+        for c in checks:
+            groups.setdefault(c["group"], []).append(c)
+        for group, items in groups.items():
+            table = section_table(group)
+            table.add_column("", width=1, no_wrap=True)
+            table.add_column("check", no_wrap=True)
+            table.add_column("summary", ratio=1)
+            for c in items:
+                glyph, style = _DOCTOR_GLYPHS[c["status"]]
+                table.add_row(Text(glyph, style=style), c["id"], Text(c["summary"]))
+                if c["status"] in ("warn", "fail") and c["detail"]:
+                    table.add_row("", "", Text(c["detail"], style="dim"))
+                if fix_hints and c["fix"]:
+                    table.add_row("", "", Text(f"fix: {c['fix']}", style="cyan"))
+            console.print(table)
+        n = doc["counts"]
+        console.print(f"{n['ok']} ok · {n['warn']} warn · {n['fail']} fail · {n['skip']} skip",
+                      highlight=False)
+    if not doc["ok"]:
+        ctx.exit(1)
 
 
 @cli.group("completion")

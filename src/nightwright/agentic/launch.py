@@ -234,6 +234,18 @@ def build_plan(cfg, role, project=None, *, resume=False, session_id=None) -> dic
             "disallowed_tools": list(eff["disallowed_tools"]), "price": CC.price_for(cfg, sett["model"])}
 
 
+def missing_prices(cfg) -> list:
+    """`[(role, model)]` for each launch role (conductor, steward) whose model has no price in
+    `agentic.conductor.prices`: the same lookup `build_plan` makes, without a project root.
+    `nw doctor` reports these (SPEC-0349); `check_price` refuses the launch."""
+    out = []
+    for role in ("conductor", "steward"):
+        model = settings(cfg, role)["model"]
+        if CC.price_for(cfg, model) is None:
+            out.append((role, model))
+    return out
+
+
 def check_price(plan):
     if plan["price"] is None:
         raise click.ClickException(

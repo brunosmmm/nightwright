@@ -54,6 +54,7 @@ uv tool install --editable '.[tui]'   # `nw` on PATH (`uv tool update-shell` if 
 nw skills install                     # symlink agent skills into ~/.claude/skills
 nw completion install --shell fish    # or bash / zsh
 nw projects add Acme --repo ~/src/acme --yes && nw projects init Acme --yes
+nw doctor --fix-hints                 # read-only install check; prints the fix for each finding
 nw queue conductor-launch             # then `nw queue steward-launch Acme` in a second terminal
 ```
 
@@ -78,6 +79,7 @@ nw campaign show CAMPAIGN               # state + recent ledger events
 nw queue resume CAMPAIGN                # continue a parked campaign
 nw queue merge my-branch --yes          # rebase + re-gate + ff-merge a local branch
 nw profiles list                        # then `show NAME` or `check`
+nw doctor                               # install health check (`--json`, `--fix-hints`)
 nw queue conductor-launch               # Claude Code session running /nw-conduct
 nw queue steward-launch PROJECT         # same, running /nw-steward
 nw escalations list                     # `answer ID` wakes the conductor; also `nw mailbox`

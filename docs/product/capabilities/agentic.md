@@ -7,6 +7,10 @@ gate result, finding and dollar lands in a per-campaign ledger. Humans see an it
 when the loop has **parked** it. Governing epic: SPEC-0169; the sections below are filled
 in by its child specs as they land.
 
+`nw doctor` (SPEC-0349) checks the agentic setup read-only: launch-model prices, the agentic
+and mailbox dirs, the runner lease, the conductor session, the worker registry and each
+project's `.nw/project.yaml` and profiles.
+
 ## Project configuration
 
 `<repo>/.nw/project.yaml` is committed with the project and declares what the loop needs

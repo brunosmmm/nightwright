@@ -261,7 +261,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0344](./specs/0344-remote-persona-jobs-with-bundle-write-back.md) | Remote persona jobs with bundle write-back | feature | accepted | — | 2026-11-01 |
 | [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | accepted | — | 2026-11-01 |
 | [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) | Remote workers integration suite for gate and persona workers | feature | accepted | — | 2026-11-01 |
-| [SPEC-0349](./specs/0349-nw-doctor-install-health-check.md) | `nw doctor`: read-only install health check with `nw.doctor.v1` JSON | feature | accepted | — | 2026-11-01 |
 | [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) | nw workers bootstrap | feature | accepted | — | 2026-11-01 |
 | [SPEC-0356](./specs/0356-queue-visibility-cli-lists-graph-unqueued.md) | Queue visibility (CLI): untruncated lists with title/priority/blocked-by, nw queue graph, nw queue unqueued, remote gate line | feature | accepted | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0358](./specs/0358-failed-first-loop-rounds.md) | Failed-first loop rounds: rerun the previously failing tests before the rest of a gate | feature | accepted | — | 2026-11-01 |
@@ -584,6 +583,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0339](./specs/0339-conductor-launch-session-scoped-permission-rules.md) | `nw queue conductor-launch` passes session-scoped permission rules (allowedTools / disallowedTools) | feature | done | — | 2026-11-01 |
 | [SPEC-0340](./specs/0340-worker-async-job-protocol.md) | Worker-side async job protocol: submit, attach, poll, cancel | feature | done | — | 2026-11-01 |
 | [SPEC-0347](./specs/0347-queue-backlog-resolves-outbound-depends-on.md) | Queue backlog resolves outbound `depends_on` (PROJ-NNNN files, merged-campaign fallback) | feature | done | — | 2026-11-01 |
+| [SPEC-0349](./specs/0349-nw-doctor-install-health-check.md) | `nw doctor`: read-only install health check with `nw.doctor.v1` JSON | feature | done | — | 2026-11-01 |
 | [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) | Per-gate path sensitivity for the close re-gate | feature | done | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0351](./specs/0351-queue-watch-fill-terminal-height.md) | queue watch: size the bottom sections to the terminal height | feature | done | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0353](./specs/0353-conductor-launch-steward-launch-allowedtools-do.md) | conductor-launch / steward-launch permission rules cover lease-pinned PR-rebase pushes and the steward rebase set | feature | done | — | 2026-11-01 |
