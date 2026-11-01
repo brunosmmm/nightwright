@@ -233,6 +233,8 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) Persona cap, rate-limit backoff, campaign affinity and cost by worker — accepted
   - [ ] [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) Remote workers integration suite for gate and persona workers — accepted
   - [ ] [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) nw workers bootstrap — accepted
+- **[SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) — Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer** · accepted · (0/0 done)
+  - _(no child specs yet)_
 
 ## Active & planned
 
@@ -261,6 +263,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0357](./specs/0357-narrow-affected-tests-py-fallbacks-and-write-the.md) | Narrow affected_tests.py fallbacks and write the NW_GATE_REPORT selection report | feature | accepted | — | 2026-11-01 |
 | [SPEC-0358](./specs/0358-failed-first-loop-rounds.md) | Failed-first loop rounds: rerun the previously failing tests before the rest of a gate | feature | accepted | — | 2026-11-01 |
 | [SPEC-0359](./specs/0359-close-tier-reuse-of-a-green-loop-gate-with-a-full.md) | Close-tier reuse of a green loop gate, with a full-suite sentinel on the base branch | feature | accepted | — | 2026-11-01 |
+| [SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) | Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer | epic | accepted | — | 2026-11-01 |
 
 ## Done
 
