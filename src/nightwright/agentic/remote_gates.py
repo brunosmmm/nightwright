@@ -58,6 +58,10 @@ class RemoteFailure(Exception):
         self.worker_wait_s = 0.0
 
 
+class _Stopped(Exception):
+    """A stop (SPEC-0229) arrived before the job was sent: nothing ran, nothing falls back."""
+
+
 @dataclass
 class Outcome:
     run: G.GateRun | None           # None: fell back (`failure` says why)
@@ -174,20 +178,42 @@ def repo_key(project: str | None, worktree) -> str:
     return f"{name}-{hashlib.sha256(os.fsencode(str(root))).hexdigest()[:12]}"
 
 
-def _have(worker: dict, key: str, shas: list[str]) -> list[str]:
+def _check_stop(stop) -> None:
+    if G._stop_requested(stop):
+        raise _Stopped()
+
+
+def _have(worker: dict, key: str, shas: list[str], stop=None) -> list[str]:
+    """The shas the worker's cache already has. A stop ends the SSH call at once (`_Stopped`)
+    instead of waiting out `HAVE_TIMEOUT_S` against a slow host."""
     argv = worker["ssh_argv"] + [worker["ssh"], worker["nw"], "worker", "have", "--repo", key,
                                  *shas]
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=HAVE_TIMEOUT_S,
-                           stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired:
-        raise RemoteFailure("have", f"`nw worker have` timed out after {HAVE_TIMEOUT_S:g}s")
+        p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, start_new_session=True)
     except OSError as e:
         raise RemoteFailure("have", f"ssh failed to start: {e}")
+    deadline = time.monotonic() + HAVE_TIMEOUT_S
+    try:
+        while True:
+            try:
+                out, err = p.communicate(timeout=_POLL_S)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            _check_stop(stop)
+            if time.monotonic() >= deadline:
+                raise RemoteFailure("have", f"`nw worker have` timed out after "
+                                            f"{HAVE_TIMEOUT_S:g}s")
+    finally:
+        if p.returncode is None:
+            _end(p, 0.0)
+            _close(p.stdout)
+            _close(p.stderr)
     if p.returncode != 0:
-        tail = (p.stderr or "").strip().splitlines()[-1:] or [""]
+        tail = (err or "").strip().splitlines()[-1:] or [""]
         raise RemoteFailure("have", f"`nw worker have` failed (exit {p.returncode}): {tail[0]}")
-    got = {ln.strip() for ln in p.stdout.splitlines()}
+    got = {ln.strip() for ln in out.splitlines()}
     return [s for s in shas if s in got]
 
 
@@ -201,9 +227,10 @@ def job_timeout_s(cfg, gates: list) -> int:
 
 
 def prepare(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int, job_id: str,
-            bundle: Path) -> dict:
+            bundle: Path, *, stop=None) -> dict:
     """Steps 1-5: the commit under test, the base, `have`, the bundle (written to `bundle`,
-    absent when nothing is left to send) and the job header."""
+    absent when nothing is left to send) and the job header. A stop (`stop` or the gates'
+    sticky one) before or during `have` raises `_Stopped`."""
     repo = campaign_state.get("repo") or {}
     wt, base_name = repo["worktree"], repo.get("base") or "main"
     sha = _git(wt, "stash", "create") or _git(wt, "rev-parse", "HEAD")    # stash stack untouched
@@ -217,7 +244,9 @@ def prepare(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int
         WK.ensure_ssh_dir(cfg)
     except OSError as e:
         raise RemoteFailure("have", f"ssh socket directory unusable: {e}")
-    have = _have(worker, key, asked)
+    _check_stop(stop)
+    have = _have(worker, key, asked, stop)
+    _check_stop(stop)
     refs = [(f"{W.JOB_REFS}{job_id}", sha), (f"{W.JOB_REFS}{job_id}-base", base_sha)]
     try:
         for ref, tip in refs:
@@ -351,8 +380,9 @@ def _end(proc: subprocess.Popen, grace_s: float) -> int | None:
 def _frame(line: bytes, job_id: str) -> dict:
     try:
         rec = json.loads(line.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as e:
-        raise RemoteFailure("protocol", f"malformed frame: {e}: {line[:200]!r}")
+    except (UnicodeDecodeError, ValueError, RecursionError) as e:   # deep nesting: Recursion
+        raise RemoteFailure("protocol", f"malformed frame: {type(e).__name__}: {e}: "
+                                        f"{line[:200]!r}")
     if not isinstance(rec, dict) or rec.get("schema") != W.FRAME_SCHEMA \
             or not isinstance(rec.get("type"), str):
         raise RemoteFailure("protocol", f"not a {W.FRAME_SCHEMA} frame: {line[:200]!r}")
@@ -415,13 +445,41 @@ def _inflate(name: str, data: str) -> bytes:
     return raw
 
 
+def _bad_result_field(result: dict) -> str | None:
+    """The first field of a worker's gate result whose JSON type a `GateResult` cannot hold,
+    else None (absent fields are left to the constructor)."""
+    for key, v in result.items():
+        if key in ("required", "ok", "timed_out", "interrupted"):
+            bad = not isinstance(v, bool)
+        elif key == "exit_code":
+            bad = v is not None and (isinstance(v, bool) or not isinstance(v, int))
+        elif key == "duration_s":
+            bad = isinstance(v, bool) or not isinstance(v, (int, float)) \
+                or not math.isfinite(v) or v < 0
+        elif key in ("cmd", "cwd"):
+            bad = not isinstance(v, str)
+        elif key == "summary":
+            bad = v is not None and not isinstance(v, dict)
+        elif key in ("attempts", "flaky"):
+            bad = v is not None and not isinstance(v, list)
+        else:
+            continue
+        if bad:
+            return key
+    return None
+
+
 def _take_gate(frame: dict, gates_dir: Path, seq: int, names: set) -> G.GateResult:
     """Write one `gate` frame's files under `gates/` and return its `GateResult` with the
-    campaign-relative log and a tail recomputed from the local copy."""
+    campaign-relative log and a tail recomputed from the local copy. Worker data a
+    `GateResult` cannot hold is a protocol failure, never an exception out of `run_all`."""
     result, files = frame.get("result"), frame.get("files")
     if not isinstance(result, dict) or not isinstance(files, dict) \
-            or result.get("name") not in names:
+            or not isinstance(result.get("name"), str) or result["name"] not in names:
         raise RemoteFailure("protocol", "gate frame without a known gate's result and files")
+    bad = _bad_result_field(result)
+    if bad is not None:
+        raise RemoteFailure("protocol", f"gate result: bad {bad} {result[bad]!r:.200}")
     stem = f"{seq:03d}-{result['name']}"
     ok_name = re.compile(rf"^{re.escape(stem)}(\.r[0-9]+)?\.(log|json)\Z")
     gates_dir.mkdir(parents=True, exist_ok=True)
@@ -609,13 +667,19 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
     cid = campaign_state["id"]
     job_id = f"{cid}-gate-{seq:03d}-a0"
     bundle = store.child_tmp(cfg, cid, owner) / "job.bundle"
+    started_at, t0 = store.now_iso(), time.monotonic()
     try:
+        _check_stop(stop)
         rec = next((w for w in WK.load(cfg) if w["name"] == worker), None)
         if rec is None:
             raise RemoteFailure("registry", f"worker {worker!r} is no longer registered",
                                 cooldown=False)
-        header = prepare(rec, project_cfg, campaign_state, cfg, seq, job_id, bundle)
+        header = prepare(rec, project_cfg, campaign_state, cfg, seq, job_id, bundle, stop=stop)
+        _check_stop(stop)                       # no job is started only to be cancelled
         return _dispatch(rec, header, bundle, cfg, cid, seq, stop)
+    except _Stopped:                            # SPEC-0229: nothing was sent, nothing ran
+        return Outcome(G.GateRun(seq, False, (), started_at, round(time.monotonic() - t0, 3),
+                                 interrupted=True))
     except RemoteFailure as f:
         _record_failure(cfg, cid, worker, job_id, seq, f)
         return Outcome(None, f.worker_wait_s, f)

@@ -240,8 +240,8 @@ def spy(monkeypatch):
     seen = []
     real = RG.prepare
 
-    def wrapped(worker, project_cfg, state, cfg, seq, job_id, bundle):
-        h = real(worker, project_cfg, state, cfg, seq, job_id, bundle)
+    def wrapped(worker, project_cfg, state, cfg, seq, job_id, bundle, **kw):
+        h = real(worker, project_cfg, state, cfg, seq, job_id, bundle, **kw)
         heads = _git(state["repo"]["worktree"], "bundle", "list-heads", str(bundle)) \
             if h["bundle_bytes"] else ""
         seen.append({"header": h, "heads": heads})
@@ -897,6 +897,141 @@ def test_stop_mid_run_ends_the_workers_gate(world, remote, tmp_path):
         return False
     assert until(gone)
 
+
+
+def test_a_worker_removed_between_slot_and_dispatch_falls_back_without_cooldown(
+        world, remote, monkeypatch):
+    """`nw workers rm box` lands after the remote slot is held: `stage: registry`, no cooldown
+    (there is no record left to cool), the gates run locally under the same seq."""
+    from nightwright.agentic import workers as WK
+    real = GS.acquire
+    seen = []
+
+    def acquire(cfg, cid, **kw):
+        cm = real(cfg, cid, **kw)
+        if kw.get("pools") is None:
+            return cm
+        import contextlib
+
+        @contextlib.contextmanager
+        def held():
+            with cm as hold:
+                seen.append(hold.pool)
+                WK.path(world.cfg).write_text(json.dumps({"schema": WK.SCHEMA, "workers": []}))
+                yield hold
+        return held()
+    monkeypatch.setattr(GS, "acquire", acquire)
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert seen == ["box"]
+    assert run.worker is None and run.ok and run.seq == 1 and len(run.results) == 3
+    (ev,) = world.ledger(["worker_failed"])
+    assert ev["stage"] == "registry" and ev["cooldown"] is False and ev["worker"] == "box"
+    assert WK.load(world.cfg) == []
+    assert all(r.cwd == str(world.repo) for r in run.results)
+    assert not (remote.wdata / "agentic" / "worker" / "jobs").exists()
+    assert not S.child_tmp(world.cfg, CID, "gate-001").exists()
+
+
+_DEEP = "import sys; n = 300000; sys.stdout.write('[' * n + ']' * n + chr(10))"
+
+
+@pytest.mark.parametrize("bad", [
+    {"name": ["ok"]}, {"name": {"a": 1}}, {"name": None},          # unhashable / not a str
+    {"duration_s": "1.0"}, {"duration_s": float("inf")}, {"exit_code": "0"},
+    {"ok": "yes"}, {"required": 1}, {"cmd": 5}, {"summary": [1]}, {"flaky": "x"},
+    "deep",                                                         # RecursionError in json
+])
+def test_a_malformed_gate_frame_falls_back_as_protocol(world, remote, bad):
+    """Worker data a `GateResult` cannot hold (or a line json cannot parse without recursing
+    out) is a `protocol` fallback with cooldown, never an exception out of `run_all`. One
+    gate, so the `done` that follows would end a run that took the result."""
+    world.project["gates"] = [_gate("ok", "echo ok")]
+    if bad == "deep":
+        body = f"{sys.executable} -c \"{_DEEP}\"; exec cat >/dev/null"
+        remote.register(ssh=_gate_job_variant(remote, "deep", body))
+    else:
+        result = {**_gate_result("ok"), **bad}                      # inf -> `Infinity`
+        _fake_gate_job(remote, "badresult", [
+            _frame_line("started", slot_wait_s=0.0),
+            _frame_line("gate", files={}, result=result), _done()])
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert run.worker is None and run.ok and run.seq == 1
+    assert [r.cwd for r in run.results] == [str(world.repo)]
+    (ev,) = world.ledger(["worker_failed"])
+    assert ev["stage"] == "protocol" and ev["cooldown"] is True
+    assert remote.record()["cooldown_until"] is not None
+    assert sorted(p.name for p in world.gates_dir.iterdir()) == ["001-ok.json", "001-ok.log"]
+
+
+def test_frame_parsing_turns_deep_nesting_into_a_protocol_failure():
+    from nightwright.agentic import remote_gates as RG
+    n = 300000
+    with pytest.raises(RG.RemoteFailure) as e:
+        RG._frame(("[" * n + "]" * n).encode(), "job")
+    assert e.value.stage == "protocol"
+
+
+def test_a_stop_during_have_ends_it_at_once_and_sends_no_job(world, remote, tmp_path,
+                                                            monkeypatch):
+    """A stop while `nw worker have` hangs on a slow host ends that SSH call at once (not after
+    `HAVE_TIMEOUT_S`), starts no `gate-job`, and returns an interrupted run: no
+    `worker_failed`, no cooldown, no local re-run."""
+    from nightwright.agentic import remote_gates as RG
+    monkeypatch.setattr(RG, "HAVE_TIMEOUT_S", 600.0)
+    have, job = tmp_path / "have.pid", tmp_path / "job-started"
+    remote.register(ssh=_script(tmp_path / "ssh-slowhave",
+                                f'case "$*" in *" have "*) echo $$ > {have}; exec sleep 600;; '
+                                f'*gate-job*) touch {job};; esac\nexec {remote.ssh} "$@"'))
+    stop = threading.Event()
+    out = {}
+    t = threading.Thread(target=lambda: out.update(run=G.run_all(
+        world.project, world.state, world.cfg, seq=1, stop=stop)))
+    t.start()
+    assert until(lambda: have.exists() and have.read_text().strip())
+    pid = int(have.read_text())
+    stop.set()
+    join(t, timeout=15)
+    run = out["run"]
+    assert run.interrupted and not run.ok and run.seq == 1 and run.results == ()
+    assert not job.exists()
+    assert not world.ledger(["worker_failed"]) and remote.record()["cooldown_until"] is None
+    assert not world.gates_dir.exists() or not list(world.gates_dir.iterdir())
+    assert not S.child_tmp(world.cfg, CID, "gate-001").exists()
+    assert _git(world.repo, "for-each-ref", "refs/nw/gate-jobs/") == ""
+
+    def gone():
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        return False
+    assert until(gone, timeout=10)                # the hung `have` was ended, not waited out
+
+
+@pytest.mark.parametrize("sticky", [False, True])
+def test_a_stop_after_prepare_starts_no_job(world, remote, tmp_path, monkeypatch, sticky):
+    """A stop (the caller's event, or the runner's sticky `terminate_all`) that lands once the
+    bundle is cut starts no `gate-job` only to cancel it."""
+    from nightwright.agentic import remote_gates as RG
+    job = tmp_path / "job-started"
+    remote.register(ssh=_gate_job_variant(remote, "late-job",
+                                          f'touch {job}; exec {remote.ssh} "$@"'))
+    stop = threading.Event()
+    real = RG.prepare
+
+    def prepare(*a, **kw):
+        h = real(*a, **kw)
+        if sticky:
+            G.terminate_all()
+        else:
+            stop.set()
+        return h
+    monkeypatch.setattr(RG, "prepare", prepare)
+    run = G.run_all(world.project, world.state, world.cfg, seq=1, stop=stop)
+    assert run.interrupted and not run.ok and run.results == () and run.worker is None
+    assert not job.exists()
+    assert not world.ledger(["worker_failed"]) and remote.record()["cooldown_until"] is None
+    assert not (remote.wdata / "agentic" / "worker" / "jobs").exists()
 
 # ---- reporting -------------------------------------------------------------------------------
 

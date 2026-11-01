@@ -323,6 +323,19 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
   already fell back) were checked to fail against the previous `remote_gates.py`. With the
   worker, gate, gate-slot, registry, project, gitops and queue-merge test files: 490 passed.
   The full suite is left to the gate.
+- Review fixes (loop 7): `uv run pytest -q -n 4 tests/test_remote_gates.py`: 87 passed. Added: a
+  worker removed from the registry after its slot is held (`stage: registry`, no cooldown, a
+  local run under seq 1, no worker job); a gate frame whose `result.name` is a list, a dict or
+  null, whose `duration_s`/`exit_code`/`ok`/`required`/`cmd`/`summary`/`flaky` has a type a
+  `GateResult` cannot hold, or a 300000-deep JSON line (RecursionError), each falling back as
+  `protocol` with cooldown on a one-gate project; a stop while `nw worker have` hangs (with
+  `HAVE_TIMEOUT_S` raised to 600 s) ending that SSH call within seconds, starting no `gate-job`
+  and returning an interrupted run with no `worker_failed` or cooldown; a stop (the event, or
+  the sticky `terminate_all`) landing after the bundle is cut starting no `gate-job`. Every new
+  test but the registry one (a path that already worked, now covered) and the null name was
+  checked to fail against the previous `remote_gates.py`. With the worker, gate, gate-slot and
+  registry test files (`uv run pytest -q -n 4` over the ten files): 405 passed. The full suite
+  is left to the gate.
 - Manual verification (steps 1-6, the second machine): manual verification attested by the
   human (ESC-0004 override).
 
@@ -390,6 +403,16 @@ pre-`started` slot-wait timeout fall back without cooldown. A **gate failure** (
   `protocol` failure, not an exception out of `run_all`.
 - The run-timeout margin (`RUN_TIMEOUT_MARGIN_S`, 120 s) and `job_timeout_s` are module-level
   in `remote_gates.py`, so tests can shrink them.
+- A worker's gate `result` is type-checked before it becomes a `GateResult`: `name` must be a
+  string the job runs, `required`/`ok`/`timed_out`/`interrupted` booleans, `exit_code` an int
+  or null, `duration_s` a finite non-negative number, `cmd`/`cwd` strings, `summary` an object
+  or null, `attempts`/`flaky` lists. Anything else, and a frame line json can only parse by
+  recursing out (`RecursionError`), is a `protocol` failure with cooldown.
+- **A stop before the job is sent sends nothing.** `run` checks the stop (the caller's event
+  and the gates' sticky `terminate_all` flag) before `prepare`, before and after `nw worker
+  have`, and before starting `gate-job`. `have` polls the stop while it waits and ends its SSH
+  process group at once. Such a run returns an interrupted `GateRun` with no results and no
+  `worker` (nothing ran on it): no `worker_failed`, no cooldown, no local re-run.
 
 ## Clock Log
 
