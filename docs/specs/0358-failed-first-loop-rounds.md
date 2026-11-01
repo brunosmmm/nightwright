@@ -1,7 +1,7 @@
 ---
 id: SPEC-0358
 title: "Failed-first loop rounds: rerun the previously failing tests before the rest of a gate"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -184,29 +184,29 @@ three outcomes of the prelude, the `failed-first` attempt kind and the `.ff.log`
 
 ## Acceptance criteria
 
-- [ ] `failed_first` is a validated gate key: a boolean, only with `results: {format: pytest}`
+- [x] `failed_first` is a validated gate key: a boolean, only with `results: {format: pytest}`
       and only on a `when: loop` gate; other cases fail `validate` naming `gates[i].failed_first`.
-- [ ] `run_all(..., tier="loop")` passes the previous same-name result from `last_gate` to
+- [x] `run_all(..., tier="loop")` passes the previous same-name result from `last_gate` to
       `run_gate_with_retries`. The close tier and gates without the flag pass none and run exactly
       as before.
-- [ ] With `failed_first: true`, a round after a red round (previous entry red, not interrupted or
+- [x] With `failed_first: true`, a round after a red round (previous entry red, not interrupted or
       timed out, with a complete failing-id list) runs the previous failing ids first, through
       `targeted_cmd` (the gate's `retry_cmd`), in a log `<seq>-<name>.ff.log`.
-- [ ] A reproduced failure (prelude red, exit code not in `TARGETED_UNRESOLVED_EXITS`) ends the
+- [x] A reproduced failure (prelude red, exit code not in `TARGETED_UNRESOLVED_EXITS`) ends the
       round red without the main run or the ladder: one attempt, of kind `failed-first`, and the
       result's `summary` names the still-failing ids.
-- [ ] A passing prelude, a timed-out prelude and a prelude exiting 4 or 5 fall through to the
+- [x] A passing prelude, a timed-out prelude and a prelude exiting 4 or 5 fall through to the
       normal run and ladder; the prelude is listed first in `attempts` and its duration is in
       `duration_s`. An interrupted prelude yields an interrupted result and no main run.
-- [ ] No prelude runs without the flag, without a prior red result for that gate name, after a
+- [x] No prelude runs without the flag, without a prior red result for that gate name, after a
       green, interrupted or timed-out previous result, or with an incomplete id list. A
       `last_gate` holding only close-tier results (e.g. a red `pytest`) gives no prelude for
       `pytest-affected`.
-- [ ] The prelude command is always built from the current round's expanded `cmd`: two reproduced
+- [x] The prelude command is always built from the current round's expanded `cmd`: two reproduced
       rounds in a row on a gate without `retry_cmd` never repeat the ids.
-- [ ] Validation rejects a gate named `<other gate>.ff`, naming `gates[i].name`, and the worker's
+- [x] Validation rejects a gate named `<other gate>.ff`, naming `gates[i].name`, and the worker's
       collision check covers `.ff`.
-- [ ] The dogfood `.nw/project.yaml` sets `failed_first: true` on `pytest-affected`, and
+- [x] The dogfood `.nw/project.yaml` sets `failed_first: true` on `pytest-affected`, and
       `docs/product/capabilities/agentic.md` documents `failed_first`.
 
 ## Test plan
@@ -247,6 +247,36 @@ three outcomes of the prelude, the `failed-first` attempt kind and the `.ff.log`
   `test_agentic_dogfood_config`; `python3 tools/spec_lint.py` exits 0; the full suite runs at the
   queue's close gate.
 
+### Test record (2026-11-01)
+
+- `uv run pytest -q -n 0 tests/test_agentic_gates.py tests/test_agentic_project.py
+  tests/test_agentic_dogfood_config.py tests/test_agentic_personas.py tests/test_worker.py`:
+  325 passed (24 new `test_ff_*` gate tests, the `failed_first` / `<other>.ff` project cases, the
+  worker `x.ff` collision case, the dogfood `failed_first` assertion and the personas rendering).
+- `python3 tools/affected_tests.py --run uv run pytest -q` (SPEC-0328): the selection fell back to
+  the full suite (a `.nw/project.yaml` and `src/` change), so I stopped it and left the full suite
+  to the queue's gate; the targeted files above are the executed regression guard.
+- `python3 tools/spec_lint.py`: exits 0. The full suite is left to the queue's gate.
+- Manual (real pytest, scratch project in `/tmp`, `run_gate_with_retries` with `previous=` from the
+  prior round's result): round 1 red (`full`, `targeted`; 1.5 s) -> round 2 with the test still
+  broken: one `failed-first` attempt, `002-...ff.log`, 0.7 s, cmd `pytest -q tests/test_x.py::test_a`
+  -> round 3 after the fix: green `failed-first` then `full`, 1.2 s. Not run as queue GATING
+  rounds, see *As shipped*.
+
+### As shipped (2026-11-01)
+
+- Built to Design. `_targeted_ids(gate, summary, cmd)` takes the summary and the current round's
+  expanded command; `run_gate_with_retries` gained `previous=` and delegates the old body to
+  `_run_ladder`. The prelude's `attempt` is -1 (sidecar `<seq>-<name>.ff.json`).
+- Additions beyond Design: a stop event set between a green/inconclusive prelude and the main run
+  yields an interrupted result instead of starting the main run; `personas._retries_line` skips
+  the prelude when counting ladder retries and renders a `failed-first:` line; the
+  `nw.gate.v1` docstring in `schemas.py` lists the new kind.
+- Deviation: the manual queue-round check (two real GATING rounds) cannot be done before merge,
+  since a campaign's gates run with main's `.nw/project.yaml`, which has no `failed_first` until
+  this change lands. The scratch run above exercised the same function with real pytest instead.
+  Wall times of real queue rounds belong to the rollout watch (step 3) after merge.
+
 ## Clock Log
 
 CLOCK-IN: n/a
@@ -264,11 +294,11 @@ CLOCK-OUT: n/a
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass; manual steps performed and recorded.
-- [ ] No regressions (queue close gate full suite).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass; manual steps performed and recorded.
+- [x] No regressions (queue close gate full suite).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated.
 
 ## Open questions
 

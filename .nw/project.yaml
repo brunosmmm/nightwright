@@ -29,6 +29,8 @@ gates:
       --run uv run pytest -q -x -n 2;
       else uv run pytest -q -x -n 2; fi
     retry_cmd: uv run pytest -q -n 0 {failing}
+    # SPEC-0358: a round after a red one reruns the previous failing ids first
+    failed_first: true
     results: {format: pytest}
     # the fallback is the full suite, so the full suite's limit
     timeout_s: 2400

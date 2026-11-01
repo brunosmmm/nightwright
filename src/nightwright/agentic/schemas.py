@@ -9,9 +9,9 @@ command output) is kept beside a nightwright-written JSON record, never mixed wi
   `interrupted` (SPEC-0229) and `summary` (SPEC-0284: parsed `{format, passed, failed, errors,
   skipped, failing}` or `{format, error}`; only for gates with `results:`). SPEC-0289: a retry's
   sidecar (`NNN-<name>.r<n>.json`) carries `attempt`; once a retry ran, attempt 0's sidecar holds
-  the final result plus `attempts` (`[{attempt, kind: targeted|full, ok, exit_code, timed_out,
+  the final result plus `attempts` (`[{attempt, kind: targeted|full|failed-first, ok, exit_code, timed_out,
   interrupted, duration_s, log, failing}]`) and, when the gate ended ok after a targeted pass,
-  `flaky` (the ids).
+  `flaky` (the ids). SPEC-0358: a `failed_first` prelude is attempt -1 (`NNN-<name>.ff.json`).
 - `nw.runner.record.v1` — one line of `<agentic>/runner.jsonl`, written by `nw queue run`.
 """
 from __future__ import annotations

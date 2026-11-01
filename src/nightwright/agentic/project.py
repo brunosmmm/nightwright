@@ -211,6 +211,24 @@ def _check_gate_retry(problems, gate, p):
             problems.append(f"{p}.retry_cmd: only valid with results: {{format: pytest}}")
 
 
+def _check_failed_first(problems, gate, p):
+    """SPEC-0358: `failed_first` is a boolean, pytest results only, loop-tier gates only."""
+    if "failed_first" not in gate:
+        return
+    ff = gate["failed_first"]
+    if not isinstance(ff, bool):
+        problems.append(f"{p}.failed_first: must be true or false")
+        return
+    if not ff:
+        return
+    res = gate.get("results")
+    if not (isinstance(res, dict) and res.get("format") == "pytest"):
+        problems.append(f"{p}.failed_first: only valid with results: {{format: pytest}}")
+    if gate_when(gate) != "loop":
+        problems.append(f"{p}.failed_first: only valid on a `when: loop` gate "
+                        "(the close tier gets no previous result)")
+
+
 def validate(doc):
     """Collect every problem in `doc` and raise one ValueError naming them by key path."""
     problems = []
@@ -230,13 +248,17 @@ def validate(doc):
         problems.append("gates: must be a list")
         gates = []
     seen = set()
+    all_names = {g.get("name") for g in gates if isinstance(g, dict)}
     for i, gate in enumerate(gates):
         p = f"gates[{i}]"
         if not _check_mapping(problems, gate, p, ("name", "cmd", "cwd", "timeout_s", "required",
                                                   "results", "retries", "on_fail", "retry_cmd",
-                                                  "when", "paths", "remote")):
+                                                  "failed_first", "when", "paths", "remote")):
             continue
         name = gate.get("name")
+        if _is_str(name) and name.endswith(".ff") and name[:-3] in all_names:
+            problems.append(f"{p}.name: {name!r} would share the failed_first prelude log of "
+                            f"gate {name[:-3]!r}")
         if not _is_str(name):
             problems.append(f"{p}.name: required non-empty string")
         elif name in seen:
@@ -254,6 +276,7 @@ def validate(doc):
         if gate.get("results") is not None:
             _check_results(problems, gate["results"], f"{p}.results")
         _check_gate_retry(problems, gate, p)
+        _check_failed_first(problems, gate, p)
         if "when" in gate:
             _check_enum(problems, gate["when"], f"{p}.when", GATE_WHEN)
         if "paths" in gate:

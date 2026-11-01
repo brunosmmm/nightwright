@@ -662,28 +662,32 @@ def _res(cmd="pytest -q", **summary):
 PYTEST_GATE = {"results": {"format": "pytest"}}
 
 
+def _sc(res):
+    return res.summary, res.cmd
+
+
 def test_targeted_ids_eligibility():
     ok = _res(failed=2, failing=["a::1", "a::2"])
-    assert G._targeted_ids(PYTEST_GATE, ok) == ["a::1", "a::2"]
+    assert G._targeted_ids(PYTEST_GATE, *_sc(ok)) == ["a::1", "a::2"]
     # not pytest results (JUnit, none)
-    assert G._targeted_ids({"results": {"format": "junit"}}, ok) == []
-    assert G._targeted_ids({}, ok) == []
+    assert G._targeted_ids({"results": {"format": "junit"}}, *_sc(ok)) == []
+    assert G._targeted_ids({}, *_sc(ok)) == []
     # a parse error in the summary
-    assert G._targeted_ids(PYTEST_GATE, _res(failed=1, failing=["a::1"], error="bad")) == []
+    assert G._targeted_ids(PYTEST_GATE, *_sc(_res(failed=1, failing=["a::1"], error="bad"))) == []
     # the list does not account for every failure or error (either way)
-    assert G._targeted_ids(PYTEST_GATE, _res(failed=3, failing=["a::1", "a::2"])) == []
-    assert G._targeted_ids(PYTEST_GATE, _res(failed=1, failing=["a::1", "a::2"])) == []
-    assert G._targeted_ids(PYTEST_GATE, _res(failed=1, errors=1, failing=["a::1"])) == []
-    assert G._targeted_ids(PYTEST_GATE, _res(failed=0, failing=[])) == []
+    assert G._targeted_ids(PYTEST_GATE, *_sc(_res(failed=3, failing=["a::1", "a::2"]))) == []
+    assert G._targeted_ids(PYTEST_GATE, *_sc(_res(failed=1, failing=["a::1", "a::2"]))) == []
+    assert G._targeted_ids(PYTEST_GATE, *_sc(_res(failed=1, errors=1, failing=["a::1"]))) == []
+    assert G._targeted_ids(PYTEST_GATE, *_sc(_res(failed=0, failing=[]))) == []
 
 
 @pytest.mark.parametrize("cmd", ["pytest -q 2>&1 | tee out.txt", "pytest -q > out.txt",
                                  "cd x; pytest", "a && pytest", "pytest $(echo -q)"])
 def test_targeted_ids_need_an_appendable_cmd(cmd):
     res = _res(cmd=cmd, failed=1, failing=["a::1"])
-    assert G._targeted_ids(PYTEST_GATE, res) == []
+    assert G._targeted_ids(PYTEST_GATE, *_sc(res)) == []
     # an explicit retry_cmd takes the ids wherever it wants them
-    assert G._targeted_ids({**PYTEST_GATE, "retry_cmd": "make t IDS={failing}"}, res) == ["a::1"]
+    assert G._targeted_ids({**PYTEST_GATE, "retry_cmd": "make t IDS={failing}"}, *_sc(res)) == ["a::1"]
 
 
 def test_pytest_usage_error_on_targeted_rerun_is_not_reproduced(world, tmp_path):
@@ -732,3 +736,195 @@ def test_rewrite_sidecar_survives_an_unreadable_sidecar(world, tmp_path):
     G._rewrite_sidecar(d / "001-pytest.log", G.GateResult("p", True, True, 0, False, 0.1, "l", ""),
                        None)                # no raise; the file is left as it was
     assert (d / "001-pytest.json").read_text() == "{trunc"
+
+
+# ---- SPEC-0358: failed_first prelude ---------------------------------------------------------
+
+FF_GATE = {"failed_first": True}
+
+
+def _prev(failing=("tests/a.py::t1",), **kw):
+    """A previous-round result entry as `last_gate["results"]` holds it."""
+    n = len(failing)
+    d = {"name": "pytest", "ok": False, "exit_code": 1, "timed_out": False, "cmd": "old cmd",
+         "summary": {"format": "pytest", "passed": 1, "failed": n, "errors": 0, "skipped": 0,
+                     "failing": list(failing)}}
+    d.update(kw)
+    return d
+
+
+def _ff(world, tmp_path, behaviours, previous=None, retries=2, **extra):
+    g = _fake(tmp_path, behaviours, retries=retries, **{**FF_GATE, **extra})
+    r = _ladder(world, tmp_path, g, previous=_prev() if previous is None else previous)
+    return g, r
+
+
+def test_ff_reproduced_ends_the_round_without_main_run(world, tmp_path):
+    g, r = _ff(world, tmp_path, [PY_FAIL, "touch main-ran"])
+    assert not r.ok and _kinds(r) == ["failed-first"] and r.attempts[0]["attempt"] == -1
+    assert _args(tmp_path) == ["tests/a.py::t1"]                 # one run: the ids appended once
+    assert r.summary["failing"] == ["tests/a.py::t1"] and r.duration_s == r.attempts[0]["duration_s"]
+    assert r.log == "gates/001-pytest.ff.log" and (tmp_path / "g" / "001-pytest.ff.log").exists()
+    assert not (tmp_path / "g" / "001-pytest.log").exists()
+    assert r.cmd.endswith("tests/a.py::t1")
+    side = json.loads((tmp_path / "g" / "001-pytest.ff.json").read_text())
+    assert side["attempt"] == -1 and SC.record_problems(side, SC.GATE_KEYS, SC.GATE_SCHEMA) == []
+
+
+def test_ff_uses_retry_cmd(world, tmp_path):
+    g, r = _ff(world, tmp_path, [PY_FAIL],
+               retry_cmd=f"sh {tmp_path}/fake/run.sh -k {{failing}}")
+    assert _args(tmp_path) == ["-k tests/a.py::t1"] and _kinds(r) == ["failed-first"]
+
+
+def test_ff_green_prelude_runs_main_and_ladder(world, tmp_path):
+    g, r = _ff(world, tmp_path, [PY_PASS, PY_FAIL, PY_PASS, PY_PASS])
+    assert _kinds(r) == ["failed-first", "full", "targeted", "full"] and r.ok
+    assert r.flaky == ("tests/a.py::t1",)
+    assert r.duration_s == round(sum(a["duration_s"] for a in r.attempts), 3)
+    assert _args(tmp_path)[0] == "tests/a.py::t1" and _args(tmp_path)[1] == ""
+    side = json.loads((tmp_path / "g" / "001-pytest.json").read_text())
+    assert [a["kind"] for a in side["attempts"]][0] == "failed-first" and side["ok"] is True
+    assert SC.record_problems(side, SC.GATE_KEYS, SC.GATE_SCHEMA) == []
+
+
+def test_ff_green_prelude_lists_it_even_without_a_ladder_retry(world, tmp_path):
+    g, r = _ff(world, tmp_path, [PY_PASS, PY_PASS], retries=0)
+    assert r.ok and _kinds(r) == ["failed-first", "full"]
+    assert r.duration_s == round(sum(a["duration_s"] for a in r.attempts), 3)
+    t2 = tmp_path / "t2"
+    t2.mkdir()
+    g, r = _ff(world, t2, [PY_PASS, PY_FAIL], retries=0)
+    assert not r.ok and _kinds(r) == ["failed-first", "full"]
+    assert r.log == "gates/001-pytest.log"
+
+
+@pytest.mark.parametrize("beh", ["exit 4", "exit 5"])
+def test_ff_unresolved_exit_falls_through(world, tmp_path, beh):
+    g, r = _ff(world, tmp_path, [beh, PY_PASS])
+    assert r.ok and _kinds(r) == ["failed-first", "full"] and r.attempts[0]["exit_code"] in (4, 5)
+
+
+def test_ff_timed_out_prelude_falls_through(world, tmp_path):
+    g, r = _ff(world, tmp_path, ["sleep 10", PY_PASS], timeout_s=1)
+    assert _kinds(r) == ["failed-first", "full"] and r.attempts[0]["timed_out"]
+    assert r.ok                              # the main run's own verdict
+
+
+def test_ff_interrupted_prelude_gives_interrupted_without_main_run(world, tmp_path, monkeypatch):
+    g = _fake(tmp_path, ["exit 1", "touch main-ran"], retries=0, **FF_GATE)
+    real, calls = G.run_gate, []
+
+    def run(*a, **kw):                  # the stop lands as the prelude starts
+        calls.append(kw.get("attempt"))
+        monkeypatch.setattr(G, "_stopping", True)
+        return real(*a, **kw)
+    monkeypatch.setattr(G, "run_gate", run)
+    r = _ladder(world, tmp_path, g, previous=_prev())
+    assert calls == [-1] and r.interrupted and not r.ok and _kinds(r) == ["failed-first"]
+    assert not (tmp_path / "main-ran").exists() and len(_args(tmp_path)) == 0
+
+
+def test_ff_no_prelude_when_a_stop_is_already_requested(world, tmp_path):
+    ev = threading.Event()
+    ev.set()
+    g = _fake(tmp_path, [PY_PASS], retries=0, **FF_GATE)
+    r = _ladder(world, tmp_path, g, previous=_prev(), stop=ev)
+    assert r.attempts == () and _args(tmp_path) == [""]
+
+
+def test_ff_stop_after_green_prelude_is_interrupted(world, tmp_path, monkeypatch):
+    ev = threading.Event()
+    g = _fake(tmp_path, ["echo '=== 1 passed in 0.01s ==='; exit 0", "exit 1"], retries=0, **FF_GATE)
+    real = G.run_gate
+
+    def run(*a, **kw):
+        res = real(*a, **kw)
+        ev.set()
+        return res
+    monkeypatch.setattr(G, "run_gate", run)
+    r = _ladder(world, tmp_path, g, previous=_prev(), stop=ev)
+    assert r.interrupted and not r.ok and len(_args(tmp_path)) == 1
+
+
+@pytest.mark.parametrize("previous", [
+    _prev(ok=True),
+    _prev(interrupted=True),
+    _prev(timed_out=True),
+    _prev(summary=None),
+    _prev(failing=["a::1", "a::2"], summary={"format": "pytest", "passed": 0, "failed": 3,
+                                              "errors": 0, "skipped": 0,
+                                              "failing": ["a::1", "a::2"]}),
+    _prev(summary={"format": "pytest", "passed": 0, "failed": 1, "errors": 1, "skipped": 0,
+                   "failing": ["a::1"]}),
+    None,
+])
+def test_ff_no_prelude_without_a_qualifying_previous(world, tmp_path, previous):
+    g = _fake(tmp_path, [PY_PASS], retries=0, **FF_GATE)
+    r = _ladder(world, tmp_path, g, previous=previous)
+    assert r.ok and r.attempts == () and _args(tmp_path) == [""]
+
+
+def test_ff_no_prelude_over_max_failing(world, tmp_path):
+    ids = [f"t.py::t{i}" for i in range(G.gate_results.MAX_FAILING + 1)]
+    g = _fake(tmp_path, [PY_PASS], retries=0, **FF_GATE)
+    r = _ladder(world, tmp_path, g, previous=_prev(failing=ids))
+    assert r.attempts == () and _args(tmp_path) == [""]
+
+
+def test_ff_no_prelude_without_the_flag(world, tmp_path):
+    g = _fake(tmp_path, [PY_PASS], retries=0)
+    r = _ladder(world, tmp_path, g, previous=_prev())
+    assert r.attempts == () and _args(tmp_path) == [""]
+
+
+def test_ff_no_prelude_when_cmd_has_shell_operators(world, tmp_path):
+    g = {**_gate("pytest", "echo '=== 1 passed in 0s ===' | cat"), "results": {"format": "pytest"},
+         **FF_GATE}
+    cfg, st, wt = world
+    r = G.run_gate_with_retries(g, wt, G.gate_env(cfg, st), tmp_path / "g" / "001-pytest.log", {},
+                                previous=_prev())
+    assert r.attempts == () and r.ok
+
+
+def test_ff_two_reproduced_rounds_in_a_row_never_repeat_the_ids(world, tmp_path):
+    g = _fake(tmp_path, [PY_FAIL, PY_FAIL])
+    g = {**g, **FF_GATE}
+    r1 = _ladder(world, tmp_path, g, previous=_prev())
+    # the second round's previous entry is the first prelude's result, as `last_gate` stores it
+    stored = G.asdict(r1)
+    r2 = _ladder(world, tmp_path, g, previous=stored)
+    cmd = f"sh {tmp_path}/fake/run.sh"
+    assert r1.cmd == r2.cmd == f"{cmd} tests/a.py::t1"
+    assert _args(tmp_path) == ["tests/a.py::t1", "tests/a.py::t1"]
+
+
+def test_ff_previous_cmd_is_never_used(world, tmp_path):
+    g = _fake(tmp_path, [PY_FAIL], **FF_GATE)
+    r = _ladder(world, tmp_path, g, previous=_prev(cmd="x | y"))      # operators in the old cmd
+    assert _kinds(r) == ["failed-first"]
+
+
+def test_ff_run_all_hands_previous_only_to_the_loop_tier(world, tmp_path):
+    cfg, st, wt = world
+    st = {**st, "last_gate": {"results": [_prev()]}}
+    g = {**_fake(tmp_path, [PY_FAIL, PY_FAIL, PY_FAIL]), "when": "loop", **FF_GATE}
+    for tier, want in (("loop", ["tests/a.py::t1"]), ("close", None), (None, None)):
+        (tmp_path / "fake" / "args.log").unlink(missing_ok=True)
+        (tmp_path / "fake" / "cnt").unlink(missing_ok=True)
+        pg = {**g, "when": "always"} if tier is None else (g if tier == "loop" else {**g, "when": "close"})
+        run = G.run_all(_project({**pg, "retries": 0}), st, cfg, seq=1, tier=tier)
+        kinds = [a["kind"] for a in run.results[0].attempts]
+        assert (kinds == ["failed-first"]) == (want is not None), tier
+        if want is None:
+            assert _args(tmp_path) == [""]
+
+
+def test_ff_close_tier_last_gate_gives_no_prelude(world, tmp_path):
+    cfg, st, wt = world
+    close_prev = {**_prev(), "name": "pytest"}
+    st = {**st, "last_gate": {"results": [close_prev]}}
+    g = {**_fake(tmp_path, [PY_PASS]), "name": "pytest-affected", "when": "loop", "retries": 0,
+         **FF_GATE}
+    run = G.run_all(_project(g), st, cfg, seq=1, tier="loop")
+    assert run.ok and run.results[0].attempts == () and _args(tmp_path) == [""]

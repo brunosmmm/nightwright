@@ -367,3 +367,39 @@ def test_repo_pytest_gate_retries():
     doc = P.load_project_config(root / ".nw" / "project.yaml")
     (g,) = [g for g in doc["gates"] if g["name"] == "pytest"]
     assert g["retries"] == 2
+
+
+# ---- SPEC-0358: failed_first ----------------------------------------------------------------
+
+_FF_OK = "    results: {format: pytest}\n    when: loop\n    failed_first: true\n"
+
+
+def test_failed_first_valid_on_a_loop_pytest_gate(tmp_path):
+    assert P.load_project_config(_gate_doc(tmp_path, _FF_OK))["gates"][0]["failed_first"] is True
+    off = "    failed_first: false\n"
+    assert P.load_project_config(_gate_doc(tmp_path, off))["gates"][0]["failed_first"] is False
+
+
+@pytest.mark.parametrize("body", [
+    "    results: {format: pytest}\n    when: loop\n    failed_first: yes please\n",
+    "    when: loop\n    failed_first: true\n",
+    "    results: {format: junit, path: r.xml}\n    when: loop\n    failed_first: true\n",
+    "    results: {format: pytest}\n    when: close\n    failed_first: true\n",
+    "    results: {format: pytest}\n    when: always\n    failed_first: true\n",
+    "    results: {format: pytest}\n    failed_first: true\n",
+    "    results: {format: pytest}\n    when: loop\n    failed_first: 1\n",
+])
+def test_failed_first_rejected(tmp_path, body):
+    with pytest.raises(ValueError, match=r"gates\[0\]\.failed_first"):
+        P.load_project_config(_gate_doc(tmp_path, body))
+
+
+def test_gate_named_other_dot_ff_is_rejected(tmp_path):
+    p = tmp_path / "project.yaml"
+    p.write_text("schema: nw.project.v1\ngates:\n  - name: g\n    cmd: x\n"
+                 "  - name: g.ff\n    cmd: y\n")
+    with pytest.raises(ValueError, match=r"gates\[1\]\.name.*g\.ff"):
+        P.load_project_config(p)
+    p.write_text("schema: nw.project.v1\ngates:\n  - name: g\n    cmd: x\n"
+                 "  - name: h.ff\n    cmd: y\n")
+    assert [g["name"] for g in P.load_project_config(p)["gates"]] == ["g", "h.ff"]

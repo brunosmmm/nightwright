@@ -171,6 +171,19 @@ when the changed paths cannot be computed every gate runs. Globs are anchored at
 pattern with no `/` matches that name at any depth. When unsure whether a test reads a file,
 list it under the full-suite gate.
 
+A loop-tier pytest gate (`when: loop`, `results: {format: pytest}`) may set `failed_first: true`
+(SPEC-0358, default off). A round after a red round then starts by running the failing ids of the
+previous result *for that gate name* (pytest `--lf` semantics driven by the ledger), through the
+gate's `retry_cmd` (else the expanded `cmd` followed by the ids), in the log
+`gates/NNN-<name>.ff.log`. The prelude is attempt kind `failed-first` and runs only when the
+previous result was red (not interrupted or timed out) with a complete failing-id list; the close
+tier never gets one, and `last_gate` after a close run holds close gates, so no prelude follows it.
+Its outcome: **still red** (exit code not 4 or 5) ends the round red with that one attempt, no main
+run and no retry ladder; **interrupted** by a stop gives an interrupted result; **green, timed out
+or not runnable** (pytest exit 4 or 5) falls through to the normal run and ladder, with the prelude
+first in `attempts` and its time in `duration_s`. A gate named `<other>.ff` is rejected (it would
+share the prelude's log).
+
 Every gate writes one log under the campaign directory, `gates/NNN-<name>.log`, starting
 with a header line that names the command and its working directory; the last 60 lines
 travel with the result into the ledger (`gate` event) and into `nw campaign show`. Gate

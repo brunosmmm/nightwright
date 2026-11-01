@@ -357,7 +357,21 @@ def _summary_line(s) -> str:
 def _retries_line(r) -> str:
     """SPEC-0289: how the gate's retry ladder went, from its `attempts`; "" without retries."""
     attempts = r.get("attempts") or []
+    ff = next((a for a in attempts if a.get("kind") == "failed-first"), None)
+    attempts = [a for a in attempts if a.get("kind") != "failed-first"]
     retried = [a for a in attempts if a.get("attempt")]
+    if ff is not None and not attempts:     # SPEC-0358: the prelude reproduced the failure
+        return f"failed-first: the previous round's {len(ff.get('failing') or [])} failing ids " \
+               "still fail (the rest of the gate was not run)"
+    prefix = ""
+    if ff is not None:                      # SPEC-0358: the prelude ran, then the normal run
+        prefix = "failed-first: previous failing ids " + (
+            "timed out" if ff.get("timed_out")
+            else f"could not run (pytest exit {ff['exit_code']})"
+            if ff.get("exit_code") in TARGETED_UNRESOLVED_EXITS else "passed")
+        if not retried:
+            return prefix
+        prefix += "; "
     if not retried:
         return ""
     targeted = next((a for a in retried if a.get("kind") == "targeted"), None)
@@ -386,7 +400,7 @@ def _retries_line(r) -> str:
         line = f"targeted rerun passed but {full} (order-dependent or other failure)"
     if r.get("flaky"):
         line += f" (flaky: {', '.join(r['flaky'])})"
-    return "retries: " + line
+    return prefix + "retries: " + line
 
 
 def render_gate_results(last_gate) -> str:

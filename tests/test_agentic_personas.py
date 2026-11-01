@@ -981,6 +981,23 @@ def test_render_gate_results_retries_line():
     assert "no full rerun left" in render(False, att(("targeted", True)))
 
 
+def test_render_gate_results_failed_first_line():
+    """SPEC-0358: the prelude is attempt -1 and never counts as a ladder retry."""
+    def render(ok, attempts):
+        return PS.render_gate_results({"results": [
+            {"name": "pytest", "required": True, "ok": ok, "exit_code": 0 if ok else 1,
+             "tail": "x", "attempts": attempts}]})
+    ff = {"attempt": -1, "kind": "failed-first", "ok": False, "exit_code": 1, "failing": ["a::b"]}
+    assert "failed-first: the previous round's 1 failing ids still fail" in render(False, [ff])
+    main = {"attempt": 0, "kind": "full", "ok": True, "failing": []}
+    assert render(True, [{**ff, "ok": True, "exit_code": 0}, main]).count("failed-first: previous failing ids passed") == 1
+    assert "could not run (pytest exit 4)" in render(True, [{**ff, "exit_code": 4}, main])
+    tgt = {"attempt": 1, "kind": "targeted", "ok": False, "failing": []}
+    out = render(False, [{**ff, "ok": True, "exit_code": 0}, {**main, "ok": False,
+                 "failing": ["a::b", "c::d"]}, tgt])
+    assert "failed-first: previous failing ids passed; retries: targeted rerun of 2 ids reproduced" in out
+
+
 def test_render_gate_results_retries_line_inconclusive_and_full_only():
     base = {"attempt": 0, "kind": "full", "ok": False, "failing": ["a::b", "c::d"]}
 

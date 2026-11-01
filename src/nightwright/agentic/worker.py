@@ -63,7 +63,7 @@ DIGITS_RE = re.compile(r"^[0-9]+\Z")
 # rules this charset can break, so a name git would refuse is a `validate` refusal
 BASE_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._/-]*\Z")
 # a gate name `<other gate>.r<n>` would share files with that gate's retry `<n>`
-RETRY_STEM_RE = re.compile(r"^(.+)\.r[0-9]+\Z")
+RETRY_STEM_RE = re.compile(r"^(.+)\.(?:r[0-9]+|ff)\Z")   # SPEC-0289 retry logs, SPEC-0358 prelude log
 # the worker's slot holds/waiters name a remote job `remote:<campaign>`, so they never read as
 # one of the worker host's own local campaigns
 SLOT_CAMPAIGN_PREFIX = "remote:"

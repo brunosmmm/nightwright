@@ -385,6 +385,7 @@ def test_base_name_check_agrees_with_git_check_ref_format(name):
     (_set("payload.gates.0.surprise", 1), "unknown key"),
     (_dup_gates, "duplicate gate name"),
     (_set("payload.gates.1.name", "x.r1"), "collides with the retry files"),
+    (_set("payload.gates.1.name", "x.ff"), "collides with the retry files"),
     (_set("payload.gate_budget_s", float("nan")), "gate_budget_s"),
     (_set("payload.gate_budget_s", float("inf")), "gate_budget_s"),
     (_set("payload.gate_budget_s", 0), "gate_budget_s"),

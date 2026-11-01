@@ -242,16 +242,17 @@ def targeted_cmd(gate: dict, cmd: str, failing, placeholders: dict | None = None
     return f"{cmd} {ids}"
 
 
-def _targeted_ids(gate: dict, result: GateResult) -> list[str]:
+def _targeted_ids(gate: dict, summary: dict | None, cmd: str) -> list[str]:
     """The failing ids a targeted rerun may use: pytest results, 1..MAX_FAILING ids, and the
     list accounts for every failure and error (so it is complete). Without a `retry_cmd` the
-    ids are appended to the expanded `cmd`, which only works when it has no shell operators
-    (a pipe or redirect would hand the ids to the wrong program)."""
+    ids are appended to the expanded `cmd` (the current round's, never a previous result's),
+    which only works when it has no shell operators (a pipe or redirect would hand the ids to
+    the wrong program). SPEC-0358: `summary` may come from a previous round's result."""
     if (gate.get("results") or {}).get("format") != "pytest":
         return []
-    if not gate.get("retry_cmd") and _SHELL_OPS_RE.search(result.cmd):
+    if not gate.get("retry_cmd") and _SHELL_OPS_RE.search(cmd):
         return []
-    s = result.summary
+    s = summary
     if not isinstance(s, dict) or s.get("error"):
         return []
     failing = list(s.get("failing") or [])
@@ -273,9 +274,62 @@ def _stop_requested(stop) -> bool:
     return (stop is not None and stop.is_set()) or _stopping
 
 
+def _previous_ids(gate: dict, previous: dict | None, cmd: str) -> list[str]:
+    """SPEC-0358: the ids a `failed_first` prelude runs: those of the previous round's result for
+    this gate when it was red (not interrupted, not timed out) with a complete pytest list.
+    Reads only the previous entry's `summary`; `cmd` is the current round's expanded command."""
+    if not gate.get("failed_first") or not isinstance(previous, dict):
+        return []
+    if previous.get("ok") or previous.get("interrupted") or previous.get("timed_out"):
+        return []
+    return _targeted_ids(gate, previous.get("summary"), cmd)
+
+
 def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
                           log_rel: str | None = None, stop: threading.Event | None = None,
-                          deadline: float | None = None) -> GateResult:
+                          deadline: float | None = None,
+                          previous: dict | None = None) -> GateResult:
+    """`run_gate` with the SPEC-0358 `failed_first` prelude, then the SPEC-0289 ladder.
+
+    With `gate["failed_first"]` and a qualifying `previous` result (see `_previous_ids`) the round
+    starts by running the previous failing ids (attempt kind `failed-first`, log `*.ff.log`).
+    A red prelude whose exit code is not in TARGETED_UNRESOLVED_EXITS reproduced the failure and
+    is the gate's result: no main run, no ladder. A stop during it gives an interrupted result.
+    Otherwise (green, timed out, ids not runnable) the normal run and ladder follow, with the
+    prelude first in `attempts`.
+    """
+    log_path = Path(log_path)
+    ids = _previous_ids(gate, previous, expand_cmd(gate["cmd"], **placeholders))
+    if not ids or _stop_requested(stop):
+        return _run_ladder(gate, worktree, env, log_path, placeholders, log_rel=log_rel,
+                           stop=stop, deadline=deadline)
+    ppath = log_path.with_name(f"{log_path.stem}.ff.log")
+    prel = f"{Path(log_rel).with_suffix('').as_posix()}.ff.log" if log_rel else str(ppath)
+    cmd = targeted_cmd(gate, expand_cmd(gate["cmd"], **placeholders), ids, placeholders)
+    pre = run_gate(gate, worktree, env, ppath, placeholders, log_rel=prel, cmd_override=cmd,
+                   attempt=-1)
+    rec = _attempt(-1, "failed-first", pre)
+    if pre.interrupted or (not pre.ok and not pre.timed_out
+                           and pre.exit_code not in TARGETED_UNRESOLVED_EXITS):
+        return replace(pre, attempts=(rec,))        # reproduced, or cut by a stop (SPEC-0229)
+    if _stop_requested(stop):                       # a stop between the prelude and the main run
+        return replace(pre, ok=False, interrupted=True, attempts=(rec,))
+    final = _run_ladder(gate, worktree, env, log_path, placeholders, log_rel=log_rel,
+                        stop=stop, deadline=deadline)
+    attempts = (rec, *(final.attempts or (_attempt(0, "full", final),)))
+    final = replace(final, attempts=attempts,
+                    duration_s=round(final.duration_s + pre.duration_s, 3))
+    try:
+        error = json.loads(log_path.with_suffix(".json").read_text(encoding="utf-8")).get("error")
+    except (OSError, ValueError):
+        error = None
+    _rewrite_sidecar(log_path, final, error)
+    return final
+
+
+def _run_ladder(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
+                log_rel: str | None = None, stop: threading.Event | None = None,
+                deadline: float | None = None) -> GateResult:
     """`run_gate` plus the SPEC-0289 retry ladder (`gate["retries"]`).
 
     A failing pytest gate with a complete failing-id list first re-runs only those ids: a
@@ -287,12 +341,11 @@ def run_gate_with_retries(gate: dict, worktree, env: dict, log_path, placeholder
     keeps the ladder inside the runner's busy budget: a full rerun does not start when it
     would, going by attempt 0's duration, end after it. A targeted rerun that exits with a
     pytest usage/no-tests code never ran the ids, so it is not "reproduced": the ladder goes on."""
-    log_path = Path(log_path)
     first = run_gate(gate, worktree, env, log_path, placeholders, log_rel=log_rel)
     retries = int(gate.get("retries") or 0)
     if first.ok or first.interrupted or first.timed_out or retries <= 0:
         return first
-    ids = _targeted_ids(gate, first)
+    ids = _targeted_ids(gate, first.summary, first.cmd)
     attempts = [_attempt(0, "full", first)]
     verdict = last = first
     targeted_passed = stopped = False
@@ -433,7 +486,8 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
                 return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
                                slot_wait_s=hold.waited_s)
             if hold.pool is None:
-                run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop)
+                run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop,
+                                    tier)
                 return replace(run, slot_wait_s=hold.waited_s)
             out = RG.run(hold.pool, project_cfg, campaign_state, cfg, seq, owner, stop)
         waited = round(hold.waited_s + out.worker_wait_s, 1)
@@ -445,13 +499,14 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
             if fb.interrupted:
                 return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
                                slot_wait_s=waited)
-            run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop)
+            run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop,
+                                tier)
         return replace(run, slot_wait_s=waited)
     finally:
         store.clear_child_tmp(cfg, cid, owner)
 
 
-def _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop) -> GateRun:
+def _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier) -> GateRun:
     """The local run under a held slot and the caller's `gate-<seq>` claim."""
     env = gate_env(cfg, campaign_state, seq)
     ph = placeholders(campaign_state)
@@ -462,14 +517,22 @@ def _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop) ->
     cut = False
     from .events import settings as events_settings     # lazy: events imports the queue lazily
     deadline = t0 + float(events_settings(cfg)["gate_budget_s"])   # SPEC-0289: retries stay in it
+    # SPEC-0358: the loop tier hands each `failed_first` gate its previous same-name result
+    # (`last_gate` is the latest run of either tier; a close run's entries have other names)
+    previous = {}
+    if tier == "loop":
+        for r in (campaign_state.get("last_gate") or {}).get("results") or []:
+            if isinstance(r, dict) and r.get("name"):
+                previous[r["name"]] = r
     for gate in project_cfg.get("gates") or []:
         if stop is not None and stop.is_set():      # SPEC-0229: no next gate after a stop
             cut = True
             break
         rel = f"gates/{seq:03d}-{gate['name']}.log"
         results.append(run_gate_with_retries(gate, worktree, env, cdir / rel, ph,
-                                             log_rel=rel, stop=stop,
-                                             deadline=deadline))
+                                             log_rel=rel, stop=stop, deadline=deadline,
+                                             previous=(previous.get(gate["name"])
+                                                       if gate.get("failed_first") else None)))
     ok = all(r.ok for r in results if r.required)
     return GateRun(seq, ok, tuple(results), started_at, round(time.monotonic() - t0, 3),
                    interrupted=cut or any(r.interrupted for r in results))
