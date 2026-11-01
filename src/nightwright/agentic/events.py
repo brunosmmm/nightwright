@@ -35,6 +35,7 @@ EVENT_TYPES = {
     "waiting": ("from",),
     "gate_waiting": ("slots", "held", "waited_s"),                # SPEC-0309
     "worker_failed": ("worker", "stage", "error", "job_id"),      # SPEC-0338
+    "worker_job_lost": ("worker", "job_id", "attempt", "reason"),  # SPEC-0341
     "parked": ("reason", "detail", "resume_to"),
     "resumed": ("to",),
     "merged": ("merged_sha",),
@@ -354,6 +355,9 @@ def _project_ledger_event(ev: dict, st: dict, sett: dict, warned: bool):
                                 "waited_s": ev.get("waited_s")}
     if t == "worker_failed":                                # SPEC-0338: informational
         return "worker_failed", {k: ev.get(k) for k in ("worker", "stage", "error", "job_id")}
+    if t == "worker_job_lost":                              # SPEC-0341: informational
+        return "worker_job_lost", {k: ev.get(k) for k in ("worker", "job_id", "attempt",
+                                                            "reason")}
     if t == "backlog":
         return "backlog", {"ready": ev.get("ready"), "blocked_by": ev.get("blocked_by") or []}
     if t == "rebase_resolved":                              # SPEC-0221

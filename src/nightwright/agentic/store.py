@@ -287,13 +287,23 @@ def _last_seq(path: Path) -> int:
     return last
 
 
+EVENT_UID_SCAN = 200          # SPEC-0341: how far back `append_event` looks for an `event_uid`
+
+
 def append_event(cfg, campaign_id, type, payload=None, *, by="tick") -> dict:
     """Append one `nw.ledger.event.v1` line `{schema, ts, seq, campaign, type, by, **payload}`
     under the campaign lock, with `O_APPEND` and a single `write()` so lines never interleave.
     The record is validated first (SPEC-0192): an unknown type or a missing per-type key
-    raises ValueError and nothing is written."""
+    raises ValueError and nothing is written. SPEC-0341: a payload carrying `event_uid` is
+    skipped (the existing record is returned) when that uid is already among the ledger's
+    last `EVENT_UID_SCAN` entries; a payload without one is appended with no scan."""
     path = _ledger_path(cfg, campaign_id)
     with item_lock(cfg, campaign_id):
+        uid = (payload or {}).get("event_uid")
+        if uid is not None:
+            for old in reversed(read_ledger(cfg, campaign_id, tail=EVENT_UID_SCAN)):
+                if old.get("event_uid") == uid:
+                    return old
         rec = {"schema": SC.LEDGER_SCHEMA, "ts": now_iso(), "seq": _last_seq(path) + 1,
                "campaign": campaign_id, "type": type, "by": by}
         rec.update(payload or {})

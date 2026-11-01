@@ -46,6 +46,7 @@ from . import gitops as git
 from . import lease as L
 from . import personas as PS
 from . import project as P
+from . import remote_jobs as RJ
 from . import sentinel as SN
 from . import spec_review as SR
 from . import spec_write as SW
@@ -1985,8 +1986,12 @@ def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
             pcfg, raises = P.campaign_gate_config(ctx.cfg, pcfg, worktree)
             if raises:
                 res.events_before.append(("finding", P.gate_limits_finding(raises)))
-        res.gate_run = G.run_all(pcfg, state, ctx.cfg, seq=G.next_gate_seq(ctx.cfg, state["id"]),
-                                 stop=ctx.stop, tier="loop")     # SPEC-0328
+        # SPEC-0341: a live remote job record (a restart, a detach) is adopted under its own
+        # seq; `next_gate_seq` would see the files its applied frames wrote and skip past it
+        live = RJ.live_gate(ctx.cfg, state["id"])
+        seq = int(live["seq_or_run"]) if live else G.next_gate_seq(ctx.cfg, state["id"])
+        res.gate_run = G.run_all(pcfg, state, ctx.cfg, seq=seq, stop=ctx.stop,
+                                 tier="loop", adopt=live)     # SPEC-0328
     except (ValueError, OSError) as e:
         res.error = str(e)
     return res
@@ -2257,6 +2262,16 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             return row
         counters["gate_runs"] += 1
         payload = G.as_payload(run)
+        if run.event_uid:                   # SPEC-0341: a replayed job's `gate` lands once
+            payload["event_uid"] = run.event_uid
+        if run.job_id:
+            # SPEC-0341: the job record goes `done` only once its `gate` event is written
+            _finish = finish
+
+            def finish(to, reason, **kw):
+                out = _finish(to, reason, **kw)
+                RJ.mark_done(cfg, run.job_id)
+                return out
         events.append(("gate", payload))
         state["last_gate"] = payload
         # SPEC-0359: the green loop result a clean close may reuse; any red loop run clears it
@@ -3551,19 +3566,32 @@ class StepPool:
         """Atomically detach every remaining persona run, so the loop can exec. None when any
         unfinished task is in-process (gate / close / FakeRunner) or in `spawning` /
         `collect`; otherwise `pool.flights` is empty afterwards and the result lists
-        `{campaign, run_ids}` of the runs left running."""
+        `{campaign, run_ids}` of the runs left running. SPEC-0341: a gate step attached to an
+        async remote job counts as detachable too; it is told to detach and its job record
+        stays live for the next runner to adopt."""
+        from . import remote_gates as RG
+
+        def remote(cid, step) -> bool:
+            return step.kind == "gate" and RG.attached(cid)
         with self.lock:
-            for fl in self.flights.values():
+            for cid, fl in self.flights.items():
                 if fl.done():                   # finished, not harvested yet: harvest, never drop
                     return None
-                for _step, fut, hk in fl.tasks:
-                    if not fut.done() and (hk is None or hk.phase not in ("wait",)):
-                        return None
+                for step, fut, hk in fl.tasks:
+                    if fut.done() or (hk is not None and hk.phase == "wait"):
+                        continue
+                    if hk is None and remote(cid, step):
+                        continue
+                    return None
             out = []
             for cid in list(self.flights):
                 fl = self.flights.pop(cid)
-                for _step, fut, hk in fl.tasks:
-                    if not fut.done():
+                for step, fut, hk in fl.tasks:
+                    if fut.done():
+                        continue
+                    if hk is None:
+                        RG.detach_attached(cid)
+                    else:
                         hk.detach.set()
                 out.append({"campaign": cid, "run_ids": [r for r, _ in fl.runs]})
             return out
@@ -7356,9 +7384,11 @@ def apply_park(cfg, plan: dict) -> dict:
                                                   "author": by}, by=by)
             store.write_state(cfg, cid, st)
             return st
-        return _park(cfg, st, "human", plan["reason"], plan["resume_to"], by=by,
-                     extra={"decision_request": plan["decision"]} if plan.get("decision")
-                     else None)
+        out = _park(cfg, st, "human", plan["reason"], plan["resume_to"], by=by,
+                    extra={"decision_request": plan["decision"]} if plan.get("decision")
+                    else None)
+    _cancel_remote_jobs(cfg, cid)               # SPEC-0341: the park ends the gate step
+    return out
 
 
 def _require_decision(cfg, st: dict, by, decision):
@@ -7546,8 +7576,21 @@ def apply_abandon(cfg, plan: dict) -> dict:
             _release_idea_link(cfg, st, events)                        # SPEC-0292
         events.append(("close", {"mode": "abandoned", "merged_sha": None, "pr_url": None,
                                  "gates_seq": None, "worktree_removed": remove}))
-        return _transition(cfg, st, "ABANDONED", "abandoned", by=by, extra_events=events,
-                           withdraw_reason=f"campaign abandoned by {by}")
+        out = _transition(cfg, st, "ABANDONED", "abandoned", by=by, extra_events=events,
+                          withdraw_reason=f"campaign abandoned by {by}")
+    _cancel_remote_jobs(cfg, cid)
+    return out
+
+
+def _cancel_remote_jobs(cfg, cid) -> None:
+    """SPEC-0341: an abandon or a park ends the campaign's remote gate jobs (outside the item
+    lock: each cancel waits up to 10 s for the job's `done`)."""
+    if not RJ.live(cfg, cid):
+        return
+    from . import remote_gates as RG
+    for job_id in RG.cancel_campaign(cfg, cid):
+        store.append_event(cfg, cid, "note", {"text": f"cancelled remote job {job_id}",
+                                              "author": "queue"})
 
 
 # ---- gc (SPEC-0275) -----------------------------------------------------------------------

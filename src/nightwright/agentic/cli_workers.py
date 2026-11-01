@@ -97,6 +97,8 @@ def workers_add(cfg, name, dest, slots, nw_cmd, identity, no_check):
                 err_console.print(Text(f"error: {e}", style="red"))
             raise click.ClickException(f"{name} failed its check; nothing registered "
                                        "(--no-check to register anyway)")
+        if isinstance(res.get("info"), dict):   # SPEC-0341: the cached `info` (features)
+            rec["info"] = res["info"]
 
     def add(records):
         if any(r["name"] == name for r in records):

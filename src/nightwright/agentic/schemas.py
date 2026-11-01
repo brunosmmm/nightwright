@@ -48,6 +48,7 @@ EVENT_KEYS: dict[str, tuple[str, ...]] = {
     # `failing` is required too when `ok` is false (see `required_keys`)
     "sentinel": ("project", "ok", "sha", "suspects"),
     "worker_failed": ("worker", "stage", "error", "job_id"),      # SPEC-0338
+    "worker_job_lost": ("worker", "job_id", "attempt", "reason"),  # SPEC-0341
     "park": ("reason", "detail", "resume_to"),      # + optional `auto` (SPEC-0302)
     "auto_resume_failed": ("rule", "error"),        # SPEC-0302
     "resume": ("to", "note", "cap_usd", "loops_reset"),

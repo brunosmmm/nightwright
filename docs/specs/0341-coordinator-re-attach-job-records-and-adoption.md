@@ -1,7 +1,7 @@
 ---
 id: SPEC-0341
 title: "Coordinator re-attach, job records and adoption after a restart"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -176,33 +176,33 @@ without re-attach or adoption.
 
 ## Acceptance criteria
 
-- [ ] Killing the coordinator's SSH process mid-job does not stop the job. The coordinator
+- [x] Killing the coordinator's SSH process mid-job does not stop the job. The coordinator
       re-attaches and the final `gates/` files and events equal those of an uninterrupted
       run, with no duplicate events.
-- [ ] A coordinator restart (a new process) during a remote gate job adopts the job from its
+- [x] A coordinator restart (a new process) during a remote gate job adopts the job from its
       record and completes the gate step without re-running it; the adopted `gate` event's
       `gate_seq` equals the record's seq and no `gates/<seq+1>-*` file exists.
-- [ ] A crash after `done` is read but before `_apply` writes the `gate` event leaves the
+- [x] A crash after `done` is read but before `_apply` writes the `gate` event leaves the
       record non-final; the next start replays it and writes exactly one `gate` event.
-- [ ] An adopted gate step's final `GateRun` includes the results of frames applied before
+- [x] An adopted gate step's final `GateRun` includes the results of frames applied before
       the restart.
-- [ ] `store.append_event` skips an append whose `event_uid` is already in the last 200
+- [x] `store.append_event` skips an append whose `event_uid` is already in the last 200
       ledger entries, and appends payloads without `event_uid` unchanged.
-- [ ] Killing the worker's job process yields `lost`, then a `worker_job_lost` ledger record
+- [x] Killing the worker's job process yields `lost`, then a `worker_job_lost` ledger record
       and a `worker_job_lost` stream event, then a local run of the gate step.
-- [ ] With the transport failing every call, the step retries with 2, 4, 8 … 60 s backoff,
+- [x] With the transport failing every call, the step retries with 2, 4, 8 … 60 s backoff,
       sends `poll --renew` before each re-attach, and gives up with
       `worker_job_lost {reason: "unreachable"}` once `worker_ttl_s` has passed.
-- [ ] A job past its record's `deadline_at` is given up with `reason: "deadline"`.
-- [ ] While adoption waits for a slot, it sends `poll --renew` every `job_lease_s / 3`, and
+- [x] A job past its record's `deadline_at` is given up with `reason: "deadline"`.
+- [x] While adoption waits for a slot, it sends `poll --renew` every `job_lease_s / 3`, and
       stops waiting on `done` (replay only) or `lost` (give up).
-- [ ] An abandon cancels the campaign's remote jobs and their processes end; a runner stop
+- [x] An abandon cancels the campaign's remote jobs and their processes end; a runner stop
       leaves them running and the next start adopts them.
-- [ ] A `code_changed` runner exit during a remote gate leaves the record non-final and the
+- [x] A `code_changed` runner exit during a remote gate leaves the record non-final and the
       job running; the restarted runner adopts it.
-- [ ] A worker whose cached `info` lacks `async` (or has no cached `info`) gets a `check`
+- [x] A worker whose cached `info` lacks `async` (or has no cached `info`) gets a `check`
       warning and its gates run through `gate-job`.
-- [ ] With no workers registered, behaviour is unchanged (SPEC-0338's golden test still
+- [x] With no workers registered, behaviour is unchanged (SPEC-0338's golden test still
       passes).
 
 ## Test plan
@@ -245,6 +245,106 @@ without re-attach or adoption.
   3. Reboot the worker mid-gate. Expect `worker_job_lost` and a local run.
 - **Regression guard:** affected tests while iterating; SPEC-0338's tests run unchanged.
 
+### Test record (2026-11-01)
+
+- `tests/test_remote_job_records.py` (new, 18 tests, offline, SPEC-0338's loopback worker
+  registered with a cached `info` listing `async`; the third gate blocks on a `GO` file so a
+  test can cut in mid-job). Two runs with `-n 8`: 18 passed each.
+  - **drop:** the fake `ssh` relays 3 frames of the first `attach` and exits 255; the step
+    sleeps one 2 s backoff, sends `poll --renew`, re-attaches `--from 3`, and finishes with one
+    `gate` event and no repeated `event_uid`. Every `gates/` file equals the decoded payload of
+    the worker's frame, byte for byte.
+  - **restart:** `_do_gate` runs in a subprocess, which is SIGKILLed after the record exists and
+    the g1 and g2 frames are applied. The next `_do_gate` + `_apply` adopts the job: `gate_seq`
+    equals the record's seq (1), there is no `gates/002-*`, the record is `done`, the worker has
+    one job dir and `nw worker jobs --json` shows it `done` (nothing re-ran).
+  - **adoption replay:** in the same test, the adopted `GateRun` has all three results.
+  - **restart before apply:** the step returns and its `_apply` never runs (the test is the
+    hook between the two); the record stays live with no `gate` event. The next step + `_apply`
+    writes exactly one `gate` event, with the first step's `event_uid`, and sets `done`.
+    Appending that payload again is dropped.
+  - **lost:** the job process is SIGKILLed; `worker_job_lost {reason: "lost", attempt: 1}`
+    lands in the ledger and, after `events.sync`, in the stream. The record ends `local` and the
+    gates run locally.
+  - **unreachable:** `attach`/`poll`/`cancel` exit 255, with a fake clock and sleep. The sleeps
+    are 2, 4, 8, 16, 32, 60, 60, 60, 60 (302 s > `worker_ttl_s` 300). There is one `poll --renew`
+    per sleep, then `worker_job_lost {reason: "unreachable"}`, a local run and a cooldown.
+  - **deadline:** a detached record whose `deadline_at` is in the past gives up with
+    `reason: "deadline"` (no cooldown).
+  - **slot wait:** the worker's single slot is held. With `job_lease_s` 1.5, the polls come
+    ≥ 0.4 s apart (every 0.5 s); a `done` poll ends the wait with a replay on the worker, a
+    `lost` one with a give-up.
+  - **runner exits:** `stop` (the gates' sticky stop + `ctx.stop`) and `code_changed` (a real
+    `StepPool.try_detach_all`) leave the record `detached` and the worker job `running`. The
+    next runner adopts it with one `gate` event, no `worker_job_lost` and no `worker_failed`.
+    `try_detach_all` returns None while the step is still submitting.
+  - **abandon / park:** both leave the record `cancelled`, the worker's last frame is `done`
+    with `interrupted: true`, and the job process exits.
+  - `append_event`: a duplicate `event_uid` is skipped, payloads without one are appended
+    unchanged, and a uid outside the last 200 entries is appended again.
+  - **old workers:** with no cached `info`, or an `info` without `async`, the gates run through
+    `gate-job` (job id `-a0`, no record). `check` caches `info` and warns when `async` is
+    missing.
+- Affected modules: `test_remote_gates.py` (SPEC-0338's golden test included, unchanged),
+  `test_workers_registry.py`, `test_worker_jobs.py`, `test_worker.py`, `test_agentic_queue.py`,
+  `test_agentic_events.py`, `test_agentic_quiet.py`, `test_skills.py`, `test_agentic_exit_paths.py`,
+  `test_agentic_codewatch.py`, `test_agentic_drain_signal.py` and the related agentic tests:
+  974 tests in one `-n 8` run. One SPEC-0340 test, `test_worker_jobs.py::test_cancel_a_running_job_then_cancel_a_done_one`, failed under that load and passed
+  when re-run alone; this spec does not change worker code. Everything else passed. The
+  full suite is left to gating.
+- Manual, on this host: the restart case was run on the loopback (the real forced command
+  `nw worker ssh-command`), as SPEC-0340 did. A read-only real call to the registered worker
+  `box` (`nw worker info --json` over its `ssh_argv`) shows it runs nightwright 0.1.0 with no
+  `features`. `remote_jobs.has_async` reads it as an old worker, so its gates keep `gate-job`,
+  and its forced command refuses `poll`. Manual steps 1-3 on the second machine therefore need
+  the worker upgraded first (Rollout step 1, a human action). They are left to the human and to
+  SPEC-0346's integration suite.
+- `python3 tools/spec_lint.py` passes.
+
+### As shipped (2026-11-01)
+
+- **Module split.** The records are `agentic/remote_jobs.py` (`nw.remote_job.v1`, atomic writes
+  under one flock). A final state is never replaced by a live one, so a cancel that lands while
+  a step still attaches wins. Records also carry `gates` (the gate names at submit, the order
+  `done` is checked against on adoption) and, after a give-up, `lost_reason`. The async step
+  (`submit`, `attach`, re-attach, `adopt`, `cancel_campaign`) lives in `remote_gates.py` next
+  to SPEC-0338's `gate-job` path. `run` picks it when the worker's cached `info` lists `async`.
+- **`deadline_at`** is `submitted_at` + the header's `timeout_s` + `worker_ttl_s`. The header's
+  `timeout_s` is SPEC-0338's job timeout (`gate_budget_s` + Σ `timeout_s` × (1 + `retries`),
+  capped at 4 h), the bound the worker itself uses. A plain sum of the gates' `timeout_s` would
+  give up on a gate that legitimately retries.
+- **Adoption lives in the gate step.** `_do_gate` looks up the campaign's live record before
+  `next_gate_seq`, so a campaign in GATING adopts on the next tick it is stepped. The tick
+  does no separate scan. A live record whose campaign leaves GATING without a park or an
+  abandon (a human `transition`) stays live until its worker lease runs out. A re-gate under
+  the adopted seq takes the `gate-<seq>` tmp claim non-exclusively, because the dead runner's
+  claim dir may still be there.
+- **Code-change exit.** SPEC-0231's exec waits for in-process steps. A gate step that is in
+  its attach loop (`remote_gates.attached`) now counts as detachable in
+  `StepPool.try_detach_all`: the step is told to detach and its result is never applied. A
+  step still preparing or submitting is waited for, as before. Signal, `ctx.stop` and crash
+  exits detach through the stop flag (or simply die), and `_apply` discards the interrupted
+  run as SPEC-0229 does for a stop.
+- **Give-up details.** `unreachable` and `lost` put the worker in SPEC-0338's cooldown;
+  `deadline` does not. A worker removed from the registry before adoption gives up as
+  `unreachable` with no cancel. Any other failure of a recorded job (an `error` frame, a
+  protocol error, a `done` with tree changes, a worker-side interrupt such as a lapsed lease)
+  takes SPEC-0338's `worker_failed` path, plus a best-effort cancel, and the record goes
+  `local`. A `done` with `interrupted: true` on a `cancelled` record is returned as an
+  interrupted run, not a fallback.
+- **Park / abandon.** An immediate `apply_park` and `apply_abandon` call
+  `remote_gates.cancel_campaign` after their state write, outside the item lock, and note
+  each cancelled job. A deferred park (a loop holds the lease) lets the running step finish,
+  as before.
+- **`nw queue gates`** (`run_and_log`) on an async worker writes the `gate` event with its
+  `event_uid` and marks the record `done`, so the loop never adopts a debug run. A debug run
+  cut by Ctrl-C cancels its own job.
+- **`info` cache.** `workers.check` stores the probed `info` on the registry record, and
+  `nw workers add` stores it on the new record. There is no per-tick refresh: the cache
+  changes only on `check`/`add`, within the "at most once per tick" bound.
+- `worker_job_lost` is a *hold* type in `quiet.RULES` and in `nw-conduct`'s quiet-stream list.
+  `docs/WORKFLOW.md` describes re-attach and adoption.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
@@ -258,11 +358,11 @@ Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

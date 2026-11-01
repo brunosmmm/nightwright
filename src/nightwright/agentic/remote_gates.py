@@ -26,7 +26,9 @@ import zlib
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
+from . import gate_slots
 from . import gates as G
+from . import remote_jobs as RJ
 from . import store
 from . import workers as WK
 from . import worker as W
@@ -471,10 +473,13 @@ def _bad_result_field(result: dict) -> str | None:
     return None
 
 
-def _take_gate(frame: dict, gates_dir: Path, seq: int, names: set) -> G.GateResult:
+def _take_gate(frame: dict, gates_dir: Path, seq: int, names: set,
+               write: bool = True) -> G.GateResult:
     """Write one `gate` frame's files under `gates/` and return its `GateResult` with the
     campaign-relative log and a tail recomputed from the local copy. Worker data a
-    `GateResult` cannot hold is a protocol failure, never an exception out of `run_all`."""
+    `GateResult` cannot hold is a protocol failure, never an exception out of `run_all`.
+    `write=False` (SPEC-0341: a frame at or below the record's cursor, already applied before
+    a restart) checks the frame and rebuilds the result without rewriting the files."""
     result, files = frame.get("result"), frame.get("files")
     if not isinstance(result, dict) or not isinstance(files, dict) \
             or not isinstance(result.get("name"), str) or result["name"] not in names:
@@ -488,7 +493,9 @@ def _take_gate(frame: dict, gates_dir: Path, seq: int, names: set) -> G.GateResu
     for name, data in files.items():
         if not isinstance(name, str) or not ok_name.match(name) or not isinstance(data, str):
             raise RemoteFailure("protocol", f"gate frame names a bad file {name!r}")
-        (gates_dir / name).write_bytes(_inflate(name, data))
+        raw = _inflate(name, data)
+        if write:
+            (gates_dir / name).write_bytes(raw)
     log = gates_dir / f"{stem}.log"
     try:
         r = G.GateResult(**{k: result[k] for k in _GATE_FIELDS if k in result})
@@ -665,25 +672,462 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
         stop: threading.Event | None = None) -> Outcome:
     """One remote gate run under the caller's claim (`owner`) and remote slot. A transport
     failure is recorded (`worker_failed`, the worker's cooldown, this run's `gates/<seq>-*`
-    files deleted) and returned with `run=None`, for the caller's local fallback."""
+    files deleted) and returned with `run=None`, for the caller's local fallback. SPEC-0341: a
+    worker whose cached `info` lists `async` gets `submit` + `attach` with a job record
+    (`_run_async`); any other keeps the synchronous `gate-job`."""
     cid = campaign_state["id"]
     job_id = f"{cid}-gate-{seq:03d}-a0"
     bundle = store.child_tmp(cfg, cid, owner) / "job.bundle"
     started_at, t0 = store.now_iso(), time.monotonic()
+    rec = job = None
     try:
         _check_stop(stop)
         rec = next((w for w in WK.load(cfg) if w["name"] == worker), None)
         if rec is None:
             raise RemoteFailure("registry", f"worker {worker!r} is no longer registered",
                                 cooldown=False)
+        if RJ.has_async(rec):
+            RJ.discard(cfg, RJ.gate_job_id(cid, seq))   # a final record of an earlier run
+            job_id = RJ.gate_job_id(cid, seq)
+            return _run_async(rec, project_cfg, campaign_state, cfg, seq, job_id, bundle, stop)
         header = prepare(rec, project_cfg, campaign_state, cfg, seq, job_id, bundle, stop=stop)
         _check_stop(stop)                       # no job is started only to be cancelled
         return _dispatch(rec, header, bundle, cfg, cid, seq, stop)
     except _Stopped:                            # SPEC-0229: nothing was sent, nothing ran
         return Outcome(G.GateRun(seq, False, (), started_at, round(time.monotonic() - t0, 3),
                                  interrupted=True))
+    except _GiveUp as g:
+        return _give_up(cfg, cid, g.worker, g.rec, seq, g.stage)
     except RemoteFailure as f:
+        job = RJ.read(cfg, job_id) if rec is not None and RJ.has_async(rec) else None
+        if job is not None:                     # submitted: cancel it, the record goes `local`
+            return _failed(cfg, cid, rec, job, seq, f)
         _record_failure(cfg, cid, worker, job_id, seq, f)
         return Outcome(None, f.worker_wait_s, f)
     finally:
         bundle.unlink(missing_ok=True)
+
+
+# ---- async jobs: submit, attach, re-attach, adoption, cancel (SPEC-0341) --------------------
+
+BACKOFF_START_S = 2.0               # re-attach backoff: 2, 4, 8, ... capped at BACKOFF_MAX_S
+BACKOFF_MAX_S = 60.0
+CANCEL_GRACE_S = 10.0               # a cancel attaches this long for the job's `done`
+CALL_TIMEOUT_S = 60.0               # one `poll` / `cancel` call
+_now = time.time                    # the wall clock of `last_seen_at` / `deadline_at` (tests swap it)
+
+
+def _sleep(seconds: float, stop) -> bool:
+    """Wait `seconds`; True when a stop (SPEC-0229) cut the wait short. Tests swap it."""
+    end = time.monotonic() + seconds
+    while not G._stop_requested(stop):
+        left = end - time.monotonic()
+        if left <= 0:
+            return False
+        time.sleep(min(_POLL_S, left))
+    return True
+
+
+class _Either:
+    """`stop` or a code-change detach (`detach_attached`): what the attach loop checks."""
+
+    def __init__(self, *events):
+        self.events = [e for e in events if e is not None]
+
+    def is_set(self) -> bool:
+        return any(e.is_set() for e in self.events)
+
+
+_ATTACHED: dict = {}                # campaign -> the detach Event of its step's attach loop
+_ATTACHED_LOCK = threading.Lock()
+
+
+def attached(cid) -> bool:
+    """A gate step of `cid` is in its attach loop: the job lives on the worker, so the runner
+    may exec without waiting for it (SPEC-0231 code-change restart)."""
+    with _ATTACHED_LOCK:
+        return cid in _ATTACHED
+
+
+def detach_attached(cid) -> bool:
+    """Ask `cid`'s attached step to detach (its record stays live); False when none is."""
+    with _ATTACHED_LOCK:
+        ev = _ATTACHED.get(cid)
+    if ev is None:
+        return False
+    ev.set()
+    return True
+
+
+class _GiveUp(RemoteFailure):
+    """The coordinator gives up on an async job (`stage` is the reason: `unreachable`, `lost`,
+    `deadline`): `worker_job_lost`, then the local fallback."""
+
+    def __init__(self, reason: str, worker: dict | None, rec: dict):
+        super().__init__(reason, f"remote job {rec['job_id']}: {reason}",
+                         cooldown=reason != "deadline")
+        self.worker, self.rec = worker, rec
+
+
+def _argv(worker: dict, *args) -> list[str]:
+    return worker["ssh_argv"] + [worker["ssh"], worker["nw"], "worker", *[str(a) for a in args]]
+
+
+def _lines(raw: bytes) -> list[dict]:
+    out = []
+    for ln in raw.splitlines():
+        try:
+            rec = json.loads(ln.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+def _call(worker: dict, *args, timeout: float = CALL_TIMEOUT_S, input: bytes | None = None):
+    """One short SSH call: `(returncode, JSON lines)`, or None when SSH could not run or timed
+    out."""
+    try:
+        p = subprocess.run(_argv(worker, *args), input=input, capture_output=True,
+                           timeout=timeout, start_new_session=True,
+                           stdin=None if input is not None else subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return p.returncode, _lines(p.stdout), p.stderr
+
+
+def _status_of(lines: list[dict]) -> str | None:
+    st = [r for r in lines if r.get("type") == "status"]
+    return str(st[-1].get("state")) if st else None
+
+
+def poll(worker: dict, job_id: str, after: int = 0) -> str | None:
+    """`poll JOB --from N --renew`: the job's state (renewing its lease), None when the worker
+    could not be reached."""
+    got = _call(worker, "poll", job_id, "--from", int(after), "--renew")
+    if got is None or got[0] not in (0, 1):     # 1: an unknown job, with its status line
+        return None
+    return _status_of(got[1])
+
+
+def _submit(worker: dict, header: dict, bundle: Path, cfg) -> None:
+    """`nw worker submit` with the header line and the bundle on stdin; returns once the worker
+    printed `accepted` (or the current state of an identical earlier submit)."""
+    data = (json.dumps(header, ensure_ascii=False) + "\n").encode("utf-8")
+    if header["bundle_bytes"]:
+        data += bundle.read_bytes()
+    upload_s = settings(cfg)["slot_wait_s"] + header["bundle_bytes"] / UPLOAD_MIN_BPS
+    try:
+        p = subprocess.run(_argv(worker, "submit"), input=data, capture_output=True,
+                           timeout=upload_s, start_new_session=True)
+    except subprocess.TimeoutExpired:
+        raise RemoteFailure("upload", f"`nw worker submit` did not answer within {upload_s:g}s")
+    except OSError as e:
+        raise RemoteFailure("ssh", f"ssh failed to start: {e}")
+    lines = _lines(p.stdout)
+    err = next((r for r in lines if r.get("type") == "error"), None)
+    if err is not None:
+        stage = str(err.get("stage") or "error")
+        raise RemoteFailure(stage, str(err.get("error") or ""),
+                            cooldown=stage not in ("claim", "validate"))
+    state = _status_of(lines)
+    if p.returncode != 0 or state not in ("accepted", "running", "done"):
+        tail = (p.stderr or b"").decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
+        raise RemoteFailure("ssh", f"`nw worker submit` failed (exit {p.returncode}, state "
+                                   f"{state!r}): {tail[0]}")
+
+
+def _run_async(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int,
+               job_id: str, bundle: Path, stop) -> Outcome:
+    """Prepare, submit (attempt 1), write the job record, then follow the job."""
+    cid = campaign_state["id"]
+    header = prepare(worker, project_cfg, campaign_state, cfg, seq, job_id, bundle, stop=stop)
+    header["attempt"] = 1
+    _check_stop(stop)
+    submitted = _now()
+    _submit(worker, header, bundle, cfg)
+    rec = RJ.create(cfg, job_id=job_id, campaign=cid, worker=worker["name"], attempt=1, seq=seq,
+                    submitted_at=submitted,
+                    deadline_at=submitted + header["timeout_s"]
+                    + RJ.settings(cfg)["worker_ttl_s"])
+    rec = RJ.update(cfg, job_id, gates=[g["name"] for g in header["payload"]["gates"]]) or rec
+    return _follow(cfg, worker, rec, project_cfg, seq, stop)
+
+
+class _Job:
+    """The frames of one job, applied in `n` order. `seen` is the last `n` taken in this
+    process (a re-attach resumes after it); `cursor` the last one whose files were written
+    (the record's; frames at or below it only rebuild their `GateResult`)."""
+
+    def __init__(self, cfg, worker: dict, rec: dict, project_cfg: dict, seq: int):
+        self.cfg, self.worker, self.rec, self.seq = cfg, worker, rec, seq
+        self.job_id = rec["job_id"]
+        self.order = list(rec.get("gates") or [g["name"] for g in project_cfg.get("gates") or []])
+        self.names = set(self.order)
+        self.gates_dir = store.gates_dir(cfg, rec["campaign"])
+        self.cursor = int(rec.get("cursor") or 0)
+        self.seen = 0
+        self.results: list = []
+        self.started, self.worker_wait = False, 0.0
+        self.started_at, self.t0 = store.now_iso(), time.monotonic()
+        self.last_seen = RJ.epoch(rec.get("last_seen_at")) or _now()
+
+    def saw_worker(self, **fields) -> None:
+        self.last_seen = _now()
+        RJ.update(self.cfg, self.job_id, last_seen_at=RJ.iso(self.last_seen), **fields)
+
+    def interrupted(self) -> G.GateRun:
+        return G.GateRun(self.seq, False, tuple(self.results), self.started_at,
+                         round(time.monotonic() - self.t0, 3), interrupted=True,
+                         worker=self.worker["name"], job_id=self.job_id)
+
+    def feed(self, frame: dict) -> G.GateRun | None:
+        """Apply one frame: files first, then the record's cursor. Returns the `GateRun` on
+        `done`. A repeated frame (`n` at or below `seen`) is skipped."""
+        n = frame.get("n")
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            raise RemoteFailure("protocol", f"`{frame['type']}` frame without a frame number")
+        if n <= self.seen:
+            return None
+        self.seen = n
+        kind, out = frame["type"], None
+        if kind == "error":
+            stage = str(frame.get("stage") or "error")
+            raise RemoteFailure(stage, str(frame.get("error") or ""),
+                                cooldown=stage not in ("claim", "validate"))
+        if kind == "started":
+            self.started = True
+            self.worker_wait = _num(frame, "slot_wait_s")
+        elif kind == "gate":
+            self.results.append(_take_gate(frame, self.gates_dir, self.seq, self.names,
+                                           write=n > self.cursor))
+        elif kind == "done":
+            out = self._done(frame, n)
+        if n > self.cursor:
+            self.cursor = n
+            self.saw_worker(cursor=n, state="attached")
+        return out
+
+    def _done(self, frame: dict, n: int) -> G.GateRun:
+        ok, cut = _flag(frame, "ok", required=True), _flag(frame, "interrupted", required=False)
+        duration = _num(frame, "duration_s")
+        if not self.started:
+            self.worker_wait = _num(frame, "slot_wait_s")
+        if cut:
+            if (RJ.read(self.cfg, self.job_id) or {}).get("state") == "cancelled":
+                return self.interrupted()       # an abandon or a park cancelled it: no fallback
+            raise RemoteFailure("interrupted", "the worker interrupted the run (signal or "
+                                               "lease)")
+        _check_changed(frame)
+        if [r.name for r in self.results] != self.order:
+            raise RemoteFailure("protocol", f"`done` after results for "
+                                            f"{[r.name for r in self.results]}, not {self.order}")
+        ok = all(r.ok for r in self.results if r.required)
+        return G.GateRun(self.seq, ok, tuple(self.results),
+                         str(frame.get("started_at") or self.started_at), duration,
+                         worker=self.worker["name"], job_id=self.job_id,
+                         event_uid=f"{self.job_id}:{n}")
+
+
+def _attach(job: _Job, stop, deadline: float):
+    """One `attach JOB --from seen`: `("done", run)`, `("lost", None)`, `("stopped", None)`,
+    `("deadline", None)` or `("dropped", got_frames)` (the connection ended without `done`)."""
+    try:
+        proc = subprocess.Popen(_argv(job.worker, "attach", job.job_id, "--from", job.seen),
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, start_new_session=True)
+    except OSError:
+        return "dropped", False
+    lines: queue.Queue = queue.Queue()
+    got = False
+    try:
+        for target, stream in ((_reader, proc.stdout), (_drain, proc.stderr)):
+            threading.Thread(target=target,
+                             args=(stream, lines if target is _reader
+                                   else collections.deque(maxlen=5)), daemon=True).start()
+        while True:
+            if G._stop_requested(stop):
+                return "stopped", None
+            if _now() >= deadline:
+                return "deadline", None
+            try:
+                line = lines.get(timeout=_POLL_S)
+            except queue.Empty:
+                continue
+            if line is None:
+                return "dropped", got
+            if not line.strip():
+                continue
+            frame = _frame(line, job.job_id)
+            job.last_seen = _now()              # the worker answered (a replayed frame too)
+            if frame["type"] == "status":
+                state = frame.get("state")
+                if state in ("lost", "unknown"):
+                    return "lost", None
+                if state == "error":
+                    raise RemoteFailure("error", "the job ended in `error` before this attach")
+                continue                        # `done` past our cursor cannot happen: seen < n
+            run = job.feed(frame)
+            got = True
+            if run is not None:
+                return "done", run
+    finally:
+        _end(proc, 0.0)                         # attach never cancels the job
+        _close(proc.stdout)
+        _close(proc.stderr)
+
+
+def _follow(cfg, worker: dict, rec: dict, project_cfg: dict, seq: int, stop) -> Outcome:
+    """Attach until `done`. A dropped connection waits with backoff, then `poll --renew`s and
+    re-attaches after `seen`. Gives up (`_GiveUp`) when the worker reports the job lost, stays
+    unreachable past `worker_ttl_s` since `last_seen_at`, or the record's `deadline_at`
+    passes. A stop detaches: the record stays live for the next runner to adopt."""
+    job = _Job(cfg, worker, rec, project_cfg, seq)
+    detach_ev = threading.Event()
+    with _ATTACHED_LOCK:
+        _ATTACHED[rec["campaign"]] = detach_ev
+    stop = _Either(stop, detach_ev)
+    ttl = RJ.settings(cfg)["worker_ttl_s"]
+    deadline = RJ.epoch(rec.get("deadline_at")) or (_now() + MAX_JOB_TIMEOUT_S)
+    delay = BACKOFF_START_S
+
+    def detach() -> Outcome:
+        RJ.update(cfg, job.job_id, state="detached")
+        return Outcome(job.interrupted(), job.worker_wait)
+    try:
+        while True:
+            kind, val = _attach(job, stop, deadline)
+            if kind == "done":
+                return Outcome(val, job.worker_wait)
+            if kind == "stopped":
+                return detach()
+            if kind in ("lost", "deadline"):
+                raise _GiveUp(kind, worker, rec)
+            if val:                             # frames arrived: the next drop starts over
+                delay = BACKOFF_START_S
+            while True:
+                if _now() >= deadline:
+                    raise _GiveUp("deadline", worker, rec)
+                if _now() - job.last_seen > ttl:
+                    raise _GiveUp("unreachable", worker, rec)
+                if _sleep(delay, stop):
+                    return detach()
+                delay = min(delay * 2, BACKOFF_MAX_S)
+                state = poll(worker, job.job_id, job.seen)
+                if state is None:
+                    continue
+                job.saw_worker()
+                if state in ("lost", "unknown"):
+                    raise _GiveUp("lost", worker, rec)
+                break
+    except RemoteFailure as f:
+        f.worker_wait_s = job.worker_wait if job.started else 0.0
+        raise
+    finally:
+        with _ATTACHED_LOCK:
+            if _ATTACHED.get(rec["campaign"]) is detach_ev:
+                del _ATTACHED[rec["campaign"]]
+
+
+def _cancel(worker: dict, job_id: str) -> None:
+    """Best effort: `cancel JOB`."""
+    _call(worker, "cancel", job_id, timeout=CANCEL_GRACE_S)
+
+
+def _give_up(cfg, cid, worker: dict | None, rec: dict, seq: int, reason: str) -> Outcome:
+    """The record goes `lost` first, then `worker_job_lost`, a best-effort cancel, this run's
+    `gates/<seq>-*` files deleted, and `local`: the caller runs the gates locally."""
+    job_id = rec["job_id"]
+    RJ.update(cfg, job_id, state="lost", lost_reason=reason)
+    store.append_event(cfg, cid, "worker_job_lost",
+                       {"worker": rec["worker"], "job_id": job_id,
+                        "attempt": rec.get("attempt"), "reason": reason}, by="gates")
+    if worker is not None:
+        _cancel(worker, job_id)
+    for p in store.gates_dir(cfg, cid).glob(f"{seq:03d}-*"):
+        p.unlink(missing_ok=True)
+    if reason != "deadline":
+        set_cooldown(cfg, rec["worker"])
+    RJ.update(cfg, job_id, state="local")
+    return Outcome(None, 0.0, RemoteFailure(reason, f"remote job {job_id}: {reason}"))
+
+
+def _failed(cfg, cid, worker: dict, rec: dict, seq: int, f: RemoteFailure) -> Outcome:
+    """A transport or protocol failure of a recorded job: SPEC-0338's fallback, plus a
+    best-effort cancel and the record set `local`."""
+    _record_failure(cfg, cid, worker["name"], rec["job_id"], seq, f)
+    _cancel(worker, rec["job_id"])
+    RJ.update(cfg, rec["job_id"], state="local")
+    return Outcome(None, f.worker_wait_s, f)
+
+
+def adopt(rec: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int, stop,
+          on_wait=None) -> tuple[Outcome, float]:
+    """Re-enter a live record's job after a restart: re-acquire a slot in its worker's pool
+    (renewing the job lease with `poll --renew` every `job_lease_s / 3` while waiting), then
+    attach from frame 0, rebuilding every `GateResult` and writing only the files past the
+    record's cursor. A `done` poll ends the wait with a replay (no slot: nothing new runs); a
+    `lost` one gives up. Returns the outcome and the slot wait."""
+    cid = campaign_state["id"]
+    worker = next((w for w in WK.load(cfg) if w["name"] == rec.get("worker")), None)
+    if worker is None:                          # unregistered since: nobody to attach to
+        return _give_up(cfg, cid, None, rec, seq, "unreachable"), 0.0
+    quit_, wait_stop = threading.Event(), threading.Event()
+    verdict: dict = {}
+    every = RJ.settings(cfg)["job_lease_s"] / 3
+
+    def watch():
+        next_at = time.monotonic() + every
+        while not quit_.is_set():
+            if G._stop_requested(stop):
+                wait_stop.set()
+                return
+            if time.monotonic() >= next_at:
+                state = poll(worker, rec["job_id"], int(rec.get("cursor") or 0))
+                next_at = time.monotonic() + every
+                if state in ("done", "lost", "unknown"):
+                    verdict["state"] = state
+                    wait_stop.set()
+                    return
+            quit_.wait(min(_POLL_S, every))
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    try:
+        with gate_slots.acquire(cfg, cid, stop=wait_stop, on_wait=on_wait,
+                                pools=[(worker["name"], worker["slots"])]) as hold:
+            quit_.set()
+            watcher.join()
+            state = verdict.get("state")
+            if hold.interrupted and state is None:      # a stop: stay live for the next runner
+                RJ.update(cfg, rec["job_id"], state="detached")
+                return Outcome(G.GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
+                                         worker=worker["name"], job_id=rec["job_id"])),                     hold.waited_s
+            if hold.interrupted and state in ("lost", "unknown"):
+                raise _GiveUp("lost", worker, rec)
+            return _follow(cfg, worker, rec, project_cfg, seq, stop), hold.waited_s
+    except _GiveUp as g:
+        return _give_up(cfg, cid, worker, rec, seq, g.stage), 0.0
+    except RemoteFailure as f:
+        return _failed(cfg, cid, worker, rec, seq, f), 0.0
+    finally:
+        quit_.set()
+
+
+def cancel_campaign(cfg, cid, job_id: str | None = None) -> list[str]:
+    """SPEC-0341: an abandon or a park ends the campaign's remote jobs (only `job_id`, when
+    given): `cancel`, attach until `done` (`CANCEL_GRACE_S`), then the record's state
+    `cancelled`. Returns the job ids."""
+    out = []
+    workers = {w["name"]: w for w in WK.load(cfg)}
+    for rec in RJ.live(cfg, cid):
+        if job_id is not None and rec["job_id"] != job_id:
+            continue
+        RJ.update(cfg, rec["job_id"], state="cancelled")    # first: a live step reads it
+        worker = workers.get(rec.get("worker"))
+        if worker is not None:
+            _cancel(worker, rec["job_id"])
+            _call(worker, "attach", rec["job_id"], "--from", int(rec.get("cursor") or 0),
+                  timeout=CANCEL_GRACE_S)
+        out.append(rec["job_id"])
+    return out

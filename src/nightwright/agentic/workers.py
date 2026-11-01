@@ -255,7 +255,22 @@ def check(cfg, rec: dict) -> dict:
         # line) is not the forced one: later connections must not multiplex onto its master
         _close_master(w)
     out["ok"] = not out["errors"]
+    if isinstance(out["info"], dict):
+        _cache_info(cfg, w["name"], out["info"])
     return out
+
+
+def _cache_info(cfg, name: str, info: dict) -> None:
+    """SPEC-0341: keep the worker's last `info` on its registry record; the coordinator reads
+    its `features` from there (no cached `info` reads as a worker without `async`)."""
+    def fn(records):
+        for r in records:
+            if r.get("name") == name:
+                r["info"] = info
+    try:
+        update(cfg, fn)
+    except (OSError, ValueError):
+        pass                                    # an unreadable registry is reported elsewhere
 
 
 def _check(cfg, w: dict, out: dict) -> bool:
@@ -299,6 +314,11 @@ def _check(cfg, w: dict, out: dict) -> bool:
     elif info.get("git_sha") and mine.get("git_sha") and info["git_sha"] != mine["git_sha"]:
         out["warnings"].append(f"sha {str(info['git_sha'])[:12]} differs from "
                                f"the coordinator's {str(mine['git_sha'])[:12]}")
+    feats = info.get("features")
+    if not (isinstance(feats, list) and "async" in feats):     # SPEC-0341: still gate-job
+        out["warnings"].append("info lacks the `async` feature: gates run through the "
+                               "synchronous `gate-job`, without re-attach or adoption; "
+                               "upgrade nightwright on the worker")
     if not identity_ok(w.get("identity")):
         return False
     err, unbound = _forced_probe(w)        # even after another error: say which key ran it

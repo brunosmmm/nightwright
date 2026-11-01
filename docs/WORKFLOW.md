@@ -377,3 +377,19 @@ back locally without a cooldown. The upload of the header and bundle has its own
 the next run.
 `nw queue gates <campaign> --worker <name>` forces one worker (its cooldown ignored);
 `--local` never uses one. `nw workers off <name>` returns gates to local at any time.
+
+**Re-attach and adoption (SPEC-0341).** A worker whose cached `info` (written by
+`nw workers check` / `add`) lists the `async` feature gets `nw worker submit` and
+`attach --from <n>` instead of `gate-job`; `check` warns about a worker without it, which
+keeps the synchronous `gate-job`. Each such job has a record at
+`<data_dir>/agentic/remote-jobs/<job_id>.json` (`nw.remote_job.v1`: worker, attempt, gate seq,
+the last applied frame `cursor`, `state`, `deadline_at`, `last_seen_at`). A dropped
+connection backs off (2, 4, 8 … 60 s), runs `poll --renew` and re-attaches after its cursor;
+the step gives up, appending `worker_job_lost {worker, job_id, attempt, reason}` and running
+the gates locally, when the worker reports the job `lost`, stays unreachable longer than
+`agentic.workers.worker_ttl_s` (default 300), or the record's `deadline_at` passes. A runner
+exit (stop, code change, crash) leaves the job running on the worker: the next runner's gate
+step finds the campaign's live record before it picks a seq, attaches from frame 0 and
+finishes it under the same seq (rebuilding every result, rewriting no file already applied;
+the `gate` event's `event_uid` keeps it from being written twice). A park or
+`nw queue abandon` cancels the campaign's remote jobs.

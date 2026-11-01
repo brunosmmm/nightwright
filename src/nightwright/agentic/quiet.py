@@ -31,6 +31,8 @@ RULES = {
     "gate_waiting": "hold",
     # SPEC-0338: a remote gate run fell back to local (the fallback already ran the gates)
     "worker_failed": "hold",
+    # SPEC-0341: a remote gate job was given up on (the gate then ran locally)
+    "worker_job_lost": "hold",
     "backlog": "cond", "backlog_blocked_long": "cond", "conductor_ping": "cond",
     "runner_draining": "cond", "campaign_silent": "cond", "state_stuck": "cond", "parked": "cond",
     "park_undecided": "wake", "runner_dead": "wake", "lease_stale": "wake",

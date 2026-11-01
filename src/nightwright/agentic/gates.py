@@ -75,6 +75,8 @@ class GateRun:
     head: str | None = None     # SPEC-0359: worktree HEAD when the run started
     tree: str | None = None     # SPEC-0359: worktree HEAD^{tree} when the run started
     reused: tuple = ()          # SPEC-0359: close gates a green loop gate stood in for
+    job_id: str | None = None   # SPEC-0341: the async job's record (`remote_jobs`); None: none
+    event_uid: str | None = None    # SPEC-0341: the `gate` event's uid (`<job_id>:<n of done>`)
 
 
 def terminate_all() -> None:
@@ -497,7 +499,8 @@ def _claim_seq(cfg, cid, seq) -> tuple[int, str]:
 
 def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
             stop: threading.Event | None = None, tier: str | None = None,
-            worker: str | None = None, local: bool = False) -> GateRun:
+            worker: str | None = None, local: bool = False,
+            adopt: dict | None = None) -> GateRun:
     """Run every gate of `project_cfg` in the campaign's worktree; logs land at
     `gates/<seq:03>-<name>.log` under the campaign dir. `ok` = every *required* gate ok.
     The returned `GateRun.seq` is the seq actually used (higher than `seq` if it was taken).
@@ -508,7 +511,10 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
     SPEC-0338: the seq is claimed before the slot, and the slot comes from the registered
     workers' pools first (`remote_gates.pools_for`; `worker` names one, `local` uses none). A
     remote hold runs on the worker; a transport failure re-runs the gates locally under the
-    same seq. Without an enabled worker this is the local run it always was."""
+    same seq. Without an enabled worker this is the local run it always was.
+    SPEC-0341: `adopt` is the campaign's live remote job record (`seq` is its seq): the run
+    re-enters that job (`remote_gates.adopt`) instead of starting one; giving up on it falls
+    back locally as a transport failure does."""
     cid = campaign_state["id"]
     project_cfg = {**project_cfg, "gates": P.gates_for(project_cfg, tier)}
     worktree = (campaign_state.get("repo") or {}).get("worktree")
@@ -520,9 +526,22 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
                            {"slots": occ["slots"], "held": occ["held"], "waited_s": waited_s},
                            by="gates")
 
-    seq, owner = _claim_seq(cfg, cid, seq)
+    if adopt is None:
+        seq, owner = _claim_seq(cfg, cid, seq)
+    else:                                       # the dead runner's claim may still be there
+        owner = f"gate-{seq:03d}"
+        store.child_tmp(cfg, cid, owner, create=True)
     try:                                        # SPEC-0253: only the owner removes its dir
         pools = None
+        if adopt is not None:
+            from . import remote_gates as RG
+            head, tree = head_tree(worktree)    # SPEC-0359: adoption requires the same tree
+            out, held_s = RG.adopt(adopt, project_cfg, campaign_state, cfg, seq, stop, announce)
+            waited = round(held_s + out.worker_wait_s, 1)
+            if out.run is not None:
+                return replace(out.run, slot_wait_s=waited, head=head, tree=tree)
+            return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
+                             announce, waited, head=head, tree=tree)
         if not local:
             from . import remote_gates as RG    # lazy: remote_gates imports this module
             pools = RG.pools_for(cfg, project_cfg, campaign_state, seq=seq, worker=worker)
@@ -539,17 +558,22 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
         waited = round(hold.waited_s + out.worker_wait_s, 1)
         if out.run is not None:
             return replace(out.run, slot_wait_s=waited, head=head, tree=tree)
-        # SPEC-0338 fallback: the remote slot is released; a local one, under the same claim
-        with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce) as fb:
-            waited = round(waited + fb.waited_s, 1)
-            if fb.interrupted:
-                return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
-                               slot_wait_s=waited)
-            run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop,
-                                tier)
-        return replace(run, slot_wait_s=waited, head=head, tree=tree)
+        return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
+                         announce, waited, head=head, tree=tree)
     finally:
         store.clear_child_tmp(cfg, cid, owner)
+
+
+def _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier, announce,
+              waited, *, head=None, tree=None) -> GateRun:
+    """SPEC-0338 fallback: the remote slot is released; a local one, under the same claim."""
+    with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce) as fb:
+        waited = round(waited + fb.waited_s, 1)
+        if fb.interrupted:
+            return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
+                           slot_wait_s=waited)
+        run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier)
+    return replace(run, slot_wait_s=waited, head=head, tree=tree)
 
 
 def _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier) -> GateRun:
@@ -628,6 +652,16 @@ def run_and_log(cfg, campaign_state: dict, project_cfg: dict, *, seq=None, by="t
     seq = seq if seq is not None else next_gate_seq(cfg, cid)
     run = run_all(project_cfg, campaign_state, cfg, seq=seq, tier=tier, worker=worker,
                   local=local)
-    store.append_event(cfg, cid, "gate", as_payload(run), by=by)
+    payload = as_payload(run)
+    if run.event_uid:
+        payload["event_uid"] = run.event_uid
+    store.append_event(cfg, cid, "gate", payload, by=by)
+    if run.job_id:
+        # SPEC-0341: a debug run is never adopted by the loop; one a stop detached is cancelled
+        from . import remote_gates as RG
+        from . import remote_jobs as RJ
+        if run.interrupted:
+            RG.cancel_campaign(cfg, cid, run.job_id)
+        RJ.mark_done(cfg, run.job_id)
     return run
 
