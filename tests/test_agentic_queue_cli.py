@@ -131,9 +131,9 @@ def test_park_resume_abandon_dry_runs_and_errors(tmp_path, monkeypatch):
     assert S.read_ledger(cfg, cid, types=["close"])[-1]["mode"] == "abandoned"
 
 
-def test_queue_help_lists_every_command():
+def test_queue_help_lists_every_command(monkeypatch):
     r = run_cli({"agentic": {}, "data_dir": "/nonexistent", "config_dir": "/nonexistent"},
-                __import__("pytest").MonkeyPatch(), ["queue", "--help"])
+                monkeypatch, ["queue", "--help"])
     for name in ("add", "list", "backlog", "prioritize", "watch", "tick", "run", "park", "resume",
                  "abandon", "gates"):
         assert f"  {name}" in r.output, name

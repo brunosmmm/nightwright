@@ -279,6 +279,14 @@ Projects are those in `rules.projects_payload(cfg)` with a resolvable research r
   `--json | python3 -m json.tool` (valid JSON, exit 0: 21 ok · 3 warn · 0 fail · 4 skip) and
   `--project Meta-Tools` (only `project.Meta-Tools.*`, both ok). A scratch read-only
   `NW_DATA_DIR` gave `data.dir` ✗ and `agentic.dirs` ✗, exit 1. `--project Nope` exits 2.
+- Gate fix (loop 2): `test_config_bad_timezone_fails_through_cli` failed only in the full run
+  because `test_agentic_queue_cli.py::test_queue_help_lists_every_command` passed a bare
+  `pytest.MonkeyPatch()` (never undone) to `run_cli`, leaving `nightwright.cli.load_config`
+  stubbed for every later test on that worker. Found with a full `-n 2` run that dumped
+  `cli.load_config` on failure; reproduced with just those two tests (`-n0`), fixed by using
+  the `monkeypatch` fixture. `uv run pytest -q -n0 -p no:randomly tests/test_agentic_queue_cli.py
+  tests/test_doctor.py`: 94 passed; `tests/test_docs_readme_front_door.py`: 2 passed. Full suite
+  left to the gate.
 
 ### As shipped (2026-11-01)
 

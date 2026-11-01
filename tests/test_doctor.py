@@ -192,7 +192,7 @@ def test_config_bad_timezone_fails_through_cli(home):
     r = CliRunner().invoke(cli, ["doctor", "--json"])
     assert r.exit_code == 1, r.output
     c = by_id(json.loads(r.output)["checks"])["config.parse"]
-    assert c["status"] == "fail" and "Mars/Olympus" in c["detail"]
+    assert c["status"] == "fail" and "Mars/Olympus" in c["detail"], r.output
 
 
 def test_timezone_set_absent_and_no_config(home):
