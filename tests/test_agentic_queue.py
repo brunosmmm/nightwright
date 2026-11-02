@@ -266,8 +266,8 @@ def test_apply_implementer_blocked_twice_parks(opened):
     blocked = {"status": "blocked", "summary": "no", "blockers": ["needs X"]}
     row, st = _apply(ctx, cfg, cid, "implement", persona="implementer", run_id="001-implementer",
                      run_result=_rr(blocked), budget=4.0)
-    assert row["to"] == "GATING" and st["counters"]["blocked_streak"] == 1
-    S.write_state(cfg, cid, dict(st, state="IMPLEMENTING"))
+    assert row["to"] == "IMPLEMENTING" and row["reason"] == "implementer_blocked_retry"
+    assert st["state"] == "IMPLEMENTING" and st["counters"]["blocked_streak"] == 1
     row, st = _apply(ctx, cfg, cid, "implement", persona="implementer", run_id="002-implementer",
                      run_result=_rr(blocked), budget=4.0)
     assert row["to"] == "PARKED" and st["park"]["reason"] == "implementer_blocked"
@@ -275,6 +275,15 @@ def test_apply_implementer_blocked_twice_parks(opened):
     findings = S.read_ledger(cfg, cid, types=["finding"])
     assert sum(1 for f in findings if f["title"] == "implementer blocker") == 2
     assert st["cost"]["total_usd"] == 0.5
+
+
+def test_apply_implementer_blocked_with_commit_gates(opened):
+    cfg, cid, ctx = opened
+    blocked = {"status": "blocked", "summary": "partial", "blockers": ["needs X"]}
+    row, st = _apply(ctx, cfg, cid, "implement", persona="implementer", run_id="001-implementer",
+                     run_result=_rr(blocked), budget=4.0, commit_sha="abc123",
+                     commit_message="wip")
+    assert row["to"] == "GATING" and st["counters"]["blocked_streak"] == 1
 
 
 def test_apply_missing_cost_charges_budget_and_notes_it(opened):

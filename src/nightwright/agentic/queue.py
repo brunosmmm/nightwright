@@ -2366,6 +2366,12 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                         "reason": "implementer_blocked",
                         "detail": f"blocked {counters['blocked_streak']}× in a row: {blockers}",
                         "resume_to": "IMPLEMENTING"})
+                elif not res.commit_sha:                  # SPEC-0377: nothing to gate
+                    events.append(("note", {
+                        "text": "implementer blocked with no new commit; retrying instead of "
+                                f"gating (blocked_streak {counters['blocked_streak']}"
+                                f"/{BLOCKED_STREAK_MAX})", "author": "queue"}))
+                    return finish("IMPLEMENTING", "implementer_blocked_retry")
             else:
                 counters["blocked_streak"] = 0
             return finish("GATING", "implemented")
