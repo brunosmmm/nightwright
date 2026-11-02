@@ -518,6 +518,33 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
   `test_agentic_adopt.py`, `test_remote_job_records.py`, `test_remote_gates.py` and
   `test_agentic_campaign_runs.py`: 267 passed. The full suite is left to gating.
 
+### As shipped (2026-11-02, steward fixes)
+
+- **Rollback pathspecs.** `_rollback` lists the `wip` commit's added paths with
+  `git diff --name-only -z` (read as bytes, so non-ASCII names are not C-quoted) and runs
+  `git --literal-pathspecs clean -fd -- <paths>`, so a name starting `:` or holding `*` is
+  removed as a path, not read as pathspec magic. Before, a `:(glob)*.txt` file made `clean`
+  delete every untracked `*.txt`.
+- **`..` in `allowed_tools`.** `request_to_job` refuses (`NotRemotable`) an `allowed_tools`
+  path under the worktree with a `..` component (`<wt>/../x`), as a cwd or `add_dirs` entry
+  that leaves the worktree is refused. `a..b` inside a name is still allowed.
+- **Definition of done.** The manual steps were not performed (see the first Test record).
+  At the human's request, the DoD line now says they are deferred to the human and SPEC-0346,
+  instead of claiming them done.
+
+### Test record (2026-11-02, steward fixes)
+
+- `uv run pytest -q -n 4 tests/test_remote_personas.py`: 48 passed. New or changed cases:
+  - `_rollback` on a partly applied `wip` removes `ünïcødé.txt`, `:colon.txt`,
+    `:(glob)*.txt` and `sub/:x.txt`, and keeps an unrelated untracked `keep.txt`. With the
+    previous `_rollback` the test fails (`keep.txt` was deleted);
+  - `<wt>/../x*`, `<wt>/a/../../x` and `<wt>/..:*` in `allowed_tools` are not remotable, and
+    `<wt>/a..b/c.txt` is. With the previous `request_to_job` the test fails (`DID NOT RAISE`);
+  - the cost-once case: the local re-run now costs 0.25, so the `run.end` charges are
+    `[0.5, 0.25]` and `state.json` `cost.total_usd` and the last ledger `cost` total are 0.75.
+- The manual steps are still not run (no persona-capable worker on this host). They are left
+  to the human and to SPEC-0346. The full suite is left to gating.
+
 ## Rollout / migration
 
 Implementation sessions clock in and out on the linked idea (`nw idea clock-in IDEA-560` /
@@ -531,7 +558,8 @@ Implementation sessions clock in and out on the linked idea (`nw idea clock-in I
 ## Definition of done
 
 - [x] Acceptance criteria all met.
-- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] Test plan executed; automated tests pass; manual steps deferred to the human / SPEC-0346
+      (see Test record).
 - [x] No regressions.
 - [x] Spec body updated to match what shipped.
 - [x] `docs/LEDGER.md` updated (status + date).

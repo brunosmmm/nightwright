@@ -746,11 +746,14 @@ def _rollback(worktree, base_head: str, head: str, wip: str | None, pre: str) ->
     the tree's own prior changes (`pre`, a `stash create` taken before the fast-forward)."""
     added = []
     if wip:
-        added = [ln for ln in _git_out(worktree, "diff", "--name-only", "--diff-filter=A",
-                                       head, wip).stdout.splitlines() if ln.strip()]
+        # NUL-separated and as bytes: no C-quoting of non-ASCII names, no decoding errors
+        out = subprocess.run(["git", "-C", str(worktree), "diff", "--name-only", "-z",
+                              "--diff-filter=A", head, wip], capture_output=True).stdout
+        added = [os.fsdecode(n) for n in out.split(b"\0") if n]
     _git_out(worktree, "reset", "-q", "--hard", base_head)
     if added:
-        _git_out(worktree, "clean", "-q", "-fd", "--", *added)
+        # literal pathspecs: a name starting `:` or holding `*` is a path, not pathspec magic
+        _git_out(worktree, "--literal-pathspecs", "clean", "-q", "-fd", "--", *added)
     if pre:
         if _git_out(worktree, "stash", "apply", "--index", "-q", pre).returncode != 0:
             _git_out(worktree, "stash", "apply", "-q", pre)

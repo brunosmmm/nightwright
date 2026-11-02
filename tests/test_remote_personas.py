@@ -178,9 +178,10 @@ LOCAL_SNAP = [{"pre_shell": ["git rev-parse HEAD > ../snap-head",
                "verdict": VERDICT, "cost_usd": 0.0}]
 
 
-def _failure_case(tmp_path, monkeypatch, hook, worker_entries=WRITER, clean_stub=False):
+def _failure_case(tmp_path, monkeypatch, hook, worker_entries=WRITER, clean_stub=False,
+                  local_entries=LOCAL_SNAP):
     script = _write_script(tmp_path / "writer.json", worker_entries)
-    local = _write_script(tmp_path / "local.json", LOCAL_SNAP)
+    local = _write_script(tmp_path / "local.json", local_entries)
     w = _world(tmp_path)
     _remote(w, script)
     base = _git(w.repo, "rev-parse", "HEAD")
@@ -250,6 +251,27 @@ def test_write_back_failure_stash_conflict_rolls_back(tmp_path, monkeypatch):
     for ref in rec["saved_refs"]:
         _git(w.repo, "rev-parse", "--verify", ref)              # kept for inspection
     assert w.ledger(["run.end"])[0]["saved_refs"] == rec["saved_refs"]
+
+
+def test_rollback_cleans_non_ascii_and_colon_names(tmp_path):
+    """`_rollback` after a partly applied `wip`: its added paths are removed even when a name
+    is non-ASCII (C-quoted without `-z`) or starts `:` / holds `*` (pathspec magic)."""
+    w = _world(tmp_path)
+    repo = w.repo
+    base = _git(repo, "rev-parse", "HEAD")
+    head = __import__("test_remote_gates")._commit(repo, "c.txt", "c\n")
+    odd = ["ünïcødé.txt", ":colon.txt", ":(glob)*.txt", "sub/:x.txt"]
+    for n in odd:
+        (repo / n).parent.mkdir(parents=True, exist_ok=True)
+        (repo / n).write_text("odd\n")
+    _git(repo, "add", "-A")
+    wip = _git(repo, "stash", "create")
+    _git(repo, "reset", "-q")                       # the stash's new files are in the tree
+    (repo / "keep.txt").write_text("not the stash's\n")
+    RPS._rollback(repo, base, head, wip, "")
+    assert _git(repo, "rev-parse", "HEAD") == base
+    assert _git(repo, "-c", "core.quotepath=false", "status", "--porcelain") == "?? keep.txt"
+    assert not any((repo / n).exists() for n in odd)
 
 
 def test_write_back_failure_corrupt_bundle(tmp_path, monkeypatch):
@@ -555,13 +577,15 @@ def test_remote_excluded_is_cleared_when_the_step_completes(tmp_path, monkeypatc
 
 def test_failed_write_back_cost_is_counted_once_when_the_rerun_completes(tmp_path, monkeypatch):
     w, base, res, st, ctx = _failure_case(
-        tmp_path, monkeypatch, lambda w, b: (w.repo / "late.txt").write_text("late\n"))
+        tmp_path, monkeypatch, lambda w, b: (w.repo / "late.txt").write_text("late\n"),
+        local_entries=[dict(LOCAL_SNAP[0], cost_usd=0.25)])
     failed, = w.ledger(["run.end"])
     assert S.read_state(w.cfg, CID)["cost"]["total_usd"] == failed["charged_usd"] == 0.5
     Q._apply(ctx, st, res)
-    charged = sum(e["charged_usd"] for e in w.ledger(["run.end"]))
-    assert S.read_state(w.cfg, CID)["cost"]["total_usd"] == pytest.approx(charged)
-    assert [e["total_usd"] for e in w.ledger(["cost"])][-1] == pytest.approx(charged)
+    ends = w.ledger(["run.end"])
+    assert [e["charged_usd"] for e in ends] == [0.5, 0.25]
+    assert S.read_state(w.cfg, CID)["cost"]["total_usd"] == pytest.approx(0.75)
+    assert [e["total_usd"] for e in w.ledger(["cost"])][-1] == pytest.approx(0.75)
 
 
 # ---- lost job, pre-submit fallback, cancel ---------------------------------------------------
@@ -848,6 +872,11 @@ def test_allowed_tools_sibling_of_the_worktree_is_not_remotable(tmp_path):
     req = _req(w, allowed_tools=(f"Bash({w.repo}-other/run.sh*)",))
     with pytest.raises(R.NotRemotable, match="-other"):
         R.request_to_job(req, w.repo)
+    for tool in (f"Bash({w.repo}/../x*)", f"Read({w.repo}/a/../../x)", f"Bash({w.repo}/..:*)"):
+        with pytest.raises(R.NotRemotable, match=r"\.\."):
+            R.request_to_job(_req(w, allowed_tools=(tool,)), w.repo)
+    dots = _req(w, allowed_tools=(f"Read({w.repo}/a..b/c.txt)",))      # not a `..` component
+    assert R.request_to_job(dots, w.repo)["allowed_tools"] == ["Read(${NW_TREE}/a..b/c.txt)"]
     ok = _req(w, allowed_tools=(f"Read({w.repo})", f"Bash({w.repo}:*)"))
     assert R.request_to_job(ok, w.repo)["allowed_tools"] == ["Read(${NW_TREE})",
                                                              "Bash(${NW_TREE}:*)"]

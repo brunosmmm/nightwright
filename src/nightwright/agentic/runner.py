@@ -556,6 +556,7 @@ ENV_VERBATIM = frozenset({"NW_CAMPAIGN", "NW_SPEC_ID", "NW_BASE", "NW_PERSONA_RU
 ENV_RESET = frozenset({"NW_WORKTREE", "NW_DATA_DIR", "NW_CONFIG_DIR", "TMPDIR", "TEMP", "TMP"})
 TREE_TOKEN = "${NW_TREE}"                     # a worktree-relative path in `allowed_tools`
 _ROOT_END = r"""(?=[/\s()*'"`,;|&<>:]|$)"""     # a path separator or the end of the token
+_TREE_PATH_RE = re.compile(re.escape(TREE_TOKEN) + r"""([^\s()*'"`,;|&<>]*)""")
 _ABS_PATH_RE = re.compile(r"(?<![\w.:/~$}-])/[A-Za-z0-9._~+@%=-][^\s()*'\"`,;|&<>]*")
 
 
@@ -602,6 +603,11 @@ def request_to_job(req: RunRequest, worktree) -> dict:
         if stray:
             raise NotRemotable(f"allowed_tools entry {tool!r} names {stray.group(0)}, "
                                "outside the worktree")
+        for m in _TREE_PATH_RE.finditer(out):
+            # `<wt>/../x` leaves the worktree, as a cwd / `add_dirs` entry would
+            if ".." in re.split(r"[/:]", m.group(1)):
+                raise NotRemotable(f"allowed_tools entry {tool!r} has a `..` component, "
+                                   "outside the worktree")
         tools.append(out)
     env = {}
     for k, v in req.env.items():
