@@ -276,6 +276,11 @@ warning in `warnings` unchanged in shape.
   identity, so the committed golden holds. `test_remote_gates.py`, `test_agentic_gates.py` and
   `test_agentic_exit_paths.py`: 226 passed.
 
+- Gate fix (loop 4 triage): the rejection notice in `gates.run_all` was a raw `print(..., file=sys.stderr)`
+  that `tests/test_rich_output_guard.py` flags; it is now `render.warn(...)` (unused `sys` import removed).
+  `test_rich_output_guard.py`, `test_remote_gates.py`, `test_agentic_gates.py`, `test_agentic_exit_paths.py`:
+  229 passed. The full suite is left to gating.
+
 ### As shipped
 
 - `buildid.compute` uses the git file list only when it contains `__init__.py` (an installed
