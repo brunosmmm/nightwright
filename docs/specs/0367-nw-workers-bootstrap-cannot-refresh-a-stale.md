@@ -267,6 +267,10 @@ warning in `warnings` unchanged in shape.
   `_git_identity` fixture that sets `GIT_AUTHOR_*`/`GIT_COMMITTER_*`. With `HOME` pointing at an
   empty dir and `GIT_CONFIG_GLOBAL=/dev/null`, `test_agentic_gates.py`, `test_agentic_exit_paths.py`
   and `test_agentic_queue.py` pass (308 tests).
+- Gate fix (loop 2 triage): the gate venv has no optional `tui` extra (textual), so TUI test modules
+  failed at collection. `tests/conftest.py` gains a `collect_ignore` for the five modules that import
+  textual-backed tabs at top level when `textual` is not importable, and two `test_tui_queue_model.py`
+  tests `importorskip("textual")`. Unrelated to this spec's code.
 
 ### As shipped
 
