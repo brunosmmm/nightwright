@@ -256,6 +256,19 @@ SPEC_REVIEWER_SCHEMA = {
 }
 
 
+def reviewer_schema(categories=None) -> dict:
+    """SPEC-0371: `ADVERSARIAL_REVIEWER_SCHEMA` with the finding `category` enum replaced by
+    `categories` plus `other` (appended only if absent). No `categories`: the default enum, which
+    already ends with `other`."""
+    schema = json.loads(json.dumps(ADVERSARIAL_REVIEWER_SCHEMA))
+    if categories:
+        enum = list(categories)
+        if "other" not in enum:
+            enum.append("other")
+        schema["properties"]["findings"]["items"]["properties"]["category"]["enum"] = enum
+    return schema
+
+
 @dataclass(frozen=True)
 class Persona:
     name: str
@@ -263,9 +276,11 @@ class Persona:
     schema: dict
     read_only: bool
     invariant: str = INVARIANT
+    role: str | None = None             # SPEC-0371: set for declared (non-builtin) personas
 
     @property
     def template(self) -> str:
+        # a declared persona carries the absolute path of its template (SPEC-0371): `dir / abs` is `abs`
         return (_TEMPLATES_DIR / self.template_file).read_text(encoding="utf-8")
 
 
@@ -315,10 +330,34 @@ PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree",
                 "write_problems", "write_rules", "epic_text", "human_overrides")
 
 
-def get_persona(name) -> Persona:
-    if name not in PERSONAS:
-        raise ValueError(f"unknown persona {name!r}; known: {', '.join(sorted(PERSONAS))}")
-    return PERSONAS[name]
+# SPEC-0371: the `{{placeholders}}` a declared persona's template may use, per role. Derived from
+# the builtin templates of the role (implementer.md; conformance/test/adversarial_reviewer.md;
+# gate_triager.md) plus the always-available campaign context. `spec_reviewer`, `spec_writer`,
+# `review_triager` and `conflict_resolver` are in no role's subset.
+_COMMON_PLACEHOLDERS = frozenset((
+    "campaign", "spec_id", "spec_rel_path", "spec_text", "worktree", "base", "loop", "loop_max",
+    "context_files", "schema_text", "human_overrides"))
+ROLE_PLACEHOLDERS = {
+    "implementer": _COMMON_PLACEHOLDERS | {"gate_results", "pending_brief", "previous_verdicts"},
+    "reviewer": _COMMON_PLACEHOLDERS | {
+        "diff", "gate_results", "pending_brief", "previous_verdicts", "test_files",
+        "tests_touched", "changed_files", "campaign_diff"},
+    "triager": _COMMON_PLACEHOLDERS | {
+        "gate_results", "pending_brief", "previous_verdicts", "triage_input"},
+}
+
+
+def get_persona(name, project_root=None) -> Persona:
+    """A builtin persona; with `project_root` also one declared by the user or that project
+    (SPEC-0371). Without it only builtins are known."""
+    if name in PERSONAS:
+        return PERSONAS[name]
+    if project_root is not None:
+        from .persona_defs import load_registry
+        registry = load_registry(project_root)
+        if name in registry:
+            return registry[name]
+    raise ValueError(f"unknown persona {name!r}; known: {', '.join(sorted(PERSONAS))}")
 
 
 # ---- rendering ---------------------------------------------------------------------------

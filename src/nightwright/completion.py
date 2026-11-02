@@ -167,6 +167,17 @@ def complete_profile(ctx, param, incomplete):
 
 
 @_soft
+def complete_persona(ctx, param, incomplete):
+    """Persona names: builtin, user-declared and the project's declared ones (SPEC-0371)."""
+    from .agentic import persona_defs as PD
+    from .agentic import project as P
+    cfg = _cfg_from_ctx(ctx)
+    name = ctx.params.get("project") or P.find_project_for_cwd(cfg)
+    root = P.project_root(cfg, name) if name else None
+    return _items(list(PD.load_registry(root, user_dir=PD.user_personas_dir(cfg))), incomplete)
+
+
+@_soft
 def complete_workstream(ctx, param, incomplete):
     from .org_write import configured_workstreams
     return _items(configured_workstreams(_cfg_from_ctx(ctx)), incomplete)

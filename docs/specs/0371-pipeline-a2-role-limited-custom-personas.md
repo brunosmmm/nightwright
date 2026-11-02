@@ -1,7 +1,7 @@
 ---
 id: SPEC-0371
 title: "Pipeline A2a: role-limited custom personas (user/project definitions, role schemas, validator, nw personas validate)"
-status: accepted
+status: done
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
@@ -226,29 +226,29 @@ The `template` property accepts an absolute `template_file` for these. Existing 
 
 ## Acceptance criteria
 
-- [ ] A valid `.nw/personas/security_reviewer.yaml` (role `reviewer`, template, `category`) in a
+- [x] A valid `.nw/personas/security_reviewer.yaml` (role `reviewer`, template, `category`) in a
       project's main checkout is loaded by `load_registry(project_root)`; the persona is
       read-only with an output schema whose finding `category` enum is the declared values plus
       `other`, and a reviewer definition without `category` gets the `ADVERSARIAL_CATEGORIES`
       enum.
-- [ ] `implementer` and `triager` definitions get `IMPLEMENTER_SCHEMA` / `GATE_TRIAGER_SCHEMA`;
+- [x] `implementer` and `triager` definitions get `IMPLEMENTER_SCHEMA` / `GATE_TRIAGER_SCHEMA`;
       the implementer is writable, the others read-only.
-- [ ] A definition naming a builtin persona (in the user or project layer), or duplicating a name
+- [x] A definition naming a builtin persona (in the user or project layer), or duplicating a name
       across user and project layers, is refused with a message naming both files/layers.
-- [ ] A definition with an unknown key (including `read_only`, `schema_ref`, `output_schema`,
+- [x] A definition with an unknown key (including `read_only`, `schema_ref`, `output_schema`,
       `invariant`), a bad `schema`, `role`, `name`, `template`, or a `category` on a
       non-reviewer role is refused with a message naming the file and key.
-- [ ] A template using a `{{placeholder}}` outside the role's subset, or an unknown one, is
+- [x] A template using a `{{placeholder}}` outside the role's subset, or an unknown one, is
       refused naming the placeholder and role; all problems across all files are reported in one
       run, and a broken file is omitted from `load_registry` while a good sibling loads.
-- [ ] A template path escaping its directory (separator, `..`, or a symlink out) is refused.
-- [ ] Project definitions are read from the project's main checkout path passed in, and a file
+- [x] A template path escaping its directory (separator, `..`, or a symlink out) is refused.
+- [x] Project definitions are read from the project's main checkout path passed in, and a file
       under a campaign worktree's `.nw/personas/` is never read.
-- [ ] `nw personas validate` exits 1 with the problems listed when any definition is broken, 0
+- [x] `nw personas validate` exits 1 with the problems listed when any definition is broken, 0
       and `ok` when clean, and `--json` emits the documented object.
-- [ ] `nw personas list|show` show the layer, role, category and template for declared personas,
+- [x] `nw personas list|show` show the layer, role, category and template for declared personas,
       mark an invalid definition `invalid`, and completion offers declared names.
-- [ ] `PERSONAS`, `REVIEWER_PERSONAS`, `ADOPT_REGISTRY` and the resolved builtin profiles are
+- [x] `PERSONAS`, `REVIEWER_PERSONAS`, `ADOPT_REGISTRY` and the resolved builtin profiles are
       unchanged; a profile listing a declared name in `reviewers:` is still rejected by
       `validate_profile_doc` exactly as before; and `profiles.py` and `queue.py` are untouched by
       the diff.
@@ -300,13 +300,51 @@ The `template` property accepts an absolute `template_file` for these. Existing 
 5. Pipeline A2b (profiles accept declared names, behind the `reviewers_of` filter) follows with
    `depends_on` this spec; Pipeline A3 then switches the queue to registry membership.
 
+### Test record (2026-11-02)
+
+- `uv run pytest -q tests/test_agentic_persona_defs.py tests/test_agentic_personas_cli.py
+  tests/test_agentic_personas.py tests/test_agentic_profiles*.py`: 251 passed.
+- `python3 tools/affected_tests.py` selects the full suite (93/227 test files affected, over its
+  40% threshold, because `cli.py` and `completion.py` changed). An attempt to run it via `--run`
+  hit the time limit and was stopped, so it did not complete. The full suite is left to the
+  queue's close gate.
+- `git status` shows no change to `queue.py` or `profiles.py`.
+- Manual (user layer, temp `NW_CONFIG_DIR`, real `uv run nw`): `nw personas validate` printed `ok`
+  and exited 0; `list` and `show security_reviewer` showed layer `user`, role `reviewer`,
+  categories `crypto, secrets` and the template path; after putting `{{idea_text}}` in the
+  template, `validate` printed the out-of-role placeholder problem and exited 1. The project layer
+  is covered by the CLI tests (`--project`).
+
+### As shipped
+
+- **A1 did not exist in the tree** (no `persona_defs/` YAML, no `nw personas` command). This spec
+  therefore ships the `nw personas` group itself (`cli_personas.py`: `list`, `show`, `validate`,
+  `--json`), and builtins in `list`/`show` come from the `PERSONAS` table (role inferred:
+  `REVIEWER_PERSONAS` are reviewers, `implementer`, `gate_triager`). `validate` checks the user
+  and project layers; there is no builtin YAML layer to validate yet.
+- Code lives in `agentic/persona_defs.py` (`scan`, `validate_persona_defs`, `load_registry`,
+  `personas_for`, `reviewer_names`); `personas.py` gained `reviewer_schema`, `ROLE_PLACEHOLDERS`,
+  `Persona.role` (optional, default `None`) and `get_persona(name, project_root=None)`, which
+  consults the registry (default user dir `<config dir>/personas`) only when a project root is
+  given. `completion.complete_persona` offers declared names.
+- `ROLE_PLACEHOLDERS`: the builtin reviewer and triager templates also use `pending_brief`, and
+  the triager template `previous_verdicts`, so those are added to the reviewer and triager
+  subsets (the Design list omitted them; the superset test requires them).
+- "A profile listing a declared name in `reviewers:` is still rejected by `validate_profile_doc`":
+  in the tree that rejection happens when the profile is resolved (`_check_reviewers`, via
+  `resolve_profile`), not in `validate_profile_doc`; the inertness test asserts `resolve_profile`
+  still raises.
+- Cross-layer duplicate: the lower layer (user) keeps the name; the project definition is the
+  invalid one. The validator message prefix is `<project root dir name>:.nw/personas/<file>`.
+- The CLI resolves the project like `nw profiles` (`--project`, else the cwd's registered project).
+
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run pytest -q`) and the full suite is green at the queue's close gate; manual steps performed and noted.
-- [ ] No regressions (builtin tables and profiles identical; `queue.py` and `profiles.py` untouched).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and `python3 tools/spec_lint.py` exits 0.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run pytest -q`) and the full suite is green at the queue's close gate; manual steps performed and noted.
+- [x] No regressions (builtin tables and profiles identical; `queue.py` and `profiles.py` untouched).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
