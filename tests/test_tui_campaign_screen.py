@@ -3,6 +3,8 @@ import json
 
 import pytest
 
+pytest.importorskip("textual")  # module-level skip: the imports below need the tui extra
+
 from test_agentic_dashboard import _campaign, _ev, _fixture
 from test_agentic_e2e import run_cli
 from test_tui_queue_tab import SIZE, _desk, _run, act, press, select, settle, snapshot, view

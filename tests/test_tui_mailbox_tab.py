@@ -3,6 +3,8 @@ import asyncio
 
 import pytest
 
+pytest.importorskip("textual")  # module-level skip: the imports below need the tui extra
+
 from test_agentic_dashboard import _fixture
 from test_tui_queue_tab import SIZE, _desk, _run, press, settle, spy_titles
 from nightwright import tui as T

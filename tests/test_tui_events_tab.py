@@ -6,6 +6,8 @@ import os
 
 import pytest
 
+pytest.importorskip("textual")  # module-level skip: the imports below need the tui extra
+
 from test_agentic_e2e import make_cfg, make_repo
 from test_agentic_events import _campaign
 from test_tui_queue_tab import SIZE, _desk, _run, press, settle

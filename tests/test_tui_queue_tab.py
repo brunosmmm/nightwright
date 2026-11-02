@@ -4,6 +4,8 @@ import json
 import subprocess
 
 import pytest
+
+pytest.importorskip("textual")  # module-level skip: the imports below need the tui extra
 from rich.text import Text
 
 from test_agentic_dashboard import _campaign, _fixture, _iso, _park_fixture

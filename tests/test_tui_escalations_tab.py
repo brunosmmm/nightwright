@@ -1,6 +1,8 @@
 """SPEC-0250: the escalations inbox of the TUI mailbox tab (Textual pilot tests)."""
 import pytest
 
+pytest.importorskip("textual")  # module-level skip: the imports below need the tui extra
+
 from test_agentic_dashboard import _campaign, _fixture
 from test_tui_queue_tab import SIZE, _desk, _run, _sub, press, settle, spy_titles
 from nightwright import tui as T

@@ -252,6 +252,20 @@ an idempotent `enabled: false`.
   integration suite.
 - `python3 tools/spec_lint.py` passes after `--write-ledger`.
 
+### Test record (2026-11-01, gate fix)
+
+- The `pytest-affected` gate failed at collection on a worker without the optional `tui`
+  extra: `test_tui_campaign_screen.py` imports `test_tui_queue_tab`, which imports
+  `nightwright.tui.queue_tab` (textual) before the `needs_textual` pytestmark can apply. This
+  was not caused by SPEC-0342's code. `pytest.importorskip("textual")` now runs right after
+  `import pytest` in every test module that imports a textual-dependent module at module
+  level: `test_tui_queue_tab.py`, `test_tui_campaign_screen.py`, `test_tui_escalations_tab.py`,
+  `test_tui_events_tab.py` and `test_tui_mailbox_tab.py`. The `needs_textual` marks stay.
+- In a throwaway venv without textual (`UV_PROJECT_ENVIRONMENT=<tmp> uv run --no-extra tui`),
+  those five modules ran as "5 skipped" and `pytest --co` collected all 5470 tests with no
+  error. With textual installed, those five modules plus `tests/test_worker_job_retry.py` gave
+  158 passed (`-n 4`). The full suite is left to gating.
+
 ### As shipped (2026-11-01)
 
 - **Where the retry lives.** `remote_gates._give_up` no longer sets the record `local`. It
