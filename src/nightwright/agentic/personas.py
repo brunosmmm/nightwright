@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import gitops as git
+from . import persona_registry as PR
 from . import store
 from .gates import TARGETED_UNRESOLVED_EXITS, tmp_env
 from .profiles import persona_settings
@@ -284,42 +285,24 @@ class Persona:
         return (_TEMPLATES_DIR / self.template_file).read_text(encoding="utf-8")
 
 
-PERSONAS = {
-    "implementer": Persona("implementer", "implementer.md", IMPLEMENTER_SCHEMA, read_only=False),
-    "gate_triager": Persona("gate_triager", "gate_triager.md", GATE_TRIAGER_SCHEMA,
-                            read_only=True),
-    "conformance_reviewer": Persona("conformance_reviewer", "conformance_reviewer.md",
-                                    CONFORMANCE_REVIEWER_SCHEMA, read_only=True),
-    "test_reviewer": Persona("test_reviewer", "test_reviewer.md", TEST_REVIEWER_SCHEMA,
-                             read_only=True),
-    "adversarial_reviewer": Persona("adversarial_reviewer", "adversarial_reviewer.md",
-                                    ADVERSARIAL_REVIEWER_SCHEMA, read_only=True),
-    "spec_reviewer": Persona("spec_reviewer", "spec_reviewer.md", SPEC_REVIEWER_SCHEMA,
-                             read_only=True, invariant=SPEC_REVIEW_INVARIANT),
-    # SPEC-0215: writes (and revises) the campaign's spec in its worktree; nightwright validates it
-    "spec_writer": Persona("spec_writer", "spec_writer.md", SPEC_WRITER_SCHEMA, read_only=False,
-                           invariant=SPEC_WRITER_INVARIANT),
-    # SPEC-0206: not a reviewer (not in REVIEWER_PERSONAS); waives minor/nit findings only
-    "review_triager": Persona("review_triager", "review_triager.md", REVIEW_TRIAGER_SCHEMA,
-                              read_only=True),
-    # SPEC-0221: runs the close rebase itself, so it commits (own invariant)
-    "conflict_resolver": Persona("conflict_resolver", "conflict_resolver.md",
-                                 CONFLICT_RESOLVER_SCHEMA, read_only=False,
-                                 invariant=RESOLVER_INVARIANT),
+# SPEC-0370: the persona registry is data (`persona_defs/*.yaml`). The YAML names code objects
+# by key; these maps resolve the keys to the schemas and invariants defined in this module.
+SCHEMAS = {
+    "implementer": IMPLEMENTER_SCHEMA,
+    "gate_triager": GATE_TRIAGER_SCHEMA,
+    "conformance_reviewer": CONFORMANCE_REVIEWER_SCHEMA,
+    "test_reviewer": TEST_REVIEWER_SCHEMA,
+    "adversarial_reviewer": ADVERSARIAL_REVIEWER_SCHEMA,
+    "spec_reviewer": SPEC_REVIEWER_SCHEMA,
+    "spec_writer": SPEC_WRITER_SCHEMA,
+    "review_triager": REVIEW_TRIAGER_SCHEMA,
+    "conflict_resolver": CONFLICT_RESOLVER_SCHEMA,
 }
-
-# Personas that get the review context (diff, gate summary, previous verdicts) and may be listed
-# in a profile's `reviewers` (SPEC-0201).
-REVIEWER_PERSONAS = ("conformance_reviewer", "test_reviewer", "adversarial_reviewer")
-
-# SPEC-0225: how adoption classifies an open run that has no `step` in its `run.start` (written
-# by an earlier runner): persona -> (step kind, review personas or None = the reviewer group).
-# Every campaign persona must be here; `spec_reviewer` has no campaign ledger.
-ADOPT_REGISTRY = {
-    "implementer": ("implement", ()),
-    "gate_triager": ("triage", ()),
-    "review_triager": ("review", ("review_triager",)),
-    **{p: ("review", None) for p in REVIEWER_PERSONAS},
+INVARIANTS = {
+    "default": INVARIANT,
+    "spec_review": SPEC_REVIEW_INVARIANT,
+    "spec_writer": SPEC_WRITER_INVARIANT,
+    "resolver": RESOLVER_INVARIANT,
 }
 
 PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree", "base",
@@ -328,6 +311,30 @@ PLACEHOLDERS = ("campaign", "spec_id", "spec_rel_path", "spec_text", "worktree",
                 "schema_text", "idea_text", "triage_input", "rebase_target", "conflicts",
                 "campaign_diff", "base_diff", "landed", "regenerate", "template_text",
                 "write_problems", "write_rules", "epic_text", "human_overrides")
+
+# What the registry validator needs from this module (it cannot import it).
+KNOWN = {"output_schemas": frozenset(SCHEMAS), "invariants": frozenset(INVARIANTS),
+         "placeholders": PLACEHOLDERS}
+
+
+def _build_persona(defn) -> Persona:
+    return Persona(defn.name, defn.template, SCHEMAS[defn.output_schema], defn.read_only,
+                   INVARIANTS[defn.invariant])
+
+
+_BUILTIN_DEFS = PR.load_builtin(KNOWN)
+
+# Builtin layer only: user/project definitions are listed by `nw personas`, never run here.
+PERSONAS = {d.name: _build_persona(d) for d in _BUILTIN_DEFS}
+
+# Personas that get the review context (diff, gate summary, previous verdicts) and may be listed
+# in a profile's `reviewers` (SPEC-0201).
+REVIEWER_PERSONAS = PR.reviewer_personas(_BUILTIN_DEFS)
+
+# SPEC-0225: how adoption classifies an open run that has no `step` in its `run.start` (written
+# by an earlier runner): persona -> (step kind, review personas or None = the reviewer group).
+# Every campaign persona must be here; `spec_reviewer` has no campaign ledger.
+ADOPT_REGISTRY = PR.adopt_registry(_BUILTIN_DEFS)
 
 
 # SPEC-0371: the `{{placeholders}}` a declared persona's template may use, per role. Derived from

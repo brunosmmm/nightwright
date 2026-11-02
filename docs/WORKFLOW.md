@@ -32,6 +32,7 @@ nw campaign log ID   every transition, run, gate, finding and dollar of one camp
 nw mailbox send|follow|list|thread   conductor <-> steward <-> human messages (SPEC-0183)
 nw escalations list|show|answer|withdraw   questions the conductor escalated to you (SPEC-0232)
 nw profiles list|show|check   workflow profiles and which file set each value (SPEC-0238)
+nw personas list|show        persona registry across builtin/user/project layers (SPEC-0370)
 nw queue conductor-launch / steward-launch PROJECT   start the conductor / a steward session
                      (needs agentic.conductor.prices in config)
 implement            you or the agent

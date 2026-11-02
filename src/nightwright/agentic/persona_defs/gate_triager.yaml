@@ -1,0 +1,9 @@
+# builtin persona (SPEC-0370); the template is agentic/personas/gate_triager.md
+schema: nw.persona.v1
+name: gate_triager
+role: triager
+template: gate_triager.md
+description: "explains why the gates failed and what to fix"
+order: 20
+output_schema: gate_triager
+invariant: default

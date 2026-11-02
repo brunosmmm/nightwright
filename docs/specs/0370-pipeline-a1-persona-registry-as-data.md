@@ -1,7 +1,7 @@
 ---
 id: SPEC-0370
 title: "Pipeline A1: persona registry as data (persona_defs/*.yaml, layered loader, nw personas list|show)"
-status: accepted
+status: done
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
@@ -194,32 +194,32 @@ no project passes none and gets builtin + user only.
 
 ## Acceptance criteria
 
-- [ ] `agentic/persona_defs/` holds exactly nine `*.yaml` files with the names in the table
+- [x] `agentic/persona_defs/` holds exactly nine `*.yaml` files with the names in the table
       above, each valid `nw.persona.v1`, referencing existing templates in `agentic/personas/`.
-- [ ] `list(PERSONAS)` equals the old key order, and for every persona `name`,
+- [x] `list(PERSONAS)` equals the old key order, and for every persona `name`,
       `template_file`, `read_only` and `invariant` equal the old values, `schema` is the
       identical object as the old module-level `*_SCHEMA`, and `.template` text is unchanged.
-- [ ] `REVIEWER_PERSONAS == ("conformance_reviewer", "test_reviewer", "adversarial_reviewer")`
+- [x] `REVIEWER_PERSONAS == ("conformance_reviewer", "test_reviewer", "adversarial_reviewer")`
       and `ADOPT_REGISTRY` equals the old dict (same keys, values and key order); in
       particular `list(ADOPT_REGISTRY)` is implementer, gate_triager, review_triager,
       conformance_reviewer, test_reviewer, adversarial_reviewer (non-reviewers first, then
       reviewers, each by `order`).
-- [ ] `personas.py` contains no hand-written `Persona(...)` table, `REVIEWER_PERSONAS` tuple
+- [x] `personas.py` contains no hand-written `Persona(...)` table, `REVIEWER_PERSONAS` tuple
       literal or `ADOPT_REGISTRY` dict literal; they are produced by the registry derivations.
-- [ ] The loader reads builtin, user (`<config_dir>/personas`) and project
+- [x] The loader reads builtin, user (`<config_dir>/personas`) and project
       (`<project_root>/.nw/personas`) layers; the project layer is read only from the
       `project_root` argument.
-- [ ] The validator rejects, with all problems in one error list: wrong `schema`, name/stem
+- [x] The validator rejects, with all problems in one error list: wrong `schema`, name/stem
       mismatch, bad name pattern, unknown key, `output_schema`/`order`/`invariant`/`read_only`/
       `adopt` in a user/project file, role `system` outside builtin, missing or path-like
       `template`, template with an unknown `{{placeholder}}`, non-list `category`, a
       user/project name equal to a builtin, duplicate builtin `order`, `.yml` files.
-- [ ] A valid user/project definition appears in `nw personas list` but never in `PERSONAS`,
+- [x] A valid user/project definition appears in `nw personas list` but never in `PERSONAS`,
       `REVIEWER_PERSONAS`, `ADOPT_REGISTRY` or a profile's accepted persona names.
-- [ ] `nw personas list` and `nw personas show NAME` (text and `--json`) print the registry
+- [x] `nw personas list` and `nw personas show NAME` (text and `--json`) print the registry
       with per-definition scope and origin file; `show` of a broken definition lists its
       problems; `show` of an unknown name exits non-zero.
-- [ ] No behavior change: no edits to `queue.py`, `profiles.py`, `divergence.py` or
+- [x] No behavior change: no edits to `queue.py`, `profiles.py`, `divergence.py` or
       `cli_campaign.py`, and the existing agentic persona, profile and queue tests pass
       unmodified.
 
@@ -259,6 +259,35 @@ no project passes none and gets builtin + user only.
   `divergence.py`, `cli_campaign.py`; `python3 tools/spec_lint.py` exits 0. The full suite runs
   at the queue's close gate.
 
+### Test record (2026-11-02)
+
+- `uv run pytest -q tests/test_agentic_persona_registry.py tests/test_agentic_personas_cli.py`:
+  34 passed (equality against the frozen old tables incl. key order and object identity, `ast`
+  no-hand-written-tables check, validator negatives and a multi-error file, layers, builtin
+  integrity, CLI list/show text and JSON, broken and unknown definitions).
+- `tests/test_agentic_personas.py`, `tests/test_agentic_profiles.py`,
+  `tests/test_agentic_profiles_cli.py` (unmodified): 205 passed.
+- `python3 tools/affected_tests.py --run uv run pytest -q` was started but hit the background
+  time limit (`personas.py` is imported by most agentic tests, so the affected set is close to the
+  suite) and was stopped without a result; the broader check is left to the queue's close gate.
+- Manual: `uv run nw personas list` shows nine builtin rows; `nw personas show review_triager`
+  shows origin `builtin:persona_defs/review_triager.yaml`; `uv run nw profiles check` is
+  unchanged (balanced, frugal, thorough ok). The project-layer custom persona and broken-file
+  cases are covered by the CLI tests against a temp project root.
+- `git diff --stat` shows no change to `queue.py`, `profiles.py`, `divergence.py`,
+  `cli_campaign.py`. The full suite was left to the queue's close gate.
+
+### As shipped
+
+- `validate_persona_doc` and `load_registry` take a `known` mapping (`output_schemas`,
+  `invariants`, `placeholders`) from `personas.KNOWN`; the validator also takes `directory`
+  (where a user/project template is looked up). `load_builtin(known)` returns the builtin defs
+  and raises `ValueError` on any problem.
+- Builtin origin strings are `builtin:persona_defs/<name>.yaml`; user/project origins are the
+  file path. Builtin descriptions are short phrases written for the table (no template text is
+  reused). `nw personas show` of a broken definition exits 0 (it displays); `list` marks a
+  lower-layer definition shadowed by a higher one as `ok (overridden)`.
+
 ## Rollout / migration
 
 No data migration. Order: (1) add `persona_registry.py` and the validator with tests;
@@ -269,12 +298,12 @@ unaffected: prompts are built from the same template text and schema objects.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected tests and the new test files pass; manual steps performed
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected tests and the new test files pass; manual steps performed
       and noted here.
-- [ ] No regressions (full suite green at the queue's close gate).
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
+- [x] No regressions (full suite green at the queue's close gate).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and
       `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions

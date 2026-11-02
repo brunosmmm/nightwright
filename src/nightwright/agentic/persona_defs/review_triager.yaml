@@ -1,0 +1,13 @@
+# builtin persona (SPEC-0370); the template is agentic/personas/review_triager.md
+schema: nw.persona.v1
+name: review_triager
+role: system
+template: review_triager.md
+description: "waives minor and nit review findings, keeps the rest"
+order: 80
+output_schema: review_triager
+read_only: true
+invariant: default
+adopt:
+  step: review
+  personas: [review_triager]

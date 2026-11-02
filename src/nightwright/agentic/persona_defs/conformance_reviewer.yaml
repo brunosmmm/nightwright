@@ -1,0 +1,9 @@
+# builtin persona (SPEC-0370); the template is agentic/personas/conformance_reviewer.md
+schema: nw.persona.v1
+name: conformance_reviewer
+role: reviewer
+template: conformance_reviewer.md
+description: "does the diff do what the spec says"
+order: 30
+output_schema: conformance_reviewer
+invariant: default

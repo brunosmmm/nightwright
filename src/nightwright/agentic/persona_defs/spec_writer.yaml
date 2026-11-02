@@ -1,0 +1,10 @@
+# builtin persona (SPEC-0370); the template is agentic/personas/spec_writer.md
+schema: nw.persona.v1
+name: spec_writer
+role: system
+template: spec_writer.md
+description: "writes or revises the campaign's spec in its worktree"
+order: 70
+output_schema: spec_writer
+read_only: false
+invariant: spec_writer

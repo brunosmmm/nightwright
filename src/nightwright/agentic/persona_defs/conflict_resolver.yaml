@@ -1,0 +1,10 @@
+# builtin persona (SPEC-0370); the template is agentic/personas/conflict_resolver.md
+schema: nw.persona.v1
+name: conflict_resolver
+role: system
+template: conflict_resolver.md
+description: "resolves the close rebase conflicts on the campaign branch"
+order: 90
+output_schema: conflict_resolver
+read_only: false
+invariant: resolver

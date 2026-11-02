@@ -1,0 +1,9 @@
+# builtin persona (SPEC-0370); the template is agentic/personas/adversarial_reviewer.md
+schema: nw.persona.v1
+name: adversarial_reviewer
+role: reviewer
+template: adversarial_reviewer.md
+description: "hunts for bugs and regressions the other reviewers miss"
+order: 50
+output_schema: adversarial_reviewer
+invariant: default

@@ -1,0 +1,10 @@
+# builtin persona (SPEC-0370); the template is agentic/personas/spec_reviewer.md
+schema: nw.persona.v1
+name: spec_reviewer
+role: system
+template: spec_reviewer.md
+description: "reviews a spec before it is admitted to the queue"
+order: 60
+output_schema: spec_reviewer
+read_only: true
+invariant: spec_review

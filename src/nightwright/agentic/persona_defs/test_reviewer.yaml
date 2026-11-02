@@ -1,0 +1,9 @@
+# builtin persona (SPEC-0370); the template is agentic/personas/test_reviewer.md
+schema: nw.persona.v1
+name: test_reviewer
+role: reviewer
+template: test_reviewer.md
+description: "do the tests prove the spec's behavior"
+order: 40
+output_schema: test_reviewer
+invariant: default

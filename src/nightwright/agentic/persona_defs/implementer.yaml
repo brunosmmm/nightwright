@@ -1,0 +1,9 @@
+# builtin persona (SPEC-0370); the template is agentic/personas/implementer.md
+schema: nw.persona.v1
+name: implementer
+role: implementer
+template: implementer.md
+description: "writes the change that makes the spec's acceptance criteria true"
+order: 10
+output_schema: implementer
+invariant: default
