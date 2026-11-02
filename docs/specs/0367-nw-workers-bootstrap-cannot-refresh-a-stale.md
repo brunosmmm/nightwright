@@ -4,7 +4,7 @@ title: "nw workers bootstrap refreshes a stale worker install (build id, --reins
 status: in-progress
 owner: user
 created: 2026-11-01
-updated: 2026-11-01
+updated: 2026-11-02
 kind: feature
 source_idea: IDEA-675
 tags: [agentic, remote, workers, ops]
@@ -293,6 +293,17 @@ warning in `warnings` unchanged in shape.
   by `_dispatch` for a `validate` error frame; the stderr line is `remote_gates.rejection_notice`,
   printed by `gates.run_all`. `docs/WORKFLOW.md` describes the build id and `--reinstall`.
 - Build ids are shown as `build_id[:12]`, which includes the `b1:` prefix (nine hex digits).
+- **Landed directly on `main` (2026-11-02) on the human's explicit order**, outside the queue's
+  gates. Rebased onto a `main` that had gained SPEC-0342's lost-job retry (`_retry` /
+  `_fallback` in `gates.run_all`) and SPEC-0341's `async` feature warning. Conflict decisions:
+  the rejection notice (`render.warn(RG.rejection_notice(...))`) is printed before the
+  `_fallback` call in the first-attempt path and also before the transport-failure fallback in
+  `_retry`, so every rejected job prints it; in `workers._check` the sha warning is replaced by
+  the `worker stale` build-id warning (per Design) and the SPEC-0341 `async` warning is kept.
+- **Real-box acceptance criterion and manual steps 2-6: waived (human), real-box steps not run.**
+  The criterion stays unticked; only step 1 (recorded above) was ever run on the box. Because
+  `spec_lint` forbids `done` with an unticked box and the human said not to tick it, the spec
+  stays `in-progress` with the code on `main`.
 
 ## Rollout / migration
 
