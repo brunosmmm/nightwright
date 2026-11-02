@@ -234,7 +234,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [ ] [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) Remote workers integration suite for gate and persona workers — accepted
   - [x] [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) nw workers bootstrap — done
 - **[SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) — Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane** · accepted · (1/2 done)
-  - [ ] [SPEC-0370](./specs/0370-pipeline-a1-persona-registry-as-data.md) Pipeline A1: persona registry as data (persona_defs/*.yaml, layered loader, nw personas list|show) — proposed
+  - [ ] [SPEC-0370](./specs/0370-pipeline-a1-persona-registry-as-data.md) Pipeline A1: persona registry as data (persona_defs/*.yaml, layered loader, nw personas list|show) — accepted
   - [x] [SPEC-0371](./specs/0371-pipeline-a2-role-limited-custom-personas.md) Pipeline A2a: role-limited custom personas (user/project definitions, role schemas, validator, nw personas validate) — done
 - **[SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) — Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer** · done · (6/6 done)
   - [x] [SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md) herdr reporter: nw herdr watch pushes queue tokens and notifications — superseded
@@ -262,7 +262,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) | Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane | epic | accepted | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0367](./specs/0367-nw-workers-bootstrap-cannot-refresh-a-stale.md) | nw workers bootstrap refreshes a stale worker install (build id, --reinstall, stale warning, loud gate rejection) | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run | feature | in-progress | — | 2026-11-02 |
-| [SPEC-0370](./specs/0370-pipeline-a1-persona-registry-as-data.md) | Pipeline A1: persona registry as data (persona_defs/*.yaml, layered loader, nw personas list|show) | feature | proposed | M9: agentic workflow | 2026-11-02 |
+| [SPEC-0370](./specs/0370-pipeline-a1-persona-registry-as-data.md) | Pipeline A1: persona registry as data (persona_defs/*.yaml, layered loader, nw personas list|show) | feature | accepted | M9: agentic workflow | 2026-11-02 |
 
 ## Done
 

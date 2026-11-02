@@ -1,9 +1,10 @@
 ---
 id: SPEC-0370
 title: "Pipeline A1: persona registry as data (persona_defs/*.yaml, layered loader, nw personas list|show)"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-02
+updated: 2026-11-02
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0348
