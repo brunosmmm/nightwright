@@ -1100,3 +1100,192 @@ def test_the_gate_job_cache_never_crosses_stores(tmp_path):
     PJ._keep_gate_job(a, JOB, job)
     assert PJ._cached_gate_job(b, JOB, 2) is None
     assert PJ._cached_gate_job(a, JOB, 2) is job
+
+
+# ---- an idle worker that may lease nothing, a long-poll whose client has gone ----------------
+
+@pytest.mark.parametrize("why", ["disabled", "no kinds", "no free slot"])
+def test_a_lease_that_can_get_nothing_still_waits(world, pull, why):
+    """A disabled worker (or a request with no usable `kinds` / `slots_free`) waits its
+    `wait_s` before the 204, so an idle one never spins against the coordinator."""
+    lease = {"kinds": ["gate"], "slots_free": 1, "wait_s": 0.5}
+    if why == "disabled":
+        WK.update(world.cfg, lambda records: next(
+            r for r in records if r["name"] == "box").update(enabled=False))
+    elif why == "no kinds":
+        lease["kinds"] = "gate"
+    else:
+        lease["slots_free"] = 0
+    t0 = time.monotonic()
+    assert _call(pull, "POST", "/v1/lease", pull.tokens["box"], lease)[0] == 204
+    assert time.monotonic() - t0 >= 0.45
+
+
+def test_a_204_that_did_not_wait_makes_the_worker_pause(world, pull, monkeypatch):
+    """Against a coordinator that answers a long-poll at once, `tick` sleeps a tick."""
+    monkeypatch.setattr(PL, "TICK_S", 0.4)
+    loop = _loop(pull)
+    calls = []
+    monkeypatch.setattr(loop.client, "json", lambda *a, **k: calls.append(a) or (204, {}))
+    t0 = time.monotonic()
+    loop.tick()
+    assert len(calls) == 1 and time.monotonic() - t0 >= 0.35
+
+
+def _abandoned_long_poll(world, monkeypatch, connect, token):
+    """A lease long-poll whose client hangs up while the server waits; a job is queued after
+    the hang-up and before the server's next take. Returns what that take got."""
+    entered, go, took = threading.Event(), threading.Event(), []
+    real = PJ._take
+
+    def take(cfg, worker, kinds, alive=lambda: True):
+        if not entered.is_set():
+            entered.set()
+            go.wait(30)
+        got = real(cfg, worker, kinds, alive)
+        took.append(got)
+        return got
+    monkeypatch.setattr(PJ, "_take", take)
+    s = connect()
+    body = json.dumps({"kinds": ["gate"], "slots_free": 1, "wait_s": 30}).encode()
+    s.sendall(b"POST /v1/lease HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer "
+              + token.encode() + b"\r\nContent-Length: " + str(len(body)).encode()
+              + b"\r\n\r\n" + body)
+    assert until(entered.is_set)
+    s.close()                                   # the worker restarted, its request is gone
+    _queue(world)
+    go.set()
+    assert until(lambda: took)
+    return took
+
+
+def _still_queued(world):
+    assert RJ.read(world.cfg, JOB)["pull_state"] == "queued"
+    assert (PJ.queue_dir(world.cfg) / f"{JOB}.json").exists()
+    assert _lease(world) is not None            # the next live lease gets it
+
+
+def test_a_long_poll_whose_client_has_gone_takes_no_job(world, pull, monkeypatch):
+    port = pull.srv.server_address[1]
+    took = _abandoned_long_poll(world, monkeypatch,
+                                lambda: socket.create_connection(("127.0.0.1", port)),
+                                pull.tokens["box"])
+    assert took == [None]
+    _still_queued(world)
+
+
+def test_a_tls_long_poll_whose_client_has_gone_takes_no_job(world, pull, pki, monkeypatch):
+    import ssl
+    srv = PJ.make_server(world.cfg, "127.0.0.1:0", tls_cert=str(pki / "127.0.0.1.pem"),
+                         tls_key=str(pki / "127.0.0.1.key"))
+    threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.05},
+                     daemon=True).start()
+    ctx = ssl.create_default_context(cafile=str(pki / "ca.pem"))
+
+    def connect():
+        raw = socket.create_connection(("127.0.0.1", srv.server_address[1]))
+        return ctx.wrap_socket(raw, server_hostname="127.0.0.1")
+    try:
+        took = _abandoned_long_poll(world, monkeypatch, connect, pull.tokens["box"])
+        assert took == [None]
+        _still_queued(world)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_a_live_long_poll_still_gets_a_job_queued_while_it_waits(world, pull):
+    def later():
+        until(lambda: False, timeout=0.6)
+        _queue(world)
+    t = threading.Thread(target=later)
+    t.start()
+    status, body = _call(pull, "POST", "/v1/lease", pull.tokens["box"],
+                         {"kinds": ["gate"], "slots_free": 1, "wait_s": 10})
+    t.join()
+    assert status == 200 and body["job"]["job_id"] == JOB
+    assert "entry" not in body and "leased_at" not in body
+    assert RJ.read(world.cfg, JOB)["pull_state"] == "leased"
+
+
+def test_a_lease_answer_that_cannot_be_written_queues_the_job_again(world, pull, monkeypatch):
+    _queue(world)
+    real = PJ._Handler._send
+
+    def send(self, status, body=None):
+        if status == 200:
+            raise BrokenPipeError("the client has gone")
+        return real(self, status, body)
+    monkeypatch.setattr(PJ._Handler, "_send", send)
+    assert _call(pull, "POST", "/v1/lease", pull.tokens["box"],
+                 {"kinds": ["gate"], "slots_free": 1, "wait_s": 0})[0] == 500
+    monkeypatch.setattr(PJ._Handler, "_send", real)
+    _still_queued(world)
+
+
+def test_release_leaves_a_job_that_moved_on(world, pull):
+    _queue(world)
+    got = _lease(world)
+    PJ.request_cancel(world.cfg, JOB)
+    assert PJ.release_lease(world.cfg, got) is False
+    assert RJ.read(world.cfg, JOB)["pull_state"] == "leased"
+    assert not (PJ.queue_dir(world.cfg) / f"{JOB}.json").exists()
+
+
+# ---- a leased job that cannot start is reported, not left to expire --------------------------
+
+def test_a_bundle_fetch_transport_failure_is_reported_when_the_coordinator_is_back(
+        world, pull, monkeypatch):
+    _queue(world)
+    got = _lease(world)
+    loop = _loop(pull)
+    real_call, real_json = loop.client.call, loop.client.json
+    down = [True]
+
+    def call(method, path, *a, **k):
+        if down[0]:
+            raise PL.Transport("ConnectionResetError: reset")
+        return real_call(method, path, *a, **k)
+
+    def post(method, path, *a, **k):
+        if down[0]:
+            raise PL.Transport("ConnectionRefusedError: refused")
+        return real_json(method, path, *a, **k)
+    monkeypatch.setattr(loop.client, "call", call)
+    monkeypatch.setattr(loop.client, "json", post)
+    loop.start(got)                             # no exception: the failure is the job's
+    assert JOB in loop.refusals and not loop.jobs
+    assert RJ.read(world.cfg, JOB)["pull_state"] == "leased"
+    down[0] = False
+    loop.report_refusals()
+    rec = RJ.read(world.cfg, JOB)
+    assert rec["pull_state"] == "error" and rec["pull_error"]["stage"] == "bundle"
+    assert not loop.refusals
+
+
+def test_a_job_that_cannot_be_submitted_is_refused_with_stage_submit(world, pull, monkeypatch):
+    _queue(world)
+    got = _lease(world)
+    loop = _loop(pull)
+
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(PL.WJ, "submit", boom)
+    loop.start(got)
+    rec = RJ.read(world.cfg, JOB)
+    assert rec["pull_state"] == "error" and rec["pull_error"]["stage"] == "submit"
+    assert not loop.jobs and not loop.refusals
+
+
+def test_an_add_that_loses_the_race_leaves_the_winners_secret(world, pull, monkeypatch):
+    """Two `workers add box --pull` at once: the one whose registry update fails never writes
+    or deletes the secret of the one that registered."""
+    from nightwright.agentic import cli_workers as CW
+    before = PJ.secret_path(world.cfg, "box").read_text()
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: world.cfg)
+    monkeypatch.setattr(CW, "_load_or_fail", lambda cfg: [])   # past the early check
+    res = CliRunner().invoke(cli, ["workers", "add", "box", "--pull"])
+    assert res.exit_code != 0 and "already registered" in res.output
+    assert PJ.secret_path(world.cfg, "box").read_text() == before
+    assert _call(pull, "POST", "/v1/lease", pull.tokens["box"],
+                 {"kinds": ["gate"], "slots_free": 1, "wait_s": 0})[0] == 204

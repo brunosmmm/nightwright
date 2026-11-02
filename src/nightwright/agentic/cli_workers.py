@@ -149,7 +149,7 @@ def _add_pull(cfg, name, slots, kinds, url) -> None:
     if any(r["name"] == name for r in _load_or_fail(cfg)):
         raise click.ClickException(f"worker {name!r} is already registered (use `rm` first)")
     url = url or PJ.coordinator_url(cfg)
-    token, secret = PJ.new_credential(cfg, name)
+    token, secret = PJ.new_credential(cfg, name, write=False)    # written once registered
     rec = {"name": name, "mode": "pull", "slots": slots, "kinds": kinds, "enabled": True,
            "cooldown_until": None, "added_at": now_iso(), "token_sha256": PJ.token_hash(token),
            "secret_ref": PJ.secret_ref(name), "coordinator_url": url}
@@ -158,11 +158,12 @@ def _add_pull(cfg, name, slots, kinds, url) -> None:
         if any(r["name"] == name for r in records):
             raise click.ClickException(f"worker {name!r} is already registered (use `rm` first)")
         records.append(rec)
-    try:
-        _update(cfg, add)
-    except click.ClickException:
-        PJ.drop_credential(cfg, name)
-        raise
+    _update(cfg, add)                       # a racing `add` of the same name fails here, so it
+    try:                                    # never touches the secret of the one that won
+        PJ.write_secret(cfg, name, secret)
+    except OSError as e:
+        _update(cfg, lambda records: records.remove(rec) if rec in records else None)
+        raise click.ClickException(f"could not write {name}'s secret: {e}")
     _say(f"registered pull worker {name} ({slots} slot{'s' if slots != 1 else ''}); on the "
          f"worker run `nw worker serve --enrol BLOB` with this one-time blob:")
     click.echo(PJ.enrol_blob(url, name, token, secret))

@@ -27,6 +27,7 @@ import json
 import os
 import re
 import secrets
+import select
 import shutil
 import socket
 import ssl
@@ -787,23 +788,52 @@ def heartbeat(cfg, worker: str, jobs: list) -> dict:
     return {"jobs": out, "job_lease_s": RJ.settings(cfg)["job_lease_s"]}
 
 
-def lease(cfg, worker: dict, kinds, slots_free, wait_s: float, stop: threading.Event) -> dict | None:
+def lease(cfg, worker: dict, kinds, slots_free, wait_s: float, stop: threading.Event,
+          alive=None) -> dict | None:
     """`POST /v1/lease`: the oldest queued job for `worker` of one of `kinds`, signed, else None
-    after `wait_s` (at most `LEASE_WAIT_S`)."""
+    after `wait_s` (at most `LEASE_WAIT_S`). A worker that may lease nothing (disabled, or no
+    usable `kinds` / `slots_free`) still waits `wait_s`, so an idle one never spins. `alive`
+    (the request's client still connected) is asked before each take and again just before a
+    job is committed, so a long-poll whose client has gone never takes a job."""
     if not isinstance(wait_s, (int, float)) or isinstance(wait_s, bool) or wait_s != wait_s:
         raise PullError(400, "`wait_s` must be a number of seconds")
+    wait = max(0.0, min(float(wait_s), LEASE_WAIT_S))
     if not isinstance(kinds, list) or not isinstance(slots_free, int) or slots_free < 1 \
             or not worker.get("enabled", True):
+        stop.wait(wait)
         return None
-    end = time.monotonic() + max(0.0, min(float(wait_s), LEASE_WAIT_S))
+    alive = alive or (lambda: True)
+    end = time.monotonic() + wait
     while True:
-        got = _take(cfg, worker, kinds)
+        if not alive():
+            return None
+        got = _take(cfg, worker, kinds, alive)
         if got is not None or time.monotonic() >= end or stop.is_set():
             return got
         stop.wait(0.25)
 
 
-def _take(cfg, worker: dict, kinds) -> dict | None:
+def release_lease(cfg, got: dict) -> bool:
+    """Undo a lease whose answer never reached the worker (writing the 200 failed): the record
+    goes back to `queued` and its queue entry is restored, under the queue lock, then the job's.
+    False (nothing changed) when the job moved on meanwhile (renewed, cancelled, final)."""
+    entry = got.get("entry")
+    if not isinstance(entry, dict):
+        return False
+    job_id = entry["header"]["job_id"]
+    with _queue_lock(cfg), job_lock(cfg, job_id):
+        rec = RJ.read(cfg, job_id)
+        if rec is None or rec.get("state") not in RJ.LIVE or _cancel_flag(rec) \
+                or rec.get("pull_state") != "leased" \
+                or rec.get("leased_at") != got.get("leased_at") \
+                or not (queue_dir(cfg) / f"{job_id}.bundle").is_file():
+            return False
+        RJ.update(cfg, job_id, pull_state="queued", lease_until=None)
+        _atomic_write(queue_dir(cfg) / f"{job_id}.json", json.dumps(entry, sort_keys=True) + "\n")
+    return True
+
+
+def _take(cfg, worker: dict, kinds, alive=lambda: True) -> dict | None:
     qd = queue_dir(cfg)
     if not qd.is_dir():
         return None
@@ -823,9 +853,12 @@ def _take(cfg, worker: dict, kinds) -> dict | None:
             job_id = e["header"]["job_id"]
             with job_lock(cfg, job_id):         # the queue lock, then the job's (never reversed)
                 rec = RJ.read(cfg, job_id)
+                stale = rec is None or rec.get("state") not in RJ.LIVE or _cancel_flag(rec) \
+                    or rec.get("pull_state") in ("lost", "done", "error")
+                if not stale and not alive():   # the client has gone: the job stays queued
+                    return None
                 p.unlink(missing_ok=True)       # leased (or stale): never handed out twice
-                if rec is None or rec.get("state") not in RJ.LIVE or _cancel_flag(rec) \
-                        or rec.get("pull_state") in ("lost", "done", "error"):
+                if stale:
                     (qd / f"{job_id}.bundle").unlink(missing_ok=True)
                     continue
                 header = sign(secret, e["header"], e["bundle_sha256"])
@@ -834,7 +867,8 @@ def _take(cfg, worker: dict, kinds) -> dict | None:
                           leased_at=RJ.iso(now), last_seen_at=RJ.iso(now),
                           lease_until=now + RJ.settings(cfg)["job_lease_s"])
             return {"job": header, "bundle_sha256": e["bundle_sha256"],
-                    "job_lease_s": RJ.settings(cfg)["job_lease_s"]}
+                    "job_lease_s": RJ.settings(cfg)["job_lease_s"],
+                    "entry": e, "leased_at": RJ.iso(now)}
     return None
 
 
@@ -979,6 +1013,20 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if data:
             self.wfile.write(data)
 
+    def _client_alive(self) -> bool:
+        """False once the client has closed or reset the connection. While its request waits
+        for the answer an HTTP/1.1 client sends nothing, so a readable socket means EOF, a
+        reset or (TLS) a close alert: data is taken as the client gone only under TLS."""
+        sock = self.connection
+        try:
+            readable, _, _ = select.select([sock], [], [], 0)
+            if not readable:
+                return True
+            data = socket.socket.recv(sock, 1, socket.MSG_PEEK)     # the raw bytes, even TLS
+        except (OSError, ValueError):
+            return False
+        return bool(data) and not isinstance(sock, ssl.SSLSocket)
+
     def _auth(self) -> dict:
         auth = self.headers.get("Authorization") or ""
         token = auth[7:].strip() if auth.startswith("Bearer ") else None
@@ -1048,8 +1096,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/v1/lease":
                 doc = self._json()
                 got = lease(cfg, w, doc.get("kinds"), doc.get("slots_free"),
-                            doc.get("wait_s", LEASE_WAIT_S), self.server.stopping)
-                return self._send(204) if got is None else self._send(200, got)
+                            doc.get("wait_s", LEASE_WAIT_S), self.server.stopping,
+                            self._client_alive)
+                if got is None:
+                    return self._send(204)
+                answer = {k: v for k, v in got.items() if k not in ("entry", "leased_at")}
+                try:
+                    self._send(200, answer)
+                    self.wfile.flush()
+                except OSError:                 # it never reached the worker: queued again
+                    release_lease(cfg, got)
+                    raise
+                return
             if path == "/v1/heartbeat":
                 return self._send(200, heartbeat(cfg, w["name"], self._json().get("jobs")))
             job_id, what = m.group("id"), m.group("what")

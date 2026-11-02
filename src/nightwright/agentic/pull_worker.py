@@ -135,6 +135,7 @@ class Loop:
         self.next_hb = 0.0
         self.jobs: dict = {jid: {"posted": None, "cancelled": False}
                            for jid in self._read_tracked()}
+        self.refusals: dict[str, tuple[str, str]] = {}     # leased, never run, not yet reported
 
     # ---- local state ---------------------------------------------------------------------
 
@@ -209,6 +210,7 @@ class Loop:
         """Sync every job (a failure is that job's alone), then heartbeat when due (or when a
         sync failed, so the leases of the jobs whose post failed are still renewed), then lease.
         A coordinator that is down fails the heartbeat or the lease, and `run` backs off."""
+        self.report_refusals()
         failed = False
         for jid in list(self.jobs):
             try:
@@ -222,9 +224,13 @@ class Loop:
         if free <= 0:
             time.sleep(TICK_S)
             return
-        got = self.lease(free, TICK_S if self.jobs else PJ.LEASE_WAIT_S)
+        wait_s = TICK_S if self.jobs else PJ.LEASE_WAIT_S
+        asked = time.monotonic()
+        got = self.lease(free, wait_s)
         if got is not None:
             self.start(got)
+        elif time.monotonic() - asked < min(wait_s, TICK_S) / 2:
+            time.sleep(TICK_S)                  # a 204 that did not wait: never spin on it
 
     def lease(self, free: int, wait_s: float) -> dict | None:
         status, body = self.client.json("POST", "/v1/lease", {
@@ -242,14 +248,20 @@ class Loop:
 
     def start(self, got: dict) -> None:
         """Fetch, verify and start one leased job; a refused one gets an `error` frame
-        (`stage: "verify"`, or `"bundle"` when the bundle fetch failed) and nothing runs."""
+        (`stage: "verify"`, `"bundle"` when the bundle fetch failed, `"submit"` when the job
+        could not be started) and nothing runs. The lease is the worker's from here on, so a
+        failure is reported (`_refuse`), never left for the lease's expiry to charge."""
         self._set_lease_s(got)
         h = got["job"]
         jid = h.get("job_id") if isinstance(h.get("job_id"), str) else None
         if jid is None or not W.KEY_RE.match(jid):
             _log("leased a job without a usable job_id; ignored")
             return
-        status, data = self.client.call("GET", f"/v1/jobs/{jid}/bundle")
+        try:
+            status, data = self.client.call("GET", f"/v1/jobs/{jid}/bundle")
+        except Transport as e:
+            _log(f"{jid}: bundle fetch failed ({e}); refused")
+            return self._refuse(jid, "bundle", f"bundle fetch: {e}")
         if status in (403, 410):                # not this worker's, or gone: nothing to report
             _log(f"{jid}: bundle fetch got HTTP {status}; dropped")
             return
@@ -260,10 +272,14 @@ class Loop:
         if why is not None:
             _log(f"{jid}: refused: {why}")
             return self._refuse(jid, "verify", why)
-        self.remember(h["nonce"], h["expires_at"])
         out = io.BytesIO()
         line = json.dumps(h, ensure_ascii=False).encode("utf-8") + b"\n"
-        rc = WJ.submit(self.cfg, io.BytesIO(line + data), out)
+        try:
+            self.remember(h["nonce"], h["expires_at"])
+            rc = WJ.submit(self.cfg, io.BytesIO(line + data), out)
+        except OSError as e:
+            _log(f"{jid}: could not start ({e}); refused")
+            return self._refuse(jid, "submit", f"{type(e).__name__}: {e}")
         if rc != 0:
             err = next((r for r in _lines(out.getvalue()) if r.get("type") == "error"), {})
             return self._refuse(jid, str(err.get("stage") or "submit"),
@@ -273,9 +289,25 @@ class Loop:
         self._renew(jid)
 
     def _refuse(self, jid: str, stage: str, error: str) -> None:
-        frame = {"schema": W.FRAME_SCHEMA, "type": "error", "job_id": jid, "at": now_iso(),
-                 "n": 1, "stage": stage, "error": error}
-        self.client.json("POST", f"/v1/jobs/{jid}/frames", {"frames": [frame]})
+        """Report a job that will not run with an `error` frame, best effort: one that could
+        not be posted is kept and posted again at the start of every tick."""
+        self.refusals[jid] = (stage, error)
+        self.report_refusals()
+
+    def report_refusals(self) -> None:
+        for jid, (stage, error) in list(self.refusals.items()):
+            frame = {"schema": W.FRAME_SCHEMA, "type": "error", "job_id": jid, "at": now_iso(),
+                     "n": 1, "stage": stage, "error": error}
+            try:
+                status, _ = self.client.json("POST", f"/v1/jobs/{jid}/frames",
+                                             {"frames": [frame]})
+            except Transport as e:
+                _log(f"{jid}: the refusal was not posted ({e}); retried next tick")
+                continue
+            if status >= 500:
+                _log(f"{jid}: the refusal got HTTP {status}; retried next tick")
+                continue
+            self.refusals.pop(jid, None)        # posted, or the job is not ours any more
 
     def _job(self, jid: str) -> Path:
         return W.jobs_dir(self.cfg) / jid

@@ -625,6 +625,68 @@ Fixes from the fourth review, no Design change:
   without inbound SSH, a real campaign's gates, revocation from that laptop) are still not
   run, so the spec stays `in-progress`.
 
+### As shipped (2026-11-02, loop 8)
+
+Fixes from the fifth review, no Design change:
+
+- **A lease that can get nothing still waits.** A disabled worker, or a request with no usable
+  `kinds` or `slots_free`, gets its 204 only after its `wait_s` (capped at `LEASE_WAIT_S`), so
+  an idle disabled worker sends one request per long-poll, not as many as it can. The worker
+  side has its own guard too: a 204 that comes back in under half the wait it asked for makes
+  `tick` sleep `TICK_S`.
+- **A long-poll whose client has gone takes no job.** The handler passes `lease()` a check
+  that its client is still connected: a non-blocking `select` on the connection, then a raw
+  `recv(1, MSG_PEEK)`. EOF or a reset means the client has gone. So does any byte under TLS,
+  because a client waiting for its answer sends nothing except a close alert. `lease()` makes
+  this check before each take, and `_take` makes it again under the job lock, just before it
+  unlinks the queue entry and writes `leased`. A client that has gone leaves the job `queued`.
+  If writing the 200 still fails (the client left after the check), `release_lease` puts the
+  record back to `queued` and restores the queue entry, taking the queue lock and then the job
+  lock. It does this only if the record is still this lease's (`leased_at`), live, not
+  cancelled, and its bundle is still there. `lease()`'s return carries the entry and
+  `leased_at` for this. The handler strips them from the answer.
+- **A leased job that cannot start is reported.** In `Loop.start`, a `Transport` on the bundle
+  fetch is refused with `stage: "bundle"`. An `OSError` from `remember` or `WJ.submit` is
+  refused with `stage: "submit"`. The `error` frame is best effort. If posting it fails
+  (`Transport` or 5xx), the job id stays in `Loop.refusals`, and the frame is posted again at
+  the start of every tick. The job is therefore reported once the coordinator answers, instead
+  of being left for lease expiry to charge to the worker. The refusals are kept in memory only.
+  If the worker restarts before one is posted, that job still waits for its lease to expire.
+- **`nw workers add --pull` writes the secret only after the registry accepts the worker.** An
+  `add` that loses a race on the same name fails at the registry update. It never overwrites
+  the winner's secret and never deletes it. If writing the secret fails, the new registry entry
+  is removed.
+
+### Test record (2026-11-02, loop 8)
+
+- New in `tests/test_pull_workers_security.py`:
+  - A lease with `wait_s` 0.5 takes at least 0.45 s before its 204, for each of: a disabled
+    worker, `kinds` that is not a list, and `slots_free` 0.
+  - A `tick` whose lease gets an immediate 204 sleeps `TICK_S`.
+  - A long-poll whose client hangs up, on plain HTTP and on TLS (with the `openssl` test CA),
+    leases nothing. The job is queued after the hang-up and before the server's next take. It
+    stays `queued` with its queue entry, and the next live lease gets it.
+  - A live long-poll still gets a job queued while it waits. Its answer carries no `entry` or
+    `leased_at`.
+  - A 200 that cannot be written puts the job back to `queued`, and it can be leased again.
+  - `release_lease` leaves alone a job that was cancelled after it was leased.
+  - A bundle fetch `Transport`, with the coordinator also down for the refusal, keeps the job in
+    `refusals`. Once the coordinator is back, `report_refusals` ends the job with
+    `stage: "bundle"`.
+  - A `WJ.submit` `OSError` ends the job with `stage: "submit"`.
+  - An `add` that loses the race leaves the winner's secret, and the winner's token still
+    leases.
+- With the previous `pull_jobs.py` and `pull_worker.py`, the 10 new lease and start tests fail.
+  The live long-poll test passes on both versions, because it is the control. With the
+  previous `cli_workers.py`, the race test fails.
+- `uv run pytest -q -n 4 tests/test_pull_workers.py tests/test_pull_workers_security.py
+  tests/test_remote_job_records.py tests/test_remote_personas.py tests/test_workers_registry.py
+  tests/test_worker_job_retry.py tests/test_workers_drain.py tests/test_remote_gates.py`:
+  460 passed. `python3 tools/spec_lint.py`: ok.
+- The full suite is left to gating. The cross-machine manual steps (a Tailscale bind, a laptop
+  without inbound SSH, a real campaign's gates, revocation from that laptop) are still not run,
+  so the spec stays `in-progress`.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-561` / `nw idea clock-out IDEA-561`.
