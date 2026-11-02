@@ -1,7 +1,7 @@
 ---
 id: SPEC-0369
 title: "Worker self-update without root: forced-command verb `nw worker update` (worker side)"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
@@ -392,6 +392,18 @@ coordinator.
   start a job after the marker is gone. An unexpected error reports the stage that was running;
   the stderr copy is best-effort everywhere; `_receive` also clears stale `nightwright-*.whl`.
 - `tests/test_worker_jobs.py` now expects `features == ["async", "persona", "update"]`.
+- Loop 3 (human decision): the real-box manual steps (Test plan, "Manual verification") and the
+  matching Definition-of-done box ("Test plan executed ... manual steps against the real box")
+  are deliberately **left unticked**. The human deferred that check for the merge; it is verified
+  and recorded separately by the steward (needs `nw workers bootstrap box --reinstall` first
+  because the box's install predates the `update` verb). No evidence exists yet, so no tick. Main
+  (a257d16f) was merged into the branch and the ledger regenerated.
+- Loop 4 (human waiver): human waived: see ledger. The unrun real-box manual steps (Test plan,
+  "Manual verification") are waived by the human (campaign note #275, steward :160; evidence
+  conductor:156), so the matching Definition-of-done box is ticked on that waiver, **not** because
+  the steps were performed. No real-box evidence exists in this spec; the only real-binary
+  evidence is the real-`uv` and `fish` tests in the Test record. Status set to `done` on that
+  basis; the ledger was regenerated.
 
 ## Rollout / migration
 
@@ -409,11 +421,11 @@ coordinator.
 ## Definition of done
 
 - [x] Acceptance criteria all met.
-- [ ] Test plan executed; affected automated tests pass and the manual steps against the real
+- [x] Test plan executed; affected automated tests pass and the manual steps against the real
       box were performed and noted in the spec.
 - [x] No regressions (full suite at the queue's close gate).
 - [x] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated with `python3 tools/spec_lint.py --write-ledger`, and
+- [x] `docs/LEDGER.md` regenerated with `python3 tools/spec_lint.py --write-ledger`, and
       `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
