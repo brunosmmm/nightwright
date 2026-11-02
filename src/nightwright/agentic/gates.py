@@ -62,6 +62,7 @@ class GateResult:
     attempts: tuple = ()        # SPEC-0289: one dict per attempt once a retry ran (attempt 0 first)
     flaky: tuple = ()           # SPEC-0289: ids a targeted rerun passed, when the gate ended ok
     report: dict | None = None  # SPEC-0359: the parsed `NW_GATE_REPORT` (< REPORT_MAX_BYTES)
+    infra_error: str | None = None  # SPEC-0387: the host could not write the gate's log/sidecar
 
 
 @dataclass(frozen=True)
@@ -191,18 +192,23 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
     cwd = Path(worktree) / gate.get("cwd", ".")
     timeout_s = int(gate.get("timeout_s", 1200))
     log_path = Path(log_path)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path = report_path_for(log_path)         # SPEC-0359
-    report_path.unlink(missing_ok=True)             # a leftover never stands for this run
-    child_env = {**os.environ, **env, "NW_GATE_REPORT": str(report_path)}
     started_at = store.now_iso()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path = report_path_for(log_path)         # SPEC-0359
+        report_path.unlink(missing_ok=True)             # a leftover never stands for this run
+        log = open(log_path, "w", encoding="utf-8")
+    except OSError as e:                            # SPEC-0387: a full disk is the host's, not a crash
+        return _infra_result(gate, cmd, cwd, log_path, log_rel, e, timeout_s, started_at,
+                             attempt)
+    child_env = {**os.environ, **env, "NW_GATE_REPORT": str(report_path)}
     started = time.monotonic()
     started_ns = time.time_ns()     # SPEC-0284: a junit file older than this is a leftover
     timed_out = False
     error = None
     exit_code = None
     interrupted = False
-    with open(log_path, "w", encoding="utf-8") as log:
+    with log:
         proc = None
         try:
             with _LOCK:                 # SPEC-0229: check the stop flag and register atomically
@@ -241,8 +247,26 @@ def run_gate(gate: dict, worktree, env: dict, log_path, placeholders: dict, *,
                         timed_out, duration, log_rel or str(log_path), tail(log_path),
                         cmd=cmd, cwd=str(cwd), interrupted=interrupted, summary=summary,
                         report=read_report(report_path))
-    _write_sidecar(log_path, result, timeout_s=timeout_s, started_at=started_at, error=error,
-                   attempt=attempt)
+    try:
+        _write_sidecar(log_path, result, timeout_s=timeout_s, started_at=started_at, error=error,
+                       attempt=attempt)
+    except OSError as e:                            # SPEC-0387: the run happened; say it is unrecorded
+        result = replace(result, ok=False, infra_error=f"could not write {e.filename or 'the sidecar'}: {e}")
+    return result
+
+
+def _infra_result(gate, cmd, cwd, log_path, log_rel, e: OSError, timeout_s, started_at,
+                  attempt) -> GateResult:
+    """SPEC-0387: the gate never ran because its log could not be created (typically ENOSPC):
+    a failed result carrying `infra_error`, so the caller still emits its frame and `done`."""
+    result = GateResult(gate["name"], bool(gate.get("required", True)), False, None, False, 0.0,
+                        log_rel or str(log_path), "", cmd=cmd, cwd=str(cwd),
+                        infra_error=f"could not create {e.filename or log_path}: {e}")
+    try:
+        _write_sidecar(log_path, result, timeout_s=timeout_s, started_at=started_at,
+                       error=result.infra_error, attempt=attempt)
+    except OSError:
+        pass                                        # the disk is still full: the frame has it
     return result
 
 
@@ -722,6 +746,8 @@ def as_payload(run: GateRun) -> dict:
     for r in results:
         if r["summary"] is None:          # SPEC-0284: only recorded with `results:`
             del r["summary"]
+        if r["infra_error"] is None:      # SPEC-0387: only recorded when the host failed
+            del r["infra_error"]
         if r["report"] is None:           # SPEC-0359: only recorded when the gate wrote one
             del r["report"]
         for key in ("attempts", "flaky"):     # SPEC-0289: only recorded when a retry ran

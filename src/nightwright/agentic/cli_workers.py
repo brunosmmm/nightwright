@@ -34,6 +34,7 @@ def workers_group():
     nw workers set NAME --kinds gate,persona [--persona-slots N]
                                        job kinds / persona slots (SPEC-0344)
     nw workers on|off NAME             enable (clears cooldown) / disable
+    nw workers clear-cooldown NAME     clear the cooldown only (enabled/drain untouched; SPEC-0387)
     nw workers drain NAME              no new gates; disabled once idle (SPEC-0343)
     nw workers update NAME [--force] [--dry-run]
                                        upgrade the worker to this checkout's build (SPEC-0385)
@@ -310,6 +311,18 @@ def workers_on(cfg, name):
         r.pop("update_pending", None)
     _update(cfg, fn)
     _say(f"{name}: enabled")
+
+
+@workers_group.command("clear-cooldown")
+@click.argument("name")
+@click.pass_obj
+def workers_clear_cooldown(cfg, name):
+    """Clear a worker's cooldown only; enabled, drain and update state stay as they are
+    (SPEC-0387)."""
+    def fn(records):
+        _find(records, name)["cooldown_until"] = None
+    _update(cfg, fn)
+    _say(f"{name}: cooldown cleared")
 
 
 @workers_group.command("off")

@@ -56,16 +56,31 @@ class RemoteFailure(Exception):
     """A transport failure (or a coordinator-side git failure): fall back to a local run.
     `cooldown` says whether the worker is put in cooldown for it. `rejected` (SPEC-0367) marks
     a worker that understood the job but cannot run it (a `validate` error) or speaks another
-    dialect (every `protocol` failure): its install is probably stale."""
+    dialect (every `protocol` failure): its install is probably stale. `job_error` (SPEC-0387)
+    marks an `error` frame a live worker sent for a failure inside the job (ENOSPC, a bug): the
+    host is fine, so no cooldown; the job is retried elsewhere (`_failed`)."""
 
     def __init__(self, stage: str, error: str, *, cooldown: bool = True,
-                 rejected: bool = False):
+                 rejected: bool = False, job_error: bool = False):
         super().__init__(error)
+        self.job_error = job_error
         self.stage = stage
         self.error = error
         self.cooldown = cooldown
         self.rejected = rejected or stage == "protocol"
         self.worker_wait_s = 0.0
+
+
+def _error_failure(stage: str, frame: dict, *, rejected: bool = False) -> RemoteFailure:
+    """The `RemoteFailure` of a worker's `error` frame. SPEC-0387: a `job_error` frame (its
+    own traceback appended to the message) leaves the worker out of cooldown."""
+    err = str(frame.get("error") or "")
+    job_error = frame.get("job_error") is True
+    if job_error and isinstance(frame.get("traceback"), str):
+        err = f"{err}\n{frame['traceback']}"
+    return RemoteFailure(stage, err,
+                         cooldown=stage not in ("claim", "validate") and not job_error,
+                         rejected=rejected, job_error=job_error)
 
 
 class _Stopped(Exception):
@@ -684,9 +699,7 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                 stage = str(frame.get("stage") or "error")
                 # `claim` (a duplicate job id) and `validate` (the coordinator's own header)
                 # say nothing about the host
-                raise RemoteFailure(stage, str(frame.get("error") or ""),
-                                    cooldown=stage not in ("claim", "validate"),
-                                    rejected=stage == "validate")
+                raise _error_failure(stage, frame, rejected=stage == "validate")
             if kind == "started":
                 started = True
                 worker_wait = _num(frame, "slot_wait_s")
@@ -1157,8 +1170,7 @@ class _Job:
         kind, out = frame["type"], None
         if kind == "error":
             stage = str(frame.get("stage") or "error")
-            raise RemoteFailure(stage, str(frame.get("error") or ""),
-                                cooldown=stage not in ("claim", "validate"))
+            raise _error_failure(stage, frame)
         if kind == "started":
             self.started = True
             self.worker_wait = _num(frame, "slot_wait_s")
@@ -1370,6 +1382,9 @@ def _failed(cfg, cid, worker: dict, rec: dict, seq: int, f: RemoteFailure) -> Ou
     ended is left alone (an interrupted run)."""
     if (out := _cancelled(cfg, worker, rec, seq)) is not None:
         return out
+    if f.job_error:                             # SPEC-0387: not the host's fault: retry the job
+        _record_failure(cfg, cid, worker["name"], rec["job_id"], seq, f)     # no cooldown
+        return _give_up(cfg, cid, worker, rec, seq, "job_error")
     RJ.update(cfg, rec["job_id"], state="local")
     _record_failure(cfg, cid, worker["name"], rec["job_id"], seq, f)
     _cancel(worker, rec["job_id"])

@@ -674,10 +674,12 @@ def submit(cfg, stdin, stdout) -> int:
     job = W.jobs_dir(cfg) / h["job_id"]
     existing = None
     reclaim_error = claim_error = None
-    retryable = False
+    retryable, claim_stage = False, "claim"
     with W.jobs_lock(cfg):
         if W.update_refusal(cfg):               # SPEC-0369: never start on a replaced install
             claim_error, retryable = W.UPDATING_ERROR, True
+        elif (low := W.admission_refusal(cfg)):     # SPEC-0387: a nearly full disk takes no job
+            claim_error, claim_stage = low, "admission"
         else:
             W.jobs_dir(cfg).mkdir(parents=True, exist_ok=True)
             try:
@@ -706,7 +708,7 @@ def submit(cfg, stdin, stdout) -> int:
     if existing is not None or claim_error is not None:     # outside jobs_lock
         _drain(stdin, h["bundle_bytes"])        # the client's upload, so it never hits EPIPE
         if reclaim_error is not None or claim_error is not None:
-            frames.emit("error", stage="claim", error=reclaim_error or claim_error,
+            frames.emit("error", stage=claim_stage, error=reclaim_error or claim_error,
                         **({"retryable": True} if retryable else {}))
             return W.EXIT_ERROR
         if existing.get("header_digest") == digest:     # idempotent: nothing new starts
@@ -951,6 +953,7 @@ def run_job(cfg, job: Path, proc: dict) -> int:
     try:
         W._checkout(cfg, h, job, None, bundle=job / "bundle")
         stage = "slot"
+        frames.stage = None
         frames.emit("accepted")
         if cancel.is_set():                     # cancelled (or the lease ran out) meanwhile
             frames.emit("done", ok=False, started_at=now_iso(), duration_s=0.0,
@@ -965,7 +968,10 @@ def run_job(cfg, job: Path, proc: dict) -> int:
     except W.WorkerError as e:
         extra = {"stage": e.stage, "error": e.error}
     except Exception as e:                      # any exception becomes an error frame
-        extra = {"stage": stage, "error": f"{type(e).__name__}: {e}"}
+        # SPEC-0387: the real stage (`gate:<name>`, `frame`), a traceback and, for an OSError,
+        # the file (and on ENOSPC the disk and the job's directory sizes)
+        extra = {"stage": frames.stage or stage, "error": f"{type(e).__name__}: {e}",
+                 **W.error_detail(cfg, e, job)}
     if extra:
         if "done" in frames.sent:               # `done` is out: never a second final frame
             print(f"nw worker job: after done: {extra['error']}", file=sys.stderr)

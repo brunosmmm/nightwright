@@ -137,6 +137,82 @@ def jobs_lock(cfg):
         os.close(fd)
 
 
+DEFAULT_MIN_FREE_GB = 5.0
+DETAIL_TB_MAX = 4096                 # SPEC-0387: bytes of traceback an error frame carries
+
+
+def min_free_gb(cfg) -> float:
+    """SPEC-0387: `agentic.workers.min_free_gb` (default 5); not a finite number >= 0: default."""
+    raw = ((cfg.get("agentic") or {}).get("workers") or {}).get("min_free_gb")
+    try:
+        v = float(raw)
+        if isinstance(raw, bool) or not math.isfinite(v) or v < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return DEFAULT_MIN_FREE_GB
+    return v
+
+
+def _free_bytes(cfg) -> int:
+    wd = worker_dir(cfg)
+    probe = wd if wd.is_dir() else Path(cfg["data_dir"])
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return shutil.disk_usage(probe).free
+
+
+def admission_refusal(cfg) -> str | None:
+    """SPEC-0387: why a new job must not start here: the data dir's free space is below
+    `min_free_gb`. A failure to measure it admits the job (the guard never blocks on itself)."""
+    floor = min_free_gb(cfg)
+    try:
+        free = _free_bytes(cfg)
+    except OSError:
+        return None
+    if free < floor * 2**30:
+        return (f"worker disk low: {free / 2**30:.1f} GiB free under {cfg['data_dir']}, below "
+                f"agentic.workers.min_free_gb ({floor:g})")
+    return None
+
+
+def _dir_bytes(path: Path) -> int | None:
+    total = 0
+    try:
+        for root, _dirs, names in os.walk(path):
+            for n in names:
+                try:
+                    total += os.lstat(os.path.join(root, n)).st_size
+                except OSError:
+                    pass
+    except OSError:
+        return None
+    return total
+
+
+def error_detail(cfg, exc: BaseException, job: Path | None = None) -> dict:
+    """SPEC-0387: the extra fields of a job-level `error` frame: `job_error` (a live worker's
+    failure inside the job, not a dead host), the traceback (last `DETAIL_TB_MAX` bytes),
+    `filename` for an OSError, and for ENOSPC the data dir's `disk_usage` and the sizes of
+    the job's `tmp`/`out`/`tree`. Never raises."""
+    import errno
+    import traceback
+    out: dict = {"job_error": True}
+    try:
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        out["traceback"] = tb[-DETAIL_TB_MAX:]
+        if isinstance(exc, OSError):
+            if exc.filename is not None:
+                out["filename"] = str(exc.filename)
+            if exc.errno == errno.ENOSPC:
+                du = shutil.disk_usage(cfg["data_dir"])
+                out["disk"] = {"total": du.total, "used": du.used, "free": du.free}
+                if job is not None:
+                    out["job_bytes"] = {d: _dir_bytes(job / d) for d in ("tmp", "out", "tree")}
+    except Exception:                           # pragma: no cover - diagnostics only
+        pass
+    return out
+
+
 def update_refusal(cfg) -> str | None:
     """SPEC-0369: `"worker updating"` when a claim must not start a job (caller holds
     `jobs_lock`): `worker/updating` is there and another process holds `worker/update.lock`
@@ -393,6 +469,7 @@ class _Frames:
         self.log: Path | None = None
         self.closed = False
         self.sent: set[str] = set()
+        self.stage: str | None = None           # SPEC-0387: where a failure inside _run_gates is
         self.n = 0                              # SPEC-0340: the last `n` written to the log
         self.last: dict | None = None
         self._torn = False                      # the log may end in a torn, unterminated line
@@ -764,6 +841,8 @@ def gate_job(cfg, stdin, stdout) -> int:
             with jobs_lock(cfg):
                 if update_refusal(cfg):         # SPEC-0369: never start on a replaced install
                     raise WorkerError("claim", UPDATING_ERROR, retryable=True)
+                if (low := admission_refusal(cfg)):     # SPEC-0387
+                    raise WorkerError("admission", low)
                 jobs_dir(cfg).mkdir(parents=True, exist_ok=True)
                 try:
                     (jobs_dir(cfg) / h["job_id"]).mkdir()
@@ -800,7 +879,8 @@ def gate_job(cfg, stdin, stdout) -> int:
             return _fail(cfg, h, job, frames, job_rec, e.stage, e.error, e.retryable)
         except Exception as e:                      # any exception becomes an error frame
             stage, state["stage"] = state["stage"], "finish"
-            return _fail(cfg, h, job, frames, job_rec, stage, f"{type(e).__name__}: {e}")
+            return _fail(cfg, h, job, frames, job_rec, getattr(frames, "stage", None) or stage,
+                         f"{type(e).__name__}: {e}", detail=error_detail(cfg, e, job))
         try:
             _write_job_json(job / "job.json", job_rec)
             _cleanup(cfg, h, job)
@@ -812,12 +892,13 @@ def gate_job(cfg, stdin, stdout) -> int:
             signal.signal(sig, handler)
 
 
-def _fail(cfg, h, job, frames, job_rec, stage, error, retryable=False) -> int:
+def _fail(cfg, h, job, frames, job_rec, stage, error, retryable=False, detail=None) -> int:
     done = "done" in frames.sent                # `done` went out: never a second final frame
     if done:
         print(f"nw worker: after done: {error}", file=sys.stderr)
     else:
-        frames.emit("error", stage=stage, error=error, **({"retryable": True} if retryable else {}))
+        frames.emit("error", stage=stage, error=error, **({"retryable": True} if retryable else {}),
+                    **(detail or {}))
     if job is not None:
         try:
             if job_rec is not None and not done:
@@ -867,11 +948,14 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
                 cut = True
                 break
             stem = f"{seq:03d}-{gate['name']}"
+            frames.stage = f"gate:{gate['name']}"
             r = G.run_gate_with_retries(gate, tree, env, out / f"{stem}.log", ph,
                                         log_rel=f"gates/{stem}.log", stop=cancel,
                                         deadline=deadline)
             results.append(r)
+            frames.stage = "frame"
             frames.emit("gate", result=asdict(r), files=gate_files(out, stem))
+        frames.stage = "frame"
         frames.emit("done", ok=all(r.ok for r in results if r.required),
                     started_at=started_at, duration_s=round(time.monotonic() - t0, 3),
                     slot_wait_s=hold.waited_s,
@@ -1060,15 +1144,11 @@ def info(cfg) -> dict:
     from .. import __version__, buildid
     pkg = Path(__file__).resolve().parents[1]
     sha = _version_out("git", "-C", str(pkg), "rev-parse", "HEAD")
-    wd = worker_dir(cfg)
-    probe = wd if wd.is_dir() else Path(cfg["data_dir"])
-    while not probe.exists() and probe != probe.parent:
-        probe = probe.parent
     return {"schema": INFO_SCHEMA, "protocol": JOB_SCHEMA, "features": ["async", "persona", "update"],
             "version": __version__,
             "git_sha": sha, "build_id": buildid.local(), "data_dir": str(cfg["data_dir"]),
             "git": _version_out("git", "--version"), "uv": _version_out("uv", "--version"),
-            "free_bytes": shutil.disk_usage(probe).free}
+            "free_bytes": _free_bytes(cfg)}
 
 
 CLAUDE_CHECK_SCHEMA = "nw.worker.claude_check.v1"
