@@ -619,6 +619,31 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
   `test_agentic_adopt.py`, `test_remote_job_records.py`, `test_remote_gates.py` and
   `test_agentic_campaign_runs.py`: 278 passed. The full suite is left to gating.
 
+### As shipped (2026-11-02, re-run TMPDIR)
+
+- **The re-run after a failed write-back gets its own TMPDIR.** The failed run's `run.end`
+  removes its private `tmp/run-<old run_id>` (SPEC-0253), so `_rerun_locally` now replaces
+  `TMPDIR`, `TEMP` and `TMP` in the re-run's env with a newly created
+  `tmp/run-<new run_id>`, which the re-run's own `run.end` removes. Before this fix the
+  re-run, fresh or adopted, inherited the deleted directory. Requests without `TMPDIR` are
+  unchanged.
+
+### Test record (2026-11-02, re-run TMPDIR)
+
+- New cases in `tests/test_remote_personas.py`: after a failed write-back (a dirty worktree),
+  the recording local runner gets `TMPDIR`/`TEMP`/`TMP` equal to
+  `<campaign>/tmp/run-002-implementer`, which exists when the runner is called, while
+  `run-001-implementer` is gone. One case covers a fresh request and one an adopted job.
+  Mutation check: with the fix disabled, both cases fail.
+- `uv run pytest -q -n 6` over `test_remote_personas.py`, `test_agentic_runner.py`,
+  `test_agentic_adopt.py`, `test_remote_job_records.py`, `test_remote_gates.py` and
+  `test_agentic_campaign_runs.py`: 277 passed, 3 failed, twice. The failures were
+  `test_agentic_adopt.py::test_adopt_review_triager_is_its_own_group`,
+  `test_fanout_detach_precondition` and `test_adopt_review_group_with_finished_member`.
+  None of them touches write-back or `_rerun_locally`. The three pass on their own, and
+  `test_agentic_adopt.py` passes in full under `-n 6` (38 passed), so they look like timing
+  flakes under load. The full suite is left to gating.
+
 ## Rollout / migration
 
 Implementation sessions clock in and out on the linked idea (`nw idea clock-in IDEA-560` /

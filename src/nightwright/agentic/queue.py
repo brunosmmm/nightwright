@@ -1938,6 +1938,12 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
         current["cost"] = copy.deepcopy(state["cost"])
         store.write_state(cfg, cid, current)
     new_req = replace(req, run_dir=store.runs_dir(cfg, cid) / new_id)
+    env = getattr(req, "env", None)
+    if isinstance(env, dict) and "TMPDIR" in env:
+        # SPEC-0253: the failed run's `run.end` just removed its private TMPDIR; the re-run
+        # gets its own, removed in turn by its own `run.end`
+        new_req = replace(new_req, env={**env, **G.tmp_env(
+            store.child_tmp(cfg, cid, f"run-{new_id}", create=True))})
     if hooks is not None and getattr(ctx.runner, "detachable", False):
         if not hooks.restart(new_req.run_dir):
             return new_id, new_req, DETACHED

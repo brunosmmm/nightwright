@@ -4,6 +4,7 @@ second data dir) with `FakeRunner` selected on the worker (`NW_AGENTIC_RUNNER=fa
 import datetime as dt
 import json
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -952,10 +953,12 @@ class _RecordingLocal:
     detachable = False
 
     def __init__(self):
-        self.reqs = []
+        self.reqs, self.tmp_existed = [], []
 
     def run(self, req, *, hooks=None):
         self.reqs.append(req)
+        tmp = (req.env or {}).get("TMPDIR")
+        self.tmp_existed.append(bool(tmp) and Path(tmp).is_dir())
         req.run_dir.mkdir(parents=True, exist_ok=True)
         return R.write_run_record(req, R.RunResult(
             exit_code=0, timed_out=False, interrupted=False, duration_s=0.0, is_error=False,
@@ -1029,3 +1032,38 @@ def test_failed_write_back_of_a_record_without_a_request_is_not_rerun(tmp_path, 
     assert local.reqs == [] and res.run_id == "001-implementer"
     assert res.run_result.writeback_failed and res.run_result.is_error
     assert [e["run_id"] for e in w.ledger(["run.start"])] == ["001-implementer"]
+
+
+# ---- the re-run after a failed write-back gets its own TMPDIR (SPEC-0253) ---------------------
+
+def _assert_own_tmp(w, local):
+    got, = local.reqs
+    tmp = S.child_tmp(w.cfg, CID, "run-002-implementer")
+    assert {got.env[k] for k in ("TMPDIR", "TEMP", "TMP")} == {str(tmp)}
+    assert local.tmp_existed == [True]                   # it existed when the runner started
+    assert not S.child_tmp(w.cfg, CID, "run-001-implementer").exists()   # the failed run's
+
+
+def test_rerun_after_failed_write_back_gets_its_own_tmpdir(tmp_path, monkeypatch):
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "writer.json", WRITER))
+    monkeypatch.setattr(RPS, "_before_writeback",
+                        lambda wt, b: (w.repo / "late.txt").write_text("late\n"))
+    old = str(S.child_tmp(w.cfg, CID, "run-001-implementer", create=True))
+    req = _req(w)
+    req = replace(req, env={**req.env, "TMPDIR": old, "TEMP": old, "TMP": old})
+    _start(w, req)
+    local = _RecordingLocal()
+    ctx = Q._Ctx(w.cfg, runner=local)
+    ctx._projects[w.state["project"]] = w.project
+    res = Q._do_persona(ctx, S.read_state(w.cfg, CID), Q.Step("implement", persona="implementer"),
+                        "001-implementer", req, 1.0)
+    assert res.run_id == "002-implementer"
+    _assert_own_tmp(w, local)
+
+
+def test_rerun_after_failed_write_back_of_an_adopted_job_gets_its_own_tmpdir(tmp_path,
+                                                                             monkeypatch):
+    w, req, res, local = _adopt_stripped(tmp_path, monkeypatch, writeback_fails=True)
+    assert res.run_id == "002-implementer"
+    _assert_own_tmp(w, local)
