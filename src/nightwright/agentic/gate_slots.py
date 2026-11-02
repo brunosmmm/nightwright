@@ -204,19 +204,34 @@ def _drop_marker(marker: Path) -> None:
         marker.unlink(missing_ok=True)
 
 
+def _repooled(cfg, repool, current: list) -> list:
+    """SPEC-0374: `repool()`'s list when it is a usable one, else `current`."""
+    try:
+        new = list(repool() or [])
+        for pool, _n in new:
+            pool_dir(cfg, pool)
+    except Exception:                           # a registry read failing mid-wait: keep waiting
+        return current
+    return new or current
+
+
 @contextmanager
 def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
-            wait_event_s=None, pools=None, skip=None) -> Iterator[SlotHold]:
+            wait_event_s=None, pools=None, skip=None, repool=None) -> Iterator[SlotHold]:
     """Hold one slot for the `with` body. `pools` is an ordered list of `(pool_name, n_slots)`
     (`pool_name` a worker name, `None` for local; default local only): each poll tries them in
-    order and takes the first free slot, so earlier pools are preferred, and the pool list is
-    fixed for the wait. `SlotHold.pool` says which one it got. While none is free, poll every
+    order and takes the first free slot, so earlier pools are preferred; the pool list is
+    fixed for the wait unless `repool` is given. `SlotHold.pool` says which one it got. While none is free, poll every
     `poll_s` with the
     waiter marker published; a stop (`stop` set, or the gates' sticky stop) ends the wait and
     yields a hold with `interrupted=True` and no slot. `on_wait(occupancy, waited_s)` is
     called once when the wait passes `wait_event_s` (default `WAIT_EVENT_S`; SPEC-0336's worker
     reads it from its environment). SPEC-0343: `skip(pool) -> bool`, evaluated before each try of
-    a non-local pool, passes over a pool that may no longer take gates (a draining worker)."""
+    a non-local pool, passes over a pool that may no longer take gates (a draining worker).
+    SPEC-0374: `repool() -> list`, called before each retry while waiting, replaces the pool
+    list (a worker that went into cooldown, was disabled or drained leaves it; with none left
+    the local pool comes in), so a waiter is never stranded on a pool that no longer takes
+    gates. An exception, an empty list or a bad pool name keeps the current list."""
     from . import gates as G                    # lazy: gates imports this module
     poll_s = POLL_S if poll_s is None else poll_s
     wait_event_s = WAIT_EVENT_S if wait_event_s is None else wait_event_s
@@ -248,6 +263,8 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
                     stop.wait(poll_s)
                 else:
                     time.sleep(poll_s)
+                if repool is not None:
+                    pools = _repooled(cfg, repool, pools)
                 taken = _try_take(cfg, pools, campaign_id, t0, skip)
         finally:
             _drop_marker(marker)

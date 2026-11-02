@@ -76,11 +76,11 @@ def _drained_events(cfg):
 
 def test_drain_excludes_from_gate_pools(cfg, invoke):
     _seed(cfg, _w("box"), _w("two"))
-    assert WK.gate_pools(cfg) == [("box", 1), ("two", 1), (None, 1)]
+    assert WK.gate_pools(cfg) == [("box", 1), ("two", 1)]
     r = invoke("drain", "box")
     assert r.exit_code == 0 and "box: draining (0 jobs)" in r.output
     assert _raw(cfg)["draining"] is True and _raw(cfg)["enabled"] is True
-    assert WK.gate_pools(cfg) == [("two", 1), (None, 1)]
+    assert WK.gate_pools(cfg) == [("two", 1)]
     assert not WK.placeable_by_name(cfg, "box") and WK.placeable_by_name(cfg, "two")
     assert not WK.placeable_by_name(cfg, "nope")
 
@@ -265,16 +265,17 @@ def _logging_ssh(world, remote):
 
 def test_waiter_started_before_drain_skips_worker(world, remote, monkeypatch):
     """The waiter's pool list has `box` (it started before the drain). Both pools are held;
-    once `box` is drained and its slot freed, the waiter still takes only the local pool."""
+    once `box` is drained and its slot freed, the waiter still takes only the local pool.
+    SPEC-0374: the waiter re-reads `gate_pools` each poll (`checks` counts those reads)."""
     ssh, marker = _logging_ssh(world, remote)
     remote.register(ssh=ssh)
     checks = []
-    real = WK.placeable_by_name
+    real = WK.gate_pools
 
-    def counted(cfg, name):
-        checks.append(name)
-        return real(cfg, name)
-    monkeypatch.setattr(WK, "placeable_by_name", counted)
+    def counted(cfg, *a, **k):
+        checks.append(1)
+        return real(cfg, *a, **k)
+    monkeypatch.setattr(WK, "gate_pools", counted)
     monkeypatch.setattr(GS, "POLL_S", 0.05)
     out = {}
     with ExitStack() as box_hold, ExitStack() as local_hold:
@@ -288,7 +289,7 @@ def test_waiter_started_before_drain_skips_worker(world, remote, monkeypatch):
         _set_draining(world.cfg)
         box_hold.close()                        # box's slot is free, but box is draining
         n = len(checks)
-        assert until(lambda: len(checks) >= n + 3)  # the waiter polled box and passed it over
+        assert until(lambda: len(checks) >= n + 3)  # the waiter re-read placement (local only now)
         assert "run" not in out and GS.holding(world.cfg, CID) is None
     join(t)
     run = out["run"]
@@ -614,7 +615,7 @@ def test_worker_without_gate_kind_is_not_placeable(cfg):
     assert not WK.placeable(box) and WK.placeable(two)
     assert not WK.placeable_by_name(cfg, "box") and WK.placeable_by_name(cfg, "two")
     assert not WK.placeable_by_name(cfg, "nope")
-    assert [p for p, _ in WK.gate_pools(cfg)] == ["two", WK.LOCAL]
+    assert [p for p, _ in WK.gate_pools(cfg)] == ["two"]
 
 
 def test_recheck_refuses_a_worker_without_gate_kind(world, remote, monkeypatch):

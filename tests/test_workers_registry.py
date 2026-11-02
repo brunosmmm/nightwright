@@ -174,7 +174,7 @@ def test_hand_edited_option_like_values_make_the_registry_unreadable(cfg, rec):
 
 def test_unparseable_cooldown_counts_as_not_cooling_and_naive_now_works(cfg):
     _seed(cfg, {"name": "a", "ssh": "h", "cooldown_until": "not a time"})
-    assert WK.gate_pools(cfg) == [("a", 1), (None, 3)]
+    assert WK.gate_pools(cfg) == [("a", 1)]
     import datetime as dt
     assert WK.in_cooldown({"cooldown_until": FUTURE}, dt.datetime.now())
     assert not WK.in_cooldown({"cooldown_until": PAST}, dt.datetime.now())
@@ -209,7 +209,7 @@ def test_gate_pools_filters_and_orders(cfg):
     _seed(cfg, _w("first", slots=2), _w("off", enabled=False),
           _w("cooling", cooldown_until=FUTURE), _w("nogate", kinds=["persona"]),
           _w("cooled", cooldown_until=PAST), _w("last"))
-    assert WK.gate_pools(cfg) == [("first", 2), ("cooled", 1), ("last", 1), (None, 3)]
+    assert WK.gate_pools(cfg) == [("first", 2), ("cooled", 1), ("last", 1)]   # SPEC-0374
 
 
 def test_gate_pools_local_only_without_a_registry(cfg):
@@ -236,7 +236,7 @@ def test_add_list_off_on_rm_cycle(cfg, invoke):
     assert "box" in invoke("list").output
     assert invoke("off", "box").exit_code == 0
     assert _names(cfg) == ["box", "two"] and not WK.load(cfg)[0]["enabled"]
-    assert WK.gate_pools(cfg) == [("two", 1), (None, 3)]
+    assert WK.gate_pools(cfg) == [("two", 1)]
     assert invoke("on", "box").exit_code == 0 and WK.load(cfg)[0]["enabled"]
     assert invoke("rm", "box").exit_code == 0
     assert _names(cfg) == ["two"]
@@ -251,7 +251,7 @@ def test_on_clears_the_cooldown(cfg, invoke):
         json.loads(invoke("list", "--json").output)["workers"][0]["cooldown_until"] == FUTURE
     assert invoke("on", "box").exit_code == 0
     assert WK.load(cfg)[0]["cooldown_until"] is None
-    assert WK.gate_pools(cfg) == [("box", 1), (None, 3)]
+    assert WK.gate_pools(cfg) == [("box", 1)]
 
 
 @pytest.mark.parametrize("args", [

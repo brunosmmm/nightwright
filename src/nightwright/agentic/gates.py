@@ -544,7 +544,7 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
                  worktree=worktree, seq=seq, owner=owner, stop=stop, tier=tier,
                  announce=announce, worker=worker)
     try:                                        # SPEC-0253: only the owner removes its dir
-        pools = skip = None
+        pools = skip = repool = None
         if adopt is not None or lost is not None:
             from . import remote_gates as RG
             RJ.settings(cfg)                    # SPEC-0342: a bad max_remote_attempts raises
@@ -569,8 +569,10 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
             if worker is None:                  # SPEC-0343: a worker drained mid-wait is passed
                 from . import workers as WK     # over (`--worker` has no other pool to take)
                 skip = lambda p: not WK.placeable_by_name(cfg, p)   # noqa: E731
+                if pools is not None:           # SPEC-0374: re-read placement while waiting
+                    repool = lambda: WK.gate_pools(cfg)                 # noqa: E731
         with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce, pools=pools,
-                                skip=skip) as hold:
+                                skip=skip, repool=repool) as hold:
             if hold.interrupted:                # SPEC-0229: stopped while waiting, nothing ran (ok=False: never counted green)
                 return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
                                slot_wait_s=hold.waited_s)
@@ -598,8 +600,9 @@ def _retry(lost, waited, *, project_cfg, campaign_state, cfg, cid, worktree, seq
            tier, announce, worker, head, tree) -> GateRun:
     """SPEC-0342: the lost job's next attempts (the remote slot is already released). Each
     gets `attempt + 1` and `excluded_workers` = the lost record's plus its worker, and acquires
-    from `remote_gates.retry_pools` (the eligible pools without them, local last), so a full
-    fleet runs it locally at once. Past `max_remote_attempts`, or with no remote pool left, it
+    from `remote_gates.retry_pools` (the eligible pools without them; SPEC-0374: local only
+    when no other worker is placeable, or last with `agentic.gates.local_overflow`), and
+    re-reads that placement while it waits. Past `max_remote_attempts`, or with no remote pool left, it
     runs locally. Every new attempt appends `worker_job_retried` (`to_worker` None: local); a
     remote one appends it only once the job is about to be sent (`on_attempt`), so a stop
     before that leaves the record `lost` with no event and the next step continues the chain.
@@ -622,12 +625,17 @@ def _retry(lost, waited, *, project_cfg, campaign_state, cfg, cid, worktree, seq
             RG.retried(cfg, cid, lost, attempt, None)
             return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
                              announce, waited, head=head, tree=tree)
-        with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce, pools=pools) as hold:
+        repool = None
+        if worker is None:                      # SPEC-0374: re-read placement while waiting
+            from . import workers as WK
+            repool = lambda ex=tuple(excluded): WK.gate_pools(cfg, exclude=ex)  # noqa: E731
+        with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce, pools=pools,
+                                repool=repool) as hold:
             waited = round(waited + hold.waited_s, 1)
             if hold.interrupted:                # the record stays `lost`: the next step retries
                 return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
                                slot_wait_s=waited)
-            if hold.pool is None:               # the eligible workers are full: local now
+            if hold.pool is None:               # no eligible worker left (or overflow): local
                 RJ.update(cfg, lost["job_id"], state="local")
                 RG.retried(cfg, cid, lost, attempt, None)
                 run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop,

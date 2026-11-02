@@ -245,12 +245,24 @@ def placeable_by_name(cfg, name) -> bool:
     return rec is not None and placeable(rec)
 
 
-def gate_pools(cfg, now=None) -> list[tuple]:
-    """`[(worker, slots), ...]` for placeable gate workers out of cooldown, in registry order,
-    then `[(None, agentic.gates.slots)]`: the `pools` argument of `gate_slots.acquire`."""
+def local_overflow(cfg) -> bool:
+    """SPEC-0374: `agentic.gates.local_overflow` (default false). Only a literal `true` turns
+    it on: a gate may then overflow to a free local slot while every worker slot is busy."""
+    raw = (((cfg.get("agentic") or {}).get("gates")) or {}).get("local_overflow")
+    return raw is True
+
+
+def gate_pools(cfg, now=None, *, exclude=()) -> list[tuple]:
+    """The `pools` argument of `gate_slots.acquire`: `[(worker, slots), ...]` for placeable
+    gate workers out of cooldown (not in `exclude`), in registry order. SPEC-0374: while that
+    list is non-empty it is the whole answer, so a gate waits for a worker slot instead of
+    taking a local one; the local pool `(None, agentic.gates.slots)` is the only pool when no
+    worker is placeable, and is appended last only with `agentic.gates.local_overflow: true`."""
     from . import gate_slots
     pools = [(w["name"], w["slots"]) for w in load(cfg)
-             if placeable(w) and not in_cooldown(w, now)]
+             if placeable(w) and not in_cooldown(w, now) and w["name"] not in set(exclude)]
+    if pools and not local_overflow(cfg):
+        return pools
     return pools + [(LOCAL, gate_slots.settings(cfg)["slots"])]
 
 

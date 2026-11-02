@@ -159,6 +159,9 @@ def test_lost_job_retries_on_the_second_worker_then_runs_locally(aw, boxes, monk
 
 
 def test_busy_second_worker_runs_the_retry_locally_at_once(aw, boxes, monkeypatch):
+    """With `agentic.gates.local_overflow` (SPEC-0374's opt-out) a full fleet runs the retry
+    locally at once, as before SPEC-0374."""
+    aw.cfg["agentic"].setdefault("gates", {})["local_overflow"] = True
     b1, b2 = boxes
     pools_seen = []
     real = GS.acquire
@@ -187,11 +190,9 @@ def test_busy_second_worker_runs_the_retry_locally_at_once(aw, boxes, monkeypatc
 
 def test_retry_pools_drop_the_excluded_workers_and_keep_local_last(aw, boxes):
     st = S.read_state(aw.cfg, CID)
-    assert WK.gate_pools(aw.cfg) == [("b1", 1), ("b2", 1), (None, 2)]
-    assert RG.retry_pools(aw.cfg, aw.project, st, seq=1, excluded=["b1"]) == [("b2", 1),
-                                                                             (None, 2)]
-    assert RG.retry_pools(aw.cfg, aw.project, st, seq=1, excluded=["b2"]) == [("b1", 1),
-                                                                             (None, 2)]
+    assert WK.gate_pools(aw.cfg) == [("b1", 1), ("b2", 1)]               # SPEC-0374
+    assert RG.retry_pools(aw.cfg, aw.project, st, seq=1, excluded=["b1"]) == [("b2", 1)]
+    assert RG.retry_pools(aw.cfg, aw.project, st, seq=1, excluded=["b2"]) == [("b1", 1)]
     assert RG.retry_pools(aw.cfg, aw.project, st, seq=1, excluded=["b1", "b2"]) is None
     assert RG.retry_pools(aw.cfg, aw.project, st, seq=1, excluded=["b1"], worker="b1") is None
 
@@ -228,7 +229,8 @@ def test_worker_job_retried_is_projected_into_the_global_events(aw, boxes):
 # ---- a stop or a transport failure during the retry ------------------------------------------
 
 def test_stop_while_the_retry_waits_for_a_slot_leaves_the_record_lost(aw, boxes, monkeypatch):
-    """Every pool of the retry (b2 and both local slots) is held: the retry waits, a stop
+    """Every pool of the retry (b2; SPEC-0374: the local slots are not in it, held anyway) is
+    held: the retry waits, a stop
     ends the step with nothing sent. The record stays `lost` with no `worker_job_retried`, and
     the next step continues the chain (one event, attempt 2 on b2)."""
     b1, b2 = boxes
@@ -236,7 +238,7 @@ def test_stop_while_the_retry_waits_for_a_slot_leaves_the_record_lost(aw, boxes,
     waiting = threading.Event()
 
     def acquire(cfg, cid, **kw):
-        if kw.get("pools") == [("b2", 1), (None, 2)]:
+        if kw.get("pools") == [("b2", 1)]:
             waiting.set()
         return real(cfg, cid, **kw)
     monkeypatch.setattr(GS, "acquire", acquire)

@@ -354,7 +354,10 @@ empties everything no live job uses.
 
 **Dispatch (SPEC-0338).** With a worker registered (`nw workers add`, SPEC-0337), every gate
 run (the loop's GATING run, the close re-gate, `nw queue gates`) takes a slot from the
-workers' pools first and the local pool last. A remote run bundles the commit under test (a
+workers' pools. SPEC-0374: while any worker is placeable (enabled, not draining, out of
+cooldown) a gate waits for a worker slot and never takes a local one; the wait re-reads the
+registry, so a worker going into cooldown, off or draining sends its waiters to the local
+pool. `agentic.gates.local_overflow: true` restores the old local-last overflow. A remote run bundles the commit under test (a
 `git stash create` commit when tracked files are modified, else HEAD) and the base against
 what the worker already has (`nw worker have`), runs `nw worker gate-job` over SSH, and
 writes the returned `gates/<seq>-<name>.{log,json}` files where a local run writes them; the

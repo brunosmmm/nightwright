@@ -160,8 +160,9 @@ def pools_for(cfg, project_cfg: dict, campaign_state: dict, *, seq: int,
 def retry_pools(cfg, project_cfg: dict, campaign_state: dict, *, seq: int, excluded,
                 worker: str | None = None) -> list | None:
     """SPEC-0342: the `pools` of a lost job's next attempt: `pools_for`'s list (its
-    eligibility checks first) without the `excluded` workers, so still ending with the local
-    pool; None (local only) when no remote pool is left."""
+    eligibility checks first) without the `excluded` workers (SPEC-0374: worker pools only,
+    unless `agentic.gates.local_overflow` appends the local pool); None (local only) when no
+    remote pool is left."""
     try:
         pools = pools_for(cfg, project_cfg, campaign_state, seq=seq, worker=worker)
     except ValueError:                          # `--worker`'s worker was disabled since
