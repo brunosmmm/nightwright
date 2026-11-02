@@ -69,9 +69,16 @@ def test_unreadable_input_fails_open(cfg, raw):
 
 def test_unreadable_registry_fails_open(cfg):
     CC.record_session(cfg, "conductor", {}, source="launch", session_id=CONDUCTOR)
-    path = CC._sessions_path(cfg)
-    path.unlink()
-    path.mkdir()                                    # reading it raises
+    CC._sessions_path(cfg).write_bytes(b"\xff\xfe\x00 not utf-8\n")   # read_text raises
+    with pytest.raises(UnicodeDecodeError):
+        CC.sessions(cfg)                            # the guard's except is what saves the human
+    assert guard(CONDUCTOR).exit_code == 0
+
+
+def test_registry_read_error_fails_open(cfg, monkeypatch):
+    def boom(*a, **k):
+        raise OSError("registry gone")
+    monkeypatch.setattr(CC, "sessions", boom)
     assert guard(CONDUCTOR).exit_code == 0
 
 
@@ -124,6 +131,13 @@ def test_doctor_warns_on_unguarded_launch_only(tmp_path):
     assert c["status"] == "warn" and "AskUserQuestion" in c["summary"] and "old" in c["detail"]
     CC.record_session(cfg, "conductor", {}, source="launch", session_id="new",
                       extra={"disallowed_tools": ["Bash(gh pr merge *)", "AskUserQuestion"]})
+    assert D.check_conductor(cfg)["status"] == "ok"
+
+
+def test_doctor_ignores_an_old_launch_behind_a_hand_started_conductor(tmp_path):
+    cfg = _doctor_cfg(tmp_path)
+    CC.record_session(cfg, "conductor", {}, source="launch", session_id="old")
+    CC.record_session(cfg, "conductor", {}, source="follower", session_id="hand")
     assert D.check_conductor(cfg)["status"] == "ok"
 
 

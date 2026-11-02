@@ -117,6 +117,13 @@ def test_hook_installed_once_and_unrelated_hooks_kept(tmp_path):
     assert _read(p)["hooks"]["PreToolUse"].count(AP.HOOK_ENTRY) == 1
 
 
+def test_null_hooks_value_is_treated_as_empty(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"hooks": None}))
+    assert AP.sync(p)["hook"] is True
+    assert _read(p)["hooks"] == {"PreToolUse": [AP.HOOK_ENTRY]}
+
+
 def test_hook_added_when_rules_already_present(tmp_path):
     p = tmp_path / "settings.json"
     p.write_text(json.dumps({"permissions": {"allow": list(AP.ALLOW_RULES)}}))

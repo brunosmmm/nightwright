@@ -1,7 +1,7 @@
 ---
 id: SPEC-0382
 title: "Conductor never blocks on the human: launch guard and hook backstop"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
@@ -172,7 +172,7 @@ via the project steward)". `review_triager.md` is checked and changed only if it
 - [x] AC6: `nw doctor` warns when the registered conductor session was launched (`source: launch`)
       with an argv lacking the `AskUserQuestion` deny, and does not warn when the deny is present or
       the conductor was not launched by `conductor-launch`.
-- [ ] AC7: against the real `claude` binary, (a) a conductor launched with `nw queue conductor-launch`
+- [x] AC7: against the real `claude` binary, (a) a conductor launched with `nw queue conductor-launch`
       in a scratch data dir and prompted to call `AskUserQuestion` has the call denied, (b) a
       sub-agent dispatched by that conductor can edit a file in a scratch worktree and run `git
       status` without a denial, and (c) a plain `claude` session registered as conductor (by `nw
@@ -219,11 +219,11 @@ via the project steward)". `review_triager.md` is checked and changed only if it
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; affected automated tests pass; manual real-binary steps performed and noted.
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; affected automated tests pass; manual real-binary steps performed and noted.
 - [x] No regressions.
 - [x] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
+- [x] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
 
@@ -257,6 +257,31 @@ slice B is a Non-goal follow-up.
     unticked and the spec stays `in-progress`; `--tools AskUserQuestion` in `-p` mode does not offer
     the tool either.
 
+### Test record (2026-11-02, loop 2: interactive real binary)
+
+- Automated: `tests/test_agentic_launch.py`, `tests/test_agentic_conductor_guard.py`,
+  `tests/test_agent_permissions.py`, `tests/test_doctor.py` pass (new: a resumed old-style launch
+  record stops warning and a resume without the deny warns again; the unreadable-registry test now
+  makes `CC.sessions` raise, plus a monkeypatched `OSError` test; a launch behind a newer
+  hand-started record does not warn; `"hooks": null` is accepted). The full suite was left to gating.
+- Real binary, **interactive** `claude` 2.1.316 under tmux (own socket), scratch `NW_DATA_DIR` /
+  `NW_CONFIG_DIR` (model haiku-5-5), `nw` wrapper running this worktree:
+  - (a) `nw queue conductor-launch` started the interactive conductor (status line `don't ask on`);
+    it ran nw-orient and nw-conduct and armed its Monitor. Prompted "call AskUserQuestion": the model
+    reported the tool is not in its tool list and ToolSearch finds nothing; no question appeared.
+  - (b) in that conductor, a dispatched sub-agent edited `.nw-worktrees/wt1/a.txt` (Edit) and ran `git
+    -C <wt1> status` with no denial; `git -C <wt1> push origin main` was denied. A second sub-agent ran
+    `git -C <wt1> add -A` and `commit -m wip` (allowed), `cp` inside `.nw-worktrees`, `uv run nw
+    --help` and `python3 tools/spec_lint.py --help` (allowed). Refused: `git -C <wt1> worktree add
+    /tmp/ac7/wt2` (the steward guard deny `git * worktree *` wins over the allow) and `cp` into a
+    directory outside the working directories ("Bash has been denied because Claude Code is running in
+    don't ask mode").
+  - (c) `nw skills install --dest <scratch> --settings <scratch>/settings.json` wrote the
+    `AskUserQuestion` hook; `nw queue conductor-session add <uuid>`; a plain interactive `claude
+    --session-id <uuid> --settings ...` prompted "call AskUserQuestion" got `PreToolUse:AskUserQuestion
+    hook error: [nw queue conductor-guard]: conductor never asks the human: use steward:<P> / nw queue
+    escalate (SPEC-0382)`, and no question reached the terminal.
+
 ### As shipped (2026-11-02)
 
 - `conductor_allowed_tools` default: `Bash(git *)` was NOT shipped. It would allow pushes to any
@@ -265,13 +290,31 @@ slice B is a Non-goal follow-up.
   set off the conductor. The default instead holds read-only git verbs (`status`, `log`, `diff`,
   `show`, `rev-parse`, `rev-list`, `merge-base`, `ls-files`, `branch` listing; each also as `git -C *`).
   Consequence: under `dontAsk` a conductor sub-agent can read git state and edit files in
-  `.nw-worktrees`, but cannot `git rebase`/`add`/`commit`; resolving rebase conflicts in a campaign
-  worktree stays with the queue's `conflict_resolver` and the steward. A user who wants it adds the
-  rules to `conductor_allowed_tools`.
+  `.nw-worktrees`, but cannot `git rebase`; resolving rebase conflicts in a campaign worktree stays
+  with the queue's `conflict_resolver` and the steward. A user who wants it adds the rules to
+  `conductor_allowed_tools`.
+- Review fix, the `main_dirty` / `main_not_on_base` / `wt_broken` rows (move in-place WIP onto a
+  worktree branch): `conductor_allowed_tools` also holds `git worktree add *`, `worktree list`,
+  `switch *`, `checkout -- *`, `add -A`, `add -A *`, `add -- *`, `commit -m *`, `commit -am *` (each
+  also as `git -C *`), `uv run nw *`, `python3 tools/spec_lint.py*`, `cp *` and `mkdir *`. They are
+  deliberately not the steward's `add *` / `commit *` strings, so the SPEC-0353 rebase set stays off
+  the conductor, and the steward guard denies (`reset --hard`, `clean`, pushes) still win. The real
+  binary showed the limits (Test record): `git -C <dir> worktree add` is denied by the steward guard
+  (`git * worktree *`), so the sub-agent must run plain `git worktree add` from the conductor's cwd;
+  `cp` is allowed only into the working directories (`.nw-worktrees` is inside the conductor's
+  project root), so the WIP worktree belongs under `.nw-worktrees`, not `../nw-<topic>`; `rm` and
+  `git clean` stay refused, so the "remove the moved untracked files" step is left to the steward or
+  the human.
 - Edit/Write rules are `//**/.nw-worktrees/**` (see the Test record).
 - `conductor-launch` writes `disallowed_tools` into the `source: launch` session record
   (`record_session(..., extra=)`); `nw doctor` reads it. Launch records written before this change
-  have no such field and so warn until the conductor is relaunched with `--resume`.
+  have no such field and so warn until the conductor is relaunched with `--resume`: a resumed launch
+  reuses its session id, so `register` passes `refresh=True` and `record_session` merges the current
+  `disallowed_tools` into the existing row in place (one row per session id, so the session counts
+  and `build_plan`'s resume lookup are unchanged). A resume after the deny was removed from config
+  warns again. Doctor judges only the newest registered conductor record, and only when it is a
+  `source: launch` one: a hand-started conductor registered after an old launch is guarded by the
+  hook and does not warn.
 - `agent_permissions.sync()` returns `{"added", "removed", "hook"}`; `skills list` is unchanged.
 - `decisions.RULE_RE` now accepts up to two qualifier segments: the already-landed `nw-conduct` row id
   `message.request.human_order` did not match the old pattern (`test_conduct_skill_rule_ids` failed,

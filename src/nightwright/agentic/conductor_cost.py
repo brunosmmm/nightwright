@@ -48,11 +48,13 @@ def sessions(cfg, reader="conductor") -> list[dict]:
 
 
 def record_session(cfg, reader, env=os.environ, *, source="follower", session_id=None,
-                   extra=None) -> dict | None:
+                   extra=None, refresh=False) -> dict | None:
     """Append `{ts, reader, session_id, claude_pid, cwd, source}` unless the `(reader,
     session_id)` pair is already recorded. Returns the record, or None when there is no
     session id (env var unset) or the pair is already there. `extra` adds fields to the record.
-    Appends under a flock."""
+    With `refresh`, an already recorded pair gets `extra` merged into its row in place (a
+    resumed launch re-records its effective argv, SPEC-0382) and the row is returned. Writes
+    under a flock."""
     sid = session_id or env.get("CLAUDE_CODE_SESSION_ID")
     if not sid:
         return None
@@ -62,7 +64,7 @@ def record_session(cfg, reader, env=os.environ, *, source="follower", session_id
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         if any(r["session_id"] == sid for r in sessions(cfg, reader)):
-            return None
+            return _refresh_row(cfg, reader, sid, extra or {}) if refresh else None
         pid = env.get("CLAUDE_PID")
         rec = {"ts": store.now_iso(), "reader": reader, "session_id": sid,
                "claude_pid": int(pid) if str(pid or "").isdigit() else None,
@@ -73,6 +75,27 @@ def record_session(cfg, reader, env=os.environ, *, source="follower", session_id
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+def _refresh_row(cfg, reader, sid, extra) -> dict | None:
+    """Merge `extra` into the `(reader, sid)` rows of sessions.jsonl (caller holds the flock);
+    the file is replaced atomically. Returns the last updated row."""
+    path = _sessions_path(cfg)
+    lines, out = [], None
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            lines.append(raw)
+            continue
+        if isinstance(rec, dict) and rec.get("session_id") == sid and rec.get("reader") == reader:
+            rec = out = {**rec, **extra}
+            raw = json.dumps(rec, ensure_ascii=False)
+        lines.append(raw)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return out
 
 
 # ---- herdr placement (SPEC-0361) -----------------------------------------------------------

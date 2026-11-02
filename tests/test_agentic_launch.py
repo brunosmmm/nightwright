@@ -308,6 +308,22 @@ def test_resume_selects_latest_launch_record(cfg, ex):
     assert "session: new (resumed)" in r.output
 
 
+def test_resume_refreshes_the_recorded_deny(cfg, ex):
+    """SPEC-0382: an old launch record (no `disallowed_tools`) stops warning once the conductor is
+    resumed with the deny, and a resume after the deny was removed from config warns again."""
+    from nightwright import doctor as D
+    _launch_record(cfg, "old")
+    assert D.check_conductor(cfg)["status"] == "warn"
+    assert invoke("conductor-launch", "--resume").exit_code == 0
+    assert D.check_conductor(cfg)["status"] == "ok"
+    rows = sessions_lines(cfg)
+    assert len(rows) == 1 and "AskUserQuestion" in rows[0]["disallowed_tools"]
+    cfg["agentic"]["conductor"].setdefault("launch", {})["conductor_disallowed_tools"] = []
+    assert invoke("conductor-launch", "--resume").exit_code == 0
+    assert D.check_conductor(cfg)["status"] == "warn"
+    assert len(sessions_lines(cfg)) == 1
+
+
 def test_resume_ignores_follower_and_manual(cfg):
     _launch_record(cfg, "f", source="follower")
     _launch_record(cfg, "m", source="manual")
@@ -757,6 +773,12 @@ def test_conductor_guard_flags_in_plan_and_json(cfg):
         assert rule in allow
     assert "Bash(git status)" in allow and "Edit(//**/.nw-worktrees/**)" in allow
     assert "Bash(git *)" not in allow       # would allow pushes to any non-main branch
+    # the main_dirty / wt_broken rows' sub-agents: worktree, WIP commit, nw, the orient gate
+    for rule in ("Bash(git worktree add *)", "Bash(git -C * commit -m *)", "Bash(uv run nw *)",
+                 "Bash(python3 tools/spec_lint.py*)", "Bash(cp *)"):
+        assert rule in allow
+    assert not any("rebase" in r or r in ("Bash(git add *)", "Bash(git commit *)")
+                   for r in allow)
     r = invoke("conductor-launch", "--dry-run", "--json")
     doc = json.loads(r.output)
     assert doc["permission_mode"] == "dontAsk" and "AskUserQuestion" in doc["disallowed_tools"]
@@ -797,7 +819,9 @@ def test_launch_record_carries_the_deny(cfg, ex):
 
 @pytest.mark.parametrize("cmd,ok", [
     ("git status", True), ("git -C /w/.nw-worktrees/x log --oneline -5", True),
-    ("git rebase origin/main", False), ("git add -A", False),
+    ("git rebase origin/main", False), ("git add src/x.py", False),
+    ("git add -A", True), ("git -C /w/.nw-worktrees/x commit -m wip", True),
+    ("git worktree add ../nw-x -b nw/x", True), ("git commit --amend", False),
     ("git push origin feature/x", False), ("git push origin main", False),
     ("git reset --hard HEAD~1", False), ("git clean -fd", False)])
 def test_conductor_default_rules_git_work_vs_dangerous(cfg, cmd, ok):

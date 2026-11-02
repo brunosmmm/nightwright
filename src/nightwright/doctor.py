@@ -387,11 +387,13 @@ def check_runner(cfg, *, now=None) -> dict:
 
 
 def _unguarded_launch(sessions):
-    """The newest `source: launch` record whose launch lacked the AskUserQuestion deny (older
-    records carry no argv fields, so they count as lacking it), else None."""
-    launched = [r for r in sessions if r.get("source") == "launch"]
-    last = launched[-1] if launched else None
-    if last and "AskUserQuestion" not in (last.get("disallowed_tools") or []):
+    """The newest registered conductor record when it is a `source: launch` one whose launch
+    lacked the AskUserQuestion deny (older records carry no argv fields, so they count as
+    lacking it; a `--resume` relaunch refreshes the field), else None. A newer hand-started
+    conductor (follower or manual record) is guarded by the hook instead."""
+    last = sessions[-1] if sessions else None
+    if last and last.get("source") == "launch" \
+            and "AskUserQuestion" not in (last.get("disallowed_tools") or []):
         return last
     return None
 

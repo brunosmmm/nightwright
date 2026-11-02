@@ -56,7 +56,7 @@ def _load(path: Path) -> dict:
     allow = (doc.get("permissions") or {}).get("allow", [])
     if not isinstance(doc.get("permissions", {}), dict) or not isinstance(allow, list):
         raise ValueError(f"{path}: permissions.allow must be a list")
-    hooks = doc.get("hooks", {})
+    hooks = doc.get("hooks") or {}              # `"hooks": null` is treated as {}
     if not isinstance(hooks, dict) or not isinstance(hooks.get(HOOK_EVENT, []), list):
         raise ValueError(f"{path}: hooks.{HOOK_EVENT} must be a list")
     return doc
@@ -113,7 +113,9 @@ def sync(path=None) -> dict:
         perms = doc.setdefault("permissions", {})
         perms["allow"] = [r for r in current if r not in legacy] + added
     if hook:
-        doc.setdefault("hooks", {}).setdefault(HOOK_EVENT, []).append(json.loads(json.dumps(HOOK_ENTRY)))
+        if doc.get("hooks") is None:
+            doc["hooks"] = {}
+        doc["hooks"].setdefault(HOOK_EVENT, []).append(json.loads(json.dumps(HOOK_ENTRY)))
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".settings.", suffix=".json")
     try:

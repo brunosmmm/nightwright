@@ -42,6 +42,12 @@ _PUSH_DENY_C_ONLY = ("* push *",)
 _CONDUCTOR_GIT_VERBS = ("status", "status *", "log *", "diff *", "show *", "rev-parse *",
                         "rev-list *", "merge-base *", "ls-files *", "ls-files", "branch --list *",
                         "branch", "branch -a", "branch -vv")
+# what the nw-conduct rows for `main_dirty` / `main_not_on_base` / `wt_broken` need to move
+# in-place WIP onto its own worktree branch. Deliberately not the steward's `add *` / `commit *`
+# strings (SPEC-0353 keeps the steward's rebase set off the conductor): narrower forms only. The
+# steward guard denies (`reset --hard`, `clean`, `branch -D`, pushes) still win.
+_CONDUCTOR_WIP_VERBS = ("worktree add *", "worktree list", "switch *", "checkout -- *",
+                        "add -A", "add -A *", "add -- *", "commit -m *", "commit -am *")
 _STEWARD_VERBS = ("fetch *", "rebase *", "rebase --continue", "rebase --abort", "add *",
                   "commit *", "restore *", "checkout --ours *", "checkout --theirs *")
 # `git <x>` and `git * <x>` (the latter covers `git -C <dir> <x>`)
@@ -116,8 +122,10 @@ DEFAULTS = {"model": "claude-sonnet-5-5", "effort": "medium", "autocompact": "15
                                         f"Edit(//**/{WORKTREES_DIR}/**)",
                                         f"Write(//**/{WORKTREES_DIR}/**)",
                                         *[f"Bash({p} {v})" for p in _PREFIXES
-                                          for v in _CONDUCTOR_GIT_VERBS],
-                                        "Bash(uv run pytest *)", "Bash(ps *)", "Bash(tail *)"]}
+                                          for v in (*_CONDUCTOR_GIT_VERBS, *_CONDUCTOR_WIP_VERBS)],
+                                        "Bash(uv run pytest *)", "Bash(uv run nw *)",
+                                        "Bash(python3 tools/spec_lint.py*)", "Bash(cp *)",
+                                        "Bash(mkdir *)", "Bash(ps *)", "Bash(tail *)"]}
 TOOL_FLAGS = {"allowed_tools": "--allowedTools", "disallowed_tools": "--disallowedTools"}
 # list-valued settings; `steward_allowed_tools` is merged into `--allowedTools`, never its own flag
 LIST_KEYS = {*TOOL_FLAGS, "steward_allowed_tools", "conductor_disallowed_tools",
@@ -289,10 +297,12 @@ def exec_env(plan, base=None) -> dict:
 
 
 def register(cfg, plan):
-    """Pre-register the session in the SPEC-0299 registry (idempotent per reader and id)."""
+    """Pre-register the session in the SPEC-0299 registry (one row per reader and id; a resumed
+    launch refreshes the row's `disallowed_tools` to the argv it now runs with, SPEC-0382)."""
     try:
         CC.record_session(cfg, plan["name"], {}, source="launch", session_id=plan["session_id"],
-                          extra={"disallowed_tools": plan["disallowed_tools"]})
+                          extra={"disallowed_tools": plan["disallowed_tools"]},
+                          refresh=bool(plan.get("resumed")))
     except OSError as e:
         raise click.ClickException(f"cannot register the session: {e}")
 
