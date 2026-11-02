@@ -1920,6 +1920,14 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
         counters = _counters(state)
         run_no = max(counters["runs"], _counters(current)["runs"], _ledger_run_max(cfg, cid)) + 1
         new_id = f"{run_no:03d}-{persona}"
+        env = getattr(req, "env", None)
+        tmp_env = None
+        if isinstance(env, dict) and "TMPDIR" in env:
+            # SPEC-0253: the failed run's `run.end` just removed its private TMPDIR; the re-run
+            # gets its own, removed in turn by its own `run.end`. Created before the re-run's
+            # `run.start`, so a failure here (a symlinked tmp dir, mkdir) leaves no open run:
+            # the step fails with the failed run already closed.
+            tmp_env = G.tmp_env(store.child_tmp(cfg, cid, f"run-{new_id}", create=True))
         excluded = list(state.get("remote_excluded") or [])
         if failed.worker and failed.worker not in excluded:
             excluded.append(failed.worker)
@@ -1938,12 +1946,8 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
         current["cost"] = copy.deepcopy(state["cost"])
         store.write_state(cfg, cid, current)
     new_req = replace(req, run_dir=store.runs_dir(cfg, cid) / new_id)
-    env = getattr(req, "env", None)
-    if isinstance(env, dict) and "TMPDIR" in env:
-        # SPEC-0253: the failed run's `run.end` just removed its private TMPDIR; the re-run
-        # gets its own, removed in turn by its own `run.end`
-        new_req = replace(new_req, env={**env, **G.tmp_env(
-            store.child_tmp(cfg, cid, f"run-{new_id}", create=True))})
+    if tmp_env is not None:
+        new_req = replace(new_req, env={**env, **tmp_env})
     if hooks is not None and getattr(ctx.runner, "detachable", False):
         if not hooks.restart(new_req.run_dir):
             return new_id, new_req, DETACHED

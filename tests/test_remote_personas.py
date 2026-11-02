@@ -141,12 +141,26 @@ def _norm_request(doc, tree):
     return doc
 
 
-def test_read_only_reviewer_same_verdict_files_and_progress(tmp_path):
-    entries = [{"verdict": {"summary": "lgtm"}, "cost_usd": 0.1, "sleep_s": 1.0,
+# the transcript grows while the run lasts (the worker's run dir is `<job>/run`, next to its
+# `tree`), so successive progress frames carry growing `transcript_bytes`
+GROW = ["for i in 1 2 3 4 5 6 7 8; do echo '{\"type\": \"x\"}' >> ../run/stream.jsonl; "
+        "sleep 0.25; done"]
+
+
+def test_read_only_reviewer_same_verdict_files_and_progress(tmp_path, monkeypatch):
+    entries = [{"verdict": {"summary": "lgtm"}, "cost_usd": 0.1, "pre_shell": GROW,
                 "transcript": '{"type": "result"}\n'}]
     script = _write_script(tmp_path / "rev.json", entries)
     remote_w, local_w = _world(tmp_path, "remote"), _world(tmp_path, "local")
     _remote(remote_w, script)
+    writes = []
+    real_write = RPS.RP.write_json_atomic
+
+    def record(path, doc, *a, **kw):
+        if Path(path).name == "progress.json":
+            writes.append(dict(doc))
+        return real_write(path, doc, *a, **kw)
+    monkeypatch.setattr(RPS.RP, "write_json_atomic", record)
     (remote_w.repo / "a.txt").write_text("dirty tracked\n")     # read-only: no clean rule
     (local_w.repo / "a.txt").write_text("dirty tracked\n")
     st = S.read_state(remote_w.cfg, CID)
@@ -169,6 +183,13 @@ def test_read_only_reviewer_same_verdict_files_and_progress(tmp_path):
     assert _norm_request(ra, None) == _norm_request(la, None)
     prog = json.loads((rd / "progress.json").read_text())
     assert set(prog) == {"ts", "transcript_bytes", "last_line_ts"}
+    # progress.json follows the frames: one write per frame, the file holds the latest one,
+    # and the transcript size grows across them up to the transcript that came back
+    assert len(writes) >= 2 and prog == writes[-1]
+    sizes = [p["transcript_bytes"] for p in writes]
+    assert sizes == sorted(sizes) and sizes[-1] > sizes[0]
+    assert [p["ts"] for p in writes] == sorted(p["ts"] for p in writes)
+    assert sizes[-1] <= (rd / "stream.jsonl").stat().st_size
     assert _git(remote_w.repo, "status", "--porcelain") == "M a.txt"   # untouched
 
 
@@ -218,6 +239,18 @@ def _check_failure(w, res, st, reason):
     return rec
 
 
+def _check_saved_refs(w, rec, names):
+    """The fetched refs (`names` under `refs/nw/jobs/<job_id>/`) are the run's `saved_refs` in
+    `run.json` and on `run.end`, and they resolve; none when the bundle never fetched."""
+    job = RPS.job_id_for(CID, "001-implementer")
+    want = sorted(f"refs/nw/jobs/{job}/{n}" for n in names)
+    assert sorted(rec.get("saved_refs") or []) == want
+    assert sorted(w.ledger(["run.end"])[0].get("saved_refs") or []) == want
+    for ref in want:
+        _git(w.repo, "rev-parse", "--verify", ref)              # kept for inspection
+    assert sorted(RPS._refs_of(w.repo, job)) == want
+
+
 def _local_saw(w):
     return ((w.tmp / "snap-head").read_text().strip(),
             (w.tmp / "snap-status").read_text().rstrip("\n"))
@@ -229,14 +262,14 @@ def test_write_back_failure_head_moved(tmp_path, monkeypatch):
     def hook(w, bundle):
         moved["sha"] = __import__("test_remote_gates")._commit(w.repo, "x.txt", "x\n")
     w, base, res, st, _ctx_ = _failure_case(tmp_path, monkeypatch, hook)
-    _check_failure(w, res, st, "head moved")
+    _check_saved_refs(w, _check_failure(w, res, st, "head moved"), ["head", "wip"])
     assert _local_saw(w) == (moved["sha"], "")                  # untouched
 
 
 def test_write_back_failure_dirty_worktree(tmp_path, monkeypatch):
     w, base, res, st, _ctx_ = _failure_case(
         tmp_path, monkeypatch, lambda w, b: (w.repo / "late.txt").write_text("late\n"))
-    _check_failure(w, res, st, "worktree dirty")
+    _check_saved_refs(w, _check_failure(w, res, st, "worktree dirty"), ["head", "wip"])
     assert _local_saw(w) == (base, "?? late.txt")
 
 
@@ -247,11 +280,7 @@ def test_write_back_failure_stash_conflict_rolls_back(tmp_path, monkeypatch):
     rec = _check_failure(w, res, st, "stash conflict")
     head, status = _local_saw(w)
     assert head == base and status == " M a.txt"                # prior status, no c/new.txt
-    job = RPS.job_id_for(CID, "001-implementer")
-    assert sorted(rec["saved_refs"]) == [f"refs/nw/jobs/{job}/head", f"refs/nw/jobs/{job}/wip"]
-    for ref in rec["saved_refs"]:
-        _git(w.repo, "rev-parse", "--verify", ref)              # kept for inspection
-    assert w.ledger(["run.end"])[0]["saved_refs"] == rec["saved_refs"]
+    _check_saved_refs(w, rec, ["head", "wip"])
 
 
 def test_rollback_cleans_non_ascii_and_colon_names(tmp_path):
@@ -281,7 +310,7 @@ def test_write_back_failure_corrupt_bundle(tmp_path, monkeypatch):
     def hook(w, bundle):
         bundle["bundle_b64"] = base64.b64encode(b"not a bundle").decode()
     w, base, res, st, _ctx_ = _failure_case(tmp_path, monkeypatch, hook)
-    _check_failure(w, res, st, "corrupt bundle")
+    _check_saved_refs(w, _check_failure(w, res, st, "corrupt bundle"), [])
     assert _local_saw(w) == (base, "")
 
 
@@ -296,7 +325,8 @@ def test_write_back_failure_head_rewound_on_the_worker(tmp_path, monkeypatch):
     write-back failure with a local re-run, and the worktree is untouched."""
     w, base, res, st, _ctx_ = _failure_case(tmp_path, monkeypatch, lambda w, b: None,
                                             worker_entries=REWINDER)
-    _check_failure(w, res, st, "head not a descendant of base_head")
+    _check_saved_refs(w, _check_failure(w, res, st, "head not a descendant of base_head"),
+                      ["head", "wip"])
     assert _local_saw(w) == (base, "")
 
 
@@ -1067,3 +1097,32 @@ def test_rerun_after_failed_write_back_of_an_adopted_job_gets_its_own_tmpdir(tmp
     w, req, res, local = _adopt_stripped(tmp_path, monkeypatch, writeback_fails=True)
     assert res.run_id == "002-implementer"
     _assert_own_tmp(w, local)
+
+
+def test_rerun_tmpdir_failure_leaves_no_open_run(tmp_path, monkeypatch):
+    """The re-run's TMPDIR cannot be created (here a symlinked campaign tmp dir): the step fails
+    with the failed run closed, and no `run.start` without its `run.end` is left behind."""
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "writer.json", WRITER))
+    monkeypatch.setattr(RPS, "_before_writeback",
+                        lambda wt, b: (w.repo / "late.txt").write_text("late\n"))
+    req = _req(w)
+    _start(w, req)
+    real = S.child_tmp
+
+    def refuse(cfg, cid, owner, **kw):
+        if owner == "run-002-implementer":
+            raise ValueError("refusing to create: tmp is a symlink")
+        return real(cfg, cid, owner, **kw)
+    monkeypatch.setattr(S, "child_tmp", refuse)
+    local = _RecordingLocal()
+    ctx = Q._Ctx(w.cfg, runner=local)
+    ctx._projects[w.state["project"]] = w.project
+    res = Q._do_persona(ctx, S.read_state(w.cfg, CID), Q.Step("implement", persona="implementer"),
+                        "001-implementer", req, 1.0)
+    assert res.error and "symlink" in res.error and res.run_id == "001-implementer"
+    assert not local.reqs                                # the re-run never started
+    starts = {e["run_id"] for e in w.ledger(["run.start"])}
+    ends = {e["run_id"] for e in w.ledger(["run.end"])}
+    assert starts == ends == {"001-implementer"}
+    assert w.ledger(["run.end"])[0]["writeback_failed"]

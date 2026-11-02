@@ -644,6 +644,35 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
   `test_agentic_adopt.py` passes in full under `-n 6` (38 passed), so they look like timing
   flakes under load. The full suite is left to gating.
 
+### As shipped (2026-11-02, re-run TMPDIR ordering)
+
+- **The re-run's TMPDIR is created before its `run.start`.** `_rerun_locally` now creates
+  `tmp/run-<new run_id>` under the item lock, after the failed run's `run.end` and `cost` and
+  before the re-run's `run.start`. If that fails (a symlinked campaign tmp dir, a failed
+  `mkdir`), the step fails with the failed run already closed: no `run.start` is left without
+  its `run.end` for `run_overdue` or a later adoption to pick up. The failed run's charge
+  still reaches `state.json`, through `_apply`'s copy of `state["cost"]` when the step parks.
+
+### Test record (2026-11-02, re-run TMPDIR ordering)
+
+- `tests/test_remote_personas.py` changes:
+  - progress: the worker's transcript grows during the run, and every coordinator write of
+    `progress.json` is recorded. The test now checks at least two writes, `transcript_bytes`
+    and `ts` non-decreasing with the size growing, the file equal to the last frame, and the
+    last size no larger than the transcript that came back. Mutation check: with
+    `progress.json` written only for the first frame, the test fails.
+  - saved refs: `_check_saved_refs` now runs on every write-back failure case. Head moved,
+    dirty worktree, rewound head and stash conflict list `head` and `wip` in `run.json` and
+    on `run.end`, and the refs resolve. The corrupt bundle case lists none. Mutation check:
+    with the refs dropped on the pre-fast-forward failures, three cases fail.
+  - new case: the re-run's TMPDIR creation raises, so the step errors with `run_id`
+    `001-implementer` and no local run, and the ledger's `run.start` and `run.end` ids are both
+    `{001-implementer}`. Mutation check: with the previous `_rerun_locally`, it fails.
+- `uv run pytest -q -n 4 tests/test_remote_personas.py`: 61 passed.
+- `uv run pytest -q -n 6` over `test_remote_personas.py`, `test_agentic_runner.py`,
+  `test_agentic_adopt.py`, `test_remote_job_records.py`, `test_remote_gates.py` and
+  `test_agentic_campaign_runs.py`: 281 passed. The full suite is left to gating.
+
 ## Rollout / migration
 
 Implementation sessions clock in and out on the linked idea (`nw idea clock-in IDEA-560` /
