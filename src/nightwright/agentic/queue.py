@@ -3599,10 +3599,10 @@ class StepPool:
                         claim.add(cid)
                         continue
                     return None
-            # the claim is what counts: a step that left its attach loop since (to give up and
-            # fall back locally) is not claimed, and must be waited for. Steps claimed before
-            # that return detached runs, harvested as any interrupted run.
-            if not all([RG.detach_attached(cid) for cid in sorted(claim)]):
+            # the claim is what counts, and it is all or none: a step that left its attach loop
+            # since (to give up and fall back locally) is not claimed, nor is any other, and the
+            # exec waits. Claimed steps return detached runs, never applied.
+            if not RG.detach_all_attached(sorted(claim)):
                 return None
             out = []
             for cid in list(self.flights):

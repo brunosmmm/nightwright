@@ -184,6 +184,58 @@ def test_drop_reattaches_without_duplicates(aw, remote, monkeypatch):
     _files_match_frames(aw, remote)
 
 
+_CUT_MID_FRAME = """import json, os, subprocess, sys
+flag = sys.argv[1]
+if os.path.exists(flag):
+    os.execv(sys.argv[2], sys.argv[2:])
+open(flag, "w").close()
+p = subprocess.Popen(sys.argv[2:], stdout=subprocess.PIPE)
+for line in p.stdout:
+    frame = json.loads(line)
+    if frame["type"] == "gate" and frame["result"]["name"] == "g2":
+        sys.stdout.buffer.write(line[:len(line) // 2])      # SSH dies mid-frame
+        sys.stdout.buffer.flush()
+        os._exit(255)
+    sys.stdout.buffer.write(line)
+    sys.stdout.buffer.flush()
+os._exit(255)
+"""
+
+
+def test_drop_mid_frame_reattaches(aw, remote, monkeypatch):
+    """The connection dies partway through a large `gate` frame line: the cut-off bytes at
+    EOF are a dropped connection, not a protocol failure. The step re-attaches after the last
+    whole frame; no `worker_failed`, no local run."""
+    tmp = aw.tmp
+    aw.project["gates"][1] = _gate("g2", "head -c 300000 /dev/urandom | base64")
+    (tmp / "cutframe.py").write_text(_CUT_MID_FRAME)
+    calls = tmp / "calls"
+    ssh = _script(tmp / "ssh-cutframe", (
+        f'echo "$*" >> {calls}\n'
+        f'case "$*" in *" attach "*) exec {sys.executable} {tmp / "cutframe.py"} '
+        f'{tmp / "cut"} {remote.ssh} "$@";; esac\n'
+        f'exec {remote.ssh} "$@"'))
+    remote.register(ssh=ssh, info=ASYNC_INFO)
+    slept = []
+    monkeypatch.setattr(RG, "_sleep", lambda s, stop: slept.append(s) or False)
+    aw.release()
+    res, row = _gate_and_apply(aw)
+    assert res.gate_run.ok and res.gate_run.worker == "box" and row["to"] == "REVIEWING"
+    assert slept == [RG.BACKOFF_START_S]
+    g1 = next(f["n"] for f in _worker_frames(remote)
+              if f["type"] == "gate" and f["result"]["name"] == "g1")
+    g2 = next(f for f in _worker_frames(remote)
+              if f["type"] == "gate" and f["result"]["name"] == "g2")
+    assert len(json.dumps(g2)) > 300000                     # several pipe / channel writes
+    attaches = [ln for ln in calls.read_text().splitlines() if " attach " in ln]
+    assert len(attaches) == 2 and attaches[1].endswith(f"--from {g1}")
+    assert not aw.ledger(["worker_failed"]) and not aw.ledger(["worker_job_lost"])
+    assert len(aw.ledger(["gate"])) == 1 and len(set(_uids(aw))) == len(_uids(aw))
+    assert [r.name for r in res.gate_run.results] == ["g1", "g2", "g3"]
+    assert _rec(aw)["state"] == "done"
+    _files_match_frames(aw, remote)
+
+
 _STEP = """import json, sys
 sys.path.insert(0, {tests!r})
 from nightwright.agentic import queue as Q, store as S
@@ -672,9 +724,16 @@ def test_recorded_job_failure_cancels_and_goes_local(aw, remote, monkeypatch):
             raise RG.RemoteFailure("protocol", "a bad g2 frame")
         return real(frame, *a, **k)
     monkeypatch.setattr(RG, "_take_gate", bad_g2)
+    real_cancel, at_cancel = RG._cancel, []
+
+    def cancel(worker, job_id):                 # the record is final before the slow cancel
+        at_cancel.append((_rec(aw)["state"], sorted(p.name for p in aw.gates_dir.glob("001-*"))))
+        real_cancel(worker, job_id)
+    monkeypatch.setattr(RG, "_cancel", cancel)
     t, out = _in_thread(lambda: _gate_and_apply(aw))
     assert until(lambda: (_rec(aw) or {}).get("state") == "local")
     assert until(lambda: _job_state(remote) == "done")     # cancelled while g3 still blocked
+    assert at_cancel == [("local", [])]
     assert [f for f in _worker_frames(remote) if f["type"] == "done"][-1]["interrupted"] is True
     aw.release()
     join(t)
@@ -883,3 +942,22 @@ def test_try_detach_all_waits_for_a_step_that_left_its_attach_loop(monkeypatch):
         RG._ATTACHED["C-1"] = ev
     assert pool.try_detach_all() == [{"campaign": "C-1", "run_ids": []}] and ev.is_set()
     assert not RG._leave("C-1", threading.Event()) and RG._leave("C-1", ev)
+
+
+def test_try_detach_all_claims_all_or_none(monkeypatch):
+    """Two attached gate steps, one of which left its loop before the claim: nothing is
+    claimed (the other keeps attaching, unaware), both flights stay and the exec waits."""
+    import concurrent.futures as cf
+    pool = Q.StepPool()
+    for cid in ("C-1", "C-2"):
+        pool.flights[cid] = Q._Flight({"id": cid}, None,
+                                      tasks=[(Q.Step("gate"), cf.Future(), None)])
+    monkeypatch.setattr(RG, "attached", lambda cid: True)
+    ev = threading.Event()
+    with RG._ATTACHED_LOCK:
+        RG._ATTACHED["C-2"] = ev                # C-1 left; C-2 still attached
+    try:
+        assert pool.try_detach_all() is None and set(pool.flights) == {"C-1", "C-2"}
+        assert not ev.is_set() and RG._ATTACHED.get("C-2") is ev
+    finally:
+        assert not RG._leave("C-2", ev)

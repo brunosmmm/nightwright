@@ -320,6 +320,17 @@ without re-attach or adoption.
   Related modules (adopt, close*, codewatch, drain, exit paths, gates, queue, queue gc,
   remote gates, worker*, workers*, events, quiet): 1107 passed in one `-n 8` run. The full
   suite is left to gating.
+- Review round 3 (same day): `tests/test_remote_job_records.py` has 40 tests, all passed in
+  one `-n 8` run. New: **drop mid-frame**: the fake `ssh` relays whole frames until the `g2`
+  `gate` frame (about 400 KB of base64 random output, so several pipe writes), writes half of
+  that line and exits 255. The step backs off once, re-attaches `--from` the `g1` frame's `n`,
+  and finishes on `box` with one `gate` event, no `worker_failed`, no `worker_job_lost` and the
+  files byte-equal to the frames. With the partial-line check disabled, this test fails. Also
+  new: `try_detach_all` with two attached gate steps where one left its loop claims neither
+  (both flights kept, the other step's detach event not set). The recorded-job failure test
+  now checks that the record is `local` and the `gates/001-*` files are gone when `_cancel`
+  runs. Related modules (remote gates, exit paths, codewatch, queue, drain signal, worker
+  jobs, and this file): 466 passed in one `-n 8` run. The full suite is left to gating.
 - Affected modules: `test_remote_gates.py` (SPEC-0338's golden test included, unchanged),
   `test_workers_registry.py`, `test_worker_jobs.py`, `test_worker.py`, `test_agentic_queue.py`,
   `test_agentic_events.py`, `test_agentic_quiet.py`, `test_skills.py`, `test_agentic_exit_paths.py`,
@@ -400,6 +411,13 @@ without re-attach or adoption.
   first returns a detached run even if its attach then failed. Signal, `ctx.stop` and crash
   exits detach through the stop flag (or simply die), and `_apply` discards the interrupted
   run as SPEC-0229 does for a stop.
+- **Partial frames (review round 3).** A line that does not end with a newline is the frame
+  SSH was writing when it died. `_attach` discards it and treats the attach as dropped (backoff,
+  `poll --renew`, re-attach after the cursor). It is never a protocol failure. `_failed` sets
+  the record `local` before it deletes the `gates/<seq>-*` files and sends the cancel, the
+  same order `_give_up` uses. `try_detach_all` claims its attached steps all or none
+  (`remote_gates.detach_all_attached`, under one lock): if any of them has left its loop,
+  nothing is claimed and the exec waits.
 - **Give-up details.** `unreachable` and `lost` put the worker in SPEC-0338's cooldown;
   `deadline` does not. A worker removed from the registry before adoption gives up as
   `unreachable` with no cancel. Any other failure of a recorded job (an `error` frame, a

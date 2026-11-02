@@ -763,6 +763,17 @@ def detach_attached(cid) -> bool:
         return True
 
 
+def detach_all_attached(cids) -> bool:
+    """Claim every step of `cids` for a detach, all or none: False (nothing claimed) when any
+    of them is no longer attached, e.g. it left its attach loop to give up."""
+    with _ATTACHED_LOCK:
+        if not all(cid in _ATTACHED for cid in cids):
+            return False
+        for cid in cids:
+            _ATTACHED.pop(cid).set()
+        return True
+
+
 def _leave(cid, ev: threading.Event) -> bool:
     """The step leaves its attach loop; True when a detach claimed it first."""
     with _ATTACHED_LOCK:
@@ -1012,6 +1023,8 @@ def _attach(job: _Job, stop):
                 continue
             if line is None:
                 return "dropped", got
+            if not line.endswith(b"\n"):       # the frame cut off at EOF: SSH died mid-write
+                return "dropped", got
             if not line.strip():
                 continue
             frame = _frame(line, job.job_id)
@@ -1122,14 +1135,15 @@ def _give_up(cfg, cid, worker: dict | None, rec: dict, seq: int, reason: str) ->
 
 
 def _failed(cfg, cid, worker: dict, rec: dict, seq: int, f: RemoteFailure) -> Outcome:
-    """A transport or protocol failure of a recorded job: SPEC-0338's fallback, plus a
-    best-effort cancel and the record set `local`. A record a cancel already ended is left
-    alone (an interrupted run)."""
+    """A transport or protocol failure of a recorded job: the record set `local` first (as
+    `_give_up` sets `lost` first, so a crash past this point never adopts a job whose files
+    are gone), then SPEC-0338's fallback and a best-effort cancel. A record a cancel already
+    ended is left alone (an interrupted run)."""
     if (out := _cancelled(cfg, worker, rec, seq)) is not None:
         return out
+    RJ.update(cfg, rec["job_id"], state="local")
     _record_failure(cfg, cid, worker["name"], rec["job_id"], seq, f)
     _cancel(worker, rec["job_id"])
-    RJ.update(cfg, rec["job_id"], state="local")
     return Outcome(None, f.worker_wait_s, f)
 
 
