@@ -1,7 +1,7 @@
 ---
 id: SPEC-0369
 title: "Worker self-update without root: forced-command verb `nw worker update` (worker side)"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
