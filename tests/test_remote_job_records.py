@@ -961,3 +961,186 @@ def test_try_detach_all_claims_all_or_none(monkeypatch):
         assert not ev.is_set() and RG._ATTACHED.get("C-2") is ev
     finally:
         assert not RG._leave("C-2", ev)
+
+
+# ---- review round 4 --------------------------------------------------------------------------
+
+def test_give_up_order_is_lost_then_event_then_local(aw, remote, monkeypatch):
+    """`_give_up` writes the record `lost` before anything else, then `worker_job_lost`, the
+    cancel and the file deletion, and `local` last: a crash in between never adopts a job
+    whose files are gone."""
+    seen = []
+    real_append, real_update, real_cancel = S.append_event, RJ.update, RG._cancel
+
+    def append(cfg, cid, type, payload=None, **kw):
+        if type == "worker_job_lost":
+            seen.append(("event", _rec(aw)["state"],
+                         sorted(p.name for p in aw.gates_dir.glob("001-*"))))
+        return real_append(cfg, cid, type, payload, **kw)
+
+    def update(cfg, job_id, **fields):
+        if fields.get("state") in ("lost", "local"):
+            seen.append((fields["state"], len(aw.ledger(["worker_job_lost"])),
+                         sorted(p.name for p in aw.gates_dir.glob("001-*"))))
+        return real_update(cfg, job_id, **fields)
+
+    def cancel(worker, job_id):
+        seen.append(("cancel", _rec(aw)["state"]))
+        real_cancel(worker, job_id)
+    monkeypatch.setattr(S, "append_event", append)
+    monkeypatch.setattr(RJ, "update", update)
+    monkeypatch.setattr(RG, "_cancel", cancel)
+    t, out = _in_thread(lambda: _gate_step(aw))
+    assert until(lambda: (_job_dir(remote) / "proc.json").is_file()
+                 and (aw.gates_dir / "001-g2.log").is_file())
+    _kill_job_process(remote)
+    aw.release()
+    join(t)
+    files = sorted(p.name for p in aw.gates_dir.glob("001-*"))
+    assert files                                    # the local run's own files, written after
+    i = seen.index(next(s for s in seen if s[0] == "lost"))
+    lost, event, cancel_, local = seen[i:i + 4]
+    assert lost[0] == "lost" and lost[1] == 0 and lost[2]          # nothing else written yet
+    assert event[:2] == ("event", "lost")
+    assert cancel_ == ("cancel", "lost")
+    assert local == ("local", 1, [])                # the event is in, the files are gone
+    assert out["r"][2].gate_run.worker is None and out["r"][2].gate_run.ok
+
+
+class _Crash(BaseException):
+    """The coordinator dies (SIGKILL) in the middle of a call."""
+
+
+def test_crash_during_submit_falls_back_without_blaming_the_worker(aw, remote, monkeypatch):
+    """The runner died while `submit` still uploaded: the record is `submitted`, cursor 0,
+    with no `accepted_at`, and the worker never heard of the job. Adoption gives up as
+    `unaccepted`, with no cooldown, and the gates run locally."""
+    def crash(*a, **k):
+        assert _rec(aw)["state"] == "submitted"
+        raise _Crash()
+    monkeypatch.setattr(RG, "_submit", crash)
+    with pytest.raises(_Crash):
+        _gate_step(aw)
+    monkeypatch.undo()
+    rec = _rec(aw)
+    assert rec["state"] == "submitted" and rec["cursor"] == 0 and not rec.get("accepted_at")
+    G.reset()
+    aw.release()
+    res, _row = _gate_and_apply(aw)
+    assert res.gate_run.worker is None and res.gate_run.ok        # the local run
+    (lost,) = aw.ledger(["worker_job_lost"])
+    assert lost["reason"] == "unaccepted" and lost["job_id"] == JOB
+    assert _rec(aw)["state"] == "local" and _rec(aw)["lost_reason"] == "unaccepted"
+    assert remote.record()["cooldown_until"] is None and not aw.ledger(["worker_failed"])
+
+
+def test_an_accepted_job_the_worker_forgot_is_lost(aw, remote):
+    """The contrast: once `submit` returned, the record has `accepted_at`, so an `unknown`
+    from the worker blames it (`lost`, with a cooldown)."""
+    _detach_and_reset(aw, remote)
+    assert _rec(aw)["accepted_at"]
+    _kill_job_process(remote)
+    import shutil
+    assert until(lambda: _job_state(remote) in ("lost", "done"))
+    shutil.rmtree(_job_dir(remote))             # the worker no longer knows the job
+    assert _job_state(remote) == "unknown"
+    aw.release()
+    res, _row = _gate_and_apply(aw)
+    assert res.gate_run.worker is None
+    (lost,) = aw.ledger(["worker_job_lost"])
+    assert lost["reason"] == "lost" and remote.record()["cooldown_until"] is not None
+
+
+def test_settle_skips_an_unreadable_state_but_not_a_gone_campaign(aw, remote, monkeypatch):
+    """Only a missing campaign dir counts as gone. A state read that fails (EIO, a bad
+    `state.json`) leaves the campaign's live job and record alone."""
+    _detach_and_reset(aw, remote)
+    real = S.read_state
+
+    def eio(cfg, cid):
+        if cid == CID:
+            raise OSError(5, "Input/output error")
+        return real(cfg, cid)
+    monkeypatch.setattr(S, "read_state", eio)
+    Q._settle_ended_remote_jobs(aw.cfg, set())
+    assert _rec(aw)["state"] == "detached" and _job_state(remote) == "running"
+    monkeypatch.undo()
+    state_json = S.campaign_dir(aw.cfg, CID) / "state.json"
+    good = state_json.read_text()
+    state_json.write_text("{not json")
+    Q._settle_ended_remote_jobs(aw.cfg, set())
+    Q._settle_ended_remote_jobs(aw.cfg, set())
+    assert _rec(aw)["state"] == "detached" and _job_state(remote) == "running"
+    assert RJ.campaigns(aw.cfg) == {CID}
+    state_json.write_text(good)
+
+
+def test_seq_past_999_records_are_visible(aw):
+    rec = RJ.create(aw.cfg, job_id=RJ.gate_job_id(CID, 1000), campaign=CID, worker="box",
+                    attempt=1, seq=1000, submitted_at=RG._now(),
+                    deadline_at=RG._now() + 60, tier="loop")
+    assert rec["job_id"] == f"{CID}-gate-1000-a1"
+    assert RJ.max_seq(aw.cfg, CID) == 1000 and G.next_gate_seq(aw.cfg, CID) == 1001
+    assert RJ.campaigns(aw.cfg) == {CID}
+    assert RJ.live_gate(aw.cfg, CID)["job_id"] == rec["job_id"]
+    RJ.update(aw.cfg, rec["job_id"], state="cancelled")
+    assert RJ.prune(aw.cfg, CID) == [rec["job_id"]]
+
+
+def test_crash_before_mark_done_then_same_head_retry_regates(aw, remote, monkeypatch):
+    """The runner died after `_transition` committed the `gate` event and before `mark_done`.
+    A later same-HEAD GATING (triage `retry_gate`) settles that record and re-runs the gates
+    under a new seq instead of replaying the old job."""
+    aw.release()
+    monkeypatch.setattr(RJ, "mark_done", lambda cfg, job_id: None)      # the crash
+    res, row = _gate_and_apply(aw)
+    monkeypatch.undo()
+    assert row["to"] == "REVIEWING" and _rec(aw)["state"] in RJ.LIVE
+    st = S.read_state(aw.cfg, CID)
+    st["state"] = "GATING"                                              # triage retry_gate
+    S.write_state(aw.cfg, CID, st)
+    res2, row2 = _gate_and_apply(aw)
+    assert res2.gate_run.seq == 2 and res2.gate_run.worker == "box" and res2.gate_run.ok
+    assert [e["gate_seq"] for e in aw.ledger(["gate"])] == [1, 2]
+    assert _rec(aw)["state"] == "done"
+    assert _rec(aw, RJ.gate_job_id(CID, 2))["state"] == "done"
+
+
+def test_crash_between_ledger_and_state_still_replays(aw, remote):
+    """The `gate` event is in the ledger but `state.json` was not written (still GATING, an
+    older `last_gate`): the record is adopted and its replayed `gate` event dropped."""
+    aw.release()
+    _ctx_, _st, res = _gate_step(aw)
+    S.append_event(aw.cfg, CID, "gate", G.job_payload(res.gate_run))    # then the crash
+    assert not Q._gate_committed(S.read_state(aw.cfg, CID), _rec(aw))
+    res2, row = _gate_and_apply(aw)
+    assert res2.gate_run.seq == 1 and row["to"] == "REVIEWING"
+    assert len(aw.ledger(["gate"])) == 1 and _rec(aw)["state"] == "done"
+
+
+def test_adoption_defers_on_a_git_failure(aw, remote, monkeypatch):
+    """`git` failing while adoption checks the worktree neither cancels the live job nor
+    re-gates: the step is deferred and the next tick adopts it. A failure that clears within
+    the retries adopts at once."""
+    _detach_and_reset(aw, remote)
+    monkeypatch.setattr(Q, "_ADOPT_GIT_PAUSE_S", 0.01)
+    real, fails = RG.tree_under_test, {"n": 0}
+
+    def flaky(wt):
+        if fails["n"] > 0:
+            fails["n"] -= 1
+            raise RG.RemoteFailure("git", "index.lock: File exists")
+        return real(wt)
+    monkeypatch.setattr(RG, "tree_under_test", flaky)
+    fails["n"] = 10**6
+    assert RG.adoptable(_rec(aw), aw.repo) is None
+    res, row = _gate_and_apply(aw)
+    assert res.gate_run is None and row["to"] == "GATING" and row["reason"] == "adoption_deferred"
+    assert _rec(aw)["state"] == "detached" and _job_state(remote) == "running"
+    assert S.read_state(aw.cfg, CID)["state"] == "GATING"
+    assert not aw.ledger(["gate"]) and not aw.ledger(["worker_job_lost"])
+    fails["n"] = Q._ADOPT_GIT_TRIES - 1                     # clears on the last try
+    aw.release()
+    res, row = _gate_and_apply(aw)
+    assert res.gate_run.seq == 1 and res.gate_run.worker == "box" and row["to"] == "REVIEWING"
+    assert _rec(aw)["state"] == "done" and len(aw.ledger(["gate"])) == 1

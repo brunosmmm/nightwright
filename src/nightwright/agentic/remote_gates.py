@@ -782,14 +782,30 @@ def _leave(cid, ev: threading.Event) -> bool:
         return ev.is_set()
 
 
+# the give-up reasons that blame the worker (its cooldown): not `deadline`, and not
+# `unaccepted` (a job the worker never accepted: the coordinator died during its submit)
+_BLAME = ("unreachable", "lost")
+
+
 class _GiveUp(RemoteFailure):
     """The coordinator gives up on an async job (`stage` is the reason: `unreachable`, `lost`,
-    `deadline`): `worker_job_lost`, then the local fallback."""
+    `unaccepted`, `deadline`): `worker_job_lost`, then the local fallback."""
 
     def __init__(self, reason: str, worker: dict | None, rec: dict):
         super().__init__(reason, f"remote job {rec['job_id']}: {reason}",
-                         cooldown=reason != "deadline")
+                         cooldown=reason in _BLAME)
         self.worker, self.rec = worker, rec
+
+
+def _gone(cfg, rec: dict, state) -> str:
+    """The give-up reason for a job the worker reports `lost` or `unknown`. An `unknown` job
+    whose record never saw the worker accept it (no `accepted_at`, cursor 0: the coordinator
+    died while `submit` was still uploading) is `unaccepted`, which does not blame the worker;
+    anything else is `lost`."""
+    cur = RJ.read(cfg, rec["job_id"]) or rec
+    if state == "unknown" and not cur.get("accepted_at") and not int(cur.get("cursor") or 0):
+        return "unaccepted"
+    return "lost"
 
 
 def _argv(worker: dict, *args) -> list[str]:
@@ -869,16 +885,17 @@ def tree_under_test(worktree) -> tuple[str, str]:
     return _git(worktree, "rev-parse", "HEAD"), _git(worktree, "rev-parse", f"{sha}^{{tree}}")
 
 
-def adoptable(rec: dict, worktree) -> bool:
+def adoptable(rec: dict, worktree) -> bool | None:
     """SPEC-0341: a live record is adopted only when the worktree still holds what the job
     was submitted for (same HEAD and same tree under test); otherwise its replayed results
-    would be for code no longer there. A record without them is never adopted."""
+    would be for code no longer there. A record without them is never adopted. None: git
+    failed (a held lock, an I/O error), so nobody knows yet; the caller must not cancel."""
     if not rec.get("head") or not rec.get("tree"):
         return False
     try:
         return tree_under_test(worktree) == (rec["head"], rec["tree"])
     except RemoteFailure:
-        return False
+        return None
 
 
 def _run_async(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int,
@@ -901,6 +918,8 @@ def _run_async(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: 
                     tier=tier, commit=header["commit"], head=head, tree=tree)
     rec = RJ.update(cfg, job_id, gates=[g["name"] for g in header["payload"]["gates"]]) or rec
     _submit(worker, header, bundle, cfg)
+    # the worker holds the job now: an `unknown` from here on is a job it lost
+    rec = RJ.update(cfg, job_id, accepted_at=RJ.iso(_now())) or rec
     return _follow(cfg, worker, rec, project_cfg, seq, stop)
 
 
@@ -997,8 +1016,9 @@ class _Job:
 
 
 def _attach(job: _Job, stop):
-    """One `attach JOB --from seen`: `("done", run)`, `("lost", None)`, `("stopped", None)`,
-    `("deadline", None)` or `("dropped", got_frames)` (the connection ended without `done`)."""
+    """One `attach JOB --from seen`: `("done", run)`, `("lost", "lost" | "unknown")`,
+    `("stopped", None)`, `("deadline", None)` or `("dropped", got_frames)` (the connection
+    ended without `done`)."""
     try:
         proc = subprocess.Popen(_argv(job.worker, "attach", job.job_id, "--from", job.seen),
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -1032,7 +1052,7 @@ def _attach(job: _Job, stop):
             if frame["type"] == "status":
                 state = frame.get("state")
                 if state in ("lost", "unknown"):
-                    return "lost", None
+                    return "lost", state
                 if state == "error":
                     raise RemoteFailure("error", "the job ended in `error` before this attach")
                 continue                        # `done` past our cursor cannot happen: seen < n
@@ -1069,8 +1089,10 @@ def _follow(cfg, worker: dict, rec: dict, project_cfg: dict, seq: int, stop) -> 
                 return Outcome(val, job.worker_wait)
             if kind == "stopped":
                 return detach()
-            if kind in ("lost", "deadline"):
+            if kind == "deadline":
                 raise _GiveUp(kind, worker, rec)
+            if kind == "lost":
+                raise _GiveUp(_gone(cfg, rec, val), worker, rec)
             if val:                             # frames arrived: the next drop starts over
                 delay = BACKOFF_START_S
             while True:
@@ -1088,7 +1110,7 @@ def _follow(cfg, worker: dict, rec: dict, project_cfg: dict, seq: int, stop) -> 
                     continue
                 job.saw_worker()
                 if state in ("lost", "unknown"):
-                    raise _GiveUp("lost", worker, rec)
+                    raise _GiveUp(_gone(cfg, rec, state), worker, rec)
                 break
     except RemoteFailure as f:
         if _leave(rec["campaign"], detach_ev):  # a code-change exec claimed the step first
@@ -1128,7 +1150,7 @@ def _give_up(cfg, cid, worker: dict | None, rec: dict, seq: int, reason: str) ->
         _cancel(worker, job_id)
     for p in store.gates_dir(cfg, cid).glob(f"{seq:03d}-*"):
         p.unlink(missing_ok=True)
-    if reason != "deadline":
+    if reason in _BLAME:
         set_cooldown(cfg, rec["worker"])
     RJ.update(cfg, job_id, state="local")
     return Outcome(None, 0.0, RemoteFailure(reason, f"remote job {job_id}: {reason}"))
@@ -1193,7 +1215,7 @@ def adopt(rec: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int, sto
                                 worker=worker["name"], job_id=rec["job_id"])
                 return Outcome(run), hold.waited_s
             if hold.interrupted and state in ("lost", "unknown"):
-                raise _GiveUp("lost", worker, rec)
+                raise _GiveUp(_gone(cfg, rec, state), worker, rec)
             return _follow(cfg, worker, rec, project_cfg, seq, stop), hold.waited_s
     except _GiveUp as g:
         return _give_up(cfg, cid, worker, rec, seq, g.stage), 0.0

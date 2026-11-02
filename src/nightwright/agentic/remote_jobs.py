@@ -27,7 +27,8 @@ FINAL = ("done", "lost", "cancelled", "local")
 STATES = LIVE + FINAL
 DEFAULT_WORKER_TTL_S = 300.0        # `agentic.workers.worker_ttl_s`
 DEFAULT_JOB_LEASE_S = 900.0         # `agentic.workers.job_lease_s` (SPEC-0340's default)
-_GATE_ID = re.compile(r"^(?P<cid>.+)-gate-(?P<seq>[0-9]{3})-a(?P<attempt>[0-9]+)\Z")
+# `{seq:03d}`: at least three digits, four from seq 1000 on
+_GATE_ID = re.compile(r"^(?P<cid>.+)-gate-(?P<seq>[0-9]{3,})-a(?P<attempt>[0-9]+)\Z")
 
 
 def jobs_dir(cfg) -> Path:

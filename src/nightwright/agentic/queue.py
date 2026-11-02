@@ -1198,6 +1198,7 @@ class StepResult:
     detached: bool = False                           # SPEC-0225: the pool detached the run
     lock_cleanup: dict | None = None                 # SPEC-0244: an adopted commit's index.lock outcome
     spec_review: dict | None = None                  # SPEC-0214: a spec_review step's outcome
+    deferred: str | None = None                      # SPEC-0341: a gate step that did nothing yet
 
 
 _PROGRESS_MIN_INTERVAL_S = 1.0      # SPEC-0313: at most one `progress_at` lease write per second
@@ -1991,12 +1992,23 @@ def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
         # A job submitted for another HEAD or tree is cancelled instead (its results would be
         # for code no longer in the worktree), and the gate runs under a fresh seq.
         live = RJ.live_gate(ctx.cfg, state["id"])
-        while live is not None and not _adoptable(live, worktree):
-            from . import remote_gates as RG
-            for job_id in RG.cancel_campaign(ctx.cfg, state["id"], live["job_id"]):
-                res.events_before.append(("note", {
-                    "text": f"cancelled remote job {job_id}: submitted for another commit",
-                    "author": "queue"}))
+        while live is not None:
+            if _gate_committed(state, live):
+                # a crash after the transition, before `mark_done`: the job's `gate` event
+                # is applied already, so the record is settled, never replayed
+                RJ.mark_done(ctx.cfg, live["job_id"])
+            else:
+                ok = _adoptable(live, worktree, ctx.stop)
+                if ok is None:                  # git failed: leave the job for the next tick
+                    res.deferred = f"remote job {live['job_id']}: worktree unreadable"
+                    return res
+                if ok:
+                    break
+                from . import remote_gates as RG
+                for job_id in RG.cancel_campaign(ctx.cfg, state["id"], live["job_id"]):
+                    res.events_before.append(("note", {
+                        "text": f"cancelled remote job {job_id}: submitted for another commit",
+                        "author": "queue"}))
             live = RJ.live_gate(ctx.cfg, state["id"])
         seq = int(live["seq_or_run"]) if live else G.next_gate_seq(ctx.cfg, state["id"])
         res.gate_run = G.run_all(pcfg, state, ctx.cfg, seq=seq, stop=ctx.stop,
@@ -2006,9 +2018,36 @@ def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
     return res
 
 
-def _adoptable(rec: dict, worktree) -> bool:
+_ADOPT_GIT_TRIES = 3                 # `remote_gates.adoptable` retries a failing git this often
+_ADOPT_GIT_PAUSE_S = 0.5
+
+
+def _adoptable(rec: dict, worktree, stop=None) -> bool | None:
+    """`remote_gates.adoptable`, retried a few times while git fails; None when it still
+    fails (the caller defers, it neither adopts nor cancels)."""
+    if not worktree:
+        return False
     from . import remote_gates as RG
-    return bool(worktree) and RG.adoptable(rec, worktree)
+    for i in range(_ADOPT_GIT_TRIES):
+        ok = RG.adoptable(rec, worktree)
+        if ok is not None:
+            return ok
+        if i + 1 < _ADOPT_GIT_TRIES and stop is not None and stop.wait(_ADOPT_GIT_PAUSE_S):
+            break
+    return None
+
+
+def _gate_committed(state: dict, rec: dict) -> bool:
+    """The campaign's committed state already holds this record's gate (or a later one):
+    `last_gate` carries the job's `event_uid`, or a `gate_seq` at or past the record's seq.
+    `_transition` writes the ledger first and `state.json` last, so a crash before the state
+    write still adopts the job (and the dedupe drops its replayed `gate` event)."""
+    lg = state.get("last_gate") or {}
+    if str(lg.get("event_uid") or "").startswith(f"{rec['job_id']}:"):
+        return True
+    gs = lg.get("gate_seq")
+    return isinstance(gs, int) and not isinstance(gs, bool) \
+        and gs >= int(rec.get("seq_or_run") or 0)
 
 
 def _do_prepare_close(ctx: _Ctx, state: dict) -> StepResult:
@@ -2268,6 +2307,17 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         return _finish_fix(ctx, state, events, finish, "gate", "triage_fix")
 
     if kind == "gate":
+        if res.deferred:
+            # SPEC-0341: adoption could not read the worktree; nothing ran, the live job is
+            # left alone and the next tick tries again (still GATING). Only the notes of jobs
+            # it cancelled are written; the gate step's own events come when it runs.
+            notes = [e for e in events if e[0] == "note"]
+            if notes:
+                with store.item_lock(cfg, cid):
+                    for etype, payload in notes:
+                        store.append_event(cfg, cid, etype, payload)
+            row["to"], row["reason"] = "GATING", "adoption_deferred"
+            return row
         run = res.gate_run
         if run is not None and run.interrupted and ctx.stop.is_set():
             # SPEC-0229: a gate a stop killed (or never started) is discarded: no event, no
@@ -7619,12 +7669,15 @@ def _settle_ended_remote_jobs(cfg, flying) -> None:
     left), and its final records removed, since it never gates again (`max_seq` needs them
     only while it can). Other campaigns' records are known by file name only, not parsed."""
     for cid in sorted(RJ.campaigns(cfg) - set(flying)):
-        try:
-            state = store.read_state(cfg, cid).get("state")
-        except (ValueError, OSError):
+        if not store.campaign_dir(cfg, cid).exists():
             state = None                        # the campaign is gone
-        if state is not None and state not in TERMINAL_STATES:
-            continue
+        else:
+            try:
+                state = store.read_state(cfg, cid).get("state")
+            except (ValueError, OSError):
+                continue                        # unreadable now (EIO, a bad state.json): not gone
+            if state not in TERMINAL_STATES:
+                continue
         cancelled = _cancel_remote_jobs(cfg, cid, note=state is not None)
         RJ.prune(cfg, cid, keep=cancelled)      # a just-cancelled record stays one tick
 

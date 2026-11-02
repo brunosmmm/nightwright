@@ -331,6 +331,25 @@ without re-attach or adoption.
   now checks that the record is `local` and the `gates/001-*` files are gone when `_cancel`
   runs. Related modules (remote gates, exit paths, codewatch, queue, drain signal, worker
   jobs, and this file): 466 passed in one `-n 8` run. The full suite is left to gating.
+- Review round 4 (same day): `tests/test_remote_job_records.py` has 49 tests, all passed in
+  one `-n 8` run. The new ones: **give-up order**: a SIGKILLed job process gives up with the
+  record `lost` while the `gates/001-*` files are still there and no `worker_job_lost` exists;
+  then `worker_job_lost` with the record `lost`, then the cancel, then `local` once the event
+  is in and the files are gone. **crash during submit**: a `_submit` that dies leaves a
+  `submitted` record with cursor 0 and no `accepted_at`; adoption gives up as `unaccepted`,
+  with no cooldown and no `worker_failed`, and runs locally. In contrast, a job the worker
+  forgot after accepting it is `lost`, with a cooldown. **settle**: a `read_state` that raises
+  EIO, or a malformed `state.json`, leaves the live record `detached` and the job running.
+  **seq 1000**: `gate-1000-a1` is seen by `max_seq` (and `next_gate_seq` is 1001),
+  `campaigns`, `live_gate` and `prune`. **crash before `mark_done`**: the `gate` transition
+  is committed and the record is still live. A same-HEAD `retry_gate` settles the record and
+  gates again under seq 2, on the worker, so the ledger has two `gate` events. A crash
+  between the ledger and `state.json` still adopts, and the replayed event is dropped.
+  **git failure at adoption**: the step is deferred (`adoption_deferred`, still GATING), with
+  no cancel, no `gate` event and the job still running. A failure that clears within the
+  retries adopts it under seq 1. Related modules (remote gates, queue, exit paths,
+  codewatch, events, quiet, worker jobs, adopt, close*, drain signal, gate*): 594 + 314
+  passed in two `-n 8` runs. The full suite is left to gating.
 - Affected modules: `test_remote_gates.py` (SPEC-0338's golden test included, unchanged),
   `test_workers_registry.py`, `test_worker_jobs.py`, `test_worker.py`, `test_agentic_queue.py`,
   `test_agentic_events.py`, `test_agentic_quiet.py`, `test_skills.py`, `test_agentic_exit_paths.py`,
@@ -435,6 +454,21 @@ without re-attach or adoption.
 - **`info` cache.** `workers.check` stores the probed `info` on the registry record, and
   `nw workers add` stores it on the new record. There is no per-tick refresh: the cache
   changes only on `check`/`add`, within the "at most once per tick" bound.
+- **Review round 4.** `submit` sets the record's `accepted_at` once the worker has accepted
+  the job. A job the worker reports `unknown` whose record has no `accepted_at` and cursor 0
+  is one the coordinator never finished submitting (it died during the upload). It gives up
+  with `reason: "unaccepted"`: `worker_job_lost` and a local run, with no cooldown. Only
+  `unreachable` and `lost` blame the worker. Before it adopts, `_do_gate` checks whether
+  `state.json`'s `last_gate` already holds the record's job: its `event_uid`, or a `gate_seq`
+  at or past the record's seq. If it does, the transition committed and only `mark_done` was
+  lost to a crash, so the record is set `done` and never replayed. (`_transition` writes the
+  ledger before `state.json`, so a crash between those two still adopts.) A git failure
+  while checking `adoptable` is retried 3 times, 0.5 s apart. If it still fails, the gate
+  step is deferred (`StepResult.deferred`): `_apply` writes only the notes of jobs it
+  cancelled and stays in GATING (`adoption_deferred`), and the live job is neither cancelled
+  nor re-gated. The per-tick settle treats a campaign as gone only when its dir is missing;
+  a state read that fails is skipped that tick. The job-id pattern accepts three or more seq
+  digits, so `gate-1000-a1` and later are seen.
 - `worker_job_lost` is a *hold* type in `quiet.RULES` and in `nw-conduct`'s quiet-stream list.
   `docs/WORKFLOW.md` describes re-attach and adoption.
 
