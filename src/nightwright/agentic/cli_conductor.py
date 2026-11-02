@@ -5,6 +5,9 @@ report and the alert stream can change independently."""
 from __future__ import annotations
 
 import datetime as dt
+import json
+import os
+import sys
 
 import click
 from rich.table import Table
@@ -43,6 +46,20 @@ def summary_line(rep) -> str:
     if not t["usd_complete"]:
         line += f" (partial: {t['unpriced_turns']} unpriced turns)"
     return line
+
+
+GUARD_MESSAGE = ("conductor never asks the human: use steward:<P> / nw queue escalate "
+                 "(SPEC-0382)")
+
+
+def _hook_session_id(raw):
+    """The `session_id` of a PreToolUse hook payload, else `$CLAUDE_CODE_SESSION_ID`."""
+    try:
+        doc = json.loads(raw) if raw and raw.strip() else {}
+    except ValueError:
+        doc = {}
+    sid = doc.get("session_id") if isinstance(doc, dict) else None
+    return sid if isinstance(sid, str) and sid else os.environ.get("CLAUDE_CODE_SESSION_ID")
 
 
 def attach(queue_group):
@@ -161,6 +178,22 @@ def attach(queue_group):
             t.add_row(r["session_id"], str(r.get("ts")), str(r.get("source")),
                       str(r.get("claude_pid") or "-"), str(r.get("cwd") or "-"))
         console.print(t)
+
+    @queue_group.command("conductor-guard")
+    @click.pass_obj
+    def conductor_guard(cfg):
+        """PreToolUse hook (SPEC-0382): deny the tool call (exit 2) when the calling session is a
+        registered conductor, exit 0 for any other session. Reads the hook JSON on stdin; fails
+        open on anything unreadable so it can never block a human's session."""
+        try:
+            sid = _hook_session_id(sys.stdin.read())
+            hit = bool(sid) and cfg is not None and any(
+                r["session_id"] == sid for r in CC.sessions(cfg, "conductor"))
+        except Exception:
+            hit = False
+        if hit:
+            click.echo(GUARD_MESSAGE, err=True)
+            raise SystemExit(2)
 
     @queue_group.command("decision")
     @click.argument("words", nargs=-1, metavar="[CAMPAIGN] RATIONALE")

@@ -20,6 +20,7 @@ STEWARD_PROMPT = "Run the /nw-orient skill, then the /nw-steward skill for proje
 
 # Rule generators (SPEC-0353). `*` matches any characters, spaces included, so allow rules that end
 # in a wildcard are guarded by a deny rule for every argument that can follow the ref.
+WORKTREES_DIR = ".nw-worktrees"
 _PREFIXES = ("git", "git -C *")
 _NAMESPACES = ("nw/*", "wt/*")
 _FORCE_FORMS = ("", "--force-with-lease ", "--force-with-lease=* ")
@@ -36,6 +37,11 @@ _PUSH_DENY += ("* nw/*:*", "* wt/*:*", "*:nw/*:*", "*:wt/*:*", "*heads/main*", "
                "--force-with-lease=* * origin *")
 # `git -C *` can swallow any subcommand, so ` push ` must be the 4th token (`git -C <dir> push`)
 _PUSH_DENY_C_ONLY = ("* push *",)
+# SPEC-0382: the conductor's git verbs, read-only. Not `Bash(git *)`: that would allow a push to
+# any branch outside the denied main/master set and the rebase set SPEC-0353 keeps off the conductor
+_CONDUCTOR_GIT_VERBS = ("status", "status *", "log *", "diff *", "show *", "rev-parse *",
+                        "rev-list *", "merge-base *", "ls-files *", "ls-files", "branch --list *",
+                        "branch", "branch -a", "branch -vv")
 _STEWARD_VERBS = ("fetch *", "rebase *", "rebase --continue", "rebase --abort", "add *",
                   "commit *", "restore *", "checkout --ours *", "checkout --theirs *")
 # `git <x>` and `git * <x>` (the latter covers `git -C <dir> <x>`)
@@ -100,10 +106,23 @@ DEFAULTS = {"model": "claude-sonnet-5-5", "effort": "medium", "autocompact": "15
             "allowed_tools": [*_push_allow(), "Bash(gh pr create *)", "Bash(gh pr edit *)",
                               "Bash(gh pr comment *)"],
             "steward_allowed_tools": [f"Bash({p} {v})" for p in _PREFIXES for v in _STEWARD_VERBS],
-            "disallowed_tools": [*_push_deny(), *_steward_guard(), "Bash(gh pr merge *)"]}
+            "disallowed_tools": [*_push_deny(), *_steward_guard(), "Bash(gh pr merge *)"],
+            # SPEC-0382: the conductor never blocks on the human; under `dontAsk` (which applies
+            # to its sub-agents too) the allow-list keeps their normal work (rebase conflicts in
+            # campaign worktrees, looking into stuck runs) from being refused
+            "conductor_disallowed_tools": ["AskUserQuestion"],
+            "conductor_permission_mode": "dontAsk",
+            "conductor_allowed_tools": ["Read", "Grep", "Glob",
+                                        f"Edit(//**/{WORKTREES_DIR}/**)",
+                                        f"Write(//**/{WORKTREES_DIR}/**)",
+                                        *[f"Bash({p} {v})" for p in _PREFIXES
+                                          for v in _CONDUCTOR_GIT_VERBS],
+                                        "Bash(uv run pytest *)", "Bash(ps *)", "Bash(tail *)"]}
 TOOL_FLAGS = {"allowed_tools": "--allowedTools", "disallowed_tools": "--disallowedTools"}
 # list-valued settings; `steward_allowed_tools` is merged into `--allowedTools`, never its own flag
-LIST_KEYS = {*TOOL_FLAGS, "steward_allowed_tools"}
+LIST_KEYS = {*TOOL_FLAGS, "steward_allowed_tools", "conductor_disallowed_tools",
+             "conductor_allowed_tools"}
+PERMISSION_MODES = ("default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 AUTOCOMPACT_MIN, AUTOCOMPACT_MAX = 100_000, 1_000_000
 # settings key -> env var, in the order NW_LAUNCH_KEYS lists them
@@ -146,6 +165,8 @@ def _good(key, v):
         return v.strip() if isinstance(v, str) and v.strip() else None
     if key == "effort":
         return v if v in EFFORTS else None
+    if key == "conductor_permission_mode":
+        return v if v in PERMISSION_MODES else None
     if key == "autocompact":
         if isinstance(v, str) and v.strip().lower() == "auto":
             return "auto"
@@ -218,18 +239,24 @@ def build_plan(cfg, role, project=None, *, resume=False, session_id=None) -> dic
     # --allowedTools/--disallowedTools are variadic: each is followed by another option (never
     # the positional prompt) so the prompt is not swallowed as a rule. Empty list: no flag.
     # The steward's effective allow list is allowed_tools + steward_allowed_tools (SPEC-0353).
-    eff = {"allowed_tools": _dedup(sett["allowed_tools"] + (sett["steward_allowed_tools"]
-                                                            if role == "steward" else [])),
-           "disallowed_tools": sett["disallowed_tools"]}
+    # The conductor's is allowed_tools + conductor_allowed_tools, its deny list gains
+    # conductor_disallowed_tools (SPEC-0382); a steward gets neither.
+    extra_allow = {"steward": sett["steward_allowed_tools"],
+                   "conductor": sett["conductor_allowed_tools"]}[role]
+    extra_deny = sett["conductor_disallowed_tools"] if role == "conductor" else []
+    eff = {"allowed_tools": _dedup(sett["allowed_tools"] + extra_allow),
+           "disallowed_tools": _dedup(sett["disallowed_tools"] + extra_deny)}
     perms = [x for key, flag in TOOL_FLAGS.items() if eff[key] for x in (flag, *eff[key])]
+    mode = sett["conductor_permission_mode"] if role == "conductor" else None
     argv = ["claude", "-n", name, "--resume" if resume else "--session-id", sid, *perms,
+            *(["--permission-mode", mode] if mode else []),
             "--model", sett["model"], "--effort", sett["effort"],
             "--autocompact", str(sett["autocompact"]), prompt]
     env = {var: str(sett[key]) for key, var in ENV_KEYS.items()}
     env[LAUNCH_KEYS_VAR] = ",".join(ENV_KEYS.values())
     return {"role": role, "name": name, "cwd": str(cwd), "session_id": sid, "resumed": resume,
             "argv": argv, "env": env, "env_remove": list(ENV_REMOVE), "prompt": prompt,
-            "model": sett["model"],
+            "model": sett["model"], "permission_mode": mode,
             "allowed_tools": list(eff["allowed_tools"]),
             "disallowed_tools": list(eff["disallowed_tools"]), "price": CC.price_for(cfg, sett["model"])}
 
@@ -264,7 +291,8 @@ def exec_env(plan, base=None) -> dict:
 def register(cfg, plan):
     """Pre-register the session in the SPEC-0299 registry (idempotent per reader and id)."""
     try:
-        CC.record_session(cfg, plan["name"], {}, source="launch", session_id=plan["session_id"])
+        CC.record_session(cfg, plan["name"], {}, source="launch", session_id=plan["session_id"],
+                          extra={"disallowed_tools": plan["disallowed_tools"]})
     except OSError as e:
         raise click.ClickException(f"cannot register the session: {e}")
 

@@ -92,6 +92,6 @@ Finish with ONE JSON object and nothing after it:
 - `summary`: one or two sentences
 - `resolutions`: `[{"path": "...", "strategy": "both|ours|theirs|regenerated|rewritten",
   "how": "what you kept from each side and why"}]`, one per conflicted path
-- `questions`: what a human must decide (empty when none)
+- `questions`: what needs a human-only decision (routed via the project steward; empty when none)
 - `dropped_commits` (optional): `[{"sha": "full or abbreviated sha of a campaign commit you
   dropped", "reason": "one sentence: what delivered its intent upstream"}]`

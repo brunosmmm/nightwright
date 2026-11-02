@@ -24,7 +24,8 @@ def test_install_creates_a_missing_file(tmp_path):
     p = tmp_path / "sub" / "settings.json"
     added = AP.install(p)
     assert added == list(AP.ALLOW_RULES)
-    assert _read(p) == {"permissions": {"allow": list(AP.ALLOW_RULES)}}
+    assert _read(p) == {"permissions": {"allow": list(AP.ALLOW_RULES)},
+                        "hooks": {"PreToolUse": [AP.HOOK_ENTRY]}}
 
 
 def test_install_merges_and_keeps_everything_else(tmp_path):
@@ -36,7 +37,7 @@ def test_install_merges_and_keeps_everything_else(tmp_path):
     added = AP.install(p)
     doc = _read(p)
     assert added == list(AP.ALLOW_RULES[1:])
-    assert doc["model"] == "opus" and doc["hooks"] == {"Stop": []}
+    assert doc["model"] == "opus" and doc["hooks"] == {"Stop": [], "PreToolUse": [AP.HOOK_ENTRY]}
     assert doc["permissions"]["deny"] == ["Read(.env)"]
     assert doc["permissions"]["allow"][:2] == ["Bash(ls)", AP.ALLOW_RULES[0]]
     assert doc["permissions"]["allow"].count(AP.ALLOW_RULES[0]) == 1
@@ -92,3 +93,52 @@ def test_cli_no_permissions_skips_rules(tmp_path):
                                  "--settings", str(settings), "--no-permissions"])
     assert r.exit_code == 0, r.output
     assert not settings.exists()
+
+
+# SPEC-0382: the conductor-guard PreToolUse hook
+def test_hook_entry_is_the_askuserquestion_guard():
+    assert AP.HOOK_ENTRY == {"matcher": "AskUserQuestion", "hooks": [
+        {"type": "command", "command": "nw queue conductor-guard"}]}
+
+
+def test_hook_installed_once_and_unrelated_hooks_kept(tmp_path):
+    p = tmp_path / "settings.json"
+    other = {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]}
+    p.write_text(json.dumps({"hooks": {"PreToolUse": [other], "Stop": [{"hooks": []}]}}))
+    assert AP.hook_missing(p)
+    assert AP.sync(p)["hook"] is True
+    doc = _read(p)
+    assert doc["hooks"]["PreToolUse"] == [other, AP.HOOK_ENTRY]
+    assert doc["hooks"]["Stop"] == [{"hooks": []}]
+    before = p.read_text()
+    res = AP.sync(p)
+    assert res == {"added": [], "removed": [], "hook": False}
+    assert p.read_text() == before and not AP.hook_missing(p)
+    assert _read(p)["hooks"]["PreToolUse"].count(AP.HOOK_ENTRY) == 1
+
+
+def test_hook_added_when_rules_already_present(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"permissions": {"allow": list(AP.ALLOW_RULES)}}))
+    res = AP.sync(p)
+    assert res["added"] == [] and res["hook"] is True
+    assert _read(p)["permissions"]["allow"] == list(AP.ALLOW_RULES)
+
+
+def test_install_command_reports_hook_and_is_idempotent(tmp_path):
+    p = tmp_path / "settings.json"
+    args = ["skills", "install", "--dest", str(tmp_path / "d"), "--settings", str(p)]
+    r = CliRunner().invoke(cli, args)
+    assert r.exit_code == 0 and "conductor-guard hook" in r.output, r.output
+    r = CliRunner().invoke(cli, args)
+    assert r.exit_code == 0 and "up-to-date" in r.output
+    assert _read(p)["hooks"]["PreToolUse"] == [AP.HOOK_ENTRY]
+
+
+def test_malformed_hooks_value_is_an_error_not_a_rewrite(tmp_path):
+    import pytest
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"hooks": {"PreToolUse": "x"}}))
+    with pytest.raises(ValueError):
+        AP.sync(p)
+    assert _read(p) == {"hooks": {"PreToolUse": "x"}}

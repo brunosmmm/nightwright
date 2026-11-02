@@ -84,7 +84,7 @@ def run(cfg, monkeypatch):
 @pytest.mark.parametrize("campaign, flags", [
     (None, ["--kind", "bogus", "--rule", "runner_dead"]),
     (None, ["--kind", "resume", "--rule", "Bad-Rule"]),
-    (None, ["--kind", "resume", "--rule", "a.b.c"]),
+    (None, ["--kind", "resume", "--rule", "a.b.c.d"]),
     (None, ["--kind", "resume", "--rule", "runner_dead", "--by", "nobody"]),
     (None, ["--kind", "resume", "--rule", "runner_dead", "--event", "999"]),
     ("ghost", ["--kind", "resume", "--rule", "runner_dead"]),

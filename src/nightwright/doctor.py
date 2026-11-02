@@ -386,6 +386,16 @@ def check_runner(cfg, *, now=None) -> dict:
     return check(id, "skip", "no campaigns")
 
 
+def _unguarded_launch(sessions):
+    """The newest `source: launch` record whose launch lacked the AskUserQuestion deny (older
+    records carry no argv fields, so they count as lacking it), else None."""
+    launched = [r for r in sessions if r.get("source") == "launch"]
+    last = launched[-1] if launched else None
+    if last and "AskUserQuestion" not in (last.get("disallowed_tools") or []):
+        return last
+    return None
+
+
 def check_conductor(cfg) -> dict:
     """`agentic.conductor`: a conductor session is registered (SPEC-0299)."""
     from .agentic import conductor_cost
@@ -393,6 +403,11 @@ def check_conductor(cfg) -> dict:
     if cfg is None:
         return _skip_no_config(id)
     sessions = conductor_cost.sessions(cfg)
+    unguarded = _unguarded_launch(sessions)
+    if unguarded:   # SPEC-0382: a hand-started conductor is guarded by the hook instead
+        return check(id, "warn", "the launched conductor session can call AskUserQuestion",
+                     detail=f"session: {unguarded['session_id']}",
+                     fix="nw queue conductor-launch --resume")
     if sessions:
         return check(id, "ok", f"{len(sessions)} conductor session(s) registered",
                      detail=f"newest: {sessions[-1]['session_id']}")

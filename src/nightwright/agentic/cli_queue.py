@@ -2028,7 +2028,7 @@ def attach(queue_group):
 
     @queue_group.command("escalate")
     @click.argument("campaign", required=False, shell_complete=C.complete_campaign_id)
-    @click.option("--question", required=True, help="what the human must decide")
+    @click.option("--question", required=True, help="the human-only decision needed")
     @click.option("--option", "options", multiple=True, help="a numbered choice (repeatable)")
     @click.option("--recommend", type=int, default=None, help="the recommended option, 1-based")
     @click.option("--fact", "facts", multiple=True, help="a fact the decision rests on")

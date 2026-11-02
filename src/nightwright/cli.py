@@ -2455,8 +2455,10 @@ def skills_install_cmd(link, dest, force, permissions, settings_path):
                           f"wt rules from {target}[/]")
             for rule in res["removed"]:
                 console.print(f"    [dim]{rule}[/]")
-        if not res["added"] and not res["removed"]:
-            console.print(f"[green]✓[/] allow rules  [dim]up-to-date in {target}[/]")
+        if res["hook"]:
+            console.print(f"[green]✓[/] conductor-guard hook  [dim]added to {target}[/]")
+        if not res["added"] and not res["removed"] and not res["hook"]:
+            console.print(f"[green]✓[/] allow rules and hook  [dim]up-to-date in {target}[/]")
 
 
 @skills_group.command("list")

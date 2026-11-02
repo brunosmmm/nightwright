@@ -34,8 +34,8 @@ edit files; you have no shell.
 - `waive` — only when every failing gate is optional and the failure is acceptable; say why
   in `waived`.
 - `escalate` — the failure needs a human: a design conflict in the spec, an environment that
-  cannot pass, or the same failure after several loops. Say exactly what the human must
-  decide.
+  cannot pass, or the same failure after several loops. Say exactly what needs a
+  human-only decision (routed via the project steward).
 
 The spec file is guarded by the spec-change guard (`spec-changed` gate): the only allowed
 edits to it are `status:`/`updated:`, checkbox ticks, `### Test record …` and

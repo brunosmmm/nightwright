@@ -51,6 +51,10 @@ def _wire(cfg, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
 
 
+CONDUCTOR_ALLOW = L.DEFAULTS["allowed_tools"] + L.DEFAULTS["conductor_allowed_tools"]
+CONDUCTOR_DENY = L.DEFAULTS["disallowed_tools"] + ["AskUserQuestion"]
+
+
 def invoke(*args):
     return CliRunner().invoke(cli, ["queue", *args])
 
@@ -82,7 +86,9 @@ def test_default_plan_argv_and_env(cfg, tmp_path):
     sid = plan["session_id"]
     assert plan["argv"] == ["claude", "-n", "conductor", "--session-id", sid,
                             "--allowedTools", *L.DEFAULTS["allowed_tools"],
-                            "--disallowedTools", *L.DEFAULTS["disallowed_tools"],
+                            *L.DEFAULTS["conductor_allowed_tools"],
+                            "--disallowedTools", *L.DEFAULTS["disallowed_tools"], "AskUserQuestion",
+                            "--permission-mode", "dontAsk",
                             "--model", "claude-sonnet-5-5", "--effort", "medium",
                             "--autocompact", "150000",
                             "Run the /nw-orient skill, then the /nw-conduct skill."]
@@ -403,14 +409,15 @@ def test_default_permission_rules():
 
 def test_plan_has_permission_flags_and_prompt_stays_last(cfg):
     plan = L.build_plan(cfg, "conductor")
-    assert _perm_args(plan["argv"], "--allowedTools") == L.DEFAULTS["allowed_tools"]
-    assert _perm_args(plan["argv"], "--disallowedTools") == L.DEFAULTS["disallowed_tools"]
+    allow, deny = CONDUCTOR_ALLOW, CONDUCTOR_DENY
+    assert _perm_args(plan["argv"], "--allowedTools") == allow
+    assert _perm_args(plan["argv"], "--disallowedTools") == deny
     assert plan["argv"][-1] == L.CONDUCTOR_PROMPT
-    assert plan["allowed_tools"] == L.DEFAULTS["allowed_tools"]
+    assert plan["allowed_tools"] == allow
     r = invoke("conductor-launch", "--dry-run", "--json")
     data = json.loads(r.output)
-    assert data["allowed_tools"] == L.DEFAULTS["allowed_tools"]
-    assert data["disallowed_tools"] == L.DEFAULTS["disallowed_tools"]
+    assert data["allowed_tools"] == allow
+    assert data["disallowed_tools"] == deny
 
 
 def test_permission_config_replaces_defaults_and_steward_inherits(cfg):
@@ -418,16 +425,21 @@ def test_permission_config_replaces_defaults_and_steward_inherits(cfg):
                                              "disallowed_tools": ["Bash(rm *)"]}
     for plan in (L.build_plan(cfg, "conductor"), L.build_plan(cfg, "steward", "Foo")):
         # a steward additionally gets steward_allowed_tools (SPEC-0353)
-        extra = L.DEFAULTS["steward_allowed_tools"] if plan["name"].startswith("steward") else []
+        steward = plan["name"].startswith("steward")
+        extra = (L.DEFAULTS["steward_allowed_tools"] if steward
+                 else L.DEFAULTS["conductor_allowed_tools"])
         assert _perm_args(plan["argv"], "--allowedTools") == ["Bash(ls *)", *extra]
-        assert _perm_args(plan["argv"], "--disallowedTools") == ["Bash(rm *)"]
+        assert _perm_args(plan["argv"], "--disallowedTools") == (
+            ["Bash(rm *)"] if steward else ["Bash(rm *)", "AskUserQuestion"])
 
 
 def test_empty_permission_lists_add_no_flags(cfg):
-    cfg["agentic"]["conductor"]["launch"] = {"allowed_tools": [], "disallowed_tools": []}
+    cfg["agentic"]["conductor"]["launch"] = {"allowed_tools": [], "disallowed_tools": [],
+                                             "conductor_allowed_tools": [],
+                                             "conductor_disallowed_tools": []}
     plan = L.build_plan(cfg, "conductor")
     assert "--allowedTools" not in plan["argv"] and "--disallowedTools" not in plan["argv"]
-    cfg["agentic"]["conductor"]["launch"] = {"allowed_tools": []}
+    cfg["agentic"]["conductor"]["launch"] = {"allowed_tools": [], "conductor_allowed_tools": []}
     plan = L.build_plan(cfg, "conductor")
     assert "--allowedTools" not in plan["argv"] and "--disallowedTools" in plan["argv"]
 
@@ -442,8 +454,8 @@ def test_resume_applies_permission_rules(cfg):
     _launch_record(cfg, "old")
     plan = L.build_plan(cfg, "conductor", resume=True)
     assert plan["argv"][3:5] == ["--resume", "old"]
-    assert _perm_args(plan["argv"], "--allowedTools") == L.DEFAULTS["allowed_tools"]
-    assert _perm_args(plan["argv"], "--disallowedTools") == L.DEFAULTS["disallowed_tools"]
+    assert _perm_args(plan["argv"], "--allowedTools") == CONDUCTOR_ALLOW
+    assert _perm_args(plan["argv"], "--disallowedTools") == CONDUCTOR_DENY
 
 
 # --- SPEC-0353: lease-pinned PR-rebase pushes and the steward rebase set ---
@@ -564,7 +576,7 @@ def test_steward_allowed_tools_overrides(cfg):
     base = L.DEFAULTS["allowed_tools"]
     launch = cfg["agentic"]["conductor"]["launch"] = {"steward_allowed_tools": ["Bash(git add *)"]}
     assert L.build_plan(cfg, "steward", "Foo")["allowed_tools"] == base + ["Bash(git add *)"]
-    assert L.build_plan(cfg, "conductor")["allowed_tools"] == base
+    assert L.build_plan(cfg, "conductor")["allowed_tools"] == CONDUCTOR_ALLOW
     launch["steward"] = {"steward_allowed_tools": []}
     assert L.build_plan(cfg, "steward", "Foo")["allowed_tools"] == base
     launch.pop("steward")
@@ -577,7 +589,8 @@ def test_steward_allowed_tools_overrides(cfg):
     launch.clear()
     launch["allowed_tools"] = []
     assert L.build_plan(cfg, "steward", "Foo")["allowed_tools"] == L.DEFAULTS["steward_allowed_tools"]
-    assert "--allowedTools" not in L.build_plan(cfg, "conductor")["argv"]
+    assert _perm_args(L.build_plan(cfg, "conductor")["argv"], "--allowedTools") == \
+        L.DEFAULTS["conductor_allowed_tools"]
     launch.clear()
     launch["steward_allowed_tools"] = []
     plan = L.build_plan(cfg, "steward", "Foo")
@@ -725,3 +738,68 @@ def test_each_guard_family_is_what_stops_the_command(cfg, cmd, rule):
     hit = _hits(cmd, deny)
     assert rule in hit, hit
     assert _permitted(cmd, allow, [r for r in deny if r not in hit]) is True
+
+
+# SPEC-0382: the conductor never blocks on the human
+def test_conductor_guard_flags_in_plan_and_json(cfg):
+    plan = L.build_plan(cfg, "conductor")
+    argv = plan["argv"]
+    assert "AskUserQuestion" in plan["disallowed_tools"]
+    assert plan["permission_mode"] == "dontAsk"
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+    deny = argv[argv.index("--disallowedTools"):]
+    assert "AskUserQuestion" in deny[:deny.index("--model")]
+    # the push/merge denies are kept, and the allow-list additions are in --allowedTools
+    assert "Bash(gh pr merge *)" in plan["disallowed_tools"]
+    assert any(r.startswith("Bash(git push") for r in plan["disallowed_tools"])
+    allow = argv[argv.index("--allowedTools"):argv.index("--disallowedTools")]
+    for rule in L.DEFAULTS["conductor_allowed_tools"]:
+        assert rule in allow
+    assert "Bash(git status)" in allow and "Edit(//**/.nw-worktrees/**)" in allow
+    assert "Bash(git *)" not in allow       # would allow pushes to any non-main branch
+    r = invoke("conductor-launch", "--dry-run", "--json")
+    doc = json.loads(r.output)
+    assert doc["permission_mode"] == "dontAsk" and "AskUserQuestion" in doc["disallowed_tools"]
+    assert "Bash(ps *)" in doc["allowed_tools"]
+
+
+def test_steward_plan_has_none_of_the_conductor_guard(cfg):
+    plan = L.build_plan(cfg, "steward", "Foo")
+    assert "--permission-mode" not in plan["argv"] and plan["permission_mode"] is None
+    assert "AskUserQuestion" not in plan["disallowed_tools"]
+    for rule in L.DEFAULTS["conductor_allowed_tools"]:
+        assert rule not in plan["allowed_tools"]
+    cfg["agentic"]["conductor"]["launch"] = {"conductor_permission_mode": "default"}
+    assert "--permission-mode" not in L.build_plan(cfg, "steward", "Foo")["argv"]
+
+
+def test_conductor_guard_settings_override_and_bad_value(cfg):
+    launch = cfg["agentic"]["conductor"].setdefault("launch", {})
+    launch.update(conductor_permission_mode="acceptEdits", conductor_disallowed_tools=["Foo"],
+                  conductor_allowed_tools=["Bash(echo *)"])
+    plan = L.build_plan(cfg, "conductor")
+    assert plan["permission_mode"] == "acceptEdits" and "Foo" in plan["disallowed_tools"]
+    assert "AskUserQuestion" not in plan["disallowed_tools"]
+    assert "Bash(echo *)" in plan["allowed_tools"] and "Bash(git *)" not in plan["allowed_tools"]
+    for bad in ("nope", 3, True, ""):
+        launch["conductor_permission_mode"] = bad
+        assert L.settings(cfg)["conductor_permission_mode"] == "dontAsk"
+    launch["conductor_disallowed_tools"] = "AskUserQuestion"   # not a list
+    assert L.settings(cfg)["conductor_disallowed_tools"] == ["AskUserQuestion"]
+
+
+def test_launch_record_carries_the_deny(cfg, ex):
+    r = invoke("conductor-launch")
+    assert r.exit_code == 0, r.output
+    rec = sessions_lines(cfg)[0]
+    assert "AskUserQuestion" in rec["disallowed_tools"]
+
+
+@pytest.mark.parametrize("cmd,ok", [
+    ("git status", True), ("git -C /w/.nw-worktrees/x log --oneline -5", True),
+    ("git rebase origin/main", False), ("git add -A", False),
+    ("git push origin feature/x", False), ("git push origin main", False),
+    ("git reset --hard HEAD~1", False), ("git clean -fd", False)])
+def test_conductor_default_rules_git_work_vs_dangerous(cfg, cmd, ok):
+    allow, deny = _eff(cfg, "conductor")
+    assert _permitted(cmd, allow, deny) is ok

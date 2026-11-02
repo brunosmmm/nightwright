@@ -190,7 +190,7 @@ def test_permissions_sync_removes_only_legacy(tmp_path):
     allow = json.loads(p.read_text())["permissions"]["allow"]
     assert allow == ["Bash(x)"] + list(AP.ALLOW_RULES)
     before = p.read_bytes()
-    assert AP.sync(p) == {"added": [], "removed": []} and p.read_bytes() == before
+    assert AP.sync(p) == {"added": [], "removed": [], "hook": False} and p.read_bytes() == before
     assert all(r.startswith(("Bash(nw ", "Bash(NW_MAILBOX_ADDR=* nw ")) for r in AP.ALLOW_RULES)
 
 

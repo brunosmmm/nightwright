@@ -1,7 +1,7 @@
 ---
 id: SPEC-0382
 title: "Conductor never blocks on the human: launch guard and hook backstop"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
@@ -148,28 +148,28 @@ via the project steward)". `review_triager.md` is checked and changed only if it
 
 ## Acceptance criteria
 
-- [ ] AC1: `nw queue conductor-launch --dry-run --json` argv contains `--disallowedTools` with
+- [x] AC1: `nw queue conductor-launch --dry-run --json` argv contains `--disallowedTools` with
       `AskUserQuestion` (the existing push/merge denies kept), `--permission-mode dontAsk`, and the
       `conductor_allowed_tools` defaults in `--allowedTools`; `nw queue steward-launch <P> --dry-run
       --json` contains none of these three additions. All three settings are overridable via
       `agentic.conductor.launch`, and a bad `conductor_permission_mode` falls back to `dontAsk`.
-- [ ] AC2: `nw queue conductor-guard` reads `session_id` from the PreToolUse JSON on stdin and exits 2
+- [x] AC2: `nw queue conductor-guard` reads `session_id` from the PreToolUse JSON on stdin and exits 2
       with the guidance message for a registered conductor session id (whether registered by launch,
       by the follower, or by `conductor-session add`), and 0 for any other session id, no registered
       conductor, or an unreadable registry.
-- [ ] AC3: `nw skills install` writes the `AskUserQuestion` PreToolUse hook entry, a second run adds no
+- [x] AC3: `nw skills install` writes the `AskUserQuestion` PreToolUse hook entry, a second run adds no
       duplicate, and pre-existing unrelated hooks are preserved.
-- [ ] AC4: the `gate_triager` and `conflict_resolver` persona prompts and the `nw queue escalate
+- [x] AC4: the `gate_triager` and `conflict_resolver` persona prompts and the `nw queue escalate
       --question` help contain neither "the human must" nor "a human must decide"; `review_triager`
       likewise; the existing persona tests pass unchanged.
-- [ ] AC5: `skills/nw-conduct/SKILL.md` contains "Never call `AskUserQuestion`" and the
+- [x] AC5: `skills/nw-conduct/SKILL.md` contains "Never call `AskUserQuestion`" and the
       `message.request.human_order` row, and none of "tell the human" or "unless told", nor an
       instruction to wait for the human anywhere outside the *Never ask the human* rule (the assertion
       excludes that paragraph, which itself says `never "wait for the human"`); `skills/nw-orient/
       SKILL.md` contains the conductor-never-asks sentence. This test passes against the current
       files. The quiet-stream paragraph in the skill still matches `quiet.RULES` (existing comparison
       test).
-- [ ] AC6: `nw doctor` warns when the registered conductor session was launched (`source: launch`)
+- [x] AC6: `nw doctor` warns when the registered conductor session was launched (`source: launch`)
       with an argv lacking the `AskUserQuestion` deny, and does not warn when the deny is present or
       the conductor was not launched by `conductor-launch`.
 - [ ] AC7: against the real `claude` binary, (a) a conductor launched with `nw queue conductor-launch`
@@ -221,8 +221,8 @@ via the project steward)". `review_triager.md` is checked and changed only if it
 
 - [ ] Acceptance criteria all met.
 - [ ] Test plan executed; affected automated tests pass; manual real-binary steps performed and noted.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`).
 
 ## Open questions
@@ -230,3 +230,51 @@ via the project steward)". `review_triager.md` is checked and changed only if it
 None. Decided here: fail-open guard; `dontAsk` with a conductor allow-list; hand-started conductors
 register through the follower (or `conductor-session add`); the spec is narrowed to slice A and
 slice B is a Non-goal follow-up.
+
+### Test record (2026-11-02)
+
+- Automated: `tests/test_agentic_launch.py`, new `tests/test_agentic_conductor_guard.py`,
+  `tests/test_agent_permissions.py`, `tests/test_skills.py`, `tests/test_doctor.py`,
+  `tests/test_agentic_decisions.py`, `tests/test_rename_nightwright.py`, the persona tests and
+  `python3 tools/spec_lint.py` pass. The full suite was left to gating.
+- Real binary (`claude` 2.1.316, scratch dir and scratch XDG data dir, model haiku, `claude -p` with
+  the exact permission flags from `nw queue conductor-launch --dry-run --json`; the interactive
+  `conductor-launch` TUI itself was not started):
+  - (a) with `--disallowedTools AskUserQuestion --permission-mode dontAsk`, `AskUserQuestion` is not
+    in the session's tool list at all; the model reports it unavailable, no question is possible.
+  - (b) a session under those flags edited `a.txt` in `<scratch>/.nw-worktrees/wt1` and ran `git
+    status` without a denial; `git push origin feature/x` was denied. The first rule form
+    `Edit(**/.nw-worktrees/**)` did NOT match (paths match relative to cwd); `Edit(//**/.nw-worktrees/**)`
+    does, and is the shipped default. A sub-agent dispatched through the Agent tool in such a session
+    also edited the file and ran `git status` with no denial.
+  - (c) the installed hook entry (`nw skills install --settings`) and `nw queue conductor-session
+    add <id>`: in `claude -p` `AskUserQuestion` is not offered at all, so the hook could not be
+    triggered by it. The same command was therefore run with the matcher swapped to `Bash`: the
+    registered session's `echo hello` was refused ("PreToolUse:Bash hook error: [nw queue
+    conductor-guard]: conductor never asks the human ..."), an unregistered session got `hello`.
+    This proves the harness passes `session_id` on stdin and honours exit 2. **Open:** the real
+    `AskUserQuestion` matcher in an interactive session (AC7 (c)) is not exercised, so AC7 stays
+    unticked and the spec stays `in-progress`; `--tools AskUserQuestion` in `-p` mode does not offer
+    the tool either.
+
+### As shipped (2026-11-02)
+
+- `conductor_allowed_tools` default: `Bash(git *)` was NOT shipped. It would allow pushes to any
+  branch outside the main/master deny set (the existing `test_default_rules_deny_dangerous_pushes`
+  fails for the conductor) and SPEC-0353's `test_conductor_plan_excludes_rebase_set` keeps the rebase
+  set off the conductor. The default instead holds read-only git verbs (`status`, `log`, `diff`,
+  `show`, `rev-parse`, `rev-list`, `merge-base`, `ls-files`, `branch` listing; each also as `git -C *`).
+  Consequence: under `dontAsk` a conductor sub-agent can read git state and edit files in
+  `.nw-worktrees`, but cannot `git rebase`/`add`/`commit`; resolving rebase conflicts in a campaign
+  worktree stays with the queue's `conflict_resolver` and the steward. A user who wants it adds the
+  rules to `conductor_allowed_tools`.
+- Edit/Write rules are `//**/.nw-worktrees/**` (see the Test record).
+- `conductor-launch` writes `disallowed_tools` into the `source: launch` session record
+  (`record_session(..., extra=)`); `nw doctor` reads it. Launch records written before this change
+  have no such field and so warn until the conductor is relaunched with `--resume`.
+- `agent_permissions.sync()` returns `{"added", "removed", "hook"}`; `skills list` is unchanged.
+- `decisions.RULE_RE` now accepts up to two qualifier segments: the already-landed `nw-conduct` row id
+  `message.request.human_order` did not match the old pattern (`test_conduct_skill_rule_ids` failed,
+  and `nw queue decision --rule message.request.human_order` would have been refused).
+- Skills: no edit, as designed. The review brief's request to change the `nw-conduct` timeout line
+  belongs to slice B with the `human_decision_timeout` row.

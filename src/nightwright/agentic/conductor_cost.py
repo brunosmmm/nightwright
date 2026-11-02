@@ -47,10 +47,12 @@ def sessions(cfg, reader="conductor") -> list[dict]:
     return out
 
 
-def record_session(cfg, reader, env=os.environ, *, source="follower", session_id=None) -> dict | None:
+def record_session(cfg, reader, env=os.environ, *, source="follower", session_id=None,
+                   extra=None) -> dict | None:
     """Append `{ts, reader, session_id, claude_pid, cwd, source}` unless the `(reader,
     session_id)` pair is already recorded. Returns the record, or None when there is no
-    session id (env var unset) or the pair is already there. Appends under a flock."""
+    session id (env var unset) or the pair is already there. `extra` adds fields to the record.
+    Appends under a flock."""
     sid = session_id or env.get("CLAUDE_CODE_SESSION_ID")
     if not sid:
         return None
@@ -64,7 +66,7 @@ def record_session(cfg, reader, env=os.environ, *, source="follower", session_id
         pid = env.get("CLAUDE_PID")
         rec = {"ts": store.now_iso(), "reader": reader, "session_id": sid,
                "claude_pid": int(pid) if str(pid or "").isdigit() else None,
-               "cwd": os.getcwd(), "source": source}
+               "cwd": os.getcwd(), "source": source, **(extra or {})}
         with open(_sessions_path(cfg), "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         return rec

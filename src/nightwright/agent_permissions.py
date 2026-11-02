@@ -30,6 +30,14 @@ LEGACY_RULES = tuple([f"Bash(wt {g} *)" for g in _GROUPS]
                      + [f"Bash(WT_MAILBOX_ADDR=* wt {g} *)" for g in _ADDRESSED])
 
 
+# SPEC-0382: a PreToolUse hook that denies `AskUserQuestion` for a registered conductor session
+# (covers a conductor started by hand, which `conductor-launch`'s --disallowedTools does not)
+HOOK_EVENT = "PreToolUse"
+HOOK_MATCHER = "AskUserQuestion"
+HOOK_COMMAND = "nw queue conductor-guard"
+HOOK_ENTRY = {"matcher": HOOK_MATCHER, "hooks": [{"type": "command", "command": HOOK_COMMAND}]}
+
+
 def default_settings_path() -> Path:
     return Path.home() / ".claude" / "settings.json"
 
@@ -48,7 +56,24 @@ def _load(path: Path) -> dict:
     allow = (doc.get("permissions") or {}).get("allow", [])
     if not isinstance(doc.get("permissions", {}), dict) or not isinstance(allow, list):
         raise ValueError(f"{path}: permissions.allow must be a list")
+    hooks = doc.get("hooks", {})
+    if not isinstance(hooks, dict) or not isinstance(hooks.get(HOOK_EVENT, []), list):
+        raise ValueError(f"{path}: hooks.{HOOK_EVENT} must be a list")
     return doc
+
+
+def _has_hook(doc) -> bool:
+    """True when some PreToolUse entry already runs HOOK_COMMAND."""
+    for entry in (doc.get("hooks") or {}).get(HOOK_EVENT, []):
+        for h in (entry.get("hooks") or []) if isinstance(entry, dict) else []:
+            if isinstance(h, dict) and h.get("command") == HOOK_COMMAND:
+                return True
+    return False
+
+
+def hook_missing(path=None) -> bool:
+    """True when the conductor-guard hook is not yet in the settings file."""
+    return not _has_hook(_load(Path(path or default_settings_path())))
 
 
 def missing(path=None) -> list[str]:
@@ -72,7 +97,8 @@ def install(path=None) -> list[str]:
 
 def sync(path=None) -> dict:
     """Merge the missing ALLOW_RULES into `permissions.allow` and drop every LEGACY_RULES entry
-    (SPEC-0330); returns {"added": [...], "removed": [...]}. When there is nothing to do the
+    (SPEC-0330), and add the conductor-guard PreToolUse hook (SPEC-0382) unless present; returns
+    {"added": [...], "removed": [...], "hook": bool (added now)}. When there is nothing to do the
     file is left untouched. Other keys and entries are kept as they are; the write is atomic."""
     path = Path(path or default_settings_path())
     doc = _load(path)
@@ -80,10 +106,14 @@ def sync(path=None) -> dict:
     legacy = set(LEGACY_RULES)
     current = list((doc.get("permissions") or {}).get("allow", []))
     removed = [r for r in current if r in legacy]
-    if not added and not removed:
-        return {"added": [], "removed": []}
-    perms = doc.setdefault("permissions", {})
-    perms["allow"] = [r for r in current if r not in legacy] + added
+    hook = not _has_hook(doc)
+    if not added and not removed and not hook:
+        return {"added": [], "removed": [], "hook": False}
+    if added or removed:
+        perms = doc.setdefault("permissions", {})
+        perms["allow"] = [r for r in current if r not in legacy] + added
+    if hook:
+        doc.setdefault("hooks", {}).setdefault(HOOK_EVENT, []).append(json.loads(json.dumps(HOOK_ENTRY)))
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".settings.", suffix=".json")
     try:
@@ -96,4 +126,4 @@ def sync(path=None) -> dict:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
-    return {"added": added, "removed": removed}
+    return {"added": added, "removed": removed, "hook": hook}

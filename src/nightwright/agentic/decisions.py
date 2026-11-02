@@ -19,7 +19,8 @@ from . import store
 SCHEMA = "nw.conductor.decision.v1"
 KINDS = ("resume", "abandon", "escalate", "ask_steward", "dispatch", "restart_runner", "wait",
          "reconcile", "apply_answer", "merge", "no_action", "other")
-RULE_RE = re.compile(r"^[a-z_]+(\.[a-z_]+)?$")
+# up to two qualifier segments: the landed nw-conduct row `message.request.human_order` (SPEC-0382)
+RULE_RE = re.compile(r"^[a-z_]+(\.[a-z_]+){0,2}$")
 BY_RE = re.compile(r"^(conductor|queue|steward:[A-Za-z0-9_.-]+)$")
 _REL_RE = re.compile(r"^(\d+)([smhd])$")
 _REL_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
