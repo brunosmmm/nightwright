@@ -139,8 +139,7 @@ the index). After the change `remote_gates.py` has no `stash create` call outsid
       with an error message, exits 1 with output, or cannot start.
 - [x] `prepare()` on a stat-dirty, content-clean tree returns a header whose `commit` is HEAD
       and the run goes to the worker: no `worker_failed stage=bundle` and no fallback finding.
-      The coordinator's stash list and index entries (`git ls-files -s`) are unchanged
-      afterwards.
+      The coordinator's stash list and index file are unchanged afterwards.
 - [x] `prepare()` and `tree_under_test()` both call `commit_under_test`, and `remote_gates.py`
       has no other `stash create` call; on a stat-dirty tree they agree on the commit and its
       tree; `adoptable` returns `None` (not `False`) when `commit_under_test` raises.
@@ -148,12 +147,12 @@ the index). After the change `remote_gates.py` has no `stash create` call outsid
       `changed == ()`; a local run and a cut-short remote run carry `changed is None`.
 - [x] A remote run whose `done` frame lists changed paths still falls back to a local run
       without cooldown, as before.
-- [x] `gates.as_payload` includes `"changed": []` for a remote run and no `changed` key for a
-      local run; `nw queue gates <id> --worker <w> --json` output shows `"changed": []`.
-- Post-merge verification (a human, on the real worker box; not an agent-run criterion): with a
-  worker registered on the real worker box, a stat-dirty campaign worktree (a tracked file
-  touched, no content change) is gated on the worker (`worker: <w>` in the `--json` output),
-  not by a `stage=bundle` fallback. Commands and expected output are in "As shipped".
+- [ ] `gates.as_payload` includes `"changed": []` for a remote run and no `changed` key for a
+      local run; `nw queue gates <id> --worker <w> --json` output shows `"changed": []`; the
+      golden `tests/data/remote_gates_golden.json` contains it.
+- [ ] Real-box: with a worker registered on the real worker box, a stat-dirty campaign worktree
+      (a tracked file touched, no content change) is gated on the worker (`worker: <w>` in the
+      `--json` output), not by a `stage=bundle` fallback.
 
 ## Test plan
 
@@ -225,24 +224,28 @@ the index). After the change `remote_gates.py` has no `stash create` call outsid
 
 ### As shipped (2026-11-02)
 
-Built to Design (`remote_gates.commit_under_test`, `GateRun.changed`, `as_payload`). Human
-decisions applied on 2026-11-02, after review:
+Built to Design (`remote_gates.commit_under_test`, `GateRun.changed`, `as_payload`). The
+acceptance-criteria text above is as accepted and was not edited; the points below deviate
+from it as written. Human decisions applied on 2026-11-02, after review:
 
 - **Golden.** `tests/data/remote_gates_golden.json` records the **local** (no-worker) path
   (`_golden_run` sets `remote_gates=False`), so it correctly gains no `changed` key and is
   unchanged. The Design line that the golden is regenerated with `changed: []` does not apply
-  to it, and the golden clause is dropped from the `as_payload` acceptance criterion. A remote
+  to it, so the golden clause of the `as_payload` acceptance criterion is not met as written
+  (the criterion is left unticked for that reason; every other part of it is true and tested,
+  and there is no remote-path golden). A remote
   run's `changed: []` is asserted in `test_remote_run_records_changed` and the CLI `--json` test.
 - **Index.** `git stash create` itself rewrites the index's stat data on a stat-dirty tree
   (git's own refresh-and-write; the old `prepare` triggered the same write). `commit_under_test`
   adds no index write of its own: its `git diff --quiet HEAD --` runs with
   `GIT_OPTIONAL_LOCKS=0`. What holds, and what `test_commit_under_test_leaves_index_alone` and
   `test_stat_dirty_tree_runs_remotely` assert, is that the stash stack (`git stash list`) and the
-  index *entries* (`git ls-files -s`) are unchanged. The `prepare()` acceptance criterion reads
-  "index entries (`git ls-files -s`) unchanged" accordingly; the Design §1 / Alternatives
-  sentences that `stash create` "leaves ... the index alone" and the test-plan bullet's "bytes of
+  index *entries* (`git ls-files -s`) are unchanged. The `prepare()` acceptance criterion's
+  "index file unchanged" is therefore met as "index entries unchanged" (a deviation from its
+  text as written); the Design §1 / Alternatives sentences that `stash create` "leaves ... the index alone" and the test-plan bullet's "bytes of
   `.git/index`" overstate this and are corrected by this note.
-- **Real-box check is a post-merge verification step**, not an agent-run criterion: the worker
+- **The Real-box acceptance criterion stays unticked** and is a post-merge verification step for
+  a human, not something an agent can run: the worker
   box is disabled for this campaign and runs the old worker until a human reinstalls it, so no
   agent can run it. The spec stays `in-progress` until a human does the following on the
   coordinator, in a campaign worktree (`<w>` = the registered real worker):
@@ -269,7 +272,7 @@ Definition-of-done boxes stay unticked; the full suite is left to the queue's ga
 
 ## Definition of done
 
-- [x] Acceptance criteria all met.
+- [ ] Acceptance criteria all met.
 - [ ] Test plan executed; affected automated tests pass; the real-box manual steps performed
       and noted in the spec; the queue's close gate runs the full suite.
 - [ ] No regressions.
