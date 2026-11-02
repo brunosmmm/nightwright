@@ -265,6 +265,20 @@ an idempotent `enabled: false`.
   those five modules ran as "5 skipped" and `pytest --co` collected all 5470 tests with no
   error. With textual installed, those five modules plus `tests/test_worker_job_retry.py` gave
   158 passed (`-n 4`). The full suite is left to gating.
+- Second gate fix: the gate worker has no global git identity, so test repos failed `git commit`
+  with exit 128. `tests/conftest.py` gains an autouse `_git_identity` fixture that sets
+  `GIT_AUTHOR_*`/`GIT_COMMITTER_*` ("nightwright test" / "nightwright@test"). The identity env
+  overrode the repo's `user.*` config, which changed the shas in `test_remote_gates.py`'s golden
+  record, so that module's `_git` helper now drops those four variables. The run without `-x`
+  also showed a real SPEC-0342 miss: `note` and `worker_job_retried` are `hold` in
+  `quiet.RULES` but were missing from `skills/nw-conduct/SKILL.md`'s "Always held" list
+  (`test_skills.py::test_conduct_skill_quiet_rules_match_code`). Both are now listed. Under the
+  worker's conditions (`HOME`/`XDG_CONFIG_HOME` temp dirs, `GIT_CONFIG_GLOBAL=/dev/null`,
+  `GIT_CONFIG_NOSYSTEM=1`), drain_signal + adopt + worker_job_retry gave 67 passed (`-n 2`). The
+  affected selection is the full suite once conftest.py changes. At `-n 8` it gave 5591 passed,
+  7 skipped and 6 failed: the 4 above, now fixed (remote_gates + skills: 172 passed under the
+  same conditions), and 2 timing tests (`test_heartbeat_spans_many_ticks`,
+  `test_acquire_waits_for_whichever_pool_frees_first`) that pass when rerun alone.
 
 ### As shipped (2026-11-01)
 

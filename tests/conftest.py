@@ -57,3 +57,15 @@ def _no_ambient_herdr_env(monkeypatch):
     import os
     for k in [k for k in os.environ if k.startswith("HERDR_")]:
         monkeypatch.delenv(k)
+
+
+@pytest.fixture(autouse=True)
+def _git_identity(monkeypatch):
+    """Tests build throwaway repos and `git commit` in them; a host with no global
+    user.name/user.email (the remote gate worker) would fail with "Author identity unknown"
+    (exit 128). Give every test the same identity as test_agentic_e2e's ENV. Global config
+    itself is left alone: other tests may rely on it."""
+    for k, v in (("GIT_AUTHOR_NAME", "nightwright test"), ("GIT_AUTHOR_EMAIL", "nightwright@test"),
+                 ("GIT_COMMITTER_NAME", "nightwright test"),
+                 ("GIT_COMMITTER_EMAIL", "nightwright@test")):
+        monkeypatch.setenv(k, v)

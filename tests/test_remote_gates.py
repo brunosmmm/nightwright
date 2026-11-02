@@ -41,10 +41,16 @@ _DATES = {"GIT_AUTHOR_DATE": "2026-11-01T10:00:00+00:00",
           "GIT_COMMITTER_DATE": "2026-11-01T10:00:00+00:00"}
 
 
+_IDENTITY = ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")
+
+
 def _git(root, *args):
-    """git with fixed dates, so the fake repo's shas (and the golden record) are stable."""
+    """git with fixed dates, so the fake repo's shas (and the golden record) are stable. The
+    conftest identity env is dropped: the repo's own `user.*` config names the author, as the
+    golden record was made with."""
+    env = {k: v for k, v in os.environ.items() if k not in _IDENTITY}
     return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True,
-                          text=True, env={**os.environ, **_DATES}).stdout.strip()
+                          text=True, env={**env, **_DATES}).stdout.strip()
 
 
 def _commit(root, name, text):
