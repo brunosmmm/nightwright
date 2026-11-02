@@ -1123,9 +1123,18 @@ def test_adoptable_unknown_when_commit_under_test_fails(aw, remote, monkeypatch)
     """SPEC-0368: a real `stash create` failure is unknown (None: do not cancel), where it
     used to be read as HEAD's tree."""
     _detach_and_reset(aw, remote)
-    monkeypatch.setattr(RG.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(
-        argv, 128, "", "fatal: Unable to create index.lock"))
+    real_run, stash_calls = subprocess.run, []
+
+    def fail_stash_create(argv, *a, **kw):
+        # only `stash create` fails; rev-parse and the rest are real, so the pre-SPEC-0368
+        # fallback (read the failure as HEAD's tree) would have answered True/False here
+        if "stash" in argv and "create" in argv:
+            stash_calls.append(argv)
+            return subprocess.CompletedProcess(argv, 128, "", "fatal: Unable to create index.lock")
+        return real_run(argv, *a, **kw)
+    monkeypatch.setattr(RG.subprocess, "run", fail_stash_create)
     assert RG.adoptable(_rec(aw), aw.repo) is None
+    assert stash_calls
 
 
 def test_adoption_defers_on_a_git_failure(aw, remote, monkeypatch):
