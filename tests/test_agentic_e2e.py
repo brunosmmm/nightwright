@@ -81,8 +81,10 @@ def _git_env(monkeypatch):
 
 
 def _git(repo, *args):
+    # hermetic: the identity / no-global-config env is applied here, not only by the autouse
+    # fixture, so modules that import make_repo don't depend on the host's git config
     return subprocess.run(["git", "-C", str(repo), *args], check=True,
-                          capture_output=True, text=True).stdout.strip()
+                          capture_output=True, text=True, env={**os.environ, **ENV}).stdout.strip()
 
 
 def _write(repo, rel, text):
@@ -124,7 +126,8 @@ def make_repo(tmp_path, *, spec_id="SPEC-0001", policy="merge", lint_required="t
     _git(repo, "commit", "-q", "-m", "init")
     if with_origin:
         origin = tmp_path / "origin.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True,
+                       env={**os.environ, **ENV})
         _git(repo, "remote", "add", "origin", str(origin))
         _git(repo, "push", "-q", "-u", "origin", "main")
     return repo
