@@ -259,7 +259,8 @@ def draining_jobs(cfg) -> dict:
     from . import remote_jobs as RJ
     out: dict = {}
     for rec in RJ.live(cfg):
-        out[rec.get("worker")] = out.get(rec.get("worker"), 0) + 1
+        if isinstance(w := rec.get("worker"), str):
+            out[w] = out.get(w, 0) + 1
     return out
 
 
@@ -272,19 +273,37 @@ def _drained(cfg, name: str) -> bool:
         and not gate_slots.held(cfg, name)
 
 
+class _NoDrain(Exception):
+    """Raised inside `finish_drains`' update when the locked re-check finds nothing: no write."""
+
+
+def _check_job_records(cfg) -> None:
+    """Raise `ValueError` (`OSError` for an unreadable dir) when `remote-jobs/` holds a record
+    file `remote_jobs.read` cannot use (unreadable, unparseable, another `schema`): its job
+    may still run on a draining worker, and `live` would silently drop it."""
+    from . import remote_jobs as RJ
+    d = RJ.jobs_dir(cfg)
+    if not d.exists():
+        return
+    for name in sorted(os.listdir(d)):
+        if not name.endswith(".json"):
+            continue
+        p = d / name
+        if RJ.read(cfg, p.stem) is None and p.exists():     # a pruned file is no record
+            raise ValueError(f"unreadable job record {p}")
+
+
 def finish_drains(cfg) -> list[str]:
     """SPEC-0343, every queue tick: each draining worker that is idle (`_drained`) gets
     `enabled: false` and loses `draining`, in one `update`; returns their names. The check runs
     again inside the registry lock, so a concurrent `on` / `off` / `drain` cannot interleave;
-    the registry is written only when some draining worker looks idle. Raises `OSError` /
-    `ValueError` (nothing disabled) when the registry or the `remote-jobs` dir is unreadable."""
-    from . import remote_jobs as RJ
+    the registry is written only when that locked re-check disables something. Raises `OSError`
+    / `ValueError` (nothing disabled) when the registry, the `remote-jobs` dir or any record in
+    it is unreadable."""
     names = [r["name"] for r in read_strict(cfg) if r.get("draining") is True]
     if not names:
         return []
-    d = RJ.jobs_dir(cfg)
-    if d.exists():
-        os.listdir(d)                           # unreadable: raise rather than see no records
+    _check_job_records(cfg)
     if not any(_drained(cfg, n) for n in names):
         return []
 
@@ -295,8 +314,13 @@ def finish_drains(cfg) -> list[str]:
                 r["enabled"] = False
                 r.pop("draining", None)
                 done.append(r["name"])
+        if not done:
+            raise _NoDrain()                    # nothing changed: leave the file alone
         return done
-    return update(cfg, fn)
+    try:
+        return update(cfg, fn)
+    except _NoDrain:
+        return []
 
 
 def check(cfg, rec: dict) -> dict:

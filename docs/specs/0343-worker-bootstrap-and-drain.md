@@ -4,7 +4,7 @@ title: "Worker drain"
 status: done
 owner: user
 created: 2026-11-01
-updated: 2026-11-01
+updated: 2026-11-02
 source_idea: IDEA-559
 parent: SPEC-0310
 tags: [agentic, remote, workers, ops]
@@ -253,6 +253,33 @@ against bootstrap text that this spec no longer contains. Each is resolved in
   gave 93 passed, 2 skipped. With it installed, `test_tui_queue_model.py` gave 28 passed. The full
   suite is left to gating.
 
+### Test record (2026-11-02, review follow-ups)
+
+- `tests/test_workers_drain.py` now has 30 tests (11 new):
+  `test_unreadable_remote_jobs_dir_skips_the_pass` (mode-000 `remote-jobs/`),
+  `test_unusable_job_record_blocks_completion[truncated|foreign-schema|mode-000]`,
+  `test_draining_jobs_keys_are_worker_names`, `test_finish_drains_disables_in_one_update` (a spy
+  counts exactly one `workers.update` for two drained workers),
+  `test_locked_recheck_finding_nothing_does_not_write` (a slot taken between the pre-check and
+  the update: `workers.json` keeps its bytes and mtime),
+  `test_drain_changed_under_the_lock_writes_nothing[removed|disabled|drained]` (`_DrainNoop`),
+  and `test_forced_worker_waiter_drained_mid_wait_falls_back` (`run_all(..., worker="box")`
+  drained mid-wait: takes the slot, `worker_failed` stage `registry`, no ssh call, the gate runs
+  locally). 30 passed.
+- Mutation check: with the record check, the no-op raise and the `str` key filter removed,
+  6 of the new tests fail; with `skip` passed for `--worker` too, the forced-waiter test fails.
+  The code was then restored.
+- Regression guard (the SPEC-0337/0338/0341 worker, slot and remote-gate files plus the queue
+  drain, watchdog and quiet tests, `-n 4`): 620 passed, 1 failed. The failure was
+  `test_gate_slots.py::test_acquire_waits_for_whichever_pool_frees_first`, a timing test in
+  a file this loop did not touch. Run alone three times, it passed each time (0.7 s, 0.7 s,
+  6.0 s). We read it as load flakiness, not a regression. The full suite is left to gating.
+- **Manual steps 1–2 were not performed.** The DoD's "manual steps performed" box covers step 3
+  and the temp-`NW_DATA_DIR` CLI run above. Steps 1–2 need a real worker, and none can be
+  reached from the queue worktree. The loopback-worker tests
+  (`test_running_job_finishes_on_the_draining_worker`, `test_waiter_started_before_drain_skips_worker`,
+  `test_forced_worker_waiter_drained_mid_wait_falls_back`) stand in for them.
+
 ### As shipped (2026-11-01)
 
 - **`--worker` waiters get no `skip`.** `gates.run_all` passes the `skip` predicate only when no
@@ -270,6 +297,24 @@ against bootstrap text that this spec no longer contains. Each is resolved in
 - **`worker_drained`** is a queue event (`events.EVENT_TYPES`, data `{worker}`, `by: queue`) and
   is held by the conductor's quiet stream (`quiet.RULES`, mirrored in `nw-conduct`'s SKILL.md).
   `docs/WORKFLOW.md` gains a Drain paragraph.
+- **Unusable job records block completion (2026-11-02).** `finish_drains` also raises
+  `ValueError` (the pass is skipped and journaled) when `remote-jobs/` holds a `*.json` file
+  that `remote_jobs.read` drops: unreadable, unparseable, or another `schema`. Its job may
+  still run on a draining worker. Such a file stalls every drain until it is fixed or removed,
+  and each tick journals it as `worker_drain_skipped`. We chose that over disabling a worker
+  under a running job.
+- **No write when the locked re-check finds nothing.** If the re-check inside
+  `workers.update` disables nothing (a gate took the slot, or `on` ran), the update is aborted
+  and `workers.json` is left untouched.
+- **`worker_drained` is best-effort.** The registry write is the record of truth. Any failure
+  to append the event (not only `OSError`/`ValueError`) is journaled and the tick goes on. A
+  runner killed between the write and the append leaves a disabled worker with no event. We
+  accept that: the event is informational and held from the conductor.
+- **`draining_jobs`** counts only records whose `worker` is a string.
+- **Test git identity.** `tests/conftest.py` (loop-3 gate fix) gives every test a throwaway
+  global git identity, because the gate user has none. A code path that commits without
+  supplying an identity would therefore pass tests. Accepted as test-environment scope; a
+  follow-up idea proposes a guard test.
 - Helpers: `workers.placeable`, `workers.placeable_by_name`, `workers.draining_jobs` (the `k`
   counts), `workers.finish_drains`; `gate_slots.held(cfg, pool)`; `gate_slots.acquire(..., skip=)`.
 

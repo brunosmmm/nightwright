@@ -366,3 +366,147 @@ def test_adopted_job_finishes_on_the_draining_worker(aw, aremote):
     assert _raw(aw.cfg)["enabled"] is False and "draining" not in _raw(aw.cfg)
     (ev,) = _drained_events(aw.cfg)
     assert ev["data"]["worker"] == "box"
+
+
+# ---- review follow-ups: unreadable job records, the locked re-check, the drain race ----------
+
+def _journal_kinds(cfg):
+    p = Q.runner_journal_path(cfg)
+    return [json.loads(ln)["kind"] for ln in p.read_text().splitlines()] if p.exists() else []
+
+
+def _assert_skipped(cfg):
+    before = WK.path(cfg).read_bytes()
+    Q._finish_worker_drains(cfg)
+    assert "worker_drain_skipped" in _journal_kinds(cfg)
+    assert WK.path(cfg).read_bytes() == before
+    assert _raw(cfg)["draining"] is True and _raw(cfg)["enabled"] is True
+    assert not _drained_events(cfg)
+
+
+@pytest.mark.skipif(__import__("os").geteuid() == 0, reason="root reads a mode-000 dir")
+def test_unreadable_remote_jobs_dir_skips_the_pass(cfg, invoke):
+    _seed(cfg, _w("box"))
+    _job(cfg, 1)                                # live, on box; no slot held
+    assert invoke("drain", "box").exit_code == 0
+    d = RJ.jobs_dir(cfg)
+    d.chmod(0)
+    try:
+        _assert_skipped(cfg)
+    finally:
+        d.chmod(0o755)
+    Q._finish_worker_drains(cfg)                # readable again: the live record still blocks
+    assert _raw(cfg)["draining"] is True
+
+
+@pytest.mark.parametrize("bad", ["truncated", "foreign-schema", "mode-000"])
+def test_unusable_job_record_blocks_completion(cfg, invoke, bad):
+    """A record file `remote_jobs.read` drops (its job may still run on box) never reads as
+    "no record": the pass is skipped until the file is readable again."""
+    import os
+    if bad == "mode-000" and os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 file")
+    _seed(cfg, _w("box"))
+    assert invoke("drain", "box").exit_code == 0
+    p = RJ.path(cfg, _job(cfg, 1))
+    if bad == "truncated":
+        p.write_text(p.read_text()[:20])
+    elif bad == "foreign-schema":
+        p.write_text(json.dumps({**json.loads(p.read_text()), "schema": "nw.remote_job.v9"}))
+    else:
+        p.chmod(0)
+    try:
+        _assert_skipped(cfg)
+    finally:
+        p.chmod(0o644)
+    p.unlink()                                  # the record is gone: the drain completes
+    Q._finish_worker_drains(cfg)
+    assert _raw(cfg)["enabled"] is False and len(_drained_events(cfg)) == 1
+
+
+def test_draining_jobs_keys_are_worker_names(cfg):
+    _job(cfg, 1)
+    RJ.jobs_dir(cfg).joinpath("c-2-gate-001-a1.json").write_text(json.dumps(
+        {"schema": RJ.SCHEMA, "job_id": "c-2-gate-001-a1", "campaign": "c-2",
+         "state": "submitted", "seq_or_run": 1, "attempt": 1}))    # no worker field
+    assert len(RJ.live(cfg)) == 2
+    assert WK.draining_jobs(cfg) == {"box": 1}
+
+
+def test_finish_drains_disables_in_one_update(cfg, invoke, monkeypatch):
+    _seed(cfg, _w("box"), _w("two"), _w("three"))
+    assert invoke("drain", "box").exit_code == 0
+    assert invoke("drain", "two").exit_code == 0
+    calls = []
+    real = WK.update
+
+    def spy(cfg_, fn):
+        calls.append(fn)
+        return real(cfg_, fn)
+    monkeypatch.setattr(WK, "update", spy)
+    assert WK.finish_drains(cfg) == ["box", "two"]
+    assert len(calls) == 1
+    for n in ("box", "two"):
+        assert _raw(cfg, n)["enabled"] is False and "draining" not in _raw(cfg, n)
+    assert _raw(cfg, "three")["enabled"] is True
+
+
+def test_locked_recheck_finding_nothing_does_not_write(cfg, invoke, monkeypatch):
+    """A gate takes box's slot between the unlocked pre-check and the update: the re-check
+    inside the lock sees the hold, and workers.json is left byte-for-byte untouched."""
+    _seed(cfg, _w("box"))
+    assert invoke("drain", "box").exit_code == 0
+    before = WK.path(cfg).stat().st_mtime_ns, WK.path(cfg).read_bytes()
+    with ExitStack() as hold:
+        real = WK.update
+
+        def racing(cfg_, fn):
+            hold.enter_context(GS.acquire(cfg, "c-1", pools=[("box", 1)]))
+            return real(cfg_, fn)
+        monkeypatch.setattr(WK, "update", racing)
+        assert WK.finish_drains(cfg) == []
+        assert GS.held(cfg, "box")
+    assert (WK.path(cfg).stat().st_mtime_ns, WK.path(cfg).read_bytes()) == before
+    assert _raw(cfg)["draining"] is True
+
+
+@pytest.mark.parametrize("change", ["removed", "disabled", "drained"])
+def test_drain_changed_under_the_lock_writes_nothing(cfg, monkeypatch, change):
+    """`drain`'s first read is stale (box enabled, not draining); the locked re-check sees the
+    registry as it is now and writes nothing (`_DrainNoop`)."""
+    from nightwright.agentic import cli_workers as CW
+    now = {"removed": [_w("two")], "disabled": [_w("box", enabled=False)],
+           "drained": [_w("box", draining=True)]}[change]
+    _seed(cfg, *now)
+    before = WK.path(cfg).read_bytes()
+    monkeypatch.setattr(CW, "_load_or_fail", lambda cfg_: [_w("box")])
+    r = _invoker(cfg, monkeypatch)("drain", "box")
+    expect = {"removed": (2, "no worker named box"),
+              "disabled": (0, "box: already disabled; nothing to drain"),
+              "drained": (0, "box: already draining (0 jobs)")}[change]
+    assert (r.exit_code, expect[1] in r.output) == (expect[0], True)
+    assert WK.path(cfg).read_bytes() == before
+
+
+def test_forced_worker_waiter_drained_mid_wait_falls_back(world, remote, monkeypatch):
+    """`nw queue gates --worker box` has only box's pool, so it gets no `skip`. box is drained
+    while it waits; it takes the freed slot, the re-check refuses it before anything is sent,
+    and the gate runs locally (it never hangs)."""
+    ssh, marker = _logging_ssh(world, remote)
+    remote.register(ssh=ssh)
+    monkeypatch.setattr(GS, "POLL_S", 0.05)
+    out = {}
+    with ExitStack() as box_hold:
+        box_hold.enter_context(GS.acquire(world.cfg, "x-box", pools=[("box", 1)]))
+        t = threading.Thread(target=lambda: out.setdefault("run", G.run_all(
+            world.project, world.state, world.cfg, seq=1, worker="box")), daemon=True)
+        t.start()
+        assert until(lambda: GS.waiting(world.cfg, CID) is not None)
+        _set_draining(world.cfg)
+    join(t)
+    run = out["run"]
+    assert run.ok and run.worker is None
+    assert all(r.cwd == str(world.repo) for r in run.results)
+    (ev,) = world.ledger(["worker_failed"])
+    assert ev["stage"] == "registry" and ev["cooldown"] is False
+    assert not marker.exists()

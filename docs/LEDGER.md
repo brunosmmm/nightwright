@@ -579,7 +579,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0340](./specs/0340-worker-async-job-protocol.md) | Worker-side async job protocol: submit, attach, poll, cancel | feature | done | — | 2026-11-01 |
 | [SPEC-0341](./specs/0341-coordinator-re-attach-job-records-and-adoption.md) | Coordinator re-attach, job records and adoption after a restart | feature | done | — | 2026-11-01 |
 | [SPEC-0342](./specs/0342-lost-job-retry-across-workers-and-escalation.md) | Lost-job retry across workers and escalation | feature | done | — | 2026-11-02 |
-| [SPEC-0343](./specs/0343-worker-bootstrap-and-drain.md) | Worker drain | feature | done | — | 2026-11-01 |
+| [SPEC-0343](./specs/0343-worker-bootstrap-and-drain.md) | Worker drain | feature | done | — | 2026-11-02 |
 | [SPEC-0347](./specs/0347-queue-backlog-resolves-outbound-depends-on.md) | Queue backlog resolves outbound `depends_on` (PROJ-NNNN files, merged-campaign fallback) | feature | done | — | 2026-11-01 |
 | [SPEC-0349](./specs/0349-nw-doctor-install-health-check.md) | `nw doctor`: read-only install health check with `nw.doctor.v1` JSON | feature | done | — | 2026-11-01 |
 | [SPEC-0350](./specs/0350-per-gate-path-sensitivity.md) | Per-gate path sensitivity for the close re-gate | feature | done | M9: agentic workflow | 2026-11-01 |

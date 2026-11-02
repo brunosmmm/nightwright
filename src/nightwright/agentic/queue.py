@@ -7715,10 +7715,10 @@ def _finish_worker_drains(cfg) -> None:
     except (OSError, ValueError) as e:
         journal(cfg, "worker_drain_skipped", error=f"{type(e).__name__}: {e}")
         return
-    for name in drained:
-        try:
+    for name in drained:                        # the registry write is the truth; the event
+        try:                                    # only reports it, so no failure here undoes it
             E.append(cfg, "worker_drained", by="queue", data={"worker": name})
-        except (OSError, ValueError) as e:
+        except Exception as e:                  # noqa: BLE001 - journaled, the tick goes on
             journal(cfg, "worker_drained", worker=name, error=f"{type(e).__name__}: {e}")
 
 
