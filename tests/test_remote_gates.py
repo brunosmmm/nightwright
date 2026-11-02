@@ -1066,6 +1066,45 @@ def test_gates_the_worker_would_refuse_stay_local(world, remote, spy, invoke, na
     assert r.exit_code != 0 and "not eligible" in r.output
 
 
+def _reuse_tiers(world):
+    """SPEC-0376: the repo's own shape: a loop gate and a close gate that `reuse_from`s it."""
+    world.project["gates"] = [_gate("fast", "echo fast", when="loop"),
+                              _gate("full", "echo full; git rev-parse HEAD", when="close",
+                                    reuse_from="fast"),
+                              _gate("lint", "echo lint")]
+
+
+def test_a_close_tier_run_with_reuse_from_is_remote_eligible(world, remote, spy):
+    """SPEC-0376 (IDEA-782): the close tier's filtered gate list carries `reuse_from` without
+    its loop gate; the header drops the key, so the run is eligible and runs on the worker."""
+    from nightwright.agentic import project as P
+    from nightwright.agentic import remote_gates as RG
+    _reuse_tiers(world)
+    close_cfg = {**world.project, "gates": P.gates_for(world.project, "close")}
+    assert [g["name"] for g in close_cfg["gates"]] == ["full", "lint"]
+    assert RG.header_refusal(close_cfg, world.state, world.cfg, 1) is None
+    assert RG.pools_for(world.cfg, close_cfg, world.state, seq=1) is not None
+    run = G.run_all(world.project, world.state, world.cfg, seq=1, tier="close")
+    assert run.worker == "box" and run.ok
+    assert [r.name for r in run.results] == ["full", "lint"]
+    (seen,) = spy
+    assert all("reuse_from" not in g and "remote" not in g
+               for g in seen["header"]["payload"]["gates"])
+    assert not [f for f in world.ledger(["finding"]) if f["gate"] == RG.FINDING_GATE]
+
+
+def test_eligibility_is_re_evaluated_at_every_gate_start(world, remote):
+    """SPEC-0376: no verdict persists: a run refused once is eligible again as soon as the
+    cause is gone, though the one-per-campaign finding stays the only record."""
+    from nightwright.agentic import remote_gates as RG
+    bad = {**world.state, "repo": {**world.state["repo"], "base": "release/.hidden"}}
+    assert RG.pools_for(world.cfg, world.project, bad, seq=1) is None
+    assert RG.pools_for(world.cfg, world.project, world.state, seq=2) is not None
+    run = G.run_all(world.project, world.state, world.cfg, seq=2)
+    assert run.worker == "box"
+    assert len([f for f in world.ledger(["finding"]) if f["gate"] == RG.FINDING_GATE]) == 1
+
+
 def test_a_base_name_the_worker_would_refuse_stays_local(world, remote):
     from nightwright.agentic import remote_gates as RG
     assert RG.pools_for(world.cfg, world.project, world.state, seq=1) is not None

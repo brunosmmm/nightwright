@@ -600,6 +600,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0372](./specs/0372-queue-watch-idle-cpu-and-worker-gate-pool-strip.md) | queue watch: near-zero idle CPU, and a workers / gate-pool strip | feature | done | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0373](./specs/0373-gate-progress-percent.md) | Gate progress percent in queue watch and gate-slots | feature | done | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0374](./specs/0374-no-local-gate-overflow.md) | Gates never overflow to the local pool while a worker is placeable | feature | done | M9: agentic workflow | 2026-11-02 |
+| [SPEC-0376](./specs/0376-close-tier-remote-eligibility-reuse-from.md) | Close-tier gates with reuse_from stay remote-eligible (the job header drops reuse_from) | feature | done | M9: agentic workflow | 2026-11-02 |
 
 ## Superseded / rejected
 

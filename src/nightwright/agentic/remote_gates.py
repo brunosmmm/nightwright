@@ -47,6 +47,9 @@ REJECTED_GATE = "worker-rejected"
 _POLL_S = 0.2
 _CHUNK = 1 << 16
 _GATE_FIELDS = tuple(f.name for f in fields(G.GateResult))
+# gate keys the worker never sees (SPEC-0376): a tier-filtered list keeps `reuse_from` on a close
+# gate but not the loop gate it names, which `validate_header` (here and on the worker) refuses
+_COORDINATOR_ONLY = frozenset({"remote", "reuse_from"})
 
 
 class RemoteFailure(Exception):
@@ -339,12 +342,14 @@ def cut(worker: dict, project_cfg: dict, campaign_state: dict, cfg, job_id: str,
 
 def _header(project_cfg: dict, campaign_state: dict, cfg, seq: int, job_id: str, key: str,
             sha: str, base_sha: str, have: list, size: int) -> dict:
-    """The `nw.job.v1` header (SPEC-0336). The gate list drops the coordinator-only `remote`
-    key."""
+    """The `nw.job.v1` header (SPEC-0336). The gate list drops the coordinator-only keys
+    (`_COORDINATOR_ONLY`): `remote`, and `reuse_from` (SPEC-0376), whose reuse decision the
+    close made before dispatch and whose loop gate a close-tier list never carries."""
     from .events import settings as events_settings
     cid = campaign_state["id"]
     base_name = (campaign_state.get("repo") or {}).get("base") or "main"
-    gl = [{k: v for k, v in g.items() if k != "remote"} for g in project_cfg.get("gates") or []]
+    gl = [{k: v for k, v in g.items() if k not in _COORDINATOR_ONLY}
+          for g in project_cfg.get("gates") or []]
     spec_id = campaign_state.get("spec_id")
     return {"schema": W.JOB_SCHEMA, "kind": "gate", "job_id": job_id, "repo_key": key,
             "campaign": cid, "spec_id": spec_id if spec_id else "-", "commit": sha,
