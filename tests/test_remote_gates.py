@@ -39,8 +39,12 @@ def _short_runtime_dir(monkeypatch):
     shutil.rmtree(d, ignore_errors=True)
 
 
+# The identity is pinned too: conftest's autouse `_git_identity` exports its own, which would
+# otherwise override the `t <t@example.com>` World configures and change every sha.
 _DATES = {"GIT_AUTHOR_DATE": "2026-11-01T10:00:00+00:00",
-          "GIT_COMMITTER_DATE": "2026-11-01T10:00:00+00:00"}
+          "GIT_COMMITTER_DATE": "2026-11-01T10:00:00+00:00",
+          "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+          "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
 
 
 _IDENTITY = ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")

@@ -271,6 +271,10 @@ warning in `warnings` unchanged in shape.
   failed at collection. `tests/conftest.py` gains a `collect_ignore` for the five modules that import
   textual-backed tabs at top level when `textual` is not importable, and two `test_tui_queue_model.py`
   tests `importorskip("textual")`. Unrelated to this spec's code.
+- Gate fix (loop 3 triage): the `_git_identity` fixture's env identity changed the commit shas in
+  `tests/data/remote_gates_golden.json`; `tests/test_remote_gates.py` `_DATES` now pins the `t <t@example.com>`
+  identity, so the committed golden holds. `test_remote_gates.py`, `test_agentic_gates.py` and
+  `test_agentic_exit_paths.py`: 226 passed.
 
 ### As shipped
 
