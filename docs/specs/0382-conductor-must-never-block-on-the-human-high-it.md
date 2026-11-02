@@ -1,12 +1,12 @@
 ---
 id: SPEC-0382
-title: "Conductor never blocks on the human: steward-first human-decision route"
+title: "Conductor never blocks on the human: launch guard and hook backstop"
 status: proposed
 owner: user
 created: 2026-11-02
 kind: feature
 source_idea: IDEA-775
-tags: [agentic, conductor, steward]
+tags: [agentic, conductor]
 depends_on: [SPEC-0232, SPEC-0235, SPEC-0319]
 ---
 
@@ -21,209 +21,200 @@ the human answered:
 | 15:10:37 | 90 s | "Direct merge": checking whether a steward-relayed HUMAN ORDER was real |
 | 16:44:10 | 63 s | "IDEA-714 DoD": defer / run / split a real-box check, after a `parked triage_escalated` event |
 
-In both cases a steward for Meta-Tools **was armed** (it had mailed minutes earlier), so the existing
-steward route was available and skipped. Causes found in the investigation (plan:
-`/home/bruno/work/nw-plans/conductor-never-blocks.md`):
+In both cases a steward for Meta-Tools was armed, so the existing steward route was available and
+skipped. Causes found in the investigation (plan: `/home/bruno/work/nw-plans/conductor-never-blocks.md`):
 
-- Nothing forbids `AskUserQuestion` for the conductor. The `nw-conduct` skill's "never block" rule only
-  covers long commands. `launch.py` (`build_plan`, conductor launch) passes no `--disallowedTools
-  AskUserQuestion` and no `--permission-mode`, so the session inherits the user's auto mode, whose
-  classifier can also fall back to an interactive prompt (a third way to block; the session had 15
-  rejected tool calls).
-- `escalations._announce` (`src/nightwright/agentic/escalations.py`) mails only `human`, never the
-  owning project's steward, so a steward never sees the escalations for its project.
+- Nothing in code forbids `AskUserQuestion` for the conductor. `launch.py` (`build_plan`, conductor
+  launch) passes no `--disallowedTools AskUserQuestion` and no `--permission-mode`, so the session
+  inherits the user's auto mode, whose classifier can also fall back to an interactive prompt (a
+  third way to block; the session had 15 rejected tool calls).
 - The `gate_triager` and `conflict_resolver` personas say "what the human must decide"
-  (`personas/gate_triager.md:37`, `personas/conflict_resolver.md:95`). The conductor read the park
-  detail "The human must either (a) run ... or (b) waive" as "ask the human now".
-- The `nw-conduct` skill has no row for a steward relaying a human order, several rows say "tell the
-  human" / "unless told" / "wait for its `message`", and `nw-steward` lets a steward answer "escalate:
-  needs the human's decision", bouncing the question back to the conductor.
+  (`personas/gate_triager.md:37`, `personas/conflict_resolver.md:95`; the same phrase is the help
+  text of `nw queue escalate --question`, `cli_queue.py:2010`). The conductor read the park detail
+  "The human must either (a) run ... or (b) waive" as "ask the human now".
+- `escalations._announce` mails only `human`, never the owning project's steward (slice B, out of
+  scope here).
+
+**Already in the repo** (not part of this spec's edits): the `nw-conduct` rule "Never ask the human,
+never wait on the human" (`skills/nw-conduct/SKILL.md:33-39`), its `message.request.human_order`
+row (line 142), the "Never `AskUserQuestion`" line in the escalate convention (line 227), and the
+conductor-never-asks sentence in `nw-orient` (line 40). A grep of `nw-conduct` and `nw-orient` finds
+no "tell the human", "unless told" or "wait for the human" outside that rule. Still missing, and
+owned by slice B: a `human_decision_timeout` row in `nw-conduct` and step 4b in `nw-steward`.
 
 ## Goals / Non-goals
 
 **Goals**
-- The conductor never calls `AskUserQuestion`, never ends a turn on a question and never waits on the
-  human, enforced by launch flags and a hook, not only by prose.
-- A human-only decision about a project campaign reaches that project's steward first (the steward may
-  block; it serves one project), falling back to the existing asynchronous `human_decision` park.
-- A steward that stays silent is detected (`human_decision_timeout`) and never stalls other events.
-- Skill and persona text stops telling the conductor to ask or wait for the human.
+- The conductor never calls `AskUserQuestion`, enforced by launch flags and a hook, not only by prose.
+- The conductor launch no longer falls back to an interactive permission prompt (`dontAsk`), without
+  starving the conductor's sub-agents of the tools their normal work needs.
+- A conductor started by hand is covered by the same deny.
+- Persona and CLI help wording stops telling the triagers and the conductor that "the human must"
+  decide.
+- The already-landed skill wording stays true (guard test).
 
-**Non-goals**
-- Changing the escalation answer flow (`nw escalations answer`, SPEC-0235) or the escalation record
-  format beyond the added routing fields.
-- Changing what a steward may decide on its own beyond the `nw-steward` rules listed in Design.
-- Restricting the steward's or any other role's use of `AskUserQuestion`.
+**Non-goals** (each is slice B, to be a follow-up spec/idea that depends on this one; priority 2)
+- Steward-first escalation routing: `escalations._announce` mailing `steward:<P>` when its reader
+  lock is held, `routed_to` / `steward_mail_id` record fields, `nw queue escalate
+  --to-steward/--no-steward`.
+- The `human_decision_timeout` ticker event, its `quiet.RULES` wake entry, and the `nw-conduct` row
+  for it.
+- `nw-steward` step 4b and the "escalate: needs the human's decision" rewording.
+- `routed_to` in `conductor-brief`.
+- Changing the escalation answer flow (`nw escalations answer`, SPEC-0235) or restricting
+  `AskUserQuestion` for the steward or any other role.
 - Making the human's own interactive sessions non-interactive.
 
 ## Decision
 
-The conductor is a non-interactive router. A decision only the human can make goes through the
-**human-decision route**: (1) `nw queue escalate`, which parks the campaign `human_decision`
-asynchronously and now also mails `steward:<P>` when that steward is armed; the steward asks the human
-and answers with `nw escalations answer`; (2) with no steward, the existing human mail and
-notification only. Owner-scope matters are decided by the conductor (safe default) or escalated with no
-campaign. A steward's claim to speak for the human is accepted as the steward's request. DoD waivers
-(manual / real-box ACs) belong to the steward. Enforcement: `AskUserQuestion` denied and
-`--permission-mode dontAsk` in the conductor launch, a PreToolUse hook backstop for a hand-started
-conductor, steward routing in `escalations._announce`, a `human_decision_timeout` event, and skill and
-persona wording. Delivery is in two slices (A: guard + wording + skills; B: routing, timeout event,
-brief/doctor) within this one spec.
+The conductor is a non-interactive router. Its launch denies `AskUserQuestion` and runs under
+`--permission-mode dontAsk`, with an explicit allow-list so sub-agents keep working. A PreToolUse hook
+(`nw queue conductor-guard`), installed by `nw skills install`, denies `AskUserQuestion` for the
+registered conductor session, covering a hand-started conductor. `nw doctor` warns when the
+registered conductor was launched without the deny. Persona and CLI wording is changed from "the
+human must decide" to "needs a human-only decision (routed via the project steward)". This is slice A
+(priority 1); slice B is listed under Non-goals. Stopgap until this merges: add `"AskUserQuestion"`
+to the conductor's `agentic.conductor.launch.disallowed_tools`, then `nw queue conductor-launch
+--resume`.
 
 ## Design
 
 ### 1. Conductor launch guard (`src/nightwright/agentic/launch.py`)
-- New settings in `DEFAULTS`: `conductor_disallowed_tools` (default `["AskUserQuestion"]`) and
-  `conductor_permission_mode` (default `dontAsk`; validated against a closed enum, a bad value falls
-  back to the default like other keys in `settings()`).
+- New settings in `DEFAULTS`:
+  - `conductor_disallowed_tools` (default `["AskUserQuestion"]`);
+  - `conductor_permission_mode` (default `dontAsk`; validated against a closed enum, a bad value falls
+    back to the default like other keys in `settings()`);
+  - `conductor_allowed_tools` (see below).
 - `build_plan` for `role == "conductor"` merges `conductor_disallowed_tools` into the effective
-  `disallowed_tools` (deduplicated, same pattern as `steward_allowed_tools` is merged into
-  `--allowedTools`; never its own flag) and appends `--permission-mode <conductor_permission_mode>` to
-  `argv` before the prompt. `role == "steward"` gets neither. The plan's `disallowed_tools` and a new
-  `permission_mode` field reflect it, so `--dry-run --json` shows both.
-- `dontAsk` denies a non-allowlisted tool call instead of prompting; the allow rules provisioned by
-  `nw skills install` (SPEC-0320) keep the `nw` commands the conductor needs.
+  `disallowed_tools` and `conductor_allowed_tools` into `--allowedTools` (deduplicated, the same
+  pattern as `steward_allowed_tools`: merged, never its own flag) and appends `--permission-mode
+  <conductor_permission_mode>` to `argv` before the prompt. `role == "steward"` gets none of the three.
+  The plan's `disallowed_tools` and a new `permission_mode` field reflect it, so `--dry-run --json`
+  shows both.
+- `dontAsk` denies a non-allowlisted tool call instead of prompting. The rules provisioned by `nw
+  skills install` (`agent_permissions.ALLOW_RULES`, SPEC-0320) only allow `Bash(nw <group> *)`, and the
+  existing conductor `allowed_tools` default adds only the push rules and `gh pr create/edit/comment`.
+  The conductor's sub-agents (rebase conflicts in campaign worktrees, looking into stuck runs) run
+  under the parent's permission mode, so `dontAsk` applies to them too. The conductor launch therefore
+  also adds `conductor_allowed_tools`, default: `Read`, `Grep`, `Glob`, `Edit` and `Write` limited to
+  the worktrees directory (`.nw-worktrees`, as path-scoped rules), `Bash(git *)`, `Bash(uv run pytest
+  *)`, `Bash(ps *)`, `Bash(tail *)`. The existing push/merge denies in `disallowed_tools` still win
+  over `Bash(git *)`. If `conductor_permission_mode` is set to `default`, only the `AskUserQuestion`
+  deny and the hook apply (the allow additions are harmless).
 
 ### 2. Hook backstop for a hand-started conductor
-- New command `nw queue conductor-guard`: reads the PreToolUse hook JSON on stdin (or
-  `$CLAUDE_SESSION_ID`), and exits 2 with the message "conductor never asks the human: use
-  steward:<P> / nw queue escalate" when the session id is the registered conductor session
-  (`CC.sessions(cfg, "conductor")`); exits 0 for any other session, including when no conductor is
-  registered or the registry cannot be read (fail open, so it can never block a human's session).
+- New command `nw queue conductor-guard`: reads the PreToolUse hook JSON on stdin and takes
+  `session_id` from it (falling back to `$CLAUDE_CODE_SESSION_ID`). It exits 2 with the message
+  "conductor never asks the human: use steward:<P> / nw queue escalate" when that id is a registered
+  conductor session (`CC.sessions(cfg, "conductor")`); it exits 0 for any other session, including
+  when no conductor is registered or the registry cannot be read (fail open, so it can never block a
+  human's session).
+- Registration of a hand-started conductor: when `/nw-conduct` arms the Monitor on `nw queue events
+  --follow --for conductor`, the follower calls `conductor_cost.record_session(cfg, "conductor")`
+  (`events.py:1097`), which writes the session id from `$CLAUDE_CODE_SESSION_ID` to the registry
+  (`source: follower`). A session that needs registering before it arms, or after the fact, uses `nw
+  queue conductor-session add <session_id>` (`source: manual`, `cli_conductor.py`). Launched
+  conductors are registered by `conductor-launch` itself (`source: launch`, `launch.py:267`).
 - `nw skills install` (via `agent_permissions.install/sync`, `~/.claude/settings.json`) writes a
   PreToolUse hook entry with matcher `AskUserQuestion` running that command, idempotently (no duplicate
   on re-run; other hooks untouched).
 
-### 3. Escalation routing (`escalations._announce`)
-- When `rec["project"]` has an armed steward (the reader lock of `steward:<P>` is held, probed
-  non-blockingly with `events.reader_lock`), also `M.send(to="steward:<P>", kind="question",
-  needs_reply=True, campaign=..., text=_mail_text(rec))` after the human mail. The record stores
-  `steward_mail_id` and `routed_to` (`"steward:<P>"`, else absent / `"human"`).
-- The human mail and notification are kept (the human may answer from anywhere).
-- `nw queue escalate` gains `--to-steward/--no-steward` (default: auto as above).
+### 3. Persona and CLI wording
+`gate_triager.md:37`, `conflict_resolver.md:95` and the `nw queue escalate --question` help text
+(`cli_queue.py:2010`): "what the human must decide" becomes "what needs a human-only decision (routed
+via the project steward)". `review_triager.md` is checked and changed only if it carries the phrase
+(today it does not). Text only; triager behavior and output schema unchanged.
 
-### 4. `human_decision_timeout` event
-- New event type in `events.py`, produced by the same ticker as `park_undecided` (SPEC-0222): when a
-  `steward:<P>` mailbox question with `needs_reply` stays unanswered for
-  `agentic.steward_answer_timeout_s` (default 1800), emit exactly one `human_decision_timeout`
-  (idempotency key per mail id). A reply before the timeout emits none.
-- `quiet.RULES` maps it to `"wake"` (never held), and the `nw-conduct` skill's table gets a row.
-- If the question was an escalation, the campaign is already parked `human_decision`, so nothing else
-  waits and the event only says "stop expecting a steward reply". If the question was mailed without an
-  escalation (a `loop_exhausted` style row), the conductor responds with `nw queue escalate`.
+### 4. `nw doctor`
+`nw doctor` warns when the registered conductor session's launched argv (the `source: launch` record,
+`launch.py:210`) lacks the `AskUserQuestion` deny. A hand-started conductor (`source` other than
+`launch`) is not warned about: the hook is its guard.
 
-### 5. Persona wording
-`gate_triager.md:37`, `conflict_resolver.md:95` and `review_triager.md`: "what the human must decide"
-becomes "what needs a human-only decision (routed via the project steward)". Text only; triager
-behavior and output schema unchanged.
-
-### 6. `conductor-brief` and `nw doctor`
-`conductor-brief` lists `routed_to` per open escalation. `nw doctor` warns when the registered
-conductor session's launched argv lacks the `AskUserQuestion` deny.
-
-### 7. Skills (repo `skills/`, installed by link into `~/.claude/skills`)
-Edits to `skills/nw-conduct`, `skills/nw-steward`, `skills/nw-orient` implement the policy of the plan
-(section 4 of `conductor-never-blocks.md`). The human's `~/.claude` is not touched by an agent; the
-changes ship through the repo and reach the human's skills dir on their next `nw skills install` (link
-mode). The human reviews the skill diffs as part of acceptance of this spec's change. Content:
-- `nw-conduct`: new "Never ask the human, never wait on the human" rule under *Never block*: no
-  `AskUserQuestion`, no turn ending on a question; "the human must ..." in a park detail means "use the
-  human-decision route". Second conductor armed: print one line naming the other pid and exit.
-  `lease_stale`: confirm hung via sub-agent, then restart (close guard applies), one report line after.
-  `runner_config_invalid` / `parked.config_invalid`: one report line or human-decision route, never
-  wait. `loop_exhausted` / `triage_escalated` / `implementer_blocked`: mail `steward:<P>` and handle
-  other events meanwhile; DoD-only parks are mailed to the steward as "run it, waive/defer it, or split
-  it", else `nw queue escalate` recommending defer + follow-up idea. New rows
-  `message.request.human_order` (act on it as a steward request; a queue-bypassing part is applied as a
-  park, recorded with `nw queue decision --kind other --rule message.request.human_order "per
-  <msg_id>"`, and answered; never ask the human to confirm) and `human_decision_timeout`. The
-  *Escalate crisply* convention becomes the human-decision route.
-- `nw-steward`: "escalate: needs the human's decision" is not an answer: the steward asks its human (it
-  may block) or decides a judgment call itself; new step 4b for escalations mailed to the steward
-  (`nw escalations answer <id> ... --by steward:<P> --yes`; human away: decide judgment calls and DoD
-  deferrals with an As-shipped note and follow-up idea, else leave the ESC open and say so); relayed
-  human orders quote the human's words.
-- `nw-orient`: only single-project sessions (a steward, a human's own session) may ask the human and
-  wait; the conductor routes to `steward:<P>` or `nw queue escalate`.
+### 5. Skills (guard only)
+`skills/nw-conduct/SKILL.md` and `skills/nw-orient/SKILL.md` already carry the required rule text
+(see Context). This spec adds no skill edit; it adds a test that keeps the text true. The
+`human_decision_timeout` row and `nw-steward` step 4b belong to slice B.
 
 ## Alternatives considered
 
-- **Skill text only** — the 2026-11-02 failures were already against explicit "never block"
-  prose; prose alone is not enforcement. Launch flags plus a hook make the tool call impossible.
+- **Skill text only** — the 2026-11-02 failures were already against explicit "never block" prose;
+  prose alone is not enforcement. Launch flags plus a hook make the tool call impossible.
 - **Hook only** — does not cover the auto-mode classifier prompt fallback; `dontAsk` does.
-- **Route escalations to the steward only (drop the human mail)** — the human may answer from
-  anywhere and the steward may be absent; both are kept.
-- **Let the conductor verify steward-relayed human orders with the human** — that is the first block;
-  the steward is the human's channel for its project.
+- **`dontAsk` without an allow-list** — sub-agents would be refused `git rebase`, `Edit` and `ps`
+  instead of prompted, silently breaking the conductor's conflict and stuck-run handling.
+- **One spec for both slices** — ten acceptance criteria over about ten modules with different
+  priorities; slice A fixes the incident, slice B is a routing feature that depends on it.
 
 ## Acceptance criteria
 
 - [ ] AC1: `nw queue conductor-launch --dry-run --json` argv contains `--disallowedTools` with
-      `AskUserQuestion` and `--permission-mode dontAsk`; `nw queue steward-launch <P> --dry-run
-      --json` contains neither. Both settings are overridable via `agentic.conductor.launch`, and a
-      bad `conductor_permission_mode` falls back to `dontAsk`.
-- [ ] AC2: `nw queue conductor-guard` exits 2 with the guidance message for the registered conductor
-      session id and 0 for any other session id, no registered conductor, or an unreadable registry.
-- [ ] AC3: `nw skills install` writes the `AskUserQuestion` PreToolUse hook entry, a second run adds
-      no duplicate, and pre-existing unrelated hooks are preserved.
-- [ ] AC4: `nw queue escalate <cid>` on a project with an armed steward mails `steward:<P>`
-      (`needs_reply`, kind `question`) and `human`; the record carries `routed_to: steward:<P>` and
-      `steward_mail_id`. With no armed steward only `human` is mailed (existing behavior) and
-      `routed_to` is not `steward:<P>`. `--no-steward` suppresses the steward mail.
-- [ ] AC5: an unanswered `steward:<P>` `needs_reply` question older than
-      `agentic.steward_answer_timeout_s` emits exactly one `human_decision_timeout` (repeated ticks emit
-      no more); an answered one emits none; `quiet.RULES["human_decision_timeout"] == "wake"`.
-- [ ] AC6: `nw escalations answer <id> ... --by steward:<P>` still works for an escalation routed to
-      the steward (SPEC-0235 behavior unchanged).
-- [ ] AC7: the persona prompts `gate_triager`, `conflict_resolver` and `review_triager` no longer
-      contain "the human must" / "a human must decide"; their existing tests pass unchanged.
-- [ ] AC8: `skills/nw-conduct/SKILL.md` contains "Never call `AskUserQuestion`", the
-      `message.request.human_order` and `human_decision_timeout` rows, and none of "tell the human",
-      "unless told", "wait for the human"; `skills/nw-steward/SKILL.md` contains step 4b;
-      `skills/nw-orient/SKILL.md` contains the conductor-never-asks sentence. The quiet-stream
-      paragraph in the skill still matches `quiet.RULES` (existing comparison test).
-- [ ] AC9: `conductor-brief` shows `routed_to` per open escalation, and `nw doctor` warns when the
-      launched conductor argv lacks the `AskUserQuestion` deny.
-- [ ] AC10: against the real `claude` binary, a conductor launched with `nw queue conductor-launch`
-      in a scratch data dir and prompted to call `AskUserQuestion` has the call denied, and a
-      hand-started session registered as conductor is denied by the hook; results recorded in the
-      spec's As shipped section.
+      `AskUserQuestion` (the existing push/merge denies kept), `--permission-mode dontAsk`, and the
+      `conductor_allowed_tools` defaults in `--allowedTools`; `nw queue steward-launch <P> --dry-run
+      --json` contains none of these three additions. All three settings are overridable via
+      `agentic.conductor.launch`, and a bad `conductor_permission_mode` falls back to `dontAsk`.
+- [ ] AC2: `nw queue conductor-guard` reads `session_id` from the PreToolUse JSON on stdin and exits 2
+      with the guidance message for a registered conductor session id (whether registered by launch,
+      by the follower, or by `conductor-session add`), and 0 for any other session id, no registered
+      conductor, or an unreadable registry.
+- [ ] AC3: `nw skills install` writes the `AskUserQuestion` PreToolUse hook entry, a second run adds no
+      duplicate, and pre-existing unrelated hooks are preserved.
+- [ ] AC4: the `gate_triager` and `conflict_resolver` persona prompts and the `nw queue escalate
+      --question` help contain neither "the human must" nor "a human must decide"; `review_triager`
+      likewise; the existing persona tests pass unchanged.
+- [ ] AC5: `skills/nw-conduct/SKILL.md` contains "Never call `AskUserQuestion`" and the
+      `message.request.human_order` row, and none of "tell the human" or "unless told", nor an
+      instruction to wait for the human anywhere outside the *Never ask the human* rule (the assertion
+      excludes that paragraph, which itself says `never "wait for the human"`); `skills/nw-orient/
+      SKILL.md` contains the conductor-never-asks sentence. This test passes against the current
+      files. The quiet-stream paragraph in the skill still matches `quiet.RULES` (existing comparison
+      test).
+- [ ] AC6: `nw doctor` warns when the registered conductor session was launched (`source: launch`)
+      with an argv lacking the `AskUserQuestion` deny, and does not warn when the deny is present or
+      the conductor was not launched by `conductor-launch`.
+- [ ] AC7: against the real `claude` binary, (a) a conductor launched with `nw queue conductor-launch`
+      in a scratch data dir and prompted to call `AskUserQuestion` has the call denied, (b) a
+      sub-agent dispatched by that conductor can edit a file in a scratch worktree and run `git
+      status` without a denial, and (c) a plain `claude` session registered as conductor (by `nw
+      queue conductor-session add <session_id>`, or by arming `nw queue events --follow --for
+      conductor` inside it) with the hook installed is denied `AskUserQuestion` by the hook. Results
+      are recorded in the spec's As shipped section.
 
 ## Test plan
 
 - **Automated tests**
   - `tests/test_agentic_launch.py`: argv/plan per role (AC1), settings override and bad-value
-    fallback, steward plan lacks both.
-  - New `tests/test_agentic_conductor_guard.py`: exit codes for conductor / other / unregistered /
-    unreadable registry (AC2).
+    fallback, steward plan lacks all three additions, push/merge denies still present.
+  - New `tests/test_agentic_conductor_guard.py`: exit codes for conductor (registered via each of the
+    three sources) / other / unregistered / unreadable registry; session id read from stdin JSON
+    (AC2).
   - `tests/test_skills.py`: hook install and idempotency with pre-existing hooks (AC3); skill text
-    assertions (AC8), including the existing quiet-stream vs `quiet.RULES` comparison.
-  - `tests/test_agentic_escalations.py` and `tests/test_agentic_escalations_cli.py`: routing with a
-    held `steward:<P>` reader lock, no steward, `--no-steward`, record fields (AC4); steward `--by`
-    answer regression (AC6).
-  - New `tests/test_agentic_human_decision_timeout.py` (events/ticker): fires once past the timeout,
-    not before, not after a reply, the quiet rule is `wake` (AC5); waits via `tests/waits.py`, no
-    fixed sleeps.
-  - Persona tests: prompt text assertions (AC7); `conductor-brief` and `nw doctor` tests (AC9).
-- **Manual verification (real binary, AC10)**: in a scratch data dir run `nw queue conductor-launch`,
-  prompt the session "call AskUserQuestion", confirm the tool call is denied and no question reaches
-  the terminal. Start a plain `claude` session registered as conductor with the hook installed and
-  repeat; confirm the hook denies with the guard message. Record transcripts' outcome in As shipped.
+    assertions (AC5, paragraph excluded), including the existing quiet-stream vs `quiet.RULES`
+    comparison.
+  - Persona and CLI help tests: prompt text and `nw queue escalate --help` assertions (AC4).
+  - `tests/test_doctor.py` (or the existing doctor tests): warn / no warn cases (AC6).
+- **Manual verification (real binary, AC7)**, in a scratch data dir:
+  1. `nw queue conductor-launch`; prompt the session "call AskUserQuestion"; confirm the call is
+     denied and no question reaches the terminal.
+  2. In that conductor, ask it to dispatch a sub-agent that edits a file under a scratch worktree in
+     `.nw-worktrees` and runs `git status`; confirm no permission denial.
+  3. Install the hook (`nw skills install`), start a plain `claude` session, register it with `nw queue
+     conductor-session add <session_id>` (the id is in its transcript path / `$CLAUDE_CODE_SESSION_ID`),
+     prompt it to call `AskUserQuestion`, and confirm the hook denies with the guard message.
+  Record each outcome in As shipped.
 - **Regression guard**: affected tests (`python3 tools/affected_tests.py --run uv run pytest -q`),
-  `python3 tools/spec_lint.py`; steward launch, escalation answer and the other launch settings tests
-  must pass unchanged. Post-ship check on the live queue: the next DoD-only park reaches
-  `steward:<P>` and the conductor transcript contains no `AskUserQuestion` call.
+  `python3 tools/spec_lint.py`; steward launch and the other launch settings tests must pass
+  unchanged. Post-ship check on the live queue: after `nw queue conductor-launch --resume`, the
+  conductor transcript contains no `AskUserQuestion` call.
 
 ## Rollout / migration
 
-1. Slice A (priority 1): launch guard (Design 1), `conductor-guard` + hook install (2), persona wording
-   (5), skill text for `nw-conduct`/`nw-orient`. Stopgap meanwhile: add `"AskUserQuestion"` to the
-   conductor's `agentic.conductor.launch.disallowed_tools`, then `nw queue conductor-launch --resume`.
-2. Slice B: steward routing (3), timeout event (4), brief/doctor (6), with the `nw-steward` step 4b
-   landing together with routing so a routed question always has a documented receiver.
-3. The skills reach the human's `~/.claude/skills` through the link install; a `skills_changed`
-   `code_changed` event re-invokes `/nw-conduct`. Existing conductor sessions pick up the launch flags
-   only after `nw queue conductor-launch --resume`.
+1. Land the launch guard (Design 1), `conductor-guard` + hook install (2), wording (3), doctor (4) and
+   the skill guard test (5). Existing conductor sessions pick up the launch flags only after `nw queue
+   conductor-launch --resume`; the hook reaches the human's `~/.claude/settings.json` on their next
+   `nw skills install`.
+2. Slice B is captured as a follow-up idea/spec that depends on SPEC-0382; until then the conductor
+   routes human-only decisions with the existing `nw queue escalate` (asynchronous `human_decision`
+   park) and mail to `steward:<P>` by hand, as the landed `nw-conduct` rule says.
 
 ## Definition of done
 
@@ -235,5 +226,6 @@ mode). The human reviews the skill diffs as part of acceptance of this spec's ch
 
 ## Open questions
 
-None. Decided here: timeout default 1800 s; fail-open guard; both mails (steward and human) kept; one
-spec delivered in two slices.
+None. Decided here: fail-open guard; `dontAsk` with a conductor allow-list; hand-started conductors
+register through the follower (or `conductor-session add`); the spec is narrowed to slice A and
+slice B is a Non-goal follow-up.
