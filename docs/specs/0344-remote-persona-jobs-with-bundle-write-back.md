@@ -400,6 +400,69 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
   `uv run pytest -q tests/test_rich_output_guard.py tests/test_remote_personas.py`: 29
   passed. The full suite is left to gating.
 
+### As shipped (2026-11-02, review fixes)
+
+- **The persona slot outlives a detach.** A slot flock alone stopped bounding a worker once a
+  job outlived its runner (a stop or restart closed the fd, and an adopted `RemoteRunner`
+  held none). Now a fresh dispatch needs a free `persona-<n>.lock` **and**
+  `remote_personas.busy(cfg, w, n) < persona_slots`: `busy` counts the slots other runners
+  hold, plus the live `kind: persona` records of that worker that no slot holder is attached
+  to. A runner holding a slot is attached through `gate-slots/w-<W>/job-<job_id>.lock` (taken
+  once the record exists; removed when the record is no longer live). An adopted runner takes
+  a free slot when there is one (best effort, since the job runs anyway); without one, its
+  record keeps counting as loose. So a detached job, an adopted one, and one a crashed
+  coordinator left all keep counting against `persona_slots`. Probing a free lock briefly
+  takes it, so a concurrent dispatch can skip a slot and run locally. That costs a local run
+  and never overcommits the worker.
+- **Saved refs are pruned at close.** `remote_personas.prune_refs(repo, campaign)` deletes
+  `refs/nw/jobs/<campaign>-persona-*/`. `close` calls it at both close points (merge, and
+  pr/draft-pr), and `apply_abandon` calls it too. Other campaigns' refs stay.
+- **Smaller hardening.** `_attach` reads the frames already received before it acts on the
+  deadline, so an adopted job's ready `done` frame is not discarded as lost. A
+  `RemoteFailure` before the worker holds the job (the cut, the header, `submit`) appends
+  `worker_failed` and sets the worker's cooldown when the failure is the worker's fault, as a
+  gate fallback does. `remote_jobs.campaigns` also lists the campaigns that have
+  `<campaign>-persona-*` records, so an ended campaign's persona jobs are cancelled and
+  pruned with its gate jobs.
+- **Not done:** recording `writeback: applying` plus the bundle head before `write_back`, so a
+  crash *inside* a write-back would be recognised on re-adoption. That crash still makes the
+  re-adopted write-back fail with `head moved` and run the step locally (filed as a
+  follow-up).
+
+### Test record (2026-11-02, review fixes)
+
+- `uv run pytest -q -n 4 tests/test_remote_personas.py`: 39 passed. New cases:
+  - adoption through `queue._adopt` with a non-detachable `FakeRunner` coordinator. The job
+    is adopted, written back once (`add c` once, then the step's commit), `_do_persona` gets
+    `adopted`, and after `_apply` the `run.end` carries `worker: box`;
+  - `_adopt` skips an open run when no live persona record exists, or when the only one
+    belongs to another run;
+  - `remote_excluded` is gone from `state.json` after `_apply` on the step that follows a
+    failed write-back;
+  - a lost job (the worker's runner raises, so the job ends in `error`) is cancelled, counted
+    once in `worker-losses.json`, marked `lost` and run locally;
+  - a `submit` failure runs locally, with `worker_failed`, the worker's cooldown and the
+    record `local`;
+  - a cut failure runs locally with no record and no cooldown;
+  - `cancel_campaign` on a running job gives an interrupted run with the worktree untouched;
+  - a detached job, and then the adopted job, keep a 1-slot worker from taking another run,
+    and the worker is free again once the job ends;
+  - a live record with no slot holder counts (and `RJ.campaigns` sees persona records);
+  - end-to-end env: the worker re-sets `NW_WORKTREE` (its own `tree`), `NW_DATA_DIR` and
+    `TMPDIR`, and the verbatim keys pass;
+  - `request.json` comes back from the worker (its `cwd` is the worker's `tree`);
+  - a sequencer in progress keeps the run local;
+  - saved refs are pruned on abandon and by the close helper, and other campaigns' refs
+    stay.
+- Mutation check: disabling the `busy` check or restoring the old `if not detachable: return`
+  in `_adopt` fails the slot tests and the queue-adoption test.
+- Related modules, `uv run pytest -q -n 6` over `test_remote_personas.py`,
+  `test_remote_job_records.py`, `test_remote_gates.py`, `test_agentic_adopt.py`,
+  `test_rich_output_guard.py`, `test_worker_job_retry.py`, `test_worker_jobs.py` and
+  `test_agentic_runner.py`: 369 passed. `test_agentic_close.py`, `test_close.py`,
+  `test_agentic_close_inflight.py` and `test_agentic_idea_campaign.py`: 98 passed.
+- The full suite is left to gating.
+
 ## Rollout / migration
 
 Implementation sessions clock in and out on the linked idea (`nw idea clock-in IDEA-560` /

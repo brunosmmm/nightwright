@@ -30,6 +30,8 @@ DEFAULT_JOB_LEASE_S = 900.0         # `agentic.workers.job_lease_s` (SPEC-0340's
 DEFAULT_MAX_REMOTE_ATTEMPTS = 2     # `agentic.workers.max_remote_attempts` (SPEC-0342)
 # `{seq:03d}`: at least three digits, four from seq 1000 on
 _GATE_ID = re.compile(r"^(?P<cid>.+)-gate-(?P<seq>[0-9]{3,})-a(?P<attempt>[0-9]+)\Z")
+# SPEC-0344: `<campaign>-persona-<run_id>-a<attempt>`
+_PERSONA_ID = re.compile(r"^(?P<cid>.+)-persona-(?P<run>[0-9]{3,}-[^/]+)-a(?P<attempt>[0-9]+)\Z")
 
 
 def jobs_dir(cfg) -> Path:
@@ -157,11 +159,13 @@ def _all(cfg, campaign: str | None = None) -> list[dict]:
 
 
 def campaigns(cfg) -> set[str]:
-    """The campaigns that have gate job records, read from the file names (nothing parsed)."""
+    """The campaigns that have gate or persona (SPEC-0344) job records, read from the file
+    names (nothing parsed)."""
     d = jobs_dir(cfg)
     if not d.is_dir():
         return set()
-    return {m.group("cid") for p in d.glob("*.json") if (m := _GATE_ID.match(p.stem))}
+    return {m.group("cid") for p in d.glob("*.json")
+            if (m := _GATE_ID.match(p.stem) or _PERSONA_ID.match(p.stem))}
 
 
 def prune(cfg, campaign: str, keep=()) -> list[str]:

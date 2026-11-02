@@ -7699,6 +7699,7 @@ def apply_abandon(cfg, plan: dict) -> dict:
                 events.append(("finding", {"persona": "human", "severity": "minor",
                                            "gate": "cleanup", "title": "worktree removal failed",
                                            "detail": e.tail, "files": []}))
+        RPS.prune_refs((st.get("repo") or {}).get("root"), cid)    # SPEC-0344: saved refs
         _drop_decision_request(cfg, st)
         st["park"] = None
         st.pop("waiting", None)

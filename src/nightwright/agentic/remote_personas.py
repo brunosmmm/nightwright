@@ -223,21 +223,66 @@ def ineligible(state: dict, step_kind: str | None, req) -> str | None:
     return None
 
 
-def acquire_slot(cfg, w: dict) -> int | None:
-    """A free persona slot of `w` (`gate-slots/w-<W>/persona-<n>.lock`, flocked): its fd, or
-    None when every slot is held."""
+def _slots_dir(cfg, w: dict) -> Path:
     from . import gate_slots as GS
-    d = GS.slots_dir(cfg) / f"w-{w['name']}"
+    return GS.slots_dir(cfg) / f"w-{w['name']}"
+
+
+def _try_lock(path: Path, *, create: bool = True, block: bool = False) -> int | None:
+    """An flocked fd on `path`, else None (held by another fd, or absent and not `create`)."""
+    try:
+        fd = os.open(path, os.O_RDWR | (os.O_CREAT if create else 0), 0o644)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if block else fcntl.LOCK_NB))
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _held(path: Path) -> bool:
+    """Someone holds the flock on `path` (an absent file is not held)."""
+    if not path.exists():
+        return False
+    fd = _try_lock(path, create=False)
+    if fd is None:
+        return path.exists()
+    os.close(fd)
+    return False
+
+
+def job_lock_path(cfg, w: dict, job_id: str) -> Path:
+    """Held by the runner attached to `job_id` while it also holds a persona slot."""
+    return _slots_dir(cfg, w) / f"job-{job_id}.lock"
+
+
+def acquire_slot(cfg, w: dict) -> tuple[int, int] | None:
+    """A free persona slot of `w` (`gate-slots/w-<W>/persona-<n>.lock`, flocked): `(fd, n)`,
+    or None when every slot is held."""
+    d = _slots_dir(cfg, w)
     d.mkdir(parents=True, exist_ok=True)
     for n in range(persona_slots(w)):
-        fd = os.open(d / f"persona-{n}.lock", os.O_RDWR | os.O_CREAT, 0o644)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            os.close(fd)
-            continue
-        return fd
+        fd = _try_lock(d / f"persona-{n}.lock")
+        if fd is not None:
+            return fd, n
     return None
+
+
+def busy(cfg, w: dict, mine: int | None = None) -> int:
+    """The persona jobs `w` runs or is about to run, besides the caller's slot `mine`: the
+    slots other runners hold (an attached job, or one about to be submitted), plus the live
+    persona job records nobody holding a slot is attached to (a job left detached by a stop or
+    a crash, adopted without a free slot). A slot alone stops being a bound once a job outlives
+    its runner; the live records keep counting it."""
+    d = _slots_dir(cfg, w)
+    held = sum(1 for n in range(persona_slots(w))
+               if n != mine and _held(d / f"persona-{n}.lock"))
+    loose = sum(1 for rec in RJ.live(cfg)
+                if rec.get("kind") == KIND and rec.get("worker") == w["name"]
+                and not _held(job_lock_path(cfg, w, rec["job_id"])))
+    return held + loose
 
 
 def live_record(cfg, campaign: str, run_id: str) -> dict | None:
@@ -264,14 +309,21 @@ def dispatch(cfg, state: dict, step_kind: str | None, req, *, adopted: bool = Fa
         w = next((x for x in WK.load(cfg) if x["name"] == rec.get("worker")), None)
         if w is None:
             w = WK.normalize(cfg, {"name": rec.get("worker"), "ssh": "-"})
-        return R.RemoteRunner(cfg, state, w, local=local, record=rec)
+        got = acquire_slot(cfg, w)              # best effort: the job runs on the worker anyway
+        return R.RemoteRunner(cfg, state, w, local=local, record=rec,
+                              slot=got[0] if got else None)
     workers = persona_workers(cfg, state)
     if not workers or ineligible(state, step_kind, req) is not None:
         return None
     for w in workers:
-        fd = acquire_slot(cfg, w)
-        if fd is not None:
-            return R.RemoteRunner(cfg, state, w, local=local, slot=fd)
+        got = acquire_slot(cfg, w)
+        if got is None:
+            continue
+        fd, n = got
+        if busy(cfg, w, n) >= persona_slots(w):    # a detached or slot-less adopted job
+            os.close(fd)
+            continue
+        return R.RemoteRunner(cfg, state, w, local=local, slot=fd)
     return None
 
 
@@ -300,14 +352,26 @@ def _header(cfg, w: dict, state: dict, req, job_id: str, bundle: Path) -> dict:
 def run(rr: R.RemoteRunner, req, hooks=None):
     try:
         if rr.record is not None:
+            _hold_job(rr, rr.record["job_id"])
             if hooks:
                 hooks.spawned()
             return _follow(rr, req, hooks, rr.record)
         return _fresh(rr, req, hooks)
     finally:
-        if rr.slot is not None:
-            os.close(rr.slot)
-            rr.slot = None
+        for name in ("job_lock", "slot"):
+            fd = getattr(rr, name)
+            if fd is not None:
+                os.close(fd)
+                setattr(rr, name, None)
+        if rr.job_id is not None and (RJ.read(rr.cfg, rr.job_id) or {}).get("state") not in RJ.LIVE:
+            job_lock_path(rr.cfg, rr.worker, rr.job_id).unlink(missing_ok=True)
+
+
+def _hold_job(rr: R.RemoteRunner, job_id: str) -> None:
+    """Mark the job attached to a slot holder (`busy` then counts it by the slot alone)."""
+    rr.job_id = job_id
+    if rr.slot is not None and rr.job_lock is None:
+        rr.job_lock = _try_lock(job_lock_path(rr.cfg, rr.worker, job_id), block=True)
 
 
 def _local(rr: R.RemoteRunner, req, hooks):
@@ -331,7 +395,10 @@ def _fresh(rr: R.RemoteRunner, req, hooks):
             WK.ensure_record_ssh_dir(cfg, w)
             base_head = RG._git(wt, "rev-parse", "HEAD")
             header = _header(cfg, w, state, req, job_id, bundle)
-        except (RG.RemoteFailure, W.WorkerError, R.NotRemotable, OSError, ValueError):
+        except RG.RemoteFailure as f:
+            _failed(cfg, cid, w, job_id, f)
+            return _local(rr, req, hooks)
+        except (W.WorkerError, R.NotRemotable, OSError, ValueError):
             return _local(rr, req, hooks)
         now = time.time()
         RJ.create(cfg, job_id=job_id, campaign=cid, worker=w["name"], attempt=1, seq=0,
@@ -340,9 +407,11 @@ def _fresh(rr: R.RemoteRunner, req, hooks):
         rec = RJ.update(cfg, job_id, run_id=run_id, persona=req.persona, base_head=base_head,
                         read_only=req.read_only, started_at=store.now_iso(),
                         step={"state": state.get("state")})
+        _hold_job(rr, job_id)
         try:
             RG._submit(w, header, bundle, cfg)
-        except RG.RemoteFailure:
+        except RG.RemoteFailure as f:
+            _failed(cfg, cid, w, job_id, f)
             RG._cancel(w, job_id)
             RJ.update(cfg, job_id, state="local")
             return _local(rr, req, hooks)
@@ -350,6 +419,17 @@ def _fresh(rr: R.RemoteRunner, req, hooks):
     if hooks:
         hooks.spawned()
     return _follow(rr, req, hooks, rec)
+
+
+def _failed(cfg, cid, w: dict, job_id: str, f) -> None:
+    """A failure before the worker held the job: `worker_failed`, and the worker's cooldown
+    when the failure is its own, as a gate run's fallback records it."""
+    from . import remote_gates as RG
+    store.append_event(cfg, cid, "worker_failed",
+                       {"worker": w["name"], "stage": f.stage, "error": f.error[-2000:],
+                        "job_id": job_id, "cooldown": f.cooldown}, by="personas")
+    if f.cooldown:
+        RG.set_cooldown(cfg, w["name"])
 
 
 def _reader(stream, lines) -> None:
@@ -379,11 +459,11 @@ def _attach(rr: R.RemoteRunner, req, hooks, job: dict):
                 return "detached", None
             if _cancelled(rr.cfg, job["id"]):
                 return "lost", "cancelled"
-            if time.time() > job["deadline"]:
-                return "lost", "deadline"
             try:
                 line = lines.get(timeout=_POLL_S)
             except _queue.Empty:
+                if time.time() > job["deadline"]:    # frames already read come first
+                    return "lost", "deadline"
                 continue
             if line is None or not line.endswith(b"\n"):
                 return "dropped", None
@@ -555,6 +635,20 @@ def _worktree_clean(worktree) -> bool:
 def _refs_of(worktree, job_id: str) -> list[str]:
     p = _git_out(worktree, "for-each-ref", "--format=%(refname)", f"{JOBS_REFS}{job_id}/")
     return [ln for ln in p.stdout.splitlines() if ln.strip()]
+
+
+def prune_refs(repo, campaign: str) -> list[str]:
+    """Delete the campaign's saved write-back refs (`refs/nw/jobs/<campaign>-persona-*/`):
+    Write-back step 5, when the campaign closes. Returns the refs deleted."""
+    if not repo or not Path(repo).is_dir():
+        return []
+    prefix = f"{JOBS_REFS}{campaign}-persona-"
+    p = _git_out(repo, "for-each-ref", "--format=%(refname)", JOBS_REFS)
+    out = []
+    for ref in (ln.strip() for ln in p.stdout.splitlines()):
+        if ref.startswith(prefix) and _git_out(repo, "update-ref", "-d", ref).returncode == 0:
+            out.append(ref)
+    return out
 
 
 def write_back(cfg, worktree, job_id: str, base_head: str, bundle: dict) -> tuple:

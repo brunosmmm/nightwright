@@ -162,6 +162,9 @@ def test_read_only_reviewer_same_verdict_files_and_progress(tmp_path):
         assert (rd / name).is_file(), name
     ra = json.loads((rd / "request.json").read_text())
     la = json.loads((ld / "request.json").read_text())
+    # the worker's own request.json came back: its cwd is the worker's checkout
+    assert ra["cwd"] != str(remote_w.repo) and Path(ra["cwd"]).name == "tree"
+    assert la["cwd"] == str(local_w.repo)
     assert _norm_request(ra, None) == _norm_request(la, None)
     prog = json.loads((rd / "progress.json").read_text())
     assert set(prog) == {"ts", "transcript_bytes", "last_line_ts"}
@@ -190,7 +193,7 @@ def _failure_case(tmp_path, monkeypatch, hook, worker_entries=WRITER, clean_stub
     st = S.read_state(w.cfg, CID)
     res = Q._do_persona(ctx, st, Q.Step("implement", persona="implementer"), "001-implementer",
                         req, 1.0)
-    return w, base, res, st
+    return w, base, res, st, ctx
 
 
 def _check_failure(w, res, st, reason):
@@ -223,20 +226,20 @@ def test_write_back_failure_head_moved(tmp_path, monkeypatch):
 
     def hook(w, bundle):
         moved["sha"] = __import__("test_remote_gates")._commit(w.repo, "x.txt", "x\n")
-    w, base, res, st = _failure_case(tmp_path, monkeypatch, hook)
+    w, base, res, st, _ctx_ = _failure_case(tmp_path, monkeypatch, hook)
     _check_failure(w, res, st, "head moved")
     assert _local_saw(w) == (moved["sha"], "")                  # untouched
 
 
 def test_write_back_failure_dirty_worktree(tmp_path, monkeypatch):
-    w, base, res, st = _failure_case(
+    w, base, res, st, _ctx_ = _failure_case(
         tmp_path, monkeypatch, lambda w, b: (w.repo / "late.txt").write_text("late\n"))
     _check_failure(w, res, st, "worktree dirty")
     assert _local_saw(w) == (base, "?? late.txt")
 
 
 def test_write_back_failure_stash_conflict_rolls_back(tmp_path, monkeypatch):
-    w, base, res, st = _failure_case(
+    w, base, res, st, _ctx_ = _failure_case(
         tmp_path, monkeypatch, lambda w, b: (w.repo / "a.txt").write_text("human edit\n"),
         clean_stub=True)
     rec = _check_failure(w, res, st, "stash conflict")
@@ -254,15 +257,15 @@ def test_write_back_failure_corrupt_bundle(tmp_path, monkeypatch):
 
     def hook(w, bundle):
         bundle["bundle_b64"] = base64.b64encode(b"not a bundle").decode()
-    w, base, res, st = _failure_case(tmp_path, monkeypatch, hook)
+    w, base, res, st, _ctx_ = _failure_case(tmp_path, monkeypatch, hook)
     _check_failure(w, res, st, "corrupt bundle")
     assert _local_saw(w) == (base, "")
 
 
 # ---- restart / adoption ----------------------------------------------------------------------
 
-def _detached_job(tmp_path):
-    entries = [dict(WRITER[0], sleep_s=1.5)]
+def _detached_job(tmp_path, sleep_s=1.5):
+    entries = [dict(WRITER[0], sleep_s=sleep_s)]
     script = _write_script(tmp_path / "writer.json", entries)
     local = _write_script(tmp_path / "local.json", [])
     w = _world(tmp_path)
@@ -336,7 +339,8 @@ def test_eligible_baseline(ew):
 
 
 @pytest.mark.parametrize("case", ["add_dir_outside", "tool_outside", "untracked", "modified",
-                                  "conflict_resolver", "rebase", "excluded"])
+                                  "conflict_resolver", "rebase", "sequencer",
+                                  "excluded"])
 def test_ineligible_runs_stay_local(ew, tmp_path, case):
     req, step, state = _req(ew), "implement", None
     if case == "add_dir_outside":
@@ -351,6 +355,8 @@ def test_ineligible_runs_stay_local(ew, tmp_path, case):
         req, step = _req(ew, persona="conflict_resolver"), "resolve"
     elif case == "rebase":
         (ew.repo / ".git" / "rebase-merge").mkdir()
+    elif case == "sequencer":
+        (ew.repo / ".git" / "sequencer").mkdir()
     elif case == "excluded":
         state = dict(S.read_state(ew.cfg, CID), remote_excluded=["box"])
     assert _dispatch(ew, req, step, state) is None
@@ -480,3 +486,229 @@ def test_ssh_grammar_allows_claude_check():
     assert W.check_ssh_command("nw worker claude-check --auth") == ["claude-check", "--auth"]
     with pytest.raises(ValueError):
         W.check_ssh_command("nw worker claude-check --other")
+
+
+# ---- adoption through the queue (queue._adopt) -----------------------------------------------
+
+def _queue_adopt(w, local):
+    """A new coordinator (non-detachable `FakeRunner`) runs its first-tick adoption."""
+    ctx = _ctx(w, local)
+    pool, report = Q.StepPool(), Q.TickReport()
+    Q._adopt(w.cfg, ctx, pool, report)
+    return ctx, pool, report
+
+
+def test_queue_adopt_reattaches_a_live_persona_job_under_a_local_runner(tmp_path, monkeypatch):
+    w, _old, req, job = _detached_job(tmp_path)
+    seen = []
+    real = Q._do_persona
+
+    def spy(*a):
+        seen.append(a[-1])                                      # `adopted`
+        return real(*a)
+    monkeypatch.setattr(Q, "_do_persona", spy)
+    base = _git(w.repo, "rev-parse", "HEAD")
+    ctx, pool, report = _queue_adopt(w, _write_script(tmp_path / "local2.json", []))
+    try:
+        assert [r["action"] for r in report.started] == ["adopt"]
+        assert report.started[0]["run_ids"] == ["001-implementer"]
+        step, fut, _hooks = pool.flights[CID].tasks[0]
+        res = fut.result(timeout=60)
+    finally:
+        pool.shutdown()
+    assert res.run_result.worker == "box" and res.commit_sha
+    assert seen == [{"exited_before_start": False}]             # committed as adopted
+    log = _git(w.repo, "log", "--format=%s", f"{base}..HEAD").splitlines()
+    assert log == [res.commit_message.splitlines()[0], "add c"]  # written back once
+    assert RJ.read(w.cfg, job) is None
+    snap = pool.flights[CID].state
+    Q._apply(ctx, snap, res)
+    end, = w.ledger(["run.end"])
+    assert end["run_id"] == "001-implementer" and end["worker"] == "box"
+
+
+def test_queue_adopt_skips_open_runs_without_a_live_persona_record(tmp_path):
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "s.json", WRITER))
+    _start(w, _req(w))                                          # an open run, no job record
+    local = _write_script(tmp_path / "local.json", [])
+    ctx, pool, report = _queue_adopt(w, local)                  # no live record at all
+    assert not pool.flights and not report.started
+    RJ.create(w.cfg, job_id=RPS.job_id_for(CID, "009-implementer"), campaign=CID, worker="box",
+              attempt=1, seq=0, submitted_at=0.0, kind=RPS.KIND, commit="a" * 40,
+              head="a" * 40, deadline_at=9e9)
+    RJ.update(w.cfg, RPS.job_id_for(CID, "009-implementer"), run_id="009-implementer")
+    ctx, pool, report = _queue_adopt(w, local)                  # a live record, another run
+    assert not pool.flights and not report.started
+    assert not w.ledger(["run.end"])                            # nor closed as stale
+
+
+# ---- remote_excluded clears when the step completes ------------------------------------------
+
+def test_remote_excluded_is_cleared_when_the_step_completes(tmp_path, monkeypatch):
+    w, base, res, st, ctx = _failure_case(
+        tmp_path, monkeypatch, lambda w, b: (w.repo / "late.txt").write_text("late\n"))
+    assert S.read_state(w.cfg, CID)["remote_excluded"] == ["box"]
+    Q._apply(ctx, st, res)
+    assert "remote_excluded" not in S.read_state(w.cfg, CID)
+
+
+# ---- lost job, pre-submit fallback, cancel ---------------------------------------------------
+
+LOCAL_OK = [{"verdict": VERDICT, "cost_usd": 0.0}]
+
+
+def _rr(w, req):
+    rr = RPS.dispatch(w.cfg, S.read_state(w.cfg, CID), "implement", req,
+                      local=R.FakeRunner(_write_script(w.tmp / "local-ok.json", LOCAL_OK)))
+    assert isinstance(rr, R.RemoteRunner)
+    return rr
+
+
+def test_lost_job_is_cancelled_counted_and_runs_locally(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_gates as RG
+    # the worker's FakeRunner raises (persona mismatch): the job ends in `error`
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "s.json", [dict(WRITER[0], persona="reviewer")]))
+    cancels = []
+    real = RG._cancel
+    monkeypatch.setattr(RG, "_cancel", lambda wk, jid: (cancels.append(jid), real(wk, jid)))
+    req = _req(w)
+    got = _rr(w, req).run(req)
+    job = RPS.job_id_for(CID, "001-implementer")
+    assert got.worker is None and got.verdict == VERDICT        # the local runner's run
+    rec = RJ.read(w.cfg, job)
+    assert rec["state"] == "lost" and rec["lost_reason"].startswith("error")
+    assert cancels == [job]
+    losses = json.loads(WK.losses_path(w.cfg).read_text())["workers"]["box"]
+    assert len(losses["losses"]) == 1 and losses["recent"][0]["job_id"] == job
+    assert not (w.repo / "c.txt").exists()                      # nothing written back
+
+
+def test_submit_failure_runs_locally_at_once_with_cooldown(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_gates as RG
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "s.json", WRITER))
+
+    def boom(*a, **k):
+        raise RG.RemoteFailure("upload", "link dropped")
+    monkeypatch.setattr(RG, "_submit", boom)
+    req = _req(w)
+    got = _rr(w, req).run(req)
+    assert got.worker is None and got.verdict == VERDICT
+    assert RJ.read(w.cfg, RPS.job_id_for(CID, "001-implementer"))["state"] == "local"
+    failed, = w.ledger(["worker_failed"])
+    assert failed["worker"] == "box" and failed["stage"] == "upload"
+    assert WK.in_cooldown(WK.load(w.cfg)[0])
+
+
+def test_cut_failure_runs_locally_without_a_record(tmp_path, monkeypatch):
+    from nightwright.agentic import remote_gates as RG
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "s.json", WRITER))
+
+    def boom(*a, **k):
+        raise RG.RemoteFailure("bundle", "git bundle failed", cooldown=False)
+    monkeypatch.setattr(RG, "cut", boom)
+    req = _req(w)
+    got = _rr(w, req).run(req)
+    assert got.worker is None and got.verdict == VERDICT
+    assert RJ.read(w.cfg, RPS.job_id_for(CID, "001-implementer")) is None
+    assert not WK.in_cooldown(WK.load(w.cfg)[0])                # not the worker's fault
+
+
+def test_cancelled_job_ends_as_an_interrupted_run(tmp_path):
+    from nightwright.agentic import remote_gates as RG
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "s.json", [dict(WRITER[0], sleep_s=5)]))
+    req = _req(w)
+    rr = _rr(w, req)
+    out = {}
+    t = threading.Thread(target=lambda: out.update(res=rr.run(req)))
+    t.start()
+    job = RPS.job_id_for(CID, "001-implementer")
+    until(lambda: (RJ.read(w.cfg, job) or {}).get("accepted_at"))
+    assert RG.cancel_campaign(w.cfg, CID) == [job]
+    join(t)
+    got = out["res"]
+    assert got.interrupted and got.is_error and got.worker is None
+    assert _git(w.repo, "status", "--porcelain") == "" and not (w.repo / "c.txt").exists()
+
+
+# ---- the persona slot outlives a detach ------------------------------------------------------
+
+def test_detached_and_adopted_jobs_keep_the_worker_slot(tmp_path):
+    w, ctx, req, job = _detached_job(tmp_path, sleep_s=4)
+    other = _req(w, "005-implementer")
+    assert _dispatch(w, other) is None          # the detached job counts: persona_slots is 1
+    out = {}
+    t = threading.Thread(target=lambda: out.update(res=_adopt(w, ctx, req)))
+    t.start()
+    worker = WK.load(w.cfg)[0]
+    until(lambda: RPS._held(RPS.job_lock_path(w.cfg, worker, job)))
+    assert _dispatch(w, other) is None          # the adopted runner holds the slot again
+    join(t)
+    assert out["res"].run_result.worker == "box"
+    assert isinstance(_dispatch(w, other), R.RemoteRunner)       # free once the job ended
+    assert not RPS.job_lock_path(w.cfg, worker, job).exists()
+
+
+def test_slot_count_includes_jobs_adopted_without_a_slot(ew):
+    rec_id = RPS.job_id_for(CID, "007-implementer")
+    RJ.create(ew.cfg, job_id=rec_id, campaign=CID, worker="box", attempt=1, seq=0,
+              submitted_at=0.0, kind=RPS.KIND, commit="a" * 40, head="a" * 40,
+              deadline_at=9e9)
+    assert _dispatch(ew) is None                # a live record nobody holds a slot for
+    assert RJ.campaigns(ew.cfg) == {CID}         # an ended campaign's persona jobs get settled
+    RJ.update(ew.cfg, rec_id, state="done")
+    assert isinstance(_dispatch(ew), R.RemoteRunner)
+
+
+# ---- run_job's env, end to end ---------------------------------------------------------------
+
+def test_worker_re_sets_the_stripped_env(tmp_path):
+    dump = [{"pre_shell": ["env | grep -E '^(NW_CAMPAIGN|NW_SPEC_ID|NW_BASE|NW_PERSONA_RUN|"
+                           "NW_WORKTREE|NW_DATA_DIR|TMPDIR)=' | sort > env.txt"],
+             "verdict": VERDICT, "cost_usd": 0.0}]
+    w = _world(tmp_path)
+    r = _remote(w, _write_script(tmp_path / "s.json", dump))
+    req = _req(w)
+    got = _rr(w, req).run(req)
+    assert got.worker == "box" and not got.writeback_failed
+    env = dict(ln.split("=", 1) for ln in (w.repo / "env.txt").read_text().splitlines())
+    assert env["NW_CAMPAIGN"] == CID and env["NW_SPEC_ID"] == "SPEC-0900"
+    assert env["NW_BASE"] == "main" and env["NW_PERSONA_RUN"] == "1"
+    tree = Path(env["NW_WORKTREE"])
+    assert tree.name == "tree" and tree != w.repo                # the worker's checkout
+    assert Path(env["NW_DATA_DIR"]) == r.wdata                   # the worker's data dir
+    assert env["TMPDIR"] != req.env["TMPDIR"] and Path(env["TMPDIR"]).parent == tree.parent
+
+
+# ---- saved refs are pruned when the campaign closes ------------------------------------------
+
+def test_saved_refs_are_pruned_when_the_campaign_is_abandoned(tmp_path, monkeypatch):
+    w, base, res, st, ctx = _failure_case(
+        tmp_path, monkeypatch, lambda w, b: (w.repo / "a.txt").write_text("human edit\n"),
+        clean_stub=True)
+    job = RPS.job_id_for(CID, "001-implementer")
+    assert RPS._refs_of(w.repo, job)
+    _git(w.repo, "update-ref", "refs/nw/jobs/OTHER-persona-001-implementer-a1/head", base)
+    cur = S.read_state(w.cfg, CID)
+    cur["state"] = "PARKED"
+    cur["repo"]["root"] = str(w.repo)
+    S.write_state(w.cfg, CID, cur)
+    Q.apply_abandon(w.cfg, Q.plan_abandon(w.cfg, CID, keep_worktree=True))
+    assert not RPS._refs_of(w.repo, job)
+    _git(w.repo, "rev-parse", "--verify", "refs/nw/jobs/OTHER-persona-001-implementer-a1/head")
+
+
+def test_close_prunes_the_campaign_saved_refs(tmp_path):
+    from nightwright.agentic import close as CL
+    w = _world(tmp_path)
+    head = _git(w.repo, "rev-parse", "HEAD")
+    mine = f"refs/nw/jobs/{RPS.job_id_for(CID, '001-implementer')}/head"
+    theirs = "refs/nw/jobs/OTHER-persona-001-implementer-a1/head"
+    for ref in (mine, theirs):
+        _git(w.repo, "update-ref", ref, head)
+    CL._prune_job_refs(w.repo, {"id": CID})
+    assert _git(w.repo, "for-each-ref", "--format=%(refname)", "refs/nw/jobs/") == theirs

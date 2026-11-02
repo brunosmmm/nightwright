@@ -644,6 +644,8 @@ class RemoteRunner:
                  record: dict | None = None):
         self.cfg, self.state, self.worker = cfg, state, worker
         self.local, self.slot, self.record = local, slot, record
+        self.job_id: str | None = None         # the job this runner is attached to
+        self.job_lock: int | None = None       # its `job-<id>.lock` fd, held with a slot
 
     def run(self, req: RunRequest, *, hooks: RunHooks | None = None):
         from . import remote_personas as RPS

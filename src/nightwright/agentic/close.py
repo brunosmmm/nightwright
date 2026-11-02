@@ -295,6 +295,12 @@ def _is_spec_less(state: dict) -> bool:
     return state.get("kind") in ("merge", "split")
 
 
+def _prune_job_refs(root, state: dict) -> None:
+    """SPEC-0344: the saved refs of failed persona write-backs go when the campaign closes."""
+    from . import remote_personas as RPS
+    RPS.prune_refs(root, state["id"])
+
+
 def _cleanup(root, worktree, branch, project_cfg, mode, events, *, merge_request=None) -> None:
     """`merge_request` is the campaign's `merge` block for a SPEC-0233 merge request: only a
     worktree nightwright created is removed, and the requester's branch is never deleted."""
@@ -916,6 +922,7 @@ def finish_close(cfg, state: dict, project_cfg: dict, prepared: PreparedClose, *
             close["reused"] = list(gate_run.reused)     # SPEC-0359: this merge rests on a reuse
             _record_reused_merge(cfg, state, project_cfg, root, merged, events)
         events.append(("close", close))
+        _prune_job_refs(root, state)
         _cleanup(root, worktree, branch, project_cfg, "merge", events,
                  merge_request=(state.get("merge") or {}) if merge_request else None)
         return CloseOutcome("MERGED", close=close, gate_run=gate_run, events=events,
@@ -943,6 +950,7 @@ def finish_close(cfg, state: dict, project_cfg: dict, prepared: PreparedClose, *
     close = {"mode": policy, "merged_sha": None, "pr_url": url, "gates_seq": seq,
              "target_sha": target_sha}
     events.append(("close", close))
+    _prune_job_refs(root, state)
     _cleanup(root, worktree, branch, project_cfg, policy, events)
     return CloseOutcome("HANDED_OFF", close=close, gate_run=gate_run, events=events,
                         attempts=attempts)
