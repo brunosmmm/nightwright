@@ -290,6 +290,26 @@ against bootstrap text that this spec no longer contains. Each is resolved in
 - Mutation check: with the `_finish_worker_drains(cfg)` call removed from `_tick`, the new test
   fails. The call was then restored. The full suite is left to gating.
 
+### Test record (2026-11-02, review loop 2)
+
+- Four new tests in `tests/test_workers_drain.py` (35 passed):
+  `test_worker_drained_append_failure_keeps_the_write` (`events.append` raises `RuntimeError`:
+  nothing escapes, the worker is disabled, the journal has a `worker_drained` error row, no
+  event), `test_worker_without_gate_kind_is_not_placeable` (`placeable`, `placeable_by_name`,
+  `gate_pools` on an enabled, non-draining worker without `gate` in `kinds`),
+  `test_recheck_refuses_a_worker_without_gate_kind` (step 3 through `gates.run_all`: stage
+  `registry`, no cooldown, no ssh call, local run) and
+  `test_record_turning_unusable_under_the_lock_blocks_completion` (a record goes unusable
+  between the pre-check and the update: the pass is skipped and `workers.json` is unchanged).
+- Mutation check: one at a time we narrowed the event `except` to `(OSError, ValueError)`,
+  dropped the `"gate" in kinds` clause, and removed the locked record check. Each of the four
+  new tests failed under its mutation. The code was then restored.
+- Regression guard (`-n 4`, the drain, registry, gate-slot, remote-gate, job-record and
+  drain-signal files): 259 passed, 1 failed. The failure was
+  `test_remote_job_records.py::test_submit_failure_after_accept_still_has_a_record`, which
+  never calls the drain code. It passed alone twice, and its whole file then passed under
+  `-n 4` (48 passed), so we read it as load flakiness. The full suite is left to gating.
+
 ### As shipped (2026-11-01)
 
 - **`--worker` waiters get no `skip`.** `gates.run_all` passes the `skip` predicate only when no
@@ -313,6 +333,13 @@ against bootstrap text that this spec no longer contains. Each is resolved in
   still run on a draining worker. Such a file stalls every drain until it is fixed or removed,
   and each tick journals it as `worker_drain_skipped`. We chose that over disabling a worker
   under a running job.
+- **The record check runs inside the lock too (2026-11-02).** `finish_drains` runs
+  `_check_job_records` again inside its `workers.update`, before the locked `_drained`
+  re-check. So a record that turns unusable after the unlocked pre-check aborts the write
+  instead of being dropped by `remote_jobs.live`. Record writes take their own
+  `remote-jobs` lock, not the registry lock, so this narrows the window but does not
+  serialize against them. A record created after the re-check comes from a gate that already
+  holds a slot, and that slot blocks completion.
 - **No write when the locked re-check finds nothing.** If the re-check inside
   `workers.update` disables nothing (a gate took the slot, or `on` ran), the update is aborted
   and `workers.json` is left untouched.

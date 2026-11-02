@@ -308,7 +308,8 @@ def finish_drains(cfg) -> list[str]:
         return []
 
     def fn(records):
-        done = []
+        _check_job_records(cfg)                 # again under the lock: a record that turned
+        done = []                               # unusable since the pre-check aborts the write
         for r in records:
             if r.get("draining") is True and _drained(cfg, r["name"]):
                 r["enabled"] = False

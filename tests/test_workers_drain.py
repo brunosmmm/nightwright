@@ -529,3 +529,65 @@ def test_forced_worker_waiter_drained_mid_wait_falls_back(world, remote, monkeyp
     (ev,) = world.ledger(["worker_failed"])
     assert ev["stage"] == "registry" and ev["cooldown"] is False
     assert not marker.exists()
+
+
+# ---- review follow-ups (2026-11-02, loop 2) -------------------------------------------------
+
+def test_worker_drained_append_failure_keeps_the_write(cfg, invoke, monkeypatch):
+    """`worker_drained` is best-effort: any failure to append it (not only OSError/ValueError)
+    is journaled, nothing escapes the tick, and the registry write stands."""
+    _seed(cfg, _w("box"))
+    assert invoke("drain", "box").exit_code == 0
+
+    def boom(*a, **k):
+        raise RuntimeError("events down")
+    monkeypatch.setattr(EV, "append", boom)
+    Q._finish_worker_drains(cfg)                # never raises
+    assert _raw(cfg)["enabled"] is False and "draining" not in _raw(cfg)
+    rows = [json.loads(ln) for ln in Q.runner_journal_path(cfg).read_text().splitlines()]
+    (row,) = [r for r in rows if r["kind"] == "worker_drained"]
+    assert row["worker"] == "box" and row["error"] == "RuntimeError: events down"
+    monkeypatch.undo()
+    assert not _drained_events(cfg)
+
+
+def test_worker_without_gate_kind_is_not_placeable(cfg):
+    _seed(cfg, _w("box", kinds=["review"]), _w("two"))
+    box, two = WK.load(cfg)
+    assert box["enabled"] and not box["draining"]
+    assert not WK.placeable(box) and WK.placeable(two)
+    assert not WK.placeable_by_name(cfg, "box") and WK.placeable_by_name(cfg, "two")
+    assert not WK.placeable_by_name(cfg, "nope")
+    assert [p for p, _ in WK.gate_pools(cfg)] == ["two", WK.LOCAL]
+
+
+def test_recheck_refuses_a_worker_without_gate_kind(world, remote, monkeypatch):
+    """Step 3: a worker that is enabled and not draining but takes no gates is not placeable
+    either: the re-check after the take sends nothing and the gate runs locally."""
+    ssh, marker = _logging_ssh(world, remote)
+    remote.register(ssh=ssh, kinds=["review"])
+    monkeypatch.setattr(RG, "pools_for", lambda *a, **k: [("box", 1), (None, 2)])
+    monkeypatch.setattr(WK, "placeable_by_name", lambda cfg, name: True)    # the race
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert run.ok and run.worker is None
+    (ev,) = world.ledger(["worker_failed"])
+    assert ev["stage"] == "registry" and ev["cooldown"] is False
+    assert not marker.exists()
+
+
+def test_record_turning_unusable_under_the_lock_blocks_completion(cfg, invoke, monkeypatch):
+    """A job record is readable at the unlocked pre-check but unusable by the time the update
+    re-checks inside the registry lock: the pass is skipped and nothing is written."""
+    _seed(cfg, _w("box"))
+    assert invoke("drain", "box").exit_code == 0
+    job = _job(cfg, 1)
+    RJ.mark_done(cfg, job)                      # final: the pre-check sees an idle worker
+    p = RJ.path(cfg, job)
+    real = WK.update
+
+    def racing(cfg_, fn):
+        p.write_text(json.dumps({**json.loads(p.read_text()), "state": "running",
+                                 "schema": "nw.remote_job.v9"}))
+        return real(cfg_, fn)
+    monkeypatch.setattr(WK, "update", racing)
+    _assert_skipped(cfg)
