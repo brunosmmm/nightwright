@@ -131,9 +131,11 @@ sits beside its definition. The YAML refers to code objects by key only: `person
   origin, path`), `load_registry(cfg, *, project_root=None) -> Registry`,
   `validate_persona_doc(doc, *, origin, layer, stem) -> list[str]`, and the two derivations
   `reviewer_personas(defs) -> tuple[str, ...]` (`role: reviewer`, by `order`) and
-  `adopt_registry(defs) -> dict` (`implementer` role -> `("implement", ())`, `triager` ->
-  `("triage", ())`, `reviewer` -> `("review", None)`, otherwise the explicit `adopt` or no
-  entry). It mirrors `profiles.py`'s `_read_dir`/`load_layers` shape: `*.yaml` only, a `.yml`
+  `adopt_registry(defs) -> dict`: first, in `order`, every non-reviewer definition that has an
+  entry (`implementer` role -> `("implement", ())`, `triager` -> `("triage", ())`, explicit
+  `adopt` -> `(step, tuple(personas))`); then, in `order`, every `role: reviewer` definition ->
+  `("review", None)`. This reproduces the old dict's key order (implementer, gate_triager,
+  review_triager, conformance_reviewer, test_reviewer, adversarial_reviewer). It mirrors `profiles.py`'s `_read_dir`/`load_layers` shape: `*.yaml` only, a `.yml`
   or a bad stem is a broken definition, an unreadable directory raises `ValueError`, every file
   is re-read and re-validated per call. It must not import `personas.py` (that module imports
   it); the set of valid `output_schema`/`invariant` keys is passed in by the caller.
@@ -197,7 +199,10 @@ no project passes none and gets builtin + user only.
       `template_file`, `read_only` and `invariant` equal the old values, `schema` is the
       identical object as the old module-level `*_SCHEMA`, and `.template` text is unchanged.
 - [ ] `REVIEWER_PERSONAS == ("conformance_reviewer", "test_reviewer", "adversarial_reviewer")`
-      and `ADOPT_REGISTRY` equals the old dict (same keys, values and key order).
+      and `ADOPT_REGISTRY` equals the old dict (same keys, values and key order); in
+      particular `list(ADOPT_REGISTRY)` is implementer, gate_triager, review_triager,
+      conformance_reviewer, test_reviewer, adversarial_reviewer (non-reviewers first, then
+      reviewers, each by `order`).
 - [ ] `personas.py` contains no hand-written `Persona(...)` table, `REVIEWER_PERSONAS` tuple
       literal or `ADOPT_REGISTRY` dict literal; they are produced by the registry derivations.
 - [ ] The loader reads builtin, user (`<config_dir>/personas`) and project
