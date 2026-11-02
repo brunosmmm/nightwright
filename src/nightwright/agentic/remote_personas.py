@@ -22,6 +22,7 @@ import binascii
 import dataclasses
 import fcntl
 import gzip
+import io
 import json
 import os
 import queue as _queue
@@ -378,6 +379,10 @@ def _local(rr: R.RemoteRunner, req, hooks):
     """The run on the local runner (the worker never took it, or lost it)."""
     local = rr.local if rr.local is not None else R.select_runner(rr.cfg)
     if hooks is not None and getattr(local, "detachable", False):
+        # an adopted remote run dir has no `proc.json`, so `_adopt` gave the hooks an adoption
+        # mode; the local run spawns its own process instead of waiting for a wrapper
+        if not hooks.restart(req.run_dir):
+            return R.DETACHED
         return local.run(req, hooks=hooks)
     return local.run(req)
 
@@ -540,6 +545,8 @@ def _follow(rr: R.RemoteRunner, req, hooks, rec: dict):
         if kind == "lost":
             return _lost(rr, req, hooks, rec, val)
         while True:
+            if time.time() > job["deadline"]:
+                return _lost(rr, req, hooks, rec, "deadline")
             if time.time() - job["last_seen"] > ttl:
                 return _lost(rr, req, hooks, rec, "unreachable")
             if _sleep(delay, hooks):
@@ -560,6 +567,8 @@ def _lost(rr: R.RemoteRunner, req, hooks, rec: dict, why: str):
     anything else is recorded as a loss on the worker and the run goes local."""
     from . import remote_gates as RG
     cfg, job_id = rr.cfg, rec["job_id"]
+    if (RJ.read(cfg, job_id) or rec).get("writeback") == "applied":
+        return _applied(rr, req, hooks, job_id)
     if why == "cancelled":
         if hooks is not None and not hooks.enter_collect():
             return R.DETACHED
@@ -573,8 +582,31 @@ def _lost(rr: R.RemoteRunner, req, hooks, rec: dict, why: str):
     return _local(rr, req, hooks)
 
 
+def _applied(rr: R.RemoteRunner, req, hooks, job_id: str):
+    """A record already marked `writeback: applied` (a runner stopped between the write-back
+    and the record's deletion) whose job the worker no longer has: the run finished and its
+    files are in the run dir, so it is collected from them, never run again."""
+    if hooks is not None and not hooks.enter_collect():
+        return R.DETACHED
+    cur = RJ.read(rr.cfg, job_id) or {}
+    run_dir = Path(req.run_dir)
+    parsed = R.parse_result(RP.run_output(run_dir), req.json_schema, exit_code=0)
+    result = R.write_run_record(req, R.RunResult(
+        exit_code=0, timed_out=False, interrupted=False, duration_s=0.0,
+        raw_path=run_dir / "result.json", worker=rr.worker["name"], **parsed),
+        cur.get("started_at") or store.now_iso())
+    RJ.update(rr.cfg, job_id, state="done")
+    RJ.path(rr.cfg, job_id).unlink(missing_ok=True)
+    return result
+
+
 def _decode(data: str) -> bytes:
-    return gzip.decompress(base64.b64decode(data))
+    """A run-dir file of the `done` frame; ValueError past `MAX_RUN_FILE_BYTES` decompressed."""
+    with gzip.GzipFile(fileobj=io.BytesIO(base64.b64decode(data))) as f:
+        out = f.read(MAX_RUN_FILE_BYTES + 1)
+    if len(out) > MAX_RUN_FILE_BYTES:
+        raise ValueError(f"run file over {MAX_RUN_FILE_BYTES} bytes")
+    return out
 
 
 def _finish(rr: R.RemoteRunner, req, hooks, rec: dict, frame: dict):

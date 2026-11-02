@@ -1856,9 +1856,13 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
             res.detached = True
             return res
         if getattr(outcome, "writeback_failed", False):
-            run_id, req, outcome = _rerun_locally(ctx, state, step, run_id, req, budget, outcome)
+            run_id, req, outcome = _rerun_locally(ctx, state, step, run_id, req, budget, outcome,
+                                                  hooks)
             res.run_id = run_id
             detachable = bool(getattr(ctx.runner, "detachable", False))
+            if outcome is DETACHED:
+                res.detached = True
+                return res
         res.run_result = outcome
         res.interrupted = bool(outcome.interrupted) if detachable else ctx.stop.is_set()
         # an adopted run a human moved past (parked, abandoned) is recorded, never committed
@@ -1891,11 +1895,15 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     return res
 
 
-def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float, failed):
+def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float, failed,
+                   hooks: RunHooks | None = None):
     """SPEC-0344: a remote run whose write-back failed. Its `run.end` (`writeback_failed`,
     `result_tail: "write-back: <reason>"`) and cost go on the ledger now, the worker joins the
     step's `remote_excluded`, and the step runs once more, in-process on the local runner,
-    under a new run id with its own `run.start` (no autopark). Returns (run_id, req, result)."""
+    under a new run id with its own `run.start` (no autopark). A detachable local runner gets
+    the task's `hooks` back in `spawning` for the new run dir, so a stop or restart detaches
+    the re-run like any local run (the result is then `DETACHED`; the next runner adopts the
+    new run). Returns (run_id, req, result)."""
     cfg, cid = ctx.cfg, state["id"]
     persona = req.persona
     with store.item_lock(cfg, cid):
@@ -1921,6 +1929,10 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
         current["remote_excluded"] = excluded
         store.write_state(cfg, cid, current)
     new_req = replace(req, run_dir=store.runs_dir(cfg, cid) / new_id)
+    if hooks is not None and getattr(ctx.runner, "detachable", False):
+        if not hooks.restart(new_req.run_dir):
+            return new_id, new_req, DETACHED
+        return new_id, new_req, ctx.runner.run(new_req, hooks=hooks)
     return new_id, new_req, ctx.runner.run(new_req)
 
 

@@ -463,6 +463,41 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
   `test_agentic_close_inflight.py` and `test_agentic_idea_campaign.py`: 98 passed.
 - The full suite is left to gating.
 
+### As shipped (2026-11-02, second review fixes)
+
+- **The local fallbacks keep the task's hooks.** `RunHooks.restart(run_dir)` puts the task
+  back in `spawning` for the new run dir and drops any adoption mode (False, and the run
+  ends `DETACHED`, when the pool already detached it). A lost remote job's local run goes
+  through it: an adopted remote run dir has no `proc.json`, so `queue._adopt` gave its hooks
+  a `claim` mode, and a `ClaudeRunner` handed those would wait for a wrapper that never
+  comes and end the run "orphaned". The re-run after a failed write-back now gets the hooks
+  too (they were in `collect`), so a stop or restart detaches it like any local run:
+  `_do_persona` then returns `detached`, and the next runner adopts run `NNN+1`.
+- **Smaller hardening.** The `allowed_tools` root rewrite matches the worktree root only
+  when a `/`, a token delimiter or the end follows, so `<wt>-other/...` is refused as
+  outside the worktree. A lost job whose record is already `writeback: applied` (a runner
+  stopped between the write-back and the record's deletion) is collected from its run-dir
+  files instead of running again locally, and is not counted as a loss. The re-attach loop
+  checks the job's deadline. `_decode` stops at `MAX_RUN_FILE_BYTES` decompressed and
+  drops a larger file.
+
+### Test record (2026-11-02, second review fixes)
+
+- New cases in `tests/test_remote_personas.py`, each run on its own and passing:
+  - a lost job whose hooks carry an adoption mode spawns on a detachable local stand-in
+    (`spawning`, no adoption mode) instead of ending "orphaned";
+  - the re-run after a failed write-back gets the hooks for run `002`, and a stop during it
+    returns `detached`;
+  - a lost job with an `applied` record is collected from its run dir, with no local run
+    and no loss counted;
+  - the re-attach loop stops at the deadline;
+  - `<wt>-other` in `allowed_tools` is not remotable;
+  - `_decode` is bounded.
+- `uv run pytest -q -n 6` over `test_remote_personas.py`, `test_agentic_runner.py`,
+  `test_agentic_adopt.py`, `test_remote_job_records.py` and `test_remote_gates.py`: 244
+  passed.
+- The full suite is left to gating.
+
 ## Rollout / migration
 
 Implementation sessions clock in and out on the linked idea (`nw idea clock-in IDEA-560` /

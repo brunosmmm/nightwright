@@ -110,6 +110,19 @@ class RunHooks:
             self.phase = "collect"
             return True
 
+    def restart(self, run_dir) -> bool:
+        """SPEC-0344: the same task starts a new local run (a lost remote job, or the re-run
+        after a failed write-back): back to `spawning` for `run_dir`, with no adoption mode
+        (the new run has its own process to spawn). False when the pool detached meanwhile."""
+        with self.lock:
+            if self.detach.is_set() or getattr(self.pool, "detach_all", False):
+                return False
+            self.phase = "spawning"
+            self.run_dir = Path(run_dir)
+            self.adopt = None
+            self.signalled_at = None
+            return True
+
     def done(self) -> None:
         with self.lock:
             self.phase = "done"
@@ -542,6 +555,7 @@ ENV_VERBATIM = frozenset({"NW_CAMPAIGN", "NW_SPEC_ID", "NW_BASE", "NW_PERSONA_RU
                           "NW_REBASE_TARGET"})
 ENV_RESET = frozenset({"NW_WORKTREE", "NW_DATA_DIR", "NW_CONFIG_DIR", "TMPDIR", "TEMP", "TMP"})
 TREE_TOKEN = "${NW_TREE}"                     # a worktree-relative path in `allowed_tools`
+_ROOT_END = r"""(?=[/\s()*'"`,;|&<>:]|$)"""     # a path separator or the end of the token
 _ABS_PATH_RE = re.compile(r"(?<![\w.:/~$}-])/[A-Za-z0-9._~+@%=-][^\s()*'\"`,;|&<>]*")
 
 
@@ -582,7 +596,8 @@ def request_to_job(req: RunRequest, worktree) -> dict:
     for tool in req.allowed_tools:
         out = str(tool)
         for root in sorted({str(r) for r in roots}, key=len, reverse=True):
-            out = re.sub(re.escape(root) + r"(?=/|\b|$)", lambda _m: TREE_TOKEN, out)
+            # the root only as a whole path component: `<wt>-other` stays and is refused below
+            out = re.sub(re.escape(root) + _ROOT_END, lambda _m: TREE_TOKEN, out)
         stray = _ABS_PATH_RE.search(out)
         if stray:
             raise NotRemotable(f"allowed_tools entry {tool!r} names {stray.group(0)}, "

@@ -712,3 +712,136 @@ def test_close_prunes_the_campaign_saved_refs(tmp_path):
         _git(w.repo, "update-ref", ref, head)
     CL._prune_job_refs(w.repo, {"id": CID})
     assert _git(w.repo, "for-each-ref", "--format=%(refname)", "refs/nw/jobs/") == theirs
+
+
+# ---- a detachable local runner on the fallback paths -----------------------------------------
+
+class _DetachableLocal:
+    """A stand-in for `ClaudeRunner`: like it, it attaches (and spawns nothing) when the hooks
+    carry an adoption mode; otherwise it spawns, records it, and either finishes or is
+    detached by the pool."""
+    detachable = True
+
+    def __init__(self, detach=False):
+        self.calls, self.detach = [], detach
+
+    def run(self, req, *, hooks=None):
+        self.calls.append({"phase": hooks.phase, "adopt": hooks.adopt,
+                           "run_dir": hooks.run_dir, "req_run_dir": req.run_dir})
+        if hooks.adopt:                                 # ClaudeRunner: wait for a wrapper
+            return R._synthetic(req, "orphaned: no wrapper claimed the run")
+        self.calls[-1]["spawned"] = True
+        req.run_dir.mkdir(parents=True, exist_ok=True)
+        hooks.spawned()
+        if self.detach:
+            hooks.detach.set()
+            return R.DETACHED
+        assert hooks.enter_collect()
+        return R.write_run_record(req, R.RunResult(
+            exit_code=0, timed_out=False, interrupted=False, duration_s=0.0, is_error=False,
+            cost_usd=0.0, verdict=VERDICT, verdict_ok=True), S.now_iso())
+
+
+def test_lost_adopted_job_spawns_locally_with_a_detachable_runner(tmp_path):
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "s.json", [dict(WRITER[0], persona="reviewer")]))
+    req = _req(w)
+    local = _DetachableLocal()
+    rr = RPS.dispatch(w.cfg, S.read_state(w.cfg, CID), "implement", req, local=local)
+    hooks = R.RunHooks(threading.Lock(), req.run_dir, phase="wait")
+    hooks.adopt = ("claim", 0.0)                        # as `queue._adopt` sets it: no proc.json
+    got = rr.run(req, hooks=hooks)
+    assert RJ.read(w.cfg, RPS.job_id_for(CID, "001-implementer"))["state"] == "lost"
+    call, = local.calls
+    assert call["spawned"] and call["phase"] == "spawning" and call["adopt"] is None
+    assert call["run_dir"] == req.run_dir
+    assert not got.interrupted and got.verdict == VERDICT
+
+
+def _rerun_case(tmp_path, monkeypatch, local):
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "writer.json", WRITER))
+    monkeypatch.setattr(RPS, "_before_writeback",
+                        lambda wt, b: (w.repo / "late.txt").write_text("late\n"))
+    req = _req(w)
+    _start(w, req)
+    ctx = Q._Ctx(w.cfg, runner=local)
+    ctx._projects[w.state["project"]] = w.project
+    hooks = R.RunHooks(threading.Lock(), req.run_dir)
+    res = Q._do_persona(ctx, S.read_state(w.cfg, CID), Q.Step("implement", persona="implementer"),
+                        "001-implementer", req, 1.0, hooks)
+    return w, res, hooks
+
+
+def test_rerun_after_failed_write_back_gets_the_hooks(tmp_path, monkeypatch):
+    local = _DetachableLocal()
+    w, res, hooks = _rerun_case(tmp_path, monkeypatch, local)
+    call, = local.calls
+    new_dir = S.runs_dir(w.cfg, CID) / "002-implementer"
+    assert call["spawned"] and call["phase"] == "spawning" and call["run_dir"] == new_dir
+    assert call["req_run_dir"] == new_dir
+    assert res.run_id == "002-implementer" and res.run_result.verdict == VERDICT
+    assert not res.detached and not res.interrupted and hooks.phase == "done"
+
+
+def test_rerun_after_failed_write_back_detaches_on_a_stop(tmp_path, monkeypatch):
+    local = _DetachableLocal(detach=True)
+    w, res, hooks = _rerun_case(tmp_path, monkeypatch, local)
+    assert len(local.calls) == 1
+    assert res.detached and res.run_id == "002-implementer"
+    assert hooks.run_dir.name == "002-implementer"      # the pool sees the new run
+    assert [e["run_id"] for e in w.ledger(["run.end"])] == ["001-implementer"]
+    assert [e["run_id"] for e in w.ledger(["run.start"])] == ["001-implementer",
+                                                              "002-implementer"]
+
+
+def test_applied_record_of_a_lost_job_is_collected_not_rerun(tmp_path, monkeypatch):
+    w, ctx, req, job = _detached_job(tmp_path)
+    base = _git(w.repo, "rev-parse", "HEAD")
+    RJ.update(w.cfg, job, writeback="applied")       # written back, then the runner stopped
+    (req.run_dir / "result.json").write_text(json.dumps(
+        {"type": "result", "structured_output": VERDICT, "is_error": False,
+         "total_cost_usd": 0.5}))
+    monkeypatch.setattr(RPS, "_attach", lambda *a: ("lost", "unknown"))
+    res = _adopt(w, ctx, req)                          # the local script is empty: never run
+    assert res.run_result.worker == "box" and res.run_result.verdict == VERDICT
+    assert not res.run_result.is_error and res.run_result.cost_usd == 0.5
+    assert _git(w.repo, "rev-parse", "HEAD") == base
+    assert RJ.read(w.cfg, job) is None and not WK.losses_path(w.cfg).exists()
+
+
+def test_reattach_loop_honours_the_deadline(tmp_path, monkeypatch):
+    w = _world(tmp_path)
+    _remote(w, _write_script(tmp_path / "s.json", WRITER))
+    req = _req(w)
+    rr = _rr(w, req)
+    monkeypatch.setattr(RPS, "_attach", lambda *a: ("dropped", None))
+    polls = []
+    from nightwright.agentic import remote_gates as RG
+    monkeypatch.setattr(RG, "poll", lambda *a: polls.append(a) or "running")
+    monkeypatch.setattr(RPS, "BACKOFF_START_S", 0.01)
+    monkeypatch.setattr(RPS, "_fresh", lambda rr_, req_, hooks: RPS._follow(rr_, req_, hooks, {
+        "job_id": "j1", "deadline_at": RJ.iso(1000.0), "cursor": 0}))
+    seen = []
+    monkeypatch.setattr(RPS, "_lost", lambda rr_, req_, hooks, rec, why: seen.append(why) or why)
+    assert rr.run(req) == "deadline" and seen == ["deadline"] and not polls
+
+
+def test_allowed_tools_sibling_of_the_worktree_is_not_remotable(tmp_path):
+    w = _world(tmp_path)
+    req = _req(w, allowed_tools=(f"Bash({w.repo}-other/run.sh*)",))
+    with pytest.raises(R.NotRemotable, match="-other"):
+        R.request_to_job(req, w.repo)
+    ok = _req(w, allowed_tools=(f"Read({w.repo})", f"Bash({w.repo}:*)"))
+    assert R.request_to_job(ok, w.repo)["allowed_tools"] == ["Read(${NW_TREE})",
+                                                             "Bash(${NW_TREE}:*)"]
+
+
+def test_decode_is_bounded(monkeypatch):
+    import base64
+    import gzip
+    data = base64.b64encode(gzip.compress(b"x" * 100)).decode()
+    assert RPS._decode(data) == b"x" * 100
+    monkeypatch.setattr(RPS, "MAX_RUN_FILE_BYTES", 99)
+    with pytest.raises(ValueError):
+        RPS._decode(data)
