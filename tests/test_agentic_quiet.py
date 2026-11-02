@@ -1683,3 +1683,109 @@ def test_wakeups_window_filters_merges_and_until_is_inclusive(tmp_path, monkeypa
     assert QT.wakeups_report(cfg, since=d2, until=d2)["digests"] == 1
     r = QT.wakeups_report(cfg, since=d2, until=d2)
     assert r["by_day"] == [{"day": d2, "delivered": 1, "held": 2, "merges": 1}]
+
+
+# ---- a digest that cannot be saved (full or read-only disk) ----------------------------------
+
+def _unwritable(monkeypatch, state):
+    real = QT._atomic_write
+
+    def write(path, text):
+        if state["fail"]:
+            raise OSError(28, "No space left on device")
+        return real(path, text)
+    monkeypatch.setattr(QT, "_atomic_write", write)
+
+
+def test_failed_save_keeps_held_event_in_memory(tmp_path, monkeypatch):
+    cfg, clock = _cfg(tmp_path), Clock()
+    state = {"fail": True}
+    _unwritable(monkeypatch, state)
+    E.cursor_set(cfg, "conductor", 0)
+    E.append(cfg, "admitted", campaign="c1", data={})
+    out, step = io.StringIO(), {"n": 0}
+
+    def stop():
+        step["n"] += 1
+        if step["n"] == 2:
+            state["fail"] = False                         # the disk recovers
+        return step["n"] >= 4
+    _follow(cfg, out, clock=clock, stop=stop)
+    assert E.cursor_get(cfg, "conductor") == 1
+    assert QT.Digest.load(cfg, "conductor").pending["held"] == {"admitted": 1}   # not lost
+    assert out.getvalue() == ""
+
+
+def test_failed_save_does_not_repeat_due_digest(tmp_path, monkeypatch):
+    cfg, clock = _cfg(tmp_path), Clock()
+    state = {"fail": False}
+    _unwritable(monkeypatch, state)
+    E.cursor_set(cfg, "conductor", 0)
+    E.append(cfg, "admitted", campaign="c1", data={})
+    out, step = io.StringIO(), {"n": 0}
+
+    def stop():
+        step["n"] += 1
+        if step["n"] == 1:
+            assert out.getvalue() == ""
+            state["fail"] = True
+            clock.advance(2000)                           # the digest is due
+        return step["n"] >= 5
+    _follow(cfg, out, clock=clock, stop=stop)
+    assert [e["type"] for e in _lines(out)] == ["conductor_digest"]   # once, over four polls
+    actions = [json.loads(x)["action"] for x in QT.deliveries_path(cfg).read_text().splitlines()]
+    assert actions == ["hold", "digest"]
+
+
+@pytest.mark.parametrize("type_", ["campaign_silent", "state_stuck"])
+def test_failed_save_does_not_repeat_watch_wake(tmp_path, monkeypatch, type_):
+    cfg, clock = _cfg(tmp_path), Clock()
+    lease = {"v": {"held": True, "in_flight": ["c1"], "busy": None, "draining": None}}
+    _silent_setup(cfg, lease, monkeypatch, type_, clock)
+    state = {"fail": True}
+    _unwritable(monkeypatch, state)
+    out, step = io.StringIO(), {"n": 0}
+
+    def stop():
+        step["n"] += 1
+        if step["n"] == 1:
+            clock.advance(E.settings(cfg)["gate_budget_s"] + 400)
+        return step["n"] >= 4
+    _follow(cfg, out, clock=clock, stop=stop)
+    assert [e["type"] for e in _lines(out) if e["type"] == type_] == [type_]
+
+
+def test_failed_save_does_not_repeat_drain_wake(tmp_path, monkeypatch):
+    cfg, clock = _cfg(tmp_path), Clock()
+    since = (clock() - dt.timedelta(seconds=10)).isoformat()
+    lease = {"held": True, "in_flight": [], "busy": None,
+             "draining": {"since": since}}
+    monkeypatch.setattr(QT, "L", types.SimpleNamespace(lease_status=lambda cfg, now=None: lease))
+    state = {"fail": True}
+    _unwritable(monkeypatch, state)
+    d = QT.Digest.load(cfg, "conductor")
+    d.drains = [{"since": since, "bound_s": 100,
+                 "event": {"id": 1, "ts": since, "type": "runner_draining", "campaign": None,
+                           "data": {"draining_s": 5}}}]
+    state["fail"] = False
+    d.save()
+    state["fail"] = True
+    E.cursor_set(cfg, "conductor", 1)
+    out, step = io.StringIO(), {"n": 0}
+
+    def stop():
+        step["n"] += 1
+        if step["n"] == 1:
+            clock.advance(500)
+        return step["n"] >= 4
+    _follow(cfg, out, clock=clock, stop=stop)
+    assert [e["type"] for e in _lines(out)] == ["runner_draining"]
+
+
+@pytest.mark.parametrize("event", [{"type": "admitted", "data": {}},
+                                   {"type": "campaign_silent", "data": []},
+                                   {"type": "campaign_silent", "data": None}])
+def test_watch_with_unusable_event_is_ignored(event):
+    w = {"key": "k", "type": "campaign_silent", "bound_s": 1.0, "event": event}
+    assert not QT._watch_ok(w)
+    assert QT._watch_ok({**w, "event": {"type": "state_stuck"}})        # data absent is fine

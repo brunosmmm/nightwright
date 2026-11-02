@@ -364,9 +364,11 @@ def _num(v) -> bool:
 
 
 def _watch_ok(w) -> bool:
+    ev = w.get("event") if isinstance(w, dict) else None
     return (isinstance(w, dict) and isinstance(w.get("key"), str)
             and isinstance(w.get("type"), str) and _num(w.get("bound_s"))
-            and isinstance(w.get("event"), dict))
+            and isinstance(ev, dict) and ev.get("type") in _CLOCK_FIELD
+            and isinstance(ev.get("data", {}), dict))
 
 
 _FIELD_OK = {"first_id": lambda v: v is None or _int(v), "last_id": _int, "since": _str_or_none,
@@ -401,6 +403,7 @@ class Digest:
     def __init__(self, path: Path, rec: dict | None = None, legacy: Path | None = None):
         self.path = path
         self._legacy = legacy                   # a migrated `<reader>.digest.json` to remove
+        self._unsaved = False
         rec = rec if _well_typed(rec) else {}
         self.drains = [dict(d) for d in rec.get("drains") or []]
         self.watches = [dict(w) for w in rec.get("watches") or []]
@@ -431,6 +434,12 @@ class Digest:
             return None
         return rec if isinstance(rec, dict) else None
 
+    def retry_save(self) -> None:
+        """Write again a state whose last `save` failed (the follower keeps one Digest in
+        memory across polls, so nothing is lost meanwhile)."""
+        if self._unsaved:
+            self.save()
+
     def save(self) -> None:
         rec = {**self.pending, "last_ping_fp": self.last_ping_fp,
                "last_printed_last_id": self.last_printed_last_id, "drains": self.drains,
@@ -438,8 +447,11 @@ class Digest:
         try:
             _atomic_write(self.path, json.dumps(rec, ensure_ascii=False) + "\n")
         except OSError as e:                    # e.g. a directory at the path: keep running
-            log.warning("quiet digest not saved to %s: %s", self.path, e)
+            if not self._unsaved:
+                log.warning("quiet digest not saved to %s: %s", self.path, e)
+            self._unsaved = True                # `follow` keeps this object; see `retry_save`
             return
+        self._unsaved = False
         if self._legacy is not None:
             old, self._legacy = self._legacy, None
             if "after" not in (self._read(old) or {"after": 1}):

@@ -1184,20 +1184,24 @@ def follow(cfg, reader, *, as_json=True, poll_s=None, types=None, out=None, max_
             # a brand-new reader starts at "now": history is for `nw queue events`, not alerts
             cursor_set(cfg, reader, _last_id(events_path(cfg)))
         replay = False
+        # one Digest for the whole run: a failed save (full or read-only disk) then keeps the
+        # state in memory, so no hold is lost and no wake or digest line repeats on a re-read
+        digest = QT.Digest.load(cfg, reader) if quiet else None
         if quiet and cursor_get(cfg, reader) == 0:
             # SPEC-0324: a replay (`--from-start`, or a corrupt cursor) re-reads events the
             # digest has already seen or printed; start it fresh so no hold is dropped. A
             # digest that never printed (`last_printed_last_id` 0) is a crash-recovery one,
             # and `Digest.add` dedups its re-reads.
-            dg = QT.Digest.load(cfg, reader)
-            if dg.last_printed_last_id > 0:
-                dg.reset()
-                dg.save()
+            if digest.last_printed_last_id > 0:
+                digest.reset()
+                digest.save()
                 replay = True
         while True:
             sync(cfg, ping=True)
             after = cursor_get(cfg, reader)
-            ctx = QT.Ctx(cfg, reader, now=clock()) if quiet else None
+            ctx = QT.Ctx(cfg, reader, now=clock(), digest=digest) if quiet else None
+            if quiet:
+                digest.retry_save()
             for ev in read_since(cfg, after, types=types):
                 if quiet and QT.classify(cfg, ev, ctx) == "hold":
                     if ctx.digest.add(ev, ctx):
