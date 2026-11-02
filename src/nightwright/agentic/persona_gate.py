@@ -33,6 +33,9 @@ UNGATED_PERSONAS = frozenset({"spec_reviewer"})          # counted by neither ca
 HELD_STATES = frozenset({"IMPLEMENTING", "TRIAGING", "REVIEWING", "SPEC_WRITING"})
 FIRST_BACKOFF_S = 60
 MAX_BACKOFF_S = 900
+# the detectors stop skipping a `persona_cap` hold older than this: a live count inflated by a
+# run that never ends (no `run.end`, a persona job record never final) would hold it forever
+CAP_MUTE_MAX_S = 7200
 
 # whole-token rate-limit markers of an API error message (`events.RATE_LIMIT_MARKERS`)
 _RATE_RE = re.compile(r"\b429\b|\b529\b|\brate[ _]limit|\boverloaded\b")
@@ -298,15 +301,20 @@ def read_holds(cfg) -> dict:
     return h if isinstance(h, dict) else {}
 
 
-def held_by(cfg, state: dict, now=None, holds=None) -> str | None:
+def held_by(cfg, state: dict, now=None, holds=None, *, cap_mute_max_s=None) -> str | None:
     """`rate_limit` while the backoff runs for a campaign whose next step is a persona step,
     `persona_cap` while the last tick held its step on the cap, else None. The caller skips
-    campaigns with a run in flight."""
+    campaigns with a run in flight. With `cap_mute_max_s` (the detectors), a `persona_cap` hold
+    held since longer than that is None, so the detectors report it again."""
     entry = (read_holds(cfg) if holds is None else holds).get(state.get("id")) or {}
     if backoff_until(cfg, now) is not None and (
             state.get("state") in HELD_STATES or entry.get("held_by") == "rate_limit"):
         return "rate_limit"
     if entry.get("held_by") == "persona_cap":
+        since = _epoch(entry.get("since"))
+        if cap_mute_max_s is not None and since is not None \
+                and _now_epoch(now) - since > cap_mute_max_s:
+            return None
         return "persona_cap"
     return None
 

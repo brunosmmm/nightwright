@@ -1112,3 +1112,23 @@ def test_split_snapshot_validates_like_write(tmp_path):
     repo = make_project(tmp_path)
     sw = SW.snapshot(repo, mode="split", number=102, path="docs/specs/0102-b.md")
     assert sw["mode"] == "split" and "fm_before" not in sw
+
+
+def test_rate_limited_spec_writer_starts_the_backoff_and_holds_the_rewrite(tmp_path,
+                                                                           monkeypatch):
+    """SPEC-0345: a spec writer run's 429 API error is folded into the account backoff; the
+    SPEC_WRITING step then waits for it (no new writer run)."""
+    from nightwright.agentic import events as EV
+    from nightwright.agentic import persona_gate as PG
+    hit = {"persona": "spec_writer", "edits": [], "verdict": None, "cost_usd": 0.1,
+           "api_error": {"status": 429, "message": "API Error: 429 rate limit"}}
+    cfg, repo, iid, cid = start(tmp_path, monkeypatch, lambda i: [hit, spec_written(2, i)])
+    Q.tick(cfg)
+    assert len(ledger(cfg, cid, "run.end")) == 1
+    assert PG.read_rate_limit(cfg)["backoff_s"] == 60
+    assert PG.backoff_until(cfg) is not None
+    assert [e["campaign"] for e in EV.read_since(cfg, 0) if e["type"] == "rate_limited"] == [cid]
+    for _ in range(3):
+        Q.tick(cfg)
+    assert len(ledger(cfg, cid, "run.start")) == 1
+    assert S.read_state(cfg, cid)["state"] == "SPEC_WRITING"

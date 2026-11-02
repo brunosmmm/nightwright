@@ -1698,7 +1698,11 @@ def attach(queue_group):
         console.print(_queue_table(payload))
 
     # SPEC-0345: `nw queue status` is `nw queue list` (the items carry `held_by`)
-    queue_group.add_command(queue_list, name="status")
+    import copy
+    queue_status = copy.copy(queue_list)
+    queue_status.help = queue_status.short_help = (
+        "Alias of `nw queue list` (SPEC-0345): the items carry `held_by`.")
+    queue_group.add_command(queue_status, name="status")
 
     @queue_group.command("backlog")
     @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.backlog.v1 JSON")

@@ -256,6 +256,37 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   tests/test_test_waits.py`: 310 passed.
 - Full suite left to gating. The manual verification steps are still not performed (see above).
 
+### Test record (2026-11-02, review loop 4)
+
+- New queue-driven tests in `tests/test_remote_persona_limits.py`, through `Q.tick` with the
+  e2e harness and loopback workers:
+  - `test_a_tick_places_the_implementer_remotely_and_stores_the_affinity`: the implementer
+    runs on `box` (`run.end.worker`), and the tick stores `remote_affinity: box`.
+  - `test_a_remote_rate_limit_starts_the_backoff_and_holds_the_next_step`: a 429 API error from
+    the worker's run sets `rate-limit.json` (`backoff_s` 60) and one `rate_limited` event. The
+    next three ticks start no run, and the hold reads `rate_limit`.
+  - `test_cap_of_two_across_two_workers_and_local_runs_two_at_once`: `max_personas: 2`, workers
+    `box` and `box2` plus local, a 3-reviewer fan-out. At most 2 reviewer runs are open at once
+    (the test fails with 3 when the cap is removed). The first two land on `box` and `box2`, the
+    third waits (`persona cap:` note) and then lands on the affine worker. The campaign merges.
+- `_do_write_spec` and `_do_resolve` folding: `test_rate_limited_spec_writer_starts_the_backoff_and_holds_the_rewrite`
+  (`tests/test_agentic_spec_writer.py`) and
+  `test_rate_limited_resolver_starts_the_backoff_and_holds_the_next_attempt`
+  (`tests/test_agentic_resolver.py`). Both fail when the `_note_rate_limit` call is removed.
+- Logic fixes, each with a test that fails without the fix:
+  `test_affine_worker_that_lost_a_job_of_the_campaign_is_demoted_for_gates`,
+  `test_the_cap_counts_the_open_run_of_a_campaign_parked_mid_run`,
+  `test_a_cap_hold_older_than_the_mute_limit_is_reported_again`.
+- The reviewer barrier already has a timeout (`fanout_support.PersonaRunner.run`,
+  `barrier.wait(timeout=10)`), so a serial regression fails with `BrokenBarrierError`.
+- `uv run pytest -q -n 6` on the persona-limits, remote gates and personas, resolver, spec
+  writer, quiet, watchdog, events, affected-tests replay, test-waits and worker-job files:
+  723 passed.
+- Full suite left to gating.
+- Manual verification is still **not** performed: `nw workers list` shows `box` with
+  `kinds: [gate]` and no cached features, so no persona job can run on it. Both manual steps
+  are left to the human (step 2 to SPEC-0346).
+
 ### As shipped (2026-11-02)
 
 - **Module.** `agentic/persona_gate.py` holds the gate (`Gate`), the backoff
@@ -325,6 +356,15 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   gains `cost_by_worker` in its JSON output and a `cost by worker` line in the text output.
   Both sum `charged_usd` of `run.end` by `worker`, with no worker counted as `local`. Remote
   costs already went through `_record_run`, so `_cap_blocks` treats them like local costs.
+- **Review loop 4.** Gate runs now put every failing worker after the healthy remote pools,
+  not only the affine one. This includes a worker that lost a job of this campaign since the
+  affinity was set, even though the loss voids the affinity. The tick's gate also counts the
+  open runs of campaigns that still have a step in flight but are no longer active (for
+  example, a human parked one mid-run). The detectors skip a `persona_cap` hold for at most
+  `persona_gate.CAP_MUTE_MAX_S` (2 h) from its `since`, then report the campaign again, so a
+  live count inflated by a run that never ends cannot mute them forever. `nw queue status`
+  still shows the hold. `nw queue status` has its own help line naming it as the alias of
+  `list`.
 - **Test support.** A `FakeRunner` script entry may carry
   `api_error: {status, message}`, which yields an API-error result.
 

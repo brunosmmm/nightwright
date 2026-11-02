@@ -177,18 +177,26 @@ def pools_for(cfg, project_cfg: dict, campaign_state: dict, *, seq: int,
 
 def _affine_first(cfg, campaign_state: dict, pools: list) -> list:
     """SPEC-0345: the campaign's affine worker's pool first, unless it is failing (a full one
-    falls through to the next pool). A failing affine worker goes after the other remote pools,
-    even when the registry order put it first. Gate runs only read the affinity, never set it."""
+    falls through to the next pool). A failing worker (disabled, last check failed, or it lost
+    a job of this campaign since the affinity was last set, which also voids the affinity) goes
+    after the other remote pools, even when the registry order put it first. Gate runs only
+    read the affinity, never set it."""
     from . import persona_gate as PG
     by_name = {name: (name, n) for name, n in pools}
     names = PG.order(cfg, campaign_state, [name for name, _n in pools])
-    if names and names[0] is not WK.LOCAL and PG.affinity(cfg, campaign_state) == names[0]:
-        rec = next((w for w in WK.load(cfg) if w["name"] == names[0]), None)
-        if rec is None or PG.failing(cfg, campaign_state, rec):
-            rest = [p for p in pools if p[0] != names[0]]
-            cut = next((i for i, p in enumerate(rest) if p[0] is WK.LOCAL), len(rest))
-            return rest[:cut] + [by_name[names[0]]] + rest[cut:]
-    return [by_name[n] for n in names]
+    recs = {w["name"]: w for w in WK.load(cfg)}
+    aff = PG.affinity(cfg, campaign_state)
+
+    def bad(name) -> bool:
+        if name is WK.LOCAL:
+            return False
+        rec = recs.get(name)
+        return (name == aff) if rec is None else PG.failing(cfg, campaign_state, rec)
+
+    ok = [n for n in names if n is not WK.LOCAL and not bad(n)]
+    worse = [n for n in names if bad(n)]
+    local = [n for n in names if n is WK.LOCAL]
+    return [by_name[n] for n in ok + worse + local]
 
 
 def retry_pools(cfg, project_cfg: dict, campaign_state: dict, *, seq: int, excluded,

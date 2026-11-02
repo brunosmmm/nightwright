@@ -1568,3 +1568,25 @@ def test_rebase_resolved_text_superseded():
     assert _render_resolved({**base, "superseded_commits": []}) == "rebase resolved: 1 paths"
     assert _render_resolved({**base, "superseded_commits": [{}, {}]}) \
         == "rebase resolved: 1 paths; 2 superseded"
+
+
+def test_rate_limited_resolver_starts_the_backoff_and_holds_the_next_attempt(tmp_path,
+                                                                              monkeypatch):
+    """SPEC-0345: a resolver run's 429 API error is folded into the account backoff; the
+    resolve step then waits for it (no new resolver run) instead of running."""
+    from nightwright.agentic import events as EV
+    from nightwright.agentic import persona_gate as PG
+    hit = resolver(shell=(), edits=False, api_error={"status": 429,
+                                                     "message": "API Error: 429 rate limit"})
+    w = basic(tmp_path, monkeypatch, hit, resolver())
+    w.open_and_conflict()
+    w.dispatched()
+    w.drive(lambda s: w.run_ids() and w.ledger("run.end")[-1]["persona"] == "conflict_resolver")
+    assert PG.read_rate_limit(w.cfg)["backoff_s"] == 60
+    assert PG.backoff_until(w.cfg) is not None
+    assert [e["campaign"] for e in EV.read_since(w.cfg, 0) if e["type"] == "rate_limited"] \
+        == [w.cid]
+    n = len(w.run_ids())
+    for _ in range(3):
+        w.tick()
+    assert len(w.run_ids()) == n and w.st()["state"] == "CLOSING"

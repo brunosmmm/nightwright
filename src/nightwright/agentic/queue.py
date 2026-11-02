@@ -4976,7 +4976,9 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     trains = close_train(members.values(), set(close_roots))
     train_pos = {cid: (ids[0], i) for ids in trains.values() for i, cid in enumerate(ids)}
     gate_starts = _gate_starts(ctx, pool, busy, admitted_ids, flying)
-    pgate = PG.Gate(cfg, [s["id"] for s in busy])          # SPEC-0345: the dispatch gate
+    # SPEC-0345: the dispatch gate. Its live count also reads the campaigns with a step in
+    # flight that are not active any more (a human parked one mid-run): the run still runs.
+    pgate = PG.Gate(cfg, [s["id"] for s in busy] + sorted(flying - {s["id"] for s in busy}))
     for st in busy:
         ctx.progress()
         if st.get("state") not in ACTIVE_STATES or st["id"] in admitted_ids \

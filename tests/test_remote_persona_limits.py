@@ -126,6 +126,18 @@ def test_failing_affine_worker_first_in_the_registry_is_demoted_for_gates(two):
     assert [p[0] for p in pools][:2] == ["box2", "box"]
 
 
+def test_affine_worker_that_lost_a_job_of_the_campaign_is_demoted_for_gates(two):
+    # the loss voids the affinity; the worker that lost the job still goes last for gate runs,
+    # as persona dispatch skips it
+    st = _affine(two, "box")                                 # registry order: box first
+    S.append_event(two.cfg, CID, "worker_job_lost", {"worker": "box", "job_id": "j",
+                                                    "attempt": 1, "reason": "unreachable"})
+    assert PG.affinity(two.cfg, st) is None
+    pools = RG.pools_for(two.cfg, two.project, S.read_state(two.cfg, CID), seq=1)
+    assert [p[0] for p in pools][:2] == ["box2", "box"]
+    assert _place(two)[0] == "box2"
+
+
 def test_gate_run_never_sets_affinity(two):
     pools = RG.pools_for(two.cfg, two.project, S.read_state(two.cfg, CID), seq=1)
     assert pools[0][0] == "box"
@@ -516,6 +528,43 @@ def test_cap_hold_raises_no_campaign_silent(tmp_path):
     assert item["held_by"] == "persona_cap"
 
 
+def test_a_cap_hold_older_than_the_mute_limit_is_reported_again(tmp_path):
+    # a live count inflated by a run that never ends must not mute the detectors forever
+    w, later = _silent_world(tmp_path)
+    old = later - dt.timedelta(seconds=PG.CAP_MUTE_MAX_S + 60)
+    PG._write_json(PG.holds_path(w.cfg), {"holds": {CID: {"held_by": "persona_cap",
+                                                          "since": old.isoformat()}}})
+    assert {"campaign_silent", "state_stuck"} <= _kinds(w.cfg, later)
+    item = next(i for i in Q.queue_payload(w.cfg, now=later)["items"] if i["campaign"] == CID)
+    assert item["held_by"] == "persona_cap"                  # still shown as held
+
+
+def test_the_cap_counts_the_open_run_of_a_campaign_parked_mid_run(tmp_path, monkeypatch):
+    # a human parked X while its local implementer runs: the run is still in the pool, and the
+    # tick's gate counts it
+    w = _world(tmp_path)
+    _cap(w.cfg, 2)
+    x = dict(w.state, id="SPEC-0901-20261101-abcd", spec_id="SPEC-0901", state="PARKED",
+             park={"reason": "human", "detail": "parked by a human"})
+    S.create_campaign(w.cfg, x)
+    _open_run(w.cfg, x["id"], "001-implementer")
+    seen = []
+
+    class Spy(PG.Gate):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            seen.append(self)
+
+    monkeypatch.setattr(PG, "Gate", Spy)
+    pool = Q.StepPool()
+    pool.adopted = True
+    monkeypatch.setattr(pool, "ids", lambda: {x["id"]})
+    Q.tick(w.cfg, runner=R.FakeRunner(_write_script(tmp_path / "l.json", LOCAL_OK)), pool=pool,
+           admit=False)
+    gate, = seen
+    assert x["id"] in gate.ids and gate.live() == 1
+
+
 def test_queue_status_is_list(tmp_path, monkeypatch):
     from nightwright.cli import cli
     w = _world(tmp_path)
@@ -569,3 +618,98 @@ def test_cost_by_worker_in_campaign_show_and_export(tmp_path, monkeypatch):
     row = CE.campaign_row(w.cfg, S.read_state(w.cfg, CID), S.read_ledger(w.cfg, CID),
                           dt.datetime.now().astimezone())
     assert row["cost_by_worker"] == want and row["cost_usd"] == 2.0
+
+
+# ---- queue-driven: persona runs on loopback workers through `Q.tick` --------------------------
+
+def _loopback(cfg, tmp_path, entries, names=("box",)):
+    """Loopback persona workers `names` for the e2e harness's `cfg`; each worker job runs
+    `entries` with the worker's FakeRunner."""
+    from types import SimpleNamespace
+    d = tmp_path / "lb"
+    d.mkdir(exist_ok=True)
+    w = SimpleNamespace(tmp=d, cfg=cfg)
+    _remote(w, _write_script(d / "worker.json", entries))
+    recs = json.loads(WK.path(cfg).read_text())["workers"]
+    recs += [dict(recs[0], name=n) for n in names[1:]]
+    WK.path(cfg).write_text(json.dumps({"schema": WK.SCHEMA, "workers": recs}))
+
+
+def _ends(cfg, cid, persona=None):
+    return [e for e in S.read_ledger(cfg, cid, types=["run.end"])
+            if persona is None or e.get("persona") == persona]
+
+
+def _tick_until(cfg, runner, pred, ticks=12):
+    for _ in range(ticks):
+        if pred():
+            return
+        Q.tick(cfg, runner=runner)
+    assert pred()
+
+
+def test_a_tick_places_the_implementer_remotely_and_stores_the_affinity(e2e, tmp_path):
+    # the local runner has no implementer entry: a local run would fail the step
+    cfg, cid, repo, runner = e2e({A: [review_entry("pass")], B: [b_entry("pass")]})
+    _loopback(cfg, tmp_path, [impl_done()])
+    _tick_until(cfg, runner, lambda: _ends(cfg, cid, "implementer"))
+    end, = _ends(cfg, cid, "implementer")
+    assert end["worker"] == "box" and not end["is_error"], end
+    st = S.read_state(cfg, cid)
+    assert st["remote_affinity"] == "box" and st["remote_affinity_at"]
+
+
+def test_a_remote_rate_limit_starts_the_backoff_and_holds_the_next_step(e2e, tmp_path):
+    cfg, cid, repo, runner = e2e({A: [review_entry("pass")], B: [b_entry("pass")]})
+    _loopback(cfg, tmp_path, [dict(impl_done(), api_error={
+        "status": 429, "message": "API Error: 429 rate limit"})])
+    _tick_until(cfg, runner, lambda: _ends(cfg, cid, "implementer"))
+    end, = _ends(cfg, cid, "implementer")
+    assert end["worker"] == "box" and end["is_error"], end
+    assert PG.read_rate_limit(cfg)["backoff_s"] == 60 and PG.backoff_until(cfg) is not None
+    assert [e["campaign"] for e in _events(cfg)] == [cid]
+    n = len(starts(cfg, cid))
+    for _ in range(3):
+        Q.tick(cfg, runner=runner)
+    assert len(starts(cfg, cid)) == n                 # held: no new run, locally or remotely
+    assert PG.read_holds(cfg)[cid]["held_by"] == "rate_limit"
+
+
+C = "third_reviewer"
+
+
+def test_cap_of_two_across_two_workers_and_local_runs_two_at_once(e2e, tmp_path, monkeypatch):
+    import dataclasses
+    from nightwright.agentic import personas as PS
+    monkeypatch.setitem(PS.PERSONAS, C, dataclasses.replace(PS.PERSONAS[A], name=C))
+    monkeypatch.setattr(PS, "REVIEWER_PERSONAS", (A, B, C))
+    from fanout_support import B_SETTINGS
+    cfg, cid, repo, runner = e2e({"implementer": [impl_done()], A: [review_entry("pass")],
+                                  B: [b_entry("pass")], C: [dict(review_entry("pass"), persona=C)]},
+                                 profile={"reviewers": [A, B, C],
+                                          "personas": {B: B_SETTINGS, C: B_SETTINGS}})
+    _cap(cfg, 2)
+    _tick_until(cfg, runner, lambda: _ends(cfg, cid, "implementer"))   # local: no worker yet
+    assert "worker" not in _ends(cfg, cid, "implementer")[0]
+    reviewer = {k: v for k, v in review_entry("pass").items() if k != "persona"}
+    _loopback(cfg, tmp_path, [reviewer], names=("box", "box2"))
+    _tick_until(cfg, runner, lambda: S.read_state(cfg, cid)["state"] in ("MERGED", "PARKED"),
+                ticks=20)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED", st.get("park")
+    led = [(e["type"], e.get("persona"), e.get("worker"))
+           for e in S.read_ledger(cfg, cid, types=["run.start", "run.end"])]
+    live = peak = 0
+    for kind, persona, _w in led:
+        if persona in (A, B, C):
+            live += 1 if kind == "run.start" else -1
+            peak = max(peak, live)
+    assert peak == 2                                   # never three reviewers at once
+    workers = {p: w for k, p, w in led if k == "run.end" and p in (A, B, C)}
+    first_two = [p for k, p, _w in led if k == "run.start" and p in (A, B, C)][:2]
+    assert {workers[p] for p in first_two} == {"box", "box2"}   # box full: falls to box2
+    third = [p for k, p, _w in led if k == "run.start" and p in (A, B, C)][2]
+    # the two reviewers race to set the affinity; the third one, dispatched alone, follows it
+    assert st["remote_affinity"] in ("box", "box2") and workers[third] == st["remote_affinity"]
+    notes = [e["text"] for e in S.read_ledger(cfg, cid, types=["note"])]
+    assert any(t.startswith("persona cap:") for t in notes)       # the third one waited

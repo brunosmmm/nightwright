@@ -536,7 +536,8 @@ def stuck_items(cfg, now, sett) -> list[dict]:
             continue
         cid, state = st["id"], st["state"]
         run = _open_run(cfg, cid)
-        if not run and PG.held_by(cfg, st, now, holds):     # SPEC-0345: held by the gate
+        if not run and PG.held_by(cfg, st, now, holds,      # SPEC-0345: held by the gate
+                                 cap_mute_max_s=PG.CAP_MUTE_MAX_S):
             continue
         limit = sett["stuck_after_s"]
         if state in _PERSONA_STATES:
@@ -843,7 +844,8 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
             continue
         if gate_slots.waiting(cfg, cid, now):            # SPEC-0309: blocked for a gate slot
             continue
-        if PG.held_by(cfg, r, now, holds):               # SPEC-0345: the dispatch gate holds it
+        if PG.held_by(cfg, r, now, holds,                # SPEC-0345: the dispatch gate holds it
+                      cap_mute_max_s=PG.CAP_MUTE_MAX_S):
             continue
         tail = store.read_ledger(cfg, cid, tail=1)
         silent = _age_s(tail[-1].get("ts"), now) if tail else _age_s(r.get("updated_at"), now)
