@@ -320,6 +320,23 @@ an idempotent `enabled: false`.
   these two fail (32 others pass); with the code as shipped, the file gives 34 passed. No `src/`
   change. The full suite is left to gating.
 
+### Test record (2026-11-02, second review fixes)
+
+- Two review findings were fixed in the code (see *As shipped (2026-11-02)*): a retry sent to a
+  worker without `async` ends the chain, and a failed mail to `human` is a failure to raise.
+- `tests/test_worker_job_retry.py` gains 5 tests: a retry to a sync b2 (completed, and stopped
+  mid-dispatch: the lost record is `local`, one `worker_job_retried` with the `-a0` id, and the
+  next step starts a fresh seq with no second event); a loss file that cannot be written
+  (`record_loss` raises `OSError`) is a campaign `note` and the gate step still passes on b2; a
+  failed mail withdraws the record, leaves `escalated_at` null, notes the campaign, and the next
+  loss raises; an unreadable registry leaves the answer unapplied (no `applied_at`, file not
+  touched) until the next tick with a readable one. 39 passed (`-n 4`). With the `src/` change
+  reverted, the two sync tests and the mail test fail; the two others (code already right,
+  coverage only) pass.
+- Regression guard: `test_remote_job_records.py`, `test_remote_gates.py`, `test_gate_slots.py`,
+  `test_workers_registry.py`, `test_agentic_gates.py`, `test_gate_tiers.py`,
+  `test_agentic_escalations*.py`: 420 passed (`-n 4`). The full suite is left to gating.
+
 ### As shipped (2026-11-01)
 
 - **Where the retry lives.** `remote_gates._give_up` no longer sets the record `local`. It
@@ -363,6 +380,24 @@ an idempotent `enabled: false`.
   appends `to_worker: null` when nothing was sent), so a crash during that run does not continue
   the chain. `_give_up` takes `count`; `adopt` passes `count=False` when the record's worker is
   no longer registered, so no loss (and no escalation) is recorded against a removed worker.
+
+### As shipped (2026-11-02)
+
+- **A retry to a worker without `async`.** Such a worker keeps the synchronous `gate-job`: it
+  has no job record and its id stays `<cid>-gate-<seq>-a0`, which `remote_gates.run` uses to
+  tell it apart. `on_attempt` now receives the id the job is sent with and whether it has a
+  record. For a `gate-job` retry the lost record is set `local` just before the job is sent (a
+  sync attempt is never retried: its failure is a transport failure, so it is the chain's last
+  attempt), and `worker_job_retried` carries the `-a0` id the job really used instead of
+  `-a<attempt>`. A stop or re-exec during that dispatch then starts a fresh attempt 1 on the
+  next step, with no second `worker_job_retried`.
+- **A failed mail is a failed raise.** When `apply_escalate` returns a record with no
+  `mail_id` (the mail to `human` failed), `record_loss` withdraws the record (`by: conductor`,
+  reason `not raised: ...`), leaves `escalated_at` null and returns `error`, so the losing
+  campaign gets a `note` and the next loss tries again. A failed `escalation` event or notifier
+  stays on the record's `notified`, as for every escalation (the human still has the mail, and
+  `remind_due` re-runs the notifier); treating them as a failure would withdraw a question the
+  human already received.
 
 ## Clock Log
 

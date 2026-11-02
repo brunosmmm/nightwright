@@ -423,13 +423,25 @@ def _raise_escalation(cfg, name: str, recent: list, n: int) -> dict:
     return ESC.apply_escalate(cfg, plan)
 
 
+def _withdraw_unraised(cfg, esc_id: str, why: str) -> None:
+    """A worker escalation whose mail to `human` failed is withdrawn, so the open record does
+    not block the next loss's attempt. A failed withdraw leaves it open (it still blocks)."""
+    from . import escalations as ESC
+    try:
+        ESC.withdraw(cfg, esc_id, f"not raised: {why}"[:300], "conductor", clear_request=False)
+    except (OSError, ValueError):
+        pass
+
+
 def record_loss(cfg, name: str, *, job_id: str, reason: str, now: float | None = None) -> dict:
     """Record one `worker_job_lost` of worker `name` in `worker-losses.json`, under its lock,
     and raise the campaign-less worker escalation when three or more losses remain inside
     the sliding `LOSS_WINDOW_S`, the last one is older than the window (or there is none) and
     no worker escalation for `name` is open. Returns `{"losses": n, "escalation": id | None,
     "error": text | None}`; a failure to raise is `error` (the next loss tries again), never
-    an exception. A file I/O failure raises `OSError`."""
+    an exception. A failed mail to `human` is a failure to raise (the record is withdrawn); a
+    failed event or notifier stays on the record's `notified`, as for any escalation, and the
+    notifier is retried by `remind_due`. A file I/O failure raises `OSError`."""
     now = _now() if now is None else now
     p = losses_path(cfg)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -453,8 +465,13 @@ def record_loss(cfg, name: str, *, job_id: str, reason: str, now: float | None =
             try:
                 if _open_escalation_for(cfg, name) is None:
                     rec = _raise_escalation(cfg, name, recent, len(losses))
-                    w["escalated_at"], w["escalation"] = _iso(now), rec["id"]
-                    out["escalation"] = rec["id"]
+                    if rec.get("mail_id") is None:  # the human was never asked: not raised
+                        why = (rec.get("notified") or {}).get("error") or "mail not sent"
+                        _withdraw_unraised(cfg, rec["id"], why)
+                        out["error"] = f"worker {name} escalation not raised: {why}"
+                    else:
+                        w["escalated_at"], w["escalation"] = _iso(now), rec["id"]
+                        out["escalation"] = rec["id"]
             except (OSError, ValueError) as e:
                 out["error"] = f"worker {name} escalation not raised: {e}"
         doc["workers"][name] = w

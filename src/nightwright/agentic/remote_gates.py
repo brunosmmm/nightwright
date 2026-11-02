@@ -697,9 +697,10 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
     record (an explicit seq; `gates.next_gate_seq` allocates past every record) also keeps
     `gate-job`: the worker may still hold that job id. `tier` is written to the record.
     SPEC-0342: `attempt` and `excluded` (the workers earlier attempts were lost on) are a lost
-    job's retry: the job id carries the attempt and the record its exclusions. `on_attempt()`
-    is called once the job is about to be sent (its record written, for an async worker), so a
-    stop or a transport failure before that leaves no trace of the attempt."""
+    job's retry: the job id carries the attempt and the record its exclusions.
+    `on_attempt(job_id, recorded)` is called once the job is about to be sent (its record
+    written, for an async worker; `recorded` False for a `gate-job` one, which has none and
+    keeps its `-a0` id), so a stop or a transport failure before that leaves no trace of it."""
     cid = campaign_state["id"]
     job_id = f"{cid}-gate-{seq:03d}-a0"
     bundle = store.child_tmp(cfg, cid, owner) / "job.bundle"
@@ -718,7 +719,7 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
         header = prepare(rec, project_cfg, campaign_state, cfg, seq, job_id, bundle, stop=stop)
         _check_stop(stop)                       # no job is started only to be cancelled
         if on_attempt is not None:
-            on_attempt()
+            on_attempt(job_id, False)
         return _dispatch(rec, header, bundle, cfg, cid, seq, stop)
     except _Stopped:                            # SPEC-0229: nothing was sent, nothing ran
         return Outcome(G.GateRun(seq, False, (), started_at, round(time.monotonic() - t0, 3),
@@ -945,7 +946,7 @@ def _run_async(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: 
                     excluded_workers=excluded)
     rec = RJ.update(cfg, job_id, gates=[g["name"] for g in header["payload"]["gates"]]) or rec
     if on_attempt is not None:
-        on_attempt()
+        on_attempt(job_id, True)
     _submit(worker, header, bundle, cfg)
     # the worker holds the job now: an `unknown` from here on is a job it lost
     rec = RJ.update(cfg, job_id, accepted_at=RJ.iso(_now())) or rec
@@ -1202,12 +1203,14 @@ def _record_loss(cfg, cid, name: str, job_id: str, reason: str) -> None:
         store.append_event(cfg, cid, "note", {"text": err, "author": "gates"}, by="gates")
 
 
-def retried(cfg, cid, lost: dict, attempt: int, to_worker: str | None) -> None:
+def retried(cfg, cid, lost: dict, attempt: int, to_worker: str | None, *,
+            job_id: str | None = None) -> None:
     """SPEC-0342: `worker_job_retried` for a lost job's next attempt (`to_worker` None: it runs
-    locally)."""
+    locally). `job_id` is the id the attempt was sent with; by default the attempt's
+    `<cid>-gate-<seq>-a<attempt>`."""
     seq = int(lost.get("seq_or_run") or 0)
     store.append_event(cfg, cid, "worker_job_retried",
-                       {"job_id": RJ.gate_job_id(cid, seq, attempt),
+                       {"job_id": job_id or RJ.gate_job_id(cid, seq, attempt),
                         "from_worker": lost.get("worker"), "to_worker": to_worker,
                         "attempt": attempt}, by="gates")
 

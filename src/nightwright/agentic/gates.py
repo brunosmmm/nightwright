@@ -594,6 +594,8 @@ def _retry(lost, waited, *, project_cfg, campaign_state, cfg, cid, worktree, seq
     runs locally. Every new attempt appends `worker_job_retried` (`to_worker` None: local); a
     remote one appends it only once the job is about to be sent (`on_attempt`), so a stop
     before that leaves the record `lost` with no event and the next step continues the chain.
+    A retry sent to a worker without `async` (no record, its `-a0` id in the event) sets the lost
+    record `local` before it is sent: it is the chain's last attempt.
     A local run, including a transport failure's fallback (SPEC-0338, no further retry), sets
     the lost record `local` first, so a crash during it never restarts remote attempts."""
     from . import remote_gates as RG
@@ -624,9 +626,13 @@ def _retry(lost, waited, *, project_cfg, campaign_state, cfg, cid, worktree, seq
                 return replace(run, slot_wait_s=waited, head=head, tree=tree)
             sent = []
 
-            def on_attempt(lost=lost, attempt=attempt, to=hold.pool):
+            def on_attempt(job_id, recorded, lost=lost, attempt=attempt, to=hold.pool):
                 sent.append(to)
-                RG.retried(cfg, cid, lost, attempt, to)
+                if not recorded:                # a `gate-job` worker: no record of its own
+                    # and never retried (its failure is a transport failure), so the chain
+                    # ends here: a stop during it starts afresh instead of re-sending
+                    RJ.update(cfg, lost["job_id"], state="local")
+                RG.retried(cfg, cid, lost, attempt, to, job_id=job_id)
             out = RG.run(hold.pool, project_cfg, campaign_state, cfg, seq, owner, stop,
                          tier=tier, attempt=attempt, excluded=excluded, on_attempt=on_attempt)
         waited = round(waited + out.worker_wait_s, 1)

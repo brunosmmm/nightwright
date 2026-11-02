@@ -132,9 +132,9 @@ def test_lost_job_retries_on_the_second_worker_then_runs_locally(aw, boxes, monk
     seen = []
     real = RG.retried
 
-    def spy(cfg, cid, lost, attempt, to_worker):
+    def spy(cfg, cid, lost, attempt, to_worker, **kw):
         seen.append((attempt, to_worker, sorted(p.name for p in aw.gates_dir.glob("001-*"))))
-        return real(cfg, cid, lost, attempt, to_worker)
+        return real(cfg, cid, lost, attempt, to_worker, **kw)
     monkeypatch.setattr(RG, "retried", spy)
     t, out = _thread(lambda: _gate_step(aw))
     assert until(lambda: b1.running(A1))
@@ -332,6 +332,69 @@ def test_transport_failure_of_a_retry_sets_the_lost_record_local(aw, boxes, monk
     res = _gate_step(aw)                        # no `lost` record to continue: a fresh run
     assert res.gate_run.ok and res.gate_run.seq != 1
     assert RJ.read(aw.cfg, A2) is None and len(_retried(aw)) == 1
+
+def _sync(w, name):
+    """Worker `name` without the `async` feature: it keeps the synchronous `gate-job`."""
+    def fn(records):
+        for r in records:
+            if r["name"] == name:
+                r["info"] = {**ASYNC_INFO, "features": []}
+    WK.update(w.cfg, fn)
+
+
+@pytest.mark.parametrize("stopped", [False, True])
+def test_retry_to_a_sync_worker_ends_the_chain(aw, boxes, monkeypatch, stopped):
+    """b2 has no `async`: the retry is a `gate-job` with no record of its own. The event names
+    the id it was sent with (`-a0`) and the lost record goes `local` before it is sent, so a
+    stop during that dispatch starts afresh on the next step: no second `worker_job_retried`."""
+    b1, b2 = boxes
+    _sync(aw, "b2")
+    sync_id = f"{CID}-gate-001-a0"
+    stop = threading.Event()
+    if stopped:
+        def dispatch(rec, header, bundle, cfg, cid, seq, stop_):
+            assert RJ.read(cfg, A1)["state"] == "local" and _retried(aw)
+            stop.set()
+            return RG.Outcome(G.GateRun(seq, False, (), S.now_iso(), 0.0, interrupted=True))
+        monkeypatch.setattr(RG, "_dispatch", dispatch)
+    t, out = _thread(lambda: _gate_step(aw, stop))
+    assert until(lambda: b1.running(A1))
+    b1.kill(A1)
+    aw.release()
+    join(t)
+    assert RJ.read(aw.cfg, A1)["state"] == "local" and RJ.read(aw.cfg, A2) is None
+    assert _retried(aw) == [{"job_id": sync_id, "from_worker": "b1", "to_worker": "b2",
+                             "attempt": 2}]
+    if not stopped:
+        assert out["r"].gate_run.ok and out["r"].gate_run.worker == "b2"
+        return
+    assert out["r"].gate_run.interrupted
+    monkeypatch.undo()
+    G.reset()
+    _clear_cooldowns(aw)
+    res = _gate_step(aw)                        # the chain ended: a fresh attempt 1
+    assert res.gate_run.ok and res.gate_run.seq != 1
+    assert RJ.read(aw.cfg, A2) is None and len(_retried(aw)) == 1
+
+
+def test_a_loss_file_that_cannot_be_written_is_a_note(aw, boxes, monkeypatch):
+    """`record_loss` itself fails (the loss file's directory cannot be made): the give-up
+    appends a campaign `note` and the retry still runs; the gate step does not fail."""
+    b1, b2 = boxes
+    blocker = aw.tmp / "not-a-dir"
+    blocker.write_text("x")
+    monkeypatch.setattr(WK, "losses_path", lambda cfg: blocker / "worker-losses.json")
+    t, out = _thread(lambda: _gate_step(aw))
+    assert until(lambda: b1.running(A1))
+    b1.kill(A1)
+    aw.release()
+    join(t)
+    assert "e" not in out, out.get("e")
+    assert out["r"].gate_run.ok and out["r"].gate_run.worker == "b2"
+    notes = [e["text"] for e in S.read_ledger(aw.cfg, CID, types=["note"])]
+    assert any("worker b1: loss not recorded" in n for n in notes), notes
+    assert not blocker.with_name("worker-losses.json").exists()
+
 
 # ---- max_remote_attempts ---------------------------------------------------------------------
 
@@ -620,6 +683,27 @@ def test_a_failed_raise_is_a_note_and_the_next_loss_retries(two, monkeypatch):
     assert len(_worker_escalations(aw)) == 1
 
 
+def test_a_failed_mail_is_a_failed_raise(two, monkeypatch):
+    """The mail to `human` fails (the mailbox is unwritable): the record is withdrawn,
+    `escalated_at` stays null, the losing campaign gets a `note`, and the next loss raises."""
+    aw = two
+
+    def boom(*a, **k):
+        raise OSError("mailbox unwritable")
+    monkeypatch.setattr(ESC.M, "send", boom)
+    _lose(aw, CID, 3, at=T0)
+    assert [r["status"] for r in _worker_escalations(aw)] == ["withdrawn"]
+    w = WK.read_losses(aw.cfg)["workers"]["b1"]
+    assert w["escalated_at"] is None and w["escalation"] is None
+    notes = [e["text"] for e in S.read_ledger(aw.cfg, CID, types=["note"])]
+    assert any("not raised" in n and "mailbox unwritable" in n for n in notes), notes
+    monkeypatch.undo()
+    _lose(aw, CID, 1, at=T0 + 10)
+    opened = [r for r in _worker_escalations(aw) if r["status"] == "open"]
+    assert len(opened) == 1 and opened[0]["mail_id"]
+    assert WK.read_losses(aw.cfg)["workers"]["b1"]["escalation"] == opened[0]["id"]
+
+
 def test_the_loss_count_survives_a_restart(two):
     aw = two
     _lose(aw, CID, 2, at=T0)
@@ -669,6 +753,23 @@ def test_keep_leaves_the_registry_byte_identical(two):
     _tick(aw)
     assert WK.path(aw.cfg).read_bytes() == before and WK.path(aw.cfg).stat().st_mtime_ns == mtime
     assert ESC.read(aw.cfg, esc_id)["applied"] == "keep"
+
+
+def test_an_unreadable_registry_leaves_the_answer_unapplied(two):
+    """The registry cannot be parsed at the tick: the record keeps no `applied_at` and the
+    file is not touched; once it reads again, the next tick applies the answer."""
+    aw = two
+    esc_id = _answered(aw, "off")
+    good = WK.path(aw.cfg).read_bytes()
+    WK.path(aw.cfg).write_text("{not json")
+    _tick(aw)
+    rec = ESC.read(aw.cfg, esc_id)
+    assert "applied_at" not in rec or rec["applied_at"] is None
+    assert WK.path(aw.cfg).read_text() == "{not json"
+    WK.path(aw.cfg).write_bytes(good)
+    _tick(aw)
+    assert ESC.read(aw.cfg, esc_id)["applied"] == "off"
+    assert [w["enabled"] for w in WK.load(aw.cfg) if w["name"] == "b1"] == [False]
 
 
 def test_removed_worker_is_skipped_with_a_note(two, monkeypatch):
