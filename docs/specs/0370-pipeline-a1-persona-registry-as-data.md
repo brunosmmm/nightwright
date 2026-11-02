@@ -301,6 +301,14 @@ no project passes none and gets builtin + user only.
   `test_agentic_personas_cli.py`, `test_agentic_profiles_cli.py`, `test_agentic_profiles.py`,
   `test_agentic_personas.py`: 249 passed; `spec_lint` ok. Full suite left to gating.
 
+- Rebase onto SPEC-0371 (A2a, landed first): `nw personas` is one group with `list`, `show` (this
+  spec) and `validate` (SPEC-0371). `list`/`show` read this registry and, for user/project
+  entries, also apply SPEC-0371's role-placeholder and duplicate rules (so they agree with
+  `validate`); rows carry `layer` (= `scope`), `read_only` and `category`, and a broken one is
+  marked `invalid`. A declared persona's `description` is optional (SPEC-0371); builtins still
+  require one. SPEC-0371's `get_persona(name, project_root)` reaches its own declared registry
+  lazily; the module tables are still built from the builtin layer only.
+
 ## Rollout / migration
 
 No data migration. Order: (1) add `persona_registry.py` and the validator with tests;

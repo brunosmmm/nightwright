@@ -211,7 +211,10 @@ def test_custom_persona_is_refused_by_profiles_and_never_derived(tmp_path):
     attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
     assert "load_builtin" in attrs
-    assert not ({"load_registry", "load_layers"} & (attrs | names))
+    # (`get_persona` may reach the SPEC-0371 declared registry lazily; the tables never do)
+    pr_attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+                and isinstance(n.value, ast.Name) and n.value.id == "PR"}
+    assert not ({"load_registry", "load_layers"} & (pr_attrs | {"load_layers"} & names))
     assert PS.REVIEWER_PERSONAS == R.reviewer_personas(R.load_builtin(PS.KNOWN))
     # profile validation and resolution refuse the custom names
     assert "sec" not in PF._persona_names()

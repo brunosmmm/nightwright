@@ -127,7 +127,8 @@ def validate_persona_doc(doc, *, origin, layer, stem, known, directory=None) -> 
         else:
             bad("role", f"must be one of {', '.join(roles)}")
     desc = doc.get("description")
-    if not isinstance(desc, str) or not desc.strip():
+    # SPEC-0371: a declared (user/project) persona may omit its description
+    if (builtin or "description" in doc) and (not isinstance(desc, str) or not desc.strip()):
         bad("description", "must be a non-empty string")
     cat = doc.get("category")
     if "category" in doc and (not isinstance(cat, list) or not all(
@@ -198,7 +199,7 @@ def _make_def(doc, scope, origin, path) -> PersonaDef:
     adopt = doc.get("adopt")
     return PersonaDef(
         name=doc["name"], role=doc["role"], template=doc["template"],
-        description=doc["description"].strip(), category=tuple(doc.get("category") or ()),
+        description=(doc.get("description") or "").strip(), category=tuple(doc.get("category") or ()),
         order=doc.get("order"), output_schema=doc.get("output_schema"),
         invariant=doc.get("invariant", "default") if scope == "builtin" else None,
         read_only=_derive_read_only(doc),
