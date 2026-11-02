@@ -4,11 +4,13 @@ A record says which worker runs the job, its attempt, the gate seq, the last app
 (`cursor`), its state and its deadline. It outlives the coordinator, so a restarted queue finds
 the campaign's live record before it allocates a new gate seq and adopts the job instead of
 re-running it. Writes are atomic and serialized by one flock; a final state is never
-overwritten by a non-final one (a cancel landing while the step still attaches wins)."""
+overwritten by a non-final one, and `cancelled` by nothing (a cancel landing while the step
+still attaches or gives up wins)."""
 from __future__ import annotations
 
 import datetime as dt
 import fcntl
+import glob
 import json
 import math
 import os
@@ -120,24 +122,49 @@ def create(cfg, *, job_id: str, campaign: str, worker: str, attempt: int, seq: i
 
 def update(cfg, job_id: str, **fields) -> dict | None:
     """Merge `fields` into the record under the lock. A record already final keeps its state
-    (only `state` in `FINAL` may replace a final one); returns the record as written, or None
-    when there is none."""
+    (only `state` in `FINAL` may replace a final one, and nothing replaces `cancelled`: an
+    abandon or a park is never undone by a racing give-up); returns the record as written, or
+    None when there is none."""
     with _lock(cfg):
         rec = read(cfg, job_id)
         if rec is None:
             return None
-        if rec.get("state") in FINAL and fields.get("state") not in FINAL:
+        if rec.get("state") == "cancelled" or (rec.get("state") in FINAL
+                                               and fields.get("state") not in FINAL):
             fields.pop("state", None)
         rec.update(fields)
         _write(cfg, rec)
         return rec
 
 
-def _all(cfg) -> list[dict]:
+def _all(cfg, campaign: str | None = None) -> list[dict]:
+    """Every record (of `campaign`, when given: only its `<campaign>-*` files are parsed)."""
     d = jobs_dir(cfg)
     if not d.is_dir():
         return []
-    return [rec for p in d.glob("*.json") if (rec := read(cfg, p.stem)) is not None]
+    pat = f"{glob.escape(campaign)}-*.json" if campaign is not None else "*.json"
+    return [rec for p in d.glob(pat) if (rec := read(cfg, p.stem)) is not None]
+
+
+def campaigns(cfg) -> set[str]:
+    """The campaigns that have gate job records, read from the file names (nothing parsed)."""
+    d = jobs_dir(cfg)
+    if not d.is_dir():
+        return set()
+    return {m.group("cid") for p in d.glob("*.json") if (m := _GATE_ID.match(p.stem))}
+
+
+def prune(cfg, campaign: str, keep=()) -> list[str]:
+    """Remove the campaign's final records (not those in `keep`): for a campaign that has
+    ended, which never gates again, so `max_seq` no longer needs them. Returns the job ids."""
+    out = []
+    with _lock(cfg):
+        for rec in _all(cfg, campaign):
+            if rec.get("campaign") == campaign and rec.get("state") in FINAL \
+                    and rec["job_id"] not in keep:
+                path(cfg, rec["job_id"]).unlink(missing_ok=True)
+                out.append(rec["job_id"])
+    return out
 
 
 def max_seq(cfg, campaign: str) -> int:
@@ -155,7 +182,7 @@ def max_seq(cfg, campaign: str) -> int:
 def live(cfg, campaign: str | None = None) -> list[dict]:
     """Records with a non-final state (of `campaign`, when given), lowest seq/attempt first."""
     out = []
-    for rec in _all(cfg):
+    for rec in _all(cfg, campaign):
         if rec.get("state") not in LIVE:
             continue
         if campaign is not None and rec.get("campaign") != campaign:

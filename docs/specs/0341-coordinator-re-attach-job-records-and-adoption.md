@@ -302,6 +302,24 @@ without re-attach or adoption.
   Related modules after the change (close, gate paths, exit paths, queue, codewatch, worker
   jobs, registry, gates, drain, adopt): 660 passed in one `-n 8` run. The full suite is left to
   gating.
+- Review round 2 (same day): 15 more tests in `tests/test_remote_job_records.py` (38 in all,
+  two `-n 8` runs, all passed). They cover: a recorded job's protocol failure (cancel sent,
+  the worker's job ends interrupted, record `local`, `worker_failed`, local run); a submit
+  whose reply is lost after acceptance (the record exists before the upload, the job is
+  cancelled); a cancel landing while attached (an interrupted run on `box`, record stays
+  `cancelled` against `attached`/`local`/`mark_done` writes); a cancel during backoff (no
+  give-up, no cooldown, and a later `_give_up` leaves it alone); `run_and_log` on the async
+  worker (event_uid, record `done`; a cut run cancels its job); the per-tick settle of an
+  ABANDONED or MERGED campaign and of a gone one (cancelled, then pruned), with a GATING
+  campaign's record left alone; an unregistered worker (`unreachable`, no cancel); tampered
+  files at or below the cursor stay byte- and mtime-identical on adoption; an explicit seq
+  with a record uses `gate-job`; a stale `last_seen_at` with one failed first attach; a late
+  adoption of a finished job past `deadline_at` replays it; and `try_detach_all` waits for a
+  step that left its attach loop before the claim. The slot-wait gaps are measured on the
+  in-process monotonic clock. `test_deadline_gives_up` now cuts in while the job still runs.
+  Related modules (adopt, close*, codewatch, drain, exit paths, gates, queue, queue gc,
+  remote gates, worker*, workers*, events, quiet): 1107 passed in one `-n 8` run. The full
+  suite is left to gating.
 - Affected modules: `test_remote_gates.py` (SPEC-0338's golden test included, unchanged),
   `test_workers_registry.py`, `test_worker_jobs.py`, `test_worker.py`, `test_agentic_queue.py`,
   `test_agentic_events.py`, `test_agentic_quiet.py`, `test_skills.py`, `test_agentic_exit_paths.py`,
@@ -329,10 +347,19 @@ without re-attach or adoption.
 - **`deadline_at`** is `submitted_at` + the header's `timeout_s` + `worker_ttl_s`. The header's
   `timeout_s` is SPEC-0338's job timeout (`gate_budget_s` + Σ `timeout_s` × (1 + `retries`),
   capped at 4 h), the bound the worker itself uses. A plain sum of the gates' `timeout_s` would
-  give up on a gate that legitimately retries.
+  give up on a gate that legitimately retries. (The Design bullets still say the plain sum: the
+  spec text is frozen at acceptance, so this definition is the one that governs.) Review round
+  2: a job past its `deadline_at` is given up only when one `poll` does not report it `done`.
+  A job the worker already finished is replayed however late, because the deadline bounds
+  waiting, not results that are already there.
 - **Adoption lives in the gate step.** `_do_gate` looks up the campaign's live record before
-  `next_gate_seq`, so a campaign in GATING adopts on the next tick it is stepped. The tick
-  does no separate scan. A re-gate under the adopted seq takes the `gate-<seq>` tmp claim
+  `next_gate_seq`, so a campaign in GATING adopts on the next tick it is stepped. Review round
+  2: each tick also settles the records of campaigns that have ended (a terminal state, or a
+  campaign dir that is gone; `queue._settle_ended_remote_jobs`). Their live records are
+  cancelled, as an abandon would, and their final records are removed a tick later, because
+  such a campaign never gates again. The tick knows other campaigns' records by file name
+  only, and a campaign's lookup parses only its own `<campaign>-*` records, so `remote-jobs/`
+  holds just the records of campaigns that can still gate. A re-gate under the adopted seq takes the `gate-<seq>` tmp claim
   non-exclusively, because the dead runner's claim dir may still be there.
 - **What gets adopted (review round 1).** A record also stores the header's `commit`, the
   worktree's `head` and the commit's `tree` at submit, and the run's `tier`. `live_gate`
@@ -350,12 +377,27 @@ without re-attach or adoption.
   (`gates.job_payload`) and settles the job at once (`gates.settle_job`, which `run_and_log`
   shares): if a stop detached the job, it is cancelled, and then the record goes `done`.
 - While adoption waits for a slot, each successful `poll` refreshes the record's
-  `last_seen_at`, so an old `last_seen_at` from before a restart cannot cause an immediate
-  `unreachable` give-up.
+  `last_seen_at`. Review round 2: the step's `unreachable` clock starts when this process
+  starts following the job. For a fresh submit that equals the record's `last_seen_at`; for an
+  adopted job it is the adoption, not the dead runner's last frame. A coordinator that was
+  simply not running is not a worker that failed to answer, so one failed first `attach`
+  backs off and retries.
+- **Record before submit (review round 2).** The record is written as `submitted` before the
+  upload. A submit whose reply is lost after the worker accepted (or a crash right after it)
+  still has a record: the step's failure path cancels the job and sets the record `local`,
+  and after a crash, adoption attaches (an unknown job gives up as `lost`).
+- **A cancel always wins (review round 2).** Nothing replaces `cancelled` in a record. A
+  give-up (`_give_up`) or a failure (`_failed`) on a record that a cancel already ended
+  returns an interrupted run: no `worker_job_lost`, no cooldown, no local fallback. A step in
+  its re-attach backoff checks for the cancel after each sleep, so an abandon whose own SSH
+  calls fail still stops it.
 - **Code-change exit.** SPEC-0231's exec waits for in-process steps. A gate step that is in
   its attach loop (`remote_gates.attached`) now counts as detachable in
   `StepPool.try_detach_all`: the step is told to detach and its result is never applied. A
-  step still preparing or submitting is waited for, as before. Signal, `ctx.stop` and crash
+  step still preparing or submitting is waited for, as before. Review round 2: the detach is
+  an atomic claim (`detach_attached` and the step's own exit, `_leave`, share one lock). A
+  step that left its attach loop to give up before the claim is waited for. A step claimed
+  first returns a detached run even if its attach then failed. Signal, `ctx.stop` and crash
   exits detach through the stop flag (or simply die), and `_apply` discards the interrupted
   run as SPEC-0229 does for a stop.
 - **Give-up details.** `unreachable` and `lost` put the worker in SPEC-0338's cooldown;

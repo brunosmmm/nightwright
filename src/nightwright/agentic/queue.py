@@ -3588,6 +3588,7 @@ class StepPool:
         def remote(cid, step) -> bool:
             return step.kind == "gate" and RG.attached(cid)
         with self.lock:
+            claim = set()
             for cid, fl in self.flights.items():
                 if fl.done():                   # finished, not harvested yet: harvest, never drop
                     return None
@@ -3595,17 +3596,19 @@ class StepPool:
                     if fut.done() or (hk is not None and hk.phase == "wait"):
                         continue
                     if hk is None and remote(cid, step):
+                        claim.add(cid)
                         continue
                     return None
+            # the claim is what counts: a step that left its attach loop since (to give up and
+            # fall back locally) is not claimed, and must be waited for. Steps claimed before
+            # that return detached runs, harvested as any interrupted run.
+            if not all([RG.detach_attached(cid) for cid in sorted(claim)]):
+                return None
             out = []
             for cid in list(self.flights):
                 fl = self.flights.pop(cid)
                 for step, fut, hk in fl.tasks:
-                    if fut.done():
-                        continue
-                    if hk is None:
-                        RG.detach_attached(cid)
-                    else:
+                    if not fut.done() and hk is not None:
                         hk.detach.set()
                 out.append({"campaign": cid, "run_ids": [r for r, _ in fl.runs]})
             return out
@@ -4184,6 +4187,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     for st in store.list_campaigns(cfg):          # SPEC-0253: residue of a killed runner
         ctx.progress()
         store.sweep_campaign_tmp(cfg, st["id"])
+    _settle_ended_remote_jobs(cfg, flying)
     items = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
     slots = slots_for(cfg)
     busy = [s for s in items if s.get("state") in ACTIVE_STATES]
@@ -7596,15 +7600,33 @@ def apply_abandon(cfg, plan: dict) -> dict:
     return out
 
 
-def _cancel_remote_jobs(cfg, cid) -> None:
+def _cancel_remote_jobs(cfg, cid, *, note: bool = True) -> list[str]:
     """SPEC-0341: an abandon or a park ends the campaign's remote gate jobs (outside the item
-    lock: each cancel waits up to 10 s for the job's `done`)."""
+    lock: each cancel waits up to 10 s for the job's `done`). Returns the job ids."""
     if not RJ.live(cfg, cid):
-        return
+        return []
     from . import remote_gates as RG
-    for job_id in RG.cancel_campaign(cfg, cid):
+    out = RG.cancel_campaign(cfg, cid)
+    for job_id in out if note else ():
         store.append_event(cfg, cid, "note", {"text": f"cancelled remote job {job_id}",
                                               "author": "queue"})
+    return out
+
+
+def _settle_ended_remote_jobs(cfg, flying) -> None:
+    """SPEC-0341, every tick: a campaign that has ended (a terminal state, or gone) has its
+    live remote job records cancelled (an abandon whose cancel never ran, a record a crash
+    left), and its final records removed, since it never gates again (`max_seq` needs them
+    only while it can). Other campaigns' records are known by file name only, not parsed."""
+    for cid in sorted(RJ.campaigns(cfg) - set(flying)):
+        try:
+            state = store.read_state(cfg, cid).get("state")
+        except (ValueError, OSError):
+            state = None                        # the campaign is gone
+        if state is not None and state not in TERMINAL_STATES:
+            continue
+        cancelled = _cancel_remote_jobs(cfg, cid, note=state is not None)
+        RJ.prune(cfg, cid, keep=cancelled)      # a just-cancelled record stays one tick
 
 
 # ---- gc (SPEC-0275) -----------------------------------------------------------------------

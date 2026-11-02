@@ -752,13 +752,23 @@ def attached(cid) -> bool:
 
 
 def detach_attached(cid) -> bool:
-    """Ask `cid`'s attached step to detach (its record stays live); False when none is."""
+    """Claim `cid`'s attached step for a detach (its record stays live); False when none is
+    attached. The claim and the step's own exit (`_leave`) are serialized: once this returns
+    True the step returns a detached run, even if it was about to give up and fall back."""
     with _ATTACHED_LOCK:
-        ev = _ATTACHED.get(cid)
-    if ev is None:
-        return False
-    ev.set()
-    return True
+        ev = _ATTACHED.pop(cid, None)
+        if ev is None:
+            return False
+        ev.set()
+        return True
+
+
+def _leave(cid, ev: threading.Event) -> bool:
+    """The step leaves its attach loop; True when a detach claimed it first."""
+    with _ATTACHED_LOCK:
+        if _ATTACHED.get(cid) is ev:
+            del _ATTACHED[cid]
+        return ev.is_set()
 
 
 class _GiveUp(RemoteFailure):
@@ -871,20 +881,23 @@ def _run_async(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: 
     head = _git(wt, "rev-parse", "HEAD")
     tree = _git(wt, "rev-parse", f"{header['commit']}^{{tree}}")
     submitted = _now()
-    _submit(worker, header, bundle, cfg)
+    # the record comes first: a submit the worker accepted but whose reply never arrived (or a
+    # crash right after it) still has a record, so the job is cancelled (`_failed`) or adopted
     rec = RJ.create(cfg, job_id=job_id, campaign=cid, worker=worker["name"], attempt=1, seq=seq,
                     submitted_at=submitted,
                     deadline_at=submitted + header["timeout_s"]
                     + RJ.settings(cfg)["worker_ttl_s"],
                     tier=tier, commit=header["commit"], head=head, tree=tree)
     rec = RJ.update(cfg, job_id, gates=[g["name"] for g in header["payload"]["gates"]]) or rec
+    _submit(worker, header, bundle, cfg)
     return _follow(cfg, worker, rec, project_cfg, seq, stop)
 
 
 class _Job:
     """The frames of one job, applied in `n` order. `seen` is the last `n` taken in this
     process (a re-attach resumes after it); `cursor` the last one whose files were written
-    (the record's; frames at or below it only rebuild their `GateResult`)."""
+    (the record's; frames at or below it only rebuild their `GateResult`). `last_seen` starts
+    now: an adopted job's TTL counts from the adoption, not from the dead runner's last frame."""
 
     def __init__(self, cfg, worker: dict, rec: dict, project_cfg: dict, seq: int):
         self.cfg, self.worker, self.rec, self.seq = cfg, worker, rec, seq
@@ -897,7 +910,23 @@ class _Job:
         self.results: list = []
         self.started, self.worker_wait = False, 0.0
         self.started_at, self.t0 = store.now_iso(), time.monotonic()
-        self.last_seen = RJ.epoch(rec.get("last_seen_at")) or _now()
+        self.last_seen = _now()
+        self.deadline = RJ.epoch(rec.get("deadline_at")) or (_now() + MAX_JOB_TIMEOUT_S)
+
+    def cancelled(self) -> bool:
+        """An abandon or a park cancelled the job (`cancel_campaign`)."""
+        return (RJ.read(self.cfg, self.job_id) or {}).get("state") == "cancelled"
+
+    def past_deadline(self) -> bool:
+        """The record's `deadline_at` has passed and the job is not finished on the worker. A
+        job `done` there is only replayed, however late: that costs nothing, and the deadline
+        bounds waiting, not results already there."""
+        if _now() < self.deadline:
+            return False
+        if poll(self.worker, self.job_id, self.seen) == "done":
+            self.deadline = math.inf
+            return False
+        return True
 
     def saw_worker(self, **fields) -> None:
         self.last_seen = _now()
@@ -941,7 +970,7 @@ class _Job:
         if not self.started:
             self.worker_wait = _num(frame, "slot_wait_s")
         if cut:
-            if (RJ.read(self.cfg, self.job_id) or {}).get("state") == "cancelled":
+            if self.cancelled():
                 return self.interrupted()       # an abandon or a park cancelled it: no fallback
             raise RemoteFailure("interrupted", "the worker interrupted the run (signal or "
                                                "lease)")
@@ -956,7 +985,7 @@ class _Job:
                          event_uid=f"{self.job_id}:{n}")
 
 
-def _attach(job: _Job, stop, deadline: float):
+def _attach(job: _Job, stop):
     """One `attach JOB --from seen`: `("done", run)`, `("lost", None)`, `("stopped", None)`,
     `("deadline", None)` or `("dropped", got_frames)` (the connection ended without `done`)."""
     try:
@@ -975,7 +1004,7 @@ def _attach(job: _Job, stop, deadline: float):
         while True:
             if G._stop_requested(stop):
                 return "stopped", None
-            if _now() >= deadline:
+            if job.past_deadline():
                 return "deadline", None
             try:
                 line = lines.get(timeout=_POLL_S)
@@ -1015,7 +1044,6 @@ def _follow(cfg, worker: dict, rec: dict, project_cfg: dict, seq: int, stop) -> 
         _ATTACHED[rec["campaign"]] = detach_ev
     stop = _Either(stop, detach_ev)
     ttl = RJ.settings(cfg)["worker_ttl_s"]
-    deadline = RJ.epoch(rec.get("deadline_at")) or (_now() + MAX_JOB_TIMEOUT_S)
     delay = BACKOFF_START_S
 
     def detach() -> Outcome:
@@ -1023,7 +1051,7 @@ def _follow(cfg, worker: dict, rec: dict, project_cfg: dict, seq: int, stop) -> 
         return Outcome(job.interrupted(), job.worker_wait)
     try:
         while True:
-            kind, val = _attach(job, stop, deadline)
+            kind, val = _attach(job, stop)
             if kind == "done":
                 return Outcome(val, job.worker_wait)
             if kind == "stopped":
@@ -1033,12 +1061,14 @@ def _follow(cfg, worker: dict, rec: dict, project_cfg: dict, seq: int, stop) -> 
             if val:                             # frames arrived: the next drop starts over
                 delay = BACKOFF_START_S
             while True:
-                if _now() >= deadline:
+                if job.past_deadline():
                     raise _GiveUp("deadline", worker, rec)
                 if _now() - job.last_seen > ttl:
                     raise _GiveUp("unreachable", worker, rec)
                 if _sleep(delay, stop):
                     return detach()
+                if job.cancelled():             # an abandon or a park whose own SSH failed
+                    return Outcome(job.interrupted(), job.worker_wait)
                 delay = min(delay * 2, BACKOFF_MAX_S)
                 state = poll(worker, job.job_id, job.seen)
                 if state is None:
@@ -1048,12 +1078,12 @@ def _follow(cfg, worker: dict, rec: dict, project_cfg: dict, seq: int, stop) -> 
                     raise _GiveUp("lost", worker, rec)
                 break
     except RemoteFailure as f:
+        if _leave(rec["campaign"], detach_ev):  # a code-change exec claimed the step first
+            return detach()
         f.worker_wait_s = job.worker_wait if job.started else 0.0
         raise
     finally:
-        with _ATTACHED_LOCK:
-            if _ATTACHED.get(rec["campaign"]) is detach_ev:
-                del _ATTACHED[rec["campaign"]]
+        _leave(rec["campaign"], detach_ev)
 
 
 def _cancel(worker: dict, job_id: str) -> None:
@@ -1061,9 +1091,21 @@ def _cancel(worker: dict, job_id: str) -> None:
     _call(worker, "cancel", job_id, timeout=CANCEL_GRACE_S)
 
 
+def _cancelled(cfg, worker: dict | None, rec: dict, seq: int) -> Outcome | None:
+    """The record was `cancelled` (an abandon or a park) while the step still ran: an
+    interrupted run, never a fallback. None when it was not."""
+    if (RJ.read(cfg, rec["job_id"]) or {}).get("state") != "cancelled":
+        return None
+    return Outcome(G.GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
+                             worker=(worker or {}).get("name"), job_id=rec["job_id"]))
+
+
 def _give_up(cfg, cid, worker: dict | None, rec: dict, seq: int, reason: str) -> Outcome:
     """The record goes `lost` first, then `worker_job_lost`, a best-effort cancel, this run's
-    `gates/<seq>-*` files deleted, and `local`: the caller runs the gates locally."""
+    `gates/<seq>-*` files deleted, and `local`: the caller runs the gates locally. A record a
+    cancel already ended is left alone (an interrupted run)."""
+    if (out := _cancelled(cfg, worker, rec, seq)) is not None:
+        return out
     job_id = rec["job_id"]
     RJ.update(cfg, job_id, state="lost", lost_reason=reason)
     store.append_event(cfg, cid, "worker_job_lost",
@@ -1081,7 +1123,10 @@ def _give_up(cfg, cid, worker: dict | None, rec: dict, seq: int, reason: str) ->
 
 def _failed(cfg, cid, worker: dict, rec: dict, seq: int, f: RemoteFailure) -> Outcome:
     """A transport or protocol failure of a recorded job: SPEC-0338's fallback, plus a
-    best-effort cancel and the record set `local`."""
+    best-effort cancel and the record set `local`. A record a cancel already ended is left
+    alone (an interrupted run)."""
+    if (out := _cancelled(cfg, worker, rec, seq)) is not None:
+        return out
     _record_failure(cfg, cid, worker["name"], rec["job_id"], seq, f)
     _cancel(worker, rec["job_id"])
     RJ.update(cfg, rec["job_id"], state="local")
@@ -1130,8 +1175,9 @@ def adopt(rec: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int, sto
             state = verdict.get("state")
             if hold.interrupted and state is None:      # a stop: stay live for the next runner
                 RJ.update(cfg, rec["job_id"], state="detached")
-                return Outcome(G.GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
-                                         worker=worker["name"], job_id=rec["job_id"])),                     hold.waited_s
+                run = G.GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
+                                worker=worker["name"], job_id=rec["job_id"])
+                return Outcome(run), hold.waited_s
             if hold.interrupted and state in ("lost", "unknown"):
                 raise _GiveUp("lost", worker, rec)
             return _follow(cfg, worker, rec, project_cfg, seq, stop), hold.waited_s
