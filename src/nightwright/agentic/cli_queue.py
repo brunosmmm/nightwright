@@ -25,6 +25,7 @@ from .. import render as R
 from ..config import load_config
 from ..console import console
 from ..report import _dump_json
+from . import gate_progress as GPG
 from . import gates as G
 from . import journey as JY
 from . import lease as L
@@ -515,7 +516,9 @@ def _workers_line(p: dict) -> Text | None:
     t.append(f"🏠 local {loc['held']}/{loc['slots']}")
     if gp["campaigns"]:
         t.append("  │ ", style="dim")
-        t.append("  ".join(f"{pool_marker(c['where'])} {c['campaign']}" for c in gp["campaigns"]))
+        t.append("  ".join(f"{pool_marker(c['where'])} {c['campaign']}"
+                           + (f" {GPG.label(c['progress'])}" if c.get("progress") else "")
+                           for c in gp["campaigns"]))
     t.no_wrap, t.overflow = True, "ellipsis"
     return t
 
@@ -740,7 +743,9 @@ def _now_text(it: dict) -> Text:
         what = "running gates" if state == "GATING" else "closing: re-gate, rebase, merge"
         where = f" · {pool_marker(h['pool'])}" if h.get("pool") else ""   # SPEC-0372
         return Text.assemble(("⚙ ", "bold blue"), what,
-                             (f"{where} · slot {h.get('slot')} · {_dur(h.get('held_s'))}", "dim"))
+                             (f"{where} · slot {h.get('slot')} · {_dur(h.get('held_s'))}", "dim"),
+                             (f" {GPG.label(h.get('progress'))}" if h.get("progress") else "",
+                              "cyan"))
     return _activity_text(a, state)
 
 

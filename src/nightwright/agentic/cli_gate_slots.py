@@ -10,12 +10,24 @@ from rich.table import Table
 from ..console import console
 from ..report import _dump_json
 from . import events as E
+from . import gate_progress as GPG
 from . import gate_slots as GS
+from . import store
 from .cli_queue import _dur
 
 
 def _age(since):
     return E._age_s(since, dt.datetime.now().astimezone())
+
+
+def _progress(cfg, h, remote: bool) -> dict | None:
+    """SPEC-0373: percent of a held slot's running gate."""
+    try:
+        return GPG.progress(cfg, h["campaign"], since=h.get("since"), elapsed_s=_age(h.get("since")),
+                            events=store.read_ledger(cfg, h["campaign"], types=["gate"]),
+                            remote=remote)
+    except Exception:
+        return None
 
 
 def attach(queue_group):
@@ -27,6 +39,11 @@ def attach(queue_group):
     def queue_gate_slots(cfg, as_json):
         """Show the host-wide gate-slot pool: holders and waiters (SPEC-0309)."""
         occ = GS.occupancy(cfg)
+        for h in occ["held"]:
+            h["progress"] = _progress(cfg, h, False)
+        for wv in (occ.get("workers") or {}).values():
+            for h in wv["held"]:
+                h["progress"] = _progress(cfg, h, True)
         if as_json:
             _dump_json({"schema": "nw.queue.gate_slots.v1", **occ})
             return
@@ -36,13 +53,13 @@ def attach(queue_group):
             console.print("[dim]no holders, no waiters[/]")
             return
         t = Table(title="Gate slots")
-        for col in ("role", "slot", "campaign", "pid", "for"):
+        for col in ("role", "slot", "campaign", "pid", "for", "progress"):
             t.add_column(col)
         for h in occ["held"]:
             t.add_row("holds", str(h["slot"]), str(h["campaign"]), str(h["pid"]),
-                      _dur(_age(h["since"])))
+                      _dur(_age(h["since"])), GPG.label(h.get("progress")))
         for w in occ["waiting"]:
-            t.add_row("waits", "—", str(w["campaign"]), str(w["pid"]), _dur(_age(w["since"])))
+            t.add_row("waits", "—", str(w["campaign"]), str(w["pid"]), _dur(_age(w["since"])), "")
         console.print(t)
 
     return queue_group

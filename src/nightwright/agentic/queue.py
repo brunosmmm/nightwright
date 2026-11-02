@@ -6561,6 +6561,25 @@ def _spec_review_rows(cfg, now, recent_hours) -> list[dict]:
     return [r for _, r in running] + [r for _, r in done]
 
 
+def _gate_progress(cfg, cid, hold, pool, ledger, now) -> dict | None:
+    """SPEC-0373: percent complete of the campaign's running gate (see gate_progress)."""
+    from . import gate_progress as GP
+    try:
+        return GP.progress(cfg, cid, since=hold.get("since"), elapsed_s=_age(hold.get("since"), now),
+                           events=ledger, remote=pool != "local")
+    except Exception:                       # informational: never fails the dashboard
+        return None
+
+
+def _with_progress(view, active) -> dict | None:
+    """SPEC-0373: put each gating campaign's progress on its `gate_pools` row."""
+    if view:
+        prog = {a["campaign"]: (a.get("gate_hold") or {}).get("progress") for a in active}
+        for c in view["campaigns"]:
+            c["progress"] = prog.get(c["campaign"])
+    return view
+
+
 def _gate_pools_view(cfg, occupancy, active_ids) -> dict | None:
     """SPEC-0372: the registered workers and where each GATING campaign gates (local pool, a
     worker's pool, or waiting for a slot), from data the dashboard already read (no probe, no
@@ -6711,7 +6730,9 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                        "track": visits, "track_elided": elided, "waiting_for": wf,
                        "why": JY.why(st, ledger, wf, loops=it["loops"]),
                        "gate_hold": ({"slot": hold.get("slot"), "since": hold.get("since"), "pool": pool,
-                                      "held_s": _age(hold.get("since"), now)} if hold else None),
+                                      "held_s": _age(hold.get("since"), now),
+                                      "progress": _gate_progress(cfg, it["campaign"], hold, pool,
+                                                                 ledger, now)} if hold else None),
                        "recent_lines": JY.recent_lines(ledger, 3),
                        "state_age_s": _age(next((e.get("ts") for e in reversed(ledger)
                                                  if e.get("type") == "transition"
@@ -6742,7 +6763,8 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                         "held": [h.get("campaign") for h in occupancy.get("held") or []],
                         "waiting": [w.get("campaign") for w in occupancy.get("waiting") or []]}
                        if occupancy is not None else None),
-        "gate_pools": _gate_pools_view(cfg, occupancy, [a["campaign"] for a in active]),
+        "gate_pools": _with_progress(_gate_pools_view(cfg, occupancy,
+                                                      [a["campaign"] for a in active]), active),
         "totals": {"active": len(active), "attention": len(attention), "waiting": len(waiting),
                    "needs_you": len(needs_you), "conductor_handling": len(conductor),
                    "conductor_overdue": sum(1 for c in conductor if c["park"].get("overdue")),
