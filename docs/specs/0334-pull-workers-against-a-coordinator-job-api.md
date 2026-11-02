@@ -178,29 +178,29 @@ ids already embed the attempt, so a legitimate retry has a new nonce.
 
 ## Acceptance criteria
 
-- [ ] A pull worker leases, runs and completes a gate job and a persona job. The results are
+- [x] A pull worker leases, runs and completes a gate job and a persona job. The results are
       identical to the SSH-push path, with the same files, events and write-back.
-- [ ] A missing, wrong or revoked token gets 401. Touching another worker's job gets 403.
-- [ ] A tampered header, an expired job, a replayed nonce, and a bundle hash mismatch are
+- [x] A missing, wrong or revoked token gets 401. Touching another worker's job gets 403.
+- [x] A tampered header, an expired job, a replayed nonce, and a bundle hash mismatch are
       each refused by the worker with `stage: "verify"`, and nothing runs.
-- [ ] A non-loopback, non-Tailscale bind without TLS is refused at startup. With
+- [x] A non-loopback, non-Tailscale bind without TLS is refused at startup. With
       `--client-ca`, a wrong client CN is refused.
-- [ ] Killing `nw worker serve` mid-job and restarting it re-posts frames from the server
+- [x] Killing `nw worker serve` mid-job and restarting it re-posts frames from the server
       cursor with no duplicates. A lease that expires returns the job with `attempt + 1`,
       and after `max_remote_attempts` the job runs locally; the old worker's next frames
       post gets 410 and it cancels the job.
-- [ ] A pull job running longer than `job_lease_s` completes as long as heartbeats succeed.
-- [ ] A `done` frame before its result bundle is stored gets 409; after the PUT it applies.
-- [ ] A SPEC-0229 stop of a campaign whose gate runs on a pull worker returns `cancel: true`
+- [x] A pull job running longer than `job_lease_s` completes as long as heartbeats succeed.
+- [x] A `done` frame before its result bundle is stored gets 409; after the PUT it applies.
+- [x] A SPEC-0229 stop of a campaign whose gate runs on a pull worker returns `cancel: true`
       on the next frames or heartbeat response; the worker runs `nw worker cancel` and the
       job ends with `interrupted: true` within 5 s.
-- [ ] After `nw workers rm`, the worker's next request gets 401; `nw worker serve` then
+- [x] After `nw workers rm`, the worker's next request gets 401; `nw worker serve` then
       cancels every local job and exits non-zero, and the coordinator requeues or locally
       runs those jobs.
-- [ ] The secret file and `coordinator.json` are created with mode 0600, and the registry
+- [x] The secret file and `coordinator.json` are created with mode 0600, and the registry
       contains only `token_sha256`.
-- [ ] Oversized requests get 413.
-- [ ] `nw workers token --rotate` invalidates the old credential immediately.
+- [x] Oversized requests get 413.
+- [x] `nw workers token --rotate` invalidates the old credential immediately.
 
 ## Test plan
 
@@ -316,6 +316,19 @@ or sharpens the Design:
   campaign's gates) were not run. The automated tests run the same gate and persona paths
   with real `nw worker serve` processes.
 - The full `uv run pytest` is left to the queue's close gate.
+
+### Test record (2026-11-02, loop 2)
+
+- The gate ran pytest inside a worker job process, which ignores SIGHUP, and the loopback
+  `ssh-command` inherited that through exec, so two SPEC-0332 attach tests hung. Applied
+  main's fix (a257d16f: `tests/remote_loopback.py` resets SIGHUP to its default in the child,
+  plus a regression test in `tests/test_worker_jobs.py`); no product code changed.
+- With SIGHUP ignored in the parent (`signal.signal(SIGHUP, SIG_IGN)` then exec
+  `uv run pytest`): `-n 0 tests/test_worker_jobs.py -k 'attach or reattach or loopback'`
+  28 passed; `-n 2 tests/test_worker_jobs.py tests/test_pull_workers.py
+  tests/test_pull_workers_security.py` 129 passed.
+- The cross-machine manual steps (Tailscale bind, a laptop without inbound SSH) are still not
+  run, so the spec stays `in-progress`. The full suite is left to gating.
 
 ## Clock Log
 
