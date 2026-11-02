@@ -273,7 +273,11 @@ from it as written. Human decisions applied on 2026-11-02, after review:
   keep working), `.nw/project.yaml` `worktrees.setup` is now plain `uv sync`, `uv.lock`
   regenerated, and the install docs no longer call the desk optional. The
   `textual_available()` guard and the test `skipif`s stay (harmless, and `nw tui`'s install hint
-  still covers a broken install). This supersedes SPEC-0099's "TUI is opt-in" packaging choice
+  still covers a broken install). Tests: `test_tui_entry.py::test_textual_is_a_core_dep_and_tui_an_empty_alias`
+  (was `..._optional_extra_not_a_hard_dep`) and `test_agentic_dogfood_config.py` (setup is
+  `["uv sync"]`); verified a fresh clone with no setup collects `tests/test_tui_queue_tab.py`
+  (38 tests) and `uv sync` + `uv run pytest --collect-only` collects 5595 with no textual
+  error. This supersedes SPEC-0099's "TUI is opt-in" packaging choice
   for this repo. Worker-side setup (and recording a setup stage in the job result) is still the
   follow-up spec's job: there is no setup stage on the worker to record yet.
 

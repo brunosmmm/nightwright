@@ -33,10 +33,11 @@ def _cfg(tmp_path):
 
 # --- packaging -------------------------------------------------------------------------
 
-def test_textual_is_an_optional_extra_not_a_hard_dep():
+def test_textual_is_a_core_dep_and_tui_an_empty_alias():
+    """SPEC-0368: a plain `uv sync`/`uv run` (the remote worker's gate tree) must get Textual."""
     meta = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    assert meta["optional-dependencies"]["tui"] == ["textual>=8,<9"]
-    assert not any("textual" in d for d in meta["dependencies"])
+    assert "textual>=8,<9" in meta["dependencies"]
+    assert meta["optional-dependencies"]["tui"] == []
 
 
 def test_cli_module_does_not_import_textual_or_the_tui_app():

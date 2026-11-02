@@ -27,7 +27,7 @@ def test_dogfood_project_config_loads_and_names_the_gates():
     assert doc["merge"]["policy"] == "merge"
     assert doc["merge"]["base"] == "main"
     assert doc["merge"]["push_after_merge"] is False
-    assert "uv sync --extra tui" in doc["worktrees"]["setup"]
+    assert doc["worktrees"]["setup"] == ["uv sync"]          # SPEC-0368: textual is core
     assert "AGENTS.md" in doc["agents"]["context_files"]
 
 
