@@ -775,7 +775,7 @@ def test_conductor_guard_flags_in_plan_and_json(cfg):
     assert "Bash(git *)" not in allow       # would allow pushes to any non-main branch
     # the main_dirty / wt_broken rows' sub-agents: worktree, WIP commit, nw, the orient gate
     for rule in ("Bash(git worktree add *)", "Bash(git -C * commit -m *)", "Bash(uv run nw *)",
-                 "Bash(python3 tools/spec_lint.py*)", "Bash(cp *)"):
+                 "Bash(python3 tools/spec_lint.py*)", "Bash(mkdir *)"):
         assert rule in allow
     assert not any("rebase" in r or r in ("Bash(git add *)", "Bash(git commit *)")
                    for r in allow)
@@ -833,7 +833,11 @@ def test_launch_record_carries_the_deny(cfg, ex):
     ("git -C /w switch --discard-changes nw/x", False), ("git -C /w switch -f nw/x", False),
     # `-C *` must not swallow another subcommand ahead of a conductor verb
     ("git -C /w reset --soft HEAD~1 status", False), ("git -C /w stash drop log", False),
-    ("git -C /w commit --amend --no-edit diff", False)])
+    ("git -C /w commit --amend --no-edit diff", False),
+    # no `cp`: it could overwrite uncommitted files in the main checkout under dontAsk
+    ("cp -r .nw-worktrees/nw-x/. .", False), ("cp src/foo.py src/bar.py", False),
+    ("cp -n .nw-worktrees/nw-x/a.txt a.txt", False), ("mkdir .nw-worktrees/nw-x", True),
+    ("git commit -m wip", True)])
 def test_conductor_default_rules_git_work_vs_dangerous(cfg, cmd, ok):
     allow, deny = _eff(cfg, "conductor")
     assert _permitted(cmd, allow, deny) is ok

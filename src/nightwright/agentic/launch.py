@@ -134,6 +134,8 @@ DEFAULTS = {"model": "claude-sonnet-5-5", "effort": "medium", "autocompact": "15
             # SPEC-0382: the conductor never blocks on the human; under `dontAsk` (which applies
             # to its sub-agents too) the allow-list keeps their normal work (rebase conflicts in
             # campaign worktrees, looking into stuck runs) from being refused
+            # no `cp` in the allow-list below: under dontAsk it would overwrite the main checkout's
+            # uncommitted files
             "conductor_disallowed_tools": ["AskUserQuestion"],
             "conductor_permission_mode": "dontAsk",
             "conductor_allowed_tools": ["Read", "Grep", "Glob",
@@ -142,7 +144,7 @@ DEFAULTS = {"model": "claude-sonnet-5-5", "effort": "medium", "autocompact": "15
                                         *[f"Bash({p} {v})" for p in _PREFIXES
                                           for v in (*_CONDUCTOR_GIT_VERBS, *_CONDUCTOR_WIP_VERBS)],
                                         "Bash(uv run pytest *)", "Bash(uv run nw *)",
-                                        "Bash(python3 tools/spec_lint.py*)", "Bash(cp *)",
+                                        "Bash(python3 tools/spec_lint.py*)",
                                         "Bash(mkdir *)", "Bash(ps *)", "Bash(tail *)"]}
 TOOL_FLAGS = {"allowed_tools": "--allowedTools", "disallowed_tools": "--disallowedTools"}
 # list-valued settings; `steward_allowed_tools` is merged into `--allowedTools`, never its own flag

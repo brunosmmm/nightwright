@@ -291,6 +291,8 @@ slice B is a Non-goal follow-up.
   (the destructive `checkout --` / `switch` forms and `-C *`-swallowed conductor verbs are not
   permitted, `switch --create` and the WIP verbs are), `tests/test_doctor.py`, `tests/test_skills.py`
   pass; `python3 tools/spec_lint.py` is clean. The full suite was left to gating.
+- Loop 4: `tests/test_agentic_launch.py`, `tests/test_agentic_conductor_guard.py`,
+  `tests/test_doctor.py` pass (314) after dropping `cp *`; spec_lint clean; full suite left to gating.
 - Real binary (`claude` 2.1.316, `claude -p`, model haiku, scratch `NW_DATA_DIR`, matcher swapped to
   `Bash` as in the first record): with the shipped hook command, the registered session's `echo` was
   denied with the guard message (JSON decision, exit 0); an unregistered session got `hello-ac7`;
@@ -333,16 +335,29 @@ slice B is a Non-goal follow-up.
 - Review fix, the `main_dirty` / `main_not_on_base` / `wt_broken` rows (move in-place WIP onto a
   worktree branch): `conductor_allowed_tools` also holds `git worktree add *`, `worktree list`,
   `switch *`, `checkout -- *`, `add -A`, `add -A *`, `add -- *`, `commit -m *`, `commit -am *` (each
-  also as `git -C *`), `uv run nw *`, `python3 tools/spec_lint.py*`, `cp *` and `mkdir *`. They are
+  also as `git -C *`), `uv run nw *`, `python3 tools/spec_lint.py*` and `mkdir *` (`cp *` was removed again in loop 4, see the last bullet). They are
   deliberately not the steward's `add *` / `commit *` strings, so the SPEC-0353 rebase set stays off
   the conductor, and the steward guard denies (`reset --hard`, `clean`, pushes) still win. The real
   binary showed the limits (Test record): `git -C <dir> worktree add` is denied by the steward guard
   (`git * worktree *`), so the sub-agent must run plain `git worktree add` from the conductor's cwd;
-  `cp` is allowed only into the working directories (`.nw-worktrees` is inside the conductor's
-  project root), so the WIP worktree belongs under `.nw-worktrees`, not `../nw-<topic>`; `rm` and
-  `git clean` stay refused, so the "remove the moved untracked files" step is left to the steward or
-  the human.
+  `rm` and `git clean` stay refused, so the "remove the moved untracked files" step is left to the
+  steward or the human.
 - Edit/Write rules are `//**/.nw-worktrees/**` (see the Test record).
+- Review fix (loop 4), no `cp` for the conductor: `Bash(cp *)` left `conductor_allowed_tools`. Under
+  `dontAsk` it let a sub-agent overwrite any file in the conductor's cwd (the internal project's main
+  checkout, where the `main_dirty` uncommitted work lives) with no prompt, which made the `.nw-worktrees`
+  scoping of Edit/Write meaningless. A no-clobber form (`cp -n`) was rejected: the matcher cannot
+  express "no `-f`/`-u`/`--update` in any later or combined flag" (`-rf`, `-nu` ...), so a narrowed
+  allow would leave a hole. Copying moved untracked files is, like `rm` / `git clean`, left to the
+  steward or the human. `test_conductor_default_rules_git_work_vs_dangerous` asserts `cp` (plain,
+  `-r ... .`, `-n`) is not permitted; `mkdir` and `commit -m` still are.
+- Known and accepted: `git commit -m ... --amend` matches the wildcard `commit -m *` allow, so a
+  conductor sub-agent can amend (a local, reflog-recoverable change; a push of it is still denied).
+  Denying it only for the conductor needs a non-default `conductor_disallowed_tools`, which would
+  contradict AC1's default; a shared deny would also stop the steward. The `git -C * * <kw>`
+  structural denies live in the shared `disallowed_tools`, so they also refuse a steward or conductor
+  `git -C <dir> commit -m "... status ..."` whose message contains a verb keyword; the message must
+  avoid those words (harmless, fail-closed).
 - `conductor-launch` writes `disallowed_tools` into the `source: launch` session record
   (`record_session(..., extra=)`); `nw doctor` reads it. Launch records written before this change
   have no such field and so warn until the conductor is relaunched with `--resume`: a resumed launch
