@@ -1370,12 +1370,20 @@ def _give_up(cfg, cid, worker: dict | None, rec: dict, seq: int, reason: str, *,
     if (out := _cancelled(cfg, worker, rec, seq)) is not None:
         return out
     job_id = rec["job_id"]
-    lost = RJ.update(cfg, job_id, state="lost", lost_reason=reason) or rec
+    pull = rec.get("pull") or (RJ.read(cfg, job_id) or {}).get("pull")
+    if pull:                                    # SPEC-0334: the API server writes this job's
+        from . import pull_jobs as PJ           # gate files under the job's lock. `lost` is
+        with PJ.job_lock(cfg, job_id):          # written under it, so a frames post after it
+            lost = RJ.update(cfg, job_id, state="lost", lost_reason=reason) or rec   # gets 410
+    else:                                       # and the files deleted below stay deleted
+        lost = RJ.update(cfg, job_id, state="lost", lost_reason=reason) or rec
     store.append_event(cfg, cid, "worker_job_lost",
                        {"worker": rec["worker"], "job_id": job_id,
                         "attempt": rec.get("attempt"), "reason": reason}, by="gates")
     if worker is not None:
         _cancel_job(cfg, worker, job_id)
+    if pull:                                    # the queue entry and bundle, even when the
+        PJ.unqueue(cfg, job_id)                 # worker is no longer registered
     for p in store.gates_dir(cfg, cid).glob(f"{seq:03d}-*"):
         p.unlink(missing_ok=True)
     if reason in _BLAME:

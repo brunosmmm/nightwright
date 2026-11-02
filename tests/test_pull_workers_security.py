@@ -1008,8 +1008,8 @@ def test_a_heartbeat_id_that_is_not_a_job_id_builds_no_path(world, pull):
 
 def test_a_lease_racing_the_unreachable_give_up_wins(world, pull, monkeypatch):
     """The step read `queued` and its TTL ran out, but a lease took the job meanwhile: the
-    step keeps waiting (here a stop ends it) instead of blaming the worker as `unreachable`,
-    and the leased job's bundle stays for the worker."""
+    step keeps waiting (here a stop ends it) instead of blaming the worker as `unreachable`.
+    (The stop then drops the bundle, as any cancel of a leased job does.)"""
     wrec = _queue(world)
     assert PJ.unqueue_unleased(world.cfg, "no-such-job") is True
     real = PJ.RJ.read
@@ -1029,7 +1029,9 @@ def test_a_lease_racing_the_unreachable_give_up_wins(world, pull, monkeypatch):
     out = PJ.follow_gate(world.cfg, wrec, rec, world.project, 1, stop)
     assert stale == [1]
     assert out.run.interrupted
-    assert (PJ.queue_dir(world.cfg) / f"{JOB}.bundle").exists()
+    after = real(world.cfg, JOB)
+    assert after["pull_state"] == "leased" and after["state"] != "lost"
+    assert "pull_lost_reason" not in after and "lost_reason" not in after
     assert PJ.unqueue_unleased(world.cfg, JOB) is False
 
 
@@ -1469,3 +1471,67 @@ def test_an_add_that_loses_the_race_leaves_the_winners_secret(world, pull, monke
     assert PJ.secret_path(world.cfg, "box").read_text() == before
     assert _call(pull, "POST", "/v1/lease", pull.tokens["box"],
                  {"kinds": ["gate"], "slots_free": 1, "wait_s": 0})[0] == 204
+
+
+# ---- the eighth review: update, the give-up's lock, a leased job's bundle --------------------
+
+def test_workers_update_refuses_a_pull_worker_cleanly(world, pull, monkeypatch):
+    from nightwright.agentic import workers_update as WU
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: world.cfg)
+    monkeypatch.setattr(WU.WB, "build_wheel", lambda out: pytest.fail("no wheel for a pull worker"))
+    for argv in (["workers", "update", "box"], ["workers", "update", "box", "--when-idle"]):
+        res = CliRunner().invoke(cli, argv)
+        assert res.exit_code == 1 and not isinstance(res.exception, KeyError), res.output
+        assert "pull worker" in res.output
+    rec = next(r for r in WK.load(world.cfg) if r["name"] == "box")
+    assert not rec.get("draining") and not WK.update_pending(rec)    # never drained for it
+    out = WU.perform(world.cfg, WK.normalize(world.cfg, rec))        # the queue's update pass
+    assert out.kind == "failed" and "pull worker" in out.detail
+
+
+def test_the_give_up_marks_a_pull_gate_job_lost_under_its_lock(world, pull, monkeypatch):
+    """A frames post holds the job's lock while it writes the gate files: the give-up's `lost`
+    waits for it, so a post after the give-up gets 410 and the files deleted stay deleted."""
+    import fcntl
+    import os
+
+    from nightwright.agentic import store
+    wrec = _queue(world)
+    assert _lease(world) is not None
+    assert _frames(pull, JOB, _gate_frame(world, 1))[0] == 200
+    gdir = store.gates_dir(world.cfg, CID)
+    assert list(gdir.glob("001-*"))
+    orig, held = RG.RJ.update, []
+
+    def check(cfg, job_id, **fields):
+        if fields.get("state") == "lost":
+            fd = os.open(PJ.frames_dir(cfg) / f"{job_id}.lock", os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held.append(False)
+            except BlockingIOError:
+                held.append(True)
+            finally:
+                os.close(fd)
+        return orig(cfg, job_id, **fields)
+    monkeypatch.setattr(RG.RJ, "update", check)
+    RG._give_up(world.cfg, CID, wrec, RJ.read(world.cfg, JOB), 1, "deadline")
+    assert held == [True]
+    assert not list(gdir.glob("001-*"))
+    assert _frames(pull, JOB, _gate_frame(world, 2))[0] == 410
+    assert not list(gdir.glob("001-*"))
+
+
+@pytest.mark.parametrize("how", ["give-up", "stop"])
+def test_a_leased_job_given_up_or_stopped_drops_its_bundle(world, pull, how):
+    wrec = _queue(world)
+    assert _lease(world) is not None
+    bundle = PJ.queue_dir(world.cfg) / f"{JOB}.bundle"
+    assert bundle.is_file()
+    if how == "give-up":
+        RG._give_up(world.cfg, CID, wrec, RJ.read(world.cfg, JOB), 1, "deadline")
+    else:
+        RJ.update(world.cfg, JOB, state="cancelled")            # as `follow_gate`'s stop does
+        PJ.request_cancel(world.cfg, JOB)
+    assert not bundle.exists() and not (PJ.queue_dir(world.cfg) / f"{JOB}.json").exists()
+    assert _call(pull, "GET", f"/v1/jobs/{JOB}/bundle", pull.tokens["box"])[0] == 410

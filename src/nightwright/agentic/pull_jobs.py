@@ -300,10 +300,11 @@ def unqueue_unleased(cfg, job_id: str) -> bool:
 
 def request_cancel(cfg, job_id: str) -> None:
     """SPEC-0229 / SPEC-0341 cancel of a pull job: `cancel_requested`, which the server returns
-    as `cancel: true` on the worker's next frames or heartbeat; a job never leased is unqueued."""
-    rec = RJ.update(cfg, job_id, cancel_requested=True)
-    if rec is not None and rec.get("pull_state") == "queued":
-        unqueue(cfg, job_id)
+    as `cancel: true` on the worker's next frames or heartbeat. The job is unqueued whether or
+    not it was leased: a cancelled job is never run again, so its bundle is only disk (a worker
+    that leased it but has not fetched the bundle yet gets 410 and drops the job)."""
+    RJ.update(cfg, job_id, cancel_requested=True)
+    unqueue(cfg, job_id)
 
 
 def give_up_lease(cfg, job_id: str, reason: str = "lease") -> None:

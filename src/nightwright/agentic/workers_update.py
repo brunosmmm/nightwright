@@ -23,6 +23,9 @@ UV_LOG = "<worker dir>/update/uv.log"
 BUSY_MSG = ("worker has live jobs; drain it (nw workers drain {name}) or retry; "
             "--force installs without killing jobs")
 
+PULL_MSG = ("{name} is a pull worker (SPEC-0334): the coordinator has no ssh to it, so "
+            "`nw workers update` cannot upgrade it; upgrade nightwright on that machine")
+
 
 class UpdateError(Exception):
     pass
@@ -89,6 +92,8 @@ def send(cfg, rec: dict, force: bool, dry_run: bool = False):
     """Build the wheel and (unless `dry_run`) upload it. Returns `(plan, result_or_None,
     exit_code_or_None, stderr)`; raises `UpdateError` for a failure before an answer."""
     import subprocess
+    if rec.get("mode") == "pull":
+        raise UpdateError(PULL_MSG.format(name=rec.get("name")))
     w = WK.normalize(cfg, rec)
     try:
         WK.ensure_record_ssh_dir(cfg, w)

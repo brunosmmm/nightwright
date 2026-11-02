@@ -485,6 +485,8 @@ def workers_drain(cfg, name):
 def _schedule_update(cfg, name) -> None:
     """SPEC-0386: mark `name` draining for an update (`draining` + `update_pending`)."""
     def state(r):
+        if r.get("mode") == "pull":             # SPEC-0334: never drained for an update
+            raise click.ClickException(WU.PULL_MSG.format(name=name))
         if r.get("enabled") is False:
             return f"{name}: disabled; nothing to drain (run `nw workers update {name}` now)"
         if WK.update_pending(r):

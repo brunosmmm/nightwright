@@ -785,6 +785,53 @@ Fixes from the seventh review, no Design change:
 - The automated tests are recorded in the loop records above. The full `uv run pytest` is
   left to the queue's close gate.
 
+### As shipped (2026-11-02, loop 11)
+
+Fixes from the eighth review, no Design change:
+
+- **`nw workers update` refuses a pull worker.** A pull record has no `ssh`, so the update
+  crashed with `KeyError`. `workers_update.send` now raises `UpdateError` for `mode: pull`
+  before it builds a wheel: `nw workers update NAME` fails with a clear message, and the
+  queue's update pass maps it to a failed update, which returns the worker to service.
+  `nw workers update NAME --when-idle` (and `auto_update`) refuses a pull worker before it
+  writes anything, so it is never drained for an update. Upgrading a pull worker is done on its
+  own machine.
+- **The give-up writes `lost` under the job's lock.** For a pull job, `remote_gates._give_up`
+  sets `state: lost` while it holds `job-frames/<job_id>.lock`, the lock the API server holds
+  while it applies frames and writes `gates/<seq>-*`. A frames post already under way finishes
+  first. Every post after it gets 410. So the gate files the give-up then deletes stay deleted.
+- **A cancelled or given-up leased job drops its bundle.** `request_cancel` now unqueues the
+  job (its queue entry and bundle) whether or not it was leased, and `_give_up` unqueues a
+  pull job even when its worker is no longer registered. A worker that leased the job but has
+  not fetched the bundle yet gets 410 and drops the job.
+
+### Test record (2026-11-02, loop 11)
+
+- New in `tests/test_pull_workers_security.py`:
+  - `nw workers update box` and `nw workers update box --when-idle` on a pull worker each exit
+    1 with "pull worker" in the output and no `KeyError`. No wheel is built. The record is not
+    marked draining or `update_pending`. `workers_update.perform` returns `failed`.
+  - `_give_up` of a leased pull gate job writes `state: lost` while the job lock is held (a
+    non-blocking `flock` from the test fails). The gate files are deleted, and a later `gate`
+    frame gets 410 and writes no file.
+  - A leased job given up on `deadline`, or stopped (`state: cancelled` and `request_cancel`),
+    has no queue entry or bundle left, and `GET bundle` gets 410.
+- With the previous `workers_update.py`, `cli_workers.py`, `remote_gates.py` and
+  `pull_jobs.py`, all 4 new tests fail.
+- `uv run pytest -q -n 2 tests/test_workers_update_cmd.py tests/test_workers_update_schedule.py`:
+  18 passed.
+- Changed: `test_a_lease_racing_the_unreachable_give_up_wins` asserted that the bundle
+  stays after the stop that ends its step. A stop of a leased job now drops the bundle, so the
+  test asserts the point of the race instead: the record stays `leased`, with no lost reason,
+  and `unqueue_unleased` still answers False.
+- `uv run pytest -q -n 4 tests/test_pull_workers.py tests/test_pull_workers_security.py
+  tests/test_workers_registry.py tests/test_remote_job_records.py tests/test_remote_personas.py
+  tests/test_worker_job_retry.py tests/test_workers_drain.py tests/test_remote_gates.py`:
+  473 passed, 1 failed (that test, before the change). After the change,
+  `uv run pytest -q -n 4 tests/test_pull_workers_security.py`: 95 passed.
+  `python3 tools/spec_lint.py`: ok.
+- The full suite is left to gating.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-561` / `nw idea clock-out IDEA-561`.
