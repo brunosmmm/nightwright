@@ -3901,14 +3901,24 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
     _store_verdicts(state, profile, counters, res.reviews)
     if res.step.held:
         # SPEC-0345: the persona cap held part of the fan-out; no routing until every reviewer
-        # ran. A member that ran without a valid verdict uses one retry, as in a full pass.
+        # ran. A member that ran without a valid verdict uses one retry, as in a full pass, and
+        # one already out of retries parks review_escalated, as `decide_reviews` would.
         valid = _valid_verdicts(state, profile)
+        failed = [r.step.persona for r in res.reviews
+                  if r.run_result is not None and r.step.persona not in valid]
+        out = tuple(p for p in failed
+                    if _retries_used(counters, p, len(reviewers)) >= REVIEW_RETRY_MAX)
+        if out:
+            who = "the conformance reviewer" if out == ("conformance_reviewer",) \
+                else ", ".join(out)
+            return finish("PARKED", "review_escalated", park={
+                "reason": "review_escalated",
+                "detail": f"{who} returned no usable verdict twice",
+                "resume_to": "REVIEWING"})
         by = counters.setdefault("review_retries_by_persona", {})
-        for r in res.reviews:
-            p = r.step.persona
-            if r.run_result is not None and p not in valid:
-                by[p] = by.get(p, 0) + 1
-                counters["review_retries"] = int(counters.get("review_retries", 0)) + 1
+        for p in failed:
+            by[p] = by.get(p, 0) + 1
+            counters["review_retries"] = int(counters.get("review_retries", 0)) + 1
         events.append(("note", {"text": f"persona cap: {', '.join(res.step.held)} "
                                         "wait for a free persona slot", "author": "queue"}))
         return finish("REVIEWING", "persona_cap")
@@ -5173,6 +5183,20 @@ def _close_stale(cfg, cid: str, ev: dict, ctx: _Ctx) -> str:
     return f"stale_{label}"
 
 
+def _adopted_held(ctx: _Ctx, snap: dict, personas: tuple) -> tuple:
+    """SPEC-0345: the reviewers an adopted fan-out's members leave out while `max_personas` is
+    set (the cap trimmed it): pending reviewers without a valid verdict. They were held, not
+    failed, so applying the adopted members charges them no retry. () without a cap."""
+    if PG.max_personas(ctx.cfg) is None or "review_triager" in personas:
+        return ()
+    try:
+        prof = ctx.profile(snap)
+    except (ValueError, OSError):
+        return ()
+    valid = _valid_verdicts(snap, prof)
+    return tuple(p for p in reviewers_of(prof) if p not in personas and p not in valid)
+
+
 def _adopt(cfg, ctx: _Ctx, pool: StepPool, report: TickReport) -> None:
     """First tick of a pool: every open run in the campaign ledgers becomes a flight in phase
     `wait`, handled by its files (`ClaudeRunner.run` attaches). Finished runs are applied by the
@@ -5235,7 +5259,8 @@ def _adopt(cfg, ctx: _Ctx, pool: StepPool, report: TickReport) -> None:
         if cls and cls[0] == "review":
             personas = tuple(e["persona"] for e in members)
             group = fl.group = _ReviewGroup(snap, Step(
-                "review", persona=personas[0], personas=personas))
+                "review", persona=personas[0], personas=personas,
+                held=_adopted_held(ctx, snap, personas)))
         for ev in members:
             rid, persona = ev["run_id"], ev["persona"]
             rd = store.runs_dir(cfg, cid) / rid

@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import os
 import threading
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -118,6 +119,13 @@ def test_failing_affine_worker_is_skipped(two, why):
         assert pools[0][0] == "box"
 
 
+def test_failing_affine_worker_first_in_the_registry_is_demoted_for_gates(two):
+    _affine(two, "box")                                      # registry order: box first
+    _set_registry(two, "box", check_ok=False)
+    pools = RG.pools_for(two.cfg, two.project, S.read_state(two.cfg, CID), seq=1)
+    assert [p[0] for p in pools][:2] == ["box2", "box"]
+
+
 def test_gate_run_never_sets_affinity(two):
     pools = RG.pools_for(two.cfg, two.project, S.read_state(two.cfg, CID), seq=1)
     assert pools[0][0] == "box"
@@ -219,6 +227,22 @@ def test_capped_fan_out_runs_members_on_later_ticks(e2e):
     assert any(r.get("reason") == "persona_cap" for rep in reports for r in rep.steps)
 
 
+def test_adopted_trimmed_fan_out_keeps_its_held_members(e2e):
+    # after a restart the queue adopts the one member the cap let run; the reviewer it held is
+    # still held (no retry charged), not a failed member
+    cfg, cid, repo, runner = e2e({})
+    ctx = Q._Ctx(cfg)
+    st = S.read_state(cfg, cid)
+    assert Q._adopted_held(ctx, st, (A,)) == ()                       # no cap: as before
+    _cap(cfg, 1)
+    assert Q._adopted_held(ctx, st, (A,)) == (B,)
+    assert Q._adopted_held(ctx, st, (A, B)) == ()
+    assert Q._adopted_held(ctx, st, ("review_triager",)) == ()
+    loop = int((st.get("counters") or {}).get("loops", 0))
+    st["last_review"] = {"verdicts": {B: {"verdict": b_entry("pass")["verdict"], "loop": loop}}}
+    assert Q._adopted_held(ctx, st, (A,)) == ()                       # B already has a verdict
+
+
 def test_no_workers_default_fan_out_runs_all_members_concurrently(e2e):
     barrier = threading.Barrier(2)
     cfg, cid, repo, runner = e2e({"implementer": [impl_done()], A: [review_entry("pass")],
@@ -227,12 +251,113 @@ def test_no_workers_default_fan_out_runs_all_members_concurrently(e2e):
     assert S.read_state(cfg, cid)["state"] == "MERGED"      # both met at the barrier
 
 
-def test_spec_review_is_neither_counted_nor_gated(tmp_path):
+def test_capped_fan_out_member_failing_twice_escalates(e2e):
+    # room for 1 of 2 reviewers; A keeps failing: its second failure parks review_escalated,
+    # as a full pass would, instead of re-running A every tick
+    bad = dict(review_entry("pass"), malformed=True)
+    cfg, cid, repo, runner = e2e({"implementer": [impl_done()], A: [bad, bad, bad],
+                                  B: [b_entry("pass")]})
+    _cap(cfg, 1)
+    drive(cfg, runner)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "PARKED" and st["park"]["reason"] == "review_escalated", st
+    assert "conformance reviewer" in st["park"]["detail"]
+    assert runner.calls.count(A) == 2 and runner.calls.count(B) == 0
+
+
+def test_capped_fan_out_charges_a_retry_only_to_the_member_that_ran(e2e):
+    # room for 1 of 2 reviewers: A runs without a valid verdict (one retry), B is held (none);
+    # A's retry then passes, B runs on a later tick, and the review routes to a merge
+    bad = dict(review_entry("pass"), malformed=True)
+    cfg, cid, repo, runner = e2e({"implementer": [impl_done()], A: [bad, review_entry("pass")],
+                                  B: [b_entry("pass")]})
+    _cap(cfg, 1)
+    for _ in range(12):
+        rep = Q.tick(cfg, runner=runner)
+        if any(r.get("reason") == "persona_cap" for r in rep.steps):
+            break
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "REVIEWING"
+    assert st["counters"]["review_retries_by_persona"] == {A: 1}       # B: held, no retry
+    assert runner.calls.count(B) == 0
+    drive(cfg, runner)
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "MERGED", st
+    assert runner.calls.count(A) == 2 and runner.calls.count(B) == 1
+    assert starts(cfg, cid)[-2:] == [f"003-{A}", f"004-{B}"]
+
+
+def _fill_cap(cfg):
+    """`max_personas: 1`, its one slot held by another campaign's live remote persona job, and
+    the rate-limit backoff running: every gated dispatch is closed."""
+    _cap(cfg, 1)
+    RJ.create(cfg, job_id="j-other", campaign="other", worker="box", attempt=1, seq=0,
+              submitted_at=0.0, kind="persona", deadline_at=9e9)
+    RJ.update(cfg, "j-other", run_id="001-implementer", persona="implementer")
+    PG._write_json(PG.rate_limit_path(cfg), {"until": PG._iso(dt.datetime.now().timestamp() + 900),
+                                             "backoff_s": 900})
+    assert PG.backoff_until(cfg) is not None
+
+
+def test_spec_review_is_neither_counted_nor_gated(tmp_path, monkeypatch):
+    from fanout_support import _git, added, make_cfg, make_repo, script
     w = _world(tmp_path)
     _open_run(w.cfg, CID, "001-spec_reviewer", persona="spec_reviewer")
-    assert PG.live_persona_runs(w.cfg, [CID]) == 0
-    assert "spec_review" not in PG.GATED_KINDS
-    assert {"implement", "triage", "review"} <= PG.GATED_KINDS
+    assert PG.live_persona_runs(w.cfg, [CID]) == 0                # not counted
+    # a live campaign spec-review run starts while the backoff runs and the cap is full
+    repo = make_repo(tmp_path)
+    v = {"verdict": "approve", "size": "s", "tone": "cost-effective", "rationale": "ok",
+         "findings": [], "suggested_splits": []}
+    cfg = make_cfg(tmp_path, repo, script(tmp_path, [
+        {"persona": "spec_reviewer", "verdict": v, "cost_usd": 0.1}]))
+    cid = added(cfg, monkeypatch)
+    runner = R.FakeRunner(cfg["agentic"]["fake_script"])
+    Q.tick(cfg, runner=R.FakeRunner(script(tmp_path, [], name="none.json")))   # open only
+    st = S.read_state(cfg, cid)
+    assert st["state"] == "IMPLEMENTING" and not starts(cfg, cid)
+    wt = Path(st["repo"]["worktree"])                     # an idea campaign's draft spec
+    spec = wt / st["spec"]["rel_path"]
+    spec.write_text(spec.read_text().replace("status: accepted", "status: draft"))
+    _git(wt, "commit", "-qam", "draft")
+    st.update(state="SPEC_REVIEW", kind="idea")
+    st["spec"]["id"] = "SPEC-0001"
+    S.write_state(cfg, cid, st)
+    _fill_cap(cfg)
+    rep = Q.tick(cfg, runner=runner)
+    assert [r for r in starts(cfg, cid) if r.endswith("-spec_reviewer")], (rep.steps, S.read_state(cfg, cid).get("park"))
+    assert cid not in PG.read_holds(cfg)
+    # the same closed gate holds a campaign persona step
+    st = S.read_state(cfg, cid)
+    st["state"] = "IMPLEMENTING"
+    S.write_state(cfg, cid, st)
+    n = len(starts(cfg, cid))
+    Q.tick(cfg, runner=runner)
+    assert len(starts(cfg, cid)) == n
+    assert PG.read_holds(cfg)[cid]["held_by"] == "rate_limit"
+
+
+@pytest.mark.parametrize("role,project", [("conductor", None), ("steward", "Foo")])
+def test_conductor_and_steward_launch_during_a_backoff_and_are_not_counted(
+        tmp_path, monkeypatch, role, project):
+    from nightwright import rules
+    from nightwright.agentic import launch as L
+    w = _world(tmp_path)
+    for d in ("nw", "foo"):
+        (tmp_path / d).mkdir()
+    monkeypatch.setattr(rules, "projects_payload", lambda cfg: {"projects": [
+        {"name": "Meta-Tools", "research": {"root": str(tmp_path / "nw")}},
+        {"name": "Foo", "research": {"root": str(tmp_path / "foo")}}]})
+    w.cfg["agentic"].setdefault("conductor", {})["prices"] = {
+        "claude": {"input": 3.0, "output": 15.0}}
+    _fill_cap(w.cfg)
+    before = PG.live_persona_runs(w.cfg, [CID, "other"])
+    execs = []
+    monkeypatch.setattr(os, "execvpe", lambda f, argv, env: execs.append(argv))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.chdir(tmp_path)
+    L.run(w.cfg, L.build_plan(w.cfg, role, project))            # not held by the backoff
+    assert len(execs) == 1 and execs[0][0] == "claude"
+    assert PG.live_persona_runs(w.cfg, [CID, "other"]) == before  # not counted toward the cap
 
 
 # ---- rate limit --------------------------------------------------------------------------------

@@ -177,14 +177,17 @@ def pools_for(cfg, project_cfg: dict, campaign_state: dict, *, seq: int,
 
 def _affine_first(cfg, campaign_state: dict, pools: list) -> list:
     """SPEC-0345: the campaign's affine worker's pool first, unless it is failing (a full one
-    falls through to the next pool). Gate runs only read the affinity, never set it."""
+    falls through to the next pool). A failing affine worker goes after the other remote pools,
+    even when the registry order put it first. Gate runs only read the affinity, never set it."""
     from . import persona_gate as PG
     by_name = {name: (name, n) for name, n in pools}
     names = PG.order(cfg, campaign_state, [name for name, _n in pools])
-    if names and names[0] is not WK.LOCAL and names[0] != pools[0][0]:
+    if names and names[0] is not WK.LOCAL and PG.affinity(cfg, campaign_state) == names[0]:
         rec = next((w for w in WK.load(cfg) if w["name"] == names[0]), None)
         if rec is None or PG.failing(cfg, campaign_state, rec):
-            return pools
+            rest = [p for p in pools if p[0] != names[0]]
+            cut = next((i for i, p in enumerate(rest) if p[0] is WK.LOCAL), len(rest))
+            return rest[:cut] + [by_name[names[0]]] + rest[cut:]
     return [by_name[n] for n in names]
 
 

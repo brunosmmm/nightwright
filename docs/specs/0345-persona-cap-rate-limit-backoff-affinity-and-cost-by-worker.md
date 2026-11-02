@@ -214,6 +214,31 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   only and has no cached `async`/`persona` feature, and a real 429 cannot be produced on
   demand. Both steps are left to the human and to SPEC-0346.
 
+### Test record (2026-11-02, review loop 2)
+
+- New tests in `tests/test_remote_persona_limits.py`:
+  - `test_capped_fan_out_member_failing_twice_escalates`: `max_personas: 1` leaves room for
+    1 of 2 reviewers, and the first reviewer keeps failing. The campaign parks
+    `review_escalated` after the second failure. The held reviewer never runs. Without the
+    fix the test fails (the campaign merged after the failing reviewer was re-run).
+  - `test_capped_fan_out_charges_a_retry_only_to_the_member_that_ran`: a member that ran
+    without a valid verdict while its sibling was held uses one retry and the held member uses
+    none (`review_retries_by_persona == {A: 1}`). The retry then passes, the held member runs
+    on a later tick, and the campaign merges.
+  - `test_spec_review_is_neither_counted_nor_gated` now drives a campaign `SPEC_REVIEW` step
+    while the backoff runs and the cap is full (another campaign's live persona job): the
+    `spec_reviewer` run starts and nothing is held. The same closed gate then holds the
+    campaign's implementer step (`held_by: rate_limit`).
+  - `test_conductor_and_steward_launch_during_a_backoff_and_are_not_counted` (conductor and
+    steward): `launch.run` reaches the `claude` exec while the backoff runs and the cap is
+    full, and the live persona count does not change.
+  - `test_failing_affine_worker_first_in_the_registry_is_demoted_for_gates` and
+    `test_adopted_trimmed_fan_out_keeps_its_held_members`.
+- `uv run pytest -q -n 4 tests/test_remote_persona_limits.py`: 47 passed.
+- `uv run pytest -q -n 6` on the reviewers, adopt, remote gates, remote personas, e2e, review
+  triage, affected-tests replay and test-waits files: 380 passed.
+- Full suite left to gating.
+
 ### As shipped (2026-11-02)
 
 - **Module.** `agentic/persona_gate.py` holds the gate (`Gate`), the backoff
@@ -235,7 +260,11 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   When the flight is applied, `_apply_reviews` stores the valid verdicts and stays in
   `REVIEWING` with reason `persona_cap` and a `persona cap: … wait …` note, without routing.
   Members that were held use no retry. A member that ran without a valid verdict uses its one
-  retry, as in a full pass. The next ticks plan the pending reviewers again.
+  retry, as in a full pass. A member that ran without a valid verdict and had already used its
+  retry parks the campaign `review_escalated`, as `decide_reviews` would in a full pass. The
+  next ticks plan the pending reviewers again. When the queue adopts a fan-out after a restart
+  while `max_personas` is set, the pending reviewers outside the adopted members are carried as
+  `held` (`_adopted_held`), so they are not charged a retry.
 - **Rate-limit detection.** `api_error_status` decides when the result JSON has it: 429 or
   529 counts. Without it, the result message must start with `API Error` and its first line
   must match `\b429\b`, `\b529\b`, `rate[ _]limit` or `\boverloaded\b`.
@@ -270,8 +299,11 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   losses without writing campaign state from the gate thread. A persona job's loss now also
   appends `worker_job_lost` to the campaign ledger (gate losses already did) and clears the
   stored affinity. Gate runs reorder `pools_for`'s pools so that the affine worker comes
-  first, unless it is failing; a full pool falls through in `gate_slots.acquire`. Gate runs
-  never set the affinity.
+  first, unless it is failing; a failing affine worker goes after the other remote pools, even
+  when the registry order put it first. A full pool falls through in `gate_slots.acquire`.
+  Gate runs never set the affinity. A `worker_job_lost` keeps that worker failing for the
+  campaign until a new affinity is set (the Design's "had a `worker_job_lost` for this
+  campaign"); the persona run then goes to another worker or runs locally.
 - **Cost.** `campaign_export` gains the `cost_by_worker` campaign column. `nw campaign show`
   gains `cost_by_worker` in its JSON output and a `cost by worker` line in the text output.
   Both sum `charged_usd` of `run.end` by `worker`, with no worker counted as `local`. Remote
