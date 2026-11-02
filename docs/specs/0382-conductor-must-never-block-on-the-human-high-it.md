@@ -37,7 +37,7 @@ skipped. Causes found in the investigation (plan: `/home/bruno/work/nw-plans/con
   scope here).
 
 **Already in the repo** (not part of this spec's edits): the `nw-conduct` rule "Never ask the human,
-never wait on the human" (`skills/nw-conduct/SKILL.md:33-39`), its `message.human_order`
+never wait on the human" (`skills/nw-conduct/SKILL.md:33-39`), its `message.request.human_order`
 row (line 142), the "Never `AskUserQuestion`" line in the escalate convention (line 227), and the
 conductor-never-asks sentence in `nw-orient` (line 40). A grep of `nw-conduct` and `nw-orient` finds
 no "tell the human", "unless told" or "wait for the human" outside that rule. Still missing, and
@@ -163,7 +163,7 @@ via the project steward)". `review_triager.md` is checked and changed only if it
       --question` help contain neither "the human must" nor "a human must decide"; `review_triager`
       likewise; the existing persona tests pass unchanged.
 - [x] AC5: `skills/nw-conduct/SKILL.md` contains "Never call `AskUserQuestion`" and the
-      `message.human_order` row, and none of "tell the human" or "unless told", nor an
+      `message.request.human_order` row, and none of "tell the human" or "unless told", nor an
       instruction to wait for the human anywhere outside the *Never ask the human* rule (the assertion
       excludes that paragraph, which itself says `never "wait for the human"`); `skills/nw-orient/
       SKILL.md` contains the conductor-never-asks sentence. This test passes against the current
