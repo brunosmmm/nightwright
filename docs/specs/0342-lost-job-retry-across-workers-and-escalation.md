@@ -1,7 +1,7 @@
 ---
 id: SPEC-0342
 title: "Lost-job retry across workers and escalation"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -152,35 +152,35 @@ an idempotent `enabled: false`.
 
 ## Acceptance criteria
 
-- [ ] Killing the worker's job process yields `lost`, then `worker_job_lost`, then a retry
+- [x] Killing the worker's job process yields `lost`, then `worker_job_lost`, then a retry
       with `attempt + 1` on a second worker (when it has a free slot). After
       `max_remote_attempts`, the job runs locally.
-- [ ] The retry's `acquire` gets the pool list `gate_pools(cfg)` minus `excluded_workers`,
+- [x] The retry's `acquire` gets the pool list `gate_pools(cfg)` minus `excluded_workers`,
       ending with the local pool; with the eligible worker's slots all held, the retry runs
       locally at once and no further remote attempt follows.
-- [ ] `worker_job_retried` is appended for every new attempt with `job_id` the new attempt's
+- [x] `worker_job_retried` is appended for every new attempt with `job_id` the new attempt's
       id, `from_worker`, `attempt`, and `to_worker` the worker used, or `null` for the local
       fallback; the abandoned attempt's `gates/` files are deleted before the next attempt
       writes.
-- [ ] `agentic.workers.max_remote_attempts` defaults to 2. Set to 1, a lost job runs locally
+- [x] `agentic.workers.max_remote_attempts` defaults to 2. Set to 1, a lost job runs locally
       with no remote retry. A value below 1 (or not an integer) is a config error.
-- [ ] With two workers registered, concurrent campaigns use both.
-- [ ] A retry never picks a worker in `excluded_workers`; with all eligible workers
+- [x] With two workers registered, concurrent campaigns use both.
+- [x] A retry never picks a worker in `excluded_workers`; with all eligible workers
       excluded, the run is local.
-- [ ] A coordinator crash after attempt 1's record is set to `lost` but before attempt 2's
+- [x] A coordinator crash after attempt 1's record is set to `lost` but before attempt 2's
       record is written is recovered on the next tick: attempt 2 starts on the same `seq` with
       `excluded_workers` taken from the lost record.
-- [ ] Losses are stored in `<agentic_dir>/worker-losses.json` and survive a coordinator
+- [x] Losses are stored in `<agentic_dir>/worker-losses.json` and survive a coordinator
       restart; three `worker_job_lost` for one worker within a sliding 3600 s (from any
       campaigns) raise one escalation with options `off` and `keep`, `kind: worker_lost`,
       `campaign: null`, `by: conductor`; no campaign is parked; a fourth loss while it is open,
       or within 3600 s of `escalated_at`, raises none.
-- [ ] Answering the worker escalation with `off` sets the worker's `enabled: false` in the
+- [x] Answering the worker escalation with `off` sets the worker's `enabled: false` in the
       registry on the next queue tick, and answering with `keep` leaves the registry
       byte-identical; either way the record gets `applied_at` and is not applied twice; a
       worker removed before the answer is applied leaves the registry unchanged and appends
       a `note`.
-- [ ] With no workers registered, behaviour is unchanged.
+- [x] With no workers registered, behaviour is unchanged.
 
 ## Test plan
 
@@ -221,6 +221,73 @@ an idempotent `enabled: false`.
 - **Regression guard:** affected tests while iterating; SPEC-0341's and the escalations
   tests run unchanged (the new `kind` keyword defaults to `None`).
 
+### Test record (2026-11-01)
+
+- `uv run pytest -q tests/test_worker_job_retry.py`: 24 passed. It covers every automated case
+  of the plan on two loopback workers (the real forced command `nw worker ssh-command`, each
+  against its own data dir): lost (default limit and limit 3), busy, pools (spied `acquire`
+  plus `retry_pools` directly), `max_remote_attempts` (settings unit test; 1 runs locally with
+  no remote retry; 0, -1, `"2"` and `true` are a gate-step config error; a bad value with no
+  workers changes nothing), two campaigns on two workers, adoption of a detached attempt-2
+  record, crash between records (same tree continues on seq 1 as attempt 2 on b2; another
+  commit starts attempt 1 on seq 2), the loss window (two campaigns, open blocks a fourth,
+  pruning, a second escalation after the answer and an hour, a failed raise is a note and the
+  next loss retries), restart (the third loss recorded by a fresh `python -c` process raises
+  the escalation), and `off` / `keep` / removed through `queue.tick`.
+- Regression guard: `tests/test_remote_job_records.py`, `test_remote_gates.py`,
+  `test_gate_slots.py`, `test_workers_registry.py` (220 passed, `-n 4`), and
+  `test_agentic_escalations*.py`, `test_agentic_events*.py`, `test_agentic_quiet.py`,
+  `test_agentic_gates.py`, `test_gate_tiers.py`, `test_cli_gate_slots.py`,
+  `test_agentic_conduct*.py`, `test_agentic_conductor_brief.py`, `test_tui_escalations_model.py`,
+  `test_tui_events_model.py`, `test_workers_bootstrap.py`, `test_agentic_queue_visibility.py`
+  (487 passed). SPEC-0341's and the escalation tests run unchanged. In one serial `-x` run,
+  `test_remote_job_records.py::test_submit_failure_after_accept_still_has_a_record` failed once
+  (it checks for the cancel call right after the record turns `local`, and `_failed` writes
+  `local` before it cancels). That path is not changed here, and the test passed in the
+  re-run. The full suite is left to gating.
+- Manual step 1 (two real workers, reboot the first mid-gate) was run on the loopback instead:
+  the job process is killed, as the `lost` test does. This host has one registered worker
+  (`box`), and it does not list the `async` feature (see SPEC-0341's test record), so the step
+  on real machines needs a second, upgraded worker. That is left to the human and to SPEC-0346's
+  integration suite.
+- `python3 tools/spec_lint.py` passes after `--write-ledger`.
+
+### As shipped (2026-11-01)
+
+- **Where the retry lives.** `remote_gates._give_up` no longer sets the record `local`. It
+  leaves it `lost`, records the loss (`workers.record_loss`, through `_record_loss`, which turns
+  any failure into a campaign `note`) and returns it as `Outcome.lost`. `gates.run_all` hands
+  it to the new `gates._retry`, which loops attempt by attempt. A local run sets the lost
+  record `local` first and appends `worker_job_retried` with `to_worker: null`. A remote
+  attempt appends the event (`remote_gates.retried`) and calls `remote_gates.run(...,
+  attempt=, excluded=)`. The pool list comes from `remote_gates.retry_pools`: `pools_for`
+  without the excluded workers, or None when no remote pool is left. A plain transport failure
+  of a retry falls back locally as SPEC-0338 does, with no further retry. A stop while a retry
+  waits for a slot leaves the record `lost`, so the next gate step continues the chain through
+  the crash path.
+- **Config check.** `remote_jobs.settings` raises for a bad `max_remote_attempts`. `run_all`
+  reads it before dispatch whenever a remote pool, an adoption or a lost chain is involved, so
+  the error reaches `_do_gate`'s `res.error` (`config error: agentic.workers.max_remote_attempts
+  ...`) before any job is submitted. The gate step then parks with its usual detail. The park
+  does not use `config_error`, because the `config_invalid` auto-resume only re-checks the
+  project config and the profile, and would resume and park again on every tick. With no
+  worker registered, the key is never read.
+- **"The commit under test" on the crash path** is checked as `remote_gates.adoptable` checks
+  adoption: the record's `head` and `tree` must equal the worktree's. Comparing the raw
+  `commit` would not work, because a dirty tree's `git stash create` commit is new on every
+  call. The newest record comes from the new `remote_jobs.newest_gate` (loop tier). The chain
+  is also not continued when `_gate_committed` says the state already holds that seq's gate.
+- **Loss file.** Each worker's entry also keeps `recent`, its last three
+  `{at, job_id, reason}`, which feed the escalation's facts (`losses` stays a list of ISO
+  times, as designed). The question uses the actual count in the window, so it reads
+  "lost 3 jobs" at the threshold.
+- **Queue-wide note.** `note` (`{text}`) and `worker_job_retried` were added to
+  `events.EVENT_TYPES`. Both are `hold` in the quiet table. `worker_job_retried` is also in
+  `schemas.EVENT_KEYS` and projected by `events.sync`, as `worker_job_lost` is.
+  `queue._apply_worker_escalations` calls the handler in `_tick` next to
+  `_settle_ended_remote_jobs`. An unreadable registry leaves the record unapplied until the
+  next tick.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
@@ -232,11 +299,11 @@ Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

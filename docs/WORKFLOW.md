@@ -387,7 +387,15 @@ the last applied frame `cursor`, `state`, `deadline_at`, `last_seen_at`). A drop
 connection backs off (2, 4, 8 … 60 s), runs `poll --renew` and re-attaches after its cursor;
 the step gives up, appending `worker_job_lost {worker, job_id, attempt, reason}` and running
 the gates locally, when the worker reports the job `lost`, stays unreachable longer than
-`agentic.workers.worker_ttl_s` (default 300), or the record's `deadline_at` passes. A runner
+`agentic.workers.worker_ttl_s` (default 300), or the record's `deadline_at` passes. SPEC-0342:
+before running locally, a given-up job is retried as attempt + 1 on a worker none of its
+attempts was lost on (the first free slot of the eligible pools, local last, so a full fleet
+runs it locally at once), up to `agentic.workers.max_remote_attempts` (default 2) remote
+attempts; each new attempt appends `worker_job_retried {job_id, from_worker, to_worker,
+attempt}` (`to_worker: null` for the local run). Losses are counted per worker in
+`<data_dir>/agentic/worker-losses.json`: three within a sliding hour raise one campaign-less
+escalation (`kind: worker_lost`, options `off` / `keep`, nothing parked), and the queue tick
+carries out the answer (`off` disables the worker as `nw workers off` does). A runner
 exit (stop, code change, crash) leaves the job running on the worker: the next runner's gate
 step finds the campaign's live record before it picks a seq, attaches from frame 0 and
 finishes it under the same seq (rebuilding every result, rewriting no file already applied;

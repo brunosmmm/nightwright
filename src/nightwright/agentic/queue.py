@@ -2010,9 +2010,21 @@ def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
                         "text": f"cancelled remote job {job_id}: submitted for another commit",
                         "author": "queue"}))
             live = RJ.live_gate(ctx.cfg, state["id"])
-        seq = int(live["seq_or_run"]) if live else G.next_gate_seq(ctx.cfg, state["id"])
+        # SPEC-0342: no live record, but the newest one is `lost` (a crash after the give-up,
+        # before the next attempt's record): continue that chain on its seq, for the same tree
+        lost = None if live is not None else RJ.newest_gate(ctx.cfg, state["id"])
+        if lost is not None and (lost.get("state") != "lost" or _gate_committed(state, lost)):
+            lost = None
+        if lost is not None:
+            ok = _adoptable(lost, worktree, ctx.stop)
+            if ok is None:
+                res.deferred = f"remote job {lost['job_id']}: worktree unreadable"
+                return res
+            lost = lost if ok else None
+        seq = int(live["seq_or_run"]) if live else int(lost["seq_or_run"]) if lost \
+            else G.next_gate_seq(ctx.cfg, state["id"])
         res.gate_run = G.run_all(pcfg, state, ctx.cfg, seq=seq, stop=ctx.stop,
-                                 tier="loop", adopt=live)     # SPEC-0328
+                                 tier="loop", adopt=live, lost=lost)     # SPEC-0328
     except (ValueError, OSError) as e:
         res.error = str(e)
     return res
@@ -4238,6 +4250,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
         ctx.progress()
         store.sweep_campaign_tmp(cfg, st["id"])
     _settle_ended_remote_jobs(cfg, flying)
+    _apply_worker_escalations(cfg)
     items = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
     slots = slots_for(cfg)
     busy = [s for s in items if s.get("state") in ACTIVE_STATES]
@@ -7661,6 +7674,15 @@ def _cancel_remote_jobs(cfg, cid, *, note: bool = True) -> list[str]:
         store.append_event(cfg, cid, "note", {"text": f"cancelled remote job {job_id}",
                                               "author": "queue"})
     return out
+
+
+def _apply_worker_escalations(cfg) -> None:
+    """SPEC-0342, every tick: carry out answered worker escalations (`off` / `keep`)."""
+    from . import workers as WK
+    try:
+        WK.apply_answered_escalations(cfg)
+    except (OSError, ValueError):
+        pass                                    # housekeeping: the next tick tries again
 
 
 def _settle_ended_remote_jobs(cfg, flying) -> None:

@@ -27,6 +27,7 @@ FINAL = ("done", "lost", "cancelled", "local")
 STATES = LIVE + FINAL
 DEFAULT_WORKER_TTL_S = 300.0        # `agentic.workers.worker_ttl_s`
 DEFAULT_JOB_LEASE_S = 900.0         # `agentic.workers.job_lease_s` (SPEC-0340's default)
+DEFAULT_MAX_REMOTE_ATTEMPTS = 2     # `agentic.workers.max_remote_attempts` (SPEC-0342)
 # `{seq:03d}`: at least three digits, four from seq 1000 on
 _GATE_ID = re.compile(r"^(?P<cid>.+)-gate-(?P<seq>[0-9]{3,})-a(?P<attempt>[0-9]+)\Z")
 
@@ -44,8 +45,10 @@ def gate_job_id(campaign_id: str, seq: int, attempt: int = 1) -> str:
 
 
 def settings(cfg) -> dict:
-    """`{worker_ttl_s, job_lease_s}` from `agentic.workers`; anything but a positive finite
-    number falls back to the default."""
+    """`{worker_ttl_s, job_lease_s, max_remote_attempts}` from `agentic.workers`. For the first
+    two, anything but a positive finite number falls back to the default. SPEC-0342:
+    `max_remote_attempts` (absent: 2) must be an integer of at least 1 (`bool` excluded);
+    any other value raises `ValueError` naming the key, a config error the gate step reports."""
     raw = (cfg.get("agentic") or {}).get("workers")
     raw = raw if isinstance(raw, dict) else {}
     out = {}
@@ -55,6 +58,11 @@ def settings(cfg) -> dict:
         ok = isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) \
             and v > 0
         out[key] = float(v) if ok else default
+    v = raw.get("max_remote_attempts", DEFAULT_MAX_REMOTE_ATTEMPTS)
+    if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+        raise ValueError(f"config error: agentic.workers.max_remote_attempts must be an "
+                         f"integer of at least 1 (got {v!r})")
+    out["max_remote_attempts"] = v
     return out
 
 
@@ -106,16 +114,17 @@ def _write(cfg, rec: dict) -> None:
 def create(cfg, *, job_id: str, campaign: str, worker: str, attempt: int, seq: int,
            submitted_at: float, deadline_at: float, kind: str = "gate",
            tier: str | None = None, commit: str | None = None, head: str | None = None,
-           tree: str | None = None) -> dict:
+           tree: str | None = None, excluded_workers=()) -> dict:
     """`tier` is the gate run's tier (`loop`, `close`, ...): only a `loop` run's record is ever
     adopted (`live_gate`). `commit` is the header's commit under test, `head` the worktree's
-    HEAD and `tree` the commit's tree at submit: adoption needs the worktree to match."""
+    HEAD and `tree` the commit's tree at submit: adoption needs the worktree to match.
+    SPEC-0342: `excluded_workers` are the workers earlier attempts of the job were lost on."""
     rec = {"schema": SCHEMA, "job_id": job_id, "kind": kind, "campaign": campaign,
            "worker": worker, "attempt": attempt, "seq_or_run": seq, "cursor": 0,
            "state": "submitted", "submitted_at": iso(submitted_at),
            "deadline_at": iso(deadline_at), "last_seen_at": iso(submitted_at),
-           "excluded_workers": [], "tier": tier, "commit": commit, "head": head,
-           "tree": tree}
+           "excluded_workers": list(excluded_workers), "tier": tier, "commit": commit,
+           "head": head, "tree": tree}
     with _lock(cfg):
         _write(cfg, rec)
     return rec
@@ -199,6 +208,16 @@ def live_gate(cfg, campaign: str) -> dict | None:
     recs = [r for r in live(cfg, campaign) if r.get("kind") == "gate"
             and r.get("tier") == "loop"
             and (m := _GATE_ID.match(str(r.get("job_id")))) and m.group("cid") == campaign]
+    return recs[-1] if recs else None
+
+
+def newest_gate(cfg, campaign: str) -> dict | None:
+    """SPEC-0342: the campaign's newest loop gate record of any state (highest seq, then
+    attempt), else None. A `lost` one is a give-up whose next attempt was never written."""
+    recs = [r for r in _all(cfg, campaign) if r.get("kind") == "gate"
+            and r.get("tier") == "loop" and r.get("campaign") == campaign
+            and (m := _GATE_ID.match(str(r.get("job_id")))) and m.group("cid") == campaign]
+    recs.sort(key=lambda r: (int(r.get("seq_or_run") or 0), int(r.get("attempt") or 0)))
     return recs[-1] if recs else None
 
 

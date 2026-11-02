@@ -33,6 +33,8 @@ RULES = {
     "worker_failed": "hold",
     # SPEC-0341: a remote gate job was given up on (the gate then ran locally)
     "worker_job_lost": "hold",
+    # SPEC-0342: a lost job's next attempt (another worker, or local); a queue-wide note
+    "worker_job_retried": "hold", "note": "hold",
     "backlog": "cond", "backlog_blocked_long": "cond", "conductor_ping": "cond",
     "runner_draining": "cond", "campaign_silent": "cond", "state_stuck": "cond", "parked": "cond",
     "park_undecided": "wake", "runner_dead": "wake", "lease_stale": "wake",

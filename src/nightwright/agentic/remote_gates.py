@@ -69,6 +69,7 @@ class Outcome:
     run: G.GateRun | None           # None: fell back (`failure` says why)
     worker_wait_s: float = 0.0      # the worker's own slot wait, once `started` was seen
     failure: RemoteFailure | None = None
+    lost: dict | None = None        # SPEC-0342: the give-up's record (`lost`), for the retry
 
 
 def settings(cfg) -> dict:
@@ -146,6 +147,23 @@ def pools_for(cfg, project_cfg: dict, campaign_state: dict, *, seq: int,
         raise ValueError(f"not eligible for remote gates: {why['title']}")
     _record_ineligible(cfg, campaign_state["id"], why)
     return None
+
+
+def retry_pools(cfg, project_cfg: dict, campaign_state: dict, *, seq: int, excluded,
+                worker: str | None = None) -> list | None:
+    """SPEC-0342: the `pools` of a lost job's next attempt: `pools_for`'s list (its
+    eligibility checks first) without the `excluded` workers, so still ending with the local
+    pool; None (local only) when no remote pool is left."""
+    try:
+        pools = pools_for(cfg, project_cfg, campaign_state, seq=seq, worker=worker)
+    except ValueError:                          # `--worker`'s worker was disabled since
+        return None
+    if pools is None:
+        return None
+    pools = [p for p in pools if p[0] not in set(excluded)]
+    if all(name is WK.LOCAL for name, _n in pools):
+        return None
+    return pools
 
 
 # ---- the commit under test and the bundle ----------------------------------------------------
@@ -669,14 +687,17 @@ def _record_failure(cfg, cid, name: str, job_id: str, seq: int, f: RemoteFailure
 
 
 def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, owner: str,
-        stop: threading.Event | None = None, *, tier: str | None = None) -> Outcome:
+        stop: threading.Event | None = None, *, tier: str | None = None, attempt: int = 1,
+        excluded=()) -> Outcome:
     """One remote gate run under the caller's claim (`owner`) and remote slot. A transport
     failure is recorded (`worker_failed`, the worker's cooldown, this run's `gates/<seq>-*`
     files deleted) and returned with `run=None`, for the caller's local fallback. SPEC-0341: a
     worker whose cached `info` lists `async` gets `submit` + `attach` with a job record
     (`_run_async`); any other keeps the synchronous `gate-job`. A seq that already has a job
     record (an explicit seq; `gates.next_gate_seq` allocates past every record) also keeps
-    `gate-job`: the worker may still hold that job id. `tier` is written to the record."""
+    `gate-job`: the worker may still hold that job id. `tier` is written to the record.
+    SPEC-0342: `attempt` and `excluded` (the workers earlier attempts were lost on) are a lost
+    job's retry: the job id carries the attempt and the record its exclusions."""
     cid = campaign_state["id"]
     job_id = f"{cid}-gate-{seq:03d}-a0"
     bundle = store.child_tmp(cfg, cid, owner) / "job.bundle"
@@ -688,10 +709,10 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
         if rec is None:
             raise RemoteFailure("registry", f"worker {worker!r} is no longer registered",
                                 cooldown=False)
-        if RJ.has_async(rec) and RJ.read(cfg, RJ.gate_job_id(cid, seq)) is None:
-            job_id = RJ.gate_job_id(cid, seq)
+        if RJ.has_async(rec) and RJ.read(cfg, RJ.gate_job_id(cid, seq, attempt)) is None:
+            job_id = RJ.gate_job_id(cid, seq, attempt)
             return _run_async(rec, project_cfg, campaign_state, cfg, seq, job_id, bundle, stop,
-                              tier)
+                              tier, attempt=attempt, excluded=excluded)
         header = prepare(rec, project_cfg, campaign_state, cfg, seq, job_id, bundle, stop=stop)
         _check_stop(stop)                       # no job is started only to be cancelled
         return _dispatch(rec, header, bundle, cfg, cid, seq, stop)
@@ -899,11 +920,12 @@ def adoptable(rec: dict, worktree) -> bool | None:
 
 
 def _run_async(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int,
-               job_id: str, bundle: Path, stop, tier: str | None = None) -> Outcome:
-    """Prepare, submit (attempt 1), write the job record, then follow the job."""
+               job_id: str, bundle: Path, stop, tier: str | None = None, *, attempt: int = 1,
+               excluded=()) -> Outcome:
+    """Prepare, submit (`attempt`), write the job record, then follow the job."""
     cid = campaign_state["id"]
     header = prepare(worker, project_cfg, campaign_state, cfg, seq, job_id, bundle, stop=stop)
-    header["attempt"] = 1
+    header["attempt"] = attempt
     _check_stop(stop)
     wt = (campaign_state.get("repo") or {})["worktree"]
     head = _git(wt, "rev-parse", "HEAD")
@@ -911,11 +933,12 @@ def _run_async(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: 
     submitted = _now()
     # the record comes first: a submit the worker accepted but whose reply never arrived (or a
     # crash right after it) still has a record, so the job is cancelled (`_failed`) or adopted
-    rec = RJ.create(cfg, job_id=job_id, campaign=cid, worker=worker["name"], attempt=1, seq=seq,
-                    submitted_at=submitted,
+    rec = RJ.create(cfg, job_id=job_id, campaign=cid, worker=worker["name"], attempt=attempt,
+                    seq=seq, submitted_at=submitted,
                     deadline_at=submitted + header["timeout_s"]
                     + RJ.settings(cfg)["worker_ttl_s"],
-                    tier=tier, commit=header["commit"], head=head, tree=tree)
+                    tier=tier, commit=header["commit"], head=head, tree=tree,
+                    excluded_workers=excluded)
     rec = RJ.update(cfg, job_id, gates=[g["name"] for g in header["payload"]["gates"]]) or rec
     _submit(worker, header, bundle, cfg)
     # the worker holds the job now: an `unknown` from here on is a job it lost
@@ -1137,12 +1160,14 @@ def _cancelled(cfg, worker: dict | None, rec: dict, seq: int) -> Outcome | None:
 
 def _give_up(cfg, cid, worker: dict | None, rec: dict, seq: int, reason: str) -> Outcome:
     """The record goes `lost` first, then `worker_job_lost`, a best-effort cancel, this run's
-    `gates/<seq>-*` files deleted, and `local`: the caller runs the gates locally. A record a
-    cancel already ended is left alone (an interrupted run)."""
+    `gates/<seq>-*` files deleted and the loss recorded (SPEC-0342's window). The record stays
+    `lost` and is returned as `Outcome.lost`: the caller retries the job on another worker, or
+    sets it `local` and runs the gates locally. A record a cancel already ended is left alone
+    (an interrupted run)."""
     if (out := _cancelled(cfg, worker, rec, seq)) is not None:
         return out
     job_id = rec["job_id"]
-    RJ.update(cfg, job_id, state="lost", lost_reason=reason)
+    lost = RJ.update(cfg, job_id, state="lost", lost_reason=reason) or rec
     store.append_event(cfg, cid, "worker_job_lost",
                        {"worker": rec["worker"], "job_id": job_id,
                         "attempt": rec.get("attempt"), "reason": reason}, by="gates")
@@ -1152,8 +1177,30 @@ def _give_up(cfg, cid, worker: dict | None, rec: dict, seq: int, reason: str) ->
         p.unlink(missing_ok=True)
     if reason in _BLAME:
         set_cooldown(cfg, rec["worker"])
-    RJ.update(cfg, job_id, state="local")
-    return Outcome(None, 0.0, RemoteFailure(reason, f"remote job {job_id}: {reason}"))
+    _record_loss(cfg, cid, rec["worker"], job_id, reason)
+    return Outcome(None, 0.0, RemoteFailure(reason, f"remote job {job_id}: {reason}"),
+                   lost=lost)
+
+
+def _record_loss(cfg, cid, name: str, job_id: str, reason: str) -> None:
+    """SPEC-0342: `workers.record_loss`; a failure (to write the file, or to raise the
+    escalation) is a `note` on the losing campaign, never a failed gate step."""
+    try:
+        err = WK.record_loss(cfg, name, job_id=job_id, reason=reason)["error"]
+    except (OSError, ValueError) as e:
+        err = f"worker {name}: loss not recorded: {e}"
+    if err:
+        store.append_event(cfg, cid, "note", {"text": err, "author": "gates"}, by="gates")
+
+
+def retried(cfg, cid, lost: dict, attempt: int, to_worker: str | None) -> None:
+    """SPEC-0342: `worker_job_retried` for a lost job's next attempt (`to_worker` None: it runs
+    locally)."""
+    seq = int(lost.get("seq_or_run") or 0)
+    store.append_event(cfg, cid, "worker_job_retried",
+                       {"job_id": RJ.gate_job_id(cid, seq, attempt),
+                        "from_worker": lost.get("worker"), "to_worker": to_worker,
+                        "attempt": attempt}, by="gates")
 
 
 def _failed(cfg, cid, worker: dict, rec: dict, seq: int, f: RemoteFailure) -> Outcome:

@@ -503,7 +503,7 @@ def _claim_seq(cfg, cid, seq) -> tuple[int, str]:
 def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
             stop: threading.Event | None = None, tier: str | None = None,
             worker: str | None = None, local: bool = False,
-            adopt: dict | None = None) -> GateRun:
+            adopt: dict | None = None, lost: dict | None = None) -> GateRun:
     """Run every gate of `project_cfg` in the campaign's worktree; logs land at
     `gates/<seq:03>-<name>.log` under the campaign dir. `ok` = every *required* gate ok.
     The returned `GateRun.seq` is the seq actually used (higher than `seq` if it was taken).
@@ -517,7 +517,10 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
     same seq. Without an enabled worker this is the local run it always was.
     SPEC-0341: `adopt` is the campaign's live remote job record (`seq` is its seq): the run
     re-enters that job (`remote_gates.adopt`) instead of starting one; giving up on it falls
-    back locally as a transport failure does."""
+    back locally as a transport failure does.
+    SPEC-0342: a give-up retries the job (`_retry`): attempt + 1 on a worker no earlier attempt
+    was lost on, local once `max_remote_attempts` is used up. `lost` is a `lost` record whose
+    next attempt a crash never wrote (`seq` is its seq): the run continues that chain."""
     cid = campaign_state["id"]
     project_cfg = {**project_cfg, "gates": P.gates_for(project_cfg, tier)}
     worktree = (campaign_state.get("repo") or {}).get("worktree")
@@ -529,25 +532,37 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
                            {"slots": occ["slots"], "held": occ["held"], "waited_s": waited_s},
                            by="gates")
 
-    if adopt is None:
+    if adopt is None and lost is None:
         seq, owner = _claim_seq(cfg, cid, seq)
     else:                                       # the dead runner's claim may still be there
         owner = f"gate-{seq:03d}"
         store.child_tmp(cfg, cid, owner, create=True)
+    retry = dict(project_cfg=project_cfg, campaign_state=campaign_state, cfg=cfg, cid=cid,
+                 worktree=worktree, seq=seq, owner=owner, stop=stop, tier=tier,
+                 announce=announce, worker=worker)
     try:                                        # SPEC-0253: only the owner removes its dir
         pools = None
-        if adopt is not None:
+        if adopt is not None or lost is not None:
             from . import remote_gates as RG
+            RJ.settings(cfg)                    # SPEC-0342: a bad max_remote_attempts raises
             head, tree = head_tree(worktree)    # SPEC-0359: adoption requires the same tree
+            if lost is not None:                # SPEC-0342: the crash left no next attempt
+                for p in store.gates_dir(cfg, cid).glob(f"{seq:03d}-*"):
+                    p.unlink(missing_ok=True)
+                return _retry(lost, 0.0, head=head, tree=tree, **retry)
             out, held_s = RG.adopt(adopt, project_cfg, campaign_state, cfg, seq, stop, announce)
             waited = round(held_s + out.worker_wait_s, 1)
             if out.run is not None:
                 return replace(out.run, slot_wait_s=waited, head=head, tree=tree)
+            if out.lost is not None:
+                return _retry(out.lost, waited, head=head, tree=tree, **retry)
             return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
                              announce, waited, head=head, tree=tree)
         if not local:
             from . import remote_gates as RG    # lazy: remote_gates imports this module
             pools = RG.pools_for(cfg, project_cfg, campaign_state, seq=seq, worker=worker)
+            if pools is not None:
+                RJ.settings(cfg)                # SPEC-0342: a bad max_remote_attempts raises
         with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce, pools=pools) as hold:
             if hold.interrupted:                # SPEC-0229: stopped while waiting, nothing ran (ok=False: never counted green)
                 return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
@@ -562,10 +577,59 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
         waited = round(hold.waited_s + out.worker_wait_s, 1)
         if out.run is not None:
             return replace(out.run, slot_wait_s=waited, head=head, tree=tree)
+        if out.lost is not None:
+            return _retry(out.lost, waited, head=head, tree=tree, **retry)
         return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
                          announce, waited, head=head, tree=tree)
     finally:
         store.clear_child_tmp(cfg, cid, owner)
+
+
+def _retry(lost, waited, *, project_cfg, campaign_state, cfg, cid, worktree, seq, owner, stop,
+           tier, announce, worker, head, tree) -> GateRun:
+    """SPEC-0342: the lost job's next attempts (the remote slot is already released). Each
+    gets `attempt + 1` and `excluded_workers` = the lost record's plus its worker, and acquires
+    from `remote_gates.retry_pools` (the eligible pools without them, local last), so a full
+    fleet runs it locally at once. Past `max_remote_attempts`, or with no remote pool left, it
+    runs locally. Every new attempt appends `worker_job_retried` (`to_worker` None: local); a
+    local one sets the lost record `local` first. A transport failure of a retry falls back
+    locally as SPEC-0338's does."""
+    from . import remote_gates as RG
+    limit = RJ.settings(cfg)["max_remote_attempts"]
+    while True:
+        attempt = int(lost.get("attempt") or 1) + 1
+        excluded = list(dict.fromkeys(
+            [w for w in [*(lost.get("excluded_workers") or []), lost.get("worker")] if w]))
+        pools = None
+        if attempt <= limit:
+            pools = RG.retry_pools(cfg, project_cfg, campaign_state, seq=seq, excluded=excluded,
+                                   worker=worker)
+        if pools is None:
+            RJ.update(cfg, lost["job_id"], state="local")
+            RG.retried(cfg, cid, lost, attempt, None)
+            return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
+                             announce, waited, head=head, tree=tree)
+        with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce, pools=pools) as hold:
+            waited = round(waited + hold.waited_s, 1)
+            if hold.interrupted:                # the record stays `lost`: the next step retries
+                return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
+                               slot_wait_s=waited)
+            if hold.pool is None:               # the eligible workers are full: local now
+                RJ.update(cfg, lost["job_id"], state="local")
+                RG.retried(cfg, cid, lost, attempt, None)
+                run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop,
+                                    tier)
+                return replace(run, slot_wait_s=waited, head=head, tree=tree)
+            RG.retried(cfg, cid, lost, attempt, hold.pool)
+            out = RG.run(hold.pool, project_cfg, campaign_state, cfg, seq, owner, stop,
+                         tier=tier, attempt=attempt, excluded=excluded)
+        waited = round(waited + out.worker_wait_s, 1)
+        if out.run is not None:
+            return replace(out.run, slot_wait_s=waited, head=head, tree=tree)
+        if out.lost is None:
+            return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
+                             announce, waited, head=head, tree=tree)
+        lost = out.lost
 
 
 def _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier, announce,

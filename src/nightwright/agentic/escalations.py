@@ -150,8 +150,9 @@ def _create(cfg, fields: dict) -> dict:
 # ---- escalate --------------------------------------------------------------------------------
 
 def plan_escalate(cfg, campaign, *, question, options=(), recommend=None, facts=(),
-                  frm=None) -> dict:
-    """Validate and describe an escalation (pure: writes nothing)."""
+                  frm=None, kind=None) -> dict:
+    """Validate and describe an escalation (pure: writes nothing). `kind` (SPEC-0342) says
+    what a record is about (`worker_lost`); None for an ordinary question."""
     from . import queue as Q
     frm = M.validate_address(cfg, frm or os.environ.get("NW_MAILBOX_ADDR") or "conductor")
     question = (question or "").strip()
@@ -168,7 +169,7 @@ def plan_escalate(cfg, campaign, *, question, options=(), recommend=None, facts=
     facts = [str(f) for f in facts]
     plan = {"campaign": campaign, "spec_id": None, "project": None, "state": None,
             "park_reason_now": None, "by": frm, "question": question, "options": opts,
-            "recommendation": recommend, "facts": facts, "park": None}
+            "recommendation": recommend, "facts": facts, "park": None, "kind": kind}
     if not campaign:
         return plan
     st = store.read_state(cfg, campaign)           # ValueError when unknown
@@ -218,7 +219,7 @@ def apply_escalate(cfg, plan: dict) -> dict:
     fields = {"by": plan["by"], "campaign": cid, "spec_id": plan["spec_id"],
               "project": plan["project"], "question": plan["question"],
               "options": plan["options"], "recommendation": plan["recommendation"],
-              "facts": plan["facts"], "park": plan["park"]}
+              "facts": plan["facts"], "park": plan["park"], "kind": plan.get("kind")}
     if not cid:
         rec = _create(cfg, fields)
     else:

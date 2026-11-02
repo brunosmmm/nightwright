@@ -15,10 +15,11 @@ import os
 import re
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 from ..export import _atomic_write
-from .store import agentic_dir
+from .store import agentic_dir, now_iso
 
 SCHEMA = "nw.workers.v1"
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,30}")
@@ -361,3 +362,161 @@ def _close_master(w: dict) -> None:
                        timeout=CHECK_TIMEOUT_S, stdin=subprocess.DEVNULL)
     except (subprocess.TimeoutExpired, OSError):
         pass
+
+
+# ---- lost-job window and the worker escalation (SPEC-0342) ------------------------------------
+
+LOSSES_SCHEMA = 1
+LOSS_WINDOW_S = 3600.0              # three losses in this sliding window raise one escalation
+LOSS_THRESHOLD = 3
+ESCALATION_KIND = "worker_lost"
+_now = time.time                    # the loss window's clock (tests swap it)
+
+
+def losses_path(cfg) -> Path:
+    return agentic_dir(cfg) / "worker-losses.json"
+
+
+def _read_losses(p: Path) -> dict:
+    """The losses document; a missing or unreadable file starts empty (it is a counter, and
+    the next write replaces it)."""
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        doc = None
+    if not isinstance(doc, dict) or not isinstance(doc.get("workers"), dict):
+        doc = {"schema": LOSSES_SCHEMA, "workers": {}}
+    return doc
+
+
+def read_losses(cfg) -> dict:
+    return _read_losses(losses_path(cfg))
+
+
+def _epoch(ts) -> float | None:
+    t = _parse_ts(ts)
+    return t.timestamp() if t is not None else None
+
+
+def _iso(epoch_s: float) -> str:
+    return dt.datetime.fromtimestamp(epoch_s).astimezone().isoformat(timespec="seconds")
+
+
+def _worker_fact(name: str) -> str:
+    return f"worker={name}"
+
+
+def _open_escalation_for(cfg, name: str) -> dict | None:
+    from . import escalations as ESC
+    return next((r for r in ESC.list_all(cfg, status="open")
+                 if r.get("kind") == ESCALATION_KIND
+                 and _worker_fact(name) in (r.get("facts") or [])), None)
+
+
+def _raise_escalation(cfg, name: str, recent: list, n: int) -> dict:
+    from . import escalations as ESC
+    facts = [_worker_fact(name)] + [f"{x.get('job_id')}: {x.get('reason')}" for x in recent]
+    plan = ESC.plan_escalate(cfg, None, question=f"Worker {name} lost {n} jobs in the last "
+                                                 f"hour. Disable it?",
+                             options=["off", "keep"], recommend=1, facts=facts,
+                             frm="conductor", kind=ESCALATION_KIND)
+    return ESC.apply_escalate(cfg, plan)
+
+
+def record_loss(cfg, name: str, *, job_id: str, reason: str, now: float | None = None) -> dict:
+    """Record one `worker_job_lost` of worker `name` in `worker-losses.json`, under its lock,
+    and raise the campaign-less worker escalation when three or more losses remain inside
+    the sliding `LOSS_WINDOW_S`, the last one is older than the window (or there is none) and
+    no worker escalation for `name` is open. Returns `{"losses": n, "escalation": id | None,
+    "error": text | None}`; a failure to raise is `error` (the next loss tries again), never
+    an exception. A file I/O failure raises `OSError`."""
+    now = _now() if now is None else now
+    p = losses_path(cfg)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(p.with_name(p.name + ".lock"), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        doc = _read_losses(p)
+        w = doc["workers"].get(name)
+        if not isinstance(w, dict):
+            w = {}
+        losses = [t for t in w.get("losses") or [] if isinstance(t, str)]
+        recent = [r for r in w.get("recent") or [] if isinstance(r, dict)]
+        losses.append(_iso(now))
+        recent = (recent + [{"at": _iso(now), "job_id": job_id, "reason": reason}])[-3:]
+        losses = [t for t in losses if (e := _epoch(t)) is not None and now - e <= LOSS_WINDOW_S]
+        w = {"losses": losses, "recent": recent,
+             "escalated_at": w.get("escalated_at"), "escalation": w.get("escalation")}
+        out = {"losses": len(losses), "escalation": None, "error": None}
+        last = _epoch(w["escalated_at"])
+        if len(losses) >= LOSS_THRESHOLD and (last is None or now - last > LOSS_WINDOW_S):
+            try:
+                if _open_escalation_for(cfg, name) is None:
+                    rec = _raise_escalation(cfg, name, recent, len(losses))
+                    w["escalated_at"], w["escalation"] = _iso(now), rec["id"]
+                    out["escalation"] = rec["id"]
+            except (OSError, ValueError) as e:
+                out["error"] = f"worker {name} escalation not raised: {e}"
+        doc["workers"][name] = w
+        doc["schema"] = LOSSES_SCHEMA
+        _atomic_write(p, json.dumps(doc, indent=2, sort_keys=True) + "\n")
+        return out
+    finally:
+        os.close(fd)
+
+
+def _global_note(cfg, text: str) -> None:
+    from . import events as E
+    try:
+        E.append(cfg, "note", by="queue", data={"text": text, "author": "queue"})
+    except (OSError, ValueError):
+        pass
+
+
+def apply_answered_escalations(cfg) -> list[tuple[str, str]]:
+    """Once per queue tick: carry out answered worker escalations not yet applied. Option 1
+    `off` sets the worker's `enabled: false` (the `nw workers off` path); option 2 `keep`
+    writes nothing. An unregistered worker or a free-text answer changes nothing and appends
+    a queue-wide `note`. Each record then gets `applied_at` and `applied` (`off`, `keep`,
+    `skipped`), so it is applied once. Returns `[(escalation id, applied), ...]`."""
+    from . import escalations as ESC
+    out = []
+    for rec in ESC.list_all(cfg, status="answered"):
+        if rec.get("kind") != ESCALATION_KIND or rec.get("applied_at"):
+            continue
+        facts = [f for f in rec.get("facts") or [] if isinstance(f, str)]
+        name = next((f[len("worker="):] for f in facts if f.startswith("worker=")), None)
+        answer = rec.get("answer") or {}
+        choice = answer.get("choice") if answer.get("kind") == "choose" else None
+        applied, why = "skipped", None
+        try:
+            names = {r["name"] for r in read_strict(cfg)}
+        except (OSError, ValueError):
+            continue                            # an unreadable registry: try again next tick
+        if not name or name not in names:
+            why = f"worker {name} is no longer registered"
+        elif choice == 1:
+            def fn(records):
+                r = next((r for r in records if r.get("name") == name), None)
+                if r is not None:
+                    r["enabled"] = False
+                return r is not None
+            try:
+                found = update(cfg, fn)
+            except (OSError, ValueError):
+                continue
+            applied = "off" if found else "skipped"
+            why = None if found else f"worker {name} is no longer registered"
+        elif choice == 2:
+            applied = "keep"
+        else:
+            why = "the answer is not one of its options"
+        if why:
+            _global_note(cfg, f"{rec['id']}: {why}; nothing applied")
+        try:
+            ESC._mutate(cfg, rec["id"], lambda r: r.update(applied_at=now_iso(),
+                                                            applied=applied))
+        except (OSError, ValueError):
+            continue
+        out.append((rec["id"], applied))
+    return out
