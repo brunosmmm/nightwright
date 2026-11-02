@@ -19,58 +19,11 @@ from nightwright.agentic import store as S
 from nightwright.agentic import worker as W
 from nightwright.agentic import workers as WK
 
-from test_remote_gates import CID, Remote, World, _git, _script
+from test_remote_gates import CID, World, _git, _script
 from test_remote_gates import _short_runtime_dir  # noqa: F401  (autouse fixture)
+from remote_support import (INFO, LOCAL_OK, VERDICT, WRITER, _remote, _req,  # noqa: F401
+                            _world, _write_script)
 from waits import join, until
-
-INFO = {"protocol": "nw.job.v1", "features": ["async", "persona"], "git": "git version 2"}
-VERDICT = {"summary": "did it"}
-
-# commits c.txt; leaves a modified tracked file (a.txt) and a new untracked one (new.txt)
-WRITER = [{"edits": [{"path": "c.txt", "write": "c\n"}, {"path": "a.txt", "append": "more\n"},
-                     {"path": "new.txt", "write": "new\n"}],
-           "shell": ["git add c.txt && git commit -q -m 'add c'"],
-           "verdict": VERDICT, "cost_usd": 0.5}]
-
-
-def _write_script(path: Path, entries) -> Path:
-    path.write_text(json.dumps(entries))
-    return path
-
-
-def _world(tmp_path, name="w") -> World:
-    d = tmp_path / name
-    d.mkdir()
-    w = World(d)
-    st = S.read_state(w.cfg, CID)
-    st["state"] = "IMPLEMENTING"
-    S.write_state(w.cfg, CID, st)
-    return w
-
-
-def _remote(w: World, worker_script: Path, *, kinds=("gate", "persona"), progress="0.2"):
-    r = Remote(w)
-    ssh = _script(w.tmp / "fake-ssh-persona",
-                  f"export NW_AGENTIC_RUNNER=fake NW_AGENTIC_FAKE_SCRIPT={worker_script} "
-                  f"NW_WORKER_PROGRESS_S={progress}\nexec {r.ssh} \"$@\"")
-    r.register(ssh=ssh, info=INFO, kinds=list(kinds))
-    return r
-
-
-def _req(w: World, run_id="001-implementer", persona="implementer", read_only=False, **kw):
-    wt = w.repo
-    fields = dict(
-        persona=persona, prompt="do it", system_append="sys", cwd=wt, model="sonnet",
-        effort=None, max_budget_usd=1.0, timeout_s=600, permission_mode="bypassPermissions",
-        read_only=read_only, allowed_tools=(f"Bash({wt}/tools/check.sh*)", "Bash(uv run pytest*)"),
-        add_dirs=(wt,), json_schema={"type": "object", "required": ["summary"]},
-        env={"NW_CAMPAIGN": CID, "NW_SPEC_ID": "SPEC-0900", "NW_BASE": "main",
-             "NW_PERSONA_RUN": "1", "NW_WORKTREE": str(wt), "NW_DATA_DIR": w.cfg["data_dir"],
-             "NW_CONFIG_DIR": w.cfg["config_dir"], "TMPDIR": str(w.tmp / "t"),
-             "TEMP": str(w.tmp / "t"), "TMP": str(w.tmp / "t")},
-        run_dir=S.runs_dir(w.cfg, CID) / run_id)
-    fields.update(kw)
-    return R.RunRequest(**fields)
 
 
 def _start(w: World, req):
@@ -673,9 +626,6 @@ def test_failed_write_back_cost_is_counted_once_when_the_rerun_completes(tmp_pat
 
 
 # ---- lost job, pre-submit fallback, cancel ---------------------------------------------------
-
-LOCAL_OK = [{"verdict": VERDICT, "cost_usd": 0.0}]
-
 
 def _rr(w, req):
     rr = RPS.dispatch(w.cfg, S.read_state(w.cfg, CID), "implement", req,

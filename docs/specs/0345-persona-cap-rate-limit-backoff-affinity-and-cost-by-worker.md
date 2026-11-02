@@ -194,6 +194,22 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   column pins, which did not yet list the new `cost_by_worker` column. After updating them,
   `tests/test_agentic_campaign_export.py` gives 66 passed, 2 skipped.
 - Full suite left to gating (`tools/affected_tests.py` selects the full suite).
+- Gate fix (helper move): `tests/test_remote_persona_limits.py` imported helpers from test
+  modules that reference `.nw/project.yaml`, so the replay case
+  `test_recorded_fallback[SPEC-0338 .nw/project.yaml]` reached 91/227 files and fell back to
+  the full suite. The loopback `World`/`Remote` helpers moved from `test_remote_gates.py`, and
+  the persona-job helpers from `test_remote_personas.py`, into the non-test module
+  `tests/remote_support.py`; both test files import them back. The e2e and reviewer fan-out
+  helpers are copied into `tests/fanout_support.py`, which writes the temp repo's config via
+  `P.CONFIG_RELPATH`. The selection is back to 90/227: the same set as before minus the new
+  file. `uv run pytest -q -n 4 tests/test_affected_tests_replay.py
+  tests/test_remote_persona_limits.py`: 46 passed. The affected-tests, remote gate, remote
+  persona, worker drain/retry, remote job record, e2e and reviewer files: 482 passed.
+- Full suite `uv run pytest -q -n 4` after the helper move: 5782 passed, 5 skipped, 1 failed.
+  The failure was `test_test_waits.py::test_no_bare_join_before_result_read`, caused by a
+  numeric `th.join(10)` in the new file. It now uses `waits.join`. After that,
+  `tests/test_test_waits.py`, `tests/test_remote_persona_limits.py` and
+  `tests/test_affected_tests_replay.py` give 50 passed.
 - Manual verification was **not** performed. This host's only worker, `box`, takes gates
   only and has no cached `async`/`persona` feature, and a real 429 cannot be produced on
   demand. Both steps are left to the human and to SPEC-0346.

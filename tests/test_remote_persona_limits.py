@@ -1,5 +1,5 @@
 """SPEC-0345: persona cap, rate-limit backoff, campaign affinity and cost by worker. Offline:
-SPEC-0338's loopback workers (`test_remote_gates.Remote`) and `FakeRunner`."""
+SPEC-0338's loopback workers (`remote_support.Remote`) and `FakeRunner`."""
 import datetime as dt
 import json
 import os
@@ -19,12 +19,11 @@ from nightwright.agentic import runner as R
 from nightwright.agentic import store as S
 from nightwright.agentic import workers as WK
 
-from test_remote_gates import CID
-from test_remote_gates import _short_runtime_dir  # noqa: F401  (autouse fixture)
-from test_remote_personas import (INFO, LOCAL_OK, WRITER, _remote, _req, _world, _write_script)
-from test_agentic_e2e import impl_done, review as review_entry
-from test_agentic_reviewers import (A, B, PersonaRunner, b_entry, drive, e2e,  # noqa: F401
-                                    second_reviewer, starts)
+from remote_support import CID, LOCAL_OK, WRITER, _remote, _req, _world, _write_script
+from remote_support import _short_runtime_dir  # noqa: F401  (autouse fixture)
+from waits import join
+from fanout_support import (A, B, PersonaRunner, b_entry, drive, e2e,  # noqa: F401
+                            impl_done, review as review_entry, second_reviewer, starts)
 
 
 # ---- helpers -----------------------------------------------------------------------------------
@@ -325,12 +324,12 @@ def test_concurrent_rate_limit_failures_make_one_episode(rl):
     for th in threads:
         th.start()
     for th in threads:
-        th.join(10)
+        join(th)
     assert PG.read_rate_limit(cfg)["backoff_s"] == 60 and len(_events(cfg)) == 1
 
 
 def test_backoff_holds_every_persona_dispatch_and_shows_held_by(tmp_path, monkeypatch):
-    from test_agentic_e2e import added, make_cfg, make_repo, script
+    from fanout_support import added, make_cfg, make_repo, script
     repo = make_repo(tmp_path)
     entries = [dict(impl_done(), api_error={"status": 429, "message": "API Error: 429 rate limit"}),
                review_entry("pass")]
