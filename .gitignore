@@ -15,3 +15,4 @@ ideas/ideas-20*.org
 
 # nw spec review sidecars are machine-local state (keyed by spec hash); never tracked
 docs/specs/reviews/
+plans/
