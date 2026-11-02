@@ -1,9 +1,10 @@
 ---
 id: SPEC-0367
 title: "nw workers bootstrap refreshes a stale worker install (build id, --reinstall, stale warning, loud gate rejection)"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-01
+updated: 2026-11-01
 kind: feature
 source_idea: IDEA-675
 tags: [agentic, remote, workers, ops]
