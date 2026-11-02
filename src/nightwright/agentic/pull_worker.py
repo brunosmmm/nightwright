@@ -242,7 +242,7 @@ class Loop:
 
     def start(self, got: dict) -> None:
         """Fetch, verify and start one leased job; a refused one gets an `error` frame
-        (`stage: "verify"`) and nothing runs."""
+        (`stage: "verify"`, or `"bundle"` when the bundle fetch failed) and nothing runs."""
         self._set_lease_s(got)
         h = got["job"]
         jid = h.get("job_id") if isinstance(h.get("job_id"), str) else None
@@ -250,9 +250,12 @@ class Loop:
             _log("leased a job without a usable job_id; ignored")
             return
         status, data = self.client.call("GET", f"/v1/jobs/{jid}/bundle")
-        if status != 200:
+        if status in (403, 410):                # not this worker's, or gone: nothing to report
             _log(f"{jid}: bundle fetch got HTTP {status}; dropped")
             return
+        if status != 200:                       # an error frame: the step falls back at once
+            _log(f"{jid}: bundle fetch got HTTP {status}; refused")
+            return self._refuse(jid, "bundle", f"bundle fetch: HTTP {status}")
         why = PJ.verify(self.secret, h, data, self.seen)
         if why is not None:
             _log(f"{jid}: refused: {why}")

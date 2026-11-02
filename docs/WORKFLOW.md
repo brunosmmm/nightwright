@@ -433,7 +433,9 @@ within `job_lease_s` is given up like a lost SSH job (retried on another worker,
 stop, a park or an abandon cancels the job (`cancel: true` on the worker's next post).
 `nw workers token NAME --rotate` replaces the credential at once and `nw workers rm NAME`
 revokes it: either way the worker cancels its jobs and exits non-zero, and their steps retry
-or run locally.
+on another worker (the attempt counts against `max_remote_attempts`) or run locally. A
+rotation charges the worker nothing (no cooldown, no recorded loss); re-enrol it with the new
+blob.
 Running `nw worker serve` as a service is left to you, e.g. a systemd user unit
 (`~/.config/systemd/user/nw-worker.service`, then `systemctl --user enable --now nw-worker`;
 exit 3 means revoked, so it is not restarted):

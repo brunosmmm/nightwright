@@ -180,11 +180,19 @@ def workers_token(cfg, name, rotate):
     if rec.get("mode") != "pull":
         raise click.ClickException(f"{name} is not a pull worker")
     token, secret = PJ.new_credential(cfg, name, write=False)
+    old_hash = rec.get("token_sha256")
 
-    def fn(records):
-        _find(records, name)["token_sha256"] = PJ.token_hash(token)
-    _update(cfg, fn)                            # the old token is refused from here on
-    PJ.write_secret(cfg, name, secret)
+    def put(value):
+        def fn(records):
+            _find(records, name)["token_sha256"] = value
+        _update(cfg, fn)
+    put(PJ.token_hash(token))                   # the old token is refused from here on
+    try:
+        PJ.write_secret(cfg, name, secret)
+    except OSError as e:                        # the old credential works again: no lock-out
+        put(old_hash)
+        raise click.ClickException(f"{name}: the new secret was not written ({e}); the "
+                                   f"rotation was undone and the old credential still works")
     lost = PJ.revoke_worker(cfg, name, "rotated")   # released, not charged to the worker
     url = rec.get("coordinator_url") or PJ.coordinator_url(cfg)
     _say(f"{name}: token and secret rotated; the old ones no longer work"

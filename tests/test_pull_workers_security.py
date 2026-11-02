@@ -121,8 +121,9 @@ def test_rotation_invalidates_the_old_credential_at_once(world, pull, monkeypatc
 
 
 def test_rotation_releases_the_workers_live_jobs_without_charging_it(world, pull, monkeypatch):
-    """The old worker cancels its jobs on its next 401, so the steps release them: a retry,
-    with no cooldown, no recorded loss, no exclusion and no attempt counted."""
+    """The old worker cancels its jobs on its next 401, so the steps release them with no
+    cooldown and no recorded loss. The retry excludes the worker (it exits on that 401 until it
+    is re-enrolled) and counts the attempt, as for any loss (SPEC-0342's budget)."""
     from nightwright.agentic import gates as G
     wrec = _queue(world)
     assert _lease(world) is not None
@@ -141,24 +142,23 @@ def test_rotation_releases_the_workers_live_jobs_without_charging_it(world, pull
     out = RG._give_up(world.cfg, CID, wrec, rec, 1, gu.value.stage)
     assert out.lost["state"] == "lost" and out.lost["lost_reason"] == "rotated"
     assert charged == []
-    # the retry: attempt 2 of max_remote_attempts 2 is not past the limit once a rotation is
-    # not counted, and `box` (re-enrolled) is not excluded
-    lost = {**out.lost, "attempt": 2}
+    # the retry: attempt 2 goes to another worker, never back to the exited `box`
+    lost = {**out.lost, "attempt": 1}
     seen = {}
 
     def pools(cfg, project_cfg, campaign_state, *, seq, excluded, worker=None):
         seen["excluded"] = list(excluded)
-        return [("box", 1), (WK.LOCAL, 1)]
+        return [("box2", 1), (WK.LOCAL, 1)]
 
     class Hold:
-        pool, waited_s, interrupted = "box", 0.0, False
+        pool, waited_s, interrupted = "box2", 0.0, False
 
         def __enter__(self):
             return self
 
         def __exit__(self, *a):
             return False
-    run = G.GateRun(1, True, (), "now", 0.1, worker="box")
+    run = G.GateRun(1, True, (), "now", 0.1, worker="box2")
     monkeypatch.setattr(RG, "retry_pools", pools)
     monkeypatch.setattr(G.gate_slots, "acquire", lambda *a, **k: Hold())
     monkeypatch.setattr(RG, "run", lambda *a, **k: (seen.update(attempt=k["attempt"]),
@@ -166,8 +166,36 @@ def test_rotation_releases_the_workers_live_jobs_without_charging_it(world, pull
     got = G._retry(lost, 0.0, project_cfg=world.project, campaign_state=world.state,
                    cfg=world.cfg, cid=CID, worktree=world.tmp, seq=1, owner="gate-001",
                    stop=None, tier="loop", announce=None, worker=None, head=None, tree=None)
-    assert got.ok and got.worker == "box"
-    assert seen == {"excluded": [], "attempt": 3}
+    assert got.ok and got.worker == "box2"
+    assert seen == {"excluded": ["box"], "attempt": 2}
+    assert charged == []
+    # a rotated loss at attempt 2 of max_remote_attempts 2 runs locally: no extra attempt
+    seen.clear()
+    monkeypatch.setattr(G, "_fallback", lambda *a, **k: G.GateRun(1, True, (), "now", 0.1))
+    got = G._retry({**out.lost, "attempt": 2}, 0.0, project_cfg=world.project,
+                   campaign_state=world.state, cfg=world.cfg, cid=CID, worktree=world.tmp,
+                   seq=1, owner="gate-001", stop=None, tier="loop", announce=None, worker=None,
+                   head=None, tree=None)
+    assert got.ok and got.worker is None and seen == {}
+
+
+def test_a_rotation_whose_secret_is_not_written_is_undone(world, pull, monkeypatch):
+    """`write_secret` fails after the registry took the new token: the registry gets the old
+    token back, so the worker is not locked out, and its live job is left alone."""
+    _queue(world)
+    assert _lease(world) is not None
+    lease = {"kinds": ["gate"], "slots_free": 1, "wait_s": 0}
+    old_secret = PJ.read_secret(world.cfg, "box")
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: world.cfg)
+
+    def full_disk(*a):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(PJ, "write_secret", full_disk)
+    res = CliRunner().invoke(cli, ["workers", "token", "box", "--rotate"])
+    assert res.exit_code != 0 and "undone" in res.output
+    assert _call(pull, "POST", "/v1/lease", pull.tokens["box"], lease)[0] == 204
+    assert PJ.read_secret(world.cfg, "box") == old_secret
+    assert RJ.read(world.cfg, JOB)["pull_state"] == "leased"
 
 
 def test_a_rotated_persona_job_goes_local_without_a_recorded_loss(world, monkeypatch):
@@ -241,7 +269,7 @@ def test_a_lease_renewed_after_the_scan_is_not_expired(world, pull, monkeypatch)
 
 # ---- the worker's checks of a leased job -----------------------------------------------------
 
-@pytest.mark.parametrize("case", ["tamper", "expired", "replay", "bundle"])
+@pytest.mark.parametrize("case", ["tamper", "expired", "replay", "replay-restart", "bundle"])
 def test_a_job_failing_verification_is_refused_and_nothing_runs(world, pull, case):
     _queue(world)
     got = _lease(world)
@@ -254,6 +282,9 @@ def test_a_job_failing_verification_is_refused_and_nothing_runs(world, pull, cas
                              now=time.time() - PJ.EXPIRES_S - PJ.CLOCK_SKEW_S - 5)
     elif case == "replay":
         loop.remember(h["nonce"], h["expires_at"])
+    elif case == "replay-restart":              # seen before the worker restarted
+        _loop(pull).remember(h["nonce"], h["expires_at"])
+        assert (pull.wdata() / "agentic" / "worker" / "nonces.jsonl").is_file()
     else:
         p = PJ.queue_dir(world.cfg) / f"{JOB}.bundle"
         data = bytearray(p.read_bytes())
@@ -909,3 +940,163 @@ def test_a_lease_marks_the_record_leased_under_the_jobs_lock(world, pull, monkey
     monkeypatch.setattr(PJ.RJ, "update", check)
     assert _lease(world) is not None
     assert held == [True]
+
+
+# ---- loop 7: the review's remaining gaps -----------------------------------------------------
+
+def test_seen_nonces_survive_a_restart_until_they_expire(world, pull):
+    now = time.time()
+    first = _loop(pull)
+    first.remember("old", now - PJ.CLOCK_SKEW_S - 10)       # expired, skew included
+    first.remember("skewed", now - PJ.CLOCK_SKEW_S + 60)    # expired, inside the skew
+    first.remember("live", now + PJ.EXPIRES_S)
+    first.remember("newer", now + PJ.EXPIRES_S)             # this write prunes `old`
+    again = _loop(pull)                                     # a restarted worker
+    assert [again.seen(n) for n in ("old", "skewed", "live", "newer")] == \
+        [False, True, True, True]
+    lines = (pull.wdata() / "agentic" / "worker" / "nonces.jsonl").read_text().splitlines()
+    assert [json.loads(ln)["nonce"] for ln in lines] == ["skewed", "live", "newer"]
+
+
+def test_a_header_expired_inside_the_clock_skew_is_still_accepted():
+    bundle = b"bundle"
+    sha = hashlib.sha256(bundle).hexdigest()
+    h = PJ.sign("s3cret", {"job_id": "j-1", "kind": "gate"}, sha, now=1_000_000.0)
+    exp = h["expires_at"]
+    assert exp == 1_000_000.0 + PJ.EXPIRES_S
+    never = lambda n: False                                 # noqa: E731
+    assert PJ.verify("s3cret", h, bundle, never, now=exp + 1) is None
+    assert PJ.verify("s3cret", h, bundle, never, now=exp + PJ.CLOCK_SKEW_S - 1) is None
+    assert PJ.verify("s3cret", h, bundle, never, now=exp + PJ.CLOCK_SKEW_S + 1) == \
+        "the job has expired"
+
+
+def test_a_body_without_content_length_gets_411(world, pull):
+    conn = http.client.HTTPConnection("127.0.0.1", pull.srv.server_address[1], timeout=30)
+    try:
+        conn.putrequest("POST", "/v1/lease")
+        conn.putheader("Authorization", f"Bearer {pull.tokens['box']}")
+        conn.endheaders()
+        r = conn.getresponse()
+        assert r.status == 411 and b"Content-Length" in r.read()
+    finally:
+        conn.close()
+
+
+def test_a_lease_long_poll_is_capped(world, pull, monkeypatch):
+    monkeypatch.setattr(PJ, "LEASE_WAIT_S", 0.5)
+    t0 = time.monotonic()
+    st, _ = _call(pull, "POST", "/v1/lease", pull.tokens["box"],
+                  {"kinds": ["gate"], "slots_free": 1, "wait_s": 3600})
+    took = time.monotonic() - t0
+    assert st == 204 and 0.5 <= took < 10
+
+
+def test_a_heartbeat_id_that_is_not_a_job_id_builds_no_path(world, pull):
+    bad = ["../../somewhere/x", "..", "a/b", ""]
+    st, body = _call(pull, "POST", "/v1/heartbeat", pull.tokens["box"],
+                     {"jobs": [{"id": i} for i in bad]})
+    assert st == 200
+    assert body["jobs"] == {i: {"cancel": False, "gone": False} for i in bad}
+    root = world.tmp
+    assert not list(root.rglob("x.lock")) and not list(root.rglob("x.json"))
+    for i in bad:
+        with pytest.raises(PJ.PullError) as e:
+            PJ._job_for(world.cfg, "box", i)
+        assert e.value.status == 400
+
+
+def test_a_lease_racing_the_unreachable_give_up_wins(world, pull, monkeypatch):
+    """The step read `queued` and its TTL ran out, but a lease took the job meanwhile: the
+    step keeps waiting (here a stop ends it) instead of blaming the worker as `unreachable`,
+    and the leased job's bundle stays for the worker."""
+    wrec = _queue(world)
+    assert PJ.unqueue_unleased(world.cfg, "no-such-job") is True
+    real = PJ.RJ.read
+    monkeypatch.setattr(PJ.RJ, "settings", lambda cfg: {
+        "worker_ttl_s": -1.0, "job_lease_s": 900.0, "max_remote_attempts": 2})
+    assert _lease(world) is not None                        # the lease wins the race
+    rec, stale = RJ.read(world.cfg, JOB), []
+
+    def read(cfg, jid):                                     # the step's own read is stale
+        if jid == JOB and not stale:
+            stale.append(1)
+            return {**real(cfg, jid), "pull_state": "queued"}
+        return real(cfg, jid)
+    monkeypatch.setattr(PJ.RJ, "read", read)
+    stop = threading.Event()
+    stop.set()
+    out = PJ.follow_gate(world.cfg, wrec, rec, world.project, 1, stop)
+    assert stale == [1]
+    assert out.run.interrupted
+    assert (PJ.queue_dir(world.cfg) / f"{JOB}.bundle").exists()
+    assert PJ.unqueue_unleased(world.cfg, JOB) is False
+
+
+def test_a_never_leased_job_is_unqueued_by_the_unreachable_give_up(world, pull, monkeypatch):
+    wrec = _queue(world)
+    monkeypatch.setattr(PJ.RJ, "settings", lambda cfg: {
+        "worker_ttl_s": -1.0, "job_lease_s": 900.0, "max_remote_attempts": 2})
+    with pytest.raises(RG._GiveUp) as gu:
+        PJ.follow_gate(world.cfg, wrec, RJ.read(world.cfg, JOB), world.project, 1, None)
+    assert gu.value.stage == "unreachable"
+    assert not list(PJ.queue_dir(world.cfg).glob(f"{JOB}.*"))
+    assert _lease(world) is None
+
+
+def test_a_gate_jobs_frames_posts_never_replay_the_spool(world, pull, monkeypatch):
+    """Each post feeds only its new frames to the `_Job` the previous post left: the spool is
+    replayed once (the first post), not on every post."""
+    _queue(world)
+    assert _lease(world) is not None
+    built = []
+    orig = PJ._gate_job
+    monkeypatch.setattr(PJ, "_gate_job", lambda *a: built.append(1) or orig(*a))
+    names = RJ.read(world.cfg, JOB)["gates"]
+
+    def gate(i):                                            # gate `names[i]` as frame i + 2
+        f = _gate_frame(world, i + 2)
+        f["result"] = {**f["result"], "name": names[i]}
+        f["files"] = {f"001-{names[i]}.log": next(iter(f["files"].values()))}
+        return f
+    started = {"type": "started", "n": 1, "job_id": JOB, "slot_wait_s": 0}
+    assert _frames(pull, JOB, started)[1]["cursor"] == 1
+    for i in range(len(names) - 1):
+        assert _frames(pull, JOB, gate(i))[1]["cursor"] == i + 2
+        assert _frames(pull, JOB, gate(i))[1]["cursor"] == i + 2      # a re-post
+    assert built == [1]
+    PJ._forget_gate_job(world.cfg, JOB)                     # a server restart: rebuilt once
+    last = len(names) + 1
+    done = {"type": "done", "n": last + 1, "job_id": JOB, "ok": True, "interrupted": False,
+            "duration_s": 0.2, "started_at": "now", "changed": []}
+    st, body = _frames(pull, JOB, gate(len(names) - 1), done)
+    assert built == [1, 1]
+    assert st == 200 and body["final"] and body["cursor"] == last + 1
+    assert [f["n"] for f in PJ.read_spool(world.cfg, JOB)] == list(range(1, last + 2))
+    assert RJ.read(world.cfg, JOB)["pull_state"] == "done"
+    assert PJ._gate_key(world.cfg, JOB) not in PJ._GATE_JOBS
+
+
+def test_a_failed_bundle_fetch_ends_the_job_at_once(world, pull, monkeypatch):
+    _queue(world)
+    got = _lease(world)
+    loop = _loop(pull)
+    real = loop.client.call
+    monkeypatch.setattr(loop.client, "call", lambda method, path, *a, **k: (
+        (500, b"oops") if path.endswith("/bundle") else real(method, path, *a, **k)))
+    loop.start(got)
+    rec = RJ.read(world.cfg, JOB)
+    assert rec["pull_state"] == "error" and rec["pull_error"]["stage"] == "bundle"
+    assert not loop.jobs
+    assert not (pull.wdata() / "agentic" / "worker" / "jobs" / JOB).exists()
+
+
+def test_the_gate_job_cache_never_crosses_stores(tmp_path):
+    """Two stores (two data dirs: two tests in one process) with the same job id at the same
+    cursor never share a cached `_Job`."""
+    a = {"data_dir": str(tmp_path / "a")}
+    b = {"data_dir": str(tmp_path / "b")}
+    job = type("J", (), {"seen": 2})()
+    PJ._keep_gate_job(a, JOB, job)
+    assert PJ._cached_gate_job(b, JOB, 2) is None
+    assert PJ._cached_gate_job(a, JOB, 2) is job

@@ -265,11 +265,13 @@ def test_lease_expiry_retries_then_runs_locally_and_the_old_worker_gets_410(tmp_
 
 def test_a_job_longer_than_the_lease_completes_with_heartbeats(tmp_path):
     w = World(tmp_path)
-    w.project["gates"] = [_gate("slow", "sleep 6; echo slow")]
-    w.cfg["agentic"]["workers"] = {"job_lease_s": 2}
+    # the gate outlives two whole leases; a 3 s lease (heartbeats every 1 s) leaves a loaded
+    # test host 2 s of slack per heartbeat instead of 1.3 s
+    w.project["gates"] = [_gate("slow", "sleep 7; echo slow")]
+    w.cfg["agentic"]["workers"] = {"job_lease_s": 3}
     p = Pull(w)
     try:
-        p.worker_config(job_lease_s=2)
+        p.worker_config(job_lease_s=3)
         p.start()
         run = G.run_and_log(w.cfg, w.state, w.project, by="test")
     finally:

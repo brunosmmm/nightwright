@@ -57,6 +57,10 @@ TAILSCALE_NETS = (ipaddress.ip_network("100.64.0.0/10"),
 SIGNED_FIELDS = ("issued_at", "expires_at", "nonce", "bundle_sha256", "sig")
 _CHUNK = 1 << 16
 _HEX64 = re.compile(r"^[0-9a-f]{64}\Z")
+_JOB_ID = re.compile(r"[A-Za-z0-9._-]+\Z")
+_GATE_JOBS: dict = {}               # (store, job id) -> its `_Job`, fed up to `pull_cursor`
+_GATE_JOBS_LOCK = threading.Lock()
+_GATE_JOBS_MAX = 64
 _JOB_PATH = re.compile(r"^/v1/jobs/(?P<id>[A-Za-z0-9._-]+)/(?P<what>bundle|frames|result-bundle|frame-upload)\Z")
 
 
@@ -272,8 +276,25 @@ def submit(cfg, worker: dict, header: dict, bundle: Path) -> None:
 def unqueue(cfg, job_id: str) -> None:
     """Drop a job's queue entry and bundle (a final or abandoned job)."""
     with _queue_lock(cfg):
-        for suffix in (".json", ".bundle"):
-            (queue_dir(cfg) / f"{job_id}{suffix}").unlink(missing_ok=True)
+        _unqueue_held(cfg, job_id)
+
+
+def _unqueue_held(cfg, job_id: str) -> None:
+    for suffix in (".json", ".bundle"):
+        (queue_dir(cfg) / f"{job_id}{suffix}").unlink(missing_ok=True)
+
+
+def unqueue_unleased(cfg, job_id: str) -> bool:
+    """The never-leased give-up's unqueue: under the queue lock (which every lease holds while
+    it takes a job) the record is read again, and the job is unqueued only when it is still
+    `queued`. False when a lease won the race: the job is the worker's, so the step keeps
+    waiting instead of blaming it as `unreachable`."""
+    with _queue_lock(cfg):
+        rec = RJ.read(cfg, job_id)
+        if rec is not None and rec.get("pull_state") != "queued":
+            return False
+        _unqueue_held(cfg, job_id)
+        return True
 
 
 def request_cancel(cfg, job_id: str) -> None:
@@ -293,6 +314,7 @@ def give_up_lease(cfg, job_id: str, reason: str = "lease") -> None:
         rec = RJ.read(cfg, job_id)
         if rec is not None and rec.get("pull_state") not in ("done", "error"):
             RJ.update(cfg, job_id, pull_state="lost", pull_lost_reason=reason)
+    _forget_gate_job(cfg, job_id)
     unqueue(cfg, job_id)
 
 
@@ -362,6 +384,7 @@ def _spool_append(cfg, job_id: str, frame: dict) -> None:
 
 def drop_job_files(cfg, job_id: str) -> None:
     """A finished pull job's spool, lock, upload and queue files."""
+    _forget_gate_job(cfg, job_id)
     unqueue(cfg, job_id)
     for p in (spool_path(cfg, job_id), frames_dir(cfg) / f"{job_id}.lock",
               result_bundle_path(cfg, job_id), *frame_uploads(cfg, job_id)):
@@ -419,8 +442,8 @@ def follow_gate(cfg, worker: dict, rec: dict, project_cfg: dict, seq: int, stop)
                                        cooldown=bool(err.get("cooldown", True)))
             if ps == "lost":
                 raise RG._GiveUp(lost_reason(cur), worker, rec)
-            if ps == "queued" and time.time() - queued_since > ttl:
-                unqueue(cfg, job_id)
+            if ps == "queued" and time.time() - queued_since > ttl \
+                    and unqueue_unleased(cfg, job_id):
                 raise RG._GiveUp("unreachable", worker, rec)
             if time.time() > deadline:
                 raise RG._GiveUp("deadline", worker, rec)
@@ -496,8 +519,8 @@ def follow_persona(rr, req, hooks, rec: dict):
         if ps == "error":
             err = cur.get("pull_error") or {}
             return RPS._lost(rr, req, hooks, rec, f"error: {err.get('stage')}: {err.get('error')}")
-        if ps == "queued" and time.time() - queued_since > ttl:
-            unqueue(cfg, job_id)
+        if ps == "queued" and time.time() - queued_since > ttl \
+                and unqueue_unleased(cfg, job_id):
             return RPS._lost(rr, req, hooks, rec, "unreachable")
         if time.time() > deadline:
             return RPS._lost(rr, req, hooks, rec, "deadline")
@@ -522,7 +545,10 @@ def _with_bundle(cfg, job_id: str, frame: dict) -> dict:
 
 def _job_for(cfg, worker: str, job_id: str) -> dict:
     """The job's record, when `worker` may touch it: 410 for an unknown job or one whose lease
-    was given up, 403 for another worker's."""
+    was given up, 403 for another worker's, 400 for an id that is not one (no path is built
+    from it)."""
+    if not isinstance(job_id, str) or not _JOB_ID.match(job_id) or job_id.strip(".") == "":
+        raise PullError(400, "not a job id")
     rec = RJ.read(cfg, job_id)
     if rec is None or not rec.get("pull"):
         raise PullError(410, f"job {job_id} is gone")
@@ -564,7 +590,7 @@ def apply_frames(cfg, worker: str, job_id: str, frames: list) -> dict:
         fields: dict = {}
         if rec.get("pull_state") in ("done", "error"):
             frames = []                         # final: a re-post only learns the cursor
-        job = None
+        job = _cached_gate_job(cfg, job_id, start) if rec.get("kind") == "gate" else None
         try:
             for frame in sorted(frames, key=lambda f: f.get("n") if isinstance(f.get("n"), int)
                                 else 0):
@@ -606,12 +632,20 @@ def apply_frames(cfg, worker: str, job_id: str, frames: list) -> dict:
                         fields["state"] = "attached"
                 if fields.get("pull_state") in ("done", "error"):
                     break
-        except BaseException:
+        except PullError:
+            if cursor > start:
+                rec = _renewed(cfg, rec, pull_cursor=cursor, **fields)
+            if job is not None and rec.get("pull_state") not in ("done", "error"):
+                _keep_gate_job(cfg, job_id, job)    # a refusal feeds nothing: still current
+            raise
+        except BaseException:                   # the `_Job` may be part-fed: rebuilt next time
             if cursor > start:
                 _renewed(cfg, rec, pull_cursor=cursor, **fields)
             raise
         rec = _renewed(cfg, rec, pull_cursor=cursor, **fields)
-    final = rec.get("pull_state") in ("done", "error")
+        final = rec.get("pull_state") in ("done", "error")
+        if job is not None and not final:
+            _keep_gate_job(cfg, job_id, job)
     if final:
         unqueue(cfg, job_id)
     return {"cursor": cursor, "cancel": _cancel_flag(rec), "final": final,
@@ -633,6 +667,31 @@ def _uploaded_frame(cfg, job_id: str, stub: dict, cursor: int) -> tuple[dict, Pa
     if not isinstance(frame, dict) or frame.get("n") != stub["n"] or frame.get("frame_sha256"):
         raise PullError(400, f"the upload {sha} is not frame {stub['n']}", cursor=cursor)
     return frame, p
+
+
+def _gate_key(cfg, job_id: str) -> tuple[str, str]:
+    return str(frames_dir(cfg)), job_id
+
+
+def _cached_gate_job(cfg, job_id: str, cursor: int):
+    """The `_Job` an earlier post to this store left fed up to `cursor` (taken out of the
+    cache: the caller holds the job's lock and puts it back), else None. It spares each frames
+    post a replay of the whole spool, big out-of-band frames included."""
+    with _GATE_JOBS_LOCK:
+        job = _GATE_JOBS.pop(_gate_key(cfg, job_id), None)
+    return job if job is not None and job.seen == cursor else None
+
+
+def _keep_gate_job(cfg, job_id: str, job) -> None:
+    with _GATE_JOBS_LOCK:
+        _GATE_JOBS[_gate_key(cfg, job_id)] = job
+        while len(_GATE_JOBS) > _GATE_JOBS_MAX:
+            _GATE_JOBS.pop(next(iter(_GATE_JOBS)))
+
+
+def _forget_gate_job(cfg, job_id: str) -> None:
+    with _GATE_JOBS_LOCK:
+        _GATE_JOBS.pop(_gate_key(cfg, job_id), None)
 
 
 def _gate_job(cfg, worker: str, rec: dict):
@@ -789,6 +848,7 @@ def expire_leases(cfg, now: float | None = None) -> list[str]:
                 if not _expired(RJ.read(cfg, rec["job_id"]) or {}, now):
                     continue
                 RJ.update(cfg, rec["job_id"], pull_state="lost", pull_lost_reason="lease")
+            _forget_gate_job(cfg, rec["job_id"])
             unqueue(cfg, rec["job_id"])
             out.append(rec["job_id"])
     return out

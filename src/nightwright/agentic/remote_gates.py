@@ -979,9 +979,9 @@ def _leave(cid, ev: threading.Event) -> bool:
 # the give-up reasons that blame the worker (its cooldown): not `deadline`, and not
 # `unaccepted` (a job the worker never accepted: the coordinator died during its submit)
 _BLAME = ("unreachable", "lost")
-# SPEC-0334: the give-up reasons that charge the worker nothing: no cooldown, no recorded loss,
-# no exclusion from the retry and no attempt counted against `max_remote_attempts`
-# (`rotated`: `nw workers token --rotate` released a pull worker's live jobs)
+# SPEC-0334: the give-up reasons that charge the worker nothing: no cooldown and no recorded
+# loss (`rotated`: `nw workers token --rotate` released a pull worker's live jobs). The retry
+# still excludes the worker and counts the attempt against `max_remote_attempts` (SPEC-0342)
 UNCHARGED = ("rotated",)
 
 

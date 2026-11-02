@@ -536,6 +536,95 @@ the API row for the out-of-band frame upload is recorded here instead of in the 
   `python3 tools/spec_lint.py`: ok.
 - The full suite is left to gating. The cross-machine manual steps were not run (see above).
 
+### As shipped (2026-11-02, loop 7)
+
+Fixes from the fourth review, no Design change:
+
+- **A rotated job's retry excludes the worker and counts.** This supersedes loop 6's rotation
+  retry rule. A rotated worker exits on its next 401 (exit 3, which the systemd example does
+  not restart), so a retry sent back to it would wait `worker_ttl_s` and then be given up as
+  `unreachable`, which charges the worker. A `rotated` give-up now has the same retry budget
+  as any loss under SPEC-0342: the worker is added to `excluded_workers`, and the attempt
+  counts against `max_remote_attempts`. What `rotated` (`remote_gates.UNCHARGED`) still
+  changes is that it sets no cooldown and records no loss. The persona path is unchanged: it
+  goes local with no recorded loss. SPEC-0342's budget therefore stays the single definition
+  of the retry budget, and SPEC-0342 needs no change. `docs/WORKFLOW.md` says so.
+- **A rotation that cannot write the secret is undone.** `nw workers token --rotate` writes the
+  new `token_sha256` and then the secret. If writing the secret fails (`OSError`), the old
+  `token_sha256` is put back and the command fails. The old credential keeps working, and the
+  worker's live jobs are not released.
+- **A lease that races the `unreachable` give-up wins.** Past `worker_ttl_s`, the step calls
+  `unqueue_unleased`. It reads the record again under the queue lock, which every lease holds
+  while it takes a job. It unqueues the job only if the record is still `queued`. Otherwise
+  the step keeps waiting, so a worker that did lease the job is never blamed as
+  `unreachable`.
+- **Job ids are checked before any path is built.** `_job_for`, used by every per-job request
+  and by each heartbeat entry, answers 400 for an id that does not match `[A-Za-z0-9._-]+`
+  or is only dots. A heartbeat reports such an entry as `{cancel: false, gone: false}`.
+- **No spool replay per frames post.** The server keeps each gate job's `_Job` in memory,
+  keyed by its store and job id, and fed up to the record's `pull_cursor`. The next post feeds
+  only its new frames. The spool is replayed only when there is no matching cached `_Job`:
+  the first post, the first post after a server restart, or a post after an exception that
+  could have left the `_Job` half-fed. The cache holds 64 jobs at most and drops a job once
+  it is final, lost or pruned.
+- **A failed bundle fetch ends the job at once.** If the worker's `GET bundle` answers
+  anything other than 200, 403 or 410, the worker posts an `error` frame
+  (`stage: "bundle"`). The job then ends without waiting `job_lease_s`. A 403 or 410 is still
+  dropped silently, because there is nothing to report.
+- **Timing.** The heartbeat test now runs a 7 s gate under a 3 s lease, instead of a 6 s gate
+  under a 2 s lease. The gate still outlives two whole leases, and a loaded host gets 2 s of
+  slack per heartbeat instead of 1.3 s. The lease-expiry test keeps `job_lease_s=2`, as the
+  Test plan asks. The stop test keeps the criterion's 5 s.
+
+### Test record (2026-11-02, loop 7)
+
+- New or changed in `tests/test_pull_workers_security.py`:
+  - **Rotation retry.** The retry sends attempt 2 to `box2`, with `box` excluded and nothing
+    charged. A rotated loss at attempt 2 of `max_remote_attempts` 2 runs locally.
+  - **Rotation undone.** A rotation whose `write_secret` raises `OSError` fails. The old token
+    still leases (204), the secret is unchanged, and the job stays `leased`.
+  - **Verification and nonces.** A replay is refused after a restart: the nonce was written by
+    one `Loop`, and a fresh `Loop` on the same data dir refuses it with `stage: "verify"`.
+    Nonces survive a restart until they expire. An entry past `expires_at` plus the skew is
+    pruned from `nonces.jsonl` on the next write. An entry inside the skew is kept.
+  - **Clock skew.** A header expired by 1 s, or by `CLOCK_SKEW_S` − 1 s, is accepted. One
+    expired by `CLOCK_SKEW_S` + 1 s is refused.
+  - **Request limits.** A request without `Content-Length` gets 411. `wait_s: 3600` is capped
+    at `LEASE_WAIT_S`, which the test lowers to 0.5 s.
+  - **Heartbeat ids.** Heartbeat ids `../../somewhere/x`, `..`, `a/b` and `""` get
+    `gone: false`, no file is created, and `_job_for` answers 400.
+  - **Unreachable race.** A lease racing the `unreachable` give-up wins: the step's stale
+    `queued` read is followed by a stop, not a give-up, and the bundle stays. A job that was
+    never leased is still unqueued and given up as `unreachable`.
+  - **Gate cache.** A gate job's frames posts build the `_Job` once. Re-posts and later posts
+    feed only their new frames. After the cache entry is dropped, the job is rebuilt once and
+    its `done` applies (spool `n` 1 to 5). A second store with the same job id and cursor
+    never gets the first store's cached `_Job`.
+  - **Bundle fetch.** A bundle fetch answered 500 ends the job at once with
+    `pull_state: error` and `stage: "bundle"`. No job dir is created.
+- With the previous `pull_jobs.py`, `pull_worker.py`, `gates.py`, `cli_workers.py` and
+  `remote_gates.py`, these tests fail: rotation retry, rotation undone, heartbeat ids,
+  unreachable race, gate cache and bundle fetch. The nonce, skew, 411 and lease-cap tests
+  lock in behaviour that already shipped, and they pass on both versions.
+- `uv run pytest -q -n 4 tests/test_pull_workers.py tests/test_pull_workers_security.py`:
+  77 passed. While I iterated, one run failed in
+  `test_lease_expiry_retries_then_runs_locally_and_the_old_worker_gets_410` under `-n 4`. The
+  output was not kept. That run took 76 s, against about 30 s normally, which points to one
+  `until` timing out on a loaded host. I could not reproduce it. Repeated runs since then all
+  passed:
+  - 6 runs at `-n 4`;
+  - 3 runs at `-n 6`, with 3 busy-loop CPU burners and `tests/test_remote_gates.py` alongside;
+  - 16 concurrent single-process runs of the three timing tests;
+  - 5 runs at `-n 4` of both pull test files together with `tests/test_worker_jobs.py`, 168
+    passed in each run.
+- `uv run pytest -q -n 4 tests/test_remote_gates.py tests/test_agentic_gates.py
+  tests/test_remote_personas.py tests/test_workers_registry.py tests/test_worker_job_retry.py
+  tests/test_remote_job_records.py tests/test_workers_drain.py tests/test_agentic_gate_limits.py`:
+  473 passed. `python3 tools/spec_lint.py`: ok.
+- The full suite is left to gating. The cross-machine manual steps (a Tailscale bind, a laptop
+  without inbound SSH, a real campaign's gates, revocation from that laptop) are still not
+  run, so the spec stays `in-progress`.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-561` / `nw idea clock-out IDEA-561`.
