@@ -146,7 +146,7 @@ def test_no_the_human_must_wording(cfg):
 
 def test_conduct_skill_never_asks_the_human():
     text = (ROOT / "skills" / "nw-conduct" / "SKILL.md").read_text(encoding="utf-8")
-    assert "Never call `AskUserQuestion`" in text and "message.request.human_order" in text
+    assert "Never call `AskUserQuestion`" in text and "message.human_order" in text
     paras = re.split(r"\n\s*\n", text)
     rule = [p for p in paras if p.startswith("**Never ask the human")]
     assert len(rule) == 1 and 'never "wait for the human"' in " ".join(rule[0].split())

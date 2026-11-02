@@ -37,7 +37,7 @@ skipped. Causes found in the investigation (plan: `/home/bruno/work/nw-plans/con
   scope here).
 
 **Already in the repo** (not part of this spec's edits): the `nw-conduct` rule "Never ask the human,
-never wait on the human" (`skills/nw-conduct/SKILL.md:33-39`), its `message.request.human_order`
+never wait on the human" (`skills/nw-conduct/SKILL.md:33-39`), its `message.human_order`
 row (line 142), the "Never `AskUserQuestion`" line in the escalate convention (line 227), and the
 conductor-never-asks sentence in `nw-orient` (line 40). A grep of `nw-conduct` and `nw-orient` finds
 no "tell the human", "unless told" or "wait for the human" outside that rule. Still missing, and
@@ -163,7 +163,7 @@ via the project steward)". `review_triager.md` is checked and changed only if it
       --question` help contain neither "the human must" nor "a human must decide"; `review_triager`
       likewise; the existing persona tests pass unchanged.
 - [x] AC5: `skills/nw-conduct/SKILL.md` contains "Never call `AskUserQuestion`" and the
-      `message.request.human_order` row, and none of "tell the human" or "unless told", nor an
+      `message.human_order` row, and none of "tell the human" or "unless told", nor an
       instruction to wait for the human anywhere outside the *Never ask the human* rule (the assertion
       excludes that paragraph, which itself says `never "wait for the human"`); `skills/nw-orient/
       SKILL.md` contains the conductor-never-asks sentence. This test passes against the current
@@ -368,8 +368,9 @@ slice B is a Non-goal follow-up.
   `source: launch` one: a hand-started conductor registered after an old launch is guarded by the
   hook and does not warn.
 - `agent_permissions.sync()` returns `{"added", "removed", "hook"}`; `skills list` is unchanged.
-- `decisions.RULE_RE` now accepts up to two qualifier segments: the already-landed `nw-conduct` row id
-  `message.request.human_order` did not match the old pattern (`test_conduct_skill_rule_ids` failed,
-  and `nw queue decision --rule message.request.human_order` would have been refused).
+- `decisions.RULE_RE` now accepts up to two qualifier segments: the `nw-conduct` row id was then
+  `message.request.human_order`, which did not match the old pattern (`test_conduct_skill_rule_ids`
+  failed). SPEC-0381 later shortened the id to `message.human_order` (one qualifier), which the
+  guard test and this spec now use; the wider pattern is harmless and was left as is.
 - Skills: no edit, as designed. The review brief's request to change the `nw-conduct` timeout line
   belongs to slice B with the `human_decision_timeout` row.
