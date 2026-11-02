@@ -129,23 +129,23 @@ the index). After the change `remote_gates.py` has no `stash create` call outsid
 
 ## Acceptance criteria
 
-- [ ] `commit_under_test` returns the stash commit on a content-dirty tree, HEAD on a clean
+- [x] `commit_under_test` returns the stash commit on a content-dirty tree, HEAD on a clean
       tree, and HEAD on a stat-dirty, content-clean tree (`git stash create` exits 1 with no
       output and `git diff --quiet HEAD --` exits 0).
-- [ ] `commit_under_test` raises `RemoteFailure("bundle")` when `stash create` exits 1 silently
+- [x] `commit_under_test` raises `RemoteFailure("bundle")` when `stash create` exits 1 silently
       but `git diff --quiet HEAD --` reports a difference (tested with a stubbed git), and the
       failure has `cooldown=False`.
-- [ ] `commit_under_test` raises `RemoteFailure("bundle", …, cooldown=False)` when git fails
+- [x] `commit_under_test` raises `RemoteFailure("bundle", …, cooldown=False)` when git fails
       with an error message, exits 1 with output, or cannot start.
-- [ ] `prepare()` on a stat-dirty, content-clean tree returns a header whose `commit` is HEAD
+- [x] `prepare()` on a stat-dirty, content-clean tree returns a header whose `commit` is HEAD
       and the run goes to the worker: no `worker_failed stage=bundle` and no fallback finding.
       The coordinator's stash list and index file are unchanged afterwards.
-- [ ] `prepare()` and `tree_under_test()` both call `commit_under_test`, and `remote_gates.py`
+- [x] `prepare()` and `tree_under_test()` both call `commit_under_test`, and `remote_gates.py`
       has no other `stash create` call; on a stat-dirty tree they agree on the commit and its
       tree; `adoptable` returns `None` (not `False`) when `commit_under_test` raises.
-- [ ] A remote `GateRun` from the synchronous loop and one from `_Follow._done` both carry
+- [x] A remote `GateRun` from the synchronous loop and one from `_Follow._done` both carry
       `changed == ()`; a local run and a cut-short remote run carry `changed is None`.
-- [ ] A remote run whose `done` frame lists changed paths still falls back to a local run
+- [x] A remote run whose `done` frame lists changed paths still falls back to a local run
       without cooldown, as before.
 - [ ] `gates.as_payload` includes `"changed": []` for a remote run and no `changed` key for a
       local run; `nw queue gates <id> --worker <w> --json` output shows `"changed": []`; the
@@ -203,6 +203,37 @@ the index). After the change `remote_gates.py` has no `stash create` call outsid
   the new `changed` key; `tests/test_agentic_gates.py` passes unchanged (a local `as_payload`
   has no new key); the stash-stack assertion at `tests/test_remote_gates.py:298-303` stays
   green; the queue's close gate runs the full `uv run pytest`.
+
+### Test record (2026-11-01)
+
+- `uv run pytest -q -n 2 tests/test_agentic_exit_paths.py tests/test_remote_gates.py
+  tests/test_remote_job_records.py tests/test_agentic_gates.py`: 282 passed, 1 failed
+  (`test_remote_job_records.py::test_submit_failure_after_accept_still_has_a_record`, a timing
+  assert on the logged `cancel` call); rerun alone it passes. It does not touch the changed
+  code paths, so it is read as a load flake under `-n 2`.
+- `tests/test_agentic_exit_paths.py` (the two gate failures with `git commit` exit 128 in
+  `make_repo`) passes here; that was the gate sandbox's git environment, not this change.
+- `tests/test_remote_gates.py` adds the `commit_under_test` cases (clean / content-dirty /
+  stat-dirty with real git, stubbed silent exit 1 with a diff, git failures), the index-untouched
+  check, `test_stat_dirty_tree_runs_remotely`, the single-call-site check, `changed` on both
+  builders, the CLI `--json` check (the golden is a local-path record and is unchanged);
+  `test_remote_job_records.py` adds the `adoptable` -> `None` case. `tests/test_agentic_gates.py`
+  passes unchanged (a local `as_payload` has no new key).
+- `python3 tools/spec_lint.py --write-ledger` / `spec_lint`: OK. The full suite is left to the
+  queue's gate.
+
+### As shipped (2026-11-01)
+
+Built to Design (`remote_gates.commit_under_test`, `GateRun.changed`, `as_payload`) with one
+deviation: `tests/data/remote_gates_golden.json` records the **local** (no-worker) path
+(`_golden_run` sets `remote_gates=False`), so it correctly gains no `changed` key and is
+unchanged; the Design/AC line that it "contains" `changed: []` cannot hold for that golden. The
+remote run's `changed: []` is asserted in `test_remote_run_records_changed` and the CLI
+`--json` test instead. That AC is left unticked for the golden clause only. **Not done: the real-box acceptance criterion and manual steps 1-2.** No worker
+is registered in this sandbox (no worker box reachable from the implementer's coordinator), so
+the stat-dirty dispatch was only exercised against real git plus the fake worker. The spec stays
+`in-progress` until someone runs `nw queue gates <campaign> --worker <w> --json` on a clean and
+a touched tree against the real box.
 
 ## Rollout / migration
 
