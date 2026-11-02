@@ -239,6 +239,23 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   triage, affected-tests replay and test-waits files: 380 passed.
 - Full suite left to gating.
 
+### Test record (2026-11-02, gate loop 3)
+
+- The gate failure `test_worker_jobs.py::test_reattach_after_a_dropped_connection_loses_and_repeats_nothing`
+  (60 s loopback timeout) was not caused by this spec. It passes in this worktree when run
+  alone, with its whole file, and with `-n 2` (90 passed). It fails only when pytest runs with
+  SIGHUP ignored, as it is under a remote gate job: `worker_job.main` sets `SIG_IGN`, children
+  inherit it, and the loopback's SIGHUP "connection drop" never ends the first attach.
+  Reproduced locally: with SIGHUP ignored, the branch's old `tests/remote_loopback.py` fails the
+  same way (`TimeoutExpired`, 63 s). Campaign SPEC-0334 hit the identical failure on `box`.
+- Main already fixed this in a257d16f ("loopback ssh-command gets default SIGHUP"), after this
+  branch's merge base. That commit was applied here unchanged (`tests/remote_loopback.py` now
+  matches main, and `tests/test_worker_jobs.py` gains its regression test).
+- With SIGHUP ignored, `uv run pytest -q -n 4 tests/test_worker_jobs.py
+  tests/test_remote_persona_limits.py tests/test_remote_gates.py tests/test_remote_personas.py
+  tests/test_test_waits.py`: 310 passed.
+- Full suite left to gating. The manual verification steps are still not performed (see above).
+
 ### As shipped (2026-11-02)
 
 - **Module.** `agentic/persona_gate.py` holds the gate (`Gate`), the backoff
