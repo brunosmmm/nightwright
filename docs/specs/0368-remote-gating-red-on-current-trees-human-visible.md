@@ -284,6 +284,14 @@ from it as written. Human decisions applied on 2026-11-02, after review:
 Not done in this run: the real-box steps above (the "Test plan executed" and "No regressions"
 Definition-of-done boxes stay unticked; the full suite is left to the queue's gate).
 
+- **Landed directly on `main` (2026-11-02) on the human's explicit order**, outside the queue's
+  gates, with the textual core-dependency commits. Rebased onto SPEC-0344 with no conflicts.
+  Landing run: `test_remote_gates`, `test_remote_job_records`, `test_agentic_e2e`,
+  `test_agentic_gates`: 277 passed; textual fix: `test_docs_*`, `test_tui_*`,
+  `test_agentic_dogfood_config`, `test_worker`: 497 passed. Full suite not run. The Real-box
+  acceptance criterion was **not run on the final tree** and stays unticked; the spec stays
+  `in-progress`.
+
 ## Rollout / migration
 
 1. Coordinator-only change; it needs no worker update and no protocol change. A worker that
