@@ -242,6 +242,17 @@ def _checkout_root() -> Path:
     return root
 
 
+def build_wheel(out) -> Path:
+    """`uv build --wheel` of this checkout into the directory `out`; the one wheel it made.
+    Shared by `nw workers bootstrap` and `nw workers update` (SPEC-0385)."""
+    _must(_run(["uv", "build", "--wheel", "--out-dir", str(out), str(_checkout_root())],
+               timeout=INSTALL_TIMEOUT_S), "uv build --wheel")
+    wheels = sorted(Path(out).glob("*.whl"))
+    if len(wheels) != 1:
+        raise StepFailed(f"uv build made {len(wheels)} wheels, expected 1")
+    return wheels[0]
+
+
 # ---- steps ----------------------------------------------------------------------------------
 
 def step_admin(plan: Plan) -> tuple[str, str]:
@@ -319,12 +330,7 @@ def step_install(plan: Plan) -> tuple[str, str]:
     else:
         why = f"build {str(have)[:12]} -> {want[:12]}"
     with tempfile.TemporaryDirectory(prefix="nw-wheel-") as out:
-        _must(_run(["uv", "build", "--wheel", "--out-dir", out, str(_checkout_root())],
-                   timeout=INSTALL_TIMEOUT_S), "uv build --wheel")
-        wheels = sorted(Path(out).glob("*.whl"))
-        if len(wheels) != 1:
-            raise StepFailed(f"uv build made {len(wheels)} wheels, expected 1")
-        wheel = wheels[0]
+        wheel = build_wheel(out)
         plan.build_id = buildid.compute_wheel(wheel)
         if plan.build_id != want:
             plan.notes.append(f"note: the wheel's build {plan.build_id[:12]} differs from the "

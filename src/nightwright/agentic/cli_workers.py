@@ -12,6 +12,7 @@ from ..report import _dump_json
 from . import gate_slots as GS
 from . import workers as WK
 from . import workers_bootstrap as WB
+from . import workers_update as WU
 from .store import now_iso
 
 KINDS = ("gate", "persona")
@@ -34,6 +35,8 @@ def workers_group():
                                        job kinds / persona slots (SPEC-0344)
     nw workers on|off NAME             enable (clears cooldown) / disable
     nw workers drain NAME              no new gates; disabled once idle (SPEC-0343)
+    nw workers update NAME [--force] [--dry-run]
+                                       upgrade the worker to this checkout's build (SPEC-0385)
     nw workers rm NAME                 unregister (held slots are untouched)
     """
 
@@ -371,3 +374,57 @@ def workers_rm(cfg, name):
         records.remove(_find(records, name))
     _update(cfg, fn)
     _say(f"{name}: removed")
+
+
+@workers_group.command("update")
+@click.argument("name")
+@click.option("--force", is_flag=True,
+              help="install even with live jobs (they are not killed); passed to `nw worker "
+                   "update --force`")
+@click.option("--dry-run", is_flag=True,
+              help="build the wheel, print the plan and its size; send nothing")
+@click.pass_obj
+def workers_update(cfg, name, force, dry_run):
+    """Upgrade a worker to this checkout's build over its restricted key (SPEC-0385): builds a
+    wheel and streams it to the worker's forced-command verb `nw worker update` (SPEC-0369),
+    then runs `check`. Exits 0 updated or unchanged, 5 worker busy (live jobs), 1 failed."""
+    rec = _find(_load_or_fail(cfg), name)
+    try:
+        plan, res, code, err = WU.send(cfg, rec, force, dry_run)
+    except WU.UpdateError as e:
+        raise click.ClickException(str(e))
+    _say(f"{name}: {plan.wheel} ({plan.size} bytes) build {plan.build_id[:12]}"
+         + (" --force" if force else ""))
+    if dry_run:
+        _say(f"would run: {plan.shown()}")
+        _say("dry run: nothing sent", "dim")
+        return
+    if res is None:
+        why = err.splitlines()[-1] if err else "no result line"
+        hint = (" (an older worker without the update verb? bootstrap it once)"
+                if "not allowed" in err else "")
+        _say(f"{name}: update failed (ssh exit {code}): {why}{hint}", "bold red")
+        raise SystemExit(1)
+    state = res.get("state")
+    if state == "busy":
+        jobs = ", ".join(res.get("live_jobs") or [])
+        _say(f"{name}: " + WU.BUSY_MSG.format(name=name)
+             + (f" (live: {jobs})" if jobs else ""), "bold yellow")
+        raise SystemExit(WU.EXIT_BUSY)
+    if state == "failed":
+        _say(f"{name}: update failed at {res.get('stage')}: {res.get('error')}", "bold red")
+        if res.get("stage") in ("install", "verify"):
+            _say(f"  see {WU.UV_LOG} on the worker for uv's output", "red")
+        raise SystemExit(1)
+    _say(f"{name}: {state} (build {str(res.get('build_id_before'))[:14]} -> "
+         f"{str(res.get('build_id_after'))[:14]}, version {res.get('version')})", "green")
+    chk = WK.check(cfg, rec)
+    got = (chk.get("info") or {}).get("build_id")
+    if not chk["ok"] or got != plan.build_id:
+        for e in chk["errors"]:
+            _say(f"  error: {e}", "red")
+        _say(f"{name}: check after update: build {got} != {plan.build_id}", "bold red")
+        raise SystemExit(1)
+    for w in chk["warnings"]:
+        _say(f"  warning: {w}", "yellow")
+    _say(f"{name}: check ok, build {got[:12]} matches", "green")
