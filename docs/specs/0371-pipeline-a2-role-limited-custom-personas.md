@@ -1,7 +1,7 @@
 ---
 id: SPEC-0371
 title: "Pipeline A2a: role-limited custom personas (user/project definitions, role schemas, validator, nw personas validate)"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
