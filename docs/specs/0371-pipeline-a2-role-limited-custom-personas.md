@@ -1,34 +1,36 @@
 ---
 id: SPEC-0371
-title: "Pipeline A2: role-limited custom personas (user/project definitions, validation, profile references)"
+title: "Pipeline A2a: role-limited custom personas (user/project definitions, role schemas, validator, nw personas validate)"
 status: proposed
 owner: user
 created: 2026-11-02
+updated: 2026-11-02
 milestone: "M9: agentic workflow"
 kind: feature
 parent: SPEC-0348
-tags: [agentic, personas, profiles, project-config, validation]
+tags: [agentic, personas, project-config, validation]
 source_idea: IDEA-716
 ---
 
 ## Context
 
 Child of epic [SPEC-0348](./0348-declarative-per-project-agentic-pipeline.md) (Stage A, child
-"Pipeline A2"), promoted from `IDEA-716`. It absorbs slices 1-2 of `IDEA-090` (pluggable reviewer
-personas, declarations and validation); slice 3 (the queue running them) is Pipeline A3.
+"Pipeline A2"), promoted from `IDEA-716`. The idea was too large for one campaign (three
+subsystems, 15 acceptance criteria), so it is split in two. **This spec is the first half, A2a:
+the declaration layer.** The second half, A2b (profiles reference declared personas), is listed
+under Non-goals and gets its own spec that `depends_on` this one. Together they absorb slices 1-2
+of `IDEA-090`; slice 3 (the queue running custom personas) is Pipeline A3.
 
 Today a project that wants a security or accessibility reviewer must patch nightwright:
 `src/nightwright/agentic/personas.py` holds `PERSONAS`, `REVIEWER_PERSONAS`, `ADOPT_REGISTRY`
-and `PLACEHOLDERS` as hand-written tables, and
-`profiles.validate_profile_doc` / `profiles._check_reviewers` (`src/nightwright/agentic/profiles.py`)
-reject any `reviewers:` or `personas:` name not in them.
+and `PLACEHOLDERS` as hand-written tables.
 
 Pipeline A1 (the persona registry as data: builtin personas in `persona_defs/*.yaml`, a layered
 loader, a strict validator, `nw personas list|show`) is the base this spec extends. A1 has no
 spec id yet, so this spec cannot name it in `depends_on`; the sequencing is recorded in the
 epic's breakdown and in Rollout below. This spec assumes only what the epic states A1 delivers:
 a registry that loads `nw.persona.v1` YAML from the builtin layer and exposes
-`PERSONAS` / `REVIEWER_PERSONAS` / `ADOPT_REGISTRY` as derived views.
+`PERSONAS` / `REVIEWER_PERSONAS` / `ADOPT_REGISTRY` as derived views, plus `nw personas list|show`.
 
 The reviewers' output schemas differ today (`CONFORMANCE_REVIEWER_SCHEMA`,
 `TEST_REVIEWER_SCHEMA`, `ADVERSARIAL_REVIEWER_SCHEMA`); all share `verdict`, `score`,
@@ -47,20 +49,31 @@ reviewer schema.
   existence, placeholder subset, `category`, and builtin-name shadowing.
 - `nw personas validate` checks every definition visible from a project and exits non-zero on any
   problem.
-- A profile's `reviewers:` list and `personas:` mapping accept declared names; a declared reviewer
-  with no `personas:` entry gets its role defaults from the selected profile.
-- Declared personas show up in `nw personas list|show` (A1's commands) with their origin layer.
+- Declared personas are available through registry functions (`load_registry`, `personas_for`,
+  `reviewer_names`, `get_persona(name, project_root)`) and show up in `nw personas list|show`
+  (A1's commands) with their origin layer.
 
 **Non-goals**
+- **Pipeline A2b: profiles reference declared personas** (separate spec, `depends_on` this one).
+  Everything touching `profiles.py` and the profile layers is deferred to it: `reviewers:` and
+  `personas:` accepting declared names in `validate_profile_doc` / `_check_reviewers`; the
+  role-based "not a reviewer persona" error; the rule that every profile layer (builtin, user,
+  project, `config.yaml` delta) is validated against the registry of the project in scope
+  (builtin plus user personas when `project_root` is None, plus that project's personas
+  otherwise, so a user profile naming a project-declared persona is valid only from that project
+  and `nw profiles check` outside a project reports `unknown persona`); `resolve_profile` writing
+  a missing `personas.<declared name>` entry as a copy of the role-default persona's settings
+  (`conformance_reviewer` / `implementer` / `gate_triager`, `read_only: true` for read-only
+  roles) with `profile_provenance` labelling them `role-default:<persona>`; the not-yet-run
+  warning in `nw profiles check`; and making `profiles.reviewers_of(profile)` return only entries
+  in `PS.REVIEWER_PERSONAS` (falling back to `["conformance_reviewer"]`) until A3, so that a
+  declared reviewer in a profile never makes `queue tick` raise in `get_persona` or wait forever
+  in `_pending_reviewers`. A2b must ship a real `queue.tick` test for that.
 - Running custom personas in the queue: review fan-out, triage, divergence, adoption, watch chips
-  and the `config_invalid` park for a broken declaration are Pipeline A3. After this spec a
-  declared persona can be named in a profile but the queue's behavior with it is unchanged and
-  unspecified until A3. To keep that safe, `queue add` / `queue tick` are not modified here
-  (see Design: "Inertness").
+  and the `config_invalid` park for a broken declaration are Pipeline A3.
 - New output schemas, new roles (spec writer, conflict resolver, new triage kinds), or any
   override of builtin personas. A definition cannot set its own schema or flip `read_only`.
-- Pipeline definitions (Stage B).
-- Moving builtin personas to YAML (A1).
+- Pipeline definitions (Stage B). Moving builtin personas to YAML (A1).
 
 ## Decision
 
@@ -68,8 +81,15 @@ Extend A1's layered persona registry with two non-builtin layers, user and proje
 role-aware validator. Roles are a closed set that maps to an existing output schema and
 `read_only` value; a persona's only schema freedom is a `category` vocabulary on reviewer-role
 personas. Declaration problems are a validation result (a list of messages), never an exception
-at import time, so a broken project file cannot take down the CLI or other projects. The profile
-validator consults the registry for the project in scope instead of the module-level tables.
+at import time, so a broken project file cannot take down the CLI or other projects.
+
+**Inertness.** This spec edits neither `profiles.py` nor `queue.py`. The module-level
+`PERSONAS`, `REVIEWER_PERSONAS` and `ADOPT_REGISTRY` stay builtin-only, and profile validation
+still rejects any `reviewers:` / `personas:` name that is not builtin. A declared persona is
+therefore reachable only through the new registry functions and the CLI, and cannot reach the
+queue (`profiles.reviewers_of` returns `profile["reviewers"]` as written, and `build_request`'s
+`get_persona(persona)` knows only builtins, so the queue must never see a declared name until A2b
+and A3 handle it).
 
 ## Design
 
@@ -109,7 +129,7 @@ Templates are resolved in the directory of the YAML file. A template path with a
 | role | output schema | read_only | notes |
 |---|---|---|---|
 | `implementer` | `IMPLEMENTER_SCHEMA` | false | writable like the builtin implementer |
-| `reviewer` | the custom reviewer schema (below) | true | eligible for `reviewers:` |
+| `reviewer` | the custom reviewer schema (below) | true | the role A2b makes eligible for `reviewers:` |
 | `triager` | `GATE_TRIAGER_SCHEMA` | true | |
 
 The custom reviewer schema is `ADVERSARIAL_REVIEWER_SCHEMA` built through a function
@@ -169,43 +189,15 @@ first in canonical order, then custom sorted by name) and `get_persona(name, pro
 which returns custom personas too. The `Persona` dataclass gains no field a builtin would need
 changed; custom personas are `Persona` instances built with the role's schema, `read_only` and the
 default invariant, with `template_file` set to the path of the template file.
-The `template` property accepts an absolute `template_file` for these.
-
-### Profile integration
-
-`profiles.validate_profile_doc` and `_check_reviewers` take the registry for the project in scope
-(an optional `registry` / `project_root` parameter threaded from the profile loader, which
-already receives `project_root`):
-
-- `personas:` keys and `reviewers:` entries may be builtin or declared names; the "unknown
-  persona" message lists builtin and declared names, labelled by layer.
-- A `reviewers:` entry must be a reviewer-role persona (the existing "is not a reviewer persona"
-  error, now role-based); the duplicate and read-only checks are unchanged.
-- A declared reviewer with no `personas.<name>` settings in the profile gets the
-  `conformance_reviewer` settings of the same profile as its role defaults (model, effort,
-  budget, permission_mode, `read_only: true`) instead of the "has no persona settings" error;
-  an explicit `personas.<name>` entry still wins. Builtin reviewers keep today's strictness.
-  Likewise a declared implementer or triager role-defaults from `implementer` / `gate_triager`.
-- `REQUIRED_KEYS` and the builtin profiles (`balanced`, `frugal`, `thorough`) are unchanged: they
-  name only builtins, so the profile `nw.profile.v1` schema and its resolved output are identical
-  for every existing project.
-
-### Inertness
-
-Nothing in `queue.py` is edited. The queue still reads `PS.REVIEWER_PERSONAS`; a profile that
-lists a declared reviewer therefore passes validation but, until Pipeline A3, the queue does not
-fan out to it. To make that explicit rather than a silent no-op, `nw profiles check` and
-`nw personas validate` print a warning (exit code unaffected) `reviewer 'x' is declared but the
-queue does not run custom personas yet` for each declared persona referenced by a profile; A3
-removes it.
+The `template` property accepts an absolute `template_file` for these. Existing callers of
+`get_persona(name)` without a project root keep seeing builtins only.
 
 ### CLI
 
 - `nw personas validate [--project NAME] [--json]`: validates the builtin layer, the user layer
   and, if a project is in scope (`--project`, else the cwd's project, as `nw profiles` resolves
   it), that project's layer. Prints one line per problem, `ok` when clean; exit 1 on any
-  problem, 0 otherwise (warnings do not change it). `--json` emits
-  `{"ok": bool, "problems": [...], "warnings": [...], "personas": [...]}`.
+  problem, 0 otherwise. `--json` emits `{"ok": bool, "problems": [...], "personas": [...]}`.
 - `nw personas list|show` (A1) gain a `layer` column / field (`builtin|user|project`) and show
   `role`, `category` and the template path for declared personas. Broken definitions appear in
   `list` marked `invalid`, mirroring `nw profiles list`.
@@ -228,14 +220,17 @@ removes it.
   for all projects; a validation result keeps it local.
 - **One placeholder set for all roles** — lets a reviewer template reference writer-only context
   that is empty for it; the per-role subset catches this at validation time.
+- **Ship profile integration in the same spec** — rejected: it is a separate subsystem
+  (`profiles.py`, per-layer registry rules, `resolve_profile` defaults, the `reviewers_of`
+  filter that keeps the queue safe) and pushed the spec to 15 criteria; it is A2b.
 
 ## Acceptance criteria
 
 - [ ] A valid `.nw/personas/security_reviewer.yaml` (role `reviewer`, template, `category`) in a
-      project's main checkout is loaded by `load_registry(project_root)`; the resulting persona is
+      project's main checkout is loaded by `load_registry(project_root)`; the persona is
       read-only with an output schema whose finding `category` enum is the declared values plus
-      `other`.
-- [ ] A reviewer definition without `category` gets the `ADVERSARIAL_CATEGORIES` enum.
+      `other`, and a reviewer definition without `category` gets the `ADVERSARIAL_CATEGORIES`
+      enum.
 - [ ] `implementer` and `triager` definitions get `IMPLEMENTER_SCHEMA` / `GATE_TRIAGER_SCHEMA`;
       the implementer is writable, the others read-only.
 - [ ] A definition naming a builtin persona (in the user or project layer), or duplicating a name
@@ -245,27 +240,18 @@ removes it.
       non-reviewer role is refused with a message naming the file and key.
 - [ ] A template using a `{{placeholder}}` outside the role's subset, or an unknown one, is
       refused naming the placeholder and role; all problems across all files are reported in one
-      run.
+      run, and a broken file is omitted from `load_registry` while a good sibling loads.
 - [ ] A template path escaping its directory (separator, `..`, or a symlink out) is refused.
 - [ ] Project definitions are read from the project's main checkout path passed in, and a file
       under a campaign worktree's `.nw/personas/` is never read.
 - [ ] `nw personas validate` exits 1 with the problems listed when any definition is broken, 0
       and `ok` when clean, and `--json` emits the documented object.
-- [ ] A profile with `reviewers: [security_reviewer]` validates when the project declares that
-      persona, and fails with a message listing known names when it does not; a declared name in
-      `reviewers:` that is implementer- or triager-role fails with the "not a reviewer persona"
-      message.
-- [ ] A declared reviewer with no `personas.security_reviewer` entry resolves with the profile's
-      `conformance_reviewer` settings, `read_only: true`; an explicit entry overrides them.
-- [ ] A `personas:` key naming a declared persona is accepted in a profile layer (builtin, user,
-      project, `config.yaml` delta) with the usual setting-key validation.
+- [ ] `nw personas list|show` show the layer, role, category and template for declared personas,
+      mark an invalid definition `invalid`, and completion offers declared names.
 - [ ] `PERSONAS`, `REVIEWER_PERSONAS`, `ADOPT_REGISTRY` and the resolved builtin profiles are
-      unchanged, and `queue.py` is untouched by the diff.
-- [ ] `nw profiles check` and `nw personas validate` print the "queue does not run custom
-      personas yet" warning for a profile-referenced declared persona, without changing the exit
-      code.
-- [ ] `nw personas list|show` show the layer, role, category and template for declared personas
-      and mark an invalid definition `invalid`.
+      unchanged; a profile listing a declared name in `reviewers:` is still rejected by
+      `validate_profile_doc` exactly as before; and `profiles.py` and `queue.py` are untouched by
+      the diff.
 
 ## Test plan
 
@@ -281,39 +267,44 @@ removes it.
     a single call;
   - `ROLE_PLACEHOLDERS` superset test against the builtin templates of each role;
   - only the main checkout is read: a `.nw/personas/` placed in a worktree path is ignored;
-  - broken file omitted from `load_registry` while a good sibling loads.
-- **Profile tests** (extend `tests/test_agentic_profiles.py`): `reviewers:`/`personas:` accept
-  declared names, reject undeclared ones with the layer-labelled known-names list, reject a
-  non-reviewer role in `reviewers:`, role-default settings and explicit override, `config.yaml`
-  delta with a declared name, and builtin-only behavior (existing parametrized cases) unchanged.
+  - broken file omitted from `load_registry` while a good sibling loads;
+  - `get_persona(name)` without a project root still resolves builtins only and raises for a
+    declared name.
 - **CLI tests** (new `tests/test_agentic_personas_cli.py`, click `CliRunner`, as
   `tests/test_agentic_profiles_cli.py`): `nw personas validate` clean / broken / `--json` /
-  `--project`, exit codes, the not-yet-run warning, and `list`/`show` layer and `invalid`
-  rendering.
+  `--project`, exit codes, and `list`/`show` layer and `invalid` rendering; completion includes a
+  declared name.
+- **Inertness guard** (in `tests/test_agentic_persona_defs.py`): with a valid project persona
+  declared, `PERSONAS`, `REVIEWER_PERSONAS`, `ADOPT_REGISTRY` equal their builtin values, and
+  `profiles.validate_profile_doc` for `reviewers: [security_reviewer]` still raises the existing
+  unknown-persona error. The existing `tests/test_agentic_personas.py` and
+  `tests/test_agentic_profiles*.py` run unchanged.
 - **Manual verification** (before `done`, on a real project checkout): create
-  `.nw/personas/security_reviewer.yaml` plus a template, list it in a project profile's
-  `reviewers:`, run `nw personas validate` and `nw profiles check` and confirm the warning; then
-  break the template placeholder and confirm the exit code and message. Record in "As shipped".
+  `.nw/personas/security_reviewer.yaml` plus a template, run `nw personas validate` and
+  `nw personas list`/`show security_reviewer`; then break the template placeholder and confirm the
+  exit code and message. Record in "As shipped".
 - **Regression guard:** `python3 tools/affected_tests.py --run uv run pytest -q` plus
   `tests/test_agentic_personas.py` and `tests/test_agentic_profiles*.py`; assert
-  `git diff --stat` shows no change to `src/nightwright/agentic/queue.py`; the full suite runs at
-  the queue's close gate.
+  `git diff --stat` shows no change to `src/nightwright/agentic/queue.py` or `profiles.py`; the
+  full suite runs at the queue's close gate.
 
 ## Rollout / migration
 
 1. Land after Pipeline A1 (registry, loader, `nw personas list|show`); this spec extends them and
    adds `depends_on` on A1's spec id when that exists.
-2. Add the user/project layers, validator and `reviewer_schema`, with the builtin-only module
-   values untouched.
-3. Thread the registry through profile validation and add `nw personas validate`.
-4. No data migration: no existing project has `.nw/personas/`, and builtin profiles are unchanged.
-5. Pipeline A3 then switches the queue to registry membership and drops the warning.
+2. Add the user/project layers, validator, `reviewer_schema` and registry functions, with the
+   builtin-only module values untouched.
+3. Add `nw personas validate` and the list/show/completion changes.
+4. No data migration: no existing project has `.nw/personas/`, and nothing in profiles or the
+   queue changes.
+5. Pipeline A2b (profiles accept declared names, behind the `reviewers_of` filter) follows with
+   `depends_on` this spec; Pipeline A3 then switches the queue to registry membership.
 
 ## Definition of done
 
 - [ ] Acceptance criteria all met.
 - [ ] Test plan executed; affected tests pass (`python3 tools/affected_tests.py --run uv run pytest -q`) and the full suite is green at the queue's close gate; manual steps performed and noted.
-- [ ] No regressions (builtin tables and profiles identical; `queue.py` untouched).
+- [ ] No regressions (builtin tables and profiles identical; `queue.py` and `profiles.py` untouched).
 - [ ] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` regenerated (`python3 tools/spec_lint.py --write-ledger`) and `python3 tools/spec_lint.py` exits 0.
 
@@ -321,6 +312,6 @@ removes it.
 
 _None._ Decisions taken while drafting, recorded for later tuning: the custom reviewer schema is
 the adversarial schema with a declared `category` enum (plus `other`) rather than a new shared
-schema, because it is the one existing reviewer shape with per-finding categories; declared
-reviewers role-default from the profile's `conformance_reviewer` settings instead of requiring a
-`personas:` entry; the dependency on A1 is prose-only until A1 has a spec id.
+schema, because it is the one existing reviewer shape with per-finding categories; the profile
+integration is split out as A2b so this spec stays inert with respect to profiles and the queue;
+the dependency on A1 is prose-only until A1 has a spec id.
