@@ -11,7 +11,11 @@ from nightwright.agentic import queue as Q
 def test_long_tick_keeps_the_lease_fresh(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     cfg = make_cfg(tmp_path, repo, script(tmp_path, []))
-    cfg["agentic"] = {**(cfg.get("agentic") or {}), "lease_ttl_s": 2}
+    # The thread beats every max(1, ttl/4) s and `heartbeat_at` is truncated to whole seconds,
+    # so a fresh lease can read about interval + 1 s old; a 5 s TTL leaves room for a loaded
+    # host while the tick still runs 1.5x past it.
+    ttl = 5
+    cfg["agentic"] = {**(cfg.get("agentic") or {}), "lease_ttl_s": ttl}
     real_tick = Q.tick
     seen = []
     # The production beat is max(1s, ttl/4) = 1s against a 2s TTL: one starved heartbeat
@@ -22,7 +26,7 @@ def test_long_tick_keeps_the_lease_fresh(tmp_path, monkeypatch):
                         lambda lease, interval_s=None: real_hb(lease, interval_s=0.1))
 
     def slow_tick(*a, **k):
-        t_end = time.monotonic() + 3.5                    # well past the 2s TTL
+        t_end = time.monotonic() + ttl * 1.5              # well past the TTL
         while time.monotonic() < t_end:
             seen.append(L.lease_status(cfg))
             time.sleep(0.25)
@@ -32,7 +36,7 @@ def test_long_tick_keeps_the_lease_fresh(tmp_path, monkeypatch):
     Q.run(cfg, once=True)
     assert seen and all(s["held"] for s in seen)
     assert not any(s["stale"] for s in seen), [s["heartbeat_age_s"] for s in seen]
-    assert max(s["heartbeat_age_s"] for s in seen) < 2
+    assert max(s["heartbeat_age_s"] for s in seen) < ttl
 
 
 def test_heartbeat_thread_stops_with_the_tick(tmp_path):

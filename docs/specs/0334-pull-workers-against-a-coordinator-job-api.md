@@ -832,6 +832,19 @@ Fixes from the eighth review, no Design change:
   `python3 tools/spec_lint.py`: ok.
 - The full suite is left to gating.
 
+### Test record (2026-11-02, loop 12)
+
+- The gate failed on `tests/test_agentic_heartbeat.py::test_long_tick_keeps_the_lease_fresh`
+  (SPEC-0204). `git diff main` on `queue.py`, `lease.py` and `store.py` is empty, so this branch
+  does not change `_heartbeat_while`, `Lease.heartbeat`, `lease_status` or `now_iso`. The
+  test's margin was too thin: with a 2 s TTL, the thread beats every 1 s and `heartbeat_at` is
+  truncated to whole seconds. The test now uses `ttl = 5` with a tick of `1.5 * ttl`, and keeps
+  the `all held`, `not any stale` and `max age < ttl` assertions. No sleep was added.
+- `uv run pytest -q -n 2 tests/test_agentic_heartbeat.py`: 2 passed, three runs.
+- `python3 tools/affected_tests.py --include tests/test_agentic_dogfood_config.py --include
+  tests/test_agentic_project.py --run uv run pytest -q -n 2`: 3759 passed, 4 skipped.
+  `python3 tools/spec_lint.py`: ok. The full suite is left to gating.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-561` / `nw idea clock-out IDEA-561`.
