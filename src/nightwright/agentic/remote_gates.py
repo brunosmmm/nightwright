@@ -157,7 +157,7 @@ def pools_for(cfg, project_cfg: dict, campaign_state: dict, *, seq: int,
                              "(see `nw workers list`)")
         pools = [(worker, rec["slots"])]
     else:
-        pools = WK.gate_pools(cfg)
+        pools = _affine_first(cfg, campaign_state, WK.gate_pools(cfg))
     if all(name is WK.LOCAL for name, _n in pools):
         return None
     worktree = (campaign_state.get("repo") or {}).get("worktree")
@@ -173,6 +173,19 @@ def pools_for(cfg, project_cfg: dict, campaign_state: dict, *, seq: int,
         raise ValueError(f"not eligible for remote gates: {why['title']}")
     _record_ineligible(cfg, campaign_state["id"], why)
     return None
+
+
+def _affine_first(cfg, campaign_state: dict, pools: list) -> list:
+    """SPEC-0345: the campaign's affine worker's pool first, unless it is failing (a full one
+    falls through to the next pool). Gate runs only read the affinity, never set it."""
+    from . import persona_gate as PG
+    by_name = {name: (name, n) for name, n in pools}
+    names = PG.order(cfg, campaign_state, [name for name, _n in pools])
+    if names and names[0] is not WK.LOCAL and names[0] != pools[0][0]:
+        rec = next((w for w in WK.load(cfg) if w["name"] == names[0]), None)
+        if rec is None or PG.failing(cfg, campaign_state, rec):
+            return pools
+    return [by_name[n] for n in names]
 
 
 def retry_pools(cfg, project_cfg: dict, campaign_state: dict, *, seq: int, excluded,

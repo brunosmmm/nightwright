@@ -18,6 +18,7 @@ from ..console import console
 from ..report import _dump_json
 from . import queue as Q
 from . import campaign_export as CE
+from . import persona_gate as PG
 from . import runs as RN
 from . import store
 from . import timeline as TL
@@ -307,6 +308,8 @@ def attach(campaign_group):
         wt_path = (st.get("repo") or {}).get("worktree")
         st["worktree_present"] = bool(wt_path and os.path.isdir(wt_path))
         st["remote_gate"] = Q.remote_gate_view(cfg, st)                # SPEC-0356
+        st["cost_by_worker"] = PG.cost_by_worker(                      # SPEC-0345
+            store.read_ledger(cfg, campaign, types=["run.end"]))
         story = None
         if as_json or not raw:
             story = TL.story(store.read_ledger(cfg, campaign), campaign=campaign, state=st,
@@ -322,6 +325,9 @@ def attach(campaign_group):
         cap = f" / ${r['cap_usd']:.2f}" if r["cap_usd"] else ""
         est = f" (~${r['estimated_usd']:.2f} est.)" if r["estimated_usd"] > 0 else ""
         console.print(f"  loops {r['loops']}  runs {r['runs']}  cost ${r['cost_usd']:.2f}{est}{cap}")
+        if st["cost_by_worker"]:
+            console.print("  cost by worker  " + "  ".join(
+                f"{k} ${v:.2f}" for k, v in sorted(st["cost_by_worker"].items())), highlight=False)
         rg_line = Q.remote_gate_line(st["remote_gate"])
         if rg_line:
             console.print(Text("  " + rg_line), highlight=False)

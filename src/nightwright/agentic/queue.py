@@ -47,6 +47,7 @@ from . import gate_slots
 from . import gates as G
 from . import gitops as git
 from . import lease as L
+from . import persona_gate as PG
 from . import personas as PS
 from . import project as P
 from . import redmain as RM
@@ -155,6 +156,7 @@ class Step:
     combined: dict | None = None
     by: str | None = None                  # SPEC-0232: who requested a deferred park
     budget: float | None = None            # SPEC-0302: the run a `cost_cap` park blocked
+    held: tuple = ()                       # SPEC-0345: fan-out members the persona cap held
 
 
 def _resolver_allowance(project_cfg: dict | None, profile: dict) -> float:
@@ -1848,7 +1850,9 @@ def _do_write_spec(ctx: _Ctx, state: dict, step: Step, run_id: str, req,
             raise
 
     try:
+        started = time.time()
         res.run_result = rr = ctx.runner.run(req)
+        _note_rate_limit(ctx, state, rr, started)           # SPEC-0345
         res.interrupted = ctx.stop.is_set()
         verdict = rr.verdict if isinstance(rr.verdict, dict) else {}
         if res.interrupted or rr.interrupted:
@@ -2064,6 +2068,7 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
                               local=ctx.runner) if cfg is not None else None
         runner = remote or ctx.runner
         detachable = bool(getattr(runner, "detachable", False))
+        started = time.time() if adopted is None else None     # SPEC-0345: an adopted run's is unknown
         outcome = runner.run(req, hooks=hooks) if (hooks and detachable) else runner.run(req)
         if outcome is DETACHED:
             res.detached = True
@@ -2080,6 +2085,7 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
             if outcome is DETACHED:
                 res.detached = True
                 return res
+        _note_rate_limit(ctx, state, outcome, started)          # SPEC-0345
         res.run_result = outcome
         res.interrupted = bool(outcome.interrupted) if detachable else ctx.stop.is_set()
         # an adopted run a human moved past (parked, abandoned) is recorded, never committed
@@ -2110,6 +2116,19 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         if hooks:
             hooks.done()
     return res
+
+
+def _note_rate_limit(ctx: _Ctx, state: dict, outcome, started) -> None:
+    """SPEC-0345: fold a finished campaign persona run into the account's rate-limit backoff.
+    Never fails the step."""
+    cfg = getattr(ctx, "cfg", None)
+    if cfg is None or outcome is None or outcome is DETACHED:
+        return
+    try:
+        PG.note_run(cfg, outcome, started, campaign=state.get("id"))
+    except (OSError, ValueError) as e:
+        journal(cfg, "rate_limit_note_failed", campaign=state.get("id"),
+                error=f"{type(e).__name__}: {e}")
 
 
 def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float, failed,
@@ -2218,7 +2237,9 @@ def _do_resolve(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         git.restore_branch(worktree, branch, pre_head)
         crash = None
         try:
+            started = time.time()
             res.run_result = rr = ctx.runner.run(req)
+            _note_rate_limit(ctx, state, rr, started)       # SPEC-0345
         except Exception as e:          # a crashing resolver is a failed attempt, not a stuck close
             crash = f"the run raised: {e}"
             res.run_result = rr = _synthetic_failure(crash)
@@ -3878,6 +3899,19 @@ def _apply_reviews(ctx, state, profile, counters, res, row, events, finish):
             "reason": "config_invalid", "detail": f"project config: {bad.error}",
             "resume_to": "REVIEWING"})
     _store_verdicts(state, profile, counters, res.reviews)
+    if res.step.held:
+        # SPEC-0345: the persona cap held part of the fan-out; no routing until every reviewer
+        # ran. A member that ran without a valid verdict uses one retry, as in a full pass.
+        valid = _valid_verdicts(state, profile)
+        by = counters.setdefault("review_retries_by_persona", {})
+        for r in res.reviews:
+            p = r.step.persona
+            if r.run_result is not None and p not in valid:
+                by[p] = by.get(p, 0) + 1
+                counters["review_retries"] = int(counters.get("review_retries", 0)) + 1
+        events.append(("note", {"text": f"persona cap: {', '.join(res.step.held)} "
+                                        "wait for a free persona slot", "author": "queue"}))
+        return finish("REVIEWING", "persona_cap")
     return _route_reviews(ctx, state, profile, counters, row, events, finish)
 
 
@@ -4932,6 +4966,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     trains = close_train(members.values(), set(close_roots))
     train_pos = {cid: (ids[0], i) for ids in trains.values() for i, cid in enumerate(ids)}
     gate_starts = _gate_starts(ctx, pool, busy, admitted_ids, flying)
+    pgate = PG.Gate(cfg, [s["id"] for s in busy])          # SPEC-0345: the dispatch gate
     for st in busy:
         ctx.progress()
         if st.get("state") not in ACTIVE_STATES or st["id"] in admitted_ids \
@@ -4995,6 +5030,12 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
             continue
         if ctx.stop.is_set():
             continue
+        if step.kind in PG.GATED_KINDS:
+            # SPEC-0345: the rate-limit backoff and the persona cap hold the step pending (it is
+            # retried next tick, never run locally instead); a fan-out may be trimmed to fit
+            step = pgate.admit(st, step)
+            if step is None:
+                continue
         if step.kind == "review":
             group = _prepare_reviews(ctx, st, step, profile, pending_agent, report)
             if group:
@@ -5015,6 +5056,11 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
                 budget=started.budget if started else 0.0)))
             continue
         pending_agent.append((st, step, run_id, req, budget, None))
+
+    try:
+        pgate.flush()
+    except (OSError, ValueError) as e:
+        journal(cfg, "persona_holds_failed", error=f"{type(e).__name__}: {e}")
 
     # 3. agent steps: submitted; a single-shot tick waits for its own and applies them now
     _submit(ctx, pool, report, pending_agent, groups)
@@ -5667,6 +5713,9 @@ def validate_runner_cfg(cfg: dict, campaigns=()) -> None:
                              f"got {slots!r}")
     _positive_number(agentic, "poll_interval_s")
     _positive_number(agentic, "lease_ttl_s")
+    workers_cfg = agentic.get("workers")
+    if isinstance(workers_cfg, dict):                         # SPEC-0345
+        PG.check_max_personas(workers_cfg.get("max_personas"))
     if agentic.get("runner") not in (None, "claude", "fake"):
         raise ValueError(f"unknown agentic.runner {agentic['runner']!r} "
                          f"(expected claude or fake)")
@@ -6560,6 +6609,7 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
     busy = sum(1 for r in rows if r.get("state") in SLOT_STATES)
     backlog = {b["campaign"]: b for b in backlog_view(cfg)}
     held = L.is_held(cfg)
+    holds = PG.read_holds(cfg)                       # SPEC-0345
     items = []
     for r in rows:
         counters = r.get("counters") or {}
@@ -6608,8 +6658,16 @@ def queue_payload(cfg, *, include_terminal=False, project=None, state=None, now=
             items[-1]["backlog"] = {k: b[k] for k in ("position", "priority", "ready", "blocked_by")}
         rv = row_view(cfg, r, b, remote=r.get("state") == "GATING", now=now)   # SPEC-0356
         items[-1].update({k: v for k, v in rv.items() if k not in ("priority", "cost_usd", "cap_usd")})
+        hb = PG.held_by(cfg, r, now, holds) if r.get("state") in ACTIVE_STATES else None
+        if hb and EV._open_run(cfg, r["id"]):         # a run in flight is not held
+            hb = None
+        items[-1]["held_by"] = hb                     # SPEC-0345
+    rl = PG.read_rate_limit(cfg)
     return {"schema": "nw.queue.v1", "lease": L.lease_status(cfg),
-            "slots": {"total": slots, "busy": busy}, "items": items}
+            "slots": {"total": slots, "busy": busy}, "items": items,
+            "personas": {"max_personas": PG.max_personas(cfg),                # SPEC-0345
+                         "rate_limit": {"until": rl["until"], "backoff_s": rl["backoff_s"],
+                                        "active": PG.backoff_until(cfg, now) is not None}}}
 
 
 # ---- dashboard (nw queue watch, SPEC-0185) -------------------------------------------------------

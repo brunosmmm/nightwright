@@ -42,6 +42,7 @@ EVENT_TYPES = {
     "worker_drained": ("worker",),                                 # SPEC-0343
     "worker_updated": ("worker", "state", "build_id"),             # SPEC-0386
     "worker_update_failed": ("worker", "reason", "error"),         # SPEC-0386
+    "rate_limited": ("until", "backoff_s"),                        # SPEC-0345
     "parked": ("reason", "detail", "resume_to"),
     "resumed": ("to",),
     "merged": ("merged_sha",),
@@ -112,6 +113,9 @@ EVENT_OPTIONAL = {
 _TRANSIENT_MARKERS = ("usage_limit", "session limit", "rate limit", "429", "overloaded",
                       "529", "api_error", "timed out connecting",
                       "write-back:")        # SPEC-0344: a remote run's failed write-back
+# SPEC-0345: the subset that is an account rate limit (`persona_gate.is_rate_limit` matches them
+# as whole tokens, in the API error message only)
+RATE_LIMIT_MARKERS = ("rate limit", "429", "overloaded", "529")
 
 DEFAULTS = {"poll_s": 2.0, "silent_after_s": 900, "overdue_grace_s": 60,
             "cost_warning_ratio": 0.8,
@@ -519,9 +523,11 @@ def stuck_items(cfg, now, sett) -> list[dict]:
     GATING/CLOSING measure time since the latest attempt (entry, `head_since`, `gate` event)
     against `max(stuck_after_s, gate_budget_s)`. `stuck_s` is the clock compared."""
     from .queue import ACTIVE_STATES
+    from . import persona_gate as PG
     out = []
     rows = store.list_campaigns(cfg)
     closing_ids = {s["id"] for s in rows if s.get("state") == "CLOSING"}
+    holds = PG.read_holds(cfg)
     for st in rows:
         if st.get("state") not in ACTIVE_STATES:
             continue
@@ -530,6 +536,8 @@ def stuck_items(cfg, now, sett) -> list[dict]:
             continue
         cid, state = st["id"], st["state"]
         run = _open_run(cfg, cid)
+        if not run and PG.held_by(cfg, st, now, holds):     # SPEC-0345: held by the gate
+            continue
         limit = sett["stuck_after_s"]
         if state in _PERSONA_STATES:
             if run:                                  # in flight: `run_overdue` owns it
@@ -784,6 +792,8 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
     lease = L.lease_status(cfg, now=now)
     out = []
     running = {}
+    from . import persona_gate as PG
+    holds = PG.read_holds(cfg)
     for r in active:
         run = _open_run(cfg, r["id"])
         if run:
@@ -832,6 +842,8 @@ def watchdog_checks(cfg, now=None) -> list[tuple]:
         if waits_in_close_train(r, closing_ids):                              # SPEC-0314
             continue
         if gate_slots.waiting(cfg, cid, now):            # SPEC-0309: blocked for a gate slot
+            continue
+        if PG.held_by(cfg, r, now, holds):               # SPEC-0345: the dispatch gate holds it
             continue
         tail = store.read_ledger(cfg, cid, tail=1)
         silent = _age_s(tail[-1].get("ts"), now) if tail else _age_s(r.get("updated_at"), now)

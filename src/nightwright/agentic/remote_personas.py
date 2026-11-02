@@ -319,10 +319,17 @@ def dispatch(cfg, state: dict, step_kind: str | None, req, *, adopted: bool = Fa
         return R.RemoteRunner(cfg, state, w, local=local, record=rec,
                               slot=got[0] if got else None,
                               request=adopted_request(cfg, state, rec, req.run_dir))
+    from . import persona_gate as PG
     workers = persona_workers(cfg, state)
     if not workers or ineligible(state, step_kind, req) is not None:
         return None
-    for w in workers:
+    # SPEC-0345: the campaign's affine worker first; a failing worker is skipped, a full one
+    # falls through to the next without clearing the affinity
+    by_name = {w["name"]: w for w in workers}
+    for name in PG.order(cfg, state, list(by_name)):
+        w = by_name[name]
+        if PG.failing(cfg, state, w):
+            continue
         got = acquire_slot(cfg, w)
         if got is None:
             continue
@@ -330,6 +337,7 @@ def dispatch(cfg, state: dict, step_kind: str | None, req, *, adopted: bool = Fa
         if busy(cfg, w, n) >= persona_slots(w):    # a detached or slot-less adopted job
             os.close(fd)
             continue
+        PG.set_affinity(cfg, state, w["name"])
         return R.RemoteRunner(cfg, state, w, local=local, slot=fd)
     return None
 
@@ -622,9 +630,19 @@ def _lost(rr: R.RemoteRunner, req, hooks, rec: dict, why: str):
             return R.DETACHED
         return R._synthetic(req, "the remote persona job was cancelled")
     RG._cancel_job(cfg, rr.worker, job_id)
-    RJ.update(cfg, job_id, state="lost", lost_reason=why)
+    lost = RJ.update(cfg, job_id, state="lost", lost_reason=why) or rec
     if why in RG.UNCHARGED:                     # SPEC-0334: a rotation is not the worker's fault
         return _local(rr, req, hooks)
+    # SPEC-0345: the campaign's ledger says so (as a gate job's loss does), which also clears
+    # the campaign's affinity on this worker
+    from . import persona_gate as PG
+    try:
+        store.append_event(cfg, rr.state["id"], "worker_job_lost",
+                           {"worker": rr.worker["name"], "job_id": job_id,
+                            "attempt": lost.get("attempt"), "reason": why}, by="personas")
+    except (OSError, ValueError):
+        pass
+    PG.clear_affinity(cfg, rr.state, rr.worker["name"])
     try:
         WK.record_loss(cfg, rr.worker["name"], job_id=job_id, reason=why)
     except (OSError, ValueError):

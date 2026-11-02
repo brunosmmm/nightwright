@@ -761,6 +761,11 @@ class FakeRunner:
                      "structured_output": verdict, "total_cost_usd": cost,
                      "usage": entry.get("usage") or {}, "session_id": f"fake-{req.persona}",
                      "result": json.dumps(verdict) if verdict is not None else ""}
+        api_error = entry.get("api_error")
+        if isinstance(api_error, dict):     # SPEC-0345: an API error result (`status`, `message`)
+            synthetic.update(is_error=True, structured_output=None,
+                             api_error_status=api_error.get("status"),
+                             result=str(api_error.get("message") or ""))
         raw_path = req.run_dir / "result.json"
         raw_path.write_text(json.dumps(synthetic, indent=2), encoding="utf-8")
         (req.run_dir / "stderr.log").write_text("", encoding="utf-8")

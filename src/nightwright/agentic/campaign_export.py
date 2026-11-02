@@ -19,6 +19,7 @@ from pathlib import Path
 from .. import specmeta
 from ..export import _atomic_write
 from . import personas as PS
+from . import persona_gate as PG
 from . import runs as RN
 from . import store
 from .profiles import resolve_profile
@@ -39,6 +40,7 @@ CAMPAIGN_COLUMNS = (
     ("gate_runs", "int"), ("gate_failures", "int"), ("gate_retries", "int"),
     ("triage_retries", "int"), ("parks", "int"), ("park_reasons", "json"),
     ("cost_usd", "float"), ("cost_by_persona", "json"), ("cost_cap_frac", "float"),
+    ("cost_by_worker", "json"),                                            # SPEC-0345
     ("time_in_state_s", "json"), ("review_score", "int"), ("must_fix_count", "int"),
     ("finding_count", "int"), ("waived_count", "int"),
     ("close_mode", "str"), ("merged_sha", "str"), ("signals", "json"),
@@ -337,6 +339,7 @@ def campaign_row(cfg, state: dict, events: list[dict], now) -> dict:
         "park_reasons": [e.get("reason") for e in of("park")],
         "cost_usd": total, "cost_by_persona": cost.get("by_persona") or {},
         "cost_cap_frac": _frac(total, cap),
+        "cost_by_worker": PG.cost_by_worker(events),
         "time_in_state_s": tis,
         "review_score": (state.get("last_review") or {}).get("score"),
         "must_fix_count": sum(1 for e in findings if e.get("severity") == "must_fix"),

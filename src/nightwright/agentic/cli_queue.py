@@ -162,6 +162,8 @@ def _queue_table(payload: dict, width: int | None = None) -> Group:
             state = f"{state} ({it['run']})"           # SPEC-0229: run: detached (pid N)
         if not park.get("reason") and it.get("park_requested"):
             state = f"{state}:park?"
+        if it.get("held_by"):
+            state = f"{state} [held: {it['held_by']}]"   # SPEC-0345
         color = {"PARKED": "yellow", "MERGED": "green", "HANDED_OFF": "green",
                  "ABANDONED": "dim"}.get(it["state"])
         conductors = it["state"] == "PARKED" and park.get("owner") != "human"
@@ -1694,6 +1696,9 @@ def attach(queue_group):
             _dump_json(payload)
             return
         console.print(_queue_table(payload))
+
+    # SPEC-0345: `nw queue status` is `nw queue list` (the items carry `held_by`)
+    queue_group.add_command(queue_list, name="status")
 
     @queue_group.command("backlog")
     @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.backlog.v1 JSON")

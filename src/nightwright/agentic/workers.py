@@ -468,7 +468,21 @@ def check(cfg, rec: dict) -> dict:
     out["ok"] = not out["errors"]
     if isinstance(out["info"], dict):
         _cache_info(cfg, w["name"], out["info"])
+    _cache_check(cfg, w["name"], out["ok"])
     return out
+
+
+def _cache_check(cfg, name: str, ok: bool) -> None:
+    """SPEC-0345: the worker's last check outcome (`check_ok`, `checked_at`); a failed check makes
+    it *failing* for campaign affinity."""
+    def fn(records):
+        for r in records:
+            if r.get("name") == name:
+                r["check_ok"], r["checked_at"] = bool(ok), _iso(time.time())
+    try:
+        update(cfg, fn)
+    except (OSError, ValueError):
+        pass
 
 
 def _cache_info(cfg, name: str, info: dict) -> None:
