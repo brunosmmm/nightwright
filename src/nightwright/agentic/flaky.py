@@ -13,7 +13,7 @@ from pathlib import Path
 from ..export import _atomic_write
 from . import store
 
-SCHEMA = "wt.flaky.v1"
+SCHEMA = "nw.flaky.v1"
 SOURCES = ("rerun", "triage_retry")        # rerun: SPEC-0289 `flaky` ids; triage_retry: retry_gate
 EXPIRY_DAYS = 90
 PROJECT_CAP = 500

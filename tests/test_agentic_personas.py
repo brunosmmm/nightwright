@@ -1031,7 +1031,7 @@ def _failing_state(tmp_path):
 
 
 def test_triager_prompt_has_flaky_history(tmp_path):
-    from wt.agentic import flaky
+    from nightwright.agentic import flaky
     cfg = _cfg(tmp_path)
     flaky.record(cfg, "Meta-Tools", ["t::a"], campaign="C1", source="rerun")
     flaky.record(cfg, "Meta-Tools", ["t::a", "t::other"], campaign="C2", source="triage_retry")

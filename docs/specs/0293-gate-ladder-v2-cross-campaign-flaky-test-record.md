@@ -31,12 +31,12 @@ campaign:
 ## Goals / Non-goals
 
 **Goals**
-- A data-dir file, `<agentic_dir>/flaky-tests.json` (`wt.flaky.v1`), that records per project
+- A data-dir file, `<agentic_dir>/flaky-tests.json` (`nw.flaky.v1`), that records per project
   and test id how often the test flaked, when, and in which campaigns.
 - It is fed from two sources: SPEC-0289's `flaky` ids, and the ids of a failed run that a
   triager `retry_gate` turned green.
 - The triager prompt shows the history of the ids that are failing right now.
-- `wt queue flaky [--project P] [--json]` lists the record.
+- `nw queue flaky [--project P] [--json]` lists the record.
 
 **Non-goals**
 - Quarantining or auto-skipping flaky tests in the target repo.
@@ -60,7 +60,7 @@ failing in the current `last_gate` are looked up, so the prompt stays small.
 - New `src/wt/agentic/flaky.py`:
   - `path(cfg)` returns `store.agentic_dir(cfg) / "flaky-tests.json"`. The lock file is
     `flaky.lock`, taken with `store._flocked`, the same way as `store.add_lock`.
-  - The file shape is `{"schema": "wt.flaky.v1", "projects": {P: {test_id: {"count", "first_seen",
+  - The file shape is `{"schema": "nw.flaky.v1", "projects": {P: {test_id: {"count", "first_seen",
     "last_seen", "sources": {"rerun": n, "triage_retry": n}, "campaigns": [≤10 ids]}}}}`.
   - `record(cfg, project, ids, *, campaign, source, now=None)` does a read-modify-write under
     the lock. It writes atomically through `export._atomic_write`, which `store` already
@@ -91,9 +91,9 @@ failing in the current `last_gate` are looked up, so the prompt stays small.
   `{{flaky_history}}` after `## Gate results`. Add to the `retry_gate` bullet: "a failing id
   with a flaky history raises the odds; an id never seen flaky with a deterministic assertion
   error does not."
-- `src/wt/agentic/cli_queue.py`: new `wt queue flaky [--project P] [--json]`.
+- `src/wt/agentic/cli_queue.py`: new `nw queue flaky [--project P] [--json]`.
   - The text form prints one row per entry: id, count, campaigns, last seen and sources.
-  - `--json` emits `{"schema": "wt.queue.flaky.v1", "path", "entries": [...]}`.
+  - `--json` emits `{"schema": "nw.queue.flaky.v1", "path", "entries": [...]}`.
   - Read-only: it never writes and never prunes.
 
 ## Alternatives considered
@@ -107,7 +107,7 @@ failing in the current `last_gate` are looked up, so the prompt stays small.
 
 ## Acceptance criteria
 
-- [x] `flaky.record` writes `<agentic_dir>/flaky-tests.json` (`wt.flaky.v1`) atomically under
+- [x] `flaky.record` writes `<agentic_dir>/flaky-tests.json` (`nw.flaky.v1`) atomically under
       `flaky.lock`. It increments counts, keeps first and last seen and at most 10 campaigns
       per id, drops entries unseen for 90 days, and caps 500 entries per project. A corrupt
       file is moved aside, not crashed on.
@@ -118,8 +118,8 @@ failing in the current `last_gate` are looked up, so the prompt stays small.
 - [x] A failed record write leaves the campaign's transition unchanged and appends a `note`.
 - [x] The gate-triager prompt contains a `Known flaky tests` section with the history of the
       currently failing ids, or `(none known)`.
-- [x] `wt queue flaky [--project] [--json]` lists entries sorted by count. `--json` emits
-      `wt.queue.flaky.v1`.
+- [x] `nw queue flaky [--project] [--json]` lists entries sorted by count. `--json` emits
+      `nw.queue.flaky.v1`.
 
 ## Test plan
 
@@ -177,7 +177,7 @@ failing in the current `last_gate` are looked up, so the prompt stays small.
   triage `gate` branch next to `retry_gate`, read and cleared on every gate run, copied by
   `finish()` and dropped by `apply_resume`. It replaces the Design's `gate_retries > 0` test,
   which a park + plain resume left stale.
-- `wt queue flaky` text cells are `rich.text.Text`, so ids like `t::x[json]` print verbatim.
+- `nw queue flaky` text cells are `rich.text.Text`, so ids like `t::x[json]` print verbatim.
 - `flaky._valid` checks entry field types (a malformed file is moved aside); a read `OSError` is
   not a bad file and propagates as a best-effort note. `_flaky_events` and `render_flaky_history`
   also swallow `TypeError`/`AttributeError`.

@@ -2517,14 +2517,14 @@ def test_backlog_readiness_outbound_dependency(tmp_path):
 # ---- SPEC-0293: the cross-campaign flaky record ---------------------------------------------------
 
 def _gate_run(seq, ok, *, failing=(), flaky=()):
-    from wt.agentic.gates import GateResult, GateRun
+    from nightwright.agentic.gates import GateResult, GateRun
     r = GateResult("test", True, ok, 0 if ok else 1, False, 0.1, f"gates/{seq:03d}-test.log", "",
                    summary={"failing": list(failing)} if failing else None, flaky=tuple(flaky))
     return GateRun(seq, ok, (r,), "2026-10-25T00:00:00", 0.1)
 
 
 def _flaky_doc(cfg):
-    from wt.agentic import flaky as FL
+    from nightwright.agentic import flaky as FL
     return FL._read(cfg)["projects"].get("Meta-Tools", {})
 
 
@@ -2536,7 +2536,7 @@ def test_gate_flaky_ids_recorded(opened):
     assert _flaky_doc(cfg)["t::a"]["sources"] == {"rerun": 1}
     (ev,) = S.read_ledger(cfg, cid, types=["flaky_recorded"])
     assert ev["ids"] == ["t::a"] and ev["source"] == "rerun"
-    from wt.agentic import schemas as SC
+    from nightwright.agentic import schemas as SC
     assert SC.ledger_problems(ev) == []
 
 
@@ -2599,7 +2599,7 @@ def test_green_without_retry_records_nothing(opened):
 
 
 def test_record_failure_is_note_only(opened, monkeypatch):
-    from wt.agentic import flaky as FL
+    from nightwright.agentic import flaky as FL
 
     def boom(*a, **kw):
         raise OSError("disk full")

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from waits import join
 
-from wt.agentic import flaky as FL
+from nightwright.agentic import flaky as FL
 
 T0 = dt.datetime(2026, 10, 1, 12, 0).astimezone()
 
@@ -26,7 +26,7 @@ def test_record_creates_and_increments(cfg):
     FL.record(cfg, "P", ["t::a", "t::a"], campaign="C2", source="triage_retry",
               now=T0 + dt.timedelta(days=1))
     doc = _doc(cfg)
-    assert doc["schema"] == "wt.flaky.v1"
+    assert doc["schema"] == "nw.flaky.v1"
     e = doc["projects"]["P"]["t::a"]
     assert e["count"] == 2 and e["campaigns"] == ["C1", "C2"]
     assert e["sources"] == {"rerun": 1, "triage_retry": 1}
