@@ -833,14 +833,29 @@ def release_lease(cfg, got: dict) -> bool:
     return True
 
 
+def _still_current(cfg, worker: dict) -> bool:
+    """Whether the worker a request authenticated as may still lease: its registry entry is read
+    again, since a long-poll outlives the request's `_auth`. A token rotated or revoked since
+    then raises 401; a worker disabled since then (`nw workers off`) answers False."""
+    fresh = next((r for r in WK.load(cfg) if r.get("name") == worker.get("name")), None)
+    want = worker.get("token_sha256")
+    if fresh is None or not is_pull(fresh) or not isinstance(want, str) \
+            or not hmac.compare_digest(str(fresh.get("token_sha256") or ""), want):
+        raise PullError(401, "unknown or revoked token")
+    return bool(fresh.get("enabled", True))
+
+
 def _take(cfg, worker: dict, kinds, alive=lambda: True) -> dict | None:
     qd = queue_dir(cfg)
     if not qd.is_dir():
         return None
-    secret = read_secret(cfg, worker["name"])
-    if secret is None:
-        return None
     with _queue_lock(cfg):
+        # The secret first, then the registry: a rotation writes the new `token_sha256` before
+        # the new secret, so a new secret read here always meets the new hash and is refused.
+        # A rotation after this check gives up the job this take commits (`revoke_worker`).
+        secret = read_secret(cfg, worker["name"])
+        if secret is None or not _still_current(cfg, worker):
+            return None
         entries = []
         for p in qd.glob("*.json"):
             try:

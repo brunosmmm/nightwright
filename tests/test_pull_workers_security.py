@@ -1208,6 +1208,80 @@ def test_a_live_long_poll_still_gets_a_job_queued_while_it_waits(world, pull):
     assert RJ.read(world.cfg, JOB)["pull_state"] == "leased"
 
 
+def _in_long_poll(monkeypatch):
+    """An Event set once the server's lease long-poll has made its first take."""
+    polling, real = threading.Event(), PJ._take
+
+    def take(*a, **k):
+        try:
+            return real(*a, **k)
+        finally:
+            polling.set()
+    monkeypatch.setattr(PJ, "_take", take)
+    return polling
+
+
+def _long_poll(pull, token, out):
+    out.append(_call(pull, "POST", "/v1/lease", token,
+                     {"kinds": ["gate"], "slots_free": 1, "wait_s": 10}))
+
+
+def test_a_long_poll_on_a_rotated_token_takes_no_job(world, pull, monkeypatch):
+    """The poll authenticated before the rotation: its takes check the token again, so the job
+    queued after the rotation is not signed with the new secret and handed to the old worker."""
+    polling, out = _in_long_poll(monkeypatch), []
+    t = threading.Thread(target=_long_poll, args=(pull, pull.tokens["box"], out))
+    t.start()
+    assert polling.wait(10)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: world.cfg)
+    res = CliRunner().invoke(cli, ["workers", "token", "box", "--rotate"])
+    assert res.exit_code == 0, res.output
+    new = PJ.parse_blob(res.output.strip().splitlines()[-1])["token"]
+    _queue(world)
+    t.join(20)
+    assert not t.is_alive() and out[0][0] == 401
+    rec = RJ.read(world.cfg, JOB)
+    assert rec["pull_state"] == "queued" and "pull_lost_reason" not in rec
+    assert (PJ.queue_dir(world.cfg) / f"{JOB}.json").exists()
+    status, body = _call(pull, "POST", "/v1/lease", new,
+                         {"kinds": ["gate"], "slots_free": 1, "wait_s": 0})
+    assert status == 200 and body["job"]["job_id"] == JOB
+    assert PJ.verify(PJ.read_secret(world.cfg, "box"), body["job"], (
+        PJ.queue_dir(world.cfg) / f"{JOB}.bundle").read_bytes(), lambda n: False) is None
+
+
+def test_a_long_poll_of_a_worker_disabled_meanwhile_takes_no_job(world, pull, monkeypatch):
+    polling, out = _in_long_poll(monkeypatch), []
+    t = threading.Thread(target=_long_poll, args=(pull, pull.tokens["box"], out))
+    t.start()
+    assert polling.wait(10)
+
+    def off(records):
+        next(r for r in records if r["name"] == "box")["enabled"] = False
+    WK.update(world.cfg, off)
+    _queue(world)
+    t.join(20)
+    assert not t.is_alive() and out[0][0] == 204
+    assert RJ.read(world.cfg, JOB)["pull_state"] == "queued"
+    assert (PJ.queue_dir(world.cfg) / f"{JOB}.json").exists()
+
+
+def test_a_pending_refusal_keeps_the_lease_poll_short(world, pull, monkeypatch):
+    """With no job running, a pending refusal is heartbeated every tick, so the lease poll is
+    `TICK_S`, not `LEASE_WAIT_S`: a short `job_lease_s` cannot expire it between heartbeats."""
+    loop = _loop(pull)
+    loop.refusals["x"] = ("verify", "bad signature")
+    beats, asked = [], []
+    monkeypatch.setattr(loop, "report_refusals", lambda: None)
+    monkeypatch.setattr(loop, "heartbeat", lambda: beats.append(1))
+    monkeypatch.setattr(loop, "lease", lambda free, wait_s: asked.append(wait_s))
+    loop.tick()
+    assert beats == [1] and asked == [PL.TICK_S]
+    loop.refusals.clear()
+    loop.tick()
+    assert asked == [PL.TICK_S, PJ.LEASE_WAIT_S]
+
+
 def test_a_lease_answer_that_cannot_be_written_queues_the_job_again(world, pull, monkeypatch):
     _queue(world)
     real = PJ._Handler._send

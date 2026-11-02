@@ -224,7 +224,8 @@ class Loop:
         if free <= 0:
             time.sleep(TICK_S)
             return
-        wait_s = TICK_S if self.jobs else PJ.LEASE_WAIT_S
+        # a pending refusal is heartbeated every tick, so a short `job_lease_s` never expires it
+        wait_s = TICK_S if self.jobs or self.refusals else PJ.LEASE_WAIT_S
         asked = time.monotonic()
         got = self.lease(free, wait_s)
         if got is not None:

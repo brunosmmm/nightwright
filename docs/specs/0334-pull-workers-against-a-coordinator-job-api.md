@@ -730,6 +730,47 @@ Fixes from the sixth review, no Design change:
   without inbound SSH, a real campaign's gates, revocation from that laptop) are still not run,
   so the spec stays `in-progress`.
 
+### As shipped (2026-11-02, loop 10)
+
+Fixes from the seventh review, no Design change:
+
+- **A long-poll checks its token again before each take.** `POST /v1/lease` authenticates once,
+  then polls `_take` for up to `LEASE_WAIT_S`. `_take` now takes the queue lock, reads the
+  secret, and then reads the registry again (`_still_current`). If the worker's
+  `token_sha256` is no longer the one the request authenticated with, or the worker is gone or
+  no longer a pull worker, the poll answers 401. The old worker then cancels its jobs and exits
+  3, as on any 401. A worker disabled meanwhile (`nw workers off`) takes nothing and gets its
+  204. The secret is read before the registry, because a rotation writes the new
+  `token_sha256` before the new secret. So a take that read the new secret always meets the
+  new hash and is refused. A rotation that lands after the check gives up the job that the
+  take commits (`revoke_worker`, `rotated`). A job queued after a rotation therefore stays
+  `queued` until the re-enrolled worker leases it, and it is never signed with the new secret
+  and handed to the old connection.
+- **A pending refusal keeps the lease poll short.** With no job running, `tick` asks for a
+  `TICK_S` lease poll whenever a refusal is pending, not `LEASE_WAIT_S`. The refusal is then
+  heartbeated every tick, so a short `job_lease_s` cannot expire it between heartbeats.
+
+### Test record (2026-11-02, loop 10)
+
+- New in `tests/test_pull_workers_security.py`:
+  - A long-poll on `box`'s token is in progress. `nw workers token box --rotate` runs, then a
+    job is queued for `box`. The old poll gets 401, the job stays `queued` with its queue
+    entry and no `pull_lost_reason`, and the new token leases it with a header that verifies
+    under the new secret.
+  - A long-poll whose worker is disabled meanwhile gets 204, and the job stays queued.
+  - A `tick` with a pending refusal and no job heartbeats and asks for a `TICK_S` lease poll.
+    With no refusal, it asks for `LEASE_WAIT_S`.
+- With the previous `pull_jobs.py` and `pull_worker.py`, all three tests fail.
+- `uv run pytest -q -n 0 tests/test_pull_workers_security.py -k "long_poll or pending_refusal
+  or rotat or disabled"`: 15 passed.
+- `uv run pytest -q -n 4 tests/test_pull_workers.py tests/test_pull_workers_security.py
+  tests/test_workers_registry.py tests/test_remote_job_records.py tests/test_remote_personas.py
+  tests/test_worker_job_retry.py tests/test_workers_drain.py tests/test_remote_gates.py`:
+  468 passed. `python3 tools/spec_lint.py`: ok.
+- The full suite is left to gating. The cross-machine manual steps (a Tailscale bind, a laptop
+  without inbound SSH, a real campaign's gates, revocation from that laptop) are still not run,
+  so the spec stays `in-progress`.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-561` / `nw idea clock-out IDEA-561`.
