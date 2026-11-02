@@ -89,3 +89,11 @@ equals the wheel's), 5 busy, 1 failed (worker `failed`, no result line, check mi
   was ok afterwards. Fixed by monkeypatching `nightwright.cli.load_config` and asserting the
   registry path is under tmp_path.
 
+
+## Definition of done
+
+- [ ] Acceptance criteria all met (the real success-path update is outstanding).
+- [x] Test plan automated part executed; the real busy path was run on `box`.
+- [x] No regressions in the touched files (bootstrap, registry); the queue gate runs the rest.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` regenerated and `python3 tools/spec_lint.py` exits 0.
