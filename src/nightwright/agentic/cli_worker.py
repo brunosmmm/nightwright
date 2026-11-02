@@ -131,17 +131,26 @@ def worker_cancel(cfg, job_id):
     _stream(WJ.cancel, cfg, job_id, sys.stdout.buffer)
 
 
+def _human_bytes(n) -> str:
+    if not isinstance(n, int):
+        return "?"
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if n < 1024 or unit == "GiB":
+            return f"{n}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+
+
 @worker_group.command("jobs")
 @click.option("--json", "as_json", is_flag=True, help="emit a JSON list")
 @click.pass_obj
 def worker_jobs(cfg, as_json):
-    """The job dirs on this worker with their state."""
+    """The job dirs on this worker with their state and on-disk size (SPEC-0388)."""
     rows = WJ.jobs(cfg)
     if as_json:
         _dump_json(rows)
         return
     for r in rows:
-        click.echo(f"{r['job_id']}\t{r['state']}")
+        click.echo(f"{r['job_id']}\t{r['state']}\t{_human_bytes(r.get('size_bytes'))}")
 
 
 @worker_group.command("gc")

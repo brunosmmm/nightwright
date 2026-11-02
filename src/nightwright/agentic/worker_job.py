@@ -853,7 +853,7 @@ def cancel(cfg, job_id, stdout) -> int:
 
 
 def jobs(cfg) -> list[dict]:
-    """Every job dir with its derived state."""
+    """Every job dir with its derived state and on-disk size (SPEC-0388)."""
     sett = settings(cfg)
     out = []
     jd = W.jobs_dir(cfg)
@@ -865,7 +865,9 @@ def jobs(cfg) -> list[dict]:
         out.append({"job_id": job.name, "state": st["state"],
                     "heartbeat_age_s": st["heartbeat_age_s"], "async": _is_async(job),
                     "campaign": rec.get("campaign"), "spec_id": rec.get("spec_id"),
-                    "claimed_at": rec.get("claimed_at"), "n": _last_n(job)})
+                    "claimed_at": rec.get("claimed_at"), "n": _last_n(job),
+                    "size_bytes": W.job_disk_bytes(job),        # SPEC-0388
+                    "scratch_bytes": W.job_scratch_bytes(job)})
     return out
 
 

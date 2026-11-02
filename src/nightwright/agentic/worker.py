@@ -11,6 +11,7 @@ user. Containment is a dedicated unprivileged user (docs/WORKFLOW.md, "Remote ga
 from __future__ import annotations
 
 import base64
+import errno
 import fcntl
 import gzip
 import json
@@ -138,6 +139,11 @@ def jobs_lock(cfg):
 
 
 DEFAULT_MIN_FREE_GB = 5.0
+DEFAULT_ABORT_FREE_GB = 2.0          # SPEC-0388: the hard floor that kills the largest running job
+DEFAULT_REAP_LOST_AFTER_MIN = 10.0   # SPEC-0388: grace before a dead job's tree/tmp/out go
+DISK_CHECK_S = 5.0                   # SPEC-0388: how often a running job looks at the free space
+REAP_SWEEP_S = 60.0                  # SPEC-0388: how often a running job sweeps dead job dirs
+JOB_SCRATCH = ("tree", "tmp", "out")
 DETAIL_TB_MAX = 4096                 # SPEC-0387: bytes of traceback an error frame carries
 
 
@@ -173,6 +179,174 @@ def admission_refusal(cfg) -> str | None:
         return (f"worker disk low: {free / 2**30:.1f} GiB free under {cfg['data_dir']}, below "
                 f"agentic.workers.min_free_gb ({floor:g})")
     return None
+
+
+def _cfg_float(cfg, key: str, default: float, minimum: float = 0.0) -> float:
+    raw = ((cfg.get("agentic") or {}).get("workers") or {}).get(key)
+    try:
+        v = float(raw)
+        if isinstance(raw, bool) or not math.isfinite(v) or v < minimum:
+            raise ValueError
+    except (TypeError, ValueError):
+        return default
+    return v
+
+
+def abort_free_gb(cfg) -> float:
+    """SPEC-0388: `agentic.workers.abort_free_gb` (default 2; 0 turns the in-run watch off)."""
+    return _cfg_float(cfg, "abort_free_gb", DEFAULT_ABORT_FREE_GB)
+
+
+def reap_lost_after_min(cfg) -> float:
+    """SPEC-0388: `agentic.workers.reap_lost_after_min` (default 10; 0 reaps at once)."""
+    return _cfg_float(cfg, "reap_lost_after_min", DEFAULT_REAP_LOST_AFTER_MIN)
+
+
+def job_scratch_bytes(job: Path) -> int:
+    """SPEC-0388: bytes under the job's `tree`/`tmp`/`out` (what a job costs on disk)."""
+    return sum(_dir_bytes(job / d) or 0 for d in JOB_SCRATCH)
+
+
+def job_disk_bytes(job: Path) -> int:
+    """SPEC-0388: bytes of the whole job dir (scratch plus the frames/metadata that stay)."""
+    return _dir_bytes(job) or 0
+
+
+def _job_groups_alive(job: Path) -> bool:
+    """A process group `proc.json`/`spawn.json` names that is still running (a gate left over
+    after its job process died)."""
+    from . import runproc
+    for name in ("proc.json", "spawn.json"):
+        rec = runproc.read_json(job / name) or {}
+        leaders = [rec] + [g for g in rec.get("gates") or [] if isinstance(g, dict)]
+        for g in leaders:
+            if g.get("pid") and runproc.group_alive(
+                    {"pid": g.get("pid"), "pgid": g.get("pgid") or g.get("pid"),
+                     "start_ticks": g.get("start_ticks")}):
+                return True
+    return False
+
+
+def reap_dead_scratch(cfg, grace_min: float | None = None, now: float | None = None) -> list[str]:
+    """SPEC-0388: remove `tree`/`tmp`/`out` (and a leftover bundle) of every job dir whose
+    process is gone (`job.lock` free, no group left) and that has been quiet for
+    `reap_lost_after_min`: a `lost` job, one the coordinator gave up on (transport error,
+    cancel) or a cleanup that failed. `job.json`, `frames.jsonl` and `result.json` stay.
+    Only per-job dirs: never `repos/` or a build/uv cache. Returns the job ids cleaned.
+    Never raises."""
+    grace = reap_lost_after_min(cfg) if grace_min is None else grace_min
+    now = time.time() if now is None else now
+    done = []
+    try:
+        with jobs_lock(cfg):
+            jd = jobs_dir(cfg)
+            for job in sorted(jd.iterdir()) if jd.is_dir() else []:
+                if not job.is_dir() or not any((job / d).exists() for d in JOB_SCRATCH):
+                    continue
+                live, fd = _job_live(job)
+                if live:
+                    continue
+                try:
+                    if _job_groups_alive(job):
+                        continue
+                    newest = max((os.stat(job / n).st_mtime for n in
+                                  ("job.json", "result.json", "heartbeat.json", "frames.jsonl",
+                                   "cancel", "lease.json") if (job / n).exists()),
+                                 default=job.stat().st_mtime)
+                    if now - newest < grace * 60:
+                        continue
+                    for d in JOB_SCRATCH:
+                        shutil.rmtree(job / d, ignore_errors=True)
+                    for name in ("job.bundle", "bundle"):
+                        (job / name).unlink(missing_ok=True)
+                    (job / "reaped_scratch.json").write_text(
+                        json.dumps({"reaped_at": now_iso()}), encoding="utf-8")
+                    done.append(job.name)
+                except OSError:
+                    pass
+                finally:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    os.close(fd)
+    except OSError:
+        pass
+    return done
+
+
+def _largest_live_job(cfg) -> str | None:
+    """The live job (`job.lock` held by a process) with the most scratch bytes."""
+    best = None
+    jd = jobs_dir(cfg)
+    for job in sorted(jd.iterdir()) if jd.is_dir() else []:
+        if not job.is_dir():
+            continue
+        live, fd = _job_live(job)
+        if not live:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+            continue
+        key = (job_scratch_bytes(job), job.name)
+        best = key if best is None or key > best else best
+    return best[1] if best else None
+
+
+class DiskAbort(OSError):
+    """SPEC-0388: raised in a job the disk watch killed (an ENOSPC-shaped error, so the
+    error frame carries the disk detail)."""
+
+
+class DiskGuard:
+    """SPEC-0388: while a job runs, every `DISK_CHECK_S` look at the data dir's free space.
+    Below `abort_free_gb`, the largest live job on this host (by scratch bytes) is killed:
+    `aborted` is set, `cancel` is set and its gates are terminated. Every `REAP_SWEEP_S` dead
+    job dirs are swept (`reap_dead_scratch`), so a lost job's tree goes while others run."""
+
+    def __init__(self, cfg, job: Path, cancel: threading.Event):
+        self.cfg, self.job, self.cancel = cfg, job, cancel
+        self.aborted: str | None = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._thread.join(timeout=5)
+
+    def tick(self, last_sweep: float = 0.0) -> None:
+        floor = abort_free_gb(self.cfg)
+        if floor <= 0 or self.aborted:
+            return
+        try:
+            free = _free_bytes(self.cfg)
+        except OSError:
+            return
+        if free >= floor * 2**30:
+            return
+        reap_dead_scratch(self.cfg, 0.0)        # dead jobs' scratch first: it may be enough
+        try:
+            free = _free_bytes(self.cfg)
+        except OSError:
+            return
+        if free >= floor * 2**30 or _largest_live_job(self.cfg) != self.job.name:
+            return
+        self.aborted = (f"worker disk exhausted: {free / 2**30:.1f} GiB free under "
+                        f"{self.cfg['data_dir']}, below agentic.workers.abort_free_gb "
+                        f"({floor:g}); this job was the largest and was killed")
+        self.cancel.set()
+        G.terminate_all()
+
+    def _run(self) -> None:
+        last = time.monotonic()
+        while not self._stop.wait(DISK_CHECK_S):
+            try:
+                self.tick()
+                if time.monotonic() - last >= REAP_SWEEP_S:
+                    last = time.monotonic()
+                    reap_dead_scratch(self.cfg)
+            except Exception as e:              # pragma: no cover - the watch never kills a job
+                print(f"nw worker: disk watch: {e}", file=sys.stderr)
 
 
 def _dir_bytes(path: Path) -> int | None:
@@ -943,18 +1117,25 @@ def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event
         ph = {"worktree": str(tree), "base": base["name"], "spec_id": h["spec_id"],
               "campaign": h["campaign"]}
         results, cut = [], False
-        for gate in payload["gates"]:
-            if cancel.is_set():
-                cut = True
-                break
-            stem = f"{seq:03d}-{gate['name']}"
-            frames.stage = f"gate:{gate['name']}"
-            r = G.run_gate_with_retries(gate, tree, env, out / f"{stem}.log", ph,
-                                        log_rel=f"gates/{stem}.log", stop=cancel,
-                                        deadline=deadline)
-            results.append(r)
-            frames.stage = "frame"
-            frames.emit("gate", result=asdict(r), files=gate_files(out, stem))
+        with DiskGuard(cfg, job, cancel) as guard:
+            for gate in payload["gates"]:
+                if cancel.is_set():
+                    cut = True
+                    break
+                stem = f"{seq:03d}-{gate['name']}"
+                frames.stage = f"gate:{gate['name']}"
+                r = G.run_gate_with_retries(gate, tree, env, out / f"{stem}.log", ph,
+                                            log_rel=f"gates/{stem}.log", stop=cancel,
+                                            deadline=deadline)
+                if guard.aborted:               # SPEC-0388: killed for the host's sake
+                    frames.stage = "disk"
+                    raise DiskAbort(errno.ENOSPC, guard.aborted)
+                results.append(r)
+                frames.stage = "frame"
+                frames.emit("gate", result=asdict(r), files=gate_files(out, stem))
+            if guard.aborted:
+                frames.stage = "disk"
+                raise DiskAbort(errno.ENOSPC, guard.aborted)
         frames.stage = "frame"
         frames.emit("done", ok=all(r.ok for r in results if r.required),
                     started_at=started_at, duration_s=round(time.monotonic() - t0, 3),
@@ -1118,6 +1299,7 @@ def gc(cfg, keep_days: int = DEFAULT_KEEP_DAYS, now: float | None = None) -> dic
         out["jobs_reaped"] = reaped
     if reaped or out["errors"]:                 # a failed write touches the dir too
         now = time.time() if clock else now
+    reap_dead_scratch(cfg)                      # SPEC-0388: dead jobs' tree/tmp/out after the grace
     with jobs_lock(cfg):
         _live_jobs(cfg, remove_before=now - keep_s, removed=out["jobs_removed"])
     rd = repos_dir(cfg)

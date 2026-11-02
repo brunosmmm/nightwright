@@ -123,7 +123,8 @@ def test_busy_exit_5_message(world):
     assert "worker has live jobs; drain it (nw workers drain box) or retry; " \
            "--force installs without killing jobs" in r.output
     assert "GATEJOB-0002" in r.output
-    assert not any("info" in c for c in _calls(world))      # no check after a refusal
+    assert "info" not in _calls(world)[-1]      # no check after a refusal (SPEC-0388: the
+    # only `info` probe is the preflight before the upload)
 
 
 def test_failed_shows_uv_log_hint(world):

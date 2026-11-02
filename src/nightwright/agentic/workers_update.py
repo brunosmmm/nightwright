@@ -66,6 +66,25 @@ def parse_result(stdout: str) -> dict | None:
     return None
 
 
+HEADROOM = 3        # SPEC-0388: free space wanted on the worker, in wheel sizes
+
+
+def _preflight(cfg, rec: dict, plan: Plan) -> None:
+    """SPEC-0388: probe the worker's `info.free_bytes`; below `HEADROOM` x the wheel, fail
+    before uploading anything. A worker that cannot be probed, or reports no number, is let
+    through (the upload then fails on its own, as before)."""
+    try:
+        chk = WK.check(cfg, rec)
+    except Exception:
+        return
+    free = (chk.get("info") or {}).get("free_bytes")
+    if isinstance(free, int) and not isinstance(free, bool) and free < HEADROOM * plan.size:
+        raise UpdateError(
+            f"{plan.name}: not enough free disk for the update: {free / 2**20:.0f} MiB free, "
+            f"need {HEADROOM} x the wheel ({HEADROOM * plan.size / 2**20:.0f} MiB); free space "
+            "on the worker (nw worker gc, finished jobs) and retry")
+
+
 def send(cfg, rec: dict, force: bool, dry_run: bool = False):
     """Build the wheel and (unless `dry_run`) upload it. Returns `(plan, result_or_None,
     exit_code_or_None, stderr)`; raises `UpdateError` for a failure before an answer."""
@@ -84,6 +103,7 @@ def send(cfg, rec: dict, force: bool, dry_run: bool = False):
                         header, force)
             if dry_run:
                 return plan, None, None, ""
+            _preflight(cfg, rec, plan)
             try:
                 p = subprocess.run(plan.argv, input=header + data, capture_output=True,
                                    timeout=TIMEOUT_S)
