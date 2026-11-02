@@ -881,7 +881,7 @@ def test_export_conflict_pressure_columns(cfg):                    # SPEC-0303
 # ---- SPEC-0321: conductor measurement hardening --------------------------------------------
 
 def test_live_window_agrees_with_campaign_row_for_terminal_without_transition(cfg):
-    from wt.agentic import conductor_cost as CC
+    from nightwright.agentic import conductor_cost as CC
     make(cfg, "C-NT", [(10, "transition", tr("QUEUED", "OPENING"))], state="ABANDONED")
     r = row_of(cfg, "C-NT")
     assert r["ended_at"] is None and r["wall_s"] is None          # not measured to `now`
@@ -891,7 +891,7 @@ def test_live_window_agrees_with_campaign_row_for_terminal_without_transition(cf
 
 
 def _conductor_setup(cfg, tmp_path, *, tokens=100_000, model="claude-x", sid="sid"):
-    from wt.agentic import conductor_cost as CC
+    from nightwright.agentic import conductor_cost as CC
     make(cfg, "C1", [(10, "transition", tr("CLOSING", "MERGED"))], created=0,
          state="MERGED", cost={"total_usd": 2.5, "cap_usd": None, "by_persona": {}})
     cfg["_root"] = str(tmp_path / "projects")
@@ -916,14 +916,14 @@ def test_export_conductor_usd_with_unpriced_turn_in_window(cfg, tmp_path):
 
 
 def test_export_survives_attribute_raising(cfg, tmp_path, monkeypatch, capsys):
-    from wt.agentic import conductor_cost as CC
+    from nightwright.agentic import conductor_cost as CC
     _conductor_setup(cfg, tmp_path)
     real = CC.attribute
 
     def boom(*a, **k):
         raise RuntimeError("disk on fire")
     monkeypatch.setattr(CC, "attribute", boom)
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     out = tmp_path / "out"
     r = CliRunner().invoke(cli, ["campaign", "export", "--out", str(out)])
     assert r.exit_code == 0, r.output
@@ -938,7 +938,7 @@ def test_export_survives_attribute_raising(cfg, tmp_path, monkeypatch, capsys):
 
 def test_export_tolerates_malformed_conductor_config_and_bad_registry_byte(
         cfg, tmp_path, capsys):
-    from wt.agentic import conductor_cost as CC
+    from nightwright.agentic import conductor_cost as CC
     _conductor_setup(cfg, tmp_path)
     cfg["agentic"]["conductor"] = [1]
     (row,) = CE.export_tables(cfg, now=NOW)["campaigns"]

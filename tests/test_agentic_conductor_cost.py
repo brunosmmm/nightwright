@@ -605,7 +605,7 @@ def test_mixed_priced_unpriced_with_live_campaign(cfg):
 
 
 def test_conductor_session_reader_option_through_cli(cfg, monkeypatch):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     run = lambda *a: CliRunner().invoke(cli, ["queue", "conductor-session", *a])
     assert run("add", "--reader", "x", "sess-x").exit_code == 0
     r = run("list", "--reader", "x")
@@ -615,7 +615,7 @@ def test_conductor_session_reader_option_through_cli(cfg, monkeypatch):
 
 
 def test_conductor_session_list_json_marks_missing_transcript(cfg, monkeypatch):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     CC.record_session(cfg, "conductor", {}, source="manual", session_id="ghost")
     r = CliRunner().invoke(cli, ["queue", "conductor-session", "list", "--json"])
     assert [x["session_id"] for x in json.loads(r.output)["sessions"]] == ["ghost"]
@@ -625,7 +625,7 @@ def test_conductor_session_list_json_marks_missing_transcript(cfg, monkeypatch):
 
 
 def test_conductor_cost_text_without_session_or_transcript(cfg, monkeypatch):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     r = CliRunner().invoke(cli, ["queue", "conductor-cost"])
     assert r.exit_code == 0 and "no conductor session registered" in r.output
     CC.record_session(cfg, "conductor", {}, source="manual", session_id="ghost")
@@ -634,7 +634,7 @@ def test_conductor_cost_text_without_session_or_transcript(cfg, monkeypatch):
 
 
 def test_conductor_cost_text_shows_partial_suffix(cfg, monkeypatch):
-    monkeypatch.setattr("wt.cli.load_config", lambda: cfg)
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
     campaign(cfg, "L", "2026-10-20T13:00:00+00:00", None, outcome=None)
     write_transcript(cfg, "s", [turn("a", utc(20, 14)),
                                 turn("u", utc(20, 14, 30), 50, model="other-y")])
