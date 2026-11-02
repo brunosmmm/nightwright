@@ -620,6 +620,8 @@ def _lost(rr: R.RemoteRunner, req, hooks, rec: dict, why: str):
         return R._synthetic(req, "the remote persona job was cancelled")
     RG._cancel_job(cfg, rr.worker, job_id)
     RJ.update(cfg, job_id, state="lost", lost_reason=why)
+    if why in RG.UNCHARGED:                     # SPEC-0334: a rotation is not the worker's fault
+        return _local(rr, req, hooks)
     try:
         WK.record_loss(cfg, rr.worker["name"], job_id=job_id, reason=why)
     except (OSError, ValueError):

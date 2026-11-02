@@ -979,6 +979,10 @@ def _leave(cid, ev: threading.Event) -> bool:
 # the give-up reasons that blame the worker (its cooldown): not `deadline`, and not
 # `unaccepted` (a job the worker never accepted: the coordinator died during its submit)
 _BLAME = ("unreachable", "lost")
+# SPEC-0334: the give-up reasons that charge the worker nothing: no cooldown, no recorded loss,
+# no exclusion from the retry and no attempt counted against `max_remote_attempts`
+# (`rotated`: `nw workers token --rotate` released a pull worker's live jobs)
+UNCHARGED = ("rotated",)
 
 
 class _GiveUp(RemoteFailure):
@@ -1376,7 +1380,7 @@ def _give_up(cfg, cid, worker: dict | None, rec: dict, seq: int, reason: str, *,
         p.unlink(missing_ok=True)
     if reason in _BLAME:
         set_cooldown(cfg, rec["worker"])
-    if count:
+    if count and reason not in UNCHARGED:
         _record_loss(cfg, cid, rec["worker"], job_id, reason)
     return Outcome(None, 0.0, RemoteFailure(reason, f"remote job {job_id}: {reason}"),
                    lost=lost)

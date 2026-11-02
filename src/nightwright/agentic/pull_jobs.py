@@ -296,24 +296,68 @@ def give_up_lease(cfg, job_id: str, reason: str = "lease") -> None:
     unqueue(cfg, job_id)
 
 
-def revoke_worker(cfg, name: str) -> list[str]:
+def revoke_worker(cfg, name: str, reason: str = "revoked") -> list[str]:
     """`nw workers rm` of a pull worker: its live pull jobs are lost (requeued or run locally by
-    their steps). Returns the job ids."""
+    their steps). `nw workers token --rotate` passes `rotated`: the worker did nothing wrong, so
+    the steps release those jobs without charging it (`remote_gates.UNCHARGED`). Returns the
+    job ids."""
     out = []
     for rec in RJ.live(cfg):
         if rec.get("pull") and rec.get("worker") == name \
                 and rec.get("pull_state") not in ("done", "error", "lost"):
-            give_up_lease(cfg, rec["job_id"], "revoked")
+            give_up_lease(cfg, rec["job_id"], reason)
             out.append(rec["job_id"])
     return out
 
 
 def read_spool(cfg, job_id: str) -> list[dict]:
+    """The spooled frames, each `n` once (its first copy). It never raises: an unterminated
+    trailing fragment (an append in progress, or one a crash or a full disk tore) and any line
+    that is not a JSON object are skipped. A torn frame was never counted in `pull_cursor`
+    (the cursor moves only after its whole line is written), so the worker re-posts it."""
     try:
-        text = spool_path(cfg, job_id).read_text(encoding="utf-8")
+        text = spool_path(cfg, job_id).read_bytes().decode("utf-8", errors="replace")
     except OSError:
         return []
-    return [json.loads(ln) for ln in text.splitlines() if ln.strip()]
+    out, seen = [], set()
+    for ln in text.split("\n")[:-1]:          # the last piece is "" or a torn fragment
+        try:
+            frame = json.loads(ln) if ln.strip() else None
+        except ValueError:
+            continue
+        if not isinstance(frame, dict):
+            continue
+        n = frame.get("n")
+        if isinstance(n, int):
+            if n in seen:
+                continue
+            seen.add(n)
+        out.append(frame)
+    return out
+
+
+def _spool_append(cfg, job_id: str, frame: dict) -> None:
+    """Append one frame's line to the spool (callers hold the job's lock). A torn trailing
+    fragment left by an earlier append is cut off first, so the new line starts a line of its
+    own and the fragment never turns into a frame."""
+    path = spool_path(cfg, job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+b") as f:
+        end = f.seek(0, os.SEEK_END)
+        if end:
+            f.seek(end - 1)
+            if f.read(1) != b"\n":             # torn: cut back to the last whole line
+                cut = end
+                while cut > 0:
+                    start = max(0, cut - _CHUNK)
+                    f.seek(start)
+                    i = f.read(cut - start).rfind(b"\n")
+                    if i >= 0:
+                        cut = start + i + 1
+                        break
+                    cut = start
+                f.truncate(cut)
+        f.write((json.dumps(frame, ensure_ascii=False) + "\n").encode("utf-8"))
 
 
 def drop_job_files(cfg, job_id: str) -> None:
@@ -328,6 +372,14 @@ def drop_job_files(cfg, job_id: str) -> None:
 
 def _since(rec: dict, key: str) -> float:
     return RJ.epoch(rec.get(key)) or time.time()
+
+
+def lost_reason(rec: dict) -> str:
+    """The give-up reason of a `pull_state: lost` record: `rotated` (its worker's credential
+    was rotated: not the worker's fault) or `lost`."""
+    from . import remote_gates as RG
+    why = rec.get("pull_lost_reason")
+    return why if why in RG.UNCHARGED else "lost"
 
 
 def follow_gate(cfg, worker: dict, rec: dict, project_cfg: dict, seq: int, stop):
@@ -366,7 +418,7 @@ def follow_gate(cfg, worker: dict, rec: dict, project_cfg: dict, seq: int, stop)
                                        str(err.get("error") or ""),
                                        cooldown=bool(err.get("cooldown", True)))
             if ps == "lost":
-                raise RG._GiveUp("lost", worker, rec)
+                raise RG._GiveUp(lost_reason(cur), worker, rec)
             if ps == "queued" and time.time() - queued_since > ttl:
                 unqueue(cfg, job_id)
                 raise RG._GiveUp("unreachable", worker, rec)
@@ -394,7 +446,11 @@ def _replay_gate(cfg, worker: dict, rec: dict, project_cfg: dict, seq: int):
     from . import remote_gates as RG
     job = RG._Job(cfg, worker, rec, project_cfg, seq)
     for frame in read_spool(cfg, rec["job_id"]):
-        run = job.feed(frame)
+        try:
+            run = job.feed(frame)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as e:
+            raise RG.RemoteFailure("protocol", f"the spooled frame {frame.get('n')} does not "
+                                               f"replay: {type(e).__name__}: {e}")
         if run is not None:
             return RG.Outcome(run, job.worker_wait)
     raise RG.RemoteFailure("protocol", "the job is done but its spool has no `done` frame")
@@ -420,7 +476,7 @@ def follow_persona(rr, req, hooks, rec: dict):
             return R.DETACHED
         cur = RJ.read(cfg, job_id)
         if cur is None or cur.get("pull_state") == "lost":
-            return RPS._lost(rr, req, hooks, rec, "lost")
+            return RPS._lost(rr, req, hooks, rec, lost_reason(cur or {}))
         if cur.get("state") == "cancelled":
             return RPS._lost(rr, req, hooks, rec, "cancelled")
         if cur.get("progress") and cur["progress"] != progress:
@@ -453,8 +509,10 @@ def _with_bundle(cfg, job_id: str, frame: dict) -> dict:
     want = frame.get("result_bundle_sha256")
     bundle = dict(frame.get("bundle") or {})
     if want:
-        p = result_bundle_path(cfg, job_id)
-        data = p.read_bytes() if p.is_file() else b""
+        try:
+            data = result_bundle_path(cfg, job_id).read_bytes()
+        except OSError:
+            data = b""
         if hashlib.sha256(data).hexdigest() == want:
             bundle["bundle_b64"] = base64.b64encode(data).decode("ascii")
     return {**frame, "bundle": bundle or frame.get("bundle")}
@@ -538,8 +596,7 @@ def apply_frames(cfg, worker: str, job_id: str, frames: list) -> dict:
                                           for k in ("ts", "transcript_bytes", "last_line_ts")}
                 if frame.get("type") == "done" and "pull_state" not in fields:
                     fields["pull_state"] = "done"
-                with open(spool_path(cfg, job_id), "a", encoding="utf-8") as f:
-                    f.write(json.dumps(frame, ensure_ascii=False) + "\n")
+                _spool_append(cfg, job_id, frame)
                 cursor = n
                 if upload is not None:                  # spooled now: the upload is done with
                     upload.unlink(missing_ok=True)
@@ -624,15 +681,30 @@ def store_result_bundle(cfg, worker: str, job_id: str, tmp: Path, sha: str) -> d
 def store_frame_upload(cfg, worker: str, job_id: str, tmp: Path, sha: str) -> dict:
     """`PUT /v1/jobs/<id>/frame-upload`: one frame too big for a frames batch, kept under its
     sha256 until the frames post that names it applies it. A job holds at most
-    `MAX_FRAME_UPLOADS` unapplied uploads (409 past that; re-sending one replaces it)."""
+    `MAX_FRAME_UPLOADS` unapplied uploads (409 past that; re-sending one replaces it). The
+    upload of a frame already applied (a retry whose first answer was lost) is not kept and
+    never counts against the cap: the frames post skips its stub anyway."""
     open_for_uploads(cfg, worker, job_id)
     with job_lock(cfg, job_id):
-        open_for_uploads(cfg, worker, job_id)
+        rec = open_for_uploads(cfg, worker, job_id)
+        n = _upload_n(tmp)
+        if n is not None and n <= int(rec.get("pull_cursor") or 0):
+            return {"sha256": sha}
         dest = frame_upload_path(cfg, job_id, sha)
         if not dest.exists() and len(frame_uploads(cfg, job_id)) >= MAX_FRAME_UPLOADS:
             raise PullError(409, f"job {job_id} already holds {MAX_FRAME_UPLOADS} frame uploads")
         os.replace(tmp, dest)
     return {"sha256": sha}
+
+
+def _upload_n(tmp: Path) -> int | None:
+    """The `n` of an uploaded frame, None when it is not a frame."""
+    try:
+        frame = json.loads(tmp.read_bytes())
+    except (OSError, ValueError):
+        return None
+    n = frame.get("n") if isinstance(frame, dict) else None
+    return n if isinstance(n, int) and not isinstance(n, bool) else None
 
 
 def heartbeat(cfg, worker: str, jobs: list) -> dict:
@@ -659,6 +731,8 @@ def heartbeat(cfg, worker: str, jobs: list) -> dict:
 def lease(cfg, worker: dict, kinds, slots_free, wait_s: float, stop: threading.Event) -> dict | None:
     """`POST /v1/lease`: the oldest queued job for `worker` of one of `kinds`, signed, else None
     after `wait_s` (at most `LEASE_WAIT_S`)."""
+    if not isinstance(wait_s, (int, float)) or isinstance(wait_s, bool) or wait_s != wait_s:
+        raise PullError(400, "`wait_s` must be a number of seconds")
     if not isinstance(kinds, list) or not isinstance(slots_free, int) or slots_free < 1 \
             or not worker.get("enabled", True):
         return None
@@ -688,16 +762,18 @@ def _take(cfg, worker: dict, kinds) -> dict | None:
                 entries.append((str(e.get("queued_at")), p, e))
         for _at, p, e in sorted(entries, key=lambda t: t[0]):
             job_id = e["header"]["job_id"]
-            rec = RJ.read(cfg, job_id)
-            p.unlink(missing_ok=True)           # leased (or stale): never handed out twice
-            if rec is None or rec.get("state") not in RJ.LIVE or _cancel_flag(rec):
-                (qd / f"{job_id}.bundle").unlink(missing_ok=True)
-                continue
-            header = sign(secret, e["header"], e["bundle_sha256"])
-            now = time.time()
-            RJ.update(cfg, job_id, pull_state="leased", accepted_at=RJ.iso(now),
-                      leased_at=RJ.iso(now), last_seen_at=RJ.iso(now),
-                      lease_until=now + RJ.settings(cfg)["job_lease_s"])
+            with job_lock(cfg, job_id):         # the queue lock, then the job's (never reversed)
+                rec = RJ.read(cfg, job_id)
+                p.unlink(missing_ok=True)       # leased (or stale): never handed out twice
+                if rec is None or rec.get("state") not in RJ.LIVE or _cancel_flag(rec) \
+                        or rec.get("pull_state") in ("lost", "done", "error"):
+                    (qd / f"{job_id}.bundle").unlink(missing_ok=True)
+                    continue
+                header = sign(secret, e["header"], e["bundle_sha256"])
+                now = time.time()
+                RJ.update(cfg, job_id, pull_state="leased", accepted_at=RJ.iso(now),
+                          leased_at=RJ.iso(now), last_seen_at=RJ.iso(now),
+                          lease_until=now + RJ.settings(cfg)["job_lease_s"])
             return {"job": header, "bundle_sha256": e["bundle_sha256"],
                     "job_lease_s": RJ.settings(cfg)["job_lease_s"]}
     return None

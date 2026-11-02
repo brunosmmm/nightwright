@@ -120,14 +120,72 @@ def test_rotation_invalidates_the_old_credential_at_once(world, pull, monkeypatc
     assert doc["secret"] == PJ.read_secret(world.cfg, "box") != old_secret
 
 
-def test_rotation_gives_up_the_workers_live_jobs(world, pull, monkeypatch):
-    _queue(world)
+def test_rotation_releases_the_workers_live_jobs_without_charging_it(world, pull, monkeypatch):
+    """The old worker cancels its jobs on its next 401, so the steps release them: a retry,
+    with no cooldown, no recorded loss, no exclusion and no attempt counted."""
+    from nightwright.agentic import gates as G
+    wrec = _queue(world)
     assert _lease(world) is not None
     monkeypatch.setattr("nightwright.cli.load_config", lambda: world.cfg)
     res = CliRunner().invoke(cli, ["workers", "token", "box", "--rotate"])
     assert res.exit_code == 0, res.output
     rec = RJ.read(world.cfg, JOB)
-    assert rec["pull_state"] == "lost" and rec["pull_lost_reason"] == "revoked"
+    assert rec["pull_state"] == "lost" and rec["pull_lost_reason"] == "rotated"
+    with pytest.raises(RG._GiveUp) as gu:
+        PJ.follow_gate(world.cfg, wrec, rec, world.project, 1, None)
+    assert gu.value.stage == "rotated" and gu.value.cooldown is False
+    charged = []
+    monkeypatch.setattr(RG, "_record_loss", lambda *a: charged.append(("loss", a)))
+    monkeypatch.setattr(RG, "set_cooldown", lambda *a: charged.append(("cooldown", a)))
+    monkeypatch.setattr(RG, "_cancel_job", lambda *a: None)
+    out = RG._give_up(world.cfg, CID, wrec, rec, 1, gu.value.stage)
+    assert out.lost["state"] == "lost" and out.lost["lost_reason"] == "rotated"
+    assert charged == []
+    # the retry: attempt 2 of max_remote_attempts 2 is not past the limit once a rotation is
+    # not counted, and `box` (re-enrolled) is not excluded
+    lost = {**out.lost, "attempt": 2}
+    seen = {}
+
+    def pools(cfg, project_cfg, campaign_state, *, seq, excluded, worker=None):
+        seen["excluded"] = list(excluded)
+        return [("box", 1), (WK.LOCAL, 1)]
+
+    class Hold:
+        pool, waited_s, interrupted = "box", 0.0, False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    run = G.GateRun(1, True, (), "now", 0.1, worker="box")
+    monkeypatch.setattr(RG, "retry_pools", pools)
+    monkeypatch.setattr(G.gate_slots, "acquire", lambda *a, **k: Hold())
+    monkeypatch.setattr(RG, "run", lambda *a, **k: (seen.update(attempt=k["attempt"]),
+                                                    RG.Outcome(run))[1])
+    got = G._retry(lost, 0.0, project_cfg=world.project, campaign_state=world.state,
+                   cfg=world.cfg, cid=CID, worktree=world.tmp, seq=1, owner="gate-001",
+                   stop=None, tier="loop", announce=None, worker=None, head=None, tree=None)
+    assert got.ok and got.worker == "box"
+    assert seen == {"excluded": [], "attempt": 3}
+
+
+def test_a_rotated_persona_job_goes_local_without_a_recorded_loss(world, monkeypatch):
+    import types
+
+    from nightwright.agentic import remote_personas as RPS
+    job_id = f"{CID}-persona-001-implementer-a1"
+    _persona_rec(world, job_id)
+    PJ.give_up_lease(world.cfg, job_id, "rotated")
+    calls = []
+    monkeypatch.setattr(RG, "_cancel_job", lambda *a: None)
+    monkeypatch.setattr(RPS.WK, "record_loss", lambda *a, **k: calls.append("loss"))
+    monkeypatch.setattr(RPS, "_local", lambda rr, req, hooks: calls.append("local") or "ran")
+    rr = types.SimpleNamespace(cfg=world.cfg, worker={"name": "box"})
+    req = types.SimpleNamespace(run_dir=str(world.tmp / "run"))
+    assert PJ.follow_persona(rr, req, None, RJ.read(world.cfg, job_id)) == "ran"
+    assert calls == ["local"]
+    assert RJ.read(world.cfg, job_id)["lost_reason"] == "rotated"
 
 
 def test_a_heartbeat_for_another_workers_job_says_gone(world, pull):
@@ -739,3 +797,115 @@ def test_a_final_job_takes_no_uploads_and_a_job_holds_few_frame_uploads(world, p
         assert st == 409 and body["final"] is True
     assert not PJ.result_bundle_path(world.cfg, job_id).exists()
     assert not [p for p in PJ.uploads_dir(world.cfg).iterdir() if p.name.startswith(".up-")]
+
+
+# ---- a torn spool line, lease input, re-uploads, the lease's lock ------------------------------
+
+def _tear(w: World, job_id: str, frame: dict) -> None:
+    """Half of `frame`'s spool line, unterminated: an append a crash or a full disk cut short."""
+    line = json.dumps(frame)
+    with open(PJ.spool_path(w.cfg, job_id), "a", encoding="utf-8") as f:
+        f.write(line[: len(line) // 2])
+
+
+def test_a_torn_spool_line_never_breaks_a_post_or_the_replay(world, pull):
+    wrec = _queue(world)
+    assert _lease(world) is not None
+    names = RJ.read(world.cfg, JOB)["gates"]
+    started = {"type": "started", "n": 1, "job_id": JOB}
+    gates = []
+    for i, name in enumerate(names):
+        f = _gate_frame(world, 2 + i)
+        f["result"] = {**f["result"], "name": name}
+        f["files"] = {f"001-{name}.log": next(iter(f["files"].values()))}
+        gates.append(f)
+    done = {"type": "done", "n": 2 + len(names), "job_id": JOB, "ok": True,
+            "duration_s": 0.2, "changed": []}
+    assert _frames(pull, JOB, started)[0] == 200
+    _tear(world, JOB, gates[0])
+    assert PJ.read_spool(world.cfg, JOB) == [started]           # the fragment is skipped
+    st, body = _frames(pull, JOB, *gates)                       # the worker re-posts them
+    assert st == 200 and body["cursor"] == 1 + len(names)
+    _tear(world, JOB, done)
+    st, body = _frames(pull, JOB, done)
+    assert st == 200 and body["cursor"] == done["n"] and body["final"] is True
+    rec = RJ.read(world.cfg, JOB)
+    assert rec["pull_state"] == "done"
+    lines = PJ.spool_path(world.cfg, JOB).read_text().splitlines()
+    assert [json.loads(ln)["n"] for ln in lines] == list(range(1, done["n"] + 1))
+    out = PJ._replay_gate(world.cfg, wrec, rec, world.project, 1)
+    assert out.run is not None and [r.name for r in out.run.results] == names
+    # a spool whose `done` is the torn line: a protocol failure (the fallback), never a raise
+    raw = PJ.spool_path(world.cfg, JOB).read_bytes()
+    PJ.spool_path(world.cfg, JOB).write_bytes(raw[:-10])
+    with pytest.raises(RG.RemoteFailure) as rf:
+        PJ._replay_gate(world.cfg, wrec, rec, world.project, 1)
+    assert rf.value.stage == "protocol"
+
+
+def test_a_persona_done_whose_spool_line_is_torn_is_lost_not_raised(world, pull, monkeypatch):
+    import types
+
+    from nightwright.agentic import remote_personas as RPS
+    job_id = f"{CID}-persona-001-implementer-a1"
+    _persona_rec(world, job_id)
+    assert _frames(pull, job_id, {"type": "accepted", "n": 1, "job_id": job_id})[0] == 200
+    _tear(world, job_id, {"type": "done", "n": 2, "job_id": job_id, "ok": True})
+    RJ.update(world.cfg, job_id, pull_state="done")     # as if the record said done
+    seen = []
+    monkeypatch.setattr(RPS, "_finish", lambda *a: seen.append("finish"))
+    monkeypatch.setattr(RPS, "_lost", lambda rr, req, hooks, rec, why: seen.append(why))
+    rr = types.SimpleNamespace(cfg=world.cfg)
+    req = types.SimpleNamespace(run_dir=str(world.tmp / "run"))
+    PJ.follow_persona(rr, req, None, RJ.read(world.cfg, job_id))
+    assert seen == ["lost"]
+
+
+def test_a_non_numeric_lease_wait_gets_400(world, pull):
+    tok = pull.tokens["box"]
+    for wait in ("soon", None, True, [1]):
+        st, body = _call(pull, "POST", "/v1/lease", tok,
+                         {"kinds": ["gate"], "slots_free": 1, "wait_s": wait})
+        assert st == 400 and "wait_s" in body["error"]
+    assert _call(pull, "POST", "/v1/lease", tok,
+                 {"kinds": ["gate"], "slots_free": 1, "wait_s": 0.1})[0] == 204
+
+
+def test_a_re_upload_of_an_applied_frame_never_counts_against_the_cap(world, pull):
+    job_id = f"{CID}-persona-001-implementer-a1"
+    _persona_rec(world, job_id)
+    tok = pull.tokens["box"]
+    raw = json.dumps({"type": "progress", "n": 1, "job_id": job_id, "ts": 1}).encode()
+    sha = hashlib.sha256(raw).hexdigest()
+    assert _call(pull, "PUT", f"/v1/jobs/{job_id}/frame-upload", tok, raw)[0] == 200
+    stub = {"type": "progress", "n": 1, "job_id": job_id, "frame_sha256": sha}
+    assert _frames(pull, job_id, stub)[1]["cursor"] == 1
+    for i in range(PJ.MAX_FRAME_UPLOADS):                   # the job's cap is full
+        assert _call(pull, "PUT", f"/v1/jobs/{job_id}/frame-upload", tok, b"%d" % i)[0] == 200
+    st, body = _call(pull, "PUT", f"/v1/jobs/{job_id}/frame-upload", tok, raw)  # a retry
+    assert st == 200 and body["sha256"] == sha
+    assert not PJ.frame_upload_path(world.cfg, job_id, sha).exists()
+    assert len(PJ.frame_uploads(world.cfg, job_id)) == PJ.MAX_FRAME_UPLOADS
+    assert _frames(pull, job_id, stub)[1]["cursor"] == 1    # its stub is skipped
+
+
+def test_a_lease_marks_the_record_leased_under_the_jobs_lock(world, pull, monkeypatch):
+    import fcntl
+    import os
+    _queue(world)
+    orig, held = PJ.RJ.update, []
+
+    def check(cfg, job_id, **fields):
+        if fields.get("pull_state") == "leased":
+            fd = os.open(PJ.frames_dir(cfg) / f"{job_id}.lock", os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held.append(False)
+            except BlockingIOError:
+                held.append(True)
+            finally:
+                os.close(fd)
+        return orig(cfg, job_id, **fields)
+    monkeypatch.setattr(PJ.RJ, "update", check)
+    assert _lease(world) is not None
+    assert held == [True]

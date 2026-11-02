@@ -638,8 +638,12 @@ def _retry(lost, waited, *, project_cfg, campaign_state, cfg, cid, worktree, seq
     limit = RJ.settings(cfg)["max_remote_attempts"]
     while True:
         attempt = int(lost.get("attempt") or 1) + 1
+        charged = lost.get("lost_reason") not in RG.UNCHARGED    # SPEC-0334: a rotation is not
+        if not charged:                                         # the worker's fault
+            limit += 1
         excluded = list(dict.fromkeys(
-            [w for w in [*(lost.get("excluded_workers") or []), lost.get("worker")] if w]))
+            [w for w in [*(lost.get("excluded_workers") or []),
+                         lost.get("worker") if charged else None] if w]))
         pools = None
         if attempt <= limit:
             pools = RG.retry_pools(cfg, project_cfg, campaign_state, seq=seq, excluded=excluded,

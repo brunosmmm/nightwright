@@ -252,7 +252,10 @@ def test_lease_expiry_retries_then_runs_locally_and_the_old_worker_gets_410(tmp_
         lost = w.ledger(["worker_job_lost"])
         assert [e["job_id"] for e in lost][:1] == [JOB]
         proc.send_signal(signal.SIGCONT)
-        assert until(lambda: "(410)" in p.log("box"))
+        gone = f"{JOB}: the coordinator gave the job up (410)"
+        assert until(lambda: gone in p.log("box"))
+        # the worker cancels the job on the 410 (`nw worker cancel`), after the 410
+        assert until(lambda: f"{JOB}: cancelling" in p.log("box").split(gone, 1)[1])
         assert until(lambda: (p.job_dir() / "result.json").exists())
         done = [f for f in p.frames() if f["type"] in ("done", "error")]
         assert done and (done[-1].get("interrupted") or done[-1]["type"] == "error")
@@ -280,14 +283,14 @@ def test_a_stop_delivers_cancel_and_ends_the_job_within_5s(bw, pull):
     stop = threading.Event()
     th, box = _gate_bg(bw, stop)
     assert until(lambda: _leased(bw) and len(pull.frames()) >= 3)
+    t0 = time.monotonic()                       # the 5 s run from the stop itself
     stop.set()
+    assert until(lambda: any(f["type"] == "done" for f in pull.frames()), timeout=5)
+    assert time.monotonic() - t0 <= 5
     th.join(30)
     assert box["run"].interrupted
     rec = RJ.read(bw.cfg, JOB)
     assert rec["state"] == "cancelled" and rec["cancel_requested"]
-    t0 = time.monotonic()
-    assert until(lambda: any(f["type"] == "done" for f in pull.frames()), timeout=5)
-    assert time.monotonic() - t0 <= 5
     done = [f for f in pull.frames() if f["type"] == "done"][-1]
     assert done["interrupted"] is True
     assert "cancelling" in pull.log()

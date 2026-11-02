@@ -476,6 +476,66 @@ Fixes from the third adversarial review, no Design change:
 - The cross-machine manual steps are still not run, so the spec stays `in-progress`. The full
   suite is left to gating.
 
+### As shipped (2026-11-02, loop 6)
+
+Fixes from the steward's review, no Design change. The spec's Design section is guarded, so
+the API row for the out-of-band frame upload is recorded here instead of in the Design table:
+
+| Method and path | Purpose |
+|---|---|
+| `PUT /v1/jobs/<id>/frame-upload` | One frame too big for a frames batch (64 MiB cap, hashed). The frames post names it by a stub `{n, frame_sha256}`. |
+
+- **Torn spool line.** `read_spool` never raises. It skips an unterminated trailing fragment (an
+  append in progress, or one a crash or full disk cut short) and any line that is not a JSON
+  object, and keeps the first copy of each `n`. Before it appends, the server cuts a torn
+  trailing fragment back to the last whole line, so the fragment never becomes a frame. A torn
+  frame was never counted in `pull_cursor`, so the worker re-posts it. A gate spool that no
+  longer replays raises `RemoteFailure("protocol")` (the fallback). A persona `done` whose
+  spooled line is torn goes to `_lost`.
+- **Rotation releases, it does not charge.** The worker cancels its jobs on its next 401, so the
+  live jobs cannot continue. `nw workers token --rotate` now gives them up with reason `rotated`.
+  `remote_gates.UNCHARGED` lists that reason. Such a give-up sets no cooldown and records no
+  loss. The gate retry does not exclude the worker and does not count the attempt against
+  `max_remote_attempts`. A persona step runs the job locally with no recorded loss. `rm` still
+  gives jobs up as `revoked`. The uncharged attempt is tracked inside one step's retry chain
+  only, so a coordinator restart in the middle of that chain counts it again.
+- **Smaller fixes.** `_take` marks a record `leased` under the job's lock (lock order: queue,
+  then job). It also skips a record that is already `lost`, `done` or `error`. A `wait_s` on
+  `/v1/lease` that is not a number gets 400. A re-upload of a frame at or below `pull_cursor`
+  gets 200 but is not kept, so it never counts against `MAX_FRAME_UPLOADS`.
+- **Not done.** Manual steps 1 to 4 across machines (a Tailscale bind, a laptop without inbound
+  SSH, a real campaign's gates, revocation from that laptop) need a human with a second
+  machine. They have not been run, so the spec stays `in-progress` and its Definition of done
+  stays unticked.
+
+### Test record (2026-11-02, loop 6)
+
+- New in `tests/test_pull_workers_security.py`:
+  - Rotation leaves the job `pull_lost_reason: rotated`. `follow_gate` raises
+    `_GiveUp("rotated")` without cooldown. `_give_up` records no loss and no cooldown. `_retry`
+    at attempt 2 of `max_remote_attempts` 2 still sends attempt 3 remotely, with `box` not
+    excluded.
+  - A rotated persona job goes local with no recorded loss.
+  - A torn spool line: a half gate frame, then the re-post, then a half `done`, then the
+    re-post. Each post gets 200, the spool holds `n` 1 to 5 once each, and the replay
+    rebuilds the run. A spool torn inside its `done` raises `RemoteFailure("protocol")`.
+  - A persona `done` torn in the spool goes to `_lost("lost")`.
+  - A `wait_s` that is not a number gets 400.
+  - A re-upload of an applied frame is accepted with the cap full and is not kept.
+  - The lease's `leased` write holds the job lock: a non-blocking `flock` from the test fails.
+- With the previous `pull_jobs.py`, `gates.py`, `remote_gates.py`, `remote_personas.py` and
+  `cli_workers.py`, all 7 new tests fail.
+- In `tests/test_pull_workers.py`, the stop test starts its 5 s clock at `stop.set()` (not
+  after the step returns). The lease-expiry test now asserts that the old worker logs
+  `<job>: cancelling` after its 410. No new sleeps were added.
+- `uv run pytest -q -n 4 tests/test_pull_workers.py tests/test_pull_workers_security.py`:
+  65 passed.
+- `uv run pytest -q -n 4 tests/test_remote_job_records.py tests/test_remote_personas.py
+  tests/test_workers_registry.py tests/test_worker_job_retry.py tests/test_workers_drain.py
+  tests/test_remote_gates.py`: 371 passed. `tests/test_agentic_gates.py`: 83 passed.
+  `python3 tools/spec_lint.py`: ok.
+- The full suite is left to gating. The cross-machine manual steps were not run (see above).
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-561` / `nw idea clock-out IDEA-561`.
