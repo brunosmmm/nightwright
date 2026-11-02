@@ -310,6 +310,23 @@ against bootstrap text that this spec no longer contains. Each is resolved in
   never calls the drain code. It passed alone twice, and its whole file then passed under
   `-n 4` (48 passed), so we read it as load flakiness. The full suite is left to gating.
 
+### Test record (2026-11-02, review loop 3)
+
+- `tests/test_workers_drain.py` (40 passed): `test_drain_unknown_exits_2` now asserts the
+  message is on `r.stderr` and not on `r.stdout`; `test_list_shows_draining_count` also drains
+  an idle worker and asserts `draining (0 jobs)` and `draining_jobs: 0` in `--json`. New:
+  `test_live_record_without_worker_blocks_completion[missing|None|7]` (the pass is skipped and
+  journaled; once the record is final the drain completes),
+  `test_non_record_entries_do_not_block_completion` (a directory `old.json` and a dotfile
+  `.backup.json` in `remote-jobs/` do not stall the drain) and
+  `test_disabled_record_with_stale_draining_lists_disabled`.
+- Mutation check: with the dotfile/directory filter removed, the non-record test fails; with the
+  worker-field check removed, the three without-worker cases fail; with the list's `enabled`
+  condition removed, the stale-draining test fails. The code was then restored.
+- Regression guard (`-n 4`; the drain, registry, bootstrap, gate-slot, CLI gate-slot,
+  remote-gate, job-record and drain-signal files): 319 passed. The full suite is left to
+  gating.
+
 ### As shipped (2026-11-01)
 
 - **`--worker` waiters get no `skip`.** `gates.run_all` passes the `skip` predicate only when no
@@ -347,7 +364,15 @@ against bootstrap text that this spec no longer contains. Each is resolved in
   to append the event (not only `OSError`/`ValueError`) is journaled and the tick goes on. A
   runner killed between the write and the append leaves a disabled worker with no event. We
   accept that: the event is informational and held from the conductor.
-- **`draining_jobs`** counts only records whose `worker` is a string.
+- **`draining_jobs`** counts only records whose `worker` is a string. A non-final record
+  without a string `worker` makes `finish_drains` raise `ValueError` like an unusable record
+  (the pass is skipped and journaled), since its job may run on a draining worker (review
+  loop 3).
+- **Record files are regular, non-hidden `*.json` files.** The unusable-record check skips
+  directories and dotfiles in `remote-jobs/`; job ids never start with a dot.
+- **A disabled worker never lists as draining.** A hand-edited `enabled: false,
+  draining: true` record shows as `no` with `draining: false`, `draining_jobs: null`; the
+  drain pass that finds the worker idle removes the stale key.
 - **Test git identity.** `tests/conftest.py` (loop-3 gate fix) gives every test a throwaway
   global git identity, because the gate user has none. A code path that commits without
   supplying an identity would therefore pass tests. Accepted as test-environment scope; a

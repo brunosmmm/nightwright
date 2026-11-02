@@ -177,13 +177,16 @@ def workers_list(cfg, as_json):
     _load_or_fail(cfg)
     ws = WK.load(cfg)
     occ = GS.occupancy(cfg).get("workers") or {}
-    jobs = WK.draining_jobs(cfg) if any(w["draining"] for w in ws) else {}
+    # a disabled worker is not draining, even with a stale `draining` key (a hand edit)
+    drain = {w["name"] for w in ws if w["draining"] and w["enabled"]}
+    jobs = WK.draining_jobs(cfg) if drain else {}
     rows = [{"name": w["name"], "ssh": w["ssh"], "slots": w["slots"], "kinds": w["kinds"],
              "enabled": w["enabled"], "cooldown_until": w["cooldown_until"]
              if WK.in_cooldown(w) else None,
              "held": len((occ.get(w["name"]) or {}).get("held") or []),
-             "identity": w.get("identity"), "draining": w["draining"],
-             "draining_jobs": jobs.get(w["name"], 0) if w["draining"] else None} for w in ws]
+             "identity": w.get("identity"), "draining": w["name"] in drain,
+             "draining_jobs": jobs.get(w["name"], 0) if w["name"] in drain else None}
+            for w in ws]
     if as_json:
         _dump_json({"schema": "nw.workers.list.v1", "workers": rows})
         return

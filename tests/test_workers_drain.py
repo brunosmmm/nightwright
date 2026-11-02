@@ -94,24 +94,37 @@ def test_registry_without_draining_loads_false(cfg, invoke):
 
 
 def test_list_shows_draining_count(cfg, invoke):
-    _seed(cfg, _w("box"), _w("two"))
+    _seed(cfg, _w("box"), _w("two"), _w("idle"))
     _job(cfg, 1)
     _job(cfg, 2)
     _job(cfg, 3, state="done")
     _job(cfg, 4, worker="two")
     assert "box: draining (2 jobs)" in invoke("drain", "box").output
+    assert "idle: draining (0 jobs)" in invoke("drain", "idle").output
     out = invoke("list").output
-    assert "draining (2 jobs)" in out
+    assert "draining (2 jobs)" in out and "draining (0 jobs)" in out
     rows = {w["name"]: w for w in json.loads(invoke("list", "--json").output)["workers"]}
     assert rows["box"]["draining"] is True and rows["box"]["draining_jobs"] == 2
+    assert rows["idle"]["draining"] is True and rows["idle"]["draining_jobs"] == 0
     assert rows["two"]["draining"] is False and rows["two"]["draining_jobs"] is None
+
+
+def test_disabled_record_with_stale_draining_lists_disabled(cfg, invoke):
+    """A hand-edited `enabled: false, draining: true` record is disabled, not draining."""
+    _seed(cfg, _w("box", enabled=False, draining=True))
+    _job(cfg, 1)
+    assert "draining" not in invoke("list").output
+    (row,) = json.loads(invoke("list", "--json").output)["workers"]
+    assert row["enabled"] is False and row["draining"] is False
+    assert row["draining_jobs"] is None
 
 
 def test_drain_unknown_exits_2(cfg, invoke):
     _seed(cfg, _w("box"))
     before = WK.path(cfg).read_bytes()
     r = CliRunner().invoke(cli, ["workers", "drain", "nope"])
-    assert r.exit_code == 2 and "no worker named nope" in r.output
+    assert r.exit_code == 2 and "no worker named nope" in r.stderr
+    assert "no worker named nope" not in r.stdout
     assert WK.path(cfg).read_bytes() == before
 
 
@@ -440,6 +453,39 @@ def test_unusable_job_record_blocks_completion(cfg, invoke, bad):
         p.chmod(0o644)
     p.unlink()                                  # the record is gone: the drain completes
     Q._finish_worker_drains(cfg)
+    assert _raw(cfg)["enabled"] is False and len(_drained_events(cfg)) == 1
+
+
+@pytest.mark.parametrize("worker", ["missing", None, 7])
+def test_live_record_without_worker_blocks_completion(cfg, invoke, worker):
+    """A live record with no string `worker` may be a job on box: the pass is skipped (and
+    journaled) rather than disabling box under it. Once it is final, the drain completes."""
+    _seed(cfg, _w("box"))
+    assert invoke("drain", "box").exit_code == 0
+    job = "c-2-gate-001-a1"
+    rec = {"schema": RJ.SCHEMA, "job_id": job, "campaign": "c-2", "state": "submitted",
+           "seq_or_run": 1, "attempt": 1}
+    if worker != "missing":
+        rec["worker"] = worker
+    RJ.jobs_dir(cfg).mkdir(parents=True, exist_ok=True)
+    RJ.path(cfg, job).write_text(json.dumps(rec))
+    _assert_skipped(cfg)
+    RJ.update(cfg, job, state="done")           # final: no longer a job anywhere
+    Q._finish_worker_drains(cfg)
+    assert _raw(cfg)["enabled"] is False and len(_drained_events(cfg)) == 1
+
+
+def test_non_record_entries_do_not_block_completion(cfg, invoke):
+    """Only regular, non-hidden `*.json` files are job records: a directory or a dotfile named
+    `*.json` (a stray backup) does not stall the drain."""
+    _seed(cfg, _w("box"))
+    assert invoke("drain", "box").exit_code == 0
+    d = RJ.jobs_dir(cfg)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "old.json").mkdir()
+    (d / ".backup.json").write_text("not json")
+    Q._finish_worker_drains(cfg)
+    assert "worker_drain_skipped" not in _journal_kinds(cfg)
     assert _raw(cfg)["enabled"] is False and len(_drained_events(cfg)) == 1
 
 

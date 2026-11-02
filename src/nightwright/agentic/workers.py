@@ -279,18 +279,28 @@ class _NoDrain(Exception):
 
 def _check_job_records(cfg) -> None:
     """Raise `ValueError` (`OSError` for an unreadable dir) when `remote-jobs/` holds a record
-    file `remote_jobs.read` cannot use (unreadable, unparseable, another `schema`): its job
-    may still run on a draining worker, and `live` would silently drop it."""
+    file `remote_jobs.read` cannot use (unreadable, unparseable, another `schema`), or a
+    non-final record without a string `worker`: its job may still run on a draining worker,
+    and `live` / `_drained` would silently pass it over. Only regular, non-hidden `*.json`
+    files are record files (job ids never start with a dot): a directory or a dotfile is
+    not a record."""
     from . import remote_jobs as RJ
     d = RJ.jobs_dir(cfg)
     if not d.exists():
         return
     for name in sorted(os.listdir(d)):
-        if not name.endswith(".json"):
+        if not name.endswith(".json") or name.startswith("."):
             continue
         p = d / name
-        if RJ.read(cfg, p.stem) is None and p.exists():     # a pruned file is no record
-            raise ValueError(f"unreadable job record {p}")
+        if not p.is_file() and not p.is_symlink():
+            continue                                        # a directory (or pruned file)
+        rec = RJ.read(cfg, p.stem)
+        if rec is None:
+            if p.exists() or p.is_symlink():                # a pruned file is no record
+                raise ValueError(f"unreadable job record {p}")
+            continue
+        if rec.get("state") in RJ.LIVE and not isinstance(rec.get("worker"), str):
+            raise ValueError(f"live job record {p} names no worker")
 
 
 def finish_drains(cfg) -> list[str]:
