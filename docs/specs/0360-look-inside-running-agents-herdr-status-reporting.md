@@ -1,7 +1,7 @@
 ---
 id: SPEC-0360
 title: "Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -184,41 +184,43 @@ Invariants every child must respect:
 - [x] herdr pane per active run running the tail viewer ([SPEC-0364](./0364-herdr-run-panes-one-pane-per-active-campaign-in.md), done 2026-11-01, superseded by SPEC-0366; one pane per active campaign in an `nw runs` tab, display agent instead of run tokens) (project: Meta-Tools) — opt-in (`nw herdr watch --run-panes` / `agentic.herdr.run_panes`), one tab per active run in an `nw` workspace running `nw campaign tail --follow`, `pane report-agent --source nw-run` state (running=working, parked/escalated=blocked, queued=idle), run tokens, pane closed after the run ends (depends_on child 2 and child 1)
 - [x] herdr watcher auto-start ([SPEC-0365](./0365-herdr-watcher-auto-start-the-conductor-follower.md), done 2026-11-01) (project: Meta-Tools) — the conductor follower supervises `nw herdr watch` in the background: on by default inside herdr (`agentic.herdr.auto_watch`), one instance (herdr flock + `herdr_watch.json` with start ticks), output only to `herdr_watch.log`, stops with the follower, exits when its parent dies, restarts with backoff, restarted on upgrade via SPEC-0231; `nw herdr status`
 - [x] herdr run tabs ([SPEC-0366](./0366-herdr-run-tabs-one-tab-per-campaign-named-after.md), done 2026-11-01, supersedes SPEC-0364) (project: Meta-Tools) — one tab per campaign with a running run, labelled `<SPEC-ID> <short title>`, display agent without the spec id, the pane runs `nw campaign tail --follow-campaign` for its whole life (no flicker, no visible command), closes 60 s after the last run (`agentic.herdr.run_pane_linger_s`), old `nw runs` panes migrated
-- [ ] OSC 7501 program-status emission from nw (project: Meta-Tools) — DEFERRED: emit queue > campaign > run status records from `nw campaign tail --follow` / `nw queue watch`; do not start until herdr or the human's terminal implements OSC 7501
+- [x] ~~OSC 7501 program-status emission~~ — rejected for this epic (2026-11-01), out of scope: herdr 0.9.5 does not implement OSC 7501, so there is nothing to emit to. Detached from the epic; it stays an open backlog idea, IDEA-656, to revisit when herdr or the terminal supports OSC 7501 (see Open questions)
 
 Sequencing / dependencies: child 1 first. It is the thin slice the human asked for, needs no
 runner change and is useful alone. Child 2 is independent of child 1 and may run in parallel
 with it; it is the riskier change (every persona run). Child 3 needs both: the viewer (child 2)
-to put in the pane and the herdr client + watcher (child 1) to drive panes. Child 4 is deferred
-and is not part of this epic's completion: when the epic closes, child 4 is either done or
-`rejected`/superseded with a pointer to a fresh idea.
+to put in the pane and the herdr client + watcher (child 1) to drive panes. Child 4 was deferred
+and is out of this epic: it closed as rejected, with a pointer to IDEA-656.
 
 ## Acceptance criteria
 
-- [ ] With `nw herdr watch` running in a herdr pane, the herdr sidebar (with the docs snippet
+- [x] With `nw herdr watch` running in a herdr pane, the herdr sidebar (with the docs snippet
       applied) shows the `$nw_queue` workspace tokens and per-pane conductor/steward tokens, and
       they update within one push interval of a queue change.
-- [ ] An escalation, a non-transient failed run and a merge each produce exactly one herdr
+- [x] An escalation, a non-transient failed run and a merge each produce exactly one herdr
       notification with the sound per invariant 8.
-- [ ] Killing the watcher makes all `nw` tokens disappear within the TTL; no herdr state set
+- [x] Killing the watcher makes all `nw` tokens disappear within the TTL; no herdr state set
       by nightwright outlives it.
-- [ ] Without `HERDR_ENV=1` or without `herdr` on `PATH`, no `herdr` process is ever spawned by
+- [x] Without `HERDR_ENV=1` or without `herdr` on `PATH`, no `herdr` process is ever spawned by
       any `nw` command, and every herdr-facing command exits 0 with a one-line explanation.
-- [ ] A hung or failing `herdr` binary never delays a queue tick or a persona run (the queue,
+- [x] A hung or failing `herdr` binary never delays a queue tick or a persona run (the queue,
       runner and `runproc` do not import the herdr module; the watcher's calls time out at 2 s).
-- [ ] A persona run started from inside a herdr pane does not change that pane's herdr agent
+- [x] A persona run started from inside a herdr pane does not change that pane's herdr agent
       state (no `HERDR_*` in the child env).
-- [ ] Every new persona run has `runs/<run>/stream.jsonl` growing while it runs; its
+- [x] Every new persona run has `runs/<run>/stream.jsonl` growing while it runs; its
       `result.json`, `run.json` verdict, `cost_usd` and budget handling are identical to a
       `--output-format json` run of the same output.
-- [ ] Runs started before the upgrade (no `stream` in `launch.json`) are adopted and collected
+- [x] Runs started before the upgrade (no `stream` in `launch.json`) are adopted and collected
       exactly as before.
-- [ ] `nw campaign tail CAMPAIGN --follow` shows a running run's tool calls and text as they
+- [x] `nw campaign tail CAMPAIGN --follow` shows a running run's tool calls and text as they
       happen and stops when the run ends; without `--follow` it renders a finished run.
-- [ ] With run panes enabled, each active run gets one herdr pane showing its tail, herdr's
-      agent state for it follows the campaign state, and the pane closes after the run ends.
-- [ ] `docs/herdr.md` documents the integration and the suggested config snippet;
+- [x] With run panes enabled, each campaign with a running run gets one herdr tab (SPEC-0366,
+      superseding SPEC-0364's one pane per run) showing its tail, herdr's agent state for it
+      follows the campaign state, and the tab closes after a linger once the last run ends.
+- [x] `docs/herdr.md` documents the integration and the suggested config snippet;
       nightwright never writes the human's herdr config.
+- [x] Dropped, not applicable: OSC 7501 emission (child 4). It was never an acceptance
+      criterion of this epic; herdr 0.9.5 does not implement it (IDEA-656).
 
 ## Test plan
 
@@ -263,15 +265,35 @@ gives transcripts and the viewer in any terminal.
 
 ## Definition of done
 
-- [ ] All child specs `done` or `superseded` (the linter gates this); child 4 may close as
+- [x] All child specs `done` or `superseded` (the linter gates this); child 4 may close as
       `rejected` with a pointer to a fresh idea if OSC 7501 is still unavailable.
-- [ ] Integration test plan executed; `uv run pytest` green.
-- [ ] Acceptance criteria met; epic body reflects what shipped.
-- [ ] `docs/LEDGER.md` regenerated.
+- [x] Integration test plan executed; `uv run pytest` green.
+- [x] Acceptance criteria met; epic body reflects what shipped.
+- [x] `docs/LEDGER.md` regenerated.
 
 ## Open questions
 
-- None. Decided here: reporter is a separate watcher process, not the queue loop
-  (Decision 1, invariant 2); pane discovery via the session registry (invariant 6); token
-  names (invariant 7); notification policy (invariant 8); in-flight safety via `launch.json`
-  (invariant 9); conductor/steward hosting in herdr stays manual (Non-goals).
+None. Decided here: reporter is a separate watcher process, not the queue loop
+(Decision 1, invariant 2); pane discovery via the session registry (invariant 6, refined in
+SPEC-0361: placement lives in `herdr_panes.json`); token names (invariant 7); notification
+policy (invariant 8); in-flight safety via `launch.json` (invariant 9); conductor/steward
+hosting in herdr stays manual (Non-goals).
+
+Child 4 (OSC 7501) was rejected for this epic at close: herdr 0.9.5 does not implement it.
+IDEA-656 remains an open backlog idea, detached from the epic: revisit when herdr or the
+human's terminal supports OSC 7501.
+
+## As shipped (2026-11-01)
+
+- **Children:** SPEC-0361 (reporter, `nw herdr watch`, done), SPEC-0362 (stream-json capture
+  and `nw campaign tail`, done), SPEC-0363 (display agent scoped to nw panes; replaces
+  SPEC-0361's pane tokens, supersedes it), SPEC-0364 (run panes, done, then superseded by
+  SPEC-0366 one tab per campaign, plus a follow-up fix c81a83bb), SPEC-0365 (watcher
+  auto-start from the conductor follower, done). Child 4 (OSC 7501) rejected, see above.
+- **Deviations from the epic text:** conductor and steward panes show a herdr *display agent*
+  string rather than `$nw_*` tokens (SPEC-0363); workspace tokens remain. Run panes became
+  one tab per campaign instead of per run (SPEC-0366). The watcher can be auto-started by the
+  conductor follower (SPEC-0365), which the non-goals had left manual for hosting only.
+  The optional `tab_bar_right` snippet was left out of `docs/herdr.md`.
+- **Verification:** each child ran its own test plan and recorded real-herdr 0.9.5 checks in
+  an isolated session in its As shipped; `nw spec verify` is ok on all children.

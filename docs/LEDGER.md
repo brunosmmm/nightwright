@@ -235,7 +235,7 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0354](./specs/0354-nw-workers-bootstrap.md) nw workers bootstrap — done
 - **[SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) — Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane** · accepted · (0/0 done)
   - _(no child specs yet)_
-- **[SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) — Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer** · accepted · (6/6 done)
+- **[SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) — Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer** · done · (6/6 done)
   - [x] [SPEC-0361](./specs/0361-herdr-reporter-nw-herdr-watch-pushes-queue-tokens.md) herdr reporter: nw herdr watch pushes queue tokens and notifications — superseded
   - [x] [SPEC-0362](./specs/0362-stream-json-capture-of-persona-runs-and-nw.md) Stream-json capture of persona runs and nw campaign tail viewer — done
   - [x] [SPEC-0363](./specs/0363-herdr-display-scoped-to-nw-panes-display-agent-on.md) herdr display scoped to nw panes: --display-agent on conductor/steward panes, per-role workspace tokens — done
@@ -263,7 +263,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | accepted | — | 2026-11-01 |
 | [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) | Remote workers integration suite for gate and persona workers | feature | accepted | — | 2026-11-01 |
 | [SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) | Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane | epic | accepted | M9: agentic workflow | 2026-11-01 |
-| [SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) | Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer | epic | accepted | — | 2026-11-01 |
 
 ## Done
 
@@ -591,6 +590,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0357](./specs/0357-narrow-affected-tests-py-fallbacks-and-write-the.md) | Narrow affected_tests.py fallbacks and write the NW_GATE_REPORT selection report | feature | done | — | 2026-11-01 |
 | [SPEC-0358](./specs/0358-failed-first-loop-rounds.md) | Failed-first loop rounds: rerun the previously failing tests before the rest of a gate | feature | done | — | 2026-11-01 |
 | [SPEC-0359](./specs/0359-close-tier-reuse-of-a-green-loop-gate-with-a-full.md) | Close-tier reuse of a green loop gate, with a full-suite sentinel on the base branch | feature | done | — | 2026-11-01 |
+| [SPEC-0360](./specs/0360-look-inside-running-agents-herdr-status-reporting.md) | Look inside running agents: herdr status reporting, stream-json run capture and a tail viewer | epic | done | — | 2026-11-01 |
 | [SPEC-0362](./specs/0362-stream-json-capture-of-persona-runs-and-nw.md) | Stream-json capture of persona runs and nw campaign tail viewer | feature | done | — | 2026-11-01 |
 | [SPEC-0363](./specs/0363-herdr-display-scoped-to-nw-panes-display-agent-on.md) | herdr display scoped to nw panes: --display-agent on conductor/steward panes, per-role workspace tokens | feature | done | — | 2026-11-01 |
 | [SPEC-0365](./specs/0365-herdr-watcher-auto-start-the-conductor-follower.md) | herdr watcher auto-start: the conductor follower supervises nw herdr watch | feature | done | — | 2026-11-01 |
