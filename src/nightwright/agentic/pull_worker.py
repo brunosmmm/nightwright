@@ -218,8 +218,8 @@ class Loop:
             except Transport as e:
                 _log(f"{jid}: frames not posted ({e})")
                 failed = True
-        if self.jobs and (failed or time.monotonic() >= self.next_hb):
-            self.heartbeat()
+        if (self.jobs and (failed or time.monotonic() >= self.next_hb)) or self.refusals:
+            self.heartbeat()                    # a pending refusal's lease is renewed too
         free = self.slots - len(self.jobs)
         if free <= 0:
             time.sleep(TICK_S)
@@ -466,12 +466,18 @@ class Loop:
         jobs = [{"id": jid, "n": st["posted"] or 0,
                  "state": WJ.job_state(self.cfg, self._job(jid))["state"]
                  if self._job(jid).is_dir() else "unknown"} for jid, st in self.jobs.items()]
+        jobs += [{"id": jid, "n": 0, "state": "refused"} for jid in self.refusals
+                 if jid not in self.jobs]       # kept leased until its error frame is posted
         status, body = self.client.json("POST", "/v1/heartbeat", {"jobs": jobs})
         if status != 200:
             raise Transport(f"heartbeat: HTTP {status}")
         self._set_lease_s(body)
         self.next_hb = time.monotonic() + self.lease_s / 3
         for jid, ans in (body.get("jobs") or {}).items():
+            if jid in self.refusals and jid not in self.jobs and isinstance(ans, dict) \
+                    and ans.get("gone"):
+                self.refusals.pop(jid, None)    # not ours any more: nothing to report
+                continue
             if jid not in self.jobs or not isinstance(ans, dict):
                 continue
             if ans.get("gone"):

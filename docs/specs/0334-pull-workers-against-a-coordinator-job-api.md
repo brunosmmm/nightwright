@@ -687,6 +687,49 @@ Fixes from the fifth review, no Design change:
   without inbound SSH, a real campaign's gates, revocation from that laptop) are still not run,
   so the spec stays `in-progress`.
 
+### As shipped (2026-11-02, loop 9)
+
+Fixes from the sixth review, no Design change:
+
+- **A pending refusal is heartbeated.** `Loop.heartbeat` also lists every job in
+  `Loop.refusals` (`state: "refused"`), and `tick` heartbeats whenever a refusal is pending. So
+  while the coordinator answers the heartbeat but not the refusal's frames post (a 5xx, a
+  partial outage), the job's lease is renewed and it is not given up as `lost` and charged. A
+  heartbeat that says `gone` for a refusal drops it: there is nothing left to report. An outage
+  that fails every request still lets the lease expire, as it does for a running job (the
+  Design's "a job outlives the outage only while its lease lasts").
+- **`_client_alive` uses `select.poll`.** `select.select` cannot take a file descriptor at or
+  past `FD_SETSIZE` (1024). Its `ValueError` was read as "client gone", so such a connection
+  never leased a job. `poll` has no such limit.
+
+### Test record (2026-11-02, loop 9)
+
+- New or changed in `tests/test_pull_workers_security.py`:
+  - The bundle-fetch `Transport` test now drives `Loop.tick`, not `report_refusals`: a tick
+    while the coordinator is down raises `Transport` and keeps the refusal, and the next tick
+    once it is back posts it (`stage: "bundle"`). With the `report_refusals` call removed from
+    `tick`, this test fails.
+  - `remember` raising `OSError` ends the job with `stage: "submit"`; `WJ.submit` is never
+    called and no job dir is created.
+  - `nw workers add lap --pull` whose `write_secret` raises `OSError` fails, leaves no `lap`
+    registry entry and no secret file.
+  - A refusal whose frames post gets 503 is heartbeated: after one `tick` its record is still
+    `leased` with `lease_until` renewed. A refusal whose job is `lost` is dropped on the
+    heartbeat's `gone`.
+  - `_client_alive` on a connection duplicated to fd 1500 answers alive, then gone once the
+    peer closes (it raises `RLIMIT_NOFILE` for the test, skipped if the hard limit is lower).
+- With the previous `pull_worker.py` and `pull_jobs.py`, the two refusal-heartbeat tests and
+  the fd test fail; the `remember`, rollback and tick tests lock in behaviour that shipped.
+- `uv run pytest -q -n 4 tests/test_pull_workers.py tests/test_pull_workers_security.py
+  tests/test_workers_registry.py`: 151 passed.
+  `uv run pytest -q -n 4 tests/test_remote_job_records.py tests/test_remote_personas.py
+  tests/test_worker_job_retry.py tests/test_workers_drain.py tests/test_remote_gates.py`:
+  314 passed.
+  `python3 tools/spec_lint.py`: ok.
+- The full suite is left to gating. The cross-machine manual steps (a Tailscale bind, a laptop
+  without inbound SSH, a real campaign's gates, revocation from that laptop) are still not run,
+  so the spec stays `in-progress`.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-561` / `nw idea clock-out IDEA-561`.

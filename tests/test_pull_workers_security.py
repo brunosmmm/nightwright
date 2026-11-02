@@ -1256,11 +1256,56 @@ def test_a_bundle_fetch_transport_failure_is_reported_when_the_coordinator_is_ba
     loop.start(got)                             # no exception: the failure is the job's
     assert JOB in loop.refusals and not loop.jobs
     assert RJ.read(world.cfg, JOB)["pull_state"] == "leased"
+    with pytest.raises(PL.Transport):           # still down: `run` backs off, refusal kept
+        loop.tick()
+    assert JOB in loop.refusals
     down[0] = False
-    loop.report_refusals()
+    monkeypatch.setattr(PJ, "LEASE_WAIT_S", 0.2)
+    loop.tick()                                 # the tick itself re-posts the refusal
     rec = RJ.read(world.cfg, JOB)
     assert rec["pull_state"] == "error" and rec["pull_error"]["stage"] == "bundle"
     assert not loop.refusals
+
+
+def _refused_with_failing_posts(world, pull, monkeypatch):
+    """A leased job whose bundle fetch failed, with every frames post answered 503."""
+    _queue(world)
+    got = _lease(world)
+    loop = _loop(pull)
+    real_call, real_json = loop.client.call, loop.client.json
+
+    def call(method, path, *a, **k):
+        if path.endswith("/bundle"):
+            raise PL.Transport("ConnectionResetError: reset")
+        return real_call(method, path, *a, **k)
+
+    def post(method, path, *a, **k):
+        if path.endswith("/frames"):
+            return 503, {}
+        return real_json(method, path, *a, **k)
+    monkeypatch.setattr(loop.client, "call", call)
+    monkeypatch.setattr(loop.client, "json", post)
+    monkeypatch.setattr(PJ, "LEASE_WAIT_S", 0.2)
+    loop.start(got)
+    assert JOB in loop.refusals and not loop.jobs
+    return loop
+
+
+def test_a_pending_refusal_is_heartbeated_so_its_lease_does_not_expire(world, pull, monkeypatch):
+    loop = _refused_with_failing_posts(world, pull, monkeypatch)
+    RJ.update(world.cfg, JOB, lease_until=time.time() + 0.5)    # about to expire
+    loop.tick()                                 # refusal post 503, heartbeat renews it
+    rec = RJ.read(world.cfg, JOB)
+    assert JOB in loop.refusals
+    assert rec["pull_state"] == "leased"
+    assert rec["lease_until"] > time.time() + RJ.settings(world.cfg)["job_lease_s"] - 5
+
+
+def test_a_pending_refusal_whose_job_is_gone_is_dropped(world, pull, monkeypatch):
+    loop = _refused_with_failing_posts(world, pull, monkeypatch)
+    RJ.update(world.cfg, JOB, pull_state="lost", pull_lost_reason="lease")
+    loop.tick()                                 # the heartbeat says gone: nothing to report
+    assert not loop.refusals and not loop.jobs
 
 
 def test_a_job_that_cannot_be_submitted_is_refused_with_stage_submit(world, pull, monkeypatch):
@@ -1275,6 +1320,67 @@ def test_a_job_that_cannot_be_submitted_is_refused_with_stage_submit(world, pull
     rec = RJ.read(world.cfg, JOB)
     assert rec["pull_state"] == "error" and rec["pull_error"]["stage"] == "submit"
     assert not loop.jobs and not loop.refusals
+
+
+def test_a_nonce_that_cannot_be_stored_is_refused_with_stage_submit(world, pull, monkeypatch):
+    _queue(world)
+    got = _lease(world)
+    loop = _loop(pull)
+    submitted = []
+
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(loop, "remember", boom)
+    monkeypatch.setattr(PL.WJ, "submit", lambda *a, **k: submitted.append(a) or 0)
+    loop.start(got)
+    rec = RJ.read(world.cfg, JOB)
+    assert rec["pull_state"] == "error" and rec["pull_error"]["stage"] == "submit"
+    assert "No space left" in rec["pull_error"]["error"]
+    assert submitted == []                      # nothing ran without its nonce stored
+    assert not loop.jobs and not loop.refusals
+    assert not (PL.W.jobs_dir(loop.cfg) / JOB).exists()
+
+
+def test_an_add_whose_secret_cannot_be_written_leaves_no_worker(world, pull, monkeypatch):
+    def boom(*a, **k):
+        raise OSError(13, "Permission denied")
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: world.cfg)
+    monkeypatch.setattr(PJ, "write_secret", boom)
+    res = CliRunner().invoke(cli, ["workers", "add", "lap", "--pull"])
+    assert res.exit_code != 0 and "could not write lap's secret" in res.output
+    assert all(r["name"] != "lap" for r in WK.load(world.cfg))
+    assert {r["name"] for r in WK.load(world.cfg)} == {"box", "box2"}
+    assert not PJ.secret_path(world.cfg, "lap").exists()
+
+
+def test_client_alive_works_for_a_connection_fd_past_fd_setsize(monkeypatch):
+    """`_client_alive` must not call a connection with fd >= 1024 gone (`select.select` cannot
+    take it; the long-poll would then never lease a job)."""
+    import os
+    import resource
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    high = 1500
+    if soft <= high:
+        if hard != resource.RLIM_INFINITY and hard <= high:
+            pytest.skip("RLIMIT_NOFILE too low for an fd past FD_SETSIZE")
+        resource.setrlimit(resource.RLIMIT_NOFILE, (high + 16, hard))
+    a, b = socket.socketpair()
+    try:
+        os.dup2(a.fileno(), high)
+        conn = socket.socket(fileno=high)
+        a.close()
+
+        class H:
+            connection = conn
+        assert PJ._Handler._client_alive(H()) is True
+        b.close()
+        assert PJ._Handler._client_alive(H()) is False
+        conn.close()
+    finally:
+        b.close()
+        a.close()
+        if soft <= high:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 
 
 def test_an_add_that_loses_the_race_leaves_the_winners_secret(world, pull, monkeypatch):

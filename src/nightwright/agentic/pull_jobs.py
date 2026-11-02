@@ -1019,8 +1019,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         reset or (TLS) a close alert: data is taken as the client gone only under TLS."""
         sock = self.connection
         try:
-            readable, _, _ = select.select([sock], [], [], 0)
-            if not readable:
+            poller = select.poll()              # no FD_SETSIZE limit, unlike `select.select`
+            poller.register(sock, select.POLLIN | select.POLLPRI)
+            if not poller.poll(0):
                 return True
             data = socket.socket.recv(sock, 1, socket.MSG_PEEK)     # the raw bytes, even TLS
         except (OSError, ValueError):
