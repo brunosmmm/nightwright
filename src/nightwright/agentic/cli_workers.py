@@ -179,13 +179,16 @@ def workers_token(cfg, name, rotate):
     rec = _find(_load_or_fail(cfg), name)
     if rec.get("mode") != "pull":
         raise click.ClickException(f"{name} is not a pull worker")
-    token, secret = PJ.new_credential(cfg, name)
+    token, secret = PJ.new_credential(cfg, name, write=False)
 
     def fn(records):
         _find(records, name)["token_sha256"] = PJ.token_hash(token)
-    _update(cfg, fn)
+    _update(cfg, fn)                            # the old token is refused from here on
+    PJ.write_secret(cfg, name, secret)
+    lost = PJ.revoke_worker(cfg, name)          # its old jobs, as after `rm`
     url = rec.get("coordinator_url") or PJ.coordinator_url(cfg)
-    _say(f"{name}: token and secret rotated; the old ones no longer work. New blob:")
+    _say(f"{name}: token and secret rotated; the old ones no longer work"
+         + (f"; {len(lost)} job(s) given up" if lost else "") + ". New blob:")
     click.echo(PJ.enrol_blob(url, name, token, secret))
 
 

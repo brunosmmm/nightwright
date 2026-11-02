@@ -45,6 +45,7 @@ from . import workers as WK
 DEFAULT_BIND = "127.0.0.1:8790"
 LEASE_WAIT_S = 30.0                 # the longest `POST /v1/lease` long-poll
 LEASE_CHECK_S = 5.0                 # how often the server looks for expired leases
+HANDLER_TIMEOUT_S = 60.0            # a connection silent this long (handshake, request) is closed
 WAIT_TICK_S = 1.0                   # the waiting step's record poll
 EXPIRES_S = 15 * 60                 # a signed header's `expires_at` - `issued_at`
 CLOCK_SKEW_S = 120.0
@@ -97,12 +98,18 @@ def write_private(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def new_credential(cfg, name: str) -> tuple[str, str]:
-    """A fresh `(token, secret)` for worker `name`; the secret is written to its 0600 file (the
-    caller stores only `token_hash(token)` in the registry)."""
+def new_credential(cfg, name: str, *, write: bool = True) -> tuple[str, str]:
+    """A fresh `(token, secret)` for worker `name`; the secret is written to its 0600 file unless
+    `write` is false (then `write_secret` later; the caller stores only `token_hash(token)` in
+    the registry)."""
     token, secret = secrets.token_urlsafe(32), secrets.token_hex(32)
-    write_private(secret_path(cfg, name), secret + "\n")
+    if write:
+        write_secret(cfg, name, secret)
     return token, secret
+
+
+def write_secret(cfg, name: str, secret: str) -> None:
+    write_private(secret_path(cfg, name), secret + "\n")
 
 
 def drop_credential(cfg, name: str) -> None:
@@ -234,7 +241,8 @@ def _sha_file(path: Path) -> str:
 
 def submit(cfg, worker: dict, header: dict, bundle: Path) -> None:
     """Queue the job for its pull worker (in place of `nw worker submit`): the bundle, then the
-    queue entry, then the record's `pull_state: queued`."""
+    record's `pull_state: queued`, then (under the queue lock) the queue entry. The record says
+    `queued` before any lease can see the entry, so a lease's `leased` is never overwritten."""
     qd = queue_dir(cfg)
     qd.mkdir(parents=True, exist_ok=True)
     job_id = header["job_id"]
@@ -245,8 +253,9 @@ def submit(cfg, worker: dict, header: dict, bundle: Path) -> None:
         dest.write_bytes(b"")
     entry = {"header": header, "worker": worker["name"], "kind": header["kind"],
              "bundle_sha256": _sha_file(dest), "queued_at": store.now_iso()}
-    _atomic_write(qd / f"{job_id}.json", json.dumps(entry, sort_keys=True) + "\n")
     RJ.update(cfg, job_id, pull=True, pull_state="queued", pull_cursor=0)
+    with _queue_lock(cfg):
+        _atomic_write(qd / f"{job_id}.json", json.dumps(entry, sort_keys=True) + "\n")
 
 
 def unqueue(cfg, job_id: str) -> None:
@@ -266,8 +275,13 @@ def request_cancel(cfg, job_id: str) -> None:
 
 def give_up_lease(cfg, job_id: str, reason: str = "lease") -> None:
     """The job's lease is gone (expired, or its worker revoked): `pull_state: lost`, which the
-    waiting step turns into SPEC-0342's give-up. A later request for it gets 410."""
-    RJ.update(cfg, job_id, pull_state="lost", pull_lost_reason=reason)
+    waiting step turns into SPEC-0342's give-up. A later request for it gets 410. Runs under
+    the job's lock, so it never interleaves with an apply or a renewal; a job already final
+    (`done` / `error`) stays so."""
+    with job_lock(cfg, job_id):
+        rec = RJ.read(cfg, job_id)
+        if rec is not None and rec.get("pull_state") not in ("done", "error"):
+            RJ.update(cfg, job_id, pull_state="lost", pull_lost_reason=reason)
     unqueue(cfg, job_id)
 
 
@@ -455,7 +469,11 @@ def _cancel_flag(rec: dict) -> bool:
 
 
 def _renewed(cfg, rec: dict, **fields) -> dict:
+    """The lease renewed (callers hold the job's lock). A record still `queued` is a lease whose
+    state was lost: it is `leased` again."""
     now = time.time()
+    if rec.get("pull_state") == "queued" and "pull_state" not in fields:
+        fields["pull_state"] = "leased"
     return RJ.update(cfg, rec["job_id"], last_seen_at=RJ.iso(now),
                      lease_until=now + RJ.settings(cfg)["job_lease_s"], **fields) or rec
 
@@ -464,49 +482,57 @@ def apply_frames(cfg, worker: str, job_id: str, frames: list) -> dict:
     """`POST /v1/jobs/<id>/frames`: apply the frames after the record's `pull_cursor`, in `n`
     order, stopping at a gap. A gate job's frames go through `_Job.feed` (its files and cursor);
     a `done` whose `result_bundle_sha256` was not uploaded yet is refused with 409 and the
-    cursor unchanged. Returns `{cursor, cancel, job_lease_s}`."""
+    cursor unchanged. A refusal mid-batch keeps the frames before it applied (the record's
+    cursor matches the spool). Returns `{cursor, cancel, job_lease_s}`."""
     if not isinstance(frames, list) or not all(isinstance(f, dict) for f in frames):
         raise PullError(400, "`frames` must be a list of objects")
     _job_for(cfg, worker, job_id)
     with job_lock(cfg, job_id):
         rec = _job_for(cfg, worker, job_id)
-        cursor = int(rec.get("pull_cursor") or 0)
+        start = cursor = int(rec.get("pull_cursor") or 0)
         fields: dict = {}
         if rec.get("pull_state") in ("done", "error"):
             frames = []                         # final: a re-post only learns the cursor
         job = None
-        for frame in sorted(frames, key=lambda f: f.get("n") if isinstance(f.get("n"), int)
-                            else 0):
-            n = frame.get("n")
-            if not isinstance(n, int) or isinstance(n, bool) or n < 1:
-                raise PullError(400, "every frame needs an integer `n` from 1")
-            if n <= cursor:
-                continue
-            if n != cursor + 1:
-                break
-            if frame.get("type") == "done" and frame.get("result_bundle_sha256"):
-                p = result_bundle_path(cfg, job_id)
-                if not p.is_file() or _sha_file(p) != frame["result_bundle_sha256"]:
-                    raise PullError(409, "the result bundle is not uploaded yet", cursor=cursor)
-            if rec.get("kind") == "gate":
-                job = job or _gate_job(cfg, worker, rec)
-                fields.update(_feed_gate(job, frame))
-            elif frame.get("type") == "error":
-                fields.update(pull_state="error", pull_error={
-                    "stage": str(frame.get("stage") or "error"),
-                    "error": str(frame.get("error") or ""), "cooldown": True})
-            elif frame.get("type") == "progress":
-                fields["progress"] = {k: frame.get(k)
-                                      for k in ("ts", "transcript_bytes", "last_line_ts")}
-            if frame.get("type") == "done" and "pull_state" not in fields:
-                fields["pull_state"] = "done"
-            with open(spool_path(cfg, job_id), "a", encoding="utf-8") as f:
-                f.write(json.dumps(frame, ensure_ascii=False) + "\n")
-            cursor = n
-            if rec.get("kind") != "gate":
-                fields.update(cursor=n, state="attached")
-            if fields.get("pull_state") in ("done", "error"):
-                break
+        try:
+            for frame in sorted(frames, key=lambda f: f.get("n") if isinstance(f.get("n"), int)
+                                else 0):
+                n = frame.get("n")
+                if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+                    raise PullError(400, "every frame needs an integer `n` from 1",
+                                    cursor=cursor)
+                if n <= cursor:
+                    continue
+                if n != cursor + 1:
+                    break
+                if frame.get("type") == "done" and frame.get("result_bundle_sha256"):
+                    p = result_bundle_path(cfg, job_id)
+                    if not p.is_file() or _sha_file(p) != frame["result_bundle_sha256"]:
+                        raise PullError(409, "the result bundle is not uploaded yet",
+                                        cursor=cursor)
+                if rec.get("kind") == "gate":
+                    job = job or _gate_job(cfg, worker, rec)
+                    fields.update(_feed_gate(job, frame))
+                elif frame.get("type") == "error":
+                    fields.update(pull_state="error", pull_error={
+                        "stage": str(frame.get("stage") or "error"),
+                        "error": str(frame.get("error") or ""), "cooldown": True})
+                elif frame.get("type") == "progress":
+                    fields["progress"] = {k: frame.get(k)
+                                          for k in ("ts", "transcript_bytes", "last_line_ts")}
+                if frame.get("type") == "done" and "pull_state" not in fields:
+                    fields["pull_state"] = "done"
+                with open(spool_path(cfg, job_id), "a", encoding="utf-8") as f:
+                    f.write(json.dumps(frame, ensure_ascii=False) + "\n")
+                cursor = n
+                if rec.get("kind") != "gate":
+                    fields.update(cursor=n, state="attached")
+                if fields.get("pull_state") in ("done", "error"):
+                    break
+        except PullError:
+            if cursor > start:
+                _renewed(cfg, rec, pull_cursor=cursor, **fields)
+            raise
         rec = _renewed(cfg, rec, pull_cursor=cursor, **fields)
     if rec.get("pull_state") in ("done", "error"):
         unqueue(cfg, job_id)
@@ -547,7 +573,8 @@ def store_result_bundle(cfg, worker: str, job_id: str, tmp: Path, sha: str) -> d
 
 
 def heartbeat(cfg, worker: str, jobs: list) -> dict:
-    """`POST /v1/heartbeat`: renew the listed jobs' leases; per job `cancel` and `gone`."""
+    """`POST /v1/heartbeat`: renew the listed jobs' leases; per job `cancel` and `gone` (a job
+    gone or no longer this worker's: the worker cancels it)."""
     if not isinstance(jobs, list):
         raise PullError(400, "`jobs` must be a list")
     out = {}
@@ -556,10 +583,13 @@ def heartbeat(cfg, worker: str, jobs: list) -> dict:
         if not isinstance(job_id, str):
             continue
         try:
-            rec = _renewed(cfg, _job_for(cfg, worker, job_id))
+            _job_for(cfg, worker, job_id)
+            with job_lock(cfg, job_id):
+                rec = _renewed(cfg, _job_for(cfg, worker, job_id))
             out[job_id] = {"cancel": _cancel_flag(rec), "gone": False}
         except PullError as e:
-            out[job_id] = {"cancel": e.status == 410, "gone": e.status == 410}
+            gone = e.status in (403, 410)
+            out[job_id] = {"cancel": gone, "gone": gone}
     return {"jobs": out, "job_lease_s": RJ.settings(cfg)["job_lease_s"]}
 
 
@@ -615,12 +645,20 @@ def expire_leases(cfg, now: float | None = None) -> list[str]:
     now = time.time() if now is None else now
     out = []
     for rec in RJ.live(cfg):
-        until = rec.get("lease_until")
-        if rec.get("pull") and rec.get("pull_state") == "leased" \
-                and isinstance(until, (int, float)) and now > until:
-            give_up_lease(cfg, rec["job_id"], "lease")
+        if _expired(rec, now):
+            with job_lock(cfg, rec["job_id"]):  # a renewal racing the check wins
+                if not _expired(RJ.read(cfg, rec["job_id"]) or {}, now):
+                    continue
+                RJ.update(cfg, rec["job_id"], pull_state="lost", pull_lost_reason="lease")
+            unqueue(cfg, rec["job_id"])
             out.append(rec["job_id"])
     return out
+
+
+def _expired(rec: dict, now: float) -> bool:
+    until = rec.get("lease_until")
+    return bool(rec.get("pull")) and rec.get("pull_state") == "leased" \
+        and isinstance(until, (int, float)) and now > until
 
 
 # ---- the HTTP server -------------------------------------------------------------------------
@@ -662,6 +700,17 @@ class PullServer(http.server.ThreadingHTTPServer):
             self.address_family = socket.AF_INET6
         super().__init__(addr, _Handler)
 
+    def finish_request(self, request, client_address):
+        """In the request's own thread: a socket timeout, then (TLS) the handshake, so neither a
+        silent peer nor a stalled handshake ever holds the accept loop."""
+        request.settimeout(HANDLER_TIMEOUT_S)
+        if isinstance(request, ssl.SSLSocket):
+            try:
+                request.do_handshake()
+            except (OSError, ValueError):
+                return                          # shutdown_request closes it
+        super().finish_request(request, client_address)
+
     def check_leases(self, every: float = LEASE_CHECK_S) -> None:
         while not self.stopping.wait(every):
             with contextlib.suppress(Exception):
@@ -693,7 +742,8 @@ def make_server(cfg, bind: str = DEFAULT_BIND, *, tls_cert=None, tls_key=None,
         if client_ca:
             ctx.load_verify_locations(client_ca)
             ctx.verify_mode = ssl.CERT_REQUIRED
-        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True,
+                                     do_handshake_on_connect=False)
     threading.Thread(target=srv.check_leases, args=(check_every,), daemon=True).start()
     return srv
 
@@ -714,6 +764,7 @@ def _worker_by_token(cfg, token: str | None) -> dict | None:
 class _Handler(http.server.BaseHTTPRequestHandler):
     server: PullServer
     protocol_version = "HTTP/1.1"
+    timeout = HANDLER_TIMEOUT_S                 # a peer that stops sending loses its thread
 
     def log_message(self, fmt, *args):         # quiet: the queue's events are the record
         if os.environ.get("NW_SERVE_LOG"):

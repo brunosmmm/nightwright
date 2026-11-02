@@ -431,8 +431,9 @@ job process as `nw worker submit`, and posts its frames back every second. A lea
 within `job_lease_s` is given up like a lost SSH job (retried on another worker, or local after
 `max_remote_attempts`); the old worker's next post gets 410 and it cancels the job. A queue
 stop, a park or an abandon cancels the job (`cancel: true` on the worker's next post).
-`nw workers token NAME --rotate` replaces the credential at once; `nw workers rm NAME` revokes
-it, the worker cancels its jobs and exits non-zero, and their steps retry or run locally.
+`nw workers token NAME --rotate` replaces the credential at once and `nw workers rm NAME`
+revokes it: either way the worker cancels its jobs and exits non-zero, and their steps retry
+or run locally.
 Running `nw worker serve` as a service is left to you, e.g. a systemd user unit
 (`~/.config/systemd/user/nw-worker.service`, then `systemctl --user enable --now nw-worker`;
 exit 3 means revoked, so it is not restarted):

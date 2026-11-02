@@ -5,6 +5,7 @@ import hashlib
 import http.client
 import json
 import shutil
+import socket
 import stat
 import subprocess
 import threading
@@ -117,6 +118,67 @@ def test_rotation_invalidates_the_old_credential_at_once(world, pull, monkeypatc
     assert doc["secret"] == PJ.read_secret(world.cfg, "box") != old_secret
 
 
+def test_rotation_gives_up_the_workers_live_jobs(world, pull, monkeypatch):
+    _queue(world)
+    assert _lease(world) is not None
+    monkeypatch.setattr("nightwright.cli.load_config", lambda: world.cfg)
+    res = CliRunner().invoke(cli, ["workers", "token", "box", "--rotate"])
+    assert res.exit_code == 0, res.output
+    rec = RJ.read(world.cfg, JOB)
+    assert rec["pull_state"] == "lost" and rec["pull_lost_reason"] == "revoked"
+
+
+def test_a_heartbeat_for_another_workers_job_says_gone(world, pull):
+    _queue(world)
+    assert _lease(world) is not None
+    st, body = _call(pull, "POST", "/v1/heartbeat", pull.tokens["box2"], {"jobs": [{"id": JOB}]})
+    assert st == 200 and body["jobs"][JOB] == {"cancel": True, "gone": True}
+    st, body = _call(pull, "POST", "/v1/heartbeat", pull.tokens["box"], {"jobs": [{"id": JOB}]})
+    assert st == 200 and body["jobs"][JOB] == {"cancel": False, "gone": False}
+
+
+# ---- leases racing the queue -----------------------------------------------------------------
+
+def test_a_lease_racing_submit_is_never_reset_to_queued(world, pull, monkeypatch):
+    """A worker already long-polling leases the job while `submit` is still marking the record
+    `queued`: the record must end `leased`, and the job be handed out exactly once."""
+    orig, leased = RJ.update, []
+
+    def racing(cfg, job_id, **fields):
+        if fields.get("pull_state") == "queued" and not leased:
+            leased.append(_lease(world))        # the long-poll's `_take` gets in first
+        return orig(cfg, job_id, **fields)
+    monkeypatch.setattr(RJ, "update", racing)
+    _queue(world)
+    monkeypatch.setattr(RJ, "update", orig)
+    got = [g for g in leased + [_lease(world)] if g is not None]
+    assert len(got) == 1
+    assert RJ.read(world.cfg, JOB)["pull_state"] == "leased"
+
+
+def test_a_renewal_repairs_a_record_left_queued(world, pull):
+    _queue(world)
+    assert _lease(world) is not None
+    RJ.update(world.cfg, JOB, pull_state="queued")
+    st, _ = _call(pull, "POST", "/v1/heartbeat", pull.tokens["box"], {"jobs": [{"id": JOB}]})
+    assert st == 200 and RJ.read(world.cfg, JOB)["pull_state"] == "leased"
+    assert JOB in PJ.expire_leases(world.cfg, now=time.time() + 3600)
+
+
+def test_a_lease_renewed_after_the_scan_is_not_expired(world, pull, monkeypatch):
+    _queue(world)
+    assert _lease(world) is not None
+    orig = PJ.job_lock
+
+    def renewed_first(cfg, job_id):           # a heartbeat held the lock across the scan
+        RJ.update(cfg, job_id, lease_until=time.time() + 3600)
+        return orig(cfg, job_id)
+    RJ.update(world.cfg, JOB, lease_until=time.time() - 1)
+    monkeypatch.setattr(PJ, "job_lock", renewed_first)
+    assert PJ.expire_leases(world.cfg) == []
+    assert RJ.read(world.cfg, JOB)["pull_state"] == "leased"
+
+
 # ---- the worker's checks of a leased job -----------------------------------------------------
 
 @pytest.mark.parametrize("case", ["tamper", "expired", "replay", "bundle"])
@@ -210,6 +272,27 @@ def test_a_done_frame_before_its_result_bundle_gets_409(world, pull):
     assert st == 200 and body["cursor"] == 1
     assert RJ.read(world.cfg, job_id)["pull_state"] == "done"
     assert PJ._with_bundle(world.cfg, job_id, done)["bundle"]["bundle_b64"]
+
+
+def test_a_409_mid_batch_keeps_the_frames_before_it(world, pull):
+    job_id = f"{CID}-persona-001-implementer-a1"
+    now = time.time()
+    RJ.create(world.cfg, job_id=job_id, campaign=CID, worker="box", attempt=1, seq=0,
+              submitted_at=now, deadline_at=now + 600, kind="persona")
+    RJ.update(world.cfg, job_id, pull=True, pull_state="leased", pull_cursor=0)
+    data = b"result bundle bytes"
+    frames = [{"type": "accepted", "n": 1, "job_id": job_id},
+              {"type": "done", "n": 2, "job_id": job_id, "ok": True,
+               "bundle": {"head": "a" * 40, "wip": None, "bundle_b64": None},
+               "result_bundle_sha256": hashlib.sha256(data).hexdigest()}]
+    tok = pull.tokens["box"]
+    st, body = _call(pull, "POST", f"/v1/jobs/{job_id}/frames", tok, {"frames": frames})
+    assert st == 409 and body["cursor"] == 1
+    assert RJ.read(world.cfg, job_id)["pull_cursor"] == 1
+    assert _call(pull, "PUT", f"/v1/jobs/{job_id}/result-bundle", tok, data)[0] == 200
+    st, body = _call(pull, "POST", f"/v1/jobs/{job_id}/frames", tok, {"frames": frames})
+    assert st == 200 and body["cursor"] == 2
+    assert [f["n"] for f in PJ.read_spool(world.cfg, job_id)] == [1, 2]
 
 
 # ---- secrets at rest -------------------------------------------------------------------------
@@ -317,6 +400,40 @@ def test_mtls_requires_the_workers_own_cn(world, pki):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_a_silent_tls_peer_never_blocks_other_requests(world, pki):
+    token, _secret = PJ.new_credential(world.cfg, "box")
+    WK.path(world.cfg).parent.mkdir(parents=True, exist_ok=True)
+    WK.path(world.cfg).write_text(json.dumps({"schema": WK.SCHEMA, "workers": [{
+        "name": "box", "mode": "pull", "slots": 1, "token_sha256": PJ.token_hash(token)}]}))
+    srv = PJ.make_server(world.cfg, "127.0.0.1:0", tls_cert=str(pki / "127.0.0.1.pem"),
+                         tls_key=str(pki / "127.0.0.1.key"))
+    threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.05},
+                     daemon=True).start()
+    port = srv.server_address[1]
+    idle = socket.create_connection(("127.0.0.1", port))   # never says a word
+    try:
+        doc = {"coordinator_url": f"https://127.0.0.1:{port}", "token": token,
+               "ca": str(pki / "ca.pem")}
+        lease = {"kinds": ["gate"], "slots_free": 1, "wait_s": 0}
+        assert PL.Client(doc).json("POST", "/v1/lease", lease, timeout=10)[0] == 204
+    finally:
+        idle.close()
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_a_silent_connection_is_closed_after_the_handler_timeout(world, pull, monkeypatch):
+    monkeypatch.setattr(PJ, "HANDLER_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(PJ._Handler, "timeout", 0.5)
+    s = socket.create_connection(("127.0.0.1", pull.srv.server_address[1]))
+    try:
+        s.sendall(b"POST /v1/lease HTTP/1.1\r\n")      # half a request, then silence
+        s.settimeout(30)
+        assert s.recv(1024) == b""                         # the server hung up
+    finally:
+        s.close()
 
 
 def test_tls_options_go_together(tmp_path):

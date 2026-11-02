@@ -330,6 +330,50 @@ or sharpens the Design:
 - The cross-machine manual steps (Tailscale bind, a laptop without inbound SSH) are still not
   run, so the spec stays `in-progress`. The full suite is left to gating.
 
+### As shipped (2026-11-02, loop 3)
+
+Fixes from the adversarial review, no Design change:
+
+- **Queue order.** `submit` marks the record `pull_state: queued` first, then writes the queue
+  entry under the queue lock, so a lease never sees an entry whose record is not yet `queued`
+  and its `leased` is never reset. A renewal (frames or heartbeat) that finds a record still
+  `queued` sets it `leased` again.
+- **Accept loop.** In TLS mode the listening socket no longer handshakes in `accept()`: each
+  request's thread sets a 60 s socket timeout (`HANDLER_TIMEOUT_S`) and then runs the
+  handshake. Request handlers have the same timeout, so a silent or half-sent request no longer
+  holds a thread forever.
+- **Locking.** The lease check and `give_up_lease` re-read the record under the job's lock and
+  skip a lease renewed meanwhile (or a job already `done` / `error`); heartbeat renewals take
+  the same lock.
+- **Mid-batch refusal.** A 400 or 409 part way through a frames batch keeps the frames before
+  it applied: the record's `pull_cursor` matches the spool, so a re-post appends nothing twice.
+- **Heartbeat 403.** A heartbeat for a job that is not this worker's says `gone` (the worker
+  cancels it), as 410 does.
+- **Rotation.** `nw workers token --rotate` writes the registry's new `token_sha256` before the
+  new secret, then gives up the worker's live jobs as `rm` does (the old worker gets 401 on its
+  next request, cancels them and exits 3).
+
+### Test record (2026-11-02, loop 3)
+
+- New in `tests/test_pull_workers_security.py`: a lease racing `submit` (the lease runs inside
+  `submit`'s record update) ends `leased` and is handed out once; a renewal repairs a record
+  left `queued`; a lease renewed under the job lock during the expiry check is not given up; a
+  409 mid-batch keeps frame 1 (cursor 1, then 2 after the PUT, spool `[1, 2]`); a heartbeat for
+  another worker's job says `gone`; rotation gives up the live job (`revoked`); a silent TCP peer
+  on the TLS listener does not block a real lease (openssl test CA); a half-sent request is
+  closed after the handler timeout. With `submit`'s old order and the old
+  `do_handshake_on_connect=True` restored, the race test and the TLS test both fail.
+- `uv run pytest -v -n 0 tests/test_pull_workers_security.py`: 40 passed.
+- `test_lease_expiry_retries_then_runs_locally_and_the_old_worker_gets_410` failed once under
+  `-n 4`. The test released the blocked gate as soon as the coordinator marked the job lost,
+  which raced the job process seeing its own expired lease. It now waits for the old job's
+  `result.json` before the release. 3 + 2 runs alone passed.
+- `uv run pytest -q -n 4 tests/test_pull_workers.py tests/test_pull_workers_security.py
+  tests/test_workers_registry.py tests/test_remote_job_records.py tests/test_remote_personas.py
+  tests/test_worker_job_retry.py`: 252 passed. `python3 tools/spec_lint.py`: ok.
+- The cross-machine manual steps are still not run, so the spec stays `in-progress`. The full
+  suite is left to gating.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-561` / `nw idea clock-out IDEA-561`.

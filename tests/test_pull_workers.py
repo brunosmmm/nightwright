@@ -240,6 +240,8 @@ def test_lease_expiry_retries_then_runs_locally_and_the_old_worker_gets_410(tmp_
         assert until(lambda: _leased(w))
         proc.send_signal(signal.SIGSTOP)        # a partition: no heartbeat, no frames
         assert until(lambda: (RJ.read(w.cfg, JOB) or {}).get("state") == "lost")
+        # its local lease (never renewed while stopped) ends the old job before g3 may finish
+        assert until(lambda: (p.job_dir() / "result.json").exists())
         w.release()                             # the retries' gates may finish now
         th.join(60)
         run = box["run"]
