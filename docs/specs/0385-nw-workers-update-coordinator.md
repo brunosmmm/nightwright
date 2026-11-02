@@ -1,7 +1,7 @@
 ---
 id: SPEC-0385
 title: "`nw workers update NAME`: coordinator side of the worker self-update"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
@@ -58,7 +58,7 @@ equals the wheel's), 5 busy, 1 failed (worker `failed`, no result line, check mi
 - [x] After success the check confirms the build id (mismatch -> exit 1).
 - [x] `--dry-run` sends nothing and prints the wheel size.
 - [x] Listed in the workers group help and docs/product/reference/index.md.
-- [ ] Real worker: an update that really installs was run on `box` and its check shows the new build.
+- [x] Real worker: an update that really installs was run on `box` and its check shows the new build.
 
 ## Test plan
 
@@ -80,9 +80,7 @@ equals the wheel's), 5 busy, 1 failed (worker `failed`, no result line, check mi
 - Verified for real on `box` (2026-11-02): `--dry-run` (wheel 830368 bytes, build b1:132bd656a),
   `nw workers check box` (stale warning b1:15ce1fa2d), and `nw workers update box` without
   `--force` -> **busy, exit 5** with the drain message and the two live job ids (box held 2/6).
-- NOT verified for real: the updated success path and the post-update check. The last acceptance
-  criterion stays unchecked and this spec stays `in-progress` until the human (or a later run on an
-  idle box) runs `nw workers update box` and `nw workers check box` shows no stale warning.
+- Success path verified for real on `box` (closed 2026-11-02): worker_updated events #3407 (b1:1719dcb0b) and #3492 (b1:deaa4a63b; list shows update_last updated 2026-11-02T17:34:22-05:00), one worker_update_failed #3428 (ENOSPC on the box disk at receive, since cleared). After the latest update `nw workers check box` -> ok and `check box --auth` -> ok; gate jobs (e.g. GATEJOB-0041) then passed on `box`.
 - Incident: the first test draft passed `obj=cfg`, which the cli group ignores, so seven runs
   sent a bogus 150-byte test wheel to the real `box` (one with `--force`, while idle). The worker
   rejected each at `install` (uv: no .dist-info), the box stayed on b1:15ce1fa2d and `check box`
@@ -92,7 +90,7 @@ equals the wheel's), 5 busy, 1 failed (worker `failed`, no result line, check mi
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met (the real success-path update is outstanding).
+- [x] Acceptance criteria all met (real success-path update verified on `box`, see As shipped).
 - [x] Test plan automated part executed; the real busy path was run on `box`.
 - [x] No regressions in the touched files (bootstrap, registry); the queue gate runs the rest.
 - [x] Spec body updated to match what shipped.

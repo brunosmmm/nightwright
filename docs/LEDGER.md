@@ -262,8 +262,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) | Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane | epic | accepted | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0367](./specs/0367-nw-workers-bootstrap-cannot-refresh-a-stale.md) | nw workers bootstrap refreshes a stale worker install (build id, --reinstall, stale warning, loud gate rejection) | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run | feature | in-progress | — | 2026-11-02 |
-| [SPEC-0385](./specs/0385-nw-workers-update-coordinator.md) | `nw workers update NAME`: coordinator side of the worker self-update | feature | in-progress | — | 2026-11-02 |
-| [SPEC-0386](./specs/0386-queue-scheduled-worker-update.md) | Queue-scheduled worker update: `nw workers update NAME --when-idle` | feature | in-progress | — | 2026-11-02 |
 
 ## Done
 
@@ -616,6 +614,8 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0382](./specs/0382-conductor-must-never-block-on-the-human-high-it.md) | Conductor never blocks on the human: launch guard and hook backstop | feature | done | — | 2026-11-02 |
 | [SPEC-0383](./specs/0383-gate-run-agent-discoverability.md) | Make `nw gate run` discoverable by agents (skill, AGENTS.md, CLI help) | feature | done | — | 2026-11-02 |
 | [SPEC-0384](./specs/0384-watch-gate-jobs-line.md) | queue watch: standalone gate jobs get their own line so they are never truncated | feature | done | — | 2026-11-02 |
+| [SPEC-0385](./specs/0385-nw-workers-update-coordinator.md) | `nw workers update NAME`: coordinator side of the worker self-update | feature | done | — | 2026-11-02 |
+| [SPEC-0386](./specs/0386-queue-scheduled-worker-update.md) | Queue-scheduled worker update: `nw workers update NAME --when-idle` | feature | done | — | 2026-11-02 |
 | [SPEC-0387](./specs/0387-worker-job-infra-errors.md) | Worker job-level infra errors (ENOSPC) - real stage, no worker cooldown, admission guard | feature | done | — | 2026-11-02 |
 | [SPEC-0388](./specs/0388-worker-disk-guard.md) | Worker disk guard - auto-reap dead jobs, in-run free-space abort, job sizes, update headroom | feature | done | — | 2026-11-02 |
 | [SPEC-0389](./specs/0389-persona-claude-resolution.md) | One claude resolver for claude-check and the persona job exec; missing claude is a job error | feature | done | — | 2026-11-02 |

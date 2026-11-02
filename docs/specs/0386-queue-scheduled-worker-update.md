@@ -1,7 +1,7 @@
 ---
 id: SPEC-0386
 title: "Queue-scheduled worker update: `nw workers update NAME --when-idle`"
-status: in-progress
+status: done
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
@@ -88,7 +88,7 @@ for ending the update (an `on`, `off` or newer schedule in between wins).
       event; jobs are not touched.
 - [x] `auto_update: true` makes `nw workers check` schedule a stale worker.
 - [x] `workers list` / `--json` / `queue watch` show updating; docs and help updated.
-- [ ] Real worker: `nw workers update box --when-idle` was run and the queue updated `box`
+- [x] Real worker: `nw workers update box --when-idle` was run and the queue updated `box`
       (check shows the new build, box back in service).
 
 ## Test plan
@@ -98,7 +98,7 @@ for ending the update (an `on`, `off` or newer schedule in between wins).
   registry, not-idle, busy back-off, failed, old worker, timeout, config/event/quiet rules,
   auto_update). Regression: `test_workers_update_cmd.py`, `test_workers_drain.py`,
   `test_agentic_quiet.py`, `test_skills.py`, `test_workers_registry.py`, `test_tui_queue_model.py`.
-- **Manual (outstanding):** with a ticking runner, `nw workers update box --when-idle`, watch
+- **Manual (done 2026-11-02, see As shipped):** with a ticking runner, `nw workers update box --when-idle`, watch
   `nw workers list` go `updating (draining, N jobs)` then plain, then `nw workers check box`.
 
 ## As shipped
@@ -107,11 +107,11 @@ for ending the update (an `on`, `off` or newer schedule in between wins).
   (`_run_worker_updates`), `cli_workers.py`, `cli_queue.py`, `events.py`, `quiet.py`.
   `nw workers update` (non-scheduled) still has its own printing; it shares `send` with `perform`.
 - Verified with fakes only (stub ssh, tmp_path registry); 322 passed over the touched files.
-- NOT verified on the real `box`: the steward does that after merge. This spec stays `in-progress`.
+- Verified for real on `box` (closed 2026-11-02): `nw workers update box --when-idle` was scheduled and the queue performed it: worker_updated #3492 to build b1:deaa4a63b at 2026-11-02T17:34:22-05:00 (`workers list --json`: updating false, update_last state updated). `nw workers check box` and `check box --auth` -> ok (back in service); gate jobs ran on `box` afterwards (e.g. GATEJOB-0041 passed).
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met (the real-box update is outstanding).
+- [x] Acceptance criteria all met (real-box update verified, see As shipped).
 - [x] Test plan automated part executed.
 - [x] No regressions in the touched files; the queue gate runs the rest.
 - [x] Spec body updated to match what shipped.
