@@ -279,6 +279,16 @@ an idempotent `enabled: false`.
   7 skipped and 6 failed: the 4 above, now fixed (remote_gates + skills: 172 passed under the
   same conditions), and 2 timing tests (`test_heartbeat_spans_many_ticks`,
   `test_acquire_waits_for_whichever_pool_frees_first`) that pass when rerun alone.
+- Third gate fix: `test_tui_queue_model.py`'s two `queue_tab` tests
+  (`test_summary_text_for_each_action`, `test_plans_carry_the_keys_the_summary_reads`) now
+  `pytest.importorskip("textual")` in-function; the rest of that module runs without textual.
+  An audit of every test importing `nightwright.tui.*`/textual found no other unguarded import.
+  The full suite in a venv without textual, under the worker's git conditions, at `-n 8`: 5377
+  passed, 96 skipped, no textual import error, 2 failed under load that pass alone (3 reruns):
+  `test_reexec_drains_inflight_close` and `test_submit_failure_after_accept_still_has_a_record`.
+  The latter asserted the cancel call with no wait after the record turned `local`; it now
+  waits with `until` (SPEC-0269). `test_remote_job_records.py` + `test_tui_queue_model.py` +
+  `test_test_waits.py`: 80 passed.
 
 ### As shipped (2026-11-01)
 
