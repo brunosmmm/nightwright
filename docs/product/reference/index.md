@@ -34,6 +34,7 @@ Claude-generating vs your-turn diagnostic.
 | `override` | Time-scoped reclassification | [Report](../capabilities/report.md) |
 | `personas` | Declared agentic personas: `list` / `show NAME` / `validate [--project NAME] [--json]`; declared personas come from the user config dir `personas/` and the project's main-checkout `.nw/personas/`; `validate` exits 1 on any problem (SPEC-0371) | [Agentic loop](../capabilities/agentic.md) |
 | `profiles` | Agentic workflow profiles: list / show (with sources) / check | [Agentic loop](../capabilities/agentic.md) |
+| `personas` | Agentic persona registry viewer: `nw personas list\|show [--project P] [--json]` (builtin / user / project layers, with origin file) | [Agentic loop](../capabilities/agentic.md) |
 | `projects` | List / register outbox + research targets | [Projects](../capabilities/projects.md) |
 | `queue` | Agentic work queue: add / list / watch / run / park / resume, conductor tooling (subcommands below) | [Agentic loop](../capabilities/agentic.md) |
 | `refresh-meetings` | Pull Outlook meetings into meetings.jsonl | [Meetings](../capabilities/meetings.md) |
