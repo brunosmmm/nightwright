@@ -2065,7 +2065,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
             for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
                       "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
                       "merge", "admission", "spec_review", "split",   # SPEC-0279: amend flips it
-                      "gate_exclusive", "last_green_loop"):
+                      "gate_exclusive", "last_green_loop", "close_red"):
                 if k in state:
                     current[k] = state[k]
             requested = current.get("park_requested")
@@ -2306,6 +2306,9 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
         if oc is None and res.prepared.outcome is not None:
             oc = res.prepared.outcome
         absorbed = list(oc.events) if oc is not None else list(res.prepared.events)
+        # SPEC-0359: a red full close gate pins that gate to full runs for this campaign
+        CL.note_close_gates(state, oc.gate_run if oc is not None
+                            else (res.prepared.gate_run if res.prepared is not None else None))
         if oc is None:
             # finish phase (main thread): a park / abandon / resume made during the worktree
             # phase wins over a merge that has not happened yet

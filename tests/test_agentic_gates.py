@@ -1025,3 +1025,25 @@ def test_interrupted_green_loop_run_does_not_set_last_green_loop(tmp_path, monke
     _, st = TQ._apply(ctx, cfg, cid, "gate", gate_run=cut)
     assert st["last_gate"]["gate_seq"] == 2
     assert st["last_green_loop"] is None
+
+
+def test_red_close_gate_run_sets_close_red_and_a_green_one_clears_it(tmp_path, monkeypatch):
+    """SPEC-0359: the queue records a red full close gate on the campaign state (persisted
+    across the transition) and a later green full run of it removes the entry."""
+    import test_agentic_queue as TQ
+    from nightwright.agentic.close import CloseOutcome
+    cfg, cid, ctx = TQ.opened.__wrapped__(tmp_path, monkeypatch)
+    red = G.GateRun(7, False, (G.GateResult("pytest", True, False, 1, False, 0.1,
+                                            "gates/007-pytest.log", ""),),
+                    "2026-11-01T00:00:00", 0.1, head="h7", tree="t7")
+    S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="CLOSING"))
+    row, st = TQ._apply(ctx, cfg, cid, "close",
+                        close_outcome=CloseOutcome("TRIAGING", gate_run=red))
+    assert row["to"] == "TRIAGING"
+    assert st["close_red"] == {"pytest": {"head": "h7", "gate_seq": 7}}
+    green = replace(red, seq=8, ok=True, results=(replace(red.results[0], ok=True, exit_code=0),))
+    S.write_state(cfg, cid, dict(st, state="CLOSING"))
+    row, st = TQ._apply(ctx, cfg, cid, "close", close_outcome=CloseOutcome(
+        "MERGED", gate_run=green, close={"mode": "merge", "merged_sha": "abc", "pr_url": None,
+                                         "gates_seq": 8, "target_sha": "def"}))
+    assert row["to"] == "MERGED" and st["close_red"] is None

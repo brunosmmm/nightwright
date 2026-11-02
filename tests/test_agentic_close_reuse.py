@@ -325,6 +325,55 @@ def test_a_tool_no_gate_runs_does_not_block_reuse(rw):
     assert out.gate_run.reused == ("pytest",)
 
 
+# ---- a red full close run pins the gate to full runs for the campaign -----------------------
+
+def test_red_full_close_blocks_reuse_after_a_retry_gate_loop_green(rw, monkeypatch):
+    """A close that declined reuse runs the full `pytest` gate red (TRIAGING). The triager
+    answers retry_gate, `pytest-affected` goes green again at the rebased head H, and the next
+    close must still run `pytest` (R2), until a full run of it is green."""
+    gates = rw["pcfg"]["gates"]
+    gates[2]["cmd"] = f"touch {rw['marker']}; false"
+    monkeypatch.setenv("NW_CLOSE_FULL", "1")           # the first close declines (any reason)
+    out = CL.prepare_close(rw["cfg"], rw["state"], rw["pcfg"])
+    assert out.outcome is not None and out.outcome.next_state == "TRIAGING"
+    assert rw["marker"].exists()
+    state = dict(rw["state"])
+    CL.note_close_gates(state, out.outcome.gate_run)
+    head = git.rev_parse(rw["nw"])
+    assert state["close_red"] == {"pytest": {"head": head, "gate_seq": out.outcome.gate_run.seq}}
+    # retry_gate: the loop gate reruns green on the already-rebased tree
+    state["last_green_loop"] = _green_loop(head)
+    monkeypatch.delenv("NW_CLOSE_FULL")
+    gates[2]["cmd"] = f"touch {rw['marker']}"
+    rw["marker"].unlink()
+    out = CL.prepare_close(rw["cfg"], state, rw["pcfg"])
+    rule, detail = _declined(out)
+    assert rule == "R2" and "was red" in detail
+    assert rw["marker"].exists(), "the full pytest gate ran"
+    assert _events(out, "gate.reused") == []
+    # that green full run lifts the pin: a later clean close may reuse again
+    CL.note_close_gates(state, out.gate_run)
+    assert state["close_red"] is None
+    rw["marker"].unlink()
+    out = CL.prepare_close(rw["cfg"], state, rw["pcfg"])
+    assert out.gate_run.reused == ("pytest",) and not rw["marker"].exists()
+
+
+def test_note_close_gates_ignores_interrupted_results():
+    from dataclasses import replace
+    from nightwright.agentic import gates as G
+    red = G.GateResult("pytest", True, False, 1, False, 0.1, "gates/004-pytest.log", "")
+    run = G.GateRun(4, False, (red,), "2026-11-01T00:00:00", 0.1, head="h")
+    state = {}
+    CL.note_close_gates(state, run)
+    assert state["close_red"] == {"pytest": {"head": "h", "gate_seq": 4}}
+    cut = replace(run, seq=5, ok=True, results=(replace(red, ok=True, interrupted=True),))
+    CL.note_close_gates(state, cut)
+    assert "pytest" in state["close_red"], "an interrupted run proves nothing"
+    CL.note_close_gates(state, None)
+    assert "pytest" in state["close_red"]
+
+
 # ---- the counter moves only on a merged reused close ---------------------------------------
 
 def test_reused_close_that_merges_counts_once(rw):

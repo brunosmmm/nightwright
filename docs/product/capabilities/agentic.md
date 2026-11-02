@@ -197,7 +197,10 @@ A close gate may set `reuse_from: <loop gate>` (validated: the gate is `when: cl
 it, when the rebase is clean by rules R1-R7: **R1** reuse is enabled (`merge.policy: merge`, not
 a merge request, no `close.force_full`, no `NW_CLOSE_FULL=1` in the runner's environment, no red
 or overdue sentinel, a readable `gate_reuse.json`); **R2** the green source result has a report
-whose `head_sha` is the gated head `G`, and `G` is still a commit; **R3** no file the branch
+whose `head_sha` is the gated head `G`, and `G` is still a commit, and no full close run of the
+gate was red in this campaign since its last green full run (the campaign state's `close_red`;
+so a triage `retry_gate` whose loop gate goes green again does not skip the suite that just
+failed); **R3** no file the branch
 changes differs between `G` and the rebased head `H`; **R4** main's delta `D` (`git diff G H`)
 touches no `.nw/**` file and does not select the full suite, and neither `D` nor the branch
 changes the reuse tooling (`tools/affected_tests.py`, or any `tools/*.py` the close gate or its

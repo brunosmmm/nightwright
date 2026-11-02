@@ -528,7 +528,14 @@ def _reuse_evidence(cfg, state, project_cfg, gate, *, policy, root, worktree, ta
                                now=now)
     if blocker:
         raise _Decline("R1", blocker)
-    # R2 green source
+    # R2 green source: a full run of this gate that was red in this campaign is not stood in
+    # for by a later loop green (its selection may miss what failed) until a full run is green
+    red = (state.get("close_red") or {}).get(gate["name"]) if isinstance(
+        state.get("close_red"), dict) else None
+    if red:
+        raise _Decline("R2", f"the full {gate['name']!r} close run was red at "
+                             f"{str(red.get('head') or '?')[:10]}; reuse waits for a green "
+                             f"full run")
     lg = state.get("last_green_loop")
     if not isinstance(lg, dict) or not lg.get("ok"):
         raise _Decline("R2", "no green loop run recorded")
@@ -611,6 +618,24 @@ def _reuse_evidence(cfg, state, project_cfg, gate, *, policy, root, worktree, ta
     if sel_b.get("reason"):
         ev["selection_reason"] = sel_b["reason"]
     return ev
+
+
+def note_close_gates(state: dict, gate_run) -> None:
+    """SPEC-0359: record on the campaign state which close gates a full close run saw red
+    (`close_red`: name -> {head, gate_seq}); a later green full run of a gate removes it. Rule R2
+    declines reuse for a gate listed there, so a triage `retry_gate` whose loop gate goes green
+    again cannot make the next close skip the full suite this campaign just saw fail."""
+    if gate_run is None:
+        return
+    red = dict(state.get("close_red") or {}) if isinstance(state.get("close_red"), dict) else {}
+    for r in gate_run.results:
+        if r.interrupted:
+            continue
+        if r.ok:
+            red.pop(r.name, None)
+        else:
+            red[r.name] = {"head": gate_run.head, "gate_seq": gate_run.seq}
+    state["close_red"] = red or None
 
 
 def _reuse_loop_green(cfg, state, project_cfg, gate_cfg, *, policy, root, worktree, target_sha,

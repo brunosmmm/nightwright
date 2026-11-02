@@ -409,6 +409,21 @@ sequencing hint only.
   `test_completion`: 1072 passed (`affected_tests.py` selects the full suite for this change). `python3
   tools/spec_lint.py` exits 0; the full suite is left to the queue's close gate.
 
+- Review loop 4 fix (a red full close pins the gate): `tests/test_agentic_close_reuse.py`
+  (+2): a close that declined reuse (`NW_CLOSE_FULL`) runs `pytest` red and goes to TRIAGING;
+  after a `retry_gate`-style green loop at the rebased head the next close declines with R2
+  ("was red") and the full `pytest` gate runs; that green full run lifts the pin and the next
+  clean close reuses again; an interrupted or missing run changes nothing.
+  `tests/test_agentic_gates.py` (+1): `queue._apply` of a TRIAGING close with a red gate run
+  persists `close_red`, a MERGED close with a green run clears it.
+  `tests/test_agentic_dogfood_config.py` (+1 assertion block, +1 test): the dogfood `pytest`
+  close gate has `reuse_from: pytest-affected` and no `close.force_full`; `agentic.md` names
+  `reuse_from`, `close.force_full`, `NW_CLOSE_FULL`, `nw queue sentinel run` and `clear`.
+  Then `test_agentic_close*`, `test_agentic_queue*`, `test_agentic_gate*`,
+  `test_agentic_project`, `test_agentic_sentinel`, `test_remote_gates`,
+  `test_agentic_outbound_e2e`, `test_docs_*`: 925 + 156 passed. The full suite is left to the
+  queue's close gate. `python3 tools/spec_lint.py` exits 0.
+
 ### As shipped (2026-11-01)
 
 - Built to Design. New module `agentic/sentinel.py` holds `gate_reuse.json` (lock
@@ -466,6 +481,13 @@ sequencing hint only.
   and every `tools/*.py` path named in the close gate's or its `reuse_from` gate's `cmd`. The
   selector that decides R4-R6 and chose the loop gate's tests is then the one already on the
   base, never one the branch edited; a selector change always runs the full close gate.
+- Review loop 4 change: a red full close run pins that gate to full runs for the campaign.
+  `queue._apply` (kind `close`) calls `close.note_close_gates` with the close's gate run: every
+  red, non-interrupted close gate result is recorded in the campaign state's `close_red`
+  (`name -> {head, gate_seq}`), a green one removes its entry. Rule R2 declines reuse for a gate
+  listed there ("the full ... close run was red"), so after a triage `retry_gate` the loop
+  gate's new green cannot stand in for the full suite this campaign just saw fail; the next
+  full run of the gate decides, and once it is green reuse is possible again.
 
 ## Risks
 

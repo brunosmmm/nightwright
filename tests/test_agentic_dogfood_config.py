@@ -17,6 +17,9 @@ def test_dogfood_project_config_loads_and_names_the_gates():
     assert "spec-lint" not in {n for n, g in gates.items() if g.get("when")}   # always
     assert gates["pytest-affected"]["failed_first"] is True          # SPEC-0358
     assert "failed_first" not in gates["pytest"]
+    assert gates["pytest"]["reuse_from"] == "pytest-affected"     # SPEC-0359
+    assert "reuse_from" not in gates["pytest-affected"]
+    assert not doc.get("close", {}).get("force_full")              # SPEC-0359: no escape hatch
     assert gates["pytest"]["cmd"].startswith("uv run pytest")
     assert gates["pytest"]["required"] and gates["spec-lint"]["required"]
     assert "spec_lint.py" in gates["spec-lint"]["cmd"]
@@ -34,3 +37,11 @@ def test_dogfood_project_config_resolves_through_the_registry(tmp_path):
     doc = P.project_config(cfg, "Meta-Tools")
     assert Path(doc["_path"]) == ROOT / ".nw" / "project.yaml"
     assert Path(doc["_root"]) == ROOT
+
+
+def test_agentic_capability_doc_names_the_reuse_knobs():
+    """SPEC-0359: the close-tier reuse knobs and the sentinel CLI are documented."""
+    text = (ROOT / "docs" / "product" / "capabilities" / "agentic.md").read_text()
+    for needle in ("reuse_from", "close.force_full", "NW_CLOSE_FULL",
+                   "nw queue sentinel run", "nw queue sentinel clear"):
+        assert needle in text, needle
