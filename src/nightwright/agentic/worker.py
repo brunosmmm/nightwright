@@ -52,8 +52,12 @@ DEFAULT_FRAME_STALL_S = 300.0
 FINISH_GC_ENV = "NW_WORKER_FINISH_GC"
 EXIT_ERROR = 3
 EXIT_REFUSED = 2
+UPDATING_ERROR = "worker updating"
 SSH_SUBCOMMANDS = ("info", "have", "gate-job", "gc", "submit", "attach", "poll", "cancel", "jobs",
-                   "claude-check")
+                   "claude-check", "update")
+# when this interpreter started (SPEC-0369): a claim that began before an install did is the old
+# code, and must not run against the venv that install replaced
+PROCESS_STARTED = time.time()
 
 # `\Z`, not `$`: `$` also matches before a trailing newline, and these grammars are literal
 # never only dots: `.`/`..` name the store's own dirs, not a job or a cache
@@ -76,10 +80,11 @@ _GIT_SCRUB = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTOR
 
 
 class WorkerError(Exception):
-    def __init__(self, stage: str, error: str):
+    def __init__(self, stage: str, error: str, retryable: bool = False):
         super().__init__(error)
         self.stage = stage
         self.error = error
+        self.retryable = retryable              # SPEC-0369: the claim may simply be sent again
 
 
 # ---- store -----------------------------------------------------------------------------------
@@ -130,6 +135,41 @@ def jobs_lock(cfg):
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+def update_refusal(cfg) -> str | None:
+    """SPEC-0369: `"worker updating"` when a claim must not start a job (caller holds
+    `jobs_lock`): `worker/updating` is there and another process holds `worker/update.lock`
+    (a marker a killed update left is removed), or an install began after this process did."""
+    wd = worker_dir(cfg)
+    if (wd / "updating").exists():
+        held = False
+        try:
+            fd = os.open(wd / "update.lock", os.O_RDWR | os.O_CREAT, 0o644)
+        except OSError:
+            fd = None
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                held = True
+            finally:
+                os.close(fd)
+        if held:
+            return UPDATING_ERROR
+        try:
+            (wd / "updating").unlink()
+        except OSError:
+            pass
+    try:
+        started = json.loads((wd / "update.json").read_text(encoding="utf-8")).get(
+            "install_started_at")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if isinstance(started, (int, float)) and not isinstance(started, bool) \
+            and started > PROCESS_STARTED:
+        return UPDATING_ERROR
+    return None
 
 
 def _read_have(cfg, repo_key) -> dict:
@@ -714,6 +754,8 @@ def gate_job(cfg, stdin, stdout) -> int:
 
             state["stage"] = "claim"
             with jobs_lock(cfg):
+                if update_refusal(cfg):         # SPEC-0369: never start on a replaced install
+                    raise WorkerError("claim", UPDATING_ERROR, retryable=True)
                 jobs_dir(cfg).mkdir(parents=True, exist_ok=True)
                 try:
                     (jobs_dir(cfg) / h["job_id"]).mkdir()
@@ -747,7 +789,7 @@ def gate_job(cfg, stdin, stdout) -> int:
             job_rec.update(state="done", finished_at=now_iso())
         except WorkerError as e:
             state["stage"] = "finish"               # a late signal no longer raises
-            return _fail(cfg, h, job, frames, job_rec, e.stage, e.error)
+            return _fail(cfg, h, job, frames, job_rec, e.stage, e.error, e.retryable)
         except Exception as e:                      # any exception becomes an error frame
             stage, state["stage"] = state["stage"], "finish"
             return _fail(cfg, h, job, frames, job_rec, stage, f"{type(e).__name__}: {e}")
@@ -762,12 +804,12 @@ def gate_job(cfg, stdin, stdout) -> int:
             signal.signal(sig, handler)
 
 
-def _fail(cfg, h, job, frames, job_rec, stage, error) -> int:
+def _fail(cfg, h, job, frames, job_rec, stage, error, retryable=False) -> int:
     done = "done" in frames.sent                # `done` went out: never a second final frame
     if done:
         print(f"nw worker: after done: {error}", file=sys.stderr)
     else:
-        frames.emit("error", stage=stage, error=error)
+        frames.emit("error", stage=stage, error=error, **({"retryable": True} if retryable else {}))
     if job is not None:
         try:
             if job_rec is not None and not done:
@@ -1014,7 +1056,7 @@ def info(cfg) -> dict:
     probe = wd if wd.is_dir() else Path(cfg["data_dir"])
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
-    return {"schema": INFO_SCHEMA, "protocol": JOB_SCHEMA, "features": ["async", "persona"],
+    return {"schema": INFO_SCHEMA, "protocol": JOB_SCHEMA, "features": ["async", "persona", "update"],
             "version": __version__,
             "git_sha": sha, "build_id": buildid.local(), "data_dir": str(cfg["data_dir"]),
             "git": _version_out("git", "--version"), "uv": _version_out("uv", "--version"),
@@ -1069,7 +1111,8 @@ def check_ssh_command(original: str | None) -> list[str]:
     `ValueError(reason)`. The grammar is literal: `info [--json]`;
     `have --repo <key> <sha>...`; `gate-job`; `gc [--keep-days <n>]`; and SPEC-0340's
     `submit`; `attach <job> [--from <n>]`; `poll <job> [--from <n>] [--renew]`;
-    `cancel <job>`; `jobs [--json]`; SPEC-0344's `claude-check [--auth]`."""
+    `cancel <job>`; `jobs [--json]`; SPEC-0344's `claude-check [--auth]`; SPEC-0369's
+    `update [--force]`."""
     if not original or not original.strip():
         raise ValueError("empty command")
     try:
@@ -1097,6 +1140,8 @@ def check_ssh_command(original: str | None) -> list[str]:
         ok = args in ([], ["--json"])
     elif sub == "claude-check":                 # SPEC-0344
         ok = args in ([], ["--auth"])
+    elif sub == "update":                       # SPEC-0369
+        ok = args in ([], ["--force"])
     elif sub == "cancel":
         ok = len(args) == 1 and _job_arg(args[0])
     elif sub in ("attach", "poll"):

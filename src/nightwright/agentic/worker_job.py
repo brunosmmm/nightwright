@@ -674,35 +674,40 @@ def submit(cfg, stdin, stdout) -> int:
     job = W.jobs_dir(cfg) / h["job_id"]
     existing = None
     reclaim_error = claim_error = None
+    retryable = False
     with W.jobs_lock(cfg):
-        W.jobs_dir(cfg).mkdir(parents=True, exist_ok=True)
-        try:
-            job.mkdir()
-        except FileExistsError:
-            existing = runproc.read_json(job / "job.json") or {}
-            if existing.get("header_digest") == digest:
-                if "spawned_ts" not in existing and _lock_held(job) is False:
-                    # its upload broke off and its submit died: no job ever ran, claim afresh
-                    shutil.rmtree(job, ignore_errors=True)
-                    try:
-                        job.mkdir()
-                        existing = None
-                    except OSError as e:        # something in it could not be removed
-                        reclaim_error = f"could not reclaim job {h['job_id']}: {e}"
-                else:
-                    st = job_state(cfg, job, sett, locked=True)
-        except OSError as e:                    # a full disk: nothing claimed
-            claim_error = f"could not claim job {h['job_id']}: {e}"
-        if existing is None and claim_error is None:
+        if W.update_refusal(cfg):               # SPEC-0369: never start on a replaced install
+            claim_error, retryable = W.UPDATING_ERROR, True
+        else:
+            W.jobs_dir(cfg).mkdir(parents=True, exist_ok=True)
             try:
-                lock_fd, job_rec = _claim(job, h, digest)
-                frames.log = job / "frames.jsonl"
-            except OSError as e:                # a full disk: un-claimed, no traceback
+                job.mkdir()
+            except FileExistsError:
+                existing = runproc.read_json(job / "job.json") or {}
+                if existing.get("header_digest") == digest:
+                    if "spawned_ts" not in existing and _lock_held(job) is False:
+                        # its upload broke off and its submit died: no job ever ran, claim afresh
+                        shutil.rmtree(job, ignore_errors=True)
+                        try:
+                            job.mkdir()
+                            existing = None
+                        except OSError as e:        # something in it could not be removed
+                            reclaim_error = f"could not reclaim job {h['job_id']}: {e}"
+                    else:
+                        st = job_state(cfg, job, sett, locked=True)
+            except OSError as e:                    # a full disk: nothing claimed
                 claim_error = f"could not claim job {h['job_id']}: {e}"
+            if existing is None and claim_error is None:
+                try:
+                    lock_fd, job_rec = _claim(job, h, digest)
+                    frames.log = job / "frames.jsonl"
+                except OSError as e:                # a full disk: un-claimed, no traceback
+                    claim_error = f"could not claim job {h['job_id']}: {e}"
     if existing is not None or claim_error is not None:     # outside jobs_lock
         _drain(stdin, h["bundle_bytes"])        # the client's upload, so it never hits EPIPE
         if reclaim_error is not None or claim_error is not None:
-            frames.emit("error", stage="claim", error=reclaim_error or claim_error)
+            frames.emit("error", stage="claim", error=reclaim_error or claim_error,
+                        **({"retryable": True} if retryable else {}))
             return W.EXIT_ERROR
         if existing.get("header_digest") == digest:     # idempotent: nothing new starts
             _print(stdout, _status(h["job_id"], st["state"], n=_last_n(job),

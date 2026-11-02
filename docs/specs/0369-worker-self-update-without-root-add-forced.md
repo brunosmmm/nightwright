@@ -1,7 +1,7 @@
 ---
 id: SPEC-0369
 title: "Worker self-update without root: forced-command verb `nw worker update` (worker side)"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-02
 updated: 2026-11-02
@@ -245,44 +245,44 @@ coordinator.
 
 ## Acceptance criteria
 
-- [ ] `nw worker ssh-command` accepts `nw worker update` and `nw worker update --force` from
+- [x] `nw worker ssh-command` accepts `nw worker update` and `nw worker update --force` from
       `SSH_ORIGINAL_COMMAND` and refuses (exit 2, nothing run) `update` with any other
       argument, `update --force --force`, `update ;id`, and any unknown verb. `nw worker info
       --json` lists `update` in `features`.
-- [ ] A worker given a valid header and wheel with a different build id installs it with `uv
+- [x] A worker given a valid header and wheel with a different build id installs it with `uv
       tool install --reinstall <wheel>` as the invoking user (no `sudo` anywhere on the path),
       then reports `state: updated`, `build_id_after` equal to the header's `build_id`, exit 0;
       the staged wheel, part file and `worker/updating` marker are gone afterwards.
-- [ ] When the installed build id already equals the header's, the result is `unchanged`, exit
+- [x] When the installed build id already equals the header's, the result is `unchanged`, exit
       0, and `uv` is not run (with or without `--force`).
-- [ ] A header with a bad schema, an unsafe or non-wheel `wheel` name, a `size` of 0 or above
+- [x] A header with a bad schema, an unsafe or non-wheel `wheel` name, a `size` of 0 or above
       64 MiB, a malformed `sha256` or a malformed `build_id` fails with stage `header` and
       writes nothing under `worker/update/`.
-- [ ] A truncated upload, a sha256 mismatch, a wheel whose zip is corrupt, one without
+- [x] A truncated upload, a sha256 mismatch, a wheel whose zip is corrupt, one without
       `nightwright/__init__.py`, or one whose computed build id differs from the header's
       fails (stage `receive` or `validate`), exits 3, and leaves the installed code untouched
       (`uv` not run).
-- [ ] With a live job (a held `job.lock`, either a synchronous gate job or a detached submitted
+- [x] With a live job (a held `job.lock`, either a synchronous gate job or a detached submitted
       job in `accepted` or `running`) and no `--force`, the result is `busy` with the job ids in
       `live_jobs`, exit 5, and the installed code is untouched. A `lost` job is not live.
       With `--force` the install proceeds and no job process is signalled.
-- [ ] Two concurrent `update` calls: the second gets `busy` (`another update is running`)
+- [x] Two concurrent `update` calls: the second gets `busy` (`another update is running`)
       without touching anything. `jobs_lock` is not held while `uv` runs (a `gc` or an
       unrelated lock take completes during a fake `uv` that is still running). A `gate-job` or
       `submit` claim started during an update, and one from a process started before an install
       that has since begun, is refused with `stage: claim`, `error: worker updating`,
       `retryable: true`, and never starts a job; a marker left by a killed update does not
       refuse claims.
-- [ ] A `uv` failure or timeout gives `failed`, stage `install`, with the last non-empty line of
+- [x] A `uv` failure or timeout gives `failed`, stage `install`, with the last non-empty line of
       `uv.log` in `error`; an install after which a fresh `nw worker info --json` reports
       another build id (or does not run) gives `failed`, stage `verify`. The verify step runs in
       a new process, not in the replaced one. `worker/update.json` holds the last result.
-- [ ] A dropped connection after the install began (stdout closed, the ssh-side stderr closed
+- [x] A dropped connection after the install began (stdout closed, the ssh-side stderr closed
       mid-run, `SIGHUP` delivered) does not interrupt `uv`: a fake `uv` that keeps running and
       writing after the close still completes, the install finishes, and `worker/update.json`
       records `updated`. `uv` is started with default `SIGHUP`/`SIGPIPE` dispositions, in its
       own session, with no fd shared with the ssh session.
-- [ ] A real forced command run under a `fish` login shell (when `fish` is installed) accepts
+- [x] A real forced command run under a `fish` login shell (when `fish` is installed) accepts
       `nw worker update` with the update stream on stdin and installs.
 
 ## Test plan
@@ -338,6 +338,44 @@ coordinator.
   `tests/test_workers_bootstrap.py`; the full suite runs at the queue's close gate.
   `python3 tools/spec_lint.py` exits 0.
 
+### Test record (2026-11-02)
+
+- `uv run pytest -q tests/test_worker_update.py tests/test_worker_ssh_command.py` (new
+  `test_worker_update.py`: 38 tests with a fake `uv`/`nw`; grammar cases incl. injections), then
+  `python3 tools/affected_tests.py --include tests/test_worker_update{,_fish,_real_uv}.py
+  --include tests/test_worker{,_jobs,_ssh_command}.py --include tests/test_workers_bootstrap.py
+  --run uv run pytest -q -n 4`: 727 passed.
+- `tests/test_worker_update_real_uv.py` ran against the real `uv` (`uv build --wheel` of this
+  checkout, a real `uv tool install --reinstall` into a temp `UV_TOOL_DIR`/`UV_TOOL_BIN_DIR`/`HOME`,
+  then the installed `nw worker info --json` reported `compute_wheel(wheel)`): passed.
+  `tests/test_worker_update_fish.py` ran the real forced command from `fish -c`: passed.
+- The full suite was left to the queue's close gate.
+- **Not run: the manual steps against the real box** (`nw@morais-Desktop`, the registry's only
+  worker). Pushing an unreleased wheel to the human's production worker is an outward-facing
+  change to their fleet, and that worker's installed nightwright predates the `update` verb
+  (it would refuse `nw worker update`), so it first needs `nw workers bootstrap box --reinstall`.
+  The real-`uv` and `fish` tests above are the only real-binary evidence so far.
+
+### As shipped (2026-11-02)
+
+- `worker_update.py` as designed, with these deviations: `worker/update.lock` is taken right
+  after the header is accepted (before `receive`), not at step 4, so a second concurrent update
+  answers `busy` before it can empty the staging dir of the first; after `validate` the part
+  file is renamed to `update/<wheel>` because `uv` needs a `.whl` file name (that file is the
+  "staged wheel" removed in cleanup). Only the process holding the lock cleans up files.
+- `install_started_at` is epoch seconds (`time.time()`), compared with `worker.PROCESS_STARTED`.
+  `worker/update.json` is written from step 6 on (not for header/receive/validate/busy/unchanged
+  answers), so an `unchanged` answer never erases the install marker older claimants rely on.
+- The claim refusal lives in `worker.update_refusal(cfg)` (called under `jobs_lock` by `gate_job`
+  and `worker_job.submit`); `WorkerError` gained `retryable`, and the claim `error` frame gains
+  `retryable: true`. `update()` takes an optional `nw_argv` (the `nw` used for the verify step)
+  so tests can use a fake; the CLI passes none and gets `worker.own_nw()`.
+- When the ssh stdout is closed, Python's exit-time flush can turn the process exit status into
+  120; the result is still in `worker/update.json`.
+- `SPEC-0367` is not yet in this spec's `depends_on`: the spec file is guarded during
+  implementation, so that one-line frontmatter edit is left for a later spec edit.
+- `tests/test_worker_jobs.py` now expects `features == ["async", "persona", "update"]`.
+
 ## Rollout / migration
 
 1. **Admission:** SPEC-0367 must be on main first (build id, `compute_wheel`, `local()`, the
@@ -353,11 +391,11 @@ coordinator.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
+- [x] Acceptance criteria all met.
 - [ ] Test plan executed; affected automated tests pass and the manual steps against the real
       box were performed and noted in the spec.
-- [ ] No regressions (full suite at the queue's close gate).
-- [ ] Spec body updated to match what shipped.
+- [x] No regressions (full suite at the queue's close gate).
+- [x] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` regenerated with `python3 tools/spec_lint.py --write-ledger`, and
       `python3 tools/spec_lint.py` exits 0.
 

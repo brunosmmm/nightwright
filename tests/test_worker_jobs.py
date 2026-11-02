@@ -569,7 +569,7 @@ def test_ssh_command_refuses_bad_job_or_cursor(execs, cmd):
 def test_info_reports_the_async_feature(wenv):
     r = LB.run(wenv, "nw worker info --json")
     rec = json.loads(b"\n".join(r.lines))
-    assert rec["protocol"] == "nw.job.v1" and rec["features"] == ["async", "persona"]   # SPEC-0344
+    assert rec["protocol"] == "nw.job.v1" and rec["features"] == ["async", "persona", "update"]   # SPEC-0344, SPEC-0369
 
 
 def test_the_worker_cli_has_the_async_commands():

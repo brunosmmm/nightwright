@@ -10,6 +10,7 @@ import click
 from ..report import _dump_json
 from . import worker as W
 from . import worker_job as WJ
+from . import worker_update as WU
 
 
 @click.group("worker")
@@ -28,6 +29,7 @@ def worker_group():
     nw worker cancel JOB               stop a submitted job
     nw worker jobs --json              the jobs on this worker and their states
     nw worker gc --keep-days 2         age out job dirs and cached objects
+    nw worker update [--force]         install the wheel on stdin (SPEC-0369)
     nw worker ssh-command              the forced command for the worker's SSH key
     """
 
@@ -156,9 +158,20 @@ def worker_gc(cfg, keep_days):
         raise SystemExit(1)
 
 
+@worker_group.command("update")
+@click.option("--force", is_flag=True, help="install even while jobs are live (never kills one)")
+@click.pass_obj
+def worker_update(cfg, force):
+    """SPEC-0369: install a wheel with `uv tool install --reinstall`, as this user, no sudo.
+    stdin: one nw.worker.update.v1 JSON line, then `size` wheel bytes. stdout: one
+    nw.worker.update.result.v1 JSON line. Exit 0 updated/unchanged, 3 failed, 5 busy (live
+    jobs without --force, or another update running)."""
+    raise SystemExit(WU.update(cfg, force, sys.stdin.buffer, sys.stdout.buffer))
+
+
 @worker_group.command("ssh-command")
 def worker_ssh_command():
     """The SSH forced command: exec `nw worker
-    <info|have|gate-job|gc|submit|attach|poll|cancel|jobs>` from SSH_ORIGINAL_COMMAND, refuse
+    <info|have|gate-job|gc|submit|attach|poll|cancel|jobs|claude-check|update>` from SSH_ORIGINAL_COMMAND, refuse
     anything else (exit 2)."""
     raise SystemExit(W.ssh_command())
