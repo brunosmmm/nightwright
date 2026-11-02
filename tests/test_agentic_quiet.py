@@ -1136,6 +1136,7 @@ def test_corrupt_digest_file_falls_back_to_fresh(tmp_path, rec):
     d = QT.Digest.load(cfg, "conductor")
     assert d.empty and d.last_ping_fp == [] and d.last_printed_last_id == 0 and d.drains == []
     assert d.watches == []
+    assert d.pending == QT._fresh()                         # every element check, not just first_id
     out = io.StringIO()
     E.cursor_set(cfg, "conductor", 0)
     E.append(cfg, "admitted", campaign="a")
@@ -1397,6 +1398,25 @@ def test_replay_does_not_track_or_wake_old_silent_events(tmp_path, monkeypatch):
     (digest,) = _lines(out)                               # no stale wake line
     assert digest["data"]["held"]["campaign_silent"] == 1
     assert QT.Digest.load(cfg, "conductor").watches == []
+
+
+def test_replay_does_not_track_or_wake_old_drain(tmp_path, monkeypatch):
+    cfg, clock = _cfg(tmp_path), Clock()
+    lease = {"v": _drain_lease(clock, 61)}                # the same drain, still draining later
+    monkeypatch.setattr(QT, "L", types.SimpleNamespace(lease_status=lambda cfg, now=None:
+                                                       lease["v"]))
+    _printed_digest(cfg, clock)
+    E.append(cfg, "runner_draining", data={"reason": "r", "draining_s": 61, "ready": 0,
+                                           "slots": 1, "waiting_on": [{"campaign": "a",
+                                                                       "timeout_s": 100}]})
+    clock.advance(5000)                                   # far past the drain's bound
+    _cursor_file(cfg).unlink()
+    out = io.StringIO()
+    _follow(cfg, out, clock=clock, from_start=True)
+    (digest,) = _lines(out)                               # no stale runner_draining wake line
+    assert digest["type"] == "conductor_digest"
+    assert digest["data"]["held"]["runner_draining"] == 1
+    assert QT.Digest.load(cfg, "conductor").drains == []
 
 
 def test_corrupt_digest_non_utf8_and_directory(tmp_path, caplog):
