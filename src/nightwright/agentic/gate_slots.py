@@ -83,11 +83,13 @@ def _waiter_path(cfg, campaign_id) -> Path:
     return slots_dir(cfg) / f"waiting-{campaign_id}.json"
 
 
-def _try_take(cfg, pools: list, campaign_id, t0: float):
+def _try_take(cfg, pools: list, campaign_id, t0: float, skip=None):
     """Take the first free slot of the first pool that has one: `(slot, fd, waited_s, pool)`,
     else None. The hold file records the wait that ended in it (`waited_s`, seconds since
-    `t0`)."""
+    `t0`). SPEC-0343: a non-local pool for which `skip(pool)` is true is passed over."""
     for pool, n_slots in pools:
+        if pool is not None and skip is not None and skip(pool):
+            continue
         d = pool_dir(cfg, pool)
         d.mkdir(parents=True, exist_ok=True)
         for n in range(n_slots):
@@ -139,6 +141,12 @@ def _probe_held(d: Path) -> list[dict]:
         finally:
             os.close(fd)
     return held
+
+
+def held(cfg, pool) -> list[dict]:
+    """SPEC-0343: the held slots of one pool (`pool_dir`); a missing dir means none."""
+    d = pool_dir(cfg, pool)
+    return _probe_held(d) if d.is_dir() else []
 
 
 def occupancy(cfg) -> dict:
@@ -198,7 +206,7 @@ def _drop_marker(marker: Path) -> None:
 
 @contextmanager
 def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
-            wait_event_s=None, pools=None) -> Iterator[SlotHold]:
+            wait_event_s=None, pools=None, skip=None) -> Iterator[SlotHold]:
     """Hold one slot for the `with` body. `pools` is an ordered list of `(pool_name, n_slots)`
     (`pool_name` a worker name, `None` for local; default local only): each poll tries them in
     order and takes the first free slot, so earlier pools are preferred, and the pool list is
@@ -207,7 +215,8 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
     waiter marker published; a stop (`stop` set, or the gates' sticky stop) ends the wait and
     yields a hold with `interrupted=True` and no slot. `on_wait(occupancy, waited_s)` is
     called once when the wait passes `wait_event_s` (default `WAIT_EVENT_S`; SPEC-0336's worker
-    reads it from its environment)."""
+    reads it from its environment). SPEC-0343: `skip(pool) -> bool`, evaluated before each try of
+    a non-local pool, passes over a pool that may no longer take gates (a draining worker)."""
     from . import gates as G                    # lazy: gates imports this module
     poll_s = POLL_S if poll_s is None else poll_s
     wait_event_s = WAIT_EVENT_S if wait_event_s is None else wait_event_s
@@ -218,7 +227,7 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
     for pool, _n in pools:
         pool_dir(cfg, pool)                     # reject a bad name before anything is held
     t0 = time.monotonic()
-    taken = _try_take(cfg, pools, campaign_id, t0)
+    taken = _try_take(cfg, pools, campaign_id, t0, skip)
     if taken is None:
         marker = _waiter_path(cfg, campaign_id)
         _atomic_write(marker, json.dumps({"campaign": campaign_id, "pid": os.getpid(),
@@ -239,7 +248,7 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
                     stop.wait(poll_s)
                 else:
                     time.sleep(poll_s)
-                taken = _try_take(cfg, pools, campaign_id, t0)
+                taken = _try_take(cfg, pools, campaign_id, t0, skip)
         finally:
             _drop_marker(marker)
     if taken is None:

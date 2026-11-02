@@ -183,7 +183,8 @@ def normalize(cfg, rec: dict) -> dict:
             "kinds": kinds if isinstance(kinds, list) else list(DEFAULT_KINDS),
             "nw": rec.get("nw") if isinstance(rec.get("nw"), str) and rec["nw"] else "nw",
             "enabled": rec.get("enabled") is not False, "ssh_argv": list(argv),
-            "cooldown_until": rec.get("cooldown_until")}
+            "cooldown_until": rec.get("cooldown_until"),
+            "draining": rec.get("draining") is True}
 
 
 def load(cfg) -> list[dict]:
@@ -231,13 +232,71 @@ def in_cooldown(rec: dict, now=None) -> bool:
     return until is not None and until > now
 
 
+def placeable(rec: dict) -> bool:
+    """SPEC-0343: a new gate may be placed on the normalized record `rec`: enabled, not
+    draining, and taking gates."""
+    return bool(rec["enabled"]) and not rec.get("draining") and "gate" in rec["kinds"]
+
+
+def placeable_by_name(cfg, name) -> bool:
+    """`placeable` for the worker `name`, from a fresh read of the registry; False for an
+    unknown name (or an unreadable registry)."""
+    rec = next((w for w in load(cfg) if w["name"] == name), None)
+    return rec is not None and placeable(rec)
+
+
 def gate_pools(cfg, now=None) -> list[tuple]:
-    """`[(worker, slots), ...]` for enabled gate workers out of cooldown, in registry order,
+    """`[(worker, slots), ...]` for placeable gate workers out of cooldown, in registry order,
     then `[(None, agentic.gates.slots)]`: the `pools` argument of `gate_slots.acquire`."""
     from . import gate_slots
     pools = [(w["name"], w["slots"]) for w in load(cfg)
-             if w["enabled"] and "gate" in w["kinds"] and not in_cooldown(w, now)]
+             if placeable(w) and not in_cooldown(w, now)]
     return pools + [(LOCAL, gate_slots.settings(cfg)["slots"])]
+
+
+def draining_jobs(cfg) -> dict:
+    """SPEC-0343: `{worker: k}`, `k` the number of its non-final remote job records."""
+    from . import remote_jobs as RJ
+    out: dict = {}
+    for rec in RJ.live(cfg):
+        out[rec.get("worker")] = out.get(rec.get("worker"), 0) + 1
+    return out
+
+
+def _drained(cfg, name: str) -> bool:
+    """A draining worker is idle: no non-final job record names it and no slot of its pool is
+    held (a gate between `acquire` and `submit` has a slot but no record yet)."""
+    from . import gate_slots
+    from . import remote_jobs as RJ
+    return not any(r.get("worker") == name for r in RJ.live(cfg)) \
+        and not gate_slots.held(cfg, name)
+
+
+def finish_drains(cfg) -> list[str]:
+    """SPEC-0343, every queue tick: each draining worker that is idle (`_drained`) gets
+    `enabled: false` and loses `draining`, in one `update`; returns their names. The check runs
+    again inside the registry lock, so a concurrent `on` / `off` / `drain` cannot interleave;
+    the registry is written only when some draining worker looks idle. Raises `OSError` /
+    `ValueError` (nothing disabled) when the registry or the `remote-jobs` dir is unreadable."""
+    from . import remote_jobs as RJ
+    names = [r["name"] for r in read_strict(cfg) if r.get("draining") is True]
+    if not names:
+        return []
+    d = RJ.jobs_dir(cfg)
+    if d.exists():
+        os.listdir(d)                           # unreadable: raise rather than see no records
+    if not any(_drained(cfg, n) for n in names):
+        return []
+
+    def fn(records):
+        done = []
+        for r in records:
+            if r.get("draining") is True and _drained(cfg, r["name"]):
+                r["enabled"] = False
+                r.pop("draining", None)
+                done.append(r["name"])
+        return done
+    return update(cfg, fn)
 
 
 def check(cfg, rec: dict) -> dict:

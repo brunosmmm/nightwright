@@ -124,11 +124,14 @@ def pools_for(cfg, project_cfg: dict, campaign_state: dict, *, seq: int,
     """The `pools` for `gate_slots.acquire`, or None for local only. Eligibility is checked
     only when a remote pool exists, so without an enabled worker nothing extra runs. With
     `worker` (`nw queue gates --worker`): only that worker's pool, its cooldown ignored; an
-    unknown or disabled worker, or an ineligible run, raises ValueError."""
+    unknown, disabled or draining worker, or an ineligible run, raises ValueError."""
     if worker is not None:
         rec = next((w for w in WK.load(cfg) if w["name"] == worker), None)
         if rec is None or not rec["enabled"] or "gate" not in rec["kinds"]:
             raise ValueError(f"worker {worker!r} is unknown or disabled (see `nw workers list`)")
+        if rec["draining"]:                     # SPEC-0343
+            raise ValueError(f"worker {worker!r} is unknown, disabled or draining "
+                             "(see `nw workers list`)")
         pools = [(worker, rec["slots"])]
     else:
         pools = WK.gate_pools(cfg)
@@ -700,7 +703,9 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
     job's retry: the job id carries the attempt and the record its exclusions.
     `on_attempt(job_id, recorded)` is called once the job is about to be sent (its record
     written, for an async worker; `recorded` False for a `gate-job` one, which has none and
-    keeps its `-a0` id), so a stop or a transport failure before that leaves no trace of it."""
+    keeps its `-a0` id), so a stop or a transport failure before that leaves no trace of it.
+    SPEC-0343: the record is re-read after the slot is taken; a worker that is no longer
+    `placeable` (draining or disabled) gets nothing sent, as an unregistered one."""
     cid = campaign_state["id"]
     job_id = f"{cid}-gate-{seq:03d}-a0"
     bundle = store.child_tmp(cfg, cid, owner) / "job.bundle"
@@ -711,6 +716,9 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
         rec = next((w for w in WK.load(cfg) if w["name"] == worker), None)
         if rec is None:
             raise RemoteFailure("registry", f"worker {worker!r} is no longer registered",
+                                cooldown=False)
+        if not WK.placeable(rec):               # SPEC-0343: drained or disabled since the take
+            raise RemoteFailure("registry", f"worker {worker} is draining or disabled",
                                 cooldown=False)
         if RJ.has_async(rec) and RJ.read(cfg, RJ.gate_job_id(cid, seq, attempt)) is None:
             job_id = RJ.gate_job_id(cid, seq, attempt)

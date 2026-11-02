@@ -39,6 +39,7 @@ EVENT_TYPES = {
     "worker_job_retried": ("job_id", "from_worker", "to_worker", "attempt"),  # SPEC-0342
     # SPEC-0342: a queue-wide note (an escalation answer the queue could not carry out)
     "note": ("text",),
+    "worker_drained": ("worker",),                                 # SPEC-0343
     "parked": ("reason", "detail", "resume_to"),
     "resumed": ("to",),
     "merged": ("merged_sha",),

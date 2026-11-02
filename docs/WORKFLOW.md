@@ -401,3 +401,12 @@ step finds the campaign's live record before it picks a seq, attaches from frame
 finishes it under the same seq (rebuilding every result, rewriting no file already applied;
 the `gate` event's `event_uid` keeps it from being written twice). A park or
 `nw queue abandon` cancels the campaign's remote jobs.
+
+**Drain (SPEC-0343).** `nw workers drain <name>` takes a worker out of service without losing
+its jobs: no new gate is placed on it (a gate already waiting passes it over, and one that
+took its slot in the race runs locally), while jobs already on it, adopted ones included,
+finish there. `nw workers list` shows `draining (k jobs)`, `k` its non-final job records. Each
+queue tick disables a draining worker once no live record names it and no slot of its pool is
+held, emitting the queue event `worker_drained {worker}`; with no runner ticking it stays
+draining. `on` cancels a drain, `off` disables at once (a gate that then lands on its slot runs
+locally).

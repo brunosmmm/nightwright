@@ -28,6 +28,7 @@ def workers_group():
     nw workers list                    name, destination, slots, enabled, cooldown, held
     nw workers check [NAME]            probe over SSH
     nw workers on|off NAME             enable (clears cooldown) / disable
+    nw workers drain NAME              no new gates; disabled once idle (SPEC-0343)
     nw workers rm NAME                 unregister (held slots are untouched)
     """
 
@@ -176,11 +177,13 @@ def workers_list(cfg, as_json):
     _load_or_fail(cfg)
     ws = WK.load(cfg)
     occ = GS.occupancy(cfg).get("workers") or {}
+    jobs = WK.draining_jobs(cfg) if any(w["draining"] for w in ws) else {}
     rows = [{"name": w["name"], "ssh": w["ssh"], "slots": w["slots"], "kinds": w["kinds"],
              "enabled": w["enabled"], "cooldown_until": w["cooldown_until"]
              if WK.in_cooldown(w) else None,
              "held": len((occ.get(w["name"]) or {}).get("held") or []),
-             "identity": w.get("identity")} for w in ws]
+             "identity": w.get("identity"), "draining": w["draining"],
+             "draining_jobs": jobs.get(w["name"], 0) if w["draining"] else None} for w in ws]
     if as_json:
         _dump_json({"schema": "nw.workers.list.v1", "workers": rows})
         return
@@ -191,7 +194,10 @@ def workers_list(cfg, as_json):
     for col in ("name", "ssh", "slots", "enabled", "cooldown", "held"):
         t.add_column(col)
     for r in rows:
-        t.add_row(r["name"], r["ssh"], str(r["slots"]), "yes" if r["enabled"] else "no",
+        enabled = "yes" if r["enabled"] else "no"
+        if r["draining"]:
+            enabled = f"draining ({r['draining_jobs']} jobs)"
+        t.add_row(r["name"], r["ssh"], str(r["slots"]), enabled,
                   r["cooldown_until"] or "—", f"{r['held']}/{r['slots']}")
     console.print(t)
 
@@ -228,11 +234,12 @@ def workers_check(cfg, name, as_json):
 @click.argument("name")
 @click.pass_obj
 def workers_on(cfg, name):
-    """Enable a worker and clear its cooldown."""
+    """Enable a worker and clear its cooldown (and a drain: SPEC-0343)."""
     def fn(records):
         r = _find(records, name)
         r["enabled"] = True
         r["cooldown_until"] = None
+        r.pop("draining", None)
     _update(cfg, fn)
     _say(f"{name}: enabled")
 
@@ -241,11 +248,65 @@ def workers_on(cfg, name):
 @click.argument("name")
 @click.pass_obj
 def workers_off(cfg, name):
-    """Disable a worker. Held slots are untouched; waiters keep the pools they started with."""
+    """Disable a worker now (clears a drain). Held slots are untouched; a waiter that then
+    takes one of its slots runs the gate locally (SPEC-0343)."""
     def fn(records):
-        _find(records, name)["enabled"] = False
+        r = _find(records, name)
+        r["enabled"] = False
+        r.pop("draining", None)
     _update(cfg, fn)
     _say(f"{name}: disabled")
+
+
+class _DrainNoop(Exception):
+    """Raised inside `drain`'s update so the registry is not rewritten."""
+
+
+@workers_group.command("drain")
+@click.argument("name")
+@click.pass_obj
+def workers_drain(cfg, name):
+    """Take a worker out of service without losing its running jobs (SPEC-0343): no new gate
+    is placed on it, jobs already on it (adopted ones included) finish there.
+
+    The worker stays draining until a queue tick sees it idle and disables it.
+    If no runner is ticking, it stays draining until one runs. `on` cancels the drain;
+    `off` disables the worker at once."""
+    def state(r):
+        if r.get("enabled") is False:
+            return f"{name}: already disabled; nothing to drain"
+        if r.get("draining") is True:
+            return f"{name}: already draining ({_jobs_on(cfg, name)} jobs)"
+        return None
+
+    rec = next((r for r in _load_or_fail(cfg) if r.get("name") == name), None)
+    if rec is None:
+        err_console.print(Text(f"no worker named {name}"))
+        raise SystemExit(2)
+    if (msg := state(rec)) is not None:
+        _say(msg)
+        return
+
+    def fn(records):
+        r = next((r for r in records if r.get("name") == name), None)
+        if r is None:
+            raise _DrainNoop(None)
+        if (m := state(r)) is not None:
+            raise _DrainNoop(m)
+        r["draining"] = True
+    try:
+        _update(cfg, fn)
+    except _DrainNoop as e:                     # changed under us: nothing written
+        if e.args[0] is None:
+            err_console.print(Text(f"no worker named {name}"))
+            raise SystemExit(2)
+        _say(e.args[0])
+        return
+    _say(f"{name}: draining ({_jobs_on(cfg, name)} jobs)")
+
+
+def _jobs_on(cfg, name) -> int:
+    return WK.draining_jobs(cfg).get(name, 0)
 
 
 @workers_group.command("rm")

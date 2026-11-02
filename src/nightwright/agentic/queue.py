@@ -4251,6 +4251,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
         store.sweep_campaign_tmp(cfg, st["id"])
     _settle_ended_remote_jobs(cfg, flying)
     _apply_worker_escalations(cfg)
+    _finish_worker_drains(cfg)
     items = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
     slots = slots_for(cfg)
     busy = [s for s in items if s.get("state") in ACTIVE_STATES]
@@ -7702,6 +7703,23 @@ def _settle_ended_remote_jobs(cfg, flying) -> None:
                 continue
         cancelled = _cancel_remote_jobs(cfg, cid, note=state is not None)
         RJ.prune(cfg, cid, keep=cancelled)      # a just-cancelled record stays one tick
+
+
+def _finish_worker_drains(cfg) -> None:
+    """SPEC-0343, every tick: disable the draining workers that are idle (`workers.finish_drains`)
+    and emit `worker_drained` for each. An unreadable registry or `remote-jobs` dir skips the
+    pass (journaled `worker_drain_skipped`); nothing is disabled."""
+    from . import events as E                   # lazy: events imports this module
+    try:
+        drained = workers.finish_drains(cfg)
+    except (OSError, ValueError) as e:
+        journal(cfg, "worker_drain_skipped", error=f"{type(e).__name__}: {e}")
+        return
+    for name in drained:
+        try:
+            E.append(cfg, "worker_drained", by="queue", data={"worker": name})
+        except (OSError, ValueError) as e:
+            journal(cfg, "worker_drained", worker=name, error=f"{type(e).__name__}: {e}")
 
 
 # ---- gc (SPEC-0275) -----------------------------------------------------------------------

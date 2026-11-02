@@ -1,7 +1,7 @@
 ---
 id: SPEC-0343
 title: "Worker drain"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -160,24 +160,24 @@ against bootstrap text that this spec no longer contains. Each is resolved in
 
 ## Acceptance criteria
 
-- [ ] `nw workers drain NAME` sets `draining: true`; `workers.gate_pools` omits the worker,
+- [x] `nw workers drain NAME` sets `draining: true`; `workers.gate_pools` omits the worker,
       so a gate started after the drain is not placed on it.
-- [ ] A waiter that started before the drain (its pool list includes the worker) is not
+- [x] A waiter that started before the drain (its pool list includes the worker) is not
       dispatched to the draining worker. It takes the next pool's slot (`skip`), or, if it
       took the worker's slot in the race, `remote_gates.run` raises a non-cooldown
       `RemoteFailure("registry", ...)` and the gate runs locally.
-- [ ] A job already running on the draining worker, and a job adopted on it after a
+- [x] A job already running on the draining worker, and a job adopted on it after a
       coordinator restart (SPEC-0341), runs to a final state on that worker.
-- [ ] The tick sets `enabled: false` and removes `draining` in one `workers.update` only
+- [x] The tick sets `enabled: false` and removes `draining` in one `workers.update` only
       when the worker has no non-final `remote_jobs` record and no held slot in
       `gate-slots/w-<NAME>/`; a held slot without a record keeps it draining.
-- [ ] `nw workers list` shows `draining (k jobs)`, where `k` is the number of non-final
+- [x] `nw workers list` shows `draining (k jobs)`, where `k` is the number of non-final
       records with `worker == NAME`; `--json` carries `draining` and `draining_jobs`.
-- [ ] `drain` on an unknown name exits 2 and writes nothing; on a disabled worker it is a
+- [x] `drain` on an unknown name exits 2 and writes nothing; on a disabled worker it is a
       no-op with `already disabled` and exits 0; `--help` documents that the worker stays
       draining until a runner ticks.
-- [ ] `nw workers on NAME` and `nw workers off NAME` both clear `draining`.
-- [ ] A `workers.json` without `draining` loads with `draining: false`, `add` does not
+- [x] `nw workers on NAME` and `nw workers off NAME` both clear `draining`.
+- [x] A `workers.json` without `draining` loads with `draining: false`, `add` does not
       write the field, and SPEC-0337's registry tests pass unchanged.
 
 ## Test plan
@@ -225,6 +225,49 @@ against bootstrap text that this spec no longer contains. Each is resolved in
   iterating. `tests/test_workers*.py`, `tests/test_gate_slots*.py` and
   `tests/test_remote_gates*.py` (SPEC-0337/0338/0341) must pass unchanged.
 
+### Test record (2026-11-01)
+
+- `tests/test_workers_drain.py` (new, 19 tests): every test the plan names, with
+  `test_running_and_adopted_job_finish` split into `test_running_job_finishes_on_the_draining_worker`
+  and `test_adopted_job_finishes_on_the_draining_worker` (both on SPEC-0341's real async loopback
+  worker, not fakes), plus `test_off_worker_taken_in_the_race_falls_back` (Rollout 2),
+  `test_finish_drains_does_not_write_without_a_drain`, `test_unreadable_registry_skips_the_pass`
+  and `test_worker_drained_is_a_held_queue_event`. All pass.
+- Regression guard: `uv run pytest -q -n 4 tests/test_workers_drain.py tests/test_workers_registry.py
+  tests/test_workers_bootstrap.py tests/test_gate_slots.py tests/test_cli_gate_slots.py
+  tests/test_remote_gates.py tests/test_remote_job_records.py tests/test_skills.py
+  tests/test_worker.py tests/test_worker_jobs.py tests/test_docs_*.py`: 620 passed, no existing
+  test edited. The event / quiet-rule / tick tests (`test_agentic_drain_signal.py`,
+  `test_agentic_watchdog_gaps.py`, `test_agentic_quiet.py`, `test_agentic_queue_visibility.py`,
+  `test_tui_events_model.py` + the above): 414 passed. `affected_tests.py` selects the full suite
+  (queue.py changed); the full suite is left to the queue's gating.
+- Manual: against a temp `NW_DATA_DIR`: `nw workers add box --no-check`, `drain box` →
+  `box: draining (0 jobs)`; `list` shows `draining (0 jobs)`; a second `drain` →
+  `already draining (0 jobs)`; `drain nope` → `no worker named nope`, exit 2; one
+  `queue._finish_worker_drains` pass → `list` shows `box` as `no`. Steps 1–2 of the manual plan
+  (a gate on a real worker) were not run against a real host (none is reachable from the queue
+  worktree); the loopback-worker tests above exercise the same paths end to end.
+
+### As shipped (2026-11-01)
+
+- **`--worker` waiters get no `skip`.** `gates.run_all` passes the `skip` predicate only when no
+  worker was forced: a `nw queue gates --worker box` waiter has no other pool, so skipping would
+  wait forever. If `box` is drained while it waits, it takes the slot and the step-3 re-check
+  sends it to the local fallback.
+- **`pools_for` wording.** An unknown or disabled worker keeps the old
+  `is unknown or disabled` message (so SPEC-0337/0338 tests pass unchanged); only a draining
+  worker gets `is unknown, disabled or draining`.
+- **`finish_drains` writes only when needed.** It reads the registry first and runs its one
+  `workers.update` (which re-checks inside the lock) only when some draining worker looks idle,
+  so the runner does not rewrite `workers.json` every tick. It raises on an unreadable registry or
+  `remote-jobs` dir; the tick wrapper `queue._finish_worker_drains` journals
+  `worker_drain_skipped` and disables nothing.
+- **`worker_drained`** is a queue event (`events.EVENT_TYPES`, data `{worker}`, `by: queue`) and
+  is held by the conductor's quiet stream (`quiet.RULES`, mirrored in `nw-conduct`'s SKILL.md).
+  `docs/WORKFLOW.md` gains a Drain paragraph.
+- Helpers: `workers.placeable`, `workers.placeable_by_name`, `workers.draining_jobs` (the `k`
+  counts), `workers.finish_drains`; `gate_slots.held(cfg, pool)`; `gate_slots.acquire(..., skip=)`.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
@@ -238,11 +281,11 @@ Use `nw idea clock-in IDEA-559` / `nw idea clock-out IDEA-559`.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

@@ -541,7 +541,7 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
                  worktree=worktree, seq=seq, owner=owner, stop=stop, tier=tier,
                  announce=announce, worker=worker)
     try:                                        # SPEC-0253: only the owner removes its dir
-        pools = None
+        pools = skip = None
         if adopt is not None or lost is not None:
             from . import remote_gates as RG
             RJ.settings(cfg)                    # SPEC-0342: a bad max_remote_attempts raises
@@ -563,7 +563,11 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
             pools = RG.pools_for(cfg, project_cfg, campaign_state, seq=seq, worker=worker)
             if pools is not None:
                 RJ.settings(cfg)                # SPEC-0342: a bad max_remote_attempts raises
-        with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce, pools=pools) as hold:
+            if worker is None:                  # SPEC-0343: a worker drained mid-wait is passed
+                from . import workers as WK     # over (`--worker` has no other pool to take)
+                skip = lambda p: not WK.placeable_by_name(cfg, p)   # noqa: E731
+        with gate_slots.acquire(cfg, cid, stop=stop, on_wait=announce, pools=pools,
+                                skip=skip) as hold:
             if hold.interrupted:                # SPEC-0229: stopped while waiting, nothing ran (ok=False: never counted green)
                 return GateRun(seq, False, (), store.now_iso(), 0.0, interrupted=True,
                                slot_wait_s=hold.waited_s)
