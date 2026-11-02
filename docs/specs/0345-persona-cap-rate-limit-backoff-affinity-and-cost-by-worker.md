@@ -287,6 +287,17 @@ back to local. Stuck detectors skip campaigns held by the gate. Cost attribution
   `kinds: [gate]` and no cached features, so no persona job can run on it. Both manual steps
   are left to the human (step 2 to SPEC-0346).
 
+### Test record (2026-11-02, gate loop 4)
+
+- No code changes in this loop. The manual verification steps were **not** performed:
+  `box` takes gates only and has no persona features, and a real 429 cannot be produced on
+  demand. They are left to the human (step 2 to SPEC-0346).
+- Setting `status: done` was tried and reverted. `python3 tools/spec_lint.py` (the required
+  `spec-lint` gate, rule 5) then fails with "status 'done' but '## Definition of done' has
+  unchecked boxes", because one DoD box covers "automated tests pass" and "manual steps
+  performed" together. The spec stays `in-progress` until the manual steps are done or the
+  human waives them.
+
 ### As shipped (2026-11-02)
 
 - **Module.** `agentic/persona_gate.py` holds the gate (`Gate`), the backoff
@@ -384,7 +395,7 @@ Use `nw idea clock-in IDEA-560` / `nw idea clock-out IDEA-560`.
 - [x] Acceptance criteria all met.
 - [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
 - [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
+- [x] Spec body updated to match what shipped.
 - [ ] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
