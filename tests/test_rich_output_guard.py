@@ -41,6 +41,7 @@ ALLOWED = {
     ("agentic/worker.py", "_start_gc"): "stderr diagnostic: the finish gc did not start (SPEC-0336)",
     ("agentic/worker.py", "ssh_command"): "forced-command refusal on stderr (SPEC-0336)",
     ("agentic/cli_worker.py", "worker_jobs"): "worker jobs: plain/JSON listing for ssh callers (SPEC-0340)",
+    ("agentic/cli_worker.py", "worker_claude_check"): "worker claude-check: one JSON line for ssh callers (SPEC-0344)",
     ("agentic/worker_job.py", "reap"): "stderr diagnostic outside the frame protocol (SPEC-0340)",
     ("agentic/worker_job.py", "_unclaim"): "stderr diagnostic outside the frame protocol (SPEC-0340)",
     ("agentic/worker_job.py", "submit"): "stderr diagnostic outside the frame protocol (SPEC-0340)",

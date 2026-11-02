@@ -392,6 +392,14 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
   implementer on it) were not run: this host's only registered worker, `box`, is disabled and
   has no `async` feature. They are left to the human and to SPEC-0346's integration suite.
 
+### Test record (2026-11-02, gate fix)
+
+- The gate's `tests/test_rich_output_guard.py::test_no_unlisted_raw_writes` flagged the new
+  `worker_claude_check` JSON line (a machine path for ssh callers); it is now in the guard's
+  allowlist. No other new raw write was added (checked over `git diff main -- src`).
+  `uv run pytest -q tests/test_rich_output_guard.py tests/test_remote_personas.py`: 29
+  passed. The full suite is left to gating.
+
 ## Rollout / migration
 
 Implementation sessions clock in and out on the linked idea (`nw idea clock-in IDEA-560` /
