@@ -1,7 +1,7 @@
 ---
 id: SPEC-0367
 title: "nw workers bootstrap refreshes a stale worker install (build id, --reinstall, stale warning, loud gate rejection)"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-11-01
 updated: 2026-11-01
@@ -155,29 +155,29 @@ warning in `warnings` unchanged in shape.
 
 ## Acceptance criteria
 
-- [ ] `buildid.compute` is stable across calls, ignores `__pycache__`/`*.pyc`, and changes
+- [x] `buildid.compute` is stable across calls, ignores `__pycache__`/`*.pyc`, and changes
       when any shipped file's bytes change or a file is added or removed; `compute_wheel` of a
       built wheel equals `compute` of the directory it installs to.
-- [ ] `nw worker info --json` reports `build_id`, and on a wheel install (no git) it is
+- [x] `nw worker info --json` reports `build_id`, and on a wheel install (no git) it is
       non-null.
-- [ ] Bootstrap with a worker reporting the same `version` but a different `build_id`
+- [x] Bootstrap with a worker reporting the same `version` but a different `build_id`
       reinstalls (status `done`), and verify passes only if the worker then reports the new
       build id.
-- [ ] Bootstrap with a worker reporting no `build_id` reinstalls and says `no build id (older
+- [x] Bootstrap with a worker reporting no `build_id` reinstalls and says `no build id (older
       worker)`.
-- [ ] Bootstrap with an equal `build_id` skips (`skipped (already ...)`), and `--reinstall`
+- [x] Bootstrap with an equal `build_id` skips (`skipped (already ...)`), and `--reinstall`
       reinstalls anyway; `--dry-run --reinstall` shows the install commands as unconditional.
-- [ ] Verify fails when the install leaves the worker on an older build id.
-- [ ] No new privileged remote command: the install path is still the SPEC-0354 one, and
+- [x] Verify fails when the install leaves the worker on an older build id.
+- [x] No new privileged remote command: the install path is still the SPEC-0354 one, and
       `--admin` works as before.
-- [ ] `nw workers check` prints `warning: worker stale: ...` (exit 0) for a worker with a
+- [x] `nw workers check` prints `warning: worker stale: ...` (exit 0) for a worker with a
       different or missing build id, and no stale warning for an equal one; the sha warning is
       gone.
-- [ ] A worker `error` frame at stage `validate` (e.g. an unknown gate key) or a `protocol`
+- [x] A worker `error` frame at stage `validate` (e.g. an unknown gate key) or a `protocol`
       failure (a `done` without `changed`) yields: a `worker_failed` event with `rejected:
       true`, one `worker-rejected` finding per campaign and worker, a stderr line naming the
       worker and the bootstrap fix, and the gates still run locally with the same result.
-- [ ] Transport failures (`ssh`, `upload`, `timeout`) are not marked `rejected` and print no
+- [x] Transport failures (`ssh`, `upload`, `timeout`) are not marked `rejected` and print no
       such line.
 - [ ] The stale same-version worker from the IDEA-645 case on the real box is refreshed by one
       `nw workers bootstrap` run (with the existing `--admin`), after which a real remote gate
@@ -234,6 +234,46 @@ warning in `warnings` unchanged in shape.
   (`test_workers_bootstrap.py`, `test_workers_registry.py`, `test_remote_gates.py`) pass; the
   full suite at the queue's close gate; healthy-worker gate output is unchanged.
 
+### Test record (2026-11-01)
+
+- `uv run pytest -q tests/test_buildid.py tests/test_workers_registry.py tests/test_remote_gates.py`
+  and `tests/test_workers_bootstrap.py`: all pass (new: build id stability / pyc / byte change /
+  git-ignored file / git failure / empty git listing / `compute_wheel` against a zip and a real
+  `uv build` wheel; bootstrap different-build, no-build-id, equal-build skip, `--reinstall`,
+  `--dry-run --reinstall`, verify-fails-on-older-build, dirty-checkout note; `worker stale`
+  warning for a different or missing id and silence for an equal one; `validate` and `protocol`
+  rejections with event / one finding / stderr line / same local result, and transport
+  failures not rejected).
+- `python3 tools/affected_tests.py --run uv run pytest -q` and `python3 tools/spec_lint.py`.
+  The affected run (1104 tests) had two failures: `tests/test_worker.py::test_info_json_keys`
+  (the expected `info` key set gained `build_id`; test updated, passes) and
+  `tests/test_gate_slots.py::test_acquire_waits_for_whichever_pool_frees_first` (a timing test
+  in code this spec does not touch; passes alone). The full suite is left to the close gate.
+- Real wheel check: a wheel from `uv build --wheel`, unzipped outside any git repo and imported
+  via `PYTHONPATH`, reports `buildid.local()` = `b1:349bb60840da...`, equal to the checkout's.
+- **Real box (manual), partly done.** The registered worker is `box` (`nw@morais-Desktop`).
+  Step 1: `nw workers check box` printed `box: ok` then `warning: worker stale: build none
+  differs from the coordinator's b1:349bb6084; run nw workers bootstrap box --ssh
+  nw@morais-Desktop --reinstall`, exit 0. Steps 2-6 (bootstrap with the existing `--admin`, the
+  re-run skip, `--reinstall`, one real remote gate, the stale-box rejection) were **not run**:
+  the admin account is not known to this run and the default worker key path
+  (`~/.ssh/nw_worker_ed25519.pub`) does not exist here, so the original bootstrap flags cannot
+  be reproduced; changing a real machine is left to the steward. The last acceptance
+  criterion therefore stays unchecked and the spec stays `in-progress`.
+
+### As shipped
+
+- `buildid.compute` uses the git file list only when it contains `__init__.py` (an installed
+  copy under a git-ignored venv lists nothing and is walked instead).
+- Bootstrap skips the install only when the build id **and** the version both equal the
+  coordinator's (a superset of the Design's condition; a differing version with an equal
+  build is not a real case but keeps `test_version_mismatch_reinstalls` meaningful). The
+  install detail then reads `version A -> B`.
+- `RemoteFailure.rejected` is set in its constructor for every `protocol` stage failure, and
+  by `_dispatch` for a `validate` error frame; the stderr line is `remote_gates.rejection_notice`,
+  printed by `gates.run_all`. `docs/WORKFLOW.md` describes the build id and `--reinstall`.
+- Build ids are shown as `build_id[:12]`, which includes the `b1:` prefix (nine hex digits).
+
 ## Rollout / migration
 
 1. Land the build id and the `info` key. Workers on the old build do not report it, so the
@@ -250,8 +290,8 @@ warning in `warnings` unchanged in shape.
       (affected tests while iterating, the full suite at the close gate); manual steps
       recorded in the spec.
 - [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 

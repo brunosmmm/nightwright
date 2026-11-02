@@ -43,6 +43,7 @@ HAVE_TIMEOUT_S = 60.0
 UPLOAD_MIN_BPS = 256 * 1024         # the header + bundle upload may take `slot_wait_s` + bytes/this
 MAX_FILE_BYTES = W.MAX_LOG_BYTES + (1 << 20)   # a gate file's decompressed size, at most
 FINDING_GATE = "remote-eligibility"
+REJECTED_GATE = "worker-rejected"
 _POLL_S = 0.2
 _CHUNK = 1 << 16
 _GATE_FIELDS = tuple(f.name for f in fields(G.GateResult))
@@ -50,13 +51,17 @@ _GATE_FIELDS = tuple(f.name for f in fields(G.GateResult))
 
 class RemoteFailure(Exception):
     """A transport failure (or a coordinator-side git failure): fall back to a local run.
-    `cooldown` says whether the worker is put in cooldown for it."""
+    `cooldown` says whether the worker is put in cooldown for it. `rejected` (SPEC-0367) marks
+    a worker that understood the job but cannot run it (a `validate` error) or speaks another
+    dialect (every `protocol` failure): its install is probably stale."""
 
-    def __init__(self, stage: str, error: str, *, cooldown: bool = True):
+    def __init__(self, stage: str, error: str, *, cooldown: bool = True,
+                 rejected: bool = False):
         super().__init__(error)
         self.stage = stage
         self.error = error
         self.cooldown = cooldown
+        self.rejected = rejected or stage == "protocol"
         self.worker_wait_s = 0.0
 
 
@@ -661,7 +666,8 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                 # `claim` (a duplicate job id) and `validate` (the coordinator's own header)
                 # say nothing about the host
                 raise RemoteFailure(stage, str(frame.get("error") or ""),
-                                    cooldown=stage not in ("claim", "validate"))
+                                    cooldown=stage not in ("claim", "validate"),
+                                    rejected=stage == "validate")
             if kind == "started":
                 started = True
                 worker_wait = _num(frame, "slot_wait_s")
@@ -720,12 +726,45 @@ def set_cooldown(cfg, name: str, seconds: float = COOLDOWN_S) -> None:
         pass                                    # an unreadable registry is reported elsewhere
 
 
+def _worker_ssh(cfg, name: str) -> str:
+    try:
+        return next((w["ssh"] for w in WK.load(cfg) if w["name"] == name), "USER@HOST")
+    except (OSError, ValueError):
+        return "USER@HOST"
+
+
+def rejection_notice(cfg, name: str, f: RemoteFailure) -> str:
+    """The stderr line for a rejected remote gate job (SPEC-0367), printed on every one."""
+    return (f"nw: worker {name} rejected the remote gate job ({f.stage}: {f.error[:200]}); "
+            f"running gates locally. The worker is probably stale: nw workers bootstrap "
+            f"{name} --ssh {_worker_ssh(cfg, name)} --reinstall")
+
+
+def _record_rejection(cfg, cid, name: str, f: RemoteFailure) -> None:
+    """One `finding` per (campaign, worker): the first rejection only (a ledger scan decides).
+    `gates`/`info` are outside divergence's counted sets."""
+    title = f"worker {name} rejected the gate job; its install may be stale"
+    if any(e.get("gate") == REJECTED_GATE and e.get("title") == title
+           for e in store.read_ledger(cfg, cid, types=["finding"])):
+        return
+    ssh = _worker_ssh(cfg, name)
+    store.append_event(cfg, cid, "finding",
+                       {"persona": "gates", "severity": "info", "gate": REJECTED_GATE,
+                        "title": title,
+                        "detail": f"{f.stage}: {f.error[:500]}\nrun nw workers check {name}, "
+                                  f"then nw workers bootstrap {name} --ssh {ssh} --reinstall",
+                        "files": []}, by="gates")
+
+
 def _record_failure(cfg, cid, name: str, job_id: str, seq: int, f: RemoteFailure) -> None:
     for p in store.gates_dir(cfg, cid).glob(f"{seq:03d}-*"):
         p.unlink(missing_ok=True)
     store.append_event(cfg, cid, "worker_failed",
                        {"worker": name, "stage": f.stage, "error": f.error[-2000:],
-                        "job_id": job_id, "cooldown": f.cooldown}, by="gates")
+                        "job_id": job_id, "cooldown": f.cooldown,
+                        **({"rejected": True} if f.rejected else {})}, by="gates")
+    if f.rejected:
+        _record_rejection(cfg, cid, name, f)
     if f.cooldown:
         set_cooldown(cfg, name)
 

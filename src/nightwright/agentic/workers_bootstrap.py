@@ -18,6 +18,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import buildid
 from . import workers as WK
 from .store import now_iso
 
@@ -56,6 +57,8 @@ class Plan:
     pubkey: str
     blob: str
     version: str
+    build_id: str | None = None                      # what the worker must report after install
+    reinstall: bool = False
     bin: str | None = None
     status: dict = field(default_factory=dict)       # step -> (status, detail)
     notes: list = field(default_factory=list)        # lines printed after the table
@@ -122,7 +125,7 @@ def _existing(cfg, name):
     return None
 
 
-def prepare(cfg, name, dest, slots, install_key, admin) -> Plan:
+def prepare(cfg, name, dest, slots, install_key, admin, reinstall=False) -> Plan:
     """The plan after every local pre-check; `StepFailed` (with `.step`) when one fails."""
     from .. import __version__
 
@@ -159,7 +162,7 @@ def prepare(cfg, name, dest, slots, install_key, admin) -> Plan:
         raise fail("register", f"{WK.path(cfg)} is unreadable: {e}")
     plan = Plan(name=name, dest=dest, user=user, slots=slots, install_key=install_key,
                 admin=admin, pub_path=pub, identity=identity, pubkey=pubkey, blob=blob,
-                version=__version__)
+                version=__version__, reinstall=reinstall)
     if rec is not None and _record_diff(rec, _want(plan), with_nw=False):
         raise fail("register", CONFLICT.format(name=name))
     return plan
@@ -299,8 +302,22 @@ def _probe_root(plan: Plan) -> None:
 def step_install(plan: Plan) -> tuple[str, str]:
     _probe_bin(plan)
     info = _remote_info(plan)
-    if info is not None and info.get("version") == plan.version:
-        return f"skipped (already {plan.version})", f"{plan.bin}/nw"
+    want = buildid.local()
+    have = info.get("build_id") if info is not None else None
+    if not plan.reinstall and info is not None and have == want \
+            and info.get("version") == plan.version:
+        plan.build_id = want
+        return f"skipped (already {want[:12]})", f"{plan.bin}/nw"
+    if plan.reinstall:
+        why = "--reinstall"
+    elif info is None:
+        why = "nw missing or unreadable on the worker"
+    elif not have:
+        why = "no build id (older worker)"
+    elif have == want:
+        why = f"version {info.get('version')} -> {plan.version}"
+    else:
+        why = f"build {str(have)[:12]} -> {want[:12]}"
     with tempfile.TemporaryDirectory(prefix="nw-wheel-") as out:
         _must(_run(["uv", "build", "--wheel", "--out-dir", out, str(_checkout_root())],
                    timeout=INSTALL_TIMEOUT_S), "uv build --wheel")
@@ -308,6 +325,11 @@ def step_install(plan: Plan) -> tuple[str, str]:
         if len(wheels) != 1:
             raise StepFailed(f"uv build made {len(wheels)} wheels, expected 1")
         wheel = wheels[0]
+        plan.build_id = buildid.compute_wheel(wheel)
+        if plan.build_id != want:
+            plan.notes.append(f"note: the wheel's build {plan.build_id[:12]} differs from the "
+                              f"working tree's {want[:12]} (uncommitted or ignored files); "
+                              "verify checks the installed wheel")
         # with --admin the wheel goes to a dir in ADMIN's /tmp that DESTUSER can read
         host = plan.admin or plan.dest
         on_host = (lambda c: _run(admin_argv(plan, c))) if plan.admin else \
@@ -327,7 +349,7 @@ def step_install(plan: Plan) -> tuple[str, str]:
                             timeout=INSTALL_TIMEOUT_S), "uv tool install")
         finally:
             _cleanup(plan, on_host, host, tmp)
-    return "done", f"installed {wheel.name} -> {plan.bin}/nw"
+    return "done", f"installed {wheel.name} -> {plan.bin}/nw ({why})"
 
 
 def _cleanup(plan: Plan, on_host, host: str, tmp: str) -> None:
@@ -352,7 +374,10 @@ def step_verify(plan: Plan) -> tuple[str, str]:
     got = info.get("version") if isinstance(info, dict) else None
     if got != plan.version:
         raise StepFailed(f"worker reports {got}, expected {plan.version}")
-    return "done", f"{plan.bin}/nw reports {got}"
+    build = info.get("build_id")
+    if plan.build_id is not None and build != plan.build_id:
+        raise StepFailed(f"worker reports build {build}, expected {plan.build_id}")
+    return "done", f"{plan.bin}/nw reports {got}" + (f" build {build[:12]}" if build else "")
 
 
 def _key_script(line: str) -> str:
@@ -480,7 +505,8 @@ def dry_plan(plan: Plan) -> dict[str, list[str]]:
     out["install"] = [worker_shown(plan, UV_PROBE),
                       worker_shown(plan, "uv tool dir --bin"),
                       worker_shown(plan, f"{DRY_BIN}/nw worker info --json"),
-                      "# only when nw is missing or another version:",
+                      "# always (--reinstall):" if plan.reinstall else
+                      "# only when nw is missing or reports another build id:",
                       j(["uv", "build", "--wheel", "--out-dir", "<local tmp dir>",
                          str(Path(__file__).resolve().parents[3])]),
                       on_host(ADMIN_MKTEMP if plan.admin else "mktemp -d")]

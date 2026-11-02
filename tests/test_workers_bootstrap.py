@@ -13,12 +13,13 @@ import shutil
 import stat
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
-from nightwright import __version__
+from nightwright import __version__, buildid
 from nightwright.agentic import workers as WK
 from nightwright.agentic import workers_bootstrap as WB
 from nightwright.cli import cli
@@ -99,10 +100,14 @@ def info():
     if {version!r} == "garbage":
         print("not json")
         sys.exit(0)
+    build = {build!r}
     nogit = os.path.exists(os.path.join(os.environ.get("FAKE_STATE", "/nonexistent"), "nogit"))
-    print(json.dumps({{"schema": "nw.worker.info.v1", "protocol": "nw.job.v1",
-                      "version": {version!r}, "git": None if nogit else "git version 2.0",
-                      "git_sha": None}}))
+    doc = {{"schema": "nw.worker.info.v1", "protocol": "nw.job.v1",
+           "version": {version!r}, "git": None if nogit else "git version 2.0",
+           "git_sha": None}}
+    if build != "none":                       # SPEC-0367: an older worker has no build id
+        doc["build_id"] = build
+    print(json.dumps(doc))
     sys.exit(0)
 if sys.argv[1:3] == ["worker", "info"]:
     info()
@@ -116,10 +121,12 @@ sys.exit(2)
 """
 
 FAKE_UV = COMMON + f"""
+import shutil
 a = sys.argv[1:]
 if a[:2] == ["build", "--wheel"]:
     out = a[a.index("--out-dir") + 1]
-    open(os.path.join(out, "nightwright-{__version__}-py3-none-any.whl"), "w").write("whl")
+    shutil.copy(os.path.join(S, "pkg.whl"),
+                os.path.join(out, "nightwright-{__version__}-py3-none-any.whl"))
 elif a[:3] == ["tool", "dir", "--bin"]:
     print(read("bin"))
 elif a[:3] == ["tool", "install", "--force"]:
@@ -127,7 +134,8 @@ elif a[:3] == ["tool", "install", "--force"]:
     b = read("bin")
     os.makedirs(b, exist_ok=True)
     p = os.path.join(b, "nw")
-    open(p, "w").write({FAKE_NW!r}.format(py={PY!r}, version=read("install_version", {__version__!r})))
+    open(p, "w").write({FAKE_NW!r}.format(py={PY!r}, version=read("install_version", {__version__!r}),
+                                   build=read("install_build", read("wheel_build"))))
     os.chmod(p, 0o755)
 else:
     sys.exit(2)
@@ -199,6 +207,7 @@ class World:
             target = self.fakebin / tool if tool in ("id", "sudo") else shutil.which(tool)
             (nouv / tool).symlink_to(target)
         self.set("bin", str(self.bin))
+        self.wheel_zip()
         keys = root / "keys"
         keys.mkdir()
         self.priv = keys / "nw_worker_ed25519"
@@ -216,6 +225,20 @@ class World:
     def set(self, name, value):
         (self.state / name).write_text(value)
 
+    def wheel_zip(self, extra=None):
+        """`state/pkg.whl`: a real zip of this checkout's `nightwright/` (what `uv build`
+        would make), so the wheel's build id equals the working tree's; `extra` adds files."""
+        pkg = Path(buildid.__file__).parent
+        files = buildid._git_files(pkg) or buildid._walk(pkg)
+        with zipfile.ZipFile(self.state / "pkg.whl", "w") as z:
+            for rel in files:
+                if not buildid._skip(rel):
+                    z.write(pkg / rel, "nightwright/" + rel)
+            for rel, data in (extra or {}).items():
+                z.writestr("nightwright/" + rel, data)
+            z.writestr("nightwright-0.1.0.dist-info/METADATA", "x")
+        self.set("wheel_build", buildid.compute_wheel(self.state / "pkg.whl"))
+
     def calls(self, prog=None):
         p = self.state / "log.jsonl"
         out = [json.loads(ln) for ln in p.read_text().splitlines()] if p.exists() else []
@@ -228,10 +251,10 @@ class World:
     def ak(self) -> Path:
         return self.home / ".ssh" / "authorized_keys"
 
-    def seed_nw(self, version):
+    def seed_nw(self, version, build="none"):
         self.bin.mkdir(exist_ok=True)
         p = self.bin / "nw"
-        p.write_text(FAKE_NW.format(py=PY, version=version))
+        p.write_text(FAKE_NW.format(py=PY, version=version, build=build))
         p.chmod(0o755)
 
     def set_comment(self, comment):
@@ -256,8 +279,9 @@ def boot(world, *args):
     return CliRunner().invoke(cli, ["workers", "bootstrap", *args])
 
 
-def plan_run(world, name="box", dest="nw@box", slots=1, install_key=True, admin=None):
-    plan = WB.prepare(world.cfg, name, dest, slots, install_key, admin)
+def plan_run(world, name="box", dest="nw@box", slots=1, install_key=True, admin=None,
+             reinstall=False):
+    plan = WB.prepare(world.cfg, name, dest, slots, install_key, admin, reinstall)
     ok = WB.run(world.cfg, plan)
     return ok, plan
 
@@ -292,7 +316,8 @@ def test_fresh_run(world):
     assert check and "-i" in check[0]["argv"] and str(world.priv) in check[0]["argv"]
     ok, plan = plan_run(world, slots=2)                   # second run: everything skipped
     assert ok and st(plan) == {"admin": "not requested",
-                               "install": f"skipped (already {__version__})", "verify": "done",
+                               "install": f"skipped (already {buildid.local()[:12]})",
+                               "verify": "done",
                                "key": "skipped (already present)",
                                "register": "skipped (already registered)"}
 
@@ -321,6 +346,63 @@ def test_version_mismatch_reinstalls(world):
     out = subprocess.run([str(world.bin / "nw"), "worker", "info", "--json"],
                          capture_output=True, text=True).stdout
     assert json.loads(out)["version"] == __version__
+
+
+def _installed(world):
+    return [c for c in world.calls("uv") if c["argv"][:3] == ["tool", "install", "--force"]]
+
+
+def test_same_version_different_build_reinstalls(world):        # SPEC-0367: the IDEA-675 case
+    world.seed_nw(__version__, build="b1:" + "0" * 64)
+    ok, plan = plan_run(world)
+    assert ok and st(plan)["install"] == "done" and st(plan)["verify"] == "done"
+    assert f"build b1:000000000 -> {buildid.local()[:12]}" in plan.status["install"][1]
+    assert len(_installed(world)) == 1
+
+
+def test_no_build_id_reinstalls(world):
+    world.seed_nw(__version__)                       # same version, no build_id key
+    ok, plan = plan_run(world)
+    assert ok and st(plan)["install"] == "done"
+    assert "no build id (older worker)" in plan.status["install"][1]
+    assert len(_installed(world)) == 1
+
+
+def test_equal_build_skips_and_reinstall_forces(world):
+    world.seed_nw(__version__, build=buildid.local())
+    ok, plan = plan_run(world)
+    assert ok and st(plan)["install"] == f"skipped (already {buildid.local()[:12]})"
+    assert _installed(world) == []
+    ok, plan = plan_run(world, reinstall=True)
+    assert ok and st(plan)["install"] == "done" and "--reinstall" in plan.status["install"][1]
+    assert len(_installed(world)) == 1
+
+
+def test_reinstall_cli_flag_and_dry_run(world):
+    res = boot(world, "box", "--ssh", "nw@box", "--dry-run", "--reinstall")
+    assert res.exit_code == 0, res.output
+    assert "# always (--reinstall):" in res.output and "# only when" not in res.output
+    res = boot(world, "box", "--ssh", "nw@box", "--dry-run")
+    assert "# only when nw is missing or reports another build id:" in res.output
+    world.seed_nw(__version__, build=buildid.local())
+    res = boot(world, "box", "--ssh", "nw@box", "--reinstall", "--install-key")
+    assert res.exit_code == 0, res.output
+    assert len(_installed(world)) == 1
+
+
+def test_verify_fails_when_install_leaves_an_older_build(world):
+    world.set("install_build", "b1:" + "1" * 64)
+    ok, plan = plan_run(world)
+    assert not ok and st(plan)["install"] == "done" and st(plan)["verify"] == "failed"
+    assert f"worker reports build b1:{'1' * 64}, expected {buildid.local()}" \
+        in plan.status["verify"][1]
+
+
+def test_dirty_checkout_note(world):
+    world.wheel_zip(extra={"stray.py": "x = 1\n"})  # the wheel differs from the working tree
+    ok, plan = plan_run(world)
+    assert ok and st(plan)["verify"] == "done"       # verify judges the installed wheel
+    assert any("differs from the working tree's" in n for n in plan.notes)
 
 
 def test_verify_fails_after_install(world):

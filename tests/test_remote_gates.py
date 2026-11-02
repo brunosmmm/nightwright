@@ -15,6 +15,7 @@ import pytest
 
 from nightwright.agentic import gate_slots as GS
 from nightwright.agentic import gates as G
+from nightwright.agentic import remote_gates as RG
 from nightwright.agentic import store as S
 
 from waits import join, until
@@ -1379,3 +1380,70 @@ def test_project_config_accepts_the_opt_outs(tmp_path):
         P.load_project_config(p)
     p.write_text("schema: nw.project.v1\ngates: []\n")
     assert P.load_project_config(p)["remote_gates"] is True
+
+
+# ---- worker-side rejection (SPEC-0367) ---------------------------------------------------------
+
+def _rejected_findings(world):
+    return [e for e in world.ledger(["finding"]) if e.get("gate") == "worker-rejected"]
+
+
+def _local_results(run):
+    return [(r.name, r.ok) for r in run.results]
+
+
+def _reject_once(world, remote, capfd):
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    return run, capfd.readouterr().err
+
+
+def test_a_validate_rejection_is_loud_and_deduplicated(world, remote, capfd):
+    frame = json.dumps({"schema": "nw.job.frame.v1", "type": "error", "stage": "validate",
+                        "error": "unknown gate key warm"})
+    remote.register(ssh=_gate_job_variant(
+        remote, "rej-validate", f"echo '{frame}'; exec cat >/dev/null"))
+    run, err = _reject_once(world, remote, capfd)
+    assert run.worker is None and run.ok
+    (ev,) = world.ledger(["worker_failed"])
+    assert ev["stage"] == "validate" and ev["rejected"] is True and not ev["cooldown"]
+    (f,) = _rejected_findings(world)
+    assert f["persona"] == "gates" and f["severity"] == "info"
+    assert "unknown gate key" in f["detail"] and "nw workers bootstrap box --ssh me@box" in f["detail"]
+    assert "nw: worker box rejected the remote gate job (validate: unknown gate key" in err
+    assert "nw workers bootstrap box --ssh me@box --reinstall" in err
+    run2 = G.run_all(world.project, world.state, world.cfg, seq=2)
+    err2 = capfd.readouterr().err
+    assert "rejected the remote gate job" in err2                # the line prints every time
+    assert len(_rejected_findings(world)) == 1                   # the finding does not repeat
+    assert [e["rejected"] for e in world.ledger(["worker_failed"])] == [True, True]
+    assert _local_results(run2) == _local_results(run)
+
+
+def test_a_done_without_changed_is_a_rejection(world, remote, capfd):
+    world.project["gates"] = [_gate("ok", "echo ok")]
+    old = {k: v for k, v in json.loads(_done()).items() if k != "changed"}
+    _fake_gate_job(remote, "nochanged", [
+        _frame_line("started", slot_wait_s=0.0),
+        _frame_line("gate", files={}, result=_gate_result("ok")), json.dumps(old)])
+    run, err = _reject_once(world, remote, capfd)
+    assert run.worker is None and run.ok
+    (ev,) = world.ledger(["worker_failed"])
+    assert ev["stage"] == "protocol" and ev["rejected"] is True and ev["cooldown"]
+    assert len(_rejected_findings(world)) == 1
+    assert "worker box rejected the remote gate job (protocol:" in err
+
+
+@pytest.mark.parametrize("variant", ["unreachable", "job255", "drop"])
+def test_transport_failures_are_not_rejections(world, remote, capfd, variant):
+    remote.register(ssh=remote.variants[variant])
+    run, err = _reject_once(world, remote, capfd)
+    (ev,) = world.ledger(["worker_failed"])
+    assert "rejected" not in ev
+    assert _rejected_findings(world) == [] and "rejected the remote gate job" not in err
+
+
+def test_only_validate_and_protocol_failures_are_rejections():
+    for stage in ("upload", "timeout", "ssh", "slot_wait", "interrupted", "have", "bundle"):
+        assert RG.RemoteFailure(stage, "x").rejected is False
+    assert RG.RemoteFailure("validate", "x", rejected=True).rejected is True
+    assert RG.RemoteFailure("protocol", "x").rejected is True

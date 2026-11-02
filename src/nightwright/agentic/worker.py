@@ -1007,7 +1007,7 @@ def _version_out(*cmd) -> str | None:
 
 
 def info(cfg) -> dict:
-    from .. import __version__
+    from .. import __version__, buildid
     pkg = Path(__file__).resolve().parents[1]
     sha = _version_out("git", "-C", str(pkg), "rev-parse", "HEAD")
     wd = worker_dir(cfg)
@@ -1016,7 +1016,7 @@ def info(cfg) -> dict:
         probe = probe.parent
     return {"schema": INFO_SCHEMA, "protocol": JOB_SCHEMA, "features": ["async", "persona"],
             "version": __version__,
-            "git_sha": sha, "data_dir": str(cfg["data_dir"]),
+            "git_sha": sha, "build_id": buildid.local(), "data_dir": str(cfg["data_dir"]),
             "git": _version_out("git", "--version"), "uv": _version_out("uv", "--version"),
             "free_bytes": shutil.disk_usage(probe).free}
 

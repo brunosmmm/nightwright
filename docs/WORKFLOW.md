@@ -298,11 +298,11 @@ Register a worker on the coordinator with the registry commands (SPEC-0337; not 
 confused with `nw worker`, which runs on the worker host): `nw workers add NAME --ssh me@box
 [--slots N] [--nw PATH] [--no-check]` registers it (it runs `check` first unless `--no-check`),
 and `nw workers check [NAME] [--json]` probes over SSH with `nw worker info --json` (exit 1 if
-any probe fails; a version or sha mismatch only warns). `nw workers list|on|off|rm` manage
+any probe fails; a version mismatch or a `worker stale` build id only warns). `nw workers list|on|off|rm` manage
 the rest.
 
 **Bootstrap (SPEC-0354).** `nw workers bootstrap NAME --ssh nw@box [--slots N] [--install-key]
-[--admin me@box] [--dry-run]` does steps 2 and 3 and the registration, skipping what is already
+[--admin me@box] [--reinstall] [--dry-run]` does steps 2 and 3 and the registration, skipping what is already
 done, and prints a status table (`done`, `skipped (already ...)`, `would run`, `failed`,
 `not requested`, `not run`; exit 1 if a step failed):
 
@@ -310,14 +310,15 @@ done, and prints a status table (`done`, `skipped (already ...)`, `would run`, `
   worker user with `sudo -n useradd -m` when `id -u` says it is missing. With `--admin`, every
   worker-side command below runs through the admin account as `sudo -n -i -u USER`.
 - **install**: needs `uv` for the worker user; `uv tool dir --bin` gives `<bin>`. When
-  `<bin>/nw worker info --json` reports another version than this checkout (or fails), a
-  wheel built here with `uv build --wheel` is copied over and installed with
-  `uv tool install --force` (with `--admin`, through a `mktemp -d` dir under `/tmp`).
-  "Same version" means the released `version` in `pyproject.toml` only: a wheel carries no
-  git sha, so a worker on an older commit of the same version is **not** reinstalled. Bump
-  the version for a change the worker must run (the forced command or the job protocol), or
-  run `uv tool install --force` on the worker yourself.
-- **verify**: `<bin>/nw worker info --json` must report this checkout's version.
+  `<bin>/nw worker info --json` reports another **build id** than this checkout (SPEC-0367;
+  an older worker reports none), or fails, a wheel built here with `uv build --wheel` is
+  copied over and installed with `uv tool install --force` (with `--admin`, through a
+  `mktemp -d` dir under `/tmp`). The build id (`b1:<sha256>`) hashes every shipped file, so
+  it changes with any code change, with no version bump, and exists on wheel installs.
+  `--reinstall` installs regardless. The status detail says why (`no build id (older
+  worker)`, `build <old> -> <new>`, `--reinstall`).
+- **verify**: `<bin>/nw worker info --json` must report this checkout's version and the build
+  id of the wheel just installed (the working tree's, unless it is dirty: a note says so).
 - **key**: the line `command="<bin>/nw worker ssh-command",restrict <worker public key>`.
   Without `--install-key` it is printed. With it, it is appended once to the worker's
   `~/.ssh/authorized_keys` (700/600). A root account (by name or uid 0) is refused, and so is

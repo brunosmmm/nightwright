@@ -349,11 +349,34 @@ def test_check_version_mismatch_only_warns(cfg, tmp_path, invoke):
     assert res.exit_code == 0
     (r,) = json.loads(res.output)
     assert r["ok"] and r["errors"] == [] and "version" in r["warnings"][0]
+
+
+def _stale(cfg, tmp_path, invoke, name, info):
+    _seed(cfg, _w(name, ssh="me@box", ssh_argv=_info_script(tmp_path, name, info)))
+    res = invoke("check", name, "--json")
+    assert res.exit_code == 0, res.output                # warnings keep exit 0 (SPEC-0337)
+    (r,) = json.loads(res.output)
+    return r
+
+
+def test_check_warns_worker_stale_for_a_different_or_missing_build_id(cfg, tmp_path, invoke):
     mine = _good_info()
-    if mine.get("git_sha"):                              # a checkout: another sha is a warning too
-        _seed(cfg, _w("old", ssh_argv=_info_script(tmp_path, "sha", {**mine, "git_sha": "0" * 40})))
-        (r,) = json.loads(invoke("check", "old", "--json").output)
-        assert r["ok"] and "sha" in r["warnings"][0]
+    r = _stale(cfg, tmp_path, invoke, "other", {**mine, "build_id": "b1:" + "0" * 64})
+    assert r["ok"] and r["errors"] == []
+    (w,) = r["warnings"]
+    assert w.startswith("worker stale: build b1:00000000") and mine["build_id"][:12] in w
+    assert "nw workers bootstrap other --ssh me@box --reinstall" in w
+    gone = {k: v for k, v in mine.items() if k != "build_id"}
+    r = _stale(cfg, tmp_path, invoke, "gone", gone)
+    assert r["ok"] and len(r["warnings"]) == 1 and "worker stale: build none differs" in r["warnings"][0]
+    res = invoke("check", "gone")
+    assert res.exit_code == 0 and "warning: worker stale" in res.output
+
+
+def test_check_is_silent_for_an_equal_build_id_and_drops_the_sha_warning(cfg, tmp_path, invoke):
+    mine = _good_info()
+    r = _stale(cfg, tmp_path, invoke, "same", {**mine, "git_sha": "0" * 40})
+    assert r["warnings"] == []                           # another sha alone no longer warns
 
 
 def test_check_without_name_fails_if_any_worker_fails(cfg, tmp_path, invoke):

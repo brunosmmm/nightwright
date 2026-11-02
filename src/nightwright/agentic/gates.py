@@ -14,6 +14,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, replace
@@ -585,6 +586,8 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
             return replace(out.run, slot_wait_s=waited, head=head, tree=tree)
         if out.lost is not None:
             return _retry(out.lost, waited, head=head, tree=tree, **retry)
+        if out.failure is not None and out.failure.rejected:    # SPEC-0367: say it loudly
+            print(RG.rejection_notice(cfg, hold.pool, out.failure), file=sys.stderr)
         return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
                          announce, waited, head=head, tree=tree)
     finally:
@@ -648,6 +651,8 @@ def _retry(lost, waited, *, project_cfg, campaign_state, cfg, cid, worktree, seq
             RJ.update(cfg, lost["job_id"], state="local")
             if not sent:                        # nothing was sent: this local run is the attempt
                 RG.retried(cfg, cid, lost, attempt, None)
+            if out.failure is not None and out.failure.rejected:    # SPEC-0367
+                print(RG.rejection_notice(cfg, hold.pool, out.failure), file=sys.stderr)
             return _fallback(project_cfg, campaign_state, cfg, cid, worktree, seq, stop, tier,
                              announce, waited, head=head, tree=tree)
         lost = out.lost

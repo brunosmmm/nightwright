@@ -127,16 +127,18 @@ def workers_add(cfg, name, dest, slots, nw_cmd, identity, no_check):
 @click.option("--admin", metavar="USER@HOST", default=None,
               help="an account with passwordless sudo: creates the worker user when missing, "
                    "and every worker command runs through it as `sudo -n -i -u USER`")
+@click.option("--reinstall", is_flag=True,
+              help="rebuild and reinstall even when the worker reports this checkout's build")
 @click.option("--dry-run", is_flag=True, help="print every step and command; run nothing")
 @click.pass_obj
-def workers_bootstrap(cfg, name, dest, slots, install_key, admin, dry_run):
+def workers_bootstrap(cfg, name, dest, slots, install_key, admin, reinstall, dry_run):
     """Install nightwright on a worker, install its dedicated key's forced-command line and
     register it (SPEC-0354). Steps already done are skipped; exits 1 if a step failed.
 
     The worker key is `agentic.workers.key` (default ~/.ssh/nw_worker_ed25519.pub), a key
     of its own: never the one your ssh login uses."""
     try:
-        plan = WB.prepare(cfg, name, dest, slots, install_key, admin)
+        plan = WB.prepare(cfg, name, dest, slots, install_key, admin, reinstall)
     except WB.StepFailed as e:
         status = {s: ("not run", "") for s in WB.STEPS}
         status[getattr(e, "step", "install")] = ("failed", str(e))

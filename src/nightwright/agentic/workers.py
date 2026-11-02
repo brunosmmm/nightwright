@@ -340,8 +340,9 @@ def finish_drains(cfg) -> list[str]:
 def check(cfg, rec: dict) -> dict:
     """Probe a worker: `{name, ok, errors, warnings, info}`. Runs `ssh_argv + [DEST, nw,
     "worker", "info", "--json"]` with a 30 s timeout. Fails on an SSH failure (a timeout
-    included), a protocol other than `nw.job.v1` or no `git`; a version or sha different from
-    this checkout's is a warning (the gate runs the campaign tree's code, not the worker's).
+    included), a protocol other than `nw.job.v1` or no `git`; a version or build id
+    different from this checkout's is a warning (the gate runs the campaign tree's code, not
+    the worker's).
     A record with an `identity` must also be bound to the forced command (`_forced_probe`);
     when the probe proves it is not (an unrestricted command ran), the ControlMaster that
     session rode is closed (`_close_master`). Any other failure leaves the master alone:
@@ -409,9 +410,11 @@ def _check(cfg, w: dict, out: dict) -> bool:
     if info.get("version") != mine.get("version"):
         out["warnings"].append(f"version {info.get('version')!r} differs from "
                                f"the coordinator's {mine.get('version')!r}")
-    elif info.get("git_sha") and mine.get("git_sha") and info["git_sha"] != mine["git_sha"]:
-        out["warnings"].append(f"sha {str(info['git_sha'])[:12]} differs from "
-                               f"the coordinator's {str(mine['git_sha'])[:12]}")
+    if mine.get("build_id") and info.get("build_id") != mine["build_id"]:
+        out["warnings"].append(
+            f"worker stale: build {str(info.get('build_id') or 'none')[:12]} differs from "
+            f"the coordinator's {mine['build_id'][:12]}; run nw workers bootstrap "
+            f"{w['name']} --ssh {w['ssh']} --reinstall")
     feats = info.get("features")
     if not (isinstance(feats, list) and "async" in feats):     # SPEC-0341: still gate-job
         out["warnings"].append("info lacks the `async` feature: gates run through the "

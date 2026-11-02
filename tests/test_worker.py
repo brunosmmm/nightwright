@@ -1088,8 +1088,8 @@ def test_info_json_keys(wenv):
     assert r.returncode == 0, r.stderr
     rec = json.loads(r.stdout)
     # `features` since SPEC-0340 (`["async"]`: submit/attach/poll/cancel/jobs)
-    assert set(rec) == {"schema", "protocol", "features", "version", "git_sha", "data_dir",
-                        "git", "uv", "free_bytes"}
+    assert set(rec) == {"schema", "protocol", "features", "version", "git_sha", "build_id",
+                        "data_dir", "git", "uv", "free_bytes"}
     assert rec["schema"] == "nw.worker.info.v1" and rec["protocol"] == "nw.job.v1"
     assert rec["data_dir"] == wenv["NW_DATA_DIR"] and isinstance(rec["free_bytes"], int)
 
