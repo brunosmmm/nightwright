@@ -83,3 +83,50 @@ def test_show_unknown_exits_nonzero_and_lists_known(env):
     r = _run("show", "nope")
     assert r.exit_code != 0
     assert "unknown persona 'nope'" in r.output and "implementer" in r.output
+
+
+@pytest.mark.parametrize("over", [{"template": 123}, {"role": ["x"]}, {"role": 1},
+                                  {"template": True}, {"template": "2026-11-02"}])
+def test_non_string_values_in_a_broken_file_do_not_crash(env, over):
+    cfg, pdir = env
+    _put(pdir, "sec")
+    doc = yaml.safe_load((pdir / "sec.yaml").read_text())
+    doc.update(over)
+    text = yaml.safe_dump(doc)
+    if over.get("template") == "2026-11-02":
+        text = text.replace("'2026-11-02'", "2026-11-02")      # a YAML date, not a string
+    (pdir / "sec.yaml").write_text(text)
+    for args in (("list",), ("list", "--json"), ("show", "sec"), ("show", "sec", "--json")):
+        r = _run(*args, "--project", "Proj")
+        assert r.exit_code == 0, (args, r.output, r.exception)
+    d = json.loads(_run("show", "sec", "--project", "Proj", "--json").output)
+    assert d["ok"] is False and d["problems"]
+
+
+def test_user_file_named_like_a_builtin_never_displaces_it(env):
+    cfg, pdir = env
+    udir = Path(cfg["config_dir"]) / "personas"
+    udir.mkdir(parents=True)
+    _put(udir, "implementer")
+    d = json.loads(_run("show", "implementer", "--json").output)
+    assert d["scope"] == "builtin" and d["ok"] is True
+    rows = [p for p in json.loads(_run("list", "--json").output)["personas"]
+            if p["name"] == "implementer"]
+    assert [(p["scope"], p["active"], p["ok"]) for p in rows] == [
+        ("builtin", True, True), ("user", False, False)]
+    assert "shadows builtin persona" in rows[1]["error"]
+    assert "overridden" not in _run("list").output
+
+
+def test_markup_in_user_values_is_printed_literally(env):
+    cfg, pdir = env
+    _put(pdir, "sec", description="all [/] clear [bold]x[/bold]")
+    r = _run("list", "--project", "Proj")
+    assert r.exit_code == 0, (r.output, r.exception)
+    r = _run("show", "sec", "--project", "Proj")
+    assert r.exit_code == 0, (r.output, r.exception)
+    assert "all [/] clear [bold]x[/bold]" in r.output
+    # a markup-like bad stem is escaped too
+    (pdir / "x[bold]y.yaml").write_text("x: 1\n")
+    r = _run("list", "--project", "Proj")
+    assert r.exit_code == 0, (r.output, r.exception)

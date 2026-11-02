@@ -63,6 +63,7 @@ class Entry:
     defn: object = None
     doc: dict = field(default_factory=dict)
     errors: list = field(default_factory=list)
+    refused: bool = False   # shadows a builtin / conflicts with a sibling: never wins resolution
 
 
 @dataclass
@@ -70,9 +71,12 @@ class Registry:
     entries: list          # builtin first, then user, then project; each sorted by name
 
     def resolved(self) -> dict:
-        """`{name: Entry}`: the highest layer wins (no merge)."""
+        """`{name: Entry}`: the highest layer wins (no merge). A refused entry (one that shadows
+        a builtin, or a `.yml` conflicting with its `.yaml` sibling) never displaces another."""
         out = {}
         for e in self.entries:
+            if e.refused and e.name in out:
+                continue
             out[e.name] = e
         return out
 
@@ -162,10 +166,11 @@ def _check_builtin_keys(doc, role, known, bad):
     if not _is_int(doc.get("order")):
         bad("order", "required, an integer")
     out = doc.get("output_schema")
-    if out not in (known.get("output_schemas") or ()):
+    if not isinstance(out, str) or out not in (known.get("output_schemas") or ()):
         bad("output_schema", f"required, one of: "
                              f"{', '.join(sorted(known.get('output_schemas') or ()))}")
-    if "invariant" in doc and doc["invariant"] not in (known.get("invariants") or ()):
+    if "invariant" in doc and (not isinstance(doc["invariant"], str)
+                               or doc["invariant"] not in (known.get("invariants") or ())):
         bad("invariant", f"unknown invariant; known: "
                          f"{', '.join(sorted(known.get('invariants') or ()))}")
     system = role == "system"
@@ -179,7 +184,8 @@ def _check_builtin_keys(doc, role, known, bad):
         if not system:
             bad("adopt", "allowed only for role system")
         elif not (isinstance(adopt, dict) and set(adopt) == {"step", "personas"}
-                  and adopt["step"] in ADOPT_STEPS and isinstance(adopt["personas"], list)
+                  and isinstance(adopt["step"], str) and adopt["step"] in ADOPT_STEPS
+                  and isinstance(adopt["personas"], list)
                   and all(isinstance(p, str) for p in adopt["personas"])):
             bad("adopt", f"must be {{step: {'|'.join(ADOPT_STEPS)}, personas: [names]}}")
 
@@ -222,6 +228,7 @@ def _read_dir(directory, layer, origin_of, known) -> list:
             msg = "rename to .yaml" if stem not in seen else \
                 f"conflicts with {stem}.yaml; remove or rename one"
             entry.errors = [f"{origin}: <file>: {msg}"]
+            entry.refused = stem in seen
             entries.append(entry)
             continue
         seen.add(stem)
@@ -284,6 +291,7 @@ def load_registry(cfg, *, project_root=None, known) -> Registry:
             if e.name in names:
                 e.errors.append(f"{e.origin}: name: shadows builtin persona {e.name!r}")
                 e.defn = None
+                e.refused = True
             entries.append(e)
     return Registry(entries)
 

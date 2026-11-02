@@ -288,6 +288,19 @@ no project passes none and gets builtin + user only.
   reused). `nw personas show` of a broken definition exits 0 (it displays); `list` marks a
   lower-layer definition shadowed by a higher one as `ok (overridden)`.
 
+- Review loop 1 hardening: `nw personas list|show` render non-string `role`/`template` values
+  of a broken file via `repr` (no table or `--json` crash), escape user-controlled text before
+  Rich markup (`cli_personas.py`, and the shared `_header` in `cli_profiles.py`), and a refused
+  `Entry` (shadows a builtin, or a `.yml` conflicting with its `.yaml` sibling) never wins
+  `Registry.resolved()`, so `show implementer` stays the builtin. Unhashable builtin
+  `output_schema`/`invariant`/`adopt.step` values are reported, not raised. New tests: profile
+  acceptance of custom personas (`validate_profile_doc`, `_check_reviewers`, `_persona_names`)
+  plus an `ast` check that `personas.py` only uses `load_builtin`; refused-entry resolution;
+  CLI cases for `template: 123`, `role: [x]`, a YAML date, a user `implementer.yaml` and
+  markup in a description. Ran `uv run pytest -q` on `tests/test_agentic_persona_registry.py`,
+  `test_agentic_personas_cli.py`, `test_agentic_profiles_cli.py`, `test_agentic_profiles.py`,
+  `test_agentic_personas.py`: 249 passed; `spec_lint` ok. Full suite left to gating.
+
 ## Rollout / migration
 
 No data migration. Order: (1) add `persona_registry.py` and the validator with tests;

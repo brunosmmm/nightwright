@@ -3,6 +3,7 @@ layers, with the file each definition came from. Registered by `nightwright.agen
 from __future__ import annotations
 
 import click
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -36,13 +37,19 @@ def _adopt_text(adopt) -> str:
     return "-" if adopt is None else f"{adopt[0]} {list(adopt[1])}"
 
 
+def _text(value):
+    """A raw YAML value as display text: a string as is, any other value (int, list, date) via
+    `repr`, so a typo in a broken file cannot crash the table or the JSON dump."""
+    return value if value is None or isinstance(value, str) else repr(value)
+
+
 def _summary(entry, active) -> dict:
     d = entry.defn
     return {"name": entry.name, "scope": entry.scope, "origin": entry.origin,
             "active": active, "ok": not entry.errors,
-            "role": d.role if d else entry.doc.get("role"),
+            "role": d.role if d else _text(entry.doc.get("role")),
             "reviewer": bool(d and d.role == "reviewer"),
-            "template": d.template if d else entry.doc.get("template"),
+            "template": d.template if d else _text(entry.doc.get("template")),
             "description": d.description if d else None,
             "error": entry.errors[0] if entry.errors else None}
 
@@ -87,8 +94,9 @@ def personas_list(cfg, project, as_json):
     for r in rows:
         status = Text("ok" if r["active"] else "ok (overridden)", style="green") if r["ok"] \
             else Text(_first_error(r["error"]), style="red", overflow="fold")
-        table.add_row(r["name"], r["role"] or "-", r["scope"], "yes" if r["reviewer"] else "-",
-                      r["template"] or "-", r["origin"], status)
+        table.add_row(Text(r["name"]), Text(r["role"] or "-"), r["scope"],
+                      "yes" if r["reviewer"] else "-", Text(r["template"] or "-"),
+                      Text(r["origin"]), status)
     console.print(table)
 
 
@@ -123,7 +131,7 @@ def personas_show(cfg, name, project, as_json):
             pairs += [("order", str(d.order)), ("output_schema", d.output_schema),
                       ("invariant", d.invariant), ("adopt", _adopt_text(d.adopt))]
     for key, value in pairs:
-        console.print(f"[bold]{key}[/]: {value}", highlight=False)
+        console.print(f"[bold]{key}[/]: {escape(str(value))}", highlight=False)
     if entry.errors:
         console.print("[red]problems:[/]", highlight=False)
         for e in entry.errors:

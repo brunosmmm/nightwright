@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 
 import click
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -44,7 +45,7 @@ def _default(cfg) -> str:
 
 def _header(project, root):
     where = f"{project} ({root})" if project else "- (no project layer: not in a known project repo)"
-    console.print(f"[dim]project {where}[/]", highlight=False)
+    console.print(f"[dim]project {escape(where)}[/]", highlight=False)
 
 
 def _first_error(msg: str) -> str:

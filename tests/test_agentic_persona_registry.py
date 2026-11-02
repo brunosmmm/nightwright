@@ -196,6 +196,55 @@ def test_layers_scope_origin_and_precedence(tmp_path):
     assert [d.name for d in reg.builtin_defs()] == list(PS.PERSONAS)
 
 
+def test_custom_persona_is_refused_by_profiles_and_never_derived(tmp_path):
+    """A valid user/project reviewer is registered, yet no module table nor a profile accepts it."""
+    from nightwright.agentic import profiles as PF
+    cfg = {"config_dir": str(tmp_path / "cfg")}
+    proj = tmp_path / "proj"
+    _custom(tmp_path / "cfg" / "personas", "sec_user")
+    _custom(proj / ".nw" / "personas", "sec")
+    reg = R.load_registry(cfg, project_root=proj, known=PS.KNOWN)
+    assert {"sec", "sec_user"} <= set(reg.resolved())
+    assert all(reg.resolved()[n].defn is not None for n in ("sec", "sec_user"))
+    # personas.py builds its tables from the builtin layer alone, never from load_registry
+    tree = ast.parse((AGENTIC / "personas.py").read_text(encoding="utf-8"))
+    attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    assert "load_builtin" in attrs
+    assert not ({"load_registry", "load_layers"} & (attrs | names))
+    assert PS.REVIEWER_PERSONAS == R.reviewer_personas(R.load_builtin(PS.KNOWN))
+    # profile validation and resolution refuse the custom names
+    assert "sec" not in PF._persona_names()
+    problems = PF.validate_profile_doc({"personas": {"sec": {}}}, origin="p.yaml", in_file=False)
+    assert any("personas.sec: unknown persona" in p for p in problems)
+    with pytest.raises(ValueError, match="unknown reviewer persona 'sec'"):
+        PF._check_reviewers({"name": "p", "reviewers": ["sec"], "personas": {"sec": {}}})
+
+
+def test_refused_entries_never_displace_a_valid_one(tmp_path):
+    cfg = {"config_dir": str(tmp_path / "cfg")}
+    d = tmp_path / "cfg" / "personas"
+    _custom(d, "implementer")                 # shadows a builtin
+    _custom(d, "sec")
+    (d / "sec.yml").write_text("x: 1\n")       # conflicts with sec.yaml
+    reg = R.load_registry(cfg, known=PS.KNOWN)
+    res = reg.resolved()
+    assert res["implementer"].scope == "builtin" and res["implementer"].defn is not None
+    assert res["sec"].path.suffix == ".yaml" and res["sec"].defn is not None
+    refused = [e for e in reg.entries if e.refused]
+    assert sorted(e.path.name for e in refused) == ["implementer.yaml", "sec.yml"]
+    assert all(e.errors for e in refused)
+
+
+def test_non_string_builtin_keys_do_not_crash_the_validator():
+    doc = _doc(output_schema=["x"], invariant=["y"], role="system", read_only=True,
+               adopt={"step": ["z"], "personas": []}, order=1)
+    errs = R.validate_persona_doc(doc, origin="o", layer="builtin", stem="sec_reviewer",
+                                  known=PS.KNOWN, directory=None)
+    assert any("output_schema" in e for e in errs) and any("invariant" in e for e in errs)
+    assert any("adopt" in e for e in errs)
+
+
 def test_project_layer_only_from_project_root(tmp_path):
     cfg = {"config_dir": str(tmp_path / "cfg")}
     other = tmp_path / "worktree"
