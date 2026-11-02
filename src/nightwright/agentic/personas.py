@@ -347,14 +347,15 @@ ROLE_PLACEHOLDERS = {
 }
 
 
-def get_persona(name, project_root=None) -> Persona:
+def get_persona(name, project_root=None, *, user_dir=None) -> Persona:
     """A builtin persona; with `project_root` also one declared by the user or that project
-    (SPEC-0371). Without it only builtins are known."""
+    (SPEC-0371). Without it only builtins are known. `user_dir` is the user personas dir
+    (default `<config dir>/personas`, as the CLI)."""
     if name in PERSONAS:
         return PERSONAS[name]
     if project_root is not None:
         from .persona_defs import load_registry
-        registry = load_registry(project_root)
+        registry = load_registry(project_root, user_dir=user_dir)
         if name in registry:
             return registry[name]
     raise ValueError(f"unknown persona {name!r}; known: {', '.join(sorted(PERSONAS))}")

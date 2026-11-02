@@ -308,6 +308,10 @@ The `template` property accepts an absolute `template_file` for these. Existing 
   40% threshold, because `cli.py` and `completion.py` changed). An attempt to run it via `--run`
   hit the time limit and was stopped, so it did not complete. The full suite is left to the
   queue's close gate.
+- Loop 2 (review fixes): `uv run pytest -q tests/test_agentic_persona_defs.py
+  tests/test_agentic_personas_cli.py tests/test_agentic_personas.py`: 110 passed, including the
+  new misnamed-copy (same layer and user/project), trailing-newline and `get_persona(user_dir=)`
+  tests.
 - `git status` shows no change to `queue.py` or `profiles.py`.
 - Manual (user layer, temp `NW_CONFIG_DIR`, real `uv run nw`): `nw personas validate` printed `ok`
   and exited 0; `list` and `show security_reviewer` showed layer `user`, role `reviewer`,
@@ -334,6 +338,11 @@ The `template` property accepts an absolute `template_file` for these. Existing 
   in the tree that rejection happens when the profile is resolved (`_check_reviewers`, via
   `resolve_profile`), not in `validate_profile_doc`; the inertness test asserts `resolve_profile`
   still raises.
+- Review fix (loop 2): the duplicate/shadowing bookkeeping is keyed on the file stem, so a file
+  whose `name:` differs from its stem (invalid) cannot claim that name and mask the real
+  definition, in the same layer or across user/project. `NAME_RE`/`CATEGORY_RE` use `fullmatch`
+  (a trailing newline is refused), and `get_persona(name, project_root, *, user_dir=None)` takes
+  the user dir the CLI uses (default `<config dir>/personas`).
 - Cross-layer duplicate: the lower layer (user) keeps the name; the project definition is the
   invalid one. The validator message prefix is `<project root dir name>:.nw/personas/<file>`.
 - The CLI resolves the project like `nw profiles` (`--project`, else the cwd's registered project).

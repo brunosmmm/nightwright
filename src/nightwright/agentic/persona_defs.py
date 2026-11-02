@@ -107,7 +107,7 @@ def _categories(doc, role, put) -> tuple:
     if len(cats) > MAX_CATEGORIES:
         put("category", f"at most {MAX_CATEGORIES} entries, got {len(cats)}")
     for c in cats:
-        if not CATEGORY_RE.match(c):
+        if not CATEGORY_RE.fullmatch(c):
             put("category", f"{c!r} must match {CATEGORY_RE.pattern}")
     dup = sorted({c for c in cats if cats.count(c) > 1})
     if dup:
@@ -135,12 +135,10 @@ def _read_file(path: Path, layer: str, origin: str, directory: Path) -> Declared
         if key not in KEYS:
             put(key, "unknown key")
     name = doc.get("name")
-    if not isinstance(name, str) or not NAME_RE.match(name):
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
         put("name", f"must match {NAME_RE.pattern}")
     elif name != path.stem:
         put("name", f"{name!r} must equal the file stem {path.stem!r}")
-    if isinstance(name, str):
-        d.name = name
     role = doc.get("role")
     if role not in ROLES:
         put("role", f"must be one of {', '.join(ROLES)}")
@@ -180,8 +178,8 @@ def scan(project_root=None, *, user_dir=None) -> list:
         found += _read_layer(root / ".nw" / "personas", "project",
                              f"{root.name}:.nw/personas/")
     seen: dict = {}
-    for d in found:
-        if d.path.is_dir() or not NAME_RE.match(d.name):
+    for d in found:                 # keyed on the file stem: a wrong `name:` claims nothing
+        if d.path.is_dir() or not NAME_RE.fullmatch(d.name):
             continue
         if d.name in PS.PERSONAS:
             d.problems.append(f"{d.origin}: name: name {d.name!r} is a builtin persona; pick "

@@ -100,6 +100,38 @@ def test_cross_layer_duplicate_names_both_files(dirs):
         str(user.resolve()))                                        # the lower layer wins
 
 
+@pytest.mark.parametrize("copy_in_user", [False, True])
+def test_a_misnamed_copy_does_not_hide_the_real_definition(dirs, copy_in_user):
+    """`perf_reviewer.yaml` still saying `name: security_reviewer` is the only broken file."""
+    user, root, pdir = dirs
+    _put(pdir, "security_reviewer")
+    copy_dir = user if copy_in_user else pdir
+    _put(copy_dir, "perf_reviewer",
+         body="schema: nw.persona.v1\nname: security_reviewer\nrole: reviewer\n"
+              "template: perf_reviewer.md\n")
+    msgs = PD.validate_persona_defs(root, user_dir=user)
+    assert len(msgs) == 1
+    assert "perf_reviewer.yaml" in msgs[0] and "must equal the file stem" in msgs[0]
+    reg = PD.load_registry(root, user_dir=user)
+    assert reg["security_reviewer"].role == "reviewer"
+    assert "perf_reviewer" not in reg
+
+
+def test_a_trailing_newline_in_a_name_or_category_is_refused(dirs):
+    user, root, pdir = dirs
+    _put(pdir, "nl_reviewer", body='schema: nw.persona.v1\nname: "nl_reviewer\\n"\n'
+         'role: reviewer\ntemplate: nl_reviewer.md\ncategory: ["a\\n"]\n')
+    msgs = PD.validate_persona_defs(root, user_dir=user)
+    assert any("name: must match" in m for m in msgs)
+    assert any("category: 'a\\n' must match" in m for m in msgs)
+
+
+def test_get_persona_takes_the_user_dir(dirs):
+    user, root, pdir = dirs
+    _put(user, "usr_reviewer")
+    assert PS.get_persona("usr_reviewer", root, user_dir=user).role == "reviewer"
+
+
 @pytest.mark.parametrize("extra,needle", [
     ("read_only: false\n", "read_only: unknown key"),
     ("output_schema: {}\n", "output_schema: unknown key"),
