@@ -87,7 +87,7 @@ def _receive(cfg, h: dict, stdin) -> Path:
     """Stream exactly `size` bytes into `update/<wheel>.part`, checking the sha256."""
     d = update_dir(cfg)
     d.mkdir(mode=0o700, parents=True, exist_ok=True)
-    for stale in d.glob("*.part"):
+    for stale in (*d.glob("*.part"), *d.glob("nightwright-*.whl")):
         stale.unlink(missing_ok=True)
     part = d / (h["wheel"] + ".part")
     left, digest = h["size"], hashlib.sha256()
@@ -153,6 +153,15 @@ def _last_line(path: Path) -> str | None:
     return lines[-1] if lines else None
 
 
+def _stderr(text: str) -> None:
+    """Best effort: the ssh side may be gone, and that must not replace the answer."""
+    try:
+        sys.stderr.write(text)
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+
+
 def _install(cfg, wheel: Path, nw_argv: list[str], log: Path) -> None:
     uv = find_uv(nw_argv)
     if uv is None:
@@ -178,10 +187,9 @@ def _install(cfg, wheel: Path, nw_argv: list[str], log: Path) -> None:
                 err = f"uv tool install timed out after {INSTALL_TIMEOUT_S:g}s"
     except OSError as e:
         err = f"could not run uv: {e}"
-    try:                                        # best effort: the ssh side may be gone
-        sys.stderr.write(log.read_text(encoding="utf-8", errors="replace")[-8192:])
-        sys.stderr.flush()
-    except (OSError, ValueError):
+    try:
+        _stderr(log.read_text(encoding="utf-8", errors="replace")[-8192:])
+    except OSError:
         pass
     if err:
         raise _fail("install", _last_line(log) or err)
@@ -222,7 +230,7 @@ def update(cfg, force: bool, stdin, stdout, nw_argv: list[str] | None = None) ->
            "live_jobs": [], "build_id_before": None, "build_id_after": None, "version": None,
            "forced": bool(force)}
     wd = W.worker_dir(cfg)
-    lock_fd, wheel, old_handlers, holding = None, None, {}, False
+    lock_fd, wheel, old_handlers, holding, stage = None, None, {}, False, "header"
     try:
         h = _header(stdin)
         wd.mkdir(parents=True, exist_ok=True)
@@ -232,9 +240,11 @@ def update(cfg, force: bool, stdin, stdout, nw_argv: list[str] | None = None) ->
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             raise _Done("busy", "lock", "another update is running")
-        holding = True
+        holding, stage = True, "receive"
         wheel = _receive(cfg, h, stdin)
+        stage = "validate"
         _validate(wheel, h)
+        stage = "lock"
         staged = wheel.with_name(h["wheel"])    # uv wants a `.whl` name
         os.replace(wheel, staged)
         wheel = staged
@@ -255,11 +265,12 @@ def update(cfg, force: bool, stdin, stdout, nw_argv: list[str] | None = None) ->
         res["build_id_before"] = buildid.local()
         if res["build_id_before"] == h["build_id"]:
             raise _Done("unchanged", build_id_after=res["build_id_before"])
+        stage = "install"
         _run_install(cfg, h, wheel, nw_argv, res)
     except _Done as d:
         res.update(d.result)
     except Exception as e:                      # never a traceback on the ssh channel
-        res.update(state="failed", stage=res["stage"] or "install",
+        res.update(state="failed", stage=stage,
                    error=f"{type(e).__name__}: {e}")
     finally:
         for sig, handler in old_handlers.items():
@@ -287,9 +298,10 @@ def _run_install(cfg, h: dict, wheel: Path, nw_argv: list[str], res: dict) -> No
         res["version"] = _verify(nw_argv, h["build_id"])
         raise _Done("updated", build_id_after=h["build_id"], version=res["version"])
     except _Done as d:
-        saved = {**res, **d.result, "install_started_at": started}
+        saved = {**res, **d.result, "install_started_at": started,
+                 "install_finished_at": time.time()}
         try:
             _write_atomic(wd / "update.json", saved)
         except OSError as e:
-            print(f"nw worker update: could not save update.json: {e}", file=sys.stderr)
+            _stderr(f"nw worker update: could not save update.json: {e}\n")
         raise

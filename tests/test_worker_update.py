@@ -40,6 +40,7 @@ case "$mode" in
          while [ ! -f "$D/release" ]; do sleep 0.05; done
          echo "still going after the close" >&2;;
 esac
+[ -f "$4" ] || { echo "error: no wheel at $4" >&2; exit 9; }
 cat "$D/will_install" > "$D/installed"
 """
 FAKE_NW = r"""#!/bin/sh
@@ -141,6 +142,7 @@ def test_install_updates_as_the_invoking_user(env, new):
     assert not (env.wd / "updating").exists()
     saved = json.loads((env.wd / "update.json").read_text())
     assert saved["state"] == "updated" and saved["install_started_at"] > 0
+    assert saved["install_finished_at"] >= saved["install_started_at"]
     assert oct(d.stat().st_mode & 0o777) == "0o700"
 
 
@@ -240,6 +242,40 @@ def test_live_job_is_busy_unless_forced(env, new, state):
         os.close(fd)
 
 
+HELPER = r"""
+import fcntl, os, signal, sys, time
+lock, hit = sys.argv[1], sys.argv[2]
+def note(sig, frame):
+    open(hit, "a").write(str(sig) + "\n")
+for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT, signal.SIGUSR1, signal.SIGUSR2):
+    signal.signal(sig, note)
+fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
+fcntl.flock(fd, fcntl.LOCK_EX)
+print("ready", flush=True)
+time.sleep(60)
+"""
+
+
+def test_force_installs_without_signalling_a_live_job_process(env, new, tmp_path):
+    data, build = new
+    job = W.jobs_dir(env.cfg) / "jp"
+    job.mkdir(parents=True)
+    (job / "job.json").write_text(json.dumps({"job_id": "jp", "state": "running"}))
+    hit = tmp_path / "signals"
+    p = subprocess.Popen([sys.executable, "-I", "-c", HELPER, str(job / "job.lock"), str(hit)],
+                         stdout=subprocess.PIPE, text=True)
+    try:
+        assert p.stdout.readline().strip() == "ready"
+        code, res = env.run(data, build)
+        assert (code, res["state"], res["live_jobs"]) == (5, "busy", ["jp"])
+        code, res = env.run(data, build, force=True)
+        assert (code, res["state"], res["live_jobs"]) == (0, "updated", ["jp"])
+        assert p.poll() is None and not hit.exists()        # still running, never signalled
+    finally:
+        p.kill()
+        p.wait()
+
+
 def test_a_lost_job_is_not_live(env, new):
     data, build = new
     job = W.jobs_dir(env.cfg) / "gone"
@@ -290,6 +326,8 @@ def test_second_update_is_busy_and_a_claim_is_refused_during_one(env, new):
         assert (code, res["state"], res["stage"]) == (5, "busy", "lock")
         assert res["error"] == "another update is running"
         assert (env.wd / "updating").exists()           # the running one's marker is untouched
+        d = WU.update_dir(env.cfg)                      # ... and so are its staged files
+        assert (d / WHEEL).is_file() and not list(d.glob("*.part"))
         # jobs_lock is free while uv runs
         assert W.gc(env.cfg)["errors"] == []
         with W.jobs_lock(env.cfg):
@@ -337,6 +375,26 @@ def test_a_claimant_older_than_the_install_is_refused(env, monkeypatch):
         assert W.update_refusal(env.cfg) is None
 
 
+def test_a_claimant_started_during_the_install_is_refused_after_it(env, monkeypatch):
+    env.wd.mkdir(parents=True)
+    rec = env.wd / "update.json"
+    monkeypatch.setattr(W, "PROCESS_STARTED", 3000.0)       # between start and finish
+    rec.write_text(json.dumps({"install_started_at": 2000.0, "install_finished_at": 4000.0}))
+    with W.jobs_lock(env.cfg):
+        assert W.update_refusal(env.cfg) == W.UPDATING_ERROR
+    out = io.BytesIO()
+    assert W.gate_job(env.cfg, io.BytesIO(line(claim_header("g3"))), out) == W.EXIT_ERROR
+    assert json.loads(out.getvalue().splitlines()[-1])["error"] == "worker updating"
+    monkeypatch.setattr(W, "PROCESS_STARTED", 5000.0)       # after the install ended
+    with W.jobs_lock(env.cfg):
+        assert W.update_refusal(env.cfg) is None
+    # no finish time (an install still running, or killed): the start is the bound
+    monkeypatch.setattr(W, "PROCESS_STARTED", 3000.0)
+    rec.write_text(json.dumps({"install_started_at": 2000.0, "state": "installing"}))
+    with W.jobs_lock(env.cfg):
+        assert W.update_refusal(env.cfg) is None
+
+
 # ---- failures --------------------------------------------------------------------------------
 
 def test_uv_failure_reports_its_last_line(env, new, capsys):
@@ -356,6 +414,78 @@ def test_uv_timeout(env, new, monkeypatch):
     monkeypatch.setattr(WU, "INSTALL_TIMEOUT_S", 0.5)
     code, res = env.run(data, build)
     assert (code, res["stage"]) == (3, "install") and "timed out" in res["error"]
+
+
+def test_stderr_closed_does_not_replace_the_answer(env, new, monkeypatch):
+    data, build = new
+    env.mode("fail")
+    closed = io.StringIO()
+    closed.close()
+    monkeypatch.setattr(sys, "stderr", closed)
+    code, res = env.run(data, build)
+    assert (code, res["stage"], res["error"]) == (3, "install", "error: boom")
+
+
+def test_an_unexpected_error_names_the_stage_that_was_running(env, new, monkeypatch):
+    data, build = new
+
+    def boom(*a, **k):
+        raise KeyError("x")
+    monkeypatch.setattr(WU, "_receive", boom)
+    code, res = env.run(data, build)
+    assert (code, res["state"], res["stage"]) == (3, "failed", "receive")
+    monkeypatch.undo()
+    monkeypatch.setenv("FAKE_DIR", str(env.dir))
+    monkeypatch.setenv("TMPDIR_FOR_WHEEL", str(env.dir.parent))
+    monkeypatch.setattr(WU, "_validate", boom)
+    code, res = env.run(data, build)
+    assert (code, res["stage"]) == (3, "validate")
+
+
+def test_stale_wheels_are_removed_before_a_receive(env, new):
+    data, build = new
+    d = WU.update_dir(env.cfg)
+    d.mkdir(parents=True)
+    (d / "nightwright-0.0.1-py3-none-any.whl").write_bytes(b"old")
+    (d / "x.part").write_bytes(b"old")
+    code, res = env.run(data, build, sha256="0" * 64)       # fails after the cleanup
+    assert (code, res["stage"]) == (3, "receive")
+    assert not list(d.glob("*.whl")) and not list(d.glob("*.part"))
+
+
+# ---- finding uv ------------------------------------------------------------------------------
+
+@pytest.fixture
+def no_uv(tmp_path, monkeypatch):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "py" / "python"))
+    monkeypatch.setattr(WU, "UV_FALLBACKS", ("~/.local/bin/uv", str(tmp_path / "nope" / "uv")))
+    return tmp_path
+
+
+def test_find_uv_next_to_the_running_nw(no_uv):
+    nwbin = no_uv / "nwbin"
+    nwbin.mkdir()
+    uv = _script(nwbin / "uv", "#!/bin/sh\n")
+    assert WU.find_uv([str(nwbin / "nw")]) == uv
+
+
+def test_find_uv_in_the_home_fallback(no_uv):
+    (no_uv / "home" / ".local" / "bin").mkdir(parents=True)
+    uv = _script(no_uv / "home" / ".local" / "bin" / "uv", "#!/bin/sh\n")
+    assert WU.find_uv([str(no_uv / "elsewhere" / "nw")]) == uv
+
+
+def test_find_uv_prefers_path_and_can_find_nothing(no_uv, monkeypatch):
+    assert WU.find_uv([str(no_uv / "elsewhere" / "nw")]) is None
+    onpath = no_uv / "onpath"
+    onpath.mkdir()
+    uv = _script(onpath / "uv", "#!/bin/sh\n")
+    monkeypatch.setenv("PATH", str(onpath))
+    assert WU.find_uv([str(no_uv / "elsewhere" / "nw")]) == uv
 
 
 def test_uv_missing(env, new, monkeypatch):

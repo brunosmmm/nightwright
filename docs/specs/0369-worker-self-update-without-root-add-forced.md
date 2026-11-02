@@ -356,6 +356,17 @@ coordinator.
   (it would refuse `nw worker update`), so it first needs `nw workers bootstrap box --reinstall`.
   The real-`uv` and `fish` tests above are the only real-binary evidence so far.
 
+### Test record, loop 2 (2026-11-02)
+
+- Review fixes: `tests/test_worker_update.py` now 50 tests, plus `tests/test_worker_ssh_command.py`
+  and the related worker files: new cases for the claim bound (`PROCESS_STARTED` between
+  `install_started_at` and `install_finished_at`, and a missing finish time), a helper process
+  holding `job.lock` under `--force` (still alive, never signalled), the second update leaving
+  the first's staged wheel and no `.part`, `find_uv` (next to `nw`, `~/.local/bin`, PATH, none
+  found), a closed stderr, the stage named by an unexpected error, and stale wheels removed
+  before a receive. All passed. The full suite was left to gating; the manual real-box steps
+  were still not run (see the first record).
+
 ### As shipped (2026-11-02)
 
 - `worker_update.py` as designed, with these deviations: `worker/update.lock` is taken right
@@ -374,6 +385,12 @@ coordinator.
   120; the result is still in `worker/update.json`.
 - `SPEC-0367` is not yet in this spec's `depends_on`: the spec file is guarded during
   implementation, so that one-line frontmatter edit is left for a later spec edit.
+- Loop 2 (review): `_run_install` also writes `install_finished_at` (after verify, before the
+  marker is removed) into `worker/update.json`, and `worker.update_refusal` refuses a claimant
+  whose `PROCESS_STARTED` is earlier than it (falling back to `install_started_at` while an
+  install is running or was killed), so a process exec'd while `uv` replaced the venv cannot
+  start a job after the marker is gone. An unexpected error reports the stage that was running;
+  the stderr copy is best-effort everywhere; `_receive` also clears stale `nightwright-*.whl`.
 - `tests/test_worker_jobs.py` now expects `features == ["async", "persona", "update"]`.
 
 ## Rollout / migration

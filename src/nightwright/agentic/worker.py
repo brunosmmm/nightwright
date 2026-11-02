@@ -140,7 +140,8 @@ def jobs_lock(cfg):
 def update_refusal(cfg) -> str | None:
     """SPEC-0369: `"worker updating"` when a claim must not start a job (caller holds
     `jobs_lock`): `worker/updating` is there and another process holds `worker/update.lock`
-    (a marker a killed update left is removed), or an install began after this process did."""
+    (a marker a killed update left is removed), or an install that began, or ended, after this process started (it may have imported
+    a mix of the old and the new code)."""
     wd = worker_dir(cfg)
     if (wd / "updating").exists():
         held = False
@@ -162,14 +163,21 @@ def update_refusal(cfg) -> str | None:
         except OSError:
             pass
     try:
-        started = json.loads((wd / "update.json").read_text(encoding="utf-8")).get(
-            "install_started_at")
+        rec = json.loads((wd / "update.json").read_text(encoding="utf-8"))
+        # an install that finished bounds the processes that may have loaded mixed code; one
+        # still running (or killed) has only its start
+        bound = rec.get("install_finished_at")
+        if not _is_num(bound):
+            bound = rec.get("install_started_at")
     except (OSError, ValueError, AttributeError):
         return None
-    if isinstance(started, (int, float)) and not isinstance(started, bool) \
-            and started > PROCESS_STARTED:
+    if _is_num(bound) and bound > PROCESS_STARTED:
         return UPDATING_ERROR
     return None
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
 def _read_have(cfg, repo_key) -> dict:
