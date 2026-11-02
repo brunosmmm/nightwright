@@ -13,7 +13,7 @@ flowchart LR
 ## 1 · Install
 
 ```bash
-git clone <this repo> nightwright && cd nightwright
+git clone https://github.com/brunosmmm/nightwright.git && cd nightwright   # or git@github.com:brunosmmm/nightwright.git
 uv sync                                 # creates .venv
 uv tool install --editable .            # puts `nw` on your PATH, editable
 nw skills install                       # installs /nw-* skills for Claude Code / Cursor

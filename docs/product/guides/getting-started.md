@@ -7,6 +7,7 @@ the wrong binary.
 ## Install
 
 ```bash
+git clone https://github.com/brunosmmm/nightwright.git && cd nightwright
 uv sync                       # .venv + base deps
 uv run nw --help              # verify: idea, report, projects, …
 uv tool install --editable .  # put nightwright on PATH

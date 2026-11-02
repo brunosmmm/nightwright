@@ -47,6 +47,13 @@ flowchart LR
     Nine steps with a check after each: install, configure, register a project, and watch
     your first spec get built and merged.
 
+- :material-play-circle-outline: **[Run the agentic loop](guides/agentic-workflow.md)**
+
+    ---
+
+    The everyday path: register projects, start the runner, launch the conductor and a
+    steward per project, queue specs and watch them merge.
+
 - :material-clock-outline: **[Track time](guides/track-time.md)**
 
     ---
@@ -91,6 +98,7 @@ interactive ideas **desk** (`nw tui`), and as agent skills (`/nw-explore`, `/nw-
 | If you want to… | Go to |
 |---|---|
 | Set everything up, step by step | [Bootstrap from zero](guides/bootstrap.md) |
+| Run the loop day to day: conductor, stewards, queue | [Run the agentic loop](guides/agentic-workflow.md) |
 | Turn a vague idea into a buildable spec | [Ideas to specs](ideas/index.md) |
 | Understand how the loop works and why | [How it works](loop/index.md) · [Principles](loop/principles.md) |
 | Know what to do when a campaign parks | [Operating the loop](loop/operate.md#when-something-parks) |

@@ -50,7 +50,7 @@ nav:
   - Start here:
       - Bootstrap from zero: guides/bootstrap.md
       - Getting started: guides/getting-started.md
-      - The normal agentic workflow: guides/agentic-workflow.md
+      - Run the agentic loop: guides/agentic-workflow.md
   - Ideas to specs:
       - ideas/index.md
       - Capture ideas: ideas/capture.md

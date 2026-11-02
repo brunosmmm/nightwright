@@ -49,10 +49,10 @@ Needs git, [uv](https://docs.astral.sh/uv/) and the `claude` CLI (personas, laun
 sessions); `gh` too if a project merges by PR.
 
 ```bash
-uv sync && uv run nw --help           # in this checkout: lists idea / spec / queue / report …
+git clone https://github.com/brunosmmm/nightwright.git && cd nightwright   # or git@github.com:brunosmmm/nightwright.git
+uv sync && uv run nw --help           # lists idea / spec / queue / report …
 uv tool install --editable .          # `nw` on PATH (`uv tool update-shell` if it is not)
-nw skills install                     # symlink agent skills into ~/.claude/skills
-nw completion install --shell fish    # or bash / zsh
+nw skills install && nw completion install --shell fish   # skills -> ~/.claude/skills; shell: fish/bash/zsh
 nw projects add Acme --repo ~/src/acme --yes && nw projects init Acme --yes
 nw doctor --fix-hints                 # read-only install check; prints the fix for each finding
 nw queue conductor-launch             # then `nw queue steward-launch Acme` in a second terminal
@@ -63,7 +63,7 @@ Before launching, create `~/.config/nightwright/config.yaml` with at least `time
 refuse unpriced models). Ideas go to `org_ideas_file` (default `~/work/org/ai/ideas.org`).
 Data lives in `~/.local/share/nightwright/`; `NW_CONFIG_DIR` / `NW_DATA_DIR` override both.
 Install **editable** so `git pull` updates skills and specs (else set `nw_checkout:`). Coming
-from `wt`? Run `nw migrate-from-wt` once. Next: [the agentic workflow](docs/product/guides/agentic-workflow.md).
+from `wt`? Run `nw migrate-from-wt` once. Next: [Run the agentic loop](docs/product/guides/agentic-workflow.md).
 
 ## Quick tour
 
