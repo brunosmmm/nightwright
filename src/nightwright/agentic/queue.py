@@ -4345,6 +4345,7 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     _settle_ended_remote_jobs(cfg, flying)
     _apply_worker_escalations(cfg)
     _finish_worker_drains(cfg)
+    _run_worker_updates(cfg)
     items = [s for s in store.list_campaigns(cfg) if s.get("state") != "PARKED"]
     slots = slots_for(cfg)
     busy = [s for s in items if s.get("state") in ACTIVE_STATES]
@@ -6621,6 +6622,7 @@ def _gate_pools_view(cfg, occupancy, active_ids) -> dict | None:
         held = [h.get("campaign") for h in (occ_w.get(w["name"]) or {}).get("held") or []]
         workers.append({"name": w["name"], "enabled": bool(w["enabled"]),
                         "cooldown": bool(WK.in_cooldown(w)), "draining": bool(w.get("draining")),
+                        "updating": bool(WK.update_pending(w)),
                         "slots": w["slots"], "held": len(held), "campaigns": held})
     where = {}
     for h in occupancy.get("held") or []:
@@ -8022,6 +8024,85 @@ def _finish_worker_drains(cfg) -> None:
             E.append(cfg, "worker_drained", by="queue", data={"worker": name})
         except Exception as e:                  # noqa: BLE001 - journaled, the tick goes on
             journal(cfg, "worker_drained", worker=name, error=f"{type(e).__name__}: {e}")
+
+
+_UPDATING: dict = {}            # (journal path, worker) -> the update thread (SPEC-0386)
+_UPDATE_RETRY: dict = {}        # (journal path, worker) -> monotonic time before which not to retry
+UPDATE_BUSY_RETRY_S = 60.0
+
+
+def _emit_worker_event(cfg, type_, data) -> None:
+    from . import events as E                   # lazy: events imports this module
+    try:
+        E.append(cfg, type_, by="queue", data=data)
+    except Exception as e:                      # noqa: BLE001 - journaled, never undoes the write
+        journal(cfg, type_, error=f"{type(e).__name__}: {e}", **data)
+
+
+def _worker_update_job(cfg, rec: dict, key) -> None:
+    """SPEC-0386: one scheduled update, off the tick thread (the wheel build and upload take
+    minutes). Never `--force`. updated / unchanged: clear the drain, the worker serves again.
+    busy (a race): stay draining, retry after `UPDATE_BUSY_RETRY_S`. failed / old worker:
+    clear the drain too (work must not be stranded) and tell the conductor; no retry until
+    `nw workers update NAME --when-idle` is run again."""
+    from . import workers_update as WU
+    name = rec["name"]
+    since = (workers.update_pending(rec) or {}).get("since")
+    try:
+        out = WU.perform(cfg, rec)
+    except Exception as e:                      # noqa: BLE001 - a crash is a failed update
+        out = WU.Outcome("failed", f"{type(e).__name__}: {e}")
+    try:
+        if out.kind == "busy":
+            _UPDATE_RETRY[key] = time.monotonic() + UPDATE_BUSY_RETRY_S
+            journal(cfg, "worker_update_busy", worker=name, live_jobs=out.live_jobs)
+        elif out.kind in ("updated", "unchanged"):
+            wrote = workers.end_update(cfg, name, since, out.kind, out.detail)
+            journal(cfg, "worker_updated", worker=name, state=out.kind, build_id=out.build_id,
+                    returned_to_service=wrote)
+            _emit_worker_event(cfg, "worker_updated",
+                               {"worker": name, "state": out.kind, "build_id": out.build_id})
+        else:
+            wrote = workers.end_update(cfg, name, since, out.kind, out.detail)
+            journal(cfg, "worker_update_failed", worker=name, state=out.kind, error=out.detail,
+                    returned_to_service=wrote)
+            _emit_worker_event(cfg, "worker_update_failed",
+                               {"worker": name, "reason": out.kind, "error": out.detail})
+    finally:
+        _UPDATING.pop(key, None)
+
+
+def _run_worker_updates(cfg) -> None:
+    """SPEC-0386, every tick: a worker draining for a scheduled update (`update_pending`) that
+    is idle gets the SPEC-0385 update in a background thread; one still busy after
+    `agentic.workers.update_drain_timeout_h` is returned to service (journal + event; no job
+    is touched). An unreadable registry or job record skips the pass (the drain pass journals it)."""
+    import threading
+    try:
+        idle, late = workers.due_updates(cfg)
+    except (OSError, ValueError, TypeError):
+        return
+    jp = str(runner_journal_path(cfg))
+    for rec in late:
+        name = rec["name"]
+        if (jp, name) in _UPDATING:
+            continue
+        hours = workers.update_drain_timeout_h(cfg)
+        since = rec["update_pending"].get("since")
+        if workers.end_update(cfg, name, since, "timeout", f"not idle after {hours:g} h"):
+            journal(cfg, "worker_update_timeout", worker=name, timeout_h=hours)
+            _emit_worker_event(cfg, "worker_update_failed", {
+                "worker": name, "reason": "timeout",
+                "error": f"still not idle after {hours:g} h; returned to service, not updated"})
+    for rec in idle:
+        key = (jp, rec["name"])
+        if key in _UPDATING or _UPDATE_RETRY.get(key, 0) > time.monotonic():
+            continue
+        journal(cfg, "worker_update_started", worker=rec["name"])
+        t = threading.Thread(target=_worker_update_job, args=(cfg, rec, key), daemon=True,
+                             name=f"worker-update-{rec['name']}")
+        _UPDATING[key] = t
+        t.start()
 
 
 # ---- gc (SPEC-0275) -----------------------------------------------------------------------

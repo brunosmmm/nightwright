@@ -509,7 +509,8 @@ def _workers_line(p: dict) -> Text | None:
         elif w["cooldown"]:
             dot, state, style = "●", "cooldown", "yellow"
         else:
-            dot, state, style = "●", "draining" if w["draining"] else "on", "green"
+            dot, state, style = "●", (("updating" if w.get("updating") else "draining") if w["draining"]
+                               else "on"), "green"
         t.append(f"🖥️ {w['name']} ")
         t.append(dot, style=style)
         t.append(f" {state} {w['held']}/{w['slots']}  ")

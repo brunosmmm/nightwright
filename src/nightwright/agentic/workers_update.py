@@ -98,3 +98,37 @@ def send(cfg, rec: dict, force: bool, dry_run: bool = False):
     out_s = p.stdout.decode("utf-8", "replace")
     err_s = p.stderr.decode("utf-8", "replace").strip()
     return plan, parse_result(out_s), p.returncode, err_s
+
+
+@dataclass
+class Outcome:
+    """SPEC-0386: the result of one non-interactive update (the queue's scheduled path).
+    `kind`: updated | unchanged | busy | failed | old (worker without the verb)."""
+    kind: str
+    detail: str = ""
+    build_id: str | None = None
+    live_jobs: list | None = None
+
+
+def perform(cfg, rec: dict) -> Outcome:
+    """SPEC-0386: `send` (never `--force`) then the post-update `check`, mapped to an
+    `Outcome`. Shares the wire path and the build-id verification with `nw workers update`."""
+    try:
+        plan, res, code, err = send(cfg, rec, False)
+    except UpdateError as e:
+        return Outcome("failed", str(e))
+    if res is None:
+        why = err.splitlines()[-1] if err else "no result line"
+        return Outcome("old" if "not allowed" in err else "failed",
+                       f"ssh exit {code}: {why}")
+    state = res.get("state")
+    if state == "busy":
+        return Outcome("busy", BUSY_MSG.format(name=plan.name), live_jobs=res.get("live_jobs"))
+    if state == "failed":
+        return Outcome("failed", f"failed at {res.get('stage')}: {res.get('error')}")
+    chk = WK.check(cfg, rec)
+    got = (chk.get("info") or {}).get("build_id")
+    if not chk["ok"] or got != plan.build_id:
+        why = "; ".join(chk["errors"]) or f"build {got} != {plan.build_id}"
+        return Outcome("failed", f"check after update: {why}")
+    return Outcome(str(state), f"build {str(got)[:12]}", build_id=got)

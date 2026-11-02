@@ -276,6 +276,41 @@ def draining_jobs(cfg) -> dict:
     return out
 
 
+UPDATE_DRAIN_TIMEOUT_H = 6.0
+
+
+def _workers_cfg(cfg) -> dict:
+    w = ((cfg.get("agentic") or {}).get("workers"))
+    return w if isinstance(w, dict) else {}
+
+
+def update_drain_timeout_h(cfg) -> float:
+    """SPEC-0386: `agentic.workers.update_drain_timeout_h` (default 6): how long a worker
+    scheduled for an update may stay draining before the queue gives up and returns it to
+    service. A non-positive or non-number value falls back to the default."""
+    raw = _workers_cfg(cfg).get("update_drain_timeout_h")
+    ok = isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0
+    return float(raw) if ok else UPDATE_DRAIN_TIMEOUT_H
+
+
+def auto_update(cfg) -> bool:
+    """SPEC-0386: `agentic.workers.auto_update` (default false); only a literal `true`."""
+    return _workers_cfg(cfg).get("auto_update") is True
+
+
+def update_pending(rec: dict) -> dict | None:
+    """The `update_pending` marker of a record that is draining for an update, else None.
+    The marker counts only together with `draining: true` (`on` / `off` clear both)."""
+    m = rec.get("update_pending")
+    return m if isinstance(m, dict) and rec.get("draining") is True else None
+
+
+def mark_update(rec: dict, since: str) -> None:
+    """SPEC-0386: schedule an update on the raw record `rec` (inside a registry `update`)."""
+    rec["draining"] = True
+    rec["update_pending"] = {"reason": "update", "since": since}
+
+
 def _drained(cfg, name: str) -> bool:
     """A draining worker is idle: no non-final job record names it and no slot of its pool is
     held (a gate between `acquire` and `submit` has a slot but no record yet)."""
@@ -325,7 +360,8 @@ def finish_drains(cfg) -> list[str]:
     the registry is written only when that locked re-check disables something. Raises `OSError`
     / `ValueError` (nothing disabled) when the registry, the `remote-jobs` dir or any record in
     it is unreadable."""
-    names = [r["name"] for r in read_strict(cfg) if r.get("draining") is True]
+    names = [r["name"] for r in read_strict(cfg)
+             if r.get("draining") is True and not update_pending(r)]
     if not names:
         return []
     _check_job_records(cfg)
@@ -336,7 +372,8 @@ def finish_drains(cfg) -> list[str]:
         _check_job_records(cfg)                 # again under the lock: a record that turned
         done = []                               # unusable since the pre-check aborts the write
         for r in records:
-            if r.get("draining") is True and _drained(cfg, r["name"]):
+            if r.get("draining") is True and not update_pending(r) \
+                    and _drained(cfg, r["name"]):
                 r["enabled"] = False
                 r.pop("draining", None)
                 done.append(r["name"])
@@ -347,6 +384,55 @@ def finish_drains(cfg) -> list[str]:
         return update(cfg, fn)
     except _NoDrain:
         return []
+
+
+def due_updates(cfg, now=None) -> tuple[list[dict], list[dict]]:
+    """SPEC-0386, every queue tick: `(idle, timed_out)` normalized records of the enabled
+    workers draining for an update. `idle`: no live job and no held slot (`_drained`).
+    `timed_out`: not idle and `since` older than `update_drain_timeout_h`. A marker with an
+    unreadable `since` counts from now (never times out). Raises like `finish_drains`."""
+    pend = [r for r in read_strict(cfg) if r.get("enabled") is not False and update_pending(r)]
+    if not pend:
+        return [], []
+    _check_job_records(cfg)
+    now = now or dt.datetime.now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    limit = dt.timedelta(hours=update_drain_timeout_h(cfg))
+    idle, late = [], []
+    for r in pend:
+        if _drained(cfg, r["name"]):
+            idle.append(normalize(cfg, r))
+            continue
+        since = _parse_ts(update_pending(r).get("since"))
+        if since is not None and now - since > limit:
+            late.append(normalize(cfg, r))
+    return idle, late
+
+
+def end_update(cfg, name: str, since, state: str, detail: str = "") -> bool:
+    """SPEC-0386: return `name` to service after its scheduled update ended (`state`: updated,
+    unchanged, failed, old, timeout): drop `draining` and `update_pending` (the worker stays
+    enabled with its slots and kinds) and record `update_last`. Only if the record still
+    carries the marker with this `since` (an `on` / `off` / newer schedule in between wins).
+    Returns whether it wrote."""
+    done = []
+
+    def fn(records):
+        r = next((r for r in records if r.get("name") == name), None)
+        m = r.get("update_pending") if r else None
+        if not isinstance(m, dict) or m.get("since") != since:
+            raise _NoDrain()
+        r.pop("draining", None)
+        r.pop("update_pending", None)
+        r["update_last"] = {"state": state, "at": dt.datetime.now().astimezone().isoformat(
+            timespec="seconds"), "detail": detail[:300]}
+        done.append(1)
+    try:
+        update(cfg, fn)
+    except _NoDrain:
+        return False
+    return bool(done)
 
 
 def check(cfg, rec: dict) -> dict:

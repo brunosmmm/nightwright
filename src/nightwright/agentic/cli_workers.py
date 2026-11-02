@@ -37,6 +37,7 @@ def workers_group():
     nw workers drain NAME              no new gates; disabled once idle (SPEC-0343)
     nw workers update NAME [--force] [--dry-run]
                                        upgrade the worker to this checkout's build (SPEC-0385)
+    nw workers update NAME --when-idle drain; the queue updates it once idle, then resumes (SPEC-0386)
     nw workers rm NAME                 unregister (held slots are untouched)
     """
 
@@ -195,6 +196,8 @@ def workers_list(cfg, as_json):
              if WK.in_cooldown(w) else None,
              "held": len((occ.get(w["name"]) or {}).get("held") or []),
              "identity": w.get("identity"), "draining": w["name"] in drain,
+             "updating": w["name"] in drain and bool(WK.update_pending(w)),
+             "update_last": w.get("update_last"),
              "draining_jobs": jobs.get(w["name"], 0) if w["name"] in drain else None}
             for w in ws]
     if as_json:
@@ -209,7 +212,8 @@ def workers_list(cfg, as_json):
     for r in rows:
         enabled = "yes" if r["enabled"] else "no"
         if r["draining"]:
-            enabled = f"draining ({r['draining_jobs']} jobs)"
+            enabled = (f"updating (draining, {r['draining_jobs']} jobs)" if r["updating"]
+                       else f"draining ({r['draining_jobs']} jobs)")
         t.add_row(r["name"], r["ssh"], str(r["slots"]), enabled,
                   r["cooldown_until"] or "—", f"{r['held']}/{r['slots']}")
     console.print(t)
@@ -250,6 +254,13 @@ def workers_check(cfg, name, as_json, auth):
                 _say(f"  error: {e}", "red")
             for w in r["warnings"]:
                 _say(f"  warning: {w}", "yellow")
+    if WK.auto_update(cfg):                      # SPEC-0386: schedule stale workers
+        for r in results:
+            if any(w.startswith("worker stale:") for w in r["warnings"]):
+                try:
+                    _schedule_update(cfg, r["name"])
+                except click.ClickException as e:
+                    _say(f"{r['name']}: auto_update: {e.message}", "yellow")
     if not all(r["ok"] for r in results):
         raise SystemExit(1)
 
@@ -296,6 +307,7 @@ def workers_on(cfg, name):
         r["enabled"] = True
         r["cooldown_until"] = None
         r.pop("draining", None)
+        r.pop("update_pending", None)
     _update(cfg, fn)
     _say(f"{name}: enabled")
 
@@ -310,6 +322,7 @@ def workers_off(cfg, name):
         r = _find(records, name)
         r["enabled"] = False
         r.pop("draining", None)
+        r.pop("update_pending", None)
     _update(cfg, fn)
     _say(f"{name}: disabled")
 
@@ -361,6 +374,29 @@ def workers_drain(cfg, name):
     _say(f"{name}: draining ({_jobs_on(cfg, name)} jobs)")
 
 
+def _schedule_update(cfg, name) -> None:
+    """SPEC-0386: mark `name` draining for an update (`draining` + `update_pending`)."""
+    def state(r):
+        if r.get("enabled") is False:
+            return f"{name}: disabled; nothing to drain (run `nw workers update {name}` now)"
+        if WK.update_pending(r):
+            return f"{name}: update already scheduled ({_jobs_on(cfg, name)} jobs)"
+        return None
+
+    def fn(records):
+        r = _find(records, name)
+        if (m := state(r)) is not None:
+            raise _DrainNoop(m)
+        WK.mark_update(r, now_iso())
+    try:
+        _update(cfg, fn)
+    except _DrainNoop as e:
+        _say(e.args[0])
+        return
+    _say(f"{name}: update scheduled, draining ({_jobs_on(cfg, name)} jobs); a queue tick "
+         f"updates it once idle")
+
+
 def _jobs_on(cfg, name) -> int:
     return WK.draining_jobs(cfg).get(name, 0)
 
@@ -383,11 +419,25 @@ def workers_rm(cfg, name):
                    "update --force`")
 @click.option("--dry-run", is_flag=True,
               help="build the wheel, print the plan and its size; send nothing")
+@click.option("--when-idle", is_flag=True,
+              help="schedule instead: drain NAME now (no new gates), and when the queue sees it "
+                   "idle it runs this update (never --force) and returns it to service "
+                   "(SPEC-0386)")
 @click.pass_obj
-def workers_update(cfg, name, force, dry_run):
+def workers_update(cfg, name, force, dry_run, when_idle):
     """Upgrade a worker to this checkout's build over its restricted key (SPEC-0385): builds a
     wheel and streams it to the worker's forced-command verb `nw worker update` (SPEC-0369),
-    then runs `check`. Exits 0 updated or unchanged, 5 worker busy (live jobs), 1 failed."""
+    then runs `check`. Exits 0 updated or unchanged, 5 worker busy (live jobs), 1 failed.
+
+    With --when-idle the queue does it for you: the worker drains (as `nw workers drain`), and
+    a queue tick that finds it idle updates it, verifies the build id, and puts it back in
+    service; on failure or after `agentic.workers.update_drain_timeout_h` (default 6) it is
+    returned to service anyway and the conductor is told. Needs a ticking runner."""
+    if when_idle:
+        if force or dry_run:
+            raise click.UsageError("--when-idle cannot be combined with --force or --dry-run")
+        _schedule_update(cfg, name)
+        return
     rec = _find(_load_or_fail(cfg), name)
     try:
         plan, res, code, err = WU.send(cfg, rec, force, dry_run)

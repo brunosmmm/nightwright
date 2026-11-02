@@ -263,6 +263,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0367](./specs/0367-nw-workers-bootstrap-cannot-refresh-a-stale.md) | nw workers bootstrap refreshes a stale worker install (build id, --reinstall, stale warning, loud gate rejection) | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0385](./specs/0385-nw-workers-update-coordinator.md) | `nw workers update NAME`: coordinator side of the worker self-update | feature | in-progress | — | 2026-11-02 |
+| [SPEC-0386](./specs/0386-queue-scheduled-worker-update.md) | Queue-scheduled worker update: `nw workers update NAME --when-idle` | feature | in-progress | — | 2026-11-02 |
 
 ## Done
 
