@@ -189,6 +189,25 @@ def test_finish_drains_does_not_write_without_a_drain(cfg):
     assert (WK.path(cfg).stat().st_mtime_ns, WK.path(cfg).read_bytes()) == before
 
 
+def test_queue_tick_runs_the_drain_pass(cfg, invoke, monkeypatch):
+    """The wiring: a real `queue.tick` (not a direct `_finish_worker_drains` call) disables an
+    idle draining worker and emits `worker_drained`."""
+    _seed(cfg, _w("box"))
+    assert invoke("drain", "box").exit_code == 0
+    calls = []
+    real = Q._finish_worker_drains
+    monkeypatch.setattr(Q, "_finish_worker_drains", lambda c: (calls.append(c), real(c)))
+    with GS.acquire(cfg, "c-1", pools=[("box", 1)]):
+        Q.tick(cfg)                             # the held slot keeps it draining
+    assert calls == [cfg]
+    assert _raw(cfg)["draining"] is True and _raw(cfg)["enabled"] is True
+    Q.tick(cfg)
+    assert len(calls) == 2
+    assert _raw(cfg)["enabled"] is False and "draining" not in _raw(cfg)
+    (ev,) = _drained_events(cfg)
+    assert ev["data"] == {"worker": "box"} and ev["by"] == "queue"
+
+
 def test_unreadable_registry_skips_the_pass(cfg):
     p = WK.path(cfg)
     p.parent.mkdir(parents=True, exist_ok=True)

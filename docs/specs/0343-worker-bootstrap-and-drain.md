@@ -280,6 +280,16 @@ against bootstrap text that this spec no longer contains. Each is resolved in
   (`test_running_job_finishes_on_the_draining_worker`, `test_waiter_started_before_drain_skips_worker`,
   `test_forced_worker_waiter_drained_mid_wait_falls_back`) stand in for them.
 
+### Test record (2026-11-02, tick wiring)
+
+- `test_queue_tick_runs_the_drain_pass` (new): it runs a real `queue.tick(cfg)`, not a direct
+  `_finish_worker_drains` call. A spy wraps `_finish_worker_drains`. During the first tick a
+  slot in `w-box/` is held: the spy is called once, and the worker stays draining. After the
+  release, a second tick disables it and emits one `worker_drained` event.
+  `tests/test_workers_drain.py`: 31 passed.
+- Mutation check: with the `_finish_worker_drains(cfg)` call removed from `_tick`, the new test
+  fails. The call was then restored. The full suite is left to gating.
+
 ### As shipped (2026-11-01)
 
 - **`--worker` waiters get no `skip`.** `gates.run_all` passes the `skip` predicate only when no
