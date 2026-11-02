@@ -553,6 +553,17 @@ def test_remote_excluded_is_cleared_when_the_step_completes(tmp_path, monkeypatc
     assert "remote_excluded" not in S.read_state(w.cfg, CID)
 
 
+def test_failed_write_back_cost_is_counted_once_when_the_rerun_completes(tmp_path, monkeypatch):
+    w, base, res, st, ctx = _failure_case(
+        tmp_path, monkeypatch, lambda w, b: (w.repo / "late.txt").write_text("late\n"))
+    failed, = w.ledger(["run.end"])
+    assert S.read_state(w.cfg, CID)["cost"]["total_usd"] == failed["charged_usd"] == 0.5
+    Q._apply(ctx, st, res)
+    charged = sum(e["charged_usd"] for e in w.ledger(["run.end"]))
+    assert S.read_state(w.cfg, CID)["cost"]["total_usd"] == pytest.approx(charged)
+    assert [e["total_usd"] for e in w.ledger(["cost"])][-1] == pytest.approx(charged)
+
+
 # ---- lost job, pre-submit fallback, cancel ---------------------------------------------------
 
 LOCAL_OK = [{"verdict": VERDICT, "cost_usd": 0.0}]
@@ -793,6 +804,11 @@ def test_rerun_after_failed_write_back_detaches_on_a_stop(tmp_path, monkeypatch)
     assert [e["run_id"] for e in w.ledger(["run.end"])] == ["001-implementer"]
     assert [e["run_id"] for e in w.ledger(["run.start"])] == ["001-implementer",
                                                               "002-implementer"]
+    # the failed remote run's charge is in state.json, though the re-run is never applied
+    failed, = w.ledger(["run.end"])
+    cost = S.read_state(w.cfg, CID)["cost"]
+    assert failed["charged_usd"] == 0.5
+    assert cost["total_usd"] == 0.5 and cost["by_persona"]["implementer"] == 0.5
 
 
 def test_applied_record_of_a_lost_job_is_collected_not_rerun(tmp_path, monkeypatch):

@@ -498,6 +498,26 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
   passed.
 - The full suite is left to gating.
 
+### As shipped (2026-11-02, cost on a detached re-run)
+
+- **The failed remote run's cost reaches `state.json` before the re-run.** `_rerun_locally`
+  writes the updated `cost` (with the failed run's `charged_usd`) into `state.json` under the
+  same item lock as `counters.runs` and `remote_excluded`. A re-run that detaches is never
+  applied, so before this fix the charge was on the ledger's `cost` event but not in
+  `state.json`. When the re-run completes, `_apply` copies `state["cost"]` over again, so
+  only the re-run's own charge is added and nothing is counted twice.
+
+### Test record (2026-11-02, cost on a detached re-run)
+
+- `tests/test_remote_personas.py`: the detach-on-stop re-run case now checks that
+  `state.json` `cost.total_usd` and `by_persona.implementer` equal the failed run's
+  `charged_usd`. A new case checks that after a completed re-run and `_apply`, the total
+  equals the sum of both runs' `charged_usd`, and the last ledger `cost` total matches it.
+  Mutation check: without the fix, both cases fail.
+- `uv run pytest -q -n 6` over `test_remote_personas.py`, `test_agentic_runner.py`,
+  `test_agentic_adopt.py`, `test_remote_job_records.py`, `test_remote_gates.py` and
+  `test_agentic_campaign_runs.py`: 267 passed. The full suite is left to gating.
+
 ## Rollout / migration
 
 Implementation sessions clock in and out on the linked idea (`nw idea clock-in IDEA-560` /

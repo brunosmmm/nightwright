@@ -13,6 +13,7 @@ checked pessimistically (`total + persona budget > cap` ⇒ PARKED). Humans act 
 `PARKED` items (`park` / `resume` / `abandon`)."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -1927,6 +1928,10 @@ def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget:
         state["remote_excluded"] = excluded
         current.setdefault("counters", {})["runs"] = run_no
         current["remote_excluded"] = excluded
+        # the failed run's charge is on the ledger now, so it goes to state.json now too: a
+        # re-run that detaches is never applied. `_apply` later copies `state["cost"]` over, so
+        # a re-run that completes adds only its own charge.
+        current["cost"] = copy.deepcopy(state["cost"])
         store.write_state(cfg, cid, current)
     new_req = replace(req, run_dir=store.runs_dir(cfg, cid) / new_id)
     if hooks is not None and getattr(ctx.runner, "detachable", False):
