@@ -1,9 +1,10 @@
 ---
 id: SPEC-0368
 title: "Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run"
-status: proposed
+status: accepted
 owner: user
 created: 2026-11-01
+updated: 2026-11-01
 kind: feature
 source_idea: IDEA-701
 tags: [agentic, gates, workers, remote]
