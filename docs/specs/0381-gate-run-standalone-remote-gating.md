@@ -349,8 +349,11 @@ for campaign states, and the `holder` and `keep_changed` arguments default off.
   - Regression guard, run with `-n 4`: `tests/test_gate_slots.py`, `tests/test_remote_gates.py`,
     `tests/test_cli_gate_slots.py`, `tests/test_docs_product_reference.py`, `tests/test_skills.py`.
   - `test_skills.py::test_conduct_skill_rule_ids` fails on `main` without this change
-    (`message.request.human_order` is missing from the decision table). That failure predates
+    (row id `message.request.human_order` fails `RULE_RE`). That failure predates
     this spec; the other tests in the file pass.
+  - Unrelated fix: the conduct decision-table row id `message.request.human_order` (cdfcef19) had three
+    segments, which `RULE_RE` (SPEC-0301, `<event>[.<qualifier>]`; `a.b.c` is a tested reject) rejects, so
+    `nw queue decision --rule` would have failed too; renamed it `message.human_order` in `skills/nw-conduct/SKILL.md`.
   - Not covered by a unit test: the `cut` `repo.commit` override. The real dispatch below
     exercised it (branch mode).
 - **Manual verification (real binary):**
