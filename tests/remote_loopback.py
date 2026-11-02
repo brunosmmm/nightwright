@@ -20,12 +20,19 @@ class Result:
         self.dropped = dropped          # True when kill_after cut the connection
 
 
+def _default_sighup():
+    """sshd starts the forced command with SIGHUP at its default action. A caller that
+    ignores it (the worker's own job process does, `worker_job.main`) would hand `SIG_IGN`
+    down through fork+exec, and a hang-up would then never end the "connection"."""
+    signal.signal(signal.SIGHUP, signal.SIG_DFL)
+
+
 def start(env, command, input=None):
     """The remote side of one connection, as a Popen (stdin a pipe, stdout a pipe)."""
     proc = subprocess.Popen([sys.executable, "-m", "nightwright", "worker", "ssh-command"],
                             env={**env, "SSH_ORIGINAL_COMMAND": command},
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE)
+                            stderr=subprocess.PIPE, preexec_fn=_default_sighup)
     if input is not None:
         try:
             proc.stdin.write(input)

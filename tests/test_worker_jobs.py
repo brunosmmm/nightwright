@@ -804,6 +804,21 @@ def test_a_signal_or_eof_on_attach_never_cancels_the_job(wenv, sig):
     assert _read(job / "job.json")["state"] == "running"
 
 
+def test_loopback_connection_gets_default_sighup_even_when_the_caller_ignores_it(wenv):
+    """Regression: a remote gate runs under the worker job process, which ignores SIGHUP
+    (inherited across exec); the loopback "sshd" must still hand the command SIG_DFL."""
+    old = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        job = _fake_job(wenv, "j-ign")
+        p = LB.start(wenv, "nw worker attach j-ign --from 0", b"")
+        assert until(lambda: (job / "lease.json").exists())
+        p.send_signal(signal.SIGHUP)
+        p.wait(timeout=WAIT_S)
+        assert not (job / "cancel").exists()
+    finally:
+        signal.signal(signal.SIGHUP, old)
+
+
 def test_heartbeat_age_is_monotonic_across_a_wall_clock_jump(wenv):
     """A host suspend or an NTP step moves the wall clock, not `CLOCK_MONOTONIC`: a fresh
     heartbeat whose wall `ts` reads 1000 s old is still `running`."""
