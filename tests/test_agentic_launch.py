@@ -823,7 +823,17 @@ def test_launch_record_carries_the_deny(cfg, ex):
     ("git add -A", True), ("git -C /w/.nw-worktrees/x commit -m wip", True),
     ("git worktree add ../nw-x -b nw/x", True), ("git commit --amend", False),
     ("git push origin feature/x", False), ("git push origin main", False),
-    ("git reset --hard HEAD~1", False), ("git clean -fd", False)])
+    ("git reset --hard HEAD~1", False), ("git clean -fd", False),
+    # the moved WIP is never discarded without a prompt: no checkout --, no forced switch
+    ("git switch --create nw/x", True), ("git -C /w switch --create nw/x-fix", True),
+    ("git checkout -- .", False), ("git -C /w checkout -- .", False),
+    ("git switch nw/x", False), ("git switch --discard-changes nw/x", False),
+    ("git switch -f nw/x", False), ("git switch -C main origin/main", False),
+    ("git switch --create nw/x --force", False), ("git -C /w switch --create nw/x -f", False),
+    ("git -C /w switch --discard-changes nw/x", False), ("git -C /w switch -f nw/x", False),
+    # `-C *` must not swallow another subcommand ahead of a conductor verb
+    ("git -C /w reset --soft HEAD~1 status", False), ("git -C /w stash drop log", False),
+    ("git -C /w commit --amend --no-edit diff", False)])
 def test_conductor_default_rules_git_work_vs_dangerous(cfg, cmd, ok):
     allow, deny = _eff(cfg, "conductor")
     assert _permitted(cmd, allow, deny) is ok

@@ -2,6 +2,8 @@
 user settings. ALL tests use a tmp settings path — never the real ~/.claude/settings.json."""
 import json
 
+import pytest
+
 from click.testing import CliRunner
 
 from nightwright import agent_permissions as AP
@@ -98,7 +100,7 @@ def test_cli_no_permissions_skips_rules(tmp_path):
 # SPEC-0382: the conductor-guard PreToolUse hook
 def test_hook_entry_is_the_askuserquestion_guard():
     assert AP.HOOK_ENTRY == {"matcher": "AskUserQuestion", "hooks": [
-        {"type": "command", "command": "nw queue conductor-guard"}]}
+        {"type": "command", "command": "nw queue conductor-guard || true"}]}
 
 
 def test_hook_installed_once_and_unrelated_hooks_kept(tmp_path):
@@ -149,3 +151,12 @@ def test_malformed_hooks_value_is_an_error_not_a_rewrite(tmp_path):
     with pytest.raises(ValueError):
         AP.sync(p)
     assert _read(p) == {"hooks": {"PreToolUse": "x"}}
+
+
+@pytest.mark.parametrize("bad", [[], "x", 0, False, ""])
+def test_non_dict_hooks_value_is_an_error_not_a_rewrite(tmp_path, bad):
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"hooks": bad}))
+    with pytest.raises(ValueError):
+        AP.sync(p)
+    assert _read(p) == {"hooks": bad}

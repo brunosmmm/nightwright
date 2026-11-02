@@ -34,7 +34,10 @@ LEGACY_RULES = tuple([f"Bash(wt {g} *)" for g in _GROUPS]
 # (covers a conductor started by hand, which `conductor-launch`'s --disallowedTools does not)
 HOOK_EVENT = "PreToolUse"
 HOOK_MATCHER = "AskUserQuestion"
-HOOK_COMMAND = "nw queue conductor-guard"
+# `|| true`: the guard denies through a JSON decision on stdout and exits 0; any other exit must not
+# block, but click exits 2 (Claude Code's "block") for a usage error such as `No such command
+# 'conductor-guard'` from an older `nw` on PATH, so the shell maps every failure to 0
+HOOK_COMMAND = "nw queue conductor-guard || true"
 HOOK_ENTRY = {"matcher": HOOK_MATCHER, "hooks": [{"type": "command", "command": HOOK_COMMAND}]}
 
 
@@ -56,7 +59,8 @@ def _load(path: Path) -> dict:
     allow = (doc.get("permissions") or {}).get("allow", [])
     if not isinstance(doc.get("permissions", {}), dict) or not isinstance(allow, list):
         raise ValueError(f"{path}: permissions.allow must be a list")
-    hooks = doc.get("hooks") or {}              # `"hooks": null` is treated as {}
+    hooks = doc.get("hooks")
+    hooks = {} if hooks is None else hooks      # `"hooks": null` is treated as {}
     if not isinstance(hooks, dict) or not isinstance(hooks.get(HOOK_EVENT, []), list):
         raise ValueError(f"{path}: hooks.{HOOK_EVENT} must be a list")
     return doc

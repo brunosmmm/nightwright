@@ -45,9 +45,17 @@ _CONDUCTOR_GIT_VERBS = ("status", "status *", "log *", "diff *", "show *", "rev-
 # what the nw-conduct rows for `main_dirty` / `main_not_on_base` / `wt_broken` need to move
 # in-place WIP onto its own worktree branch. Deliberately not the steward's `add *` / `commit *`
 # strings (SPEC-0353 keeps the steward's rebase set off the conductor): narrower forms only. The
-# steward guard denies (`reset --hard`, `clean`, `branch -D`, pushes) still win.
-_CONDUCTOR_WIP_VERBS = ("worktree add *", "worktree list", "switch *", "checkout -- *",
+# steward guard denies (`reset --hard`, `clean`, `branch -D`, pushes) still win. Nothing here
+# discards uncommitted work: no `checkout -- *`, and `switch` only creates (`--create`; the short
+# `-c` is already denied by the config-injection guard `git * -c *`), with the force / discard
+# forms denied below; dropping the moved WIP from main is left to the steward or the human.
+_CONDUCTOR_WIP_VERBS = ("worktree add *", "worktree list", "switch --create *",
                         "add -A", "add -A *", "add -- *", "commit -m *", "commit -am *")
+# `switch -f` / `--force` / `--discard-changes` / `-C` throw away or reset local state
+_CONDUCTOR_SWITCH_DENY = ("-f*", "* -f*", "-C*", "* -C*", "*--force*", "*--discard-changes*")
+# conductor verbs `git -C <dir> …` must not swallow ahead of the verb (see _steward_guard)
+_CONDUCTOR_GUARD_KEYWORDS = ("status", "log", "diff", "show", "rev-parse", "rev-list", "merge-base",
+                             "ls-files", "branch", "switch")
 _STEWARD_VERBS = ("fetch *", "rebase *", "rebase --continue", "rebase --abort", "add *",
                   "commit *", "restore *", "checkout --ours *", "checkout --theirs *")
 # `git <x>` and `git * <x>` (the latter covers `git -C <dir> <x>`)
@@ -102,6 +110,15 @@ def _steward_guard():
     return rules
 
 
+def _conductor_guard():
+    rules = []
+    for x in _CONDUCTOR_SWITCH_DENY:
+        rules += [f"Bash(git switch {x})", f"Bash(git * switch {x})"]
+    for kw in _CONDUCTOR_GUARD_KEYWORDS:
+        rules += [f"Bash(git -C * * {kw} *)", f"Bash(git -C * * {kw})"]
+    return rules
+
+
 def _dedup(items):
     return list(dict.fromkeys(items))
 
@@ -112,7 +129,8 @@ DEFAULTS = {"model": "claude-sonnet-5-5", "effort": "medium", "autocompact": "15
             "allowed_tools": [*_push_allow(), "Bash(gh pr create *)", "Bash(gh pr edit *)",
                               "Bash(gh pr comment *)"],
             "steward_allowed_tools": [f"Bash({p} {v})" for p in _PREFIXES for v in _STEWARD_VERBS],
-            "disallowed_tools": [*_push_deny(), *_steward_guard(), "Bash(gh pr merge *)"],
+            "disallowed_tools": [*_push_deny(), *_steward_guard(), *_conductor_guard(),
+                                 "Bash(gh pr merge *)"],
             # SPEC-0382: the conductor never blocks on the human; under `dontAsk` (which applies
             # to its sub-agents too) the allow-list keeps their normal work (rebase conflicts in
             # campaign worktrees, looking into stuck runs) from being refused

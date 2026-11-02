@@ -182,9 +182,11 @@ def attach(queue_group):
     @queue_group.command("conductor-guard")
     @click.pass_obj
     def conductor_guard(cfg):
-        """PreToolUse hook (SPEC-0382): deny the tool call (exit 2) when the calling session is a
-        registered conductor, exit 0 for any other session. Reads the hook JSON on stdin; fails
-        open on anything unreadable so it can never block a human's session."""
+        """PreToolUse hook (SPEC-0382): deny the tool call, through the hook's JSON decision on
+        stdout, when the calling session is a registered conductor. Always exits 0 (exit 2 is
+        what Claude Code treats as a block, and click also uses it for usage errors); stays silent
+        for any other session. Reads the hook JSON on stdin; fails open on anything unreadable
+        so it can never block a human's session."""
         try:
             sid = _hook_session_id(sys.stdin.read())
             hit = bool(sid) and cfg is not None and any(
@@ -192,8 +194,9 @@ def attach(queue_group):
         except Exception:
             hit = False
         if hit:
-            click.echo(GUARD_MESSAGE, err=True)
-            raise SystemExit(2)
+            click.echo(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": GUARD_MESSAGE}}))
 
     @queue_group.command("decision")
     @click.argument("words", nargs=-1, metavar="[CAMPAIGN] RATIONALE")

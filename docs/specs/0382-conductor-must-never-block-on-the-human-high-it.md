@@ -282,7 +282,44 @@ slice B is a Non-goal follow-up.
     hook error: [nw queue conductor-guard]: conductor never asks the human: use steward:<P> / nw queue
     escalate (SPEC-0382)`, and no question reached the terminal.
 
+### Test record (2026-11-02, loop 3: review fixes)
+
+- Automated: `tests/test_agentic_conductor_guard.py` (deny asserted as exit 0 plus the PreToolUse
+  JSON decision; an unknown `queue` command still exits 2 but the hook command string yields 0 with
+  a fake `nw` that exits 2; the deny decision passes through the string), `tests/test_agent_permissions.py`
+  (non-dict `hooks` values are a `ValueError`, `null` stays empty), `tests/test_agentic_launch.py`
+  (the destructive `checkout --` / `switch` forms and `-C *`-swallowed conductor verbs are not
+  permitted, `switch --create` and the WIP verbs are), `tests/test_doctor.py`, `tests/test_skills.py`
+  pass; `python3 tools/spec_lint.py` is clean. The full suite was left to gating.
+- Real binary (`claude` 2.1.316, `claude -p`, model haiku, scratch `NW_DATA_DIR`, matcher swapped to
+  `Bash` as in the first record): with the shipped hook command, the registered session's `echo` was
+  denied with the guard message (JSON decision, exit 0); an unregistered session got `hello-ac7`;
+  a registered-looking session with an `nw` on PATH that exits 2 ("No such command") also ran the
+  command, i.e. version skew no longer blocks.
+
 ### As shipped (2026-11-02)
+
+- Review fix, hook fails open by construction: `conductor-guard` always exits 0 and denies through
+  the PreToolUse JSON decision on stdout (`permissionDecision: deny`, reason = the guard message).
+  This deviates from the Design/AC2 wording "exits 2"; the observable behaviour (the call is denied
+  with the guidance message, other sessions pass) is unchanged and was re-verified on the real
+  binary. Exit 2 is also click's usage-error code, so the installed command is
+  `nw queue conductor-guard || true` (`agent_permissions.HOOK_COMMAND`): a missing subcommand on an
+  older `nw` (exit 2) or a crash maps to 0, a missing binary is already non-blocking (127). Hook
+  entries written by the earlier, unmerged form (`nw queue conductor-guard` without `|| true`) are
+  not migrated.
+- Review fix, no discard verbs for the conductor: `switch *` and `checkout -- *` left
+  `conductor_allowed_tools`; only `git switch --create *` (the short `-c` is already denied by the
+  steward guard `git * -c *`) and `worktree add *` remain. The default `disallowed_tools` gains
+  denies for `switch` with `-f`, `-C`, `--force`, `--discard-changes` (both `git switch …` and
+  `git * switch …`) and the structural `git -C * * <verb>` family for the conductor verbs (`status`,
+  `log`, `diff`, `show`, `rev-parse`, `rev-list`, `merge-base`, `ls-files`, `branch`, `switch`), so
+  `-C *` cannot swallow another subcommand ahead of them. They sit in `disallowed_tools`, not
+  `conductor_disallowed_tools`, because the stewards have no such allow and the denies are harmless
+  there. Dropping the moved WIP from main (the old `checkout --` step, like `rm` / `git clean`) is
+  left to the steward or the human.
+- `agent_permissions._load` treats only `null` `hooks` as empty; any other non-object value is a
+  `ValueError`.
 
 - `conductor_allowed_tools` default: `Bash(git *)` was NOT shipped. It would allow pushes to any
   branch outside the main/master deny set (the existing `test_default_rules_deny_dangerous_pushes`
