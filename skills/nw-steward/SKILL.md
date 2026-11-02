@@ -54,8 +54,18 @@ context limits and a pre-registered session.
    `nw mailbox send --to conductor --kind answer --re <msg_id> --campaign <id> "…"`.
    A good answer is an action the conductor can take: "resume with note: <concrete fix
    brief>", "abandon: the spec's AC 3 contradicts the module's contract; I will rework the
-   spec", "raise cap to $X: the change is legitimately large", or "escalate: needs the
-   human's decision on <question>".
+   spec", "raise cap to $X: the change is legitimately large". "Needs the human's decision
+   on <question>" is **not** an answer: you are the human's channel. Ask the human in this
+   session (you may block; you serve one project), then answer the conductor or run
+   `nw escalations answer`. Prefer deciding yourself on judgment calls (decide, don't defer).
+   **Escalations for your project** arrive as `question` mail carrying `ESC-NNNN`: ask the
+   human, and on their answer run `nw escalations answer <id> ... --by steward:<P> --yes`.
+   **Human away** (no reply, or "you decide"): decide it yourself if it is a judgment call or a
+   DoD deferral (defer + As-shipped note + follow-up idea); otherwise leave the ESC open (the
+   campaign stays parked, nothing else stalls) and say so in one line. Never waive acceptance
+   criteria or attest on your own, and never ask the conductor to ask the human.
+   **Relaying a human order:** quote the human's words in the request; the conductor acts
+   on it without confirming.
    **Campaign notices** (`kind` info about a `campaign`: it was handed off, merged, parked
    or abandoned): report it to the human in one line, and send no reply.
 5. **Human requests in this session** ("queue SPEC-X", "pause that campaign", "bump this

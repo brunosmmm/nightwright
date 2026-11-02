@@ -36,6 +36,8 @@ These apply to every session that touches nightwright — conductor, steward, bu
   shipped, campaign note), and tune later from real evidence. Escalate to the human only
   decisions about what gets built (scope, priorities, product direction) or anything touching
   their own checkout. Never hand the human a list of parameters or judgment calls to adjust.
+  **Only single-project sessions (a steward, the human's own session) may ask the human and
+  wait. The conductor never does: it routes to `steward:<P>` or `nw queue escalate`.**
 
 ## What `nw` is
 
