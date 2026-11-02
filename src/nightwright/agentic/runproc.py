@@ -38,6 +38,43 @@ def child_env(extra=None, environ=None) -> dict:
     return {**env, **(extra or {})}
 
 
+_CLAUDE_HOMES = (".local/bin", ".claude/local", ".npm-global/bin", ".bun/bin", ".volta/bin")
+_CLAUDE_SYSTEM = ("/usr/local/bin", "/opt/homebrew/bin", "/usr/bin")
+
+
+def resolve_claude(environ=None) -> str | None:
+    """SPEC-0389: the one `claude` lookup of a worker (`claude-check` and the job's exec):
+    `PATH` first, then the standard install dirs a non-login ssh `PATH` lacks
+    (`~/.local/bin`, ...). The absolute path, or None."""
+    import shutil
+    env = os.environ if environ is None else environ
+    found = shutil.which("claude", path=env.get("PATH"))
+    if found:
+        return found
+    home = Path(env.get("HOME") or os.path.expanduser("~"))
+    for d in [home / h for h in _CLAUDE_HOMES] + [Path(x) for x in _CLAUDE_SYSTEM]:
+        c = d / "claude"
+        if c.is_file() and os.access(c, os.X_OK):
+            return str(c)
+    return None
+
+
+def with_claude(argv, env) -> tuple[list, dict]:
+    """SPEC-0389: `argv` with a leading `claude` made absolute and its dir put on `env`'s
+    `PATH` (claude re-executes itself and its helpers). `FileNotFoundError` when none."""
+    if not argv or argv[0] != "claude":
+        return list(argv), env
+    exe = resolve_claude(env)
+    if exe is None:
+        raise FileNotFoundError(2, "claude not found on PATH or in the standard install dirs",
+                                "claude")
+    d = str(Path(exe).parent)
+    parts = (env.get("PATH") or "").split(os.pathsep)
+    if d not in parts:
+        env = {**env, "PATH": os.pathsep.join([*parts, d]) if env.get("PATH") else d}
+    return [exe, *argv[1:]], env
+
+
 def _now_iso() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -332,7 +369,8 @@ def main(argv=None) -> int:
             with open(run_dir / "prompt.md", "rb") as stdin, \
                     open(run_dir / ("stream.jsonl" if stream else "result.json"), "wb") as out, \
                     open(run_dir / "stderr.log", "wb") as err:
-                child = subprocess.Popen(launch["argv"], stdin=stdin, stdout=out, stderr=err,
+                argv, env = with_claude(launch["argv"], env)     # SPEC-0389
+                child = subprocess.Popen(argv, stdin=stdin, stdout=out, stderr=err,
                                          cwd=launch.get("cwd"), env=env, process_group=0)
         except OSError as e:
             (run_dir / "stderr.log").write_text(str(e), encoding="utf-8")

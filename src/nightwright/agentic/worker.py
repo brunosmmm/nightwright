@@ -1342,13 +1342,15 @@ def claude_check(auth: bool = False) -> dict:
     probe (it costs money, so only on request). `{schema, ok, version, auth, error}`."""
     out = {"schema": CLAUDE_CHECK_SCHEMA, "ok": False, "version": None, "auth": None,
            "error": None}
-    out["version"] = _version_out("claude", "--version")
+    from . import runproc as RP
+    exe = RP.resolve_claude()                   # SPEC-0389: the resolver the job's exec uses
+    out["version"] = _version_out(exe, "--version") if exe else None
     if out["version"] is None:
         out["error"] = "`claude --version` failed: no working claude on the worker"
         return out
     if auth:
         try:
-            p = subprocess.run(["claude", "-p", "--output-format", "json", "--max-turns", "1",
+            p = subprocess.run([exe, "-p", "--output-format", "json", "--max-turns", "1",
                                 "--no-session-persistence", "Reply with the single word ok."],
                                capture_output=True, text=True, timeout=CLAUDE_AUTH_TIMEOUT_S,
                                stdin=subprocess.DEVNULL)

@@ -144,6 +144,10 @@ def run_job(cfg, h: dict, job: Path, frames, cancel: threading.Event) -> None:
         runner = R.select_runner(cfg)
     except (KeyError, TypeError, ValueError) as e:
         raise W.WorkerError("run", f"cannot run the persona: {e}")
+    if isinstance(runner, R.ClaudeRunner) and RP.resolve_claude() is None:
+        # SPEC-0389: an infrastructure failure, not a persona verdict (no $ estimate charged)
+        raise FileNotFoundError(2, "claude not found on PATH or in the standard install dirs",
+                                "claude")
     frames.emit("started", slot_wait_s=0.0)
     started_at, t0 = store.now_iso(), time.monotonic()
     box: dict = {}

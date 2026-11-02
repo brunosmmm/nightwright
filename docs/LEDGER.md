@@ -618,6 +618,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0384](./specs/0384-watch-gate-jobs-line.md) | queue watch: standalone gate jobs get their own line so they are never truncated | feature | done | — | 2026-11-02 |
 | [SPEC-0387](./specs/0387-worker-job-infra-errors.md) | Worker job-level infra errors (ENOSPC) - real stage, no worker cooldown, admission guard | feature | done | — | 2026-11-02 |
 | [SPEC-0388](./specs/0388-worker-disk-guard.md) | Worker disk guard - auto-reap dead jobs, in-run free-space abort, job sizes, update headroom | feature | done | — | 2026-11-02 |
+| [SPEC-0389](./specs/0389-persona-claude-resolution.md) | One claude resolver for claude-check and the persona job exec; missing claude is a job error | feature | done | — | 2026-11-02 |
 
 ## Superseded / rejected
 
