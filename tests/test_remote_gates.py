@@ -4,6 +4,7 @@ script (`ssh_argv`) that drops the destination and runs the remote command throu
 second temp data dir. The fake project is a temp git repo with tiny shell gates."""
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -286,7 +287,7 @@ def test_remote_run_matches_a_local_one(world, remote):
     (ev,) = world.ledger(["gate"])
     assert ev["worker"] == "box"
     local = json.loads(GOLDEN.read_text())["payload"]
-    assert set(G.as_payload(run)) - {"worker"} == set(local)
+    assert set(G.as_payload(run)) - {"worker", "changed"} == set(local)
     assert set(ev["results"][0]) == set(local["results"][0])
     assert remote.record()["cooldown_until"] is None            # a success writes no registry
 
@@ -308,6 +309,151 @@ def test_dirty_tracked_tree_gates_the_stash_commit(world, remote):
     assert run.results[0].tail.splitlines()[0] == "changed"
     assert _git(world.repo, "stash", "list") == stashes          # the stash stack is untouched
     assert (world.repo / "a.txt").read_text() == "changed\n"
+
+
+# ---- SPEC-0368: the commit under test, and done.changed on the run ---------------------------
+
+def _stat_dirty(repo):
+    """Rewrite a tracked file with identical content and a new mtime. No `git status` or
+    `update-index` after it: either would refresh the on-disk index and make the tree clean."""
+    p = repo / "a.txt"
+    p.write_text(p.read_text())
+    os.utime(p, (1_900_000_000, 1_900_000_000))
+
+
+def _raw_stash_create(repo):
+    return subprocess.run(["git", "-C", str(repo), "stash", "create"], capture_output=True,
+                          text=True)
+
+
+@pytest.mark.parametrize("case", ["clean", "content-dirty", "stat-dirty"])
+def test_commit_under_test_cases(world, case):
+    from nightwright.agentic import remote_gates as RG
+    if case == "content-dirty":
+        (world.repo / "a.txt").write_text("changed\n")
+    elif case == "stat-dirty":
+        _stat_dirty(world.repo)
+        # the precondition, on a copy: a raw `stash create` exits 1 silently, then refreshes
+        # the index it ran in, so it must not run in the fixture itself
+        twin = world.tmp / "twin-repo"
+        shutil.copytree(world.repo, twin, copy_function=shutil.copy2)
+        p = _raw_stash_create(twin)
+        assert (p.returncode, p.stdout, p.stderr) == (1, "", "")
+    sha = RG.commit_under_test(world.repo)
+    if case == "content-dirty":
+        assert sha != world.head and _git(world.repo, "rev-parse", f"{sha}^") == world.head
+        assert _git(world.repo, "show", f"{sha}:a.txt") == "changed"
+    else:
+        assert sha == world.head
+
+
+class _Proc:
+    def __init__(self, rc, out="", err=""):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+
+def _stub_git(monkeypatch, replies):
+    """`subprocess.run` answering by git subcommand; the calls are recorded."""
+    from nightwright.agentic import remote_gates as RG
+    calls = []
+
+    def fake(argv, **kw):
+        sub = argv[3:5] if argv[3] == "stash" else argv[3:4]
+        calls.append((argv[3:], kw.get("env")))
+        reply = replies[" ".join(sub)]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+    monkeypatch.setattr(RG.subprocess, "run", fake)
+    return calls
+
+
+def test_commit_under_test_silent_exit_1_but_dirty(monkeypatch, tmp_path):
+    from nightwright.agentic import remote_gates as RG
+    calls = _stub_git(monkeypatch, {"stash create": _Proc(1), "diff": _Proc(1),
+                                    "rev-parse": _Proc(0, "deadbeef\n")})
+    with pytest.raises(RG.RemoteFailure) as e:
+        RG.commit_under_test(tmp_path)
+    assert e.value.stage == "bundle" and e.value.cooldown is False
+    assert [c[0][0] for c in calls] == ["stash", "diff"]            # HEAD was never consulted
+    assert calls[1][0][1:] == ["--quiet", "HEAD", "--"]
+    assert calls[1][1]["GIT_OPTIONAL_LOCKS"] == "0"
+
+
+@pytest.mark.parametrize("reply", [_Proc(128, "", "fatal: bad index"), _Proc(1, "text", ""),
+                                   _Proc(1, "", "error: boom"), OSError("no git")])
+def test_commit_under_test_git_failure(monkeypatch, tmp_path, reply):
+    from nightwright.agentic import remote_gates as RG
+    _stub_git(monkeypatch, {"stash create": reply})
+    with pytest.raises(RG.RemoteFailure) as e:
+        RG.commit_under_test(tmp_path)
+    assert e.value.stage == "bundle" and e.value.cooldown is False
+
+
+def test_commit_under_test_leaves_index_alone(world):
+    """`git stash create` itself rewrites the index's stat data when it finds a stat-dirty
+    tree (git does this and nothing here can stop it); the helper adds no change of content
+    and the stash stack stays untouched."""
+    from nightwright.agentic import remote_gates as RG
+    _stat_dirty(world.repo)
+    entries = _git(world.repo, "ls-files", "-s")
+    stashes = _git(world.repo, "stash", "list")
+    assert RG.commit_under_test(world.repo) == world.head
+    assert _git(world.repo, "ls-files", "-s") == entries
+    assert _git(world.repo, "diff", "--quiet", "HEAD", "--") == ""
+    assert _git(world.repo, "stash", "list") == stashes == ""
+
+
+def test_stat_dirty_tree_runs_remotely(world, remote, spy):
+    world.project["gates"] = [_gate("ok", "echo hi")]
+    _stat_dirty(world.repo)
+    entries = _git(world.repo, "ls-files", "-s")
+    run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert run.worker == "box" and run.ok
+    assert spy[0]["header"]["commit"] == world.head
+    assert not world.ledger(["worker_failed"]) and not world.ledger(["finding"])
+    assert _git(world.repo, "ls-files", "-s") == entries
+    assert _git(world.repo, "stash", "list") == ""
+
+
+def test_prepare_and_tree_under_test_share_the_helper(world, remote, spy):
+    from nightwright.agentic import remote_gates as RG
+    world.project["gates"] = [_gate("ok", "echo hi")]
+    _stat_dirty(world.repo)
+    G.run_all(world.project, world.state, world.cfg, seq=1)
+    head, tree = RG.tree_under_test(world.repo)
+    assert head == world.head and tree == _git(world.repo, "rev-parse", "HEAD^{tree}")
+    assert spy[0]["header"]["commit"] == head
+    src = Path(RG.__file__).read_text()
+    assert src.count('"stash", "create"') == 1                      # only the helper
+    assert src.count("commit_under_test(") >= 3                     # def, prepare, tree_under_test
+
+
+def test_remote_run_records_changed(world, remote):
+    world.project["gates"] = [_gate("ok", "echo ok")]
+    run = G.run_and_log(world.cfg, world.state, world.project, by="test")
+    assert run.worker == "box" and run.changed == ()
+    assert G.as_payload(run)["changed"] == []
+    (ev,) = world.ledger(["gate"])
+    assert ev["changed"] == []
+    local = G.run_and_log(world.cfg, world.state, world.project, by="test", local=True)
+    assert local.worker is None and local.changed is None
+    assert "changed" not in G.as_payload(local)
+
+
+def test_a_cut_short_remote_run_records_no_changed(world, remote, tmp_path):
+    pidfile = tmp_path / "gate.pid"
+    world.project["gates"] = [_gate("slow", f"echo $$ > {pidfile}; exec sleep 600")]
+    stop = threading.Event()
+    out = {}
+    t = threading.Thread(target=lambda: out.update(run=G.run_all(
+        world.project, world.state, world.cfg, seq=1, stop=stop)))
+    t.start()
+    assert until(lambda: pidfile.exists() and pidfile.read_text().strip())
+    stop.set()
+    join(t)
+    assert out["run"].interrupted and out["run"].changed is None
+    assert "changed" not in G.as_payload(out["run"])
 
 
 @pytest.mark.parametrize("case", ["untracked", "project", "gate"])
@@ -1200,6 +1346,15 @@ def test_queue_gates_worker_and_local(world, remote, invoke):
     assert "worker=box" in r.output
     workers = [e.get("worker") for e in world.ledger(["gate"])]
     assert workers == ["box", None]
+
+
+def test_queue_gates_json_shows_changed_for_a_remote_run(world, remote, invoke):
+    r = invoke("queue", "gates", CID, "--worker", "box", "--json")
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["changed"] == []
+    r = invoke("queue", "gates", CID, "--local", "--json")
+    assert r.exit_code == 0, r.output
+    assert "changed" not in json.loads(r.output)
 
 
 def test_worker_failed_is_a_held_queue_event():

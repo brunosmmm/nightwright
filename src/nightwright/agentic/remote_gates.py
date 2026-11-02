@@ -184,6 +184,35 @@ def _git(cwd, *args, check=True) -> str:
     return p.stdout.strip() if p.returncode == 0 else ""
 
 
+def commit_under_test(worktree) -> str:
+    """SPEC-0368: the commit the gates run: `git stash create` of a dirty tree, else HEAD.
+    `stash create` exits 1 with no output when stat information is stale but no content
+    differs (a touched file, a rebase that rewrote mtimes); that is HEAD only when
+    `git diff --quiet HEAD --` agrees (`GIT_OPTIONAL_LOCKS=0`: it never writes the index).
+    Anything else is a `bundle`-stage failure without cooldown. The stash stack stays untouched."""
+    wt = str(worktree)
+    try:
+        p = subprocess.run(["git", "-C", wt, "stash", "create"], capture_output=True, text=True)
+    except OSError as e:
+        raise RemoteFailure("bundle", f"git stash failed to start: {e}", cooldown=False)
+    out, err = (p.stdout or "").strip(), (p.stderr or "").strip()
+    if p.returncode == 0:
+        return out or _git(wt, "rev-parse", "HEAD")
+    if p.returncode == 1 and not out and not err:
+        try:
+            d = subprocess.run(["git", "-C", wt, "diff", "--quiet", "HEAD", "--"],
+                               capture_output=True, text=True,
+                               env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+        except OSError as e:
+            raise RemoteFailure("bundle", f"git diff failed to start: {e}", cooldown=False)
+        if d.returncode == 0:
+            return _git(wt, "rev-parse", "HEAD")
+        raise RemoteFailure("bundle", "stash create found changes but made no commit",
+                            cooldown=False)
+    raise RemoteFailure("bundle", f"git stash create failed: {(err or out)[-1000:]}",
+                        cooldown=False)
+
+
 def _is_ancestor(cwd, a, b) -> bool:
     return subprocess.run(["git", "-C", str(cwd), "merge-base", "--is-ancestor", a, b],
                           capture_output=True).returncode == 0
@@ -266,7 +295,7 @@ def cut(worker: dict, project_cfg: dict, campaign_state: dict, cfg, job_id: str,
     test, base sha, have, bundle bytes)`, the bundle written to `bundle`."""
     repo = campaign_state.get("repo") or {}
     wt, base_name = repo["worktree"], repo.get("base") or "main"
-    sha = _git(wt, "stash", "create") or _git(wt, "rev-parse", "HEAD")    # stash stack untouched
+    sha = commit_under_test(wt)                 # stash stack untouched
     base_sha = _git(wt, "rev-parse", "--verify", f"{base_name}^{{commit}}")
     asked = [base_sha]
     mb = _git(wt, "merge-base", "HEAD", base_sha, check=False)
@@ -445,7 +474,7 @@ def _flag(frame: dict, key: str, *, required: bool) -> bool:
     return v
 
 
-def _check_changed(frame: dict) -> None:
+def _check_changed(frame: dict) -> tuple:
     """`done`'s `changed`: the paths the gates wrote in the worker's checkout. Those writes
     never reach the coordinator's worktree (a regenerated ledger, a formatter's output), so a
     run that made any is re-run locally, without cooldown: the local run leaves the worktree
@@ -462,6 +491,7 @@ def _check_changed(frame: dict) -> None:
         raise RemoteFailure("tree", f"the gates changed {len(changed)} file(s) in the worker's "
                                     f"checkout ({', '.join(changed[:5])}); re-running locally "
                                     f"so the worktree gets those writes", cooldown=False)
+    return tuple(changed)
 
 
 def _inflate(name: str, data: str) -> bytes:
@@ -648,8 +678,9 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                     # the worker cut the run short on its own (SIGTERM/SIGINT/SIGHUP: the host
                     # is going away): a transport failure, never a red gate
                     raise RemoteFailure("interrupted", "the worker interrupted the run (signal)")
+                changed = None
                 if not cut:
-                    _check_changed(frame)
+                    changed = _check_changed(frame)
                     if [r.name for r in results] != order:
                         raise RemoteFailure("protocol", f"`done` after results for "
                                                         f"{[r.name for r in results]}, not "
@@ -658,7 +689,8 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                     ok = all(r.ok for r in results if r.required)
                 return Outcome(G.GateRun(seq, ok, tuple(results),
                                          str(frame.get("started_at") or started_at), duration,
-                                         interrupted=cut, worker=worker["name"]), worker_wait)
+                                         interrupted=cut, worker=worker["name"],
+                                         changed=changed), worker_wait)
             # `accepted` and `slot_wait` are progress only
     except RemoteFailure as f:
         grace = min(grace, 2.0)
@@ -924,9 +956,9 @@ def _submit(worker: dict, header: dict, bundle: Path, cfg) -> None:
 
 def tree_under_test(worktree) -> tuple[str, str]:
     """`(HEAD, tree of the commit under test)` of `worktree`, as `prepare` cuts it: a dirty
-    tree's `git stash create` commit is new on every call, but its tree is not. (`stash
-    create` exits 1 with no output on a stat-dirty, content-clean tree: that is HEAD's tree.)"""
-    sha = _git(worktree, "stash", "create", check=False) or _git(worktree, "rev-parse", "HEAD")
+    tree's `git stash create` commit is new on every call, but its tree is not. (A stat-dirty,
+    content-clean tree is HEAD's tree; a real git failure raises `RemoteFailure`: SPEC-0368.)"""
+    sha = commit_under_test(worktree)
     return _git(worktree, "rev-parse", "HEAD"), _git(worktree, "rev-parse", f"{sha}^{{tree}}")
 
 
@@ -1053,7 +1085,7 @@ class _Job:
                 return self.interrupted()       # an abandon or a park cancelled it: no fallback
             raise RemoteFailure("interrupted", "the worker interrupted the run (signal or "
                                                "lease)")
-        _check_changed(frame)
+        changed = _check_changed(frame)
         if [r.name for r in self.results] != self.order:
             raise RemoteFailure("protocol", f"`done` after results for "
                                             f"{[r.name for r in self.results]}, not {self.order}")
@@ -1061,7 +1093,7 @@ class _Job:
         return G.GateRun(self.seq, ok, tuple(self.results),
                          str(frame.get("started_at") or self.started_at), duration,
                          worker=self.worker["name"], job_id=self.job_id,
-                         event_uid=f"{self.job_id}:{n}")
+                         event_uid=f"{self.job_id}:{n}", changed=changed)
 
 
 def _attach(job: _Job, stop):

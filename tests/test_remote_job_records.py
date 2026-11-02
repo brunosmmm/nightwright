@@ -133,6 +133,7 @@ def test_async_run_writes_a_record_and_one_gate_event(aw, remote):
     res, row = _gate_and_apply(aw)
     run = res.gate_run
     assert run.worker == "box" and run.ok and run.seq == 1 and row["to"] == "REVIEWING"
+    assert run.changed == ()                    # SPEC-0368: `_Follow._done` records it too
     rec = _rec(aw)
     assert rec["state"] == "done" and rec["seq_or_run"] == 1 and rec["attempt"] == 1
     assert rec["cursor"] == _worker_frames(remote)[-1]["n"]
@@ -1116,6 +1117,15 @@ def test_crash_between_ledger_and_state_still_replays(aw, remote):
     res2, row = _gate_and_apply(aw)
     assert res2.gate_run.seq == 1 and row["to"] == "REVIEWING"
     assert len(aw.ledger(["gate"])) == 1 and _rec(aw)["state"] == "done"
+
+
+def test_adoptable_unknown_when_commit_under_test_fails(aw, remote, monkeypatch):
+    """SPEC-0368: a real `stash create` failure is unknown (None: do not cancel), where it
+    used to be read as HEAD's tree."""
+    _detach_and_reset(aw, remote)
+    monkeypatch.setattr(RG.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(
+        argv, 128, "", "fatal: Unable to create index.lock"))
+    assert RG.adoptable(_rec(aw), aw.repo) is None
 
 
 def test_adoption_defers_on_a_git_failure(aw, remote, monkeypatch):

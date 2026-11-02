@@ -78,6 +78,8 @@ class GateRun:
     reused: tuple = ()          # SPEC-0359: close gates a green loop gate stood in for
     job_id: str | None = None   # SPEC-0341: the async job's record (`remote_jobs`); None: none
     event_uid: str | None = None    # SPEC-0341: the `gate` event's uid (`<job_id>:<n of done>`)
+    changed: tuple | None = None    # SPEC-0368: paths the gates wrote in the worker's checkout;
+    #                                 None on a local run
 
 
 def terminate_all() -> None:
@@ -724,6 +726,8 @@ def as_payload(run: GateRun) -> dict:
     for key in ("head", "tree"):            # SPEC-0359: the tree the run gated
         if getattr(run, key):
             out[key] = getattr(run, key)
+    if run.changed is not None:             # SPEC-0368: a remote run's; a local payload is unchanged
+        out["changed"] = list(run.changed)
     if run.reused:                          # SPEC-0359: close gates a loop result stood in for
         out["reused"] = list(run.reused)
     out["results"] = results
