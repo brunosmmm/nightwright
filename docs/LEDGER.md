@@ -218,11 +218,11 @@ progress. This is the single place to see *what has been decided* and *what is i
   - [x] [SPEC-0321](./specs/0321-wtfug-spec-0299-20261030-a7a2-spec-0299-review.md) Conductor cost measurement hardening: terminal campaigns without a transition, malformed config and transcripts, honest manual-check record, test gaps — done
   - [x] [SPEC-0325](./specs/0325-steward-campaign-notices-project-idea-reconcile-remote-open.md) Stewards get campaign notices; a second-project merge reconciles its idea; pr campaigns branch from the remote — done
   - [x] [SPEC-0327](./specs/0327-cross-project-spec-id-collision-the-comfort.md) Spec ids are per project: a second project's SPEC-NNNN never resolves against wt's own specs — done
-- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (12/16 done)
+- **[SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) — Remote workers: run gates, persona runs and campaigns on other machines** · accepted · (13/16 done)
   - [x] [SPEC-0331](./specs/0331-remote-gates-over-ssh-on-one-worker-host.md) Remote gates over SSH on one worker host — superseded
   - [x] [SPEC-0332](./specs/0332-worker-owned-async-jobs.md) Worker-owned async jobs — superseded
   - [x] [SPEC-0333](./specs/0333-remote-persona-runs-with-bundle-write-back.md) Remote persona runs with bundle write-back — superseded
-  - [ ] [SPEC-0334](./specs/0334-pull-workers-against-a-coordinator-job-api.md) Pull workers against a coordinator job API — in-progress
+  - [x] [SPEC-0334](./specs/0334-pull-workers-against-a-coordinator-job-api.md) Pull workers against a coordinator job API — done
   - [ ] [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) Federation over a networked mailbox — accepted
   - [x] [SPEC-0336](./specs/0336-gate-worker-job-runner-and-forced-command.md) Gate worker job runner and forced-command dispatcher — done
   - [x] [SPEC-0337](./specs/0337-worker-registry-and-multi-pool-gate-slots.md) Worker registry and multi-pool gate slots — done
@@ -258,7 +258,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0169](./specs/0169-mini-agentic-workflow-queue-campaigns-headless.md) | Mini agentic workflow: queue, campaigns, headless personas, conductor | epic | accepted | M9: agentic workflow | 2026-10-25 |
 | [SPEC-0293](./specs/0293-gate-ladder-v2-cross-campaign-flaky-test-record.md) | Gate ladder v2: a cross-campaign flaky-test record the triager sees | feature | accepted | M9: agentic workflow | 2026-10-30 |
 | [SPEC-0310](./specs/0310-remote-workers-run-gates-persona-runs-and.md) | Remote workers: run gates, persona runs and campaigns on other machines | epic | accepted | — | 2026-10-31 |
-| [SPEC-0334](./specs/0334-pull-workers-against-a-coordinator-job-api.md) | Pull workers against a coordinator job API | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0335](./specs/0335-federation-over-a-networked-mailbox.md) | Federation over a networked mailbox | feature | accepted | — | 2026-10-31 |
 | [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | accepted | — | 2026-11-01 |
 | [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) | Remote workers integration suite for gate and persona workers | feature | accepted | — | 2026-11-01 |
@@ -581,6 +580,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0328](./specs/0328-tiered-gates-affected-test-selection.md) | Tiered gates (when: loop | close | always) + static affected-test selection for fix loops | feature | done | M9: agentic workflow | 2026-10-31 |
 | [SPEC-0329](./specs/0329-deflake-load-dependent-tests.md) | Deflake the load-dependent tests: condition waits, deterministic sync, and two real races in production code | feature | done | M9: agentic workflow | 2026-10-31 |
 | [SPEC-0330](./specs/0330-rename-to-nightwright.md) | Rename wt to nightwright (CLI nw): hard cut, legacy-readable stored data, migrate-from-wt, cutover runbook | feature | done | M9: agentic workflow | 2026-10-31 |
+| [SPEC-0334](./specs/0334-pull-workers-against-a-coordinator-job-api.md) | Pull workers against a coordinator job API | feature | done | — | 2026-11-02 |
 | [SPEC-0336](./specs/0336-gate-worker-job-runner-and-forced-command.md) | Gate worker job runner and forced-command dispatcher | feature | done | — | 2026-10-31 |
 | [SPEC-0337](./specs/0337-worker-registry-and-multi-pool-gate-slots.md) | Worker registry and multi-pool gate slots | feature | done | — | 2026-11-01 |
 | [SPEC-0338](./specs/0338-remote-gate-dispatch-with-local-fallback.md) | Remote gate dispatch with local fallback | feature | done | — | 2026-11-01 |

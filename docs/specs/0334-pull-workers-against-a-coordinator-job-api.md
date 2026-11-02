@@ -1,7 +1,7 @@
 ---
 id: SPEC-0334
 title: "Pull workers against a coordinator job API"
-status: in-progress
+status: done
 owner: user
 created: 2026-10-31
 updated: 2026-11-02
@@ -771,6 +771,20 @@ Fixes from the seventh review, no Design change:
   without inbound SSH, a real campaign's gates, revocation from that laptop) are still not run,
   so the spec stays `in-progress`.
 
+### Test record (2026-11-02, attestation)
+
+- No code changed in this loop. The human attested SPEC-0334 on 2026-11-02 ("attest 0334") and
+  accepted the manual verification as it stands.
+- What was run by hand: on loopback, with the real binaries (`nw workers add --pull`,
+  `nw serve --jobs --bind 127.0.0.1:18793`, `nw worker serve --enrol <blob>` against a separate
+  data dir). The checks were revocation, the 401 that follows it, and the worker's exit 3.
+- What was NOT run: the cross-machine manual steps (step 1, a Tailscale bind; step 2, a laptop
+  without inbound SSH; step 3, a real campaign's gates through it; step 4, revocation from that
+  laptop). The human waived them. The Definition of done's "manual steps performed" box is
+  ticked on that attestation, not on a cross-machine run.
+- The automated tests are recorded in the loop records above. The full `uv run pytest` is
+  left to the queue's close gate.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-561` / `nw idea clock-out IDEA-561`.
@@ -782,11 +796,11 @@ Use `nw idea clock-in IDEA-561` / `nw idea clock-out IDEA-561`.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
