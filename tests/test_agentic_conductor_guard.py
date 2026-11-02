@@ -85,10 +85,9 @@ def test_unreadable_input_fails_open(cfg, raw):
 
 def test_unreadable_registry_fails_open(cfg):
     CC.record_session(cfg, "conductor", {}, source="launch", session_id=CONDUCTOR)
-    CC._sessions_path(cfg).write_bytes(b"\xff\xfe\x00 not utf-8\n")   # read_text raises
-    with pytest.raises(UnicodeDecodeError):
-        CC.sessions(cfg)                            # the guard's except is what saves the human
-    assert allowed(guard(CONDUCTOR))
+    CC._sessions_path(cfg).write_bytes(b"\xff\xfe\x00 not utf-8\n")
+    assert isinstance(CC.sessions(cfg), list)       # SPEC-0321: decodes with errors="replace", no raise
+    assert allowed(guard(CONDUCTOR))                # nothing parseable registered -> fails open
 
 
 def test_registry_read_error_fails_open(cfg, monkeypatch):
