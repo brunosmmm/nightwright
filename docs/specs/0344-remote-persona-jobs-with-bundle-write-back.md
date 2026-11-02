@@ -4,7 +4,7 @@ title: "Remote persona jobs with bundle write-back"
 status: accepted
 owner: user
 created: 2026-11-01
-updated: 2026-11-01
+updated: 2026-11-02
 source_idea: IDEA-560
 parent: SPEC-0310
 tags: [agentic, remote, workers, personas]
@@ -37,8 +37,8 @@ cap, backoff, affinity, cost per worker) and
 ## Goals / Non-goals
 
 **Goals**
-- A persona run can execute on a worker and produce the same `RunResult` and run-dir files.
-  For a writing persona, it also produces the same commits on the campaign branch as a local
+- A persona run can execute on a worker and produce the same verdict and the same run-dir
+  files (equal up to worker-local paths, timings and session data). For a writing persona, it also produces the same commits on the campaign branch as a local
   run.
 - A remote run writes the same `run.start`/`run.end` ledger entries as a local run, so the
   stuck-run detectors work unchanged.
@@ -64,11 +64,16 @@ rebuilds it with `runner.request_from_job(doc, tree, run_dir)`. The worker runs 
 runner chosen by `runner.select_runner(<worker cfg>)` (its own `ClaudeRunner`, or
 `FakeRunner` under `agentic.runner: fake`) inside the SPEC-0340 job process.
 
+Remote dispatch is a new detachable `RemoteRunner` (a `PersonaRunner`, see Design ›
+Dispatch) that `queue._do_persona` uses in place of the local runner when Eligibility
+holds; the rest of `_do_persona` is unchanged.
+
 At the end of the run, the worker sends back a **result bundle**: the new commits, plus a
-`git stash create` commit for uncommitted changes. The coordinator applies it to the campaign
-worktree with a fast-forward and `git stash apply`. The worktree ends up exactly as if the
-persona had run locally, and the normal `git.commit_all` step in `queue._do_persona` takes
-over from there.
+`git add -A` + `git stash create` commit for everything left uncommitted (including new
+untracked, non-ignored files). The coordinator applies it to the campaign worktree with a
+fast-forward and `git stash apply --index`. The worktree ends up exactly as if the persona
+had run locally, and the normal `git.commit_all` step (`git add -A`) in `queue._do_persona`
+takes over from there.
 
 ## Design
 
@@ -80,13 +85,41 @@ A run goes remote only when **all** of these hold:
   repo stay local);
 - the worktree has no untracked, non-ignored files (the SPEC-0338 rule);
 - for a writing persona, the worktree is **clean** (no tracked modifications either), so
-  write-back starts from exactly `base_head`.
+  write-back starts from exactly `base_head`;
+- the persona is not `conflict_resolver` and the worktree has no rebase or sequencer in
+  progress (`gitops.rebase_in_progress`, `gitops.sequencer_in_progress`), since write-back's
+  fast-forward and stash apply are meaningless mid-rebase;
+- the step's state does not list the worker in `remote_excluded` (see Write-back step 4),
+  and `request_to_job` accepts the request (`allowed_tools`, `add_dirs`, env; see The job).
 
 (The global persona cap and the rate-limit backoff are added to this list by SPEC-0345.)
 
 `kinds` is set with `nw workers add|set NAME --kinds gate,persona`; the default stays
 `gate`. Persona slots are a separate pool, `gate-slots/w-<W>/persona-<n>.lock`, sized by
 `--persona-slots` (default 1).
+
+### Dispatch
+
+Remote dispatch is a `RemoteRunner` class in `src/nightwright/agentic/runner.py`
+implementing `PersonaRunner`. `queue._do_persona` picks it per run: when Eligibility holds
+it calls `RemoteRunner(worker, ...).run(req, hooks=...)` instead of `ctx.runner.run(...)`;
+otherwise it uses `ctx.runner` as today. `RemoteRunner.run`:
+
+1. records `base_head` (the worktree HEAD) and submits the job through SPEC-0340. The
+   SPEC-0341 job record under `remote-jobs/` stores `job_id`, `worker`, `run_id`, `persona`,
+   `base_head`, `read_only` and the step snapshot, so write-back survives a coordinator
+   restart;
+2. writes the same `run.start` ledger entry a local run writes;
+3. follows the job's frames; on `done` it performs write-back (below), writes the run-dir
+   files and `run.end`, deletes the job record, and returns the `RunResult`.
+
+`RemoteRunner` is **detachable** like `ClaudeRunner` (SPEC-0225): on a stop or restart it
+returns `DETACHED` and leaves the job record. On the next start, the existing SPEC-0341
+adoption in `queue` (`_adoptable` on live remote job records) re-attaches a `kind: persona`
+record to a `RemoteRunner` built from the record. When the `done` frame is read it applies
+write-back **once**: the record is marked `writeback: applied` (with the resulting HEAD)
+before it is deleted, and a record already marked `applied` is not applied again. Then
+`_do_persona` continues with `adopted` set, exactly as for an adopted local run.
 
 ### The job (`kind: "persona"`)
 
@@ -99,6 +132,12 @@ The payload is:
 
 - `request_to_job` / `request_from_job` are explicit field-by-field serializers (not the
   run dir's `request.json`), with a round-trip test.
+- `request_to_job` rewrites worktree-absolute paths in `allowed_tools` (for example a
+  `Bash(<worktree>/...)` gate pattern from `personas._gate_tool_patterns`) to
+  worktree-relative form, and `request_from_job` re-anchors them at the worker's `tree`. If
+  an `allowed_tools` entry references an absolute path outside the worktree, or an
+  `add_dirs` entry is outside it, `request_to_job` raises `NotRemotable` and the run stays
+  local. `permission_mode` passes verbatim.
 - The env allowlist follows the persona env set in `personas.py`. `NW_CAMPAIGN`,
   `NW_SPEC_ID`, `NW_BASE`, `NW_PERSONA_RUN` and `NW_REBASE_TARGET` pass verbatim.
   `NW_WORKTREE`, the `tmp_env` keys (`TMPDIR` and the others), `NW_DATA_DIR` and
@@ -123,7 +162,9 @@ The payload is:
   the transcript, `request.json`), gzip+base64 and capped at 16 MiB each. For a
   non-read-only persona it also carries the **result bundle**:
   - `head`: the tree's HEAD after the run;
-  - `wip`: `git stash create` of what is left uncommitted, or null;
+  - `wip`: after the run the worker runs `git add -A` and then `git stash create`, so new
+    untracked, non-ignored files are included; or null when `git status --porcelain` is
+    empty;
   - `bundle_b64`: the bundle bytes, with the job's input commit as the base.
 - The run record (`write_run_record`) gains `worker` (null when local), and the `run` and
   `run_failed` events carry `worker` when the run was remote.
@@ -135,19 +176,38 @@ The payload is:
 2. On `done`:
    - fetch the bundle into the campaign repo under `refs/nw/jobs/<job_id>/{head,wip}`;
    - check that the worktree HEAD is still `base_head`. Affinity and the one-step-per-campaign
-     rule make a moved HEAD a bug, so it is detected rather than merged.
-   - `git merge --ff-only <head>` in the worktree, then `git stash apply <wip>` if `wip` is
-     set;
+     rule make a moved HEAD a bug, so it is detected rather than merged; failure reason
+     `write-back: head moved`;
+   - check that the worktree is still clean (`git status --porcelain` empty), else fail
+     with `write-back: worktree dirty`;
+   - `git merge --ff-only <head>` in the worktree, then `git stash apply --index <wip>` if
+     `wip` is set (this restores the new files as well as the modifications; the later
+     `commit_all` re-adds everything with `git add -A`);
    - delete the refs.
-3. A failure at any point (fetch, a moved HEAD, a non-ff, a stash conflict) leaves the
-   worktree untouched. It is reported as `run_failed` with `transient: true` and
-   `error: "write-back: <reason>"`, so the existing retry path re-runs the persona, locally
-   this time, because the worker is excluded for that run. The fetched refs stay under
-   `refs/nw/jobs/<job_id>/` and are listed in the run record as `saved_refs` (so the work
-   can be inspected); they are pruned when the campaign closes.
-4. Retry rule: a write-back failure retries **locally only**. A lost job (the worker or
-   connection died) follows SPEC-0342's lost-job path instead.
-5. A read-only persona has no write-back. Only the verdict and the files come back.
+3. A failure before the fast-forward (fetch, a corrupt bundle, a moved HEAD, a dirty
+   worktree) leaves the worktree untouched. If any step after the fast-forward fails (a
+   stash conflict), the coordinator restores the worktree with `git reset --hard
+   <base_head>` followed by `git clean -fd -- <paths>`, limited to the paths the `wip`
+   commit adds (`git diff --name-only --diff-filter=A <head> <wip>`), before reporting. In
+   both cases the worktree ends at `base_head` with the same status it had before the
+   fast-forward.
+4. A write-back failure is reported and retried like this:
+   - `RemoteRunner` writes the run's `run.end` ledger entry with `is_error: true`,
+     `result_tail: "write-back: <reason>"`, `writeback_failed: true` and `worker`. `"write-back:"`
+     is added to `events._TRANSIENT_MARKERS`, so the projected `run_failed` has
+     `transient: true`.
+   - `RemoteRunner` adds the worker to the step's state key `remote_excluded` (a list of
+     worker names in the campaign state, cleared when the step completes) and returns the
+     failed `RunResult` with `writeback_failed` set.
+   - `_do_persona`, seeing `writeback_failed`, immediately re-runs the same step **once**
+     in-process with the local runner (`ctx.runner`, i.e. `select_runner(cfg)`), under a
+     new `run_id`, without going through autopark. Eligibility checks `remote_excluded`, so
+     the retry cannot be dispatched back to that worker.
+   - A write-back failure retries **locally only**. A lost job (the worker or connection
+     died) follows SPEC-0342's lost-job path instead.
+5. The fetched refs stay under `refs/nw/jobs/<job_id>/` and are listed in the run record as
+   `saved_refs` (so the work can be inspected); they are pruned when the campaign closes.
+6. A read-only persona has no write-back. Only the verdict and the files come back.
 
 ### `nw workers check` and `set`
 
@@ -172,19 +232,35 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
 ## Acceptance criteria
 
 - [ ] A writing persona run on a worker leaves the campaign worktree identical (HEAD, tree,
-      uncommitted changes) to the same `FakeRunner` script run locally.
-- [ ] A read-only persona run on a worker returns the same verdict and run-dir files as a
-      local run.
-- [ ] A write-back failure leaves the worktree untouched and becomes a transient
-      `run_failed`, and the run is retried locally.
+      uncommitted changes, including a newly created untracked file) to the same
+      `FakeRunner` script run locally.
+- [ ] A read-only persona run on a worker returns the same `verdict` and `verdict_ok`, and
+      the run dir contains `result.json`, the transcript and `request.json`; `request.json`
+      equals the local one after normalizing `cwd`, `run_dir`, `add_dirs` and the re-set env
+      keys.
+- [ ] A write-back failure (moved HEAD, dirty worktree, stash conflict, corrupt bundle)
+      leaves the worktree at `base_head` with its prior status (after a stash conflict, via
+      `git reset --hard <base_head>` plus `git clean -fd` on the stash's added paths). The
+      run's `run.end` has `is_error: true`, `result_tail: "write-back: <reason>"` and
+      `writeback_failed: true`; the projected `run_failed` has `transient: true` (via the
+      `write-back:` entry in `_TRANSIENT_MARKERS`); the worker is listed in the step's
+      `remote_excluded`; and `_do_persona` re-runs the step once in-process with the local
+      runner, without autopark.
+- [ ] A persona job whose coordinator restarts mid-run is re-attached from its SPEC-0341
+      job record (which holds `base_head`, `worker`, `job_id`) by a `RemoteRunner`, and its
+      write-back is applied exactly once.
 - [ ] A failed write-back keeps the fetched refs as `saved_refs` in the run record.
-- [ ] A persona with an `add_dirs` entry outside the worktree, with an untracked file in the
-      worktree, or (if writing) with a modified tracked file, runs locally.
+- [ ] A persona with an `add_dirs` entry outside the worktree, with an `allowed_tools` path
+      outside the worktree, with an untracked file in the worktree, (if writing) with a
+      modified tracked file, the `conflict_resolver` persona, or a worktree with a rebase or
+      sequencer in progress, runs locally.
 - [ ] A remote persona run writes the same `run.start`/`run.end` ledger entries as a local
       one, so `run_overdue` fires past `timeout_s` and `campaign_silent` stays quiet while
       it is open; `progress` frames land in `progress.json`.
-- [ ] `runner.request_to_job` / `request_from_job` round-trip a `RunRequest`. An env key
-      outside the allowlist is refused; stripped keys are re-set by the worker.
+- [ ] `runner.request_to_job` / `request_from_job` round-trip a `RunRequest`, with
+      worktree-absolute `allowed_tools` paths made relative and re-anchored at the worker's
+      tree. An env key outside the allowlist is refused; stripped keys are re-set by the
+      worker.
 - [ ] The run record, and the `run` / `run_failed` events, carry `worker` for a remote run.
 - [ ] `nw workers set --kinds/--persona-slots` updates the record, and `nw workers check
       --auth` passes with a working (fake) `claude` and fails a persona worker without one.
@@ -196,15 +272,31 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
 - **Automated tests** (`tests/test_remote_personas.py`, offline): the loopback workers
   (SPEC-0338 and SPEC-0340), with the worker configured for `FakeRunner` (`agentic.runner:
   fake`). The cases:
-  - **write-back equality:** a fake implementer script commits one file and leaves one
-    uncommitted. The remote and local outcomes compare equal (commit tree hashes and the
-    `git diff` of the worktree);
-  - **read-only reviewer:** the verdict and the files are equal;
-  - **write-back failures:** HEAD moved, a stash conflict and a corrupt bundle each give a
-    transient `run_failed`, an untouched worktree and a local retry;
-  - **eligibility:** `add_dirs` outside the tree, an untracked file, and a writing persona
-    with a modified tracked file;
-  - **serialization:** `request_to_job` / `request_from_job` round-trip;
+  - **write-back equality:** a fake implementer script commits one file and leaves
+    uncommitted changes; the uncommitted change includes a newly created (untracked) file
+    and a modified tracked file. The remote and local outcomes compare equal (commit tree
+    hashes, `git status --porcelain`, and the `git diff` of the worktree), and after
+    `commit_all` the committed trees are equal;
+  - **read-only reviewer:** `verdict` and `verdict_ok` are equal; the run dir has
+    `result.json`, the transcript and `request.json`, and `request.json` equals the local one
+    after normalizing `cwd`, `run_dir`, `add_dirs` and the re-set env keys;
+  - **write-back failures:** HEAD moved (a commit made in the worktree after submission), a
+    dirty worktree (an untracked file created after submission), a stash conflict (a tracked
+    file the fake script also edits is modified in the worktree after submission, with the
+    clean check stubbed so the run reaches `stash apply`), and a corrupt bundle. Each gives a
+    `run.end` with `is_error`/`writeback_failed` and `result_tail` starting `write-back:`,
+    a projected `run_failed` with `transient: true`, a worktree back at `base_head` with its
+    prior status (no leftover stash files after the conflict case), the worker in
+    `remote_excluded`, and exactly one local re-run by `_do_persona` with no autopark entry;
+  - **restart / adoption:** stop the coordinator loop while a remote persona job runs
+    (`RemoteRunner` returns `DETACHED`), start a new one, let the job finish: the record is
+    adopted, write-back is applied once (HEAD advanced once, a second adoption of an
+    `applied` record changes nothing), and `_do_persona` commits with `adopted` set;
+  - **eligibility:** `add_dirs` outside the tree, an `allowed_tools` path outside the tree,
+    an untracked file, a writing persona with a modified tracked file, the
+    `conflict_resolver` persona, and a worktree with a rebase in progress, each run locally;
+  - **serialization:** `request_to_job` / `request_from_job` round-trip, including a
+    worktree-absolute `allowed_tools` gate pattern made relative and re-anchored;
   - **env:** an allowed key passes, a stripped key is re-set by the worker, another key is
     refused;
   - **saved refs:** a failed write-back lists `saved_refs` and the refs exist;
@@ -224,11 +316,10 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
 - **Regression guard:** affected tests while iterating. The persona-run and queue tests run
   unchanged with no workers.
 
-## Clock Log
-
-Use `nw idea clock-in IDEA-560` / `nw idea clock-out IDEA-560`.
-
 ## Rollout / migration
+
+Implementation sessions clock in and out on the linked idea (`nw idea clock-in IDEA-560` /
+`nw idea clock-out IDEA-560`).
 
 1. Ships with persona jobs disabled: the default `kinds` is `[gate]`.
 2. The human turns persona jobs on per worker with `--kinds gate,persona`, after
@@ -252,4 +343,7 @@ None. Decided while splitting SPEC-0333:
 - A writing persona goes remote only from a clean worktree.
 - The env is an allowlist mirroring `personas.py`; worker-local paths are re-set by the
   worker.
-- A write-back failure retries locally only and keeps its refs for inspection.
+- A write-back failure retries locally only (once, in-process, the worker excluded via
+  `remote_excluded`) and keeps its refs for inspection.
+- Remote dispatch is a detachable `RemoteRunner`; `base_head` lives in the SPEC-0341 job
+  record so write-back survives a restart.
