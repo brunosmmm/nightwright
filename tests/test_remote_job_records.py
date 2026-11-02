@@ -21,7 +21,7 @@ from nightwright.agentic import remote_jobs as RJ
 from nightwright.agentic import store as S
 from nightwright.agentic import workers as WK
 
-from test_remote_gates import CID, Remote, World, _decode, _gate, _script
+from test_remote_gates import CID, Remote, World, _commit, _decode, _gate, _script
 from test_remote_gates import _short_runtime_dir  # noqa: F401  (autouse fixture)
 from waits import join, until
 
@@ -454,6 +454,124 @@ def test_abandon_and_park_cancel_the_job(aw, remote, how):
     pid = json.loads((_job_dir(remote) / "proc.json").read_text())["pid"]
     assert until(lambda: not Path(f"/proc/{pid}").exists()
                  or "Z" in Path(f"/proc/{pid}/stat").read_text().split()[2])
+
+
+# ---- jobs the loop must not adopt (review round 1) ------------------------------------------
+
+def test_close_regate_job_is_never_adopted_by_the_next_gate_step(aw, remote):
+    """A close re-gate (tier `close`) on an async worker: `settle_job` closes its record, and
+    even one a crash left live is ignored by `live_gate`. The next GATING runs a fresh job under
+    a new seq and gets its own results, not the close run's."""
+    aw.release()
+    st = S.read_state(aw.cfg, CID)
+    run = G.run_all(aw.project, st, aw.cfg, seq=G.next_gate_seq(aw.cfg, CID), tier="close")
+    assert run.worker == "box" and run.job_id == JOB and run.event_uid
+    rec = _rec(aw)
+    assert rec["tier"] == "close" and rec["state"] in RJ.LIVE      # a crash before settling
+    assert RJ.live_gate(aw.cfg, CID) is None
+    assert G.job_payload(run)["event_uid"] == run.event_uid
+    res, _row = _gate_and_apply(aw)
+    assert res.gate_run.seq == 2 and res.gate_run.job_id == RJ.gate_job_id(CID, 2)
+    assert res.gate_run.worker == "box" and res.gate_run.ok
+    (ev,) = aw.ledger(["gate"])
+    assert ev["gate_seq"] == 2 and ev["event_uid"].startswith(RJ.gate_job_id(CID, 2))
+    assert _rec(aw)["state"] in RJ.LIVE                            # untouched by the loop
+    assert not aw.ledger(["worker_failed"]) and not aw.ledger(["worker_job_lost"])
+    G.settle_job(aw.cfg, CID, run)                                 # what the close step does
+    assert _rec(aw)["state"] == "done"
+
+
+def test_adoption_after_head_moved_cancels_the_old_job(aw, remote):
+    """A detached job whose worktree got a new commit since its submit is cancelled, not
+    adopted: the gate runs a new job under a new seq, for the current HEAD."""
+    aw._remote = remote
+    ctx, st, res = _detached(aw, "stop")
+    Q._apply(ctx, st, res)
+    G.reset()
+    rec = _rec(aw)
+    assert rec["state"] in RJ.LIVE and rec["head"] == aw.head and rec["tier"] == "loop"
+    head = _commit(aw.repo, "c.txt", "c\n")
+    aw.release()
+    res2, _row = _gate_and_apply(aw)
+    run = res2.gate_run
+    assert _rec(aw)["state"] == "cancelled"
+    assert run.seq == 2 and run.job_id == RJ.gate_job_id(CID, 2) and run.worker == "box"
+    assert _rec(aw, RJ.gate_job_id(CID, 2))["head"] == head
+    assert _rec(aw, RJ.gate_job_id(CID, 2))["state"] == "done"
+    (ev,) = aw.ledger(["gate"])
+    assert ev["gate_seq"] == 2
+    assert any("submitted for another commit" in n["text"] for n in aw.ledger(["note"]))
+    assert not aw.ledger(["worker_failed"]) and not aw.ledger(["worker_job_lost"])
+
+
+def test_same_head_still_adopts(aw, remote):
+    aw._remote = remote
+    ctx, st, res = _detached(aw, "stop")
+    Q._apply(ctx, st, res)
+    G.reset()
+    assert RG.adoptable(_rec(aw), aw.repo)
+    (aw.repo / "a.txt").write_text("dirty\n")                      # another tree under test
+    assert not RG.adoptable(_rec(aw), aw.repo)
+    (aw.repo / "a.txt").write_text("a\n")
+    assert RG.adoptable(_rec(aw), aw.repo)
+    assert not RG.adoptable({**_rec(aw), "tree": None}, aw.repo)
+
+
+def test_park_before_the_first_frame_then_resume_uses_a_new_seq(aw, remote):
+    """A park lands before any gate frame (no `gates/001-*` file): the next gate step
+    allocates past the cancelled record's seq, so it never resubmits a job id the worker
+    still holds, and runs remotely with no `worker_failed` and no cooldown."""
+    go = aw.tmp / "GO1"
+    aw.project["gates"][0] = _gate("g1", f"while [ ! -f {go} ]; do sleep 0.05; done; echo one")
+    stop = threading.Event()
+    ctx = _ctx(aw, stop)
+    st = S.read_state(aw.cfg, CID)
+    out = {}
+    t = threading.Thread(target=lambda: out.setdefault("res", Q._do_gate(ctx, st)), daemon=True)
+    t.start()
+    try:
+        assert until(lambda: RG.attached(CID) and _job_state(remote) == "running")
+        G.terminate_all()
+        stop.set()
+        join(t)
+    finally:
+        go.write_text("go\n")
+    Q._apply(ctx, st, out["res"])
+    G.reset()
+    assert not list(aw.gates_dir.glob("001-*")) and _rec(aw)["state"] in RJ.LIVE
+    Q.apply_park(aw.cfg, Q.plan_park(aw.cfg, CID, "testing"))
+    assert _rec(aw)["state"] == "cancelled"
+    assert G.next_gate_seq(aw.cfg, CID) == 2
+    st = S.read_state(aw.cfg, CID)                                  # resume
+    st["state"], st["park"] = "GATING", None
+    S.write_state(aw.cfg, CID, st)
+    aw.release()
+    res, _row = _gate_and_apply(aw)
+    run = res.gate_run
+    assert run.seq == 2 and run.worker == "box" and run.ok
+    assert run.job_id == RJ.gate_job_id(CID, 2) and _rec(aw, run.job_id)["state"] == "done"
+    assert not aw.ledger(["worker_failed"]) and not WK.in_cooldown(remote.record())
+
+
+def test_watcher_poll_refreshes_last_seen(aw, remote):
+    """While adoption waits for a slot, a successful poll refreshes `last_seen_at`: an old one
+    (a restart long after the last frame) cannot cause an instant `unreachable` give-up."""
+    aw._remote = remote
+    ctx, st, res = _detached(aw, "stop")
+    Q._apply(ctx, st, res)
+    G.reset()
+    stale = RJ.iso(RG._now() - 10 * RJ.DEFAULT_WORKER_TTL_S)
+    RJ.update(aw.cfg, JOB, last_seen_at=stale)
+    aw.cfg.setdefault("agentic", {})["workers"] = {"job_lease_s": 0.6}
+    with GS.acquire(aw.cfg, "someone-else", pools=[("box", 1)]):
+        out = {}
+        t = threading.Thread(target=lambda: out.setdefault("r", _gate_and_apply(aw)),
+                             daemon=True)
+        t.start()
+        assert until(lambda: _rec(aw)["last_seen_at"] != stale)
+    aw.release()
+    join(t)
+    assert out["r"][0].gate_run.worker == "box" and not aw.ledger(["worker_job_lost"])
 
 
 # ---- old workers -----------------------------------------------------------------------------

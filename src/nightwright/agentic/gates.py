@@ -24,6 +24,7 @@ from . import gate_slots
 from . import schemas as SC
 from . import store
 from . import project as P
+from . import remote_jobs as RJ
 from .project import expand_cmd
 
 TAIL_LINES = 60
@@ -471,8 +472,10 @@ def _rewrite_sidecar(log_path: Path, final: GateResult, error: str | None) -> No
 
 def next_gate_seq(cfg, campaign_id) -> int:
     """1 + the highest `NNN-` prefix among existing gate logs (so debug runs and loop runs
-    never overwrite each other)."""
-    return next_gate_seq_in(store.gates_dir(cfg, campaign_id))
+    never overwrite each other). SPEC-0341: also past every remote job record of the campaign
+    (final ones included), so a job id the worker may still hold is never reused."""
+    return max(next_gate_seq_in(store.gates_dir(cfg, campaign_id)),
+               RJ.max_seq(cfg, campaign_id) + 1)
 
 
 def next_gate_seq_in(d) -> int:
@@ -554,7 +557,8 @@ def run_all(project_cfg: dict, campaign_state: dict, cfg, *, seq: int,
                 run = _run_all_held(project_cfg, campaign_state, cfg, cid, worktree, seq, stop,
                                     tier)
                 return replace(run, slot_wait_s=hold.waited_s, head=head, tree=tree)
-            out = RG.run(hold.pool, project_cfg, campaign_state, cfg, seq, owner, stop)
+            out = RG.run(hold.pool, project_cfg, campaign_state, cfg, seq, owner, stop,
+                         tier=tier)
         waited = round(hold.waited_s + out.worker_wait_s, 1)
         if out.run is not None:
             return replace(out.run, slot_wait_s=waited, head=head, tree=tree)
@@ -652,16 +656,27 @@ def run_and_log(cfg, campaign_state: dict, project_cfg: dict, *, seq=None, by="t
     seq = seq if seq is not None else next_gate_seq(cfg, cid)
     run = run_all(project_cfg, campaign_state, cfg, seq=seq, tier=tier, worker=worker,
                   local=local)
+    store.append_event(cfg, cid, "gate", job_payload(run), by=by)
+    settle_job(cfg, cid, run)       # SPEC-0341: a debug run is never adopted by the loop
+    return run
+
+
+def job_payload(run: GateRun) -> dict:
+    """`as_payload`, plus the async job's `event_uid` (SPEC-0341) when there is one."""
     payload = as_payload(run)
     if run.event_uid:
         payload["event_uid"] = run.event_uid
-    store.append_event(cfg, cid, "gate", payload, by=by)
-    if run.job_id:
-        # SPEC-0341: a debug run is never adopted by the loop; one a stop detached is cancelled
-        from . import remote_gates as RG
-        from . import remote_jobs as RJ
-        if run.interrupted:
-            RG.cancel_campaign(cfg, cid, run.job_id)
-        RJ.mark_done(cfg, run.job_id)
-    return run
+    return payload
+
+
+def settle_job(cfg, cid, run: GateRun) -> None:
+    """SPEC-0341: a run outside the loop's gate step (a debug run, a close re-gate) has its
+    `GateRun` in hand: its job record goes final now, and a job a stop detached is cancelled,
+    so nothing is left live for a later gate step to stumble on."""
+    if not run.job_id:
+        return
+    if run.interrupted:
+        from . import remote_gates as RG    # lazy: remote_gates imports this module
+        RG.cancel_campaign(cfg, cid, run.job_id)
+    RJ.mark_done(cfg, run.job_id)
 

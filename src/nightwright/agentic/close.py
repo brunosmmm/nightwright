@@ -815,7 +815,10 @@ def prepare_close(cfg, state: dict, project_cfg: dict, *, gate_seq=None,
     if reused:
         gate_run = replace(gate_run, reused=tuple(reused))
     seq = gate_run.seq                          # run_all moves on when the seq's tmp dir is taken
-    events.append(("gate", G.as_payload(gate_run)))
+    # SPEC-0341: a close re-gate's job is never adopted (its record's tier is `close`); its
+    # record goes final here
+    G.settle_job(cfg, state["id"], gate_run)
+    events.append(("gate", G.job_payload(gate_run)))
     if not gate_run.ok:
         detail = ""
         if merge_request:

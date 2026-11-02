@@ -1987,14 +1987,28 @@ def _do_gate(ctx: _Ctx, state: dict) -> StepResult:
             if raises:
                 res.events_before.append(("finding", P.gate_limits_finding(raises)))
         # SPEC-0341: a live remote job record (a restart, a detach) is adopted under its own
-        # seq; `next_gate_seq` would see the files its applied frames wrote and skip past it
+        # seq; `next_gate_seq` would see the files its applied frames wrote and skip past it.
+        # A job submitted for another HEAD or tree is cancelled instead (its results would be
+        # for code no longer in the worktree), and the gate runs under a fresh seq.
         live = RJ.live_gate(ctx.cfg, state["id"])
+        while live is not None and not _adoptable(live, worktree):
+            from . import remote_gates as RG
+            for job_id in RG.cancel_campaign(ctx.cfg, state["id"], live["job_id"]):
+                res.events_before.append(("note", {
+                    "text": f"cancelled remote job {job_id}: submitted for another commit",
+                    "author": "queue"}))
+            live = RJ.live_gate(ctx.cfg, state["id"])
         seq = int(live["seq_or_run"]) if live else G.next_gate_seq(ctx.cfg, state["id"])
         res.gate_run = G.run_all(pcfg, state, ctx.cfg, seq=seq, stop=ctx.stop,
                                  tier="loop", adopt=live)     # SPEC-0328
     except (ValueError, OSError) as e:
         res.error = str(e)
     return res
+
+
+def _adoptable(rec: dict, worktree) -> bool:
+    from . import remote_gates as RG
+    return bool(worktree) and RG.adoptable(rec, worktree)
 
 
 def _do_prepare_close(ctx: _Ctx, state: dict) -> StepResult:

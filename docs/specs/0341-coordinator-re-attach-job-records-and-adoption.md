@@ -285,6 +285,23 @@ without re-attach or adoption.
   - **old workers:** with no cached `info`, or an `info` without `async`, the gates run through
     `gate-job` (job id `-a0`, no record). `check` caches `info` and warns when `async` is
     missing.
+- Review round 1 (same day): five more tests in `tests/test_remote_job_records.py`, 23
+  passed together with `test_remote_gates.py` (116 tests, `-n 8`):
+  - a close-tier run on the async worker, with its record left live as a crash would leave it,
+    is ignored by `live_gate`; the next GATING runs `gate-002-a1` under seq 2 with its own
+    `gate` event, and there is no `worker_failed` and no `worker_job_lost`. `settle_job` then
+    sets the close record to `done`;
+  - after a detach, a new commit lands: the old job is `cancelled` and noted, and the gate runs
+    remotely under seq 2 for the new HEAD. `adoptable` is true for the same HEAD and tree,
+    false for a dirtied tree, and true again once the tree is restored (a stat-dirty
+    `stash create` exits 1);
+  - a park before the first gate frame (no `gates/001-*`), then a resume: `next_gate_seq` is
+    2, and the gate runs on the worker as `gate-002-a1` with no `worker_failed` and no cooldown;
+  - with a `last_seen_at` far in the past, the slot-wait watcher's poll refreshes it, and the
+    adopted job finishes on the worker with no `worker_job_lost`.
+  Related modules after the change (close, gate paths, exit paths, queue, codewatch, worker
+  jobs, registry, gates, drain, adopt): 660 passed in one `-n 8` run. The full suite is left to
+  gating.
 - Affected modules: `test_remote_gates.py` (SPEC-0338's golden test included, unchanged),
   `test_workers_registry.py`, `test_worker_jobs.py`, `test_worker.py`, `test_agentic_queue.py`,
   `test_agentic_events.py`, `test_agentic_quiet.py`, `test_skills.py`, `test_agentic_exit_paths.py`,
@@ -315,10 +332,26 @@ without re-attach or adoption.
   give up on a gate that legitimately retries.
 - **Adoption lives in the gate step.** `_do_gate` looks up the campaign's live record before
   `next_gate_seq`, so a campaign in GATING adopts on the next tick it is stepped. The tick
-  does no separate scan. A live record whose campaign leaves GATING without a park or an
-  abandon (a human `transition`) stays live until its worker lease runs out. A re-gate under
-  the adopted seq takes the `gate-<seq>` tmp claim non-exclusively, because the dead runner's
-  claim dir may still be there.
+  does no separate scan. A re-gate under the adopted seq takes the `gate-<seq>` tmp claim
+  non-exclusively, because the dead runner's claim dir may still be there.
+- **What gets adopted (review round 1).** A record also stores the header's `commit`, the
+  worktree's `head` and the commit's `tree` at submit, and the run's `tier`. `live_gate`
+  returns only `tier: loop` records, so a close re-gate's or a debug run's job is never adopted
+  by the gate step. `_do_gate` adopts a live record only while the worktree still has the same
+  HEAD and tree under test (`remote_gates.adoptable`). Otherwise it cancels that job (a `note`
+  says so) and gates under a fresh seq. A record left live by a human `transition` or an
+  auto-park therefore never replays results for code that has since changed.
+- **Seqs are never reused.** `gates.next_gate_seq` allocates past every remote job record of
+  the campaign, final ones included (`remote_jobs.max_seq`). A job cancelled before its first
+  frame wrote a `gates/` file therefore never has its job id submitted again. If a caller passes
+  an explicit seq that already has a record, `remote_gates.run` uses `gate-job` for that run
+  and does not discard the record.
+- **Close re-gates.** `close.prepare_close` writes the `gate` event with its `event_uid`
+  (`gates.job_payload`) and settles the job at once (`gates.settle_job`, which `run_and_log`
+  shares): if a stop detached the job, it is cancelled, and then the record goes `done`.
+- While adoption waits for a slot, each successful `poll` refreshes the record's
+  `last_seen_at`, so an old `last_seen_at` from before a restart cannot cause an immediate
+  `unreachable` give-up.
 - **Code-change exit.** SPEC-0231's exec waits for in-process steps. A gate step that is in
   its attach loop (`remote_gates.attached`) now counts as detachable in
   `StepPool.try_detach_all`: the step is told to detach and its result is never applied. A

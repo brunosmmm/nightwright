@@ -669,12 +669,14 @@ def _record_failure(cfg, cid, name: str, job_id: str, seq: int, f: RemoteFailure
 
 
 def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, owner: str,
-        stop: threading.Event | None = None) -> Outcome:
+        stop: threading.Event | None = None, *, tier: str | None = None) -> Outcome:
     """One remote gate run under the caller's claim (`owner`) and remote slot. A transport
     failure is recorded (`worker_failed`, the worker's cooldown, this run's `gates/<seq>-*`
     files deleted) and returned with `run=None`, for the caller's local fallback. SPEC-0341: a
     worker whose cached `info` lists `async` gets `submit` + `attach` with a job record
-    (`_run_async`); any other keeps the synchronous `gate-job`."""
+    (`_run_async`); any other keeps the synchronous `gate-job`. A seq that already has a job
+    record (an explicit seq; `gates.next_gate_seq` allocates past every record) also keeps
+    `gate-job`: the worker may still hold that job id. `tier` is written to the record."""
     cid = campaign_state["id"]
     job_id = f"{cid}-gate-{seq:03d}-a0"
     bundle = store.child_tmp(cfg, cid, owner) / "job.bundle"
@@ -686,10 +688,10 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
         if rec is None:
             raise RemoteFailure("registry", f"worker {worker!r} is no longer registered",
                                 cooldown=False)
-        if RJ.has_async(rec):
-            RJ.discard(cfg, RJ.gate_job_id(cid, seq))   # a final record of an earlier run
+        if RJ.has_async(rec) and RJ.read(cfg, RJ.gate_job_id(cid, seq)) is None:
             job_id = RJ.gate_job_id(cid, seq)
-            return _run_async(rec, project_cfg, campaign_state, cfg, seq, job_id, bundle, stop)
+            return _run_async(rec, project_cfg, campaign_state, cfg, seq, job_id, bundle, stop,
+                              tier)
         header = prepare(rec, project_cfg, campaign_state, cfg, seq, job_id, bundle, stop=stop)
         _check_stop(stop)                       # no job is started only to be cancelled
         return _dispatch(rec, header, bundle, cfg, cid, seq, stop)
@@ -699,7 +701,7 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
     except _GiveUp as g:
         return _give_up(cfg, cid, g.worker, g.rec, seq, g.stage)
     except RemoteFailure as f:
-        job = RJ.read(cfg, job_id) if rec is not None and RJ.has_async(rec) else None
+        job = RJ.read(cfg, job_id) if job_id != f"{cid}-gate-{seq:03d}-a0" else None
         if job is not None:                     # submitted: cancel it, the record goes `local`
             return _failed(cfg, cid, rec, job, seq, f)
         _record_failure(cfg, cid, worker, job_id, seq, f)
@@ -838,19 +840,43 @@ def _submit(worker: dict, header: dict, bundle: Path, cfg) -> None:
                                    f"{state!r}): {tail[0]}")
 
 
+def tree_under_test(worktree) -> tuple[str, str]:
+    """`(HEAD, tree of the commit under test)` of `worktree`, as `prepare` cuts it: a dirty
+    tree's `git stash create` commit is new on every call, but its tree is not. (`stash
+    create` exits 1 with no output on a stat-dirty, content-clean tree: that is HEAD's tree.)"""
+    sha = _git(worktree, "stash", "create", check=False) or _git(worktree, "rev-parse", "HEAD")
+    return _git(worktree, "rev-parse", "HEAD"), _git(worktree, "rev-parse", f"{sha}^{{tree}}")
+
+
+def adoptable(rec: dict, worktree) -> bool:
+    """SPEC-0341: a live record is adopted only when the worktree still holds what the job
+    was submitted for (same HEAD and same tree under test); otherwise its replayed results
+    would be for code no longer there. A record without them is never adopted."""
+    if not rec.get("head") or not rec.get("tree"):
+        return False
+    try:
+        return tree_under_test(worktree) == (rec["head"], rec["tree"])
+    except RemoteFailure:
+        return False
+
+
 def _run_async(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int,
-               job_id: str, bundle: Path, stop) -> Outcome:
+               job_id: str, bundle: Path, stop, tier: str | None = None) -> Outcome:
     """Prepare, submit (attempt 1), write the job record, then follow the job."""
     cid = campaign_state["id"]
     header = prepare(worker, project_cfg, campaign_state, cfg, seq, job_id, bundle, stop=stop)
     header["attempt"] = 1
     _check_stop(stop)
+    wt = (campaign_state.get("repo") or {})["worktree"]
+    head = _git(wt, "rev-parse", "HEAD")
+    tree = _git(wt, "rev-parse", f"{header['commit']}^{{tree}}")
     submitted = _now()
     _submit(worker, header, bundle, cfg)
     rec = RJ.create(cfg, job_id=job_id, campaign=cid, worker=worker["name"], attempt=1, seq=seq,
                     submitted_at=submitted,
                     deadline_at=submitted + header["timeout_s"]
-                    + RJ.settings(cfg)["worker_ttl_s"])
+                    + RJ.settings(cfg)["worker_ttl_s"],
+                    tier=tier, commit=header["commit"], head=head, tree=tree)
     rec = RJ.update(cfg, job_id, gates=[g["name"] for g in header["payload"]["gates"]]) or rec
     return _follow(cfg, worker, rec, project_cfg, seq, stop)
 
@@ -1086,6 +1112,9 @@ def adopt(rec: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int, sto
             if time.monotonic() >= next_at:
                 state = poll(worker, rec["job_id"], int(rec.get("cursor") or 0))
                 next_at = time.monotonic() + every
+                if state is not None:           # the worker answered: not unreachable
+                    rec["last_seen_at"] = RJ.iso(_now())
+                    RJ.update(cfg, rec["job_id"], last_seen_at=rec["last_seen_at"])
                 if state in ("done", "lost", "unknown"):
                     verdict["state"] = state
                     wait_stop.set()
