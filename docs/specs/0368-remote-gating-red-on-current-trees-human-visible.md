@@ -4,7 +4,7 @@ title: "Remote gates gate a stat-dirty tree at HEAD instead of falling back, and
 status: in-progress
 owner: user
 created: 2026-11-01
-updated: 2026-11-01
+updated: 2026-11-02
 kind: feature
 source_idea: IDEA-701
 tags: [agentic, gates, workers, remote]
@@ -137,9 +137,10 @@ the index). After the change `remote_gates.py` has no `stash create` call outsid
       failure has `cooldown=False`.
 - [x] `commit_under_test` raises `RemoteFailure("bundle", …, cooldown=False)` when git fails
       with an error message, exits 1 with output, or cannot start.
-- [ ] `prepare()` on a stat-dirty, content-clean tree returns a header whose `commit` is HEAD
+- [x] `prepare()` on a stat-dirty, content-clean tree returns a header whose `commit` is HEAD
       and the run goes to the worker: no `worker_failed stage=bundle` and no fallback finding.
-      The coordinator's stash list and index file are unchanged afterwards.
+      The coordinator's stash list and index entries (`git ls-files -s`) are unchanged
+      afterwards.
 - [x] `prepare()` and `tree_under_test()` both call `commit_under_test`, and `remote_gates.py`
       has no other `stash create` call; on a stat-dirty tree they agree on the commit and its
       tree; `adoptable` returns `None` (not `False`) when `commit_under_test` raises.
@@ -147,12 +148,12 @@ the index). After the change `remote_gates.py` has no `stash create` call outsid
       `changed == ()`; a local run and a cut-short remote run carry `changed is None`.
 - [x] A remote run whose `done` frame lists changed paths still falls back to a local run
       without cooldown, as before.
-- [ ] `gates.as_payload` includes `"changed": []` for a remote run and no `changed` key for a
-      local run; `nw queue gates <id> --worker <w> --json` output shows `"changed": []`; the
-      golden `tests/data/remote_gates_golden.json` contains it.
-- [ ] Real-box: with a worker registered on the real worker box, a stat-dirty campaign worktree
-      (a tracked file touched, no content change) is gated on the worker (`worker: <w>` in the
-      `--json` output), not by a `stage=bundle` fallback.
+- [x] `gates.as_payload` includes `"changed": []` for a remote run and no `changed` key for a
+      local run; `nw queue gates <id> --worker <w> --json` output shows `"changed": []`.
+- Post-merge verification (a human, on the real worker box; not an agent-run criterion): with a
+  worker registered on the real worker box, a stat-dirty campaign worktree (a tracked file
+  touched, no content change) is gated on the worker (`worker: <w>` in the `--json` output),
+  not by a `stage=bundle` fallback. Commands and expected output are in "As shipped".
 
 ## Test plan
 
@@ -222,31 +223,40 @@ the index). After the change `remote_gates.py` has no `stash create` call outsid
 - `python3 tools/spec_lint.py --write-ledger` / `spec_lint`: OK. The full suite is left to the
   queue's gate.
 
-### As shipped (2026-11-01)
+### As shipped (2026-11-02)
 
-Built to Design (`remote_gates.commit_under_test`, `GateRun.changed`, `as_payload`) with one
-deviation: `tests/data/remote_gates_golden.json` records the **local** (no-worker) path
-(`_golden_run` sets `remote_gates=False`), so it correctly gains no `changed` key and is
-unchanged; the Design/AC line that it "contains" `changed: []` cannot hold for that golden. The
-remote run's `changed: []` is asserted in `test_remote_run_records_changed` and the CLI
-`--json` test instead. That AC is left unticked for the golden clause only. **Not done: the real-box acceptance criterion and manual steps 1-2.** No worker
-is registered in this sandbox (no worker box reachable from the implementer's coordinator), so
-the stat-dirty dispatch was only exercised against real git plus the fake worker. The spec stays
-`in-progress` until someone runs `nw queue gates <campaign> --worker <w> --json` on a clean and
-a touched tree against the real box.
+Built to Design (`remote_gates.commit_under_test`, `GateRun.changed`, `as_payload`). Human
+decisions applied on 2026-11-02, after review:
 
-**Second deviation: the index file is not byte-identical.** `git stash create` itself rewrites
-the index's stat data on a stat-dirty tree (git's own refresh-and-write; the old `prepare`
-triggered the same write, so this is not new behaviour). `commit_under_test` adds no index write
-of its own: its `git diff --quiet HEAD --` runs with `GIT_OPTIONAL_LOCKS=0`. What holds, and what
-`test_commit_under_test_leaves_index_alone` and `test_stat_dirty_tree_runs_remotely` assert, is
-that the stash stack (`git stash list`) and the index *entries* (`git ls-files -s`) are
-unchanged. The Design §1 and Alternatives sentences that `stash create` "leaves ... the index
-alone", and the test-plan bullet's "bytes of `.git/index`", overstate this; the guarded spec text
-is not edited, and this note is the correction. For the same reason the `prepare()` stat-dirty
-acceptance criterion ("stash list and index file are unchanged") is **unticked**: it is true for
-the stash list and the index entries, not for the index file's bytes, and it is not claimed
-beyond that. It can be ticked once a human accepts the entries-only reading.
+- **Golden.** `tests/data/remote_gates_golden.json` records the **local** (no-worker) path
+  (`_golden_run` sets `remote_gates=False`), so it correctly gains no `changed` key and is
+  unchanged. The Design line that the golden is regenerated with `changed: []` does not apply
+  to it, and the golden clause is dropped from the `as_payload` acceptance criterion. A remote
+  run's `changed: []` is asserted in `test_remote_run_records_changed` and the CLI `--json` test.
+- **Index.** `git stash create` itself rewrites the index's stat data on a stat-dirty tree
+  (git's own refresh-and-write; the old `prepare` triggered the same write). `commit_under_test`
+  adds no index write of its own: its `git diff --quiet HEAD --` runs with
+  `GIT_OPTIONAL_LOCKS=0`. What holds, and what `test_commit_under_test_leaves_index_alone` and
+  `test_stat_dirty_tree_runs_remotely` assert, is that the stash stack (`git stash list`) and the
+  index *entries* (`git ls-files -s`) are unchanged. The `prepare()` acceptance criterion reads
+  "index entries (`git ls-files -s`) unchanged" accordingly; the Design §1 / Alternatives
+  sentences that `stash create` "leaves ... the index alone" and the test-plan bullet's "bytes of
+  `.git/index`" overstate this and are corrected by this note.
+- **Real-box check is a post-merge verification step**, not an agent-run criterion: the worker
+  box is disabled for this campaign and runs the old worker until a human reinstalls it, so no
+  agent can run it. The spec stays `in-progress` until a human does the following on the
+  coordinator, in a campaign worktree (`<w>` = the registered real worker):
+  1. Clean tree: `uv run nw queue gates <campaign> --worker <w> --json`. Expected: `"worker":
+     "<w>"`, `"changed": []`. (Green or red depends on the worker-setup follow-up spec.)
+  2. `touch <a tracked file>`; check `git stash create; echo $?` prints nothing and exits 1;
+     `git stash list > /tmp/before`; rerun the command from step 1. Expected: `"worker": "<w>"`,
+     `"changed": []`, no `stage=bundle` fallback (no `worker_failed stage=bundle` event or
+     finding), and `git stash list` identical to `/tmp/before`.
+  Then record the results here and set `status: done` (ticking the Definition-of-done boxes for
+  the real-box steps and the full suite).
+
+Not done in this run: the real-box steps above (the "Test plan executed" and "No regressions"
+Definition-of-done boxes stay unticked; the full suite is left to the queue's gate).
 
 ## Rollout / migration
 
@@ -259,13 +269,13 @@ beyond that. It can be ticked once a human accepts the entries-only reading.
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
+- [x] Acceptance criteria all met.
 - [ ] Test plan executed; affected automated tests pass; the real-box manual steps performed
       and noted in the spec; the queue's close gate runs the full suite.
 - [ ] No regressions.
 - [ ] Spec body updated to match what shipped (an "As shipped" note with the real-box results).
-- [ ] `docs/LEDGER.md` regenerated with `python3 tools/spec_lint.py --write-ledger`.
-- [ ] `python3 tools/spec_lint.py` exits 0.
+- [x] `docs/LEDGER.md` regenerated with `python3 tools/spec_lint.py --write-ledger`.
+- [x] `python3 tools/spec_lint.py` exits 0.
 
 ## Open questions
 
