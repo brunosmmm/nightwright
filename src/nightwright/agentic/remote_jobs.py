@@ -70,7 +70,9 @@ def settings(cfg) -> dict:
 
 def has_async(worker: dict) -> bool:
     """The worker's cached `info` (written by `nw workers check`) lists the `async` feature. No
-    cached `info` reads as an old worker."""
+    cached `info` reads as an old worker. A pull worker (SPEC-0334) is always async."""
+    if worker.get("mode") == "pull":
+        return True
     info = worker.get("info")
     feats = info.get("features") if isinstance(info, dict) else None
     return isinstance(feats, list) and "async" in feats
@@ -177,6 +179,11 @@ def prune(cfg, campaign: str, keep=()) -> list[str]:
             if rec.get("campaign") == campaign and rec.get("state") in FINAL \
                     and rec["job_id"] not in keep:
                 path(cfg, rec["job_id"]).unlink(missing_ok=True)
+                if rec.get("pull"):             # SPEC-0334: its spool, lock and upload
+                    for p in (agentic_dir(cfg) / "job-frames" / f"{rec['job_id']}.jsonl",
+                              agentic_dir(cfg) / "job-frames" / f"{rec['job_id']}.lock",
+                              agentic_dir(cfg) / "job-uploads" / f"{rec['job_id']}.result.bundle"):
+                        p.unlink(missing_ok=True)
                 out.append(rec["job_id"])
     return out
 

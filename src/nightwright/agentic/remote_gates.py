@@ -328,13 +328,14 @@ def cut(worker: dict, project_cfg: dict, campaign_state: dict, cfg, job_id: str,
     if mb and mb not in asked:
         asked.append(mb)
     key = repo_key(campaign_state.get("project") or project_cfg.get("project"), wt)
-    try:
-        WK.ensure_record_ssh_dir(cfg, worker)
-    except OSError as e:
-        # the coordinator's own directory, not the worker's fault: no cooldown
-        raise RemoteFailure("ssh", f"ssh socket directory unusable: {e}", cooldown=False)
+    if worker.get("mode") != "pull":            # SPEC-0334: a pull worker gets everything
+        try:
+            WK.ensure_record_ssh_dir(cfg, worker)
+        except OSError as e:
+            # the coordinator's own directory, not the worker's fault: no cooldown
+            raise RemoteFailure("ssh", f"ssh socket directory unusable: {e}", cooldown=False)
     _check_stop(stop)
-    have = _have(worker, key, asked, stop)
+    have = [] if worker.get("mode") == "pull" else _have(worker, key, asked, stop)
     _check_stop(stop)
     refs = [(f"{W.JOB_REFS}{job_id}", sha), (f"{W.JOB_REFS}{job_id}-base", base_sha)]
     try:
@@ -765,7 +766,8 @@ def set_cooldown(cfg, name: str, seconds: float = COOLDOWN_S) -> None:
 
 def _worker_ssh(cfg, name: str) -> str:
     try:
-        return next((w["ssh"] for w in WK.load(cfg) if w["name"] == name), "USER@HOST")
+        return next((w.get("ssh") or "USER@HOST" for w in WK.load(cfg) if w["name"] == name),
+                    "USER@HOST")
     except (OSError, ValueError):
         return "USER@HOST"
 
@@ -1018,7 +1020,9 @@ def _lines(raw: bytes) -> list[dict]:
 
 def _call(worker: dict, *args, timeout: float = CALL_TIMEOUT_S, input: bytes | None = None):
     """One short SSH call: `(returncode, JSON lines)`, or None when SSH could not run or timed
-    out."""
+    out (and always for a pull worker, SPEC-0334: nothing reaches it over SSH)."""
+    if worker.get("mode") == "pull":
+        return None
     try:
         p = subprocess.run(_argv(worker, *args), input=input, capture_output=True,
                            timeout=timeout, start_new_session=True,
@@ -1044,7 +1048,14 @@ def poll(worker: dict, job_id: str, after: int = 0) -> str | None:
 
 def _submit(worker: dict, header: dict, bundle: Path, cfg) -> None:
     """`nw worker submit` with the header line and the bundle on stdin; returns once the worker
-    printed `accepted` (or the current state of an identical earlier submit)."""
+    printed `accepted` (or the current state of an identical earlier submit). SPEC-0334: a pull
+    worker's job is queued for its lease instead."""
+    if worker.get("mode") == "pull":
+        from . import pull_jobs as PJ
+        try:
+            return PJ.submit(cfg, worker, header, bundle)
+        except OSError as e:
+            raise RemoteFailure("queue", f"could not queue the job: {e}", cooldown=False)
     data = (json.dumps(header, ensure_ascii=False) + "\n").encode("utf-8")
     if header["bundle_bytes"]:
         data += bundle.read_bytes()
@@ -1265,7 +1276,11 @@ def _follow(cfg, worker: dict, rec: dict, project_cfg: dict, seq: int, stop) -> 
     """Attach until `done`. A dropped connection waits with backoff, then `poll --renew`s and
     re-attaches after `seen`. Gives up (`_GiveUp`) when the worker reports the job lost, stays
     unreachable past `worker_ttl_s` since `last_seen_at`, or the record's `deadline_at`
-    passes. A stop detaches: the record stays live for the next runner to adopt."""
+    passes. A stop detaches: the record stays live for the next runner to adopt.
+    SPEC-0334: a pull worker's job is waited for on its record (`pull_jobs.follow_gate`)."""
+    if worker.get("mode") == "pull":
+        from . import pull_jobs as PJ
+        return PJ.follow_gate(cfg, worker, rec, project_cfg, seq, stop)
     job = _Job(cfg, worker, rec, project_cfg, seq)
     detach_ev = threading.Event()
     with _ATTACHED_LOCK:
@@ -1321,6 +1336,16 @@ def _cancel(worker: dict, job_id: str) -> None:
     _call(worker, "cancel", job_id, timeout=CANCEL_GRACE_S)
 
 
+def _cancel_job(cfg, worker: dict, job_id: str) -> None:
+    """`_cancel`; SPEC-0334: a pull worker's job gets `cancel_requested` instead (the server
+    answers its worker's next request with `cancel: true`)."""
+    if worker.get("mode") == "pull":
+        from . import pull_jobs as PJ
+        PJ.request_cancel(cfg, job_id)
+        return
+    _cancel(worker, job_id)
+
+
 def _cancelled(cfg, worker: dict | None, rec: dict, seq: int) -> Outcome | None:
     """The record was `cancelled` (an abandon or a park) while the step still ran: an
     interrupted run, never a fallback. None when it was not."""
@@ -1346,7 +1371,7 @@ def _give_up(cfg, cid, worker: dict | None, rec: dict, seq: int, reason: str, *,
                        {"worker": rec["worker"], "job_id": job_id,
                         "attempt": rec.get("attempt"), "reason": reason}, by="gates")
     if worker is not None:
-        _cancel(worker, job_id)
+        _cancel_job(cfg, worker, job_id)
     for p in store.gates_dir(cfg, cid).glob(f"{seq:03d}-*"):
         p.unlink(missing_ok=True)
     if reason in _BLAME:
@@ -1392,7 +1417,7 @@ def _failed(cfg, cid, worker: dict, rec: dict, seq: int, f: RemoteFailure) -> Ou
         return _give_up(cfg, cid, worker, rec, seq, "job_error")
     RJ.update(cfg, rec["job_id"], state="local")
     _record_failure(cfg, cid, worker["name"], rec["job_id"], seq, f)
-    _cancel(worker, rec["job_id"])
+    _cancel_job(cfg, worker, rec["job_id"])
     return Outcome(None, f.worker_wait_s, f)
 
 
@@ -1464,7 +1489,7 @@ def cancel_campaign(cfg, cid, job_id: str | None = None) -> list[str]:
         RJ.update(cfg, rec["job_id"], state="cancelled")    # first: a live step reads it
         worker = workers.get(rec.get("worker"))
         if worker is not None:
-            _cancel(worker, rec["job_id"])
+            _cancel_job(cfg, worker, rec["job_id"])
             _call(worker, "attach", rec["job_id"], "--from", int(rec.get("cursor") or 0),
                   timeout=CANCEL_GRACE_S)
         out.append(rec["job_id"])

@@ -28,6 +28,7 @@ NW_CMD_RE = re.compile(r"[A-Za-z0-9._/~+-]+")
 IDENTITY_RE = re.compile(r"/[A-Za-z0-9._/+-]+")  # an absolute private-key path (SPEC-0354)
 MIN_SLOTS, MAX_SLOTS = 1, 16
 DEFAULT_KINDS = ["gate"]
+MODES = ("ssh", "pull")                         # SPEC-0334: how the coordinator reaches it
 CHECK_TIMEOUT_S = 30.0
 LOCAL = None                                    # the local pool's name in `gate_pools`/`acquire`
 
@@ -111,6 +112,14 @@ def _check_record(rec) -> None:
     name = rec.get("name")
     if not isinstance(name, str) or not NAME_RE.fullmatch(name):
         raise ValueError(f"worker name {name!r} is invalid")
+    mode = rec.get("mode", "ssh")
+    if mode not in MODES:
+        raise ValueError(f"worker {name}: mode {mode!r} is not one of {list(MODES)}")
+    if mode == "pull":                          # SPEC-0334: no SSH; a token hash instead
+        th = rec.get("token_sha256")
+        if not isinstance(th, str) or not re.fullmatch(r"[0-9a-f]{64}", th):
+            raise ValueError(f"worker {name}: a pull worker needs a hex token_sha256")
+        return
     ssh = rec.get("ssh")
     if not isinstance(ssh, str) or not DEST_RE.fullmatch(ssh) or ssh.startswith("-"):
         raise ValueError(f"worker {name}: ssh destination {ssh!r} is invalid")
@@ -183,6 +192,7 @@ def normalize(cfg, rec: dict) -> dict:
             "kinds": kinds if isinstance(kinds, list) else list(DEFAULT_KINDS),
             "nw": rec.get("nw") if isinstance(rec.get("nw"), str) and rec["nw"] else "nw",
             "enabled": rec.get("enabled") is not False, "ssh_argv": list(argv),
+            "mode": rec.get("mode") if rec.get("mode") in MODES else "ssh",
             "cooldown_until": rec.get("cooldown_until"),
             "draining": rec.get("draining") is True}
 
@@ -447,6 +457,10 @@ def check(cfg, rec: dict) -> dict:
     gate jobs multiplex on it, and `-O exit` would end every one in flight."""
     w = normalize(cfg, rec)
     out = {"name": w["name"], "ok": False, "errors": [], "warnings": [], "info": None}
+    if w["mode"] == "pull":                     # SPEC-0334: nothing to reach over SSH
+        out["ok"] = True
+        out["warnings"].append("a pull worker is not probed; it shows up when it leases a job")
+        return out
     if _check(cfg, w, out):
         # the key that authenticated (an ssh_config IdentityFile fallback, an unrestricted
         # line) is not the forced one: later connections must not multiplex onto its master

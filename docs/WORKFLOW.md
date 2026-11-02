@@ -415,3 +415,39 @@ queue tick disables a draining worker once no live record names it and no slot o
 held, emitting the queue event `worker_drained {worker}`; with no runner ticking it stays
 draining. `on` cancels a drain, `off` disables at once (a gate that then lands on its slot runs
 locally).
+
+**Pull workers (SPEC-0334).** A worker the coordinator cannot SSH into (behind NAT, no inbound
+SSH) dials out instead. On the coordinator, `nw serve --jobs [--bind ADDR:PORT]` serves the job
+API (default `127.0.0.1:8790`; without `--tls-cert/--tls-key` only loopback and Tailscale
+addresses, `100.64.0.0/10` and `fd7a:115c:a1e0::/48`, may be bound; `--client-ca` adds mTLS with
+the worker's name as the certificate CN). `nw workers add NAME --pull [--kinds gate,persona]
+[--url http://<coordinator>:8790]` registers the worker (the registry keeps only the token's
+sha256; the signing secret is `<config_dir>/secrets/workers/NAME.key`, mode 0600) and prints a
+one-time enrolment blob. On the worker, `nw worker serve --enrol BLOB` stores it in
+`<config_dir>/coordinator.json` (0600) and starts leasing; later starts need no flag. Jobs
+for it are queued under `<agentic_dir>/job-queue/`; the worker checks each job's HMAC
+signature, expiry (15 min, 120 s skew), nonce and bundle hash before running it with the same
+job process as `nw worker submit`, and posts its frames back every second. A lease not renewed
+within `job_lease_s` is given up like a lost SSH job (retried on another worker, or local after
+`max_remote_attempts`); the old worker's next post gets 410 and it cancels the job. A queue
+stop, a park or an abandon cancels the job (`cancel: true` on the worker's next post).
+`nw workers token NAME --rotate` replaces the credential at once; `nw workers rm NAME` revokes
+it, the worker cancels its jobs and exits non-zero, and their steps retry or run locally.
+Running `nw worker serve` as a service is left to you, e.g. a systemd user unit
+(`~/.config/systemd/user/nw-worker.service`, then `systemctl --user enable --now nw-worker`;
+exit 3 means revoked, so it is not restarted):
+
+```ini
+[Unit]
+Description=nightwright pull worker
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/nw worker serve
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=3
+
+[Install]
+WantedBy=default.target
+```

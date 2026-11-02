@@ -458,7 +458,7 @@ def _fresh(rr: R.RemoteRunner, req, hooks):
             RG._submit(w, header, bundle, cfg)
         except RG.RemoteFailure as f:
             _failed(cfg, cid, w, job_id, f)
-            RG._cancel(w, job_id)
+            RG._cancel_job(cfg, w, job_id)
             RJ.update(cfg, job_id, state="local")
             return _local(rr, req, hooks)
     rec = RJ.update(cfg, job_id, accepted_at=RJ.iso(time.time())) or rec
@@ -569,8 +569,12 @@ def _sleep(seconds: float, hooks) -> bool:
 
 def _follow(rr: R.RemoteRunner, req, hooks, rec: dict):
     """Attach until `done`; a dropped connection polls with backoff and re-attaches. A detach
-    leaves the record `detached` (SPEC-0341 adoption); a lost job runs locally."""
+    leaves the record `detached` (SPEC-0341 adoption); a lost job runs locally. SPEC-0334: a
+    pull worker's job is waited for on its record (`pull_jobs.follow_persona`)."""
     from . import remote_gates as RG
+    if rr.worker.get("mode") == "pull":
+        from . import pull_jobs as PJ
+        return PJ.follow_persona(rr, req, hooks, rec)
     cfg = rr.cfg
     job = {"id": rec["job_id"], "seen": int(rec.get("cursor") or 0), "last_seen": time.time(),
            "deadline": RJ.epoch(rec.get("deadline_at")) or time.time() + RG.MAX_JOB_TIMEOUT_S}
@@ -614,7 +618,7 @@ def _lost(rr: R.RemoteRunner, req, hooks, rec: dict, why: str):
         if hooks is not None and not hooks.enter_collect():
             return R.DETACHED
         return R._synthetic(req, "the remote persona job was cancelled")
-    RG._cancel(rr.worker, job_id)
+    RG._cancel_job(cfg, rr.worker, job_id)
     RJ.update(cfg, job_id, state="lost", lost_reason=why)
     try:
         WK.record_loss(cfg, rr.worker["name"], job_id=job_id, reason=why)

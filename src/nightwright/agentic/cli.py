@@ -44,6 +44,7 @@ def register(cli, projects_group):
     cli.add_command(cli_workers.workers_group)          # SPEC-0337
     from .cli_gate import gate_group                    # SPEC-0381
     cli.add_command(gate_group)
+    cli.add_command(cli_worker.serve_cmd)               # SPEC-0334
     cli.add_command(campaign_group)
     cli.add_command(cli_profiles.profiles_group)
     cli.add_command(cli_personas.personas_group)        # SPEC-0371

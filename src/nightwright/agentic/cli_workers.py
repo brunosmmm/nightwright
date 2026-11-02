@@ -40,6 +40,8 @@ def workers_group():
                                        upgrade the worker to this checkout's build (SPEC-0385)
     nw workers update NAME --when-idle drain; the queue updates it once idle, then resumes (SPEC-0386)
     nw workers rm NAME                 unregister (held slots are untouched)
+    nw workers add box --pull          a pull worker: prints its one-time enrolment blob
+    nw workers token NAME --rotate     a pull worker's new token + secret (SPEC-0334)
     """
 
 
@@ -71,7 +73,14 @@ def _update(cfg, fn):
 
 @workers_group.command("add")
 @click.argument("name")
-@click.option("--ssh", "dest", required=True, help="ssh destination, e.g. me@box")
+@click.option("--ssh", "dest", default=None, help="ssh destination, e.g. me@box")
+@click.option("--pull", is_flag=True, help="a pull worker (SPEC-0334): it dials out to "
+              "`nw serve --jobs`; prints its one-time enrolment blob")
+@click.option("--kinds", default=None, metavar="KIND[,KIND]",
+              help="job kinds the worker takes: gate, persona (default gate)")
+@click.option("--url", default=None, metavar="URL",
+              help="--pull: the coordinator URL the worker dials (default "
+                   "agentic.workers.coordinator_url, else http://127.0.0.1:8790)")
 @click.option("--slots", type=click.IntRange(WK.MIN_SLOTS, WK.MAX_SLOTS), default=1,
               show_default=True, help="gate slots on the worker")
 @click.option("--nw", "nw_cmd", default="nw", show_default=True,
@@ -82,10 +91,15 @@ def _update(cfg, fn):
                    "the worker then uses only that key (SPEC-0354)")
 @click.option("--no-check", is_flag=True, help="register without probing the worker")
 @click.pass_obj
-def workers_add(cfg, name, dest, slots, nw_cmd, identity, no_check):
+def workers_add(cfg, name, dest, pull, kinds, url, slots, nw_cmd, identity, no_check):
     """Register a worker. Refuses a duplicate name and, unless --no-check, an unreachable one."""
     if not WK.NAME_RE.fullmatch(name) or name == "local":
         raise click.UsageError(f"NAME must match {WK.NAME_RE.pattern} and not be 'local'")
+    if pull == (dest is not None):
+        raise click.UsageError("give exactly one of --ssh DEST or --pull")
+    parsed = _kinds(kinds) if kinds is not None else list(WK.DEFAULT_KINDS)
+    if pull:
+        return _add_pull(cfg, name, slots, parsed, url)
     if not WK.DEST_RE.fullmatch(dest) or dest.startswith("-"):
         raise click.UsageError(f"--ssh must match {WK.DEST_RE.pattern} and not start with '-'")
     if not WK.NW_CMD_RE.fullmatch(nw_cmd) or nw_cmd.startswith("-"):
@@ -95,7 +109,7 @@ def workers_add(cfg, name, dest, slots, nw_cmd, identity, no_check):
                                f"{WK.IDENTITY_RE.pattern}")
     if any(r["name"] == name for r in _load_or_fail(cfg)):
         raise click.ClickException(f"worker {name!r} is already registered (use `rm` first)")
-    rec = {"name": name, "ssh": dest, "slots": slots, "kinds": list(WK.DEFAULT_KINDS),
+    rec = {"name": name, "ssh": dest, "slots": slots, "kinds": parsed,
            "nw": nw_cmd, "enabled": True, "cooldown_until": None, "added_at": now_iso()}
     if identity is not None:
         rec["identity"] = identity
@@ -118,6 +132,61 @@ def workers_add(cfg, name, dest, slots, nw_cmd, identity, no_check):
 
     _update(cfg, add)
     _say(f"registered {name} ({dest}, {slots} slot{'s' if slots != 1 else ''})")
+
+
+def _kinds(kinds: str) -> list[str]:
+    parsed = [k.strip() for k in kinds.split(",") if k.strip()]
+    bad = [k for k in parsed if k not in KINDS]
+    if not parsed or bad:
+        raise click.UsageError(f"--kinds must list some of {', '.join(KINDS)}"
+                               + (f" (not {', '.join(bad)})" if bad else ""))
+    return list(dict.fromkeys(parsed))
+
+
+def _add_pull(cfg, name, slots, kinds, url) -> None:
+    """SPEC-0334: register a pull worker with a fresh token and secret; print the blob."""
+    from . import pull_jobs as PJ
+    if any(r["name"] == name for r in _load_or_fail(cfg)):
+        raise click.ClickException(f"worker {name!r} is already registered (use `rm` first)")
+    url = url or PJ.coordinator_url(cfg)
+    token, secret = PJ.new_credential(cfg, name)
+    rec = {"name": name, "mode": "pull", "slots": slots, "kinds": kinds, "enabled": True,
+           "cooldown_until": None, "added_at": now_iso(), "token_sha256": PJ.token_hash(token),
+           "secret_ref": PJ.secret_ref(name), "coordinator_url": url}
+
+    def add(records):
+        if any(r["name"] == name for r in records):
+            raise click.ClickException(f"worker {name!r} is already registered (use `rm` first)")
+        records.append(rec)
+    try:
+        _update(cfg, add)
+    except click.ClickException:
+        PJ.drop_credential(cfg, name)
+        raise
+    _say(f"registered pull worker {name} ({slots} slot{'s' if slots != 1 else ''}); on the "
+         f"worker run `nw worker serve --enrol BLOB` with this one-time blob:")
+    click.echo(PJ.enrol_blob(url, name, token, secret))
+
+
+@workers_group.command("token")
+@click.argument("name")
+@click.option("--rotate", is_flag=True, required=True,
+              help="replace the token and the secret; the old ones stop working at once")
+@click.pass_obj
+def workers_token(cfg, name, rotate):
+    """Rotate a pull worker's credential and print its new enrolment blob (SPEC-0334)."""
+    from . import pull_jobs as PJ
+    rec = _find(_load_or_fail(cfg), name)
+    if rec.get("mode") != "pull":
+        raise click.ClickException(f"{name} is not a pull worker")
+    token, secret = PJ.new_credential(cfg, name)
+
+    def fn(records):
+        _find(records, name)["token_sha256"] = PJ.token_hash(token)
+    _update(cfg, fn)
+    url = rec.get("coordinator_url") or PJ.coordinator_url(cfg)
+    _say(f"{name}: token and secret rotated; the old ones no longer work. New blob:")
+    click.echo(PJ.enrol_blob(url, name, token, secret))
 
 
 @workers_group.command("bootstrap")
@@ -192,7 +261,7 @@ def workers_list(cfg, as_json):
     # a disabled worker is not draining, even with a stale `draining` key (a hand edit)
     drain = {w["name"] for w in ws if w["draining"] and w["enabled"]}
     jobs = WK.draining_jobs(cfg) if drain else {}
-    rows = [{"name": w["name"], "ssh": w["ssh"], "slots": w["slots"], "kinds": w["kinds"],
+    rows = [{"name": w["name"], "ssh": w.get("ssh"), "slots": w["slots"], "kinds": w["kinds"],
              "enabled": w["enabled"], "cooldown_until": w["cooldown_until"]
              if WK.in_cooldown(w) else None,
              "held": len((occ.get(w["name"]) or {}).get("held") or []),
@@ -215,7 +284,7 @@ def workers_list(cfg, as_json):
         if r["draining"]:
             enabled = (f"updating (draining, {r['draining_jobs']} jobs)" if r["updating"]
                        else f"draining ({r['draining_jobs']} jobs)")
-        t.add_row(r["name"], r["ssh"], str(r["slots"]), enabled,
+        t.add_row(r["name"], r["ssh"] or "(pull)", str(r["slots"]), enabled,
                   r["cooldown_until"] or "—", f"{r['held']}/{r['slots']}")
     console.print(t)
 
@@ -432,10 +501,22 @@ def _jobs_on(cfg, name) -> int:
 @click.argument("name")
 @click.pass_obj
 def workers_rm(cfg, name):
-    """Unregister a worker. Held slots are untouched."""
+    """Unregister a worker. Held slots are untouched. A pull worker (SPEC-0334) is revoked at
+    once: its token stops working, its secret is deleted and its live jobs are given up (each
+    is retried on another worker or run locally by its step)."""
+    removed = {}
+
     def fn(records):
-        records.remove(_find(records, name))
+        r = _find(records, name)
+        removed.update(r)
+        records.remove(r)
     _update(cfg, fn)
+    if removed.get("mode") == "pull":
+        from . import pull_jobs as PJ
+        PJ.drop_credential(cfg, name)
+        lost = PJ.revoke_worker(cfg, name)
+        _say(f"{name}: removed and revoked" + (f"; {len(lost)} job(s) given up" if lost else ""))
+        return
     _say(f"{name}: removed")
 
 

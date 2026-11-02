@@ -1,10 +1,10 @@
 ---
 id: SPEC-0334
 title: "Pull workers against a coordinator job API"
-status: accepted
+status: in-progress
 owner: user
 created: 2026-10-31
-updated: 2026-10-31
+updated: 2026-11-02
 source_idea: IDEA-561
 parent: SPEC-0310
 tags: [agentic, remote, workers, security, api]
@@ -233,6 +233,89 @@ ids already embed the attempt, so a legitimate retry has a new nonce.
   3. Run one campaign's gates through it.
   4. Revoke the worker and confirm the laptop's next lease gets 401.
 - **Regression guard:** the full `uv run pytest`. The SSH-push tests run unchanged.
+
+### As shipped (2026-11-02)
+
+Code: `src/nightwright/agentic/pull_jobs.py` (credentials, signing, the coordinator's queue,
+wait and cancel, the HTTP server), `src/nightwright/agentic/pull_worker.py` (`nw worker serve`),
+`nw serve --jobs` and `nw worker serve` in `cli_worker.py`, `nw workers add --pull [--kinds]
+[--url]` / `token --rotate` / `rm` in `cli_workers.py`, `mode: pull` records in `workers.py`,
+and pull branches in `remote_gates.py` (`cut`, `_call`, `_submit`, `_follow`, `_cancel`),
+`remote_personas.py` (`_follow`) and `remote_jobs.py` (`has_async`, `prune`). Docs:
+`docs/WORKFLOW.md` "Pull workers", with the example systemd user unit. Where it differs from
+or sharpens the Design:
+
+- **Record fields.** The server writes the record's pull fields (`pull_state` queued / leased /
+  done / error / lost, `pull_cursor`, `lease_until`, `pull_error`, `progress`) and, for a gate
+  job, the gate files and `cursor` through SPEC-0341's own `_Job.feed`, under the per-job lock
+  `job-frames/<job_id>.lock`; applied frames are spooled to `job-frames/<job_id>.jsonl`. The
+  record's `state` keeps its SPEC-0341 meaning, so `live_gate`, adoption and `mark_done` are
+  unchanged. The waiting step polls `pull_state`, not `state`.
+- **Gate `done`.** The step rebuilds the `GateRun` by replaying the spool through `_Job.feed`
+  (no file is rewritten: every `n` is at or below the cursor), so the `gate` event and its
+  `event_uid` are the SSH path's.
+- **Persona write-back.** The server refuses a `done` with 409 until the bundle with its
+  `result_bundle_sha256` is stored, then marks the job done; the step then runs SPEC-0344's
+  `_finish` (the SSH write-back code) on the spooled `done` frame with the uploaded bundle read
+  back inline. The server never touches the campaign worktree.
+- **Lease expiry.** The server's 5 s check only marks the job `pull_state: lost`
+  (`pull_lost_reason: lease`) and unqueues it; the waiting step then runs the SPEC-0342 give-up
+  (`worker_job_lost`, `excluded_workers`, `-a<attempt+1>` or local past
+  `max_remote_attempts`) with the same code as an SSH loss. With no step waiting, the next
+  step's adoption does it.
+- **Never leased.** A job still `queued` after `worker_ttl_s` is given up as `unreachable`
+  (an offline pull worker would otherwise hold the step until the job's deadline).
+- **Stop.** A SPEC-0229 signal or `ctx.stop` stop cancels a pull gate job (`state: cancelled`,
+  `cancel_requested`), as the criterion asks; a SPEC-0231 code-change detach leaves the record
+  live and the next runner re-enters the wait (adoption). A park or abandon cancels it through
+  `cancel_campaign`. Persona steps detach as over SSH.
+- **Lease long-poll.** `POST /v1/lease` takes an optional `wait_s` (capped at 30 s). The worker
+  sends 1 s while it runs jobs, so the lease poll doubles as its 1 s frames tick.
+- **Assignment.** A job is queued for the worker whose gate slot the dispatcher took; a pull
+  worker leases only its own jobs. A pull worker gets the whole bundle (no `have` round trip).
+- **Disabled is not revoked.** `nw workers off` keeps the credential working, but the worker
+  gets no new lease. Only `rm` and `token --rotate` answer 401.
+- **Smaller details.** `issued_at`/`expires_at` are epoch seconds. A body without
+  `Content-Length` gets 411. Lease and heartbeat bodies share the 4 MiB cap. The blob's
+  `coordinator_url` comes from `--url`, then `agentic.workers.coordinator_url`, then
+  `http://127.0.0.1:8790`. `coordinator.json` may also carry `ca`, `cert` and `key` for TLS
+  and mTLS. `nw worker serve` exits 3 when revoked; the systemd example sets
+  `RestartPreventExitStatus=3`. There is no `--print-unit`.
+
+### Test record (2026-11-02)
+
+- `uv run pytest -q -n 0 tests/test_pull_workers.py`: 6 passed. Covers a gate job against the
+  SSH loopback (the same gate files byte for byte, the same payload, ledger event types and
+  `event_uid`); a persona job against the SSH loopback (the same write-back tree, status, diff
+  and new file, the same run-dir files and `result.json`); a worker killed mid-job and
+  restarted (the spool holds each `n` once, one `gate` event); lease expiry (`job_lease_s=2`,
+  worker SIGSTOPped: `worker_job_lost`, retried as `-a2` on a second pull worker, local after
+  `max_remote_attempts=2`, and after SIGCONT the old worker logs 410 and its job ends); a 6 s
+  gate under a 2 s lease completing with heartbeats; a stop delivering `cancel` with the job's
+  `done` (`interrupted: true`) within 5 s.
+- `uv run pytest -q -n 0 tests/test_pull_workers_security.py`: 32 passed. Covers missing,
+  wrong and revoked tokens (401); cross-worker frames and bundle (403); tampered header,
+  expired header, replayed nonce and flipped bundle byte, each refused with `stage: "verify"`
+  and no job dir; bind refusal (public address, `0.0.0.0`, `::`) and the Tailscale IPv4/IPv6
+  ranges accepted; 413 for frames, heartbeat and result-bundle bodies; `done` before the
+  bundle PUT gets 409 and applies after it; 0600 secret and `coordinator.json`, no token or
+  secret in `workers.json`; `rm` of a running worker (it exits 3, its job runs locally); mTLS
+  with an `openssl` test CA (right CN 204, wrong CN 403, no certificate refused); rotation; a
+  disabled worker leasing nothing; `prune` removing a pull job's spool and upload.
+- `python3 tools/affected_tests.py --run uv run pytest -q -n 4`: 883 passed, 2 skipped,
+  3 failed. Three existing tests stub `remote_gates._cancel` with two arguments, so the pull
+  branch moved to a new `_cancel_job(cfg, worker, job_id)` and `_cancel` kept its signature.
+  The rerun of `tests/test_remote_job_records.py`, `tests/test_remote_personas.py` and both
+  pull test files then gave 148 passed.
+- Manual, on loopback with the real binaries (no second machine was available to this run):
+  `nw workers add lap --pull`, `nw serve --jobs --bind 127.0.0.1:18793` and
+  `nw worker serve --enrol <blob>` against a separate data dir. The worker long-polled (204),
+  `coordinator.json` and the secret were mode 600, and after `nw workers rm lap` the worker's
+  next lease got 401; it logged "revoked ... cancelling every local job" and exited 3. Manual
+  steps 1 and 3 across machines (a Tailscale bind, a laptop without inbound SSH, a real
+  campaign's gates) were not run. The automated tests run the same gate and persona paths
+  with real `nw worker serve` processes.
+- The full `uv run pytest` is left to the queue's close gate.
 
 ## Clock Log
 

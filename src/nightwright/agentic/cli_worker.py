@@ -31,6 +31,7 @@ def worker_group():
     nw worker gc --keep-days 2         age out job dirs and cached objects
     nw worker update [--force]         install the wheel on stdin (SPEC-0369)
     nw worker ssh-command              the forced command for the worker's SSH key
+    nw worker serve --enrol BLOB       a pull worker: dial the coordinator (SPEC-0334)
     """
 
 
@@ -184,3 +185,55 @@ def worker_ssh_command():
     <info|have|gate-job|gc|submit|attach|poll|cancel|jobs|claude-check|update>` from SSH_ORIGINAL_COMMAND, refuse
     anything else (exit 2)."""
     raise SystemExit(W.ssh_command())
+
+
+@worker_group.command("serve")
+@click.option("--enrol", "blob", default=None, metavar="BLOB",
+              help="the one-time blob `nw workers add --pull` printed; stored in "
+                   "<config_dir>/coordinator.json (0600)")
+@click.option("--config", "conf", default=None, type=click.Path(dir_okay=False),
+              help="a coordinator.json to use (default <config_dir>/coordinator.json)")
+@click.option("--kinds", default="gate,persona", show_default=True, metavar="KIND[,KIND]",
+              help="job kinds this worker leases")
+@click.option("--slots", type=click.IntRange(1, 64), default=1, show_default=True,
+              help="jobs run at once")
+@click.pass_obj
+def worker_serve(cfg, blob, conf, kinds, slots):
+    """Pull worker (SPEC-0334): lease jobs from `nw serve --jobs`, run them with the same job
+    process as `submit`, and post their frames back. Runs until revoked or interrupted."""
+    from . import pull_worker as PW
+    try:
+        doc = PW.load_conf(cfg, blob, conf)
+    except ValueError as e:
+        raise click.UsageError(str(e))
+    ks = [k.strip() for k in kinds.split(",") if k.strip()]
+    sys.exit(PW.Loop(cfg, doc, kinds=ks, slots=slots).run())
+
+
+@click.command("serve")
+@click.option("--jobs", "jobs", is_flag=True, required=True,
+              help="serve the pull-worker job API (the only mode so far)")
+@click.option("--bind", default="127.0.0.1:8790", show_default=True, metavar="ADDR:PORT",
+              help="without TLS: loopback or a Tailscale address only")
+@click.option("--tls-cert", default=None, type=click.Path(exists=True, dir_okay=False))
+@click.option("--tls-key", default=None, type=click.Path(exists=True, dir_okay=False))
+@click.option("--client-ca", default=None, type=click.Path(exists=True, dir_okay=False),
+              help="require client certificates signed by this CA, CN = the worker's name")
+@click.pass_obj
+def serve_cmd(cfg, jobs, bind, tls_cert, tls_key, client_ca):
+    """Serve jobs to pull workers over HTTP(S) (SPEC-0334)."""
+    from . import pull_jobs as PJ
+    try:
+        srv = PJ.make_server(cfg, bind, tls_cert=tls_cert, tls_key=tls_key, client_ca=client_ca)
+    except (ValueError, OSError) as e:
+        raise click.ClickException(str(e))
+    host, port = srv.server_address[:2]
+    click.echo(f"nw serve: job API on {'https' if tls_cert else 'http'}://{host}:{port}",
+               err=True)
+    try:
+        srv.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.stopping.set()
+        srv.server_close()
