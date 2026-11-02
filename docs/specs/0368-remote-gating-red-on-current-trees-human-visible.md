@@ -137,7 +137,7 @@ the index). After the change `remote_gates.py` has no `stash create` call outsid
       failure has `cooldown=False`.
 - [x] `commit_under_test` raises `RemoteFailure("bundle", …, cooldown=False)` when git fails
       with an error message, exits 1 with output, or cannot start.
-- [x] `prepare()` on a stat-dirty, content-clean tree returns a header whose `commit` is HEAD
+- [ ] `prepare()` on a stat-dirty, content-clean tree returns a header whose `commit` is HEAD
       and the run goes to the worker: no `worker_failed stage=bundle` and no fallback finding.
       The coordinator's stash list and index file are unchanged afterwards.
 - [x] `prepare()` and `tree_under_test()` both call `commit_under_test`, and `remote_gates.py`
@@ -234,6 +234,19 @@ is registered in this sandbox (no worker box reachable from the implementer's co
 the stat-dirty dispatch was only exercised against real git plus the fake worker. The spec stays
 `in-progress` until someone runs `nw queue gates <campaign> --worker <w> --json` on a clean and
 a touched tree against the real box.
+
+**Second deviation: the index file is not byte-identical.** `git stash create` itself rewrites
+the index's stat data on a stat-dirty tree (git's own refresh-and-write; the old `prepare`
+triggered the same write, so this is not new behaviour). `commit_under_test` adds no index write
+of its own: its `git diff --quiet HEAD --` runs with `GIT_OPTIONAL_LOCKS=0`. What holds, and what
+`test_commit_under_test_leaves_index_alone` and `test_stat_dirty_tree_runs_remotely` assert, is
+that the stash stack (`git stash list`) and the index *entries* (`git ls-files -s`) are
+unchanged. The Design §1 and Alternatives sentences that `stash create` "leaves ... the index
+alone", and the test-plan bullet's "bytes of `.git/index`", overstate this; the guarded spec text
+is not edited, and this note is the correction. For the same reason the `prepare()` stat-dirty
+acceptance criterion ("stash list and index file are unchanged") is **unticked**: it is true for
+the stash list and the index entries, not for the index file's bytes, and it is not claimed
+beyond that. It can be ticked once a human accepts the entries-only reading.
 
 ## Rollout / migration
 
