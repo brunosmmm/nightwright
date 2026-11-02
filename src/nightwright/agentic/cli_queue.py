@@ -34,6 +34,7 @@ from . import mailbox as M
 from . import project as P
 from . import decisions as DEC
 from . import queue as Q
+from . import restart as RS
 from . import store
 from .gitops import GitError
 
@@ -523,6 +524,23 @@ def _workers_line(p: dict) -> Text | None:
     return t
 
 
+def _runner_code_line(rc) -> Text | None:
+    """SPEC-0375: one line when the runner runs older nightwright code than the checkout."""
+    if not rc or not rc.get("stale"):
+        return None
+    n = rc.get("changed")
+    what = f"{n} code file{'s' if n != 1 else ''}" if n is not None else "diff unknown"
+    line = Text.assemble(("⚠ ", "yellow"), ("runner code stale: ", "bold yellow"),
+                         f"{str(rc.get('runner_sha'))[:7]} → {str(rc.get('head_sha'))[:7]}",
+                         (f" ({what})", "dim"))
+    if rc.get("pending_reexec"):
+        line.append("  re-exec pending (draining)", style="dim")
+    else:
+        line.append("  · nw queue restart", style="dim")
+    line.no_wrap, line.overflow = True, "ellipsis"
+    return line
+
+
 def _dash_header(p: dict, width=None) -> Panel:
     lease, slots, tot = p["lease"], p["slots"], p["totals"]
     if lease.get("held"):
@@ -566,6 +584,9 @@ def _dash_header(p: dict, width=None) -> Panel:
     else:
         grid.add_row(runner, slot_txt)
         rows = [grid, chips]
+    rc = _runner_code_line(p.get("runner_code"))
+    if rc is not None:
+        rows.append(rc)
     wl = _workers_line(p)
     if wl is not None:
         rows.append(wl)
@@ -1244,6 +1265,12 @@ def _journal_lines(rec: dict) -> Group:
         head.append("⏸ re-exec deferred", style="bold yellow")
         head.append(f"  {rec.get('reason')} (code at {str(rec.get('to_sha'))[:8]})")
         return Group(head)
+    if kind == "restart":                                  # SPEC-0375
+        head.append(f"⟲ restart {rec.get('id')}", style="bold cyan")
+        head.append(f"  runner {rec.get('old_pid') or '-'} → {rec.get('new_pid') or '-'}; "
+                    f"parked {len(rec.get('parked') or [])}, "
+                    f"resumed {len(rec.get('resumed') or [])}")
+        return Group(head)
     if kind == "admission_blocked":                        # SPEC-0268
         held = ", ".join(f"{h.get('campaign')} {h.get('state')}"
                          + (" deferred" if h.get("deferred") else "")
@@ -1282,6 +1309,40 @@ def _gc_table(rows: list) -> Table:
                       Text(r["action"], style=styles.get(r["action"], "")),
                       Text(why, style="red" if r.get("error") else ""))
     return table
+
+
+def _print_restart_plan(plan: dict) -> None:
+    """SPEC-0375: the `nw queue restart` dry run."""
+    r, cmd = plan.get("runner") or {}, plan.get("command") or {}
+    if plan.get("id"):
+        console.print(f"[bold]continue restart {plan['id']}[/] from phase {plan.get('phase')} "
+                      f"(done: {', '.join(plan.get('done_phases') or []) or '-'})",
+                      highlight=False)
+    if r.get("held"):
+        console.print(f"runner   pid {r.get('pid')} on {r.get('host')}"
+                      + (" (detached)" if r.get("detached") else "")
+                      + (f"; {r['guard']}: the stop waits for it" if r.get("guard") else ""),
+                      highlight=False)
+    else:
+        console.print("runner   none holds the lease: start only", highlight=False)
+    console.print(f"command  {' '.join(cmd.get('argv') or [])}", highlight=False)
+    console.print(f"         cwd {cmd.get('cwd')} · command from {cmd.get('source')} · env from "
+                  f"{cmd.get('env_source')}", style="dim", highlight=False)
+    console.print(f"log      {plan.get('log')}", highlight=False)
+    gating = [t["campaign"] for t in plan.get("targets") or [] if t["state"] == "GATING"]
+    if plan.get("drain_min"):
+        console.print(f"drain    up to {plan['drain_min']:g} min for "
+                      f"{', '.join(gating) or 'no running gate'}", highlight=False)
+    for t in plan.get("targets") or []:
+        what = (f"park restart → resume {t['resume_to']}" if t["action"] == "park"
+                else "not parked: the new runner adopts its persona run")
+        console.print(f"  {t['campaign']}  {t['state']}  p{t['priority']}  {what}",
+                      highlight=False)
+    if not plan.get("targets"):
+        console.print("  no campaign in flight", style="dim")
+    if plan.get("untouched"):
+        console.print(f"  not in --only (a running gate is still ended): "
+                      f"{', '.join(plan['untouched'])}", style="dim", highlight=False)
 
 
 def _print_plan(title: str, plan: dict) -> None:
@@ -1831,6 +1892,66 @@ def attach(queue_group):
                           f"({result['waited_s']}s)", highlight=False)
         else:
             console.print(f"[dim]{result['reason']}[/]")
+
+    @queue_group.command("restart")
+    @click.option("--drain", "drain_min", type=float, default=0, show_default=True,
+                  help="minutes to let running gate steps finish before the stop")
+    @click.option("--only", "only", multiple=True, shell_complete=C.complete_campaign_id,
+                  help="park/resume only this in-flight campaign (repeatable)")
+    @click.option("--timeout", "timeout_s", type=float, default=60, show_default=True,
+                  help="seconds to wait for the lease to be released after SIGTERM")
+    @click.option("--continue", "cont", is_flag=True,
+                  help="finish an interrupted restart from its plan file")
+    @click.option("--by", default=None,
+                  help="who acts (default: $NW_MAILBOX_ADDR, then human)")
+    @click.option("--yes", "do_write", is_flag=True, help="apply (default is dry-run)")
+    @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.restart.v1 JSON")
+    @click.pass_obj
+    def queue_restart(cfg, drain_min, only, timeout_s, cont, by, do_write, as_json):
+        """Restart the runner gracefully (SPEC-0375): optionally let running gates finish
+        (--drain), SIGTERM the runner as `nw queue stop --wait-guard` does, park the campaigns
+        in OPENING/GATING/CLOSING with reason `restart`, resume them in priority order, then
+        start a detached runner with the old one's command line, cwd and environment. Persona
+        runs are not parked: the new runner adopts them. Remote gate jobs are not cancelled.
+        Crash-safe: the plan is kept in <agentic_dir>/restart.json and `--continue --yes`
+        finishes it. Dry run without --yes."""
+        try:
+            actor = _actor(cfg, by)
+            if cont:
+                if drain_min or only:
+                    raise ValueError("--continue finishes the recorded plan: drop --drain / --only")
+                plan = RS.continue_plan(cfg)
+            else:
+                plan = RS.plan_restart(cfg, drain_min=drain_min, only=only)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        result = error = None
+        if do_write:
+            try:
+                result = RS.apply_restart(cfg, plan, by=actor, timeout_s=timeout_s)
+            except ValueError as e:
+                if not as_json:
+                    raise click.ClickException(str(e))
+                error = str(e)
+        if as_json:
+            shown = result if result is not None else (
+                (RS.read_plan(cfg) or plan) if do_write else plan)
+            _dump_json({**RS.public(shown), "written": bool(do_write), "error": error})
+            if error is not None:
+                raise click.exceptions.Exit(1)
+            return
+        if result is None:
+            _print_restart_plan(RS.public(plan))
+            console.print(_NOT_WRITTEN)
+            return
+        stop, start = result.get("stop") or {}, result.get("start") or {}
+        old = f"runner pid {stop['pid']} stopped" if stop.get("stopped") else "no runner to stop"
+        new = (f"runner pid {start.get('pid')} started, log {start.get('log')}"
+               if start.get("started")
+               else f"runner pid {start.get('pid')} already holds the lease")
+        console.print(f"[green]✓[/] restart {result['id']}: {old}; parked "
+                      f"{len(result.get('parked') or [])}, resumed "
+                      f"{len(result.get('resumed') or [])}; {new}", highlight=False)
 
     @queue_group.command("runner-log")
     @click.option("--tail", type=int, default=30, show_default=True,

@@ -20,7 +20,8 @@ from .store import agentic_dir, now_iso
 HANDOVER_ENV = "NW_RUNNER_LEASE_FD"
 # SPEC-0228: the loop state the runner publishes in the lease info (read by the watchdog)
 LOOP_KEYS = ("tick_at", "poll_interval_s", "in_flight", "slot_freed_at", "busy",
-             "busy_ended_at", "slots_full_at", "progress_at", "last_tick_s", "ticks")
+             "busy_ended_at", "slots_full_at", "progress_at", "last_tick_s", "ticks",
+             "code_sha")                                         # SPEC-0375
 
 
 def lock_path(cfg) -> Path:

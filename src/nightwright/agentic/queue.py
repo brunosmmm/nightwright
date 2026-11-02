@@ -55,7 +55,8 @@ from . import spec_write as SW
 from . import schemas as SC
 from . import store
 from . import workers
-from .codewatch import _CODE_PATHS, _git_out, code_changes, code_checkout  # noqa: F401
+from .codewatch import (_CODE_PATHS, _changed_paths, _git_out, code_changes,  # noqa: F401
+                        code_checkout)
 from .gitops import GitError
 from .profiles import (SEVERITIES, persona_settings, resolve_profile, review_params,
                        reviewers_of, select_profile, triager_enabled)
@@ -84,10 +85,12 @@ PARK_REASONS = frozenset({
     "diverging",                                       # SPEC-0247: the fix loop is not converging
     "regenerate_failed",                               # SPEC-0255: close-time regenerate failed/dirtied
     "gate_timeout",                                    # SPEC-0311: gates keep timing out under load
+    "restart",                                         # SPEC-0375: parked across `nw queue restart`
 })
 # SPEC-0222: who a park waits for. The human only for their own checkout and explicit
 # escalations (`human_decision`, SPEC-0232); everything else is the conductor's.
-PARK_OWNERS = {"main_dirty": "human", "main_not_on_base": "human", "human_decision": "human"}
+PARK_OWNERS = {"main_dirty": "human", "main_not_on_base": "human", "human_decision": "human",
+               "restart": "human"}            # SPEC-0375: only a crashed restart leaves one
 
 
 def park_owner(reason) -> str:
@@ -5379,11 +5382,13 @@ def _log_tail(path, n=_LOG_TAIL) -> str:
 
 
 def detach_runner(cfg, argv, log_path, *, timeout_s=15, popen=subprocess.Popen,
-                  clock=time.monotonic) -> dict:
+                  clock=time.monotonic, env=None, cwd=None) -> dict:
     """Start `argv` (minus `--detach`/`--log`) as a detached session leader, stdin closed and
     output appended to `log_path`, then wait until the child holds the lease. Returns
     `{pid, log}`. ValueError when the lease is already held, when the child exits first, or
-    when it has not taken the lease within `timeout_s` (the child is then left running)."""
+    when it has not taken the lease within `timeout_s` (the child is then left running).
+    `env` (default `os.environ`) and `cwd` (default this process's) are the child's
+    (SPEC-0375: `nw queue restart` passes the old runner's)."""
     if L.is_held(cfg):
         st = L.lease_status(cfg)
         age = st.get("heartbeat_age_s")
@@ -5392,7 +5397,7 @@ def detach_runner(cfg, argv, log_path, *, timeout_s=15, popen=subprocess.Popen,
                          "stop it with nw queue stop")
     log_path = Path(log_path).expanduser().absolute()      # the child's cwd may differ
     child_argv = _strip_detach(argv)
-    env = {**os.environ, RUNNER_LOG_ENV: str(log_path)}
+    env = {**(os.environ if env is None else env), RUNNER_LOG_ENV: str(log_path)}
     env.pop(L.HANDOVER_ENV, None)
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5400,7 +5405,8 @@ def detach_runner(cfg, argv, log_path, *, timeout_s=15, popen=subprocess.Popen,
             fh.write(f"--- nw queue run --detach {store.now_iso()} ---\n")
             fh.flush()
             child = popen(child_argv, stdin=subprocess.DEVNULL, stdout=fh,
-                          stderr=subprocess.STDOUT, start_new_session=True, env=env)
+                          stderr=subprocess.STDOUT, start_new_session=True, env=env,
+                          **({"cwd": str(cwd)} if cwd is not None else {}))
     except OSError as e:
         raise ValueError(f"cannot start the runner ({child_argv[0]}, log {log_path}): {e}")
     end = clock() + timeout_s
@@ -5590,6 +5596,12 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
         reason = "signal"
         watch_root = (code_root or code_checkout()) if reexec else None
         code_sha = _git_out(watch_root, "rev-parse", "HEAD") if watch_root else None
+        # SPEC-0375: the code this process runs, for `nw queue watch`'s stale-code line — with
+        # or without re-exec (a --no-reexec runner is the one that goes stale)
+        sha_root = watch_root or code_root or code_checkout()
+        started_sha = code_sha or (_git_out(sha_root, "rev-parse", "HEAD") if sha_root else None)
+        if started_sha:
+            lease.update_info(code_sha=started_sha)
         restart = {}
         draining = False                                  # a code change was detected (SPEC-0229)
         detached: list = []
@@ -5617,7 +5629,7 @@ def run(cfg, *, once=False, max_ticks=None, poll_interval_s=None, until_idle=Fal
                                         "waiting_on": _waiting_on(cfg, pool)})
 
         journal(cfg, "start", argv=list(argv or ["nw", "queue", "run"]), interval_s=interval,
-                code_sha=code_sha)
+                code_sha=started_sha)
         entered = True
     finally:
         if not entered:
@@ -6625,6 +6637,121 @@ def _gate_occupancy(cfg) -> dict | None:
         return None
 
 
+# ---- SPEC-0375: is the runner running the checkout's code? -----------------------------------
+
+_CODE_MEMO: dict = {}
+
+
+def _git_watch_files(root) -> list:
+    """The files whose stat changes when the checkout's HEAD may have moved: `HEAD`, the ref it
+    names and `packed-refs` (a linked worktree's `.git` file and `commondir` are followed)."""
+    root = Path(root)
+    gitdir = root / ".git"
+    if gitdir.is_file():
+        txt = gitdir.read_text(encoding="utf-8").strip()
+        if txt.startswith("gitdir:"):
+            gitdir = root / txt[len("gitdir:"):].strip()
+    common = gitdir
+    if (gitdir / "commondir").is_file():
+        common = gitdir / (gitdir / "commondir").read_text(encoding="utf-8").strip()
+    files = [gitdir / "HEAD", common / "packed-refs"]
+    head = (gitdir / "HEAD").read_text(encoding="utf-8").strip()
+    if head.startswith("ref:"):
+        files.append(common / head[len("ref:"):].strip())
+    return files
+
+
+def _stat_fingerprint(paths) -> tuple:
+    out = []
+    for p in paths:
+        try:
+            st = os.stat(p)
+            out.append((str(p), st.st_ino, st.st_size, st.st_mtime_ns))
+        except OSError:
+            out.append((str(p), None))
+    return tuple(out)
+
+
+def _checkout_head(root) -> str | None:
+    """`git rev-parse HEAD` of `root`, re-run only when the stat fingerprint of its git HEAD
+    files changed: a steady-state watch refresh spawns no process."""
+    try:
+        key = _stat_fingerprint(_git_watch_files(root))
+    except OSError:
+        key = None
+    memo = _CODE_MEMO.get(("head", str(root)))
+    if key is not None and memo is not None and memo[0] == key:
+        return memo[1]
+    head = _git_out(root, "rev-parse", "HEAD")
+    _CODE_MEMO[("head", str(root))] = (key, head)
+    return head
+
+
+def _journal_start_sha(cfg, pid, max_bytes: int = 1 << 20) -> str | None:
+    """`code_sha` of the newest journal `start` record by `pid` in the last `max_bytes` of
+    `runner.jsonl` (a runner that predates the lease's `code_sha`), memoised per pid and lease
+    start / re-exec time."""
+    info = L.read_lease(cfg) or {}
+    key = ("start", pid, info.get("started_at"), info.get("restarted_at"))
+    if key in _CODE_MEMO:
+        return _CODE_MEMO[key]
+    sha = None
+    try:
+        with open(runner_journal_path(cfg), "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(0, size - max_bytes))
+            data = f.read()
+    except OSError:
+        data = b""
+    for raw in reversed(data.split(b"\n")):
+        if b'"start"' not in raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("kind") == "start" and rec.get("pid") == pid:
+            sha = rec.get("code_sha")
+            break
+    _CODE_MEMO[key] = sha
+    return sha
+
+
+def runner_code_status(cfg, lease: dict, root=None) -> dict | None:
+    """SPEC-0375: `{runner_sha, head_sha, stale, changed, pending_reexec}` for the held lease
+    `lease` (a `lease_status`) against the nightwright checkout `root` (default the one this
+    package is imported from). `stale` when nightwright code (`_CODE_PATHS`) changed between
+    the two, or the diff failed. None when no runner holds the lease, there is no checkout, or
+    the runner's sha is unknown (it predates SPEC-0375 and its start record has none)."""
+    if not (lease or {}).get("held"):
+        return None
+    root = root or code_checkout()
+    if root is None:
+        return None
+    runner_sha = lease.get("code_sha") or _journal_start_sha(cfg, lease.get("pid"))
+    head = _checkout_head(root) if runner_sha else None
+    if not runner_sha or not head:
+        return None
+    if head == runner_sha:
+        changed = []
+    else:
+        key = ("diff", str(root), runner_sha, head)
+        if key not in _CODE_MEMO:
+            _CODE_MEMO[key] = _changed_paths(root, runner_sha, head, _CODE_PATHS)
+        changed = _CODE_MEMO[key]
+    return {"runner_sha": runner_sha, "head_sha": head,
+            "stale": changed is None or bool(changed),
+            "changed": None if changed is None else len(changed),
+            "pending_reexec": ((lease.get("draining") or {}).get("reason") == "code_changed")}
+
+
+def _runner_code_safe(cfg, lease) -> dict | None:
+    try:                                          # a display hint never breaks the dashboard
+        return runner_code_status(cfg, lease)
+    except Exception:                             # noqa: BLE001
+        return None
+
+
 def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None) -> dict:
     """`nw.queue.dashboard.v1`: everything `nw queue watch` shows — the runner, the active
     campaigns with what each is doing now, what needs attention, the backlog, and what was
@@ -6765,6 +6892,7 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
     return {
         "schema": "nw.queue.dashboard.v1", "generated_at": now.isoformat(timespec="seconds"),
         "project": project, "lease": base["lease"], "slots": slots,
+        "runner_code": _runner_code_safe(cfg, base["lease"]),
         "gate_slots": ({"total": occupancy.get("slots"),
                         "held": [h.get("campaign") for h in occupancy.get("held") or []],
                         "waiting": [w.get("campaign") for w in occupancy.get("waiting") or []]}

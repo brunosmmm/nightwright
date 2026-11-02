@@ -82,10 +82,13 @@ See [Write a spec the loop can build](../ideas/spec.md).
 ```bash
 nw queue run --detach      # background runner; one per machine, a lease stops a second
 nw queue stop --yes        # later: stop it (a dry run without --yes)
+nw queue restart --yes     # restart it with the same command; parks/resumes in-flight steps
 ```
 
 You can skip this: the conductor starts the runner if none holds the lease. A merge that
 changes nightwright's own code makes the runner re-execute itself, so upgrades need no restart.
+A runner started with `--no-reexec` (or one stuck in a long drain) keeps the old code:
+`nw queue watch` then shows `runner code stale`, and `nw queue restart` (dry run first) swaps it.
 
 ## 5 · Launch the conductor, then a steward per project
 

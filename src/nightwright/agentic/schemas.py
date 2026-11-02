@@ -97,7 +97,8 @@ RUNNER_KINDS = {"start": ("pid", "argv", "interval_s"),
                 "reexec_deferred": ("reason", "to_sha"),
                 "admission_blocked": ("tick", "ready", "slots", "occupied", "holders", "draining"),
                 "adopt": ("runs",),
-                "gate_timeout_deferred": ("campaign", "timeout_regates")}
+                "gate_timeout_deferred": ("campaign", "timeout_regates"),
+                "restart": ("id", "phase")}                       # SPEC-0375
 
 
 def required_keys(etype: str, payload: dict | None = None) -> tuple[str, ...]:

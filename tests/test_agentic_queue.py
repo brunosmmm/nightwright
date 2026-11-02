@@ -1424,10 +1424,10 @@ def test_first_implementer_prompt_has_findings_second_does_not(tmp_path, monkeyp
 
 def test_park_owner_table():
     assert Q.PARK_OWNERS == {"main_dirty": "human", "main_not_on_base": "human",
-                             "human_decision": "human"}
+                             "human_decision": "human", "restart": "human"}   # SPEC-0375
     for reason in Q.PARK_REASONS:
         assert Q.park_owner(reason) == ("human" if reason in ("main_dirty", "main_not_on_base",
-                                                               "human_decision")
+                                                               "human_decision", "restart")
                                         else "conductor"), reason
     assert Q.park_owner("human_decision") == "human"
     assert "human_decision" in Q.PARK_REASONS                                # SPEC-0232
