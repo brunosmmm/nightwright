@@ -568,6 +568,42 @@ def test_after_an_answer_and_an_hour_three_new_losses_raise_a_second(two):
     assert len(_worker_escalations(aw)) == 2
 
 
+def test_a_fourth_loss_while_the_escalation_is_open_raises_none_on_its_own(two):
+    """The open-escalation check alone: `escalated_at` is cleared, so only the open record
+    for the worker stops a second escalation."""
+    aw = two
+    _lose(aw, CID, 3, at=T0)
+    (esc,) = _worker_escalations(aw)
+    p = WK.losses_path(aw.cfg)
+    doc = json.loads(p.read_text())
+    doc["workers"]["b1"]["escalated_at"] = None
+    p.write_text(json.dumps(doc))
+    _lose(aw, CID2, 1, at=T0 + 180)            # a fourth while it is open: none
+    assert [r["id"] for r in _worker_escalations(aw)] == [esc["id"]]
+    w = WK.read_losses(aw.cfg)["workers"]["b1"]
+    assert len(w["losses"]) == 4 and w["escalated_at"] is None
+    assert WK.record_loss(aw.cfg, "b1", job_id="x", reason="lost",
+                          now=T0 + 200)["escalation"] is None
+    assert len(_worker_escalations(aw)) == 1
+
+
+def test_an_open_escalation_blocks_a_new_one_after_the_window_has_elapsed(two):
+    """An hour after `escalated_at`, with three losses in the window, the still-open record
+    stops a second escalation; once it is answered, the next loss raises one."""
+    aw = two
+    _lose(aw, CID, 3, at=T0)
+    (esc,) = _worker_escalations(aw)
+    _lose(aw, CID2, 3, at=T0 + 3700)           # window elapsed, three losses, still open
+    assert [r["id"] for r in _worker_escalations(aw)] == [esc["id"]]
+    w = WK.read_losses(aw.cfg)["workers"]["b1"]
+    assert len(w["losses"]) == 3 and w["escalation"] == esc["id"]
+    ESC.apply_answer(aw.cfg, ESC.plan_answer(aw.cfg, esc["id"], choose="keep"))
+    _lose(aw, CID, 1, at=T0 + 3710)            # same window, now answered: a second one
+    escs = _worker_escalations(aw)
+    assert len(escs) == 2
+    assert WK.read_losses(aw.cfg)["workers"]["b1"]["escalation"] != esc["id"]
+
+
 def test_a_failed_raise_is_a_note_and_the_next_loss_retries(two, monkeypatch):
     aw = two
     real = ESC.apply_escalate

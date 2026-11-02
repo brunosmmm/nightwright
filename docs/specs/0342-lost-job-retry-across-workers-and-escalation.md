@@ -4,7 +4,7 @@ title: "Lost-job retry across workers and escalation"
 status: done
 owner: user
 created: 2026-11-01
-updated: 2026-11-01
+updated: 2026-11-02
 source_idea: IDEA-559
 parent: SPEC-0310
 tags: [agentic, remote, workers, reliability, conductor]
@@ -309,6 +309,16 @@ an idempotent `enabled: false`.
 - Regression guard: `test_remote_job_records.py`, `test_remote_gates.py`, `test_gate_slots.py`,
   `test_workers_registry.py`, `test_agentic_gates.py`, `test_gate_tiers.py`,
   `test_agentic_events.py`: 355 passed (`-n 4`). The full suite is left to gating.
+
+### Test record (2026-11-02, open-escalation check)
+
+- `tests/test_worker_job_retry.py` gains 2 tests of `record_loss`'s open-escalation check on
+  its own: a fourth loss while the escalation is open, with `escalated_at` cleared so only the
+  open record can stop it, raises none; and with the window since `escalated_at` elapsed and
+  three losses in it, the still-open record blocks a second escalation, and once it is answered
+  the next loss raises one. With the `_open_escalation_for` check replaced by `True`, exactly
+  these two fail (32 others pass); with the code as shipped, the file gives 34 passed. No `src/`
+  change. The full suite is left to gating.
 
 ### As shipped (2026-11-01)
 
