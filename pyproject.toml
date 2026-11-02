@@ -13,12 +13,16 @@ dependencies = [
     "rich>=13",
     "pyyaml>=6",
     "orgparse>=0.4",
+    # SPEC-0368: the interactive desk (`nw tui`) is a core dependency. As an opt-in extra
+    # (SPEC-0099) it was dropped by any plain `uv run`/`uv sync` (the remote worker's gate
+    # tree), and the TUI tests failed collection with ModuleNotFoundError: textual.
+    "textual>=8,<9",
 ]
 
 [project.optional-dependencies]
-# SPEC-0099: the interactive desk (`nw tui`) is opt-in. Base installs — agents, CI —
-# stay on click/rich/pyyaml/orgparse only.
-tui = ["textual>=8,<9"]
+# SPEC-0368: textual is now a core dependency; `tui` stays as an empty alias so existing
+# `uv sync --extra tui` / `'.[tui]'` installs keep working.
+tui = []
 # SPEC-0143: product docs site (`mkdocs.yml` → docs/product/).
 docs = ["mkdocs-material>=9"]
 

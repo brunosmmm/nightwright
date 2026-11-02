@@ -103,7 +103,7 @@ merge:
     - docs/WORKFLOW.md
 worktrees:
   setup:
-    - uv sync --extra tui
+    - uv sync
   cleanup: on_merge
 agents:
   context_files:

@@ -1,16 +1,17 @@
 # Desk (TUI)
 
-Optional Textual **ideas desk** for humans. Agents stay on CLI + `--json`.
+Textual **ideas desk** for humans (Textual is a core dependency, SPEC-0368). Agents stay on CLI + `--json`.
 
 ## Install
 
 ```bash
-uv sync --extra tui                 # checkout
-uv tool install --editable '.[tui]'   # PATH entry from this checkout
+uv sync                             # checkout
+uv tool install --editable .        # PATH entry from this checkout
 nw tui
 ```
 
-Without the extra, `nw tui` prints an install hint and exits 1.
+If Textual is missing anyway (a broken install), `nw tui` prints an install hint and exits 1.
+The `tui` extra remains as an empty alias, so `--extra tui` / `'.[tui]'` still work.
 
 ## Tabs
 

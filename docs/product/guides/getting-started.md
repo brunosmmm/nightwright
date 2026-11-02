@@ -10,8 +10,6 @@ the wrong binary.
 uv sync                       # .venv + base deps
 uv run nw --help              # verify: idea, report, projects, …
 uv tool install --editable .  # put nightwright on PATH
-# optional desk UI:
-uv tool install --editable '.[tui]'   # from this checkout — not `uv tool install 'nightwright[tui]'`
 ```
 
 Install **editable**: `nw skills install`, internal specs and the Meta-Tools research root

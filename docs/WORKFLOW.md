@@ -160,17 +160,17 @@ vanishing. Every view has a `--json` twin (`nw.queue.v1`, `nw.campaigns.v1`,
 `nw.queue.backlog.v1`, `nw.queue.graph.v1`, `nw.queue.unqueued.v1`) carrying `title,
 priority, depends_on, blocked_by, waiting_on, park_reason, cost_usd, cap_usd`.
 
-## Optional interactive desk (`nw tui`)
+## Interactive desk (`nw tui`)
 
-`nw tui` is a human-only ideas desk behind the optional `tui` extra (SPEC-0098/0099). The
-default install stays click/rich/pyyaml/orgparse; agents keep the classic commands and
+`nw tui` is a human-only ideas desk (SPEC-0098/0099). Textual is a core dependency since
+SPEC-0368 (the `tui` extra is an empty alias); agents keep the classic commands and
 `--json`.
 
 ```bash
-uv sync --extra tui          # from a checkout
-uv tool install --editable '.[tui]'   # from the nightwright checkout (NOT PyPI `nw` — that is a different tool)
+uv sync                      # from a checkout (Textual is a core dependency, SPEC-0368)
+uv tool install --editable .   # from the nightwright checkout (NOT PyPI `nw` — that is a different tool)
 # editable: skills/specs/Meta-Tools resolve from the checkout; non-editable needs nw_checkout: in config
-nw tui                       # without the extra: install hint + exit 1
+nw tui
 nw tui --tab queue           # tabs: ideas, hub, queue, events, mailbox (keys 1..5 switch)
 nw tui --campaign ID         # one campaign's timeline, runs, gates and reviews
 ```

@@ -706,4 +706,4 @@ never implement in campaign worktrees.
 
 nightwright dogfoods itself: the repo's own `.nw/project.yaml` declares `uv run pytest -q -x` and
 `python3 tools/spec_lint.py` as required gates, merge policy `merge` into `main`, and
-`uv sync --extra tui` as worktree setup. `nw projects config Meta-Tools` shows it.
+`uv sync` as worktree setup. `nw projects config Meta-Tools` shows it.

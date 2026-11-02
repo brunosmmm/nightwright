@@ -15,7 +15,7 @@ flowchart LR
 ```bash
 git clone <this repo> nightwright && cd nightwright
 uv sync                                 # creates .venv
-uv tool install --editable '.[tui]'     # puts `nw` on your PATH, editable
+uv tool install --editable .            # puts `nw` on your PATH, editable
 nw skills install                       # installs /nw-* skills for Claude Code / Cursor
 ```
 

@@ -454,7 +454,7 @@ def capture_tui(cfg: dict, out: Path, show_id: str) -> list[Path]:
     from nightwright.tui import textual_available
 
     if not textual_available():
-        print("skip tui-desk.svg (textual extra not installed)", file=sys.stderr)
+        print("skip tui-desk.svg (textual not installed)", file=sys.stderr)
         return []
 
     from textual.widgets import DataTable

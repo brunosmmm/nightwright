@@ -481,14 +481,12 @@ dependencies = [
     { name = "orgparse" },
     { name = "pyyaml" },
     { name = "rich" },
+    { name = "textual" },
 ]
 
 [package.optional-dependencies]
 docs = [
     { name = "mkdocs-material" },
-]
-tui = [
-    { name = "textual" },
 ]
 
 [package.dev-dependencies]
@@ -507,7 +505,7 @@ requires-dist = [
     { name = "orgparse", specifier = ">=0.4" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "rich", specifier = ">=13" },
-    { name = "textual", marker = "extra == 'tui'", specifier = ">=8,<9" },
+    { name = "textual", specifier = ">=8,<9" },
 ]
 provides-extras = ["tui", "docs"]
 

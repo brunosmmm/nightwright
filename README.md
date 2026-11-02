@@ -50,7 +50,7 @@ sessions); `gh` too if a project merges by PR.
 
 ```bash
 uv sync && uv run nw --help           # in this checkout: lists idea / spec / queue / report …
-uv tool install --editable '.[tui]'   # `nw` on PATH (`uv tool update-shell` if it is not)
+uv tool install --editable .          # `nw` on PATH (`uv tool update-shell` if it is not)
 nw skills install                     # symlink agent skills into ~/.claude/skills
 nw completion install --shell fish    # or bash / zsh
 nw projects add Acme --repo ~/src/acme --yes && nw projects init Acme --yes
