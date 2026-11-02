@@ -261,6 +261,13 @@ warning in `warnings` unchanged in shape.
   be reproduced; changing a real machine is left to the steward. The last acceptance
   criterion therefore stays unchecked and the spec stays `in-progress`.
 
+- Gate fix (loop 1 triage): `tests/test_agentic_exit_paths.py` and `tests/test_agentic_gates.py`
+  failed in the gate sandbox because their temp repos `git commit` with no git identity (exit
+  128; nothing in this spec's code is involved). `tests/conftest.py` gains an autouse
+  `_git_identity` fixture that sets `GIT_AUTHOR_*`/`GIT_COMMITTER_*`. With `HOME` pointing at an
+  empty dir and `GIT_CONFIG_GLOBAL=/dev/null`, `test_agentic_gates.py`, `test_agentic_exit_paths.py`
+  and `test_agentic_queue.py` pass (308 tests).
+
 ### As shipped
 
 - `buildid.compute` uses the git file list only when it contains `__init__.py` (an installed

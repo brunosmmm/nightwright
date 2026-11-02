@@ -40,6 +40,17 @@ def code_repo(tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _git_identity(monkeypatch):
+    """Hermetic commits: many tests build throwaway repos and `git commit` in them. A sandbox with
+    no global user.name/user.email (the queue's gate runner) would exit 128, so give every test an
+    identity through the environment (tests that need a different one set their own)."""
+    for k, v in (("GIT_AUTHOR_NAME", "nightwright test"), ("GIT_AUTHOR_EMAIL", "nightwright@test"),
+                 ("GIT_COMMITTER_NAME", "nightwright test"),
+                 ("GIT_COMMITTER_EMAIL", "nightwright@test")):
+        monkeypatch.setenv(k, v)
+
+
+@pytest.fixture(autouse=True)
 def _no_persona_run(monkeypatch):
     """SPEC-0272: pytest run by a campaign agent inherits NW_PERSONA_RUN=1; behave as on a
     human shell. Tests that exercise the guard opt in with monkeypatch.setenv. Likewise
