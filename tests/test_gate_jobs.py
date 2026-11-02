@@ -18,7 +18,7 @@ from nightwright.agentic import project as P
 from nightwright.agentic import queue as Q
 from nightwright.agentic import remote_gates as RG
 from nightwright.agentic import workers as WK
-from nightwright.agentic.cli_queue import _workers_line
+from nightwright.agentic.cli_queue import _gate_jobs_line, _workers_line
 from nightwright.cli import cli
 
 
@@ -354,8 +354,8 @@ def test_dashboard_and_gate_slots_show_the_job(gw, monkeypatch):
         occ = GS.occupancy(cfg)
         view = Q._gate_pools_view(cfg, occ, [])
         assert view["gate_jobs"] == [{**holder, "where": "box"}]
-        line = _workers_line({"gate_pools": view})
-        assert "GATEJOB-0007 by alice" in line.plain
+        line = _gate_jobs_line({"gate_pools": view})
+        assert "GATEJOB-0007 by alice (demo@feat)" in line.plain
         monkeypatch.setattr("nightwright.cli.load_config", lambda: cfg)
         r = CliRunner().invoke(cli, ["queue", "gate-slots"])
         assert r.exit_code == 0 and "GATEJOB-0007" in r.output and "alice" in r.output
@@ -464,3 +464,25 @@ def test_detached_child_waits_and_cancel_sigterms_it(gw, monkeypatch):
         assert r.exit_code == 0 and "cancel sent" in r.output
         assert waits.until(lambda: J.read(cfg, job)["status"] == "cancelled")
     assert J.read(cfg, job)["exit"] == 130
+
+
+def test_gate_jobs_line_survives_a_long_campaign_marker():
+    """SPEC-0384: a campaign marker that truncates the workers line must not hide a job."""
+    import io
+    from rich.console import Console
+    from nightwright.agentic import cli_queue as CQ
+    gp = {"local": {"slots": 2, "held": 1},
+          "workers": [{"name": "box", "enabled": True, "cooldown": False, "draining": False,
+                       "slots": 6, "held": 2, "campaigns": []}],
+          "campaigns": [{"campaign": "SPEC-0001-" + "x" * 80, "where": "box"}],
+          "gate_jobs": [{"job": "GATEJOB-0002", "by": "bruno", "project": "jerome",
+                         "branch": "main", "where": "box"}]}
+    p = {"gate_pools": gp}
+    c = Console(width=80, file=io.StringIO(), force_terminal=False, color_system=None)
+    c.print(CQ._workers_line(p))
+    assert "GATEJOB-0002" not in c.file.getvalue()
+    c.print(CQ._gate_jobs_line(p))
+    out = c.file.getvalue()
+    assert "GATEJOB-0002 by bruno (jerome@main)" in out
+    gp["gate_jobs"] = []
+    assert CQ._gate_jobs_line(p) is None

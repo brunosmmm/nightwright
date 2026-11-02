@@ -520,10 +520,23 @@ def _workers_line(p: dict) -> Text | None:
         t.append("  ".join(f"{pool_marker(c['where'])} {c['campaign']}"
                            + (f" {GPG.label(c['progress'])}" if c.get("progress") else "")
                            for c in gp["campaigns"]))
-    if gp.get("gate_jobs"):                     # SPEC-0381: standalone `nw gate run` jobs
-        t.append("  │ ", style="dim")
-        t.append("  ".join(f"{pool_marker(j['where'])} ⚙ {j['job']} by {j.get('by') or '?'}"
-                           for j in gp["gate_jobs"]))
+    t.no_wrap, t.overflow = True, "ellipsis"
+    return t
+
+
+def _gate_jobs_line(p: dict) -> Text | None:
+    """SPEC-0384: standalone `nw gate run` jobs (SPEC-0381) on their own line under the workers
+    line, so campaign markers can never truncate them away. None when no job is running."""
+    jobs = (p.get("gate_pools") or {}).get("gate_jobs")
+    if not jobs:
+        return None
+    t = Text(" gate jobs ", style="dim")
+    t.append("  ".join(
+        f"{pool_marker(j['where'])} ⚙ {j['job']} by {j.get('by') or '?'}"
+        + (f" ({j['project']}@{j['branch']})" if j.get("project") and j.get("branch")
+           else f" ({j.get('project') or j.get('branch')})" if j.get("project") or j.get("branch")
+           else "")
+        for j in jobs))
     t.no_wrap, t.overflow = True, "ellipsis"
     return t
 
@@ -594,6 +607,9 @@ def _dash_header(p: dict, width=None) -> Panel:
     wl = _workers_line(p)
     if wl is not None:
         rows.append(wl)
+    gj = _gate_jobs_line(p)
+    if gj is not None:
+        rows.append(gj)
     by_project = tot.get("by_project") or {}
     if len(by_project) > 1 or p.get("project"):
         line = Text(" ")
