@@ -1568,7 +1568,7 @@ def test_silent_hold_through_ctx_lease(tmp_path, monkeypatch):
     _follow(cfg, out, clock=clock, stop=stop)
     (wake,) = _lines(out)
     assert wake["type"] == "campaign_silent"
-    from wt.agentic import lease as LS
+    from nightwright.agentic import lease as LS
     with LS.acquire(cfg):
         status = LS.lease_status(cfg)
     assert {"held", "in_flight", "busy"} <= set(status) and status["held"] is True
