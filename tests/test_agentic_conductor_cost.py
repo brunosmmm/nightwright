@@ -559,7 +559,7 @@ def test_read_turns_streams(cfg, monkeypatch):
     mention = {"type": "user", "timestamp": utc(20, 14),
                "message": {"content": 'the word "assistant" and compact_boundary'}}
     brief = line("m2", utc(20, 15), content=[{"type": "tool_use", "name": "Bash",
-                                              "input": {"command": "wt queue conductor-brief"}}])
+                                              "input": {"command": "nw queue conductor-brief"}}])
     boundary = {"type": "system", "subtype": "compact_boundary", "timestamp": utc(20, 16)}
     # U+2028 raw inside a text block: str.splitlines used to cut the line in two and drop the turn
     sep = json.dumps(line("m3", utc(20, 17), content=[{"type": "text", "text": "a b"}]),
