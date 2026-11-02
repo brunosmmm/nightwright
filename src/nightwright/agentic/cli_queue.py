@@ -446,6 +446,80 @@ def _chip(label: str, n, style: str) -> Text:
                          (f" {label}", style if n else "dim"))
 
 
+IDLE_REFRESH_S = 15.0       # SPEC-0372: re-render an unchanged dashboard this often (ages)
+
+
+def _watch_fingerprint(cfg) -> tuple:
+    """SPEC-0372: (name, mtime_ns, size) of the files the dashboard derives from: campaign
+    state and ledger, the events journal and runner files, the gate-slot dirs, the worker
+    registry. A few hundred stats, no parsing."""
+    root = store.agentic_dir(cfg)
+    out = []
+
+    def add(path):
+        try:
+            st = os.stat(path)
+            out.append((str(path), st.st_mtime_ns, st.st_size))
+        except OSError:
+            pass
+    try:
+        top = list(os.scandir(root))
+    except OSError:
+        top = []
+    for e in top:
+        if e.is_file():
+            add(e.path)
+    for sub in ("gate-slots", "mailbox", "escalations"):
+        for dirpath, _dirs, files in os.walk(root / sub):
+            add(dirpath)
+            for f in files:
+                add(os.path.join(dirpath, f))
+    try:
+        camps = list(os.scandir(root / "campaigns"))
+    except OSError:
+        camps = []
+    for c in camps:
+        add(os.path.join(c.path, "state.json"))
+        add(os.path.join(c.path, "ledger.jsonl"))
+    try:
+        from . import workers as WK
+        add(WK.path(cfg))
+    except Exception:
+        pass
+    return tuple(sorted(out))
+
+
+def pool_marker(where) -> str:
+    """SPEC-0372: 🏠 local gate slot, 🖥️ + worker name remote, ⏳ waiting for a slot."""
+    return "🏠" if where == "local" else "⏳" if where == "waiting" else f"🖥️ {where}"
+
+
+def _workers_line(p: dict) -> Text | None:
+    """SPEC-0372: one slim line (only when a worker is registered): each worker's state and
+    slots held, the local pool, and where each gating campaign is."""
+    gp = p.get("gate_pools")
+    if not gp:
+        return None
+    t = Text(" workers ", style="dim")
+    for w in gp["workers"]:
+        if not w["enabled"]:
+            dot, state, style = "○", "off", "grey50"
+        elif w["cooldown"]:
+            dot, state, style = "●", "cooldown", "yellow"
+        else:
+            dot, state, style = "●", "draining" if w["draining"] else "on", "green"
+        t.append(f"🖥️ {w['name']} ")
+        t.append(dot, style=style)
+        t.append(f" {state} {w['held']}/{w['slots']}  ")
+    loc = gp["local"]
+    t.append(f"🏠 local {loc['held']}/{loc['slots']}")
+    if gp["campaigns"]:
+        t.append("  │ ", style="dim")
+        t.append("  ".join(f"{pool_marker(c['where'])} {c['campaign']}" for c in gp["campaigns"]))
+    t.no_wrap, t.overflow = True, "ellipsis"
+    return t
+
+
 def _dash_header(p: dict, width=None) -> Panel:
     lease, slots, tot = p["lease"], p["slots"], p["totals"]
     if lease.get("held"):
@@ -489,6 +563,9 @@ def _dash_header(p: dict, width=None) -> Panel:
     else:
         grid.add_row(runner, slot_txt)
         rows = [grid, chips]
+    wl = _workers_line(p)
+    if wl is not None:
+        rows.append(wl)
     by_project = tot.get("by_project") or {}
     if len(by_project) > 1 or p.get("project"):
         line = Text(" ")
@@ -661,8 +738,9 @@ def _now_text(it: dict) -> Text:
     if a.get("kind") == "gates" and it.get("gate_hold"):
         h = it["gate_hold"]
         what = "running gates" if state == "GATING" else "closing: re-gate, rebase, merge"
+        where = f" · {pool_marker(h['pool'])}" if h.get("pool") else ""   # SPEC-0372
         return Text.assemble(("⚙ ", "bold blue"), what,
-                             (f" · slot {h.get('slot')} · {_dur(h.get('held_s'))}", "dim"))
+                             (f"{where} · slot {h.get('slot')} · {_dur(h.get('held_s'))}", "dim"))
     return _activity_text(a, state)
 
 
@@ -1576,15 +1654,22 @@ def attach(queue_group):
         from rich.live import Live
         n = 0
         # the alternate screen redraws in place (no scroll-back ghosts) and restores the
-        # terminal on exit; `--once` is the frame to keep
-        with Live(frame(), console=console, refresh_per_second=4,
+        # terminal on exit; `--once` is the frame to keep. SPEC-0372: no auto-refresh thread
+        # re-rendering a static frame 4x/s; the frame is rebuilt when the data changed (a
+        # cheap stat fingerprint) or every IDLE_REFRESH_S so ages stay fresh.
+        with Live(frame(), console=console, auto_refresh=False,
                   screen=console.is_terminal) as live:
+            fp, last = _watch_fingerprint(cfg), time.monotonic()
             while True:
                 n += 1
                 if iterations and n >= iterations:
                     break
                 time.sleep(interval)
-                live.update(frame())
+                now_fp = _watch_fingerprint(cfg)
+                if now_fp == fp and time.monotonic() - last < IDLE_REFRESH_S:
+                    continue
+                fp, last = now_fp, time.monotonic()
+                live.update(frame(), refresh=True)
 
     @queue_group.command("tick")
     @click.option("--json", "as_json", is_flag=True, help="emit nw.queue.tick.v1 JSON")

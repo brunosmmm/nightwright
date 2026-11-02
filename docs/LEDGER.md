@@ -597,6 +597,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0363](./specs/0363-herdr-display-scoped-to-nw-panes-display-agent-on.md) | herdr display scoped to nw panes: --display-agent on conductor/steward panes, per-role workspace tokens | feature | done | — | 2026-11-01 |
 | [SPEC-0365](./specs/0365-herdr-watcher-auto-start-the-conductor-follower.md) | herdr watcher auto-start: the conductor follower supervises nw herdr watch | feature | done | — | 2026-11-01 |
 | [SPEC-0366](./specs/0366-herdr-run-tabs-one-tab-per-campaign-named-after.md) | herdr run tabs: one tab per campaign named after the work, supersedes the shared nw runs tab | feature | done | — | 2026-11-01 |
+| [SPEC-0372](./specs/0372-queue-watch-idle-cpu-and-worker-gate-pool-strip.md) | queue watch: near-zero idle CPU, and a workers / gate-pool strip | feature | done | M9: agentic workflow | 2026-11-02 |
 
 ## Superseded / rejected
 

@@ -350,6 +350,26 @@ def read_ledger(cfg, campaign_id, *, types=None, tail=None) -> list[dict]:
 
 # ---- listing ----------------------------------------------------------------------------
 
+_STATE_CACHE: dict = {}      # SPEC-0372: path -> ((mtime_ns, size), raw JSON text parse)
+
+
+def _load_state_cached(p):
+    """Parse `state.json` only when its (mtime_ns, size) changed; each caller gets a private
+    deep copy. `nw queue watch` lists every campaign several times per refresh."""
+    import pickle
+    try:
+        stt = p.stat()
+    except OSError:
+        return None
+    sig = (stt.st_mtime_ns, stt.st_size)
+    hit = _STATE_CACHE.get(p)
+    if hit and hit[0] == sig:
+        return pickle.loads(hit[1])
+    st = json.loads(p.read_text(encoding="utf-8"))
+    _STATE_CACHE[p] = (sig, pickle.dumps(st, pickle.HIGHEST_PROTOCOL))
+    return st
+
+
 def list_campaigns(cfg, *, include_terminal=False, project=None, spec_id=None,
                    state=None) -> list[dict]:
     """Scan `campaigns/*/state.json`, newest first by `created_at`. Hides terminal states
@@ -363,8 +383,10 @@ def list_campaigns(cfg, *, include_terminal=False, project=None, spec_id=None,
         if not p.is_file():
             continue
         try:
-            st = json.loads(p.read_text(encoding="utf-8"))
+            st = _load_state_cached(p)
         except ValueError:
+            continue
+        if st is None:
             continue
         if not include_terminal and st.get("state") in TERMINAL_STATES:
             continue

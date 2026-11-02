@@ -157,7 +157,31 @@ def validate_profile_doc(doc, *, origin, in_file) -> list:
 
 # ---- layers ----------------------------------------------------------------------------------
 
+_DIR_CACHE: dict = {}           # SPEC-0372: (dir, origin_of key) -> (signature, defs)
+
+
 def _read_dir(directory, origin_of) -> dict:
+    """Cached by the directory's file signature (name, mtime_ns, size): `nw queue watch` resolves
+    a profile per campaign per refresh, and re-parsing the YAML each time burned a core. A
+    changed, added or removed file invalidates. Callers get a private deep copy."""
+    import pickle
+    try:
+        sig = tuple((p.name, (st := p.stat()).st_mtime_ns, st.st_size)
+                    for p in sorted(directory.iterdir())) if directory.is_dir() else None
+    except OSError:
+        sig = None
+    key = (str(directory), origin_of("") if origin_of is str else "builtin")
+    if sig is not None:
+        hit = _DIR_CACHE.get(key)
+        if hit and hit[0] == sig:
+            return pickle.loads(hit[1])
+    defs = _read_dir_uncached(directory, origin_of)
+    if sig is not None:
+        _DIR_CACHE[key] = (sig, pickle.dumps(defs, pickle.HIGHEST_PROTOCOL))
+    return defs
+
+
+def _read_dir_uncached(directory, origin_of) -> dict:
     """`{name: Def}` for the `*.yaml` files of `directory` (missing directory: none). A `*.yml`
     file (or a `.yml` next to a `.yaml` of the same stem) or a file whose stem is not a valid
     name defines a broken profile; other files are ignored. An unreadable directory raises

@@ -6561,6 +6561,36 @@ def _spec_review_rows(cfg, now, recent_hours) -> list[dict]:
     return [r for _, r in running] + [r for _, r in done]
 
 
+def _gate_pools_view(cfg, occupancy, active_ids) -> dict | None:
+    """SPEC-0372: the registered workers and where each GATING campaign gates (local pool, a
+    worker's pool, or waiting for a slot), from data the dashboard already read (no probe, no
+    subprocess). None when no worker is registered, so the dashboard stays as it was."""
+    from . import workers as WK
+    if not occupancy:
+        return None
+    ws = WK.load(cfg)
+    if not ws:
+        return None
+    occ_w = occupancy.get("workers") or {}
+    workers = []
+    for w in ws:
+        held = [h.get("campaign") for h in (occ_w.get(w["name"]) or {}).get("held") or []]
+        workers.append({"name": w["name"], "enabled": bool(w["enabled"]),
+                        "cooldown": bool(WK.in_cooldown(w)), "draining": bool(w.get("draining")),
+                        "slots": w["slots"], "held": len(held), "campaigns": held})
+    where = {}
+    for h in occupancy.get("held") or []:
+        where[h.get("campaign")] = "local"
+    for w in workers:
+        for c in w["campaigns"]:
+            where[c] = w["name"]
+    for w in occupancy.get("waiting") or []:
+        where.setdefault(w.get("campaign"), "waiting")
+    return {"local": {"slots": occupancy.get("slots"), "held": len(occupancy.get("held") or [])},
+            "workers": workers,
+            "campaigns": [{"campaign": c, "where": where[c]} for c in active_ids if c in where]}
+
+
 def _gate_occupancy(cfg) -> dict | None:
     """SPEC-0326: the host-wide gate-slot snapshot for the dashboard, None when unreadable."""
     from . import gate_slots
@@ -6663,6 +6693,14 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
         wf = JY.waiting_for(st, ledger, occupancy, now=now)
         hold = next((h for h in (occupancy or {}).get("held") or []
                      if h.get("campaign") == it["campaign"]), None)
+        pool = "local" if hold else None
+        if not hold:                       # SPEC-0372: a hold in a registered worker's pool
+            for wn, wv in ((occupancy or {}).get("workers") or {}).items():
+                hold = next((h for h in wv.get("held") or []
+                             if h.get("campaign") == it["campaign"]), None)
+                if hold:
+                    pool = wn
+                    break
         active.append({**it, "spec_title": title,
                        "phases": list(phases),
                        "phase_index": phases.index(state) if state in phases else None,
@@ -6672,7 +6710,7 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                        # SPEC-0326: the journey, the why sentence and what it waits on
                        "track": visits, "track_elided": elided, "waiting_for": wf,
                        "why": JY.why(st, ledger, wf, loops=it["loops"]),
-                       "gate_hold": ({"slot": hold.get("slot"), "since": hold.get("since"),
+                       "gate_hold": ({"slot": hold.get("slot"), "since": hold.get("since"), "pool": pool,
                                       "held_s": _age(hold.get("since"), now)} if hold else None),
                        "recent_lines": JY.recent_lines(ledger, 3),
                        "state_age_s": _age(next((e.get("ts") for e in reversed(ledger)
@@ -6704,6 +6742,7 @@ def dashboard_payload(cfg, *, project=None, recent=5, recent_hours=24, now=None)
                         "held": [h.get("campaign") for h in occupancy.get("held") or []],
                         "waiting": [w.get("campaign") for w in occupancy.get("waiting") or []]}
                        if occupancy is not None else None),
+        "gate_pools": _gate_pools_view(cfg, occupancy, [a["campaign"] for a in active]),
         "totals": {"active": len(active), "attention": len(attention), "waiting": len(waiting),
                    "needs_you": len(needs_you), "conductor_handling": len(conductor),
                    "conductor_overdue": sum(1 for c in conductor if c["park"].get("overdue")),
