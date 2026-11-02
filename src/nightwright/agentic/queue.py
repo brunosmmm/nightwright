@@ -47,6 +47,7 @@ from . import lease as L
 from . import personas as PS
 from . import project as P
 from . import remote_jobs as RJ
+from . import remote_personas as RPS
 from . import sentinel as SN
 from . import spec_review as SR
 from . import spec_write as SW
@@ -1108,6 +1109,9 @@ def _record_run(state: dict, persona: str, run_id: str, result, budget: float, *
         "session_id": result.session_id, "verdict_ok": result.verdict_ok,
         "verdict": result.verdict,
         "result_tail": (result.result_text or "")[-400:] if not result.verdict_ok else "",
+        **({"worker": result.worker} if getattr(result, "worker", None) else {}),
+        **({"writeback_failed": True, "saved_refs": list(result.saved_refs)}
+           if getattr(result, "writeback_failed", False) else {}),
     }), ("cost", {"persona": persona, "delta_usd": charged, "total_usd": cost["total_usd"],
                   "cap_usd": cost.get("cap_usd"), "estimated": estimated})]
     if estimated:
@@ -1840,13 +1844,21 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
     run found open by a new runner (`exited_before_start`: its process ended before this
     runner's lease started, so a commit made but never recorded is recorded now)."""
     res = StepResult(state["id"], step, state["state"], run_id=run_id, budget=budget)
-    detachable = bool(getattr(ctx.runner, "detachable", False))
     try:
-        outcome = ctx.runner.run(req, hooks=hooks) if (hooks and detachable) \
-            else ctx.runner.run(req)
+        # SPEC-0344: a persona-capable worker may take the run (or holds an adopted one)
+        cfg = getattr(ctx, "cfg", None)
+        remote = RPS.dispatch(cfg, state, step.kind, req, adopted=adopted is not None,
+                              local=ctx.runner) if cfg is not None else None
+        runner = remote or ctx.runner
+        detachable = bool(getattr(runner, "detachable", False))
+        outcome = runner.run(req, hooks=hooks) if (hooks and detachable) else runner.run(req)
         if outcome is DETACHED:
             res.detached = True
             return res
+        if getattr(outcome, "writeback_failed", False):
+            run_id, req, outcome = _rerun_locally(ctx, state, step, run_id, req, budget, outcome)
+            res.run_id = run_id
+            detachable = bool(getattr(ctx.runner, "detachable", False))
         res.run_result = outcome
         res.interrupted = bool(outcome.interrupted) if detachable else ctx.stop.is_set()
         # an adopted run a human moved past (parked, abandoned) is recorded, never committed
@@ -1877,6 +1889,39 @@ def _do_persona(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: fl
         if hooks:
             hooks.done()
     return res
+
+
+def _rerun_locally(ctx: _Ctx, state: dict, step: Step, run_id: str, req, budget: float, failed):
+    """SPEC-0344: a remote run whose write-back failed. Its `run.end` (`writeback_failed`,
+    `result_tail: "write-back: <reason>"`) and cost go on the ledger now, the worker joins the
+    step's `remote_excluded`, and the step runs once more, in-process on the local runner,
+    under a new run id with its own `run.start` (no autopark). Returns (run_id, req, result)."""
+    cfg, cid = ctx.cfg, state["id"]
+    persona = req.persona
+    with store.item_lock(cfg, cid):
+        for etype, payload in _record_run(state, persona, run_id, failed, budget):
+            store.append_event(cfg, cid, etype, payload)
+        start = next((e for e in reversed(store.read_ledger(cfg, cid, types=["run.start"]))
+                      if e.get("run_id") == run_id), {})
+        current = store.read_state(cfg, cid)
+        counters = _counters(state)
+        run_no = max(counters["runs"], _counters(current)["runs"], _ledger_run_max(cfg, cid)) + 1
+        new_id = f"{run_no:03d}-{persona}"
+        excluded = list(state.get("remote_excluded") or [])
+        if failed.worker and failed.worker not in excluded:
+            excluded.append(failed.worker)
+        payload = {k: v for k, v in start.items()
+                   if k not in ("id", "seq", "ts", "type", "campaign", "run_id")}
+        payload.update(persona=persona, run_id=new_id, retry_of=run_id,
+                       remote_excluded=excluded)
+        store.append_event(cfg, cid, "run.start", payload)
+        counters["runs"] = run_no
+        state["remote_excluded"] = excluded
+        current.setdefault("counters", {})["runs"] = run_no
+        current["remote_excluded"] = excluded
+        store.write_state(cfg, cid, current)
+    new_req = replace(req, run_dir=store.runs_dir(cfg, cid) / new_id)
+    return new_id, new_req, ctx.runner.run(new_req)
 
 
 def _commit_resolver_changes(ctx: _Ctx, state: dict, worktree, branch, run_id: str,
@@ -2132,6 +2177,7 @@ def _apply(ctx: _Ctx, state: dict, res: StepResult) -> dict:
                                 f"transition to {to} skipped", "author": "queue"})
                 row["to"], row["reason"] = store.read_state(cfg, cid).get("state"), "superseded_by_human"
                 return row
+            current.pop("remote_excluded", None)     # SPEC-0344: cleared when the step completes
             for k in ("counters", "cost", "repo", "spec", "last_gate", "last_verdict", "last_review",
                       "pending_brief", "close", "review_carry", "closing", "spec_write", "spec_id",
                       "merge", "admission", "spec_review", "split",   # SPEC-0279: amend flips it
@@ -4550,9 +4596,12 @@ def _adopt(cfg, ctx: _Ctx, pool: StepPool, report: TickReport) -> None:
     from .runner import _epoch
     pool.adopted = True
     try:
-        if not getattr(ctx.runner, "detachable", False):
-            return
+        detachable = bool(getattr(ctx.runner, "detachable", False))
     except ValueError:
+        return
+    # SPEC-0344: a remote persona job is adoptable whatever the local runner is
+    remote_only = not detachable
+    if remote_only and not RPS.any_live(cfg):
         return
     lease_started = (L.read_lease(cfg) or {}).get("started_at")
     now = time.time()
@@ -4565,6 +4614,8 @@ def _adopt(cfg, ctx: _Ctx, pool: StepPool, report: TickReport) -> None:
         if not opens:
             continue
         last = opens[-1]
+        if remote_only and RPS.live_record(cfg, cid, last.get("run_id")) is None:
+            continue
         cls = _adopt_class(last)
         if cls and cls[0] == "review":              # the open runs of the latest review round
             key = cls[1]

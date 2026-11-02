@@ -64,6 +64,9 @@ class RunResult:
     verdict_ok: bool = False
     result_text: str = ""
     raw_path: Path | None = None
+    worker: str | None = None                   # SPEC-0344: the worker of a remote run
+    writeback_failed: bool = False              # SPEC-0344: its write-back failed
+    saved_refs: tuple = ()                      # SPEC-0344: the refs a failed write-back kept
 
 
 class _Detached:
@@ -260,8 +263,12 @@ def write_run_record(req: RunRequest, result: RunResult, started_at: str) -> Run
         "session_id": result.session_id, "verdict_ok": result.verdict_ok,
         "verdict": result.verdict,
         "profile": req.profile, "profile_sources": list(req.profile_sources),
+        "worker": result.worker,                                 # SPEC-0344: null when local
         "files": {"prompt": "prompt.md", "raw": "result.json", "stderr": "stderr.log"},
     }
+    if result.writeback_failed or result.saved_refs:
+        rec["writeback_failed"] = result.writeback_failed
+        rec["saved_refs"] = list(result.saved_refs)
     if (req.run_dir / "stream.jsonl").is_file():                 # SPEC-0362
         rec["files"]["stream"] = "stream.jsonl"
     (req.run_dir / "run.json").write_text(json.dumps(rec, indent=2, ensure_ascii=False) + "\n",
@@ -523,12 +530,132 @@ def _epoch(iso: str) -> float:
         return time.time()
 
 
+# ---- remote persona jobs (SPEC-0344) ------------------------------------------------------------
+
+class NotRemotable(ValueError):
+    """A request that cannot run on a worker (a path outside the worktree, an env key outside
+    the allowlist): the run stays local."""
+
+
+# passed to the worker verbatim / stripped here and re-set by the worker to its own values
+ENV_VERBATIM = frozenset({"NW_CAMPAIGN", "NW_SPEC_ID", "NW_BASE", "NW_PERSONA_RUN",
+                          "NW_REBASE_TARGET"})
+ENV_RESET = frozenset({"NW_WORKTREE", "NW_DATA_DIR", "NW_CONFIG_DIR", "TMPDIR", "TEMP", "TMP"})
+TREE_TOKEN = "${NW_TREE}"                     # a worktree-relative path in `allowed_tools`
+_ABS_PATH_RE = re.compile(r"(?<![\w.:/~$}-])/[A-Za-z0-9._~+@%=-][^\s()*'\"`,;|&<>]*")
+
+
+def _rel_inside(path, roots) -> str | None:
+    """`path` relative to the first of `roots` it is inside ("." for the root), else None."""
+    for root in roots:
+        try:
+            rel = Path(os.path.normpath(str(path))).relative_to(root)
+        except ValueError:
+            continue
+        return rel.as_posix() or "."
+    return None
+
+
+def _roots(worktree) -> list[Path]:
+    wt = Path(os.path.normpath(str(worktree)))
+    real = Path(os.path.realpath(str(worktree)))
+    return [wt] if wt == real else [wt, real]
+
+
+def request_to_job(req: RunRequest, worktree) -> dict:
+    """The `request` of a `kind: persona` job (SPEC-0344): every field of `req`, paths made
+    relative to `worktree`, worktree-absolute paths in `allowed_tools` replaced by
+    `TREE_TOKEN`, the env reduced to `ENV_VERBATIM` (the `ENV_RESET` keys are the worker's own).
+    Raises `NotRemotable` for a cwd / `add_dirs` entry / `allowed_tools` path outside the
+    worktree or another env key."""
+    roots = _roots(worktree)
+    cwd = _rel_inside(req.cwd, roots)
+    if cwd is None:
+        raise NotRemotable(f"cwd {req.cwd} is outside the worktree")
+    add_dirs = []
+    for d in req.add_dirs:
+        rel = _rel_inside(d, roots)
+        if rel is None:
+            raise NotRemotable(f"add_dirs entry {d} is outside the worktree")
+        add_dirs.append(rel)
+    tools = []
+    for tool in req.allowed_tools:
+        out = str(tool)
+        for root in sorted({str(r) for r in roots}, key=len, reverse=True):
+            out = re.sub(re.escape(root) + r"(?=/|\b|$)", lambda _m: TREE_TOKEN, out)
+        stray = _ABS_PATH_RE.search(out)
+        if stray:
+            raise NotRemotable(f"allowed_tools entry {tool!r} names {stray.group(0)}, "
+                               "outside the worktree")
+        tools.append(out)
+    env = {}
+    for k, v in req.env.items():
+        if k in ENV_VERBATIM:
+            env[k] = str(v)
+        elif k not in ENV_RESET:
+            raise NotRemotable(f"env key {k} is outside the remote allowlist")
+    return {"persona": req.persona, "prompt": req.prompt, "system_append": req.system_append,
+            "cwd": cwd, "model": req.model, "effort": req.effort,
+            "max_budget_usd": req.max_budget_usd, "timeout_s": req.timeout_s,
+            "permission_mode": req.permission_mode, "read_only": req.read_only,
+            "allowed_tools": tools, "add_dirs": add_dirs, "json_schema": req.json_schema,
+            "env": env, "profile": req.profile, "profile_sources": list(req.profile_sources)}
+
+
+def request_from_job(doc: dict, tree, run_dir, env: dict | None = None) -> RunRequest:
+    """The worker's `RunRequest` from `request_to_job`'s doc: paths anchored at `tree`, the
+    worker's own `env` values (`ENV_RESET` keys) over the verbatim ones. Raises `ValueError`
+    for a malformed doc or an env key outside `ENV_VERBATIM`."""
+    tree = Path(tree)
+    extra = sorted(set(doc.get("env") or {}) - ENV_VERBATIM)
+    if extra:
+        raise ValueError(f"env keys outside the allowlist {sorted(ENV_VERBATIM)}: {extra}")
+
+    def at(rel) -> Path:
+        rel = str(rel)
+        if rel.startswith("/") or ".." in Path(rel).parts:
+            raise ValueError(f"path {rel!r} is not relative to the tree")
+        return tree if rel == "." else tree / rel
+    return RunRequest(
+        persona=str(doc["persona"]), prompt=str(doc.get("prompt") or ""),
+        system_append=str(doc.get("system_append") or ""), cwd=at(doc.get("cwd") or "."),
+        model=str(doc.get("model") or ""), effort=doc.get("effort"),
+        max_budget_usd=float(doc.get("max_budget_usd") or 0), timeout_s=int(doc.get("timeout_s") or 0),
+        permission_mode=str(doc.get("permission_mode") or ""),
+        read_only=bool(doc.get("read_only")),
+        allowed_tools=tuple(str(t).replace(TREE_TOKEN, str(tree))
+                            for t in doc.get("allowed_tools") or ()),
+        add_dirs=tuple(at(d) for d in doc.get("add_dirs") or ()),
+        json_schema=doc.get("json_schema") or {},
+        env={**{k: str(v) for k, v in (doc.get("env") or {}).items()}, **(env or {})},
+        run_dir=Path(run_dir), profile=doc.get("profile"),
+        profile_sources=tuple(doc.get("profile_sources") or ()))
+
+
+class RemoteRunner:
+    """A persona run on a worker (SPEC-0344): a `kind: persona` job through SPEC-0340, its
+    result bundle written back into the campaign worktree. Detachable like `ClaudeRunner`: a
+    stop leaves the job and its SPEC-0341 record for the next runner to adopt. The logic is in
+    `remote_personas`; `local` is the runner a run falls back to before the worker took it."""
+
+    detachable = True
+
+    def __init__(self, cfg, state: dict, worker: dict, *, local=None, slot=None,
+                 record: dict | None = None):
+        self.cfg, self.state, self.worker = cfg, state, worker
+        self.local, self.slot, self.record = local, slot, record
+
+    def run(self, req: RunRequest, *, hooks: RunHooks | None = None):
+        from . import remote_personas as RPS
+        return RPS.run(self, req, hooks)
+
+
 # ---- offline stand-in ----------------------------------------------------------------------------
 
 class FakeRunner:
     """Replay a JSON script: a list of entries consumed in order, each
     `{persona, edits: [{path, write|append|delete}], verdict, cost_usd, exit_code?, timed_out?,
-    malformed?, sleep_s?, pre_shell?, shell?}`. Edits apply relative to `req.cwd`; `pre_shell`
+    malformed?, sleep_s?, pre_shell?, shell?, transcript?}`. Edits apply relative to `req.cwd`; `pre_shell`
     / `shell` are command lists run in `req.cwd` with `req.env` before / after the edits. A persona mismatch raises so a
     test never silently runs the wrong step. The cursor lives in a file next to the campaign's
     runs dir so the script advances across separate `nw` processes."""
@@ -587,6 +714,9 @@ class FakeRunner:
         entry = self._next_entry(req)
         started_at = _now_iso()
         started = time.monotonic()
+        RP.write_json_atomic(req.run_dir / "request.json", _request_doc(req, started_at))
+        if entry.get("transcript") is not None:     # SPEC-0344: a scripted transcript
+            (req.run_dir / "stream.jsonl").write_text(str(entry["transcript"]), encoding="utf-8")
         if entry.get("sleep_s"):
             time.sleep(float(entry["sleep_s"]))
         self._shell(req, entry.get("pre_shell"))

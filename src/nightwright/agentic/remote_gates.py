@@ -255,6 +255,15 @@ def prepare(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int
     """Steps 1-5: the commit under test, the base, `have`, the bundle (written to `bundle`,
     absent when nothing is left to send) and the job header. A stop (`stop` or the gates'
     sticky one) before or during `have` raises `_Stopped`."""
+    key, sha, base_sha, have, size = cut(worker, project_cfg, campaign_state, cfg, job_id,
+                                         bundle, stop=stop)
+    return _header(project_cfg, campaign_state, cfg, seq, job_id, key, sha, base_sha, have, size)
+
+
+def cut(worker: dict, project_cfg: dict, campaign_state: dict, cfg, job_id: str, bundle: Path,
+        *, stop=None) -> tuple:
+    """Steps 1-4 of `prepare` (shared with SPEC-0344's persona jobs): `(repo_key, commit under
+    test, base sha, have, bundle bytes)`, the bundle written to `bundle`."""
     repo = campaign_state.get("repo") or {}
     wt, base_name = repo["worktree"], repo.get("base") or "main"
     sha = _git(wt, "stash", "create") or _git(wt, "rev-parse", "HEAD")    # stash stack untouched
@@ -290,7 +299,7 @@ def prepare(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int
     finally:
         for ref, _tip in refs:
             _git(wt, "update-ref", "-d", ref, check=False)
-    return _header(project_cfg, campaign_state, cfg, seq, job_id, key, sha, base_sha, have, size)
+    return key, sha, base_sha, have, size
 
 
 def _header(project_cfg: dict, campaign_state: dict, cfg, seq: int, job_id: str, key: str,

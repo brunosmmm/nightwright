@@ -52,7 +52,8 @@ DEFAULT_FRAME_STALL_S = 300.0
 FINISH_GC_ENV = "NW_WORKER_FINISH_GC"
 EXIT_ERROR = 3
 EXIT_REFUSED = 2
-SSH_SUBCOMMANDS = ("info", "have", "gate-job", "gc", "submit", "attach", "poll", "cancel", "jobs")
+SSH_SUBCOMMANDS = ("info", "have", "gate-job", "gc", "submit", "attach", "poll", "cancel", "jobs",
+                   "claude-check")
 
 # `\Z`, not `$`: `$` also matches before a trailing newline, and these grammars are literal
 # never only dots: `.`/`..` name the store's own dirs, not a job or a cache
@@ -236,8 +237,8 @@ def validate_header(h) -> None:
         bad("the header is not a JSON object")
     if h.get("schema") != JOB_SCHEMA:
         bad(f"schema {h.get('schema')!r} is not {JOB_SCHEMA}")
-    if h.get("kind") != "gate":
-        bad(f"kind {h.get('kind')!r} is not 'gate'")
+    if h.get("kind") not in ("gate", "persona"):
+        bad(f"kind {h.get('kind')!r} is not 'gate' or 'persona'")
     for key in ("job_id", "repo_key", "campaign", "spec_id"):
         if not isinstance(h.get(key), str) or not KEY_RE.match(h[key]):
             bad(f"{key} must match [A-Za-z0-9._-]+")
@@ -264,6 +265,9 @@ def validate_header(h) -> None:
     payload = h.get("payload")
     if not isinstance(payload, dict):
         bad("payload must be an object")
+    if h["kind"] == "persona":
+        _validate_persona(payload, bad)
+        return
     seq = payload.get("seq")
     if not isinstance(seq, int) or isinstance(seq, bool) or not 0 <= seq <= 999:
         bad("payload.seq must be an int from 0 to 999")
@@ -291,6 +295,34 @@ def validate_header(h) -> None:
         validate_project({"schema": PROJECT_SCHEMA, "gates": gl})
     except ValueError as e:
         bad(f"payload.gates: {e}")
+
+
+def _validate_persona(payload: dict, bad) -> None:
+    """SPEC-0344: a `kind: persona` payload `{run_id, persona, request, json_schema, read_only,
+    timeout_s, max_budget_usd}`; the request must rebuild (`runner.request_from_job`)."""
+    from . import runner as R
+    if not isinstance(payload.get("run_id"), str) or not KEY_RE.match(payload["run_id"]):
+        bad("payload.run_id must match [A-Za-z0-9._-]+")
+    if not isinstance(payload.get("persona"), str) or not KEY_RE.match(payload["persona"]):
+        bad("payload.persona must match [A-Za-z0-9._-]+")
+    if not isinstance(payload.get("read_only"), bool):
+        bad("payload.read_only must be a boolean")
+    for key in ("timeout_s", "max_budget_usd"):
+        v = payload.get(key)
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) \
+                or v <= 0:
+            bad(f"payload.{key} must be a positive finite number")
+    req = payload.get("request")
+    if not isinstance(req, dict):
+        bad("payload.request must be an object")
+    env = req.get("env") or {}
+    if not isinstance(env, dict) or any(not isinstance(v, str) or "\x00" in v
+                                        for v in env.values()):
+        bad("payload.request.env must map keys to strings without NUL bytes")
+    try:
+        R.request_from_job(req, "/nonexistent-tree", "/nonexistent-run")
+    except (KeyError, TypeError, ValueError) as e:
+        bad(f"payload.request: {e}")
 
 
 # ---- frames ----------------------------------------------------------------------------------
@@ -676,6 +708,8 @@ def gate_job(cfg, stdin, stdout) -> int:
                     and KEY_RE.match(h["job_id"]):
                 frames.job_id = h["job_id"]
             validate_header(h)
+            if h["kind"] != "gate":             # SPEC-0344: persona jobs are `submit`-only
+                raise WorkerError("validate", f"kind {h['kind']!r} needs `nw worker submit`")
             stop.check()
 
             state["stage"] = "claim"
@@ -980,11 +1014,47 @@ def info(cfg) -> dict:
     probe = wd if wd.is_dir() else Path(cfg["data_dir"])
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
-    return {"schema": INFO_SCHEMA, "protocol": JOB_SCHEMA, "features": ["async"],
+    return {"schema": INFO_SCHEMA, "protocol": JOB_SCHEMA, "features": ["async", "persona"],
             "version": __version__,
             "git_sha": sha, "data_dir": str(cfg["data_dir"]),
             "git": _version_out("git", "--version"), "uv": _version_out("uv", "--version"),
             "free_bytes": shutil.disk_usage(probe).free}
+
+
+CLAUDE_CHECK_SCHEMA = "nw.worker.claude_check.v1"
+CLAUDE_AUTH_TIMEOUT_S = 120.0
+
+
+def claude_check(auth: bool = False) -> dict:
+    """SPEC-0344: `claude --version` on this worker and, with `auth`, a 1-token `claude -p`
+    probe (it costs money, so only on request). `{schema, ok, version, auth, error}`."""
+    out = {"schema": CLAUDE_CHECK_SCHEMA, "ok": False, "version": None, "auth": None,
+           "error": None}
+    out["version"] = _version_out("claude", "--version")
+    if out["version"] is None:
+        out["error"] = "`claude --version` failed: no working claude on the worker"
+        return out
+    if auth:
+        try:
+            p = subprocess.run(["claude", "-p", "--output-format", "json", "--max-turns", "1",
+                                "--no-session-persistence", "Reply with the single word ok."],
+                               capture_output=True, text=True, timeout=CLAUDE_AUTH_TIMEOUT_S,
+                               stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            out["auth"], out["error"] = False, f"`claude -p` auth probe failed: {e}"
+            return out
+        try:
+            doc = json.loads(p.stdout)
+        except ValueError:
+            doc = None
+        good = p.returncode == 0 and isinstance(doc, dict) and not doc.get("is_error")
+        out["auth"] = good
+        if not good:
+            tail = (p.stderr or p.stdout or "").strip().splitlines()[-1:] or [""]
+            out["error"] = f"`claude -p` auth probe failed (exit {p.returncode}): {tail[0]}"
+            return out
+    out["ok"] = True
+    return out
 
 
 # ---- ssh-command -----------------------------------------------------------------------------
@@ -999,7 +1069,7 @@ def check_ssh_command(original: str | None) -> list[str]:
     `ValueError(reason)`. The grammar is literal: `info [--json]`;
     `have --repo <key> <sha>...`; `gate-job`; `gc [--keep-days <n>]`; and SPEC-0340's
     `submit`; `attach <job> [--from <n>]`; `poll <job> [--from <n>] [--renew]`;
-    `cancel <job>`; `jobs [--json]`."""
+    `cancel <job>`; `jobs [--json]`; SPEC-0344's `claude-check [--auth]`."""
     if not original or not original.strip():
         raise ValueError("empty command")
     try:
@@ -1025,6 +1095,8 @@ def check_ssh_command(original: str | None) -> list[str]:
         ok = args == []
     elif sub == "jobs":
         ok = args in ([], ["--json"])
+    elif sub == "claude-check":                 # SPEC-0344
+        ok = args in ([], ["--auth"])
     elif sub == "cancel":
         ok = len(args) == 1 and _job_arg(args[0])
     elif sub in ("attach", "poll"):

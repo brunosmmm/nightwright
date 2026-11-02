@@ -14,6 +14,9 @@ from . import workers as WK
 from . import workers_bootstrap as WB
 from .store import now_iso
 
+KINDS = ("gate", "persona")
+RPS_MIN, RPS_MAX = 1, 16                        # remote_personas.{MIN,MAX}_PERSONA_SLOTS
+
 
 @click.group("workers")
 def workers_group():
@@ -27,6 +30,8 @@ def workers_group():
                                        install nw, the forced key line, register (SPEC-0354)
     nw workers list                    name, destination, slots, enabled, cooldown, held
     nw workers check [NAME]            probe over SSH
+    nw workers set NAME --kinds gate,persona [--persona-slots N]
+                                       job kinds / persona slots (SPEC-0344)
     nw workers on|off NAME             enable (clears cooldown) / disable
     nw workers drain NAME              no new gates; disabled once idle (SPEC-0343)
     nw workers rm NAME                 unregister (held slots are untouched)
@@ -209,14 +214,25 @@ def workers_list(cfg, as_json):
 @click.argument("name", required=False)
 @click.option("--json", "as_json", is_flag=True, help="emit a list of {name, ok, errors, "
               "warnings, info}")
+@click.option("--auth", is_flag=True, help="persona workers: also run a 1-token `claude -p` "
+              "auth probe on the worker (costs money; SPEC-0344)")
 @click.pass_obj
-def workers_check(cfg, name, as_json):
+def workers_check(cfg, name, as_json, auth):
     """Probe workers with `nw worker info --json` over SSH. Without NAME, every registered
-    worker; exits 1 if any fails (a version or sha mismatch only warns)."""
+    worker; exits 1 if any fails (a version or sha mismatch only warns). A worker whose
+    `kinds` contain `persona` must also have a working `claude` (SPEC-0344)."""
+    from . import remote_personas as RPS
     records = _load_or_fail(cfg)
     if name is not None:
         records = [_find(records, name)]
-    results = [WK.check(cfg, r) for r in records]
+    results = []
+    for r in records:
+        res = WK.check(cfg, r)
+        w = WK.normalize(cfg, r)
+        if "persona" in w["kinds"] and not res["errors"]:
+            res["errors"] += RPS.claude_check(cfg, w, auth)
+            res["ok"] = not res["errors"]
+        results.append(res)
     if as_json:
         _dump_json(results)
     else:
@@ -231,6 +247,38 @@ def workers_check(cfg, name, as_json):
                 _say(f"  warning: {w}", "yellow")
     if not all(r["ok"] for r in results):
         raise SystemExit(1)
+
+
+@workers_group.command("set")
+@click.argument("name")
+@click.option("--kinds", default=None, metavar="KIND[,KIND]",
+              help="job kinds the worker takes: gate, persona (SPEC-0344)")
+@click.option("--persona-slots", type=click.IntRange(RPS_MIN, RPS_MAX), default=None,
+              help="concurrent persona jobs on the worker (default 1)")
+@click.pass_obj
+def workers_set(cfg, name, kinds, persona_slots):
+    """Change a registered worker's job kinds or persona slots (SPEC-0344)."""
+    if kinds is None and persona_slots is None:
+        raise click.UsageError("nothing to set: give --kinds and/or --persona-slots")
+    parsed = None
+    if kinds is not None:
+        parsed = [k.strip() for k in kinds.split(",") if k.strip()]
+        bad = [k for k in parsed if k not in KINDS]
+        if not parsed or bad:
+            raise click.UsageError(f"--kinds must list some of {', '.join(KINDS)}"
+                                   + (f" (not {', '.join(bad)})" if bad else ""))
+        parsed = list(dict.fromkeys(parsed))
+
+    def fn(records):
+        r = _find(records, name)
+        if parsed is not None:
+            r["kinds"] = parsed
+        if persona_slots is not None:
+            r["persona_slots"] = persona_slots
+    _update(cfg, fn)
+    w = WK.normalize(cfg, _find(_load_or_fail(cfg), name))
+    from . import remote_personas as RPS
+    _say(f"{name}: kinds {','.join(w['kinds'])}, persona slots {RPS.persona_slots(w)}")
 
 
 @workers_group.command("on")

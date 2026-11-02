@@ -635,7 +635,7 @@ def _claim(job: Path, h: dict, digest: str) -> tuple[int, dict]:
         job_rec = {"schema": "nw.worker.job.v1", "job_id": h["job_id"], "kind": h["kind"],
                    "campaign": h["campaign"], "spec_id": h["spec_id"],
                    "repo_key": h["repo_key"], "commit": h["commit"], "base": h["base"],
-                   "attempt": h.get("attempt"), "seq": payload["seq"],
+                   "attempt": h.get("attempt"), "seq": payload.get("seq"),
                    "tier": payload.get("tier"), "pid": os.getpid(),
                    "claimed_at": now_iso(), "state": "accepted", "header_digest": digest,
                    "submitted_ts": time.time()}
@@ -950,6 +950,10 @@ def run_job(cfg, job: Path, proc: dict) -> int:
         if cancel.is_set():                     # cancelled (or the lease ran out) meanwhile
             frames.emit("done", ok=False, started_at=now_iso(), duration_s=0.0,
                         slot_wait_s=0.0, interrupted=True)
+        elif h["kind"] == "persona":            # SPEC-0344
+            from . import remote_personas as RPS
+            stage = "run"
+            RPS.run_job(cfg, h, job, frames, cancel)
         else:
             W._run_gates(cfg, h, job, frames, cancel)
         state = "done"

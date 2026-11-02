@@ -96,7 +96,8 @@ EVENT_OPTIONAL = {
 
 # transient run failures: account limits, overload, network-ish API errors
 _TRANSIENT_MARKERS = ("usage_limit", "session limit", "rate limit", "429", "overloaded",
-                      "529", "api_error", "timed out connecting")
+                      "529", "api_error", "timed out connecting",
+                      "write-back:")        # SPEC-0344: a remote run's failed write-back
 
 DEFAULTS = {"poll_s": 2.0, "silent_after_s": 900, "overdue_grace_s": 60,
             "cost_warning_ratio": 0.8,
@@ -348,7 +349,8 @@ def _project_ledger_event(ev: dict, st: dict, sett: dict, warned: bool):
         err = ev.get("result_tail") or ("timed out" if ev.get("timed_out") else "error")
         return "run_failed", {"persona": ev.get("persona"), "run_id": ev.get("run_id"),
                               "transient": _is_transient(err), "error": err[-300:],
-                              "timed_out": bool(ev.get("timed_out"))}
+                              "timed_out": bool(ev.get("timed_out")),
+                              **({"worker": ev["worker"]} if ev.get("worker") else {})}
     if t == "cost" and not warned:
         total, cap = ev.get("total_usd"), ev.get("cap_usd")
         if isinstance(total, (int, float)) and isinstance(cap, (int, float)) and cap > 0 \

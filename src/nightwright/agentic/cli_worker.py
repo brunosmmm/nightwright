@@ -45,6 +45,18 @@ def worker_info(cfg, as_json):
         click.echo(f"{k}: {v}")
 
 
+@worker_group.command("claude-check")
+@click.option("--auth", is_flag=True, help="also run a 1-token `claude -p` auth probe (costs money)")
+@click.pass_obj
+def worker_claude_check(cfg, auth):
+    """SPEC-0344: whether this worker's `claude` works (and, with --auth, is logged in): one
+    nw.worker.claude_check.v1 JSON line; exit 1 when it fails."""
+    rec = W.claude_check(auth)
+    click.echo(json.dumps(rec))
+    if not rec["ok"]:
+        raise SystemExit(1)
+
+
 @worker_group.command("have")
 @click.option("--repo", "repo", required=True, help="the repo_key of the object cache")
 @click.argument("shas", nargs=-1, required=True)

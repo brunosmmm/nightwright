@@ -362,7 +362,7 @@ def test_base_name_check_agrees_with_git_check_ref_format(name):
     (_set("repo_key", "proj\n"), "repo_key"),
     (_set("campaign", "a/b"), "campaign"),
     (_set("spec_id", "../s"), "spec_id"),
-    (_set("kind", "persona"), "kind"),
+    (_set("kind", "build"), "kind"),
     (_set("commit", "zz"), "commit"),
     (_set("commit", "a" * 40 + "\n"), "commit"),
     (_set("base.sha", "not-a-sha"), "base"),

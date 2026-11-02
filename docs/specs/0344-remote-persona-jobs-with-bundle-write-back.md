@@ -1,7 +1,7 @@
 ---
 id: SPEC-0344
 title: "Remote persona jobs with bundle write-back"
-status: accepted
+status: done
 owner: user
 created: 2026-11-01
 updated: 2026-11-02
@@ -231,14 +231,14 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
 
 ## Acceptance criteria
 
-- [ ] A writing persona run on a worker leaves the campaign worktree identical (HEAD, tree,
+- [x] A writing persona run on a worker leaves the campaign worktree identical (HEAD, tree,
       uncommitted changes, including a newly created untracked file) to the same
       `FakeRunner` script run locally.
-- [ ] A read-only persona run on a worker returns the same `verdict` and `verdict_ok`, and
+- [x] A read-only persona run on a worker returns the same `verdict` and `verdict_ok`, and
       the run dir contains `result.json`, the transcript and `request.json`; `request.json`
       equals the local one after normalizing `cwd`, `run_dir`, `add_dirs` and the re-set env
       keys.
-- [ ] A write-back failure (moved HEAD, dirty worktree, stash conflict, corrupt bundle)
+- [x] A write-back failure (moved HEAD, dirty worktree, stash conflict, corrupt bundle)
       leaves the worktree at `base_head` with its prior status (after a stash conflict, via
       `git reset --hard <base_head>` plus `git clean -fd` on the stash's added paths). The
       run's `run.end` has `is_error: true`, `result_tail: "write-back: <reason>"` and
@@ -246,25 +246,25 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
       `write-back:` entry in `_TRANSIENT_MARKERS`); the worker is listed in the step's
       `remote_excluded`; and `_do_persona` re-runs the step once in-process with the local
       runner, without autopark.
-- [ ] A persona job whose coordinator restarts mid-run is re-attached from its SPEC-0341
+- [x] A persona job whose coordinator restarts mid-run is re-attached from its SPEC-0341
       job record (which holds `base_head`, `worker`, `job_id`) by a `RemoteRunner`, and its
       write-back is applied exactly once.
-- [ ] A failed write-back keeps the fetched refs as `saved_refs` in the run record.
-- [ ] A persona with an `add_dirs` entry outside the worktree, with an `allowed_tools` path
+- [x] A failed write-back keeps the fetched refs as `saved_refs` in the run record.
+- [x] A persona with an `add_dirs` entry outside the worktree, with an `allowed_tools` path
       outside the worktree, with an untracked file in the worktree, (if writing) with a
       modified tracked file, the `conflict_resolver` persona, or a worktree with a rebase or
       sequencer in progress, runs locally.
-- [ ] A remote persona run writes the same `run.start`/`run.end` ledger entries as a local
+- [x] A remote persona run writes the same `run.start`/`run.end` ledger entries as a local
       one, so `run_overdue` fires past `timeout_s` and `campaign_silent` stays quiet while
       it is open; `progress` frames land in `progress.json`.
-- [ ] `runner.request_to_job` / `request_from_job` round-trip a `RunRequest`, with
+- [x] `runner.request_to_job` / `request_from_job` round-trip a `RunRequest`, with
       worktree-absolute `allowed_tools` paths made relative and re-anchored at the worker's
       tree. An env key outside the allowlist is refused; stripped keys are re-set by the
       worker.
-- [ ] The run record, and the `run` / `run_failed` events, carry `worker` for a remote run.
-- [ ] `nw workers set --kinds/--persona-slots` updates the record, and `nw workers check
+- [x] The run record, and the `run` / `run_failed` events, carry `worker` for a remote run.
+- [x] `nw workers set --kinds/--persona-slots` updates the record, and `nw workers check
       --auth` passes with a working (fake) `claude` and fails a persona worker without one.
-- [ ] With no persona-capable worker (the default `kinds` is `[gate]`), persona runs are
+- [x] With no persona-capable worker (the default `kinds` is `[gate]`), persona runs are
       unchanged.
 
 ## Test plan
@@ -316,6 +316,82 @@ working `claude` fails the check. This needs one more allowed subcommand on the 
 - **Regression guard:** affected tests while iterating. The persona-run and queue tests run
   unchanged with no workers.
 
+### As shipped (2026-11-02)
+
+- **Where it lives.** `runner.py` has `request_to_job` / `request_from_job`, `NotRemotable`,
+  the env sets (`ENV_VERBATIM`, `ENV_RESET`) and the `RemoteRunner` class; its logic, the
+  worker's `run_job`, eligibility (`dispatch`, `ineligible`), write-back and the
+  `claude-check` client are in the new `remote_personas.py`. `queue._do_persona` asks
+  `remote_personas.dispatch` for the runner. Worktree-absolute `allowed_tools` paths travel
+  as the token `${NW_TREE}` (the worktree-relative form) and are re-anchored at the worker's
+  tree.
+- **`run.start` / `run.end`.** The queue still writes both (`_prepare_run`, `_record_run`), so
+  a remote run's entries are the local ones by construction; `run.end` gains `worker` and,
+  after a failed write-back, `writeback_failed` and `saved_refs`. `RunResult` gains
+  `worker`, `writeback_failed` and `saved_refs`; `run.json` gains `worker` (null when local).
+- **Persona jobs need the async protocol.** A worker qualifies only when its cached `info`
+  lists `async` (SPEC-0341); `nw worker info` now also lists the `persona` feature. A persona
+  header is refused by the synchronous `gate-job`.
+- **Before the worker holds the job** (the bundle cut, the header, `submit`), any failure runs
+  the persona locally at once, as a gate run falls back.
+- **A lost job** (the worker reports it lost or unknown, it stays unreachable past
+  `worker_ttl_s`, its deadline passes, or it ends in `error`) is cancelled, recorded with
+  `workers.record_loss` (SPEC-0342's per-worker loss count and escalation), and the run then
+  goes local on the coordinator. There is no second remote attempt: SPEC-0342's
+  cross-worker retry chain is keyed by gate seq. A job cancelled by a park or abandon ends
+  as an interrupted run.
+- **Write-back details.** After `git stash apply --index <wip>` the coordinator runs
+  `git reset -q`, so new files are untracked and modifications unstaged, as a local run
+  leaves them (the worker's `git add -A` staged everything). The rollback also re-applies a
+  `git stash create` snapshot taken before the fast-forward. That snapshot is empty unless the
+  clean check is bypassed, as the stash-conflict test does, so "its prior status" holds
+  there too. A failed write-back's `RunResult` drops the remote verdict (`verdict: null`), so
+  its findings are not recorded next to the local re-run's.
+- **`remote_excluded`** is written to `state.json` by `_do_persona` (under the item lock) and
+  to the step's snapshot. `_apply`'s `finish` drops it, so it is cleared when the step
+  completes. The local re-run gets its own `run.start` (`retry_of`, `remote_excluded`) and run
+  dir, and the failed run's `run.end` and `cost` are on the ledger before the re-run starts.
+- **Adoption.** `queue._adopt` now also runs with a non-detachable local runner (for
+  example `FakeRunner`) when a live persona job record exists, adopting only the runs that
+  have one. Write-back is marked `writeback: applied` on the record before `run.json` and the
+  record's deletion.
+- **Worker identity.** When the worker's tree has no `user.name` / `user.email`, the job sets
+  a fallback (`nightwright worker`), so the persona's commits and the `wip` stash can be
+  created.
+- **`nw workers check`** runs `nw worker claude-check` on a persona worker: `claude --version`
+  always, and the 1-token `claude -p` probe with `--auth`. Both are new subcommands in the
+  forced-command grammar.
+
+### Test record (2026-11-02)
+
+- `uv run pytest -q tests/test_remote_personas.py`: 26 passed. It covers write-back equality
+  (a commit plus an uncommitted tracked edit and a new untracked file; trees, `status
+  --porcelain` and `git diff` equal, and equal trees after `commit_all`), the read-only
+  reviewer (same verdict, `result.json` / `stream.jsonl` / `request.json`, `request.json`
+  equal after dropping `cwd` and `started_at`), `progress.json`, the four write-back failures
+  (moved HEAD, dirty tree, stash conflict with the clean check stubbed, corrupt bundle),
+  restart/adoption (detach, then adopt, write-back once; an `applied` record is not applied
+  again), eligibility (seven local-only cases, read-only on a modified tree, default kinds,
+  the persona slot pool), serialization, env allowlist (coordinator, worker rebuild and
+  header validation), `run_overdue` without `campaign_silent` while a remote run is open,
+  `nw workers set`, `check --auth` with a working and a failing fake `claude`, and the SSH
+  grammar.
+- Related modules, `uv run pytest -q -n 4` over `test_agentic_runner.py`,
+  `test_agentic_adopt.py`, `test_agentic_campaign_runs.py`, `test_agentic_events.py`,
+  `test_agentic_personas.py`, `test_worker.py`, `test_worker_ssh_command.py`,
+  `test_workers_registry.py`, `test_remote_gates.py`, `test_remote_job_records.py`,
+  `test_worker_jobs.py`, `test_worker_job_retry.py` and this file: 674 passed, 2 failed. Both
+  failures were assertions this spec changes on purpose: `persona` is now a valid header kind
+  (the bad-kind case now uses `build`), and `info` lists the `persona` feature. Both were
+  updated and pass.
+- `nw idea clock-in IDEA-560` was refused inside the campaign run (`NW_PERSONA_RUN=1`), so
+  this run has no clock entry.
+- `python3 tools/affected_tests.py` selects the full suite (105/225 files), which is left to
+  gating.
+- The manual steps (a real `claude` login on a second machine and a real campaign's
+  implementer on it) were not run: this host's only registered worker, `box`, is disabled and
+  has no `async` feature. They are left to the human and to SPEC-0346's integration suite.
+
 ## Rollout / migration
 
 Implementation sessions clock in and out on the linked idea (`nw idea clock-in IDEA-560` /
@@ -328,11 +404,11 @@ Implementation sessions clock in and out on the linked idea (`nw idea clock-in I
 
 ## Definition of done
 
-- [ ] Acceptance criteria all met.
-- [ ] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
-- [ ] No regressions.
-- [ ] Spec body updated to match what shipped.
-- [ ] `docs/LEDGER.md` updated (status + date).
+- [x] Acceptance criteria all met.
+- [x] Test plan executed; automated tests pass (`uv run pytest`); manual steps performed.
+- [x] No regressions.
+- [x] Spec body updated to match what shipped.
+- [x] `docs/LEDGER.md` updated (status + date).
 
 ## Open questions
 
