@@ -50,13 +50,13 @@ WAIT_TICK_S = 1.0                   # the waiting step's record poll
 EXPIRES_S = 15 * 60                 # a signed header's `expires_at` - `issued_at`
 CLOCK_SKEW_S = 120.0
 MAX_FRAMES_BYTES = 4 << 20          # a frames batch (and any other JSON body)
-MAX_BUNDLE_BYTES = 64 << 20         # a result bundle
+MAX_BUNDLE_BYTES = 64 << 20         # a result bundle, or one frame uploaded out of band
 TAILSCALE_NETS = (ipaddress.ip_network("100.64.0.0/10"),
                   ipaddress.ip_network("fd7a:115c:a1e0::/48"))
 SIGNED_FIELDS = ("issued_at", "expires_at", "nonce", "bundle_sha256", "sig")
 _CHUNK = 1 << 16
 _HEX64 = re.compile(r"^[0-9a-f]{64}\Z")
-_JOB_PATH = re.compile(r"^/v1/jobs/(?P<id>[A-Za-z0-9._-]+)/(?P<what>bundle|frames|result-bundle)\Z")
+_JOB_PATH = re.compile(r"^/v1/jobs/(?P<id>[A-Za-z0-9._-]+)/(?P<what>bundle|frames|result-bundle|frame-upload)\Z")
 
 
 class PullError(Exception):
@@ -211,6 +211,16 @@ def result_bundle_path(cfg, job_id: str) -> Path:
     return uploads_dir(cfg) / f"{job_id}.result.bundle"
 
 
+def frame_upload_path(cfg, job_id: str, sha: str) -> Path:
+    """One frame too big for a frames batch, uploaded out of band (`PUT frame-upload`)."""
+    return uploads_dir(cfg) / f"{job_id}.frame-{sha}"
+
+
+def frame_uploads(cfg, job_id: str) -> list[Path]:
+    d = uploads_dir(cfg)
+    return sorted(d.glob(f"{job_id}.frame-*")) if d.is_dir() else []
+
+
 @contextmanager
 def _flock(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -309,7 +319,7 @@ def drop_job_files(cfg, job_id: str) -> None:
     """A finished pull job's spool, lock, upload and queue files."""
     unqueue(cfg, job_id)
     for p in (spool_path(cfg, job_id), frames_dir(cfg) / f"{job_id}.lock",
-              result_bundle_path(cfg, job_id)):
+              result_bundle_path(cfg, job_id), *frame_uploads(cfg, job_id)):
         p.unlink(missing_ok=True)
 
 
@@ -482,8 +492,10 @@ def apply_frames(cfg, worker: str, job_id: str, frames: list) -> dict:
     """`POST /v1/jobs/<id>/frames`: apply the frames after the record's `pull_cursor`, in `n`
     order, stopping at a gap. A gate job's frames go through `_Job.feed` (its files and cursor);
     a `done` whose `result_bundle_sha256` was not uploaded yet is refused with 409 and the
-    cursor unchanged. A refusal mid-batch keeps the frames before it applied (the record's
-    cursor matches the spool). Returns `{cursor, cancel, job_lease_s}`."""
+    cursor unchanged. A stub `{n, frame_sha256}` stands for a frame uploaded out of band
+    (`PUT frame-upload`): it is applied as that frame (409 until it is uploaded). A refusal or
+    failure mid-batch keeps the frames before it applied (the record's cursor matches the
+    spool). Returns `{cursor, cancel, final, job_lease_s}`."""
     if not isinstance(frames, list) or not all(isinstance(f, dict) for f in frames):
         raise PullError(400, "`frames` must be a list of objects")
     _job_for(cfg, worker, job_id)
@@ -505,6 +517,9 @@ def apply_frames(cfg, worker: str, job_id: str, frames: list) -> dict:
                     continue
                 if n != cursor + 1:
                     break
+                upload = None
+                if frame.get("frame_sha256"):
+                    frame, upload = _uploaded_frame(cfg, job_id, frame, cursor)
                 if frame.get("type") == "done" and frame.get("result_bundle_sha256"):
                     p = result_bundle_path(cfg, job_id)
                     if not p.is_file() or _sha_file(p) != frame["result_bundle_sha256"]:
@@ -525,19 +540,39 @@ def apply_frames(cfg, worker: str, job_id: str, frames: list) -> dict:
                 with open(spool_path(cfg, job_id), "a", encoding="utf-8") as f:
                     f.write(json.dumps(frame, ensure_ascii=False) + "\n")
                 cursor = n
+                if upload is not None:                  # spooled now: the upload is done with
+                    upload.unlink(missing_ok=True)
                 if rec.get("kind") != "gate":
                     fields.update(cursor=n, state="attached")
                 if fields.get("pull_state") in ("done", "error"):
                     break
-        except PullError:
+        except BaseException:
             if cursor > start:
                 _renewed(cfg, rec, pull_cursor=cursor, **fields)
             raise
         rec = _renewed(cfg, rec, pull_cursor=cursor, **fields)
-    if rec.get("pull_state") in ("done", "error"):
+    final = rec.get("pull_state") in ("done", "error")
+    if final:
         unqueue(cfg, job_id)
-    return {"cursor": cursor, "cancel": _cancel_flag(rec),
+    return {"cursor": cursor, "cancel": _cancel_flag(rec), "final": final,
             "job_lease_s": RJ.settings(cfg)["job_lease_s"]}
+
+
+def _uploaded_frame(cfg, job_id: str, stub: dict, cursor: int) -> tuple[dict, Path]:
+    """The frame a `{n, frame_sha256}` stub stands for, and its upload: 409 until it is
+    uploaded, 400 when the upload is not that frame."""
+    sha = stub["frame_sha256"]
+    p = frame_upload_path(cfg, job_id, sha) if isinstance(sha, str) and _HEX64.match(sha) \
+        else None
+    if p is None or not p.is_file() or _sha_file(p) != sha:
+        raise PullError(409, "the frame is not uploaded yet", cursor=cursor)
+    try:
+        frame = json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        frame = None
+    if not isinstance(frame, dict) or frame.get("n") != stub["n"] or frame.get("frame_sha256"):
+        raise PullError(400, f"the upload {sha} is not frame {stub['n']}", cursor=cursor)
+    return frame, p
 
 
 def _gate_job(cfg, worker: str, rec: dict):
@@ -569,6 +604,15 @@ def store_result_bundle(cfg, worker: str, job_id: str, tmp: Path, sha: str) -> d
     with job_lock(cfg, job_id):
         os.replace(tmp, result_bundle_path(cfg, job_id))
     RJ.update(cfg, job_id, result_bundle_sha256=sha)
+    return {"sha256": sha}
+
+
+def store_frame_upload(cfg, worker: str, job_id: str, tmp: Path, sha: str) -> dict:
+    """`PUT /v1/jobs/<id>/frame-upload`: one frame too big for a frames batch, kept under its
+    sha256 until the frames post that names it applies it."""
+    _job_for(cfg, worker, job_id)
+    with job_lock(cfg, job_id):
+        os.replace(tmp, frame_upload_path(cfg, job_id, sha))
     return {"sha256": sha}
 
 
@@ -841,7 +885,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             m = _JOB_PATH.match(path)
             known = (method == "POST" and path in ("/v1/lease", "/v1/heartbeat")) or (
                 m is not None and (method, m.group("what")) in (
-                    ("GET", "bundle"), ("POST", "frames"), ("PUT", "result-bundle")))
+                    ("GET", "bundle"), ("POST", "frames"), ("PUT", "result-bundle"),
+                    ("PUT", "frame-upload")))
             if not known:
                 raise PullError(404, "no such endpoint")
             w = self._auth()
@@ -856,17 +901,22 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if what == "frames":
                 return self._send(200, apply_frames(cfg, w["name"], job_id,
                                                     self._json().get("frames")))
-            if what == "result-bundle":
+            if what in ("result-bundle", "frame-upload"):
                 _job_for(cfg, w["name"], job_id)
                 tmp, sha = self._body(MAX_BUNDLE_BYTES)
+                put = store_result_bundle if what == "result-bundle" else store_frame_upload
                 try:
-                    return self._send(200, store_result_bundle(cfg, w["name"], job_id, tmp, sha))
+                    return self._send(200, put(cfg, w["name"], job_id, tmp, sha))
                 finally:
                     tmp.unlink(missing_ok=True)
             return self._bundle(w, job_id)
         except PullError as e:
             self.close_connection = True        # the body may be unread
             self._send(e.status, e.body)
+        except (TypeError, KeyError, AttributeError) as e:     # a body of the wrong shape
+            self.close_connection = True
+            with contextlib.suppress(OSError):
+                self._send(400, {"error": f"{type(e).__name__}: {e}"})
         except (OSError, ValueError) as e:
             self.close_connection = True
             with contextlib.suppress(OSError):

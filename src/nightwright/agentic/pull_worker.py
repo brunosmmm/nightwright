@@ -3,7 +3,10 @@
 Lease a job (long-poll), fetch its bundle, verify the signed header (signature, expiry, nonce,
 bundle hash), start the job process exactly as `nw worker submit` does, then tail its
 `frames.jsonl` to `POST frames` every second. A `done` frame's result bundle is PUT first and the
-frame carries its sha256 instead. Every successful frames post or heartbeat renews the local
+frame carries its sha256 instead; a frame still too big for a batch is PUT whole (`frame-upload`)
+and posted as a `{n, frame_sha256}` stub, and one over the upload cap becomes an `error` frame,
+so the job ends instead of retrying forever. One job's failed post never stops the others'
+heartbeats or the next lease. Every successful frames post or heartbeat renews the local
 `lease.json` by the coordinator's `job_lease_s`, so a job outlives an outage only while that
 lease lasts. `cancel: true` runs `nw worker cancel`; 410 cancels that job; 401 (revoked) cancels
 every local job and exits non-zero. The posted cursor comes from the server, so a restart
@@ -31,6 +34,7 @@ BACKOFF_START_S, BACKOFF_MAX_S = 2.0, 60.0
 TICK_S = 1.0
 MAX_BATCH_BYTES = 3 << 20           # under the server's 4 MiB frames cap
 CALL_TIMEOUT_S = PJ.LEASE_WAIT_S + 30
+TLS_KEYS = ("ca", "cert", "key")
 
 
 class Revoked(Exception):
@@ -51,6 +55,12 @@ def load_conf(cfg, blob: str | None, conf: str | None) -> dict:
     p = Path(conf) if conf else conf_path(cfg)
     if blob:
         doc = PJ.parse_blob(blob)
+        try:                                    # a re-enrolment keeps the TLS settings
+            old = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            old = {}
+        if isinstance(old, dict):
+            doc = {**{k: old[k] for k in TLS_KEYS if old.get(k)}, **doc}
         PJ.write_private(p, json.dumps(doc, indent=2, sort_keys=True) + "\n")
         return doc
     try:
@@ -196,9 +206,17 @@ class Loop:
                 return 130
 
     def tick(self) -> None:
+        """Sync every job (a failure is that job's alone), then heartbeat when due (or when a
+        sync failed, so the leases of the jobs whose post failed are still renewed), then lease.
+        A coordinator that is down fails the heartbeat or the lease, and `run` backs off."""
+        failed = False
         for jid in list(self.jobs):
-            self.sync(jid)
-        if self.jobs and time.monotonic() >= self.next_hb:
+            try:
+                self.sync(jid)
+            except Transport as e:
+                _log(f"{jid}: frames not posted ({e})")
+                failed = True
+        if self.jobs and (failed or time.monotonic() >= self.next_hb):
             self.heartbeat()
         free = self.slots - len(self.jobs)
         if free <= 0:
@@ -281,23 +299,59 @@ class Loop:
         self.jobs.pop(jid, None)
         self._save_tracked()
 
-    def _outgoing(self, jid: str, frame: dict) -> dict | None:
-        """A `done` frame's result bundle goes up first (`PUT result-bundle`); the frame then
-        carries `result_bundle_sha256` instead of the bytes. None when the upload failed."""
+    def _outgoing(self, jid: str, frame: dict) -> tuple[dict, bytes] | None:
+        """The frame as posted, with its JSON. A `done` frame's result bundle goes up first
+        (`PUT result-bundle`); the frame then carries `result_bundle_sha256` instead of the
+        bytes. A frame still over `MAX_BATCH_BYTES` goes up whole (`PUT frame-upload`) and a
+        `{n, frame_sha256}` stub stands for it. An upload over the coordinator's cap turns the
+        frame into an `error` frame (the job ends). None when an upload failed (next tick)."""
         bundle = frame.get("bundle")
-        if frame.get("type") != "done" or not isinstance(bundle, dict) \
-                or not bundle.get("bundle_b64"):
-            return frame
-        data = base64.b64decode(bundle["bundle_b64"])
-        status, _ = self.client.call("PUT", f"/v1/jobs/{jid}/result-bundle", data,
-                                     ctype="application/octet-stream")
-        if status != 200:
-            _log(f"{jid}: result-bundle upload got HTTP {status}")
-            if status == 410:
-                self._gone(jid)
+        if frame.get("type") == "done" and isinstance(bundle, dict) and bundle.get("bundle_b64"):
+            data = base64.b64decode(bundle["bundle_b64"])
+            got = self._upload(jid, "result-bundle", data)
+            if got is None:
+                return None
+            if got is False:
+                return self._too_big(jid, frame, "result bundle", len(data))
+            frame = {**frame, "bundle": {**bundle, "bundle_b64": None},
+                     "result_bundle_sha256": got}
+        raw = json.dumps(frame).encode("utf-8")
+        if len(raw) <= MAX_BATCH_BYTES:
+            return frame, raw
+        got = self._upload(jid, "frame-upload", raw)
+        if got is None:
             return None
-        return {**frame, "bundle": {**bundle, "bundle_b64": None},
-                "result_bundle_sha256": hashlib.sha256(data).hexdigest()}
+        if got is False:
+            return self._too_big(jid, frame, "frame", len(raw))
+        stub = {"schema": frame.get("schema"), "type": frame.get("type"), "job_id": jid,
+                "n": frame.get("n"), "frame_sha256": got}
+        return stub, json.dumps(stub).encode("utf-8")
+
+    def _upload(self, jid: str, what: str, data: bytes):
+        """PUT `data` to `/v1/jobs/<jid>/<what>`: its sha256, False when it is over the cap
+        (nothing is sent past the cap), None when the upload failed (410 also drops the job)."""
+        if len(data) > PJ.MAX_BUNDLE_BYTES:
+            return False
+        status, _ = self.client.call("PUT", f"/v1/jobs/{jid}/{what}", data,
+                                     ctype="application/octet-stream")
+        if status == 200:
+            return hashlib.sha256(data).hexdigest()
+        _log(f"{jid}: {what} upload got HTTP {status}")
+        if status == 413:
+            return False
+        if status == 410:
+            self._gone(jid)
+        return None
+
+    def _too_big(self, jid: str, frame: dict, what: str, size: int) -> tuple[dict, bytes]:
+        """An `error` frame in place of a frame the coordinator cannot take."""
+        _log(f"{jid}: frame {frame.get('n')}'s {what} is {size} bytes, over the coordinator's "
+             f"cap; the job ends with an error")
+        err = {"schema": W.FRAME_SCHEMA, "type": "error", "job_id": jid, "at": now_iso(),
+               "n": frame.get("n"), "stage": "frames",
+               "error": f"frame {frame.get('n')} ({frame.get('type')}): its {what} is {size} "
+                        f"bytes, over the coordinator's {PJ.MAX_BUNDLE_BYTES}-byte upload cap"}
+        return err, json.dumps(err).encode("utf-8")
 
     def _gone(self, jid: str) -> None:
         _log(f"{jid}: the coordinator gave the job up (410)")
@@ -316,12 +370,18 @@ class Loop:
             return False
         if status == 409:                       # the bundle is not stored yet: next tick
             return True
+        if status == 413 and frames:            # cannot happen within MAX_BATCH_BYTES
+            frame = frames[0]
+            return self._post(jid, [self._too_big(jid, frame, "batch",
+                                                  len(json.dumps(frames)))[0]])
         if status != 200:
             raise Transport(f"frames: HTTP {status}: {body.get('error')}")
         self._set_lease_s(body)
         st = self.jobs[jid]
         if isinstance(body.get("cursor"), int):
             st["posted"] = body["cursor"]
+        if body.get("final"):                   # done or error there: it takes no more frames
+            st["final"] = True
         self._renew(jid)
         if body.get("cancel"):
             self.cancel(jid)
@@ -344,10 +404,10 @@ class Loop:
                 frame = json.loads(raw)
             except ValueError:
                 continue
-            frame = self._outgoing(jid, frame) if isinstance(frame, dict) else None
-            if frame is None or jid not in self.jobs:
+            out = self._outgoing(jid, frame) if isinstance(frame, dict) else None
+            if out is None or jid not in self.jobs:
                 break
-            n = len(json.dumps(frame))
+            frame, n = out[0], len(out[1])
             if batch and size + n > MAX_BATCH_BYTES:
                 if not self._post(jid, batch):
                     return
@@ -357,7 +417,11 @@ class Loop:
         if jid not in self.jobs or not self._post(jid, batch):
             return
         state = WJ.job_state(self.cfg, job)["state"]
-        if state in ("done", "error", "lost") and st["posted"] >= WJ._last_n(job):
+        if st.get("final") and state not in ("done", "error", "lost") \
+                and st["posted"] < WJ._last_n(job):
+            self.cancel(jid)                    # it ended there (an error): stop it here
+        if state in ("done", "error", "lost") and (st["posted"] >= WJ._last_n(job)
+                                                   or st.get("final")):
             if state == "lost" and not reader.final:
                 _log(f"{jid}: the job process was lost")
             self.drop(jid)

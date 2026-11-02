@@ -1,6 +1,7 @@
 """SPEC-0334: the pull-worker API's security rules. The API server runs in a thread on
 127.0.0.1:0 (`test_pull_workers.Pull`); requests are raw `http.client` calls or the worker's
 own `pull_worker.Client` / `Loop`, in process, unless a test needs `nw worker serve` itself."""
+import base64
 import hashlib
 import http.client
 import json
@@ -460,10 +461,154 @@ def test_prune_drops_a_pull_jobs_spool_and_upload(world, pull):
     _lease(world)
     tok = pull.tokens["box"]
     assert _call(pull, "PUT", f"/v1/jobs/{JOB}/result-bundle", tok, b"x")[0] == 200
+    assert _call(pull, "PUT", f"/v1/jobs/{JOB}/frame-upload", tok, b"{}")[0] == 200
     assert _call(pull, "POST", f"/v1/jobs/{JOB}/frames", tok, {"frames": [
         {"type": "accepted", "n": 1, "job_id": JOB}]})[0] == 200
-    assert PJ.spool_path(world.cfg, JOB).exists()
+    assert PJ.spool_path(world.cfg, JOB).exists() and PJ.frame_uploads(world.cfg, JOB)
     RJ.update(world.cfg, JOB, state="local")
     assert RJ.prune(world.cfg, CID) == [JOB]
     assert not PJ.spool_path(world.cfg, JOB).exists()
     assert not PJ.result_bundle_path(world.cfg, JOB).exists()
+    assert not PJ.frame_uploads(world.cfg, JOB)
+
+
+def test_a_body_of_the_wrong_shape_gets_400(world, pull):
+    lease = {"kinds": ["gate"], "slots_free": 1, "wait_s": [1]}
+    assert _call(pull, "POST", "/v1/lease", pull.tokens["box"], lease)[0] == 400
+
+
+# ---- frames too big for a batch (out-of-band upload, isolation) ------------------------------
+
+BIG = 5 << 20                           # one frame over the server's 4 MiB frames cap
+
+
+def _persona_rec(w: World, job_id: str, worker="box"):
+    now = time.time()
+    RJ.create(w.cfg, job_id=job_id, campaign=CID, worker=worker, attempt=1, seq=0,
+              submitted_at=now, deadline_at=now + 600, kind="persona")
+    RJ.update(w.cfg, job_id, pull=True, pull_state="leased", pull_cursor=0,
+              lease_until=now + 60)                 # live, and short of a renewal's 900 s
+
+
+def _local_job(loop: PL.Loop, job_id: str, frames: list, done: bool):
+    """A job dir on the worker holding `frames` (ended with `result.json` when `done`)."""
+    job = loop._job(job_id)
+    job.mkdir(parents=True)
+    (job / "frames.jsonl").write_text("".join(json.dumps(f) + "\n" for f in frames))
+    if done:
+        (job / "result.json").write_text(json.dumps({"state": "done"}))
+    loop.jobs[job_id] = {"posted": None, "cancelled": False}
+
+
+def _big_done(job_id: str, n: int, bundle: bytes) -> dict:
+    return {"schema": "nw-worker-frame/1", "type": "done", "job_id": job_id, "n": n, "ok": True,
+            "files": {"transcript.jsonl": "x" * BIG},
+            "bundle": {"head": "a" * 40, "wip": None,
+                       "bundle_b64": base64.b64encode(bundle).decode()}}
+
+
+def test_a_frame_stub_applies_only_once_its_upload_is_stored(world, pull):
+    job_id = f"{CID}-persona-001-implementer-a1"
+    _persona_rec(world, job_id)
+    frame = {"type": "progress", "n": 1, "job_id": job_id, "ts": 1, "pad": "y" * 100}
+    raw = json.dumps(frame).encode()
+    sha = hashlib.sha256(raw).hexdigest()
+    stub = {"type": "progress", "n": 1, "job_id": job_id, "frame_sha256": sha}
+    tok = pull.tokens["box"]
+    st, body = _call(pull, "POST", f"/v1/jobs/{job_id}/frames", tok, {"frames": [stub]})
+    assert st == 409 and body["cursor"] == 0
+    assert _call(pull, "PUT", f"/v1/jobs/{job_id}/frame-upload", tok, raw)[0] == 200
+    assert _call(pull, "PUT", f"/v1/jobs/{job_id}/frame-upload", pull.tokens["box2"],
+                 raw)[0] == 403
+    st, body = _call(pull, "POST", f"/v1/jobs/{job_id}/frames", tok, {"frames": [stub]})
+    assert st == 200 and body["cursor"] == 1 and body["final"] is False
+    assert PJ.read_spool(world.cfg, job_id) == [frame]
+    assert not PJ.frame_uploads(world.cfg, job_id)
+    stub2 = {"type": "progress", "n": 2, "job_id": job_id, "frame_sha256": sha}
+    assert _call(pull, "POST", f"/v1/jobs/{job_id}/frames", tok, {"frames": [stub2]})[0] == 409
+    wrong = json.dumps({**frame, "n": 3}).encode()      # an upload that is not frame 2
+    assert _call(pull, "PUT", f"/v1/jobs/{job_id}/frame-upload", tok, wrong)[0] == 200
+    stub2["frame_sha256"] = hashlib.sha256(wrong).hexdigest()
+    st, body = _call(pull, "POST", f"/v1/jobs/{job_id}/frames", tok, {"frames": [stub2]})
+    assert st == 400 and body["cursor"] == 1
+
+
+def test_a_frame_over_the_frames_cap_goes_up_out_of_band_and_the_job_ends(world, pull):
+    big, small = f"{CID}-persona-001-implementer-a1", f"{CID}-persona-002-implementer-a1"
+    _persona_rec(world, big)
+    _persona_rec(world, small)
+    loop = _loop(pull)
+    loop.slots = 2
+    bundle = b"result bundle bytes"
+    _local_job(loop, big, [{"type": "accepted", "n": 1, "job_id": big},
+                           _big_done(big, 2, bundle)], done=True)
+    _local_job(loop, small, [{"type": "accepted", "n": 1, "job_id": small}], done=False)
+    before = RJ.read(world.cfg, small)["lease_until"]
+    loop.tick()
+    rec = RJ.read(world.cfg, big)
+    assert rec["pull_state"] == "done" and rec["pull_cursor"] == 2
+    spooled = PJ.read_spool(world.cfg, big)[-1]
+    assert spooled["files"]["transcript.jsonl"] == "x" * BIG and "frame_sha256" not in spooled
+    assert PJ._with_bundle(world.cfg, big, spooled)["bundle"]["bundle_b64"] == \
+        base64.b64encode(bundle).decode()
+    assert not PJ.frame_uploads(world.cfg, big)
+    assert big not in loop.jobs                         # ended and fully posted: dropped
+    assert small in loop.jobs and RJ.read(world.cfg, small)["lease_until"] > before
+
+
+def test_a_frame_over_the_upload_cap_becomes_an_error_frame(world, pull, monkeypatch):
+    monkeypatch.setattr(PJ, "MAX_BUNDLE_BYTES", 1 << 20)
+    job_id = f"{CID}-persona-001-implementer-a1"
+    _persona_rec(world, job_id)
+    loop = _loop(pull)
+    frames = [{"type": "accepted", "n": 1, "job_id": job_id}, _big_done(job_id, 2, b"b"),
+              {"type": "progress", "n": 3, "job_id": job_id, "ts": 2}]
+    _local_job(loop, job_id, frames, done=False)
+    cancelled = []
+    monkeypatch.setattr(PL.WJ, "cancel", lambda cfg, jid, out: cancelled.append(jid))
+    loop.sync(job_id)
+    rec = RJ.read(world.cfg, job_id)
+    assert rec["pull_state"] == "error" and rec["pull_cursor"] == 2
+    assert rec["pull_error"]["stage"] == "frames" and "upload cap" in rec["pull_error"]["error"]
+    assert cancelled == [job_id]                        # it ended there: stopped here
+    (loop._job(job_id) / "result.json").write_text(json.dumps({"state": "done"}))
+    loop.sync(job_id)
+    assert job_id not in loop.jobs                      # the server takes no more: dropped
+
+
+def test_one_jobs_failed_post_never_stops_the_others_or_the_heartbeat(world, pull):
+    bad, good = f"{CID}-persona-001-implementer-a1", f"{CID}-persona-002-implementer-a1"
+    _persona_rec(world, bad)
+    _persona_rec(world, good)
+    loop = _loop(pull)
+    loop.slots = 3
+    for jid in (bad, good):
+        _local_job(loop, jid, [{"type": "accepted", "n": 1, "job_id": jid}], done=False)
+    loop.next_hb = time.monotonic() + 3600              # not due: only the failure forces it
+    real, calls = loop.client.call, []
+
+    def call(method, path, *a, **kw):
+        calls.append(path)
+        if path == f"/v1/jobs/{bad}/frames":
+            raise PL.Transport("connection reset")
+        return real(method, path, *a, **kw)
+    loop.client.call = call
+    before = {j: RJ.read(world.cfg, j)["lease_until"] for j in (bad, good)}
+    loop.tick()                                         # no exception escapes
+    assert "/v1/heartbeat" in calls and "/v1/lease" in calls
+    for jid in (bad, good):                             # both leases renewed
+        assert RJ.read(world.cfg, jid)["lease_until"] > before[jid]
+    assert RJ.read(world.cfg, good)["pull_cursor"] == 1
+    assert bad in loop.jobs and loop.jobs[bad]["posted"] is None
+
+
+def test_re_enrolling_keeps_the_tls_settings(tmp_path):
+    cfg = {"config_dir": str(tmp_path), "data_dir": str(tmp_path)}
+    blob = PJ.enrol_blob("https://c:8790", "box", "t1", "s1")
+    PL.load_conf(cfg, blob, None)
+    p = PL.conf_path(cfg)
+    p.write_text(json.dumps({**json.loads(p.read_text()), "ca": "/ca.pem", "cert": "/c.pem",
+                             "key": "/k.pem"}))
+    doc = PL.load_conf(cfg, PJ.enrol_blob("https://c:8790", "box", "t2", "s2"), None)
+    assert doc["token"] == "t2" and doc["ca"] == "/ca.pem" and doc["key"] == "/k.pem"
+    assert json.loads(p.read_text())["cert"] == "/c.pem"

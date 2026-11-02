@@ -374,6 +374,61 @@ Fixes from the adversarial review, no Design change:
 - The cross-machine manual steps are still not run, so the spec stays `in-progress`. The full
   suite is left to gating.
 
+### As shipped (2026-11-02, loop 4)
+
+Fixes from the second adversarial review. The 4 MiB frames-batch cap stands; one endpoint is
+added to the API table:
+
+- **Frames too big for a batch.** A frame whose JSON is still over the worker's 3 MiB batch size
+  once its result bundle is uploaded goes up whole by `PUT /v1/jobs/<id>/frame-upload` (the
+  64 MiB cap, hashed like the result bundle) and is posted as a stub `{n, frame_sha256}`. The
+  server applies the stub as the uploaded frame: 409 until the upload is stored, 400 when the
+  upload is not frame `n`. The spool holds the whole frame, and the upload is deleted once it is
+  applied. Such frames are gate frames carrying big logs and persona `done` frames carrying
+  run files.
+- **Over the upload cap.** A frame or result bundle over 64 MiB is never sent. The worker posts
+  an `error` frame (`stage: "frames"`) in its place, so the job ends as an error instead of
+  being retried forever. A 413 on the upload or on a frames post is handled the same way.
+- **Final jobs.** The frames response also carries `final` (the job is `done` or `error` on the
+  server). Once a job is final, the worker drops it when the job ends locally. If the job is
+  still running there with frames the server will never take, the worker cancels it first.
+- **Per-job isolation.** `tick` catches a `Transport` failure per job. A failed sync forces the
+  heartbeat, so every job's lease is renewed, including the failing job's, and the lease poll
+  still runs. A coordinator that is down fails the heartbeat or the lease, and `run` backs off as
+  before.
+- **Smaller fixes.** A body of the wrong shape (TypeError, KeyError) gets 400, not a dropped
+  connection. `apply_frames` keeps the cursor of the frames already applied when any exception
+  interrupts a batch, not only a refusal. Re-enrolling (`--enrol`) keeps `ca`, `cert` and
+  `key` from the existing `coordinator.json`. `prune` and the step's cleanup also remove
+  leftover frame uploads.
+
+### Test record (2026-11-02, loop 4)
+
+- New in `tests/test_pull_workers_security.py`:
+  - A stub before its upload gets 409. After the PUT it applies, and the whole frame is
+    spooled with the upload removed. Another worker's PUT gets 403. An upload that is not
+    frame `n` gets 400 with the cursor kept.
+  - Two persona jobs in one `Loop.tick`. One has a 5 MiB `done` frame with a result bundle:
+    it ends `done`, its whole frame is spooled, the bundle can be read back, and the job is
+    dropped. The other job's lease is renewed.
+  - A frame over the upload cap (the cap lowered to 1 MiB) ends the job with
+    `stage: "frames"`, cursor 2. The running local job is cancelled, then dropped once it
+    ends.
+  - One job's frames post raises `Transport`. The tick completes, runs the heartbeat and the
+    lease poll, and both jobs' leases are renewed.
+  - Re-enrolling keeps the TLS keys.
+  - A body of the wrong shape gets 400.
+  - `prune` removes frame uploads.
+- With `pull_worker.py` and `pull_jobs.py` reverted to the previous commit, the five new
+  out-of-band, cap, isolation, stub and enrol tests fail.
+- `uv run pytest -q -n 0 tests/test_pull_workers_security.py`: 45 passed (before the 400 and
+  prune additions). Then `uv run pytest -q -n 4 tests/test_pull_workers.py
+  tests/test_pull_workers_security.py tests/test_remote_job_records.py
+  tests/test_remote_personas.py tests/test_workers_registry.py tests/test_worker_job_retry.py`:
+  258 passed. `python3 tools/spec_lint.py`: ok.
+- The cross-machine manual steps are still not run, so the spec stays `in-progress`. The full
+  suite is left to gating.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-561` / `nw idea clock-out IDEA-561`.

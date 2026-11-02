@@ -179,10 +179,12 @@ def prune(cfg, campaign: str, keep=()) -> list[str]:
             if rec.get("campaign") == campaign and rec.get("state") in FINAL \
                     and rec["job_id"] not in keep:
                 path(cfg, rec["job_id"]).unlink(missing_ok=True)
-                if rec.get("pull"):             # SPEC-0334: its spool, lock and upload
+                if rec.get("pull"):             # SPEC-0334: its spool, lock and uploads
+                    up = agentic_dir(cfg) / "job-uploads"
                     for p in (agentic_dir(cfg) / "job-frames" / f"{rec['job_id']}.jsonl",
                               agentic_dir(cfg) / "job-frames" / f"{rec['job_id']}.lock",
-                              agentic_dir(cfg) / "job-uploads" / f"{rec['job_id']}.result.bundle"):
+                              up / f"{rec['job_id']}.result.bundle",
+                              *(up.glob(f"{rec['job_id']}.frame-*") if up.is_dir() else ())):
                         p.unlink(missing_ok=True)
                 out.append(rec["job_id"])
     return out
