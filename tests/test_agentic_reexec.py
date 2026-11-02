@@ -119,8 +119,11 @@ def test_reexec_off_by_default(tmp_path, monkeypatch):
     n = iter(range(100))
     monkeypatch.setattr(Q, "tick", lambda *a, **k: (
         _commit(root, "src/nightwright/x.py", f"B = {next(n)}\n", "c"), real_tick(*a, **k))[1])
+    start_sha = _git(root, "rev-parse", "HEAD")
     Q.run(cfg, max_ticks=2, poll_interval_s=0, code_root=root)
-    assert calls == [] and Q.read_journal(cfg)[0].get("code_sha") is None
+    # SPEC-0375 records the started code_sha even with re-exec off (stale-code line); off means
+    # no re-exec and no tracking of later commits, so it stays the sha the runner started on
+    assert calls == [] and Q.read_journal(cfg)[0].get("code_sha") == start_sha
 
 
 def test_real_execve_adopts_the_lease(tmp_path):
