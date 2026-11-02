@@ -259,7 +259,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0345](./specs/0345-persona-cap-rate-limit-backoff-affinity-and-cost-by-worker.md) | Persona cap, rate-limit backoff, campaign affinity and cost by worker | feature | accepted | — | 2026-11-01 |
 | [SPEC-0346](./specs/0346-remote-workers-integration-suite.md) | Remote workers integration suite for gate and persona workers | feature | accepted | — | 2026-11-01 |
 | [SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) | Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane | epic | accepted | M9: agentic workflow | 2026-11-01 |
-| [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gating goes green on current trees: worker runs worktrees.setup, stash-create tolerates a stat-dirty tree, done.changed is exposed | feature | proposed | — | 2026-11-01 |
+| [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run | feature | proposed | — | 2026-11-01 |
 
 ## Done
 
