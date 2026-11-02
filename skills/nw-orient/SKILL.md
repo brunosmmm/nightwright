@@ -38,6 +38,17 @@ These apply to every session that touches nightwright — conductor, steward, bu
   their own checkout. Never hand the human a list of parameters or judgment calls to adjust.
   **Only single-project sessions (a steward, the human's own session) may ask the human and
   wait. The conductor never does: it routes to `steward:<P>` or `nw queue escalate`.**
+- **Gating on the worker box (`nw gate run`, SPEC-0381).** To verify a worktree, branch or stash,
+  run the project's gates on a worker box instead of a heavy local pytest: the box has gate
+  slots, the local machine must not run heavy suites. Forms (exact flags: `nw gate run --help`):
+  `nw gate run --project <P> --worktree <path>` (HEAD, or a stash commit of a dirty tree),
+  `nw gate run --branch B`, repeatable ad-hoc `--cmd '...'` (replaces the project gates),
+  `--tier loop|close|all`, `--wait-s N` (wait for a slot), `--detach` (background), `--json`
+  (`nw.gatejob.v1`). Follow a job with `nw gate status|logs|cancel|list GATEJOB-NNNN`.
+  Exit codes: 0 green, 1 red, 2 cannot start, 3 box unavailable, 4 transport failure,
+  130 cancelled. Worker pools only: it never falls back to running locally, and campaigns get
+  slots first. Needs gates in `.nw/project.yaml` or `--cmd`. Known limit: remote gates skip
+  `worktrees.setup` (IDEA-800).
 
 ## What `nw` is
 

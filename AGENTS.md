@@ -60,6 +60,9 @@ Cursor may load from `~/.claude/plugins` even when you are not using Claude Code
   *Decision*/*Design* as you go — don't let it drift from reality.
 - **Follow the spec's Test plan.** If a feature spec has no Test plan, it is incomplete —
   add one before writing code.
+- **Heavy gates go to the box.** To run the project's gates/tests when they are heavy enough to
+  need the worker box, use `nw gate run` (SPEC-0381; see the nw-orient skill's "Gating on the
+  worker box" section), not a local full suite.
 - **Clock in/out on the linked idea** (SPEC-0060/0061): `nw idea clock-in <IDEA-ID>` when you
   start working a spec's implementation, `nw idea clock-out <IDEA-ID>` when you pause or
   finish. This is supplemental wall-time data alongside nightwright's passive transcript tracking —

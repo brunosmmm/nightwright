@@ -88,7 +88,10 @@ def gate_run(cfg, project, worktree, branch, base, tier, cmds, by, wait, wait_s,
     """Gate a worktree or a branch on a worker box, without a campaign (SPEC-0381).
 
     Exit 0 green, 1 red, 2 cannot start, 3 box unavailable (no placeable worker or no slot
-    within --wait-s), 4 transport failure, 130 cancelled. Never runs gates locally."""
+    within --wait-s), 4 transport failure, 130 cancelled. Never runs gates locally.
+
+    \b
+    Example: nw gate run --project Meta-Tools --worktree . --tier close --json"""
     if worktree and branch:
         raise click.UsageError("--worktree and --branch are exclusive")
     if not J.settings(cfg)["enabled"]:
