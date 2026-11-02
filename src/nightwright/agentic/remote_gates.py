@@ -596,7 +596,8 @@ def _start_io(proc, header: dict, bundle: Path, cancel: threading.Event,
             os.close(fd)
 
 
-def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop) -> Outcome:
+def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop, *,
+              gates_dir: Path | None = None) -> Outcome:
     argv = worker["ssh_argv"] + [worker["ssh"], worker["nw"], "worker", "gate-job"]
     slot_wait_s = settings(cfg)["slot_wait_s"]
     try:
@@ -609,7 +610,7 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
     err_tail: collections.deque = collections.deque(maxlen=20)
     order = [g["name"] for g in header["payload"]["gates"]]
     names = set(order)
-    gates_dir = store.gates_dir(cfg, cid)
+    gates_dir = store.gates_dir(cfg, cid) if gates_dir is None else Path(gates_dir)
     results: list = []
     started, worker_wait = False, 0.0
     t0, started_at = time.monotonic(), store.now_iso()
@@ -828,6 +829,42 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
             return _failed(cfg, cid, rec, job, seq, f)
         _record_failure(cfg, cid, worker, job_id, seq, f)
         return Outcome(None, f.worker_wait_s, f)
+    finally:
+        bundle.unlink(missing_ok=True)
+
+
+def run_detached(worker: str, project_cfg: dict, state: dict, cfg, seq: int, gates_dir: Path,
+                 stop: threading.Event | None = None) -> G.GateRun:
+    """SPEC-0379: one gate run on `worker` for a caller that is not a campaign (the base-branch
+    sentinel): the synchronous `gate-job` path only (no `remote_jobs` record, so nothing for a
+    runner restart to adopt), logs written to `gates_dir`, and no campaign ledger. `state` is
+    the campaign-shaped `{id, project, spec_id, repo: {worktree, base}}` `prepare` reads; its
+    `id` names the job. A transport failure sets the worker's cooldown (as `_record_failure`
+    does) and is raised as RemoteFailure; a stop returns an interrupted run."""
+    cid = state["id"]
+    job_id = f"{cid}-gate-{seq:03d}-t{int(time.time())}"
+    gates_dir = Path(gates_dir)
+    gates_dir.mkdir(parents=True, exist_ok=True)
+    bundle = gates_dir / f".{job_id}.bundle"
+    started_at, t0 = store.now_iso(), time.monotonic()
+    try:
+        _check_stop(stop)
+        rec = next((w for w in WK.load(cfg) if w["name"] == worker), None)
+        if rec is None or not WK.placeable(rec):
+            raise RemoteFailure("registry", f"worker {worker!r} is not placeable", cooldown=False)
+        header = prepare(rec, project_cfg, state, cfg, seq, job_id, bundle, stop=stop)
+        _check_stop(stop)
+        out = _dispatch(rec, header, bundle, cfg, cid, seq, stop, gates_dir=gates_dir)
+        return out.run
+    except _Stopped:
+        return G.GateRun(seq, False, (), started_at, round(time.monotonic() - t0, 3),
+                         interrupted=True)
+    except RemoteFailure as f:
+        for q in gates_dir.glob(f"{seq:03d}-*"):
+            q.unlink(missing_ok=True)
+        if f.cooldown:
+            set_cooldown(cfg, worker)
+        raise
     finally:
         bundle.unlink(missing_ok=True)
 

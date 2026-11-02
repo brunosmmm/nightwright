@@ -238,6 +238,21 @@ base) stays too and is named as `orphans` on the event. A git error (an unresolv
 `worktrees.setup` is rerun until it has succeeded once (`<project>.setup.json`), and again when
 the setup commands change.
 
+**Affected-only close and the clock sentinel (SPEC-0378/0379).** nightwright's own close-tier
+`pytest` gate runs `tools/affected_tests.py ... --run uv run pytest`, the tests the branch affects
+against `merge-base($NW_BASE, HEAD)`, never the bare full suite; its fallbacks are narrowed
+(nested conftest, metadata-only `pyproject.toml`, own-version `uv.lock` bump, removed modules,
+hub-only modules, unmapped files and the old 40% cap no longer force it) and `close.force_full` /
+`NW_CLOSE_FULL` only turn reuse off. The full suite runs on the sentinel: `affected_tests.py`
+selects everything under `NW_SENTINEL` (local run), an `NW_CAMPAIGN` starting `sentinel-` (the
+worker run) or `NW_AFFECTED_FULL=1`. Besides the reuse triggers the runner starts a project's
+sentinel on the clock when it has close gates, its base moved since the last green sentinel and
+that run is older than `agentic.sentinel.interval_hours` (nw config, default 6; 0, `false` or
+null turns the clock off). The run takes a worker-box gate slot while a worker is placeable
+(SPEC-0374, never local overflow then) and runs there through `remote_gates.run_detached`; a
+worker transport failure is a failed run (retried after the hour or when the base moves), not a
+local fallback.
+
 - `nw queue sentinel run --project P` runs the sentinel now (waits for a gate slot; exits 1 when
   red or when another run of `P` holds the lock; `--json` emits `nw.queue.sentinel.v1`).
 - `nw queue sentinel clear --project P` clears `force_full_close` and `due_since`; the suspects

@@ -531,3 +531,166 @@ def test_drain_waiting_on_lists_a_running_sentinel(sw):
     gate.set()
     pool.sentinel[1].result()
     pool.shutdown()
+
+
+# ---- SPEC-0379: the clock trigger and worker placement ------------------------------------------
+
+def _icfg(hours=..., **extra):
+    sec = {} if hours is ... else {"interval_hours": hours}
+    return {"agentic": {"sentinel": sec, **extra}}
+
+
+@pytest.mark.parametrize("raw,hours", [(..., 6.0), (True, 6.0), (6, 6.0), (1.5, 1.5), ("12", 12.0),
+                                       (0, 0.0), (False, 0.0), (None, 0.0), (-3, 0.0)])
+def test_interval_hours_default_and_disable_values(raw, hours):
+    assert SN.interval_hours(_icfg(raw)) == hours
+    assert SN.DEFAULT_INTERVAL_HOURS == 6.0
+
+
+def test_interval_hours_rejects_a_non_number():
+    with pytest.raises(ValueError, match="interval_hours"):
+        SN.interval_hours(_icfg("often"))
+    assert SN.interval_hours({}) == 6.0                       # no agentic section at all
+
+
+def _time_due(world, hours=..., *, base="b" * 40, now=NOW, pcfg=None, **st):
+    cfg = {**world["cfg"], **_icfg(hours)}
+    SN._write(SN.state_path(cfg, PROJECT), _st(**st))
+    return SN.time_due(cfg, PROJECT, base, project_cfg=pcfg or {"sentinel": SCFG}, now=now)
+
+
+def test_time_due_when_the_base_moved_and_the_last_green_is_older_than_the_interval(world):
+    old = dict(last_green_sha="a" * 40, last_green_at=_iso(-7 * 3600))
+    assert _time_due(world, **old)                                        # 7h > 6h default
+    assert not _time_due(world, last_green_sha="a" * 40, last_green_at=_iso(-5 * 3600))   # not yet
+    assert _time_due(world, last_green_sha="a" * 40)                      # never timestamped
+    assert _time_due(world)                                               # never green at all
+
+
+def test_time_due_not_when_the_base_is_the_last_green_sha(world):
+    assert not _time_due(world, last_green_sha="b" * 40, last_green_at=_iso(-30 * 86400))
+
+
+@pytest.mark.parametrize("off", [0, False, None, -1])
+def test_time_due_disabled_by_the_interval(world, off):
+    assert not _time_due(world, off, last_green_sha="a" * 40, last_green_at=_iso(-30 * 86400))
+
+
+def test_time_due_disabled_with_the_project_sentinel(world):
+    assert not _time_due(world, pcfg={"sentinel": {**SCFG, "enabled": False}},
+                         last_green_sha="a" * 40, last_green_at=_iso(-30 * 86400))
+
+
+def test_time_due_follows_an_interval_change(world):
+    st = dict(last_green_sha="a" * 40, last_green_at=_iso(-7 * 3600))
+    assert _time_due(world, 6, **st)
+    assert not _time_due(world, 12, **st)
+    assert _time_due(world, 0.5, **st)
+
+
+def test_time_due_on_an_unreadable_state(world):
+    cfg = world["cfg"]
+    path = SN.state_path(cfg, PROJECT)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{nope")
+    assert SN.time_due(cfg, PROJECT, "b" * 40, project_cfg={"sentinel": SCFG}, now=NOW)
+
+
+def _stale_green(sw, sha="a" * 40):
+    SN._write(SN.state_path(sw["cfg"], PROJECT),
+              _st(last_green_sha=sha, last_green_at=_iso(-30 * 86400)))
+
+
+def test_clock_trigger_schedules_a_run_on_a_moved_base(sched):
+    sw, ctx, started = sched
+    _stale_green(sw)                                     # not due by count, due on the clock
+    assert not SN.check_due(sw["cfg"], PROJECT, project_cfg=sw["pcfg"])
+    pool = Q.StepPool()
+    assert Q._sentinel_step(ctx, pool, []) == PROJECT
+    pool.sentinel[1].result()
+    assert started == [PROJECT]
+    pool.shutdown()
+
+
+def test_clock_trigger_off_unmoved_base_or_no_close_gates(sched):
+    sw, ctx, started = sched
+    _stale_green(sw, git.rev_parse(sw["root"]))          # green at the current base
+    assert Q._sentinel_step(ctx, Q.StepPool(), []) is None
+    _stale_green(sw)
+    sw["cfg"]["agentic"]["sentinel"] = {"interval_hours": 0}
+    assert Q._sentinel_step(ctx, Q.StepPool(), []) is None
+    sw["cfg"]["agentic"]["sentinel"] = {"interval_hours": 6}
+    sw["pcfg"]["gates"] = [g for g in sw["pcfg"]["gates"] if g.get("when") != "close"]
+    assert Q._sentinel_step(ctx, Q.StepPool(), []) is None
+    assert started == []
+
+
+def test_placement_prefers_worker_pools_and_never_local_while_one_is_placeable(sw, monkeypatch):
+    from nightwright.agentic import remote_gates as RG
+    from nightwright.agentic import workers as WK
+    wt = SN.worktree_path(sw["cfg"], PROJECT)
+    monkeypatch.setattr(WK, "gate_pools", lambda cfg, *a, **k: [("box", 6)])
+    monkeypatch.setattr(RG, "ineligible", lambda *a: None)
+    monkeypatch.setattr(RG, "header_refusal", lambda *a: None)
+    pools, repool, state = SN._placement(sw["cfg"], PROJECT, sw["pcfg"], wt, 1)
+    assert pools == [("box", 6)] and repool() == [("box", 6)]
+    assert state["id"] == f"sentinel-{PROJECT}" and state["spec_id"] is None
+    assert state["id"].startswith("sentinel-")           # affected_tests.py: full suite
+    assert state["repo"] == {"worktree": str(wt), "base": SN._base(sw["pcfg"])}
+    monkeypatch.setattr(RG, "ineligible", lambda *a: {"reason": "untracked"})
+    assert SN._placement(sw["cfg"], PROJECT, sw["pcfg"], wt, 1)[:2] == (None, None)
+    monkeypatch.setattr(RG, "ineligible", lambda *a: None)
+    monkeypatch.setattr(WK, "gate_pools", lambda cfg, *a, **k: [(WK.LOCAL, 2)])
+    assert SN._placement(sw["cfg"], PROJECT, sw["pcfg"], wt, 1)[:2] == (None, None)
+
+
+def _fake_slot(pool):
+    import contextlib
+
+    @contextlib.contextmanager
+    def acquire(cfg, owner, **kw):
+        acquire.kw = kw
+        yield SimpleNamespace(pool=pool, interrupted=False)
+    return acquire
+
+
+def test_run_on_a_worker_slot_runs_the_close_gates_there(sw, monkeypatch):
+    from nightwright.agentic import gates as G
+    from nightwright.agentic import remote_gates as RG
+    from nightwright.agentic import workers as WK
+    monkeypatch.setattr(WK, "gate_pools", lambda cfg, *a, **k: [("box", 6)])
+    monkeypatch.setattr(RG, "ineligible", lambda *a: None)
+    monkeypatch.setattr(RG, "header_refusal", lambda *a: None)
+    acq = _fake_slot("box")
+    monkeypatch.setattr(gate_slots, "acquire", acq)
+    calls = []
+
+    def detached(worker, pcfg, state, cfg, seq, gates_dir, stop=None):
+        calls.append((worker, [g["name"] for g in pcfg["gates"]], state["id"]))
+        res = G.GateResult(name="full", required=True, ok=True, exit_code=0, timed_out=False,
+                           duration_s=1.0, log="001-full.log", tail="")
+        return G.GateRun(seq=seq, ok=True, results=(res,), started_at="", duration_s=1.0,
+                         worker=worker)
+    monkeypatch.setattr(RG, "run_detached", detached)
+    out = SN.run(sw["cfg"], PROJECT, project_cfg=sw["pcfg"])
+    assert out["ok"] and calls == [("box", ["full"], f"sentinel-{PROJECT}")]
+    assert acq.kw["pools"] == [("box", 6)] and acq.kw["repool"] is not None
+    assert SN.read(sw["cfg"], PROJECT)["last_green_sha"] == out["sha"]
+
+
+def test_remote_transport_failure_is_a_failed_run_not_a_local_fallback(sw, monkeypatch):
+    from nightwright.agentic import remote_gates as RG
+    from nightwright.agentic import workers as WK
+    monkeypatch.setattr(WK, "gate_pools", lambda cfg, *a, **k: [("box", 6)])
+    monkeypatch.setattr(RG, "ineligible", lambda *a: None)
+    monkeypatch.setattr(RG, "header_refusal", lambda *a: None)
+    monkeypatch.setattr(gate_slots, "acquire", _fake_slot("box"))
+
+    def boom(*a, **k):
+        raise RG.RemoteFailure("transport", "ssh died")
+    monkeypatch.setattr(RG, "run_detached", boom)
+    ran_local = []
+    monkeypatch.setattr(SN.G, "run_gate_with_retries", lambda *a, **k: ran_local.append(a))
+    with pytest.raises(RuntimeError, match="remote sentinel on box failed"):
+        SN.run(sw["cfg"], PROJECT, project_cfg=sw["pcfg"])
+    assert ran_local == []

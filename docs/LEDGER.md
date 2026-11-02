@@ -603,6 +603,8 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0375](./specs/0375-queue-restart.md) | nw queue restart: graceful runner restart with park/resume and a stale-code indicator | feature | done | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0376](./specs/0376-close-tier-remote-eligibility-reuse-from.md) | Close-tier gates with reuse_from stay remote-eligible (the job header drops reuse_from) | feature | done | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0377](./specs/0377-blocked-implementer-does-not-gate.md) | A blocked implementer run with no new commit does not advance to GATING | feature | done | M9: agentic workflow | 2026-11-02 |
+| [SPEC-0378](./specs/0378-affected-only-close-gate.md) | Affected-only close gate: the close tier runs the affected selection, with narrowed full-suite fallbacks | feature | done | M9: agentic workflow | 2026-11-02 |
+| [SPEC-0379](./specs/0379-time-based-sentinel-on-worker-slots.md) | Clock-triggered full-suite sentinel on main, placed on worker-box gate slots | feature | done | M9: agentic workflow | 2026-11-02 |
 
 ## Superseded / rejected
 

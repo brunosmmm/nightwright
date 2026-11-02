@@ -4010,7 +4010,10 @@ def _sentinel_step(ctx: _Ctx, pool: StepPool, busy: list) -> str | None:
     a gate slot (a live waiter marker, or a GATING campaign whose gate step did not start) and
     no sentinel is in flight. A project whose run lock is held (a CLI run) is skipped, and one
     `SN.backoff` holds back (green or cleared red at the same base sha, or a red / failed run
-    there less than `SN.RETRY_S` ago) waits. Returns the project started, if any."""
+    there less than `SN.RETRY_S` ago) waits. SPEC-0379: a project is also due on the clock
+    (`SN.time_due`: the base moved since the last green run, which is older than
+    `agentic.sentinel.interval_hours`) when it has close gates; the candidates stay the projects
+    with sentinel state (every merge records it). Returns the project started, if any."""
     cfg = ctx.cfg
     fl = pool.sentinel
     if fl is not None:
@@ -4039,13 +4042,17 @@ def _sentinel_step(ctx: _Ctx, pool: StepPool, busy: list) -> str | None:
     for project in candidates:
         try:
             pcfg = P.project_config(cfg, project)
-            if not SN.check_due(cfg, project, root=pcfg.get("_root"), project_cfg=pcfg):
-                continue
+            due = SN.check_due(cfg, project, root=pcfg.get("_root"), project_cfg=pcfg)
+            if not due and (SN.interval_hours(cfg) <= 0 or not P.gates_for(pcfg, "close")):
+                continue                                    # the clock is off / nothing to run
             if SN.running(cfg, project):
                 continue                                    # a CLI run holds the lock
             # an unresolvable base (renamed branch, re-cloned repo) is a failure, not a run
             base_sha = git.rev_parse(pcfg.get("_root") or P.project_root(cfg, project),
                                      SN._base(pcfg))
+            if not due and not SN.time_due(cfg, project, base_sha, root=pcfg.get("_root"),
+                                           project_cfg=pcfg):
+                continue
             why = SN.backoff(cfg, project, base_sha)
         except (GitError, ValueError, OSError) as e:         # never out of the tick
             err = " ".join(str(e).split())[:500]

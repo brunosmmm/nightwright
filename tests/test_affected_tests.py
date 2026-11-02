@@ -1,4 +1,5 @@
-"""SPEC-0328 / SPEC-0357: `tools/affected_tests.py`, static affected-test selection for loop gates.
+"""SPEC-0328 / SPEC-0357 / SPEC-0378: `tools/affected_tests.py`, static affected-test selection for
+loop and close gates.
 
 Every case builds a small temp git repo shaped like nightwright (src/nightwright + tests), branches off main,
 changes files, and checks the selection (or the full-suite fallback)."""
@@ -48,6 +49,9 @@ FILES = {
 def _git_env(monkeypatch):
     for k, v in ENV.items():
         monkeypatch.setenv(k, v)
+    # SPEC-0378: the sentinel (which runs this file too) forces the full suite through these
+    for k in ("NW_SENTINEL", "NW_CAMPAIGN", "NW_AFFECTED_FULL", "NW_AFFECTED_STRICT", "NW_BASE"):
+        monkeypatch.delenv(k, raising=False)
 
 
 def _git(repo, *args):
@@ -159,8 +163,7 @@ def test_unsafe_changes_fall_back_to_the_full_suite_in_strict_mode(repo, rel):
     assert sel.full and sel.tests == [], sel.reason
 
 
-@pytest.mark.parametrize("rel", ["tests/conftest.py", "tests/waits.py", "pyproject.toml", "uv.lock",
-                                 "tests/sub/conftest.py"])
+@pytest.mark.parametrize("rel", ["tests/conftest.py", "uv.lock"])    # root conftest; a lock added
 def test_unmappable_changes_still_fall_back_to_the_full_suite(repo, rel):
     _change(repo, "src/nightwright/base.py", rel)
     sel = _select(repo, max_fraction=1.0)
@@ -183,16 +186,22 @@ def test_src_module_no_test_reaches_falls_back(repo):
     assert sel.full and "orphan" in sel.reason
 
 
-def test_module_reached_only_through_the_hub_falls_back(repo):
+def test_module_reached_only_through_the_hub_selects_the_hub_tests(repo):
+    # SPEC-0378: was the full suite; now the tests reaching it through the hub
     _change(repo, "src/nightwright/lonely.py")                 # only cli imports it
-    sel = _select(repo, max_fraction=1.0)
-    assert sel.full and "no test reaches" in sel.reason
+    sel = _select(repo)
+    assert not sel.full and sel.tests == ["tests/test_cli.py"]
+    assert "through the hubs for src/nightwright/lonely.py" in sel.reason
+    assert _select(repo, strict=True).full                     # strict keeps SPEC-0328
 
 
-def test_removed_module_falls_back(repo):
+def test_removed_module_selects_the_tests_of_what_still_names_it(repo):
+    # SPEC-0378: was the full suite; cli.py still imports lonely, so test_cli
     _git(repo, "rm", "-q", "src/nightwright/lonely.py")
     _git(repo, "commit", "-qm", "rm")
-    assert _select(repo, max_fraction=1.0).full
+    sel = _select(repo)
+    assert not sel.full and sel.tests == ["tests/test_cli.py"], sel.reason
+    assert _select(repo, strict=True).full
 
 
 def test_selection_over_the_fraction_falls_back(repo):
@@ -412,7 +421,7 @@ def test_unwritable_report_path_is_ignored(repo2, tmp_path, monkeypatch):
 
 
 def test_report_for_full_selection_has_empty_tests(repo2, tmp_path, monkeypatch):
-    _change(repo2, "pyproject.toml")
+    _change(repo2, "tests/conftest.py")
     out = tmp_path / "r.json"
     monkeypatch.setenv("NW_GATE_REPORT", str(out))
     _cli(repo2)
@@ -489,15 +498,15 @@ def test_spec_0328_selection_is_identical_in_strict_and_default_mode(repo2, stri
     assert not sel.full and sel.tests == expected, sel.reason
 
 
-@pytest.mark.parametrize("strict", [False, True], ids=["default", "strict"])
 @pytest.mark.parametrize("rel", ["src/nightwright/lonely.py", "src/nightwright/agentic/core.py"])
-def test_removed_and_hub_only_modules_are_full_in_both_modes(repo2, strict, rel):
+def test_removed_and_hub_only_modules_are_full_in_strict_mode_only(repo2, rel):
     if rel.endswith("core.py"):
         _git(repo2, "rm", "-q", rel)
         _git(repo2, "commit", "-qm", "rm")
     else:
         _change(repo2, rel)                                        # reached only through the hub
-    assert _select(repo2, max_fraction=1.0, strict=strict).full
+    assert _select(repo2, max_fraction=1.0, strict=True).full
+    assert not _select(repo2).full                                 # SPEC-0378 default
 
 
 @pytest.mark.parametrize("strict", [False, True], ids=["default", "strict"])
@@ -521,11 +530,11 @@ def test_reason_joins_every_rule_that_fired(repo2):
     assert sel.tests == ["tests/test_agentic_widgets.py", "tests/test_cfg.py"]
 
 
-def test_removed_tools_module_falls_back(repo2):
+def test_removed_tools_module_selects_the_tests_that_name_it(repo2):
     _git(repo2, "rm", "-q", "tools/tool_x.py")
     _git(repo2, "commit", "-qm", "rm")
-    sel = _select(repo2, max_fraction=1.0)
-    assert sel.full and "removed" in sel.reason
+    sel = _select(repo2)
+    assert not sel.full and sel.tests == ["tests/test_tool_import.py"], sel.reason
 
 
 def test_one_mapped_plus_one_unmapped_file_is_full(repo2):
@@ -583,7 +592,7 @@ def test_empty_changed_value_does_not_crash(repo2):
     ("tests/test_mid.py", ["tests/test_base.py"], False, ["tests/test_base.py", "tests/test_mid.py"],
      "RUN tests/test_base.py tests/test_mid.py"),                      # narrowed (+ smoke set)
     ("docs/note.md", [], False, [], "no affected tests"),              # empty selection
-    ("pyproject.toml", ["tests/test_base.py"], True, [], "RUN"),       # full suite
+    ("tests/conftest.py", ["tests/test_base.py"], True, [], "RUN"),    # full suite
 ])
 def test_report_is_written_on_the_run_path(repo2, tmp_path, monkeypatch, change, include, full, tests,
                                            stdout):
@@ -671,3 +680,155 @@ def test_newline_joined_changed_paths_are_split(repo2):
     assert rep["full"] is True and rep["changed"] == ["docs/note.md", "pyproject.toml"]
     r = _cli(repo2, "--changed", ".nw/project.yaml\ndocs/note.md", "--run", "echo", "RUN")
     assert r.stdout.strip() == "RUN tests/test_cfg.py"
+
+
+# --- SPEC-0378: the close gate runs the selection; narrowed fallbacks ----------------------------------
+
+def _rewrite(repo, rel, text):
+    p = repo / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", f"rewrite {rel}")
+
+
+def _sel_base(repo, **kw):
+    return AT.select(repo, AT.changed_files(repo, "main"), base=AT._merge_base(repo, "main"), **kw)
+
+
+def test_no_fraction_cap_by_default(repo2):
+    # the 40% cap made 29 of the last 200 main commits run the full suite; it is gone
+    _commit_new(repo2, {f"tests/test_x{i}.py": "" for i in range(30)})
+    sel = _select(repo2)
+    assert not sel.full and len(sel.tests) == 30
+    assert _select(repo2, strict=True).full                    # strict keeps MAX_FRACTION
+    assert _select(repo2, max_fraction=0.1).full               # an explicit cap still applies
+
+
+def test_nested_conftest_selects_the_tests_below_it(repo):
+    _commit_new(repo, {"tests/sub/__init__.py": "", "tests/sub/test_a.py": "", "tests/sub/deep/test_b.py": ""})
+    _git(repo, "branch", "-f", "main", "HEAD")
+    _change(repo, "tests/sub/conftest.py")
+    sel = _select(repo)
+    assert not sel.full and sel.tests == ["tests/sub/deep/test_b.py", "tests/sub/test_a.py"]
+    assert _select(repo, strict=True).full
+
+
+def test_waits_selects_its_importers_not_the_suite(repo):
+    _commit_new(repo, {"tests/test_waiter.py": "from waits import wait_for\n"})
+    _git(repo, "branch", "-f", "main", "HEAD")
+    _change(repo, "tests/waits.py")
+    sel = _select(repo)
+    assert not sel.full and sel.tests == ["tests/test_waiter.py"]
+
+
+PYPROJECT = """[project]
+name = "nw"
+version = "1.0"
+description = "d"
+dependencies = ["a>=1"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+addopts = "-q"
+"""
+
+
+@pytest.mark.parametrize("old,new,full", [
+    ('version = "1.0"', 'version = "1.1"', False),
+    ('description = "d"', 'description = "e"', False),
+    ("line-length = 100", "line-length = 110", False),               # [tool.ruff]
+    ('dependencies = ["a>=1"]', 'dependencies = ["a>=2"]', True),
+    ('addopts = "-q"', 'addopts = "-x"', True),                     # [tool.pytest]
+    ('[project]', '[build-system]\nrequires = ["x"]\n\n[project]', True),
+    ('name = "nw"', 'name = "nw"\n[[[', True),                       # unparsable
+])
+def test_pyproject_metadata_only_changes_select_nothing(repo, old, new, full):
+    _rewrite(repo, "pyproject.toml", PYPROJECT)
+    _git(repo, "branch", "-f", "main", "HEAD")
+    _rewrite(repo, "pyproject.toml", PYPROJECT.replace(old, new, 1))
+    sel = _sel_base(repo)
+    assert sel.full is full, sel.reason
+    if not full:
+        assert sel.tests == [] and "metadata only" in sel.reason
+    assert _select(repo, strict=True).full                     # strict: any pyproject change
+
+
+LOCK = """version = 1
+
+[[package]]
+name = "nw"
+version = "1.0"
+source = { editable = "." }
+
+[[package]]
+name = "dep"
+version = "2.0"
+"""
+
+
+@pytest.mark.parametrize("old,new,full", [
+    ('name = "nw"\nversion = "1.0"', 'name = "nw"\nversion = "1.1"', False),   # own version bump
+    ('name = "dep"\nversion = "2.0"', 'name = "dep"\nversion = "2.1"', True),  # a dependency moved
+])
+def test_uv_lock_own_version_bump_selects_nothing(repo, old, new, full):
+    _rewrite(repo, "pyproject.toml", PYPROJECT)
+    _rewrite(repo, "uv.lock", LOCK)
+    _git(repo, "branch", "-f", "main", "HEAD")
+    _rewrite(repo, "uv.lock", LOCK.replace(old, new, 1))
+    sel = _sel_base(repo)
+    assert sel.full is full, sel.reason
+
+
+def test_config_change_without_a_base_is_full(repo):
+    sel = AT.select(repo, ["pyproject.toml"])
+    assert sel.full and "no base" in sel.reason
+
+
+def test_removed_module_nothing_names_selects_nothing(repo):
+    _git(repo, "rm", "-q", "src/nightwright/agentic/core.py", "tests/test_core.py")
+    _git(repo, "commit", "-qm", "rm")
+    sel = _select(repo)
+    assert not sel.full and sel.tests == [], sel.reason
+
+
+def test_removed_module_named_by_an_untested_src_module_is_full(repo):
+    _commit_new(repo, {"src/nightwright/gone.py": "G = 1\n", "src/nightwright/orphan.py": "from . import gone\n"})
+    _git(repo, "branch", "-f", "main", "HEAD")
+    _git(repo, "rm", "-q", "src/nightwright/gone.py")
+    _git(repo, "commit", "-qm", "rm")
+    sel = _select(repo)
+    assert sel.full and "reaches no test" in sel.reason
+
+
+def test_unmapped_root_file_selects_the_tests_that_name_it(repo):
+    _commit_new(repo, {"AGENTS.md": "contract\n", "tests/test_agents_doc.py": 'P = "AGENTS.md"\n'})
+    _git(repo, "branch", "-f", "main", "HEAD")
+    _change(repo, "AGENTS.md")
+    sel = _select(repo)
+    assert not sel.full and sel.tests == ["tests/test_agents_doc.py"]
+    assert "reference scan for AGENTS.md" in sel.reason
+
+
+@pytest.mark.parametrize("env", [{"NW_AFFECTED_FULL": "1"}, {"NW_SENTINEL": "Meta-Tools"},
+                                 {"NW_CAMPAIGN": "sentinel-Meta-Tools"}])
+def test_sentinel_environment_forces_the_full_suite(repo, monkeypatch, env):
+    _change(repo, "tests/test_mid.py")
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    r = _cli(repo, "--run", "echo", "RUN")
+    assert r.returncode == 0 and r.stdout.strip() == "RUN" and "full suite" in r.stderr
+    assert AT.forced_full()
+
+
+@pytest.mark.parametrize("env", [{}, {"NW_AFFECTED_FULL": "0"}, {"NW_CAMPAIGN": "Meta-Tools-0042-x"},
+                                 {"NW_SENTINEL": " "}])
+def test_campaign_environment_does_not_force_the_full_suite(repo, monkeypatch, env):
+    _change(repo, "tests/test_mid.py")
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    r = _cli(repo, "--run", "echo", "RUN")
+    assert r.stdout.strip() == "RUN tests/test_mid.py"
+    assert AT.forced_full() is None

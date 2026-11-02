@@ -15,7 +15,12 @@ unreadable one is left in place and declines reuse (R1) until a sentinel run rew
 Runs of one project are serialized by a non-blocking flock on `<agentic>/sentinel/<project>.lock`
 (a second run raises `Busy`). Each finished run is noted in `<project>.last.json` so the runner
 does not resubmit a red or failed run at the same base sha before `RETRY_S`, nor a green one, nor
-one whose red result was cleared by `nw queue sentinel clear`, until the base moves."""
+one whose red result was cleared by `nw queue sentinel clear`, until the base moves.
+
+SPEC-0379: the sentinel is also due on a clock (`time_due`): the base moved since the last green
+run and that run is older than `agentic.sentinel.interval_hours` (default 6; 0 / false / null
+turn it off). A run takes a worker-box gate slot whenever a worker is placeable (SPEC-0374's
+`workers.gate_pools`) and runs there; the local pool only when none is."""
 from __future__ import annotations
 
 import datetime as dt
@@ -38,6 +43,7 @@ from . import store
 STATE_FILE = "gate_reuse.json"
 UNREADABLE = f"{STATE_FILE} unreadable"
 RETRY_S = 3600          # a red / failed run at an unmoved base is retried after this long
+DEFAULT_INTERVAL_HOURS = 6.0    # SPEC-0379: `agentic.sentinel.interval_hours` when unset
 _KEYS = ("reuses_since_green", "last_green_sha", "last_green_at", "due_since",
          "force_full_close", "suspects")
 
@@ -158,6 +164,44 @@ def _mark_due(st: dict, scfg: dict, now=None) -> bool:
         st["due_since"] = _iso(now)
         return True
     return False
+
+
+def interval_hours(cfg) -> float:
+    """SPEC-0379: `agentic.sentinel.interval_hours` of the nw config: DEFAULT_INTERVAL_HOURS when
+    the key is absent (or `true`); 0.0 (off) for 0, `false`, null or a negative number. A value
+    that is not a number raises ValueError."""
+    sec = (cfg.get("agentic") or {}).get("sentinel")
+    if not isinstance(sec, dict) or "interval_hours" not in sec:
+        return DEFAULT_INTERVAL_HOURS
+    raw = sec["interval_hours"]
+    if raw is None or raw is False:
+        return 0.0
+    if raw is True:
+        return DEFAULT_INTERVAL_HOURS
+    try:
+        hours = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"agentic.sentinel.interval_hours must be a number of hours, 0 or "
+                         f"false to disable; got {raw!r}")
+    return hours if hours > 0 and hours == hours else 0.0
+
+
+def time_due(cfg, project, base_sha, *, root=None, project_cfg=None, now=None) -> bool:
+    """SPEC-0379: the clock trigger. True when `interval_hours` is on, the project's sentinel is
+    enabled, `base_sha` is not the last green sha, and the last green run is older than the
+    interval (or there never was one). An unreadable state is due (a run rewrites it)."""
+    hours = interval_hours(cfg)
+    scfg = settings(project_cfg)[1]
+    if hours <= 0 or not scfg["enabled"]:
+        return False
+    try:
+        st = read(cfg, project, root=root, project_cfg=project_cfg, now=now)
+    except Unreadable:
+        return True
+    if base_sha and st.get("last_green_sha") == base_sha:
+        return False
+    at = _ts(st.get("last_green_at"))
+    return at is None or _now(now) - at >= hours * 3600.0
 
 
 # ---- rebuild after state loss ------------------------------------------------------------
@@ -530,9 +574,20 @@ def _run_locked(cfg, project, *, project_cfg, stop, now, hooks, tested) -> dict:
            "NW_SENTINEL": str(project)}
     ph = {"spec_id": None, "campaign": owner, "worktree": str(wt), "base": _base(pcfg)}
     results, interrupted = [], False
-    with gate_slots.acquire(cfg, owner, stop=stop) as hold:
+    pools, repool, state = _placement(cfg, project, pcfg, wt, seq)
+    with gate_slots.acquire(cfg, owner, stop=stop, pools=pools, repool=repool) as hold:
         if hold.interrupted:
             interrupted = True
+        elif hold.pool is not None:             # SPEC-0379: a worker-box slot, run there
+            from . import remote_gates as RG
+            try:
+                run = RG.run_detached(hold.pool, {**pcfg, "gates": P.gates_for(pcfg, "close")},
+                                      state, cfg, seq, logs, stop=stop)
+            except RG.RemoteFailure as f:
+                raise RuntimeError(f"remote sentinel on {hold.pool} failed "
+                                   f"({f.stage}): {f.error}"[:500])
+            results = list(run.results) if run is not None else []
+            interrupted = run is None or run.interrupted
         else:
             for gate in P.gates_for(pcfg, "close"):
                 if stop is not None and stop.is_set():
@@ -559,6 +614,27 @@ def _run_locked(cfg, project, *, project_cfg, stop, now, hooks, tested) -> dict:
                      now=now, base=_base(pcfg))
     out.update(suspects=settled, failing=failing)
     return out
+
+
+def _placement(cfg, project, pcfg, wt, seq):
+    """SPEC-0379: `(pools, repool, state)` for the run's slot. Worker pools while a worker is
+    placeable (`workers.gate_pools`, SPEC-0374: no local overflow unless configured), and the
+    campaign-shaped `state` a remote run reads; `(None, None, state)` (local only) when no worker
+    is placeable or the project's close gates cannot run remotely (`remote_gates.ineligible`,
+    a header the worker would refuse)."""
+    from . import remote_gates as RG
+    from . import workers as WK
+    safe = "".join(c if c.isalnum() or c in "._-" else "-" for c in str(project)) or "project"
+    state = {"id": f"sentinel-{safe}", "project": project, "spec_id": None,
+             "repo": {"worktree": str(wt), "base": _base(pcfg)}}
+    pools = WK.gate_pools(cfg)
+    if all(name is WK.LOCAL for name, _n in pools):
+        return None, None, state
+    close_cfg = {**pcfg, "gates": P.gates_for(pcfg, "close")}
+    if RG.ineligible(close_cfg, str(wt)) is not None \
+            or RG.header_refusal(close_cfg, state, cfg, seq) is not None:
+        return None, None, state
+    return pools, (lambda: WK.gate_pools(cfg)), state
 
 
 def _orphans(root, base, suspects) -> list:

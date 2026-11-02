@@ -20,7 +20,10 @@ def test_dogfood_project_config_loads_and_names_the_gates():
     assert gates["pytest"]["reuse_from"] == "pytest-affected"     # SPEC-0359
     assert "reuse_from" not in gates["pytest-affected"]
     assert not doc.get("close", {}).get("force_full")              # SPEC-0359: no escape hatch
-    assert gates["pytest"]["cmd"].startswith("uv run pytest")
+    # SPEC-0378: the close gate runs the affected selection, never the bare full suite
+    assert gates["pytest"]["cmd"].startswith("python3 tools/affected_tests.py")
+    assert "--run uv run pytest" in gates["pytest"]["cmd"]
+    assert gates["pytest"]["retries"] == 2 and "{failing}" in gates["pytest"]["retry_cmd"]
     assert gates["pytest"]["required"] and gates["spec-lint"]["required"]
     assert "spec_lint.py" in gates["spec-lint"]["cmd"]
     assert "--write-ledger" in gates["spec-lint"]["cmd"]   # regenerate, then lint

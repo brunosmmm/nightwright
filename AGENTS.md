@@ -74,9 +74,10 @@ A spec may be set `status: done` only when **all** of these are true:
       manual verification performed and noted in the spec. While iterating, run only the
       **affected tests** (`python3 tools/affected_tests.py --run uv run pytest -q`,
       SPEC-0328) plus the files you touched; do not run the full suite by hand.
-- [ ] **No regressions:** the full suite (`uv run pytest`) passes at the queue's close gate
-      (SPEC-0309/0328). Agents do not run it themselves or wait on it; outside the queue
-      (a human or direct-to-main change), affected tests + `spec_lint` are enough.
+- [ ] **No regressions:** the affected tests pass at the queue's close gate (SPEC-0378); the
+      full suite (`uv run pytest`) runs only as the periodic sentinel on main (SPEC-0379).
+      Agents never run the full suite themselves or wait on it; outside the queue (a human or
+      direct-to-main change), affected tests + `spec_lint` are enough.
 - [ ] The spec body reflects what actually shipped (not the original guess).
 - [ ] [`docs/LEDGER.md`](./docs/LEDGER.md) regenerated (`python3 tools/spec_lint.py
       --write-ledger`) so the spec's new status shows.
