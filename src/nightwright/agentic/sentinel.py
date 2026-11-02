@@ -179,11 +179,35 @@ def _reused_merges(cfg, project) -> list[dict]:
     return out
 
 
+def _ancestor(root, rev, tip) -> bool | None:
+    """`git merge-base --is-ancestor rev tip`: True (exit 0), False (exit 1), or None when git
+    cannot answer (another exit code, a timeout, a missing repo)."""
+    if not root or not rev or not tip:
+        return None
+    try:
+        code = git.git(root, "merge-base", "--is-ancestor", str(rev), str(tip),
+                       check=False).returncode
+    except (git.GitError, ValueError, OSError):
+        return None
+    return {0: True, 1: False}.get(code)
+
+
+def _known(root, sha) -> bool:
+    """`sha` names a commit git knows (False when git cannot say)."""
+    if not root or not sha:
+        return False
+    try:
+        return git.git(root, "cat-file", "-e", f"{sha}^{{commit}}", check=False).returncode == 0
+    except (git.GitError, ValueError, OSError):
+        return False
+
+
 def _contains(root, tested_sha, merge_sha) -> bool:
-    """`merge_sha` is `tested_sha` or one of its ancestors (False when git cannot say)."""
+    """`merge_sha` is `tested_sha` or one of its ancestors (False when git cannot say, so the
+    suspect is kept)."""
     if not root or not tested_sha or not merge_sha:
         return False
-    return merge_sha == tested_sha or git.is_ancestor(root, merge_sha, tested_sha)
+    return merge_sha == tested_sha or _ancestor(root, merge_sha, tested_sha) is True
 
 
 def rebuild(cfg, project, *, root=None, scfg=None, now=None) -> dict:
@@ -201,7 +225,7 @@ def rebuild(cfg, project, *, root=None, scfg=None, now=None) -> dict:
     for m in merges:
         if green is not None:
             sha = (green.get("data") or {}).get("sha")
-            if root and git.is_ancestor(root, sha, sha):        # the sha is known: by ancestry
+            if _known(root, sha):                               # the sha is known: by ancestry
                 if _contains(root, sha, m["merge_sha"]):
                     continue
             elif (_ts(m["ts"]) or 0.0) <= (_ts(green.get("ts")) or 0.0):
@@ -538,15 +562,17 @@ def _run_locked(cfg, project, *, project_cfg, stop, now, hooks, tested) -> dict:
 
 
 def _orphans(root, base, suspects) -> list:
-    """Suspects whose merge sha is not on the base branch (rewritten away, or unknown to git):
-    no sentinel run on the base can ever contain them. Empty when the base cannot be read."""
+    """Suspects whose merge sha git knows but which are not on the base branch (rewritten away):
+    no sentinel run on the base can contain them. Reported on the `sentinel` event, never
+    dropped. Empty when the base cannot be read; a suspect git cannot answer for is not one."""
     if not root or not base or not suspects:
         return []
     try:
         tip = git.rev_parse(root, base)
-    except (ValueError, OSError):
+    except (git.GitError, ValueError, OSError):
         return []
-    return [s for s in suspects if not _contains(root, tip, s.get("merge_sha"))]
+    return [s for s in suspects if s.get("merge_sha") and _known(root, s["merge_sha"])
+            and _ancestor(root, s["merge_sha"], tip) is False]
 
 
 def _repeat_red(cfg, project, sha) -> bool:
@@ -563,18 +589,18 @@ def _repeat_red(cfg, project, sha) -> bool:
 def settle(cfg, project, sha, ok, failing=(), *, root=None, project_cfg=None, now=None,
            base=None) -> list:
     """Record a finished sentinel run at tested sha `sha` (section 5 *Outcome*) and announce
-    it; returns the suspects it settled (those that are `sha` or its ancestors). With `base`,
-    a green run also drops the suspects that are not on the base branch at all. A red run at
-    the sha the previous red event already reported does not escalate again."""
+    it; returns the suspects it settled (only those that are `sha` or its ancestors; one git
+    cannot answer for stays). With `base`, a green run names on its event (`orphans`) the kept
+    suspects that are not on the base branch at all; they stay suspects. A red run at the sha
+    the previous red event already reported does not escalate again."""
     scfg = settings(project_cfg)[1]
-    dropped = []
+    orphans = []
     with locked(cfg, project):
         st = _load_locked(cfg, project, root=root, scfg=scfg, now=now, rebuild_unreadable=True)
         settled = [s for s in st["suspects"] if _contains(root, sha, s.get("merge_sha"))]
         if ok:
             keep = [s for s in st["suspects"] if s not in settled]
-            dropped = _orphans(root, base, keep)
-            keep = [s for s in keep if s not in dropped]
+            orphans = _orphans(root, base, keep)
             st.update(suspects=keep, reuses_since_green=len(keep), last_green_sha=sha,
                       last_green_at=_iso(now), force_full_close=False, due_since=None)
             if keep:
@@ -587,9 +613,9 @@ def settle(cfg, project, sha, ok, failing=(), *, root=None, project_cfg=None, no
                          for s in settled]}
     if not ok:
         data["failing"] = list(failing)
-    if dropped:
-        data["dropped"] = [{"campaign": s.get("campaign"), "merge_sha": s.get("merge_sha")}
-                           for s in dropped]
+    if orphans:
+        data["orphans"] = [{"campaign": s.get("campaign"), "merge_sha": s.get("merge_sha")}
+                           for s in orphans]
     repeat = not ok and _repeat_red(cfg, project, sha)
     try:
         E.append(cfg, "sentinel", project=project, by="sentinel", data=data)

@@ -200,12 +200,21 @@ print(json.dumps({{"full": False, "tests": [], "reason": "stub"}}))
 """
 
 
+def _base_tool(rw, source):
+    """Put a real selection tool into the base the branch was gated on (so it is in neither
+    `B` nor `D`): commit it on main, rebase the branch, gate that head, then move main on."""
+    _commit(rw["root"], CL.AFFECTED_TOOL, source, "stub selection tool")
+    _git(rw["nw"], "rebase", "-q", "main")
+    rw["state"]["last_green_loop"] = _green_loop(git.rev_parse(rw["nw"]))
+    _commit(rw["root"], "other.txt", "main again\n", "another unrelated main change")
+
+
 @pytest.mark.parametrize("closure,needle", [("sys.exit(3)", "exited 3"),
                                             ("time.sleep(5)", "timed out")])
 def test_affected_tool_error_or_timeout_declines_with_r6(rw, monkeypatch, closure, needle):
     monkeypatch.setattr(CL, "_affected", _REAL_AFFECTED)
     monkeypatch.setattr(CL, "AFFECTED_TIMEOUT_S", 1)
-    _commit(rw["root"], CL.AFFECTED_TOOL, STUB.format(closure=closure), "stub selection tool")
+    _base_tool(rw, STUB.format(closure=closure))
     out = CL.prepare_close(rw["cfg"], rw["state"], rw["pcfg"])
     rule, detail = _declined(out)
     assert rule == "R6" and needle in detail, detail
@@ -217,6 +226,103 @@ def test_missing_tool_declines_with_r4(rw, monkeypatch):
     out = CL.prepare_close(rw["cfg"], rw["state"], rw["pcfg"])
     rule, detail = _declined(out)
     assert rule == "R4" and "not found" in detail
+
+
+# the R4 call selects for main's delta (other.txt), the R5 call for the branch (feature.txt)
+PER_CALL = """import sys, time, json
+argv = sys.argv[1:]
+if "--closure" not in argv and "--changed=other.txt" in argv:
+    {r4}
+if "--closure" not in argv and "--changed=feature.txt" in argv:
+    {r5}
+print(json.dumps({{"full": False, "tests": [], "reason": "stub", "closure": []}}))
+"""
+
+
+@pytest.mark.parametrize("r4,r5,rule,needle", [
+    ("sys.exit(4)", "pass", "R4", "exited 4"),
+    ("time.sleep(5)", "pass", "R4", "timed out"),
+    ("print('not json'); sys.exit(0)", "pass", "R4", "no JSON report"),
+    ("pass", "sys.exit(5)", "R5", "exited 5"),
+    ("pass", "time.sleep(5)", "R5", "timed out"),
+    ("pass", "print('{oops'); sys.exit(0)", "R5", "no JSON report"),
+])
+def test_tool_error_on_the_r4_or_r5_call_declines_with_that_rule(rw, monkeypatch, r4, r5,
+                                                                 rule, needle):
+    monkeypatch.setattr(CL, "_affected", _REAL_AFFECTED)
+    monkeypatch.setattr(CL, "AFFECTED_TIMEOUT_S", 1)
+    _base_tool(rw, PER_CALL.format(r4=r4, r5=r5))
+    out = CL.prepare_close(rw["cfg"], rw["state"], rw["pcfg"])
+    got, detail = _declined(out)
+    assert got == rule and needle in detail, (got, detail)
+    assert rw["marker"].exists()
+
+
+def test_the_real_stub_tool_reuses_when_every_call_succeeds(rw, monkeypatch):
+    """Control for the per-call cases: the same stub with no failure reuses."""
+    monkeypatch.setattr(CL, "_affected", _REAL_AFFECTED)
+    _base_tool(rw, PER_CALL.format(r4="pass", r5="pass"))
+    out = CL.prepare_close(rw["cfg"], rw["state"], rw["pcfg"])
+    assert _events(out, "gate.reuse_declined") == [], out.events
+    assert out.gate_run.reused == ("pytest",) and not rw["marker"].exists()
+
+
+def test_git_diff_error_declines_with_r3(rw, monkeypatch):
+    def boom(*a, **k):
+        raise git.GitError(["git", "diff"], 128, "fatal: bad object")
+    monkeypatch.setattr(git, "changed_files", boom)
+    out = CL.prepare_close(rw["cfg"], rw["state"], rw["pcfg"])
+    rule, detail = _declined(out)
+    assert rule == "R3" and "bad object" in detail
+    assert rw["marker"].exists()
+
+
+def test_unexpected_error_in_the_rules_declines_with_r1(rw, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("kaboom")
+    monkeypatch.setattr(SN, "reuse_blocker", boom)
+    out = CL.prepare_close(rw["cfg"], rw["state"], rw["pcfg"])
+    rule, detail = _declined(out)
+    assert rule == "R1" and "reuse check failed" in detail and "kaboom" in detail
+    assert rw["marker"].exists() and out.gate_run.reused == ()
+
+
+# ---- the branch does not judge its own reuse -----------------------------------------------
+
+def _branch_edits(rw, path, text="# edited by the branch\n"):
+    _commit(rw["nw"], path, text, f"branch edits {path}")
+    rw["state"]["last_green_loop"] = _green_loop(git.rev_parse(rw["nw"]))
+
+
+@pytest.mark.parametrize("where", ["branch", "main"])
+def test_a_change_to_the_selector_declines_with_r4_and_runs_the_full_gate(rw, where):
+    if where == "branch":
+        _branch_edits(rw, CL.AFFECTED_TOOL)
+    else:
+        _commit(rw["root"], CL.AFFECTED_TOOL, "# edited on main\n", "main edits the selector")
+    out = CL.prepare_close(rw["cfg"], rw["state"], rw["pcfg"])
+    assert out.outcome is None, out.events
+    rule, detail = _declined(out)
+    assert rule == "R4" and "reuse tooling" in detail and CL.AFFECTED_TOOL in detail
+    assert rw["marker"].exists(), "the full gate runs"
+    assert [r.name for r in out.gate_run.results] == ["lint", "pytest"]
+    assert rw["calls"] == [], "the edited selector was never asked"
+
+
+def test_a_tool_the_loop_gate_runs_counts_as_reuse_tooling(rw):
+    rw["pcfg"]["gates"][0]["cmd"] = "python3 tools/run_selected.py --run pytest"
+    _branch_edits(rw, "tools/run_selected.py")
+    out = CL.prepare_close(rw["cfg"], rw["state"], rw["pcfg"])
+    rule, detail = _declined(out)
+    assert rule == "R4" and "tools/run_selected.py" in detail
+    assert rw["marker"].exists()
+
+
+def test_a_tool_no_gate_runs_does_not_block_reuse(rw):
+    _branch_edits(rw, "tools/unrelated_helper.py")
+    out = CL.prepare_close(rw["cfg"], rw["state"], rw["pcfg"])
+    assert _events(out, "gate.reuse_declined") == [], out.events
+    assert out.gate_run.reused == ("pytest",)
 
 
 # ---- the counter moves only on a merged reused close ---------------------------------------

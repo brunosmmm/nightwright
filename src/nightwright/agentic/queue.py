@@ -3845,20 +3845,19 @@ def _sentinel_step(ctx: _Ctx, pool: StepPool, busy: list) -> str | None:
             pcfg = P.project_config(cfg, project)
             if not SN.check_due(cfg, project, root=pcfg.get("_root"), project_cfg=pcfg):
                 continue
-        except (ValueError, OSError) as e:
-            key = ("sentinel", project, str(e))
-            if key not in pool.deferred_noted:              # once per runner, not per tick
-                pool.deferred_noted.add(key)
-                journal(cfg, "sentinel_failed", project=project, error=str(e))
-            continue
-        if SN.running(cfg, project):
-            continue                                        # a CLI run holds the lock
-        try:
+            if SN.running(cfg, project):
+                continue                                    # a CLI run holds the lock
+            # an unresolvable base (renamed branch, re-cloned repo) is a failure, not a run
             base_sha = git.rev_parse(pcfg.get("_root") or P.project_root(cfg, project),
                                      SN._base(pcfg))
-        except (ValueError, OSError):
-            base_sha = None
-        why = SN.backoff(cfg, project, base_sha)
+            why = SN.backoff(cfg, project, base_sha)
+        except (GitError, ValueError, OSError) as e:         # never out of the tick
+            err = " ".join(str(e).split())[:500]
+            key = ("sentinel", project, err)
+            if key not in pool.deferred_noted:              # once per reason, not per tick
+                pool.deferred_noted.add(key)
+                journal(cfg, "sentinel_failed", project=project, error=err)
+            continue
         if why:
             key = ("sentinel_backoff", project, why)
             if key not in pool.deferred_noted:              # once per reason, not per tick
@@ -4328,7 +4327,10 @@ def _tick(cfg, ctx: _Ctx, pool: StepPool, report: TickReport, *, admit: bool, ow
     _submit(ctx, pool, report, pending_agent, groups)
     ctx.progress()
     if not own and not draining:
-        _sentinel_step(ctx, pool, busy)     # SPEC-0359: the full suite on base, when due
+        try:                                # SPEC-0359: the full suite on base, when due
+            _sentinel_step(ctx, pool, busy)
+        except Exception as e:              # never let the sentinel cost the tick
+            journal(cfg, "sentinel_failed", error=f"{type(e).__name__}: {e}")
     if own:
         pool.wait_all()
         _harvest(pool, report)

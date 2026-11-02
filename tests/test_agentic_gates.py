@@ -1004,3 +1004,24 @@ def test_last_green_loop_set_by_green_and_cleared_by_red(tmp_path, monkeypatch):
     S.write_state(cfg, cid, dict(st, state="GATING"))
     row, st = TQ._apply(ctx, cfg, cid, "gate", gate_run=good)
     assert st["last_green_loop"]["gate_seq"] == 1
+
+
+
+def test_interrupted_green_loop_run_does_not_set_last_green_loop(tmp_path, monkeypatch):
+    """`ok` with `interrupted` (cut short without a stop, so the run is applied) is not a green
+    source: `last_green_loop` is cleared, not set to it."""
+    import test_agentic_queue as TQ
+    cfg, cid, ctx = TQ.opened.__wrapped__(tmp_path, monkeypatch)
+    rep = {"head_sha": "h1", "tests": [], "full": False}
+    good = G.GateRun(1, True, (G.GateResult("pytest-affected", True, True, 0, False, 0.1,
+                                            "gates/001-pytest-affected.log", "", report=rep),),
+                     "2026-10-25T00:00:00", 0.1, head="h1", tree="t1")
+    S.write_state(cfg, cid, dict(S.read_state(cfg, cid), state="GATING"))
+    _, st = TQ._apply(ctx, cfg, cid, "gate", gate_run=good)
+    assert st["last_green_loop"]["gate_seq"] == 1
+    cut = replace(good, seq=2, interrupted=True)
+    assert cut.ok and not ctx.stop.is_set()
+    S.write_state(cfg, cid, dict(st, state="GATING"))
+    _, st = TQ._apply(ctx, cfg, cid, "gate", gate_run=cut)
+    assert st["last_gate"]["gate_seq"] == 2
+    assert st["last_green_loop"] is None

@@ -34,6 +34,7 @@ from . import project as P
 from . import decisions as DEC
 from . import queue as Q
 from . import store
+from .gitops import GitError
 
 _NOT_WRITTEN = "[yellow]not written — re-run with --yes to commit[/]"
 
@@ -1976,7 +1977,7 @@ def attach(queue_group):
         try:
             out = SN.run(cfg, project, project_cfg=pcfg)
             state = SN.read(cfg, project, root=pcfg.get("_root"), project_cfg=pcfg)
-        except (ValueError, OSError) as e:
+        except (GitError, ValueError, OSError) as e:
             raise click.ClickException(getattr(e, "tail", None) or str(e))
         if as_json:
             _dump_json({"schema": "nw.queue.sentinel.v1", **out, "state": state})
@@ -2006,8 +2007,8 @@ def attach(queue_group):
         pcfg = _sentinel_project(cfg, project)
         try:
             state = SN.clear(cfg, project, root=pcfg.get("_root"), project_cfg=pcfg)
-        except (ValueError, OSError) as e:
-            raise click.ClickException(str(e))
+        except (GitError, ValueError, OSError) as e:
+            raise click.ClickException(getattr(e, "tail", None) or str(e))
         if as_json:
             _dump_json({"schema": "nw.queue.sentinel.v1", "project": project, "state": state})
             return

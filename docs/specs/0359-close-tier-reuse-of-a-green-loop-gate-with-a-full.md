@@ -386,6 +386,29 @@ sequencing hint only.
   after the new lock test was moved to `waits.join`), and `test_docs_*`, `test_specs`,
   `test_completion` (75 passed). The full suite was left to the queue's close gate. `python3 tools/spec_lint.py` exits 0.
 
+- Review loop 3 fix (git errors, own-selector reuse, settle only ancestors):
+  `tests/test_agentic_close_reuse.py` (42 tests, +13): the branch or main editing
+  `tools/affected_tests.py` declines with R4 ("reuse tooling"), the full `pytest` gate runs and
+  the selector is never called; a `tools/*.py` the loop gate's `cmd` runs counts as tooling, an
+  unrelated `tools/` file does not; a real stub tool that exits non-zero, times out or prints no
+  JSON on the R4 call declines with R4, the same on the R5 call with R5 (and the stub with no
+  failure reuses); a `git` diff error declines with R3; an unexpected exception declines with R1
+  (`reuse check failed`). The R6 tool-error cases now put the stub into the gated base, since a
+  tool change in `D` declines earlier with R4. `tests/test_agentic_gates.py` (+1): an
+  interrupted `ok` loop run clears `last_green_loop` (fails with the guard removed).
+  `tests/test_agentic_sentinel.py` (26 tests, +4, one rewritten): a green run settles only
+  ancestors of X, keeps an unknown sha silently and a known off-base sha as `orphans`; with
+  `merge-base`, `rev-parse` and `cat-file` raising `GitError` a green settle still finishes,
+  settles only the tested sha and keeps the other suspect; a due project whose `merge.base`
+  does not resolve journals one `sentinel_failed` over three steps and a whole `Q.tick`, starts
+  no run (fails with `GitError` left out of the except); any exception in the step is journaled
+  by the tick; `nw queue sentinel run|clear` report a git error without a traceback. Then
+  the guard set: `test_agentic_close*`, `test_agentic_gate*`, `test_agentic_queue*`,
+  `test_agentic_sentinel`, `test_agentic_project`, `test_agentic_dogfood_config`, `test_docs_*`,
+  `test_specs`, `test_agentic_escalation*`, `test_remote_gates`, `test_test_waits`,
+  `test_completion`: 1072 passed (`affected_tests.py` selects the full suite for this change). `python3
+  tools/spec_lint.py` exits 0; the full suite is left to the queue's close gate.
+
 ### As shipped (2026-11-01)
 
 - Built to Design. New module `agentic/sentinel.py` holds `gate_reuse.json` (lock
@@ -423,13 +446,26 @@ sequencing hint only.
   (3600 s, a constant rather than a config key, since the project schema is fixed by this spec);
   a moved base always runs; a deferral is journaled once per reason (`sentinel_deferred`).
   (3) `settle` skips the escalation when the project's previous `sentinel` event was already
-  red at the same sha (the event is still appended). (4) A green run with the base given also
-  drops suspects whose merge sha is not an ancestor of the base tip (a rewritten base, or a sha
-  git no longer knows): no run on the base can ever settle them, and keeping them would leave
-  the sentinel due and then overdue forever; they are listed as `dropped` on the `sentinel`
-  event. (5) `worktrees.setup` success is marked in `<project>.setup.json` (with the commands),
+  red at the same sha (the event is still appended). (4) (Replaced in review loop 3, see
+  below: orphan suspects are no longer dropped.) (5) `worktrees.setup` success is marked in `<project>.setup.json` (with the commands),
   so a failed or changed setup recreates the worktree on the next run. (6) The drain lists a
   running sentinel in `waiting_on` and does not detach-and-exec while it runs.
+- Review loop 3 changes. (1) No git failure leaves the runner's tick: `queue._sentinel_step`
+  resolves the base inside `except (GitError, ValueError, OSError)` and journals
+  `sentinel_failed` once per reason instead of starting a run (an unresolvable `merge.base`),
+  and the tick wraps the whole step (`sentinel_failed`, never raised). `nw queue sentinel
+  run|clear` turn a `GitError` into a ClickException. In `sentinel.py` every ancestry question
+  goes through `_ancestor` (exit 0 true, exit 1 false, anything else or a `GitError` "cannot
+  say") and `_known` (`cat-file -e`); "cannot say" never settles or drops a suspect. (2) A green
+  run settles only the suspects that are X or its ancestors, as section 5 says; the loop 2
+  dropping of suspects not on the base is gone. A suspect git knows that is not an ancestor of
+  the base tip (exit exactly 1, a rewritten base) is named as `orphans` on the `sentinel` event
+  and kept. Such a suspect keeps the sentinel due and eventually overdue, so reuse turns off for
+  the project (fail closed) until a human repairs `gate_reuse.json`. (3) Rule R4 also declines
+  when `B` or `D` contains the reuse tooling: `tools/affected_tests.py` (`close.AFFECTED_TOOL`)
+  and every `tools/*.py` path named in the close gate's or its `reuse_from` gate's `cmd`. The
+  selector that decides R4-R6 and chose the loop gate's tests is then the one already on the
+  base, never one the branch edited; a selector change always runs the full close gate.
 
 ## Risks
 

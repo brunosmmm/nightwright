@@ -446,6 +446,18 @@ class _Decline(Exception):
         self.rule, self.detail = rule, detail
 
 
+_TOOL_PATH = re.compile(r"(?<![\w./-])(tools/[\w./-]+\.py)\b")
+
+
+def _reuse_machinery(*gates) -> set[str]:
+    """The paths whose change would let a branch judge its own reuse: the selector
+    (`AFFECTED_TOOL`) and every `tools/*.py` a gate's command runs."""
+    out = {AFFECTED_TOOL}
+    for g in gates:
+        out |= set(_TOOL_PATH.findall(str((g or {}).get("cmd") or "")))
+    return out
+
+
 def _close_full_env() -> bool:
     return os.environ.get("NW_CLOSE_FULL", "").strip().lower() not in ("", "0", "false", "no")
 
@@ -547,6 +559,13 @@ def _reuse_evidence(cfg, state, project_cfg, gate, *, policy, root, worktree, ta
     nw = [p for p in delta if p.startswith(".nw/")]
     if nw:
         raise _Decline("R4", f"the main delta changes gate definitions: {_names(nw)}")
+    # the selector that decides R4-R6 (and chose the loop gate's tests) must be the one that
+    # gated the base: a branch or a main delta that changes it is not judged by it
+    src_gate = next((x for x in project_cfg.get("gates") or []
+                     if isinstance(x, dict) and x.get("name") == src_name), None)
+    tooling = (set(delta) | set(branch)) & _reuse_machinery(gate, src_gate)
+    if tooling:
+        raise _Decline("R4", f"the change touches the reuse tooling: {_names(tooling)}")
     try:
         sel_d = _affected(worktree, delta)
     except RuntimeError as e:

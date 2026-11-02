@@ -199,7 +199,9 @@ a merge request, no `close.force_full`, no `NW_CLOSE_FULL=1` in the runner's env
 or overdue sentinel, a readable `gate_reuse.json`); **R2** the green source result has a report
 whose `head_sha` is the gated head `G`, and `G` is still a commit; **R3** no file the branch
 changes differs between `G` and the rebased head `H`; **R4** main's delta `D` (`git diff G H`)
-touches no `.nw/**` file and does not select the full suite; **R5** the branch's selection
+touches no `.nw/**` file and does not select the full suite, and neither `D` nor the branch
+changes the reuse tooling (`tools/affected_tests.py`, or any `tools/*.py` the close gate or its
+`reuse_from` gate runs), so a branch is never judged by its own edited selector; **R5** the branch's selection
 recomputed on `H` did not grow; **R6** the forward static closure of the branch's tests contains
 no path in `D`, and that of `D`'s tests no branch path; **R7** `G` was gated less than
 `close.reuse_max_age_s` (86400) ago and `D` has at most `close.reuse_max_delta` (200) paths. Any
@@ -225,8 +227,11 @@ held for the worktree reset, the gates and the settle); the runner skips a locke
 finished run is noted in `<project>.last.json`, and the runner does not rerun the sentinel at the
 base sha the last run tested when that run was green or its red was cleared, nor a red or failed
 run there within an hour; a moved base always runs. A red run at the sha the previous red
-`sentinel` event already reported does not escalate again. A green run also drops suspects whose
-merge sha is no longer on the base branch (listed as `dropped` on the event). The worktree's
+`sentinel` event already reported does not escalate again. A green run settles only suspects
+that are its tested sha or an ancestor of it; one git cannot answer for (an unknown sha, a git
+error) stays a suspect, and one git knows but that is no longer on the base branch (a rewritten
+base) stays too and is named as `orphans` on the event. A git error (an unresolvable
+`merge.base`) is journaled as `sentinel_failed` and never stops the runner. The worktree's
 `worktrees.setup` is rerun until it has succeeded once (`<project>.setup.json`), and again when
 the setup commands change.
 

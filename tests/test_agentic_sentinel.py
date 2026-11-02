@@ -368,26 +368,104 @@ def test_red_sentinel_not_resubmitted_at_the_same_sha_and_escalates_once(real_sc
     assert len(ESC.list_all(cfg, "open")) == 1
 
 
-def test_green_at_the_same_sha_is_not_rerun_and_orphan_suspects_are_dropped(real_sched):
+def test_green_at_the_same_sha_is_not_rerun_and_settles_only_ancestors(real_sched):
+    """Green removes only suspects that are X or its ancestors (section 5). A suspect git does
+    not know stays silently (git cannot say); one git knows but that is not on the base
+    (a rewritten base) stays too and is named on the event as `orphans`."""
     sw, ctx, pool = real_sched
     cfg, root = sw["cfg"], sw["root"]
     first = _merge_on_main(sw, "a.txt")
     SN.record_merge(cfg, PROJECT, "c-a", first, root=root, project_cfg=sw["pcfg"])
-    for i in range(2):                                       # never on main: orphans
-        SN.record_merge(cfg, PROJECT, f"c-o{i}", f"{i + 10:040x}", root=root,
-                        project_cfg=sw["pcfg"])
+    unknown = f"{10:040x}"
+    side = git.git(root, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "off main").stdout.strip()
+    SN.record_merge(cfg, PROJECT, "c-unknown", unknown, root=root, project_cfg=sw["pcfg"])
+    SN.record_merge(cfg, PROJECT, "c-side", side, root=root, project_cfg=sw["pcfg"])
     assert Q._sentinel_step(ctx, pool, []) == PROJECT
     _wait_done(pool)
     st = SN.read(cfg, PROJECT)
-    assert st["suspects"] == [] and st["reuses_since_green"] == 0 and st["due_since"] is None
+    assert st["suspects"] == [{"campaign": "c-unknown", "merge_sha": unknown},
+                              {"campaign": "c-side", "merge_sha": side}]
+    assert st["reuses_since_green"] == 2 and st["force_full_close"] is False
     ev = _sentinel_events(cfg)[-1]["data"]
     assert ev["suspects"] == [{"campaign": "c-a", "merge_sha": first}]
-    assert [d["campaign"] for d in ev["dropped"]] == ["c-o0", "c-o1"]
+    assert ev["orphans"] == [{"campaign": "c-side", "merge_sha": side}]
+    assert "dropped" not in ev
     # even if something keeps it due, a green base sha is not rerun until the base moves
     _due(cfg)
     assert Q._sentinel_step(ctx, pool, []) is None
     assert "already green" in SN.backoff(cfg, PROJECT, first)
     assert SN.backoff(cfg, PROJECT, "0" * 40) is None
+
+
+def _git_failing(monkeypatch, *verbs):
+    real = git.git
+
+    def flaky(repo, *args, **kw):
+        if args and args[0] in verbs:
+            raise git.GitError(["git", *args], -1, "timed out after 60s")
+        return real(repo, *args, **kw)
+    monkeypatch.setattr(git, "git", flaky)
+
+
+def test_a_git_failure_keeps_the_suspect_and_settle_still_finishes(sw, monkeypatch):
+    cfg, root = sw["cfg"], sw["root"]
+    first = _merge_on_main(sw, "a.txt")
+    later = _merge_on_main(sw, "b.txt")
+    SN.record_merge(cfg, PROJECT, "c-a", first, root=root, project_cfg=sw["pcfg"])
+    SN.record_merge(cfg, PROJECT, "c-b", later, root=root, project_cfg=sw["pcfg"])
+    _git_failing(monkeypatch, "merge-base", "rev-parse", "cat-file")
+    settled = SN.settle(cfg, PROJECT, later, True, root=root, project_cfg=sw["pcfg"],
+                        base="main")
+    assert settled == [{"campaign": "c-b", "merge_sha": later}], "the tested sha itself"
+    st = SN.read(cfg, PROJECT)
+    assert st["suspects"] == [{"campaign": "c-a", "merge_sha": first}], "kept, not dropped"
+    assert st["reuses_since_green"] == 1 and st["last_green_sha"] == later
+    (ev,) = _sentinel_events(cfg)
+    assert ev["data"]["ok"] is True and "orphans" not in ev["data"]
+    assert SN._orphans(root, "main", st["suspects"]) == []
+
+
+def test_an_unresolvable_base_never_leaves_the_tick(real_sched, monkeypatch):
+    """A due project whose `merge.base` no longer resolves (renamed branch, re-cloned repo):
+    the runner's tick journals `sentinel_failed` once and goes on; no run is started."""
+    sw, ctx, pool = real_sched
+    cfg = sw["cfg"]
+    sw["pcfg"]["merge"] = {**sw["pcfg"]["merge"], "base": "renamed-away"}
+    _due(cfg)
+    runs = []
+    monkeypatch.setattr(SN, "run", lambda *a, **k: runs.append(a) or {})
+    for _ in range(3):
+        assert Q._sentinel_step(ctx, pool, []) is None
+    assert runs == [] and pool.sentinel is None
+    failed = [r for r in Q.read_journal(cfg) if r.get("kind") == "sentinel_failed"]
+    assert len(failed) == 1 and failed[0]["project"] == PROJECT
+    assert "renamed-away" in failed[0]["error"]
+    # the same through a whole tick of the run loop (the step runs only with a pool)
+    Q.tick(cfg, pool=pool, stop=ctx.stop)
+    assert runs == []
+
+
+def test_any_sentinel_error_is_journaled_not_raised_by_the_tick(real_sched, monkeypatch):
+    sw, ctx, pool = real_sched
+
+    def boom(cfg):
+        raise RuntimeError("state dir exploded")
+    monkeypatch.setattr(SN, "projects", boom)
+    Q.tick(sw["cfg"], pool=pool, stop=ctx.stop)
+    failed = [r for r in Q.read_journal(sw["cfg"]) if r.get("kind") == "sentinel_failed"]
+    assert failed and "state dir exploded" in failed[-1]["error"]
+
+
+def test_cli_run_and_clear_report_git_errors_cleanly(sw, monkeypatch):
+    cfg = sw["cfg"]
+    sw["pcfg"]["merge"] = {**sw["pcfg"]["merge"], "base": "renamed-away"}
+    monkeypatch.setattr(P, "project_config", lambda c, p: sw["pcfg"])
+    r = _cli(cfg, monkeypatch, ["queue", "sentinel", "run", "--project", PROJECT])
+    assert r.exit_code == 1 and "Error:" in r.output, r.output
+    assert r.exception is None or isinstance(r.exception, SystemExit), r.exception
+    _git_failing(monkeypatch, "merge-base", "rev-parse", "cat-file")
+    r = _cli(cfg, monkeypatch, ["queue", "sentinel", "clear", "--project", PROJECT])
+    assert r.exception is None or isinstance(r.exception, SystemExit), r.exception
 
 
 def test_exception_backs_off_and_a_failed_setup_is_rerun(real_sched, tmp_path):
