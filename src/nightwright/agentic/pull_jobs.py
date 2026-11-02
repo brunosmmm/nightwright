@@ -51,6 +51,7 @@ EXPIRES_S = 15 * 60                 # a signed header's `expires_at` - `issued_a
 CLOCK_SKEW_S = 120.0
 MAX_FRAMES_BYTES = 4 << 20          # a frames batch (and any other JSON body)
 MAX_BUNDLE_BYTES = 64 << 20         # a result bundle, or one frame uploaded out of band
+MAX_FRAME_UPLOADS = 4               # frame uploads one job may hold before their frames apply
 TAILSCALE_NETS = (ipaddress.ip_network("100.64.0.0/10"),
                   ipaddress.ip_network("fd7a:115c:a1e0::/48"))
 SIGNED_FIELDS = ("issued_at", "expires_at", "nonce", "bundle_sha256", "sig")
@@ -543,7 +544,9 @@ def apply_frames(cfg, worker: str, job_id: str, frames: list) -> dict:
                 if upload is not None:                  # spooled now: the upload is done with
                     upload.unlink(missing_ok=True)
                 if rec.get("kind") != "gate":
-                    fields.update(cursor=n, state="attached")
+                    fields["cursor"] = n
+                    if rec.get("state") != "cancelled":     # a park or abandon stays final
+                        fields["state"] = "attached"
                 if fields.get("pull_state") in ("done", "error"):
                     break
         except BaseException:
@@ -598,10 +601,21 @@ def _feed_gate(job, frame: dict) -> dict:
     return {"pull_state": "done"} if run is not None else {}
 
 
+def open_for_uploads(cfg, worker: str, job_id: str) -> dict:
+    """The job's record when it still takes uploads: 409 once it is `done` or `error` (it
+    takes no more frames, so an upload would only sit on disk)."""
+    rec = _job_for(cfg, worker, job_id)
+    if rec.get("pull_state") in ("done", "error"):
+        raise PullError(409, f"job {job_id} is final: it takes no more uploads",
+                        cursor=int(rec.get("pull_cursor") or 0), final=True)
+    return rec
+
+
 def store_result_bundle(cfg, worker: str, job_id: str, tmp: Path, sha: str) -> dict:
     """`PUT /v1/jobs/<id>/result-bundle`: the hashed upload becomes the job's result bundle."""
-    _job_for(cfg, worker, job_id)
+    open_for_uploads(cfg, worker, job_id)
     with job_lock(cfg, job_id):
+        open_for_uploads(cfg, worker, job_id)
         os.replace(tmp, result_bundle_path(cfg, job_id))
     RJ.update(cfg, job_id, result_bundle_sha256=sha)
     return {"sha256": sha}
@@ -609,10 +623,15 @@ def store_result_bundle(cfg, worker: str, job_id: str, tmp: Path, sha: str) -> d
 
 def store_frame_upload(cfg, worker: str, job_id: str, tmp: Path, sha: str) -> dict:
     """`PUT /v1/jobs/<id>/frame-upload`: one frame too big for a frames batch, kept under its
-    sha256 until the frames post that names it applies it."""
-    _job_for(cfg, worker, job_id)
+    sha256 until the frames post that names it applies it. A job holds at most
+    `MAX_FRAME_UPLOADS` unapplied uploads (409 past that; re-sending one replaces it)."""
+    open_for_uploads(cfg, worker, job_id)
     with job_lock(cfg, job_id):
-        os.replace(tmp, frame_upload_path(cfg, job_id, sha))
+        open_for_uploads(cfg, worker, job_id)
+        dest = frame_upload_path(cfg, job_id, sha)
+        if not dest.exists() and len(frame_uploads(cfg, job_id)) >= MAX_FRAME_UPLOADS:
+            raise PullError(409, f"job {job_id} already holds {MAX_FRAME_UPLOADS} frame uploads")
+        os.replace(tmp, dest)
     return {"sha256": sha}
 
 
@@ -902,7 +921,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._send(200, apply_frames(cfg, w["name"], job_id,
                                                     self._json().get("frames")))
             if what in ("result-bundle", "frame-upload"):
-                _job_for(cfg, w["name"], job_id)
+                open_for_uploads(cfg, w["name"], job_id)
                 tmp, sha = self._body(MAX_BUNDLE_BYTES)
                 put = store_result_bundle if what == "result-bundle" else store_frame_upload
                 try:

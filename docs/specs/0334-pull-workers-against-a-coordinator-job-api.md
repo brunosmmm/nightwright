@@ -429,6 +429,53 @@ added to the API table:
 - The cross-machine manual steps are still not run, so the spec stays `in-progress`. The full
   suite is left to gating.
 
+### As shipped (2026-11-02, loop 5)
+
+Fixes from the third adversarial review, no Design change:
+
+- **A cancelled job stays cancelled.** The review found that frames after a park, an abandon or
+  a stop set the record back to `state: attached`. That does not happen: `RJ.update` never
+  replaces `cancelled`, and it never replaces any final state with a live one. A gate frame's
+  `saw_worker(state="attached")` therefore leaves `cancelled` alone. The persona apply path no
+  longer asks for `attached` on a cancelled record either. So the record stays final: absent from
+  `RJ.live`, not counted by `draining_jobs`. The interrupted `done` resolves as a cancel
+  (`pull_state: done`, an interrupted run, no `pull_error`), and a waiting persona step goes to
+  `_lost("cancelled")`, never to `_finish`. Tests now lock this in.
+- **403 on frames.** A frames post answered 403 cancels the local job before dropping it, as a
+  heartbeat's `gone` does.
+- **Upload limits.** `PUT result-bundle` and `PUT frame-upload` get 409 (`final: true`) once the
+  job is `done` or `error`. A job holds at most `MAX_FRAME_UPLOADS` (4) unapplied frame uploads,
+  so a fifth distinct upload gets 409; re-sending one already held replaces it.
+- Not done: a non-blaming give-up reason for `token --rotate`. It still gives up the worker's
+  live jobs as `rm` does (filed as a follow-up).
+
+### Test record (2026-11-02, loop 5)
+
+- New in `tests/test_pull_workers_security.py`:
+  - A pull gate job gets `cancel_campaign`, then a `gate` frame, then an interrupted `done`.
+    The record stays `cancelled` throughout (absent from `RJ.live` and `draining_jobs`), ends
+    `pull_state: done` with no `pull_error`, and `_replay_gate` and `follow_gate` return an
+    interrupted run.
+  - A persona step waits in `follow_persona` while the campaign is parked, and a `progress`
+    frame and an interrupted `done` follow at once. It ends with `_lost("cancelled")` and
+    `_finish` never runs.
+  - A frames post, `GET bundle`, `PUT result-bundle` and `PUT frame-upload` for a
+    `pull_state: lost` job each get 410, and a heartbeat for it says `gone`.
+  - `Loop.sync` on a 410, `Loop.heartbeat` on `gone`, and `Loop.sync` on a 403 each call
+    `WJ.cancel` and drop the job, including from the tracked list.
+  - Uploads to a final job get 409, and so does a fifth distinct frame upload.
+- With `RJ.update`'s cancelled/final guard removed and the previous `pull_jobs.py`, both cancel
+  tests fail (`'attached' == 'cancelled'`). With the guard removed, the persona test alone passes
+  on the new apply path. With the previous `pull_worker.py` and `pull_jobs.py`, the 403 and
+  upload-limit tests fail.
+- `uv run pytest -q -n 0 tests/test_pull_workers_security.py -k "cancelled or park or 410 or
+  refuses or final_job"`: 7 passed. Then `uv run pytest -q -n 4 tests/test_pull_workers.py
+  tests/test_pull_workers_security.py tests/test_remote_job_records.py
+  tests/test_remote_personas.py tests/test_workers_registry.py tests/test_worker_job_retry.py
+  tests/test_workers_drain.py`: 317 passed. `python3 tools/spec_lint.py`: ok.
+- The cross-machine manual steps are still not run, so the spec stays `in-progress`. The full
+  suite is left to gating.
+
 ## Clock Log
 
 Use `nw idea clock-in IDEA-561` / `nw idea clock-out IDEA-561`.

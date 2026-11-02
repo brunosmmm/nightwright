@@ -2,6 +2,7 @@
 127.0.0.1:0 (`test_pull_workers.Pull`); requests are raw `http.client` calls or the worker's
 own `pull_worker.Client` / `Loop`, in process, unless a test needs `nw worker serve` itself."""
 import base64
+import gzip
 import hashlib
 import http.client
 import json
@@ -612,3 +613,129 @@ def test_re_enrolling_keeps_the_tls_settings(tmp_path):
     doc = PL.load_conf(cfg, PJ.enrol_blob("https://c:8790", "box", "t2", "s2"), None)
     assert doc["token"] == "t2" and doc["ca"] == "/ca.pem" and doc["key"] == "/k.pem"
     assert json.loads(p.read_text())["cert"] == "/c.pem"
+
+
+# ---- a cancelled job stays cancelled; a given-up job is gone ---------------------------------
+
+def _gate_frame(w: World, n: int) -> dict:
+    name = RJ.read(w.cfg, JOB)["gates"][0]
+    return {"type": "gate", "n": n, "job_id": JOB,
+            "result": {"name": name, "required": True, "ok": True, "exit_code": 0,
+                       "timed_out": False, "duration_s": 0.1, "log": "", "tail": ""},
+            "files": {f"001-{name}.log": base64.b64encode(gzip.compress(b"ok\n")).decode()}}
+
+
+def _frames(p: Pull, job_id: str, *frames, worker="box"):
+    return _call(p, "POST", f"/v1/jobs/{job_id}/frames", p.tokens[worker], {"frames": frames})
+
+
+def _final_and_cancelled(w: World, job_id: str) -> dict:
+    rec = RJ.read(w.cfg, job_id)
+    assert rec["state"] == "cancelled"
+    assert job_id not in [r["job_id"] for r in RJ.live(w.cfg)]
+    assert "box" not in WK.draining_jobs(w.cfg)
+    return rec
+
+
+def test_a_cancelled_pull_gate_job_stays_cancelled_through_its_last_frames(world, pull):
+    wrec = _queue(world)
+    assert _lease(world) is not None
+    assert _frames(pull, JOB, {"type": "started", "n": 1, "job_id": JOB})[0] == 200
+    assert RJ.read(world.cfg, JOB)["state"] == "attached"
+    assert RG.cancel_campaign(world.cfg, CID) == [JOB]          # a park or an abandon
+    st, body = _frames(pull, JOB, _gate_frame(world, 2))        # a result lands after it
+    assert st == 200 and body["cancel"] is True and body["cursor"] == 2
+    _final_and_cancelled(world, JOB)
+    st, body = _frames(pull, JOB, {"type": "done", "n": 3, "job_id": JOB, "ok": False,
+                                   "interrupted": True, "duration_s": 0.2})
+    assert st == 200 and body["final"] is True
+    rec = _final_and_cancelled(world, JOB)
+    assert rec["pull_state"] == "done" and "pull_error" not in rec  # a cancel, not an error
+    out = PJ._replay_gate(world.cfg, wrec, rec, world.project, 1)
+    assert out.run.interrupted and out.failure is None
+    assert PJ.follow_gate(world.cfg, wrec, rec, world.project, 1, None).run.interrupted
+
+
+def test_a_persona_step_waiting_through_a_park_never_runs_finish(world, pull, monkeypatch):
+    import types
+
+    from nightwright.agentic import remote_personas as RPS
+    job_id = f"{CID}-persona-001-implementer-a1"
+    _persona_rec(world, job_id)
+    assert _frames(pull, job_id, {"type": "accepted", "n": 1, "job_id": job_id})[0] == 200
+    assert RJ.read(world.cfg, job_id)["state"] == "attached"
+    seen, polls = [], []
+    monkeypatch.setattr(RPS, "_finish", lambda *a: seen.append("finish"))
+    monkeypatch.setattr(RPS, "_lost", lambda rr, req, hooks, rec, why: seen.append(why))
+    real_read = PJ.RJ.read
+    monkeypatch.setattr(PJ.RJ, "read", lambda cfg, jid: (polls.append(jid), real_read(cfg, jid))[1])
+    rr = types.SimpleNamespace(cfg=world.cfg)
+    req = types.SimpleNamespace(run_dir=str(world.tmp / "run"))
+    th = threading.Thread(target=PJ.follow_persona, args=(rr, req, None, RJ.read(world.cfg, job_id)),
+                          daemon=True)
+    th.start()
+    until(lambda: polls)                                        # the step is waiting
+    assert RG.cancel_campaign(world.cfg, CID) == [job_id]
+    # within the step's 1 s tick, a progress frame and the interrupted `done`
+    st, body = _frames(pull, job_id, {"type": "progress", "n": 2, "job_id": job_id, "ts": 1})
+    assert st == 200 and body["cancel"] is True
+    st, _ = _frames(pull, job_id, {"type": "done", "n": 3, "job_id": job_id, "ok": False,
+                                   "interrupted": True,
+                                   "bundle": {"head": "a" * 40, "wip": None, "bundle_b64": None}})
+    assert st == 200
+    rec = _final_and_cancelled(world, job_id)
+    assert rec["pull_state"] == "done" and rec["pull_cursor"] == 3
+    th.join(timeout=10)
+    assert not th.is_alive() and seen == ["cancelled"]
+
+
+def _gone_rec(w: World, job_id: str) -> None:
+    RJ.update(w.cfg, job_id, pull_state="lost", pull_lost_reason="lease")
+
+
+def test_every_request_for_a_given_up_job_gets_410(world, pull):
+    _queue(world)
+    assert _lease(world) is not None
+    _gone_rec(world, JOB)
+    tok = pull.tokens["box"]
+    assert _frames(pull, JOB, {"type": "started", "n": 1, "job_id": JOB})[0] == 410
+    assert _call(pull, "GET", f"/v1/jobs/{JOB}/bundle", tok)[0] == 410
+    assert _call(pull, "PUT", f"/v1/jobs/{JOB}/result-bundle", tok, b"bytes")[0] == 410
+    assert _call(pull, "PUT", f"/v1/jobs/{JOB}/frame-upload", tok, b"{}")[0] == 410
+    st, body = _call(pull, "POST", "/v1/heartbeat", tok, {"jobs": [{"id": JOB}]})
+    assert st == 200 and body["jobs"][JOB] == {"cancel": True, "gone": True}
+
+
+@pytest.mark.parametrize("how", ["frames-410", "heartbeat-gone", "frames-403"])
+def test_the_worker_cancels_and_drops_a_job_the_coordinator_refuses(world, pull, monkeypatch, how):
+    job_id = f"{CID}-persona-001-implementer-a1"
+    _persona_rec(world, job_id, worker="box2" if how == "frames-403" else "box")
+    if how != "frames-403":
+        _gone_rec(world, job_id)
+    loop = _loop(pull)
+    _local_job(loop, job_id, [{"type": "accepted", "n": 1, "job_id": job_id}], done=False)
+    cancelled = []
+    monkeypatch.setattr(PL.WJ, "cancel", lambda cfg, jid, out: cancelled.append(jid))
+    if how == "heartbeat-gone":
+        loop.heartbeat()
+    else:
+        loop.sync(job_id)
+    assert cancelled == [job_id] and job_id not in loop.jobs
+    assert job_id not in loop._read_tracked()
+
+
+def test_a_final_job_takes_no_uploads_and_a_job_holds_few_frame_uploads(world, pull):
+    job_id = f"{CID}-persona-001-implementer-a1"
+    _persona_rec(world, job_id)
+    tok = pull.tokens["box"]
+    for i in range(PJ.MAX_FRAME_UPLOADS):
+        assert _call(pull, "PUT", f"/v1/jobs/{job_id}/frame-upload", tok, b"%d" % i)[0] == 200
+    assert _call(pull, "PUT", f"/v1/jobs/{job_id}/frame-upload", tok, b"0")[0] == 200  # a resend
+    st, _ = _call(pull, "PUT", f"/v1/jobs/{job_id}/frame-upload", tok, b"one more")
+    assert st == 409 and len(PJ.frame_uploads(world.cfg, job_id)) == PJ.MAX_FRAME_UPLOADS
+    RJ.update(world.cfg, job_id, pull_state="error")
+    for what in ("frame-upload", "result-bundle"):
+        st, body = _call(pull, "PUT", f"/v1/jobs/{job_id}/{what}", tok, b"late")
+        assert st == 409 and body["final"] is True
+    assert not PJ.result_bundle_path(world.cfg, job_id).exists()
+    assert not [p for p in PJ.uploads_dir(world.cfg).iterdir() if p.name.startswith(".up-")]

@@ -364,8 +364,9 @@ class Loop:
         if status == 410:
             self._gone(jid)
             return False
-        if status == 403:
-            _log(f"{jid}: not leased to this worker (403); dropped")
+        if status == 403:                       # as a heartbeat's `gone`: stop it here
+            _log(f"{jid}: not leased to this worker (403); cancelled and dropped")
+            self.cancel(jid)
             self.drop(jid)
             return False
         if status == 409:                       # the bundle is not stored yet: next tick
