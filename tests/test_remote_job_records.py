@@ -690,8 +690,10 @@ def test_check_warns_without_async_and_caches_info(aw, monkeypatch):
     info = W.info(aw.cfg)
     info.pop("features", None)
     out = {"name": "box", "ok": False, "errors": [], "warnings": [], "info": None}
-    monkeypatch.setattr(WK.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
-        a[0], 0, json.dumps(info), ""))
+    real_run = subprocess.run       # SPEC-0367: the local build id still runs `git ls-files`
+    monkeypatch.setattr(WK.subprocess, "run", lambda *a, **k: (
+        real_run(*a, **k) if a and list(a[0][:1]) == ["git"]
+        else subprocess.CompletedProcess(a[0], 0, json.dumps(info), "")))
     WK._check(aw.cfg, WK.normalize(aw.cfg, r.record()), out)
     assert any("lacks the `async` feature" in w for w in out["warnings"])
 

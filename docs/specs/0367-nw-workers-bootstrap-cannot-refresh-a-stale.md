@@ -300,6 +300,12 @@ warning in `warnings` unchanged in shape.
   `_fallback` call in the first-attempt path and also before the transport-failure fallback in
   `_retry`, so every rejected job prints it; in `workers._check` the sha warning is replaced by
   the `worker stale` build-id warning (per Design) and the SPEC-0341 `async` warning is kept.
+  `tests/test_remote_job_records.py::test_check_warns_without_async_and_caches_info` stubbed
+  every `subprocess.run`, which now also feeds `buildid`'s `git ls-files`; its stub passes `git`
+  calls through. Landing run: `test_buildid`, `test_workers_bootstrap`, `test_workers_registry`,
+  `test_worker`, `test_rich_output_guard`, `test_agentic_exit_paths`: 282 passed;
+  `test_remote_gates`, `test_agentic_gates`, `test_remote_job_records`: 244 passed + that test
+  (fixed, passes). Full suite not run.
 - **Real-box acceptance criterion and manual steps 2-6: waived (human), real-box steps not run.**
   The criterion stays unticked; only step 1 (recorded above) was ever run on the box. Because
   `spec_lint` forbids `done` with an unticked box and the human said not to tick it, the spec
