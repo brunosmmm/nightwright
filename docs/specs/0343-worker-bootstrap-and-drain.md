@@ -247,6 +247,11 @@ against bootstrap text that this spec no longer contains. Each is resolved in
   `queue._finish_worker_drains` pass → `list` shows `box` as `no`. Steps 1–2 of the manual plan
   (a gate on a real worker) were not run against a real host (none is reachable from the queue
   worktree); the loopback-worker tests above exercise the same paths end to end.
+- Gate fix (loop 3): the gate venv has no optional `tui` extra, so the two
+  `tests/test_tui_queue_model.py` tests that lazily import `queue_tab` now
+  `pytest.importorskip("textual")`. With `textual` hidden, the five `test_tui_*_model.py` files
+  gave 93 passed, 2 skipped. With it installed, `test_tui_queue_model.py` gave 28 passed. The full
+  suite is left to gating.
 
 ### As shipped (2026-11-01)
 
