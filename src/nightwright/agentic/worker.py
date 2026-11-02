@@ -573,6 +573,10 @@ def validate_header(h) -> None:
     if budget is not None and (not isinstance(budget, (int, float)) or isinstance(budget, bool)
                                or not math.isfinite(budget) or budget <= 0):
         bad("payload.gate_budget_s must be a positive finite number")
+    hs = payload.get("host_slots")                  # SPEC-0391: the registry's slots
+    if hs is not None and (not isinstance(hs, int) or isinstance(hs, bool)
+                           or not 1 <= hs <= gate_slots.MAX_SLOTS):
+        bad(f"payload.host_slots must be an int from 1 to {gate_slots.MAX_SLOTS}")
     gl = payload.get("gates")
     if not isinstance(gl, list):
         bad("payload.gates must be a list")
@@ -1086,15 +1090,19 @@ def _fail(cfg, h, job, frames, job_rec, stage, error, retryable=False, detail=No
 
 def _run_gates(cfg, h: dict, job: Path, frames: _Frames, cancel: threading.Event) -> None:
     """Steps 4-5: the worker host's own gate slot, then each gate, one `gate` frame each, then
-    `done`. `cancel` (stdin EOF) ends the slot wait or the running gate."""
+    `done`. `cancel` (stdin EOF) ends the slot wait or the running gate. SPEC-0391: the host's
+    slot limit is the coordinator's `payload.host_slots` (the worker's registry slots), else
+    this host's own `agentic.gates.slots`; each job scans only its own limit's slots."""
     payload, base = h["payload"], h["base"]
     seq = payload["seq"]
+    n_slots = payload.get("host_slots") or gate_slots.settings(cfg)["slots"]
 
     def announce(_occ, waited_s):
         frames.emit("slot_wait", waited_s=waited_s)
 
     with gate_slots.acquire(cfg, SLOT_CAMPAIGN_PREFIX + h["campaign"], stop=cancel, on_wait=announce,
-                            wait_event_s=_slot_wait_event_s()) as hold:
+                            wait_event_s=_slot_wait_event_s(),
+                            pools=[(None, n_slots)]) as hold:
         if hold.interrupted:
             frames.emit("done", ok=False, started_at=now_iso(), duration_s=0.0,
                         slot_wait_s=hold.waited_s, interrupted=True, changed=[])

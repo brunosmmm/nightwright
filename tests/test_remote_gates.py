@@ -416,6 +416,8 @@ def test_stat_dirty_tree_runs_remotely(world, remote, spy):
     run = G.run_all(world.project, world.state, world.cfg, seq=1)
     assert run.worker == "box" and run.ok
     assert spy[0]["header"]["commit"] == world.head
+    # SPEC-0391: the worker's registry slots ride along as the host's slot limit
+    assert spy[0]["header"]["payload"]["host_slots"] == remote.record()["slots"] == 1
     assert not world.ledger(["worker_failed"]) and not world.ledger(["finding"])
     assert _git(world.repo, "ls-files", "-s") == entries
     assert _git(world.repo, "stash", "list") == ""
@@ -1176,6 +1178,17 @@ def test_worker_slot_wait_past_the_limit_falls_back_without_cooldown(world, remo
     with _hold_worker_slots(remote):
         run = G.run_all(world.project, world.state, world.cfg, seq=1)
     _assert_fell_back(world, remote, run, "slot_wait", cooldown=False)
+
+
+def test_registry_slots_raise_the_worker_hosts_own_limit(world, remote):
+    """SPEC-0391 (IDEA-813): a worker registered with 3 slots runs a third job while its host's
+    own default pool of 2 is full; the header carries the registry value."""
+    world.cfg["agentic"]["workers"] = {"slot_wait_s": 1}
+    remote.register(slots=3)
+    with _hold_worker_slots(remote):
+        run = G.run_all(world.project, world.state, world.cfg, seq=1)
+    assert run.worker == "box" and run.ok and not world.ledger(["worker_failed"])
+    assert run.slot_wait_s < 1.0
 
 
 def test_stop_during_the_fallback_local_wait(world, remote):

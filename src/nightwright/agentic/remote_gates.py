@@ -310,7 +310,8 @@ def prepare(worker: dict, project_cfg: dict, campaign_state: dict, cfg, seq: int
     sticky one) before or during `have` raises `_Stopped`."""
     key, sha, base_sha, have, size = cut(worker, project_cfg, campaign_state, cfg, job_id,
                                          bundle, stop=stop)
-    return _header(project_cfg, campaign_state, cfg, seq, job_id, key, sha, base_sha, have, size)
+    return _header(project_cfg, campaign_state, cfg, seq, job_id, key, sha, base_sha, have, size,
+                   host_slots=worker.get("slots"))
 
 
 def cut(worker: dict, project_cfg: dict, campaign_state: dict, cfg, job_id: str, bundle: Path,
@@ -357,24 +358,28 @@ def cut(worker: dict, project_cfg: dict, campaign_state: dict, cfg, job_id: str,
 
 
 def _header(project_cfg: dict, campaign_state: dict, cfg, seq: int, job_id: str, key: str,
-            sha: str, base_sha: str, have: list, size: int) -> dict:
+            sha: str, base_sha: str, have: list, size: int, host_slots=None) -> dict:
     """The `nw.job.v1` header (SPEC-0336). The gate list drops the coordinator-only keys
     (`_COORDINATOR_ONLY`): `remote`, and `reuse_from` (SPEC-0376), whose reuse decision the
-    close made before dispatch and whose loop gate a close-tier list never carries."""
+    close made before dispatch and whose loop gate a close-tier list never carries.
+    SPEC-0391: `host_slots` (the worker's registry `slots`) goes in as `payload.host_slots`,
+    the worker host's slot limit for this job."""
     from .events import settings as events_settings
     cid = campaign_state["id"]
     base_name = (campaign_state.get("repo") or {}).get("base") or "main"
     gl = [{k: v for k, v in g.items() if k not in _COORDINATOR_ONLY}
           for g in project_cfg.get("gates") or []]
     spec_id = campaign_state.get("spec_id")
+    payload = {"seq": seq, "gates": gl,
+               "gate_budget_s": float(events_settings(cfg)["gate_budget_s"])}
+    if host_slots is not None:
+        payload["host_slots"] = host_slots
     return {"schema": W.JOB_SCHEMA, "kind": "gate", "job_id": job_id, "repo_key": key,
             "campaign": cid, "spec_id": spec_id if spec_id else "-", "commit": sha,
             "base": {"name": base_name, "sha": base_sha}, "have": have, "bundle_bytes": size,
             "env": {"NW_CAMPAIGN": str(cid), "NW_SPEC_ID": str(spec_id or ""),
                     "NW_BASE": base_name},
-            "timeout_s": job_timeout_s(cfg, gl), "attempt": 0,
-            "payload": {"seq": seq, "gates": gl,
-                        "gate_budget_s": float(events_settings(cfg)["gate_budget_s"])}}
+            "timeout_s": job_timeout_s(cfg, gl), "attempt": 0, "payload": payload}
 
 
 def header_refusal(project_cfg: dict, campaign_state: dict, cfg, seq: int) -> str | None:

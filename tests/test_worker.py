@@ -389,6 +389,11 @@ def test_base_name_check_agrees_with_git_check_ref_format(name):
     (_set("payload.gate_budget_s", float("nan")), "gate_budget_s"),
     (_set("payload.gate_budget_s", float("inf")), "gate_budget_s"),
     (_set("payload.gate_budget_s", 0), "gate_budget_s"),
+    (_set("payload.host_slots", 0), "host_slots"),
+    (_set("payload.host_slots", 17), "host_slots"),
+    (_set("payload.host_slots", True), "host_slots"),
+    (_set("payload.host_slots", "4"), "host_slots"),
+    (_set("payload.host_slots", 2.0), "host_slots"),
     (_set("env.NW_SPEC_ID", "a\x00b"), "NUL"),
     (_set("payload.gates.1.cmd", "true\x00"), "NUL"),
 ])
@@ -750,6 +755,26 @@ def test_held_slot_gives_slot_wait_then_started(src, tmp_path, wenv):
     assert rc == 0 and fin["ok"] is True
     assert job.types() == ["accepted", "slot_wait", "started", "gate", "done"]
     assert job.frames[1]["waited_s"] >= 0.5 and fin["slot_wait_s"] > 0
+
+
+def test_payload_host_slots_is_the_hosts_slot_limit(src, tmp_path, wenv):
+    """SPEC-0391: the coordinator's `host_slots` replaces this host's own `slots: 1`: with slot 0
+    held, `host_slots: 2` runs at once on slot 1, `host_slots: 1` waits for slot 0."""
+    env = _slot_conf(wenv)
+    with GS.acquire(_cfg(env, slots=1), "other") as hold:
+        assert hold.slot == 0
+        h, data = _bundle_job(src, tmp_path, [_gate("x", "true")])
+        h["payload"]["host_slots"] = 2
+        job, fin, rc = _run(env, h, data)
+        assert rc == 0 and fin["ok"] is True, job.frames
+        assert job.types() == ["accepted", "started", "gate", "done"]
+        h1, data1 = _bundle_job(src, tmp_path, [_gate("x", "true")])
+        h1["payload"]["host_slots"] = 1
+        job1 = Job(env, h1, data1)
+        job1.wait_for("slot_wait")
+        assert "started" not in job1.types()
+    fin1, rc1 = job1.finish()
+    assert rc1 == 0 and fin1["ok"] is True and "slot_wait" in job1.types()
 
 
 def test_eof_while_waiting_for_the_slot(src, tmp_path, wenv):
