@@ -85,6 +85,8 @@ EVENT_TYPES = {
     "spec_accepted": ("spec_id",),
     # SPEC-0359: a full-suite sentinel run on a project's base (keys: `schemas.EVENT_KEYS`)
     "sentinel": SC.EVENT_KEYS["sentinel"],
+    # SPEC-0381: a standalone `nw gate run` job was dispatched or finished
+    "gate_job": ("job_id", "status"),
     # SPEC-0300: synthetic follower line (never appended to events.jsonl)
     "conductor_digest": ("first_id", "last_id", "held", "merged"),
 }

@@ -304,10 +304,11 @@ def cut(worker: dict, project_cfg: dict, campaign_state: dict, cfg, job_id: str,
     test, base sha, have, bundle bytes)`, the bundle written to `bundle`."""
     repo = campaign_state.get("repo") or {}
     wt, base_name = repo["worktree"], repo.get("base") or "main"
-    sha = commit_under_test(wt)                 # stash stack untouched
+    # SPEC-0381: a standalone gate job names its commit (a branch tip); campaigns never do
+    sha = repo.get("commit") or commit_under_test(wt)   # stash stack untouched
     base_sha = _git(wt, "rev-parse", "--verify", f"{base_name}^{{commit}}")
     asked = [base_sha]
-    mb = _git(wt, "merge-base", "HEAD", base_sha, check=False)
+    mb = _git(wt, "merge-base", sha, base_sha, check=False)
     if mb and mb not in asked:
         asked.append(mb)
     key = repo_key(campaign_state.get("project") or project_cfg.get("project"), wt)
@@ -596,8 +597,19 @@ def _start_io(proc, header: dict, bundle: Path, cancel: threading.Event,
             os.close(fd)
 
 
+def _kept_changed(frame: dict):
+    """SPEC-0381: `done`'s `changed` for a run with no local re-run (a standalone gate job):
+    recorded, never a fallback. `null` stays None; a malformed value is a protocol failure."""
+    changed = frame.get("changed")
+    if changed is None:
+        return None
+    if not isinstance(changed, list) or not all(isinstance(p, str) for p in changed):
+        raise RemoteFailure("protocol", f"`done` frame: bad changed {changed!r}")
+    return tuple(changed)
+
+
 def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop, *,
-              gates_dir: Path | None = None) -> Outcome:
+              gates_dir: Path | None = None, keep_changed: bool = False) -> Outcome:
     argv = worker["ssh_argv"] + [worker["ssh"], worker["nw"], "worker", "gate-job"]
     slot_wait_s = settings(cfg)["slot_wait_s"]
     try:
@@ -693,7 +705,7 @@ def _dispatch(worker: dict, header: dict, bundle: Path, cfg, cid, seq: int, stop
                     raise RemoteFailure("interrupted", "the worker interrupted the run (signal)")
                 changed = None
                 if not cut:
-                    changed = _check_changed(frame)
+                    changed = _kept_changed(frame) if keep_changed else _check_changed(frame)
                     if [r.name for r in results] != order:
                         raise RemoteFailure("protocol", f"`done` after results for "
                                                         f"{[r.name for r in results]}, not "
@@ -834,13 +846,15 @@ def run(worker: str, project_cfg: dict, campaign_state: dict, cfg, seq: int, own
 
 
 def run_detached(worker: str, project_cfg: dict, state: dict, cfg, seq: int, gates_dir: Path,
-                 stop: threading.Event | None = None) -> G.GateRun:
+                 stop: threading.Event | None = None, *, keep_changed: bool = False) -> G.GateRun:
     """SPEC-0379: one gate run on `worker` for a caller that is not a campaign (the base-branch
     sentinel): the synchronous `gate-job` path only (no `remote_jobs` record, so nothing for a
     runner restart to adopt), logs written to `gates_dir`, and no campaign ledger. `state` is
     the campaign-shaped `{id, project, spec_id, repo: {worktree, base}}` `prepare` reads; its
     `id` names the job. A transport failure sets the worker's cooldown (as `_record_failure`
-    does) and is raised as RemoteFailure; a stop returns an interrupted run."""
+    does) and is raised as RemoteFailure; a stop returns an interrupted run. SPEC-0381:
+    `keep_changed` records the files the gates wrote in the worker's checkout instead of
+    failing with `tree` (a standalone job has no local re-run)."""
     cid = state["id"]
     job_id = f"{cid}-gate-{seq:03d}-t{int(time.time())}"
     gates_dir = Path(gates_dir)
@@ -854,7 +868,8 @@ def run_detached(worker: str, project_cfg: dict, state: dict, cfg, seq: int, gat
             raise RemoteFailure("registry", f"worker {worker!r} is not placeable", cooldown=False)
         header = prepare(rec, project_cfg, state, cfg, seq, job_id, bundle, stop=stop)
         _check_stop(stop)
-        out = _dispatch(rec, header, bundle, cfg, cid, seq, stop, gates_dir=gates_dir)
+        out = _dispatch(rec, header, bundle, cfg, cid, seq, stop, gates_dir=gates_dir,
+                        keep_changed=keep_changed)
         return out.run
     except _Stopped:
         return G.GateRun(seq, False, (), started_at, round(time.monotonic() - t0, 3),

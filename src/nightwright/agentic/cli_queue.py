@@ -520,6 +520,10 @@ def _workers_line(p: dict) -> Text | None:
         t.append("  ".join(f"{pool_marker(c['where'])} {c['campaign']}"
                            + (f" {GPG.label(c['progress'])}" if c.get("progress") else "")
                            for c in gp["campaigns"]))
+    if gp.get("gate_jobs"):                     # SPEC-0381: standalone `nw gate run` jobs
+        t.append("  │ ", style="dim")
+        t.append("  ".join(f"{pool_marker(j['where'])} ⚙ {j['job']} by {j.get('by') or '?'}"
+                           for j in gp["gate_jobs"]))
     t.no_wrap, t.overflow = True, "ellipsis"
     return t
 

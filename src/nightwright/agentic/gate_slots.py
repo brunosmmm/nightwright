@@ -83,7 +83,17 @@ def _waiter_path(cfg, campaign_id) -> Path:
     return slots_dir(cfg) / f"waiting-{campaign_id}.json"
 
 
-def _try_take(cfg, pools: list, campaign_id, t0: float, skip=None):
+HOLDER_KEYS = ("job", "by", "project", "branch")      # SPEC-0381: a standalone gate job's holder
+
+
+def _holder(holder) -> dict:
+    """SPEC-0381: the `HOLDER_KEYS` of `holder` (string values only), for the hold file and the
+    waiter marker."""
+    return {k: str(holder[k]) for k in HOLDER_KEYS
+            if isinstance(holder, dict) and holder.get(k) is not None}
+
+
+def _try_take(cfg, pools: list, campaign_id, t0: float, skip=None, holder=None):
     """Take the first free slot of the first pool that has one: `(slot, fd, waited_s, pool)`,
     else None. The hold file records the wait that ended in it (`waited_s`, seconds since
     `t0`). SPEC-0343: a non-local pool for which `skip(pool)` is true is passed over."""
@@ -104,6 +114,7 @@ def _try_take(cfg, pools: list, campaign_id, t0: float, skip=None):
                     "waited_s": waited_s}
             if pool is not None:
                 info["pool"] = pool
+            info.update(_holder(holder))
             try:
                 os.ftruncate(fd, 0)
                 os.write(fd, (json.dumps(info) + "\n").encode("utf-8"))
@@ -135,7 +146,8 @@ def _probe_held(d: Path) -> list[dict]:
         except OSError:
             info = _read_json(p) or {}
             held.append({"slot": int(p.stem.split("-")[1]), "campaign": info.get("campaign"),
-                         "pid": info.get("pid"), "since": info.get("since")})
+                         "pid": info.get("pid"), "since": info.get("since"),
+                         **{k: info[k] for k in HOLDER_KEYS if k in info}})
         else:
             fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
@@ -162,7 +174,8 @@ def occupancy(cfg) -> dict:
         for p in sorted(d.glob("waiting-*.json")):
             rec = _read_json(p)
             if rec and _pid_alive(rec.get("pid")):
-                waiting.append({k: rec.get(k) for k in ("campaign", "pid", "since")})
+                waiting.append({**{k: rec.get(k) for k in ("campaign", "pid", "since")},
+                                **{k: rec[k] for k in HOLDER_KEYS if k in rec}})
     out = {"slots": settings(cfg)["slots"], "held": held, "waiting": waiting}
     registered = WK.load(cfg)
     if registered:
@@ -217,7 +230,8 @@ def _repooled(cfg, repool, current: list) -> list:
 
 @contextmanager
 def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
-            wait_event_s=None, pools=None, skip=None, repool=None) -> Iterator[SlotHold]:
+            wait_event_s=None, pools=None, skip=None, repool=None,
+            holder=None) -> Iterator[SlotHold]:
     """Hold one slot for the `with` body. `pools` is an ordered list of `(pool_name, n_slots)`
     (`pool_name` a worker name, `None` for local; default local only): each poll tries them in
     order and takes the first free slot, so earlier pools are preferred; the pool list is
@@ -231,7 +245,8 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
     SPEC-0374: `repool() -> list`, called before each retry while waiting, replaces the pool
     list (a worker that went into cooldown, was disabled or drained leaves it; with none left
     the local pool comes in), so a waiter is never stranded on a pool that no longer takes
-    gates. An exception, an empty list or a bad pool name keeps the current list."""
+    gates. An exception, an empty list or a bad pool name keeps the current list. SPEC-0381:
+    `holder` (`{job, by, project, branch}`) is written into the hold file and the waiter marker."""
     from . import gates as G                    # lazy: gates imports this module
     poll_s = POLL_S if poll_s is None else poll_s
     wait_event_s = WAIT_EVENT_S if wait_event_s is None else wait_event_s
@@ -242,11 +257,11 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
     for pool, _n in pools:
         pool_dir(cfg, pool)                     # reject a bad name before anything is held
     t0 = time.monotonic()
-    taken = _try_take(cfg, pools, campaign_id, t0, skip)
+    taken = _try_take(cfg, pools, campaign_id, t0, skip, holder)
     if taken is None:
         marker = _waiter_path(cfg, campaign_id)
         _atomic_write(marker, json.dumps({"campaign": campaign_id, "pid": os.getpid(),
-                                          "since": now_iso()}) + "\n")
+                                          "since": now_iso(), **_holder(holder)}) + "\n")
         announced = False
         try:
             while taken is None:
@@ -265,7 +280,7 @@ def acquire(cfg, campaign_id, *, stop=None, poll_s=None, on_wait=None,
                     time.sleep(poll_s)
                 if repool is not None:
                     pools = _repooled(cfg, repool, pools)
-                taken = _try_take(cfg, pools, campaign_id, t0, skip)
+                taken = _try_take(cfg, pools, campaign_id, t0, skip, holder)
         finally:
             _drop_marker(marker)
     if taken is None:

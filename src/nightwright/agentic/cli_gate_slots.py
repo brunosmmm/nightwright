@@ -30,6 +30,12 @@ def _progress(cfg, h, remote: bool) -> dict | None:
         return None
 
 
+def _job_label(h) -> str:
+    """SPEC-0381: `GATEJOB-0001 (by alice, proj@branch)` for a standalone gate job's slot."""
+    return (f"{h['job']} (by {h.get('by') or '?'}, {h.get('project') or '-'}"
+            f"@{h.get('branch') or '-'})")
+
+
 def attach(queue_group):
     """Register `gate-slots` on the `queue` group."""
 
@@ -47,9 +53,13 @@ def attach(queue_group):
         if as_json:
             _dump_json({"schema": "nw.queue.gate_slots.v1", **occ})
             return
+        jobs = sum(1 for wv in (occ.get("workers") or {}).values() for h in wv["held"]
+                   if h.get("job"))
         console.print(f"gate slots: {len(occ['held'])}/{occ['slots']} held, "
-                      f"{len(occ['waiting'])} waiting", highlight=False)
-        if not occ["held"] and not occ["waiting"]:
+                      f"{len(occ['waiting'])} waiting"
+                      + (f", {jobs} standalone gate job(s) on workers" if jobs else ""),
+                      highlight=False)
+        if not occ["held"] and not occ["waiting"] and not jobs:
             console.print("[dim]no holders, no waiters[/]")
             return
         t = Table(title="Gate slots")
@@ -58,8 +68,14 @@ def attach(queue_group):
         for h in occ["held"]:
             t.add_row("holds", str(h["slot"]), str(h["campaign"]), str(h["pid"]),
                       _dur(_age(h["since"])), GPG.label(h.get("progress")))
+        for name, wv in (occ.get("workers") or {}).items():
+            for h in wv["held"]:                # SPEC-0381: standalone gate jobs on workers
+                if h.get("job"):
+                    t.add_row("holds", f"{name}:{h['slot']}", _job_label(h), str(h["pid"]),
+                              _dur(_age(h["since"])), GPG.label(h.get("progress")))
         for w in occ["waiting"]:
-            t.add_row("waits", "—", str(w["campaign"]), str(w["pid"]), _dur(_age(w["since"])), "")
+            t.add_row("waits", "—", _job_label(w) if w.get("job") else str(w["campaign"]),
+                      str(w["pid"]), _dur(_age(w["since"])), "")
         console.print(t)
 
     return queue_group

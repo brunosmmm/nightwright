@@ -610,6 +610,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0378](./specs/0378-affected-only-close-gate.md) | Affected-only close gate: the close tier runs the affected selection, with narrowed full-suite fallbacks | feature | done | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0379](./specs/0379-time-based-sentinel-on-worker-slots.md) | Clock-triggered full-suite sentinel on main, placed on worker-box gate slots | feature | done | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0380](./specs/0380-reexec-off-test-code-sha.md) | test_reexec_off_by_default asserts the SPEC-0375 started code_sha | feature | done | — | 2026-11-02 |
+| [SPEC-0381](./specs/0381-gate-run-standalone-remote-gating.md) | nw gate run: standalone remote gating of a worktree or branch without a campaign | feature | done | M9: agentic workflow | 2026-11-02 |
 
 ## Superseded / rejected
 

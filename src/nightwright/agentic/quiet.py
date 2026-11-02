@@ -37,6 +37,8 @@ RULES = {
     "worker_job_retried": "hold", "note": "hold",
     # SPEC-0343: a drained worker was disabled by the queue (informational)
     "worker_drained": "hold",
+    # SPEC-0381: a standalone gate job (no campaign) was dispatched or finished (informational)
+    "gate_job": "hold",
     "backlog": "cond", "backlog_blocked_long": "cond", "conductor_ping": "cond",
     "runner_draining": "cond", "campaign_silent": "cond", "state_stuck": "cond", "parked": "cond",
     "park_undecided": "wake", "runner_dead": "wake", "lease_stale": "wake",

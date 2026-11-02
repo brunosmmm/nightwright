@@ -6630,9 +6630,17 @@ def _gate_pools_view(cfg, occupancy, active_ids) -> dict | None:
             where[c] = w["name"]
     for w in occupancy.get("waiting") or []:
         where.setdefault(w.get("campaign"), "waiting")
+    # SPEC-0381: standalone gate jobs (`nw gate run`) hold worker slots with a `job` holder
+    jobs = [{"job": h["job"], "by": h.get("by"), "project": h.get("project"),
+             "branch": h.get("branch"), "where": name}
+            for name, wv in occ_w.items() for h in (wv or {}).get("held") or [] if h.get("job")]
+    jobs += [{"job": w["job"], "by": w.get("by"), "project": w.get("project"),
+              "branch": w.get("branch"), "where": "waiting"}
+             for w in occupancy.get("waiting") or [] if w.get("job")]
     return {"local": {"slots": occupancy.get("slots"), "held": len(occupancy.get("held") or [])},
             "workers": workers,
-            "campaigns": [{"campaign": c, "where": where[c]} for c in active_ids if c in where]}
+            "campaigns": [{"campaign": c, "where": where[c]} for c in active_ids if c in where],
+            "gate_jobs": jobs}
 
 
 def _gate_occupancy(cfg) -> dict | None:
