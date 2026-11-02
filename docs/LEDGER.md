@@ -262,7 +262,6 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0348](./specs/0348-declarative-per-project-agentic-pipeline.md) | Declarative per-project agentic pipeline: steps, personas and routing as data, with a lean fast-track lane | epic | accepted | M9: agentic workflow | 2026-11-01 |
 | [SPEC-0367](./specs/0367-nw-workers-bootstrap-cannot-refresh-a-stale.md) | nw workers bootstrap refreshes a stale worker install (build id, --reinstall, stale warning, loud gate rejection) | feature | in-progress | — | 2026-11-02 |
 | [SPEC-0368](./specs/0368-remote-gating-red-on-current-trees-human-visible.md) | Remote gates gate a stat-dirty tree at HEAD instead of falling back, and expose done.changed on the run | feature | in-progress | — | 2026-11-02 |
-| [SPEC-0369](./specs/0369-worker-self-update-without-root-add-forced.md) | Worker self-update without root: forced-command verb `nw worker update` (worker side) | feature | in-progress | — | 2026-11-02 |
 
 ## Done
 
@@ -599,6 +598,7 @@ progress. This is the single place to see *what has been decided* and *what is i
 | [SPEC-0363](./specs/0363-herdr-display-scoped-to-nw-panes-display-agent-on.md) | herdr display scoped to nw panes: --display-agent on conductor/steward panes, per-role workspace tokens | feature | done | — | 2026-11-01 |
 | [SPEC-0365](./specs/0365-herdr-watcher-auto-start-the-conductor-follower.md) | herdr watcher auto-start: the conductor follower supervises nw herdr watch | feature | done | — | 2026-11-01 |
 | [SPEC-0366](./specs/0366-herdr-run-tabs-one-tab-per-campaign-named-after.md) | herdr run tabs: one tab per campaign named after the work, supersedes the shared nw runs tab | feature | done | — | 2026-11-01 |
+| [SPEC-0369](./specs/0369-worker-self-update-without-root-add-forced.md) | Worker self-update without root: forced-command verb `nw worker update` (worker side) | feature | done | — | 2026-11-02 |
 | [SPEC-0370](./specs/0370-pipeline-a1-persona-registry-as-data.md) | Pipeline A1: persona registry as data (persona_defs/*.yaml, layered loader, nw personas list|show) | feature | done | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0371](./specs/0371-pipeline-a2-role-limited-custom-personas.md) | Pipeline A2a: role-limited custom personas (user/project definitions, role schemas, validator, nw personas validate) | feature | done | M9: agentic workflow | 2026-11-02 |
 | [SPEC-0372](./specs/0372-queue-watch-idle-cpu-and-worker-gate-pool-strip.md) | queue watch: near-zero idle CPU, and a workers / gate-pool strip | feature | done | M9: agentic workflow | 2026-11-02 |
